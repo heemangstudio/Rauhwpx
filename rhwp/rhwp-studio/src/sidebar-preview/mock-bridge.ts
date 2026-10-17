@@ -1,7 +1,8 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
-import { isChatPermissionCapability } from '../agent/chat-permissions.ts';
+import { isChatPermissionCapability, isOneShotChatPermission } from '../agent/chat-permissions.ts';
+import { linkError } from '../agent/document-link.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -275,6 +276,7 @@ export function createMockBridge(
   let startHistory: string[] = [];
   let messagesSent = 0;
   const sentMentions: string[][] = [];
+  const sentDocumentMentions: T.DocumentMention[][] = [];
   const projectParams = new URLSearchParams(location.search);
   const projects = createPreviewProjects({
     homeAccess: projectParams.get('home') === '1',
@@ -336,6 +338,15 @@ export function createMockBridge(
   let permissionRequest: T.ChatPermissionRequest | null = null;
   let chatPermissionGrants: T.ChatPermissionCapability[] = [];
   const permissionResponses: Array<{ requestId: string; decision: T.ChatPermissionDecision }> = [];
+  /** 허브에 보낸 chat-link-document — 검사가 연결 순서와 대상을 읽는다. */
+  const documentLinks: Array<{ threadId: string; documentId: string; documentName: string | null; createdByThread: string | null; running: boolean }> = [];
+  /** 문서 연결 요청의 예시 — 데스크톱 경로로 연다. */
+  const documentLinkRequest = (turnId: string): T.ChatPermissionRequest => ({
+    requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId, turnId, agent,
+    capability: 'document-link', kind: 'open', documentName: '2026 사업계획서.hwpx',
+    path: '/Users/hama/Documents/HamaEditor/2026 사업계획서.hwpx',
+    reason: '문서 연결 · 2026 사업계획서.hwpx', createdAt: new Date().toISOString(),
+  });
   /* 콘텍스트 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
@@ -652,14 +663,25 @@ export function createMockBridge(
       permissionResponses.push({ requestId, decision });
       if (!pending || pending.requestId !== requestId) {
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'REQUEST_INVALIDATED' });
-      } else if (decision === 'grant' && running) {
+      } else if (decision === 'grant' && running && !isOneShotChatPermission(pending.capability)) {
+        // 문서 연결 동의는 그 연결을 기다리는 도구 호출 안에서 답한다 — 턴이 도는 동안에도 받는다.
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: false, code: 'AGENT_BUSY' });
       } else {
         emit({ type: 'chat-permission-response-result', responseId, requestId, ok: true });
-        if (decision === 'grant' && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
+        if (decision === 'grant' && !isOneShotChatPermission(pending.capability)
+          && !chatPermissionGrants.includes(pending.capability)) chatPermissionGrants.push(pending.capability);
         completePermission(decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
       }
     }),
+    linkChatDocument: async (link) => {
+      if (link.threadId !== threadId || hubChatThreadId !== link.threadId) return null;
+      if (chatDocumentId !== null && chatDocumentId !== link.documentId) throw linkError('THREAD_ALREADY_LINKED');
+      chatDocumentId = link.documentId;
+      documentLinks.push({ ...link, createdByThread: link.createdByThread ?? null, running });
+      const reply = { documentId: link.documentId, documentName: link.documentName, projectId: null };
+      emit({ type: 'chat-document-linked', threadId: link.threadId, ...reply });
+      return reply;
+    },
     hubSessionKnown: () => welcome,
     getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
     getHubChat: () => (hubChatThreadId
@@ -988,10 +1010,11 @@ export function createMockBridge(
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false, _signal, mentions = []) => {
+    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false, _signal, mentions = [], _acceptance, documentMentions = []) => {
       messagesSent += 1;
       sentMessages.push({ text, ...(skillName ? { skillName } : {}), referenceIds: [...referenceIds], requireReceipt });
       sentMentions.push([...mentions]);
+      sentDocumentMentions.push(documentMentions.map((mention) => ({ ...mention })));
       const messageId = crypto.randomUUID();
       // 실제 브리지처럼 receipt 가 필요한 메시지(첨부·대기 메시지)만 id 를 돌려준다.
       const receipt = referenceIds.length > 0 || requireReceipt ? messageId : null;
@@ -1044,9 +1067,11 @@ export function createMockBridge(
           }
           const capability = isChatPermissionCapability(selected) ? selected : 'project-edit';
           if (!chatPermissionGrants.includes(capability)) {
-            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
-              turnId: `turn-${turnGeneration}`, agent, capability,
-              reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
+            permissionRequest = capability === 'document-link'
+              ? documentLinkRequest(`turn-${turnGeneration}`)
+              : { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+                turnId: `turn-${turnGeneration}`, agent, capability,
+                reason: '요청한 작업을 이어가려면 이 권한이 필요합니다.', createdAt: new Date().toISOString() };
             stream({ type: 'tool-call', agent, callId: `permission-${turnGeneration}`, tool: 'mcp__rhwp__request_permission',
               argsJson: JSON.stringify({ capability, reason: permissionRequest.reason }) });
             stream({ type: 'tool-result', agent, callId: `permission-${turnGeneration}`, ok: true,
@@ -1904,6 +1929,20 @@ export function createMockBridge(
       generation++;
       failTurn(kind, currentTurnId ?? `turn-${generation}`);
     },
+    /** 허브처럼 문서 연결 동의를 묻는다 (문서 없는 채팅의 open_document). */
+    requestDocumentLink: () => {
+      if (!running) {
+        setRunning(true);
+        stream({ type: 'turn-start', agent, turnId: `turn-${++generation}` });
+      }
+      permissionRequest = documentLinkRequest(`turn-${generation}`);
+      emit({ type: 'chat-permission-requested', request: permissionRequest });
+      return permissionRequest.requestId;
+    },
+    /** 허브가 문서 없는 채팅의 프로젝트 저장을 막았다 (DOCUMENT_REQUIRED). */
+    emitDocumentRequired: (tool = 'project_edit') => {
+      emit({ type: 'document-required', tool, reason: 'project-save' });
+    },
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
@@ -1924,8 +1963,11 @@ export function createMockBridge(
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       messagesSent,
       sentMentions: sentMentions.map((ids) => [...ids]),
+      sentDocumentMentions: sentDocumentMentions.map((rows) => rows.map((row) => ({ ...row }))),
       interrupts,
       permissionResponses: permissionResponses.map((response) => ({ ...response })),
+      documentLinks: documentLinks.map((link) => ({ ...link })),
+      chatDocumentId,
       chatPermissionGrants: [...chatPermissionGrants],
       messageTexts: sentMessages.map((message) => message.text),
       sentMessages: sentMessages.map((message) => ({ ...message, referenceIds: [...message.referenceIds] })),

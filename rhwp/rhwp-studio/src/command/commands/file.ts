@@ -52,6 +52,7 @@ import {
   type SaveDocumentResult,
   type FileSystemWindowLike,
 } from '@/command/file-system-access';
+import { EXACT_LOCAL_DOCUMENT_MAX_BYTES, readBlobBytesWithLimit } from '@/core/document-input-limits';
 import { PdfPrintDialog } from '@/ui/pdf-print-dialog';
 import { userSettings } from '@/core/user-settings';
 import { showToast } from '@/ui/toast';
@@ -166,6 +167,46 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
     console.error('[file:open] 열기 실패:', msg);
     alert(`파일 열기에 실패했습니다:\n${msg}`);
   }
+}
+
+/**
+ * 파일 하나를 골라 읽기만 한다 — 문서를 열지 않고 저장 여부도 묻지 않는다(채팅에 문서를 이을 때).
+ * 데스크톱 열기 창, 브라우저 파일 선택 창, 둘 다 없으면 잠깐 만든 파일 입력 순이다.
+ * 고르지 않으면 null. 고른 핸들을 쓰지 않으면 호출자가 releaseUnusedSaveTarget 으로 놓는다.
+ */
+export async function pickDocumentFile(
+  services: Pick<CommandServices, 'pickOpenHandle'>,
+): Promise<{ bytes: Uint8Array; name: string; handle: FileSystemFileHandleLike | null } | null> {
+  const desktopHandle = await services.pickOpenHandle?.();
+  if (desktopHandle === null) return null;
+  if (desktopHandle) {
+    try {
+      return { ...await readFileFromHandle(desktopHandle), handle: desktopHandle };
+    } catch (error) {
+      await desktopHandle.releaseUnusedSaveTarget?.().catch(() => {});
+      throw error;
+    }
+  }
+  const picked = await pickReadableBrowserDocument(window as FileSystemWindowLike);
+  if (picked === null) return null;
+  if (picked) return picked;
+  const file = await new Promise<File | null>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.hwp,.hwpx,.hml,.rhwpx';
+    input.style.display = 'none';
+    const done = (value: File | null) => {
+      input.remove();
+      resolve(value);
+    };
+    input.addEventListener('change', () => done(input.files?.[0] ?? null), { once: true });
+    input.addEventListener('cancel', () => done(null), { once: true });
+    document.body.append(input);
+    input.click();
+  });
+  if (!file) return null;
+  const maxBytes = file.name.toLowerCase().endsWith('.rhwpx') ? PORTABLE_HISTORY_MAX_BYTES : EXACT_LOCAL_DOCUMENT_MAX_BYTES;
+  return { bytes: await readBlobBytesWithLimit(file, maxBytes, '로컬 문서'), name: file.name, handle: null };
 }
 
 async function importLegacyHistoryFolder(services: CommandServices): Promise<void> {

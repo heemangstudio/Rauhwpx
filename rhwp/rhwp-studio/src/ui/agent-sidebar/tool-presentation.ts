@@ -521,13 +521,7 @@ const SPECS: Record<string, ToolSpec> = {
 
   // 서식 틀
   get_active_template: { category: 'read', label: '서식 틀 확인' },
-  template_get_structure: { category: 'read', label: '서식 틀 구조 읽기' },
-  template_get_text_range: { category: 'read', label: '서식 틀 텍스트 읽기', summary: (a) => para(a) },
-  template_get_para_format: { category: 'read', label: '서식 틀 문단 서식 읽기', summary: (a) => para(a) },
-  template_get_char_format: { category: 'read', label: '서식 틀 글자 서식 읽기', summary: (a) => para(a) },
-  template_list_styles: { category: 'read', label: '서식 틀 스타일 읽기' },
   template_get_page_layout: { category: 'read', label: '서식 틀 쪽 설정 읽기' },
-  template_render_page: { category: 'check', label: '서식 틀 쪽 그림 보기', summary: (a) => page(a) },
   template_apply_section_layout: { category: 'edit', label: '서식 틀 쪽 설정 적용' },
   template_apply_paragraph_format: {
     category: 'edit', label: '서식 틀 문단 서식 적용',
@@ -554,6 +548,15 @@ const SPECS: Record<string, ToolSpec> = {
     summary: (a) => str(a['name']) || host(str(a['url'])),
   },
   find_home_files: { category: 'read', label: '홈 폴더 검색', summary: (a) => quote(str(a['query'])) },
+  list_documents: {
+    category: 'read', label: '문서 목록 확인',
+    summary: (a) => quote(str(a['query'])) || clip(str(a['path']).split(/[\\/]/u).pop() ?? '', 32),
+  },
+  open_document: {
+    category: 'other', label: '문서 연결',
+    summary: (a) => clip(str(a['path']).split(/[\\/]/u).pop() ?? '', 32),
+  },
+  create_document: { category: 'other', label: '새 문서 만들기', summary: (a) => clip(str(a['name']), 32) },
 
   // 대화·계획·파일
   request_permission: {
@@ -631,6 +634,23 @@ export function parseToolArgs(argsJson: string): Args {
   }
 }
 
+/** documentId 로 다른 문서를 읽을 수 있는 도구 (허브의 읽기 도구 documentId). */
+export const FOREIGN_READ_TOOLS: ReadonlySet<string> = new Set([
+  'get_structure', 'get_outline', 'get_text_range', 'find_text', 'get_para_format', 'get_char_format',
+  'get_table_properties', 'get_table_layout', 'get_page_geometry', 'list_styles', 'render_page', 'read_batch',
+]);
+
+/**
+ * documentId 를 준 읽기는 그 문서를 읽는다 — 'template' 은 활성 서식 틀, 그 밖은 다른 문서다.
+ * “문서 구조 읽기”는 “서식 틀 구조 읽기”·“다른 문서 구조 읽기”가 된다.
+ */
+function foreignReadLabel(name: string, label: string, args: Args): string {
+  const documentId = str(args['documentId']);
+  if (!documentId || !FOREIGN_READ_TOOLS.has(name)) return label;
+  const owner = documentId === 'template' ? '서식 틀' : '다른 문서';
+  return `${owner} ${label.replace(/^문서 /, '')}`;
+}
+
 function describe(name: string, args: Args): { known: boolean; category: ToolCategory; label: string; summary: string } {
   const spec = SPECS[name];
   if (!spec) {
@@ -652,6 +672,7 @@ function describe(name: string, args: Args): { known: boolean; category: ToolCat
     label = typeof spec.label === 'string' ? spec.label : name;
     summary = '';
   }
+  label = foreignReadLabel(name, label, args);
   return { known: true, category: spec.category, label, summary };
 }
 
@@ -714,6 +735,12 @@ const ERROR_TEXT: Record<string, string> = {
   TEMPLATE_UNAVAILABLE: '서식 틀 없음',
   TEMPLATE_NOT_FOUND: '서식 틀 없음',
   TEMPLATE_TRANSFER_FAILED: '서식 틀 적용 실패',
+  SOURCE_NOT_FOUND: '문서를 찾지 못함',
+  DOCUMENT_OPEN_ELSEWHERE: '다른 창에서 열려 있음',
+  DOCUMENT_OPEN_ELSEWHERE_CLOSED: '문서를 연 창이 닫힘',
+  SOURCE_PERMISSION_REQUIRED: '파일 권한 필요',
+  SOURCE_UNREADABLE: '읽을 수 없는 문서',
+  SOURCE_TOO_LARGE: '문서가 너무 큼',
   SKILL_NOT_FOUND: '스킬 없음',
   REFERENCE_NOT_FOUND: '참고 자료 없음',
   FILE_NOT_FOUND: '파일 없음',
@@ -732,6 +759,27 @@ const ERROR_TEXT: Record<string, string> = {
   NO_ACTIVE_TURN: '턴이 끝난 뒤 도착',
   TOO_MANY_INFLIGHT_CALLS: '동시 호출 초과',
   PERMISSION_DENIED: '권한 거부',
+  // 문서 연결 (open_document·create_document)
+  THREAD_ALREADY_LINKED: '이미 문서가 있는 채팅',
+  MODE_FORBIDS_CREATE: '이 모드에서는 만들 수 없음',
+  DOC_OPEN_ELSEWHERE: '다른 곳에서 열려 있음',
+  NOT_FOUND: '문서를 찾지 못함',
+  PATH_UNAVAILABLE: '경로로 열 수 없음',
+  PATH_REJECTED: '열 수 없는 경로',
+  INVALID_PATH: '열 수 없는 경로',
+  INVALID_NAME: '쓸 수 없는 이름',
+  INVALID_FOLDER: '쓸 수 없는 폴더',
+  ROOT_INTERACTION_REQUIRED: '주 에이전트만 연결',
+  DOCUMENT_LINK_PENDING: '연결 동의 대기',
+  DOCUMENT_LINK_FAILED: '문서 연결 실패',
+  LINK_FAILED: '문서 연결 실패',
+  LINK_UNAVAILABLE: '지금은 연결할 수 없음',
+  UNREADABLE: '읽을 수 없는 문서',
+  TOO_LARGE: '문서가 너무 큼',
+  WRITE_FAILED: '파일을 만들지 못함',
+  DESKTOP_ONLY: '데스크톱 앱에서만 가능',
+  LICENSE_READ_ONLY: '읽기 전용 라이선스',
+  DOCUMENT_REQUIRED: '문서가 필요함',
   RPC_ERROR: '실행 오류',
 };
 
@@ -917,14 +965,17 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
       return text ? quote(text) : '선택 없음';
     }
     case 'get_structure':
-    case 'template_get_structure':
     case 'get_document_info': {
       const pages = num(result['pageCount']);
       return join([pages !== null ? `${pages}쪽` : '', result['truncated'] === true ? '일부' : '']);
     }
     case 'list_styles':
-    case 'template_list_styles':
       return countText(count(result['styles']), '스타일', '스타일 없음');
+    case 'list_documents':
+      return countText(count(result['documents']), '문서', '문서 없음');
+    case 'open_document':
+    case 'create_document':
+      return clip(str(result['name']), 32);
     case 'list_numberings':
       return countText(count(result['numberings']), '번호', '번호 없음');
     case 'list_bookmarks':
@@ -945,7 +996,6 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
       ]);
     }
     case 'render_page':
-    case 'template_render_page':
       return typeof result['svg'] === 'string' ? 'SVG' : '';
     case 'apply_engine_edits': {
       const applied = num(result['applied']) ?? count(result['results']);

@@ -82,6 +82,13 @@ test('raw upload/list/search/delete API is bearer-authenticated and CORS-safe', 
   assert.equal(searched.results.length, 1, 'legacy frontend limit query should be accepted');
   assert.equal(searched.results[0].fileId, created.id);
 
+  // 원본 바이트는 그 파일의 범위로만 받는다 (문서 없는 채팅의 첨부 PDF 를 스튜디오가 그린다).
+  const blob = await fetch(`${base}/reference-files/${created.id}/blob?scope=chat&scopeId=chat-a`, { headers });
+  assert.equal(blob.status, 200);
+  assert.equal(await blob.text(), '라온 프로젝트 일정과 배포 품질 검증');
+  assert.equal((await fetch(`${base}/reference-files/${created.id}/blob?scope=chat&scopeId=chat-b`, { headers })).status, 404);
+  assert.equal((await fetch(`${base}/reference-files/${created.id}/blob?scope=chat&scopeId=chat-z`, { headers })).status, 403);
+
   const removed = await fetch(`${base}/reference-files/${created.id}?scope=chat&scopeId=chat-a`, { method: 'DELETE', headers });
   assert.equal(removed.status, 200);
   assert.equal((await removed.json()).status, 'deleted');

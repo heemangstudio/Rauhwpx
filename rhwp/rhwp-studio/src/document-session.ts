@@ -89,7 +89,18 @@ export interface DocumentSession {
   readonly bridge: AgentBridge | null;
   readonly sidebar: DocumentSessionSidebar | null;
   versions: DocumentVersionController | null;
+  /**
+   * 에이전트가 create_document 로 이 세션에 만든 문서와 그 채팅. 그 채팅이 이 문서에 쓰는 것은 에이전트
+   * 모드에서도 검토 없이 반영된다. 세션의 문서가 바뀌면(documentId 가 다르면) 더는 뜻이 없다.
+   */
+  createdDocument: { threadId: string; documentId: string } | null;
   readonly disposers: Array<() => void>;
+}
+
+/** 이 세션의 지금 문서를 만든 채팅. 다른 문서가 들어왔으면 null. */
+export function documentCreatedBy(session: Pick<DocumentSession, 'createdDocument' | 'documentId'>): string | null {
+  const created = session.createdDocument;
+  return created && session.documentId !== null && created.documentId === session.documentId ? created.threadId : null;
 }
 
 export interface DocumentSessionCoreOptions {
@@ -162,6 +173,7 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     get bridge() { return session.activeChat?.bridge ?? null; },
     get sidebar() { return session.activeChat?.sidebar ?? null; },
     versions: null,
+    createdDocument: null,
     disposers,
   };
 

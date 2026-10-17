@@ -675,7 +675,7 @@ export function nativePathOwnershipKey(filePath, { platform = process.platform }
 // ERROR_INVALID_FUNCTION, which CreateHardLink returns on FAT, to EISDIR.
 const HARD_LINK_UNSUPPORTED_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS', 'EINVAL']);
 
-function hardLinksUnsupported(error, platform) {
+export function hardLinksUnsupported(error, platform) {
   return HARD_LINK_UNSUPPORTED_CODES.has(error?.code)
     || (platform === 'win32' && error?.code === 'EISDIR');
 }
@@ -1514,21 +1514,36 @@ export class NativeFileHandleRegistry {
   }
 
   /**
-   * 미리보기용으로 기억한 위치의 문서 바이트를 읽는다. 한 번 연 파일로 크기를 보고 그만큼만
-   * 읽는다. 다른 창이 쥔 파일, 폴더 묶음, 큰 파일, 아직 내려받지 않은 클라우드 자리표시
-   * 파일(크기는 있는데 디스크 블록이 없음)은 읽지 않는다.
+   * 미리보기용으로 기억한 위치의 문서 바이트를 읽는다. 읽지 못하면 null — 이유는
+   * {@link readRememberedDocumentResult} 가 알려 준다.
    */
-  async readRememberedDocument(sessionId, documentId, { maxBytes = HOME_THUMBNAIL_SOURCE_MAX_BYTES } = {}) {
+  async readRememberedDocument(sessionId, documentId, options) {
+    const result = await this.readRememberedDocumentResult(sessionId, documentId, options);
+    return result.ok ? { name: result.name, bytes: result.bytes } : null;
+  }
+
+  /**
+   * 기억한 위치의 문서 바이트와, 읽지 못했을 때의 이유. 한 번 연 파일로 크기를 보고 그만큼만 읽는다.
+   * - owned: 다른 창이 쥔 파일
+   * - missing: 기억한 문서가 없거나 파일·폴더가 없다
+   * - too-large: maxBytes 를 넘는다
+   * - unreadable: 링크로 바뀐 경로, 폴더 묶음, 아직 내려받지 않은 클라우드 자리표시 파일(크기는
+   *   있는데 디스크 블록이 없음), 권한·잠김(EACCES·EPERM·EBUSY) 같은 읽기 실패. 잠깐일 수 있다.
+   * @returns {Promise<{ ok: true, name: string, bytes: Buffer }
+   *   | { ok: false, reason: 'owned' | 'missing' | 'too-large' | 'unreadable', size?: number }>}
+   */
+  async readRememberedDocumentResult(sessionId, documentId, { maxBytes = HOME_THUMBNAIL_SOURCE_MAX_BYTES } = {}) {
     const bookmark = this.#bookmarks.get(documentId);
-    if (!bookmark) return null;
+    if (!bookmark) return { ok: false, reason: 'missing' };
     const owner = this.#byPath.get(this.#ownershipKey(bookmark.path));
-    if (owner && owner.sessionId !== sessionId) return null;
+    if (owner && owner.sessionId !== sessionId) return { ok: false, reason: 'owned' };
     let handle;
     try {
       handle = await this.#openFile(bookmark.path, OPEN_READ_NO_FOLLOW);
       const info = await handle.stat();
-      if (!info.isFile() || info.size > maxBytes) return null;
-      if (info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return null;
+      if (!info.isFile()) return { ok: false, reason: 'unreadable' };
+      if (info.size > maxBytes) return { ok: false, reason: 'too-large', size: info.size };
+      if (info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return { ok: false, reason: 'unreadable' };
       const bytes = Buffer.allocUnsafe(info.size);
       let offset = 0;
       while (offset < bytes.length) {
@@ -1536,9 +1551,10 @@ export class NativeFileHandleRegistry {
         if (bytesRead === 0) break;
         offset += bytesRead;
       }
-      return { name: basename(bookmark.path), bytes: bytes.subarray(0, offset) };
-    } catch {
-      return null;
+      return { ok: true, name: basename(bookmark.path), bytes: bytes.subarray(0, offset) };
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { ok: false, reason: 'missing' };
+      return { ok: false, reason: 'unreadable' };
     } finally {
       await handle?.close().catch(() => {});
     }

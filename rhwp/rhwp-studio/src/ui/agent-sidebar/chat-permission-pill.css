@@ -42,3 +42,14 @@
 .ag-permission-pill[data-status='denied'] .ag-permission-status,
 .ag-permission-pill[data-status='expired'] .ag-permission-status { color: var(--ag-text-muted); }
 .ag-permission-error { flex-basis: 100%; padding: 2px; color: var(--ag-text-muted); font-size: 11px; }
+.ag-permission-path {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 0 2px 1px;
+  overflow: hidden;
+  color: var(--ag-text-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

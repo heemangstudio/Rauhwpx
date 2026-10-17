@@ -19,7 +19,15 @@ import {
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
 import { createProjectService, createProjectStore, createProjectWorktreeState, type ProjectClient } from './project-service.ts';
-import { AgentToolExecutor, documentWriterBusyError, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
+import {
+  AgentToolExecutor,
+  documentWriterBusyError,
+  isDocumentWriteTool,
+  toolTraceNow,
+  type ToolDocumentSource,
+  type ToolTraceTimings,
+} from './tool-executor.ts';
+import { readFileSourceResponse, type FileDocumentSource, type ForeignDocumentBytes } from './foreign-documents.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
@@ -37,7 +45,17 @@ import {
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
-import { chatPermissionMatchesContext, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
+import { chatPermissionMatchesContext, isOneShotChatPermission, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
+import {
+  DOCUMENT_LINK_TOOLS,
+  linkError,
+  readDocumentLinkToolArgs,
+  readDocumentRequiredFrame,
+  readLinkFailure,
+  type ChatDocumentLinkReply,
+  type ChatDocumentLinked,
+  type ChatDocumentLinkRequest,
+} from './document-link.ts';
 import {
   setModelCatalog,
   setPiModels as setPiModelRegistry,
@@ -47,6 +65,7 @@ import {
 import {
   AGENT_PROTOCOL_VERSION,
   AgentToolError,
+  MAX_DOCUMENT_MENTIONS,
   isAgentPhase,
   isAgentWorkflow,
   isStructuredPlan,
@@ -61,6 +80,7 @@ import {
 } from '../core/document-input-limits.ts';
 import type {
   ProviderFailure,
+  DocumentMention,
   AgentBridgeDeps,
   ChatHistoryEntry,
   ProviderContextUsage,
@@ -318,6 +338,18 @@ export interface AgentBridge {
   getChatPermissionGrants(): ChatPermissionCapability[];
   respondChatPermission(requestId: string, decision: ChatPermissionDecision): string;
   /**
+   * 문서 없는 채팅에 문서를 이었다고 허브에 알린다 (chat-link-document). 공급자를 다시 띄우지 않고 턴
+   * 중에도 된다. 허브가 확인(chat-document-linked)하면 이 채팅의 문서가 바뀐다. 허브에 이 채팅의
+   * 세션이 아직 없으면(초안) 알릴 것이 없어 null — 첫 메시지의 chat-start 가 문서를 싣는다.
+   * 허브가 거절하면 ChatDocumentLinkError(THREAD_ALREADY_LINKED·LINK_FAILED)를 던진다.
+   */
+  linkChatDocument(link: {
+    threadId: string;
+    documentId: string;
+    documentName: string | null;
+    createdByThread?: string | null;
+  }): Promise<ChatDocumentLinkReply | null>;
+  /**
    * 이 페이지에서 허브의 첫 답(welcome)을 반영했거나, 첫 연결 시도가 답 없이 끝났거나(재시도 예약),
    * 다른 탭에 밀려났거나, 폐기되면 풀린다. 새로고침 뒤 사이드바는 이것을 기다렸다가 채팅을 고른다.
    */
@@ -427,6 +459,8 @@ export interface AgentBridge {
     /** 입력기에서 @ 로 고른 프로젝트 항목 id (최대 20개). */
     mentions?: string[],
     acceptance?: { requireAcceptance: true; messageId: string },
+    /** 입력기에서 @ 로 고른 문서 (최대 5개). 에이전트가 documentId 로 읽는다. */
+    documentMentions?: DocumentMention[],
   ): Promise<string | null>;
   /** 이 채팅이 묶인 연구 프로젝트 — 참고자료와 같은 인증으로 허브에 묻는다. */
   readonly projects: ProjectClient;
@@ -720,6 +754,46 @@ function readUserQuestionOutcome(
     }
   }
   return { status: 'answered', answers };
+}
+
+/** 보낼 문서 멘션 — documentId 로 겹침을 없애고 MAX_DOCUMENT_MENTIONS 개까지. open 은 참일 때만 싣는다. */
+function documentMentionsFrame(mentions: readonly DocumentMention[]): DocumentMention[] {
+  const seen = new Set<string>();
+  const out: DocumentMention[] = [];
+  for (const mention of mentions) {
+    if (!mention.documentId || seen.has(mention.documentId)) continue;
+    seen.add(mention.documentId);
+    out.push({ documentId: mention.documentId, title: mention.title, ...(mention.open === true ? { open: true as const } : {}) });
+    if (out.length >= MAX_DOCUMENT_MENTIONS) break;
+  }
+  return out;
+}
+
+const DOCUMENT_SOURCE_KEYS = new Set(['kind', 'documentId']);
+const FILE_SOURCE_KEYS = new Set(['kind', 'handle', 'name', 'size', 'mtimeMs']);
+
+/**
+ * tool-request 의 source — 허브가 읽기 도구의 documentId 를 확인한 앱 문서
+ * {kind:'document', documentId}, 또는 list_documents({path}) 가 발급한 파일
+ * {kind:'file', handle, name, size, mtimeMs}. 모르는 꼴은 버린다 (실행기가 그 읽기를 거절한다).
+ */
+function readToolDocumentSource(value: unknown): ToolDocumentSource | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  const keys = Object.keys(item);
+  if (item['kind'] === 'document') {
+    if (keys.some((key) => !DOCUMENT_SOURCE_KEYS.has(key))) return null;
+    const documentId = item['documentId'];
+    if (typeof documentId !== 'string' || !documentId.trim() || documentId.length > 200) return null;
+    return { kind: 'document', documentId };
+  }
+  if (item['kind'] !== 'file' || keys.length !== FILE_SOURCE_KEYS.size || keys.some((key) => !FILE_SOURCE_KEYS.has(key))) return null;
+  const { handle, name, size, mtimeMs } = item;
+  if (typeof handle !== 'string' || !/^[\x21-\x7e]{1,200}$/u.test(handle)) return null;
+  if (typeof name !== 'string' || !name.trim() || name.length > 512) return null;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) return null;
+  if (typeof mtimeMs !== 'number' || !Number.isFinite(mtimeMs) || mtimeMs < 0) return null;
+  return { kind: 'file', handle, name, size, mtimeMs };
 }
 
 function readDocumentTemplate(value: unknown): DocumentTemplate | null {
@@ -1359,6 +1433,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private editFollow: AgentEditFollow;
   private pendingChangeUnsub: (() => void) | null = null;
   private executor: AgentToolExecutor;
+  /** 이 문서의 어느 채팅이든 검토 대기 편집이 있는가 (ForeignDocumentAccess.ownPendingReview). */
+  private readonly ownPendingReview: (() => boolean) | undefined;
 
   private url = '';
   private token = '';
@@ -1368,6 +1444,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
+  /** 문서 없는 채팅에 문서를 잇는 편집기 흐름 (open_document·create_document). */
+  private readonly linkDocument?: (request: ChatDocumentLinkRequest) => Promise<ChatDocumentLinked>;
+  /** 이 문서를 만든 채팅 — 그 채팅의 쓰기는 검토 없이 반영된다. */
+  private readonly documentCreatedBy?: () => string | null;
+  /** 허브의 답을 기다리는 chat-link-document 의 requestId. */
+  private pendingDocumentLinkId: string | null = null;
   readonly projects: ProjectClient;
   private readonly claimDocumentWrite?: () => boolean;
   /** 문서 세션의 턴 체크포인트 — 첫 쓰기 전 문서와 이 채팅의 승인·거절·턴 끝을 알린다. */
@@ -1550,6 +1632,7 @@ export class AgentBridgeImpl implements AgentBridge {
     messageId?: string;
     stagedReferenceIds?: string[];
     mentions?: string[];
+    documentMentions?: DocumentMention[];
     requireAcceptance?: boolean;
     resolve(messageId: string | null): void;
   }> = [];
@@ -1575,6 +1658,8 @@ export class AgentBridgeImpl implements AgentBridge {
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
+    this.linkDocument = deps.linkDocument;
+    this.documentCreatedBy = deps.documentCreatedBy;
     const projectService = createProjectService({
       url: (pathname, query) => this.referenceUrl(pathname, query),
       fetch: (url, init) => fetch(url, {
@@ -1634,6 +1719,7 @@ export class AgentBridgeImpl implements AgentBridge {
       this.settleCheckpointSets(e);
       this.scheduleBusyCheck();
     });
+    this.ownPendingReview = deps.foreignDocuments?.ownPendingReview;
     this.executor = new AgentToolExecutor({
       wasm: deps.wasm,
       editor: this.editorHost,
@@ -1641,12 +1727,15 @@ export class AgentBridgeImpl implements AgentBridge {
       revision: this.revision,
       pending: this.pendingEdits,
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
+      loadFileSource: (source) => this.downloadFileSource(source),
+      foreignDocuments: deps.foreignDocuments,
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
       getDocumentWorktree: deps.getDocumentWorktree,
       loadProjectFile: async (projectId, itemId) => (
         new Uint8Array(await (await projectService.fileBlob(projectId, itemId)).arrayBuffer())
       ),
+      loadReferenceFile: (scope, scopeId, fileId) => this.downloadReferenceBlob(scope, scopeId, fileId),
       claimDocumentWrite: deps.claimDocumentWrite,
       // 이 턴의 첫 쓰기 직전 문서를 체크포인트로 남긴다 (모든 쓰기 문을 지난 뒤).
       beforeDocumentWrite: deps.turnCheckpoints
@@ -2209,14 +2298,24 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.workflow === 'direct' || (this.workflow === 'plan' && this.phase === 'implementing');
   }
 
-  /** 전체 모드: 쓰기가 검토 없이 바로 문서에 반영된다 (쓰기 도구 하나 = undo 한 단계). */
+  /**
+   * 쓰기가 검토 없이 바로 문서에 반영된다 (쓰기 도구 하나 = undo 한 단계). 전체 모드이거나, 이 채팅이
+   * 만든 문서에 쓰는 에이전트 모드(쓸 수 있는 단계)다 — 만든 문서에는 지킬 원래 내용이 없다.
+   */
   private writesApplyDirectly(): boolean {
-    return writesApplyDirectly(this.workflow, this.phase, this.permissionProfile);
+    return writesApplyDirectly(this.workflow, this.phase, this.permissionProfile)
+      || (this.canStagePendingEdits() && this.writesToOwnCreatedDocument());
+  }
+
+  /** 이 채팅이 create_document 로 만든 문서에 쓴다. */
+  private writesToOwnCreatedDocument(): boolean {
+    const creator = this.documentCreatedBy?.() ?? null;
+    return creator !== null && creator === this.threadId;
   }
 
   /** 전체 모드 에이전트의 버전 커밋. 검토 단계가 있는 모드에서는 받지 않는다. */
   private async commitVersion(args: unknown): Promise<{ committed: true; message: string }> {
-    if (!this.writesApplyDirectly()) {
+    if (!writesApplyDirectly(this.workflow, this.phase, this.permissionProfile)) {
       throw new AgentToolError('COMMIT_REQUIRES_FULL_ACCESS', 'commit_version is available in 전체 mode only.');
     }
     const raw = (args as { message?: unknown } | null)?.message;
@@ -2249,6 +2348,87 @@ export class AgentBridgeImpl implements AgentBridge {
       if (this.versionCommitInFlight === commit) this.versionCommitInFlight = null;
     }
     return { committed: true, message };
+  }
+
+  /**
+   * open_document·create_document — 허브가 모드와 동의를 이미 확인했다. 편집기가 이 채팅의 문서 세션에
+   * 문서를 열고 채팅과 허브를 이은 뒤(chat-link-document 를 이 응답보다 먼저 보낸다) 새 revision 을
+   * 돌려준다. 다음 쓰기는 이 revision 으로 통과한다.
+   */
+  private async runDocumentLinkTool(tool: string, args: unknown): Promise<{
+    documentId: string; name: string; revision: number; linked: true;
+  }> {
+    const target = readDocumentLinkToolArgs(tool, args);
+    if (!this.linkDocument) throw linkError('LINK_UNAVAILABLE', 'This editor cannot link documents to the chat.');
+    const linked = await this.linkDocument({ target, origin: 'agent', threadId: this.threadId || null });
+    return { documentId: linked.documentId, name: linked.name, revision: this.revision.revision, linked: true };
+  }
+
+  async linkChatDocument(link: {
+    threadId: string;
+    documentId: string;
+    documentName: string | null;
+    createdByThread?: string | null;
+  }): Promise<ChatDocumentLinkReply | null> {
+    if (link.threadId !== this.threadId) return null;
+    if (this.documentId !== null && this.documentId !== link.documentId) {
+      throw linkError('THREAD_ALREADY_LINKED');
+    }
+    const pendingStart = this.pendingChatStart;
+    // 기다리는 시작 요청도 이 문서를 싣는다 — 아직 나가지 않았으면 그 요청이 곧 연결이고, 이미 나갔으면
+    // 다시 보낼 때(재연결) 문서 없이 세션을 새로 열지 않게 한다.
+    if (pendingStart && pendingStart.threadId === link.threadId) {
+      pendingStart.documentId = link.documentId;
+      pendingStart.documentName = link.documentName;
+    }
+    const hubHoldsChat = this.state === 'connected'
+      && ((this.activeAgent !== null && !pendingStart) || (pendingStart !== null && this.chatStartSent));
+    this.documentId = link.documentId;
+    this.documentName = link.documentName;
+    this.syncProjectWorktreeContext();
+    if (!hubHoldsChat) return null;
+    const requestId = `chat-link-document-${++this.requestSeq}`;
+    this.pendingDocumentLinkId = requestId;
+    const reply = this.requests.create<Record<string, unknown>>(requestId, REQUEST_TIMEOUT_MS);
+    const sent = this.sendJson({
+      v: AGENT_PROTOCOL_VERSION,
+      type: 'chat-link-document',
+      requestId,
+      threadId: link.threadId,
+      documentId: link.documentId,
+      documentName: link.documentName,
+      ...(link.createdByThread ? { createdByThread: link.createdByThread } : {}),
+      // 버전 기록이 있는 문서면 chat-start 처럼 저장소를 싣는다 — 허브가 문서별 프로젝트가 아닌 저장소의
+      // 프로젝트에 묶고 예전 스레드 프로젝트를 그리로 옮긴다.
+      ...this.projectRepositoryFields(link.documentId),
+    });
+    if (!sent) this.requests.settle(requestId, null);
+    const frame = await reply;
+    if (this.pendingDocumentLinkId === requestId) this.pendingDocumentLinkId = null;
+    if (!frame) throw linkError('LINK_FAILED', 'The hub did not confirm the document link.');
+    // 허브에 아직 채팅이 없다 — 다음 chat-start 가 이 문서를 싣는다(위에서 바꾼 문서로 시작한다).
+    if (frame['ok'] === false && frame['code'] === 'AGENT_NOT_STARTED') return null;
+    if (frame['ok'] === false || frame['error']) throw readLinkFailure(frame);
+    // 연결 요청 앞에 나간 시작 요청의 응답(chat-started)이 문서를 비웠을 수 있다 — 허브가 확인한 문서로 맞춘다.
+    if (this.threadId === link.threadId) {
+      this.documentId = link.documentId;
+      this.documentName = link.documentName;
+      this.syncProjectWorktreeContext();
+    }
+    const result: ChatDocumentLinkReply = {
+      documentId: typeof frame['documentId'] === 'string' && frame['documentId'] ? frame['documentId'] : link.documentId,
+      documentName: typeof frame['documentName'] === 'string' ? frame['documentName'] : link.documentName,
+      projectId: typeof frame['projectId'] === 'string' && frame['projectId'] ? frame['projectId'] : null,
+    };
+    this.emit({ type: 'chat-document-linked', threadId: link.threadId, ...result });
+    return result;
+  }
+
+  /** chat-document-linked·연결 거절을 기다리는 연결 요청에 넘긴다. requestId 가 없으면 지금 기다리는 요청이다. */
+  private settleDocumentLink(msg: Record<string, unknown>): void {
+    const requestId = typeof msg['requestId'] === 'string' ? msg['requestId'] : this.pendingDocumentLinkId;
+    if (!requestId || requestId !== this.pendingDocumentLinkId) return;
+    this.requests.settle(requestId, msg);
   }
 
   /** 전체 모드에서 쓰기 도구가 끝나면(성공·실패 모두) 그 도구가 남긴 편집을 곧바로 확정한다. */
@@ -2790,11 +2970,14 @@ export class AgentBridgeImpl implements AgentBridge {
           && cancelled.documentId === msg.documentId) this.pendingPermissionCancellation = null;
         const pending = this.pendingChatPermissionRequest;
         const outcome = readChatPermissionOutcome(msg.outcome);
+        // 요청 자신의 채팅·문서로 맞춘다. 지금 문맥과 맞추면, 확인을 기다리는 사이 문서를 이은 채팅(문서 없는
+        // 채팅의 요청)에서 허브가 끝낸 요청을 놓쳐 확인 줄이 남는다.
         if (!pending || pending.requestId !== msg.requestId || !outcome
-          || msg.threadId !== pending.threadId || msg.documentId !== pending.documentId
-          || !chatPermissionMatchesContext(pending, this.referenceContext())) break;
+          || msg.threadId !== pending.threadId || msg.documentId !== pending.documentId) break;
         const grants = readChatPermissionGrants(msg.grants);
-        if (outcome.status === 'granted' && !grants.includes(pending.capability)) break;
+        // 일회성 동의(문서 연결)는 채팅 권한 목록에 오르지 않는다.
+        if (outcome.status === 'granted' && !isOneShotChatPermission(pending.capability)
+          && !grants.includes(pending.capability)) break;
         this.chatPermissionGrants = grants;
         this.clearChatPermissionRequest(outcome);
         if (this.turnRunning) this.beginPendingTurn(this.editingAgent);
@@ -3372,6 +3555,12 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'chat-error': {
+        // 문서 연결 거절도 세션을 건드리지 않는다 — 연결을 기다리는 쪽에만 돌려준다.
+        if (this.pendingDocumentLinkId !== null && (msg.requestType === 'chat-link-document'
+          || (typeof msg.requestId === 'string' && msg.requestId === this.pendingDocumentLinkId))) {
+          this.settleDocumentLink({ ...msg, ok: false });
+          break;
+        }
         // 압축 거절은 세션을 건드리지 않는다 — 요청자에게만 돌려준다.
         if (typeof msg.requestId === 'string' && msg.requestId.startsWith('chat-compact-')
           && this.requests.settle(msg.requestId, {
@@ -3501,6 +3690,21 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       case 'tool-request': {
         this.handleToolRequest(msg);
+        break;
+      }
+      case 'document-read-request': {
+        this.handleDocumentReadRequest(msg);
+        break;
+      }
+      case 'chat-document-linked':
+      case 'chat-link-document-result': {
+        this.settleDocumentLink(msg);
+        break;
+      }
+      case 'document-required': {
+        const notice = readDocumentRequiredFrame(msg);
+        if (!notice || (notice.threadId && notice.threadId !== this.threadId)) break;
+        this.emit({ type: 'document-required', tool: notice.tool, reason: notice.reason });
         break;
       }
       case 'tool-request-cancel': {
@@ -3671,6 +3875,54 @@ export class AgentBridgeImpl implements AgentBridge {
     }
   }
 
+  /**
+   * 이 채팅의 문서를 가리키는 documentId 는 떼어 낸다 — 허브가 먼저 떼지만, 남아 있으면 저장된 파일이
+   * 아니라 지금 문서(저장하지 않은 편집과 revision 포함)를 읽어야 한다.
+   */
+  private withoutOwnDocumentId(args: unknown): unknown {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+    const record = args as Record<string, unknown>;
+    if (this.documentId === null || record['documentId'] !== this.documentId) return args;
+    const { documentId: _own, ...rest } = record;
+    return rest;
+  }
+
+  /**
+   * 다른 창의 채팅이 이 채팅의 문서를 읽는다 — 허브가 이 문서를 연 창으로 보낸 읽기다. 이 채팅의 엔진으로
+   * 읽어(저장하지 않은 편집 포함) document-read-response 로 답한다. 이 채팅의 턴·쓰기 자리·대기 편집·
+   * 도구 행·화면에는 닿지 않으므로 이 채팅의 턴이 도는 중에도 답한다. id 가 없는 프레임은 버린다.
+   */
+  private handleDocumentReadRequest(msg: Record<string, unknown>): void {
+    const id = msg['id'];
+    // 허브는 숫자 id 를 쓴다 — 문자열도 받아 받은 값 그대로 돌려준다.
+    if (typeof id === 'number' ? !Number.isFinite(id) : typeof id !== 'string' || !id || id.length > 200) return;
+    const reply = (body: { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }) => {
+      // 소켓이 끊겼으면 버린다 — 허브의 읽기는 그 소켓과 함께 끝났다 (재연결 뒤에 보낼 곳이 없다).
+      this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'document-read-response', id, ...body });
+    };
+    const fail = (code: string, message: string) => reply({ ok: false, error: { code, message } });
+    const { documentId, tool, args } = msg;
+    if (typeof documentId !== 'string' || !documentId || typeof tool !== 'string' || !tool
+      || !args || typeof args !== 'object' || Array.isArray(args)
+      || (args as Record<string, unknown>)['documentId'] !== documentId) {
+      fail('INVALID_ARGS', 'document-read-request needs documentId, tool and args carrying the same documentId.');
+      return;
+    }
+    if (this.documentId === null || documentId !== this.documentId) {
+      fail('SOURCE_NOT_FOUND', `Document ${documentId} is not open in this window.`);
+      return;
+    }
+    const pendingReview = this.ownPendingReview?.() ?? this.pendingEdits.hasPending();
+    void this.executor.readForOtherChat(tool, args as Record<string, unknown>, { documentId, pendingReview })
+      .then(
+        (result) => reply({ ok: true, result }),
+        (e: unknown) => fail(
+          e instanceof AgentToolError ? e.code : 'RPC_ERROR',
+          e instanceof Error ? e.message : String(e),
+        ),
+      );
+  }
+
   private handleToolRequest(msg: any): void {
     const id = msg.id;
     if (typeof id !== 'number') return;
@@ -3709,7 +3961,8 @@ export class AgentBridgeImpl implements AgentBridge {
     this.activeToolRequestControllers.set(id, request);
     const requestIsActive = () => !controller.signal.aborted && belongsToActiveTurn();
     const tool = typeof msg.tool === 'string' ? msg.tool : '';
-    const args = msg.args;
+    const args = this.withoutOwnDocumentId(msg.args);
+    const source = readToolDocumentSource(msg.source);
     const parentTask = typeof msg.parentTaskId === 'string' && msg.parentTaskId ? { parentTaskId: msg.parentTaskId } : {};
     const agent: AgentName = isAgentName(msg.agent) ? msg.agent : (this.activeAgent ?? 'claude');
     this.editingAgent = agent;
@@ -3735,7 +3988,8 @@ export class AgentBridgeImpl implements AgentBridge {
     this.syncEditingLease();
     // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
     if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
-    const execute = () => (tool === 'commit_version' ? this.commitVersion(args) : this.executor
+    const execute = () => (tool === 'commit_version' ? this.commitVersion(args)
+      : DOCUMENT_LINK_TOOLS.has(tool) ? this.runDocumentLinkTool(tool, args) : this.executor
       .execute(tool, args, agent, {
         workflow: this.workflow,
         phase: msg.phase,
@@ -3743,6 +3997,7 @@ export class AgentBridgeImpl implements AgentBridge {
         activePhase: this.phase,
         activeCapabilityEpoch: this.capabilityEpoch,
         template: readDocumentTemplate(msg.template) ?? undefined,
+        ...(source ? { source } : {}),
         requestIsActive,
         ...(trace ? { trace } : {}),
       }));
@@ -4158,6 +4413,7 @@ export class AgentBridgeImpl implements AgentBridge {
     signal?: AbortSignal,
     mentions: string[] = [],
     acceptance?: { requireAcceptance: true; messageId: string },
+    documentMentions: DocumentMention[] = [],
   ): Promise<string | null> {
     if (acceptance && (this.messageReceipts.has(acceptance.messageId)
       || this.queuedMessages.some((message) => message.messageId === acceptance.messageId))) return Promise.resolve(null);
@@ -4187,6 +4443,7 @@ export class AgentBridgeImpl implements AgentBridge {
         text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds],
         ...(acceptance ? { requireAcceptance: true } : {}),
         ...(mentions.length ? { mentions: [...new Set(mentions)].slice(0, 20) } : {}),
+        ...(documentMentions.length ? { documentMentions: documentMentionsFrame(documentMentions) } : {}),
         resolve: settle,
       };
       signal?.addEventListener('abort', cancel, { once: true });
@@ -4352,6 +4609,7 @@ export class AgentBridgeImpl implements AgentBridge {
       ...(message.skillName ? { skillName: message.skillName } : {}),
       ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
       ...(message.mentions?.length ? { mentions: message.mentions } : {}),
+      ...(message.documentMentions?.length ? { documentMentions: message.documentMentions } : {}),
       ...(message.requireAcceptance ? { requireAcceptance: true } : {}),
       ...(built ? { documentSnapshot: built.snapshot } : {}),
     });
@@ -4607,6 +4865,26 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.downloadTemplateBytes(template);
   }
 
+  /**
+   * list_documents({path}) 가 발급한 파일 핸들의 바이트 주소 — 허브는 이 세션(sessionId)의
+   * 에이전트가 받은 핸들만 내준다. 인증은 서식 틀 내용과 같은 templateToken 이다.
+   */
+  private documentSourceContentUrl(handle: string): string {
+    return this.referenceUrl(`/document-sources/${encodeURIComponent(handle)}/content`);
+  }
+
+  private async downloadFileSource(source: FileDocumentSource): Promise<ForeignDocumentBytes> {
+    let response: Response;
+    try {
+      response = await fetch(this.documentSourceContentUrl(source.handle), {
+        headers: { Authorization: `Bearer ${this.templateToken}` },
+      });
+    } catch (error) {
+      throw new AgentToolError('RPC_ERROR', `"${source.name}" could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return readFileSourceResponse(source, response);
+  }
+
   private async downloadTemplateBytes(template: DocumentTemplate): Promise<Uint8Array> {
     const response = await fetch(this.referenceUrl(`/templates/${encodeURIComponent(template.id)}/content`), {
       headers: { Authorization: `Bearer ${this.templateToken}` },
@@ -4626,6 +4904,24 @@ export class AgentBridgeImpl implements AgentBridge {
       throw new AgentToolError('TEMPLATE_REVISION_MISMATCH', `Template revision ${revision} does not match ${template.revision}; inspect it again.`);
     }
     return readResponseBytesWithLimit(response, TEMPLATE_DOCUMENT_MAX_BYTES, '템플릿');
+  }
+
+  /** 프로젝트 밖 참고 자료(채팅·문서 첨부)의 원본 바이트 — PDF 쪽을 그릴 때만 받는다. */
+  private async downloadReferenceBlob(scope: string, scopeId: string, fileId: string): Promise<Uint8Array> {
+    let response: Response;
+    try {
+      response = await fetch(this.referenceUrl(`/reference-files/${encodeURIComponent(fileId)}/blob`, { scope, scopeId }), {
+        headers: { Authorization: `Bearer ${this.referenceToken}` },
+      });
+    } catch (error) {
+      throw new AgentToolError('REFERENCE_UNAVAILABLE', `The reference file could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!response.ok) {
+      await cancelResponseBody(response, `HTTP ${response.status}`);
+      throw new AgentToolError(response.status === 404 ? 'REFERENCE_NOT_FOUND' : 'REFERENCE_UNAVAILABLE',
+        `The reference file is unavailable (HTTP ${response.status}).`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   async uploadReference(scope: ReferenceScope, scopeId: string, file: File): Promise<ReferenceFile> {

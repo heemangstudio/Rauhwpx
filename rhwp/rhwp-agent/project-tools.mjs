@@ -1,4 +1,5 @@
 import { otherWorktreeOf } from './project-context.mjs';
+import { sessionHasNoDocument } from './reference-session.mjs';
 
 /**
  * 연구 프로젝트 MCP 도구를 허브에서 바로 실행한다 (reference-tools.mjs 와 같은 자리).
@@ -193,7 +194,19 @@ export async function executeProjectTool({
   labels = null,
 }) {
   if (!PROJECT_TOOLS.has(tool)) return { handled: false, result: null };
+  // 홈 폴더 찾기는 자료함에 저장하지 않는다 — 프로젝트가 없는 채팅(문서 없는 채팅)에서도 쓴다.
+  if (tool === 'find_home_files') {
+    if (!homeSearch?.available) throw projectToolError('HOME_SEARCH_DISABLED', 'Home folder search is off or unavailable');
+    return {
+      handled: true,
+      result: await homeSearch.find({ query: args.query, types: args.types, limit: args.limit, sessionKey }),
+    };
+  }
   const projectId = session?.projectId;
+  if (!projectId && tool === 'project_read' && session && sessionHasNoDocument(session)) {
+    // 문서 없는 채팅에는 자료함이 없다. 메시지 첨부는 search_reference_files 로 읽는다.
+    return { handled: true, result: { project: null, reason: 'No document is linked, so this chat has no 자료함 yet; message attachments are searchable with search_reference_files.' } };
+  }
   if (!projectId || !projectStore) throw projectToolError('PROJECT_NOT_BOUND', 'This chat has no research project yet');
   const actor = {
     kind: 'agent',
@@ -216,13 +229,6 @@ export async function executeProjectTool({
         expectedRevision: args.expectedRevision,
         labels,
       }),
-    };
-  }
-  if (tool === 'find_home_files') {
-    if (!homeSearch?.available) throw projectToolError('HOME_SEARCH_DISABLED', 'Home folder search is off or unavailable');
-    return {
-      handled: true,
-      result: await homeSearch.find({ query: args.query, types: args.types, limit: args.limit, sessionKey }),
     };
   }
   if (!ingest) throw projectToolError('PROJECT_INGEST_UNAVAILABLE', 'Project import is unavailable');

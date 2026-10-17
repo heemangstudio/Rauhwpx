@@ -16,6 +16,7 @@ import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { ForeignDocumentAccess } from './foreign-documents.ts';
 import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
@@ -140,8 +141,21 @@ export interface UserQuestionInteraction {
   questions: UserQuestion[];
 }
 
-/** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
-export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution';
+/** chat-user-message 의 documentMentions 항목 — open 은 이 창에 열린 문서다. */
+export interface DocumentMention {
+  documentId: string;
+  title: string;
+  open?: true;
+}
+
+/** 한 메시지가 싣는 문서 멘션 수 — 허브와 같다. */
+export const MAX_DOCUMENT_MENTIONS = 5;
+
+/**
+ * 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. document-link 는 문서 연결 한 번에만 묻는
+ * 일회성 동의다 — 채팅 전체 권한으로 남지 않는다.
+ */
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents' | 'document-link';
 export type ChatPermissionDecision = 'grant' | 'deny';
 export type ChatPermissionOutcome =
   | { status: 'granted' }
@@ -154,7 +168,14 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
-  kind?: 'browser-save-account' | 'browser-use-account';
+  /** 브라우저 계정 요청이거나, document-link 면 열기(open)·만들기(create). */
+  kind?: 'browser-save-account' | 'browser-use-account' | 'open' | 'create';
+  /** document-link: 연결할 문서 이름. 최근 문서를 id 로 열면 비어 있을 수 있다(linkDocumentId 로 찾는다). */
+  documentName?: string;
+  /** document-link: 최근 문서를 id 로 열 때 그 문서. */
+  linkDocumentId?: string;
+  /** document-link: 데스크톱에서 경로로 열거나 만들 파일의 전체 경로. */
+  path?: string;
   origin?: string;
   origins?: string[];
   accountId?: string;
@@ -1049,6 +1070,10 @@ export type SidebarEvent =
   | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
   | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[] }
   | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
+  /** 문서 없는 채팅에 문서가 이어졌다 (허브가 확인했다). */
+  | { type: 'chat-document-linked'; threadId: string; documentId: string; documentName: string | null; projectId: string | null }
+  /** 허브가 프로젝트에 저장하려는 도구를 문서가 없어 막았다 — 채팅에 새 문서·문서 연결 줄을 띄운다. */
+  | { type: 'document-required'; tool: string; reason: 'project-save' }
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }
   | { type: 'agent-instructions'; status: AgentInstructionsStatus; changedBy: string }
@@ -1215,6 +1240,21 @@ export interface AgentBridgeDeps {
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
   view?: AgentViewHost | null;
+  /**
+   * 다른 문서 읽기 — 창 하나가 모든 채팅과 함께 쓰는 엔진 묶음과 문서 찾기. 열린 문서 찾기는
+   * 이 채팅의 문서를 빼고 돌려준다. 없으면 다른 문서를 찾지 못한다.
+   */
+  foreignDocuments?: ForeignDocumentAccess;
+  /**
+   * 문서 없는 채팅에 문서를 잇는다 (open_document·create_document). 편집기가 이 채팅의 문서 세션에
+   * 문서를 열고 채팅·허브를 이은 뒤 돌려준다. 실패는 ChatDocumentLinkError 로 던진다. 없으면 도구가 실패한다.
+   */
+  linkDocument?: (request: import('./document-link.ts').ChatDocumentLinkRequest) => Promise<import('./document-link.ts').ChatDocumentLinked>;
+  /**
+   * 이 문서를 만든 채팅 (에이전트가 create_document 로 만든 문서). 그 채팅의 쓰기는 에이전트 모드에서도
+   * 검토 없이 바로 반영된다(쓰기 도구 하나 = 실행 취소 한 단계). 없거나 null 이면 모드 규칙대로다.
+   */
+  documentCreatedBy?: () => string | null;
 }
 
 export interface AgentBridgeOptions {

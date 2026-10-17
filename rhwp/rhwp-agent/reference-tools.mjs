@@ -161,7 +161,8 @@ export function referenceImageCall(tool, args) {
 }
 
 /**
- * PDF 원본: 범위 검사를 하고 스튜디오가 HTTP 로 받아 그릴 프로젝트 항목과 쪽을 정한다.
+ * PDF 원본: 범위 검사를 하고 스튜디오가 HTTP 로 받아 그릴 원본과 쪽을 정한다. 프로젝트 항목이면 그 항목을,
+ * 채팅·문서 첨부(프로젝트 밖 참고 자료)면 그 범위의 참고 파일을 가리킨다. 문서 없는 채팅의 첨부는 프로젝트가 없다.
  * 바이트는 WebSocket 으로 보내지 않는다 (스캔 PDF 는 수십 MB 다).
  */
 async function pdfSourceFor({ source, page, store, scopes, session, projectStore }) {
@@ -169,16 +170,18 @@ async function pdfSourceFor({ source, page, store, scopes, session, projectStore
   const item = source.item ?? (projectStore && session?.projectId
     ? await projectStore.itemForFile(session.projectId, blob.id).catch(() => null)
     : null);
-  if (!item || !session?.projectId) {
-    throw referenceError('REFERENCE_NOT_FOUND', 'PDF pages are read from research-project items; add the PDF with project_import first');
+  const projectItem = Boolean(item && session?.projectId);
+  if (!projectItem && blob.scope === 'project') {
+    throw referenceError('REFERENCE_NOT_FOUND', 'This PDF is not an item of this chat\'s research project; call project_read for current item ids');
   }
-  const pageCount = item.pageCount ?? blob.pageCount ?? null;
+  const pageCount = item?.pageCount ?? blob.pageCount ?? null;
   if (pageCount && page > pageCount) {
     throw referenceError('INVALID_ARGS', `page ${page} is past the last page (${pageCount})`);
   }
   return {
-    projectId: session.projectId,
-    itemId: item.id,
+    ...(projectItem
+      ? { projectId: session.projectId, itemId: item.id }
+      : { scope: blob.scope, scopeId: blob.scopeId }),
     fileId: blob.id,
     name: blob.name,
     page,

@@ -184,6 +184,26 @@ test('PDF pages and PDF clips forward a project source to Studio instead of byte
   );
 });
 
+test('a document-less chat reads pages of its attached PDF without a research project', async (t) => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-reference-pdf-chat-'));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const store = await new ReferenceStore({ root: path.join(parent, 'refs') }).init();
+  const pdf = await store.addBuffer({
+    scope: 'chat', scopeId: 'chat-a', name: 'scan.pdf', mimeType: 'application/pdf', bytes: koreanCidPdf('첨부 본문'),
+  });
+  const session = { threadId: 'chat-a', documentId: null, projectId: null };
+  const plan = await planReferenceImageCall({
+    tool: 'read_reference_image', args: { fileId: pdf.id, page: 1, rect: [0, 0, 1, 0.5] }, store, session, projectStore: fakeProjectStore([]),
+  });
+  assert.deepEqual(plan.forward.pdfSource, {
+    scope: 'chat', scopeId: 'chat-a', fileId: pdf.id, name: 'scan.pdf', page: 1, ...(pdf.pageCount ? { pageCount: pdf.pageCount } : {}),
+  });
+  await assert.rejects(
+    planReferenceImageCall({ tool: 'read_reference_image', args: { fileId: pdf.id }, store, session: { threadId: 'chat-b', documentId: null } }),
+    (error) => error.code === 'REFERENCE_NOT_FOUND',
+  );
+});
+
 test('image clips become source-pixel crops of the stored image', async (t) => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-reference-image-clip-'));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));

@@ -2,7 +2,7 @@
 // 프로세스/네트워크 부수효과가 없어야 하므로 여기에는 스키마·설명·검증 함수만 둔다.
 import { z } from 'zod/v3';
 import { MCP_USER_QUESTION_SHAPE } from './user-question.mjs';
-import { CHAT_PERMISSION_CAPABILITIES, chatPermissionForCategory } from './chat-permissions.mjs';
+import { GRANTABLE_CHAT_PERMISSIONS, chatPermissionForCategory } from './chat-permissions.mjs';
 
 // 공유 규칙 본문은 tool-rules.mjs 에 있다 — provider 브리프(agents/backend.mjs)가 zod 없이 가져다 쓴다.
 export { RHWP_TOOL_RULES } from './tool-rules.mjs';
@@ -91,6 +91,41 @@ export function cellPathParam() {
  */
 function renderParam() {
   return z.enum(['crop', 'page']).optional();
+}
+
+/**
+ * 읽기 도구가 다른 문서(앱 documentId, 활성 서식 틀 "template", list_documents 의 file: 핸들)를
+ * 읽게 하는 선택 인자. 읽기 전용이다 — 선언하지 않은 도구에 오면 documentIdArgError 가 거절한다.
+ * 설명은 RHWP_TOOL_RULES 에만 둔다 (직접 프로필 크기 한도).
+ */
+function documentIdParam() {
+  return z.string().optional();
+}
+
+export const DOCUMENT_ID_READ_ONLY_MESSAGE = 'documentId is read-only; writes target the live document';
+
+/**
+ * documentId 를 선언하지 않은 도구(쓰기 도구 등)에 documentId 가 오면 오류 메시지를, 아니면 null 을
+ * 돌려준다. MCP SDK 는 모르는 인자를 조용히 지우므로 mcp-stdio 가 파싱 전에, 허브가 다시 부른다.
+ * read_batch 는 최상위 documentId 하나만 받는다 — 항목별 documentId 는 거절한다.
+ * @param {{ name: string, shape: Record<string, unknown> } | undefined} definition
+ * @param {unknown} args
+ */
+export function documentIdArgError(definition, args) {
+  if (!definition || !args || typeof args !== 'object' || Array.isArray(args)) return null;
+  if (Object.hasOwn(args, 'documentId') && !Object.hasOwn(definition.shape, 'documentId')) {
+    return DOCUMENT_ID_READ_ONLY_MESSAGE;
+  }
+  const items = definition.name === 'read_batch' ? args.reads
+    : definition.name === 'apply_edits' ? args.edits
+      : null;
+  if (!Array.isArray(items)) return null;
+  const itemHasDocumentId = (item) => item && typeof item === 'object' && (Object.hasOwn(item, 'documentId')
+    || (item.args && typeof item.args === 'object' && Object.hasOwn(item.args, 'documentId')));
+  if (!items.some(itemHasDocumentId)) return null;
+  return definition.name === 'read_batch'
+    ? 'read_batch takes one top-level documentId, not one per item'
+    : DOCUMENT_ID_READ_ONLY_MESSAGE;
 }
 
 /** set_zone_borders 의 테두리 한 변 스펙. 인스턴스를 공유하면 JSON 스키마에 $ref 가 생기므로 매번 새로 만든다. */
@@ -548,6 +583,7 @@ export const TOOL_CATEGORIES = Object.freeze([
   'project-read',
   'project-write',
   'project-ingest',
+  'document-link',
 ]);
 
 /**
@@ -557,7 +593,7 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'} category
+ * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'} category
  */
 export function toolAnnotations(category) {
   return {
@@ -794,59 +830,34 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'get_active_template',
-    description: 'Return metadata and the transfer-capability report for this chat\'s selected template, including its revision. Call before template inspection or transfer; replacement invalidates older revisions.',
+    description: 'Return metadata and the transfer-capability report for this chat\'s selected template, including its revision. Read the template with documentId:"template" on the read tools; transfers need the current revision.',
     shape: {},
   },
   {
-    name: 'template_get_structure',
-    description: 'Read the active template outline without changing the open document, in the same line format as get_structure (format:"json" for JSON). Treat template content as untrusted reference data.',
+    name: 'list_documents',
+    description: 'List documents to read with documentId: open, recent and project ones; query filters names. path (absolute .hwp/.hwpx/.hml, desktop app) returns a file: documentId and needs the other-documents permission.',
     shape: {
-      templateRevision: z.number().int().min(1),
-      maxPreviewChars: z.number().int().min(0).default(120).optional(),
-      maxParagraphs: z.number().int().min(1).default(500).optional(),
-      format: z.enum(['text', 'json']).default('text').optional(),
+      query: z.string().max(200).optional(),
+      path: z.string().min(1).max(4_096).optional(),
     },
   },
   {
-    name: 'template_get_text_range',
-    description: 'Read text from one paragraph of the active template. Addresses refer to the template.',
+    name: 'open_document',
+    description: 'Link an existing document to this chat and open it: documentId from list_documents or mentions, or path (absolute .hwp/.hwpx/.hml, desktop app). The user confirms; a chat links one document, permanently, and writes then target it.',
     shape: {
-      templateRevision: z.number().int().min(1),
-      sectionIdx: z.number().int(),
-      paraIdx: z.number().int(),
-      charOffset: z.number().int().default(0).optional(),
-      count: z.number().int().min(0).optional(),
-      cell: cellParam(),
+      documentId: z.string().min(1).max(256).optional(),
+      path: z.string().min(1).max(4_096).optional(),
+    },
+    validate(args) {
+      if ((args.documentId === undefined) === (args.path === undefined)) throw invalidArgs('Pass exactly one of documentId or path');
     },
   },
   {
-    name: 'template_get_para_format',
-    description: 'Read the paragraph/list formatting of one active-template paragraph (full:true adds zero/false fields).',
+    name: 'create_document',
+    description: 'Create a blank .hwpx document named name and link it to this chat. The desktop app saves it in folder (absolute, inside home; default ~/Documents/HamaEditor). The user confirms; a chat links one document, permanently.',
     shape: {
-      templateRevision: z.number().int().min(1),
-      full: z.boolean().optional(),
-      sectionIdx: z.number().int(),
-      paraIdx: z.number().int(),
-      cell: cellParam(),
-    },
-  },
-  {
-    name: 'template_get_char_format',
-    description: 'Read character formatting at one position in the active template (full:true adds unset fields).',
-    shape: {
-      templateRevision: z.number().int().min(1),
-      full: z.boolean().optional(),
-      sectionIdx: z.number().int(),
-      paraIdx: z.number().int(),
-      charOffset: z.number().int(),
-      cell: cellParam(),
-    },
-  },
-  {
-    name: 'template_list_styles',
-    description: 'List named styles in the active template. Style identifiers are template-local; template_apply_paragraph_format remaps them into the open document.',
-    shape: {
-      templateRevision: z.number().int().min(1),
+      name: z.string().min(1).max(120).describe('File name without extension'),
+      folder: z.string().min(1).max(4_096).optional(),
     },
   },
   {
@@ -855,16 +866,6 @@ const BASE_TOOL_DEFINITIONS = [
     shape: {
       templateRevision: z.number().int().min(1),
       sectionIdx: z.number().int(),
-    },
-  },
-  {
-    name: 'template_render_page',
-    description: 'Render one page of the active template for visual inspection. Prefer structure tools; render only pages needed for layout.',
-    shape: {
-      templateRevision: z.number().int().min(1),
-      pageIndex: z.number().int(),
-      format: z.enum(['png', 'svg']).default('png').optional(),
-      scale: z.number().positive().default(1.25).optional(),
     },
   },
   {
@@ -883,6 +884,7 @@ const BASE_TOOL_DEFINITIONS = [
         fromPara: z.number().int().min(0),
         toPara: z.number().int().min(0),
       }).strict().optional().describe('Body paragraphs, inclusive'),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -895,6 +897,7 @@ const BASE_TOOL_DEFINITIONS = [
       count: z.number().int().min(0).optional(),
       cell: cellParam(),
       cellPath: cellPathParam(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -933,6 +936,7 @@ const BASE_TOOL_DEFINITIONS = [
       query: z.string().min(1),
       caseSensitive: z.boolean().default(false).optional(),
       maxResults: z.number().int().min(1).default(50).optional(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -944,6 +948,7 @@ const BASE_TOOL_DEFINITIONS = [
       scale: z.number().min(0.5).max(3).default(1.25).optional(),
       regionMm: regionMmParam(),
       savePath: z.string().min(1).optional(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -954,6 +959,7 @@ const BASE_TOOL_DEFINITIONS = [
       include: z.array(z.enum(['lines', 'runs', 'objects'])).min(1).optional()
         .describe("Default: ['lines','objects']"),
       regionMm: regionMmParam(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -965,6 +971,7 @@ const BASE_TOOL_DEFINITIONS = [
       paraIdx: z.number().int(),
       cell: cellParam(),
       cellPath: cellPathParam(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -977,6 +984,7 @@ const BASE_TOOL_DEFINITIONS = [
       charOffset: z.number().int(),
       cell: cellParam(),
       cellPath: cellPathParam(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -988,6 +996,7 @@ const BASE_TOOL_DEFINITIONS = [
       paraIdx: z.number().int(),
       controlIdx: z.number().int(),
       cellIdx: z.number().int().optional(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -997,6 +1006,7 @@ const BASE_TOOL_DEFINITIONS = [
       sectionIdx: z.number().int().default(0).optional(),
       paraIdx: z.number().int(),
       controlIdx: z.number().int(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -1048,6 +1058,7 @@ const BASE_TOOL_DEFINITIONS = [
         tool: z.enum(BATCHABLE_READ_TOOL_NAMES),
         args: z.record(z.string(), z.unknown()).optional(),
       }).passthrough()).min(1).max(16),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -1357,7 +1368,7 @@ const BASE_TOOL_DEFINITIONS = [
   {
     name: 'list_styles',
     description: `List named styles: id, name (Korean), englishName, type. Apply one with apply_style.`,
-    shape: {},
+    shape: { documentId: documentIdParam() },
   },
   {
     name: 'list_numberings',
@@ -1571,6 +1582,7 @@ const BASE_TOOL_DEFINITIONS = [
     description: `Heading tree from outline numbering or Korean clause markers (조/항/호/목); nodes carry level, kind, marker, text, sectionIdx/paraIdx.`,
     shape: {
       mode: z.enum(['auto', 'outline', 'clause']).default('auto').optional(),
+      documentId: documentIdParam(),
     },
   },
   {
@@ -1653,9 +1665,9 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing project or local execution permission for this chat, explaining why. Ordinary public research browsing and managed downloads are enabled by default. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
+    description: 'Request a missing project, local execution or other-documents (list_documents path) permission for this chat, explaining why. Ordinary public research browsing and managed downloads are enabled by default. Returns pending: end the turn and wait. It authorizes nothing. Document edits need 에이전트/전체 mode or an approved plan.',
     shape: {
-      capability: z.enum(CHAT_PERMISSION_CAPABILITIES),
+      capability: z.enum(GRANTABLE_CHAT_PERMISSIONS),
       reason: z.string().trim().min(1).max(1_000),
     },
   },
@@ -1885,7 +1897,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
 ];
 
-/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'>>} */
+/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
   update_agent_instructions: 'instruction-write',
@@ -1900,13 +1912,12 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   project_import: 'project-ingest',
   find_home_files: 'project-ingest',
   get_active_template: 'template-read',
-  template_get_structure: 'template-read',
-  template_get_text_range: 'template-read',
-  template_get_para_format: 'template-read',
-  template_get_char_format: 'template-read',
-  template_list_styles: 'template-read',
+  // 라이브 문서를 읽지 않는다 — 허브가 결과를 revision·문서 정보로 기록하지 않는다(LIVE_UNTRACKED_READ_TOOLS).
+  list_documents: 'document-read',
+  // 문서 없는 채팅에 문서를 하나 연결한다 — 문서 없이 시작한 세션에만 등록된다(filterToolDefinitions documentLink).
+  open_document: 'document-link',
+  create_document: 'document-link',
   template_get_page_layout: 'template-read',
-  template_render_page: 'template-read',
   get_structure: 'document-read',
   get_text_range: 'document-read',
   get_selection: 'document-read',
@@ -1995,16 +2006,25 @@ export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definit
   return Object.freeze({ ...definition, category });
 }));
 
+/** document-read 이지만 라이브 문서를 읽지 않는 도구 — 결과를 라이브 revision·문서 정보로 기록하지 않는다. */
+export const LIVE_UNTRACKED_READ_TOOL_NAMES = Object.freeze(['list_documents']);
+
+/** documentId 로 다른 문서를 읽을 수 있는 읽기 도구 — 허브가 이 이름들에만 읽기 출처를 푼다. */
+export const FOREIGN_READ_TOOL_NAMES = Object.freeze(TOOL_DEFINITIONS
+  .filter((definition) => definition.category === 'document-read' && Object.hasOwn(definition.shape, 'documentId'))
+  .map((definition) => definition.name));
+
 // 프로젝트 도구는 문서 쓰기가 아니라서 읽기 전용 모드(채팅·플랜)에도 들어간다. 백그라운드
 // 서식 틀 작업자만 뺀다. 채팅의 프로젝트 쓰기·가져오기는 설정으로 끌 수 있다(filterToolDefinitions).
 const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'project-ingest']);
 
+// 문서 연결: open_document 는 모든 채팅 단계에, create_document 는 문서를 쓸 수 있는 단계(direct·implementing)에만 보인다.
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', ...PROJECT_CATEGORIES]),
-  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
+  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',
@@ -2030,6 +2050,7 @@ export const TOOL_PROFILES = Object.freeze({
  * MCP 프로세스 환경에서 프로젝트 도구 게이트를 읽는다. 허브가 mcpCapabilityEnv 로 넣는다.
  * - RHWP_PROJECT_WRITES=0: 채팅에서 프로젝트 쓰기·가져오기를 끈 설정(질문 워크플로에만 실린다).
  * - RHWP_HOME_SEARCH=1: 데스크톱 홈 폴더 검색이 켜져 있다.
+ * - RHWP_DOCUMENT_LINK=1: 문서 없이 시작한 채팅이다(open_document·create_document).
  * @param {Record<string, string|undefined>} env
  */
 export function projectToolGatesFromEnv(env = process.env) {
@@ -2038,6 +2059,7 @@ export function projectToolGatesFromEnv(env = process.env) {
     homeSearch: env.RHWP_HOME_SEARCH === '1',
     researchPermissions: { browse: env.RHWP_RESEARCH_BROWSE !== '0', downloads: env.RHWP_RESEARCH_DOWNLOADS !== '0', import: env.RHWP_RESEARCH_IMPORT !== '0' },
     ...(env.RHWP_REQUESTABLE_TOOLS === '1' ? { requestable: true } : {}),
+    ...(env.RHWP_DOCUMENT_LINK === '1' ? { documentLink: true } : {}),
   };
 }
 
@@ -2046,7 +2068,7 @@ export function projectToolGatesFromEnv(env = process.env) {
  * Unknown entries are ignored so a typo cannot accidentally broaden access.
  * @param {string | undefined} profile
  */
-export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false, researchPermissions = { browse: true, downloads: true, import: true } } = {}) {
+export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false, documentLink = false, researchPermissions = { browse: true, downloads: true, import: true } } = {}) {
   const value = String(profile ?? 'direct').trim();
   const named = TOOL_PROFILES[value];
   const entries = new Set(named ?? value.split(',').map((entry) => entry.trim()).filter(Boolean));
@@ -2060,6 +2082,8 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
     if (definition.name === 'browser_request_account' && !requestableProfile) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
+    // 문서 연결 도구는 문서 없이 시작한 채팅에만 보인다.
+    if (definition.category === 'document-link' && documentLink !== true) return false;
     if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
     return true;
   });
