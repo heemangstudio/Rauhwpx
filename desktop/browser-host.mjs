@@ -223,9 +223,11 @@ export class OwnedBrowserHost {
     const blockHumanInput = (event, input) => {
       if (tab.automationInputDepth) return;
       // 에이전트 작업이 실행 중이면 사용자 입력을 막는다. 사용자가 잡은 탭의 에이전트 입력은 허브와 CDP가 거부한다.
-      if (!tab.human || !tab.interactive || !tab.held && tab.agentActivity?.size) event.preventDefault();
+      const blocked = !tab.human || !tab.interactive || !tab.held && tab.agentActivity?.size;
+      if (blocked) event.preventDefault();
       // 잡지 않은 탭의 클릭·키 입력은 편집기가 제어권을 넘겨받을 수 있게 알린다.
-      if (!tab.held && ['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
+      // 전달된 입력은 허브에도 알려 이어지는 페이지 요청(로그인 제출 등)을 사용자의 것으로 본다.
+      if (!tab.held && ['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input', { delivered: !blocked });
     };
     contents.on('before-input-event', blockHumanInput);
     contents.on('before-mouse-event', blockHumanInput);
@@ -399,7 +401,7 @@ export class OwnedBrowserHost {
   state(tab) {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
-    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
+    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, openerTargetId: tab.openerTargetId ?? null, native: true,
       generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition, passwordProtected: !!tab.passwordShield,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
@@ -437,7 +439,7 @@ export class OwnedBrowserHost {
     if (!tab?.targetId) return;
     const payload = { type, ...this.state(tab), ...extra };
     this.onEvent(payload);
-    if (['zoom', 'download-progress'].includes(type) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
+    if ((['zoom', 'download-progress'].includes(type) || type === 'human-input' && extra.delivered) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
         this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId,
           generation: this.generation, reason: type, ...(type === 'zoom' ? { zoomFactor: payload.zoomFactor } : extra) } }, () => {});
