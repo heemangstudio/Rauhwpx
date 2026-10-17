@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRouter 연결 튜토리얼 | HamaEditor</title>
-<meta name="description" content="OpenRouter 계정에 크레딧을 충전하고 HamaEditor의 Pi를 OAuth로 연결하는 8단계 튜토리얼입니다.">
+<meta name="description" content="OpenRouter 계정에 크레딧을 충전하고 HamaEditor의 Pi를 OAuth로 연결하는 8단계 튜토리얼이에요.">
 <meta name="theme-color" content="#000000">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -14,67 +14,76 @@
 <script>document.documentElement.classList.add('js');</script>
 <style>
 /* OpenRouter 연결 튜토리얼 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   단계 머리는 왼쪽 번호 칸 + 오른쪽 글 칸으로 나뉘고, 스크린샷은 기둥 폭을 다 써요. */
+   문서 형식: 왼쪽 본문 + 오른쪽 "이 페이지" 목차. 좁은 화면에서는 목차가 본문 위로 접혀 들어가요. */
+
+.docs {
+  display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 64px;
+  padding: clamp(40px, 5vw, 64px) var(--cell-pad) clamp(72px, 9vw, 120px);
+}
+.docs__main { min-width: 0; max-width: 760px; }
+.docs :is(h2, h3) { scroll-margin-top: calc(var(--nav-h) + 24px); }
+.docs section, .docs article { scroll-margin-top: calc(var(--nav-h) + 24px); }
+
+/* 이동 경로 */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--meta); }
+.crumbs a { transition: color 0.15s ease; }
+.crumbs a:hover { color: var(--text); }
+.crumbs [aria-current] { color: var(--muted); }
 
 /* 쪽 머리 */
-.back-link {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-size: var(--fs-small); font-weight: 500; color: var(--meta);
-  transition: color 0.15s ease;
+.doc-head { margin-top: 20px; }
+.doc-title { font-size: clamp(30px, 1.1vw + 22px, 40px); line-height: 1.2; font-weight: 650; letter-spacing: -0.032em; text-wrap: balance; }
+.doc-head .lead { margin-top: 12px; font-size: 18px; }
+
+/* 섹션과 단계 */
+.doc-sec { margin-top: 56px; padding-top: 40px; border-top: 1px solid var(--line); }
+.doc-where {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+  font-size: 13px; font-weight: 600; color: var(--meta);
 }
-.back-link::before { content: "←"; transition: transform 0.2s var(--ease-out); }
-.back-link:hover { color: var(--text); }
-.back-link:hover::before { transform: translateX(-3px); }
-.page-head .back-link + .h1 { margin-top: 18px; }
-.page-head .btn-row { margin-top: 32px; }
-
-/* 두 갈래 요약 */
-.route > .cell { padding-block: 28px; }
-.route__link { display: flex; align-items: flex-start; gap: 20px; }
-.route__no { flex: none; min-width: 52px; padding-top: 3px; font-family: var(--mono); font-size: 13px; color: var(--accent); }
-.route__name { display: block; font-size: var(--fs-h3); line-height: 1.4; font-weight: 620; letter-spacing: -0.02em; }
-.route__desc { display: block; margin-top: 2px; font-size: var(--fs-small); color: var(--muted); }
-.route__link::after { content: "↓"; margin-left: auto; color: var(--meta); transition: transform 0.2s var(--ease-out), color 0.15s ease; }
-.route__link:hover::after { transform: translateY(3px); color: var(--text); }
-
-/* 번호 칸 + 글 칸 */
-.ledger { display: grid; grid-template-columns: 216px minmax(0, 1fr); padding: 0; }
-.ledger__key, .ledger__body { padding: var(--cell-pad); }
-.ledger__key { position: relative; border-right: 1px solid var(--line); }
-.ledger__key::after {
-  content: ""; position: absolute; top: -4px; right: -4px; z-index: 2;
-  width: 7px; height: 7px;
-  background: var(--night-1); border: 1px solid var(--line-strong);
+.doc-where img { width: 18px; height: 18px; border-radius: 4px; }
+.doc-where img.px { width: 20px; height: 18px; border-radius: 0; }
+.doc-h2 {
+  display: flex; align-items: flex-start; gap: 12px;
+  font-size: clamp(22px, 0.6vw + 18px, 27px); line-height: 1.3; font-weight: 640; letter-spacing: -0.028em;
 }
-
-/* 갈래 머리 */
-.phase .ledger__key, .phase .ledger__body { padding-top: clamp(64px, 7vw, 104px); padding-bottom: clamp(32px, 4vw, 48px); }
-.phase__no {
-  display: block;
-  font-size: clamp(44px, 2.4vw + 26px, 64px); line-height: 1; font-weight: 650; letter-spacing: -0.04em;
-  color: var(--accent); font-variant-numeric: tabular-nums;
-}
-.phase__where { display: flex; align-items: center; gap: 10px; margin-top: 20px; font-size: var(--fs-small); font-weight: 600; }
-.phase__where img { width: 24px; height: 24px; border-radius: 6px; }
-.phase__where img.px { width: 26px; height: 24px; border-radius: 0; }
-.phase .lead { margin-top: 18px; }
-
-/* 단계 머리 */
-.step-no { display: flex; gap: 6px; }
-.step-no > span[aria-hidden] {
-  width: 40px; height: 28px; display: grid; place-items: center;
-  border-radius: 999px;
-  font-family: var(--mono); font-size: 12.5px; font-weight: 600;
+.doc-h2__no {
+  flex: none; display: inline-grid; place-items: center;
+  width: 30px; height: 30px; margin-top: 0.1em; border-radius: 8px;
+  font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: 0;
   color: var(--accent); background: rgba(98, 179, 226, 0.1);
   box-shadow: inset 0 0 0 1px rgba(98, 179, 226, 0.22);
 }
-.guide .ledger__body { padding-bottom: 32px; }
-.step-title { font-size: clamp(20px, 0.5vw + 17px, 24px); line-height: 1.4; font-weight: 620; letter-spacing: -0.02em; text-wrap: balance; }
-.step-title + .text { margin-top: 10px; max-width: 38em; }
-.text b { color: var(--text); font-weight: 600; }
+.doc-sec > .text { margin-top: 12px; max-width: 40em; }
 
-/* 스크린샷: 투명 여백과 그림자를 기둥 밖으로 빼서 창 테두리를 글 칸에 맞춰요 */
-.snap { padding: var(--cell-pad) var(--cell-pad) 28px; }
+.doc-step { margin-top: 44px; }
+.doc-h3 {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  font-size: clamp(18px, 0.25vw + 16.5px, 20px); line-height: 1.4; font-weight: 620; letter-spacing: -0.02em;
+}
+.step__no {
+  flex: none; padding: 2px 7px; border-radius: 6px;
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 1.5;
+  color: var(--meta); box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.doc-step .text { margin-top: 8px; max-width: 40em; }
+
+/* 화면 속 버튼 이름 */
+kbd.ui {
+  display: inline-block; padding: 0 7px; border-radius: 6px;
+  font-family: var(--font); font-size: 0.86em; font-weight: 600; line-height: 1.6; letter-spacing: -0.005em;
+  color: var(--text); background: #11161a;
+  box-shadow: inset 0 0 0 1px rgba(178, 226, 251, 0.16), inset 0 -1px 0 rgba(178, 226, 251, 0.1);
+  white-space: nowrap;
+}
+
+/* 스크린샷: 투명 여백과 그림자를 판 밖으로 빼서 창 테두리를 판 안쪽에 맞춰요 */
+.shots { display: grid; gap: 16px; margin-top: 20px; }
+.snap {
+  padding: clamp(12px, 2.2vw, 24px);
+  border: 1px solid var(--line); border-radius: 12px;
+  background: #07090b;
+}
 .snap__win { position: relative; display: flow-root; }
 .snap__win img {
   max-width: none;
@@ -82,9 +91,9 @@
   margin: calc(var(--y) / var(--w) * -100%) 0 calc((var(--ih) - var(--y) - var(--h)) / var(--w) * -100%) calc(var(--x) / var(--w) * -100%);
 }
 .snap__cap {
-  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px;
-  margin-top: 22px;
-  font-size: var(--fs-small); color: var(--meta);
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 6px 24px;
+  margin-top: clamp(14px, 2vw, 20px); padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 14px; color: var(--meta);
 }
 .snap__cap .link-arrow { flex: none; font-size: var(--fs-meta); }
 
@@ -134,45 +143,70 @@
 }
 .js [data-demo] .hit[data-at].is-on { transform: none; }
 
-/* HamaEditor 로 돌아가는 띠 */
-.handoff__cell {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px 48px; align-items: end;
-  padding-block: clamp(64px, 7vw, 104px);
-}
-.handoff .lead { margin-top: 16px; }
-
 /* 끝 */
-.finish .cell--head { padding-bottom: clamp(72px, 9vw, 120px); }
-.finish__wrap { position: relative; width: min(100%, 560px); margin: 96px auto 0; }
-.finish__wrap .perch { width: 132px; height: 120px; left: 50%; margin-left: -66px; }
-.finish__card { text-align: center; padding: 40px clamp(20px, 5vw, 44px) 36px; }
-.finish__card .text { max-width: 30em; margin: 14px auto 0; }
-.finish__card .btn-row { justify-content: center; margin-top: 28px; }
-.finish__card .link-arrow { margin-top: 20px; font-size: var(--fs-small); }
+.doc-sec .btn-row { margin-top: 20px; }
+.related { list-style: none; padding: 0; margin-top: 14px; display: grid; gap: 8px; }
+.related a::after { content: "↗"; display: inline-block; margin-left: 4px; color: var(--meta); }
 
-@media (max-width: 900px) {
-  .ledger { grid-template-columns: minmax(0, 1fr); }
-  .ledger__key { border-right: 0; padding-bottom: 0; }
-  .ledger__key::after { display: none; }
-  .phase .ledger__key { display: flex; align-items: center; gap: 18px; padding-bottom: 0; }
-  .phase .ledger__body { padding-top: 24px; }
-  .phase__where { margin-top: 0; }
-  .guide .ledger__body { padding-top: 18px; }
+/* 목차 */
+.toc {
+  position: sticky; top: calc(var(--nav-h) + 40px); align-self: start;
+  max-height: calc(100vh - var(--nav-h) - 80px); overflow-y: auto;
+  font-size: 14px;
+}
+.toc__title { font-size: 13px; font-weight: 600; color: var(--text); }
+.toc ol { list-style: none; padding: 0; margin: 0; }
+.toc__title + ol { margin-top: 12px; border-left: 1px solid var(--line); }
+.toc a {
+  display: block; margin-left: -1px; padding: 5px 0 5px 14px;
+  border-left: 1px solid transparent;
+  line-height: 1.45; color: var(--meta);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.toc ol ol a { padding-left: 26px; font-size: 13.5px; }
+.toc a:hover { color: var(--text); }
+.toc a[aria-current] { color: var(--soft); border-left-color: var(--accent); }
+.toc :focus-visible { outline-offset: -2px; border-radius: 4px; }
+
+/* 좁은 화면 목차: 본문 위에 접어 둬요 */
+.toc-m { display: none; }
+
+@media (max-width: 1000px) {
+  .docs { grid-template-columns: minmax(0, 1fr); }
+  .docs__main { max-width: none; }
+  .toc { display: none; }
+  .toc-m {
+    display: block; margin-top: 28px;
+    border: 1px solid var(--line); border-radius: 10px; background: #07090b;
+    font-size: 14px;
+  }
+  .toc-m summary {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; cursor: pointer; list-style: none;
+    font-weight: 600; color: var(--text); border-radius: 10px;
+  }
+  .toc-m summary::-webkit-details-marker { display: none; }
+  .toc-m summary::after { content: "+"; font-family: var(--mono); color: var(--meta); }
+  .toc-m[open] summary::after { content: "−"; }
+  .toc-m ol { list-style: none; padding: 0; margin: 0; }
+  .toc-m > ol { padding: 4px 16px 14px; border-top: 1px solid var(--line); }
+  .toc-m a { display: block; padding: 6px 0; color: var(--muted); }
+  .toc-m ol ol a { padding-left: 16px; color: var(--meta); }
+  .toc-m a:hover { color: var(--text); }
 }
 @media (max-width: 760px) {
-  .route > .cell { padding-block: 22px; }
-  .page-head .btn-row .btn { flex: 1 1 100%; }
-  .handoff__cell { grid-template-columns: minmax(0, 1fr); }
-  .handoff .btn { width: 100%; }
+  .docs { padding: 32px 16px 72px; }
+  .doc-sec { margin-top: 44px; padding-top: 32px; }
+  .doc-step { margin-top: 36px; }
+  .doc-h2 { gap: 10px; }
+  .doc-h2__no { width: 26px; height: 26px; font-size: 13px; border-radius: 7px; }
+  .snap { padding: 10px; border-radius: 10px; }
   .hit__tag { gap: 4px; padding: 2px 6px 2px 3px; font-size: 10.5px; }
   .hit__tag b { min-width: 15px; padding: 0 3px; font-size: 10px; }
   .hit--west .hit__tag { right: calc(100% + 6px); }
   .hit--east .hit__tag { left: calc(100% + 6px); }
   .hit--end .hit__tag, .hit .hit__tag { top: calc(100% + 5px); }
   .hit--west .hit__tag, .hit--east .hit__tag { top: 50%; }
-  .finish__wrap { margin-top: 72px; }
-  .finish__wrap .perch { width: 88px; height: 80px; margin-left: -44px; }
-  .finish__card .btn-row .btn { flex: 1 1 100%; }
 }
 </style>
 </head>
@@ -184,7 +218,6 @@
     <a class="brand" href="index.html" aria-label="HamaEditor 처음으로"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -196,7 +229,6 @@
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
       <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -208,192 +240,147 @@
 </header>
 
 <main id="main">
+  <div class="frame frame--top">
+    <div class="docs">
+      <article class="docs__main" aria-labelledby="tut-title">
+        <nav class="crumbs" aria-label="이동 경로">
+          <a href="index.html#connect">연결</a><span aria-hidden="true">/</span><span aria-current="page">OpenRouter 연결</span>
+        </nav>
+        <header class="doc-head" id="top">
+          <h1 id="tut-title" class="doc-title">Pi를 OpenRouter에 연결하기</h1>
+          <p class="lead">구독 없이 크레딧만으로 사용</p>
+        </header>
 
-  <!-- ─────────── 머리 ─────────── -->
-  <section id="top" aria-labelledby="tut-title">
-    <div class="frame frame--top">
-      <header class="cell cell--open page-head">
-        <a class="back-link" href="index.html#connect">연결로 돌아가기</a>
-        <h1 id="tut-title" class="h1">Pi를 OpenRouter에 연결하세요</h1>
-        <p class="lead">구독권이 없어도 프로그램을 이용할 수 있습니다.</p>
-        <div class="btn-row">
-          <a class="btn btn--primary" href="#step-1">첫 단계로 이동</a>
-          <a class="btn btn--secondary" href="https://openrouter.ai/" target="_blank" rel="noopener">OpenRouter 열기</a>
-        </div>
-      </header>
-      <ol class="cells route" role="list" aria-label="연결 과정 요약">
-        <li class="cell">
-          <a class="route__link" href="#phase-openrouter">
-            <span class="route__no">01–06</span>
-            <span><strong class="route__name">OpenRouter</strong><span class="route__desc">가입 · 크레딧 충전</span></span>
-          </a>
-        </li>
-        <li class="cell">
-          <a class="route__link" href="#phase-hamaeditor">
-            <span class="route__no">07–08</span>
-            <span><strong class="route__name">HamaEditor</strong><span class="route__desc">Pi · OAuth 로그인</span></span>
-          </a>
-        </li>
-      </ol>
-    </div>
-  </section>
+        <details class="toc-m">
+          <summary>이 페이지</summary>
+          <ol>
+            <li><a href="#phase-openrouter">1. OpenRouter 계정과 크레딧</a>
+              <ol>
+                <li><a href="#step-1">OpenRouter 열고 Sign Up</a></li>
+                <li><a href="#step-3">프로필 메뉴에서 Credits 선택</a></li>
+                <li><a href="#step-5">Add Credits 누르고 금액 입력</a></li>
+              </ol>
+            </li>
+            <li><a href="#phase-hamaeditor">2. HamaEditor에서 Pi 연결</a>
+              <ol><li><a href="#step-7">Pi 선택 후 OpenRouter OAuth</a></li></ol>
+            </li>
+            <li><a href="#done">3. 연결 완료</a></li>
+            <li><a href="#links">관련 링크</a></li>
+          </ol>
+        </details>
 
-  <!-- ─────────── 1 OpenRouter ─────────── -->
-  <section class="phase-sec" id="phase-openrouter" aria-labelledby="openrouter-phase">
-    <div class="frame">
-      <header class="cell ledger phase">
-        <div class="ledger__key">
-          <span class="phase__no" aria-hidden="true">1</span>
-          <span class="phase__where"><img src="assets/icon-openrouter.png" width="640" height="640" alt="">OpenRouter</span>
-        </div>
-        <div class="ledger__body">
-          <h2 id="openrouter-phase" class="h2">계정을 만들고 크레딧을 충전합니다</h2>
-          <p class="lead">브라우저에서 OpenRouter 가입부터 결제까지 마친 뒤 HamaEditor로 돌아오세요.</p>
-        </div>
-      </header>
+        <!-- ─────────── 1 OpenRouter ─────────── -->
+        <section class="doc-sec" id="phase-openrouter" aria-labelledby="openrouter-phase">
+          <p class="doc-where"><img src="assets/icon-openrouter.png" width="640" height="640" alt="">OpenRouter</p>
+          <h2 id="openrouter-phase" class="doc-h2"><span class="doc-h2__no">1</span>OpenRouter 계정 만들기와 크레딧 충전</h2>
+          <p class="text">브라우저에서 가입과 결제를 마치고 HamaEditor로 돌아와요.</p>
 
-      <article class="guide" id="step-1" aria-labelledby="step-1-title">
-        <div class="cell ledger">
-          <p class="ledger__key step-no"><span class="sr-only">1단계와 2단계</span><span aria-hidden="true">01</span><span aria-hidden="true">02</span></p>
-          <div class="ledger__body">
-            <h3 id="step-1-title" class="step-title">OpenRouter를 열고 Sign Up을 누르세요</h3>
-            <p class="text"><a class="link" href="https://openrouter.ai/" target="_blank" rel="noopener">openrouter.ai</a>로 이동한 뒤 오른쪽 위의 <b>Sign Up</b>을 눌러 계정을 만드세요.</p>
-          </div>
-        </div>
-        <figure class="cell snap" data-demo>
-          <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1431;--w:2066;--h:1296;--x:67;--y:46">
-            <img src="assets/openrouter-home.webp" width="2200" height="1431" alt="OpenRouter 홈페이지 오른쪽 위에 Sign Up 버튼이 보이는 화면" fetchpriority="high" decoding="async">
-            <span class="hit hit--end" data-at="300" aria-hidden="true" style="--l:93.37%;--t:5.79%;--hw:5.03%;--hh:3.24%"><span class="hit__tag"><b>2</b>Sign Up</span></span>
-          </div>
-          <figcaption class="snap__cap"><span>OpenRouter 홈페이지 · 오른쪽 위에서 가입을 시작합니다.</span><a class="link-arrow" href="assets/openrouter-home.webp" target="_blank">크게 보기</a></figcaption>
-        </figure>
-      </article>
-
-      <article class="guide" id="step-3" aria-labelledby="step-3-title">
-        <div class="cell ledger">
-          <p class="ledger__key step-no"><span class="sr-only">3단계와 4단계</span><span aria-hidden="true">03</span><span aria-hidden="true">04</span></p>
-          <div class="ledger__body">
-            <h3 id="step-3-title" class="step-title">프로필 메뉴에서 Credits를 선택하세요</h3>
-            <p class="text">가입이 끝나면 오른쪽 위의 프로필을 열고 <b>Credits</b>를 누르세요. 계정 설정 화면에서는 왼쪽 <b>ACCOUNT</b> 목록에서도 Credits를 찾을 수 있습니다.</p>
-          </div>
-        </div>
-        <div class="cells">
-          <figure class="cell snap" data-demo>
-            <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1604;--w:2050;--h:1453;--x:75;--y:51">
-              <img src="assets/openrouter-profile-menu.webp" width="2200" height="1604" alt="OpenRouter 오른쪽 위 Personal 프로필 메뉴에 Credits 항목이 보이는 화면" loading="lazy" decoding="async">
-              <span class="hit hit--west" data-at="300" aria-hidden="true" style="--l:90.29%;--t:15.35%;--hw:7.80%;--hh:3.03%"><span class="hit__tag"><b>3</b>프로필</span></span>
-              <span class="hit hit--west" data-at="700" aria-hidden="true" style="--l:81.32%;--t:36.55%;--hw:16.78%;--hh:3.44%"><span class="hit__tag"><b>4</b>Credits</span></span>
+          <article class="doc-step" id="step-1" aria-labelledby="step-1-title">
+            <h3 id="step-1-title" class="doc-h3"><span class="step__no"><span class="sr-only">1단계와 2단계</span><span aria-hidden="true">01–02</span></span>OpenRouter 열고 Sign Up</h3>
+            <p class="text"><a class="link" href="https://openrouter.ai/" target="_blank" rel="noopener">openrouter.ai</a>에서 오른쪽 위 <kbd class="ui">Sign Up</kbd>을 눌러 계정을 만들어요.</p>
+            <div class="shots">
+              <figure class="snap" data-demo>
+                <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1431;--w:2066;--h:1296;--x:67;--y:46">
+                  <img src="assets/openrouter-home.webp" width="2200" height="1431" alt="OpenRouter 홈페이지 오른쪽 위에 Sign Up 버튼이 보이는 화면" fetchpriority="high" decoding="async">
+                  <span class="hit hit--end" data-at="300" aria-hidden="true" style="--l:93.37%;--t:5.79%;--hw:5.03%;--hh:3.24%"><span class="hit__tag"><b>2</b>Sign Up</span></span>
+                </div>
+                <figcaption class="snap__cap"><a class="link-arrow" href="assets/openrouter-home.webp" target="_blank">크게 보기</a></figcaption>
+              </figure>
             </div>
-            <figcaption class="snap__cap"><span>프로필을 열면 Credits가 바로 보입니다.</span><a class="link-arrow" href="assets/openrouter-profile-menu.webp" target="_blank">크게 보기</a></figcaption>
-          </figure>
-          <figure class="cell snap" data-demo>
-            <div class="snap__win" data-reveal="rise" style="--i:2;--iw:2200;--ih:1604;--w:2050;--h:1453;--x:75;--y:51">
-              <img src="assets/openrouter-account-sidebar.webp" width="2200" height="1604" alt="OpenRouter 계정 설정 왼쪽 사이드바의 Account 영역에 Credits 항목이 보이는 화면" loading="lazy" decoding="async">
-              <span class="hit hit--east" data-at="500" aria-hidden="true" style="--l:1.17%;--t:72.88%;--hw:12.68%;--hh:3.65%"><span class="hit__tag"><b>4</b>Credits</span></span>
+          </article>
+
+          <article class="doc-step" id="step-3" aria-labelledby="step-3-title">
+            <h3 id="step-3-title" class="doc-h3"><span class="step__no"><span class="sr-only">3단계와 4단계</span><span aria-hidden="true">03–04</span></span>프로필 메뉴에서 Credits 선택</h3>
+            <p class="text">가입이 끝나면 오른쪽 위 프로필을 열고 <kbd class="ui">Credits</kbd>를 눌러요.</p>
+            <div class="shots">
+              <figure class="snap" data-demo>
+                <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1604;--w:2050;--h:1453;--x:75;--y:51">
+                  <img src="assets/openrouter-profile-menu.webp" width="2200" height="1604" alt="OpenRouter 오른쪽 위 Personal 프로필 메뉴에 Credits 항목이 보이는 화면" loading="lazy" decoding="async">
+                  <span class="hit hit--west" data-at="300" aria-hidden="true" style="--l:90.29%;--t:15.35%;--hw:7.80%;--hh:3.03%"><span class="hit__tag"><b>3</b>프로필</span></span>
+                  <span class="hit hit--west" data-at="700" aria-hidden="true" style="--l:81.32%;--t:36.55%;--hw:16.78%;--hh:3.44%"><span class="hit__tag"><b>4</b>Credits</span></span>
+                </div>
+                <figcaption class="snap__cap"><a class="link-arrow" href="assets/openrouter-profile-menu.webp" target="_blank">크게 보기</a></figcaption>
+              </figure>
             </div>
-            <figcaption class="snap__cap"><span>설정 화면에서는 왼쪽 ACCOUNT 목록을 확인하세요.</span><a class="link-arrow" href="assets/openrouter-account-sidebar.webp" target="_blank">크게 보기</a></figcaption>
-          </figure>
-        </div>
-      </article>
+          </article>
 
-      <article class="guide" id="step-5" aria-labelledby="step-5-title">
-        <div class="cell ledger">
-          <p class="ledger__key step-no"><span class="sr-only">5단계와 6단계</span><span aria-hidden="true">05</span><span aria-hidden="true">06</span></p>
-          <div class="ledger__body">
-            <h3 id="step-5-title" class="step-title">Add Credits를 누르고 충전 금액을 입력하세요</h3>
-            <p class="text">Credits 화면의 <b>Add Credits</b>를 누른 뒤 결제 수단과 금액을 확인하세요. 마지막으로 <b>Purchase</b>를 누르면 충전됩니다.</p>
-          </div>
-        </div>
-        <figure class="cell snap" data-demo>
-          <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1431;--w:2066;--h:1296;--x:67;--y:46">
-            <img src="assets/openrouter-purchase-credits.webp" width="2200" height="1431" alt="OpenRouter Purchase Credits 창에 결제 수단, 금액 입력란, Purchase 버튼이 보이는 화면" loading="lazy" decoding="async">
-            <span class="hit" data-at="300" aria-hidden="true" style="--l:21.25%;--t:50.15%;--hw:15.78%;--hh:4.63%"><span class="hit__tag"><b>5</b>Add Credits</span></span>
-            <span class="hit hit--east" data-at="700" aria-hidden="true" style="--l:38.09%;--t:39.51%;--hw:23.81%;--hh:4.63%"><span class="hit__tag"><b>6</b>금액</span></span>
-            <span class="hit hit--east" data-at="1050" aria-hidden="true" style="--l:38.09%;--t:72.69%;--hw:23.81%;--hh:4.63%"><span class="hit__tag"><b>6</b>Purchase</span></span>
-          </div>
-          <figcaption class="snap__cap"><span>결제 수단과 총액을 확인한 뒤 Purchase를 누릅니다.</span><a class="link-arrow" href="assets/openrouter-purchase-credits.webp" target="_blank">크게 보기</a></figcaption>
-        </figure>
-      </article>
-    </div>
-  </section>
-
-  <!-- ─────────── HamaEditor 로 ─────────── -->
-  <section class="handoff has-sky" aria-labelledby="handoff-title">
-    <div class="sky" aria-hidden="true">
-      <i class="wide-only cloud cloud--l" style="left:4%;top:58%"></i>
-      <i class="wide-only cloud cloud--s" style="left:80%;top:16%"></i>
-      <i class="star star--lg star--blink" style="left:88%;top:62%;--d:1.2s"></i>
-      <i class="star star--dim" style="left:9%;top:22%"></i>
-      <i class="wide-only star" style="left:70%;top:30%"></i>
-      <i class="dot dot--hi" style="left:94%;top:20%"></i>
-      <i class="dot" style="left:2%;top:40%"></i>
-      <i class="wide-only dot" style="left:62%;top:82%"></i>
-    </div>
-    <div class="frame">
-      <div class="cell handoff__cell">
-        <div>
-          <h2 id="handoff-title" class="h2">충전이 끝났다면 HamaEditor로 돌아오세요</h2>
-          <p class="lead">이제 앱의 에이전트 연결 설정에서 Pi를 OpenRouter 계정에 연결합니다.</p>
-        </div>
-        <a class="btn btn--primary" href="#step-7">Pi 연결로 이동</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- ─────────── 2 HamaEditor ─────────── -->
-  <section class="phase-sec" id="phase-hamaeditor" aria-labelledby="hamaeditor-phase">
-    <div class="frame">
-      <header class="cell ledger phase">
-        <div class="ledger__key">
-          <span class="phase__no" aria-hidden="true">2</span>
-          <span class="phase__where"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">HamaEditor</span>
-        </div>
-        <div class="ledger__body">
-          <h2 id="hamaeditor-phase" class="h2">Pi에서 OpenRouter OAuth로 로그인합니다</h2>
-          <p class="lead">HamaEditor 설정의 에이전트 연결 목록에서 Pi를 열면 브라우저 로그인 버튼이 나타납니다.</p>
-        </div>
-      </header>
-
-      <article class="guide" id="step-7" aria-labelledby="step-7-title">
-        <div class="cell ledger">
-          <p class="ledger__key step-no"><span class="sr-only">7단계와 8단계</span><span aria-hidden="true">07</span><span aria-hidden="true">08</span></p>
-          <div class="ledger__body">
-            <h3 id="step-7-title" class="step-title">Pi를 선택하고 OpenRouter OAuth를 누르세요</h3>
-            <p class="text">오른쪽 설정 패널의 에이전트 연결 목록에서 <b>Pi</b>를 누르세요. Pi 설정 창이 열리면 <b>브라우저로 로그인 · OpenRouter OAuth</b>를 눌러 연결을 승인합니다.</p>
-          </div>
-        </div>
-        <figure class="cell snap" data-demo>
-          <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1463;--w:2042;--h:1306;--x:79;--y:53">
-            <img src="assets/hamaeditor-pi-openrouter-oauth.webp" width="2200" height="1463" alt="HamaEditor 설정 패널의 Pi 항목과 Pi 설정 창의 OpenRouter OAuth 브라우저 로그인 버튼이 보이는 화면" loading="lazy" decoding="async">
-            <span class="hit hit--west" data-at="300" aria-hidden="true" style="--l:78.01%;--t:30.70%;--hw:21.06%;--hh:5.51%"><span class="hit__tag"><b>7</b>Pi</span></span>
-            <span class="hit hit--east" data-at="700" aria-hidden="true" style="--l:33.06%;--t:47.78%;--hw:9.30%;--hh:6.97%"><span class="hit__tag"><b>8</b>OpenRouter OAuth</span></span>
-          </div>
-          <figcaption class="snap__cap"><span>Pi 설정 창의 왼쪽 버튼이 OpenRouter OAuth 로그인입니다.</span><a class="link-arrow" href="assets/hamaeditor-pi-openrouter-oauth.webp" target="_blank">크게 보기</a></figcaption>
-        </figure>
-      </article>
-    </div>
-  </section>
-
-  <!-- ─────────── 끝 ─────────── -->
-  <section class="finish" aria-labelledby="finish-title">
-    <div class="frame">
-      <div class="cell cell--head cell--center">
-        <div class="finish__wrap">
-          <div class="perch" data-reveal style="--i:4"><img class="px" src="assets/hama.svg" width="132" height="120" alt=""></div>
-          <div class="card card--navy finish__card" data-reveal="rise">
-            <h2 id="finish-title" class="h2">연결이 끝났습니다</h2>
-            <p class="text">OAuth 승인을 마치고 HamaEditor로 돌아오면 Pi에서 OpenRouter 모델을 사용할 수 있습니다.</p>
-            <div class="btn-row">
-              <a class="btn btn--primary" href="trial.html">체험 신청하기</a>
-              <a class="btn btn--secondary" href="index.html#connect">다른 연결 보기</a>
+          <article class="doc-step" id="step-5" aria-labelledby="step-5-title">
+            <h3 id="step-5-title" class="doc-h3"><span class="step__no"><span class="sr-only">5단계와 6단계</span><span aria-hidden="true">05–06</span></span>Add Credits 누르고 금액 입력</h3>
+            <p class="text">Credits 화면의 <kbd class="ui">Add Credits</kbd>를 누르고 결제 수단과 금액을 확인해요. <kbd class="ui">Purchase</kbd>를 누르면 충전이 끝나요.</p>
+            <div class="shots">
+              <figure class="snap" data-demo>
+                <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1431;--w:2066;--h:1296;--x:67;--y:46">
+                  <img src="assets/openrouter-purchase-credits.webp" width="2200" height="1431" alt="OpenRouter Purchase Credits 창에 결제 수단, 금액 입력란, Purchase 버튼이 보이는 화면" loading="lazy" decoding="async">
+                  <span class="hit" data-at="300" aria-hidden="true" style="--l:21.25%;--t:50.15%;--hw:15.78%;--hh:4.63%"><span class="hit__tag"><b>5</b>Add Credits</span></span>
+                  <span class="hit hit--east" data-at="700" aria-hidden="true" style="--l:38.09%;--t:39.51%;--hw:23.81%;--hh:4.63%"><span class="hit__tag"><b>6</b>금액</span></span>
+                  <span class="hit hit--east" data-at="1050" aria-hidden="true" style="--l:38.09%;--t:72.69%;--hw:23.81%;--hh:4.63%"><span class="hit__tag"><b>6</b>Purchase</span></span>
+                </div>
+                <figcaption class="snap__cap"><a class="link-arrow" href="assets/openrouter-purchase-credits.webp" target="_blank">크게 보기</a></figcaption>
+              </figure>
             </div>
-            <a class="link-arrow" href="https://openrouter.ai/docs/guides/overview/auth/oauth" target="_blank" rel="noopener">OpenRouter OAuth 문서</a>
+          </article>
+        </section>
+
+        <!-- ─────────── 2 HamaEditor ─────────── -->
+        <section class="doc-sec" id="phase-hamaeditor" aria-labelledby="hamaeditor-phase">
+          <p class="doc-where"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">HamaEditor</p>
+          <h2 id="hamaeditor-phase" class="doc-h2"><span class="doc-h2__no">2</span>HamaEditor에서 Pi 연결</h2>
+          <p class="text">충전이 끝나면 앱의 에이전트 연결 설정에서 Pi를 OpenRouter 계정에 연결해요.</p>
+
+          <article class="doc-step" id="step-7" aria-labelledby="step-7-title">
+            <h3 id="step-7-title" class="doc-h3"><span class="step__no"><span class="sr-only">7단계와 8단계</span><span aria-hidden="true">07–08</span></span>Pi 선택 후 OpenRouter OAuth</h3>
+            <p class="text">오른쪽 설정 패널의 에이전트 연결 목록에서 <kbd class="ui">Pi</kbd>를 눌러요. 설정 창이 열리면 <kbd class="ui">브라우저로 로그인 · OpenRouter OAuth</kbd>를 눌러 연결을 승인해요.</p>
+            <div class="shots">
+              <figure class="snap" data-demo>
+                <div class="snap__win" data-reveal="rise" style="--iw:2200;--ih:1463;--w:2042;--h:1306;--x:79;--y:53">
+                  <img src="assets/hamaeditor-pi-openrouter-oauth.webp" width="2200" height="1463" alt="HamaEditor 설정 패널의 Pi 항목과 Pi 설정 창의 OpenRouter OAuth 브라우저 로그인 버튼이 보이는 화면" loading="lazy" decoding="async">
+                  <span class="hit hit--west" data-at="300" aria-hidden="true" style="--l:78.01%;--t:30.70%;--hw:21.06%;--hh:5.51%"><span class="hit__tag"><b>7</b>Pi</span></span>
+                  <span class="hit hit--east" data-at="700" aria-hidden="true" style="--l:33.06%;--t:47.78%;--hw:9.30%;--hh:6.97%"><span class="hit__tag"><b>8</b>OpenRouter OAuth</span></span>
+                </div>
+                <figcaption class="snap__cap"><a class="link-arrow" href="assets/hamaeditor-pi-openrouter-oauth.webp" target="_blank">크게 보기</a></figcaption>
+              </figure>
+            </div>
+          </article>
+        </section>
+
+        <!-- ─────────── 3 끝 ─────────── -->
+        <section class="doc-sec" id="done" aria-labelledby="finish-title">
+          <h2 id="finish-title" class="doc-h2"><span class="doc-h2__no">3</span>연결 완료</h2>
+          <p class="text">OAuth 승인을 마치고 돌아오면 Pi에서 OpenRouter 모델을 바로 쓸 수 있어요.</p>
+          <div class="btn-row">
+            <a class="btn btn--primary btn--sm" href="trial.html">체험 신청하기</a>
+            <a class="btn btn--secondary btn--sm" href="index.html#connect">다른 연결 보기</a>
           </div>
-        </div>
-      </div>
-      <div class="rule"></div>
+        </section>
+
+        <section class="doc-sec" id="links" aria-labelledby="links-title">
+          <h2 id="links-title" class="doc-h2">관련 링크</h2>
+          <ul class="related">
+            <li><a class="link" href="https://openrouter.ai/" target="_blank" rel="noopener">OpenRouter 열기</a></li>
+            <li><a class="link" href="https://openrouter.ai/docs/guides/overview/auth/oauth" target="_blank" rel="noopener">OpenRouter OAuth 문서</a></li>
+          </ul>
+        </section>
+      </article>
+
+      <nav class="toc" aria-labelledby="toc-title" data-toc>
+        <p id="toc-title" class="toc__title">이 페이지</p>
+        <ol>
+          <li><a href="#phase-openrouter">1. OpenRouter 계정과 크레딧</a>
+            <ol>
+              <li><a href="#step-1">OpenRouter 열고 Sign Up</a></li>
+              <li><a href="#step-3">프로필 메뉴에서 Credits 선택</a></li>
+              <li><a href="#step-5">Add Credits 누르고 금액 입력</a></li>
+            </ol>
+          </li>
+          <li><a href="#phase-hamaeditor">2. HamaEditor에서 Pi 연결</a>
+            <ol><li><a href="#step-7">Pi 선택 후 OpenRouter OAuth</a></li></ol>
+          </li>
+          <li><a href="#done">3. 연결 완료</a></li>
+          <li><a href="#links">관련 링크</a></li>
+        </ol>
+      </nav>
     </div>
-  </section>
+  </div>
 </main>
 
 <footer class="footer" data-footer>
@@ -407,7 +394,6 @@
         <ul>
           <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>
@@ -436,5 +422,31 @@
 </footer>
 
 <script src="assets/site.js" defer></script>
+<script>
+/* 목차: 지금 읽는 곳을 표시하고, 좁은 화면 목차는 고르면 접혀요. */
+(function () {
+  var toc = document.querySelector('[data-toc]');
+  var mobile = document.querySelector('.toc-m');
+  if (mobile) mobile.addEventListener('click', function (e) { if (e.target.closest('a')) mobile.open = false; });
+  if (!toc) return;
+  var links = Array.prototype.slice.call(toc.querySelectorAll('a[href^="#"]'));
+  var targets = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });
+  var queued = false;
+  function paint() {
+    queued = false;
+    var line = window.innerHeight * 0.3;
+    var current = -1;
+    targets.forEach(function (el, i) { if (el && el.getBoundingClientRect().top <= line) current = i; });
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = targets.length - 1;
+    links.forEach(function (a, i) {
+      if (i === current) a.setAttribute('aria-current', 'location');
+      else a.removeAttribute('aria-current');
+    });
+  }
+  window.addEventListener('scroll', function () { if (!queued) { queued = true; requestAnimationFrame(paint); } }, { passive: true });
+  window.addEventListener('resize', paint, { passive: true });
+  paint();
+})();
+</script>
 </body>
 </html>

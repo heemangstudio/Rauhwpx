@@ -38,7 +38,7 @@
 .hero .page { --page-w: 444px; }
 .hero .perch { right: 104px; }
 @media (max-width: 760px) {
-  .hero .btn-row .btn { flex: 1 1 100%; }
+  .hero .btn-row > .btn { flex: 1 1 100%; }
   .hero__stage { padding-top: 76px; }
   .hero .win { --win-h: 420px; }
   .hero .perch { right: 18px; }
@@ -200,22 +200,7 @@
   .rs { --win-h: 520px; }
 }
 
-/* 02 예시: 영상과 같이 가는 단계 */
-.flow-step { padding-bottom: clamp(32px, 4vw, 52px); }
-.flow-step__btn { all: unset; display: block; width: 100%; cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.flow-step__btn:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 8px; border-radius: 6px; }
-.flow-step__no { display: block; margin-bottom: 10px; font-family: var(--mono); font-size: 13px; color: var(--meta); transition: color 0.2s ease; }
-.flow-step .h3 { display: block; color: var(--muted); transition: color 0.2s ease; }
-.flow-step .text { display: block; margin-top: 6px; font-size: var(--fs-small); }
-.flow-step[aria-current] .h3, .flow-step__btn:hover .h3 { color: var(--text); }
-.flow-step[aria-current] .flow-step__no { color: var(--accent); }
-.flow-step__bar {
-  position: absolute; left: 0; right: 0; top: -1px; z-index: 1;
-  height: 2px; background: var(--accent);
-  transform-origin: left center; transform: scaleX(var(--p, 0));
-}
-
-/* 03 연결 */
+/* 02 연결 */
 .prov .tile { margin-bottom: 22px; }
 .prov .h3 + .text { margin-top: 4px; }
 .prov__link { display: block; height: 100%; }
@@ -231,22 +216,6 @@
   .prov__link .link-arrow { margin-top: 10px; justify-self: start; }
 }
 
-/* 가격 */
-.apply { padding-bottom: clamp(88px, 10vw, 140px); }
-.apply .cell--head { padding-bottom: clamp(64px, 8vw, 104px); }
-.price-wrap { position: relative; width: min(100%, 520px); margin: 112px auto 0; }
-.price-wrap .perch { width: 132px; height: 120px; left: 50%; margin-left: -66px; }
-.price { text-align: center; padding: 40px clamp(20px, 5vw, 44px) 36px; }
-.price__num { font-size: clamp(44px, 3vw + 30px, 60px); line-height: 1.05; font-weight: 700; letter-spacing: -0.04em; }
-.price .meta { margin-top: 10px; }
-.price .text { margin-top: 18px; }
-.price .btn-row { justify-content: center; margin-top: 28px; }
-.price .link-arrow { margin-top: 20px; font-size: var(--fs-small); }
-@media (max-width: 760px) {
-  .price-wrap { margin-top: 72px; }
-  .price-wrap .perch { width: 88px; height: 80px; margin-left: -44px; }
-  .price .btn-row .btn { flex: 1 1 100%; }
-}
 
 /* ── browser card ── */
 /* 인앱 브라우저: 앱 안의 작은 브라우저를 에이전트 커서가 다뤄요 */
@@ -443,7 +412,7 @@
   .feat--edit [data-demo] .ed-ln[data-at] { clip-path: none !important; }
 }
 .feat .text em.tone-accent { font-weight: 700; }
-.prov__note { margin-top: 10px; font-size: var(--fs-small, 14px); font-style: italic; color: var(--meta); }
+.prov__note { margin-top: 10px; font-size: var(--fs-meta); color: var(--meta); }
 .dl-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .dl-ver { font-size: 12px; color: var(--meta); font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) { .dl-stack { flex: 1 1 100%; align-items: stretch; text-align: right; } }
@@ -457,9 +426,8 @@
     <a class="brand" href="#top" aria-label="HamaEditor 처음으로"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
       <a href="#features">기능</a>
-      <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a href="#apply">가격</a>
+      <a href="pricing.html">가격</a>
     </nav>
     <div class="nav__end">
       <a class="btn btn--primary btn--white btn--sm" href="install.html"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>MacOS 용 다운로드</a>
@@ -469,9 +437,8 @@
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
       <a href="#features">기능</a>
-      <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a href="#apply">가격</a>
+      <a href="pricing.html">가격</a>
     </nav>
     <div class="btn-row">
       <a class="btn btn--primary" href="install.html">다운로드</a>
@@ -835,28 +802,11 @@
     </div>
   </section>
 
-  <!-- ─────────── 02 예시 ─────────── -->
-  <section id="flow" aria-labelledby="flow-title">
-    <div class="frame">
-      <header class="cell cell--head">
-        <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">02</span>예시</p>
-        <h2 id="flow-title" class="h2" data-reveal="chunk" style="--i:1">브레인스토밍부터 문서 작성까지, <span class="nb">한 공간에서</span></h2>
-      </header>
-      <div class="cell cell--media">
-        <div class="shot" data-reveal="rise">
-          <video id="flow-video" data-autoplay data-calm-controls muted loop playsinline preload="none" width="1600" height="1000" poster="assets/demo/report.jpg" aria-label="2026 상반기 운영 보고서. 계획 모드로 뼈대를 잡고, 계획을 승인하자 에이전트가 보고서를 채워요.">
-            <source src="assets/demo/report.mp4" type="video/mp4">
-          </video>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ─────────── 03 연결 ─────────── -->
+  <!-- ─────────── 02 연결 ─────────── -->
   <section id="connect" aria-labelledby="c-title">
     <div class="frame">
       <header class="cell cell--head">
-        <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">03</span>연결</p>
+        <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">02</span>연결</p>
         <h2 id="c-title" class="h2" data-reveal="chunk" style="--i:1">쓰던 계정을 연결하면 끝</h2>
       </header>
       <ul class="cells cells--3" role="list">
@@ -864,13 +814,13 @@
           <span class="tile" aria-hidden="true"><img src="assets/icon-codex.png" width="640" height="640" alt="" loading="lazy"></span>
           <h3 class="h3">Codex</h3>
           <p class="text">API, OAuth</p>
-          <p class="prov__note">Codex 가 지원되는 ChatGPT 계정 (plus 이상) 의 계정이 필요합니다.</p>
+          <p class="prov__note">Codex 지원 ChatGPT 계정 필요 (Plus 이상)</p>
         </li>
         <li class="cell prov" data-reveal style="--i:1">
           <span class="tile" aria-hidden="true"><img src="assets/icon-claude.png" width="512" height="512" alt="" loading="lazy"></span>
           <h3 class="h3">Claude</h3>
           <p class="text">API, OAuth</p>
-          <p class="prov__note">Claude Code 가 지원되는 Claude 계정(pro 이상)이 필요합니다</p>
+          <p class="prov__note">Claude Code 지원 Claude 계정 필요 (Pro 이상)</p>
         </li>
         <li class="cell prov" data-reveal style="--i:2">
           <a class="prov__link" href="tutorial-openrouter.html">
@@ -884,42 +834,6 @@
     </div>
   </section>
 
-  <!-- ─────────── 가격 ─────────── -->
-  <section class="apply has-sky" id="apply" aria-labelledby="price-title">
-    <div class="sky" aria-hidden="true">
-      <i class="cloud cloud--l" style="left:6%;top:30%"></i>
-      <i class="cloud" style="left:82%;top:52%"></i>
-      <i class="cloud cloud--s" style="left:18%;top:72%"></i>
-      <i class="star star--lg star--blink" style="left:12%;top:16%;--d:.8s"></i>
-      <i class="star star--lg" style="left:86%;top:22%"></i>
-      <i class="star star--dim" style="left:30%;top:46%"></i>
-      <i class="star star--blink" style="left:70%;top:38%;--d:2.6s;--blink:7.4s"></i>
-      <i class="star star--dim" style="left:93%;top:80%"></i>
-      <i class="dot dot--hi" style="left:26%;top:12%"></i>
-      <i class="dot" style="left:64%;top:10%"></i>
-      <i class="dot" style="left:4%;top:56%"></i>
-      <i class="dot dot--hi" style="left:96%;top:40%"></i>
-      <i class="dot" style="left:52%;top:88%"></i>
-    </div>
-    <div class="frame">
-      <div class="cell cell--head cell--center">
-        <div class="price-wrap">
-          <div class="perch" data-reveal style="--i:6"><img class="px" src="assets/hama.svg" width="132" height="120" alt=""></div>
-          <div class="card card--navy price" data-reveal="rise">
-            <h2 id="price-title" class="price__num">9,900원</h2>
-            <p class="meta">VAT 포함 · 일회성 구매</p>
-            <p class="text">라이선스 키는 최대 두 번 동시에 적용할 수 있어요.</p>
-            <div class="btn-row">
-              <a class="btn btn--primary" href="pricing.html">구매하기</a>
-              <a class="btn btn--secondary" href="install.html">체험판 내려받기</a>
-            </div>
-            <a class="link-arrow" href="pricing.html">가격과 환불 안내</a>
-          </div>
-        </div>
-      </div>
-      <div class="rule"></div>
-    </div>
-  </section>
 </main>
 
 <footer class="footer" data-footer>
@@ -933,7 +847,6 @@
         <ul>
           <li><a href="#features">기능</a></li>
           <li><a href="#gongmun">문서 편집</a></li>
-          <li><a href="#flow">예시</a></li>
           <li><a href="#connect">연결</a></li>
         </ul>
       </nav>

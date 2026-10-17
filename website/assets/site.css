@@ -46,6 +46,10 @@
   --page-sketch: #f4f6f8;
   --page-line: #dfe6ec;
 
+  /* 하마처럼 픽셀로 찍은 체크 표시 */
+  --px-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 5' shape-rendering='crispEdges'%3E%3Cpath fill='%2362b3e2' d='M6 0h1v2H6zM5 1h1v2H5zM4 2h1v2H4zM0 2h1v2H0zM1 3h1v2H1zM3 3h1v2H3zM2 4h1v1H2z'/%3E%3C/svg%3E");
+  --px-check-navy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 5' shape-rendering='crispEdges'%3E%3Cpath fill='%230c2536' d='M6 0h1v2H6zM5 1h1v2H5zM4 2h1v2H4zM0 2h1v2H0zM1 3h1v2H1zM3 3h1v2H3zM2 4h1v1H2z'/%3E%3C/svg%3E");
+
   /* 글꼴 */
   --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
@@ -191,6 +195,7 @@ main {
 .meta { font-size: var(--fs-meta); color: var(--meta); letter-spacing: 0.01em; }
 .mono { font-family: var(--mono); font-size: 0.86em; letter-spacing: 0; }
 .tone-accent { color: var(--accent); }
+em.tone-accent { font-style: normal; }
 .tone-muted { color: var(--muted); }
 
 /* 칸 머리 위의 작은 글: "01 기능" */
@@ -369,7 +374,6 @@ html.menu-open { overflow: hidden; }
 .cell--center { text-align: center; }
 .cell--center .eyebrow { justify-content: center; }
 .cell--center .lead { margin-inline: auto; }
-.cell--media { padding: clamp(14px, 2.6vw, 30px); }
 
 .cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .cells--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -461,22 +465,20 @@ html.menu-open { overflow: hidden; }
 .check { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; font-size: var(--fs-small); line-height: 1.6; color: var(--muted); }
 .check input {
   appearance: none; -webkit-appearance: none; flex: none;
-  width: 20px; height: 20px; margin: 2px 0 0;
+  width: 22px; height: 22px; margin: 1px 0 0;
   border-radius: 6px;
-  background: #0a0a0a;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  display: grid; place-content: center; cursor: pointer;
-  transition: background-color 0.15s ease-out, box-shadow 0.15s ease-out;
+  background: #0a0c0e var(--px-check-navy) center / 14px 10px no-repeat;
+  background-size: 0 0;
+  box-shadow: inset 0 0 0 1px var(--line-strong), inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  transition: background-color 0.18s var(--ease-std), box-shadow 0.18s var(--ease-std), background-size 0.22s var(--ease-spring);
 }
-.check input::after {
-  content: ""; width: 10px; height: 6px;
-  border: solid var(--navy); border-width: 0 0 2px 2px;
-  transform: translateY(-1px) rotate(-45deg) scale(0);
-  transition: transform 0.2s var(--ease-spring);
+.check input:checked {
+  background-color: var(--accent); background-size: 14px 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 0 0 1px rgba(98, 179, 226, 0.4);
 }
-.check input:checked { background: var(--accent); box-shadow: none; }
-.check input:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
-.check:hover input:not(:checked) { box-shadow: inset 0 0 0 1px var(--soft); }
+.check:hover input:not(:checked) { box-shadow: inset 0 0 0 1px var(--soft), inset 0 1px 2px rgba(0, 0, 0, 0.5); }
+.check input:focus-visible { outline: 2px solid var(--soft); outline-offset: 3px; }
 .check a { color: var(--soft); text-decoration: underline; text-underline-offset: 3px; }
 
 .input {
@@ -663,16 +665,6 @@ html.menu-open { overflow: hidden; }
 @media (max-width: 760px) {
   .perch { width: 66px; height: 60px; }
 }
-
-/* 실제 앱 화면을 그대로 담는 틀 (밝은 테마 녹화본) */
-.shot {
-  position: relative;
-  border-radius: var(--r-win);
-  overflow: hidden;
-  background: #fff;
-  box-shadow: var(--shadow-win);
-}
-.shot video, .shot img { width: 100%; height: auto; }
 
 /* ─────────── 바닥글 ─────────── */
 /* 본문이 위로 걷히면서 아래에 고정된 바닥글이 드러나요 (site.js 가 높이를 맞춰요). */
