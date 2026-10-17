@@ -37,7 +37,7 @@ import {
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
-import { chatPermissionMatchesContext, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
+import { chatPermissionMatchesContext, isChatPermissionScope, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest, readChatPermissionRequests, readSecretMeta } from './chat-permissions.ts';
 import {
   setModelCatalog,
   setPiModels as setPiModelRegistry,
@@ -134,6 +134,8 @@ import type {
   ChatPermissionDecision,
   ChatPermissionOutcome,
   ChatPermissionRequest,
+  ChatPermissionScope,
+  SecretSubmitResult,
 } from './types.ts';
 
 function isProductSkillIcon(value: unknown): value is ProductSkillIcon | null {
@@ -314,9 +316,17 @@ export interface AgentBridge {
   getActiveAgent(): AgentName | null;
   isTurnRunning(): boolean;
   getPendingUserQuestion(): UserQuestionInteraction | null;
+  /** 가장 먼저 온 대기 요청. 여러 개면 getPendingChatPermissionRequests 를 쓴다. */
   getPendingChatPermissionRequest(): ChatPermissionRequest | null;
+  /** 이 채팅의 대기 요청 전부(종류 무관), 온 순서대로. */
+  getPendingChatPermissionRequests(): ChatPermissionRequest[];
   getChatPermissionGrants(): ChatPermissionCapability[];
-  respondChatPermission(requestId: string, decision: ChatPermissionDecision): string;
+  respondChatPermission(requestId: string, decision: ChatPermissionDecision, scope?: ChatPermissionScope): string;
+  /**
+   * 비밀 값 저장 요청에 값을 낸다. 값은 secret-submit 프레임에만 실린다 — 이벤트·로그·저장소에 남지 않는다.
+   * 실패는 던지지 않고 ok:false 로 돌려준다.
+   */
+  submitSecret(args: { requestId: string; label: string; value: string; scope: ChatPermissionScope }): Promise<SecretSubmitResult>;
   /**
    * 이 페이지에서 허브의 첫 답(welcome)을 반영했거나, 첫 연결 시도가 답 없이 끝났거나(재시도 예약),
    * 다른 탭에 밀려났거나, 폐기되면 풀린다. 새로고침 뒤 사이드바는 이것을 기다렸다가 채팅을 고른다.
@@ -1420,10 +1430,11 @@ export class AgentBridgeImpl implements AgentBridge {
   } | null = null;
   private pendingUserQuestionId: string | null = null;
   private pendingUserQuestion: UserQuestionInteraction | null = null;
-  private pendingChatPermissionRequest: ChatPermissionRequest | null = null;
+  /** 이 채팅에서 허브가 아직 열어 둔 요청. 허브가 해소하거나 목록에서 뺄 때만 지운다. */
+  private pendingChatPermissionRequests = new Map<string, ChatPermissionRequest>();
   /** 허브가 확인한 현재 채팅의 권한만 메모리에 둔다. */
   private chatPermissionGrants: ChatPermissionCapability[] = [];
-  private pendingPermissionCancellation: { request: ChatPermissionRequest; responseId: string } | null = null;
+  private pendingPermissionCancellations = new Map<string, { request: ChatPermissionRequest; responseId: string }>();
   private pendingInterrupt = false;
   /** interruptTurnsOnFirstWelcome 을 첫 welcome 에서 이미 봤다. */
   private staleTurnChecked = false;
@@ -1722,7 +1733,7 @@ export class AgentBridgeImpl implements AgentBridge {
       // 채팅 시작·재연결·모드 전환을 기다리는 사용자 메시지
       || this.queuedMessages.length > 0
       || this.pendingUserQuestion !== null
-      || this.pendingChatPermissionRequest != null
+      || this.pendingChatPermissionRequests.size > 0
       || (this.workflow === 'plan' && (this.phase === 'awaiting-approval' || this.phase === 'switching'))
       || this.pendingEdits.hasPending();
   }
@@ -2043,7 +2054,7 @@ export class AgentBridgeImpl implements AgentBridge {
       // 30초 타임아웃까지 가지 않고 이 응답으로 마무리된다.
       this.flushToolResponses();
       this.flushPendingQuestionCancellation();
-      this.flushPermissionCancellation();
+      for (const cancellation of this.pendingPermissionCancellations.values()) this.flushPermissionCancellation(cancellation);
       if (!this.pendingQuestionCancellation
         && this.pendingInterrupt
         && this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-interrupt' })) {
@@ -2126,7 +2137,7 @@ export class AgentBridgeImpl implements AgentBridge {
       || this.pendingTurnOpen
       || Boolean(this.activeAgent)
       || Boolean(this.pendingUserQuestion)
-      || Boolean(this.pendingChatPermissionRequest);
+      || this.pendingChatPermissionRequests.size > 0;
   }
 
   /** 재시도 계기(시도 횟수·남은 시간)를 실은 connection 이벤트. */
@@ -2326,7 +2337,7 @@ export class AgentBridgeImpl implements AgentBridge {
       agent: this.editingAgent,
       workflow: this.workflow,
       phase: this.phase,
-      waitingForUser: this.pendingUserQuestionId !== null || this.pendingChatPermissionRequest != null,
+      waitingForUser: this.pendingUserQuestionId !== null || this.pendingChatPermissionRequests.size > 0,
     });
     this.publishEditingLease();
     this.scheduleBusyCheck();
@@ -2699,7 +2710,7 @@ export class AgentBridgeImpl implements AgentBridge {
           if (!this.turnRunning) this.endTurnCheckpoint();
         } else {
           this.chatPermissionGrants = [];
-          this.clearChatPermissionRequest({ status: 'expired', reason: 'hub-restarted' });
+          this.clearChatPermissionRequests({ status: 'expired', reason: 'hub-restarted' });
           // 이 페이지가 멈춘 세션은 허브가 잃은 것이 아니다 — 끊긴 턴 줄·알림을 내지 않는다. 그 턴의 끝은 허브가 보낸다.
           hubLostTurn = wasRunning && !stoppedBeforeWelcome;
           this.activeAgent = null;
@@ -2772,39 +2783,40 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'chat-permission-requested': {
         const request = readChatPermissionRequest(msg.request);
         if (!request || !chatPermissionMatchesContext(request, this.referenceContext())) break;
-        if (this.pendingPermissionCancellation?.request.requestId === request.requestId) {
-          this.flushPermissionCancellation();
+        const cancellation = this.pendingPermissionCancellations.get(request.requestId);
+        if (cancellation) {
+          this.flushPermissionCancellation(cancellation);
           break;
         }
-        if (this.pendingChatPermissionRequest?.requestId !== request.requestId) {
-          this.clearChatPermissionRequest({ status: 'expired', reason: 'request-invalidated' });
-        }
-        this.pendingChatPermissionRequest = request;
+        // 다른 요청이 와도 앞의 요청은 그대로 둔다 — 허브가 해소할 때까지 둘 다 열려 있다.
+        this.pendingChatPermissionRequests.set(request.requestId, request);
         this.syncEditingLease();
         this.emit({ type: 'chat-permission-requested', request, ...(msg.replayed === true ? { replayed: true } : {}) });
         break;
       }
       case 'chat-permission-resolved': {
-        const cancelled = this.pendingPermissionCancellation?.request;
-        if (cancelled && cancelled.requestId === msg.requestId && cancelled.threadId === msg.threadId
-          && cancelled.documentId === msg.documentId) this.pendingPermissionCancellation = null;
-        const pending = this.pendingChatPermissionRequest;
+        const cancelled = typeof msg.requestId === 'string' ? this.pendingPermissionCancellations.get(msg.requestId)?.request : undefined;
+        if (cancelled && cancelled.threadId === msg.threadId
+          && cancelled.documentId === msg.documentId) this.pendingPermissionCancellations.delete(cancelled.requestId);
+        const pending = typeof msg.requestId === 'string' ? this.pendingChatPermissionRequests.get(msg.requestId) : undefined;
         const outcome = readChatPermissionOutcome(msg.outcome);
-        if (!pending || pending.requestId !== msg.requestId || !outcome
+        if (!pending || !outcome
           || msg.threadId !== pending.threadId || msg.documentId !== pending.documentId
           || !chatPermissionMatchesContext(pending, this.referenceContext())) break;
         const grants = readChatPermissionGrants(msg.grants);
-        // 브라우저 계정·로그인 요청의 승인은 채팅 권한을 늘리지 않는다.
-        if (outcome.status === 'granted' && !pending.kind && !grants.includes(pending.capability)) break;
-        if (!pending.kind || Array.isArray(msg.grants)) this.chatPermissionGrants = grants;
-        this.clearChatPermissionRequest(outcome);
+        const alwaysGrants = readChatPermissionGrants(msg.alwaysGrants);
+        // 브라우저 계정·로그인·비밀 값 요청의 승인은 채팅 권한을 늘리지 않는다.
+        if (outcome.status === 'granted' && !pending.kind && !grants.includes(pending.capability)
+          && !alwaysGrants.includes(pending.capability)) break;
+        if (!pending.kind || Array.isArray(msg.grants)) this.chatPermissionGrants = [...new Set([...grants, ...alwaysGrants])];
+        this.clearChatPermissionRequests(outcome, (request) => request.requestId === pending.requestId, alwaysGrants);
         if (this.turnRunning) this.beginPendingTurn(this.editingAgent);
         this.syncEditingLease();
         break;
       }
       case 'chat-permission-response-result': {
         if (typeof msg.responseId !== 'string' || typeof msg.requestId !== 'string'
-          || this.pendingChatPermissionRequest?.requestId !== msg.requestId) break;
+          || !this.pendingChatPermissionRequests.has(msg.requestId)) break;
         this.emit({ type: 'chat-permission-response-result', responseId: msg.responseId, requestId: msg.requestId,
           ok: msg.ok === true, ...(typeof msg.code === 'string' ? { code: msg.code } : {}),
           ...(typeof msg.message === 'string' ? { message: msg.message } : {}) });
@@ -3354,6 +3366,18 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, { result: msg.result, error: msg.error });
         break;
       }
+      case 'secret-submit-result': {
+        // 결과에는 메타데이터만 있다. 값처럼 보이는 필드는 읽지 않는다.
+        if (typeof msg.responseId !== 'string') break;
+        const secret = readSecretMeta(msg.secret);
+        this.requests.settle(msg.responseId, {
+          ok: msg.ok === true,
+          ...(typeof msg.code === 'string' ? { code: msg.code } : {}),
+          ...(typeof msg.message === 'string' ? { message: msg.message } : {}),
+          ...(secret ? { secret } : {}),
+        } satisfies SecretSubmitResult);
+        break;
+      }
       case 'browser-event': {
         if (msg.event && typeof msg.event === 'object' && typeof (msg.event as Record<string, unknown>).type === 'string') {
           this.emit({ type: 'browser-event', event: msg.event as BrowserEvent });
@@ -3421,7 +3445,7 @@ export class AgentBridgeImpl implements AgentBridge {
         this.queuedMessages = [];
         if (chatStartFailed) {
           this.chatPermissionGrants = [];
-          this.clearChatPermissionRequest({ status: 'expired', reason: 'request-invalidated' });
+          this.clearChatPermissionRequests({ status: 'expired', reason: 'request-invalidated' });
           this.chatStartSent = false;
           // 허브는 교체 프로바이더를 시작하기 전에 이전 세션을 폐기한다. 요청한 시작값은
           // 재시도 설정으로 남기되 다음 메시지가 사라진 이전 에이전트로 향하지 않게 한다.
@@ -3603,7 +3627,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 끝까지 가지 못한 턴은 프로바이더가 맥락을 이어 가지 않을 수 있다 (첫 턴 중단 뒤 새 세션).
         if (!succeeded) {
           this.turnSnapshots?.reset();
-          this.clearChatPermissionRequest({ status: 'expired', reason: 'turn-interrupted' });
+          // 권한 요청만 그 턴과 함께 끝난다. 브라우저·비밀 값 요청은 허브가 해소할 때까지 둔다.
+          this.clearChatPermissionRequests({ status: 'expired', reason: 'turn-interrupted' }, (request) => !request.kind);
         }
         if (this.pendingTurnOpen) {
           try {
@@ -3874,50 +3899,77 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   getPendingChatPermissionRequest(): ChatPermissionRequest | null {
-    return this.pendingChatPermissionRequest ? structuredClone(this.pendingChatPermissionRequest) : null;
+    const first = this.pendingChatPermissionRequests.values().next().value;
+    return first ? structuredClone(first) : null;
+  }
+
+  getPendingChatPermissionRequests(): ChatPermissionRequest[] {
+    return [...this.pendingChatPermissionRequests.values()].map((request) => structuredClone(request));
   }
 
   getChatPermissionGrants(): ChatPermissionCapability[] {
     return [...this.chatPermissionGrants];
   }
 
-  private clearChatPermissionRequest(outcome: ChatPermissionOutcome): void {
-    const pending = this.pendingChatPermissionRequest;
-    this.pendingChatPermissionRequest = null;
-    if (!pending) return;
-    this.emit({ type: 'chat-permission-resolved', requestId: pending.requestId,
-      threadId: pending.threadId, documentId: pending.documentId, outcome, grants: [...this.chatPermissionGrants] });
+  private clearChatPermissionRequests(
+    outcome: ChatPermissionOutcome,
+    filter: (request: ChatPermissionRequest) => boolean = () => true,
+    alwaysGrants?: ChatPermissionCapability[],
+  ): void {
+    for (const pending of [...this.pendingChatPermissionRequests.values()]) {
+      if (!filter(pending)) continue;
+      this.pendingChatPermissionRequests.delete(pending.requestId);
+      this.emit({ type: 'chat-permission-resolved', requestId: pending.requestId,
+        threadId: pending.threadId, documentId: pending.documentId, outcome, grants: [...this.chatPermissionGrants],
+        ...(alwaysGrants?.length ? { alwaysGrants: [...alwaysGrants] } : {}) });
+    }
   }
 
   private syncChatPermissions(source: Record<string, unknown>): void {
     this.chatPermissionGrants = readChatPermissionGrants(source['chatPermissionGrants']);
-    const candidate = readChatPermissionRequest(source['pendingChatPermissionRequest']);
-    let next = candidate && chatPermissionMatchesContext(candidate, this.referenceContext()) ? candidate : null;
-    if (this.pendingPermissionCancellation) {
-      if (next?.requestId === this.pendingPermissionCancellation.request.requestId) {
-        this.flushPermissionCancellation();
-        next = null;
-      } else this.pendingPermissionCancellation = null;
+    const context = this.referenceContext();
+    const listed = readChatPermissionRequests(source['pendingChatPermissionRequests']);
+    const legacy = readChatPermissionRequest(source['pendingChatPermissionRequest']);
+    const candidates = (listed ?? (legacy ? [legacy] : []))
+      .filter((request) => chatPermissionMatchesContext(request, context));
+    // 멈추며 거절한 요청을 허브가 아직 들고 있으면 다시 거절하고 숨긴다. 허브가 잊었으면 거절도 잊는다.
+    for (const cancellation of [...this.pendingPermissionCancellations.values()]) {
+      if (candidates.some((request) => request.requestId === cancellation.request.requestId)) this.flushPermissionCancellation(cancellation);
+      else this.pendingPermissionCancellations.delete(cancellation.request.requestId);
     }
-    const pending = this.pendingChatPermissionRequest;
-    if (pending && pending.requestId !== next?.requestId) {
-      this.clearChatPermissionRequest(this.chatPermissionGrants.includes(pending.capability)
-        ? { status: 'granted' } : { status: 'expired', reason: 'request-invalidated' });
+    const next = new Map<string, ChatPermissionRequest>();
+    for (const request of candidates) {
+      if (!this.pendingPermissionCancellations.has(request.requestId)) next.set(request.requestId, request);
     }
-    this.pendingChatPermissionRequest = next;
-    if (this.pendingChatPermissionRequest) {
-      this.emit({ type: 'chat-permission-requested', request: this.pendingChatPermissionRequest, replayed: true });
+    for (const pending of [...this.pendingChatPermissionRequests.values()]) {
+      if (next.has(pending.requestId)) continue;
+      // 목록이 없는 옛 허브는 브라우저 요청을 스냅샷에 싣지 않는다 — 그 요청은 허브의 해소를 기다린다.
+      if (listed === null && pending.kind && chatPermissionMatchesContext(pending, context)) {
+        next.set(pending.requestId, pending);
+        continue;
+      }
+      this.pendingChatPermissionRequests.delete(pending.requestId);
+      const granted = !pending.kind && this.chatPermissionGrants.includes(pending.capability);
+      this.emit({ type: 'chat-permission-resolved', requestId: pending.requestId, threadId: pending.threadId,
+        documentId: pending.documentId, outcome: granted ? { status: 'granted' } : { status: 'expired', reason: 'request-invalidated' },
+        grants: [...this.chatPermissionGrants] });
+    }
+    this.pendingChatPermissionRequests = next;
+    for (const request of next.values()) {
+      this.emit({ type: 'chat-permission-requested', request, replayed: true });
     }
   }
 
-  respondChatPermission(requestId: string, decision: ChatPermissionDecision): string {
+  respondChatPermission(requestId: string, decision: ChatPermissionDecision, scope?: ChatPermissionScope): string {
     const responseId = globalThis.crypto?.randomUUID?.() ?? `permission-${Date.now().toString(36)}-${++this.requestSeq}`;
-    const pending = this.pendingChatPermissionRequest;
-    const valid = pending?.requestId === requestId && chatPermissionMatchesContext(pending, this.referenceContext())
+    const pending = this.pendingChatPermissionRequests.get(requestId);
+    const valid = pending !== undefined && chatPermissionMatchesContext(pending, this.referenceContext())
       && (decision === 'grant' || decision === 'deny');
+    const offered = pending?.scopes ?? ['chat'];
+    const sendScope = decision === 'grant' && isChatPermissionScope(scope) && offered.includes(scope) ? scope : undefined;
     const sent = valid && this.state === 'connected' && this.sendJson({
       v: AGENT_PROTOCOL_VERSION, type: 'chat-permission-response', responseId, requestId, decision,
-      threadId: pending.threadId, documentId: pending.documentId,
+      threadId: pending.threadId, documentId: pending.documentId, ...(sendScope ? { scope: sendScope } : {}),
     });
     if (!sent) queueMicrotask(() => this.emit({ type: 'chat-permission-response-result', requestId, responseId, ok: false,
       code: valid ? 'DISCONNECTED' : 'REQUEST_INVALIDATED',
@@ -3925,16 +3977,40 @@ export class AgentBridgeImpl implements AgentBridge {
     return responseId;
   }
 
-  private cancelChatPermissionRequest(): void {
-    const request = this.pendingChatPermissionRequest;
-    if (request) this.pendingPermissionCancellation = { request,
-      responseId: globalThis.crypto?.randomUUID?.() ?? `permission-cancel-${++this.requestSeq}` };
-    this.clearChatPermissionRequest({ status: 'expired', reason: 'user-stop' });
+  async submitSecret(args: { requestId: string; label: string; value: string; scope: ChatPermissionScope }): Promise<SecretSubmitResult> {
+    const pending = this.pendingChatPermissionRequests.get(args.requestId);
+    if (!pending || pending.kind !== 'secret-save' || !chatPermissionMatchesContext(pending, this.referenceContext())) {
+      return { ok: false, code: 'REQUEST_INVALIDATED', message: '이 채팅의 요청이 만료되었습니다.' };
+    }
+    const label = typeof args.label === 'string' ? args.label.trim() : '';
+    const scope = isChatPermissionScope(args.scope) && (pending.scopes ?? ['always', 'chat']).includes(args.scope) ? args.scope : null;
+    if (!label || label.length > 80 || typeof args.value !== 'string' || !args.value || !scope) {
+      return { ok: false, code: 'INVALID_SECRET', message: '이름과 값을 확인하세요.' };
+    }
+    if (this.state !== 'connected') return { ok: false, code: 'DISCONNECTED', message: '연결 후 다시 시도해 주세요.' };
+    const responseId = globalThis.crypto?.randomUUID?.() ?? `secret-${Date.now().toString(36)}-${++this.requestSeq}`;
+    const frame: Record<string, unknown> = {
+      v: AGENT_PROTOCOL_VERSION, type: 'secret-submit', responseId, requestId: pending.requestId,
+      threadId: pending.threadId, documentId: pending.documentId, label, value: args.value, scope,
+    };
+    const result = this.requests.create<SecretSubmitResult>(responseId, 60_000);
+    let sent = false;
+    try { sent = this.sendJson(frame); } finally { delete frame['value']; }
+    if (!sent) this.requests.settle(responseId, null);
+    const settled = await result;
+    return settled ?? { ok: false, code: sent ? 'TIMEOUT' : 'DISCONNECTED', message: '저장 결과를 확인하지 못했습니다.' };
   }
 
-  private flushPermissionCancellation(): void {
-    const pending = this.pendingPermissionCancellation;
-    if (pending && chatPermissionMatchesContext(pending.request, this.referenceContext())) {
+  private cancelChatPermissionRequest(): void {
+    for (const request of this.pendingChatPermissionRequests.values()) {
+      this.pendingPermissionCancellations.set(request.requestId, { request,
+        responseId: globalThis.crypto?.randomUUID?.() ?? `permission-cancel-${++this.requestSeq}` });
+    }
+    this.clearChatPermissionRequests({ status: 'expired', reason: 'user-stop' });
+  }
+
+  private flushPermissionCancellation(pending: { request: ChatPermissionRequest; responseId: string }): void {
+    if (chatPermissionMatchesContext(pending.request, this.referenceContext())) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-permission-response', decision: 'deny',
         responseId: pending.responseId, requestId: pending.request.requestId,
         threadId: pending.request.threadId, documentId: pending.request.documentId });
@@ -4009,7 +4085,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.clearMessageReceipts();
     if (force || threadId !== this.threadId || documentId !== this.documentId) {
       this.chatPermissionGrants = [];
-      this.clearChatPermissionRequest({ status: 'expired', reason: 'request-invalidated' });
+      this.clearChatPermissionRequests({ status: 'expired', reason: 'request-invalidated' });
     }
     this.selectedAgent = agent;
     this.selectedModel = model || null;
@@ -5186,7 +5262,8 @@ export class AgentBridgeImpl implements AgentBridge {
     this.persistPendingQuestionCancellation();
     this.pendingUserQuestionId = null;
     this.pendingUserQuestion = null;
-    this.pendingChatPermissionRequest = null;
+    this.pendingChatPermissionRequests.clear();
+    this.pendingPermissionCancellations.clear();
     this.chatPermissionGrants = [];
     this.pendingInterrupt = false;
     this.abortSocket();

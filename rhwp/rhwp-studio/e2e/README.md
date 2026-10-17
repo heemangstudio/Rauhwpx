@@ -16,6 +16,8 @@ These run outside the smoke suite and CI, for changes to the areas they cover.
 
 `npm run e2e:chat-permissions` starts its own hub and Vite with a fake Pi. It checks per-chat permission requests and the edit review boundary in each mode.
 
+`npm run e2e:request-cards` starts its own hub, Studio and app-owned Chromium (`PLAYWRIGHT_BROWSERS_PATH`) against two local HTTPS sites with a throwaway CA, and a fake Pi. It drives the request cards as a user: saving a secret, typing it into its own origin only, deny, socket drop and reload, code handoff, and an always-allowed permission, then checks that the secret value never reaches MCP traffic, provider prompts, Studio, the hub log or any file. Evidence goes to `RHWP_REQUEST_CARDS_EVIDENCE_DIR` (default `rhwp/target/request-cards-live`).
+
 `npm run e2e:chat-follows-document` needs `npm run dev` running. Clicking another document's chat saves and commits the current document once, then opens that document and continues its chat.
 
 `npm run e2e:worktrees` starts an isolated hub and Studio to check worktree creation

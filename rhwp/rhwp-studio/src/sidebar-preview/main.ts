@@ -44,8 +44,16 @@ import { mountEditorShell } from './editor-shell.ts';
 import { createProjectScene } from './project-scene.ts';
 import { mountCitationScenes } from './mock-citations.ts';
 import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-guard.ts';
+import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
+import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 
 const params = new URLSearchParams(location.search);
+/** `vault=1|empty|unsupported|fail`: 데스크톱 앱의 Chrome 비밀번호 보관함을 흉내 낸다. */
+const vaultParam = params.get('vault');
+const localPasswords = vaultParam
+  ? createPreviewLocalPasswords(vaultParam === 'empty' || vaultParam === 'unsupported' || vaultParam === 'fail' ? vaultParam : 'ready')
+  : null;
+provideLocalPasswordsApi(localPasswords?.api);
 if (params.get('usage') === 'live') {
   const description = document.querySelector('#preview-controls > p');
   if (description) description.textContent = 'Live account usage. Sample chat and documents.';
@@ -656,7 +664,7 @@ if (parallel === 'locked') await openLockedParallelScene();
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
-  projects: previewProjects, projectScene,
+  projects: previewProjects, projectScene, localPasswords,
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

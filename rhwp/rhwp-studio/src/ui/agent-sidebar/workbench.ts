@@ -1,10 +1,11 @@
 /** 집중 화면 오른쪽의 작업 칸. 칸을 여닫는 상태와 선택한 보기는 따로 둔다. 데이터와 문서 수명은 각 보기에서 관리한다. */
 import './workbench.css';
 import { createIcon } from './icons.ts';
+import { createSiteMark } from './site-mark.ts';
 import { projectIcon } from './project/project-ui.ts';
 
 export type WorkbenchView = 'board' | 'changes' | 'agents' | 'documents' | 'browser';
-export interface WorkbenchResource { id: string; title: string; dirty: boolean; view?: WorkbenchView; kind?: 'document' | 'browser'; }
+export interface WorkbenchResource { id: string; title: string; dirty: boolean; view?: WorkbenchView; kind?: 'document' | 'browser'; /** 브라우저 탭의 사이트 아이콘(data: URI). */ faviconUrl?: string; }
 export interface SidebarWorkbench {
   header: HTMLElement;
   /** 지금 보기의 머리 동작. 연결하는 쪽이 보기마다 채운다. */
@@ -113,7 +114,7 @@ export function createSidebarWorkbench(deps: {
   let activeResource: string | null = null;
   let stripFrame: number | null = null;
   let tabSequence = 0;
-  const tabRows = new Map<string, { row: HTMLElement; button: HTMLButtonElement; label: HTMLElement; close: HTMLButtonElement }>();
+  const tabRows = new Map<string, { row: HTMLElement; button: HTMLButtonElement; label: HTMLElement; close: HTMLButtonElement; icon: Element; favicon: string }>();
   function activeKey(): string | null {
     return activeResource && (resources.find((resource) => resource.id === activeResource)?.view ?? 'documents') === selected ? `resource:${activeResource}` : selected;
   }
@@ -229,7 +230,7 @@ export function createSidebarWorkbench(deps: {
         button.addEventListener('click', () => activateTab(key));
         closeButton.addEventListener('click', () => closeTab(key));
         row.addEventListener('auxclick', event => { if (event.button === 1) { event.preventDefault(); closeTab(key); } });
-        tab = { row, button, label, close: closeButton };
+        tab = { row, button, label, close: closeButton, icon, favicon: '' };
         tabRows.set(key, tab);
         strip.append(row);
       }
@@ -237,6 +238,12 @@ export function createSidebarWorkbench(deps: {
       const resource = key.startsWith('resource:') ? resources.find(item => `resource:${item.id}` === key) : null;
       const label = resource?.title ?? (views.find(view => view.id === key)?.title ?? '');
       tab.label.textContent = label;
+      // 사이트 아이콘이 오면 브라우저 탭의 기본 그림을 바꾼다. 아이콘이 없으면 그대로 둔다.
+      const favicon = resource?.kind === 'browser' ? resource.faviconUrl ?? '' : '';
+      if (favicon !== tab.favicon) {
+        const next = favicon ? createSiteMark({ origin: null, faviconUrl: favicon, className: 'ag-site-mark-small' }) : createIcon('browser');
+        tab.icon.replaceWith(next); tab.icon = next; tab.favicon = favicon;
+      }
       tab.button.title = label;
       tab.button.setAttribute('aria-label', label);
       tab.close.setAttribute('aria-label', `${label} 닫기`);

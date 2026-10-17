@@ -17,6 +17,8 @@
 .ag-browser-tab { display: flex; align-items: center; min-width: 85px; max-width: 200px; border-radius: 7px; }
 .ag-browser-tab:has([aria-selected=true]) { background: color-mix(in srgb, currentColor 6%, transparent); }
 .ag-browser-tab button[role=tab] { flex: 1; min-width: 0; height: 27px; overflow: hidden; text-overflow: ellipsis; padding: 0 9px; border-color: transparent; text-align: left; justify-content: flex-start; font-size: 11px; }
+.ag-browser-tab button[role=tab]:has(.ag-site-mark) { display: flex; align-items: center; gap: 6px; padding-left: 7px; }
+.ag-browser-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ag-browser-tab button.ag-browser-tab-close { width: 22px; height: 22px; flex-basis: 22px; margin-right: 3px; }
 .ag-browser-tab-close .ag-icon { width: 12px; height: 12px; }
 .ag-browser-toolbar { position: relative; display: flex; gap: 2px; align-items: center; padding: 4px 7px 6px; flex-shrink: 0; background: color-mix(in srgb, var(--ag-bg, var(--n-surface)) 94%, transparent); border-bottom: 1px solid var(--browser-border); }

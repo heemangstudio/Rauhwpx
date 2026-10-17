@@ -508,3 +508,28 @@ test('tab sleep preferences persist and reject invalid or agent configuration ch
   await broker.updateConfiguration({ actor: owner, performance: { idleMinutes: 0 } });
   assert.equal((await broker.getConfiguration()).performance.idleMinutes, 0);
 });
+
+test('a chat-only account approval lets that chat fill once approved and never persists or reaches another chat', async (t) => {
+  const { broker, policy, dataDir, secretStore } = await fixture(t);
+  const saved = await savedAccount(broker, { use: false });
+  assert.equal(saved.agentReuseApproved, false);
+  const request = await broker.requestAccount({ actor: agent, accountId: saved.id, origin: accountInput.origin, intent: 'use' });
+  const approved = await broker.approveAccount({ actor: owner, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, use: true }, scope: 'chat' });
+  assert.equal(approved.account.chatApproved, true);
+  assert.equal(approved.account.agentReuseApproved, false, 'settings still show the account as not remembered');
+  assert.equal((await policy.list()).accounts.find((entry) => entry.accountId === saved.id).approved, false);
+  const target = binding(saved.id);
+  const use = await broker.issueHandle({ actor: agent, accountId: saved.id, binding: target });
+  let filled = false;
+  await broker.fill({ actor: agent, handle: use.handle, binding: target, getBinding: async () => target, fill: async ({ perform }) => { await perform(async () => { filled = true; }); } });
+  assert.equal(filled, true);
+  const otherChat = { ...agent, threadId: 'chat-b', projectId: 'project-b' };
+  await assert.rejects(broker.issueHandle({ actor: otherChat, accountId: saved.id, binding: target }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  // 채팅이 끝나면 승인도 끝나고, 허브를 다시 열어도 남지 않는다.
+  policy.clearChatAccounts(agent.threadId);
+  await assert.rejects(broker.issueHandle({ actor: agent, accountId: saved.id, binding: target }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  await broker.approveAccount({ actor: owner, accountId: saved.id, scope: 'chat' });
+  const restarted = createBrowserCredentialBroker({ dataDir, secretStore, policy: createBrowserPolicy({ dataDir }) });
+  await restarted.ready();
+  await assert.rejects(restarted.issueHandle({ actor: agent, accountId: saved.id, binding: target }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+});

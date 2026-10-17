@@ -9584,7 +9584,36 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   opacity: 0.6;
 }
 
-/* 계획 초안 제안은 권한 요청 알약과 같은 모양을 쓴다. */
+/* 계획 초안 제안 — 대화 끝의 작은 알약. */
+.ag-plan-suggest {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 18px;
+  color: var(--ag-text);
+  background: var(--ag-input-bg);
+  font-size: 12px;
+}
+.ag-plan-suggest-write,
+.ag-plan-suggest-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ag-plan-suggest-write { font-weight: 600; }
+.ag-plan-suggest-close { padding: 2px 4px; font-size: 18px; color: var(--ag-text-muted); }
+.ag-plan-suggest-write:focus-visible,
+.ag-plan-suggest-close:focus-visible { outline: var(--ag-focus-ring); outline-offset: 3px; border-radius: 12px; }
 .ag-plan-suggest .ag-icon { width: 13px; height: 13px; color: var(--ag-text-secondary); }
 
 /* macOS 셸에서는 문서 홈 단추가 신호등 옆에 늘 떠 있으므로 사이드바의 홈 단추는 숨긴다. */

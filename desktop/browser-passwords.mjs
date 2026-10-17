@@ -110,12 +110,16 @@ function pageSnapshot(token, selector, maxElements, includeText) {
     viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } };
 }
 
-function captureViewport(secretSelector) {
+function captureViewport(secretSelector, protectedValues = []) {
   const roots = [document]; let masked = true; let hasSecret = false;
+  // 허브가 다른 탭에 입력한 사용자 비밀을 사이트가 다시 보여 주는 페이지도 캡처하지 않는다.
+  const shows = (value) => typeof value === 'string' && protectedValues.some((secret) => value.includes(secret));
+  if (protectedValues.length && shows(String(document.documentElement?.innerText ?? ''))) hasSecret = true;
   for (let index = 0; index < roots.length; index++) {
     for (const el of roots[index].querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
       if (el.matches(secretSelector) && el.value) hasSecret = true;
+      if (protectedValues.length && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && shows(el.value)) hasSecret = true;
       if (el.matches('input,textarea,select,[contenteditable],iframe,frame') && getComputedStyle(el).visibility !== 'hidden') masked = false;
     }
   }
@@ -135,6 +139,25 @@ function pageAction(payload) {
   if (payload.action === 'wait') return { completed: payload.state === 'hidden' ? !ready(el) : ready(el) };
   if (payload.action === 'scroll') { window.scrollBy(payload.deltaX, payload.deltaY); return { completed: true }; }
   if (!ready(el)) return { error: 'target' };
+  if (payload.action === 'validate-secret' || payload.action === 'fill-secret') {
+    // 사용자가 승인한 비밀은 한 줄 글자 칸이나 textarea 한 곳에만 넣는다.
+    const textInput = el instanceof HTMLInputElement && ['text', 'password', 'email', 'tel', 'url'].includes(el.type);
+    if (!textInput && !(el instanceof HTMLTextAreaElement)) return { error: 'target' };
+    if (el.autocomplete === 'one-time-code') return { error: 'code' };
+    if (/^cc-/.test(el.autocomplete)) return { error: 'target' };
+    // 이름이 action 인 칸이 form.action 을 가릴 수 있어 속성을 직접 읽는다. 제출 단추의 formaction 도 본다.
+    const form = el.form;
+    const destinations = form ? [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))] : [];
+    if (destinations.some((value) => value && new URL(value, document.baseURI).origin !== payload.origin)) return { error: 'origin' };
+    if (payload.action === 'validate-secret') return { completed: true };
+    const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    el.setAttribute('data-rhwp-private-field', 'true');
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, payload.value);
+    if (!ready(el) || location.origin !== payload.origin) return { error: 'target' };
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { completed: true };
+  }
   if (payload.action === 'fill' || payload.action === 'validate-fill') {
     const password = current.refs.get(payload.passwordRef);
     const username = payload.usernameRef ? current.refs.get(payload.usernameRef) : null;
@@ -262,7 +285,7 @@ export class NativeBrowserPasswords {
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
-      ? await this.run(tab, captureViewport, [SECRET]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
+      ? await this.run(tab, captureViewport, [SECRET, Array.isArray(params.protectedValues) ? params.protectedValues.filter((value) => typeof value === 'string' && value).slice(0, 256) : []]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
       : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 1000, params.text === true]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
@@ -323,7 +346,29 @@ export class NativeBrowserPasswords {
     current();
     return result;
   }
+  /** 허브가 승인을 확인하고 넘긴 사용자 비밀을 한 칸에 넣는다. 값은 응답·로그에 남기지 않는다. */
+  async fillSecret(params) {
+    const tab = this.tab(params);
+    const snapshot = this.assertSnapshot(tab, params);
+    const origin = passwordOrigin(tab.view.webContents.getURL());
+    if (!Array.isArray(params.origins) || !params.origins.includes(origin)) throw passwordFailure('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites the user approved for this secret.');
+    if (typeof params.value !== 'string' || !params.value || Buffer.byteLength(params.value) > 16 * 1024) throw passwordFailure('BROWSER_SECRET_INVALID', 'The secret value is unavailable.');
+    const target = { snapshotId: snapshot.snapshotId, ref: params.ref, origin };
+    const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-secret' }]);
+    this.assertSnapshot(tab, params);
+    if (checked?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+    if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_SECRET_FORM_ORIGIN' : 'BROWSER_SECRET_TARGET_INVALID', checked?.error === 'origin' ? 'This form sends its data to another website.' : 'Choose a visible text or password field for this secret.');
+    // 값이 페이지에 들어가기 전에 원시 읽기를 막는다(비밀번호 입력과 같은 보호).
+    const firstProtection = !tab.passwordShield;
+    this.protectFamily(tab, origin, params.value);
+    if (firstProtection) await this.host.session?.closeAllConnections();
+    this.assertSnapshot(tab, params);
+    const result = await this.run(tab, pageAction, [{ ...target, action: 'fill-secret', value: params.value }]);
+    if (!result?.completed) throw passwordFailure('BROWSER_SECRET_TARGET_INVALID', 'Choose a visible text or password field for this secret.');
+    return { completed: true };
+  }
   async fill(params, { human = false } = {}) {
+    if (!human && params?.mode === 'secret') return this.fillSecret(params);
     const tab = this.tab(params, { human });
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
@@ -343,7 +388,7 @@ export class NativeBrowserPasswords {
       const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
       if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
       return { completed: true, accountId: params.accountId };
-    }, { agent: !human });
+    }, { agent: !human, chatApprovedAt: human ? null : params.chatApprovedAt });
   }
   async action(params) {
     const tab = this.tab(params);

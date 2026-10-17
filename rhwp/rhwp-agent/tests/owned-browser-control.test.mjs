@@ -121,3 +121,11 @@ test('real Playwright failures keep a typed reason for covered, detached and non
   assert.match(covered.message, /div#cover\.overlay\.sheet/);
   assert.equal(covered.message.includes('Private banner text'), false, 'the covering element is described without its page text');
 });
+
+test('the desktop browser reports ready before its first tab even without managed Chromium', async (t) => {
+  const nativeAdapter = { async bind() { return { generation: 'native-generation' }; }, async control() {}, async inventory() { return []; } };
+  const browser = await service(t, { nativeAdapter, runtimeFactory: fakeRuntime({ nativeTargetId: 'native-target' }) });
+  const { readiness } = await browser.request(agent, 'status', {});
+  assert.equal(readiness.installed, true);
+  assert.equal(readiness.state, 'ready');
+});
