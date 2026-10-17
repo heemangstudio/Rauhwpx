@@ -1,5 +1,11 @@
 export type FontIndexSourceKind = 'system' | 'user' | 'hancom' | 'app';
-export type FontIndexFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'hft';
+export type FontIndexFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'woff' | 'woff2' | 'hft';
+
+/** WOFF 표(zlib)와 WOFF2 스트림(brotli) 압축 해제기. outLength 를 넘게 풀지 않아야 한다. */
+export interface WebFontDecoders {
+  zlib?(data: Uint8Array, outLength: number): Uint8Array | Promise<Uint8Array>;
+  brotli?(data: Uint8Array, outLength: number): Uint8Array | Promise<Uint8Array>;
+}
 
 /** 임의 위치를 읽을 수 있는 글꼴 원본 */
 export interface FontByteSource {
@@ -34,6 +40,8 @@ export interface IndexedFontFace extends Omit<RawFontFace, 'format'> {
   format: FontIndexFormat;
   source: FontIndexSourceKind;
   size: number;
+  /** 다른 앱이 자기용으로 둔 글꼴: 문서가 이름으로 부를 때만 쓰고 글꼴 메뉴에는 넣지 않는다. */
+  unlisted?: boolean;
 }
 
 export interface FontIndexFile {
@@ -42,6 +50,7 @@ export interface FontIndexFile {
   size: number;
   mtimeMs: number;
   kind: FontIndexSourceKind;
+  unlisted?: boolean;
 }
 
 export interface ParsedFontFileResult {
@@ -103,7 +112,21 @@ export function parseSfntFaces(input: Uint8Array | FontByteSource): Promise<{
   faces: RawFontFace[];
   undecodable: number;
 }>;
-export function parseFontSource(input: Uint8Array | FontByteSource, fileName?: string): Promise<{
+export function webFontKind(bytes: Uint8Array): 'woff' | 'woff2' | null;
+export function decodeWebFont(input: Uint8Array | FontByteSource, options: {
+  decompress?: WebFontDecoders;
+  tables?: Iterable<string> | null;
+  maxBytes: number;
+}): Promise<Uint8Array>;
+export function streamWebFontDecoders(): WebFontDecoders;
+export function standaloneFaceBytes(
+  input: Uint8Array | FontByteSource,
+  face: { format: string; faceIndex: number },
+  options?: { decompress?: WebFontDecoders; maxBytes?: number },
+): Promise<Uint8Array | null>;
+export function parseFontSource(input: Uint8Array | FontByteSource, fileName?: string, options?: {
+  decompress?: WebFontDecoders;
+}): Promise<{
   type: 'hft' | 'sfnt';
   faces: RawFontFace[];
   undecodable?: number;

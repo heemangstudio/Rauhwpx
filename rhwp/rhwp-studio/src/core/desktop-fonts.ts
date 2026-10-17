@@ -50,7 +50,8 @@ import { sfntMetricsSubset } from './sfnt-subset.ts';
 // ─── preload 계약 ─────────────────────────────────────────────
 
 export type SystemFontSource = 'system' | 'user' | 'hancom' | 'app';
-export type SystemFontFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'hft';
+/** woff/woff2 face 는 host 가 SFNT 로 풀어서 내준다. */
+export type SystemFontFormat = 'ttf' | 'otf' | 'ttc' | 'otc' | 'woff' | 'woff2' | 'hft';
 
 export interface SystemFontFace {
   id: string;
@@ -63,6 +64,8 @@ export interface SystemFontFace {
   format: SystemFontFormat;
   source: SystemFontSource;
   size: number;
+  /** 다른 앱이 자기용으로 둔 글꼴. 문서가 이름으로 부를 때만 쓰고 글꼴 메뉴에는 넣지 않는다. */
+  unlisted?: boolean;
   families: string[];
   fullNames: string[];
   postscriptNames: string[];
@@ -892,7 +895,7 @@ export function getDesktopFontMenuNames(): string[] {
   if (desktopMenuNames) return desktopMenuNames;
   const names = new Set<string>();
   for (const face of currentIndex.faces) {
-    if (face.format === 'hft' || face.italic || isBoldFace(face)) continue;
+    if (face.format === 'hft' || face.unlisted || face.italic || isBoldFace(face)) continue;
     const name = face.families.find(family => HANGUL_RE.test(family)) ?? face.families[0];
     if (name && !name.startsWith('.')) names.add(name.trim());
   }

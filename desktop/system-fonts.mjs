@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 import { replaceFile } from './fs-replace.mjs';
 
 import {
@@ -27,14 +29,15 @@ import {
   parseSfntFaces,
   pathKey,
   readTableDirectory,
+  standaloneFaceBytes,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
 import { expandFontRootCatalog } from '../rhwp/rhwp-shared/fonts/font-roots.mjs';
 import { enumerateOsFontRoots, runFontCommand } from '../rhwp/rhwp-shared/fonts/font-enumerators.mjs';
 
 export { SYSTEM_FONT_INDEX_VERSION, decodeHancomText, decodeNameRecord, parseHancomFontList, parseNameTable, parseSfntFaces };
 
-// 3: 가변 글꼴의 이름 붙은 인스턴스를 face 로 펼친다.
-const CACHE_FORMAT = 3;
+// 3: 가변 글꼴의 이름 붙은 인스턴스를 face 로 펼친다. 4: WOFF/WOFF2 를 색인한다.
+const CACHE_FORMAT = 4;
 const CACHE_FILE = 'system-font-index.json';
 const { maxDepth: MAX_DEPTH, maxFiles: MAX_FILES, maxDirs: MAX_DIRS } = FONT_SCAN_LIMITS;
 const PARSE_CONCURRENCY = 8;
@@ -66,6 +69,14 @@ async function readInto(handle, buffer, length, offset) {
   }
   return buffer;
 }
+
+const inflate = promisify(zlib.inflate);
+const brotliDecompress = promisify(zlib.brotliDecompress);
+/** WOFF/WOFF2 압축 해제기. 기대한 길이보다 길게 풀리면 zlib 이 멈추고 오류를 낸다. */
+export const NODE_WEB_FONT_DECODERS = Object.freeze({
+  zlib: (data, outLength) => inflate(data, { maxOutputLength: Math.max(1, outLength) }),
+  brotli: (data, outLength) => brotliDecompress(data, { maxOutputLength: Math.max(1, outLength) }),
+});
 
 function asBuffer(bytes) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -352,7 +363,15 @@ async function collectFiles(roots, { platform, pathApi }) {
       const key = pathKey(real, platform);
       if (seenFiles.has(key)) return;
       seenFiles.add(key);
-      files.push({ path: filePath, realPath: real, size: stat.size, mtimeMs: stat.mtimeMs, kind: root.kind, report: entry });
+      files.push({
+        path: filePath,
+        realPath: real,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        kind: root.kind,
+        report: entry,
+        ...(root.unlisted ? { unlisted: true } : {}),
+      });
       entry.fileCount += 1;
     };
     if (info.isFile()) {
@@ -461,7 +480,9 @@ async function mapLimit(items, limit, worker) {
 async function parseFontFile(file) {
   const handle = await fs.open(file.path, 'r');
   try {
-    return await parseFontSource(fileSource(handle, file.size), path.basename(file.path));
+    return await parseFontSource(fileSource(handle, file.size), path.basename(file.path), {
+      decompress: NODE_WEB_FONT_DECODERS,
+    });
   } finally {
     await handle.close();
   }
@@ -691,6 +712,7 @@ export function createSystemFontService(options = {}) {
     if (!collection && file.size > MAX_FACE_BYTES) {
       throw new Error(`too-large: ${file.size} bytes (cap ${MAX_FACE_BYTES})`);
     }
+    if (face.format === 'woff' || face.format === 'woff2') return openWebFace(id, face, file, started);
     const plan = collection ? await planCollectionFace(file, face.faceIndex) : null;
     async function* chunks() {
       const handle = await fs.open(file.path, 'r');
@@ -707,6 +729,30 @@ export function createSystemFontService(options = {}) {
       }
     }
     return { size: plan ? plan.size : file.size, chunks };
+  }
+
+  /**
+   * WOFF/WOFF2 는 FontFace 와 엔진 메트릭(ttf-parser), CanvasKit 이 모두 읽는 SFNT 로 풀어 보낸다.
+   * 풀린 크기를 미리 알아야 해서 한 번에 푼다. 웹 글꼴은 대개 작고 상한은 MAX_FACE_BYTES 다.
+   */
+  async function openWebFace(id, face, file, started) {
+    const handle = await fs.open(file.path, 'r');
+    let sfnt;
+    try {
+      const now = await handle.stat();
+      if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) {
+        throw staleError(id, 'font file changed since the index was built');
+      }
+      sfnt = asBuffer(await standaloneFaceBytes(fileSource(handle, file.size), face, { decompress: NODE_WEB_FONT_DECODERS }));
+    } finally {
+      await handle.close();
+    }
+    log(`read ${id} ${face.families[0] ?? '?'} ${file.path} ${face.format} ${file.size} → ${sfnt.length} bytes `
+      + `${Math.round(performance.now() - started)}ms`);
+    async function* chunks() {
+      for (let at = 0; at < sfnt.length; at += STREAM_CHUNK) yield sfnt.subarray(at, at + STREAM_CHUNK);
+    }
+    return { size: sfnt.length, chunks };
   }
 
   return { list, openFace };

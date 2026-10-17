@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  NODE_WEB_FONT_DECODERS,
   createSystemFontService,
   decodeHancomText,
   defaultFontRoots,
@@ -14,15 +15,20 @@ import {
 } from '../desktop/system-fonts.mjs';
 import {
   blobSource,
+  decodeWebFont,
   extractCollectionFace as extractCollectionFaceCore,
   parseFontSource,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
+import { brotliCompressSync, deflateSync } from 'node:zlib';
 import { expandFontRootCatalog } from '../rhwp/rhwp-shared/fonts/font-roots.mjs';
 import { serveSystemFont, systemFontBaseUrl } from '../desktop/studio-protocol.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NOTO = path.join(repoRoot, 'rhwp/ttfs/opensource/NotoSansKR-Regular.ttf');
 const VARIABLE = path.join(repoRoot, 'rhwp/tests/fixtures/fonts/RHWPVariableWeightFixture.ttf');
+// rhwp/scripts/generate_web_font_fixtures.py 로 만든다. WOFF2 는 glyf·loca·hmtx 변환을 쓴다.
+const WEB_FIXTURES = path.join(repoRoot, 'tests/fixtures/fonts');
+const WEB_TTF = path.join(WEB_FIXTURES, 'NotoSansKRWebFixture.ttf');
 
 function readTables(font) {
   const numTables = font.readUInt16BE(4);
@@ -320,7 +326,7 @@ test('expands catalog roots with home, Windows variables and wildcard folders', 
   ]);
   assert.deepEqual(mac.roots, [
     { path: '/Users/rau/Library/Fonts', kind: 'user', label: 'home' },
-    { path: '/Users/rau/cache', kind: 'app', label: 'cache', sniff: true, maxDepth: 2 },
+    { path: '/Users/rau/cache', kind: 'app', label: 'cache', sniff: true, maxDepth: 2, unlisted: true },
   ]);
   assert.deepEqual(mac.installs, [{ path: '/opt/hnc', label: 'Hancom' }]);
   // Windows 환경 변수는 대소문자를 가리지 않고, 없는 변수를 쓰는 항목은 건너뛴다.
@@ -413,4 +419,173 @@ test('variable fonts expose named instances as separate faces with stable ids', 
   const parts = [];
   for await (const chunk of (await service.openFace(instance.id)).chunks()) parts.push(chunk);
   assert.deepEqual(Buffer.concat(parts), await readFile(VARIABLE));
+});
+
+/** glyf 의 글리프별 머리말(윤곽 수·bbox)과 hmtx·cmap 은 웹 글꼴을 풀어도 원본과 같아야 한다. */
+function glyphHeaders(font) {
+  const tables = readTables(font);
+  const head = tables.get('head');
+  const longLoca = head.readInt16BE(50) === 1;
+  const loca = tables.get('loca');
+  const glyf = tables.get('glyf');
+  const count = tables.get('maxp').readUInt16BE(4);
+  const headers = [];
+  for (let glyph = 0; glyph < count; glyph += 1) {
+    const at = longLoca ? loca.readUInt32BE(glyph * 4) : loca.readUInt16BE(glyph * 2) * 2;
+    const end = longLoca ? loca.readUInt32BE(glyph * 4 + 4) : loca.readUInt16BE(glyph * 2 + 2) * 2;
+    headers.push(end > at ? glyf.subarray(at, at + 10).toString('hex') : '');
+  }
+  return headers;
+}
+
+test('WOFF and WOFF2 index like their source font and decode back to an equivalent SFNT', async () => {
+  const ttf = await readFile(WEB_TTF);
+  const source = (await parseFontSource(ttf, 'NotoSansKRWebFixture.ttf')).faces;
+  for (const flavor of ['woff', 'woff2']) {
+    const bytes = await readFile(path.join(WEB_FIXTURES, `NotoSansKRWebFixture.${flavor}`));
+    const parsed = await parseFontSource(bytes, `x.${flavor}`, { decompress: NODE_WEB_FONT_DECODERS });
+    assert.deepEqual(parsed.faces, source.map((face) => ({ ...face, format: flavor })), flavor);
+    // 압축 해제기가 없으면 조용히 틀린 색인을 만들지 않고 실패한다.
+    await assert.rejects(parseFontSource(bytes, `x.${flavor}`), /unsupported/);
+
+    const decoded = Buffer.from(await decodeWebFont(bytes, { decompress: NODE_WEB_FONT_DECODERS, maxBytes: 1 << 20 }));
+    const original = readTables(ttf);
+    const tables = readTables(decoded);
+    assert.deepEqual([...tables.keys()].sort(), [...original.keys()].sort(), flavor);
+    for (const tag of ['hmtx', 'cmap', 'name', 'OS/2', 'hhea', 'maxp']) {
+      assert.deepEqual(tables.get(tag), original.get(tag), `${flavor} ${tag}`);
+    }
+    assert.deepEqual(glyphHeaders(decoded), glyphHeaders(ttf), flavor);
+    assert.equal(decoded.readUInt32BE(0), 0x00010000);
+  }
+
+  const variable = await parseSfntFaces(await readFile(VARIABLE));
+  const woff2 = await parseFontSource(
+    await readFile(path.join(WEB_FIXTURES, 'RHWPVariableWeightFixture.woff2')),
+    'v.woff2',
+    { decompress: NODE_WEB_FONT_DECODERS },
+  );
+  assert.deepEqual(woff2.faces, variable.faces.map((face) => ({ ...face, format: 'woff2' })));
+});
+
+function woffWithTable(tag, compressed, origLength) {
+  const header = Buffer.alloc(44 + 20);
+  header.write('wOFF', 0, 'latin1');
+  header.writeUInt32BE(0x00010000, 4);
+  header.writeUInt32BE(header.length + compressed.length, 8);
+  header.writeUInt16BE(1, 12);
+  header.write(tag, 44, 'latin1');
+  header.writeUInt32BE(header.length, 48);
+  header.writeUInt32BE(compressed.length, 52);
+  header.writeUInt32BE(origLength, 56);
+  return Buffer.concat([header, compressed]);
+}
+
+function woff2WithStream(origLength, stream) {
+  const directory = Buffer.from([0x05, ...base128(origLength)]); // name, 변환 없음
+  const header = Buffer.alloc(48);
+  header.write('wOF2', 0, 'latin1');
+  header.writeUInt32BE(0x00010000, 4);
+  header.writeUInt32BE(48 + directory.length + stream.length, 8);
+  header.writeUInt16BE(1, 12);
+  header.writeUInt32BE(stream.length, 20);
+  return Buffer.concat([header, directory, stream]);
+}
+
+function base128(value) {
+  const bytes = [value & 0x7f];
+  for (let rest = value >>> 7; rest > 0; rest >>>= 7) bytes.unshift(0x80 | (rest & 0x7f));
+  return bytes;
+}
+
+test('web font decoding refuses decompression bombs and oversized declared output', async () => {
+  const bomb = Buffer.alloc(4 * 1024 * 1024);
+  // 표가 64KiB 라고 적고 4MiB 로 풀리는 zlib·brotli 스트림
+  const woff = woffWithTable('name', deflateSync(bomb), 64 * 1024);
+  await assert.rejects(decodeWebFont(woff, { decompress: NODE_WEB_FONT_DECODERS, maxBytes: 1 << 20 }), /buffer|length/i);
+  const woff2 = woff2WithStream(64 * 1024, brotliCompressSync(bomb));
+  await assert.rejects(decodeWebFont(woff2, { decompress: NODE_WEB_FONT_DECODERS, maxBytes: 1 << 20 }), /buffer|length/i);
+  // 적힌 크기가 상한을 넘으면 풀기 전에 거부한다.
+  let called = false;
+  const decompress = { brotli: () => { called = true; return new Uint8Array(0); } };
+  await assert.rejects(
+    decodeWebFont(woff2WithStream(64 * 1024 * 1024, Buffer.alloc(16)), { decompress, maxBytes: 1 << 20 }),
+    /too-large/,
+  );
+  assert.equal(called, false);
+});
+
+test('app-bundled WOFF2 fonts are indexed unlisted and served as SFNT', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-web-fonts-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const bundle = path.join(dir, 'Tool.app', 'Contents', 'Resources', 'fonts');
+  await mkdir(bundle, { recursive: true });
+  await writeFile(path.join(bundle, 'Web.woff2'), await readFile(path.join(WEB_FIXTURES, 'NotoSansKRWebFixture.woff2')));
+  const { roots } = await expandFontRootCatalog({
+    platform: 'darwin',
+    catalog: [{ os: 'darwin', kind: 'app', label: 'app bundles', bundles: dir }],
+  });
+  const service = createSystemFontService({ roots });
+  const index = await service.list();
+  assert.deepEqual(index.faces.map((face) => [face.format, face.source, face.unlisted, face.families[0]]), [
+    ['woff2', 'app', true, 'Noto Sans KR'],
+  ]);
+  const key = 'c'.repeat(64);
+  const response = await serveSystemFont(new Request(`${systemFontBaseUrl(key)}${index.faces[0].id}`), { fonts: service, key });
+  assert.equal(response.status, 200);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(Number(response.headers.get('content-length')), bytes.length);
+  assert.deepEqual(readTables(bytes).get('hmtx'), readTables(await readFile(WEB_TTF)).get('hmtx'));
+});
+
+test('catalog probes app bundles, Homebrew casks, TeX trees and Windows program folders at fixed depths', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-font-probe-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const folders = [
+    'Apps/Viewer.app/Contents/Resources/Fonts',
+    'Apps/Suite.app/Contents/Library/Suite Editor.app/Contents/Resources/fonts',
+    'Apps/Vendor/Tool.app/Contents/Resources/fonts',
+    // Electron 내부 자원과 Frameworks 는 고정 자리에 없어 보지 않는다.
+    'Apps/Chat.app/Contents/Resources/app/out/media/fonts',
+    'Apps/Chat.app/Contents/Frameworks/Kit.framework/Resources/Fonts',
+    // 전용 항목이 있는 앱은 건너뛴다.
+    'Apps/Microsoft Word.app/Contents/Resources/Fonts',
+    'Caskroom/font-nerd/3.5.1',
+    'Caskroom/ripgrep/14.0',
+    'texlive/2025/texmf-dist/fonts/opentype',
+    'texlive/2024/texmf-dist/fonts/truetype',
+  ];
+  for (const folder of folders) await mkdir(path.join(dir, folder), { recursive: true });
+  const { roots } = await expandFontRootCatalog({
+    platform: 'darwin',
+    catalog: [
+      { os: 'darwin', kind: 'user', label: 'Homebrew casks', glob: `${dir}/Caskroom/font-*`, maxDepth: 3 },
+      { os: 'darwin', kind: 'app', label: 'app bundles', bundles: `${dir}/Apps` },
+      { os: 'darwin', kind: 'app', label: 'TeX Live', glob: `${dir}/texlive/*/texmf-dist/fonts/opentype`, maxDepth: 4 },
+    ],
+  });
+  assert.deepEqual(roots.map((root) => [path.relative(dir, root.path), root.kind, root.label, root.maxDepth, root.unlisted]), [
+    ['Caskroom/font-nerd', 'user', 'Homebrew casks', 3, undefined],
+    ['Apps/Suite.app/Contents/Library/Suite Editor.app/Contents/Resources/fonts', 'app', 'app bundles: Suite Editor', 1, true],
+    ['Apps/Vendor/Tool.app/Contents/Resources/fonts', 'app', 'app bundles: Tool', 1, true],
+    ['Apps/Viewer.app/Contents/Resources/Fonts', 'app', 'app bundles: Viewer', 1, true],
+    // 와일드카드 뒤 고정 경로는 여기서 확인하지 않는다. 없는 루트는 탐색 때 조용히 건너뛴다.
+    ['texlive/2024/texmf-dist/fonts/opentype', 'app', 'TeX Live', 4, true],
+    ['texlive/2025/texmf-dist/fonts/opentype', 'app', 'TeX Live', 4, true],
+  ]);
+
+  // Windows 는 프로그램 폴더 바로 아래 Fonts 만 본다. 폴더 목록은 주입한다.
+  const tree = {
+    'C:\\PF': ['Microsoft Office', 'Hnc', 'Vendor', 'Plain'],
+    'C:\\PF\\Vendor': ['Fonts', 'bin'],
+    'C:\\PF\\Plain': ['bin'],
+    'C:\\PF\\Hnc': ['Fonts'],
+  };
+  const win = await expandFontRootCatalog({
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\PF' },
+    catalog: [{ os: 'win32', kind: 'app', label: 'program fonts', programs: '%ProgramFiles%' }],
+    listDir: async (target) => tree[target] ?? [],
+  });
+  assert.deepEqual(win.roots.map((root) => [root.path, root.label]), [['C:\\PF\\Vendor\\Fonts', 'program fonts: Vendor']]);
 });

@@ -5,8 +5,10 @@ import {
   buildDesktopFontLookup,
   configureDesktopFonts,
   createCombinedFontHost,
+  getDesktopFontMenuNames,
   isDesktopFontMatch,
   isDesktopFontsSupported,
+  loadDesktopFontIndex,
   matchDesktopFont,
   prepareDesktopFontsForDocument,
   resetDesktopFontsForTests,
@@ -212,6 +214,21 @@ test('다른 앱 전용 사본은 같은 이름의 사용자·시스템 글꼴�
   // 설치된 사본이 없는 스타일과 이름은 앱 사본으로 채운다.
   assert.equal(result.slots.find(slot => slot.slot === 'bold')?.face.id, 'office-cloud-calibri-bold');
   assert.equal(match('Calibri', makeIndex([appCopy])).anchor.id, 'office-cloud-calibri');
+});
+
+test('다른 앱 번들 글꼴은 글꼴 메뉴에 없지만 문서가 이름으로 부르면 연결된다', async () => {
+  const bundled = face('blender-noto-cjk', {
+    families: ['Noto Sans CJK SC'], postscriptNames: ['NotoSansCJKsc-Regular'], source: 'app', format: 'woff2', unlisted: true,
+  });
+  resetDesktopFontsForTests();
+  configureDesktopFonts({ host: streamedFontHost(async () => makeIndex([malgun, bundled]), () => new Uint8Array(4)) });
+  try {
+    await loadDesktopFontIndex();
+    assert.deepEqual(getDesktopFontMenuNames(), ['맑은 고딕']);
+    assert.equal(match('Noto Sans CJK SC', makeIndex([malgun, bundled])).anchor.id, 'blender-noto-cjk');
+  } finally {
+    resetDesktopFontsForTests();
+  }
 });
 
 test('가변 글꼴 인스턴스는 고정 굵기 FontFace와 인스턴스 좌표 메트릭으로 등록된다', async () => {

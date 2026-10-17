@@ -6,8 +6,14 @@ export interface FontRootEntry {
   label: string;
   path?: string;
   glob?: string;
+  /** macOS: 이 폴더의 .app 마다 Contents/Resources/fonts 만 본다. */
+  bundles?: string;
+  /** Windows: 이 폴더의 프로그램 폴더마다 바로 아래 Fonts 만 본다. */
+  programs?: string;
   sniff?: boolean;
   maxDepth?: number;
+  /** 글꼴 메뉴에 넣을지. app 은 기본 false, 나머지는 기본 true. */
+  menu?: boolean;
 }
 
 export interface ExpandedFontRoot {
@@ -16,6 +22,7 @@ export interface ExpandedFontRoot {
   label: string;
   sniff?: boolean;
   maxDepth?: number;
+  unlisted?: boolean;
 }
 
 export const FONT_ROOT_CATALOG: ReadonlyArray<FontRootEntry>;

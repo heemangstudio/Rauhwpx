@@ -1,9 +1,12 @@
 // 글꼴 색인의 플랫폼 중립 부분. 데스크톱(Node)과 브라우저 Worker가 함께 쓴다.
 // node: 모듈을 쓰지 않고 `{ size, read(offset, length) → Promise<Uint8Array> }` 원본만 다룬다.
 // 파일 시스템 탐색·캐시·파일 열기는 호출부가 맡는다.
+import { WEB_FONT_INDEX_TABLES, decodeWebFont, webFontKind } from './web-font.mjs';
+
+export { decodeWebFont, streamWebFontDecoders, webFontKind } from './web-font.mjs';
 
 export const SYSTEM_FONT_INDEX_VERSION = 1;
-export const FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.otc', '.hft']);
+export const FONT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.otc', '.hft', '.woff', '.woff2']);
 export const FONT_SCAN_LIMITS = Object.freeze({ maxDepth: 6, maxFiles: 20_000, maxDirs: 20_000 });
 export const MAX_FACE_BYTES = 48 * 1024 * 1024;
 export const MAX_TABLE_READ = 8 * 1024 * 1024;
@@ -21,11 +24,11 @@ const NAME_IDS = [1, 2, 4, 6, 16, 17];
 /** 가변 글꼴 PostScript 이름 접두어 (nameID 25) */
 const VARIATIONS_PS_PREFIX_ID = 25;
 
-/** 확장자 없이 받은 파일이 SFNT/TTC 글꼴인지 첫 4바이트로 판별한다. */
+/** 확장자 없이 받은 파일이 SFNT/TTC/WOFF/WOFF2 글꼴인지 첫 4바이트로 판별한다. */
 export function isFontSignature(bytes) {
   if (!bytes || bytes.length < 4) return false;
   const tag = u32(bytes, 0);
-  return SFNT_VERSIONS.has(tag) || tag === TTCF;
+  return SFNT_VERSIONS.has(tag) || tag === TTCF || webFontKind(bytes) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -603,9 +606,11 @@ async function namedInstanceFaces(source, tables, base, baseRecords, budget) {
 
 /**
  * 글꼴 파일 하나를 판별하고 면 정보를 읽는다. HFT 는 서명만 확인한다.
+ * WOFF/WOFF2 는 색인에 필요한 표만 풀어 읽는다. 압축 해제기가 없으면 오류를 던진다.
+ * @param {{ decompress?: { zlib?: Function, brotli?: Function } }} [options]
  * @returns {Promise<{ type: 'hft' | 'sfnt', faces: object[], undecodable?: number }>}
  */
-export async function parseFontSource(input, fileName) {
+export async function parseFontSource(input, fileName, { decompress } = {}) {
   const source = asSource(input);
   if (source.size < 12) throw new Error('file too small to be a font');
   const magic = await source.read(0, Math.min(source.size, HFT_MAGIC.length));
@@ -613,8 +618,26 @@ export async function parseFontSource(input, fileName) {
     return { type: 'hft', faces: [] };
   }
   if (/\.hft$/i.test(fileName ?? '')) throw new Error('missing HFT signature');
+  const web = webFontKind(magic);
+  if (web) {
+    const sfnt = await decodeWebFont(source, { decompress, tables: WEB_FONT_INDEX_TABLES, maxBytes: MAX_FACE_BYTES });
+    const parsed = await parseSfntFaces(sfnt);
+    for (const face of parsed.faces) face.format = web;
+    return { type: 'sfnt', faces: parsed.faces, undecodable: parsed.undecodable };
+  }
   const parsed = await parseSfntFaces(source);
   return { type: 'sfnt', faces: parsed.faces, undecodable: parsed.undecodable };
+}
+
+/**
+ * 색인 face 의 바이트를 FontFace·엔진 메트릭이 읽는 단독 SFNT 로 만든다. TTC/OTC 면은 떼어 내고,
+ * WOFF/WOFF2 는 풀어서 돌려준다. 그 밖의 형식은 null (원본 파일 그대로 쓴다).
+ * @param {{ format: string, faceIndex: number }} face
+ */
+export async function standaloneFaceBytes(input, face, { decompress, maxBytes = MAX_FACE_BYTES } = {}) {
+  if (face.format === 'ttc' || face.format === 'otc') return extractCollectionFace(input, face.faceIndex, { maxBytes });
+  if (face.format === 'woff' || face.format === 'woff2') return decodeWebFont(asSource(input), { decompress, maxBytes });
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +862,7 @@ export async function assembleFontIndex({ parsedFiles, mapFiles, readMapFile, fa
         format: raw.format,
         source: file.kind,
         size: file.size,
+        ...(file.unlisted ? { unlisted: true } : {}),
         ...cloneFaceNames(raw),
         weight: raw.weight,
         italic: raw.italic,
