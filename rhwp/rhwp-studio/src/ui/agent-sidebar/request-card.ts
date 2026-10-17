@@ -223,6 +223,8 @@ export function createRequestCardController(options: RequestCardOptions) {
     card.retry = null;
     void options.takeBrowserControl(tabId).then(() => {
       card.holding = true;
+      // 탭이 화면을 넘겨받는다. 다시 그린 단추로 초점을 되돌리면 좁은 집중 화면에서 방금 연 서랍이 닫힌다.
+      if (card.root.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
       if (!card.outcome) render(card);
     }).catch(() => {
       if (!card.outcome) fail(card, '탭을 열지 못했습니다.', () => takeover(card));
