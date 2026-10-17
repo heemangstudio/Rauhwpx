@@ -470,7 +470,12 @@ export class WasmBridge {
     const hasBaked = Reflect.get(wasmExports, 'hasBakedFontMetrics');
     const fallbackFamilies = Reflect.get(wasmExports, 'fontFallbackFamilies');
     return {
-      register: (bytes, aliasesJson, bold, italic) => String(register(bytes, aliasesJson, bold, italic)),
+      // 가변 좌표 인자를 모르는 이전 wasm 은 다섯 번째 인자를 무시하고 기본 좌표로 잰다.
+      register: (bytes, aliasesJson, bold, italic, variationsJson) => String(
+        variationsJson === undefined
+          ? register(bytes, aliasesJson, bold, italic)
+          : register(bytes, aliasesJson, bold, italic, variationsJson),
+      ),
       ...(typeof clear === 'function' ? { clear: () => { clear(); } } : {}),
       ...(typeof report === 'function' ? { report: () => String(report()) } : {}),
       ...(typeof hasBaked === 'function'

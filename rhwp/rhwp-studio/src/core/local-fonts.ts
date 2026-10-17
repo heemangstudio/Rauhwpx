@@ -602,6 +602,8 @@ export interface RegisterLocalFontFaceOptions {
   runtimeFamilyKey?: string;
   /** 데스크톱 글꼴 색인 face id (source가 desktop일 때) */
   desktopFaceId?: string;
+  /** style 이름에서 정한 값 대신 쓸 FontFace descriptor (가변 글꼴 인스턴스의 굵기·너비) */
+  descriptors?: FontFaceDescriptors;
 }
 
 export type RegisterLocalFontFaceFailure =
@@ -807,6 +809,7 @@ export async function registerLocalFontFace(
     const face = new FontFace(record.runtimeFamily, bytes, {
       style: importedFontSlant(record.style),
       weight: importedFontWeight(record.style),
+      ...options.descriptors,
     });
     await face.load();
     // FontFace.load 중 사용자가 같은 face를 가져왔을 수 있다.

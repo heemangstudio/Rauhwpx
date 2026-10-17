@@ -7,6 +7,9 @@
 //! 조회 순서는 `text_measurement::measure_char_width_with_policy` 가 결정한다:
 //! KoPub/Haansoft 오버라이드 → 내장 메트릭 → 런타임 레지스트리 → 휴리스틱.
 //!
+//! 가변 글꼴은 등록할 때 받은 좌표(이름 붙은 인스턴스, 예: `wght=600`)에서 advance 를 잰다.
+//! 좌표가 없으면 기본 인스턴스다.
+//!
 //! 폰트 바이트는 보관하지 않는다. 등록 시 cmap → glyph → hmtx advance 를
 //! 256 코드포인트 단위 페이지 테이블(u16)로 펼쳐 두므로 한 페이스당 메모리는
 //! 커버하는 페이지 수 × 512 바이트다 (한글+한자 CJK 폰트 ≈ 100~200KB).
@@ -92,6 +95,8 @@ struct RuntimeFace {
     raw_keys: Vec<String>,
     bold: bool,
     italic: bool,
+    /// 적용한 가변 좌표 (보고용)
+    variations: Vec<(String, f32)>,
     units_per_em: u16,
     line_height_ratio: f64,
     ascender_ratio: f64,
@@ -130,6 +135,8 @@ pub(crate) struct RegisterOutcome {
     pub covers_hangul: bool,
     pub covers_latin: bool,
     pub replaced: bool,
+    /// 글꼴에 있어 실제로 적용한 가변 축 수
+    pub variations_applied: usize,
 }
 
 /// 폰트명 정규화: 앞뒤 공백·따옴표 제거, 연속 공백 1칸, ASCII 소문자.
@@ -201,18 +208,43 @@ fn select_face_index(bytes: &[u8], keys: &[String], bold: bool, italic: bool) ->
     name_match.unwrap_or(0)
 }
 
+/// 가변 좌표 하나. 축 태그는 4바이트 ASCII 다.
+fn variation_tag(axis: &str) -> Option<ttf_parser::Tag> {
+    let bytes = axis.as_bytes();
+    (bytes.len() == 4 && bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' '))
+        .then(|| ttf_parser::Tag::from_bytes(&[bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+/// 등록 결과와 함께 실제로 적용된 축을 돌려준다. 글꼴에 없는 축은 건너뛴다.
+type ParsedFace = (u16, f64, f64, f64, AdvanceTable, Vec<(String, f32)>);
+
 fn parse_face(
     bytes: &[u8],
     keys: &[String],
     bold: bool,
     italic: bool,
-) -> Result<(u16, f64, f64, f64, AdvanceTable), String> {
+    variations: &[(String, f32)],
+) -> Result<ParsedFace, String> {
     if bytes.is_empty() {
         return Err("empty font data".to_string());
     }
     let index = select_face_index(bytes, keys, bold, italic);
-    let face =
+    let mut face =
         ttf_parser::Face::parse(bytes, index).map_err(|err| format!("unparseable font: {err}"))?;
+    let mut applied = Vec::new();
+    for (axis, value) in variations {
+        let Some(tag) = variation_tag(axis) else {
+            continue;
+        };
+        // set_variation 은 없는 축도 성공으로 돌려주므로 축 목록을 먼저 본다.
+        let known = face
+            .variation_axes()
+            .into_iter()
+            .any(|var_axis| var_axis.tag == tag);
+        if known && face.set_variation(tag, *value).is_some() {
+            applied.push((axis.clone(), *value));
+        }
+    }
     let units_per_em = face.units_per_em();
     if units_per_em == 0 {
         return Err("font has no unitsPerEm".to_string());
@@ -250,6 +282,7 @@ fn parse_face(
         ascender_ratio,
         line_gap_ratio,
         advances,
+        applied,
     ))
 }
 
@@ -261,6 +294,17 @@ pub(crate) fn register(
     aliases: &[String],
     bold: bool,
     italic: bool,
+) -> Result<RegisterOutcome, String> {
+    register_with_variations(bytes, aliases, bold, italic, &[])
+}
+
+/// `register` 와 같되 가변 글꼴 좌표(축 태그, 값)에서 advance·세로 메트릭을 잰다.
+pub(crate) fn register_with_variations(
+    bytes: &[u8],
+    aliases: &[String],
+    bold: bool,
+    italic: bool,
+    variations: &[(String, f32)],
 ) -> Result<RegisterOutcome, String> {
     let aliases = aliases
         .iter()
@@ -289,8 +333,8 @@ pub(crate) fn register(
         }
     }
 
-    let (units_per_em, line_height_ratio, ascender_ratio, line_gap_ratio, advances) =
-        parse_face(bytes, &keys, bold, italic)?;
+    let (units_per_em, line_height_ratio, ascender_ratio, line_gap_ratio, advances, applied) =
+        parse_face(bytes, &keys, bold, italic, variations)?;
     let covers_hangul = ['가', '한', '힣']
         .into_iter()
         .all(|c| advances.get(c as u32).is_some());
@@ -304,6 +348,7 @@ pub(crate) fn register(
         raw_keys,
         bold,
         italic,
+        variations: applied,
         units_per_em,
         line_height_ratio,
         ascender_ratio,
@@ -319,6 +364,7 @@ pub(crate) fn register(
         covers_hangul,
         covers_latin,
         replaced: false,
+        variations_applied: face.variations.len(),
     };
 
     let replaced = REGISTRY.with(|registry| {
@@ -506,6 +552,11 @@ pub(crate) fn report_json() -> String {
                     "aliases": face.aliases,
                     "bold": face.bold,
                     "italic": face.italic,
+                    "variations": face
+                        .variations
+                        .iter()
+                        .map(|(axis, value)| (axis.clone(), serde_json::json!(value)))
+                        .collect::<serde_json::Map<_, _>>(),
                     "unitsPerEm": face.units_per_em,
                     "mappedChars": face.advances.mapped,
                     "coversHangul": face.covers_hangul,
@@ -518,13 +569,37 @@ pub(crate) fn report_json() -> String {
     })
 }
 
+/// 가변 좌표 JSON (`{"wght":600,"wdth":75}`) 을 푼다. 숫자가 아닌 값은 버린다.
+fn parse_variations(json: &str) -> Result<Vec<(String, f32)>, String> {
+    let map = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+        .map_err(|err| format!("invalid variations json: {err}"))?;
+    Ok(map
+        .into_iter()
+        .filter_map(|(axis, value)| Some((axis, value.as_f64()? as f32)))
+        .collect())
+}
+
 /// wasm `registerRuntimeFontMetrics` 본체: 별칭 JSON 파싱 + 등록 + 결과 JSON.
-pub(crate) fn register_json(bytes: &[u8], aliases_json: &str, bold: bool, italic: bool) -> String {
+/// `variations_json` 이 있으면 그 가변 좌표에서 잰다.
+pub(crate) fn register_json(
+    bytes: &[u8],
+    aliases_json: &str,
+    bold: bool,
+    italic: bool,
+    variations_json: Option<&str>,
+) -> String {
     let result = serde_json::from_str::<Vec<String>>(aliases_json)
         .map_err(|err| format!("invalid aliases json: {err}"))
-        .and_then(|aliases| register(bytes, &aliases, bold, italic));
+        .and_then(|aliases| {
+            let variations = match variations_json.filter(|json| !json.trim().is_empty()) {
+                Some(json) => parse_variations(json)?,
+                None => Vec::new(),
+            };
+            register_with_variations(bytes, &aliases, bold, italic, &variations)
+                .map(|outcome| (outcome, variations.len()))
+        });
     match result {
-        Ok(outcome) => serde_json::json!({
+        Ok((outcome, requested)) => serde_json::json!({
             "registered": true,
             "key": outcome.key,
             "unitsPerEm": outcome.units_per_em,
@@ -532,8 +607,75 @@ pub(crate) fn register_json(bytes: &[u8], aliases_json: &str, bold: bool, italic
             "coversHangul": outcome.covers_hangul,
             "coversLatin": outcome.covers_latin,
             "replaced": outcome.replaced,
+            "variationsApplied": outcome.variations_applied,
+            "variationsRequested": requested,
         })
         .to_string(),
         Err(reason) => serde_json::json!({ "registered": false, "reason": reason }).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// wght 100~900 가변 글꼴. 'A' advance: 100 → 400, 400(기본) → 500, 900 → 700 (선형 보간).
+    const VARIABLE: &[u8] =
+        include_bytes!("../../tests/fixtures/fonts/RHWPVariableWeightFixture.ttf");
+
+    fn em(name: &str, c: char) -> f64 {
+        char_em_advance(name, false, false, c).expect("registered advance")
+    }
+
+    #[test]
+    fn variable_instances_measure_at_their_coordinates() {
+        clear();
+        register(VARIABLE, &["Var Default".into()], false, false).unwrap();
+        let semibold = [("wght".to_string(), 600.0)];
+        let outcome =
+            register_with_variations(VARIABLE, &["Var SemiBold".into()], false, false, &semibold)
+                .unwrap();
+        assert_eq!(outcome.variations_applied, 1);
+        assert_eq!(em("Var Default", 'A'), 0.5);
+        assert_eq!(em("Var SemiBold", 'A'), 0.58);
+        assert_eq!(em("Var SemiBold", '가'), 1.08);
+        clear();
+    }
+
+    #[test]
+    fn variable_advances_fall_back_to_gvar_phantom_points_without_hvar() {
+        // HVAR 표 태그를 지워 gvar 팬텀 점으로만 advance 를 보정하게 한다.
+        let mut bytes = VARIABLE.to_vec();
+        let tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let record = (0..tables)
+            .map(|i| 12 + i * 16)
+            .find(|&at| &bytes[at..at + 4] == b"HVAR")
+            .expect("fixture has HVAR");
+        bytes[record..record + 4].copy_from_slice(b"zVAR");
+        clear();
+        let bold = [("wght".to_string(), 900.0)];
+        register_with_variations(&bytes, &["Var Black".into()], false, false, &bold).unwrap();
+        assert_eq!(em("Var Black", 'A'), 0.7);
+        clear();
+    }
+
+    #[test]
+    fn json_registration_accepts_optional_variations() {
+        clear();
+        let without = register_json(VARIABLE, r#"["Var Json"]"#, false, false, None);
+        assert!(without.contains(r#""registered":true"#), "{without}");
+        assert_eq!(em("Var Json", 'A'), 0.5);
+        let with = register_json(
+            VARIABLE,
+            r#"["Var Json"]"#,
+            false,
+            false,
+            Some(r#"{"wght":100,"XXXX":1}"#),
+        );
+        assert!(with.contains(r#""variationsApplied":1"#), "{with}");
+        assert_eq!(em("Var Json", 'A'), 0.4);
+        let invalid = register_json(VARIABLE, r#"["Var Json"]"#, false, false, Some("[1]"));
+        assert!(invalid.contains(r#""registered":false"#), "{invalid}");
+        clear();
     }
 }
