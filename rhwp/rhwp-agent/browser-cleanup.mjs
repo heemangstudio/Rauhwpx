@@ -5,8 +5,8 @@ function failure(message) {
   return Object.assign(new Error(message), { code: 'BROWSER_CLEANUP_FAILED' });
 }
 
-/** Called only after the owner has stopped browser processes and checkpoint writers. */
-export async function removeOwnedBrowserState({ dataDir } = {}) {
+/** Called only after the owner has stopped browser guests and checkpoint writers. */
+export async function removeOwnedBrowserState({ dataDir, nativeStorageCleared = false } = {}) {
   if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw failure('Browser cleanup requires the configured owner directory.');
   const root = await fs.lstat(dataDir);
   if (!root.isDirectory() || root.isSymbolicLink()
@@ -38,6 +38,8 @@ export async function removeOwnedBrowserState({ dataDir } = {}) {
       if (!entry) continue;
       if (entry.isSymbolicLink() || (name.startsWith('tabs.json') ? !entry.isFile() : !entry.isDirectory())
         || (process.platform !== 'win32' && entry.uid !== process.getuid())) throw failure('Browser profile storage is not owned by this app.');
+      // A live Electron session keeps Windows database handles open after clearData.
+      if (name === 'native-profile' && process.platform === 'win32' && nativeStorageCleared === true) continue;
       entries.push(location);
     }
     for (const location of entries) {

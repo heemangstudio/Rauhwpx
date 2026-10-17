@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:https';
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
@@ -18,7 +15,7 @@ import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tl
 const { WebSocketServer } = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url))('ws');
 
 // No real Chrome profiles, keychain records, accounts or application windows are used.
-const root = mkdtempSync(join(tmpdir(), 'hama-native-password-test-'));
+const root = process.env.RHWP_BROWSER_TEST_DATA_DIR;
 app.setPath('userData', join(root, 'electron'));
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.on('window-all-closed', () => {});
@@ -260,7 +257,6 @@ finally {
   if (webSockets) { for (const socket of webSockets.clients) socket.terminate(); await new Promise((resolve) => webSockets.close(resolve)); }
   for (const socket of sockets) socket.destroy();
   if (server) await new Promise((resolve) => server.close(resolve));
-  await rm(root, { recursive: true, force: true });
   console.log(`NATIVE_PASSWORD_REPORT ${JSON.stringify(report)}`);
   app.exit(process.exitCode || 0);
 }

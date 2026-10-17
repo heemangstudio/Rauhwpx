@@ -289,7 +289,11 @@ export class PrivateBrowserCdp {
     }
     if (!method.startsWith('Input.')) {
       let result;
-      try { result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
+      try {
+        const send = () => entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId);
+        result = method === 'Page.captureScreenshot' && this.host.withCaptureSurface
+          ? await this.host.withCaptureSurface(entry.tab, send) : await send();
+      }
       catch (error) { if (entry.tab.passwordShield || entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Native browser command failed'); throw error; }
       if (entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
       // A read that started before the vault fill must not return after protection began.

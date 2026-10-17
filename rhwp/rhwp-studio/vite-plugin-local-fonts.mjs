@@ -5,7 +5,7 @@
 // 같은 텍스트 파일 하나만 실린다 — 가나·키릴 등 번들 폰트가 커버하는 글리프도 tofu.
 // 링크가 실체화되지 않았을 때만: dev 서버는 assets/fonts 를 /fonts 아래로 서빙하고,
 // 빌드는 assets/fonts 파일들을 dist/fonts 로 복사한다.
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 
 const FONT_MIME = {
@@ -59,6 +59,8 @@ export function rhwpLocalFontsPlugin(studioDir) {
     },
     closeBundle() {
       const outDir = resolve(studioDir, 'dist', 'fonts');
+      // Vite copies Git's regular-file symlink placeholder on Windows.
+      if (existsSync(outDir) && !statSync(outDir).isDirectory()) unlinkSync(outDir);
       mkdirSync(outDir, { recursive: true });
       for (const entry of readdirSync(assetsFontsDir)) {
         const ext = extname(entry).toLowerCase();

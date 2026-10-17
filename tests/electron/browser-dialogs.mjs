@@ -53,8 +53,11 @@ app.whenReady().then(async () => {
     assert.equal(webContents.getAllWebContents().length, initialContents + 1, 'Parking adds no renderer');
     assert.equal(tab.view.webContents.getOwnerBrowserWindow(), host.parkingWindow);
     assert.equal(await tab.view.webContents.executeJavaScript('document.visibilityState'), 'hidden');
-    const capture = await tab.view.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png' });
+    const capture = await host.cdp.command({ method: 'Page.captureScreenshot', params: { format: 'png' }, sessionId: tab.cdpSessionId });
     assert.ok(capture.data.length > 100, 'A hidden parked guest remains capturable through the shared debugger');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(host.parkingWindow.isVisible(), false, 'Capture never leaves a native window mapped');
+    assert.equal(await tab.view.webContents.executeJavaScript('document.visibilityState'), 'hidden');
     const evaluate = script => tab.view.webContents.executeJavaScript(script, true);
     const waitDialog = () => new Promise((resolve, reject) => {
       const contents = tab.view.webContents;

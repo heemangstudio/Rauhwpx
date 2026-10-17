@@ -178,7 +178,7 @@ test('MCP resource probes succeed with empty lists', { timeout: 20_000 }, async 
 test('generated artifacts default to app data beside templates', () => {
   assert.equal(
     defaultGeneratedArtifactRoot({}, 'darwin', '/Users/andy'),
-    '/Users/andy/Library/Application Support/rhwp/generated-artifacts',
+    path.join('/Users/andy', 'Library', 'Application Support', 'rhwp', 'generated-artifacts'),
   );
   assert.equal(defaultGeneratedArtifactRoot({ RHWP_ARTIFACTS_DIR: '/tmp/a' }, 'linux', '/home/a'), path.resolve('/tmp/a'));
 });

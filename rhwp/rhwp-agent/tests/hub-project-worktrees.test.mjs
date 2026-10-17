@@ -10,8 +10,9 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
 import WebSocket from 'ws';
-import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { registerHubSession, requestHubShutdown } from '../../../desktop/agent-hub.mjs';
 import { writeFakeCliBin } from './fake-cli-bin.mjs';
+import { terminateAndWaitForProcessTreeExit } from '../process-tree.mjs';
 
 const token = 'project-worktrees-test';
 const launchId = 'project-worktrees-launch';
@@ -66,6 +67,7 @@ function writeFakePi(piRoot) {
     const prompt = require('node:fs').readFileSync(0, 'utf8').trim();
     console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: JSON.stringify({ prompt }) } }));
     console.log(JSON.stringify({ type: 'agent_settled' }));
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   `);
 }
 
@@ -81,9 +83,18 @@ async function startHub(t, root) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let errors = '';
+  let owner;
   child.stderr.on('data', (chunk) => { errors += chunk; });
   const stop = async () => {
-    if (child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'exit'); }
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      if (process.platform === 'win32' && owner) {
+        assert.equal((await requestHubShutdown(owner)).status, 'prepared');
+      } else if (process.platform === 'win32') {
+        assert.equal(await terminateAndWaitForProcessTreeExit(child), true);
+      } else child.kill('SIGTERM');
+      await exited;
+    }
   };
   t.after(stop);
   const lines = createInterface({ input: child.stdout });
@@ -97,6 +108,7 @@ async function startHub(t, root) {
     });
   });
   const base = `http://127.0.0.1:${ready.port}`;
+  owner = { port: ready.port, token, launchId, timeoutMs: 15_000 };
   const session = async (sessionId) => {
     const capabilities = await registerHubSession({ port: ready.port, token, launchId, sessionId });
     const http = (route, init = {}) => fetch(`${base}${route}${route.includes('?') ? '&' : '?'}sessionId=${sessionId}`, {
@@ -114,9 +126,13 @@ const json = (body) => ({ method: 'POST', headers: { 'Content-Type': 'applicatio
 
 test('worktree chats share one project, edit it concurrently, and rebind after a hub restart', { timeout: 120_000 }, async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-worktrees-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let hub;
+  t.after(async () => {
+    await hub?.stop();
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  });
   writeFakePi(path.join(root, 'pi'));
-  let hub = await startHub(t, root);
+  hub = await startHub(t, root);
   const main = await hub.session('worktree-main');
   const settings = await main.http('/project-settings', { ...json({ settings: { librarian: { enabled: false } } }), method: 'PUT' });
   assert.equal(settings.status, 200);

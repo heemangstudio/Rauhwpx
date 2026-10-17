@@ -15,7 +15,7 @@ test('native tray reopens healthy drafts and safely recovers crashed or missing 
   const env = { ...process.env, RHWP_BROWSER_TEST_DATA_DIR: root }; delete env.ELECTRON_RUN_AS_NODE;
   try {
     const report = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-tray-recovery.mjs', import.meta.url)), '--use-mock-keychain'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(electron, [fileURLToPath(new URL('./electron/browser-tray-recovery.mjs', import.meta.url)), '--use-mock-keychain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = ''; child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
       const timer = setTimeout(() => child.kill('SIGKILL'), 25_000);
       child.once('error', reject); child.once('exit', code => { clearTimeout(timer); const line = output.split('\n').find(line => line.startsWith('BROWSER_TRAY_REPORT ')); if (code !== 0 || !line) reject(new Error(output)); else resolve(JSON.parse(line.slice('BROWSER_TRAY_REPORT '.length))); });

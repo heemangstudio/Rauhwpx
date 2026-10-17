@@ -20,9 +20,9 @@ function fixtureStorage() {
     decryptStringAsync: async (value) => { const decipher = createDecipheriv('aes-256-gcm', key, value.subarray(0, 12)); decipher.setAuthTag(value.subarray(12, 28)); return { result: Buffer.concat([decipher.update(value.subarray(28)), decipher.final()]).toString('utf8') }; },
   };
 }
-async function vaultFixture(t) {
+async function vaultFixture(t, beforeCleanup = () => {}) {
   const root = await mkdtemp(join(tmpdir(), 'hama-password-vault-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => { beforeCleanup(); await rm(root, { recursive: true, force: true }); });
   const safeStorage = fixtureStorage(); const vault = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
   return { root, vault, safeStorage };
 }
@@ -42,7 +42,7 @@ test('native vault exposes metadata and writes OS-encrypted records with private
   assert.equal(JSON.stringify(metadata).includes(password), false);
   const file = join(root, 'vault', 'local-passwords.json');
   assert.equal((await readFile(file, 'utf8')).includes(password), false);
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
   const reopened = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
   await reopened.withCredential(account.id, async (credential) => assert.equal(credential.password, password));
   const updated = await vault.importCredential({ origin: account.origin, username: account.username, password: 'replacement', sourceProfile: 'Fixture' });
@@ -85,12 +85,13 @@ test('batch import persists once and preserves prior accounts if any encryption 
 });
 
 test('explicit Chrome profile import takes a WAL-consistent readonly snapshot and reports unsupported records', async (t) => {
-  const { root, vault } = await vaultFixture(t);
+  const databases = [];
+  const { root, vault } = await vaultFixture(t, () => { for (const database of databases) database.close(); });
   const chrome = join(root, 'Chrome'); const profile = join(chrome, 'Default');
   await mkdir(profile, { recursive: true });
   await writeFile(join(chrome, 'Local State'), JSON.stringify({ profile: { info_cache: { Default: { name: 'Test profile' }, '../escape': { name: 'Blocked' } } } }));
   const db = new DatabaseSync(join(profile, 'Login Data'));
-  t.after(() => db.close());
+  databases.push(db);
   db.exec('PRAGMA journal_mode = WAL; CREATE TABLE logins (origin_url TEXT, signon_realm TEXT, username_value TEXT, password_value BLOB, blacklisted_by_user INTEGER)');
   const insert = db.prepare('INSERT INTO logins VALUES (?, ?, ?, ?, 0)');
   insert.run('https://fixture.invalid/login', 'https://fixture.invalid/', 'andy', encryptChrome('fixture-password', 'fixture-keychain-key'));
@@ -98,7 +99,7 @@ test('explicit Chrome profile import takes a WAL-consistent readonly snapshot an
   insert.run('http://insecure.invalid/', 'http://insecure.invalid/', 'andy', encryptChrome('ignored', 'fixture-keychain-key'));
   insert.run('https://invalid-identity.invalid/', 'https://invalid-identity.invalid/', null, encryptChrome('ignored-invalid-identity', 'fixture-keychain-key'));
   const accountDb = new DatabaseSync(join(profile, 'Login Data For Account'));
-  t.after(() => accountDb.close());
+  databases.push(accountDb);
   accountDb.exec('PRAGMA journal_mode = WAL; CREATE TABLE logins (origin_url TEXT, signon_realm TEXT, username_value TEXT, password_value BLOB, blacklisted_by_user INTEGER)');
   const accountInsert = accountDb.prepare('INSERT INTO logins VALUES (?, ?, ?, ?, 0)');
   accountInsert.run('https://fixture.invalid/other', 'https://fixture.invalid/', 'andy', encryptChrome('account-store-password', 'fixture-keychain-key'));

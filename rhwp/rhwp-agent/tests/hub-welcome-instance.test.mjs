@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
+import { requestHubShutdown } from '../../../desktop/agent-hub.mjs';
 
 import {
   HUB_TEST_TOKEN as TOKEN,
@@ -61,7 +62,8 @@ test('a hub that shuts down announces it to Studio before it ends the running tu
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
 
   const exited = once(hub.child, 'exit');
-  hub.child.kill('SIGTERM');
+  if (process.platform === 'win32') await requestHubShutdown(hub);
+  else hub.child.kill('SIGTERM');
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end', 20_000);
   await exited;
   const frames = studio.frames();

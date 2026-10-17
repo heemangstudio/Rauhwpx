@@ -1528,7 +1528,7 @@ export class NativeFileHandleRegistry {
       handle = await this.#openFile(bookmark.path, OPEN_READ_NO_FOLLOW);
       const info = await handle.stat();
       if (!info.isFile() || info.size > maxBytes) return null;
-      if (info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return null;
+      if (process.platform !== 'win32' && info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return null;
       const bytes = Buffer.allocUnsafe(info.size);
       let offset = 0;
       while (offset < bytes.length) {
