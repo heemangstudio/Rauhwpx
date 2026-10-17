@@ -2,7 +2,8 @@
  * E2E: 새로고침 뒤 다시 이어 붙기(S2)와 끊긴 턴(S3) — 실제 허브와 Vite 개발 서버, 가짜 Pi(턴을 끝내지
  * 않는다)로 본다.
  *
- * 0. 턴이 도는 중에, 그리고 공급자가 질문을 남긴 채 기다리는 중에 새로고침한다. 같은 채팅이 허브의 같은
+ * 0. 편집 전 빈 새 문서에서 턴이 도는 중에, 그리고 공급자가 질문을 남긴 채 기다리는 중에 새로고침한다.
+ *    문서 ID와 clean 상태를 되살리고 홈에서 다른 문서도 열 수 있다. 같은 채팅이 허브의 같은
  *    프로바이더 세션·턴에 다시 붙고(chat-start·chat-stop·chat-interrupt 를 보내지 않는다) Stop 이 서고
  *    AGENT_BUSY 줄이 없다. 질문은 만료되지 않고 그 단계와 입력하던 답으로 돌아오며, 제출한 답은 질문을
  *    보낸 원래 공급자 호출이 받는다.
@@ -356,6 +357,22 @@ try {
     assert(await page.evaluate(() => window.__agentBridge?.isTurnRunning?.() === true), 'The turn keeps running after the answer');
     provider.ws.close();
     provider = null;
+
+    step('open another blank document from Home while the restored agent keeps working');
+    const homeButton = await page.$$eval('button[aria-label="문서 홈"]', (buttons) => buttons
+      .map((button) => button.getBoundingClientRect()).filter((rect) => rect.width > 0 && rect.height > 0)
+      .map((rect) => ({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }))[0]);
+    assert(Boolean(homeButton), 'The restored editor has a visible Home button');
+    await page.mouse.click(homeButton.x, homeButton.y);
+    await page.waitForSelector('#document-new-action', { visible: true });
+    await page.click('#document-new-action');
+    await page.waitForFunction((id) => window.__wasm.hasLoadedDocument()
+      && window.__documentSessions.attached().documentId !== id
+      && !document.documentElement.classList.contains('document-home-open'),
+    { timeout: 15_000 }, documentId);
+    assert(await page.evaluate((id) => window.__documentSessions.list().some((session) =>
+      session.documentId === id && session.chats.some((chat) => chat.bridge.isTurnRunning())), documentId),
+    'Home opens a new document while the restored document and its agent stay alive');
   });
 
   await runTest('A hub restart mid-turn leaves a resumable interruption; a new tab after another restart shows it too', async ({ page, browser }) => {
