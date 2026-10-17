@@ -16,7 +16,15 @@ import {
   loadStoredLocalFonts,
   type LocalFontState,
 } from '../../core/local-fonts.ts';
-import { isDesktopFontsSupported } from '../../core/desktop-fonts.ts';
+import { getDesktopFontIndex, isDesktopFontsSupported, onDesktopFontIndexChange } from '../../core/desktop-fonts.ts';
+import {
+  addDesktopFontFolder,
+  addedFolderFaceCount,
+  isDesktopFontFoldersSupported,
+  listDesktopFontFolders,
+  removeDesktopFontFolder,
+  summarizeDesktopFontSources,
+} from '../../core/desktop-font-folders.ts';
 import { takeHftOutlineChange } from '../../core/hft-glyphs.ts';
 import { canDetectFonts, detectAllFonts, fontDetectionMessage } from '../../core/font-detection.ts';
 import {
@@ -287,7 +295,114 @@ export function createEditingSettings(options: {
   disconnectFolder.type = 'button';
   folderActions.append(connectFolder, disconnectFolder);
   folderHeader.append(folderCopy, folderActions);
-  fonts.body.append(recentFonts.root, recentCount.root, fontSets, localHeader, folderHeader);
+  // 데스크톱 앱: 찾은 글꼴 출처와 사용자가 더한 폴더.
+  const sources = el('div', 'ag-settings-disclosure');
+  sources.hidden = !isDesktopFontFoldersSupported();
+  const sourceHeader = el('div', 'ag-settings-disclosure-header');
+  const sourceToggle = el('button', 'ag-settings-disclosure-toggle');
+  sourceToggle.type = 'button';
+  sourceToggle.setAttribute('aria-expanded', 'false');
+  sourceToggle.setAttribute('aria-controls', 'ag-settings-font-source-list');
+  const sourceCount = el('span', 'ag-settings-disclosure-count');
+  sourceToggle.append(
+    createChevron('ag-settings-disclosure-chevron'),
+    el('span', 'ag-settings-control-label', '글꼴 출처'),
+    sourceCount,
+  );
+  const addSourceFolder = el('button', 'ag-settings-btn', '폴더 추가');
+  addSourceFolder.type = 'button';
+  sourceHeader.append(sourceToggle, addSourceFolder);
+  const sourceList = el('div', 'ag-settings-resource-list ag-settings-font-set-list');
+  sourceList.id = 'ag-settings-font-source-list';
+  sourceList.hidden = true;
+  sources.append(sourceHeader, sourceList);
+  fonts.body.append(recentFonts.root, recentCount.root, fontSets, localHeader, folderHeader, sources);
+
+  let addedFolders: string[] = [];
+  let sourceBusy = false;
+  const setSourcesOpen = (open: boolean): void => {
+    sourceList.hidden = !open;
+    sourceToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    sources.classList.toggle('ag-open', open);
+  };
+  const faceText = (faces: number | null): string => (faces === null ? '색인 중…' : `${faces.toLocaleString()}개`);
+  const sourceRow = (label: string, faces: number | null, path?: string): { row: HTMLElement; actions: HTMLElement } => {
+    const row = el('div', 'ag-settings-resource-row ag-settings-font-set-row');
+    const copy = el('div', 'ag-settings-control-copy ag-settings-font-set-copy');
+    copy.append(el('span', 'ag-settings-control-label', label));
+    if (path) {
+      copy.append(el('span', 'ag-settings-control-description', path));
+      row.title = path;
+    }
+    const actions = el('div', 'ag-settings-actions');
+    actions.append(el('span', 'ag-settings-disclosure-count', faceText(faces)));
+    row.append(copy, actions);
+    return { row, actions };
+  };
+  const renderSources = (message?: string): void => {
+    if (sources.hidden) return;
+    const index = getDesktopFontIndex();
+    const found = summarizeDesktopFontSources(index);
+    sourceList.replaceChildren();
+    for (const folder of addedFolders) {
+      const name = folder.split(/[\\/]/).filter(Boolean).pop() ?? folder;
+      const { row, actions } = sourceRow(name, sourceBusy ? null : addedFolderFaceCount(index, folder), folder);
+      const remove = el('button', 'ag-settings-btn', '제거');
+      remove.type = 'button';
+      remove.disabled = sourceBusy;
+      remove.setAttribute('aria-label', `${name} 폴더 제거`);
+      remove.addEventListener('click', () => {
+        void changeSources(() => removeDesktopFontFolder(folder));
+      });
+      actions.append(remove);
+      sourceList.append(row);
+    }
+    for (const source of found) {
+      const { row } = sourceRow(source.label, source.faces);
+      row.title = source.paths.join('\n');
+      sourceList.append(row);
+    }
+    sourceCount.textContent = message ?? (index ? `${(found.length + addedFolders.length).toLocaleString()}곳` : '색인 중…');
+    addSourceFolder.disabled = sourceBusy;
+  };
+  const refreshSources = async (): Promise<void> => {
+    if (sources.hidden) return;
+    try {
+      addedFolders = await listDesktopFontFolders();
+    } catch (error) {
+      // 글꼴 검색을 끈 앱(RHWP_SYSTEM_FONTS=off)에는 보여 줄 출처가 없다.
+      console.warn('[DesktopFonts] 글꼴 폴더 목록을 읽지 못했습니다:', error);
+      sources.hidden = true;
+      return;
+    }
+    renderSources();
+  };
+  /** 바꾸면 main 이 색인을 다시 만들고 창마다 새 색인을 받는다. 목록은 그 알림에서 다시 그린다. */
+  const changeSources = async (change: () => Promise<string[] | null>): Promise<void> => {
+    if (sourceBusy) return;
+    sourceBusy = true;
+    renderSources();
+    let failed: string | undefined;
+    try {
+      const next = await change();
+      if (next) {
+        addedFolders = next;
+        setSourcesOpen(true);
+      }
+    } catch (error) {
+      failed = error instanceof Error ? error.message : String(error);
+    } finally {
+      sourceBusy = false;
+    }
+    renderSources(failed);
+  };
+  sourceToggle.addEventListener('click', () => setSourcesOpen(sourceList.hidden !== false));
+  addSourceFolder.addEventListener('click', () => {
+    void changeSources(addDesktopFontFolder);
+  });
+  const unsubscribeIndex = onDesktopFontIndexChange(() => {
+    void refreshSources();
+  });
 
   const renderFontFolder = (message?: string): void => {
     const state = getFontFolderState();
@@ -595,6 +710,7 @@ export function createEditingSettings(options: {
 
   renderFontSets();
   renderFontFolder();
+  void refreshSources();
   render();
   void loadStoredLocalFonts().then(
     () => renderLocalFonts(),
@@ -611,6 +727,7 @@ export function createEditingSettings(options: {
       renderFontSets();
       renderLocalFonts();
       renderFontFolder();
+      void refreshSources();
       render();
     },
     isDirty,
@@ -619,6 +736,7 @@ export function createEditingSettings(options: {
     dispose(): void {
       unsubscribe();
       unsubscribeFolder();
+      unsubscribeIndex();
     },
   };
 }

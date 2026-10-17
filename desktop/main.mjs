@@ -108,6 +108,7 @@ import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
+import { createFontFolderStore } from './font-folders.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -587,9 +588,16 @@ browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
+const logFonts = (line) => console.log(`[hamaeditor] fonts: ${line}`);
+const fontFolders = createFontFolderStore({
+  filePath: join(app.getPath('userData'), 'font-folders.json'),
+  writeAtomically: writeNativeFileAtomically,
+  log: logFonts,
+});
 const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
-  log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
+  log: logFonts,
+  addedFolders: () => fontFolders.list(),
 });
 const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
@@ -1192,8 +1200,43 @@ ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
 });
 ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   sessionForEvent(event);
-  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+  assertSystemFontsEnabled();
   return systemFonts.list({ refresh: options?.refresh === true });
+});
+function assertSystemFontsEnabled() {
+  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+}
+/** 글꼴 폴더 목록을 바꾼 뒤 색인을 다시 만들고, 모든 창에 새 색인을 받아 문서 글꼴을 다시 잇게 한다. */
+async function changeFontFolders(change) {
+  const folders = await change();
+  await systemFonts.list({ refresh: true });
+  for (const window of sessions.windows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:fonts-changed');
+  }
+  return folders;
+}
+ipcMain.handle('desktop:font-folders-list', (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  return fontFolders.list();
+});
+ipcMain.handle('desktop:font-folders-add', async (event) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) throw new Error('Font folder sender window is unavailable');
+  const picked = await dialog.showOpenDialog(window, {
+    title: 'Add font folder',
+    properties: ['openDirectory'],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return null;
+  return changeFontFolders(() => fontFolders.add(picked.filePaths[0]));
+});
+ipcMain.handle('desktop:font-folders-remove', (event, folder) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  if (typeof folder !== 'string' || !folder) throw new Error('Font folder path is required');
+  return changeFontFolders(() => fontFolders.remove(folder));
 });
 ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);

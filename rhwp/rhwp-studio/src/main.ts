@@ -125,6 +125,7 @@ import {
   configureDesktopFonts,
   finalizeDesktopFontReport,
   fontReportsChangedLayout,
+  getDesktopFontHostApi,
   hasSystemFontHost,
   setHubFontHost,
   isDesktopFontIndexReady,
@@ -133,6 +134,7 @@ import {
   prepareDesktopFontsForDocument,
   prepareLocalFontAccessMetrics,
   prepareSystemFontsForDocument,
+  reloadDesktopFonts,
   settleWithin,
   syncImportedFontMetrics,
   unattemptedDesktopFonts,
@@ -1025,6 +1027,12 @@ function initializeDesktopFonts(): void {
     // 첫 문서가 열리기 전에 색인을 미리 받아 둔다.
     void loadDesktopFontIndex().catch((error) => {
       console.warn('[DesktopFonts] 글꼴 색인 준비 실패:', error);
+    });
+    // 글꼴 폴더를 바꾸면 main 이 새로 만든 색인을 받아 열린 문서 글꼴을 다시 잇는다.
+    getDesktopFontHostApi()?.onFontsChanged?.(() => {
+      void reloadDesktopFonts({ rescan: false }).catch((error) => {
+        console.warn('[DesktopFonts] 글꼴 색인 갱신 실패:', error);
+      });
     });
     return;
   }
