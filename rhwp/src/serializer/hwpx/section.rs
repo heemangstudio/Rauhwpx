@@ -19,7 +19,7 @@
 //!   - `paragraph.char_shapes[0].char_shape_id` → 첫 `<hp:run charPrIDRef>`
 //!   - `paragraph.line_segs[i]` → 각 `<hp:lineseg>` 속성 (9개 필드 그대로 출력)
 
-use quick_xml::Writer;
+use quick_xml::{events::Event, Reader, Writer};
 
 use crate::model::control::{
     AutoNumber, AutoNumberType, CharOverlap, Control, Equation, Field, Hyperlink, NewNumber,
@@ -29,7 +29,10 @@ use crate::model::document::{Document, Section, SectionDef};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::page::{ColumnDef, ColumnDirection, ColumnType};
-use crate::model::paragraph::{ColumnBreakType, FieldRange, LineSeg, OrphanFieldEnd, Paragraph};
+use crate::model::paragraph::{
+    AuthoredTextRun, ColumnBreakType, FieldRange, LineSeg, OrphanFieldEnd, Paragraph,
+    SectionPrefixChildKind,
+};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, SizeCriterion, TextWrap, VertAlign, VertRelTo,
 };
@@ -799,30 +802,10 @@ fn write_section_inner(
     let mut vert_cursor: u32 = 0;
 
     let first_para = section.paragraphs.first();
-    // [#1584] 첫 문단 렌더 직전 set — 본문 첫 ColumnDef(섹션 템플릿 흡수분)의 인라인
-    // XML 방출만 1회 억제한다(슬롯 위치는 보존). 렌더 직후 reset 하여 추가 문단 누설 방지.
-    ctx.body_coldef_template_pending = true;
-    let (first_runs, first_linesegs, first_advance) = match first_para {
-        Some(p) => render_paragraph_parts_limited(p, vert_cursor, ctx, max_bytes)?,
-        // 문단이 없는 섹션(비파싱 IR) — linesegarray 방출 생략 (#1380)
-        None => (String::new(), String::new(), vert_cursor),
-    };
-    ctx.body_coldef_template_pending = false;
-    vert_cursor = first_advance;
-    if first_runs
-        .len()
-        .checked_add(first_linesegs.len())
-        .map_or(true, |bytes| bytes > max_bytes)
-    {
-        return Err(SerializeError::XmlError(format!(
-            "section{index}.xml exceeds the {max_bytes} byte generation limit"
-        )));
-    }
-
     // 치환은 모두 pristine 템플릿의 고정 anchor 에 대해 수행한다 (#1378):
     // linesegarray 치환을 콘텐츠(run 시퀀스) 삽입보다 먼저 두어, 콘텐츠에 포함된
     // 중첩 linesegarray(각주·머리말 등)가 anchor 탐색을 오염시키지 않도록 한다.
-    let mut out = replace_first_linesegs(EMPTY_SECTION_XML, &first_linesegs);
+    let mut out = EMPTY_SECTION_XML.to_owned();
     out = replace_page_pr(&out, &section.section_def.page_def);
     // 쪽 테두리/배경 — 템플릿의 하드코딩 borderFillIDRef="1"(테두리 없음)을 IR 값으로
     // 치환한다. 누락 시 문서의 쪽 테두리가 소실되어 외곽 4선 노드가 사라진다(#1388 동형).
@@ -889,6 +872,62 @@ fn write_section_inner(
         }
     }
 
+    let authored_prefix = first_para.is_some_and(|para| {
+        para.authored_text_runs
+            .as_ref()
+            .is_some_and(|runs| runs.iter().any(|run| !run.prefix_children.is_empty()))
+    });
+    if authored_prefix {
+        let children = first_para
+            .unwrap()
+            .authored_text_runs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .flat_map(|run| &run.prefix_children);
+        let (mut sections, mut columns) = (0usize, 0usize);
+        for child in children {
+            match child.kind {
+                SectionPrefixChildKind::Section { nested_column } => {
+                    sections += 1;
+                    columns += usize::from(nested_column);
+                }
+                SectionPrefixChildKind::Column => columns += 1,
+            }
+        }
+        if sections != 1 || columns > 1 {
+            return Err(SerializeError::XmlError(
+                "작성된 section prefix 중복/누락".into(),
+            ));
+        }
+    }
+    let prefix = authored_prefix
+        .then(|| SectionPrefixXml::from_template(&out))
+        .transpose()?;
+    // [#1584] 첫 문단 렌더 직전 set — 본문 첫 ColumnDef(섹션 템플릿 흡수분)의 인라인
+    // XML 방출만 1회 억제한다(슬롯 위치는 보존). 렌더 직후 reset 하여 추가 문단 누설 방지.
+    ctx.body_coldef_template_pending = true;
+    let (first_runs, first_linesegs, first_advance) = match first_para {
+        Some(p) => {
+            render_paragraph_parts_with_prefix(p, vert_cursor, ctx, max_bytes, prefix.as_ref())?
+        }
+        // 문단이 없는 섹션(비파싱 IR) — linesegarray 방출 생략 (#1380)
+        None => (String::new(), String::new(), vert_cursor),
+    };
+    ctx.body_coldef_template_pending = false;
+    vert_cursor = first_advance;
+    if first_runs
+        .len()
+        .checked_add(first_linesegs.len())
+        .map_or(true, |bytes| bytes > max_bytes)
+    {
+        return Err(SerializeError::XmlError(format!(
+            "section{index}.xml exceeds the {max_bytes} byte generation limit"
+        )));
+    }
+
+    out = replace_first_linesegs(&out, &first_linesegs);
+
     if let Some(p) = first_para {
         // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
         // (#1933) 본문 경로는 종전에 style_id 를 reference 하지 않았다 — emit 만
@@ -902,12 +941,17 @@ fn write_section_inner(
         // 파서는 이 run 시작에서도 (0, id) 를 기록하므로, id 가 다르면 재파싱 시
         // 가짜 (0, 0) entry 가 생긴다 (#1378 stage1 양상 ②).
         let first_cs = first_run_char_shape_id(p);
-        if first_cs != 0 {
+        if first_cs != 0 && prefix.is_none() {
             let new_secpr_run = format!(r#"<hp:run charPrIDRef="{}"><hp:secPr "#, first_cs);
             out = out.replacen(TEMPLATE_SECPR_RUN_OPEN, &new_secpr_run, 1);
         }
 
         // 템플릿의 텍스트 run 전체를 문단의 run 시퀀스(다중 run 분할 포함)로 1회 치환.
+        if let Some(prefix) = &prefix {
+            // 원본 prefix run을 다시 별도로 추가하지 않는다. 같은 스타일의 다음
+            // run도 source 경계대로 이미 first_runs에 들어 있다.
+            out = out.replacen(&prefix.template_run, "", 1);
+        }
         out = out.replacen(TEMPLATE_TEXT_RUN, &first_runs, 1);
     }
 
@@ -947,13 +991,18 @@ fn write_section_inner(
 
 /// IR의 Paragraph를 기반으로 `<hp:p>` 시작 태그를 생성.
 ///
-/// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
-/// 파서는 id 를 무시하므로 순차값으로 충분.
+/// 원본 PARA_HEADER의 instanceId를 보존한다. 원본 꼬리가 없는 새 문단은
+/// 바이너리 직렬화와 동일하게 0을 사용한다. 호출자의 순차 ID 할당은 유지한다.
 ///
 /// `style_id_ref` 는 호출자가 `ctx.effective_style_id(p.style_id)` 로 강등한 값
 /// (미등록 스타일 → 0, #1933). 전 문단 경로가 이 함수를 거치므로 여기가 단일
 /// 방출 지점이다.
-pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32, style_id_ref: u8) -> String {
+pub(crate) fn render_hp_p_open(p: &Paragraph, _id: u32, style_id_ref: u8) -> String {
+    let instance_id = p
+        .raw_header_extra
+        .get(6..10)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .unwrap_or(0);
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -966,7 +1015,7 @@ pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32, style_id_ref: u8) -> Stri
     };
     format!(
         r#"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"#,
-        id, p.para_shape_id, style_id_ref, page_break, column_break,
+        instance_id, p.para_shape_id, style_id_ref, page_break, column_break,
     )
 }
 
@@ -998,8 +1047,20 @@ pub(crate) fn render_paragraph_parts_limited(
     ctx: &mut SerializeContext,
     max_bytes: usize,
 ) -> Result<(String, String, u32), SerializeError> {
+    render_paragraph_parts_with_prefix(para, vert_start, ctx, max_bytes, None)
+}
+
+fn render_paragraph_parts_with_prefix(
+    para: &Paragraph,
+    vert_start: u32,
+    ctx: &mut SerializeContext,
+    max_bytes: usize,
+    prefix: Option<&SectionPrefixXml>,
+) -> Result<(String, String, u32), SerializeError> {
+    para.validate_special_spaces()
+        .map_err(|e| SerializeError::XmlError(e.to_string()))?;
     ensure_paragraph_graph_within_limit(std::slice::from_ref(para), max_bytes)?;
-    let (runs_xml, collapsed) = render_runs_limited(para, ctx, max_bytes)?;
+    let (runs_xml, collapsed) = render_runs_with_prefix(para, ctx, max_bytes, prefix)?;
 
     if !para.line_segs.is_empty() {
         // [#6869/#6871] 접은 쪽번호 슬롯은 출처와 무관하게 축에서 뺀다.
@@ -1047,36 +1108,72 @@ pub(crate) fn render_hp_t_content(
     tab_extended: &[[u16; 7]],
     tab_idx: &mut usize,
 ) -> String {
-    render_hp_t_content_limited(text, tab_extended, tab_idx, usize::MAX)
+    render_hp_t_content_limited(text, &[], tab_extended, tab_idx, usize::MAX)
         .expect("unbounded hp:t rendering")
 }
 
 fn render_hp_t_content_limited(
     text: &str,
+    origins: &[crate::model::paragraph::SpecialSpaceOrigin],
     tab_extended: &[[u16; 7]],
     tab_idx: &mut usize,
     max_bytes: usize,
 ) -> Result<String, SerializeError> {
     use std::fmt::Write as _;
 
+    crate::model::paragraph::validate_special_space_origins(text, origins)
+        .map_err(|e| SerializeError::XmlError(e.to_string()))?;
     let mut t_xml = BoundedXmlString::from_str("<hp:t>", max_bytes)?;
     let mut buf = BoundedXmlString::new(max_bytes);
-    for c in text.chars() {
+    for (i, c) in text.chars().enumerate() {
+        let origin = origins
+            .binary_search_by_key(&i, |r| r.char_idx)
+            .ok()
+            .map(|n| origins[n].origin);
         match c {
             '\t' => {
                 flush_buf_limited(&mut t_xml, &mut buf)?;
-                let (width, leader, tab_type) = if let Some(ext) = tab_extended.get(*tab_idx) {
-                    *tab_idx += 1;
-                    (ext[0] as u32, ext[2] & 0x00ff, (ext[2] >> 8) & 0x00ff)
-                } else {
-                    (TAB_DEFAULT_WIDTH, 0u16, 1u16)
-                };
+                let (width, leader, tab_type, raw_flags) =
+                    if let Some(ext) = tab_extended.get(*tab_idx) {
+                        *tab_idx += 1;
+                        (
+                            ext[0] as u32,
+                            ext[2] & 0x00ff,
+                            (ext[2] >> 8) & 0x00ff,
+                            Some(ext[5]),
+                        )
+                    } else {
+                        (TAB_DEFAULT_WIDTH, 0u16, 1u16, None)
+                    };
                 write!(
                     t_xml,
-                    r#"<hp:tab width="{}" leader="{}" type="{}"/>"#,
+                    r#"<hp:tab width="{}" leader="{}" type="{}""#,
                     width, leader, tab_type
                 )
                 .map_err(|_| xml_generation_limit_error(max_bytes))?;
+                // Package writer가 실제 방출 위치에서 수집한 뒤 제거하는 내부 속성.
+                if let Some(flags) = raw_flags {
+                    write!(
+                        t_xml,
+                        " {}=\"{}\"",
+                        crate::model::document::hwpx_raw_fields::CARRIER,
+                        flags
+                    )
+                    .map_err(|_| xml_generation_limit_error(max_bytes))?;
+                }
+                t_xml.push_str("/>")?;
+            }
+            '\u{00a0}'
+                if origin == Some(crate::model::paragraph::SpecialSpaceOriginKind::NbSpace) =>
+            {
+                flush_buf_limited(&mut t_xml, &mut buf)?;
+                t_xml.push_str("<hp:nbSpace/>")?;
+            }
+            '\u{2007}'
+                if origin == Some(crate::model::paragraph::SpecialSpaceOriginKind::FwSpace) =>
+            {
+                flush_buf_limited(&mut t_xml, &mut buf)?;
+                t_xml.push_str("<hp:fwSpace/>")?;
             }
             '\n' => {
                 flush_buf_limited(&mut t_xml, &mut buf)?;
@@ -1108,7 +1205,7 @@ fn xml_generation_limit_error(max_bytes: usize) -> SerializeError {
 /// 2. 연속 동일 id 경계는 출력 시 skip (IR 은 이미 dedup 상태이나 방어적으로 유지)
 /// 3. `char_shapes` 가 비어있으면 단일 run `charPrIDRef="0"`
 /// 4. `segs[0].start_pos > 0` 인 비정상 IR 도 첫 run 은 위치 0 부터 시작 (관용 처리)
-/// 5. 빈 세그먼트는 `<hp:t></hp:t>` 로 방출 — 재파싱 시 run 시작 entry 위치 보존
+/// 5. 빈 세그먼트도 run은 유지하되, 텍스트 자식은 별도의 원본 fragment 조건으로 생성한다.
 struct RunSplitter {
     /// `(start_pos, char_shape_id)` — `[0]` 은 첫 run, `[1..]` 은 cut 경계.
     segs: Vec<(u32, u32)>,
@@ -1118,10 +1215,19 @@ struct RunSplitter {
     runs: String,
     /// 현재 run 의 내부 콘텐츠 버퍼.
     content: String,
+    authored: Option<Vec<AuthoredTextRun>>,
+    retain_unknown_empty: bool,
+    fragment_error: Option<String>,
+    prefix: Option<SectionPrefixXml>,
+    collapsed_slots: Vec<u32>,
 }
 
 impl RunSplitter {
     fn new(para: &Paragraph) -> Self {
+        Self::with_prefix(para, None)
+    }
+
+    fn with_prefix(para: &Paragraph, prefix: Option<&SectionPrefixXml>) -> Self {
         let mut segs: Vec<(u32, u32)> = Vec::new();
         for cs in &para.char_shapes {
             if let Some(&(_, last_id)) = segs.last() {
@@ -1134,11 +1240,42 @@ impl RunSplitter {
         if segs.is_empty() {
             segs.push((0, 0)); // 규칙 3
         }
+        let mut fragment_error = None;
+        if let Some(runs) = &para.authored_text_runs {
+            let mut normalized = Vec::new();
+            for run in runs {
+                if normalized
+                    .last()
+                    .is_none_or(|&(_, id)| id != run.char_shape_id)
+                {
+                    normalized.push((run.start_pos, run.char_shape_id));
+                }
+            }
+            if normalized != segs
+                || runs
+                    .iter()
+                    .any(|run| run.end_pos < run.start_pos || run.end_pos >= para.char_count)
+            {
+                fragment_error =
+                    Some("작성된 빈 hp:t의 run 좌표 또는 서식이 변경되었습니다".into());
+            }
+            if !runs.is_empty() {
+                segs = runs
+                    .iter()
+                    .map(|run| (run.start_pos, run.char_shape_id))
+                    .collect();
+            }
+        }
         Self {
             segs,
             next: 1,
             runs: String::new(),
             content: String::new(),
+            authored: para.authored_text_runs.clone(),
+            retain_unknown_empty: !para.range_tags.is_empty(),
+            fragment_error,
+            prefix: prefix.cloned(),
+            collapsed_slots: Vec::new(),
         }
     }
 
@@ -1149,12 +1286,22 @@ impl RunSplitter {
 
     /// `pos` 위치의 콘텐츠 방출 전에 run 경계 적용이 필요한지 (flush 판단용).
     fn needs_cut(&self, pos: u32) -> bool {
-        self.next < self.segs.len() && self.segs[self.next].0 <= pos
+        (self.next < self.segs.len() && self.segs[self.next].0 <= pos)
+            || self
+                .authored
+                .as_ref()
+                .and_then(|runs| runs.get(self.next - 1))
+                .is_some_and(|run| {
+                    run.empty_children
+                        .iter()
+                        .any(|child| child.utf16_pos == pos)
+                        || run.text_starts.contains(&pos)
+                })
     }
 
     /// `pos` 이하 위치의 경계를 모두 적용 — 규칙 1 (경계 먼저, 콘텐츠는 새 run 소속).
     fn cut_before(&mut self, pos: u32) {
-        while self.needs_cut(pos) {
+        while self.next < self.segs.len() && self.segs[self.next].0 <= pos {
             self.close_run();
             self.next += 1;
         }
@@ -1166,25 +1313,266 @@ impl RunSplitter {
             r#"<hp:run charPrIDRef="{}">"#,
             self.segs[self.next - 1].1
         ));
-        if self.content.is_empty() {
-            // 규칙 5 — 빈 run 도 <hp:t></hp:t> 로 방출해 재파싱 시 entry 보존
+        if let Some(run) = self
+            .authored
+            .as_ref()
+            .and_then(|runs| runs.get(self.next - 1))
+        {
+            match project_collapsed_run(run, &self.collapsed_slots).and_then(|run| {
+                restore_empty_text_children(&self.content, &run, self.prefix.as_ref())
+            }) {
+                Ok(content) => self.runs.push_str(&content),
+                Err(message) => {
+                    self.fragment_error.get_or_insert_with(|| {
+                        format!(
+                            "{message}; run={} source_utf16={}..{} charPrIDRef={}",
+                            self.next - 1,
+                            run.start_pos,
+                            run.end_pos,
+                            run.char_shape_id
+                        )
+                    });
+                }
+            }
+        } else if self.content.is_empty() && self.retain_unknown_empty {
+            // 범위 descriptor 경로는 이 보정의 원본 증명 범위 밖이다.
             self.runs.push_str("<hp:t></hp:t>");
         } else {
             self.runs.push_str(&self.content);
-            self.content.clear();
         }
+        self.content.clear();
         self.runs.push_str("</hp:run>");
     }
 
     /// 잔여 경계(콘텐츠 끝 이후 시작)를 빈 run 으로 방출하고 마지막 run 을 닫는다.
-    fn finish(mut self) -> String {
+    fn finish(mut self) -> Result<String, SerializeError> {
         while self.next < self.segs.len() {
             self.close_run();
             self.next += 1;
         }
         self.close_run();
-        self.runs
+        match self.fragment_error {
+            Some(message) => Err(SerializeError::XmlError(message)),
+            None => Ok(self.runs),
+        }
     }
+}
+
+#[derive(Clone)]
+struct SectionPrefixXml {
+    template_run: String,
+    section: String,
+    column: String,
+}
+
+impl SectionPrefixXml {
+    fn from_template(template: &str) -> Result<Self, SerializeError> {
+        let error = || SerializeError::XmlError("section prefix 템플릿 경계 오류".into());
+        let run_start = template.find(TEMPLATE_SECPR_RUN_OPEN).ok_or_else(error)?;
+        let run_end = template[run_start..].find("</hp:run>").ok_or_else(error)?
+            + run_start
+            + "</hp:run>".len();
+        let run = &template[run_start..run_end];
+        let sec_start = run.find("<hp:secPr ").ok_or_else(error)?;
+        let sec_end = run.find("</hp:secPr>").ok_or_else(error)? + "</hp:secPr>".len();
+        let column = &run[sec_end..run.len() - "</hp:run>".len()];
+        Ok(Self {
+            template_run: run.to_owned(),
+            section: run[sec_start..sec_end].to_owned(),
+            column: column.to_owned(),
+        })
+    }
+}
+
+/// 방출 중 명시적으로 접은 pageNum 자식만 제거한다. 경계 탐색은 원본 축을
+/// 사용하고, 복원할 run 메타데이터만 저장되는 UTF-16 축으로 투영한다.
+fn project_collapsed_run(run: &AuthoredTextRun, slots: &[u32]) -> Result<AuthoredTextRun, String> {
+    if run.empty_children.is_empty() && run.prefix_children.is_empty() {
+        return Ok(run.clone());
+    }
+    let removed: Vec<usize> = run
+        .page_number_children
+        .iter()
+        .filter(|(pos, _)| slots.contains(pos))
+        .map(|(_, index)| *index)
+        .collect();
+    // 묶인 ctrl의 일부 슬롯만 접히면 직접 자식은 남는다. 단독 pageNum
+    // 자식의 제거만 반영하고, 남은 자식 구조는 아래 복원 단계에서 엄격히 검사한다.
+    if removed.iter().any(|&index| index >= run.child_count)
+        || removed.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err("접힌 pageNum의 작성된 자식 위치를 확인할 수 없습니다".into());
+    }
+    let project_pos = |pos: u32| {
+        pos.saturating_sub(
+            8 * slots
+                .iter()
+                .filter(|&&slot| slot.saturating_add(8) <= pos)
+                .count() as u32,
+        )
+    };
+    let project_index =
+        |index: usize| index - removed.iter().filter(|&&removed| removed < index).count();
+    let mut projected = run.clone();
+    projected.start_pos = project_pos(run.start_pos);
+    projected.end_pos = project_pos(run.end_pos);
+    projected.child_count -= removed.len();
+    for pos in &mut projected.text_starts {
+        *pos = project_pos(*pos);
+    }
+    for child in &mut projected.empty_children {
+        child.utf16_pos = project_pos(child.utf16_pos);
+        child.child_index = project_index(child.child_index);
+    }
+    for child in &mut projected.prefix_children {
+        child.child_index = project_index(child.child_index);
+    }
+    projected
+        .page_number_children
+        .retain(|(pos, _)| !slots.contains(pos));
+    for (pos, index) in &mut projected.page_number_children {
+        *pos = project_pos(*pos);
+        *index = project_index(*index);
+    }
+    Ok(projected)
+}
+
+/// 직접 자식의 순서만 복원한다. 재구성된 자식 구조가 다르면 위치를 추측하지 않는다.
+fn restore_empty_text_children(
+    content: &str,
+    run: &AuthoredTextRun,
+    prefix: Option<&SectionPrefixXml>,
+) -> Result<String, String> {
+    if run.empty_children.is_empty() && run.prefix_children.is_empty() {
+        return Ok(content.to_owned());
+    }
+    let mut local_run;
+    let run = if prefix.is_none() && !run.prefix_children.is_empty() {
+        // 본문 첫 문단 밖에서는 템플릿을 삽입하지 않는다. 기존 방출 경로는
+        // secPr을 생략하고 colPr은 직접 자식으로 낸다. 내부 colPr이 있던
+        // secPr은 그 colPr 자식으로 대체되므로 자식 수를 줄이지 않는다.
+        let removed: Vec<_> = run
+            .prefix_children
+            .iter()
+            .filter_map(|child| {
+                matches!(
+                    child.kind,
+                    SectionPrefixChildKind::Section {
+                        nested_column: false
+                    }
+                )
+                .then_some(child.child_index)
+            })
+            .collect();
+        if run
+            .prefix_children
+            .iter()
+            .any(|child| child.child_index >= run.child_count)
+            || run
+                .prefix_children
+                .windows(2)
+                .any(|pair| pair[0].child_index >= pair[1].child_index)
+            || run.prefix_children.iter().any(|prefix| {
+                run.empty_children
+                    .iter()
+                    .any(|empty| empty.child_index == prefix.child_index)
+            })
+        {
+            return Err("작성된 section prefix 자식 위치 오류".into());
+        }
+        local_run = run.clone();
+        local_run.child_count -= removed.len();
+        for child in &mut local_run.empty_children {
+            child.child_index -= removed
+                .iter()
+                .filter(|&&index| index < child.child_index)
+                .count();
+        }
+        local_run.prefix_children.clear();
+        &local_run
+    } else {
+        run
+    };
+    let mut reader = Reader::from_str(content);
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut children = Vec::new();
+    loop {
+        let before = reader.buffer_position() as usize;
+        match reader.read_event().map_err(|e| e.to_string())? {
+            Event::Start(_) => {
+                if depth == 0 {
+                    start = before;
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                depth = depth.checked_sub(1).ok_or("HWPX fragment 자식 경계 오류")?;
+                if depth == 0 {
+                    children.push(&content[start..reader.buffer_position() as usize]);
+                }
+            }
+            Event::Empty(_) if depth == 0 => {
+                children.push(&content[before..reader.buffer_position() as usize]);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if depth != 0
+        || children.len() + run.empty_children.len() + run.prefix_children.len() != run.child_count
+    {
+        return Err(format!(
+            "작성된 빈 hp:t의 자식 구조를 복원할 수 없습니다: expected={} emitted={} empty={} prefix={} depth={}",
+            run.child_count, children.len(), run.empty_children.len(), run.prefix_children.len(), depth
+        ));
+    }
+    let mut output = String::new();
+    let mut nonempty = children.into_iter();
+    let mut empty = run.empty_children.iter().peekable();
+    let mut prefix_children = run.prefix_children.iter().peekable();
+    for index in 0..run.child_count {
+        if empty.peek().is_some_and(|child| child.child_index == index) {
+            let child = empty.next().unwrap();
+            if child.utf16_pos < run.start_pos || child.utf16_pos > run.end_pos {
+                return Err("작성된 빈 hp:t의 UTF-16 위치 오류".into());
+            }
+            output.push_str("<hp:t></hp:t>");
+        } else if prefix_children
+            .peek()
+            .is_some_and(|child| child.child_index == index)
+        {
+            let child = prefix_children.next().unwrap();
+            let xml =
+                prefix.ok_or("작성된 section prefix는 본문 첫 문단에서만 복원할 수 있습니다")?;
+            match child.kind {
+                SectionPrefixChildKind::Section {
+                    nested_column: false,
+                } => output.push_str(&xml.section),
+                SectionPrefixChildKind::Section {
+                    nested_column: true,
+                } => {
+                    let column = xml
+                        .column
+                        .strip_prefix("<hp:ctrl>")
+                        .and_then(|value| value.strip_suffix("</hp:ctrl>"))
+                        .ok_or("section 내부 column 템플릿 경계 오류")?;
+                    output.push_str(&xml.section.replacen(
+                        "</hp:secPr>",
+                        &format!("{column}</hp:secPr>"),
+                        1,
+                    ));
+                }
+                SectionPrefixChildKind::Column => output.push_str(&xml.column),
+            }
+        } else {
+            output.push_str(nonempty.next().ok_or("작성된 hp:t 자식 순서 오류")?);
+        }
+    }
+    if empty.next().is_some() || prefix_children.next().is_some() {
+        return Err("작성된 빈 hp:t 자식 순서 오류".into());
+    }
+    Ok(output)
 }
 
 /// `<hp:ctrl><hp:fieldEnd beginIDRef=".."/></hp:ctrl>` 방출 공통 경로.
@@ -1232,6 +1620,7 @@ fn split_text_into(
     markpens: &mut PositionedMarkpens<'_>,
 ) -> Result<(), SerializeError> {
     let mut text_buf = String::new();
+    let mut text_origins = Vec::new();
     let mut running_pos = 0u32;
     for (idx, c) in para.text.chars().enumerate() {
         let char_pos = para.char_offsets.get(idx).copied().unwrap_or(running_pos);
@@ -1239,13 +1628,28 @@ fn split_text_into(
             flush_text_fragment(
                 &mut splitter.content,
                 &mut text_buf,
+                &mut text_origins,
                 &para.tab_extended,
                 tab_idx,
                 max_bytes.saturating_sub(splitter.runs.len()),
             )?;
             splitter.cut_before(char_pos);
         }
-        markpens.flush(char_pos, splitter, &mut text_buf, para, tab_idx, max_bytes)?;
+        markpens.flush(
+            char_pos,
+            splitter,
+            &mut text_buf,
+            &mut text_origins,
+            para,
+            tab_idx,
+            max_bytes,
+        )?;
+        if let Some(origin) = para.space_origin_at(idx) {
+            text_origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                char_idx: text_buf.chars().count(),
+                origin,
+            });
+        }
         text_buf.push(c);
         running_pos = char_pos
             .max(running_pos)
@@ -1254,11 +1658,20 @@ fn split_text_into(
     flush_text_fragment(
         &mut splitter.content,
         &mut text_buf,
+        &mut text_origins,
         &para.tab_extended,
         tab_idx,
         max_bytes.saturating_sub(splitter.runs.len()),
     )?;
-    markpens.flush(u32::MAX, splitter, &mut text_buf, para, tab_idx, max_bytes)?;
+    markpens.flush(
+        u32::MAX,
+        splitter,
+        &mut text_buf,
+        &mut text_origins,
+        para,
+        tab_idx,
+        max_bytes,
+    )?;
     Ok(())
 }
 
@@ -1272,18 +1685,43 @@ fn render_runs_limited(
     ctx: &mut SerializeContext,
     max_bytes: usize,
 ) -> Result<(String, Vec<u32>), SerializeError> {
+    render_runs_with_prefix(para, ctx, max_bytes, None)
+}
+
+fn render_runs_with_prefix(
+    para: &Paragraph,
+    ctx: &mut SerializeContext,
+    max_bytes: usize,
+    prefix: Option<&SectionPrefixXml>,
+) -> Result<(String, Vec<u32>), SerializeError> {
     // [#6869/#6871] 표·머리말 등 자식 문단도 같은 context로 재귀 호출된다.
     // 본체의 조기 반환을 포함해 문단 종료 뒤에는 부모의 방출 상태로 돌아가야 한다.
     let parent = std::mem::replace(&mut ctx.para_page_num_pos_emitted, false);
-    let result = render_runs_in_paragraph_scope(para, ctx, max_bytes);
+    let scope_depth = ctx.sub_list_depth;
+    let result = render_runs_in_paragraph_scope(para, ctx, max_bytes, prefix);
     ctx.para_page_num_pos_emitted = parent;
-    result
+    result.map_err(|error| match error {
+        SerializeError::XmlError(message) => {
+            let id = para
+                .raw_header_extra
+                .get(6..10)
+                .map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+            SerializeError::XmlError(format!(
+                "{message}; paragraph_id={id} char_count={} controls={} sub_list_depth={}",
+                para.char_count,
+                para.controls.len(),
+                scope_depth
+            ))
+        }
+        other => other,
+    })
 }
 
 fn render_runs_in_paragraph_scope(
     para: &Paragraph,
     ctx: &mut SerializeContext,
     max_bytes: usize,
+    prefix: Option<&SectionPrefixXml>,
 ) -> Result<(String, Vec<u32>), SerializeError> {
     // ID 참조 무결성 (구현계획서 1.5): 실제 char_shapes entry 만 reference.
     // 빈 IR 의 fallback 0 은 제외 — char_shapes 미등록 문서(`Document::default()`)의
@@ -1306,7 +1744,7 @@ fn render_runs_in_paragraph_scope(
         return Ok((String::new(), Vec::new()));
     }
 
-    let mut splitter = RunSplitter::new(para);
+    let mut splitter = RunSplitter::with_prefix(para, prefix);
 
     let slot_count = inferred_control_slot_count(para);
     // slots 와 각 slot 의 para.controls 인덱스(slot_ctrl_indices)를 병행 수집 —
@@ -1414,13 +1852,33 @@ fn render_runs_in_paragraph_scope(
         && para.orphan_field_ends.is_empty()
         && splitter.single_run()
         && para.markpen_marks.is_empty()
+        && para.authored_text_runs.as_ref().is_none_or(|runs| {
+            runs.iter().all(|run| {
+                run.text_starts.len() <= 1
+                    && run.empty_children.iter().all(|child| {
+                        child.utf16_pos == run.start_pos || child.utf16_pos == run.end_pos
+                    })
+            })
+        })
     {
         let remaining = max_bytes
             .saturating_sub(splitter.runs.len())
             .saturating_sub(splitter.content.len());
-        let t =
-            render_hp_t_content_limited(&para.text, &para.tab_extended, &mut tab_idx, remaining)?;
-        splitter.content.push_str(&t);
+        let t = render_hp_t_content_limited(
+            &para.text,
+            &para.special_space_origins,
+            &para.tab_extended,
+            &mut tab_idx,
+            remaining,
+        )?;
+        if !para.text.is_empty()
+            || !para.range_tags.is_empty()
+            || (para.authored_text_runs.is_none()
+                && para.para_text_terminal == Some(0)
+                && para.control_mask & 0x00e7_d81e != 0)
+        {
+            splitter.content.push_str(&t);
+        }
         return finish_runs_limited(splitter, max_bytes).map(|xml| (xml, Vec::new()));
     }
 
@@ -1465,6 +1923,7 @@ fn render_runs_in_paragraph_scope(
             u32::MAX,
             &mut splitter,
             &mut String::new(),
+            &mut Vec::new(),
             para,
             &mut tab_idx,
             max_bytes,
@@ -1474,10 +1933,9 @@ fn render_runs_in_paragraph_scope(
 
     // 메인 경로 — UTF-16 위치 축 위에서 슬롯/필드/문자/경계를 함께 처리
     let mut text_buf = String::new();
+    let mut text_origins = Vec::new();
     let mut slot_idx = 0usize;
     let mut expected_utf16_pos = 0u32;
-    // [#6871] 우리가 접은 슬롯(중복 쪽번호)의 위치 — 출처와 무관하게 축에서 뺀다.
-    let mut collapsed_slot_positions: Vec<u32> = Vec::new();
     let mut field_end_emitted = vec![false; para.field_ranges.len()];
     // [Task #1556] 고아 fieldEnd 방출 추적.
     let mut orphan_emitted = vec![false; para.orphan_field_ends.len()];
@@ -1497,6 +1955,7 @@ fn render_runs_in_paragraph_scope(
                 expected_utf16_pos,
                 &mut splitter,
                 &mut text_buf,
+                &mut text_origins,
                 para,
                 &mut tab_idx,
                 max_bytes,
@@ -1510,12 +1969,11 @@ fn render_runs_in_paragraph_scope(
                 )?;
             }
             render_control_slot_tracked(
-                &mut splitter.content,
+                &mut splitter,
                 slots[slot_idx],
                 ctx,
-                max_bytes.saturating_sub(splitter.runs.len()),
+                max_bytes,
                 expected_utf16_pos,
-                &mut collapsed_slot_positions,
             )?;
             slot_idx += 1;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
@@ -1564,6 +2022,7 @@ fn render_runs_in_paragraph_scope(
                 flush_text_fragment(
                     &mut splitter.content,
                     &mut text_buf,
+                    &mut text_origins,
                     &para.tab_extended,
                     &mut tab_idx,
                     max_bytes.saturating_sub(splitter.runs.len()),
@@ -1577,6 +2036,7 @@ fn render_runs_in_paragraph_scope(
             flush_text_fragment(
                 &mut splitter.content,
                 &mut text_buf,
+                &mut text_origins,
                 &para.tab_extended,
                 &mut tab_idx,
                 max_bytes.saturating_sub(splitter.runs.len()),
@@ -1587,6 +2047,7 @@ fn render_runs_in_paragraph_scope(
                 expected_utf16_pos,
                 &mut splitter,
                 &mut text_buf,
+                &mut text_origins,
                 para,
                 &mut tab_idx,
                 max_bytes,
@@ -1600,12 +2061,11 @@ fn render_runs_in_paragraph_scope(
                 )?;
             }
             render_control_slot_tracked(
-                &mut splitter.content,
+                &mut splitter,
                 slots[slot_idx],
                 ctx,
-                max_bytes.saturating_sub(splitter.runs.len()),
+                max_bytes,
                 expected_utf16_pos,
-                &mut collapsed_slot_positions,
             )?;
             let emitted_ctrl_idx = slot_ctrl_indices[slot_idx];
             slot_idx += 1;
@@ -1634,6 +2094,7 @@ fn render_runs_in_paragraph_scope(
                 flush_text_fragment(
                     &mut splitter.content,
                     &mut text_buf,
+                    &mut text_origins,
                     &para.tab_extended,
                     &mut tab_idx,
                     max_bytes.saturating_sub(splitter.runs.len()),
@@ -1656,6 +2117,7 @@ fn render_runs_in_paragraph_scope(
                 flush_text_fragment(
                     &mut splitter.content,
                     &mut text_buf,
+                    &mut text_origins,
                     &para.tab_extended,
                     &mut tab_idx,
                     max_bytes.saturating_sub(splitter.runs.len()),
@@ -1688,6 +2150,7 @@ fn render_runs_in_paragraph_scope(
             flush_text_fragment(
                 &mut splitter.content,
                 &mut text_buf,
+                &mut text_origins,
                 &para.tab_extended,
                 &mut tab_idx,
                 max_bytes.saturating_sub(splitter.runs.len()),
@@ -1697,17 +2160,17 @@ fn render_runs_in_paragraph_scope(
                 expected_utf16_pos,
                 &mut splitter,
                 &mut text_buf,
+                &mut text_origins,
                 para,
                 &mut tab_idx,
                 max_bytes,
             )?;
             render_control_slot_tracked(
-                &mut splitter.content,
+                &mut splitter,
                 slots[slot_idx],
                 ctx,
-                max_bytes.saturating_sub(splitter.runs.len()),
+                max_bytes,
                 expected_utf16_pos,
-                &mut collapsed_slot_positions,
             )?;
             slot_idx += 1;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
@@ -1719,6 +2182,7 @@ fn render_runs_in_paragraph_scope(
             flush_text_fragment(
                 &mut splitter.content,
                 &mut text_buf,
+                &mut text_origins,
                 &para.tab_extended,
                 &mut tab_idx,
                 max_bytes.saturating_sub(splitter.runs.len()),
@@ -1730,10 +2194,17 @@ fn render_runs_in_paragraph_scope(
             char_pos,
             &mut splitter,
             &mut text_buf,
+            &mut text_origins,
             para,
             &mut tab_idx,
             max_bytes,
         )?;
+        if let Some(origin) = para.space_origin_at(idx) {
+            text_origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                char_idx: text_buf.chars().count(),
+                origin,
+            });
+        }
         text_buf.push(c);
         let width = char_utf16_width(c);
         if char_pos >= expected_utf16_pos {
@@ -1753,6 +2224,7 @@ fn render_runs_in_paragraph_scope(
                 flush_text_fragment(
                     &mut splitter.content,
                     &mut text_buf,
+                    &mut text_origins,
                     &para.tab_extended,
                     &mut tab_idx,
                     max_bytes.saturating_sub(splitter.runs.len()),
@@ -1771,6 +2243,7 @@ fn render_runs_in_paragraph_scope(
     flush_text_fragment(
         &mut splitter.content,
         &mut text_buf,
+        &mut text_origins,
         &para.tab_extended,
         &mut tab_idx,
         max_bytes.saturating_sub(splitter.runs.len()),
@@ -1817,6 +2290,7 @@ fn render_runs_in_paragraph_scope(
             expected_utf16_pos,
             &mut splitter,
             &mut text_buf,
+            &mut text_origins,
             para,
             &mut tab_idx,
             max_bytes,
@@ -1830,12 +2304,11 @@ fn render_runs_in_paragraph_scope(
             )?;
         }
         render_control_slot_tracked(
-            &mut splitter.content,
+            &mut splitter,
             slots[slot_idx],
             ctx,
-            max_bytes.saturating_sub(splitter.runs.len()),
+            max_bytes,
             expected_utf16_pos,
-            &mut collapsed_slot_positions,
         )?;
         let emitted_ctrl_idx = slot_ctrl_indices[slot_idx];
         slot_idx += 1;
@@ -1872,16 +2345,39 @@ fn render_runs_in_paragraph_scope(
         u32::MAX,
         &mut splitter,
         &mut text_buf,
+        &mut text_origins,
         para,
         &mut tab_idx,
         max_bytes,
     )?;
+    // 6B0F28: paragraph mask가 scan을 선택한다. 6B140C: 마지막 flush 뒤의
+    // 실제 0D 잔여가 fragment를 만든다. terminal-only span도 같은 scan을 따른다.
+    if para.authored_text_runs.is_none()
+        && para.range_tags.is_empty()
+        && para.control_mask & 0x00e7_d81e != 0
+    {
+        if let Some(terminal) = para.para_text_terminal {
+            let text_end = para
+                .text
+                .chars()
+                .last()
+                .zip(para.char_offsets.last())
+                .map_or(0, |(ch, pos)| pos.saturating_add(char_utf16_width(ch)));
+            splitter.cut_before(terminal);
+            if expected_utf16_pos == terminal
+                && (text_end < terminal || splitter.segs[splitter.next - 1].0 == terminal)
+            {
+                splitter.content.push_str("<hp:t></hp:t>");
+            }
+        }
+    }
+    let collapsed_slot_positions = splitter.collapsed_slots.clone();
     let xml = finish_runs_limited(splitter, max_bytes)?;
     Ok((xml, collapsed_slot_positions))
 }
 
 fn finish_runs_limited(splitter: RunSplitter, max_bytes: usize) -> Result<String, SerializeError> {
-    let runs = splitter.finish();
+    let runs = splitter.finish()?;
     if runs.len() > max_bytes {
         return Err(xml_generation_limit_error(max_bytes));
     }
@@ -1972,6 +2468,7 @@ impl PositionedMarkpens<'_> {
         position: u32,
         splitter: &mut RunSplitter,
         text: &mut String,
+        text_origins: &mut Vec<crate::model::paragraph::SpecialSpaceOrigin>,
         para: &Paragraph,
         tab_idx: &mut usize,
         max_bytes: usize,
@@ -1986,6 +2483,7 @@ impl PositionedMarkpens<'_> {
         flush_text_fragment(
             &mut splitter.content,
             text,
+            text_origins,
             &para.tab_extended,
             tab_idx,
             max_bytes.saturating_sub(splitter.runs.len()),
@@ -2013,18 +2511,21 @@ impl PositionedMarkpens<'_> {
 fn flush_text_fragment(
     out: &mut String,
     text_buf: &mut String,
+    text_origins: &mut Vec<crate::model::paragraph::SpecialSpaceOrigin>,
     tab_extended: &[[u16; 7]],
     tab_idx: &mut usize,
     max_bytes: usize,
 ) -> Result<(), SerializeError> {
     if !text_buf.is_empty() {
         let remaining = max_bytes.saturating_sub(out.len());
-        let rendered = render_hp_t_content_limited(text_buf, tab_extended, tab_idx, remaining)?;
+        let rendered =
+            render_hp_t_content_limited(text_buf, text_origins, tab_extended, tab_idx, remaining)?;
         out.try_reserve(rendered.len()).map_err(|error| {
             SerializeError::XmlError(format!("HWPX XML allocation failed: {error}"))
         })?;
         out.push_str(&rendered);
         text_buf.clear();
+        text_origins.clear();
     }
     Ok(())
 }
@@ -2057,22 +2558,26 @@ fn emit_inorder_bookmarks(
 }
 
 fn render_control_slot_tracked(
-    out: &mut String,
+    splitter: &mut RunSplitter,
     control: &Control,
     ctx: &mut SerializeContext,
     max_bytes: usize,
     hwp5_pos: u32,
-    collapsed_slot_positions: &mut Vec<u32>,
 ) -> Result<(), SerializeError> {
-    let before = out.len();
+    let before = splitter.content.len();
     // [#6871] 이 슬롯이 **우리가 접은 것**인지 미리 안다 — 두 번째 이후 쪽번호 위치.
     let collapses_here =
         matches!(control, Control::PageNumberPos(_)) && ctx.para_page_num_pos_emitted;
-    render_control_slot_limited(out, control, ctx, max_bytes)?;
-    if out.len() == before && collapses_here {
+    render_control_slot_limited(
+        &mut splitter.content,
+        control,
+        ctx,
+        max_bytes.saturating_sub(splitter.runs.len()),
+    )?;
+    if splitter.content.len() == before && collapses_here {
         // [#6871] **출처와 무관하게** 축에서 빼야 한다. secd/cold/억제 ColumnDef 는
         // 여기 넣지 않는다.
-        collapsed_slot_positions.push(hwp5_pos);
+        splitter.collapsed_slots.push(hwp5_pos);
     }
     Ok(())
 }
@@ -3422,6 +3927,55 @@ fn render_page_border_fill(ty: &str, pbf: &crate::model::page::PageBorderFill) -
 mod tests {
     use super::*;
     use crate::model::paragraph::{CharShapeRef, Paragraph};
+
+    #[test]
+    fn paragraph_instance_ids_survive_section_roundtrip_and_split() {
+        use crate::parser::hwpx::section::parse_hwpx_section;
+
+        // instanceId는 고유 순번이 아니다. 중복과 최상위 비트도 그대로 보존한다.
+        let ids = [0, 0x8000_0000, u32::MAX, 0x1234_5678, 0x8000_0000];
+        let paragraphs = ids
+            .iter()
+            .map(|id| {
+                format!(
+                    r#"<hp:p id="{id}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>source</hp:t></hp:run></hp:p>"#
+                )
+            })
+            .collect::<String>();
+        let xml = format!(
+            r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">{paragraphs}</hs:sec>"#
+        );
+        let mut section = parse_hwpx_section(&xml).unwrap();
+        let new_paragraph = section.paragraphs[4].split_at(3);
+        assert!(new_paragraph.raw_header_extra.is_empty());
+        section.paragraphs.push(new_paragraph);
+        for len in [0, 6, 9] {
+            section.paragraphs.push(Paragraph {
+                text: "short tail".to_string(),
+                raw_header_extra: vec![0xff; len],
+                ..Default::default()
+            });
+        }
+        let mut expected_ids = ids.to_vec();
+        expected_ids.extend([0; 4]);
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let reopened = parse_hwpx_section(std::str::from_utf8(&bytes).unwrap()).unwrap();
+
+        assert_eq!(reopened.paragraphs.len(), expected_ids.len());
+        for ((actual, source), expected_id) in reopened
+            .paragraphs
+            .iter()
+            .zip(&section.paragraphs)
+            .zip(expected_ids)
+        {
+            let bytes: [u8; 4] = actual.raw_header_extra[6..10].try_into().unwrap();
+            assert_eq!(u32::from_le_bytes(bytes), expected_id);
+            assert_eq!(actual.text, source.text);
+        }
+    }
 
     #[test]
     fn section_generation_rejects_an_exhausted_member_budget_before_rendering() {
@@ -5345,14 +5899,33 @@ mod tests {
 
     #[test]
     fn task1378_trailing_boundary_emits_empty_run() {
-        // 콘텐츠 끝 이후 경계 — 빈 run(<hp:t></hp:t>)으로 entry 보존 (규칙 5)
+        // 콘텐츠 끝 이후 경계 — 텍스트 자식 없는 빈 run으로 entry 보존 (규칙 5)
         let mut para = Paragraph::default();
         para.text = "abc".to_string();
         para.char_shapes = vec![cs(0, 1), cs(3, 2)];
         assert_eq!(
             runs_of(&para),
-            r#"<hp:run charPrIDRef="1"><hp:t>abc</hp:t></hp:run><hp:run charPrIDRef="2"><hp:t></hp:t></hp:run>"#
+            r#"<hp:run charPrIDRef="1"><hp:t>abc</hp:t></hp:run><hp:run charPrIDRef="2"></hp:run>"#
         );
+        let xml = runs_of(&para);
+        let section = crate::parser::hwpx::section::parse_hwpx_section(&format!(
+            "<hs:sec xmlns:hs=\"urn:hs\" xmlns:hp=\"urn:hp\"><hp:p>{xml}</hp:p></hs:sec>"
+        ))
+        .unwrap();
+        let reopened = &section.paragraphs[0];
+        assert_eq!(reopened.text, "abc");
+        assert_eq!(
+            reopened
+                .char_shapes
+                .iter()
+                .map(|shape| (shape.start_pos, shape.char_shape_id))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (3, 2)]
+        );
+        let runs = reopened.authored_text_runs.as_ref().unwrap();
+        assert_eq!(runs[1].child_count, 0);
+        assert!(runs[1].empty_children.is_empty());
+        assert_eq!(runs_of(reopened), xml);
     }
 
     #[test]

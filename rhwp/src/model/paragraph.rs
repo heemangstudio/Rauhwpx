@@ -3,6 +3,112 @@
 use super::control::{Control, FieldType};
 use serde::{Deserialize, Serialize};
 
+/// 같은 Unicode 문자로 정규화되는 빈칸의 원본 표현. 누락된 항목은 구형/미상이다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpecialSpaceOriginKind {
+    Literal,
+    NbSpace,
+    FwSpace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpecialSpaceOrigin {
+    #[serde(rename = "charIndex")]
+    pub char_idx: usize,
+    pub origin: SpecialSpaceOriginKind,
+}
+
+/// 삭제 역연산과 내부 붙여넣기가 보존하는 로컬 scalar 좌표의 콘텐츠.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextContent {
+    pub text: String,
+    #[serde(default, rename = "specialSpaceOrigins")]
+    pub special_space_origins: Vec<SpecialSpaceOrigin>,
+}
+
+impl TextContent {
+    pub fn literal(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            special_space_origins: text
+                .chars()
+                .enumerate()
+                .filter_map(|(char_idx, ch)| {
+                    matches!(ch, '\u{00a0}' | '\u{2007}').then_some(SpecialSpaceOrigin {
+                        char_idx,
+                        origin: SpecialSpaceOriginKind::Literal,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_special_space_origins(&self.text, &self.special_space_origins)
+    }
+}
+
+pub fn validate_special_space_origins(
+    text: &str,
+    origins: &[SpecialSpaceOrigin],
+) -> Result<(), &'static str> {
+    let mut chars = text.chars().enumerate();
+    let mut previous = None;
+    for record in origins {
+        if previous.is_some_and(|index| index >= record.char_idx) {
+            return Err("빈칸 출처 인덱스는 중복 없이 증가해야 합니다");
+        }
+        let ch = chars
+            .find(|(index, _)| *index == record.char_idx)
+            .map(|(_, ch)| ch);
+        let valid = match record.origin {
+            SpecialSpaceOriginKind::Literal => matches!(ch, Some('\u{00a0}' | '\u{2007}')),
+            SpecialSpaceOriginKind::NbSpace => ch == Some('\u{00a0}'),
+            SpecialSpaceOriginKind::FwSpace => ch == Some('\u{2007}'),
+        };
+        if !valid {
+            return Err("빈칸 출처가 실제 문자와 일치하지 않습니다");
+        }
+        previous = Some(record.char_idx);
+    }
+    Ok(())
+}
+
+/// 작성된 HWPX run의 빈 텍스트 자식. UTF-16 위치와 직접 자식 순서를 함께 보존한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmptyTextChild {
+    pub utf16_pos: u32,
+    pub child_index: usize,
+}
+
+/// 섹션 템플릿으로 생성하되, 작성된 run 안의 원래 자식 위치에 놓는 prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionPrefixChildKind {
+    Section { nested_column: bool },
+    Column,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectionPrefixChild {
+    pub child_index: usize,
+    pub kind: SectionPrefixChildKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthoredTextRun {
+    pub start_pos: u32,
+    pub end_pos: u32,
+    pub char_shape_id: u32,
+    pub child_count: usize,
+    pub text_starts: Vec<u32>,
+    pub empty_children: Vec<EmptyTextChild>,
+    #[serde(default)]
+    pub prefix_children: Vec<SectionPrefixChild>,
+    /// 단독 pageNum ctrl의 (UTF-16 위치, 직접 자식 인덱스). 중복 슬롯 정규화용.
+    #[serde(default)]
+    pub page_number_children: Vec<(u32, usize)>,
+}
+
 /// 문단 (HWPTAG_PARA_HEADER + 하위 레코드)
 #[derive(Debug, Default, Clone)]
 pub struct Paragraph {
@@ -20,6 +126,8 @@ pub struct Paragraph {
     pub raw_break_type: u8,
     /// 문단 텍스트 (UTF-16에서 변환된 문자열)
     pub text: String,
+    /// 문자 scalar 인덱스별 출처. 기록이 없는 특수 빈칸은 구형/미상이다.
+    pub special_space_origins: Vec<SpecialSpaceOrigin>,
     /// 텍스트 문자별 UTF-16 코드 유닛 위치 (LineSeg/CharShapeRef 위치와 매핑용)
     /// char_offsets[i] = text[i]에 해당하는 원본 UTF-16 코드 유닛 인덱스
     pub char_offsets: Vec<u32>,
@@ -27,6 +135,14 @@ pub struct Paragraph {
     pub char_shapes: Vec<CharShapeRef>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
+    /// 저장 host 글줄 앞의 개체 흐름 영역. XML에는 별도 속성으로 저장하지 않는다.
+    pub leading_block_host_layout: Option<LeadingBlockHostLayout>,
+    /// 인증 해제 직전/직후 reset capture 좌표. section 재계산이 한 번 소비한다.
+    pub leading_host_rollback_bound: Option<(i32, i32)>,
+    /// TAC 줄의 실제 원본 cache 부재. runtime tag는 항상 합성 상태를 유지한다.
+    pub tac_line_origin: Option<TacLineOrigin>,
+    /// 원본 수식 서체로 갱신한 줄 시작의 출처. 직렬화하지 않는 런타임 캐시다.
+    pub cached_equation_line_origin: Option<Box<CachedEquationLineOrigin>>,
     /// 영역 태그 정보
     pub range_tags: Vec<RangeTag>,
     /// 필드 텍스트 범위 (0x03~0x04 사이 텍스트 인덱스 + 컨트롤 인덱스)
@@ -49,6 +165,10 @@ pub struct Paragraph {
     pub raw_header_extra: Vec<u8>,
     /// 원본에 PARA_TEXT 레코드가 존재했는지 (라운드트립 보존용)
     pub has_para_text: bool,
+    /// 실제 PARA_TEXT의 마지막 0D 위치. 없거나 확인하지 못한 원본은 None.
+    pub para_text_terminal: Option<u32>,
+    /// 명시적으로 작성된 빈 hp:t/run 순서. 의미 편집 뒤에는 좌표를 폐기한다.
+    pub authored_text_runs: Option<Vec<AuthoredTextRun>>,
     /// TAB 확장 데이터 (라운드트립 보존용)
     /// 각 탭 문자의 7 code unit (탭 너비, 종류 등) — text 내 '\t' 순서와 1:1 대응
     pub tab_extended: Vec<[u16; 7]>,
@@ -61,6 +181,299 @@ pub struct Paragraph {
     /// None = 앞 번호 목록에 이어 (기본)
     /// Some(NumberingRestart) = 이전 번호 이어 / 새 번호 시작
     pub numbering_restart: Option<NumberingRestart>,
+}
+
+/// 원본 줄 사다리가 증명한 개체 → host 글줄 관계.
+/// `vertical_pos`는 글줄 좌표이고, 개체 anchor는 이 reserve를 뺀 좌표다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingBlockHostLayout {
+    pub control_index: usize,
+    pub reserve_hu: i32,
+    pub host_para_shape_id: u16,
+    pub host_style_id: u8,
+    pub control_order: Vec<u8>,
+    pub structural_controls: Vec<LeadingStructuralInputs>,
+    pub section: LeadingSectionInputs,
+    pub table: LeadingTableInputs,
+    pub para_styles: Vec<(u16, LeadingParaStyleInputs)>,
+    pub char_styles: Vec<(u32, LeadingCharStyleInputs)>,
+    pub border_widths: Vec<(u16, [(u8, u8); 4])>,
+}
+
+/// 같은 줄 수/지오메트리에서만 교체한 수식 문단 줄 시작의 되돌림 정보.
+/// Paragraph의 Clone이 snapshot과 함께 보존한다. 파일/ParaMeta에는 쓰지 않는다.
+#[derive(Debug, Clone)]
+pub struct CachedEquationLineOrigin {
+    pub(crate) source_bytes: Vec<u8>,
+    pub(crate) source_lines: Vec<LineSeg>,
+    pub(crate) installed_starts: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TacLineOrigin {
+    Owner(Box<TacTableLineOrigin>),
+    Leaf(Box<TacParagraphSource>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TacTableLineOrigin {
+    pub section: LeadingSectionInputs,
+    /// 원본 predecessor, host, successor. 부재 cache는 빈 배열 그대로 보존한다.
+    pub source: Vec<TacParagraphSource>,
+    #[serde(with = "tac_exact_style_inputs")]
+    pub para_styles: Vec<(u16, LeadingParaStyleInputs)>,
+    #[serde(with = "tac_exact_style_inputs")]
+    pub char_styles: Vec<(u32, LeadingCharStyleInputs)>,
+    pub border_widths: Vec<(u16, [(u8, u8); 4])>,
+}
+
+// 이 TAC 출처만 JSON 숫자의 재파싱 반올림을 피한다. 공용 style 표현은 그대로 둔다.
+mod tac_exact_style_inputs {
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    const BITS: &str = "$rhwpF64Bits";
+
+    pub fn serialize<T: Serialize, S: serde::Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        fn encode(value: &mut Value) {
+            match value {
+                Value::Number(n) if n.is_f64() => {
+                    let mut tagged = serde_json::Map::new();
+                    tagged.insert(BITS.to_owned(), Value::from(n.as_f64().unwrap().to_bits()));
+                    *value = Value::Object(tagged);
+                }
+                Value::Array(values) => values.iter_mut().for_each(encode),
+                Value::Object(values) => values.values_mut().for_each(encode),
+                _ => {}
+            }
+        }
+        let mut value = serde_json::to_value(value).map_err(serde::ser::Error::custom)?;
+        encode(&mut value);
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: serde::de::DeserializeOwned, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T, D::Error> {
+        fn decode(value: &mut Value) -> Result<(), &'static str> {
+            if let Value::Object(values) = value {
+                if values.len() == 1 && values.contains_key(BITS) {
+                    let bits = values[BITS].as_u64().ok_or("invalid TAC float bits")?;
+                    let number = f64::from_bits(bits);
+                    if !number.is_finite() {
+                        return Err("nonfinite TAC float bits");
+                    }
+                    *value = Value::Number(serde_json::Number::from_f64(number).unwrap());
+                    return Ok(());
+                }
+            }
+            match value {
+                Value::Array(values) => {
+                    for value in values {
+                        decode(value)?;
+                    }
+                }
+                Value::Object(values) => {
+                    for value in values.values_mut() {
+                        decode(value)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let mut value = Value::deserialize(deserializer)?;
+        decode(&mut value).map_err(serde::de::Error::custom)?;
+        serde_json::from_value(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TacParagraphSource {
+    pub text: String,
+    pub char_count: u32,
+    pub char_offsets: Vec<u32>,
+    pub char_shapes: Vec<(u32, u32)>,
+    pub para_shape_id: u16,
+    pub style_id: u8,
+    pub column_type: ColumnBreakType,
+    pub raw_break_type: u8,
+    pub tab_extended: Vec<[u16; 7]>,
+    pub orphan_ends: Vec<(usize, u32, u32, u32)>,
+    pub controls: Vec<TacControlSource>,
+    pub lines: Vec<[i64; 9]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TacControlSource {
+    Table(Box<TacTableSource>),
+    Column(LeadingColumnInputs),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TacTableSource {
+    /// 공통 geometry projection. 문단 입력은 아래 배열에 한 번만 보관한다.
+    pub inputs: LeadingTableInputs,
+    pub cell_headers: Vec<bool>,
+    pub cell_fields: Vec<Option<String>>,
+    pub page_break: u8,
+    pub paragraphs: Vec<Vec<TacParagraphSource>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LeadingStructuralInputs {
+    Section(LeadingSectionGeometryInputs),
+    Column(LeadingColumnInputs),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingSectionInputs {
+    pub geometry: LeadingSectionGeometryInputs,
+    pub columns: Vec<LeadingColumnInputs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingSectionGeometryInputs {
+    pub page_size: [u32; 2],
+    pub page_margins: [u32; 7],
+    pub pagination_bottom_tolerance: u32,
+    pub page_attr: u32,
+    pub landscape: bool,
+    pub binding: u8,
+    pub section_flags: u32,
+    pub grid_and_column_spacing: [i16; 3],
+    pub default_tab_spacing: u32,
+    pub page_number: u16,
+    pub page_number_type: u8,
+    pub text_direction: u8,
+    pub hide: [bool; 6],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingColumnInputs {
+    pub column_count: u16,
+    pub column_type: u8,
+    pub direction: u8,
+    pub same_width: bool,
+    pub spacing: i16,
+    pub widths: Vec<i16>,
+    pub gaps: Vec<i16>,
+    pub proportional_widths: bool,
+    pub raw_attr: u16,
+}
+
+/// 선언된 배치/할당과 셀 내용의 정확한 비교값. 측정 cache key가 아니다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingTableInputs {
+    pub placement: LeadingObjectInputs,
+    pub attr: u32,
+    pub rows: u16,
+    pub cols: u16,
+    pub cell_spacing: i16,
+    pub padding: [i16; 4],
+    pub row_sizes: Vec<i16>,
+    pub border_fill_id: u16,
+    pub repeat_header: bool,
+    pub outer_margin: [i16; 4],
+    pub zones: Vec<(u16, u16, u16, u16, u16)>,
+    pub cells: Vec<LeadingCellInputs>,
+    pub local_rows: Vec<u16>,
+    pub local_cols: Vec<u16>,
+    pub local_widths: Vec<(usize, u32)>,
+    pub local_heights: Vec<(usize, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingObjectInputs {
+    pub attr: u32,
+    pub offset: [u32; 2],
+    pub size: [u32; 2],
+    pub margin: [i16; 4],
+    pub z_order: i32,
+    pub prevent_page_break: i32,
+    pub positioning: [u8; 8],
+    pub flow: [bool; 5],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingCellInputs {
+    pub address: [u16; 4],
+    pub size: [u32; 2],
+    pub padding: [i16; 4],
+    pub border_fill_id: u16,
+    pub text_direction: u8,
+    pub vertical_align: u8,
+    pub line_wrap: u8,
+    pub apply_inner_margin: bool,
+    pub paragraphs: Vec<LeadingCellParagraphInputs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingCellParagraphInputs {
+    pub text: String,
+    pub char_offsets: Vec<u32>,
+    pub char_shapes: Vec<(u32, u32)>,
+    pub para_shape_id: u16,
+    pub style_id: u8,
+    pub column_type: ColumnBreakType,
+    pub lines: Vec<(u32, i32, i32, i32, i32, i32, i32, i32, u32)>,
+    pub pictures: Vec<LeadingPictureInputs>,
+    pub tab_extended: Vec<[u16; 7]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingPictureInputs {
+    pub placement: LeadingObjectInputs,
+    pub border_width: i32,
+    pub border_x: [i32; 4],
+    pub border_y: [i32; 4],
+    pub crop: [i32; 4],
+    pub padding: [i16; 4],
+    pub bin_data_id: u16,
+    pub img_dim: (u32, u32),
+    pub transform: [f64; 6],
+    pub shape_size: [u32; 4],
+    pub rotation: (i16, i32, i32),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingParaStyleInputs {
+    pub alignment: u8,
+    pub line_spacing_type: u8,
+    pub line_spacing: f64,
+    pub margins: [f64; 3],
+    pub spacing: [f64; 2],
+    pub head: (u8, u8, u16),
+    pub border_fill_id: u16,
+    pub border_spacing: [f64; 4],
+    pub border_ignore_margin: bool,
+    pub default_tab_width: f64,
+    pub tabs: Vec<(f64, u8, u8)>,
+    pub condense_min_space: u8,
+    pub english_break_unit: u8,
+    pub korean_break_unit: u8,
+    pub vertical_align: u8,
+    pub layout_flags: [bool; 10],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeadingCharStyleInputs {
+    pub metrics_policy: u8,
+    pub families: Vec<String>,
+    pub subst_families: Vec<String>,
+    pub hft_families: Vec<String>,
+    pub font_size: f64,
+    pub font_family: String,
+    pub letter_spacing: f64,
+    pub ratio: f64,
+    pub char_offsets: Vec<f64>,
+    pub relative_sizes: Vec<f64>,
+    pub letter_spacings: Vec<f64>,
+    pub ratios: Vec<f64>,
+    pub geometry_flags: [bool; 9],
+    pub border_fill_id: u16,
 }
 
 /// 문단 스코프 메타데이터 — 문단 병합의 역연산(undo)에서 복원해야 하는 값들.
@@ -83,6 +496,15 @@ pub struct ParaMeta {
     pub raw_header_extra: Vec<u8>,
     /// TAB 확장 데이터 — 문단 전체가 통째로 이동하므로 분할 없이 그대로 옮긴다.
     pub tab_extended: Vec<[u16; 7]>,
+    #[serde(default)]
+    pub leading_block_host_layout: Option<LeadingBlockHostLayout>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tac_line_origin: Option<TacLineOrigin>,
+    /// 내용 없는 뒷 문단 병합이 버린 글자 모양 — 본문 병합 undo에서만 캡처한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_char_shapes: Option<Vec<(u32, u32)>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_authored_text_runs: Option<Vec<AuthoredTextRun>>,
 }
 
 /// 문단 번호 시작 방식
@@ -370,6 +792,64 @@ pub struct OrphanFieldEnd {
 }
 
 impl Paragraph {
+    pub fn validate_special_spaces(&self) -> Result<(), &'static str> {
+        validate_special_space_origins(&self.text, &self.special_space_origins)
+    }
+
+    pub fn space_origin_at(&self, char_idx: usize) -> Option<SpecialSpaceOriginKind> {
+        self.special_space_origins
+            .binary_search_by_key(&char_idx, |r| r.char_idx)
+            .ok()
+            .map(|i| self.special_space_origins[i].origin)
+    }
+
+    pub fn capture_text_content(&self, start: usize, count: usize) -> TextContent {
+        let start = start.min(self.text.chars().count());
+        let text: String = self.text.chars().skip(start).take(count).collect();
+        let end = start + text.chars().count();
+        TextContent {
+            text,
+            special_space_origins: self
+                .special_space_origins
+                .iter()
+                .filter(|r| r.char_idx >= start && r.char_idx < end)
+                .map(|r| SpecialSpaceOrigin {
+                    char_idx: r.char_idx - start,
+                    origin: r.origin,
+                })
+                .collect(),
+        }
+    }
+
+    /// 삽입된 구간만 바꾸므로 비어 있는 출처 목록도 미상으로 정확히 복원한다.
+    pub(crate) fn restore_inserted_origins(&mut self, at: usize, content: &TextContent) {
+        let end = at + content.text.chars().count();
+        self.special_space_origins
+            .retain(|r| r.char_idx < at || r.char_idx >= end);
+        self.special_space_origins
+            .extend(
+                content
+                    .special_space_origins
+                    .iter()
+                    .map(|r| SpecialSpaceOrigin {
+                        char_idx: at + r.char_idx,
+                        origin: r.origin,
+                    }),
+            );
+        self.special_space_origins.sort_by_key(|r| r.char_idx);
+    }
+
+    pub fn insert_text_content_at(
+        &mut self,
+        at: usize,
+        content: &TextContent,
+    ) -> Result<usize, &'static str> {
+        content.validate()?;
+        let at = self.insert_text_at(at, &content.text);
+        self.restore_inserted_origins(at, content);
+        Ok(at)
+    }
+
     /// 한컴 2022 실측: 종류 2, 하위 24비트는 COLORREF(BGR), 끝 위치는 exclusive.
     pub(crate) fn import_markpen_range_tags(&mut self) {
         self.markpen_marks = self
@@ -621,6 +1101,8 @@ impl Paragraph {
     /// 지점 이후 글자모양 run 경계가 텍스트와 어긋났다(글자모양 오염). `insert_text_at`
     /// 의 시프트 규약과 동형이다.
     pub(crate) fn shift_for_inline_control_insert(&mut self, char_offset: usize) {
+        self.authored_text_runs = None;
+        self.para_text_terminal = None;
         if self.char_offsets.is_empty() {
             return;
         }
@@ -761,6 +1243,23 @@ impl Paragraph {
         utf16_insert_pos: u32,
         new_text: &str,
     ) -> usize {
+        if new_text.is_empty() {
+            return char_offset;
+        }
+        self.authored_text_runs = None;
+        let inserted = TextContent::literal(new_text);
+        let inserted_count = new_text.chars().count();
+        for record in &mut self.special_space_origins {
+            if record.char_idx >= char_offset {
+                record.char_idx += inserted_count;
+            }
+        }
+        self.special_space_origins
+            .extend(inserted.special_space_origins.into_iter().map(|mut r| {
+                r.char_idx += char_offset;
+                r
+            }));
+        self.special_space_origins.sort_by_key(|r| r.char_idx);
         let text_chars: Vec<char> = self.text.chars().collect();
         let byte_offset: usize = text_chars[..char_offset].iter().map(|c| c.len_utf8()).sum();
         let hyperlink_starts = self
@@ -893,6 +1392,7 @@ impl Paragraph {
         // The paragraph header and stored line/style positions use UTF-16
         // units. Selection offsets and the return value remain codepoints.
         self.char_count += utf16_delta;
+        self.para_text_terminal = self.para_text_terminal.map(|p| p + utf16_delta);
 
         char_offset
     }
@@ -915,6 +1415,7 @@ impl Paragraph {
         }
 
         // 실제 삭제할 문자 수 (범위 클램핑)
+        self.authored_text_runs = None;
         let actual_count = count.min(text_len - char_offset);
         let del_end = char_offset + actual_count;
 
@@ -949,6 +1450,13 @@ impl Paragraph {
             }
         }
 
+        self.special_space_origins
+            .retain(|r| r.char_idx < char_offset || r.char_idx >= del_end);
+        for record in &mut self.special_space_origins {
+            if record.char_idx >= del_end {
+                record.char_idx -= actual_count;
+            }
+        }
         // 1. 텍스트 삭제
         self.text.drain(byte_start..byte_end);
 
@@ -1018,8 +1526,38 @@ impl Paragraph {
 
         // Match the UTF-16 delta used for offsets, including surrogate pairs.
         self.char_count -= utf16_delta;
+        self.para_text_terminal = self
+            .para_text_terminal
+            .map(|p| p.saturating_sub(utf16_delta));
 
         actual_count
+    }
+
+    /// 인증 해제는 저장 글줄 좌표의 역투영과 한 번에 수행한다.
+    /// 실패하면 좌표와 인증을 모두 보존한다 (부분 변환 금지).
+    pub(crate) fn rollback_leading_block_host_layout(&mut self) -> Option<i32> {
+        let reserve = self.leading_block_host_layout.as_ref()?.reserve_hu;
+        let positions: Option<Vec<i32>> = self
+            .line_segs
+            .iter()
+            .map(|line| i32::try_from(i64::from(line.vertical_pos) - i64::from(reserve)).ok())
+            .collect();
+        let positions = positions?;
+        let old_end = self.line_segs.last().map(|line| {
+            let height = if line.text_height > 0 {
+                line.text_height
+            } else {
+                line.line_height
+            };
+            line.vertical_pos
+                .saturating_add(height.saturating_add(line.line_spacing))
+        });
+        self.leading_host_rollback_bound = old_end.map(|end| (end, end.saturating_sub(reserve)));
+        for (line, position) in self.line_segs.iter_mut().zip(positions) {
+            line.vertical_pos = position;
+        }
+        self.leading_block_host_layout = None;
+        Some(reserve)
     }
 
     /// 병합으로 사라질 문단의 스코프 메타데이터를 캡처한다 (undo 복원용).
@@ -1032,11 +1570,53 @@ impl Paragraph {
             numbering_restart: self.numbering_restart,
             raw_header_extra: self.raw_header_extra.clone(),
             tab_extended: self.tab_extended.clone(),
+            leading_block_host_layout: self.leading_block_host_layout.clone(),
+            tac_line_origin: self.tac_line_origin.clone(),
+            // 작성된 빈 run의 스타일과 좌표는 함께 복원해야 한다. 출처 없는
+            // 빈 문단의 public metadata 동작은 유지한다(body merge는 별도 캡처).
+            empty_char_shapes: (self.is_contentless_empty_for_merge()
+                && self.authored_text_runs.is_some())
+            .then(|| {
+                self.char_shapes
+                    .iter()
+                    .map(|shape| (shape.start_pos, shape.char_shape_id))
+                    .collect()
+            }),
+            empty_authored_text_runs: self
+                .is_contentless_empty_for_merge()
+                .then(|| self.authored_text_runs.clone())
+                .flatten(),
         }
+    }
+
+    pub(crate) fn capture_merge_meta(&self) -> ParaMeta {
+        let mut meta = self.capture_meta();
+        if self.is_contentless_empty_for_merge() {
+            meta.empty_authored_text_runs = self.authored_text_runs.clone();
+            meta.empty_char_shapes = Some(
+                self.char_shapes
+                    .iter()
+                    .map(|shape| (shape.start_pos, shape.char_shape_id))
+                    .collect(),
+            );
+        }
+        meta
     }
 
     /// 캡처한 메타데이터를 되돌린다 — 병합 undo 의 `split_at` 직후에 호출한다.
     pub fn apply_meta(&mut self, meta: ParaMeta) {
+        if self.is_contentless_empty_for_merge() {
+            self.authored_text_runs = meta.empty_authored_text_runs;
+            if let Some(shapes) = meta.empty_char_shapes {
+                self.char_shapes = shapes
+                    .into_iter()
+                    .map(|(start_pos, char_shape_id)| CharShapeRef {
+                        start_pos,
+                        char_shape_id,
+                    })
+                    .collect();
+            }
+        }
         self.para_shape_id = meta.para_shape_id;
         self.style_id = meta.style_id;
         self.column_type = meta.column_type;
@@ -1044,6 +1624,8 @@ impl Paragraph {
         self.numbering_restart = meta.numbering_restart;
         self.raw_header_extra = meta.raw_header_extra;
         self.tab_extended = meta.tab_extended;
+        self.leading_block_host_layout = meta.leading_block_host_layout;
+        self.tac_line_origin = meta.tac_line_origin;
     }
 
     /// char_offset 위치에서 문단을 분할한다.
@@ -1055,9 +1637,21 @@ impl Paragraph {
     /// 분할의 시맨틱이다. 병합의 역연산으로 쓰는 호출부는 `apply_meta` 로 사라진
     /// 문단의 원래 값을 되돌려야 한다 (Task #2342).
     pub fn split_at(&mut self, char_offset: usize) -> Paragraph {
+        self.authored_text_runs = None;
         let control_positions = self.split_logical_control_positions();
         let split_pos = self.split_text_pos_for_logical_offset(char_offset, &control_positions);
         let text_chars: Vec<char> = self.text.chars().collect();
+        if let Some(layout) = &self.leading_block_host_layout {
+            let owner_moves = control_positions
+                .get(layout.control_index)
+                .is_none_or(|position| *position >= char_offset);
+            let left_has_text = text_chars[..split_pos.min(text_chars.len())]
+                .iter()
+                .any(|ch| *ch > '\u{001f}' && *ch != '\u{fffc}' && !ch.is_whitespace());
+            if owner_moves || !left_has_text {
+                self.rollback_leading_block_host_layout();
+            }
+        }
 
         // 분할 지점의 UTF-16 위치
         let mut utf16_split: u32 = if split_pos < self.char_offsets.len() {
@@ -1097,6 +1691,14 @@ impl Paragraph {
         // 1. 텍스트 분할
         let byte_offset: usize = text_chars[..split_pos].iter().map(|c| c.len_utf8()).sum();
         let new_text = self.text[byte_offset..].to_string();
+        let origin_split = self
+            .special_space_origins
+            .partition_point(|r| r.char_idx < split_pos);
+        let mut new_special_space_origins = self.special_space_origins.split_off(origin_split);
+        for record in &mut new_special_space_origins {
+            record.char_idx -= split_pos;
+        }
+
         self.text.truncate(byte_offset);
 
         // 2. char_offsets 분할
@@ -1364,6 +1966,7 @@ impl Paragraph {
             && self.controls.is_empty()
             && self.field_ranges.is_empty()
             && self.orphan_field_ends.is_empty());
+        self.para_text_terminal = self.has_para_text.then_some(self.char_count - 1);
         let new_has_para_text = !new_text.is_empty()
             || !new_controls.is_empty()
             || !new_field_ranges.is_empty()
@@ -1393,6 +1996,7 @@ impl Paragraph {
 
         Paragraph {
             text: new_text,
+            special_space_origins: new_special_space_origins,
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
             line_segs: new_line_segs,
@@ -1412,10 +2016,25 @@ impl Paragraph {
             // 복제하지 않고, merge undo인 경우에만 apply_meta가 원래 값을 복원한다.
             raw_header_extra: Vec::new(),
             has_para_text: new_has_para_text,
+            para_text_terminal: new_has_para_text.then_some(new_char_count - 1),
+            authored_text_runs: None,
             tab_extended: new_tab_extended,
             markpen_marks: new_markpen_marks,
             numbering_restart: None,
+            leading_block_host_layout: None,
+            leading_host_rollback_bound: None,
+            tac_line_origin: None,
+            cached_equation_line_origin: None,
         }
+    }
+
+    fn is_contentless_empty_for_merge(&self) -> bool {
+        self.text.is_empty()
+            && self.controls.is_empty()
+            && self.field_ranges.is_empty()
+            && self.orphan_field_ends.is_empty()
+            && self.range_tags.is_empty()
+            && self.markpen_marks.is_empty()
     }
 
     /// 다른 문단의 텍스트와 메타데이터를 현재 문단 끝에 결합한다.
@@ -1423,17 +2042,18 @@ impl Paragraph {
     /// 병합 후 other 문단의 내용은 현재 문단에 포함된다.
     /// 반환값: 병합 지점의 char offset (원래 텍스트의 길이).
     pub fn merge_from(&mut self, other: &Paragraph) -> usize {
-        // 텍스트 없이 컨트롤만 있는 문단(예: 그림 복사 클립보드)도 병합 대상 (#1323)
-        if other.text.is_empty()
-            && other.controls.is_empty()
-            && other.field_ranges.is_empty()
-            && other.orphan_field_ends.is_empty()
-            && other.range_tags.is_empty()
-            && other.markpen_marks.is_empty()
+        // 오른쪽의 개체를 옮기는 병합은 기존 개체 anchor 표현으로 먼저 되돌린다.
+        if other.leading_block_host_layout.is_some()
+            || (self.leading_block_host_layout.is_some() && !other.controls.is_empty())
         {
+            self.rollback_leading_block_host_layout();
+        }
+        // 텍스트 없이 컨트롤만 있는 문단(예: 그림 복사 클립보드)도 병합 대상 (#1323)
+        if other.is_contentless_empty_for_merge() {
             return self.text.chars().count();
         }
 
+        self.authored_text_runs = None;
         let self_text_len = self.text.chars().count();
 
         // 현재 문단 끝의 UTF-16 위치.
@@ -1470,6 +2090,16 @@ impl Paragraph {
 
         // 1. 텍스트 결합
         self.text.push_str(&other.text);
+        self.special_space_origins
+            .extend(
+                other
+                    .special_space_origins
+                    .iter()
+                    .map(|r| SpecialSpaceOrigin {
+                        char_idx: self_text_len + r.char_idx,
+                        origin: r.origin,
+                    }),
+            );
 
         // 2. char_offsets 결합 (other의 오프셋에 utf16_end 추가)
         for &off in &other.char_offsets {
@@ -1637,6 +2267,7 @@ impl Paragraph {
         {
             self.has_para_text = true;
         }
+        self.para_text_terminal = self.has_para_text.then_some(self.char_count - 1);
 
         self_text_len
     }
@@ -1866,6 +2497,30 @@ impl Paragraph {
             .unwrap_or(self.char_offsets.len())
     }
 
+    /// 실제 글자 서식 경계가 바뀐 경우에만 원본 run 자식 순서를 폐기한다.
+    pub(crate) fn invalidate_authored_run_styles(&mut self) {
+        let Some(runs) = &self.authored_text_runs else {
+            return;
+        };
+        let mut authored: Vec<_> = runs
+            .iter()
+            .map(|r| (r.start_pos, r.char_shape_id))
+            .collect();
+        authored.dedup_by_key(|r| r.1);
+        let mut current: Vec<_> = self
+            .char_shapes
+            .iter()
+            .map(|r| (r.start_pos, r.char_shape_id))
+            .collect();
+        current.dedup_by_key(|r| r.1);
+        if current.is_empty() {
+            current.push((0, 0));
+        }
+        if authored != current {
+            self.authored_text_runs = None;
+        }
+    }
+
     /// [start_char_offset, end_char_offset) 범위에 new_char_shape_id를 적용한다.
     ///
     /// CharShapeRef 배열을 분할/교체하여 지정 범위만 새 ID로 변경한다.
@@ -2025,6 +2680,7 @@ impl Paragraph {
         }
 
         self.char_shapes = merged;
+        self.invalidate_authored_run_styles();
     }
 
     /// 문단의 글자 모양을 단일 CharShapeRef로 초기화한다.
@@ -2034,6 +2690,7 @@ impl Paragraph {
             start_pos: 0,
             char_shape_id,
         });
+        self.invalidate_authored_run_styles();
     }
 
     /// 스타일 기본 글자 모양 run만 새 ID로 바꾸고 직접 지정된 run은 유지한다.
@@ -2044,6 +2701,9 @@ impl Paragraph {
     ) {
         if self.char_shapes.is_empty() {
             self.set_single_char_shape(new_char_shape_id);
+            return;
+        }
+        if old_char_shape_id == new_char_shape_id {
             return;
         }
 
@@ -2057,6 +2717,7 @@ impl Paragraph {
 
         if replaced {
             self.merge_adjacent_char_shapes();
+            self.invalidate_authored_run_styles();
         }
     }
 
@@ -2096,3 +2757,75 @@ impl Paragraph {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod empty_text_fragment_edit_tests {
+    use super::*;
+
+    #[test]
+    fn empty_text_fragment_utf16_empty_insert_preserves_authored_children() {
+        let mut para = Paragraph::new_empty();
+        para.authored_text_runs = Some(vec![AuthoredTextRun {
+            start_pos: 0,
+            end_pos: 0,
+            char_shape_id: 0,
+            child_count: 1,
+            text_starts: Vec::new(),
+            prefix_children: Vec::new(),
+            page_number_children: Vec::new(),
+            empty_children: vec![EmptyTextChild {
+                utf16_pos: 0,
+                child_index: 0,
+            }],
+        }]);
+        let before = para.authored_text_runs.clone();
+        para.insert_text_at_utf16(0, 0, "");
+        assert_eq!(para.authored_text_runs, before);
+    }
+}
+
+#[cfg(test)]
+mod empty_text_fragment_merge_meta_tests {
+    use super::*;
+
+    #[test]
+    fn empty_text_fragment_body_merge_metadata_restores_ordered_empty_runs_and_styles() {
+        let section = crate::parser::hwpx::section::parse_hwpx_section(
+            "<hs:sec xmlns:hs=\"urn:hs\" xmlns:hp=\"urn:hp\"><hp:p><hp:run charPrIDRef=\"8\"><hp:t/><hp:t/></hp:run><hp:run charPrIDRef=\"8\"><hp:t/></hp:run></hp:p></hs:sec>"
+        ).unwrap();
+        let empty = &section.paragraphs[0];
+        let meta = empty.capture_merge_meta();
+        assert_eq!(meta.empty_char_shapes, Some(vec![(0, 8)]));
+        let meta: ParaMeta = serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
+        let mut host = Paragraph::new_empty();
+        host.char_shapes = vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 2,
+        }];
+        host.insert_text_at(0, "A");
+        assert_eq!(host.merge_from(empty), 1);
+        let mut restored = host.split_at(1);
+        assert_eq!(restored.char_shapes[0].char_shape_id, 2);
+        restored.apply_meta(meta);
+        assert_eq!(
+            restored
+                .char_shapes
+                .iter()
+                .map(|shape| (shape.start_pos, shape.char_shape_id))
+                .collect::<Vec<_>>(),
+            vec![(0, 8)]
+        );
+        assert_eq!(restored.authored_text_runs, empty.authored_text_runs);
+
+        let mut native_empty = Paragraph::new_empty();
+        native_empty.char_shapes = vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 5,
+        }];
+        assert!(native_empty.capture_meta().empty_char_shapes.is_none());
+        assert_eq!(
+            native_empty.capture_merge_meta().empty_char_shapes,
+            Some(vec![(0, 5)])
+        );
+    }
+}

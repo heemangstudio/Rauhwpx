@@ -254,8 +254,7 @@ impl HeightCursor {
         }
         let curr_first_vpos = paragraphs
             .get(item_para)
-            .and_then(|p| p.line_segs.first())
-            .map(|ls| ls.vertical_pos);
+            .and_then(super::float_placement::paragraph_flow_anchor);
         let prev_spacing_after_hu = styles
             .para_styles
             .get(prev_para.para_shape_id as usize)
@@ -329,7 +328,19 @@ impl HeightCursor {
                     .controls
                     .iter()
                     .any(|c| matches!(c, Control::Picture(p) if p.common.treat_as_char));
-            let curr_sb_hu = if self.skip_spacing_before_prededuct || !prev_is_tac_picture_text_host
+            // 일반 본문도 실제 하단에서 후행 줄간격을 이미 소비했으면 같은 sb 규칙을 쓴다.
+            // 빈 spacer·개체 host·미측정 경로는 기존 bridge를 유지한다.
+            let prev_text_tail_consumed = prev_has_text
+                && !prev_para.text.trim().is_empty()
+                && prev_para.controls.is_empty()
+                && self.prev_item_content_bottom_y.is_some_and(|bottom| {
+                    bottom.is_finite()
+                        && ((y_offset - bottom) - hwpunit_to_px(seg.line_spacing.max(0), self.dpi))
+                            .abs()
+                            <= 0.5
+                });
+            let curr_sb_hu = if self.skip_spacing_before_prededuct
+                || !(prev_is_tac_picture_text_host || prev_text_tail_consumed)
             {
                 0
             } else {
@@ -1931,6 +1942,167 @@ mod tests {
         let ps = vec![para(0, 1000, 1000, 0, 5000), para(0, 2000, 1000, 0, 5000)];
         let got = c.vpos_adjust(90.0, 1, &ps, &styles(10.0));
         assert!((got - (100.0 + 2000.0 / 75.0)).abs() < 1e-6, "got={got}");
+    }
+
+    fn text_tail_spacing_paragraphs() -> Vec<Paragraph> {
+        let mut paragraphs = vec![
+            para(0, 10_000, 1200, 600, 5000),
+            para(0, 12_250, 1200, 600, 5000),
+        ];
+        paragraphs[0].text = "Previous text".into();
+        paragraphs[1].text = "Following text".into();
+        paragraphs
+    }
+
+    #[test]
+    fn lazy_origin_text_tail_consumed_spacing_before_is_counted_once() {
+        for dpi in [96.0, 144.0] {
+            for (vpos, height, tail, y_hu, expected_base) in [
+                (10_000, 1200, 600, 2700, 9100),
+                (20_000, 900, 300, 1800, 19_400),
+            ] {
+                for before_hu in [225, 450, 900] {
+                    for painted_error in [-0.49, 0.0, 0.49] {
+                        let mut paragraphs = text_tail_spacing_paragraphs();
+                        paragraphs[0].line_segs[0].vertical_pos = vpos;
+                        paragraphs[0].line_segs[0].line_height = height;
+                        paragraphs[0].line_segs[0].line_spacing = tail;
+                        paragraphs[1].line_segs[0].vertical_pos = vpos + height + tail + before_hu;
+                        // 다음 문단의 필드는 직전 일반 본문의 소비 증거를 바꾸지 않는다.
+                        paragraphs[1]
+                            .controls
+                            .push(Control::Field(Default::default()));
+                        let mut c = cursor(None);
+                        c.dpi = dpi;
+                        c.prev_layout_para = Some(0);
+                        let y = COL_Y + hwpunit_to_px(y_hu, dpi);
+                        c.prev_item_content_bottom_y =
+                            Some(y - hwpunit_to_px(tail, dpi) + painted_error);
+                        let got = c.vpos_adjust(
+                            y,
+                            1,
+                            &paragraphs,
+                            &styles(hwpunit_to_px(before_hu, dpi)),
+                        );
+                        assert_eq!(c.vpos_lazy_base, Some(expected_base),
+                        "dpi={dpi}, vpos={vpos}, tail={tail}, before={before_hu}, painted_error={painted_error}");
+                        assert!((got - y).abs() < 1e-6, "{got} != {y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_origin_text_tail_keeps_unknown_or_unconsumed_bridge() {
+        let paragraphs = text_tail_spacing_paragraphs();
+        let y = COL_Y + hwpunit_to_px(2700, DPI);
+        let painted_bottom = y - hwpunit_to_px(600, DPI);
+        for bottom in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(painted_bottom - 0.51),
+            Some(painted_bottom + 0.51),
+        ] {
+            let mut c = cursor(None);
+            c.prev_layout_para = Some(0);
+            c.prev_item_content_bottom_y = bottom;
+            let got = c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert_eq!(c.vpos_lazy_base, Some(8500), "bottom={bottom:?}");
+            assert!((got - y - hwpunit_to_px(600, DPI)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn lazy_origin_text_tail_keeps_spacer_and_control_host_bridges() {
+        let y = COL_Y + hwpunit_to_px(2700, DPI);
+        for text in ["", " \t\u{2007}", "\u{001F}", "\u{FFFC}"] {
+            let mut paragraphs = text_tail_spacing_paragraphs();
+            paragraphs[0].text = text.into();
+            let mut c = cursor(None);
+            c.prev_layout_para = Some(0);
+            c.prev_item_content_bottom_y = Some(y - hwpunit_to_px(600, DPI));
+            c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert_eq!(c.vpos_lazy_base, Some(8500), "text={text:?}");
+        }
+        let mut inline_table = crate::model::table::Table::default();
+        inline_table.common.treat_as_char = true;
+        for control in [
+            Control::Field(Default::default()),
+            Control::Table(Box::default()),
+            Control::Table(Box::new(inline_table)),
+        ] {
+            let mut paragraphs = text_tail_spacing_paragraphs();
+            paragraphs[0].controls.push(control);
+            let mut c = cursor(None);
+            c.prev_layout_para = Some(0);
+            c.prev_item_content_bottom_y = Some(y - hwpunit_to_px(600, DPI));
+            c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert_eq!(c.vpos_lazy_base, Some(8500));
+        }
+    }
+
+    #[test]
+    fn lazy_origin_text_tail_keeps_spacing_and_anchor_guards() {
+        let y = COL_Y + hwpunit_to_px(2700, DPI);
+        for case in [
+            "prededuct skipped",
+            "true gap",
+            "unknown anchor",
+            "missing style",
+        ] {
+            let mut paragraphs = text_tail_spacing_paragraphs();
+            let mut c = cursor(None);
+            c.prev_layout_para = Some(0);
+            c.prev_item_content_bottom_y = Some(y - hwpunit_to_px(600, DPI));
+            match case {
+                "prededuct skipped" => c.skip_spacing_before_prededuct = true,
+                "true gap" => paragraphs[1].line_segs[0].vertical_pos += 1,
+                "unknown anchor" => paragraphs[1].line_segs.clear(),
+                "missing style" => paragraphs[1].para_shape_id = 1,
+                _ => unreachable!(),
+            }
+            c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert_eq!(c.vpos_lazy_base, Some(8500), "{case}");
+        }
+    }
+
+    #[test]
+    fn lazy_origin_text_tail_retains_tac_and_existing_origin_policy() {
+        let y = COL_Y + hwpunit_to_px(2700, DPI);
+        let mut paragraphs = text_tail_spacing_paragraphs();
+        let mut picture = crate::model::image::Picture::default();
+        picture.common.treat_as_char = true;
+        paragraphs[0]
+            .controls
+            .push(Control::Picture(Box::new(picture)));
+        for skip in [false, true] {
+            let mut c = cursor(None);
+            c.prev_layout_para = Some(0);
+            c.skip_spacing_before_prededuct = skip;
+            // TAC 문단은 종전처럼 실제 콘텐츠 하단을 몰라도 sb 연속성을 인정한다.
+            assert!(c.prev_item_content_bottom_y.is_none());
+            let got = c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert_eq!(c.vpos_lazy_base, Some(if skip { 8500 } else { 9100 }));
+            if !skip {
+                assert!((got - y).abs() < 1e-6);
+            }
+        }
+        let paragraphs = text_tail_spacing_paragraphs();
+        for origin in ["page", "lazy", "own layout"] {
+            let mut c = cursor((origin == "page").then_some(9100));
+            c.prev_layout_para = Some(0);
+            c.prev_item_content_bottom_y = Some(y - hwpunit_to_px(600, DPI));
+            if origin == "lazy" {
+                c.vpos_lazy_base = Some(9100);
+            }
+            c.own_line_layout = origin == "own layout";
+            let got = c.vpos_adjust(y, 1, &paragraphs, &styles(hwpunit_to_px(450, DPI)));
+            assert!((got - y).abs() < 1e-6, "{origin}: {got} != {y}");
+            assert_eq!(c.vpos_lazy_base, (origin != "page").then_some(9100));
+        }
     }
 
     /// lazy_path: page_base 없음 → sequential y 에서 lazy_base 역산, 이후 적용.

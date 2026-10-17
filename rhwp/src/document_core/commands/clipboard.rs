@@ -17,7 +17,7 @@ use crate::model::paragraph::{FieldRange, LineSeg, Paragraph};
 const PASTE_CASCADE_STEP_HU: u32 = 567;
 
 /// 커서는 인라인 개체만 세지만 split_at은 떠 있는 개체도 한 슬롯으로 센다.
-fn clipboard_split_offset(paragraph: &Paragraph, logical_offset: usize) -> usize {
+pub(super) fn clipboard_split_offset(paragraph: &Paragraph, logical_offset: usize) -> usize {
     let (text_offset, _) = super::super::helpers::logical_to_text_offset(paragraph, logical_offset);
     let positions = super::super::helpers::find_logical_control_positions(paragraph);
     text_offset
@@ -74,11 +74,20 @@ fn recompute_clipboard_control_mask(para: &Paragraph) -> u32 {
     if para.text.contains('\n') {
         mask |= 1u32 << 0x000A;
     }
-    // 하이픈(코드 24)·고정폭 빈칸(코드 31)은 리터럴 U+00AD/U+2007 과 같은 문자로 실리므로
-    // 직렬화기가 원본 마스크 비트로 코드 유닛을 고른다. 문자가 남아 있으면 출처 비트를 잇는다.
-    for (bit, ch) in [(0x0018, '\u{00AD}'), (0x001F, '\u{2007}')] {
+    // 미상 하이픈(코드 24)은 기존 마스크를 잇고, 빈칸은 각 문자의 명시적 출처를 우선한다.
+    for (bit, ch) in [(0x0018, '\u{00AD}')] {
         if para.control_mask & (1u32 << bit) != 0 && para.text.contains(ch) {
             mask |= 1u32 << bit;
+        }
+    }
+    for (i, ch) in para.text.chars().enumerate() {
+        match para.space_origin_at(i) {
+            Some(crate::model::paragraph::SpecialSpaceOriginKind::NbSpace) => mask |= 1u32 << 0x1e,
+            Some(crate::model::paragraph::SpecialSpaceOriginKind::FwSpace) => mask |= 1u32 << 0x1f,
+            None if ch == '\u{2007}' && para.control_mask & (1u32 << 0x1f) != 0 => {
+                mask |= 1u32 << 0x1f
+            }
+            _ => {}
         }
     }
     mask
@@ -93,6 +102,8 @@ pub(super) fn strip_structural_controls_for_text_clipboard(para: &mut Paragraph)
 
     for (old_idx, ctrl) in old_controls.into_iter().enumerate() {
         if matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_)) {
+            para.authored_text_runs = None;
+            para.para_text_terminal = None;
             continue;
         }
         index_map[old_idx] = Some(new_controls.len());
@@ -897,6 +908,7 @@ impl DocumentCore {
         {
             // 단일 문단 텍스트 붙여넣기 (컨트롤 없음)
             let clip_text = clip_paras[0].text.clone();
+            let clip_content = clip_paras[0].capture_text_content(0, clip_text.chars().count());
             let clip_char_shapes = clip_paras[0].char_shapes.clone();
             let clip_char_offsets = clip_paras[0].char_offsets.clone();
             let new_chars = clip_text.chars().count();
@@ -907,7 +919,8 @@ impl DocumentCore {
 
             // 텍스트 삽입
             self.document.sections[section_idx].paragraphs[para_idx]
-                .insert_text_at(text_offset, &clip_text);
+                .insert_text_content_at(text_offset, &clip_content)
+                .map_err(|e| HwpError::RenderError(e.to_string()))?;
 
             // 클립보드의 글자 모양 적용
             self.apply_clipboard_char_shapes(
@@ -1350,6 +1363,7 @@ impl DocumentCore {
             self.document.sections[section_idx]
                 .paragraphs
                 .insert(para_idx, clip_para);
+            self.insert_composed_paragraph(section_idx, para_idx);
             insert_para_idx = para_idx;
         } else {
             if char_offset > 0 && !para.text.is_empty() {
@@ -1359,14 +1373,17 @@ impl DocumentCore {
                 self.document.sections[section_idx]
                     .paragraphs
                     .insert(para_idx + 1, new_para);
+                self.insert_composed_paragraph(section_idx, para_idx + 1);
                 self.document.sections[section_idx]
                     .paragraphs
                     .insert(para_idx + 1, clip_para);
+                self.insert_composed_paragraph(section_idx, para_idx + 1);
                 insert_para_idx = para_idx + 1;
             } else {
                 self.document.sections[section_idx]
                     .paragraphs
                     .insert(para_idx + 1, clip_para);
+                self.insert_composed_paragraph(section_idx, para_idx + 1);
                 insert_para_idx = para_idx + 1;
             }
         }
@@ -1429,6 +1446,7 @@ impl DocumentCore {
         self.document.sections[section_idx]
             .paragraphs
             .insert(insert_para_idx + 1, empty_para);
+        self.insert_composed_paragraph(section_idx, insert_para_idx + 1);
 
         // [Task #2299] 신규 문단들(컨트롤 host·이웃 빈 문단·분할 우측)의 placeholder
         // vpos 를 흐름에 연결한다 — 방치하면 이후 편집의 vpos 재계산이 저장 단/쪽

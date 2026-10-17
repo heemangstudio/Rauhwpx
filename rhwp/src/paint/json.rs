@@ -505,7 +505,8 @@ impl PaintOp {
                     ",\"text\":{},\"baseline\":{:.3},\"rotation\":{:.3},\"isVertical\":{},\"orientation\":{},\"projectionKind\":{},\"clusterBasis\":\"legacyPosition\"",
                     json_escape(&run.text),
                     // 글자 위치(%) 기준선 이동 — CanvasKit 재생은 이 baseline 을 그대로 쓴다.
-                    run.baseline + run.style.font_size * run.style.char_offset,
+                    run.baseline + explicit_char_offset_dy(&run.style)
+                        .unwrap_or(run.style.font_size * run.style.char_offset),
                     run.rotation,
                     run.is_vertical,
                     json_escape(text_orientation_str(run)),
@@ -1470,6 +1471,13 @@ fn clip_kind_str(value: ClipKind) -> &'static str {
     }
 }
 
+/// 원본 scalar가 있는 run만 절대 위치를 싣는다. legacy JSON의 비율/기준선 계약은 유지한다.
+fn explicit_char_offset_dy(style: &TextStyle) -> Option<f64> {
+    (style.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        && style.native_char_position.is_some())
+    .then(|| crate::renderer::char_offset_dy(style))
+}
+
 fn write_text_style(buf: &mut String, style: &TextStyle) {
     buf.push('{');
     let _ = write!(
@@ -1515,6 +1523,10 @@ fn write_text_style(buf: &mut String, style: &TextStyle) {
     }
     if style.char_offset != 0.0 {
         let _ = write!(buf, ",\"charOffset\":{:.4}", style.char_offset);
+    }
+    if let Some(offset_dy) = explicit_char_offset_dy(style) {
+        // Display는 고정 소수 자리수로 자르지 않아 f64가 그대로 왕복한다. 0도 유효하다.
+        let _ = write!(buf, ",\"charOffsetDy\":{offset_dy}");
     }
     if !style.effective_font_subst().is_empty() {
         let _ = write!(
@@ -3258,6 +3270,137 @@ mod tests {
         RenderLayerInfo, TextRunNode,
     };
     use serde_json::Value;
+
+    #[test]
+    fn native_char_position_json_scalar_roundtrips_and_legacy_style_is_unchanged() {
+        use crate::model::provenance::FontMetricsPolicy;
+        use crate::renderer::{char_offset_dy, NativeCharPosition};
+        let mut style = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 24.0,
+            char_offset: -0.12,
+            native_char_position: Some(NativeCharPosition {
+                base_height_hu: 1150,
+                percent: -12,
+                dpi: 97.0,
+            }),
+            ..Default::default()
+        };
+        let mut raw = String::new();
+        write_text_style(&mut raw, &style);
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        // serde_json의 기본 decimal parser는 significand 변환에서 1 ULP를 잃을 수 있다.
+        // 전체 JSON 문법은 위에서 검증하고, 원본 숫자 token의 f64 왕복은 표준 parser로 확인한다.
+        let token = raw
+            .split_once("\"charOffsetDy\":")
+            .unwrap()
+            .1
+            .split([',', '}'])
+            .next()
+            .unwrap();
+        let decoded = token.parse::<f64>().expect("finite JSON numeric token");
+        assert!(decoded.is_finite());
+        assert_eq!(decoded.to_bits(), char_offset_dy(&style).to_bits());
+        assert_eq!(json["charOffset"], -0.12);
+        style.native_char_position.as_mut().unwrap().percent = 0;
+        raw.clear();
+        write_text_style(&mut raw, &style);
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["charOffsetDy"],
+            0.0
+        );
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        raw.clear();
+        write_text_style(&mut raw, &style);
+        let legacy = raw.clone();
+        assert!(!raw.contains("charOffsetDy"));
+        style.native_char_position = None;
+        raw.clear();
+        write_text_style(&mut raw, &style);
+        assert_eq!(raw, legacy);
+        style.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        raw.clear();
+        write_text_style(&mut raw, &style);
+        assert!(!raw.contains("charOffsetDy"));
+    }
+
+    #[test]
+    fn native_char_position_json_baseline_shares_scalar_but_placement_and_decoration_do_not() {
+        use crate::model::provenance::FontMetricsPolicy;
+        use crate::renderer::{char_offset_dy, NativeCharPosition};
+        let run = TextRunNode {
+            text: "H".into(),
+            style: TextStyle {
+                font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                font_family: "Noto Sans".into(),
+                font_size: 24.0,
+                char_offset: -0.12,
+                superscript: true,
+                underline: UnderlineType::Bottom,
+                native_char_position: Some(NativeCharPosition {
+                    base_height_hu: 1150,
+                    percent: -12,
+                    dpi: 96.0,
+                }),
+                ..Default::default()
+            },
+            char_shape_id: None,
+            para_shape_id: None,
+            section_index: None,
+            para_index: None,
+            char_start: None,
+            cell_context: None,
+            is_para_end: false,
+            is_line_break_end: false,
+            rotation: 0.0,
+            is_vertical: false,
+            char_overlap: None,
+            border_fill_id: 0,
+            baseline: 30.0,
+            field_marker: FieldMarkerType::None,
+            display_text: None,
+        };
+        let serialize = |run: TextRunNode| {
+            let bbox = BoundingBox::new(10.0, 10.0, 40.0, 32.0);
+            serde_json::from_str::<Value>(
+                &PageLayerTree::new(
+                    100.0,
+                    80.0,
+                    LayerNode::leaf(
+                        bbox,
+                        None,
+                        vec![
+                            PaintOp::text_run(bbox, run.clone()),
+                            PaintOp::text_decoration(bbox, run, TextDecorationKind::Underline),
+                        ],
+                    ),
+                )
+                .to_json(),
+            )
+            .unwrap()
+        };
+        let explicit = serialize(run.clone());
+        let ops = explicit["root"]["ops"].as_array().unwrap();
+        assert_eq!(
+            ops[0]["baseline"],
+            run.baseline + char_offset_dy(&run.style)
+        );
+        assert_eq!(ops[0]["style"]["charOffsetDy"], char_offset_dy(&run.style));
+        assert_eq!(ops[0]["placement"]["runToPage"]["f"], 40.0);
+        assert_eq!(ops[0]["placement"]["baselineY"], 0.0);
+        let mut absent = run.clone();
+        absent.style.native_char_position = None;
+        let legacy = serialize(absent);
+        assert_eq!(
+            legacy["root"]["ops"][0]["baseline"],
+            run.baseline + 24.0 * -0.12
+        );
+        assert_eq!(ops[0]["placement"], legacy["root"]["ops"][0]["placement"]);
+        assert_eq!(
+            ops[1], legacy["root"]["ops"][1],
+            "external decoration remains on its existing origin"
+        );
+    }
 
     #[test]
     fn equation_layout_serializes_glyph_advances_and_limit_offsets() {

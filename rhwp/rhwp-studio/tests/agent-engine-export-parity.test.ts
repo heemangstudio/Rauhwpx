@@ -8,6 +8,8 @@ import {
   MUTATING_METHODS,
 } from '../src/core/mutation-method-registry.ts';
 
+import { applyEngineEditSession, getEngineEditCapabilities, runEngineEdits } from '../src/agent/engine-edit.ts';
+import { AgentToolError } from '../src/agent/types.ts';
 import { requireWasmPackage } from './browser-support.ts';
 
 requireWasmPackage(fileURLToPath(new URL('../../pkg/', import.meta.url)));
@@ -33,6 +35,18 @@ const SEMANTIC_ALIASES: Readonly<Record<string, string>> = {
   removeFieldAtInCell: 'removeFieldAt',
   removeFieldAtInCellEx: 'removeFieldAt',
 };
+
+test('editor-owned restore exports remain unavailable to agent document and session calls', () => {
+  const capabilities = new Set(getEngineEditCapabilities().map(({ method }) => method));
+  const wasm = new Proxy({}, { get: () => assert.fail('editor-owned method reached the bridge') }) as Parameters<typeof runEngineEdits>[0];
+  for (const method of editorRoutedMethods) {
+    assert.ok(engineMethods.includes(method), `stale editor-owned export: ${method}`);
+    assert.equal(capabilities.has(method), false, `${method} must stay out of the agent catalog`);
+    const denied = (error: unknown) => error instanceof AgentToolError && error.code === 'ENGINE_EDIT_NOT_ALLOWED';
+    assert.throws(() => runEngineEdits(wasm, [{ method, args: [] }]), denied);
+    assert.throws(() => applyEngineEditSession(wasm, { method, args: [] }), denied);
+  }
+});
 
 const NON_EDIT_EXPORTS = new Set([
   'createEmpty',

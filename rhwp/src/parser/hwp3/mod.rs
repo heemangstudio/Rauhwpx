@@ -334,6 +334,8 @@ fn hwp3_tab_position_to_ir(value: u16) -> u32 {
 
 fn reset_hwp3_plain_paragraph_text(para: &mut crate::model::paragraph::Paragraph, text: &str) {
     para.text = text.to_string();
+    para.special_space_origins =
+        crate::model::paragraph::TextContent::literal(text).special_space_origins;
     para.char_offsets.clear();
     let mut utf16_pos = 0u32;
     for ch in para.text.chars() {
@@ -680,6 +682,7 @@ fn hwp3_default_body_column_def() -> crate::model::page::ColumnDef {
 /// 값 전달 + 반환으로 처리해 본문 무변경 이동을 보장한다).
 struct Hwp3CharScan<'a> {
     text_string: &'a mut String,
+    special_space_origins: &'a mut Vec<crate::model::paragraph::SpecialSpaceOrigin>,
     char_offsets: &'a mut Vec<u32>,
     hwp3_char_to_utf16_pos: &'a mut Vec<u32>,
     controls: &'a mut Vec<crate::model::control::Control>,
@@ -1543,6 +1546,7 @@ fn parse_object_control_char(
     use byteorder::{LittleEndian, ReadBytesExt};
     let Hwp3CharScan {
         text_string,
+        special_space_origins: _,
         char_offsets,
         hwp3_char_to_utf16_pos,
         controls,
@@ -1835,6 +1839,7 @@ fn parse_field_control_char(
     use byteorder::{LittleEndian, ReadBytesExt};
     let Hwp3CharScan {
         text_string,
+        special_space_origins: _,
         char_offsets,
         hwp3_char_to_utf16_pos,
         controls,
@@ -1961,6 +1966,7 @@ fn parse_simple_control_char(
     use byteorder::{LittleEndian, ReadBytesExt};
     let Hwp3CharScan {
         text_string,
+        special_space_origins,
         char_offsets,
         hwp3_char_to_utf16_pos,
         controls,
@@ -1978,6 +1984,12 @@ fn parse_simple_control_char(
             i += 1;
             char_offsets.push(utf16_len);
             utf16_len += 1;
+            if ch == 30 {
+                special_space_origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                    char_idx: text_string.chars().count(),
+                    origin: crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                });
+            }
             text_string.push(if ch == 30 { '\u{00A0}' } else { ' ' });
         }
         24 => {
@@ -2194,6 +2206,12 @@ fn parse_simple_control_char(
                 for c in page_str.chars() {
                     char_offsets.push(utf16_len);
                     utf16_len += c.len_utf16() as u32;
+                    if matches!(c, '\u{00a0}' | '\u{2007}') {
+                        special_space_origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                            char_idx: text_string.chars().count(),
+                            origin: crate::model::paragraph::SpecialSpaceOriginKind::Literal,
+                        });
+                    }
                     text_string.push(c);
                 }
             } else {
@@ -2300,6 +2318,7 @@ pub(crate) fn parse_paragraph_list(
 
         let mut ctrl_data_records = Vec::new();
         let mut text_string = String::new();
+        let mut special_space_origins = Vec::new();
         let mut char_offsets = Vec::with_capacity(para_info.char_count as usize);
         let mut hwp3_char_to_utf16_pos = vec![0; para_info.char_count as usize];
         let mut utf16_len = 0;
@@ -2330,6 +2349,7 @@ pub(crate) fn parse_paragraph_list(
                             utf16_len,
                             &mut Hwp3CharScan {
                                 text_string: &mut text_string,
+                                special_space_origins: &mut special_space_origins,
                                 char_offsets: &mut char_offsets,
                                 hwp3_char_to_utf16_pos: &mut hwp3_char_to_utf16_pos,
                                 controls: &mut controls,
@@ -2350,6 +2370,7 @@ pub(crate) fn parse_paragraph_list(
                             utf16_len,
                             &mut Hwp3CharScan {
                                 text_string: &mut text_string,
+                                special_space_origins: &mut special_space_origins,
                                 char_offsets: &mut char_offsets,
                                 hwp3_char_to_utf16_pos: &mut hwp3_char_to_utf16_pos,
                                 controls: &mut controls,
@@ -2379,6 +2400,7 @@ pub(crate) fn parse_paragraph_list(
                             utf16_len,
                             &mut Hwp3CharScan {
                                 text_string: &mut text_string,
+                                special_space_origins: &mut special_space_origins,
                                 char_offsets: &mut char_offsets,
                                 hwp3_char_to_utf16_pos: &mut hwp3_char_to_utf16_pos,
                                 controls: &mut controls,
@@ -2402,6 +2424,12 @@ pub(crate) fn parse_paragraph_list(
                 }
                 char_offsets.push(utf16_len);
                 utf16_len += s.len_utf16() as u32;
+                if matches!(s, '\u{00a0}' | '\u{2007}') {
+                    special_space_origins.push(crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: text_string.chars().count(),
+                        origin: crate::model::paragraph::SpecialSpaceOriginKind::Literal,
+                    });
+                }
                 text_string.push(s);
             }
         }
@@ -2451,6 +2479,7 @@ pub(crate) fn parse_paragraph_list(
                 let new_char_count = new_text.chars().count() as u32;
                 let new_offsets: Vec<u32> = (0..new_char_count).collect();
                 text_string = new_text;
+                special_space_origins.clear();
                 char_offsets = new_offsets;
                 utf16_len = new_char_count;
 
@@ -2480,6 +2509,7 @@ pub(crate) fn parse_paragraph_list(
         para.para_shape_id = para_shape_id;
         para.char_offsets = char_offsets;
         para.text = text_string;
+        para.special_space_origins = special_space_origins;
         para.controls = controls;
         para.ctrl_data_records = ctrl_data_records;
         para.has_para_text = !para.text.is_empty() || !para.controls.is_empty();
@@ -3987,7 +4017,13 @@ fn hwp3_font_name_to_hwp5(name: &str) -> String {
 fn fixup_hwp3_heading_decoration(doc: &mut crate::model::document::Document) {
     for section in &mut doc.sections {
         for paragraph in &mut section.paragraphs {
-            if let Some(cleaned) = strip_heading_decoration(&paragraph.text) {
+            if let Some((cleaned, start, end)) = strip_heading_decoration(&paragraph.text) {
+                paragraph
+                    .special_space_origins
+                    .retain(|r| r.char_idx >= start && r.char_idx < end);
+                for record in &mut paragraph.special_space_origins {
+                    record.char_idx -= start;
+                }
                 paragraph.text = cleaned;
             }
         }
@@ -3996,7 +4032,7 @@ fn fixup_hwp3_heading_decoration(doc: &mut crate::model::document::Document) {
 
 /// HWP3 heading decoration pattern detection + strip.
 /// Returns Some(stripped_text) 시 매치, None 시 패턴 비매치 (원본 유지).
-fn strip_heading_decoration(text: &str) -> Option<String> {
+fn strip_heading_decoration(text: &str) -> Option<(String, usize, usize)> {
     const DECORATION_CHAR: char = '═';
     const MARKER_CHAR: char = '■';
     const MIN_DECORATION: usize = 5;
@@ -4045,7 +4081,16 @@ fn strip_heading_decoration(text: &str) -> Option<String> {
         return None;
     }
 
-    Some(core.to_string())
+    let mid_leading = chars[leading..trailing_end]
+        .iter()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let core_leading = mid_chars[1..mid_chars.len() - 1]
+        .iter()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let start = leading + mid_leading + 1 + core_leading;
+    Some((core.to_string(), start, start + core.chars().count()))
 }
 
 /// [Task #877 Stage 4] HWP3 → IR 변환 후 outline list 글머리 자동 prefix.
@@ -4148,6 +4193,11 @@ fn apply_textbox_bullet_fixup(para: &mut crate::model::paragraph::Paragraph) {
     new_text.push(' ');
     new_text.push_str(bullet_str);
     new_text.push_str(&para.text[1..]);
+    for record in &mut para.special_space_origins {
+        if record.char_idx >= 1 {
+            record.char_idx += inserted_chars as usize;
+        }
+    }
     para.text = new_text;
     para.char_count = para.char_count.saturating_add(inserted_chars);
 
@@ -4221,6 +4271,11 @@ fn apply_bullet_fixup_single(
     new_text.push(' ');
     new_text.push_str(bullet_str);
     new_text.push_str(&para.text[1..]);
+    for record in &mut para.special_space_origins {
+        if record.char_idx >= 1 {
+            record.char_idx += inserted_chars as usize;
+        }
+    }
     para.text = new_text;
     para.char_count = para.char_count.saturating_add(inserted_chars);
 
@@ -4643,12 +4698,14 @@ mod tests {
             para_shape: None,
         };
         let mut text_string = String::new();
+        let mut special_space_origins = Vec::new();
         let mut char_offsets = Vec::new();
         let mut hwp3_char_to_utf16_pos = vec![0u32; 10];
         let mut controls = Vec::new();
         let mut ctrl_data_records = Vec::new();
         let mut scan = Hwp3CharScan {
             text_string: &mut text_string,
+            special_space_origins: &mut special_space_origins,
             char_offsets: &mut char_offsets,
             hwp3_char_to_utf16_pos: &mut hwp3_char_to_utf16_pos,
             controls: &mut controls,
@@ -4691,12 +4748,14 @@ mod tests {
         let mut cursor = Cursor::new(body.as_slice());
 
         let mut text_string = String::new();
+        let mut special_space_origins = Vec::new();
         let mut char_offsets = Vec::new();
         let mut hwp3_char_to_utf16_pos = vec![0u32; 8];
         let mut controls = Vec::new();
         let mut ctrl_data_records = Vec::new();
         let mut scan = Hwp3CharScan {
             text_string: &mut text_string,
+            special_space_origins: &mut special_space_origins,
             char_offsets: &mut char_offsets,
             hwp3_char_to_utf16_pos: &mut hwp3_char_to_utf16_pos,
             controls: &mut controls,

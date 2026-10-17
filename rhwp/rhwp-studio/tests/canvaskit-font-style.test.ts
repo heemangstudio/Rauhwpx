@@ -63,3 +63,10 @@ test('BI face metadata carries bold italic style through the shared import mappi
     weight: 700, bold: true, italic: true,
   });
 });
+
+test('SFNT metadata selects localized physical italic without synthetic styles', () => {
+  const italic = { ...face('Corsivo', 'Locale-Italic'), sfntStyle: { weight: 400, italic: true } };
+  const bold = { ...face('Bold Italic', 'Locale-BoldItalic'), sfntStyle: { weight: 700, italic: true } };
+  assert.deepEqual(physicalFontStyle(italic), {weight: 400, bold: false, italic: true});
+  assert.deepEqual(selectPreparedFontFace('Malgun Gothic', bold, [bold, italic], false, true), {record: italic, syntheticBold: false, syntheticItalic: false});
+});

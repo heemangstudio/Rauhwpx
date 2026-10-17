@@ -38,6 +38,8 @@ struct EquationSvgFont<'a> {
     modern: bool,
     modern_hy: bool,
     stix_integral: bool,
+    /// 단일 적분 e05b의 실제 cmap coverage. sqrt 글립의 존재와 별도로 확인한다.
+    integral_pua_font: Option<&'a str>,
     /// Unicode fallback font-family 체인 (escape된 속성 값).
     css_family: String,
 }
@@ -410,6 +412,10 @@ pub fn render_equation_svg_with_font_and_version(
         modern: !version_info.is_empty(),
         modern_hy,
         stix_integral: modern_hy && stix_integral_available(),
+        integral_pua_font: font_name
+            .filter(|name| modern_hy && super::font::is_legacy_equation_font(name))
+            .filter(|name| legacy_glyph_em_advance(name, '\u{e05b}').is_some())
+            .map(|_| "HyhwpEQ"),
         css_family: family.clone(),
     };
     let mut svg = String::new();
@@ -555,14 +561,7 @@ fn render_box(
         LayoutKind::MathSymbol(text) => {
             // 현대 HY 적분은 굽은 글리프를 우선하고, 나머지는 stroke path 를 쓴다.
             if super::layout::is_integral_symbol(text) {
-                svg.push_str(&integral_path(
-                    x,
-                    y,
-                    fs,
-                    color,
-                    font.modern_hy,
-                    font.stix_integral,
-                ));
+                svg.push_str(&integral_path(x, y, fs, color, text, font));
             } else {
                 let text_x = x;
                 let text_y = y + lb.baseline;
@@ -795,14 +794,7 @@ fn render_box(
 
             if is_integral {
                 // 적분: 기호는 왼쪽, 첨자는 오른쪽 위/아래 (nolimits).
-                svg.push_str(&integral_path(
-                    x,
-                    y,
-                    fs,
-                    color,
-                    font.modern_hy,
-                    font.stix_integral,
-                ));
+                svg.push_str(&integral_path(x, y, fs, color, symbol, font));
             } else {
                 // ∑, ∏ 등: 기호는 중앙, 첨자는 위/아래 (limits)
                 let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
@@ -1237,10 +1229,26 @@ fn integral_path(
     y: f64,
     fs: f64,
     color: &str,
-    modern_hy: bool,
-    stix_integral: bool,
+    symbol: &str,
+    font: &EquationSvgFont<'_>,
 ) -> String {
-    if modern_hy && stix_integral {
+    let modern_hy = font.modern_hy;
+    if let (Some(glyph), Some(family)) = (
+        super::font::modern_hy_integral_glyph(symbol, modern_hy),
+        font.integral_pua_font,
+    ) {
+        // 네이티브와 같은 기존 paint 원점. 글립 자연폭으로 칠하고 layout은 바꾸지 않는다.
+        return format!(
+            "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{:.4}\" font-style=\"normal\" font-weight=\"normal\" fill=\"{}\">{}</text>\n",
+            x + fs * 0.042,
+            y + fs * 1.94,
+            escape_xml(family),
+            fs * super::font::MODERN_HY_INTEGRAL_GLYPH_SCALE,
+            color,
+            glyph,
+        );
+    }
+    if modern_hy && font.stix_integral {
         return format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" font-family=\"STIXGeneral, serif\" font-size=\"{:.2}\" fill=\"{}\">∫</text>\n",
             x + fs * 0.042,
@@ -1564,6 +1572,7 @@ mod tests {
                         modern: true,
                         modern_hy: true,
                         stix_integral,
+                        integral_pua_font: None,
                         css_family: String::new(),
                     },
                 );
@@ -1580,6 +1589,34 @@ mod tests {
             let stix = render(true);
             assert!(stix.contains("<text") && stix.contains("∫"), "{stix}");
             assert!(!stix.contains("<path"), "{stix}");
+        }
+    }
+
+    #[test]
+    fn integral_pua_requires_modern_simple_symbol_and_coverage() {
+        for fs in [6.0, 12.0, 20.0] {
+            let mut font = EquationSvgFont {
+                pua_font: None,
+                modern: true,
+                modern_hy: true,
+                stix_integral: true,
+                integral_pua_font: Some("HyhwpEQ"),
+                css_family: String::new(),
+            };
+            let pua = integral_path(3.0, 5.0, fs, "black", "∫", &font);
+            assert!(pua.contains('\u{e05b}') && !pua.contains("STIXGeneral"));
+            assert!(pua.contains(&format!("font-size=\"{:.4}\"", fs * 2.0)));
+            assert!(pua.contains(&format!("y=\"{:.4}\"", 5.0 + fs * 1.94)));
+            for symbol in ["∬", "∭", "∮", "∯", "∰"] {
+                assert!(!integral_path(3.0, 5.0, fs, "black", symbol, &font).contains('\u{e05b}'));
+            }
+            font.modern_hy = false;
+            assert!(integral_path(3.0, 5.0, fs, "black", "∫", &font).contains("<path"));
+            font.modern_hy = true;
+            font.integral_pua_font = None;
+            assert!(integral_path(3.0, 5.0, fs, "black", "∫", &font).contains("STIXGeneral"));
+            font.stix_integral = false;
+            assert!(integral_path(3.0, 5.0, fs, "black", "∫", &font).contains("<path"));
         }
     }
 
@@ -1610,6 +1647,7 @@ mod tests {
                 modern: true,
                 modern_hy: true,
                 stix_integral: false,
+                integral_pua_font: None,
                 css_family: String::new(),
             },
         );

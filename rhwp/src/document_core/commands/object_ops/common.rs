@@ -109,6 +109,8 @@ impl DocumentCore {
     /// 태그·필드 참조는 옮기지 않으므로 직접 부르지 말고 그 함수를 쓴다.
     /// 반환값은 제거된 갭의 시작 UTF-16 위치다.
     fn remove_inline_control_and_shift(para: &mut Paragraph, control_idx: usize) -> u32 {
+        para.authored_text_runs = None;
+        para.para_text_terminal = None;
         let gap_start = Self::find_inline_control_gap_start(para, control_idx);
 
         // char_offsets 조정
@@ -175,6 +177,8 @@ impl DocumentCore {
         idx: usize,
         control: Control,
     ) {
+        para.authored_text_runs = None;
+        para.para_text_terminal = None;
         if para.ctrl_data_records.len() < para.controls.len() {
             para.ctrl_data_records
                 .resize_with(para.controls.len(), || None);

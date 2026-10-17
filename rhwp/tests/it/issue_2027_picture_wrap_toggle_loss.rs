@@ -261,7 +261,14 @@ fn tac_roundtrip_preserves_anchor_line_segs() {
             })
             .collect()
     };
-    let before = size_keys(&core.document().sections[0].paragraphs[para_idx].line_segs);
+    let paragraph = &core.document().sections[0].paragraphs[para_idx];
+    let original_text = paragraph.text.clone();
+    let before = size_keys(&paragraph.line_segs);
+    let expected = *before.first().expect("text paragraph has a line");
+    assert!(
+        before.iter().all(|key| *key == expected),
+        "homogeneous text fixture"
+    );
 
     set_props(&mut core, para_idx, ci, r#"{"treatAsChar":true}"#, "tac on");
     set_props(
@@ -273,10 +280,40 @@ fn tac_roundtrip_preserves_anchor_line_segs() {
     );
 
     let after = size_keys(&core.document().sections[0].paragraphs[para_idx].line_segs);
-    assert_eq!(
-        before, after,
-        "tac on→off 왕복 후 앵커 문단 줄 크기 메트릭이 원본과 달라짐 (비가역 마이그레이션)"
+    assert!(!after.is_empty(), "text must retain a line after TAC off");
+    assert!(
+        after.iter().all(|key| *key == expected),
+        "every rewrapped line must restore text metrics, not picture height: {after:?}"
     );
+    let paragraph = &core.document().sections[0].paragraphs[para_idx];
+    assert_eq!(paragraph.text, original_text);
+    // Para/Square는 그림 폭을 제외하며, 실제 구역 개요 머리도 줄 계산 전에
+    // 폭을 차지한다. 두 계약은 원래 줄 개수를 고정하지 않는다.
+    let starts: Vec<_> = paragraph
+        .line_segs
+        .iter()
+        .map(|line| {
+            paragraph
+                .char_offsets
+                .partition_point(|offset| *offset < line.text_start)
+                + 1
+        })
+        .collect();
+    let mut previous = None;
+    for offset in starts {
+        let raw = core
+            .get_cursor_rect_native(0, para_idx, offset)
+            .expect("rewrapped line caret");
+        let caret: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let page = caret["pageIndex"].as_u64().unwrap();
+        let y = caret["y"].as_f64().unwrap();
+        assert!(y.is_finite() && caret["height"].as_f64().unwrap() > 0.0);
+        if let Some((previous_page, previous_y)) = previous {
+            assert!(page > previous_page || (page == previous_page && y > previous_y));
+        }
+        previous = Some((page, y));
+    }
+    assert_picture_visible(&mut core, para_idx, ci, "TAC off rewrapped lines");
 }
 
 /// 대조 실험: core 스냅샷 undo 는 배치 변경을 완전히 복원해야 한다.

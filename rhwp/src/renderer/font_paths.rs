@@ -293,9 +293,41 @@ struct RealFaceHmtx {
     advance_by_char: std::collections::HashMap<u32, u16>,
 }
 
-static REAL_FACE_HMTX: std::sync::LazyLock<
-    std::sync::RwLock<std::collections::HashMap<(PathBuf, u32), std::sync::Arc<RealFaceHmtx>>>,
-> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+#[derive(Default)]
+struct RealFaceHmtxCache {
+    generation: usize,
+    entries: std::collections::HashMap<(PathBuf, u32), std::sync::Arc<RealFaceHmtx>>,
+}
+
+static REAL_FACE_HMTX: std::sync::LazyLock<std::sync::RwLock<RealFaceHmtxCache>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(RealFaceHmtxCache::default()));
+
+#[cfg(test)]
+thread_local! {
+    // 실파일 파싱과 게시 사이에서 새로고침하는 순서를 재현한다.
+    pub(crate) static HMTX_BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 수식 서체의 hmtx를 명시적으로 새로 읽는다. 레지스트리 잠금은 조달 캐시와 분리한다.
+pub(crate) fn invalidate_equation_face_metrics() {
+    let mut faces = std::collections::BTreeSet::new();
+    for alias in ["hyhwpeq", "haansoft batang"] {
+        if let Ok(sources) = CUSTOM_FACE_SOURCES.read() {
+            faces.extend(sources.get(alias).cloned());
+        }
+        if let Ok(variants) = CUSTOM_FACE_VARIANTS.read() {
+            if let Some(variants) = variants.get(alias) {
+                faces.extend(variants.iter().map(|face| (face.file.clone(), face.index)));
+            }
+        }
+    }
+    if let Ok(mut cache) = REAL_FACE_HMTX.write() {
+        // 진행 중인 파일 파싱도 같은 잠금 아래 세대를 확인해야 다시 게시할 수 있다.
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.entries.retain(|key, _| !faces.contains(key));
+    }
+}
 
 /// name 테이블 파싱이 끝난 폰트 파일 — 렌더 호출마다 재파싱하지 않는다.
 static SCANNED_FACE_FILES: std::sync::RwLock<std::collections::BTreeSet<PathBuf>> =
@@ -312,9 +344,9 @@ fn normalize_face_alias(value: &str) -> Option<String> {
 /// TTC 의 모든 face를 순회하고 name 테이블의 family/full/postscript 이름을
 /// 전 언어에 대해 등록한다. 파일명 스템도 별칭으로 둔다(`find_font_file` 의
 /// 후보 파일명 관례와 정합).
-fn register_font_file_faces(file: &Path) {
+fn register_font_file_faces(file: &Path) -> bool {
     let Ok(bytes) = std::fs::read(file) else {
-        return;
+        return false;
     };
     let mut aliases = Vec::new();
     let mut variants = Vec::new();
@@ -381,8 +413,7 @@ fn register_font_file_faces(file: &Path) {
             }
         }
     }
-    // 등록 face 목록이 바뀌었으므로 글자 폭 측정 캐시를 비운다.
-    crate::renderer::layout::clear_measure_width_cache();
+    true
 }
 
 /// custom source(`extra` = 호출자 지정 경로 + `RHWP_FONT_PATH`)의 face 이름을
@@ -392,6 +423,7 @@ pub fn register_font_face_availability(extra: &[PathBuf]) {
     let sources = custom_font_sources(extra);
     // 같은 source 의 한컴 HFT 는 그리기 전용 윤곽선 소스로 등록한다 (측정 불변).
     crate::renderer::hft_glyphs::register_hft_sources(&sources);
+    let mut registered = false;
     for file in font_files(&sources) {
         if SCANNED_FACE_FILES
             .read()
@@ -400,10 +432,14 @@ pub fn register_font_face_availability(extra: &[PathBuf]) {
         {
             continue;
         }
-        register_font_file_faces(&file);
+        registered |= register_font_file_faces(&file);
         if let Ok(mut scanned) = SCANNED_FACE_FILES.write() {
             scanned.insert(file);
         }
+    }
+    if registered {
+        // 한 번의 등록 묶음이 끝난 뒤 공개한다. 반복 조달 조회는 파일을 다시 읽지 않는다.
+        crate::renderer::layout::clear_measure_caches();
     }
 }
 
@@ -453,13 +489,13 @@ pub fn custom_face_source(name: &str) -> Option<(PathBuf, u32)> {
 /// face 이름의 등록 파일에서 cmap·hmtx 를 한 번만 읽어 캐시한다.
 fn real_face_hmtx(file: &Path, index: u32) -> Option<std::sync::Arc<RealFaceHmtx>> {
     let key = (file.to_path_buf(), index);
-    if let Some(hit) = REAL_FACE_HMTX
-        .read()
-        .ok()
-        .and_then(|cache| cache.get(&key).cloned())
-    {
-        return Some(hit);
-    }
+    let generation = {
+        let cache = REAL_FACE_HMTX.read().ok()?;
+        if let Some(hit) = cache.entries.get(&key) {
+            return Some(hit.clone());
+        }
+        cache.generation
+    };
     let bytes = std::fs::read(file).ok()?;
     let face = ttf_parser::Face::parse(&bytes, index).ok()?;
     let mut advance_by_char = std::collections::HashMap::new();
@@ -486,9 +522,18 @@ fn real_face_hmtx(file: &Path, index: u32) -> Option<std::sync::Arc<RealFaceHmtx
         descender: face.descender(),
         advance_by_char,
     });
-    if let Ok(mut cache) = REAL_FACE_HMTX.write() {
-        cache.entry(key).or_insert_with(|| metrics.clone());
+    #[cfg(test)]
+    {
+        let before_publish = HMTX_BEFORE_PUBLISH.with(|slot| slot.borrow_mut().take());
+        if let Some(before_publish) = before_publish {
+            before_publish();
+        }
     }
+    let mut cache = REAL_FACE_HMTX.write().ok()?;
+    if cache.generation != generation {
+        return None;
+    }
+    cache.entries.entry(key).or_insert_with(|| metrics.clone());
     Some(metrics)
 }
 

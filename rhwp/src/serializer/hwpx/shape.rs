@@ -1416,10 +1416,11 @@ mod tests {
         let mut p = Paragraph::default();
         p.text = "a\tb\nc".to_string();
         p.tab_extended = vec![[2000, 0, 0x0100, 0, 0, 0, 0]];
+        // 내부 carrier는 package capture_part가 수집한 뒤 공개 XML에서 제거한다.
         let xml = serialize_rect(&rect_with_text_paragraph(p));
         assert!(
             xml.contains(
-                r#"<hp:t>a<hp:tab width="2000" leader="0" type="1"/>b<hp:lineBreak/>c</hp:t>"#
+                r#"<hp:t>a<hp:tab width="2000" leader="0" type="1" rhwpRawTabFlags="0"/>b<hp:lineBreak/>c</hp:t>"#
             ),
             "글상자 텍스트는 hp:tab/hp:lineBreak 인라인 요소로 방출되어야 함: {}",
             xml

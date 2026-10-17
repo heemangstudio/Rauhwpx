@@ -1102,7 +1102,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.cursor.exitPictureObjectSelection();
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
-        this.enterTextboxEditing(ref.sec, ref.ppi, ref.ci);
+        this.enterTextboxEditing(ref);
         return;
       }
     }
@@ -2244,6 +2244,7 @@ export function onPaste(this: any, e: ClipboardEvent): void {
 
   // 선택 영역 삭제 여부 캡처 (스냅샷 내부에서 처리)
   const hasSelection = this.cursor.hasSelection();
+  const selection = hasSelection ? this.cursor.getSelectionOrdered() : null;
 
   const pos = this.cursor.getPosition();
   const clipboardData = e.clipboardData;
@@ -2314,9 +2315,9 @@ export function onPaste(this: any, e: ClipboardEvent): void {
   if (useInternalClipboard) {
     // 컨트롤(개체) 붙여넣기 — 본문에서만 허용
     if (this.wasm.clipboardIsSingleControl?.() === true && pos.parentParaIndex === undefined) {
+      if (hasSelection) this.cursor.clearSelection();
       this.executeOperation({ kind: 'snapshot', operationType: 'pasteControl', operation: (wasm: WasmBridge) => {
-        if (hasSelection) this.deleteSelection();
-        const p = this.cursor.getPosition();
+        const p = selection ? deleteSelectionImmediate(wasm, selection.start, selection.end) : pos;
         const result = wasm.pasteControl(p.sectionIndex, p.paragraphIndex, p.charOffset);
         const parsed = JSON.parse(result);
         if (parsed.ok) {
@@ -2333,10 +2334,10 @@ export function onPaste(this: any, e: ClipboardEvent): void {
     }
 
     // 내부 클립보드 텍스트 붙여넣기 (서식 보존)
+    if (hasSelection) this.cursor.clearSelection();
     this.executeOperation({ kind: 'snapshot', operationType: 'pasteInternal', operation: (wasm: WasmBridge) => {
       this.pastedFieldEndOutsidePending = false;
-      if (hasSelection) this.deleteSelection();
-      const p = this.cursor.getPosition();
+      const p = selection ? deleteSelectionImmediate(wasm, selection.start, selection.end) : pos;
       let result: string;
       if (isNestedCellPosition(p)) {
         result = wasm.pasteInternalInCellByPath(

@@ -165,6 +165,11 @@ test('owned Vite hub starts without Electron and retains production request chec
     RHWP_WRITING_STYLE_DIR: join(root, 'writing-style'),
     RHWP_AGENT_INSTRUCTIONS_DIR: join(root, 'instructions'),
     RHWP_TEMPLATES_DIR: join(root, 'templates'),
+    RHWP_REFERENCES_DIR: join(root, 'references'),
+    RHWP_PROJECTS_DIR: join(root, 'projects'),
+    RHWP_BROWSER_DATA_DIR: join(root, 'browser'),
+    RHWP_BROWSER_HOST: undefined,
+    RHWP_BROWSER_OS_KEYRING: '0',
   };
   const previous = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
   let server;
@@ -188,8 +193,8 @@ test('owned Vite hub starts without Electron and retains production request chec
     const response = await fetch(`${origin}${AGENT_HUB_ENSURE_PATH}?sessionId=owned-hub-test`, {
       method: 'POST', headers: { origin }, signal: AbortSignal.timeout(20_000),
     });
-    assert.equal(response.status, 200);
     const body = await response.json();
+    assert.equal(response.status, 200, body.error);
     assert.equal(body.ready, true, body.error);
     assert.ok(body.hubToken && body.referenceToken && body.templateToken);
     const hub = body.hubUrl.replace('ws:', 'http:');

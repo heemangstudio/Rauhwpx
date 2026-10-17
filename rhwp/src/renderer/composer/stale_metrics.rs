@@ -63,6 +63,35 @@ fn geometry(seg: &LineSeg) -> [i32; 7] {
     ]
 }
 
+/// 이전 exporter는 그림 줄 시작을 제어 슬롯 뒤 첫 글자 위치로 저장했다.
+/// 현재 reflow의 슬롯 시작 좌표를 그 wire 규칙으로 바꾼 뒤 전체 줄을 비교한다.
+/// 첫 줄 원점과 모호한 다중 제어 갭은 그대로 둔다.
+fn restore_previous_picture_line_starts(para: &Paragraph, lines: &mut [LineSeg]) {
+    let positions = para.control_text_positions();
+    let chars: Vec<_> = para.text.chars().collect();
+    for &position in &positions {
+        let Some(&after) = para.char_offsets.get(position) else {
+            continue;
+        };
+        let before = position
+            .checked_sub(1)
+            .and_then(|index| para.char_offsets.get(index).zip(chars.get(index)))
+            .map_or(0, |(offset, ch)| offset + ch.len_utf16() as u32);
+        if before.checked_add(8) != Some(after)
+            || positions.iter().filter(|&&other| other == position).count() != 1
+        {
+            continue;
+        }
+        if let Some(line) = lines
+            .iter_mut()
+            .skip(1)
+            .find(|line| line.text_start == before)
+        {
+            line.text_start = after;
+        }
+    }
+}
+
 /// Return replacement boundaries only when the entire saved layout is exactly
 /// reproducible with the old policy, and the new policy changes no line geometry.
 /// Callers must independently establish the document's exporter lineage and
@@ -95,6 +124,7 @@ pub(crate) fn cell_lines_from_previous_font_metrics(
     }
     let mut previous = para.clone();
     reflow_line_segs(&mut previous, width_px, previous_styles, dpi);
+    restore_previous_picture_line_starts(para, &mut previous.line_segs);
     if previous.line_segs.len() != para.line_segs.len()
         || !previous
             .line_segs
@@ -108,6 +138,7 @@ pub(crate) fn cell_lines_from_previous_font_metrics(
     }
     let mut current = para.clone();
     reflow_line_segs(&mut current, width_px, current_styles, dpi);
+    restore_previous_picture_line_starts(para, &mut current.line_segs);
     if current.line_segs.len() != para.line_segs.len()
         || !current
             .line_segs
@@ -171,7 +202,34 @@ mod tests {
                 - style.margin_right;
             let result =
                 cell_lines_from_previous_font_metrics(para, width, &previous, &current, 96.0)
-                    .unwrap_or_else(|| panic!("{id}: not an exact old-policy layout"));
+                    .unwrap_or_else(|| {
+                        let mut reproduced = para.clone();
+                        reflow_line_segs(&mut reproduced, width, &previous, 96.0);
+                        restore_previous_picture_line_starts(para, &mut reproduced.line_segs);
+                        panic!(
+                            "{id}: not an exact old-policy layout\nsaved={:?}\nprevious={:?}",
+                            para.line_segs, reproduced.line_segs,
+                        )
+                    });
+            assert_eq!(
+                result.iter().map(geometry).collect::<Vec<_>>(),
+                para.line_segs.iter().map(geometry).collect::<Vec<_>>(),
+                "{id}: font-policy repair must retain every saved line dimension",
+            );
+            if id == "cell-mixed-text" {
+                // 실제 편집 reflow의 새 슬롯 원점을 예전 exporter 출력으로 오인하지 않는다.
+                let mut canonical = para.clone();
+                let mut slot_layout = para.clone();
+                reflow_line_segs(&mut slot_layout, width, &previous, 96.0);
+                assert_eq!(slot_layout.line_segs[1].text_start, 10);
+                assert_eq!(para.line_segs[1].text_start, 18);
+                assert_eq!(result[1].text_start, 18);
+                canonical.line_segs[1].text_start = slot_layout.line_segs[1].text_start;
+                assert!(cell_lines_from_previous_font_metrics(
+                    &canonical, width, &previous, &current, 96.0,
+                )
+                .is_none());
+            }
             let mut already_current = para.clone();
             already_current.line_segs = result.clone();
             assert!(cell_lines_from_previous_font_metrics(

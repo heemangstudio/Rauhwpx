@@ -532,6 +532,7 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut SweepRepo
         column_type,
         raw_break_type,
         text,
+        special_space_origins,
         char_offsets,
         char_shapes,
         line_segs,
@@ -543,9 +544,16 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut SweepRepo
         char_count_msb,
         raw_header_extra,
         has_para_text,
+        para_text_terminal,
+        authored_text_runs,
         tab_extended,
         markpen_marks,
         numbering_restart,
+        // In-memory layout projection; neither field is source IR or serialized.
+        leading_block_host_layout: _,
+        leading_host_rollback_bound: _,
+        tac_line_origin: _,
+        cached_equation_line_origin: _,
     } = a;
 
     macro_rules! f {
@@ -560,6 +568,7 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut SweepRepo
     f!(column_type);
     f!(raw_break_type);
     f!(text);
+    f!(special_space_origins);
     f!(char_offsets);
     f!(char_shapes);
     f!(line_segs);
@@ -570,6 +579,10 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut SweepRepo
     f!(char_count_msb);
     f!(raw_header_extra);
     f!(has_para_text);
+    // Source-format provenance differs between raw HWP and authored HWPX.
+    // Report these fields explicitly rather than equating absence with an empty child.
+    f!(para_text_terminal);
+    f!(authored_text_runs);
     f!(tab_extended);
     f!(markpen_marks);
     f!(numbering_restart);
@@ -1299,5 +1312,28 @@ mod tests {
         });
         let copy = doc.clone();
         assert!(sweep_documents(&doc, &copy).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod empty_text_fragment_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn empty_text_fragment_diagnostics_report_provenance_without_hiding_text() {
+        let a = Paragraph::default();
+        let mut b = a.clone();
+        b.para_text_terminal = Some(0);
+        b.authored_text_runs = Some(Vec::new());
+        b.text = "A".into();
+        let mut report = SweepReport::default();
+        sweep_paragraph("paragraph", &a, &b, &mut report);
+        for field in ["para_text_terminal", "authored_text_runs", "text"] {
+            assert!(report
+                .details
+                .iter()
+                .any(|item| item.path == format!("paragraph.{field}")));
+        }
+        assert_eq!(report.total(), 3);
     }
 }

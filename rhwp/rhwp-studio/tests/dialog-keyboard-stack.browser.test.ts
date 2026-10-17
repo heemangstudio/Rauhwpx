@@ -235,19 +235,43 @@ test('the find dialog leaves Enter/Escape outside it alone and re-checks a stale
     await page.evaluate(async () => {
       const { FindDialog } = await import('/src/ui/find-dialog.ts');
       const calls: string[] = [];
+      type Position = { sectionIndex: number; paragraphIndex: number; charOffset: number };
       const state = {
+        text: '---abc-tail',
         hits: [{ sec: 0, para: 0, charOffset: 3, length: 3 }],
-        selection: null as null | { start: object; end: object },
+        position: { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 },
+        selection: null as null | { start: Position; end: Position },
+        replacements: [] as unknown[][],
       };
       const wasm = {
-        searchText: () => { calls.push('searchText'); return { found: true, sec: 0, para: 0, charOffset: 3, length: 3 }; },
+        // 이 본문 fixture에는 인라인 개체가 없어 text/logical 좌표가 같다.
+        logicalToTextOffset: (_sec: number, _para: number, offset: number) => offset,
+        textToLogicalOffset: (_sec: number, _para: number, offset: number) => offset,
+        searchText: () => {
+          calls.push('searchText');
+          return state.hits.length ? { found: true, ...state.hits[0] } : { found: false };
+        },
         searchAllText: () => state.hits,
-        replaceText: () => { calls.push('replaceText'); return { ok: true }; },
+        replaceText: (sec: number, para: number, offset: number, length: number, text: string) => {
+          calls.push('replaceText');
+          state.replacements.push([sec, para, offset, length, text]);
+          state.text = state.text.slice(0, offset) + text + state.text.slice(offset + length);
+          state.hits = [];
+          return { ok: true };
+        },
       };
       const inputHandler = {
-        getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
-        moveCursorTo: () => true,
-        cursor: { setAnchor: () => undefined, moveTo: () => undefined },
+        getCursorPosition: () => state.position,
+        moveCursorTo: (position: Position) => {
+          state.position = { ...position }; state.selection = null; return true;
+        },
+        cursor: {
+          setAnchor: () => { state.selection = { start: { ...state.position }, end: { ...state.position } }; },
+          moveTo: ({ sectionIndex, paragraphIndex, charOffset }: Position) => {
+            state.position = { sectionIndex, paragraphIndex, charOffset };
+            if (state.selection) state.selection.end = { ...state.position };
+          },
+        },
         getSelection: () => state.selection,
         executeOperation: (desc: { operation: (w: unknown) => unknown }) => { desc.operation(wasm); },
       };
@@ -280,27 +304,43 @@ test('the find dialog leaves Enter/Escape outside it alone and re-checks a stale
     await page.focus('.find-dialog-input');
     await page.keyboard.type('abc');
     await page.keyboard.press('Enter');
+    const selection = (start: number, end: number) => ({
+      start: { sectionIndex: 0, paragraphIndex: 0, charOffset: start },
+      end: { sectionIndex: 0, paragraphIndex: 0, charOffset: end },
+    });
+    assert.deepEqual(await page.evaluate(() => (window as any).findState.selection), selection(3, 6));
+    const inputs = await page.$$('.find-dialog-input');
+    await inputs[1].type('XYZ');
     const replaceButton = await page.evaluateHandle(() => [...document.querySelectorAll('.find-dialog button')]
       .find((button) => button.textContent === '바꾸기')!);
 
     // 검색 뒤 앞쪽에 글자가 들어가 결과가 밀렸다 → 쓰지 않고 다시 찾는다.
     await page.evaluate(() => {
-      const state = (window as unknown as { findState: { hits: unknown[]; selection: unknown } }).findState;
+      const state = (window as unknown as { findState: { text: string; hits: unknown[] } }).findState;
+      state.text = '++---abc-tail';
       state.hits = [{ sec: 0, para: 0, charOffset: 5, length: 3 }];
-      state.selection = { start: { sectionIndex: 0, paragraphIndex: 0, charOffset: 3 }, end: { sectionIndex: 0, paragraphIndex: 0, charOffset: 6 } };
     });
     await (replaceButton as unknown as { click: () => Promise<void> }).click();
-    let calls = await page.evaluate(() => (window as unknown as { findCalls: string[] }).findCalls.slice(2));
-    assert.deepEqual(calls, ['searchText', 'searchText'], 'a stale hit is searched again, not replaced');
+    const stale = await page.evaluate(() => ({
+      calls: (window as any).findCalls.slice(2),
+      text: (window as any).findState.text,
+      selection: (window as any).findState.selection,
+      replacements: (window as any).findState.replacements,
+    }));
+    assert.deepEqual(stale, {
+      calls: ['searchText', 'searchText'], text: '++---abc-tail',
+      selection: selection(5, 8), replacements: [],
+    }, 'a stale hit is searched again and selected at its new position without changing text');
 
-    // 결과와 선택이 그대로면 바꾼다.
-    await page.evaluate(() => {
-      const state = (window as unknown as { findState: { hits: unknown[] } }).findState;
-      state.hits = [{ sec: 0, para: 0, charOffset: 3, length: 3 }];
-    });
+    // 새 검색 결과와 선택이 그대로인 다음 클릭에서만 그 범위를 바꾼다.
     await (replaceButton as unknown as { click: () => Promise<void> }).click();
-    calls = await page.evaluate(() => (window as unknown as { findCalls: string[] }).findCalls.slice(4));
-    assert.deepEqual(calls, ['replaceText', 'searchText']);
+    assert.deepEqual(await page.evaluate(() => ({
+      calls: (window as any).findCalls.slice(4),
+      text: (window as any).findState.text,
+      replacements: (window as any).findState.replacements,
+    })), {
+      calls: ['replaceText', 'searchText'], text: '++---XYZ-tail', replacements: [[0, 0, 5, 3, 'XYZ']],
+    });
     assert.deepEqual(pageErrors(page), []);
   } finally {
     await page.close();

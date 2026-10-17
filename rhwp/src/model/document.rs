@@ -19,6 +19,481 @@ pub const HWP5_ORIGIN_HWPX_MARKER_PATH: &str = "META-INF/rhwp-hwp5-origin";
 /// 저장 줄의 구현 태그를 복원하지 않고 세션의 행 높이 해석을 재로드에서도 유지한다.
 pub const OWN_LINE_LAYOUT_HWPX_MARKER_PATH: &str = "META-INF/rhwp-own-line-layout";
 
+/// 표준 HWPX 속성으로 표현할 수 없는 원시 필드의 보조 엔트리.
+pub const RAW_FIELDS_HWPX_PATH: &str = "META-INF/rhwp-raw-fields.json";
+
+/// 실제 방출 XML에 결합하는 라운드트립 메타데이터. 문서 트리를 다시 순회하지 않는다.
+pub(crate) mod hwpx_raw_fields {
+    use std::borrow::Cow;
+    use std::collections::{HashMap, HashSet};
+
+    use quick_xml::events::{BytesStart, Event};
+    use quick_xml::Reader;
+    use serde::{Deserialize, Serialize};
+
+    use super::DocInfo;
+    use crate::model::style::UnderlineType;
+
+    pub(crate) const MAX_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_RECORDS: usize = 65_536;
+    const MAX_DEPTH: usize = 256;
+    pub(crate) const CARRIER: &str = "rhwpRawTabFlags";
+
+    #[derive(Default, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(crate) struct Metadata {
+        version: u8,
+        parts: Vec<Part>,
+        strokes: Vec<Stroke>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Part {
+        path: String,
+        digest: [u8; 32],
+        tabs: Vec<Tab>,
+    }
+
+    #[derive(Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct TabKey {
+        route: Vec<u32>,
+        paragraph_id: u32,
+        ordinal: u32,
+        width: u16,
+        leader: u8,
+        tab_type: u8,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Tab {
+        key: TabKey,
+        flags: u16,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Stroke {
+        id: u32,
+        digest: [u8; 32],
+        underline: Option<u8>,
+        strike: Option<u8>,
+    }
+
+    fn digest(xml: &str) -> [u8; 32] {
+        *blake3::hash(xml.as_bytes()).as_bytes()
+    }
+
+    fn local(name: &[u8]) -> &[u8] {
+        name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+    }
+
+    fn attr(e: &BytesStart<'_>, key: &str) -> Option<String> {
+        let mut value = None;
+        for a in e.attributes() {
+            let a = a.ok()?;
+            if a.key.as_ref() == key.as_bytes() {
+                if value.is_some() {
+                    return None;
+                }
+                let raw = std::str::from_utf8(&a.value).ok()?;
+                value = Some(quick_xml::escape::unescape(raw).ok()?.into_owned());
+            }
+        }
+        value
+    }
+
+    /// 바이트를 다시 직렬화하지 않아 표준 XML의 지문과 원본 공백을 유지한다.
+    pub(crate) fn strip_carriers(xml: &str) -> Cow<'_, str> {
+        let mut scanner = crate::xml_attr::ExactXmlAttributeScanner::new(xml);
+        let mut ranges = Vec::new();
+        while let Some((value_start, value_end)) = scanner.next_value(CARRIER) {
+            let mut cursor = value_start - 1;
+            while cursor > 0 && xml.as_bytes()[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            if cursor == 0 || xml.as_bytes()[cursor - 1] != b'=' {
+                continue;
+            }
+            cursor -= 1;
+            while cursor > 0 && xml.as_bytes()[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            let Some(mut start) = cursor.checked_sub(CARRIER.len()) else {
+                continue;
+            };
+            while start > 0 && xml.as_bytes()[start - 1].is_ascii_whitespace() {
+                start -= 1;
+            }
+            ranges.push((start, value_end + 1));
+        }
+        if ranges.is_empty() {
+            return Cow::Borrowed(xml);
+        }
+        let mut clean = String::with_capacity(xml.len());
+        let mut cursor = 0;
+        for (start, end) in ranges {
+            clean.push_str(&xml[cursor..start]);
+            cursor = end;
+        }
+        clean.push_str(&xml[cursor..]);
+        Cow::Owned(clean)
+    }
+
+    struct Frame {
+        route: Vec<u32>,
+        next_child: u32,
+        paragraph: Option<(Option<u32>, u32)>,
+    }
+
+    struct ObservedTab {
+        key: TabKey,
+        insert_at: usize,
+        flags: Option<u16>,
+    }
+
+    /// 각 요소의 자식 인덱스로 문단 경로를 만든다. 중복 문단 ID도 서로 구별된다.
+    fn tabs(xml: &str) -> Option<Vec<ObservedTab>> {
+        let mut reader = Reader::from_str(xml);
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut roots = 0u32;
+        let mut observed = Vec::new();
+        loop {
+            let event = reader.read_event().ok()?;
+            match event {
+                Event::Start(ref e) | Event::Empty(ref e) => {
+                    let empty = matches!(&event, Event::Empty(_));
+                    let mut route = if let Some(parent) = stack.last_mut() {
+                        let mut route = parent.route.clone();
+                        route.push(parent.next_child);
+                        parent.next_child = parent.next_child.checked_add(1)?;
+                        route
+                    } else {
+                        let route = vec![roots];
+                        roots = roots.checked_add(1)?;
+                        route
+                    };
+                    if route.len() > MAX_DEPTH {
+                        return None;
+                    }
+                    let name = e.name();
+                    let name = local(name.as_ref());
+                    if name == b"tab" && empty {
+                        let flags = attr(e, CARRIER).and_then(|v| v.parse().ok());
+                        let Some(paragraph) =
+                            stack.iter_mut().rev().find(|f| f.paragraph.is_some())
+                        else {
+                            if flags.is_some() {
+                                return None;
+                            }
+                            continue;
+                        };
+                        let route = paragraph.route.clone();
+                        let (id, ordinal) = paragraph.paragraph.as_mut()?;
+                        let tab_ordinal = *ordinal;
+                        *ordinal = ordinal.checked_add(1)?;
+                        let key = (|| {
+                            Some(TabKey {
+                                route,
+                                paragraph_id: (*id)?,
+                                ordinal: tab_ordinal,
+                                width: attr(e, "width")?.parse().ok()?,
+                                leader: attr(e, "leader")?.parse().ok()?,
+                                tab_type: attr(e, "type")?.parse().ok()?,
+                            })
+                        })();
+                        let Some(key) = key else {
+                            if flags.is_some() {
+                                return None;
+                            }
+                            continue;
+                        };
+                        let end = usize::try_from(reader.buffer_position()).ok()?;
+                        if xml.as_bytes().get(end.checked_sub(2)?..end)? != b"/>" {
+                            return None;
+                        }
+                        observed.push(ObservedTab {
+                            key,
+                            insert_at: end - 2,
+                            flags,
+                        });
+                        if observed.len() > MAX_RECORDS {
+                            return None;
+                        }
+                    }
+                    if !empty {
+                        stack.push(Frame {
+                            route: std::mem::take(&mut route),
+                            next_child: 0,
+                            paragraph: (name == b"p")
+                                .then(|| (attr(e, "id").and_then(|v| v.parse().ok()), 0)),
+                        });
+                    }
+                }
+                Event::End(_) => {
+                    stack.pop()?;
+                }
+                Event::Eof => return stack.is_empty().then_some(observed),
+                _ => {}
+            }
+        }
+    }
+
+    struct HeaderShape {
+        digest: [u8; 32],
+        underline_type: String,
+        underline_shape: String,
+        strike_shape: String,
+    }
+
+    fn header_shapes(xml: &str) -> Option<HashMap<u32, HeaderShape>> {
+        let mut reader = Reader::from_str(xml);
+        let mut current = None;
+        let mut shapes = HashMap::new();
+        let mut depth = 0usize;
+        loop {
+            let start = usize::try_from(reader.buffer_position()).ok()?;
+            match reader.read_event().ok()? {
+                Event::Start(e) => {
+                    depth += 1;
+                    if depth > MAX_DEPTH {
+                        return None;
+                    }
+                    if local(e.name().as_ref()) == b"charPr" {
+                        if current.is_some() {
+                            return None;
+                        }
+                        current = Some((
+                            attr(&e, "id")?.parse::<u32>().ok()?,
+                            start,
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                        ));
+                    }
+                }
+                Event::Empty(e) => {
+                    // 빈/중복 charPr 정의가 섞인 헤더는 복원 대상 ID를 확정할 수 없다.
+                    if local(e.name().as_ref()) == b"charPr" {
+                        return None;
+                    }
+                    if let Some((_, _, ref mut kind, ref mut underline, ref mut strike)) = current {
+                        match local(e.name().as_ref()) {
+                            b"underline" if kind.is_empty() => {
+                                *kind = attr(&e, "type")?;
+                                *underline = attr(&e, "shape")?;
+                            }
+                            b"strikeout" if strike.is_empty() => *strike = attr(&e, "shape")?,
+                            b"underline" | b"strikeout" => return None,
+                            _ => {}
+                        }
+                    }
+                }
+                Event::End(e) => {
+                    depth = depth.checked_sub(1)?;
+                    if local(e.name().as_ref()) == b"charPr" {
+                        let (id, start, underline_type, underline_shape, strike_shape) =
+                            current.take()?;
+                        let end = usize::try_from(reader.buffer_position()).ok()?;
+                        if shapes
+                            .insert(
+                                id,
+                                HeaderShape {
+                                    digest: digest(&xml[start..end]),
+                                    underline_type,
+                                    underline_shape,
+                                    strike_shape,
+                                },
+                            )
+                            .is_some()
+                            || shapes.len() > MAX_RECORDS
+                        {
+                            return None;
+                        }
+                    }
+                }
+                Event::Eof => return (depth == 0 && current.is_none()).then_some(shapes),
+                _ => {}
+            }
+        }
+    }
+
+    impl Metadata {
+        pub(crate) fn new() -> Self {
+            Self {
+                version: 1,
+                ..Default::default()
+            }
+        }
+
+        /// 임시 속성을 수집한 뒤 표준 XML만 ZIP writer에 반환한다.
+        pub(crate) fn capture_part(&mut self, path: &str, xml: &str) -> Option<String> {
+            let observed = tabs(xml)?;
+            let clean = strip_carriers(xml).into_owned();
+            let records: Vec<_> = observed
+                .into_iter()
+                .filter_map(|tab| {
+                    tab.flags.map(|flags| Tab {
+                        key: tab.key,
+                        flags,
+                    })
+                })
+                .collect();
+            if !records.is_empty() {
+                self.parts.push(Part {
+                    path: path.to_string(),
+                    digest: digest(&clean),
+                    tabs: records,
+                });
+            }
+            Some(clean)
+        }
+
+        pub(crate) fn capture_strokes(&mut self, info: &DocInfo, xml: &str) -> Option<()> {
+            let shapes = header_shapes(xml)?;
+            for (id, cs) in info.char_shapes.iter().enumerate() {
+                let underline = (cs.underline_type == UnderlineType::None
+                    && (13..=15).contains(&cs.underline_shape))
+                .then_some(cs.underline_shape);
+                let strike = (!cs.strikethrough && (1..=15).contains(&cs.strike_shape))
+                    .then_some(cs.strike_shape);
+                if underline.is_some() || strike.is_some() {
+                    let id = u32::try_from(id).ok()?;
+                    self.strokes.push(Stroke {
+                        id,
+                        digest: shapes.get(&id)?.digest,
+                        underline,
+                        strike,
+                    });
+                }
+            }
+            Some(())
+        }
+
+        pub(crate) fn encode(&self) -> Option<Vec<u8>> {
+            if !self.valid() {
+                return None;
+            }
+            let mut out = crate::serializer::hwpx::utils::BoundedXmlBuffer::new(MAX_BYTES);
+            serde_json::to_writer(&mut out, self).ok()?;
+            Some(out.into_inner())
+        }
+
+        pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+            if bytes.len() > MAX_BYTES {
+                return None;
+            }
+            let value: Self = serde_json::from_slice(bytes).ok()?;
+            value.valid().then_some(value)
+        }
+
+        fn valid(&self) -> bool {
+            if self.version != 1
+                || self.parts.len() > MAX_RECORDS
+                || self.strokes.len() > MAX_RECORDS
+            {
+                return false;
+            }
+            let mut paths = HashSet::new();
+            let mut total = self.strokes.len();
+            for part in &self.parts {
+                if part.path.is_empty() || part.path.len() > 1024 || !paths.insert(&part.path) {
+                    return false;
+                }
+                total = match total.checked_add(part.tabs.len()) {
+                    Some(n) if n <= MAX_RECORDS => n,
+                    _ => return false,
+                };
+                let mut keys = HashSet::new();
+                for tab in &part.tabs {
+                    if tab.key.route.is_empty()
+                        || tab.key.route.len() > MAX_DEPTH
+                        || !keys.insert((&tab.key.route, tab.key.ordinal))
+                    {
+                        return false;
+                    }
+                }
+            }
+            let mut ids = HashSet::new();
+            self.strokes.iter().all(|s| {
+                ids.insert(s.id)
+                    && (s.underline.is_some() || s.strike.is_some())
+                    && s.underline.is_none_or(|v| (13..=15).contains(&v))
+                    && s.strike.is_none_or(|v| (1..=15).contains(&v))
+            })
+        }
+
+        /// 전체 part 지문과 모든 목적지를 확인한 뒤에만 내부 속성을 삽입한다.
+        pub(crate) fn project_part<'a>(&self, path: &str, clean: &'a str) -> Cow<'a, str> {
+            let Some(part) = self
+                .parts
+                .iter()
+                .find(|p| p.path == path && p.digest == digest(clean))
+            else {
+                return Cow::Borrowed(clean);
+            };
+            let Some(observed) = tabs(clean) else {
+                return Cow::Borrowed(clean);
+            };
+            let by_key: HashMap<_, _> = observed
+                .iter()
+                .map(|tab| (&tab.key, tab.insert_at))
+                .collect();
+            let mut insertions = Vec::new();
+            for tab in &part.tabs {
+                let Some(&offset) = by_key.get(&tab.key) else {
+                    return Cow::Borrowed(clean);
+                };
+                insertions.push((offset, tab.flags));
+            }
+            insertions.sort_unstable_by_key(|(offset, _)| *offset);
+            let mut projected = String::with_capacity(clean.len());
+            let mut cursor = 0;
+            for (offset, flags) in insertions {
+                projected.push_str(&clean[cursor..offset]);
+                use std::fmt::Write;
+                let _ = write!(projected, " {CARRIER}=\"{flags}\"");
+                cursor = offset;
+            }
+            projected.push_str(&clean[cursor..]);
+            Cow::Owned(projected)
+        }
+
+        pub(crate) fn restore_strokes(&self, info: &mut DocInfo, xml: &str) {
+            let Some(shapes) = header_shapes(xml) else {
+                return;
+            };
+            for record in &self.strokes {
+                let Some(shape) = shapes
+                    .get(&record.id)
+                    .filter(|shape| shape.digest == record.digest)
+                else {
+                    continue;
+                };
+                let Some(cs) = info.char_shapes.get_mut(record.id as usize) else {
+                    continue;
+                };
+                if let Some(raw) = record.underline {
+                    if cs.underline_type == UnderlineType::None
+                        && shape.underline_type == "NONE"
+                        && shape.underline_shape == "SOLID"
+                    {
+                        cs.underline_shape = raw;
+                    }
+                }
+                if let Some(raw) = record.strike {
+                    let expected = if raw == 15 { "3D" } else { "NONE" };
+                    if !cs.strikethrough && shape.strike_shape == expected {
+                        cs.strike_shape = raw;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 파서가 모델링하지 않는 원시 레코드 (라운드트립 보존용)
 #[derive(Debug, Clone, Default)]
 pub struct RawRecord {

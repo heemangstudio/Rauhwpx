@@ -31,7 +31,8 @@ use std::collections::HashSet;
 
 use crate::model::bin_data::BinDataBytes;
 use crate::model::document::{
-    Document, HWP5_ORIGIN_HWPX_MARKER_PATH, OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
+    hwpx_raw_fields, Document, HWP5_ORIGIN_HWPX_MARKER_PATH, OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
+    RAW_FIELDS_HWPX_PATH,
 };
 
 use super::SerializeError;
@@ -66,6 +67,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     let mut ctx = SerializeContext::collect_from_document(doc);
 
     let mut z = HwpxZipWriter::new();
+    let mut raw_fields = hwpx_raw_fields::Metadata::new();
 
     // 1. mimetype (반드시 최초 엔트리, STORED, extra field 없음)
     z.write_stored("mimetype", b"application/hwp+zip")?;
@@ -81,6 +83,15 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     // 3. Contents/header.xml — Stage 1 동적 생성 (IR 기반)
     let header_limit = z.remaining_entry_limit("Contents/header.xml")?;
     let header_xml = header::write_header_limited(doc, &ctx, header_limit)?;
+    let header_text =
+        std::str::from_utf8(&header_xml).map_err(|e| SerializeError::XmlError(e.to_string()))?;
+    raw_fields
+        .capture_strokes(&doc.doc_info, header_text)
+        .ok_or_else(|| {
+            SerializeError::XmlError(
+                "HWPX raw stroke metadata could not be bound to header XML".into(),
+            )
+        })?;
     z.write_deflated("Contents/header.xml", &header_xml)?;
 
     // 4. Contents/section{N}.xml — 실제 섹션만큼, 없으면 0개
@@ -90,7 +101,16 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     for (i, sec) in doc.sections.iter().enumerate() {
         let section_limit = z.remaining_entry_limit(&section_hrefs[i])?;
         let xml = section::write_section_limited(sec, doc, i, &mut ctx, section_limit)?;
-        z.write_deflated(&section_hrefs[i], &xml)?;
+        let text =
+            std::str::from_utf8(&xml).map_err(|e| SerializeError::XmlError(e.to_string()))?;
+        let clean = raw_fields
+            .capture_part(&section_hrefs[i], text)
+            .ok_or_else(|| {
+                SerializeError::XmlError(
+                    "HWPX raw tab metadata could not be bound to section XML".into(),
+                )
+            })?;
+        z.write_deflated(&section_hrefs[i], clean.as_bytes())?;
     }
 
     // 4b. Contents/masterpage{N}.xml — 바탕쪽 (전 섹션 누적 전역 인덱스).
@@ -104,7 +124,12 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
             let href = format!("Contents/masterpage{}.xml", mp_global);
             let master_limit = z.remaining_entry_limit(&href)?;
             let xml = master_page::render_master_page_xml_limited(mp, &id, &mut ctx, master_limit)?;
-            z.write_deflated(&href, xml.as_bytes())?;
+            let clean = raw_fields.capture_part(&href, &xml).ok_or_else(|| {
+                SerializeError::XmlError(
+                    "HWPX raw tab metadata could not be bound to master page XML".into(),
+                )
+            })?;
+            z.write_deflated(&href, clean.as_bytes())?;
             master_items.push((id, href));
             mp_global += 1;
         }
@@ -135,6 +160,10 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     if let Some(bytes) = crate::model::hyperlink_format::encode(doc) {
         z.write_deflated(crate::model::hyperlink_format::HWPX_ENTRY, &bytes)?;
     }
+    let raw_bytes = raw_fields.encode().ok_or_else(|| {
+        SerializeError::XmlError("HWPX raw field metadata exceeds validation or size limits".into())
+    })?;
+    z.write_deflated(RAW_FIELDS_HWPX_PATH, &raw_bytes)?;
 
     // 7. META-INF/container.rdf — header + every section part.
     // Hancom uses this RDF graph alongside content.hpf; a stale one-section
@@ -201,6 +230,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         "META-INF/manifest.xml",
         HWP5_ORIGIN_HWPX_MARKER_PATH,
         OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
+        RAW_FIELDS_HWPX_PATH,
     ]
     .into_iter()
     .map(str::to_string)

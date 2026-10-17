@@ -754,6 +754,8 @@ impl DocumentCore {
     /// 컨트롤·ctrl_data 레코드를 제거하며 char_count 를 8 감소시킨다.
     /// 본문(`delete_equation_control_native`)과 셀 경로가 공유한다.
     fn remove_equation_control_and_shift(para: &mut Paragraph, control_idx: usize) {
+        para.authored_text_runs = None;
+        para.para_text_terminal = None;
         let text_chars: Vec<char> = para.text.chars().collect();
         let mut ci = 0usize;
         let mut prev_end: u32 = 0;

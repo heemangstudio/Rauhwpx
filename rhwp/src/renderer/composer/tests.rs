@@ -1170,6 +1170,7 @@ fn test_reflow_line_height() {
 #[test]
 fn test_split_runs_by_lang_korean_english() {
     let runs = vec![ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "안녕Hello세계".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1191,6 +1192,7 @@ fn test_split_runs_by_lang_korean_english() {
 #[test]
 fn test_split_runs_by_lang_no_split() {
     let runs = vec![ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "안녕하세요".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1208,6 +1210,7 @@ fn test_split_runs_by_lang_no_split() {
 #[test]
 fn test_split_runs_by_lang_space_at_korean_boundaries() {
     let runs = vec![ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "안녕 Hello 세계".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1229,6 +1232,7 @@ fn test_split_runs_by_lang_space_at_korean_boundaries() {
 #[test]
 fn test_split_runs_by_lang_empty() {
     let runs = vec![ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1245,6 +1249,7 @@ fn test_split_runs_by_lang_empty() {
 #[test]
 fn test_split_runs_by_lang_english_only() {
     let runs = vec![ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "Hello World".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1339,6 +1344,7 @@ fn test_estimate_composed_line_width() {
 
     let line = ComposedLine {
         runs: vec![ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: "가나다".to_string(),
             char_style_id: 0,
             lang_index: 0,
@@ -1680,6 +1686,7 @@ fn test_tokenize_line_break() {
 #[test]
 fn test_555_effective_text_for_metrics_uses_display_text_when_present() {
     let run = ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "\u{F861}".to_string(), // PUA 책괄호 (1 char)
         char_style_id: 0,
         lang_index: 0,
@@ -1702,6 +1709,7 @@ fn test_555_effective_text_for_metrics_uses_display_text_when_present() {
 #[test]
 fn test_555_effective_text_for_metrics_multi_jamo_cluster() {
     let run = ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "\u{F8E0}".to_string(), // PUA 옛한글 합자 (가상 codepoint, 1 char)
         char_style_id: 0,
         lang_index: 0,
@@ -1725,6 +1733,7 @@ fn test_555_effective_text_for_metrics_multi_jamo_cluster() {
 #[test]
 fn test_555_effective_text_for_metrics_no_display_text_falls_back_to_text() {
     let run = ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "한글".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1746,6 +1755,7 @@ fn test_555_effective_text_for_metrics_no_display_text_falls_back_to_text() {
 #[test]
 fn test_677_effective_text_for_metrics_preserves_f081c_filler() {
     let run = ComposedTextRun {
+        special_space_origins: Vec::new(),
         text: "\u{F081C}\u{F081C}".to_string(),
         char_style_id: 0,
         lang_index: 0,
@@ -1799,6 +1809,7 @@ fn test_kbu1_line_start_forbidden_retraction() {
     let styles = make_styles_with_font_size(16.0);
     let line = ComposedLine {
         runs: vec![ComposedTextRun {
+            special_space_origins: Vec::new(),
             text: "적용한다.111111".to_string(),
             char_style_id: 0,
             lang_index: 0,

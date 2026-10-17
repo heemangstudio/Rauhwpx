@@ -1611,117 +1611,163 @@ mod tests {
         );
     }
 
-    /// Task #521: exam_eng p2 18번 박스 (TAC 표) 하단 ↔ ① 첫 답안 gap 정합 검증.
-    ///
-    /// 페이지 2 우측 단 18번 문제 (pi=104) 의 TAC 표 (1×1, 이메일 박스, h=76.2mm,
-    /// outer_margin_bottom=2.1mm=600 HU) 직후 ① 첫 답안 (pi=105) 위치.
-    ///
-    /// HWP IR ls[0] lh=22207 = cell h (21607) + outer_margin_bottom (600) 으로
-    /// lh 정의. layout_table_item TAC after-spacing 분기 (layout.rs:2491-2497) 가
-    /// outer_margin_bottom 미적용 → 다음 paragraph 가 8 px 위로 시프트.
-    ///
-    /// PDF 한컴 2010: 박스 bottom → ① 첫 답안 gap ≈ 20 px
-    /// 수정 전: gap = 12.27 px (-7.7 px shortfall)
-    /// 수정 후: gap = 20.27 px (PDF ±2 px 정합)
+    /// Task #521: 배경 그림 뒤 TAC 표는 원본 호스트 높이·여백·signed spacing을
+    /// 한 번 소비하고 다음 본문 줄을 원본 LINE_SEG 원점에 배치한다.
+    /// 근사 그림 잉크↔글자 baseline 간격 대신 전체 렌더 트리의 흐름을 검증한다.
     #[test]
     fn test_521_tac_table_outer_margin_bottom_p2() {
+        use crate::renderer::{hwpunit_to_px, px_to_hwpunit_round};
+
         let core = load_document("samples/exam_eng.hwp");
-        let svg = core.render_page_svg_native(1).unwrap_or_default();
-        assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
-
-        // 박스 (table border rect) bottom y 찾기
-        // 우측 단 (x ≈ 597), top y ≈ 244, height ≈ 288 → bottom ≈ 532
-        let mut box_bottom: Option<f64> = None;
-        for chunk in svg.split("<rect ").skip(1) {
-            let close = match chunk.find("/>") {
-                Some(p) => p,
-                None => continue,
-            };
-            let attrs = &chunk[..close];
-            let parse_attr = |name: &str| -> Option<f64> {
-                let key = format!("{}=\"", name);
-                let p = attrs.find(&key)? + key.len();
-                let q = attrs[p..].find('"')?;
-                attrs[p..p + q].parse::<f64>().ok()
-            };
-            let x = match parse_attr("x") {
-                Some(v) => v,
-                None => continue,
-            };
-            let y = match parse_attr("y") {
-                Some(v) => v,
-                None => continue,
-            };
-            let h = match parse_attr("height") {
-                Some(v) => v,
-                None => continue,
-            };
-            // 박스: x ≈ 597 (col 1), y in [240, 250], h in [285, 290]
-            if x > 595.0 && x < 600.0 && y > 240.0 && y < 250.0 && h > 285.0 && h < 290.0 {
-                box_bottom = Some(y + h);
-                break;
+        let tree = core.build_page_render_tree(1).expect("fixture page 2");
+        let pages: Vec<_> = core
+            .pagination
+            .iter()
+            .flat_map(|result| &result.pages)
+            .filter(|page| page.page_index == 1)
+            .collect();
+        assert_eq!(pages.len(), 1, "fixture page must have one section frame");
+        let page = pages[0];
+        let section_index = page.section_index;
+        let paragraphs = &core.document.sections[section_index].paragraphs;
+        let mut candidates = Vec::new();
+        for (column_index, column) in page.column_contents.iter().enumerate() {
+            for (item_index, item) in column.items.iter().enumerate() {
+                let crate::renderer::pagination::PageItem::Table {
+                    para_index,
+                    control_index,
+                } = item
+                else {
+                    continue;
+                };
+                let para = &paragraphs[*para_index];
+                let Some(next) = paragraphs.get(*para_index + 1) else {
+                    continue;
+                };
+                if para.line_segs.len() == 1
+                    && next.text.trim_start().starts_with('①')
+                    && para.controls[..*control_index].iter().any(|control| {
+                        matches!(control, Control::Picture(picture)
+                            if !picture.common.treat_as_char
+                                && picture.common.text_wrap == TextWrap::BehindText)
+                    })
+                {
+                    candidates.push((column_index, item_index, *para_index, *control_index));
+                }
             }
         }
-        let box_bottom = box_bottom.expect("페이지 2 우측 단 18번 박스 (TAC 표) rect 를 찾지 못함");
-
-        // ① 첫 답안 baseline y 찾기 (우측 단, box bottom 직후)
-        let mut answer_y: Option<f64> = None;
-        for chunk in svg.split("<text ").skip(1) {
-            let close = match chunk.find('>') {
-                Some(p) => p,
-                None => continue,
-            };
-            let attrs = &chunk[..close];
-            let key = "transform=\"translate(";
-            let p = match attrs.find(key) {
-                Some(p) => p + key.len(),
-                None => continue,
-            };
-            let q = match attrs[p..].find(')') {
-                Some(q) => q,
-                None => continue,
-            };
-            let coords = &attrs[p..p + q];
-            let parts: Vec<&str> = coords.split(',').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-            let x: f64 = match parts[0].trim().parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let y: f64 = match parts[1].trim().parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let body_start = close + 1;
-            let body_end = chunk[body_start..]
-                .find("</text>")
-                .map(|i| body_start + i)
-                .unwrap_or(close);
-            let body = &chunk[body_start..body_end];
-            // 우측 단 (x > 580), box bottom 직후 (y > box_bottom + 5), '①' 문자
-            if x > 580.0 && y > box_bottom + 5.0 && y < box_bottom + 30.0 && body == "①" {
-                answer_y = Some(y);
-                break;
-            }
-        }
-        let answer_y = answer_y.expect("페이지 2 우측 단 18번 ① 첫 답안을 찾지 못함");
-
-        // gap 검증
-        let gap = answer_y - box_bottom;
-        let pdf_expected_gap: f64 = 20.0;
-
-        assert!(
-            (gap - pdf_expected_gap).abs() < 2.0,
-            "박스 bottom y={:.2} → ① y={:.2} gap={:.2} 가 PDF 기대값 {:.2} (±2 px) 와 \
-             일치해야 함. 버그(수정 전): gap=12.27 (-7.7 px shortfall, \
-             layout_table_item TAC after-spacing 의 outer_margin_bottom 미적용).",
-            box_bottom,
-            answer_y,
-            gap,
-            pdf_expected_gap
+        assert_eq!(
+            candidates.len(),
+            1,
+            "unique email table/first-answer cohort"
         );
+        let (column_index, item_index, para_index, control_index) = candidates[0];
+        let next_index = para_index + 1;
+        let column = &page.column_contents[column_index];
+        assert!(
+            column.zone_layout.is_none(),
+            "fixture uses the page column frame"
+        );
+        assert_eq!(column.zone_y_offset, 0.0);
+        assert!(
+            matches!(column.items.get(item_index + 1),
+            Some(crate::renderer::pagination::PageItem::FullParagraph { para_index })
+                if *para_index == next_index),
+            "answer must immediately follow the table"
+        );
+
+        let host = &paragraphs[para_index];
+        let next = &paragraphs[next_index];
+        let Control::Table(table) = &host.controls[control_index] else {
+            panic!("selected item must be a table");
+        };
+        assert!(table.common.treat_as_char && table.caption.is_none());
+        assert!(
+            host.controls.iter().enumerate().all(|(index, control)| {
+                index == control_index
+                    || matches!(control, Control::Picture(picture)
+                    if !picture.common.treat_as_char
+                        && picture.common.text_wrap == TextWrap::BehindText
+                        && picture.caption.is_none())
+            }),
+            "preceding pictures must remain out of flow"
+        );
+        assert!(!host.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}'));
+        assert!(next.controls.is_empty());
+        assert_eq!(next.line_segs.len(), 1);
+        let host_seg = &host.line_segs[0];
+        let next_seg = &next.line_segs[0];
+        for seg in [host_seg, next_seg] {
+            assert_eq!(seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY, 0);
+            assert!(seg.line_height > 0 && seg.text_height > 0 && seg.segment_width > 0);
+        }
+        assert_eq!(
+            i64::from(host_seg.line_height),
+            i64::from(table.common.height)
+                + i64::from(table.outer_margin_top)
+                + i64::from(table.outer_margin_bottom)
+        );
+        let advance_hu = host_seg.line_height + host_seg.line_spacing;
+        assert_eq!(next_seg.vertical_pos - host_seg.vertical_pos, advance_hu);
+        assert_eq!(
+            core.styles.para_styles[host.para_shape_id as usize].spacing_after,
+            0.0
+        );
+        assert_eq!(
+            core.styles.para_styles[next.para_shape_id as usize].spacing_before,
+            0.0
+        );
+
+        let mut nodes = Vec::new();
+        collect_render_nodes(&tree.root, &mut nodes);
+        let tables: Vec<_> = nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.node_type,
+            RenderNodeType::Table(table)
+                if table.section_index == Some(section_index)
+                    && table.para_index == Some(para_index)
+                    && table.control_index == Some(control_index))
+            })
+            .collect();
+        let lines: Vec<_> = nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.node_type,
+            RenderNodeType::TextLine(line)
+                if line.section_index == Some(section_index)
+                    && line.para_index == Some(next_index) && line.line_index == Some(0))
+                    && node.children.iter().any(|child| {
+                        matches!(&child.node_type,
+                RenderNodeType::TextRun(run) if run.cell_context.is_none())
+                    })
+            })
+            .collect();
+        assert_eq!(tables.len(), 1, "outer table is rendered once");
+        assert_eq!(lines.len(), 1, "following outer body line is rendered once");
+        let table_top = tables[0].bbox.y - hwpunit_to_px(table.outer_margin_top as i32, core.dpi);
+        let next_top = lines[0].bbox.y;
+        let column_y = page.layout.column_areas[column_index].y;
+        // 원본 정수 HU로 돌아가서 글자 baseline이나 배경 그림 잉크와 구분한다.
+        assert_eq!(
+            px_to_hwpunit_round(table_top - column_y, core.dpi),
+            host_seg.vertical_pos,
+            "actual table host anchor"
+        );
+        assert_eq!(
+            px_to_hwpunit_round(next_top - column_y, core.dpi),
+            next_seg.vertical_pos,
+            "actual following body origin"
+        );
+        assert_eq!(
+            px_to_hwpunit_round(next_top - table_top, core.dpi),
+            advance_hu,
+            "host height, margins and signed gap must be consumed once"
+        );
+        let RenderNodeType::TextLine(line) = &lines[0].node_type else {
+            unreachable!();
+        };
+        assert_eq!(line.vpos, Some(next_seg.vertical_pos));
     }
 
     /// Task #574: exam_science.hwp 페이지 1 쪽번호 "1" 이 CharShape.bold=false 인데도

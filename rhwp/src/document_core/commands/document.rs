@@ -10,11 +10,13 @@ use crate::document_core::{
 use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::document::{Document, Section};
-use crate::model::paragraph::{LineSeg, Paragraph};
+use crate::model::paragraph::{
+    LineSeg, Paragraph, TacControlSource, TacLineOrigin, TacParagraphSource, TacTableLineOrigin,
+};
 use crate::model::provenance::LayoutCompatibilityProfile;
 use crate::model::shape::{Caption, DrawingObjAttr, ShapeObject};
 use crate::renderer::composer::{
-    compose_section, reflow_line_segs, reflow_line_segs_with_exclusions,
+    reflow_line_segs, reflow_line_segs_with_exclusions, ComposedParagraph,
 };
 use crate::renderer::float_placement::FloatExclusion;
 use crate::renderer::layout::LayoutEngine;
@@ -25,6 +27,410 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+
+const TAC_LINE_ORIGIN_PATH: &str = "META-INF/rhwp-tac-line-origin";
+const TAC_LINE_ORIGIN_MAX_BYTES: usize = 131_072;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TacWireOrigins {
+    version: u8,
+    groups: Vec<TacWireGroup>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TacWireGroup {
+    section: usize,
+    paragraph: usize,
+    origin: TacTableLineOrigin,
+    wire: Vec<TacParagraphSource>,
+}
+
+fn tac_dependent_snapshot_inputs_match(
+    paras: &[Paragraph],
+    snapshot: &SnapshotSection,
+    i: usize,
+) -> bool {
+    use crate::renderer::float_placement::{has_tac_line_origin, tac_snapshot_inputs_match};
+    let scoped = paras.iter().any(has_tac_line_origin)
+        || snapshot
+            .paragraphs
+            .iter()
+            .any(|p| has_tac_line_origin(&p.paragraph));
+    if scoped
+        && !paras
+            .get(i)
+            .zip(snapshot.paragraphs.get(i))
+            .is_some_and(|(p, s)| {
+                p.line_segs
+                    .iter()
+                    .map(crate::renderer::float_placement::tac_line_fields)
+                    .eq(s
+                        .paragraph
+                        .line_segs
+                        .iter()
+                        .map(crate::renderer::float_placement::tac_line_fields))
+            })
+    {
+        return false;
+    }
+    let range = i.saturating_sub(1)..=i.saturating_add(1);
+    let dependent = range
+        .clone()
+        .any(|n| paras.get(n).is_some_and(has_tac_line_origin))
+        || range.clone().any(|n| {
+            snapshot
+                .paragraphs
+                .get(n)
+                .is_some_and(|p| has_tac_line_origin(&p.paragraph))
+        });
+    !dependent
+        || paras
+            .get(i)
+            .zip(snapshot.paragraphs.get(i))
+            .is_some_and(|(p, s)| tac_snapshot_inputs_match(p, &s.paragraph))
+}
+
+fn tac_snapshot_section_matches(section: &Section, snapshot: &SnapshotSection) -> bool {
+    use crate::renderer::float_placement::{has_tac_line_origin, leading_section_inputs};
+    if !section.paragraphs.iter().any(has_tac_line_origin)
+        && !snapshot
+            .paragraphs
+            .iter()
+            .any(|p| has_tac_line_origin(&p.paragraph))
+    {
+        return true;
+    }
+    if section.paragraphs.len() != snapshot.paragraphs.len()
+        || !(0..section.paragraphs.len())
+            .all(|i| tac_dependent_snapshot_inputs_match(&section.paragraphs, snapshot, i))
+    {
+        return false;
+    }
+    let mut old = snapshot.section_shell.clone();
+    old.paragraphs = snapshot
+        .paragraphs
+        .iter()
+        .map(|p| p.paragraph.as_ref().clone())
+        .collect();
+    leading_section_inputs(section) == leading_section_inputs(&old)
+}
+
+fn tac_wire_record_matches(current: &TacParagraphSource, wire: &TacParagraphSource) -> bool {
+    current.text == wire.text
+        && current.char_count == wire.char_count
+        && current.char_offsets == wire.char_offsets
+        && current.orphan_ends == wire.orphan_ends
+        && current.lines == wire.lines
+        && current.controls.len() == wire.controls.len()
+        && current
+            .controls
+            .iter()
+            .zip(&wire.controls)
+            .all(|(a, b)| match (a, b) {
+                (TacControlSource::Column(_), TacControlSource::Column(_)) => true,
+                (TacControlSource::Table(a), TacControlSource::Table(b)) => {
+                    a.paragraphs.len() == b.paragraphs.len()
+                        && a.paragraphs.iter().zip(&b.paragraphs).all(|(a, b)| {
+                            a.len() == b.len()
+                                && a.iter().zip(b).all(|(a, b)| tac_wire_record_matches(a, b))
+                        })
+                }
+                _ => false,
+            })
+}
+
+/// JSON line fields는 실제 IR 정수 범위 안에서만 출처로 사용한다.
+fn tac_wire_line_domains(p: &TacParagraphSource) -> bool {
+    p.lines.iter().all(|l| {
+        u32::try_from(l[0]).is_ok()
+            && l[1..8].iter().all(|n| i32::try_from(*n).is_ok())
+            && u32::try_from(l[8]).is_ok()
+    }) && p.controls.iter().all(|c| match c {
+        TacControlSource::Table(t) => t.paragraphs.iter().flatten().all(tac_wire_line_domains),
+        TacControlSource::Column(_) => true,
+    })
+}
+
+/// 기존 줄의 평행 이동과 실제 부재의 합성만 허용한다. stream은 불변이다.
+fn tac_origin_wire_consistent(group: &TacWireGroup) -> bool {
+    let source = &group.origin.source;
+    if !crate::renderer::float_placement::tac_source_absence_map_valid(source) {
+        return false;
+    }
+    if source.len() != 3
+        || group.wire.len() != 3
+        || !source.iter().chain(&group.wire).all(tac_wire_line_domains)
+        || !source[1].lines.is_empty()
+    {
+        return false;
+    }
+    let mut wire = group.wire.clone();
+    let Some((now, old)) = wire[0].lines.first().zip(source[0].lines.first()) else {
+        return false;
+    };
+    let delta = now[1] - old[1];
+    for index in [0, 2] {
+        for line in &mut wire[index].lines {
+            line[1] -= delta;
+        }
+    }
+    let ordinary = |p: &TacParagraphSource| {
+        p.lines.len() == 1 && p.lines[0][8] as u32 == LineSeg::TAG_SINGLE_SEGMENT_LINE
+    };
+    if !ordinary(&wire[1]) {
+        return false;
+    }
+    wire[1].lines.clear();
+    let [TacControlSource::Table(original)] = source[1].controls.as_slice() else {
+        return false;
+    };
+    let [TacControlSource::Table(saved)] = wire[1].controls.as_mut_slice() else {
+        return false;
+    };
+    if original.paragraphs.len() != saved.paragraphs.len() {
+        return false;
+    }
+    let mut absent = 0;
+    for (old, now) in original.paragraphs.iter().zip(&mut saved.paragraphs) {
+        if old.len() != now.len() {
+            return false;
+        }
+        for (old, now) in old.iter().zip(now) {
+            if old.lines.is_empty() {
+                if !ordinary(now) {
+                    return false;
+                }
+                now.lines.clear();
+                absent += 1;
+            }
+        }
+    }
+    absent > 0 && wire == *source
+}
+
+/// 파서가 0-height record를 지우기 전 실제 XML record 존재를 읽는다.
+fn tac_xml_cache_presence(
+    data: &[u8],
+    section_idx: usize,
+    section_count: usize,
+    roots: &[Paragraph],
+) -> Option<Vec<Vec<bool>>> {
+    use quick_xml::events::Event;
+    let selected: HashSet<_> = roots
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            (p.text.is_empty()
+                && p.line_segs.is_empty()
+                && matches!(p.controls.as_slice(), [Control::Table(_)]))
+            .then_some(i)
+        })
+        .collect();
+    let mut presence = vec![Vec::new(); roots.len()];
+    if selected.is_empty() {
+        return Some(presence);
+    }
+    // section 경로와 spine 순서는 본 파서와 같은 공개 helper로 해석한다.
+    let mut archive = crate::parser::hwpx::reader::HwpxReader::open_shared(Arc::from(data)).ok()?;
+    let content = archive.read_file("Contents/content.hpf").ok()?;
+    let package = crate::parser::hwpx::content::parse_content_hpf(&content).ok()?;
+    if package.section_files.len() != section_count {
+        return None;
+    }
+    let path = package.section_files.get(section_idx)?;
+    let xml = archive
+        .read_file_bytes_limited(path, crate::model::document::hwpx_raw_fields::MAX_BYTES)
+        .ok()?;
+    let xml = std::str::from_utf8(&xml).ok()?;
+    let xml = crate::model::document::hwpx_raw_fields::strip_carriers(xml);
+    let mut reader = quick_xml::Reader::from_reader(xml.as_bytes());
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    let mut root_count = 0usize;
+    let mut current = None;
+    let mut paragraphs = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer).ok()? {
+            Event::Start(e) => {
+                let name = e.local_name();
+                if name.as_ref() == b"p" {
+                    if depth == 1 {
+                        current = Some(root_count);
+                        root_count = root_count.checked_add(1)?;
+                        if root_count > roots.len() {
+                            return None;
+                        }
+                    }
+                    let key = current.filter(|i| selected.contains(i)).map(|i| {
+                        let pi = presence[i].len();
+                        presence[i].push(false);
+                        (i, pi)
+                    });
+                    paragraphs.push(key);
+                } else if name.as_ref() == b"lineseg" {
+                    if let Some(Some((i, pi))) = paragraphs.last() {
+                        presence[*i][*pi] = true;
+                    }
+                }
+                depth = depth.checked_add(1)?;
+            }
+            Event::Empty(e) => {
+                if e.local_name().as_ref() == b"lineseg" {
+                    if let Some(Some((i, pi))) = paragraphs.last() {
+                        presence[*i][*pi] = true;
+                    }
+                } else if e.local_name().as_ref() == b"p" {
+                    if depth == 1 {
+                        let i = root_count;
+                        root_count = root_count.checked_add(1)?;
+                        if root_count > roots.len() {
+                            return None;
+                        }
+                        if selected.contains(&i) {
+                            presence[i].push(false);
+                        }
+                    } else if let Some(i) = current.filter(|i| selected.contains(i)) {
+                        presence[i].push(false);
+                    }
+                }
+            }
+            Event::End(e) => {
+                depth = depth.checked_sub(1)?;
+                if e.local_name().as_ref() == b"p" {
+                    paragraphs.pop()?;
+                    if depth == 1 {
+                        current = None;
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    (root_count == roots.len() && depth == 0 && paragraphs.is_empty()).then_some(presence)
+}
+
+/// 자기 저장의 정확한 association만 복원한다. 알 수 없는 출처는 보존한다.
+fn restore_tac_wire_origins(data: &[u8], document: &mut Document) {
+    use crate::renderer::float_placement::tac_paragraph_source;
+    let Some(payload) = document.hwpx_aux_entry(TAC_LINE_ORIGIN_PATH) else {
+        return;
+    };
+    if payload.len() > TAC_LINE_ORIGIN_MAX_BYTES {
+        return;
+    }
+    let Ok(entry) = serde_json::from_slice::<TacWireOrigins>(payload) else {
+        return;
+    };
+    if entry.version != 1
+        || entry.groups.len()
+            > document
+                .sections
+                .iter()
+                .map(|s| s.paragraphs.len())
+                .sum::<usize>()
+    {
+        return;
+    }
+    let unique = zip::ZipArchive::new(std::io::Cursor::new(data))
+        .ok()
+        .is_some_and(|z| {
+            z.file_names()
+                .filter(|n| *n == TAC_LINE_ORIGIN_PATH)
+                .count()
+                == 1
+        });
+    if !unique {
+        return;
+    }
+    let mut claimed = HashSet::new();
+    for group in &entry.groups {
+        let Some(section) = document.sections.get(group.section) else {
+            return;
+        };
+        let Some(next) = group.paragraph.checked_add(1) else {
+            return;
+        };
+        if group.paragraph == 0
+            || next >= section.paragraphs.len()
+            || !claimed.insert((group.section, group.paragraph))
+            || !tac_origin_wire_consistent(group)
+        {
+            return;
+        }
+    }
+    let mut restored = document.clone();
+    for group in entry.groups {
+        let Some(section) = restored.sections.get_mut(group.section) else {
+            return;
+        };
+        let i = group.paragraph;
+        if !section.paragraphs[i - 1..=i + 1]
+            .iter()
+            .zip(&group.wire)
+            .all(|(p, wire)| {
+                tac_paragraph_source(p).is_some_and(|p| tac_wire_record_matches(&p, wire))
+            })
+        {
+            return;
+        }
+        let [TacControlSource::Table(source)] = group.origin.source[1].controls.as_slice() else {
+            return;
+        };
+        let [Control::Table(table)] = section.paragraphs[i].controls.as_mut_slice() else {
+            return;
+        };
+        if source.paragraphs.len() != table.cells.len()
+            || !group.origin.source[1].lines.is_empty()
+            || group.wire[1].lines.len() != 1
+            || group.wire[1].lines[0][8] as u32 != LineSeg::TAG_SINGLE_SEGMENT_LINE
+        {
+            return;
+        }
+        let [TacControlSource::Table(wire_table)] = group.wire[1].controls.as_slice() else {
+            return;
+        };
+        let mut absent = Vec::new();
+        let mut valid = true;
+        for (ci, (source, cell)) in source.paragraphs.iter().zip(&table.cells).enumerate() {
+            if source.len() != cell.paragraphs.len() {
+                valid = false;
+                break;
+            }
+            for (pi, p) in source.iter().enumerate() {
+                if p.lines.is_empty() {
+                    let lines = &cell.paragraphs[pi].line_segs;
+                    let associated = tac_paragraph_source(&cell.paragraphs[pi])
+                        .zip(wire_table.paragraphs.get(ci).and_then(|c| c.get(pi)))
+                        .is_some_and(|(current, wire)| tac_wire_record_matches(&current, wire));
+                    if lines.len() != 1
+                        || lines[0].tag != LineSeg::TAG_SINGLE_SEGMENT_LINE
+                        || !associated
+                    {
+                        valid = false;
+                        break;
+                    }
+                    absent.push((ci, pi, p.clone()));
+                }
+            }
+        }
+        if !valid || absent.is_empty() {
+            return;
+        }
+        for (ci, pi, source) in absent {
+            let p = &mut table.cells[ci].paragraphs[pi];
+            p.line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+            p.tac_line_origin = Some(TacLineOrigin::Leaf(Box::new(source)));
+        }
+        section.paragraphs[i].line_segs[0].tag |= LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        section.paragraphs[i].tac_line_origin = Some(TacLineOrigin::Owner(Box::new(group.origin)));
+    }
+    restored
+        .hwpx_aux_entries
+        .retain(|(path, _)| path != TAC_LINE_ORIGIN_PATH);
+    *document = restored;
+}
 
 /// HWP 내보내기 + 자기 재로드 검증 결과 (#178 Stage 6).
 ///
@@ -1303,6 +1709,80 @@ fn visit_paragraphs_mut(paragraphs: &mut [Paragraph], f: &mut dyn FnMut(&mut Par
     }
 }
 
+fn visit_paragraphs(paragraphs: &[Paragraph], f: &mut dyn FnMut(&Paragraph)) {
+    fn caption_read(caption: &Option<Caption>, f: &mut dyn FnMut(&Paragraph)) {
+        if let Some(caption) = caption {
+            visit_paragraphs(&caption.paragraphs, f);
+        }
+    }
+    fn shape_lists_read(shape: &ShapeObject, f: &mut dyn FnMut(&Paragraph)) {
+        if let Some(drawing) = shape.drawing() {
+            if let Some(text_box) = &drawing.text_box {
+                visit_paragraphs(&text_box.paragraphs, f);
+            }
+            caption_read(&drawing.caption, f);
+        }
+        match shape {
+            ShapeObject::Group(group) => {
+                caption_read(&group.caption, f);
+                for child in &group.children {
+                    shape_lists_read(child, f);
+                }
+            }
+            ShapeObject::Picture(picture) => caption_read(&picture.caption, f),
+            ShapeObject::Chart(chart) => caption_read(&chart.caption, f),
+            ShapeObject::Ole(ole) => caption_read(&ole.caption, f),
+            _ => {}
+        }
+    }
+    for para in paragraphs {
+        f(para);
+        for control in &para.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        visit_paragraphs(&cell.paragraphs, f);
+                    }
+                    caption_read(&table.caption, f);
+                }
+                Control::Shape(s) => shape_lists_read(s, f),
+                Control::Picture(picture) => caption_read(&picture.caption, f),
+                Control::Header(header) => visit_paragraphs(&header.paragraphs, f),
+                Control::Footer(footer) => visit_paragraphs(&footer.paragraphs, f),
+                Control::Footnote(note) => visit_paragraphs(&note.paragraphs, f),
+                Control::Endnote(note) => visit_paragraphs(&note.paragraphs, f),
+                Control::HiddenComment(comment) => visit_paragraphs(&comment.paragraphs, f),
+                Control::Field(field) => visit_paragraphs(&field.memo_paragraphs, f),
+                Control::SectionDef(section_def) => {
+                    for master in &section_def.master_pages {
+                        visit_paragraphs(&master.paragraphs, f);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn validate_document_special_spaces(document: &Document) -> Result<(), HwpError> {
+    let mut error = None;
+    let mut validate = |para: &Paragraph| {
+        if error.is_none() {
+            error = para.validate_special_spaces().err();
+        }
+    };
+    for section in &document.sections {
+        visit_paragraphs(&section.paragraphs, &mut validate);
+        for master in &section.section_def.master_pages {
+            visit_paragraphs(&master.paragraphs, &mut validate);
+        }
+    }
+    match error {
+        Some(error) => Err(HwpError::RenderError(error.to_string())),
+        None => Ok(()),
+    }
+}
+
 /// Visit the line caches refreshed after late font registration. Canonical master-page
 /// paragraphs are generated at import only when the entire document has no stored lines.
 fn visit_line_refresh_paragraphs_mut(
@@ -1624,6 +2104,7 @@ fn equation_container_path(path: &str) -> String {
 /// it blocks malformed CFB/required-stream/record output, while conversions with
 /// known representational losses remain diagnosable through `serialize_hwp_with_verify`.
 fn serialize_validated_hwp(document: &Document) -> Result<Vec<u8>, HwpError> {
+    validate_document_special_spaces(document)?;
     let bytes = crate::serializer::serialize_document(document)
         .map_err(|e| HwpError::RenderError(e.to_string()))?;
     let reparsed = crate::parser::parse_hwp_strict_regenerated(&bytes).map_err(|error| {
@@ -1644,6 +2125,7 @@ fn serialize_validated_hwp(document: &Document) -> Result<Vec<u8>, HwpError> {
 
 /// Serialize, validate the OPC-style package graph, and reparse generated HWPX.
 fn serialize_validated_hwpx(document: &Document) -> Result<Vec<u8>, HwpError> {
+    validate_document_special_spaces(document)?;
     let bytes = crate::serializer::serialize_hwpx(document)
         .map_err(|e| HwpError::RenderError(e.to_string()))?;
     let package_report = crate::serializer::hwpx::package_check::check_package(&bytes, document);
@@ -1786,7 +2268,214 @@ fn count_shape(shape: &ShapeObject, counts: &mut HwpStructureCounts, losses: &mu
     }
 }
 
+// 원본 HWP5 정책만 보존한다. XML enum/합성 0 레코드에서 native 값을 추론하지 않는다.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NaturalFlowOrigin {
+    version: u8,
+    source_present: bool,
+    words: [u32; 6],
+    emitted_tail: String,
+    parsed_target: Option<String>,
+    parsed_flags: [bool; 3],
+    sections: Vec<NaturalFlowSectionOrigin>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct NaturalFlowSectionOrigin {
+    capacity_flags: u16,
+    emitted_settings: [i64; 17],
+}
+
+fn natural_flow_section_settings(section: &crate::model::document::SectionDef) -> [i64; 17] {
+    let p = &section.page_def;
+    [
+        section.flags as i64,
+        section.line_grid as i64,
+        section.char_grid as i64,
+        section.text_direction as i64,
+        p.width as i64,
+        p.height as i64,
+        p.margin_left as i64,
+        p.margin_right as i64,
+        p.margin_top as i64,
+        p.margin_bottom as i64,
+        p.margin_header as i64,
+        p.margin_footer as i64,
+        p.margin_gutter as i64,
+        p.attr as i64,
+        p.landscape as i64,
+        p.pagination_bottom_tolerance as i64,
+        section.page_num_type as i64,
+    ]
+}
+
+fn original_natural_capacity_flags(section: &crate::model::document::SectionDef) -> Option<u16> {
+    // kind(4)+모델 필드(24) 뒤 wire34..35 → raw_ctrl_extra6..7.
+    let bytes = section.raw_ctrl_extra.get(6..8)?;
+    Some(u16::from_le_bytes(bytes.try_into().ok()?))
+}
+
+fn natural_flow_flags(info: &crate::model::document::DocInfo) -> [bool; 3] {
+    [
+        info.do_not_align_last_forbidden,
+        info.adjust_baseline_in_fixed_line_spacing,
+        info.apply_next_spacing_of_last_para,
+    ]
+}
+
+fn original_natural_flow_words(doc: &crate::model::document::Document) -> Option<[u32; 6]> {
+    use crate::parser::tags::{HWPTAG_COMPATIBLE_DOCUMENT, HWPTAG_LAYOUT_COMPATIBILITY};
+    if doc.provenance.format != crate::model::provenance::SourceFormat::Hwp5
+        || doc.provenance.hwp3_lineage
+        || doc.provenance.hwpx_lineage
+    {
+        return None;
+    }
+    fn extract<'a>(mut records: impl Iterator<Item = (u16, &'a [u8])>) -> Option<[u32; 6]> {
+        let mut target = None;
+        let mut layout = None;
+        for (tag, data) in records.by_ref() {
+            match tag {
+                HWPTAG_COMPATIBLE_DOCUMENT => {
+                    if target.is_some() || data.len() != 4 {
+                        return None;
+                    }
+                    target = Some(u32::from_le_bytes(data.try_into().ok()?));
+                }
+                HWPTAG_LAYOUT_COMPATIBILITY => {
+                    if layout.is_some() || data.len() != 20 {
+                        return None;
+                    }
+                    let mut words = [0u32; 5];
+                    for (word, bytes) in words.iter_mut().zip(data.chunks_exact(4)) {
+                        *word = u32::from_le_bytes(bytes.try_into().ok()?);
+                    }
+                    layout = Some(words);
+                }
+                _ => {}
+            }
+        }
+        let l = layout?;
+        Some([target?, l[0], l[1], l[2], l[3], l[4]])
+    }
+    let source =
+        crate::parser::record::Record::read_all(doc.doc_info.raw_stream.as_deref()?).ok()?;
+    let authentic = extract(source.iter().map(|r| (r.tag_id, r.data.as_slice())))?;
+    let modeled = extract(
+        doc.doc_info
+            .extra_records
+            .iter()
+            .map(|r| (r.tag_id, r.data.as_slice())),
+    )?;
+    (authentic == modeled).then_some(authentic)
+}
+
+fn natural_flow_source_words(doc: &crate::model::document::Document) -> Option<[u32; 6]> {
+    if doc
+        .hwpx_aux_entries
+        .iter()
+        .filter(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+        .count()
+        > 1
+    {
+        return None;
+    }
+    if doc.provenance.format == crate::model::provenance::SourceFormat::Hwp5 {
+        return original_natural_flow_words(doc);
+    }
+    if doc.provenance.format != crate::model::provenance::SourceFormat::Hwpx {
+        return None;
+    }
+    let mut entries = doc
+        .hwpx_aux_entries
+        .iter()
+        .filter(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH);
+    let (_, bytes) = entries.next()?;
+    if entries.next().is_some() || bytes.len() > 131_072 {
+        return None;
+    }
+    let origin: NaturalFlowOrigin = serde_json::from_slice(bytes).ok()?;
+    if origin.version != 1
+        || !origin.source_present
+        || doc.doc_info.hwpx_head_tail.as_deref() != Some(origin.emitted_tail.as_str())
+        || doc.doc_info.hwpx_target_program != origin.parsed_target
+        || natural_flow_flags(&doc.doc_info) != origin.parsed_flags
+        || origin.sections.len() != doc.sections.len()
+        || origin
+            .sections
+            .iter()
+            .zip(&doc.sections)
+            .any(|(saved, current)| {
+                saved.emitted_settings != natural_flow_section_settings(&current.section_def)
+            })
+    {
+        return None;
+    }
+    Some(origin.words)
+}
+
+fn natural_flow_origin_payload(doc: &crate::model::document::Document) -> Option<Vec<u8>> {
+    let words = original_natural_flow_words(doc)?;
+    // 실제 writer/parser 경계를 사용하고 폴백 XML 을 손으로 재구성하지 않는다.
+    let mut ctx = crate::serializer::hwpx::context::SerializeContext::collect_from_document(doc);
+    let header = crate::serializer::hwpx::header::write_header(doc, &ctx).ok()?;
+    let (parsed, _) =
+        crate::parser::hwpx::header::parse_hwpx_header(std::str::from_utf8(&header).ok()?).ok()?;
+    let emitted_tail = parsed.hwpx_head_tail.clone()?;
+    let mut sections = Vec::with_capacity(doc.sections.len());
+    for (index, source) in doc.sections.iter().enumerate() {
+        let capacity_flags = original_natural_capacity_flags(&source.section_def)?;
+        // 섹션 속성은 같은 writer/parser 로 정규화한다. 본문은 출처 바인딩에 포함하지 않는다.
+        let settings_only = crate::model::document::Section {
+            section_def: source.section_def.clone(),
+            paragraphs: vec![crate::model::paragraph::Paragraph::default()],
+            ..Default::default()
+        };
+        let xml =
+            crate::serializer::hwpx::section::write_section(&settings_only, doc, index, &mut ctx)
+                .ok()?;
+        let parsed_section =
+            crate::parser::hwpx::section::parse_hwpx_section(std::str::from_utf8(&xml).ok()?)
+                .ok()?;
+        sections.push(NaturalFlowSectionOrigin {
+            capacity_flags,
+            emitted_settings: natural_flow_section_settings(&parsed_section.section_def),
+        });
+    }
+    let payload = serde_json::to_vec(&NaturalFlowOrigin {
+        version: 1,
+        source_present: true,
+        words,
+        emitted_tail,
+        parsed_target: parsed.hwpx_target_program.clone(),
+        parsed_flags: natural_flow_flags(&parsed),
+        sections,
+    })
+    .ok()?;
+    (payload.len() <= 131_072).then_some(payload)
+}
+
 impl DocumentCore {
+    pub(crate) fn natural_flow_source_words(&self) -> Option<[u32; 6]> {
+        natural_flow_source_words(&self.document)
+    }
+
+    pub(crate) fn natural_flow_capacity_flags(&self, section: usize) -> Option<u16> {
+        self.natural_flow_source_words()?;
+        if self.document.provenance.format == crate::model::provenance::SourceFormat::Hwp5 {
+            return original_natural_capacity_flags(
+                &self.document.sections.get(section)?.section_def,
+            );
+        }
+        let bytes = self
+            .document
+            .hwpx_aux_entry(crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)?;
+        let origin: NaturalFlowOrigin = serde_json::from_slice(bytes).ok()?;
+        Some(origin.sections.get(section)?.capacity_flags)
+    }
+
     /// `base_dir`에서 파일명이 일치하는 외부 그림을 읽고 페이지 캐시를 갱신한다.
     /// 원본 절대 경로를 사용할 수 없는 HWP3 문서도 같은 폴더의 그림을 표시할 수 있다.
     /// 반환값은 읽어 들인 그림 수다.
@@ -1879,6 +2568,15 @@ impl DocumentCore {
         let mut document = parsed.document;
         document.doc_info.font_metrics_policy = font_metrics;
         let hml_metadata = parsed.hml_metadata;
+        let tac_origin_route = matches!(source_format, crate::parser::FileFormat::Hwpx)
+            && !ignore_stored_linesegs
+            && std::env::var_os("RHWP_EXP_BODY_FRESH").is_none()
+            && document
+                .hwpx_aux_entry(crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+                .is_none();
+        if tac_origin_route {
+            restore_tac_wire_origins(data, &mut document);
+        }
 
         // [#2279 실험 전용] 본문 저장 lineseg 전면 무시 → fresh 재계산.
         // 기계생성 결재문서의 부분-사다리 불신 실험 계측용 (기본 no-op).
@@ -1926,6 +2624,41 @@ impl DocumentCore {
         let check_textrun_reflow =
             matches!(source_format, crate::parser::FileFormat::Hwpx) && !hwp5_origin_hwpx;
         let validation_report = Self::validate_linesegs(&document, check_textrun_reflow);
+        if tac_origin_route {
+            let section_count = document.sections.len();
+            for (si, section) in document.sections.iter_mut().enumerate() {
+                if let Some(presence) =
+                    tac_xml_cache_presence(data, si, section_count, &section.paragraphs)
+                {
+                    crate::renderer::float_placement::capture_tac_line_origins(
+                        section, &styles, &presence,
+                    );
+                }
+            }
+        }
+
+        // 원본 인증은 누락 줄 합성 전에, 저장 줄이 완전한 reopen에서도 수행한다.
+        if check_textrun_reflow && !document.layout_profile().hwp3_layout() {
+            for section in &mut document.sections {
+                let Some(context) =
+                    crate::renderer::float_placement::leading_section_inputs(section)
+                else {
+                    continue;
+                };
+                let page = &section.section_def.page_def;
+                let width = (i64::from(page.width)
+                    - i64::from(page.margin_left)
+                    - i64::from(page.margin_right))
+                .clamp(0, i64::from(i32::MAX)) as i32;
+                crate::renderer::float_placement::certify_leading_table_hosts(
+                    &mut section.paragraphs,
+                    &styles,
+                    DEFAULT_DPI,
+                    width,
+                    &context,
+                );
+            }
+        }
 
         // lineSegArray가 없는 문단에 대해 합성 LineSeg 생성.
         // XML 파서는 linesegarray 부재 문단의 line_segs 를 빈 채 보존하므로(#1380)
@@ -1985,17 +2718,33 @@ impl DocumentCore {
         // 초기 상태(properties bit 15 == 0) 누름틀의 안내문 텍스트를 삭제하여 빈 필드로 정규화
         // (한컴에서 메모 추가 시 안내문 텍스트가 필드 값으로 삽입됨 — compose 전에 제거해야 정합성 유지)
         Self::clear_initial_field_texts(&mut document);
+        for section in &mut document.sections {
+            crate::renderer::float_placement::seal_imported_leading_host_inputs(
+                &mut section.paragraphs,
+            );
+        }
 
-        let composed = document
+        let mut composed: Vec<Vec<ComposedParagraph>> = document
             .sections
             .iter()
-            .map(|s| compose_section(s))
+            .map(|s| {
+                crate::renderer::composer::compose_section_with_policy(
+                    s,
+                    styles.font_metrics_policy,
+                )
+            })
             .collect();
 
+        crate::renderer::composer::initialize_body_paragraph_heads(
+            &document,
+            &styles,
+            &mut composed,
+        );
         let sec_count = document.sections.len();
         let mut doc = DocumentCore {
             document,
             pagination: Vec::new(),
+            section_carry: Vec::new(),
             styles,
             composed,
             render_normalization: super::super::RenderNormalizationState::default(),
@@ -2070,7 +2819,10 @@ impl DocumentCore {
         )?;
         replacement.convert_to_editable_native()?;
 
+        self.section_carry.clear();
         self.document = replacement.document;
+        // 새 문서의 저장 줄은 이전 문서 번호 폭과 비교하지 않는다.
+        self.composed = replacement.composed;
         self.deferred_pagination_revision = self.deferred_pagination_revision.wrapping_add(1);
         self.deferred_pagination_descriptor = None;
         self.pending_pagination_job = None;
@@ -2460,7 +3212,10 @@ impl DocumentCore {
                         && para.controls.is_empty()
                         && !para.line_segs.is_empty()
                 }) {
-                    let composed = crate::renderer::composer::compose_paragraph(para);
+                    let composed = crate::renderer::composer::compose_paragraph_with_policy(
+                        para,
+                        styles.font_metrics_policy,
+                    );
                     let mut metrics = Vec::with_capacity(composed.lines.len());
                     if composed.lines.len() == para.line_segs.len() {
                         for (line, seg) in composed.lines.iter().zip(&para.line_segs) {
@@ -2563,7 +3318,8 @@ impl DocumentCore {
 
         let layout_profile = document.layout_profile();
         let is_hwp3_variant = layout_profile.hwp3_layout();
-        for section in &mut document.sections {
+        let body_heads = crate::renderer::layout::resolve_body_paragraph_heads(document, styles);
+        for (section_index, section) in document.sections.iter_mut().enumerate() {
             // 캡션 줄이 없으면 개체 높이 측정이 4pt 기본값을 쓴다. 부모 TAC 줄을
             // 만들기 전에 하위 캡션을 조판해야 캡션의 실제 글자 크기·간격이 예약된다.
             if include_empty {
@@ -2628,6 +3384,12 @@ impl DocumentCore {
             let mut unbroken_body_end = Some(0.0_f64);
             let mut previous_spacing_after = 0.0_f64;
             for (pi, para) in section.paragraphs.iter_mut().enumerate() {
+                let head_reserve = crate::renderer::layout::resolved_head_reserve_px(
+                    styles,
+                    para,
+                    body_heads[section_index][pi].as_ref(),
+                    dpi,
+                );
                 // 본문 문단 reflow
                 // [#2195 stage68] 본문 텍스트 NO_LS 확장(stage1)은 기각 — 후속 축
                 // (전각 폴백·pad 규칙·스트레치·after_for_fit)이 게이트 정합을 대체했고,
@@ -2716,13 +3478,15 @@ impl DocumentCore {
                         for exclusion in &mut preceding_exclusions {
                             exclusion.rect.y -= gap;
                         }
-                        let mut owned = reflow_line_segs_with_exclusions(
-                            para,
-                            available_width,
-                            styles,
-                            dpi,
-                            &preceding_exclusions,
-                        );
+                        let mut owned =
+                            crate::renderer::composer::reflow_line_segs_with_exclusions_and_head(
+                                para,
+                                available_width,
+                                styles,
+                                dpi,
+                                &preceding_exclusions,
+                                Some(head_reserve),
+                            );
                         let flow_height = |p: &Paragraph| {
                             p.line_segs
                                 .iter()
@@ -2744,12 +3508,13 @@ impl DocumentCore {
                                 .is_none_or(|start| start + height > layout.body_area.height)
                         {
                             preceding_exclusions.clear();
-                            owned = reflow_line_segs_with_exclusions(
+                            owned = crate::renderer::composer::reflow_line_segs_with_exclusions_and_head(
                                 para,
                                 available_width,
                                 styles,
                                 dpi,
                                 &[],
+                                Some(head_reserve),
                             );
                             height = flow_height(para);
                         }
@@ -2775,7 +3540,13 @@ impl DocumentCore {
                         }
                         previous_spacing_after = style.map_or(0.0, |s| s.spacing_after);
                     } else {
-                        reflow_line_segs(para, available_width, styles, dpi);
+                        crate::renderer::composer::reflow_line_segs_with_head(
+                            para,
+                            available_width,
+                            styles,
+                            dpi,
+                            head_reserve,
+                        );
                     }
                     Self::mark_synthesized_line_segs(para);
                     body_line_seg_changed = true;
@@ -2901,7 +3672,12 @@ impl DocumentCore {
                                             dpi,
                                         );
                                         super::text_editing::reflow_cell_line_segs(
-                                            cell_para, width, squeeze, styles, dpi,
+                                            cell_para,
+                                            width,
+                                            squeeze,
+                                            cell.text_direction == 0,
+                                            styles,
+                                            dpi,
                                         );
                                         Self::mark_synthesized_line_segs(cell_para);
                                         first_synth.get_or_insert(cpi);
@@ -3267,7 +4043,18 @@ impl DocumentCore {
                         }
                     }
                     // 문단 LINE_SEG vpos 를 running_vpos 부터 문단 안 누적으로 갱신
-                    let mut inner_vpos = running_vpos;
+                    let prefix_reserve = para
+                        .leading_block_host_layout
+                        .as_ref()
+                        .map_or(0, |layout| layout.reserve_hu);
+                    if prefix_reserve > 0 && pi == 0 && !keep_stored {
+                        running_vpos = para
+                            .line_segs
+                            .first()
+                            .map(|line| line.vertical_pos.saturating_sub(prefix_reserve))
+                            .unwrap_or(running_vpos);
+                    }
+                    let mut inner_vpos = running_vpos.saturating_add(prefix_reserve);
                     if keep_stored {
                         let last = &para.line_segs[para.line_segs.len() - 1];
                         inner_vpos = last.vertical_pos + advance_of(last);
@@ -3278,7 +4065,15 @@ impl DocumentCore {
                         }
                     }
                     // 비-TAC TopAndBottom Picture/Table: 개체 높이를 vpos에 반영
-                    for ctrl in para.controls.iter() {
+                    for (control_index, ctrl) in para.controls.iter().enumerate() {
+                        // 인증된 개체 영역은 host 시작 좌표에서 이미 한 번 소비했다.
+                        if para
+                            .leading_block_host_layout
+                            .as_ref()
+                            .is_some_and(|layout| layout.control_index == control_index)
+                        {
+                            continue;
+                        }
                         // 종이/쪽 기준 개체는 위에서 host 줄을 내리는 규칙으로 처리했다.
                         if page_anchored_block_span(ctrl, body_top_hu).is_some() {
                             continue;
@@ -3445,6 +4240,7 @@ impl DocumentCore {
             paras,
             metrics,
             false,
+            false,
             styles,
             dpi,
             is_hwp3_variant,
@@ -3456,6 +4252,7 @@ impl DocumentCore {
         paras: &mut [Paragraph],
         metrics: (u32, i16, i16),
         squeeze: bool,
+        known_horizontal: bool,
         styles: &ResolvedStyleSet,
         dpi: f64,
         is_hwp3_variant: bool,
@@ -3466,6 +4263,7 @@ impl DocumentCore {
             paras,
             &width,
             squeeze,
+            known_horizontal,
             false,
             styles,
             dpi,
@@ -3478,6 +4276,7 @@ impl DocumentCore {
         paras: &mut [Paragraph],
         width_of: &dyn Fn(u16) -> f64,
         squeeze: bool,
+        known_horizontal: bool,
         carry_note_floats: bool,
         styles: &ResolvedStyleSet,
         dpi: f64,
@@ -3535,7 +4334,14 @@ impl DocumentCore {
                         .retain(|exclusion| exclusion.rect.y + exclusion.rect.height > 0.0);
                     previous_spacing_after = style.map_or(0.0, |style| style.spacing_after);
                 } else {
-                    super::text_editing::reflow_cell_line_segs(para, width, squeeze, styles, dpi);
+                    super::text_editing::reflow_cell_line_segs(
+                        para,
+                        width,
+                        squeeze,
+                        known_horizontal,
+                        styles,
+                        dpi,
+                    );
                 }
                 Self::mark_synthesized_line_segs(para);
                 first.get_or_insert(i);
@@ -3749,6 +4555,7 @@ impl DocumentCore {
                                     &mut cell.paragraphs,
                                     m,
                                     squeeze,
+                                    cell.text_direction == 0,
                                     styles,
                                     dpi,
                                     is_hwp3_variant,
@@ -3868,6 +4675,7 @@ impl DocumentCore {
                         &width_of,
                         false,
                         false,
+                        false,
                         styles,
                         dpi,
                         is_hwp3_variant,
@@ -3882,6 +4690,7 @@ impl DocumentCore {
                     Self::synthesize_list_with(
                         &mut f.paragraphs,
                         &width_of,
+                        false,
                         false,
                         false,
                         styles,
@@ -3899,6 +4708,7 @@ impl DocumentCore {
             Self::synthesize_list_with(
                 paras,
                 &width_of,
+                false,
                 false,
                 own_line_layout,
                 styles,
@@ -4251,12 +5061,13 @@ impl DocumentCore {
 
         // 스타일은 재해소해도 동일 결과이므로 재계산하여 borrow 충돌 회피.
         let styles = self.resolve_document_styles();
+        let heads = crate::renderer::layout::resolve_body_paragraph_heads(&self.document, &styles);
         let dpi = self.dpi;
         let mut reflowed = 0usize;
         let layout_profile = self.document.layout_profile();
         let doc_hwp3_layout = layout_profile.hwp3_layout();
 
-        for section in &mut self.document.sections {
+        for (si, section) in self.document.sections.iter_mut().enumerate() {
             let page_def = &section.section_def.page_def;
             let column_def = Self::find_initial_column_def(&section.paragraphs);
             let layout = PageLayoutInfo::from_page_def(page_def, &column_def, dpi);
@@ -4271,7 +5082,19 @@ impl DocumentCore {
                 if Self::needs_reflow_broadly(para) {
                     let available_width =
                         Self::column_line_width_px(col_width, para.para_shape_id, &styles, dpi);
-                    reflow_line_segs(para, available_width, &styles, dpi);
+                    let reserve = crate::renderer::layout::resolved_head_reserve_px(
+                        &styles,
+                        para,
+                        heads[si][pi].as_ref(),
+                        dpi,
+                    );
+                    crate::renderer::composer::reflow_line_segs_with_head(
+                        para,
+                        available_width,
+                        &styles,
+                        dpi,
+                        reserve,
+                    );
                     reflowed += 1;
                     if min_reflowed_idx.is_none() {
                         min_reflowed_idx = Some(pi);
@@ -4322,12 +5145,7 @@ impl DocumentCore {
         if reflowed > 0 {
             // 재구성 · 페이지네이션 재실행 필요
             self.styles = styles;
-            self.composed = self
-                .document
-                .sections
-                .iter()
-                .map(|s| compose_section(s))
-                .collect();
+            self.recompose_body_sections();
             let sec_count = self.document.sections.len();
             self.dirty_sections = vec![true; sec_count];
             self.paginate();
@@ -4347,13 +5165,24 @@ impl DocumentCore {
         let composed = document
             .sections
             .iter()
-            .map(|s| compose_section(s))
+            .map(|s| {
+                crate::renderer::composer::compose_section_with_policy(
+                    s,
+                    styles.font_metrics_policy,
+                )
+            })
             .collect();
         let sec_count = document.sections.len();
 
+        self.section_carry.clear();
         self.document = document;
         self.styles = styles;
         self.composed = composed;
+        crate::renderer::composer::initialize_body_paragraph_heads(
+            &self.document,
+            &self.styles,
+            &mut self.composed,
+        );
         self.clipboard = None;
         self.table_transpose_clipboard = None;
         self.dirty_sections = vec![true; sec_count];
@@ -4376,7 +5205,8 @@ impl DocumentCore {
 
     /// Document IR을 HWP 5.0 CFB 바이너리로 직렬화 (네이티브 에러 타입)
     pub fn export_hwp_native(&self) -> Result<Vec<u8>, HwpError> {
-        serialize_validated_hwp(&self.document)
+        let normalized = self.leading_host_export_document(false)?;
+        serialize_validated_hwp(&normalized)
     }
 
     /// HWPX 출처 IR 을 HWP 호환 형태로 변환 후 HWP 5.0 CFB 바이너리로 직렬화한다 (#178).
@@ -4388,7 +5218,8 @@ impl DocumentCore {
     /// 렌더/편집 시멘틱이 HWPX에서 HWP5로 바뀌고, 다음 저장이 다른 결과를 내는
     /// 파괴적 부작용이 생긴다.
     pub fn export_hwp_with_adapter(&self) -> Result<Vec<u8>, HwpError> {
-        let export_document = document_for_hwp_export(&self.document, self.source_format);
+        let normalized = self.leading_host_export_document(false)?;
+        let export_document = document_for_hwp_export(&normalized, self.source_format);
         serialize_validated_hwp(&export_document)
     }
 
@@ -4413,7 +5244,8 @@ impl DocumentCore {
     /// 큰 문서 수백 ms 가능.
     pub fn serialize_hwp_with_verify(&mut self) -> Result<HwpExportVerification, HwpError> {
         let page_count_before = self.page_count();
-        let export_document = document_for_hwp_export(&self.document, self.source_format);
+        let normalized = self.leading_host_export_document(false)?;
+        let export_document = document_for_hwp_export(&normalized, self.source_format);
         let (structure_before, mut serialization_losses) = hwp_structure_counts(&export_document);
         let bytes = serialize_validated_hwp(&export_document)?;
         let bytes_len = bytes.len();
@@ -4470,24 +5302,417 @@ impl DocumentCore {
 
     /// Document IR을 HWPX(ZIP+XML)로 직렬화 (네이티브 에러 타입)
     pub fn export_hwpx_native(&self) -> Result<Vec<u8>, HwpError> {
+        let normalized = self.leading_host_export_document(true)?;
+        let normalized = self.tac_line_export_document(normalized)?;
+        // serializer 는 같은 이름을 한 번만 기록하므로 중복을 정상 출처로 바꾸지 않는다.
+        if normalized
+            .hwpx_aux_entries
+            .iter()
+            .filter(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+            .count()
+            > 1
+        {
+            return Err(HwpError::InvalidFile("중복 HWP5 정책 출처".into()));
+        }
         if matches!(self.source_format, crate::parser::FileFormat::Hwp) {
-            let mut doc = self.document.clone();
-            if !doc
-                .hwpx_aux_entries
-                .iter()
-                .any(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+            let mut doc = normalized.into_owned();
+            // 최초 HWP export 에서만 원본 정책을 인증한다. HWPX 재저장은 갱신하지 않는다.
+            if !doc.provenance.hwpx_lineage
+                && !doc
+                    .hwpx_aux_entries
+                    .iter()
+                    .any(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
             {
+                let payload = natural_flow_origin_payload(&doc).unwrap_or_else(|| b"1".to_vec());
                 doc.hwpx_aux_entries.push((
                     crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH.to_string(),
-                    b"1".to_vec(),
+                    payload,
                 ));
             }
             Self::canonicalize_hwp5_bin_data_ids_for_hwpx_export(&mut doc);
             Self::materialize_hwp5_missing_linesegs_for_hwpx_export(&mut doc);
             serialize_validated_hwpx(&doc)
+        } else if natural_flow_source_words(&normalized).is_none() {
+            let recognized = normalized
+                .hwpx_aux_entry(crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+                .filter(|bytes| bytes.len() <= 131_072)
+                .and_then(|bytes| serde_json::from_slice::<NaturalFlowOrigin>(bytes).ok())
+                .filter(|origin| origin.version == 1 && origin.source_present);
+            if let Some(mut origin) = recognized {
+                // 원본 값/settings 는 보존하고 stale 출처만 비활성화한다. 재바인딩하지 않는다.
+                origin.source_present = false;
+                let payload = serde_json::to_vec(&origin)
+                    .map_err(|e| HwpError::RenderError(e.to_string()))?;
+                let mut unsupported = normalized.into_owned();
+                for (path, bytes) in &mut unsupported.hwpx_aux_entries {
+                    if path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH {
+                        *bytes = payload.clone();
+                    }
+                }
+                serialize_validated_hwpx(&unsupported)
+            } else {
+                // legacy/알 수 없는 버전/손상 payload 는 그대로 통과하고 정책은 선택하지 않는다.
+                serialize_validated_hwpx(&normalized)
+            }
         } else {
-            serialize_validated_hwpx(&self.document)
+            serialize_validated_hwpx(&normalized)
         }
+    }
+
+    fn tac_completed_geometry(
+        &self,
+        document: &Document,
+        section_idx: usize,
+        para_idx: usize,
+        styles: &ResolvedStyleSet,
+    ) -> bool {
+        use crate::model::shape::{HorzAlign, HorzRelTo, VertAlign, VertRelTo};
+        use crate::renderer::float_placement::{
+            object_frame, tac_line_fields, ObjectPlacementContext,
+        };
+        let section = &document.sections[section_idx];
+        let p = &section.paragraphs[para_idx];
+        let Some(TacLineOrigin::Owner(proof)) = &p.tac_line_origin else {
+            return false;
+        };
+        let [TacControlSource::Table(source)] = proof.source[1].controls.as_slice() else {
+            return false;
+        };
+        let Control::Table(table) = &p.controls[0] else {
+            return false;
+        };
+        let mut fresh = document.clone();
+        let root = &mut fresh.sections[section_idx].paragraphs[para_idx];
+        root.line_segs.clear();
+        let Control::Table(ft) = &mut root.controls[0] else {
+            return false;
+        };
+        for (ci, cell) in source.paragraphs.iter().enumerate() {
+            for (pi, old) in cell.iter().enumerate() {
+                if old.lines.is_empty() {
+                    ft.cells[ci].paragraphs[pi].line_segs.clear();
+                }
+            }
+        }
+        Self::reflow_zero_height_paragraphs(&mut fresh, styles, self.dpi, true, true, false);
+        let expected = &fresh.sections[section_idx].paragraphs[para_idx];
+        if expected
+            .line_segs
+            .iter()
+            .map(tac_line_fields)
+            .collect::<Vec<_>>()
+            != p.line_segs.iter().map(tac_line_fields).collect::<Vec<_>>()
+        {
+            return false;
+        }
+        let Control::Table(et) = &expected.controls[0] else {
+            return false;
+        };
+        let boundary_gap = |a: &Paragraph, b: &Paragraph| -> Option<i64> {
+            let a = styles.para_styles.get(a.para_shape_id as usize)?;
+            let b = styles.para_styles.get(b.para_shape_id as usize)?;
+            Some(i64::from(crate::renderer::px_to_hwpunit_round(
+                a.spacing_after + b.spacing_before,
+                self.dpi,
+            )))
+        };
+        let previous = &section.paragraphs[para_idx - 1];
+        let next = &section.paragraphs[para_idx + 1];
+        let (Some(last), Some(line), Some(first)) = (
+            previous.line_segs.last(),
+            p.line_segs.first(),
+            next.line_segs.first(),
+        ) else {
+            return false;
+        };
+        let end = |l: &LineSeg| {
+            i64::from(l.vertical_pos) + i64::from(l.text_height) + i64::from(l.line_spacing)
+        };
+        if Some(end(last))
+            .zip(boundary_gap(previous, p))
+            .is_none_or(|(end, gap)| end + gap != i64::from(line.vertical_pos))
+            || Some(end(line))
+                .zip(boundary_gap(p, next))
+                .is_none_or(|(end, gap)| end + gap != i64::from(first.vertical_pos))
+            || line.text_start != 0
+            || line.column_start != 0
+            || line.line_height != line.text_height
+        {
+            return false;
+        }
+        for (ci, cell) in source.paragraphs.iter().enumerate() {
+            let live = &table.cells[ci];
+            for (pi, old) in cell.iter().enumerate() {
+                if old.lines.is_empty() {
+                    if live.text_direction != 0
+                        || live.line_wrap == crate::model::table::CellLineWrap::Squeeze
+                        || live.height == 0
+                    {
+                        return false;
+                    }
+                    let paragraph = &live.paragraphs[pi];
+                    let Some(style) = styles.para_styles.get(paragraph.para_shape_id as usize)
+                    else {
+                        return false;
+                    };
+                    if style.margin_left != 0.0
+                        || style.margin_right != 0.0
+                        || style.indent != 0.0
+                        || style.spacing_before != 0.0
+                        || style.spacing_after != 0.0
+                        || style.head_type as u8 != 0
+                    {
+                        return false;
+                    }
+                    if paragraph
+                        .line_segs
+                        .iter()
+                        .map(tac_line_fields)
+                        .collect::<Vec<_>>()
+                        != et.cells[ci].paragraphs[pi]
+                            .line_segs
+                            .iter()
+                            .map(tac_line_fields)
+                            .collect::<Vec<_>>()
+                    {
+                        return false;
+                    }
+                    let seg = &paragraph.line_segs[0];
+                    let Some(prefix) = live.paragraphs.get(pi - 1).and_then(|p| p.line_segs.last())
+                    else {
+                        return false;
+                    };
+                    if seg.text_start != 0
+                        || seg.column_start != 0
+                        || seg.line_height != prefix.line_height
+                        || seg.text_height != prefix.text_height
+                        || seg.baseline_distance != prefix.baseline_distance
+                        || seg.line_spacing != prefix.line_spacing
+                        || seg.segment_width != prefix.segment_width
+                        || boundary_gap(&live.paragraphs[pi - 1], paragraph)
+                            .is_none_or(|gap| end(prefix) + gap != i64::from(seg.vertical_pos))
+                    {
+                        return false;
+                    }
+                    let padding = if live.apply_inner_margin {
+                        &live.padding
+                    } else {
+                        &table.padding
+                    };
+                    let usable =
+                        i64::from(live.height) - i64::from(padding.top) - i64::from(padding.bottom);
+                    if i64::from(seg.vertical_pos) + i64::from(seg.text_height) > usable {
+                        return false;
+                    }
+                }
+            }
+        }
+        let column = section.paragraphs[..=para_idx]
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match c {
+                Control::ColumnDef(c) => Some(c.clone()),
+                _ => None,
+            })
+            .last()
+            .unwrap_or_default();
+        let layout =
+            PageLayoutInfo::from_page_def(&section.section_def.page_def, &column, self.dpi);
+        let Some(area) = layout.column_areas.first().copied() else {
+            return false;
+        };
+        let origin = crate::renderer::hwpunit_to_px(line.vertical_pos, self.dpi);
+        let bottom = origin + crate::renderer::hwpunit_to_px(line.text_height, self.dpi);
+        if origin < 0.0
+            || bottom > area.height
+            || crate::renderer::hwpunit_to_px(
+                table.get_column_widths().iter().sum::<u32>() as i32,
+                self.dpi,
+            ) > area.width
+        {
+            return false;
+        }
+        // 지원한 Page/Bottom frame은 기존 배치 함수로 검사한다.
+        for control in &next.controls {
+            let Control::Table(t) = control else {
+                return false;
+            };
+            if t.common.treat_as_char
+                || !matches!(t.common.vert_rel_to, VertRelTo::Page)
+                || !matches!(t.common.vert_align, VertAlign::Bottom)
+                || !matches!(t.common.horz_rel_to, HorzRelTo::Column)
+                || !matches!(t.common.horz_align, HorzAlign::Center)
+                || t.common.allow_overlap
+                || t.caption.is_some()
+            {
+                return false;
+            }
+            let rect = object_frame(
+                &t.common,
+                crate::renderer::hwpunit_to_px(t.common.width as i32, self.dpi),
+                crate::renderer::hwpunit_to_px(t.common.height as i32, self.dpi),
+                ObjectPlacementContext {
+                    paper: crate::renderer::page_layout::LayoutRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: layout.page_width,
+                        height: layout.page_height,
+                    },
+                    page: layout.body_area,
+                    column: area,
+                    paragraph: area,
+                    line_y: area.y + crate::renderer::hwpunit_to_px(first.vertical_pos, self.dpi),
+                },
+                self.dpi,
+            );
+            if crate::renderer::float_placement::ranges_overlap(
+                area.y + origin,
+                area.y + bottom,
+                rect.y,
+                rect.y + rect.height,
+            ) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// 표준 wire fields만 clone에서 변환하고 자기 reopen용 출처를 보존한다.
+    fn tac_line_export_document<'a>(
+        &self,
+        document: Cow<'a, Document>,
+    ) -> Result<Cow<'a, Document>, HwpError> {
+        use crate::renderer::float_placement::{tac_group_inputs_match, tac_paragraph_source};
+        if !matches!(self.source_format, crate::parser::FileFormat::Hwpx)
+            || document.hwpx_aux_entry(TAC_LINE_ORIGIN_PATH).is_some()
+        {
+            return Ok(document);
+        }
+        let styles = self.resolve_document_styles();
+        let mut groups = Vec::new();
+        for (si, section) in document.sections.iter().enumerate() {
+            for (pi, p) in section.paragraphs.iter().enumerate() {
+                let Some(TacLineOrigin::Owner(origin)) = &p.tac_line_origin else {
+                    continue;
+                };
+                if tac_group_inputs_match(section, pi, origin, &styles)
+                    && self.tac_completed_geometry(&document, si, pi, &styles)
+                {
+                    groups.push(TacWireGroup {
+                        section: si,
+                        paragraph: pi,
+                        origin: origin.as_ref().clone(),
+                        wire: Vec::new(),
+                    });
+                }
+            }
+        }
+        if groups.is_empty() {
+            return Ok(document);
+        }
+        let mut output = document.clone().into_owned();
+        for group in &groups {
+            let p = &mut output.sections[group.section].paragraphs[group.paragraph];
+            p.line_segs[0].tag &= !LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+            let [TacControlSource::Table(source)] = group.origin.source[1].controls.as_slice()
+            else {
+                unreachable!()
+            };
+            let Control::Table(t) = &mut p.controls[0] else {
+                unreachable!()
+            };
+            for (ci, cell) in source.paragraphs.iter().enumerate() {
+                for (pi, p) in cell.iter().enumerate() {
+                    if p.lines.is_empty() {
+                        t.cells[ci].paragraphs[pi].line_segs[0].tag &=
+                            !LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+                    }
+                }
+            }
+        }
+        // Serializer의 정확한 control/UTF-16 투영으로 association을 확인한다.
+        let bytes = serialize_validated_hwpx(&output)?;
+        let parsed = crate::parser::hwpx::parse_hwpx_validated(&bytes)
+            .map_err(|e| HwpError::RenderError(e.to_string()))?;
+        for group in &mut groups {
+            let section = &parsed.sections[group.section];
+            let Some(wire) = section.paragraphs[group.paragraph - 1..=group.paragraph + 1]
+                .iter()
+                .map(tac_paragraph_source)
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(document);
+            };
+            group.wire = wire;
+        }
+        let entry = TacWireOrigins { version: 1, groups };
+        let Ok(payload) = serde_json::to_vec(&entry) else {
+            return Ok(document);
+        };
+        if payload.len() > TAC_LINE_ORIGIN_MAX_BYTES {
+            return Ok(document);
+        }
+        output
+            .hwpx_aux_entries
+            .push((TAC_LINE_ORIGIN_PATH.to_owned(), payload));
+        Ok(Cow::Owned(output))
+    }
+
+    /// 읽기 전용 저장에서도 pending/direct 변경을 검사하고, 필요할 때만 clone을
+    /// 기존 anchor 축으로 되돌린다. HWP/HWPX 변환도 같은 rollback을 사용한다.
+    fn leading_host_export_document(
+        &self,
+        retain_hwpx_origin: bool,
+    ) -> Result<std::borrow::Cow<'_, crate::model::document::Document>, HwpError> {
+        validate_document_special_spaces(&self.document)?;
+        let has_certificate = self
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .any(|p| p.leading_block_host_layout.is_some());
+        if !has_certificate {
+            return Ok(std::borrow::Cow::Borrowed(&self.document));
+        }
+        // 현재 DocInfo로 검증하므로 아직 조판하지 않은 스타일 변경도 검출한다.
+        let styles = self.resolve_document_styles();
+        let is_invalid =
+            |p: &Paragraph, context: Option<&crate::model::paragraph::LeadingSectionInputs>| {
+                p.leading_block_host_layout.as_ref().is_some_and(|layout| {
+                    !retain_hwpx_origin
+                        || context != Some(&layout.section)
+                        || !crate::renderer::float_placement::leading_host_inputs_match(
+                            p,
+                            layout,
+                            Some(&styles),
+                        )
+                })
+            };
+        let invalid = self.document.sections.iter().any(|section| {
+            let context = crate::renderer::float_placement::leading_section_inputs(section);
+            section
+                .paragraphs
+                .iter()
+                .any(|p| is_invalid(p, context.as_ref()))
+        });
+        if !invalid {
+            return Ok(std::borrow::Cow::Borrowed(&self.document));
+        }
+        let mut document = self.document.clone();
+        for section in &mut document.sections {
+            let context = crate::renderer::float_placement::leading_section_inputs(section);
+            for p in &mut section.paragraphs {
+                if is_invalid(p, context.as_ref()) {
+                    p.rollback_leading_block_host_layout();
+                    if p.leading_block_host_layout.is_some() {
+                        return Err(HwpError::RenderError(
+                            "host origin rollback overflow".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(std::borrow::Cow::Owned(document))
     }
 
     /// HML 원본의 공통 IR을 HWPML 2.91 UTF-8 XML로 직렬화한다.
@@ -4797,14 +6022,15 @@ impl DocumentCore {
 
     /// 문서 IR을 직접 설정한다 (테스트/네이티브 전용).
     pub fn set_document(&mut self, doc: Document) {
+        self.section_carry.clear();
         self.document = doc;
         self.styles = self.resolve_document_styles();
-        self.composed = self
-            .document
-            .sections
-            .iter()
-            .map(|s| compose_section(s))
-            .collect();
+        self.recompose_body_sections();
+        crate::renderer::composer::initialize_body_paragraph_heads(
+            &self.document,
+            &self.styles,
+            &mut self.composed,
+        );
         self.mark_all_sections_dirty();
         self.paginate();
     }
@@ -4945,6 +6171,13 @@ impl DocumentCore {
                             })
                             .filter(|snapshot_paragraph| {
                                 snapshot_paragraph.revision == paragraph_revision
+                                    && baseline_section.is_some_and(|section| {
+                                        tac_dependent_snapshot_inputs_match(
+                                            &self.document.sections[section_idx].paragraphs,
+                                            section,
+                                            paragraph_idx,
+                                        )
+                                    })
                             })
                             .map(|snapshot_paragraph| Arc::clone(&snapshot_paragraph.paragraph));
                         SnapshotParagraph {
@@ -5131,12 +6364,7 @@ impl DocumentCore {
         // 로드 뒤 등록한 글꼴도 합성 줄의 나눔에 반영한다. 저장 줄이 섞인 문서는
         // 문단별 합성 태그를 따르고, 저장 줄이 전혀 없던 문서만 전체를 다시 계산한다.
         self.resynthesize_generated_line_layout();
-        self.composed = self
-            .document
-            .sections
-            .iter()
-            .map(|s| compose_section(s))
-            .collect();
+        self.recompose_body_sections();
 
         let section_count = self.document.sections.len();
         self.dirty_sections.resize(section_count, true);
@@ -5272,8 +6500,12 @@ impl DocumentCore {
                 .iter()
                 .enumerate()
                 .filter_map(|(section_idx, snapshot_section)| {
-                    (current_revisions[section_idx] != snapshot_section.revision)
-                        .then_some(section_idx)
+                    (current_revisions[section_idx] != snapshot_section.revision
+                        || !tac_snapshot_section_matches(
+                            &self.document.sections[section_idx],
+                            snapshot_section,
+                        ))
+                    .then_some(section_idx)
                 })
                 .collect()
         } else {
@@ -5299,8 +6531,13 @@ impl DocumentCore {
                         .enumerate()
                         .filter_map(|(paragraph_idx, snapshot_paragraph)| {
                             (current_paragraph_revisions[section_idx][paragraph_idx]
-                                != snapshot_paragraph.revision)
-                                .then_some(paragraph_idx)
+                                != snapshot_paragraph.revision
+                                || !tac_dependent_snapshot_inputs_match(
+                                    &self.document.sections[section_idx].paragraphs,
+                                    snapshot_section,
+                                    paragraph_idx,
+                                ))
+                            .then_some(paragraph_idx)
                         })
                         .collect(),
                 )
@@ -5325,7 +6562,10 @@ impl DocumentCore {
         restored.doc_info.font_metrics_policy = self.document.doc_info.font_metrics_policy;
         restored.sections.reserve(snapshot.sections.len());
         for (section_idx, snapshot_section) in snapshot.sections.iter().enumerate() {
-            if same_section_count && current_revisions[section_idx] == snapshot_section.revision {
+            if same_section_count
+                && current_revisions[section_idx] == snapshot_section.revision
+                && tac_snapshot_section_matches(&current_sections[section_idx], snapshot_section)
+            {
                 let mut section = std::mem::take(&mut current_sections[section_idx]);
                 section.raw_stream = snapshot_section.raw_stream.as_deref().cloned();
                 restored.sections.push(section);
@@ -5338,6 +6578,15 @@ impl DocumentCore {
                     && current_sections[section_idx].paragraphs.len()
                         == snapshot_section.paragraphs.len();
                 if can_move_unchanged_paragraphs {
+                    let tac_reuse: Vec<_> = (0..current_sections[section_idx].paragraphs.len())
+                        .map(|i| {
+                            tac_dependent_snapshot_inputs_match(
+                                &current_sections[section_idx].paragraphs,
+                                snapshot_section,
+                                i,
+                            )
+                        })
+                        .collect();
                     let current_paragraphs =
                         std::mem::take(&mut current_sections[section_idx].paragraphs);
                     section
@@ -5351,6 +6600,7 @@ impl DocumentCore {
                     {
                         if current_paragraph_revisions[section_idx][paragraph_idx]
                             == snapshot_paragraph.revision
+                            && tac_reuse[paragraph_idx]
                         {
                             section.paragraphs.push(current_paragraph);
                         } else {
@@ -5368,6 +6618,9 @@ impl DocumentCore {
                 }
                 restored.sections.push(section);
             }
+        }
+        if !same_section_count {
+            self.section_carry.clear();
         }
         self.document = restored;
         if same_section_count {
@@ -5403,10 +6656,23 @@ impl DocumentCore {
                     _ => self.recompose_section(section_idx),
                 }
             }
+            // 복원은 저장 줄을 가진 새 문서 경계다. 편집 후 번호와 폭을 비교하지 않는다.
+            crate::renderer::composer::initialize_body_paragraph_heads(
+                &self.document,
+                &self.styles,
+                &mut self.composed,
+            );
             if !changed_sections.is_empty() {
                 self.paginate();
             }
         } else {
+            self.styles = self.resolve_document_styles();
+            self.recompose_body_sections();
+            crate::renderer::composer::initialize_body_paragraph_heads(
+                &self.document,
+                &self.styles,
+                &mut self.composed,
+            );
             self.refresh_layout_native();
         }
         self.event_log.restore_snapshot_revisions(
@@ -5683,6 +6949,13 @@ impl DocumentCore {
                 let removed_len = end - start;
                 let new_text: String = chars[..start].iter().chain(chars[end..].iter()).collect();
                 para.text = new_text;
+                para.special_space_origins
+                    .retain(|r| r.char_idx < start || r.char_idx >= end);
+                for record in &mut para.special_space_origins {
+                    if record.char_idx >= end {
+                        record.char_idx -= removed_len;
+                    }
+                }
                 para.field_ranges[fri].end_char_idx = start;
                 // 이후 field_ranges의 char_idx 조정
                 for i in 0..para.field_ranges.len() {
@@ -5730,7 +7003,10 @@ impl DocumentCore {
                     }
                 }
             }
-            let _ = any_removed;
+            if any_removed {
+                para.authored_text_runs = None;
+                para.para_text_terminal = None;
+            }
         }
 
         fn process_table(table: &mut crate::model::table::Table) {
@@ -5767,6 +7043,235 @@ mod replace_content_tests {
     const HML: &[u8] = include_bytes!("../../../samples/hml/formatting_table.hml");
     const HWP: &[u8] = include_bytes!("../../../saved/blank2010.hwp");
     const HWPX: &[u8] = include_bytes!("../../../saved/blank_hwpx.hwpx");
+
+    fn natural_flow_policy_seed() -> DocumentCore {
+        use crate::model::document::RawRecord;
+        use crate::parser::tags::{HWPTAG_COMPATIBLE_DOCUMENT, HWPTAG_LAYOUT_COMPATIBILITY};
+        let mut core = DocumentCore::from_bytes(HWP).unwrap();
+        let info = &mut core.document.doc_info;
+        info.extra_records.retain(|r| {
+            r.tag_id != HWPTAG_COMPATIBLE_DOCUMENT && r.tag_id != HWPTAG_LAYOUT_COMPATIBILITY
+        });
+        let records = [
+            (HWPTAG_COMPATIBLE_DOCUMENT, vec![0; 4]),
+            (HWPTAG_LAYOUT_COMPATIBILITY, vec![0; 20]),
+        ];
+        let mut wire = Vec::new();
+        for (tag, data) in records {
+            wire.extend_from_slice(&(u32::from(tag) | ((data.len() as u32) << 20)).to_le_bytes());
+            wire.extend_from_slice(&data);
+            info.extra_records.push(RawRecord {
+                tag_id: tag,
+                level: 0,
+                data,
+            });
+        }
+        // 테스트가 만든 정책 레코드의 원본/모델 일치 계약. 실제 native 입력을 주장하지 않는다.
+        info.raw_stream = Some(wire);
+        for section in &mut core.document.sections {
+            section.section_def.raw_ctrl_extra = vec![0; 8];
+        }
+        core
+    }
+
+    #[test]
+    fn natural_flow_policy_survives_edit_fresh_export_and_reopen() {
+        let mut core = natural_flow_policy_seed();
+        assert_eq!(core.natural_flow_source_words(), Some([0; 6]));
+        core.insert_text_content_native(
+            0,
+            0,
+            0,
+            &crate::model::paragraph::TextContent::literal("body"),
+        )
+        .unwrap();
+        assert_eq!(core.natural_flow_source_words(), Some([0; 6]));
+        let saved = core.export_hwpx_native().unwrap();
+        let mut reopened = DocumentCore::from_bytes(&saved).unwrap();
+        assert_eq!(reopened.natural_flow_source_words(), Some([0; 6]));
+        assert_eq!(reopened.natural_flow_capacity_flags(0), Some(0));
+        for section in &mut reopened.document.sections {
+            for paragraph in &mut section.paragraphs {
+                paragraph.line_segs.clear();
+            }
+        }
+        reopened.refresh_layout_native();
+        assert_eq!(reopened.natural_flow_source_words(), Some([0; 6]));
+        let second = DocumentCore::from_bytes(&reopened.export_hwpx_native().unwrap()).unwrap();
+        assert_eq!(second.natural_flow_source_words(), Some([0; 6]));
+    }
+
+    #[test]
+    fn natural_flow_policy_rejects_legacy_duplicate_malformed_and_stale_markers() {
+        let saved = natural_flow_policy_seed().export_hwpx_native().unwrap();
+        let loaded = DocumentCore::from_bytes(&saved).unwrap();
+        assert_eq!(loaded.natural_flow_source_words(), Some([0; 6]));
+        let marker = crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH;
+        for field in ["version", "source_present", "unknown"] {
+            let mut document = loaded.document.clone();
+            let entry = document
+                .hwpx_aux_entries
+                .iter_mut()
+                .find(|(p, _)| p == marker)
+                .unwrap();
+            let mut value: serde_json::Value = serde_json::from_slice(&entry.1).unwrap();
+            value[field] = match field {
+                "version" => serde_json::json!(2),
+                "source_present" => serde_json::json!(false),
+                _ => serde_json::json!(0),
+            };
+            entry.1 = serde_json::to_vec(&value).unwrap();
+            let expected = entry.1.clone();
+            assert_eq!(natural_flow_source_words(&document), None);
+            let mut passthrough = DocumentCore::from_bytes(&saved).unwrap();
+            passthrough.document = document;
+            let reopened =
+                DocumentCore::from_bytes(&passthrough.export_hwpx_native().unwrap()).unwrap();
+            assert_eq!(
+                reopened.document.hwpx_aux_entry(marker),
+                Some(expected.as_slice())
+            );
+        }
+        for bytes in [b"1".to_vec(), b"{}".to_vec(), vec![b'x'; 131_073]] {
+            let mut document = loaded.document.clone();
+            document
+                .hwpx_aux_entries
+                .iter_mut()
+                .find(|(p, _)| p == marker)
+                .unwrap()
+                .1 = bytes;
+            assert_eq!(natural_flow_source_words(&document), None);
+        }
+        let mut duplicate = loaded.document.clone();
+        duplicate.hwpx_aux_entries.push((
+            marker.into(),
+            duplicate.hwpx_aux_entry(marker).unwrap().to_vec(),
+        ));
+        assert_eq!(natural_flow_source_words(&duplicate), None);
+        let mut core = loaded;
+        core.document = duplicate;
+        assert!(core.export_hwpx_native().is_err());
+        core = DocumentCore::from_bytes(&saved).unwrap();
+        core.document
+            .doc_info
+            .hwpx_head_tail
+            .as_mut()
+            .unwrap()
+            .push_str(" ");
+        assert_eq!(core.natural_flow_source_words(), None);
+        let stale = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+        assert_eq!(stale.natural_flow_source_words(), None);
+        let disabled: NaturalFlowOrigin =
+            serde_json::from_slice(stale.document.hwpx_aux_entry(marker).unwrap()).unwrap();
+        assert!(!disabled.source_present);
+        assert_eq!(disabled.words, [0; 6]);
+        assert_eq!(
+            disabled.emitted_tail,
+            DocumentCore::from_bytes(&saved)
+                .unwrap()
+                .document
+                .doc_info
+                .hwpx_head_tail
+                .unwrap()
+        );
+        core = DocumentCore::from_bytes(&saved).unwrap();
+        core.document.doc_info.apply_next_spacing_of_last_para =
+            !core.document.doc_info.apply_next_spacing_of_last_para;
+        assert_eq!(core.natural_flow_source_words(), None);
+        let stale_flags = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+        assert_eq!(stale_flags.natural_flow_source_words(), None);
+        core = DocumentCore::from_bytes(&saved).unwrap();
+        core.document.sections[0].section_def.page_def.margin_bottom += 1;
+        assert_eq!(core.natural_flow_source_words(), None);
+        let stale_section = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
+        assert_eq!(stale_section.natural_flow_source_words(), None);
+        let mut source = natural_flow_policy_seed();
+        source
+            .document
+            .doc_info
+            .extra_records
+            .iter_mut()
+            .find(|r| r.tag_id == crate::parser::tags::HWPTAG_LAYOUT_COMPATIBILITY)
+            .unwrap()
+            .data[0] = 1;
+        assert_eq!(source.natural_flow_source_words(), None);
+    }
+
+    #[test]
+    fn control_space_literal_slot_activates_on_load_edit_and_save_reopen() {
+        use crate::model::paragraph::{CharShapeRef, TextContent};
+        use crate::model::provenance::FontMetricsPolicy;
+        use crate::model::style::Font;
+        let mut seed = DocumentCore::new_empty();
+        seed.create_blank_document_native().unwrap();
+        let mut document = seed.document().clone();
+        document.doc_info.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        document.doc_info.font_faces.resize_with(7, Vec::new);
+        document.doc_info.font_faces[0] = vec![Font {
+            name: "HY신명조".into(),
+            ..Default::default()
+        }];
+        document.doc_info.font_faces[5] = vec![Font {
+            name: "한양신명조".into(),
+            alt_type: 2,
+            ..Default::default()
+        }];
+        document.doc_info.char_shapes[0].font_ids = [0; 7];
+        let content = TextContent::literal("가\u{2007}나");
+        document.sections[0].paragraphs = vec![Paragraph {
+            text: content.text,
+            special_space_origins: content.special_space_origins,
+            char_count: 4,
+            char_offsets: vec![0, 1, 2],
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                vertical_pos: 123,
+                line_height: 1600,
+                text_height: 1148,
+                baseline_distance: 900,
+                segment_width: 40000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        seed.set_document(document);
+        let figure_slots = |core: &DocumentCore| {
+            core.composed[0][0]
+                .lines
+                .iter()
+                .flat_map(|line| &line.runs)
+                .flat_map(|run| {
+                    run.text
+                        .chars()
+                        .filter(|ch| *ch == '\u{2007}')
+                        .map(move |_| (run.lang_index, run.text_style(&core.styles).font_family))
+                })
+                .collect::<Vec<_>>()
+        };
+        let source = seed.export_hwpx_native().unwrap();
+        let mut loaded =
+            DocumentCore::from_bytes_with_font_metrics(&source, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        assert_eq!(figure_slots(&loaded), vec![(5, "함초롬바탕".into())]);
+        let other =
+            DocumentCore::from_bytes_with_font_metrics(&source, FontMetricsPolicy::HancomWindows)
+                .unwrap();
+        assert_eq!(figure_slots(&other)[0].0, 0);
+        loaded
+            .insert_text_content_native(0, 0, 1, &TextContent::literal("\u{2007}"))
+            .unwrap();
+        assert_eq!(figure_slots(&loaded), vec![(5, "함초롬바탕".into()); 2]);
+        let saved = loaded.export_hwpx_native().unwrap();
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        assert_eq!(figure_slots(&reopened), figure_slots(&loaded));
+        assert_eq!(
+            reopened.document.sections[0].paragraphs[0].special_space_origins,
+            loaded.document.sections[0].paragraphs[0].special_space_origins
+        );
+    }
 
     #[test]
     fn font_refresh_preserves_nested_saved_lines_and_reflows_generated_lines() {
@@ -7115,5 +8620,113 @@ mod validate_linesegs_tests {
         assert_eq!(counts.object_count, 1);
         assert_eq!(counts.opaque_control_bytes, 5);
         assert!(losses.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod leading_host_cold_layout_tests {
+    use super::*;
+    use serde_json::Value;
+
+    const SOURCE: &[u8] =
+        include_bytes!("../../../samples/editing/leading_object_host_text_origin.hwpx");
+    const ORACLE: &str =
+        include_str!("../../../samples/editing/leading_object_host_text_origin_native_oracle.json");
+
+    fn assert_cold(core: &DocumentCore) {
+        // Fresh LayoutEngine plus empty measurement, pagination, composed and tree state.
+        crate::renderer::layout::clear_measure_caches();
+        let mut cold = DocumentCore::new_empty();
+        cold.source_format = core.source_format;
+        cold.dpi = core.dpi;
+        cold.layout_engine = LayoutEngine::new(core.dpi);
+        cold.fallback_font = core.fallback_font.clone();
+        cold.respect_vpos_reset = core.respect_vpos_reset;
+        cold.set_document(core.document.clone());
+        assert_eq!(
+            cold.document.layout_profile(),
+            core.document.layout_profile()
+        );
+        assert_eq!(
+            cold.document.doc_info.font_metrics_policy,
+            core.document.doc_info.font_metrics_policy
+        );
+        assert_eq!(cold.page_count(), core.page_count());
+        for page in 0..core.page_count() {
+            assert_eq!(
+                cold.get_page_line_layout_native(page).unwrap(),
+                core.get_page_line_layout_native(page).unwrap(),
+                "cold body lines"
+            );
+            assert_eq!(
+                cold.get_page_control_layout_native(page).unwrap(),
+                core.get_page_control_layout_native(page).unwrap(),
+                "cold table geometry/order"
+            );
+        }
+        assert_eq!(
+            cold.export_hwpx_native().unwrap(),
+            core.export_hwpx_native().unwrap()
+        );
+    }
+
+    #[test]
+    fn leading_host_five_public_edits_match_genuinely_cold_layout() {
+        // 다른 테스트의 첫 native font 등록이 비교 중 합성 Bold 폭을 바꾸지 않게 한다.
+        // 글꼴 환경만 먼저 확정하며 cold 쪽 측정·조판 캐시는 assert_cold가 계속 비운다.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::renderer::font_paths::register_font_face_availability(&[std::path::Path::new(
+            env!("CARGO_MANIFEST_DIR"),
+        )
+        .join("tests/fixtures/fonts/RHWPShapingFixture.ttf")]);
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            SOURCE,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let oracle: Value = serde_json::from_str(ORACLE).unwrap();
+        assert_cold(&core);
+        for step in oracle["operation_manifest"]["operations"]["steps"]
+            .as_array()
+            .unwrap()
+        {
+            let op = &step["operation"];
+            let n = |key: &str| op[key].as_u64().unwrap() as usize;
+            match op["kind"].as_str().unwrap() {
+                "type" => {
+                    core.insert_text_native(
+                        n("section"),
+                        n("paragraph"),
+                        n("offset"),
+                        op["text"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                }
+                "replace_local" => {
+                    core.replace_body_text_local_native(
+                        n("section"),
+                        n("paragraph"),
+                        n("offset"),
+                        n("count"),
+                        op["text"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                }
+                "delete" => {
+                    core.delete_text_native(n("section"), n("paragraph"), n("offset"), n("count"))
+                        .unwrap();
+                }
+                "paragraph_split" => {
+                    core.split_paragraph_native(n("section"), n("paragraph"), n("offset"), None)
+                        .unwrap();
+                }
+                "paragraph_merge" => {
+                    core.merge_paragraph_native(n("section"), n("paragraph"))
+                        .unwrap();
+                }
+                kind => panic!("unsupported operation {kind}"),
+            }
+            assert_cold(&core);
+        }
     }
 }

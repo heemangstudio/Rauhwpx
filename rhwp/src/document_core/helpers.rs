@@ -910,6 +910,30 @@ pub(crate) fn json_ok_with(fields: &str) -> String {
     format!("{{\"ok\":true,{}}}", fields)
 }
 
+/// 역연산 콘텐츠는 캐럿 준비 전에 전체 검증한다.
+pub(crate) fn parse_text_content(
+    json: &str,
+) -> Result<crate::model::paragraph::TextContent, HwpError> {
+    let content: crate::model::paragraph::TextContent = serde_json::from_str(json)
+        .map_err(|e| HwpError::RenderError(format!("텍스트 콘텐츠 파싱 실패: {e}")))?;
+    content
+        .validate()
+        .map_err(|e| HwpError::RenderError(e.to_string()))?;
+    Ok(content)
+}
+
+pub(crate) fn removed_content_fields(
+    start: usize,
+    content: &crate::model::paragraph::TextContent,
+) -> String {
+    format!(
+        "\"removedStart\":{},\"removedCount\":{},\"removedContent\":{}",
+        start,
+        content.text.chars().count(),
+        serde_json::to_string(content).expect("text content JSON")
+    )
+}
+
 /// 병합 결과 JSON 에 덧붙일 `,"removedParaMeta":{...}` 조각 (Task #2342).
 ///
 /// undo 가 `split_at` 뒤 되돌릴 값이며 스튜디오는 내용을 해석하지 않고 그대로

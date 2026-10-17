@@ -1221,6 +1221,9 @@ fn remap_paragraphs(
             char_shape.char_shape_id =
                 remap_char_shape_id(char_shape.char_shape_id, resources.char_base)?;
         }
+        for run in paragraph.authored_text_runs.iter_mut().flatten() {
+            run.char_shape_id = remap_char_shape_id(run.char_shape_id, resources.char_base)?;
+        }
         if paragraph.raw_header_extra.len() >= 10 {
             let old = u32::from_le_bytes(paragraph.raw_header_extra[6..10].try_into().unwrap());
             let new = ids.allocate_object(old)?;

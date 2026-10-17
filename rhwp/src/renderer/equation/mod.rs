@@ -16,6 +16,42 @@ pub mod svg_render;
 pub mod symbols;
 pub mod tokenizer;
 
+static MEASUREMENT_GENERATION: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    static OBSERVED_MEASUREMENT_GENERATION: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    // 서체 미해소(None)는 저장하지 않는다 — 원본 서체는 렌더 진입 때 등록될 수 있다.
+    static NATURAL_WIDTH_CACHE: std::cell::RefCell<
+        std::collections::HashMap<(String, u32, String, String), i32>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 원본 서체 등록/명시적 새로고침 이후의 측정 세대. 준비한 조판의 설치 전에도 확인한다.
+pub(crate) fn measurement_generation() -> usize {
+    MEASUREMENT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// 서체 조달 캐시를 먼저 비우고 모든 측정 스레드에 새 세대를 공개한다.
+/// 동일 경로의 파일 교체는 이 명시적 경계 뒤 첫 측정에서 다시 읽는다.
+pub(crate) fn invalidate_measurement_caches() {
+    #[cfg(not(target_arch = "wasm32"))]
+    super::font_paths::invalidate_equation_face_metrics();
+    MEASUREMENT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn sync_measurement_caches() -> usize {
+    let generation = measurement_generation();
+    OBSERVED_MEASUREMENT_GENERATION.with(|observed| {
+        if observed.replace(generation) != generation {
+            // 캐시를 빌리는 측정에 들어가기 전에 동기화한다. 재진입도 같은 세대를 본다.
+            NATURAL_WIDTH_CACHE.with(|cache| cache.borrow_mut().clear());
+            measure::clear_measurement_caches();
+        }
+    });
+    generation
+}
+
 /// 개체 공통 너비는 바깥 여백을 제외한 값이다. 인라인 슬롯에 양쪽 여백을 예약한다.
 pub(crate) fn occupied_width_hwp(eq: &crate::model::control::Equation) -> i32 {
     (i64::from(content_width_hwp(eq))
@@ -36,28 +72,22 @@ pub(crate) fn content_width_hwp(eq: &crate::model::control::Equation) -> i32 {
 
 /// 원본 수식 서체로 잰 자연 폭(HWPUNIT). 서체 메트릭이 없으면 None.
 pub(crate) fn natural_width_hwp(eq: &crate::model::control::Equation) -> Option<i32> {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
     // An empty EQEDIT can be an authored inline spacer. Hancom keeps its saved
     // width; measuring an empty AST would collapse it to zero.
     if eq.script.is_empty() {
         return None;
     }
-    thread_local! {
-        // 서체 미해소(None)는 저장하지 않는다 — 원본 서체는 렌더 진입 때 등록될 수 있다.
-        static CACHE: RefCell<HashMap<(String, u32, String, String), i32>> =
-            RefCell::new(HashMap::new());
-    }
     if !font::is_legacy_equation_font(&eq.font_name) || eq.version_info.is_empty() {
         return None;
     }
+    let generation = sync_measurement_caches();
     let key = (
         eq.script.clone(),
         eq.font_size,
         eq.font_name.clone(),
         eq.version_info.clone(),
     );
-    if let Some(hit) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+    if let Some(hit) = NATURAL_WIDTH_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
         return Some(hit);
     }
     let font_size_px = super::hwpunit_to_px(eq.font_size.max(1) as i32, super::DEFAULT_DPI);
@@ -69,7 +99,10 @@ pub(crate) fn natural_width_hwp(eq: &crate::model::control::Equation) -> Option<
     }
     let ast = parser::EqParser::new(tokenizer::tokenize(&eq.script)).parse();
     let width = super::px_to_hwpunit_round(engine.layout(&ast).width, super::DEFAULT_DPI).max(0);
-    CACHE.with(|cache| {
+    if measurement_generation() != generation {
+        return None;
+    }
+    NATURAL_WIDTH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= 8192 {
             cache.clear();
@@ -832,6 +865,295 @@ pub fn intrinsic_size_hwp_with_font(script: &str, font_size: u32, font_name: &st
     (width, height)
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod font_cache_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn isolated(name: &str) -> bool {
+        const CHILD: &str = "RHWP_EQUATION_CACHE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg(format!("renderer::equation::font_cache_tests::{name}"))
+            .args(["--exact", "--nocapture"])
+            .env(CHILD, "1")
+            .env_remove(crate::renderer::font_paths::FONT_PATH_ENV)
+            .output()
+            .expect("run isolated equation font-cache test");
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        true
+    }
+
+    struct Fixture {
+        folder: PathBuf,
+        path: PathBuf,
+        original: Vec<u8>,
+        changed: Vec<u8>,
+        expected_natural_px: f64,
+    }
+
+    fn checksum(bytes: &[u8]) -> u32 {
+        bytes.chunks(4).fold(0, |sum: u32, chunk| {
+            let mut word = [0; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            sum.wrapping_add(u32::from_be_bytes(word))
+        })
+    }
+
+    fn table_directory(bytes: &[u8], tag: &[u8; 4]) -> usize {
+        let table_count = u16::from_be_bytes(bytes[4..6].try_into().unwrap());
+        (0..usize::from(table_count))
+            .map(|index| 12 + 16 * index)
+            .find(|&offset| &bytes[offset..offset + 4] == tag)
+            .unwrap()
+    }
+
+    fn table_range(bytes: &[u8], directory: usize) -> std::ops::Range<usize> {
+        let offset =
+            u32::from_be_bytes(bytes[directory + 8..directory + 12].try_into().unwrap()) as usize;
+        let length =
+            u32::from_be_bytes(bytes[directory + 12..directory + 16].try_into().unwrap()) as usize;
+        offset..offset + length
+    }
+
+    fn assert_font_checksums(bytes: &[u8]) {
+        assert_eq!(checksum(bytes), 0xb1b0afba);
+        let table_count = u16::from_be_bytes(bytes[4..6].try_into().unwrap());
+        for directory in (0..usize::from(table_count)).map(|index| 12 + 16 * index) {
+            let mut table = bytes[table_range(bytes, directory)].to_vec();
+            if &bytes[directory..directory + 4] == b"head" {
+                table[8..12].fill(0);
+            }
+            let expected =
+                u32::from_be_bytes(bytes[directory + 4..directory + 8].try_into().unwrap());
+            assert_eq!(checksum(&table), expected);
+        }
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let original = std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fonts/HYhwpEQSourceFixture.ttf"
+            ))
+            .unwrap();
+            assert_font_checksums(&original);
+            let mut changed = original.clone();
+            let (glyph, metric_count, em) = {
+                let face = ttf_parser::Face::parse(&original, 0).unwrap();
+                (
+                    face.glyph_index('\u{e034}').unwrap().0,
+                    face.tables().hhea.number_of_metrics,
+                    face.units_per_em(),
+                )
+            };
+            let hmtx = table_directory(&changed, b"hmtx");
+            let offset = u32::from_be_bytes(changed[hmtx + 8..hmtx + 12].try_into().unwrap())
+                as usize
+                + usize::from(glyph.min(metric_count - 1)) * 4;
+            assert_ne!(
+                u16::from_be_bytes(changed[offset..offset + 2].try_into().unwrap()),
+                em
+            );
+            changed[offset..offset + 2].copy_from_slice(&em.to_be_bytes());
+            let head = table_directory(&changed, b"head");
+            let adjustment = table_range(&changed, head).start + 8;
+            changed[adjustment..adjustment + 4].fill(0);
+            for directory in [hmtx, head] {
+                let table_checksum = checksum(&changed[table_range(&changed, directory)]);
+                changed[directory + 4..directory + 8]
+                    .copy_from_slice(&table_checksum.to_be_bytes());
+            }
+            let adjustment_value = 0xb1b0afbau32.wrapping_sub(checksum(&changed));
+            changed[adjustment..adjustment + 4].copy_from_slice(&adjustment_value.to_be_bytes());
+            assert_font_checksums(&changed);
+            let folder = std::env::temp_dir().join(format!(
+                "rhwp-equation-cache-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&folder).unwrap();
+            let path = folder.join("source.ttf");
+            std::fs::write(&path, &original).unwrap();
+            crate::renderer::font_paths::register_font_face_availability(&[path.clone()]);
+            Self {
+                folder,
+                path,
+                original,
+                changed,
+                expected_natural_px: 2.0
+                    * crate::renderer::hwpunit_to_px(1000, super::super::DEFAULT_DPI),
+            }
+        }
+
+        fn install(&self, bytes: &[u8]) {
+            std::fs::write(&self.path, bytes).unwrap();
+            crate::renderer::font_paths::register_font_face_availability(&[self.path.clone()]);
+            crate::renderer::layout::clear_measure_caches();
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.folder).unwrap();
+        }
+    }
+
+    fn widths() -> (Option<i32>, f64, Option<f64>) {
+        let mut equation = crate::model::control::Equation::default();
+        equation.script = "11".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.font_size = 1000;
+        equation.version_info = "Equation Version 60".into();
+        (
+            natural_width_hwp(&equation),
+            intrinsic_metrics_px_with_version(
+                &equation.script,
+                equation.font_size,
+                super::super::DEFAULT_DPI,
+                &equation.font_name,
+                &equation.version_info,
+            )
+            .width,
+            measure::legacy_natural_width(
+                "11",
+                crate::renderer::hwpunit_to_px(1000, super::super::DEFAULT_DPI),
+            ),
+        )
+    }
+
+    fn source_advance() -> Option<f64> {
+        crate::renderer::font_paths::custom_face_char_em_advance(
+            "HYhwpEQ", false, false, '\u{e034}',
+        )
+    }
+
+    #[test]
+    fn registered_source_refresh_reloads_same_path() {
+        if isolated("registered_source_refresh_reloads_same_path") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let before = widths();
+        let before_advance = source_advance().unwrap();
+        assert_eq!(widths(), before);
+        fixture.install(&fixture.changed);
+        let changed = widths();
+        assert!((changed.2.unwrap() - fixture.expected_natural_px).abs() < 1e-9);
+        assert!(changed.0.unwrap() > before.0.unwrap());
+        assert!(changed.1 > before.1);
+        assert_eq!(source_advance(), Some(1.0));
+        assert_eq!(widths(), changed);
+        fixture.install(&fixture.original);
+        assert_eq!(widths(), before);
+        assert_eq!(source_advance(), Some(before_advance));
+    }
+
+    #[test]
+    #[cfg(not(feature = "native-skia"))]
+    fn missing_registered_source_cannot_reuse_positive_width() {
+        if isolated("missing_registered_source_cannot_reuse_positive_width") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let before = widths();
+        assert!(before.0.is_some());
+        assert!(source_advance().is_some());
+        std::fs::remove_file(&fixture.path).unwrap();
+        crate::renderer::font_paths::register_font_face_availability(&[fixture.path.clone()]);
+        crate::renderer::layout::clear_measure_caches();
+        let missing = widths();
+        assert_eq!(missing.0, None);
+        assert_eq!(missing.2, None);
+        assert_eq!(source_advance(), None);
+    }
+
+    #[test]
+    fn registered_source_refresh_reaches_warmed_worker() {
+        if isolated("registered_source_refresh_reaches_warmed_worker") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            result_tx.send(widths()).unwrap();
+            continue_rx.recv().unwrap();
+            result_tx.send(widths()).unwrap();
+        });
+        let before = result_rx.recv().unwrap();
+        fixture.install(&fixture.changed);
+        continue_tx.send(()).unwrap();
+        let changed = result_rx.recv().unwrap();
+        worker.join().unwrap();
+        assert!((changed.2.unwrap() - fixture.expected_natural_px).abs() < 1e-9);
+        assert!(changed.0.unwrap() > before.0.unwrap());
+        assert!(changed.1 > before.1);
+        assert_eq!(changed, widths());
+    }
+
+    #[test]
+    fn warm_registration_preserves_generation_and_first_alias() {
+        if isolated("warm_registration_preserves_generation_and_first_alias") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let before = widths();
+        let generation = measurement_generation();
+        for _ in 0..3 {
+            crate::renderer::font_paths::register_font_face_availability(&[fixture.path.clone()]);
+            assert_eq!(measurement_generation(), generation);
+            assert_eq!(widths(), before);
+        }
+        let later = fixture.folder.join("later.ttf");
+        std::fs::write(&later, &fixture.changed).unwrap();
+        crate::renderer::font_paths::register_font_face_availability(&[later]);
+        assert!(measurement_generation() > generation);
+        assert_eq!(
+            crate::renderer::font_paths::custom_face_source("HYhwpEQ"),
+            Some((fixture.path.clone(), 0))
+        );
+        assert_eq!(widths(), before);
+        assert_eq!(source_advance(), Some(0.6));
+    }
+
+    #[test]
+    fn hmtx_load_spanning_refresh_cannot_publish_old_metrics() {
+        if isolated("hmtx_load_spanning_refresh_cannot_publish_old_metrics") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let (parsed_tx, parsed_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            crate::renderer::font_paths::HMTX_BEFORE_PUBLISH.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    parsed_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                }));
+            });
+            let interrupted = source_advance();
+            (interrupted, source_advance())
+        });
+        parsed_rx.recv().unwrap();
+        fixture.install(&fixture.changed);
+        continue_tx.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), (None, Some(1.0)));
+        assert_eq!(source_advance(), Some(1.0));
+    }
+}
+
 #[cfg(test)]
 mod metric_tests {
     use super::*;
@@ -1012,6 +1334,7 @@ mod metric_tests {
             inline_controls: vec![],
             numbering_text: None,
             numbering_head: None,
+            numbering_known_horizontal: false,
             tac_controls: vec![(0, 0, 0), (1, 0, 1)],
             footnote_positions: vec![],
             tab_extended: vec![],

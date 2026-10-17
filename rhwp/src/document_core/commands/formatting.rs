@@ -833,10 +833,8 @@ impl DocumentCore {
                     align_str,
                     ps.line_spacing, ps.line_spacing_type,
                     dialog_margin_left_px, dialog_margin_right_px, dialog_indent_px,
-                    // spacing_before/after는 원본 HWPUNIT → px (1x) 변환 (Task #9)
-                    // ResolvedParaStyle은 /2.0이 적용되어 UI 표시에 부적합
-                    raw_ps.map(|r| crate::renderer::hwpunit_to_px(r.spacing_before, self.dpi)).unwrap_or(ps.spacing_before),
-                    raw_ps.map(|r| crate::renderer::hwpunit_to_px(r.spacing_after, self.dpi)).unwrap_or(ps.spacing_after),
+                    // 2x 저장값은 해석된 물리 px로 표시한다.
+                    ps.spacing_before, ps.spacing_after,
                     para_shape_id,
                     head_str, ps.para_level, ps.numbering_id,
                     widow_orphan, keep_with_next, keep_lines, page_break_before,

@@ -1015,20 +1015,25 @@ test('edit_table split_cell fails on the tool call when the engine rejects the s
 
 // ─── apply_para_format / apply_style ────────────────────────
 
-test('apply_para_format: pt→HWPUNIT 변환 적용, reject 는 setParaShapeId 복원', async () => {
-  const { call, pending, calls } = makeEnv();
+test('apply_para_format: pt→2x 저장값 변환 적용, reject 는 setParaShapeId 복원', async () => {
+  const { call, pending, calls, wasm } = makeEnv();
+  const before = wasm.getParaPropertiesAt(0, 0);
   const r = (await call('apply_para_format', {
     sectionIdx: 0, paraIdx: 0, alignment: 'center', spaceBeforePt: 6, lineSpacingPercent: 160,
   })) as { changeSetId: string };
   const apply = calls.find((x) => x.m === 'applyParaFormat')!;
   const json = JSON.parse(apply.a[1] as string) as Record<string, unknown>;
   assert.equal(json['alignment'], 'center');
-  assert.equal(json['spacingBefore'], 600);
+  assert.equal(json['spacingBefore'], 1200);
   assert.equal(json['lineSpacing'], 160);
   assert.equal(json['lineSpacingType'], 'Percent');
+  assert.equal(wasm.getParaPropertiesAt(0, 0).paraShapeId, 99);
+  assert.equal(pending.hasPending(), true);
   pending.reject(r.changeSetId);
   const restore = calls.find((x) => x.m === 'setParaShapeId')!;
   assert.deepEqual(restore.a, [0, 10]); // 이전 para_shape_id 복원
+  assert.deepEqual(wasm.getParaPropertiesAt(0, 0), before);
+  assert.equal(pending.hasPending(), false);
 });
 
 test('apply_style: 즉시 적용, reject 는 문단 보관본으로 복원 + 존재하지 않는 styleId 거부', async () => {

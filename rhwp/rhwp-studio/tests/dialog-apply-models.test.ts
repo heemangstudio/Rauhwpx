@@ -60,18 +60,18 @@ const liveHits: SearchHit[] = [
 
 test('replace validates the remembered hit against the live document and selection', () => {
   const selection = { start: body(1, 3), end: body(1, 6) };
-  assert.equal(isLiveFindHit(liveHits, hit, selection), true, 'unchanged hit and selection');
+  assert.equal(isLiveFindHit(liveHits, hit, selection, offsets), true, 'unchanged hit and selection');
 
   const shifted: SearchHit[] = [{ sec: 0, para: 1, charOffset: 5, length: 3 }];
-  assert.equal(isLiveFindHit(shifted, hit, selection), false, 'text typed before the match moved it');
-  assert.equal(isLiveFindHit([], hit, selection), false, 'the query no longer matches (edited or other document)');
-  assert.equal(isLiveFindHit(liveHits, hit, { start: body(1, 4), end: body(1, 6) }), false, 'selection moved');
-  assert.equal(isLiveFindHit(liveHits, hit, null), false, 'selection cleared by a click');
+  assert.equal(isLiveFindHit(shifted, hit, selection, offsets), false, 'text typed before the match moved it');
+  assert.equal(isLiveFindHit([], hit, selection, offsets), false, 'the query no longer matches (edited or other document)');
+  assert.equal(isLiveFindHit(liveHits, hit, { start: body(1, 4), end: body(1, 6) }, offsets), false, 'selection moved');
+  assert.equal(isLiveFindHit(liveHits, hit, null, offsets), false, 'selection cleared by a click');
   const inCell = { start: { ...body(1, 3), parentParaIndex: 1, cellPath: [{ controlIndex: 0, cellIndex: 0, cellParaIndex: 1 }] }, end: body(1, 6) };
-  assert.equal(isLiveFindHit(liveHits, hit, inCell), false, 'cell coordinates never match a body hit');
+  assert.equal(isLiveFindHit(liveHits, hit, inCell, offsets), false, 'cell coordinates never match a body hit');
   const cellHit: SearchHit[] = [{ ...liveHits[1], cellContext: { parentPara: 1, ctrlIdx: 0, cellIdx: 0, cellPara: 0 } }];
-  assert.equal(isLiveFindHit(cellHit, hit, selection), false, 'a cell match at the same numbers is not the body hit');
-  assert.equal(isLiveFindHit(liveHits, { found: false }, selection), false);
+  assert.equal(isLiveFindHit(cellHit, hit, selection, offsets), false, 'a cell match at the same numbers is not the body hit');
+  assert.equal(isLiveFindHit(liveHits, { found: false }, selection, offsets), false);
 });
 
 // ── 글자 모양: 언어별 값 ─────────────────────────────────────────────────────
@@ -289,3 +289,10 @@ test('style edit: a second 글자 모양 pass keeps the first pass', () => {
   assert.deepEqual(JSON.parse(pending), { fontIds: [1, 2, 3, 4, 5, 6, 7] });
   assert.deepEqual(JSON.parse(mergeShapeModsJson('not json', { italic: true })), { italic: true });
 });
+
+const offsets = {
+  textToLogicalOffset: (_s: number, _p: number, at: number) => at,
+  logicalToTextOffset: (_s: number, _p: number, at: number) => at,
+  textToLogicalOffsetInCellByPath: (_s: number, _p: number, _path: string, at: number) => at,
+  logicalToTextOffsetInCellByPath: (_s: number, _p: number, _path: string, at: number) => at,
+};

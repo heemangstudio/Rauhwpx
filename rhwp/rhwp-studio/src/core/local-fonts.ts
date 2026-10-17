@@ -33,6 +33,8 @@ export interface LocalFontRecord {
   fullName: string;
   postscriptName: string;
   style: string;
+  /** SFNT 수치 메타데이터. 현지화된 표시 이름과 분리한다. */
+  sfntStyle?: { weight?: number; italic?: boolean };
   displayName: string;
   aliases: string[];
   /** 이번 세션에 가져온 face 이름. 번들 CSS 대체 글꼴보다 먼저 선택한다. */
@@ -268,6 +270,7 @@ interface SfntFontNames {
   fullNames: string[];
   postscriptNames: string[];
   styles: string[];
+  sfntStyle?: LocalFontRecord['sfntStyle'];
 }
 
 interface LocalFontLookup {
@@ -416,32 +419,104 @@ function parseSfntNameTable(buffer: ArrayBuffer): SfntFontNames {
   };
 }
 
+function decodeSfntStyle(os2?: DataView, head?: DataView): LocalFontRecord['sfntStyle'] {
+  let weight: number | undefined;
+  let italic: boolean | undefined;
+  if (os2 && byteRangeAvailable(os2, 4, 2)) {
+    const value = os2.getUint16(4, false);
+    if (value >= 1 && value <= 1000) weight = value;
+  }
+  if (os2 && byteRangeAvailable(os2, 62, 2)) {
+    const flags = os2.getUint16(62, false);
+    italic = !!(flags & 1) || (os2.getUint16(0, false) >= 4 && !!(flags & 0x200));
+  }
+  if (head && byteRangeAvailable(head, 44, 2)) {
+    const macStyle = head.getUint16(44, false);
+    weight ??= (macStyle & 1) ? 700 : 400;
+    italic ??= !!(macStyle & 2);
+  }
+  return weight === undefined && italic === undefined ? undefined : {
+    ...(weight === undefined ? {} : { weight }), ...(italic === undefined ? {} : { italic }),
+  };
+}
+
+function parseSfntFontNames(buffer: ArrayBuffer): SfntFontNames {
+  try {
+    const size = buffer.byteLength;
+    if (size < 12 || size > LOCAL_FONT_MAX_BYTES_PER_FACE) return emptySfntFontNames();
+    const header = new DataView(buffer, 0, 12);
+    let faceOffset = 0;
+    if (sfntTag(header, 0) === 'ttcf') {
+      const count = header.getUint32(8, false);
+      if (!count || count > (size - 12) / 4) return emptySfntFontNames();
+      // 기존 단일 face 등록과 같이 collection의 첫 face를 읽는다.
+      faceOffset = new DataView(buffer, 12, 4).getUint32(0, false);
+    }
+    if (faceOffset > size - 12) return emptySfntFontNames();
+    const faceHeader = new DataView(buffer, faceOffset, 12);
+    const tableCount = faceHeader.getUint16(4, false);
+    const directoryLength = 12 + tableCount * 16;
+    if (directoryLength > size - faceOffset) return emptySfntFontNames();
+    const directory = new DataView(buffer, faceOffset, directoryLength);
+    let names = emptySfntFontNames();
+    let os2: DataView | undefined;
+    let head: DataView | undefined;
+    for (let index = 0; index < tableCount; index += 1) {
+      const recordOffset = 12 + index * 16;
+      const tag = sfntTag(directory, recordOffset);
+      if (!['name', 'OS/2', 'head'].includes(tag)) continue;
+      const offset = directory.getUint32(recordOffset + 8, false);
+      const length = directory.getUint32(recordOffset + 12, false);
+      if (offset > size || length > size - offset) continue;
+      const table = new DataView(buffer, offset, length);
+      if (tag === 'name') names = parseSfntNameTable(buffer.slice(offset, offset + length));
+      if (tag === 'OS/2') os2 = table;
+      if (tag === 'head') head = table;
+    }
+    names.sfntStyle = decodeSfntStyle(os2, head);
+    return names;
+  } catch {
+    // 메타데이터 보강 실패는 감지 자체를 실패시키지 않고 API 기본 이름만 사용한다.
+    return emptySfntFontNames();
+  }
+}
+
 async function readSfntFontNames(fontData: FontData): Promise<SfntFontNames> {
   if (!fontData.blob) return emptySfntFontNames();
   try {
     const blob = await fontData.blob();
-    if (
-      !Number.isSafeInteger(blob.size)
-      || blob.size < 12
-      || blob.size > LOCAL_FONT_MAX_BYTES_PER_FACE
-    ) return emptySfntFontNames();
+    if (!Number.isSafeInteger(blob.size) || blob.size < 12
+      || blob.size > LOCAL_FONT_MAX_BYTES_PER_FACE) return emptySfntFontNames();
     const header = new DataView(await blob.slice(0, 12).arrayBuffer());
-    const tableCount = header.getUint16(4, false);
-    const directoryLength = 12 + tableCount * 16;
-    if (blob.size < directoryLength) return emptySfntFontNames();
-    const directory = new DataView(await blob.slice(0, directoryLength).arrayBuffer());
-    for (let index = 0; index < tableCount; index += 1) {
-      const recordOffset = 12 + index * 16;
-      if (sfntTag(directory, recordOffset) !== 'name') continue;
+    let faceOffset = 0;
+    if (sfntTag(header, 0) === 'ttcf') {
+      const count = header.getUint32(8, false);
+      if (!count || count > (blob.size - 12) / 4) return emptySfntFontNames();
+      faceOffset = new DataView(await blob.slice(12, 16).arrayBuffer()).getUint32(0, false);
+    }
+    if (faceOffset > blob.size - 12) return emptySfntFontNames();
+    const faceHeader = new DataView(await blob.slice(faceOffset, faceOffset + 12).arrayBuffer());
+    const directoryLength = 12 + faceHeader.getUint16(4, false) * 16;
+    if (directoryLength > blob.size - faceOffset) return emptySfntFontNames();
+    const directory = new DataView(await blob.slice(faceOffset, faceOffset + directoryLength).arrayBuffer());
+    let names = emptySfntFontNames();
+    let os2: DataView | undefined;
+    let head: DataView | undefined;
+    for (let recordOffset = 12; recordOffset < directoryLength; recordOffset += 16) {
+      const tag = sfntTag(directory, recordOffset);
+      if (!['name', 'OS/2', 'head'].includes(tag)) continue;
       const offset = directory.getUint32(recordOffset + 8, false);
       const length = directory.getUint32(recordOffset + 12, false);
-      if (offset > blob.size || length > blob.size - offset) return emptySfntFontNames();
-      return parseSfntNameTable(await blob.slice(offset, offset + length).arrayBuffer());
+      if (offset > blob.size || length > blob.size - offset) continue;
+      const readLength = tag === 'OS/2' ? Math.min(length, 64) : tag === 'head' ? Math.min(length, 46) : length;
+      const buffer = await blob.slice(offset, offset + readLength).arrayBuffer();
+      if (tag === 'name') names = parseSfntNameTable(buffer);
+      if (tag === 'OS/2') os2 = new DataView(buffer);
+      if (tag === 'head') head = new DataView(buffer);
     }
-  } catch {
-    // 메타데이터 보강 실패는 감지 자체를 실패시키지 않고 API 기본 이름만 사용한다.
-  }
-  return emptySfntFontNames();
+    names.sfntStyle = decodeSfntStyle(os2, head);
+    return names;
+  } catch { return emptySfntFontNames(); }
 }
 
 function preferredLocalFontDisplayName(fullNames: readonly string[], families: readonly string[]): string {
@@ -479,6 +554,7 @@ function makeLocalFontRecord(fontData: Pick<FontData, 'family' | 'fullName' | 'p
     // name table의 여러 언어 스타일 이름은 가나다순이라 'Corsivo' 같은 현지화 이름이 먼저 올 수 있다.
     // 굵기·기울임 판정에 쓰므로 API가 준 이름을 먼저 쓴다.
     style: normalizeFontNames([fontData.style])[0] ?? styles[0] ?? '',
+    ...(sfntNames.sfntStyle ? { sfntStyle: sfntNames.sfntStyle } : {}),
     displayName: preferredLocalFontDisplayName(fullNames, families) || family,
     aliases,
   };
@@ -514,6 +590,15 @@ function normalizeLocalFontRecords(value: unknown): LocalFontRecord[] {
       ?? preferredLocalFontDisplayName(aliases.filter(name => HANGUL_RE.test(name)), [record.fullName, record.family])
       ?? record.family;
     const normalized: LocalFontRecord = { ...record, displayName, aliases };
+    const physical = data.sfntStyle;
+    if (physical && typeof physical === 'object') {
+      const weight = physical.weight;
+      const italic = physical.italic;
+      normalized.sfntStyle = {
+        ...(Number.isInteger(weight) && weight! >= 1 && weight! <= 1000 ? { weight } : {}),
+        ...(typeof italic === 'boolean' ? { italic } : {}),
+      };
+    }
     if (typeof data.sfntBoundsRepair === 'boolean') normalized.sfntBoundsRepair = data.sfntBoundsRepair;
     const key = normalizeFontAlias(normalized.postscriptName || normalized.fullName || normalized.family);
     if (key && !records.has(key)) records.set(key, normalized);
@@ -558,6 +643,12 @@ export function importedFontWeight(style: string): string {
 
 export function importedFontSlant(style: string): 'normal' | 'italic' {
   return /italic|oblique|기울임|^(?:i|bi)$/i.test(style) ? 'italic' : 'normal';
+}
+
+/** 모든 physical face 소비자가 같은 수치 메타데이터와 이름 fallback을 쓴다. */
+export function importedFontPhysicalStyle(record: Pick<LocalFontRecord, 'style' | 'sfntStyle'>): { weight: number; bold: boolean; italic: boolean } {
+  const weight = record.sfntStyle?.weight ?? Number(importedFontWeight(record.style));
+  return { weight, bold: weight >= 600, italic: record.sfntStyle?.italic ?? (importedFontSlant(record.style) === 'italic') };
 }
 
 export interface LocalFontImportResult {
@@ -742,6 +833,7 @@ export async function registerLocalFontFace(
   const budgetBytes = convertedFromHft ? Math.max(source.byteLength, bytes.byteLength) : bytes.byteLength;
   if (bytes.byteLength > limits.perFace) return { ok: false, reason: 'too-large' };
 
+  const parsed = parseSfntFontNames(bytes);
   let record: LocalFontRecord | null;
   if (options.names) {
     const names = options.names;
@@ -753,6 +845,7 @@ export async function registerLocalFontFace(
     });
     record = base && {
       ...base,
+      ...(parsed.sfntStyle ? { sfntStyle: parsed.sfntStyle } : {}),
       family: names.family.trim() || base.family,
       fullName: names.fullName.trim() || base.fullName,
       postscriptName: names.postscriptName.trim() || base.postscriptName,
@@ -761,13 +854,14 @@ export async function registerLocalFontFace(
       aliases: normalizeFontNames([...base.aliases, ...names.aliases]),
     };
   } else {
-    const parsed = await readSfntFontNames({
-      family: '', fullName: '', postscriptName: '', style: '',
-      blob: async () => new Blob([bytes]),
-    });
     record = makeLocalFontRecord({ family: '', fullName: '', postscriptName: '', style: '' }, parsed);
   }
   if (!record) return { ok: false, reason: 'invalid', error: 'no usable font names' };
+  // 가변 인스턴스의 descriptor 굵기는 기본 OS/2 굵기보다 우선한다.
+  const descriptorWeight = Number(options.descriptors?.weight);
+  if (Number.isFinite(descriptorWeight) && descriptorWeight >= 1 && descriptorWeight <= 1000) {
+    record.sfntStyle = { ...record.sfntStyle, weight: descriptorWeight };
+  }
   if (options.extraAliases?.length) {
     record.aliases = normalizeFontNames([...record.aliases, ...options.extraAliases]);
   }
@@ -807,8 +901,8 @@ export async function registerLocalFontFace(
   localFontLookupGeneration++;
   try {
     const face = new FontFace(record.runtimeFamily, bytes, {
-      style: importedFontSlant(record.style),
-      weight: importedFontWeight(record.style),
+      style: importedFontPhysicalStyle(record).italic ? 'italic' : 'normal',
+      weight: String(importedFontPhysicalStyle(record).weight),
       ...options.descriptors,
     });
     await face.load();
@@ -1117,8 +1211,8 @@ async function registerRepairedLocalFamily(faces: readonly LocalFontRecord[]): P
     if (!bytes) continue;
     try {
       const face = new FontFace(family, bytes, {
-        style: importedFontSlant(record.style),
-        weight: importedFontWeight(record.style),
+        style: importedFontPhysicalStyle(record).italic ? 'italic' : 'normal',
+        weight: String(importedFontPhysicalStyle(record).weight),
       });
       await face.load();
       document.fonts.add(face);
@@ -1542,7 +1636,10 @@ function resolveFromLookup(
     ?? uniqueMatch(lookup.families.get(target));
   if (exact) return exact;
   if (preferRegular) {
-    const regular = matches.filter(record => /^(regular|normal|보통|)$/i.test(record.style.trim()));
+    const upright = matches.filter(record => !importedFontPhysicalStyle(record).italic);
+    const distance = (record: LocalFontRecord) => Math.abs(importedFontPhysicalStyle(record).weight - 400);
+    const nearest = Math.min(...upright.map(distance));
+    const regular = upright.filter(record => distance(record) === nearest);
     if (regular.length === 1) return regular[0];
   }
   return matches.length === 1 ? matches[0] : null;
@@ -1611,8 +1708,8 @@ function findImportedLocalFontBytes(fontName: string, bold: boolean, italic: boo
   const selected = !exactFace && variants.length > 1
     ? variants.sort((a, b) => {
       const distance = (candidate: LocalFontRecord): number =>
-        (importedFontSlant(candidate.style) === (italic ? 'italic' : 'normal') ? 0 : 1000)
-        + Math.abs(Number(importedFontWeight(candidate.style)) - (bold ? 700 : 400));
+        (importedFontPhysicalStyle(candidate).italic === italic ? 0 : 1000)
+        + Math.abs(importedFontPhysicalStyle(candidate).weight - (bold ? 700 : 400));
       return distance(a) - distance(b);
     })[0]
     : record;
