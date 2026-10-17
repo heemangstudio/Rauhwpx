@@ -307,11 +307,6 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   function renderOtherTabs() {
     if (active === 'permissions') {
       if (!policy) { body.append(node('p', 'ag-browser-empty', '권한을 불러오는 중…')); return; }
-      const defaults = section('기본 연구 권한');
-      for (const [key, label] of [['browse', '공개 연구 페이지 읽기'], ['download', '연구 자료 다운로드'], ['researchImport', '다운로드한 자료를 프로젝트에 추가']]) {
-        const root = node('label', 'ag-browser-check'); const input = node('input', ''); input.type = 'checkbox'; input.checked = policy.defaults[key as keyof Policy['defaults']]; input.disabled = busy;
-        input.addEventListener('change', () => void mutate('policy.update', { operation: 'set-default', key, enabled: input.checked })); root.append(input, document.createTextNode(label!)); defaults.append(root);
-      }
       const always = alwaysGrants.filter(isChatPermissionCapability);
       if (always.length) {
         const alwaysSection = section('항상 허용한 권한');
