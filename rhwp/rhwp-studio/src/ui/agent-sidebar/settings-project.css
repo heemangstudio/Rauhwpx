@@ -182,3 +182,47 @@
 }
 
 .ag-pset-notice[hidden] { display: none; }
+
+.ag-pset-group > .ag-settings-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ag-root .ag-settings-page .ag-settings-btn.ag-pset-heading-btn {
+  height: 24px;
+  margin: -4px 0;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-root .ag-settings-page .ag-settings-btn.ag-pset-heading-btn:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-pset-heading-btn[hidden] { display: none; }
+
+.ag-pset-check {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0 -4px 0 0;
+  accent-color: var(--ag-primary-bg);
+}
+
+.ag-pset-selecting {
+  user-select: none;
+  touch-action: none;
+}
+
+.ag-pset-selecting .ag-pset-check { pointer-events: none; }
+.ag-pset-selecting > .ag-pset-total .ag-pset-check { pointer-events: auto; }
+
+.ag-pset-storage > .ag-pset-row.ag-selected { background-color: var(--n-ink-fill-soft); }
+
+.ag-pset-storage-actions { align-items: center; }
