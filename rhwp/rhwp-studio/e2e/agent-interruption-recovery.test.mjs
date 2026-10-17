@@ -136,7 +136,7 @@ try {
   for (const entry of ['/', '/src/main.ts']) {
     await fetch(`${process.env.VITE_URL}${entry}`).then((response) => response.text()).catch(() => {});
   }
-  const { runTest, assert, screenshot, loadApp } = await import('./helpers.mjs');
+  const { runTest, assert, screenshot, loadApp, createNewDocument } = await import('./helpers.mjs');
 
   const step = (label) => console.log(`  [step] ${label}`);
 
@@ -227,12 +227,16 @@ try {
     }
   }, { timeout: 10_000, polling: 100 }, threadId, draft);
 
-  await runTest('Reloading while the agent works or waits on a question keeps that chat on the same provider turn', async ({ page }) => {
+  await runTest('Reloading an untouched blank document restores it and keeps the running agent or question on the same turn', async ({ page }) => {
     watchConsole(page);
     await recordSentFrames(page);
     await seedFakePiPrefs(page);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await connected(page);
+    await createNewDocument(page);
+    const documentId = await page.evaluate(() => window.__documentSessions.attached().documentId);
+    assert(await page.evaluate(() => !window.__documentSessions.attached().documentState.isDirty()),
+      'The blank document has never been edited');
     step('send the first message');
     await sendFromComposer(page, ADOPT_PROMPT);
     await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi'
@@ -248,6 +252,12 @@ try {
 
     // 채팅을 다시 시작하면(chat-start force·chat-stop) 허브가 프로바이더를 내려 세션 id 가 바뀌고 턴이 끝난다.
     async function assertAdopted(label) {
+      assert(await page.evaluate((id) => window.__wasm.hasLoadedDocument()
+        && window.__documentSessions.attached().documentId === id
+        && !window.__documentSessions.attached().documentState.isDirty()
+        && window.__wasm.isNewDocument
+        && !document.documentElement.classList.contains('document-home-open'), documentId),
+      `${label}: the same untouched document is open, clean and unsaved`);
       const { sessionId: after, record } = await windowHubRecord(page);
       assert(after === sessionId, `${label}: the window keeps its hub session`);
       assert(record?.session?.sessionId === before.session.sessionId && record.session.turnId === before.session.turnId
@@ -297,9 +307,8 @@ try {
       ],
     });
     await page.waitForSelector('.ag-user-question[data-inactive="false"] .ag-question-option', { timeout: 15_000 });
-    // 카드가 열리면 질문이 초점을 받아 숫자 키로 고른다.
-    await page.keyboard.press('1');
-    await page.keyboard.press('2');
+    await page.click('.ag-user-question[data-inactive="false"] .ag-question-option:nth-child(1)');
+    await page.click('.ag-user-question[data-inactive="false"] .ag-question-option:nth-child(2)');
     await page.click('.ag-question-next');
     await page.waitForFunction(() => document.querySelector('.ag-question-step')?.textContent === '2/2', { timeout: 10_000 });
     await page.click('.ag-question-other');
