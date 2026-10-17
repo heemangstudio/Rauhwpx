@@ -17,8 +17,10 @@ const PASSWORD_SAFE_COMMANDS = new Set([
 ]);
 const PASSWORD_SAFE_EVENTS = /^(Page\.(frame|lifecycleEvent|domContentEventFired|loadEventFired|javascriptDialog)|Network\.(requestWillBeSent|responseReceived|loadingFinished|loadingFailed)|Fetch\.(requestPaused|authRequired)|Runtime\.(executionContextCreated|executionContextDestroyed|executionContextsCleared)|Target\.(attachedToTarget|detachedFromTarget))/;
 const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
-const RESOURCE_TYPES = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Font', 'Script', 'TextTrack', 'XHR', 'Fetch', 'EventSource', 'WebSocket', 'Manifest', 'Other']);
+const RESOURCE_TYPES = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Font', 'Script', 'TextTrack', 'XHR', 'Fetch', 'Prefetch', 'EventSource', 'WebSocket', 'Manifest', 'SignedExchange', 'Ping', 'CSPViolationReport', 'Preflight', 'FedCM', 'Other']);
+const INITIATOR_TYPES = new Set(['parser', 'script', 'preload', 'SignedExchange', 'preflight', 'FedCM', 'other']);
 const UTILITY_WORLD = /^__playwright_utility_world_page@[0-9a-f]{32}$/;
+const REDIRECTED_BODY_LIMIT = 64;
 function safePasswordSetup(tab, method, params) {
   // 일반 새로고침은 값을 읽지 않는다. 재로딩 시 실행할 스크립트는 허용하지 않는다.
   if (method === 'Page.reload') return Object.keys(params).every(key => key === 'ignoreCache') && (params.ignoreCache === undefined || typeof params.ignoreCache === 'boolean');
@@ -29,8 +31,12 @@ function safePasswordSetup(tab, method, params) {
   }
   return method === 'Page.createIsolatedWorld' && tab.passwordUtilityWorlds?.has(params.worldName) && /^[0-9A-Fa-f]{32}$/.test(params.frameId) && params.grantUniveralAccess === true && Object.keys(params).every((key) => ['frameId', 'worldName', 'grantUniveralAccess'].includes(key));
 }
-function protectedUrl(tab, value) {
-  try { const origin = new URL(value).origin; return tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; } catch { return 'about:blank'; }
+/**
+ * 보호된 탭의 주소는 출처만 남긴다. 경로·쿼리는 비밀번호를 담을 수 있다. 출처는 네이티브 스냅샷도 이미 알려 주고,
+ * 허브가 이 출처로 사이트 판정을 하므로 가리지 않는다. 웹 주소가 아니면 about:blank 다.
+ */
+export function protectedUrl(value) {
+  try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? `${url.origin}/` : 'about:blank'; } catch { return 'about:blank'; }
 }
 /** Website strings can encode a password. Project protocol metadata instead of forwarding them. */
 function passwordEvent(tab, method, params) {
@@ -39,19 +45,23 @@ function passwordEvent(tab, method, params) {
   for (const key of ['timestamp', 'wallTime', 'encodedDataLength', 'responseStatusCode']) if (Number.isFinite(params[key])) result[key] = params[key];
   if (RESOURCE_TYPES.has(params.type)) result.type = params.type;
   if (RESOURCE_TYPES.has(params.resourceType)) result.resourceType = params.resourceType;
-  if (params.request) result.request = { url: protectedUrl(tab, params.request.url), method: METHODS.has(params.request.method) ? params.request.method : 'GET', headers: {}, hasPostData: !!params.request.hasPostData };
-  if (params.response) result.response = { url: protectedUrl(tab, params.response.url), status: Number(params.response.status) || 0, statusText: '', headers: {}, mimeType: '', protocol: 'http/1.1', securityState: 'secure' };
-  if ('documentURL' in params) result.documentURL = protectedUrl(tab, params.documentURL);
+  if (params.request) result.request = { url: protectedUrl(params.request.url), method: METHODS.has(params.request.method) ? params.request.method : 'GET', headers: {}, hasPostData: !!params.request.hasPostData };
+  const response = (value) => ({ url: protectedUrl(value.url), status: Number(value.status) || 0, statusText: '', headers: {}, mimeType: '', protocol: 'http/1.1', securityState: 'secure' });
+  if (params.response) result.response = response(params.response);
+  // Playwright 는 리디렉션을 redirectResponse 로 잇고, 가로챈 사전 요청을 initiator.type 으로 알아본다. 둘 다 웹사이트 문자열 없이 넘긴다.
+  if (params.redirectResponse) result.redirectResponse = response(params.redirectResponse);
+  if (params.initiator) result.initiator = { type: INITIATOR_TYPES.has(params.initiator.type) ? params.initiator.type : 'other' };
+  if ('documentURL' in params) result.documentURL = protectedUrl(params.documentURL);
   if ('responseHeaders' in params) result.responseHeaders = [];
-  if ('url' in params) result.url = protectedUrl(tab, params.url);
-  if (params.frame) result.frame = { id: params.frame.id, parentId: params.frame.parentId, loaderId: params.frame.loaderId, url: protectedUrl(tab, params.frame.url), securityOrigin: protectedUrl(tab, params.frame.url).replace(/\/$/, ''), name: '', mimeType: 'text/html' };
+  if ('url' in params) result.url = protectedUrl(params.url);
+  if (params.frame) result.frame = { id: params.frame.id, parentId: params.frame.parentId, loaderId: params.frame.loaderId, url: protectedUrl(params.frame.url), securityOrigin: protectedUrl(params.frame.url).replace(/\/$/, ''), name: '', mimeType: 'text/html' };
   if (method === 'Page.lifecycleEvent' && ['init', 'DOMContentLoaded', 'load', 'networkAlmostIdle', 'networkIdle', 'firstContentfulPaint'].includes(params.name)) result.name = params.name;
   if (method === 'Page.javascriptDialogOpening') { result.type = ['alert', 'confirm', 'prompt', 'beforeunload'].includes(params.type) ? params.type : 'alert'; result.message = ''; result.defaultPrompt = ''; result.hasBrowserHandler = !!params.hasBrowserHandler; }
   if (method === 'Page.javascriptDialogClosed') result.result = !!params.result;
   if (method === 'Network.loadingFailed') { result.canceled = !!params.canceled; result.errorText = 'Protected browser request failed'; }
   if (method === 'Runtime.executionContextCreated') result.context = { id: params.context?.id, origin: '', name: tab.passwordUtilityWorlds?.has(params.context?.name) ? params.context.name : '', uniqueId: params.context?.uniqueId, auxData: { isDefault: !!params.context?.auxData?.isDefault, type: 'default', frameId: params.context?.auxData?.frameId } };
   if (method === 'Runtime.executionContextDestroyed') { result.executionContextId = params.executionContextId; result.executionContextUniqueId = params.executionContextUniqueId; }
-  if (method === 'Target.attachedToTarget') { result.waitingForDebugger = !!params.waitingForDebugger; result.targetInfo = { targetId: params.targetInfo?.targetId, type: 'iframe', title: '', url: protectedUrl(tab, params.targetInfo?.url), attached: true }; }
+  if (method === 'Target.attachedToTarget') { result.waitingForDebugger = !!params.waitingForDebugger; result.targetInfo = { targetId: params.targetInfo?.targetId, type: 'iframe', title: '', url: protectedUrl(params.targetInfo?.url), attached: true }; }
   return result;
 }
 
@@ -140,6 +150,13 @@ export class PrivateBrowserCdp {
     if (tab.openerTargetId) tab.targetInfo.openerId = tab.openerTargetId;
     tab.childSessions = new Set();
     tab.debuggerMessage = (_event, method, params, nativeSessionId) => {
+      // Electron 은 가로챈 307·308 리디렉션(본문을 다시 보내는 요청)을 그대로 이으면 ERR_INVALID_ARGUMENT 로 끊는다.
+      // 같은 주소를 명시해 이으면 본문과 함께 진행되므로, 허브가 그 요청을 이을 때 데스크톱이 원래 주소를 붙인다.
+      if (method === 'Fetch.requestPaused' && params?.redirectedRequestId && !['GET', 'HEAD'].includes(params.request?.method)) {
+        tab.redirectedBodies ??= new Map();
+        tab.redirectedBodies.set(`${nativeSessionId ?? ''}\n${params.requestId}`, params.request.url);
+        if (tab.redirectedBodies.size > REDIRECTED_BODY_LIMIT) tab.redirectedBodies.delete(tab.redirectedBodies.keys().next().value);
+      }
       if (method === 'Page.javascriptDialogOpening' || method === 'Page.javascriptDialogClosed') this.host.onJavaScriptDialog?.(tab, method);
       if (method === 'Target.attachedToTarget' && params?.sessionId) {
         tab.childSessions.add(params.sessionId);
@@ -183,7 +200,7 @@ export class PrivateBrowserCdp {
 
   targetInfo(tab) {
     const metadata = { ...tab.targetInfo, url: tab.view.webContents.getURL(), title: tab.view.webContents.getTitle(), attached: true };
-    if (tab.passwordShield) { metadata.url = protectedUrl(tab, metadata.url); metadata.title = ''; }
+    if (tab.passwordShield) { metadata.url = protectedUrl(metadata.url); metadata.title = ''; }
     return this.host.passwords ? this.host.passwords.redact(tab, metadata) : metadata;
   }
 
@@ -288,6 +305,12 @@ export class PrivateBrowserCdp {
       }
     }
     if (!method.startsWith('Input.')) {
+      if (['Fetch.continueRequest', 'Fetch.failRequest', 'Fetch.fulfillRequest'].includes(method) && entry.tab.redirectedBodies?.size) {
+        const key = `${entry.nativeSessionId ?? ''}\n${params.requestId}`;
+        const url = entry.tab.redirectedBodies.get(key);
+        entry.tab.redirectedBodies.delete(key);
+        if (url && method === 'Fetch.continueRequest' && params.url === undefined) params = { ...params, url };
+      }
       let result;
       try { result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
       catch (error) {
@@ -303,7 +326,7 @@ export class PrivateBrowserCdp {
         const project = (tree) => ({ frame: passwordEvent(entry.tab, 'Page.frameNavigated', { frame: tree.frame }).frame, ...(tree.childFrames ? { childFrames: tree.childFrames.map(project) } : {}) });
         return result.frameTree ? { frameTree: project(result.frameTree) } : {};
       }
-      if (entry.tab.passwordShield && method === 'Page.getNavigationHistory') return { currentIndex: result.currentIndex, entries: (result.entries ?? []).map((history) => ({ id: history.id, url: protectedUrl(entry.tab, history.url), userTypedURL: '', title: '', transitionType: 'other' })) };
+      if (entry.tab.passwordShield && method === 'Page.getNavigationHistory') return { currentIndex: result.currentIndex, entries: (result.entries ?? []).map((history) => ({ id: history.id, url: protectedUrl(history.url), userTypedURL: '', title: '', transitionType: 'other' })) };
       if (method === 'Emulation.setDeviceMetricsOverride') entry.tab.viewport = { width: params.width, height: params.height };
       if (method === 'Emulation.clearDeviceMetricsOverride') entry.tab.viewport = null;
       return this.host.passwords ? this.host.passwords.redact(entry.tab, result) : result;

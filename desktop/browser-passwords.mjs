@@ -262,7 +262,7 @@ export class NativeBrowserPasswords {
     try { return await tab.view.webContents.executeJavaScriptInIsolatedWorld(WORLD, [{ code: `(${fn.toString()})(...${JSON.stringify(args)})` }], true); }
     catch { throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The page changed before native browser input completed.'); }
   }
-  protectFamily(tab, origin, password) {
+  protectFamily(tab, password) {
     const candidates = new Set([...this.host.tabs.values(), ...(this.host.pendingTabs ?? []), tab]);
     const keys = (candidate) => {
       const result = new Set(); const visited = new Set();
@@ -287,7 +287,6 @@ export class NativeBrowserPasswords {
     } while (changed);
     for (const member of family) {
       member.passwordShield = true;
-      member.passwordAllowedOrigins = new Set(member.passwordAllowedOrigins ?? []); member.passwordAllowedOrigins.add(origin);
       member.protectedPasswords = new Set(member.protectedPasswords ?? []); member.protectedPasswords.add(password);
     }
     this.protect(password);
@@ -387,7 +386,7 @@ export class NativeBrowserPasswords {
     if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_SECRET_FORM_ORIGIN' : 'BROWSER_SECRET_TARGET_INVALID', checked?.error === 'origin' ? 'This form sends its data to another site.' : 'Choose a visible text or password field for this secret.');
     // 값이 페이지에 들어가기 전에 원시 읽기를 막는다(비밀번호 입력과 같은 보호).
     const firstProtection = !tab.passwordShield;
-    this.protectFamily(tab, origin, params.value);
+    this.protectFamily(tab, params.value);
     if (firstProtection) await this.host.session?.closeAllConnections();
     this.assertSnapshot(tab, params);
     const result = await this.run(tab, pageAction, [{ ...target, action: 'fill-secret', value: params.value }]);
@@ -411,7 +410,7 @@ export class NativeBrowserPasswords {
       if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_PASSWORD_FORM_ORIGIN' : 'BROWSER_PASSWORD_TARGET_INVALID', checked?.error === 'origin' ? 'This sign-in form sends its data to another site.' : 'Choose a visible password field in a same-site sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
-      this.protectFamily(tab, origin, credential.password);
+      this.protectFamily(tab, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
       const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
@@ -485,7 +484,7 @@ export class NativeBrowserPasswords {
   }
   forgetTab(tab) {
     tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
-    tab.passwordSnapshot = null; tab.protectedPasswords?.clear(); tab.passwordAllowedOrigins?.clear();
+    tab.passwordSnapshot = null; tab.protectedPasswords?.clear();
     tab.passwordShield = false;
   }
   async storageState() {
@@ -509,10 +508,7 @@ export class NativeBrowserPasswords {
     if (!tab.interactive || tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || origin !== passwordOrigin(tab.view.webContents.getURL())) throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The login page changed. Try again.');
     const token = params.enabled === false ? null : randomUUID();
     tab.manualPasswordSave = token ? { token, origin, epoch: tab.navigationEpoch } : null;
-    if (token) {
-      tab.passwordShield = true;
-      tab.passwordAllowedOrigins = new Set(tab.passwordAllowedOrigins ?? []); tab.passwordAllowedOrigins.add(origin);
-    }
+    if (token) tab.passwordShield = true;
     tab.view.webContents.send('desktop:browser-guest-arm-save', token);
     return { enabled: !!token, navigationEpoch: epoch };
   }
@@ -532,7 +528,7 @@ export class NativeBrowserPasswords {
     let origin;
     try { origin = passwordOrigin(event.senderFrame.url); } catch { return; }
     if (origin !== armed.origin || typeof payload.username !== 'string' || typeof payload.password !== 'string' || !payload.username || !payload.password || Buffer.byteLength(payload.username) + Buffer.byteLength(payload.password) > 12 * 1024) return;
-    this.protectFamily(tab, origin, payload.password);
+    this.protectFamily(tab, payload.password);
     try {
       await this.vault.importCredential({ origin, username: payload.username, password: payload.password, sourceProfile: 'Hama Browser' });
       this.host.emit(tab, 'password-save', { state: 'saved' });

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PrivateBrowserCdp } from './browser-cdp.mjs';
+import { PrivateBrowserCdp, protectedUrl } from './browser-cdp.mjs';
 
 const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', import.meta.url));
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
@@ -181,8 +181,7 @@ export class OwnedBrowserHost {
       frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
     // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
     if (parent?.passwordShield) Object.assign(tab, { passwordShield: true,
-      protectedPasswords: new Set(parent.protectedPasswords ?? []),
-      passwordAllowedOrigins: new Set(parent.passwordAllowedOrigins ?? []), passwordSnapshot: null });
+      protectedPasswords: new Set(parent.protectedPasswords ?? []), passwordSnapshot: null });
     this.parkGuest(tab);
     this.pendingTabs.add(tab);
     contents.setWindowOpenHandler((details) => {
@@ -418,11 +417,7 @@ export class OwnedBrowserHost {
       state.nativeFloating = true;
       state.floatingBounds = { left: bounds.x - area.x, top: bounds.y - area.y, width: bounds.width, height: bounds.height };
     }
-    if (tab.passwordShield) {
-      try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
-      catch { state.url = 'about:blank'; }
-      state.title = ''; state.error = null;
-    }
+    if (tab.passwordShield) { state.url = protectedUrl(state.url); state.title = ''; state.error = null; }
     return this.passwords ? this.passwords.redact(tab, state) : state;
   }
 

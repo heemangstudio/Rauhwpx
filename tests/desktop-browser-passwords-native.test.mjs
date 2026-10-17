@@ -33,7 +33,7 @@ function runHarness(name, marker) {
 test('real native password fill submits without exposing secrets to hub and preserves subsequent input', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async () => {
   const report = await runHarness('browser-passwords.mjs', 'NATIVE_PASSWORD_REPORT');
   assert.equal(report.error, undefined);
-  for (const key of ['hostileObservation', 'armedCapture', 'protectedCapture', 'protectedReload', 'agentManualAutofill', 'schoolIdAutocomplete', 'schoolFormFill', 'manualSave', 'nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked']) assert.equal(report[key], true, key);
+  for (const key of ['hostileObservation', 'armedCapture', 'protectedCapture', 'protectedReload', 'agentManualAutofill', 'schoolIdAutocomplete', 'schoolFormFill', 'manualSave', 'nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked', 'redirectedPost']) assert.equal(report[key], true, key);
 });
 
 test('native secret fill checks origin and form before reading, types in the isolated world and shields the page', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async () => {

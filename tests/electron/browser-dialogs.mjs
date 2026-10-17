@@ -163,7 +163,7 @@ app.whenReady().then(async () => {
     report.ownership = { staleEditorRejected: true, newerPresentationRetained: true };
 
     const secret = 'synthetic-dialog-private-value-a93f';
-    tab.passwordShield = true; tab.passwordAllowedOrigins = new Set([origin]);
+    tab.passwordShield = true;
     observed = waitDialog();
     const protectedDialog = evaluate(`confirm(${JSON.stringify(secret)})`);
     assert.equal(await observed, 'confirm');

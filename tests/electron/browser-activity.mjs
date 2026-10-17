@@ -125,7 +125,7 @@ app.whenReady().then(async () => {
     }
     // Main-owned protection masks a fixture string echoed into visible document text.
     await evaluate('document.body.append(Object.assign(document.createElement("p"),{textContent:"fixture-protected-string"}))');
-    passwords.protectFamily(tab, origin, 'fixture-protected-string');
+    passwords.protectFamily(tab, 'fixture-protected-string');
     const safeWait = await publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'Submit draft', timeoutMs: 1000 });
     assert.equal(JSON.stringify(safeWait).includes('fixture-protected-string'), false);
     await assert.rejects(publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'fixture-protected-string', timeoutMs: 70 }), { code: 'BROWSER_ACTION_TIMEOUT' });

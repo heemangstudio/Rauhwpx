@@ -423,10 +423,10 @@ test('protected relay projects website-controlled network, dialog and target str
   const secret = 'fixture password ! ~'; const transformed = Buffer.from(secret).toString('hex');
   const debuggerApi = new EventEmitter(); debuggerApi.isAttached = () => false; debuggerApi.attach = () => {};
   debuggerApi.sendCommand = async () => ({ targetInfo: { targetId: 'target' } });
-  const tab = { passwordShield: true, passwordAllowedOrigins: new Set(['https://fixture.invalid']), targetId: 'target', view: { webContents: { debugger: debuggerApi, getURL: () => `https://fixture.invalid/${transformed}`, getTitle: () => transformed } } };
+  const tab = { passwordShield: true, targetId: 'target', view: { webContents: { debugger: debuggerApi, getURL: () => `https://fixture.invalid/${transformed}`, getTitle: () => transformed } } };
   const cdp = new PrivateBrowserCdp({ host: {} }); const sent = []; cdp.send = (message) => sent.push(message);
   await cdp.add(tab); tab.cdpSessionId = 'main';
-  debuggerApi.emit('message', {}, 'Network.requestWillBeSent', { requestId: '1', documentURL: `https://fixture.invalid/?${transformed}`, request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret, hasPostData: true }, initiator: { stack: transformed } });
+  debuggerApi.emit('message', {}, 'Network.requestWillBeSent', { requestId: '1', documentURL: `https://fixture.invalid/?${transformed}`, request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret, hasPostData: true }, initiator: { type: 'preflight', url: `https://fixture.invalid/${transformed}`, stack: transformed }, redirectResponse: { url: `https://other.invalid/${transformed}`, status: 307, headers: { location: transformed } } });
   debuggerApi.emit('message', {}, 'Fetch.requestPaused', { requestId: '2', request: { url: `https://fixture.invalid/${transformed}`, method: 'POST', headers: { value: transformed }, postData: secret }, responseHeaders: [{ name: 'secret', value: transformed }] });
   debuggerApi.emit('message', {}, 'Page.javascriptDialogOpening', { type: 'prompt', message: transformed, defaultPrompt: secret, url: `https://fixture.invalid/${transformed}` });
   debuggerApi.emit('message', {}, 'Network.webSocketFrameReceived', { response: { payloadData: transformed } });
@@ -435,6 +435,9 @@ test('protected relay projects website-controlled network, dialog and target str
   assert.equal(metadata.url, 'https://fixture.invalid/'); assert.equal(metadata.title, '');
   for (const value of [secret, transformed]) assert.equal(JSON.stringify({ sent, metadata }).includes(value), false);
   assert.equal(sent[0].params.request.hasPostData, true);
+  // Playwright 는 가로챈 사전 요청을 initiator.type 으로, 리디렉션 체인을 redirectResponse 로 읽는다. 출처는 허브의 사이트 판정에 남는다.
+  assert.equal(sent[0].params.initiator.type, 'preflight');
+  assert.deepEqual([sent[0].params.request.url, sent[0].params.redirectResponse.url, sent[0].params.redirectResponse.status], ['https://fixture.invalid/', 'https://other.invalid/', 307]);
 });
 
 
