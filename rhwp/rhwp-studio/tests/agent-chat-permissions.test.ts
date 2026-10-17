@@ -231,6 +231,9 @@ test('a site card lists the site logins and secrets by name and the blocks it li
   assert.deepEqual(read?.item, { accountId: 'l1' });
   assert.equal(read?.siteDomain, 'coupang.com');
   assert.equal(JSON.stringify(read).includes('never-read'), false, 'value-looking fields never reach the card');
+  // 에이전트가 거절에 실린 호출을 그대로 하면 이유가 비어 있다. 사이트 카드는 그래도 보이고, 일반 권한은 이유가 있어야 한다.
+  assert.equal(readChatPermissionRequest({ ...site, reason: '' })?.requestId, 'site-1');
+  assert.equal(readChatPermissionRequest({ ...request, reason: '' }), null);
 });
 
 test('a replayed legacy account or secret use request becomes a site card', () => {

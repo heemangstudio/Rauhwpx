@@ -81,7 +81,9 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     || typeof request['agent'] !== 'string'
     || !['claude', 'codex', 'pi'].includes(request['agent'])
     || !capability
-    || !text(request['reason'], 1000) || !text(request['createdAt'], 128)) return null;
+    // 브라우저 카드는 사이트가 곧 이유다. 에이전트가 이유를 빼도 카드를 보인다. 일반 권한은 이유가 있어야 한다.
+    || !(text(request['reason'], 1000) || kind && request['reason'] === '')
+    || !text(request['createdAt'], 128)) return null;
   if (legacy === 'secret-use' && !text(request['secretId'], 256)) return null;
   const scopes = Array.isArray(request['scopes']) && request['scopes'].length > 0 && request['scopes'].length <= 2
     && request['scopes'].every(isChatPermissionScope) ? [...new Set(request['scopes'] as ChatPermissionScope[])] : null;
@@ -110,7 +112,7 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
   return {
     requestId: request['requestId'], threadId: request['threadId'], documentId: request['documentId'],
     turnId: request['turnId'], agent: request['agent'] as ChatPermissionRequest['agent'],
-    capability, reason: request['reason'], createdAt: request['createdAt'],
+    capability, reason: request['reason'] as string, createdAt: request['createdAt'],
     ...(kind ? { kind } : {}),
     ...(kind === 'secret-save' && text(request['secretId'], 256) ? { secretId: request['secretId'] } : {}),
     ...(kind === 'secret-save' && text(request['secretLabel'], 80) ? { secretLabel: request['secretLabel'] } : {}),
