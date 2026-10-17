@@ -178,6 +178,18 @@ test('문단 범위는 펼쳐 세되 호출 하나에 천 문단을 넘지 않�
   ]).parts, ['문단 2개 수정']);
 });
 
+test('documentId 를 준 읽기는 이 문서가 아니라 그 문서를 읽은 것으로 센다', () => {
+  const result = summary([
+    call('get_text_range', { documentId: 'doc-b', sectionIdx: 0, paraIdx: 3 }),
+    call('read_batch', { documentId: 'doc-c', reads: [{ tool: 'get_structure' }, { tool: 'find_text', args: { query: '가' } }] }),
+    call('find_text', { documentId: 'doc-b', query: '나' }),
+    call('get_structure', { documentId: 'template' }),
+    call('render_page', { documentId: 'template', pageIndex: 0 }),
+    call('render_page', { pageIndex: 0 }),
+  ]);
+  assert.deepEqual(result.allParts, ['쪽 2개 확인', '다른 문서 2개 읽음', '서식 틀 읽음']);
+});
+
 test('허브의 모든 도구는 요약 분류가 있거나 일부러 빠진다 — “도구 N번”으로 새지 않는다', () => {
   const names = [...new Set([...TOOL_DEFINITIONS.map((tool) => tool.name), ...PRESENTED_TOOL_NAMES])];
   for (const name of names) {

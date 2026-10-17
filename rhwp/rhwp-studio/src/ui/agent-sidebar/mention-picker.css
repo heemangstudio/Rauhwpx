@@ -39,6 +39,14 @@
   color: var(--ag-text);
 }
 
+/* 문서 묶음 머리글 — 프로젝트 항목과 열린·최근 문서를 가른다. */
+.ag-mention-group {
+  padding: 6px 10px 2px;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  color: var(--ag-text-secondary);
+}
+
 /* 사용자 말풍선·첨부 줄의 멘션 칩은 첨부 알약과 같은 면을 쓴다. */
 .ag-mention-pill {
   cursor: pointer;
@@ -46,4 +54,9 @@
 
 .ag-mention-pill .ag-icon {
   color: var(--ag-text-secondary);
+}
+
+/* 문서 멘션 칩은 누를 동작이 없다. */
+.ag-mention-pill[data-mention-kind='document'] {
+  cursor: default;
 }

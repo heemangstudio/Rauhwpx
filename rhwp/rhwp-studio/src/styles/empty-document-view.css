@@ -1,0 +1,61 @@
+/* 문서가 없을 때 용지 자리: 점선 종이와 새 문서·파일 열기 */
+.empty-document-view {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  pointer-events: none;
+}
+
+.empty-document-view[hidden] {
+  display: none;
+}
+
+.empty-document-paper {
+  width: 118px;
+  height: 156px;
+  border: 1.5px dashed var(--ui-border-strong);
+  border-radius: 3px;
+}
+
+.empty-document-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.empty-document-action {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 8px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.empty-document-action:hover {
+  background: var(--ui-hover);
+}
+
+.empty-document-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.empty-document-create {
+  border-color: var(--ui-text);
+  background: var(--ui-text);
+  color: var(--ui-surface-raised);
+}
+
+.empty-document-create:hover {
+  background: color-mix(in srgb, var(--ui-text) 86%, var(--ui-surface-raised));
+}

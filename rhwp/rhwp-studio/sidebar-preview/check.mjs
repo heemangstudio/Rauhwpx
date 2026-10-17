@@ -27,6 +27,9 @@ import { checkBrowserSettings } from './browser-settings.check.mjs';
 import { checkBrowserWorkbench } from './browser-workbench.check.mjs';
 import { checkNativeBrowserRecovery } from './browser-native-recovery.check.mjs';
 import { checkCaptureSend } from './capture-send.check.mjs';
+import { checkDocumentMentions } from './document-mentions.check.mjs';
+import { checkDocumentLink } from './document-link.check.mjs';
+import { checkDocumentChip } from './document-chip.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
@@ -42,6 +45,9 @@ import { checkAdoptionPreview } from './adoption.check.mjs';
 
 const focusedChecks = {
   'capture-send': (h) => checkCaptureSend(h),
+  'document-mentions': (h) => checkDocumentMentions(h),
+  'document-link': (h) => checkDocumentLink(h),
+  'document-chip': (h) => checkDocumentChip(h),
   'focus-composer': async ({ page, open }) => {
     await open('reset=1&fullscreen=1');
     const startNewChat = async () => {

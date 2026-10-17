@@ -14,6 +14,7 @@ registerHooks({
 
 const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
 const { AgentToolExecutor } = await import('../src/agent/tool-executor.ts');
+const { ForeignDocumentPool } = await import('../src/agent/foreign-documents.ts');
 const { SNAPSHOT_MAX_CHARS, TurnSnapshots } = await import('../src/agent/turn-snapshot.ts');
 const { expectErr, makeEnv } = await import('./agent-test-env.ts');
 
@@ -202,6 +203,7 @@ test('도구 결과는 본 상태를 그 revision 까지 잇고, 문서 revision
 
 function realExecutor(body: string[]) {
   const h = makeEnv(body);
+  const foreignPool = new ForeignDocumentPool({ createEngine: async () => ({ loadDocument() {}, releaseDocument() {} }) as never, storage: null });
   const executor = new AgentToolExecutor({
     wasm: h.wasm as never,
     editor: { getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }), getSelection: () => null } as never,
@@ -209,6 +211,7 @@ function realExecutor(body: string[]) {
     revision: h.revision,
     pending: h.pending,
     loadTemplateBytes: async () => new Uint8Array(),
+    foreignDocuments: { pool: foreignPool },
   });
   const snapshots = new TurnSnapshots({
     read: (args) => executor.structureSnapshot(args),
@@ -218,7 +221,7 @@ function realExecutor(body: string[]) {
     activePage: () => 0,
     documentInstance: () => undefined,
   });
-  return { h, executor, snapshots };
+  return { h, executor, snapshots, foreignPool };
 }
 
 test('실제 실행기: 본문은 get_structure 도구 결과 그대로이고, 그 revision 으로 첫 쓰기가 통과한 뒤 unchanged 가 된다', async () => {
@@ -247,16 +250,16 @@ test('실제 실행기: 본문은 get_structure 도구 결과 그대로이고, �
 });
 
 test('스냅샷 읽기는 템플릿 매핑 게이트를 열지 않는다 — 템플릿 이식에는 에이전트 자신의 읽기가 필요하다', async (t) => {
-  const { h, executor, snapshots } = realExecutor(['본문 문단']);
+  const { h, executor, snapshots, foreignPool } = realExecutor(['본문 문단']);
   const template = {
     id: 'tpl-1', name: '양식', originalName: '양식.hwpx', format: 'hwpx', size: 1, pageCount: 1, sectionCount: 1,
     contentHash: 'x', revision: 1, createdAt: '', updatedAt: '',
   } as const;
   // 템플릿 쪽은 이미 읽은 것으로 둔다 — 게이트에 남은 조건은 문서 읽기뿐이다.
   Object.assign(executor as unknown as Record<string, unknown>, {
-    templateWasm: { releaseDocument() {} }, templateBytes: new Uint8Array(), templateKey: 'tpl-1:1', templateInspectionKey: 'tpl-1:1',
+    templateInspectionKey: 'tpl-1:1',
   });
-  t.after(() => executor.dispose());
+  t.after(() => { executor.dispose(); foreignPool.dispose(); });
   const apply = () => executor.execute('template_apply_section_layout', {
     expectedRevision: h.revision.revision, templateRevision: 1, mappings: [],
   }, 'claude', { workflow: 'direct', template });

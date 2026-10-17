@@ -2921,6 +2921,34 @@ button.ag-skill-copy {
   line-height: var(--ag-lh-secondary);
 }
 
+/* 문서 없는 채팅에서 프로젝트 저장이 막혔을 때 — 한 줄 안내와 두 단추. */
+.ag-doc-required {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px 6px;
+  max-width: 100%;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-doc-required-label { margin-right: 2px; }
+
+.ag-doc-required-action {
+  padding: 3px 9px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ag-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ag-doc-required-action:hover { background: var(--ag-hover); }
+.ag-doc-required-action:focus-visible { outline: var(--ag-focus-ring); outline-offset: 2px; }
+
 /* 대화 흐름의 구분선 — 프로바이더 전환·콘텍스트 압축. 선 · 아이콘 · 이름 · 선. */
 .ag-marker {
   display: flex;

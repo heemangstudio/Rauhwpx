@@ -206,8 +206,10 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   white-space: nowrap;
 }
 
-/* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px. */
-.dh-settings {
+/* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px.
+   새 채팅 단추는 같은 모양으로 그 바로 위에 선다. */
+.dh-settings,
+.dh-new-chat {
   position: absolute;
   left: 6px;
   bottom: 6px;
@@ -222,10 +224,13 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   background: transparent;
   color: var(--dh-text-secondary);
 }
-.dh-settings .ag-icon { width: 15px; height: 15px; }
+.dh-settings .ag-icon,
+.dh-new-chat .ag-icon { width: 15px; height: 15px; }
+.dh-new-chat { bottom: 40px; }
 
 .dh-ghost:hover,
 .dh-settings:hover,
+.dh-new-chat:hover,
 .dh-back:hover { background: var(--dh-hover); color: var(--dh-text); }
 .dh-ghost:active,
 .dh-back:active { background: var(--dh-pressed); }

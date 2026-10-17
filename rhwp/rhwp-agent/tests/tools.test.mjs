@@ -9,6 +9,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
   assertCellArgsPlacement,
   BATCHABLE_EDIT_TOOL_NAMES,
+  FOREIGN_READ_TOOL_NAMES,
   TOOL_CATEGORIES,
   TOOL_CLASSIFICATIONS,
   TOOL_DEFINITIONS,
@@ -16,6 +17,7 @@ import {
   RHWP_TOOL_RULES,
   TABLE_PROPS_KEYS,
   CELL_PROPS_KEYS,
+  documentIdArgError,
   filterToolDefinitions,
   projectToolGatesFromEnv,
   toToolContent,
@@ -227,7 +229,7 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(direct.has('get_outline'));
   assert.ok(direct.has('get_table_properties'));
   assert.ok(direct.has('search_reference_files'));
-  assert.ok(direct.has('template_get_structure'));
+  assert.ok(direct.has('get_active_template'));
   assert.ok(direct.has('template_insert_block'));
   assert.ok(direct.has('download_file'));
   assert.ok(!direct.has('present_implementation_plan'));
@@ -262,8 +264,8 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!question.has('insert_text'));
 
   const implementing = new Set(filterToolDefinitions('implementing').map((definition) => definition.name));
-  // 계획 제시·백그라운드 작업자 3개와, 데스크톱 게이트가 없으면 숨는 find_home_files 가 빠진다.
-  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 5);
+  // 계획 제시·백그라운드 작업자 3개, 데스크톱 게이트가 없으면 숨는 find_home_files, 문서 없는 채팅에만 보이는 문서 연결 2개가 빠진다.
+  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 7);
   assert.ok(implementing.has('insert_text'));
   assert.ok(implementing.has('download_file'));
   assert.ok(implementing.has('browser_click'));
@@ -289,6 +291,34 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   ]);
   assert.ok(!worker.includes('commit_product_skill'));
   assert.ok(!worker.includes('list_harness_skills'));
+});
+
+test('document link tools exist only for chats that started without a document', () => {
+  const linkTools = (profile, gates) => filterToolDefinitions(profile, gates)
+    .map((definition) => definition.name)
+    .filter((name) => name === 'open_document' || name === 'create_document');
+  for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing']) {
+    assert.deepEqual(linkTools(profile), [], profile);
+  }
+  // 새 문서는 문서를 쓸 수 있는 단계에만 보인다. 연결은 모든 채팅 단계에 있다.
+  assert.deepEqual(linkTools('direct', { documentLink: true }), ['open_document', 'create_document']);
+  assert.deepEqual(linkTools('implementing', { documentLink: true }), ['open_document', 'create_document']);
+  for (const profile of ['planning', 'question', 'awaiting-approval']) {
+    assert.deepEqual(linkTools(profile, { documentLink: true }), ['open_document'], profile);
+  }
+  assert.deepEqual(linkTools('doc-researcher', { documentLink: true }), []);
+  assert.deepEqual(linkTools('copy-layout-worker', { documentLink: true }), []);
+  // 허브는 문서 없는 세션의 MCP 프로세스 환경에만 게이트를 싣는다.
+  const env = mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: () => ({ documentLink: true }) });
+  assert.equal(env.RHWP_DOCUMENT_LINK, '1');
+  assert.deepEqual(linkTools('direct', projectToolGatesFromEnv(env)), ['open_document', 'create_document']);
+  assert.equal(mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: () => ({ documentLink: false }) }).RHWP_DOCUMENT_LINK, undefined);
+  assert.throws(() => byName.get('open_document').validate({}), /exactly one/);
+  assert.throws(() => byName.get('open_document').validate({ documentId: 'a', path: '/a.hwp' }), /exactly one/);
+  // 문서 연결은 연결마다 앱이 묻는다 — 에이전트가 청하는 채팅 권한이 아니다.
+  assert.ok(!byName.get('request_permission').shape.capability.safeParse('document-link').success);
+  assert.throws(() => normalizeChatPermissionRequest({ capability: 'nope', reason: 'x' }), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
+  assert.deepEqual(normalizeChatPermissionGrants(['document-link', 'downloads']), ['downloads']);
 });
 
 test('project tools reach every chat profile, chat edits and home search are gated', () => {
@@ -362,13 +392,39 @@ test('browser actions require scoped current tab and semantic snapshot identitie
 });
 
 test('template tools separate read-only inspection from pending document writes', () => {
-  for (const name of [
-    'template_get_structure', 'template_get_text_range', 'template_get_para_format',
-    'template_get_char_format', 'template_list_styles', 'template_get_page_layout', 'template_render_page',
-  ]) assert.equal(byName.get(name)?.category, 'template-read');
+  for (const name of ['get_active_template', 'template_get_page_layout']) assert.equal(byName.get(name)?.category, 'template-read');
   for (const name of ['template_apply_section_layout', 'template_apply_paragraph_format', 'template_insert_block']) {
     assert.equal(byName.get(name)?.category, 'document-write');
+    assert.ok(byName.get(name).shape.templateRevision, `${name} keeps its templateRevision check`);
   }
+  // 서식 틀 본문 읽기는 일반 읽기 도구의 documentId:"template" 로 한다.
+  for (const name of ['template_get_structure', 'template_get_text_range', 'template_get_para_format',
+    'template_get_char_format', 'template_list_styles', 'template_render_page']) {
+    assert.equal(byName.has(name), false, `${name} folded into documentId:"template"`);
+  }
+  assert.match(byName.get('get_active_template').description, /documentId:"template"/);
+});
+
+test('only read tools take documentId; every other tool rejects it before the SDK strips it', () => {
+  assert.deepEqual([...FOREIGN_READ_TOOL_NAMES].sort(), [
+    'find_text', 'get_char_format', 'get_outline', 'get_page_geometry', 'get_para_format', 'get_structure',
+    'get_table_layout', 'get_table_properties', 'get_text_range', 'list_styles', 'read_batch', 'render_page',
+  ]);
+  for (const definition of TOOL_DEFINITIONS) {
+    const error = documentIdArgError(definition, { documentId: 'document-other' });
+    // open_document 의 documentId 는 연결할 문서다.
+    if (FOREIGN_READ_TOOL_NAMES.includes(definition.name) || definition.name === 'delegate_copy_layout' || definition.name === 'open_document') {
+      assert.equal(error, null, definition.name);
+    } else {
+      assert.equal(error, 'documentId is read-only; writes target the live document', definition.name);
+    }
+  }
+  const applyEdits = byName.get('apply_edits');
+  assert.match(documentIdArgError(applyEdits, { edits: [{ tool: 'insert_text', documentId: 'x' }] }), /read-only/);
+  const readBatch = byName.get('read_batch');
+  assert.equal(documentIdArgError(readBatch, { documentId: 'x', reads: [{ tool: 'get_structure' }] }), null);
+  assert.match(documentIdArgError(readBatch, { reads: [{ tool: 'get_structure', args: { documentId: 'x' } }] }), /one top-level documentId/);
+  assert.match(documentIdArgError(readBatch, { reads: [{ tool: 'get_structure', documentId: 'x' }] }), /one top-level documentId/);
 });
 
 test('present_implementation_plan 스키마가 완전한 구조를 강제한다', () => {
@@ -636,7 +692,7 @@ test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {
   assert.ok(!reads.safeParse(Array.from({ length: 17 }, () => ({ tool: 'get_fields' }))).success, '17개는 거절');
   // 쓰기 도구·배치 도구·바이너리 읽기는 스키마 enum 이 자체 거절한다.
   for (const tool of ['insert_text', 'apply_edits', 'read_batch', 'render_page',
-    'materialize_document_snapshot', 'template_get_structure', 'bogus']) {
+    'materialize_document_snapshot', 'template_get_page_layout', 'bogus']) {
     assert.ok(!reads.safeParse([{ tool }]).success, `${tool} must be rejected by the enum`);
   }
   for (const profile of ['direct', 'planning', 'question', 'implementing']) {
@@ -1118,13 +1174,15 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
 // 채팅별 권한 요청 도구의 정의를 포함한다.
 // 소유 브라우저의 구조화된 ref/epoch 도구를 모든 모드에 제공하는 비용도 제한한다.
+// 서식 틀 읽기 도구 6개는 읽기 도구의 documentId:"template" 로 접었다 (documentId 인자 비용 포함 약 −3,000자).
 const DIRECT_DEFINITION_TOTAL_LIMIT = 74_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
+// 문서 없이 시작한 데스크톱 채팅(문서 연결 도구 + 홈 폴더 검색 + 요청 가능한 도구)이 가장 큰 direct 목록이다.
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {
   let total = 0;
   const over = [];
-  for (const definition of filterToolDefinitions('direct')) {
+  for (const definition of filterToolDefinitions('direct', { documentLink: true, homeSearch: true, requestable: true })) {
     const chars = toolDefinitionChars(definition);
     total += chars;
     if (chars > TOOL_DEFINITION_LIMIT) over.push(`${definition.name} ${chars} > ${TOOL_DEFINITION_LIMIT}`);

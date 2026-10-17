@@ -61,6 +61,10 @@ export class DocumentLeaseManager {
     return this.#claimsByKey.get(`path:${canonicalPath}`)?.sessionId ?? null;
   }
 
+  ownerForDocument(documentId) {
+    return this.#claimsByKey.get(`document:${documentId}`)?.sessionId ?? null;
+  }
+
   /**
    * A claim held by the same window in another slot is a conflict too: two
    * live copies of one document in one window would save over each other.

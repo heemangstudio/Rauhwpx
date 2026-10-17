@@ -800,6 +800,7 @@ export function mcpCapabilityEnv(opts = {}) {
     ...(gates && workflow === 'question' && gates.chatMayEdit === false ? { RHWP_PROJECT_WRITES: '0' } : {}),
     ...(gates?.homeSearch === true ? { RHWP_HOME_SEARCH: '1' } : {}),
     ...(gates?.requestable === true ? { RHWP_REQUESTABLE_TOOLS: '1' } : {}),
+    ...(gates?.documentLink === true ? { RHWP_DOCUMENT_LINK: '1' } : {}),
     ...(gates?.researchPermissions?.browse === false ? { RHWP_RESEARCH_BROWSE: '0' } : {}),
     ...(gates?.researchPermissions?.downloads === false ? { RHWP_RESEARCH_DOWNLOADS: '0' } : {}),
     ...(gates?.researchPermissions?.import === false ? { RHWP_RESEARCH_IMPORT: '0' } : {}),

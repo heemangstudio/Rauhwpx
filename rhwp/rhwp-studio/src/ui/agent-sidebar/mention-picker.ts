@@ -2,6 +2,8 @@
  * 입력칸의 `@` 멘션 선택기. 슬래시 메뉴와 같은 목록 모양·키 동작을 쓰고,
  * 고른 항목은 글자로 넣지 않고 onPick 으로 돌려준다 — 입력기는 그 항목을
  * 첨부 줄의 칩으로 보여 주고 메시지에 `mentions:[itemId]` 로 실어 보낸다.
+ * 프로젝트 항목 아래 '문서' 묶음은 열린 문서와 최근 문서다 — 고르면 onPickDocument 로 돌려주고,
+ * 입력기는 `documentMentions` 로 실어 보낸다. 프로젝트가 없는 채팅에서도 보인다.
  *
  * 한글 조합 중에는 목록을 바꾸지 않는다. 조합이 끝난 input 에서 다시 거른다.
  */
@@ -18,9 +20,23 @@ export interface MentionPickerOptions {
   /** 열 id → 열 이름. 없으면 열을 표시하지 않는다. */
   columnName?: (columnId: string) => string | null;
   onPick: (item: ProjectItem) => void;
+  /** '문서' 묶음 — 이 창에 열린 문서와 최근 문서 (채팅의 문서는 뺀다). 열 때마다 다시 읽는다. */
+  getDocuments?: () => readonly MentionDocument[];
+  onPickDocument?: (document: MentionDocument) => void;
+  /** `@` 를 새로 입력해 목록을 찾기 시작했다 — 문서 목록을 다시 읽을 때다. */
+  onOpen?: () => void;
   /** 목록을 붙일 곳. 기본은 입력기(.ag-composer) — 슬래시 메뉴와 같은 자리다. */
   mount?: HTMLElement;
 }
+
+/** @ 로 고를 수 있는 문서. open 은 이 창에 열린 문서다. */
+export interface MentionDocument {
+  documentId: string;
+  title: string;
+  open: boolean;
+}
+
+type MentionRow = { kind: 'item'; item: ProjectItem } | { kind: 'document'; document: MentionDocument };
 
 export interface MentionPicker {
   readonly element: HTMLElement;
@@ -41,6 +57,7 @@ interface Trigger {
 
 const MAX_QUERY = 40;
 const MAX_OPTIONS = 50;
+const MAX_DOCUMENT_OPTIONS = 10;
 let pickerCount = 0;
 
 /** 커서 바로 앞의 `@검색어` 를 찾는다. `@` 는 줄 처음이나 공백·여는 괄호 뒤에만 온다. */
@@ -87,6 +104,17 @@ export function rankMentionItems(items: readonly ProjectItem[], query: string): 
     .map((row) => row.item);
 }
 
+/** 문서 제목으로 거른다. 검색어가 없으면 받은 순서(열린 문서, 최근 문서)를 지킨다. */
+export function rankMentionDocuments(documents: readonly MentionDocument[], query: string): MentionDocument[] {
+  if (!query.trim()) return documents.slice(0, MAX_DOCUMENT_OPTIONS);
+  return documents
+    .map((document, order) => ({ document, order, score: fuzzyTemplateScore(document.title, query) }))
+    .filter((row): row is { document: MentionDocument; order: number; score: number } => row.score !== null)
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, MAX_DOCUMENT_OPTIONS)
+    .map((row) => row.document);
+}
+
 export function createMentionPicker(options: MentionPickerOptions): MentionPicker {
   const { textarea } = options;
   const id = `ag-mention-menu-${++pickerCount}`;
@@ -95,12 +123,12 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
   menu.id = id;
   menu.hidden = true;
   menu.setAttribute('role', 'listbox');
-  menu.setAttribute('aria-label', '프로젝트 항목');
+  menu.setAttribute('aria-label', '언급할 항목');
   const mount = options.mount ?? textarea.closest<HTMLElement>('.ag-composer') ?? textarea.parentElement;
   mount?.append(menu);
 
   let trigger: Trigger | null = null;
-  let rows: ProjectItem[] = [];
+  let rows: MentionRow[] = [];
   let active = 0;
   let composing = false;
   /** Esc 로 닫은 `@` 위치. 같은 자리에서는 다시 열지 않는다. */
@@ -126,7 +154,14 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
 
   function render(): void {
     menu.replaceChildren();
-    rows.forEach((item, index) => {
+    rows.forEach((entry, index) => {
+      if (entry.kind === 'document' && rows[index - 1]?.kind !== 'document') {
+        const heading = document.createElement('div');
+        heading.className = 'ag-mention-group';
+        heading.setAttribute('role', 'presentation');
+        heading.textContent = '문서';
+        menu.append(heading);
+      }
       const row = document.createElement('button');
       row.type = 'button';
       row.id = `${id}-${index}`;
@@ -136,15 +171,23 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
       row.classList.toggle('ag-active', index === active);
       const icon = document.createElement('span');
       icon.className = 'ag-mention-icon';
-      icon.append(projectIcon(itemIconName(item)));
       const name = document.createElement('strong');
       name.className = 'ag-slash-name';
-      name.textContent = item.title;
       const detail = document.createElement('span');
       detail.className = 'ag-slash-detail';
-      detail.textContent = item.column ? options.columnName?.(item.column) ?? '' : '';
+      if (entry.kind === 'item') {
+        const { item } = entry;
+        icon.append(projectIcon(itemIconName(item)));
+        name.textContent = item.title;
+        detail.textContent = item.column ? options.columnName?.(item.column) ?? '' : '';
+      } else {
+        row.dataset.mentionKind = 'document';
+        icon.append(projectIcon('documentNode'));
+        name.textContent = entry.document.title;
+        detail.textContent = entry.document.open ? '열림' : '';
+      }
       row.append(icon, name, detail);
-      row.title = item.title;
+      row.title = name.textContent ?? '';
       // 입력칸의 포커스를 지킨다.
       row.addEventListener('mousedown', (event) => {
         event.preventDefault();
@@ -165,9 +208,16 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
       close();
       return;
     }
+    const opening = trigger === null;
     if (!trigger || trigger.query !== next.query || trigger.start !== next.start) active = 0;
     trigger = next;
-    rows = rankMentionItems(options.getItems(), next.query);
+    if (opening) options.onOpen?.();
+    rows = [
+      ...rankMentionItems(options.getItems(), next.query).map((item): MentionRow => ({ kind: 'item', item })),
+      ...(options.onPickDocument
+        ? rankMentionDocuments(options.getDocuments?.() ?? [], next.query).map((document): MentionRow => ({ kind: 'document', document }))
+        : []),
+    ];
     active = Math.min(active, Math.max(0, rows.length - 1));
     render();
   }
@@ -180,14 +230,15 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
   }
 
   function pick(index: number): void {
-    const item = rows[index];
+    const entry = rows[index];
     const range = trigger;
-    if (!item || !range) return;
+    if (!entry || !range) return;
     close();
     // `@검색어` 를 지우고 입력기가 높이·보내기 상태를 다시 맞추도록 input 을 알린다.
     textarea.setRangeText('', range.start, range.end, 'end');
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    options.onPick(item);
+    if (entry.kind === 'item') options.onPick(entry.item);
+    else options.onPickDocument?.(entry.document);
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -237,7 +288,8 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
     isOpen: () => !menu.hidden,
     close,
     refresh() {
-      if (!menu.hidden) update();
+      // 아직 고를 것이 없어 닫혀 있던 `@` 도 다시 거른다 — 문서 목록이 늦게 올 수 있다.
+      if (trigger || !menu.hidden) update();
     },
     destroy() {
       close();
@@ -253,7 +305,7 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
 }
 
 /** 사용자 말풍선과 첨부 줄의 멘션 칩. 클릭 동작은 부르는 쪽이 단다. */
-export function renderMentionPill(item: ProjectItem | { id: string; title: string }): HTMLButtonElement {
+export function renderMentionPill(item: ProjectItem | { id: string; title: string; kind?: 'document' }): HTMLButtonElement {
   const pill = document.createElement('button');
   pill.type = 'button';
   pill.className = 'ag-msg-attachment ag-mention-pill';
@@ -263,7 +315,8 @@ export function renderMentionPill(item: ProjectItem | { id: string; title: strin
   name.className = 'ag-msg-attachment-name';
   name.textContent = item.title;
   // 저장된 대화에는 id·제목만 남을 수 있다.
-  const icon = projectIcon('kind' in item ? itemIconName(item) : 'file');
+  const icon = projectIcon(item.kind === 'document' ? 'documentNode' : 'source' in item ? itemIconName(item) : 'file');
+  if (item.kind === 'document') pill.dataset.mentionKind = 'document';
   pill.append(icon, name);
   return pill;
 }
