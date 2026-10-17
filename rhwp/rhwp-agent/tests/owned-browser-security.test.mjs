@@ -509,3 +509,30 @@ test('saved-account fill bypasses page setters while delivering normal input eve
   assert.deepEqual(await page.evaluate(() => ({ setterCalls, inputs })), { setterCalls: 0, inputs: 2 });
   assert.equal(JSON.stringify(await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).includes('fixture-broker-secret'), false);
 });
+
+test('an approved account fill lets the agent submit that sign-in without a website-change grant', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const posts = [];
+  const f = await fixture(t, (request, response) => {
+    if (request.method === 'POST') { posts.push(request.url); response.writeHead(303, { Location: '/home' }); response.end(); return; }
+    response.setHeader('Content-Type', 'text/html');
+    if (request.url === '/home') { response.end('<form method="post" action="/posts"><input name="title" aria-label="Title"><button>Publish post</button></form>'); return; }
+    response.end('<form method="post" action="/login"><input name="id" aria-label="Identity"><input name="pw" type="password" aria-label="Password"><button>Sign in</button></form>');
+  });
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  const credentialBroker = { assertBrowserAccess: async () => {}, issueHandle: async () => ({ handle: 'fixture' }), fill: async ({ fill }) => fill({ username: 'fixture-user', password: 'fixture-broker-secret' }) };
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: f.origin });
+  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  // 계정을 채우기 전에는 로그인 제출도 다른 웹사이트 변경처럼 막힌다.
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  await browser.request(agent, 'fill-account', { ...refArgs(observation, named(observation, 'Password')), accountId: 'fixture', usernameRef: named(observation, 'Identity').ref, passwordRef: named(observation, 'Password').ref });
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  await browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in')));
+  await eventually(() => posts.includes('/login'));
+  observation = await eventually(async () => { const next = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return next.snapshot.outline.includes('Publish post') && next; });
+  // 로그인 뒤의 다른 변경은 여전히 따로 승인받아야 한다.
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Publish post'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  assert.deepEqual(posts, ['/login']);
+});

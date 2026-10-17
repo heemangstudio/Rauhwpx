@@ -286,10 +286,25 @@ export function createOwnedBrowserService(options = {}) {
     if (!tab || (!actor.isHuman && !canAccessTab(actor, tab))) throw error('BROWSER_TAB_NOT_FOUND', 'This browser tab is unavailable to the current agent.');
     return tab;
   };
+  // 승인된 계정을 이 탭에 채운 에이전트는 같은 문서에서 그 로그인을 제출할 수 있다. 다른 변경·다른 출처·다음 문서에는 미치지 않는다.
+  const submitsSignIn = (actor, action, url, tab, args) => {
+    const grant = tab?.signInGrant;
+    if (!grant || args.intent !== 'website-change' || !['click', 'press', 'browse'].includes(action) || changesWebsiteURL(url)) return false;
+    if (grant.threadId !== actor.threadId || grant.agentId !== actor.agentId || grant.navigationEpoch !== tab.navigationEpoch || Date.now() > grant.expiresAt) return false;
+    try { return new URL(url).origin === grant.origin; } catch { return false; }
+  };
+  const grantSignIn = (actor, tab, page) => {
+    if (actor.isHuman) return;
+    tab.signInGrant = { threadId: actor.threadId, agentId: actor.agentId, origin: new URL(page.url()).origin, navigationEpoch: tab.navigationEpoch, expiresAt: Date.now() + 5 * 60_000 };
+  };
   const assertPolicy = async (actor, action, url, tab, args = {}) => {
     if (actor.isHuman) return;
-    const mapped = args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
-    if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() });
+    const mapped = submitsSignIn(actor, action, url, tab, args) ? 'browse' : args.intent === 'website-change' || !actor.isHuman && changesWebsiteURL(url) ? 'website-change' : action === 'download' ? 'download' : READS.has(action) || MUTATIONS.has(action) ? 'read' : 'browse';
+    if (policy?.assertAllowed && url !== 'about:blank') await policy.assertAllowed({ actor, action: mapped, url, profileId: profileId() }).catch((failure) => {
+      // 로그인 제출이면 에이전트가 다시 시도할 길을 알려 준다. 사용자를 대신 부르는 우회는 하지 않는다.
+      if (mapped === 'website-change' && failure?.code === 'BROWSER_PERMISSION_REQUIRED') failure.message = 'Website changes on this site need owner approval. To submit a sign-in, fill an approved account with browser_fill_account in this page first, then submit it.';
+      throw failure;
+    });
     else if (policy?.assertBrowserAction) await policy.assertBrowserAction({ actor, action, url, tab: tab && descriptor(tab), intent: args.intent ?? 'research' });
     else if (mapped === 'website-change') throw error('BROWSER_WEBSITE_CHANGE_REQUIRED', 'Approve website changes for this site before continuing.');
     if (credentialBroker?.assertBrowserAccess && tab?.scope !== 'global' && (!tab || ['open', 'browse', 'navigate', 'fill-account', 'fill-secret'].includes(action) || args.intent === 'website-change') && url !== 'about:blank') await credentialBroker.assertBrowserAccess({ actor, url, tab: { ...descriptor(tab ?? { page: null, url, controller: {} }), profileId: profileId() } });
@@ -1163,6 +1178,7 @@ export function createOwnedBrowserService(options = {}) {
         const chatApprovedAt = actor.isHuman ? null : policy?.chatAccountGrantedAt?.(actor, args.accountId) ?? null;
         const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(chatApprovedAt ? { chatApprovedAt } : {}) });
         tab.snapshot.passwordProtected = true;
+        grantSignIn(actor, tab, page);
         return result;
       }
       if (!credentialBroker?.issueHandle || !credentialBroker?.fill) throw error('BROWSER_VAULT_UNAVAILABLE', 'The secure account broker is unavailable.', true);
@@ -1193,6 +1209,7 @@ export function createOwnedBrowserService(options = {}) {
         if (usernameHandle) await write(usernameHandle, username, false);
         await write(passwordHandle, password, true);
       } });
+      grantSignIn(actor, tab, page);
       return { completed: true, accountId: args.accountId };
     }
     if (action === 'fill-secret') return fillSecret(actor, tab, page, args);
