@@ -1,4 +1,4 @@
-/* 문서가 없을 때 용지 자리: 점선 종이와 새 문서·파일 열기 */
+/* 문서가 없을 때 용지 자리: 자는 하마가 든 점선 종이와 새 문서·파일 열기 */
 .empty-document-view {
   position: absolute;
   inset: 0;
@@ -16,10 +16,63 @@
 }
 
 .empty-document-paper {
+  position: relative;
   width: 118px;
   height: 156px;
   border: 1.5px dashed var(--ui-border-strong);
   border-radius: 3px;
+  color: var(--ui-text-muted);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.empty-document-paper:hover {
+  border-color: color-mix(in srgb, var(--ui-border-strong) 55%, var(--ui-text-muted));
+  background: var(--ui-hover-quiet);
+}
+
+/* 자는 하마: 스프라이트 한 칸이 3px. 아래 16칸은 z 가 떠오르는 자리다. */
+.empty-document-hama {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  width: 90px;
+  height: 84px;
+  margin-left: -45px;
+  overflow: visible;
+}
+
+.empty-document-hama-inhale {
+  opacity: 0;
+  animation: empty-document-breathe 4.8s steps(1, end) infinite;
+}
+
+.empty-document-z {
+  opacity: 0;
+  animation: empty-document-z-rise 4.8s steps(3, end) infinite;
+}
+
+.empty-document-z-2 {
+  animation-delay: 0.8s;
+}
+
+.empty-document-z-3 {
+  animation-delay: 1.6s;
+}
+
+@keyframes empty-document-breathe {
+  0%, 55% { opacity: 0; }
+  60%, 90% { opacity: 1; }
+}
+
+/* 한 칸 아래에서 떠올라 두 칸 더 오른 뒤 사라진다. 계단식(steps)이라 픽셀이 번지지 않는다. */
+@keyframes empty-document-z-rise {
+  0% { opacity: 0; transform: translateY(1px); }
+  8% { opacity: 0.85; }
+  50% { opacity: 0.85; }
+  66% { opacity: 0; transform: translateY(-2px); }
+  100% { opacity: 0; transform: translateY(-2px); }
 }
 
 .empty-document-actions {
@@ -58,4 +111,19 @@
 
 .empty-document-create:hover {
   background: color-mix(in srgb, var(--ui-text) 86%, var(--ui-surface-raised));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-document-paper {
+    transition: none;
+  }
+
+  .empty-document-hama-inhale {
+    animation: none;
+  }
+
+  .empty-document-z {
+    animation: none;
+    opacity: 0.85;
+  }
 }
