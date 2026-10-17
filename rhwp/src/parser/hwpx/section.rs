@@ -2513,6 +2513,11 @@ fn parse_table_caption(
     Ok(caption)
 }
 
+fn parse_cell_padding(attr: &quick_xml::events::attributes::Attribute) -> i16 {
+    // 음수 셀 여백의 UINT32 부호 확장 표현을 보존하되 HWPUNIT16 범위를 검사한다.
+    i16::try_from(parse_i32_wrapping(attr)).unwrap_or(0)
+}
+
 fn parse_table_cell(
     e: &quick_xml::events::BytesStart,
     reader: &mut Reader<&[u8]>,
@@ -2584,10 +2589,10 @@ fn parse_table_cell(
                     b"cellMargin" => {
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
-                                b"left" => cell.padding.left = parse_i16(&attr),
-                                b"right" => cell.padding.right = parse_i16(&attr),
-                                b"top" => cell.padding.top = parse_i16(&attr),
-                                b"bottom" => cell.padding.bottom = parse_i16(&attr),
+                                b"left" => cell.padding.left = parse_cell_padding(&attr),
+                                b"right" => cell.padding.right = parse_cell_padding(&attr),
+                                b"top" => cell.padding.top = parse_cell_padding(&attr),
+                                b"bottom" => cell.padding.bottom = parse_cell_padding(&attr),
                                 _ => {}
                             }
                         }
@@ -2704,10 +2709,10 @@ fn parse_table_cell(
                     b"cellMargin" => {
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
-                                b"left" => cell.padding.left = parse_i16(&attr),
-                                b"right" => cell.padding.right = parse_i16(&attr),
-                                b"top" => cell.padding.top = parse_i16(&attr),
-                                b"bottom" => cell.padding.bottom = parse_i16(&attr),
+                                b"left" => cell.padding.left = parse_cell_padding(&attr),
+                                b"right" => cell.padding.right = parse_cell_padding(&attr),
+                                b"top" => cell.padding.top = parse_cell_padding(&attr),
+                                b"bottom" => cell.padding.bottom = parse_cell_padding(&attr),
                                 _ => {}
                             }
                         }
@@ -6875,6 +6880,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cell_padding_preserves_sign_extended_uint32_values() {
+        for ending in ["/>", "></hp:cellMargin>"] {
+            let xml = format!(
+                r#"<hp:tc><hp:cellMargin left="4294967295" right="4294967294" top="4294934528" bottom="32767"{ending}</hp:tc>"#
+            );
+            let mut reader = Reader::from_str(&xml);
+            let Event::Start(cell_start) = reader.read_event().unwrap() else {
+                panic!("expected cell start");
+            };
+            let cell = parse_table_cell(&cell_start, &mut reader, 0).unwrap();
+            assert_eq!(cell.padding.left, -1);
+            assert_eq!(cell.padding.right, -2);
+            assert_eq!(cell.padding.top, i16::MIN);
+            assert_eq!(cell.padding.bottom, i16::MAX);
+        }
+    }
+
+    #[test]
     fn section_column_prefix_roundtrips_in_either_order_and_across_runs() {
         use crate::model::document::Document;
         use crate::serializer::hwpx::{context::SerializeContext, section::write_section};
@@ -6933,6 +6956,24 @@ mod tests {
                 }
                 assert_eq!(saved.matches("<hp:colPr ").count(), 2);
             }
+        }
+    }
+
+    #[test]
+    fn cell_padding_rejects_values_outside_hwpunit16_without_truncating() {
+        for ending in ["/>", "></hp:cellMargin>"] {
+            let xml = format!(
+                r#"<hp:tc><hp:cellMargin left="32768" right="4294934527" top="4294967296" bottom="invalid"{ending}</hp:tc>"#
+            );
+            let mut reader = Reader::from_str(&xml);
+            let Event::Start(cell_start) = reader.read_event().unwrap() else {
+                panic!("expected cell start");
+            };
+            let cell = parse_table_cell(&cell_start, &mut reader, 0).unwrap();
+            assert_eq!(cell.padding.left, 0);
+            assert_eq!(cell.padding.right, 0);
+            assert_eq!(cell.padding.top, 0);
+            assert_eq!(cell.padding.bottom, 0);
         }
     }
 

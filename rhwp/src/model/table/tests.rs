@@ -44,6 +44,342 @@ fn make_table(rows: u16, cols: u16) -> Table {
     table
 }
 
+fn native_tall_zone_table() -> Table {
+    let spec = [
+        (0, 0, 1, 1, 16535, 5669),
+        (1, 0, 2, 1, 15686, 3881),
+        (2, 0, 1, 1, 15686, 1882),
+        (0, 1, 1, 1, 16535, 5669),
+        (2, 1, 1, 1, 15686, 2082),
+        (0, 2, 1, 3, 47907, 65469),
+    ];
+    let cells = spec
+        .iter()
+        .map(|&(col, row, row_span, col_span, width, height)| {
+            let mut cell = Cell::new_empty(col, row, width, height, 1);
+            cell.row_span = row_span;
+            cell.col_span = col_span;
+            cell
+        })
+        .collect();
+    let zone = |row, col, border_fill_id| TableZone {
+        start_row: row,
+        start_col: col,
+        end_row: row,
+        end_col: col,
+        border_fill_id,
+    };
+    let mut table = Table {
+        row_count: 3,
+        col_count: 3,
+        row_sizes: vec![3, 2, 1],
+        border_fill_id: 1,
+        cells,
+        zones: vec![zone(2, 0, 212), zone(1, 0, 211), zone(1, 2, 213)],
+        ..Default::default()
+    };
+    table.common.width = 47907;
+    table.common.height = 76968;
+    table.rebuild_grid();
+    table
+}
+
+fn zone_rows(table: &Table) -> Vec<(u16, u16, u16, u16, u16)> {
+    table
+        .zones
+        .iter()
+        .map(|z| {
+            (
+                z.border_fill_id,
+                z.start_row,
+                z.start_col,
+                z.end_row,
+                z.end_col,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn local_row_boundary_remaps_zones_like_native_tall_zone_edit() {
+    let mut table = native_tall_zone_table();
+    table
+        .shift_local_row_boundaries(&[5669, 5669, 65469], &[(0, 1, 1132)])
+        .unwrap();
+
+    assert_eq!(table.row_count, 4);
+    assert_eq!(
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.height, cell.width))
+            .collect::<Vec<_>>(),
+        [
+            (0, 0, 2, 6801, 16535),
+            (1, 0, 3, 3881, 15686),
+            (2, 0, 1, 1882, 15686),
+            (0, 2, 1, 4537, 16535),
+            (2, 1, 2, 2082, 15686),
+            (0, 3, 1, 65469, 47907),
+        ]
+    );
+    assert_eq!(
+        zone_rows(&table),
+        [(212, 3, 0, 3, 0), (211, 2, 0, 2, 0), (213, 1, 2, 1, 2)]
+    );
+    assert_eq!((table.common.width, table.common.height), (47907, 76968));
+}
+
+#[test]
+fn local_row_boundary_rejects_unverified_zone_shapes_without_editing() {
+    for zone in [
+        TableZone {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 1,
+            start_col: 1,
+            end_row: 1,
+            end_col: 1,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 1,
+            start_col: 0,
+            end_row: 1,
+            end_col: 2,
+            border_fill_id: 9,
+        },
+        TableZone {
+            start_row: 3,
+            start_col: 0,
+            end_row: 3,
+            end_col: 0,
+            border_fill_id: 9,
+        },
+    ] {
+        let mut table = native_tall_zone_table();
+        table.zones.push(zone);
+        let before = zone_rows(&table);
+        assert!(table
+            .shift_local_row_boundaries(&[5669, 5669, 65469], &[(0, 1, 1132)])
+            .is_err());
+        assert_eq!(table.row_count, 3);
+        assert_eq!(zone_rows(&table), before);
+        assert_eq!(table.cells[0].height, 5669);
+    }
+}
+
+#[test]
+fn local_row_boundary_rejects_zone_that_would_split_between_rows() {
+    let mut table = make_table(2, 2);
+    table.zones.push(TableZone {
+        start_row: 1,
+        end_row: 1,
+        start_col: 0,
+        end_col: 1,
+        border_fill_id: 9,
+    });
+    assert!(table
+        .shift_local_row_boundaries(&[1000, 1000], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 2);
+    assert_eq!(zone_rows(&table), [(9, 1, 0, 1, 1)]);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
+#[test]
+fn local_row_boundary_bounds_total_zone_coverage() {
+    let mut table = make_table(2, 32);
+    table.zones = vec![
+        TableZone {
+            start_row: 0,
+            end_row: 0,
+            start_col: 0,
+            end_col: 31,
+            border_fill_id: 9,
+        };
+        MAX_TABLE_GRID_CELLS / 32 + 1
+    ];
+    assert!(table
+        .shift_local_row_boundaries(&[1000, 1000], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 2);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
+#[test]
+fn local_row_boundary_matches_native_staggered_grid() {
+    let mut table = make_table(3, 2);
+    for cell in &mut table.cells {
+        cell.height = 3401;
+    }
+    table.common.height = 10203;
+    let widths: Vec<_> = table.cells.iter().map(|cell| cell.width).collect();
+    table
+        .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+        .unwrap();
+
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.row_sizes, [2, 1, 1, 2]);
+    assert_eq!(table.cells.len(), 6);
+    assert_eq!(
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.height))
+            .collect::<Vec<_>>(),
+        [
+            (0, 0, 2, 3967),
+            (1, 0, 1, 3401),
+            (0, 2, 1, 2835),
+            (1, 1, 2, 3401),
+            (0, 3, 1, 3401),
+            (1, 3, 1, 3401),
+        ]
+    );
+    assert!(table.cells.iter().map(|cell| cell.width).eq(widths));
+    for row in 0..4 {
+        for col in 0..2 {
+            assert!(table.cell_index_at(row, col).is_some());
+        }
+    }
+    assert_eq!(table.cell_at(1, 0).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(2, 1).unwrap().row_span, 2);
+}
+
+#[test]
+fn local_row_boundary_reuses_saved_span_grid_for_next_move() {
+    let mut table = make_table(3, 2);
+    table
+        .shift_local_row_boundaries(&[1000; 3], &[(0, 1, 200)])
+        .unwrap();
+    table
+        .shift_local_row_boundaries(&[1000, 200, 800, 1000], &[(0, 3, 200)])
+        .unwrap();
+    assert_eq!(table.row_count, 5);
+    assert_eq!(table.cell_at(3, 0).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(3, 1).unwrap().row_span, 2);
+    assert_eq!(table.cell_at(4, 0).unwrap().height, 800);
+    assert_eq!(table.cell_at(4, 1).unwrap().height, 1000);
+}
+
+#[test]
+fn local_row_boundary_rejects_invalid_moves_without_mutating_grid() {
+    let mut table = make_table(3, 2);
+    for moves in [&[(0, 1, -801)][..], &[(0, 0, 200)], &[(2, 1, 200)]] {
+        assert!(table.shift_local_row_boundaries(&[1000; 3], moves).is_err());
+        assert_eq!(table.row_count, 3);
+        assert_eq!(table.row_sizes, [2, 2, 2]);
+        assert!(table.cells.iter().all(|cell| cell.height == 1000));
+    }
+}
+
+#[test]
+fn moving_the_same_boundary_in_all_columns_does_not_add_a_logical_row() {
+    let mut table = make_table(3, 2);
+    table
+        .shift_local_row_boundaries(&[1000; 3], &[(0, 1, 200), (1, 1, 200)])
+        .unwrap();
+    assert_eq!(table.row_count, 3);
+    assert!(table.cells.iter().all(|cell| cell.row_span == 1));
+    assert_eq!(table.row_sizes, [2, 2, 2]);
+    assert_eq!(table.cell_at(0, 0).unwrap().height, 1200);
+    assert_eq!(table.cell_at(1, 1).unwrap().height, 800);
+}
+
+#[test]
+fn local_row_boundary_rejects_overlapping_spans_before_applying_any_moves() {
+    let mut table = make_table(32, 32);
+    for cell in &mut table.cells {
+        cell.row = 0;
+        cell.col = 0;
+        cell.row_span = 32;
+        cell.col_span = 32;
+    }
+    assert!(table
+        .shift_local_row_boundaries(&[1000; 32], &[(0, 1, 200)])
+        .is_err());
+    assert_eq!(table.row_count, 32);
+    assert!(table.cells.iter().all(|cell| cell.height == 1000));
+}
+
+#[test]
+fn spaced_local_row_boundary_uses_physical_heights_not_outer_gaps() {
+    let mut table = make_table(3, 2);
+    table.cell_spacing = 566;
+    table.common.width = 43652;
+    table.common.height = 12467;
+    for cell in &mut table.cells {
+        cell.width = 20977;
+        cell.height = 3401;
+    }
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 3401, 3401]
+    );
+    table
+        .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+        .unwrap();
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.cells.len(), 6);
+    assert_eq!(table.common.height, 12467);
+    assert_eq!(table.common.width, 43652);
+    assert_eq!(table.cell_spacing, 566);
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 566, 2835, 3401]
+    );
+    assert!(table
+        .cells
+        .iter()
+        .any(|cell| cell.col == 0 && cell.row == 0 && cell.row_span == 2 && cell.height == 3967));
+    assert!(table
+        .cells
+        .iter()
+        .any(|cell| cell.col == 1 && cell.row == 1 && cell.row_span == 2 && cell.height == 3401));
+
+    table
+        .shift_local_row_boundaries(&[3401, 566, 2835, 3401], &[(0, 3, 100)])
+        .unwrap();
+    assert_eq!(table.row_count, 5);
+    assert_eq!(
+        table.logical_row_heights_for_spaced_resize().unwrap(),
+        [3401, 566, 2835, 100, 3301]
+    );
+}
+
+#[test]
+fn spaced_local_row_boundary_rejects_malformed_geometry_without_editing() {
+    let mut table = make_table(3, 2);
+    table.cell_spacing = 566;
+    table.common.width = 43652;
+    table.common.height = 12467;
+    for cell in &mut table.cells {
+        cell.width = 20977;
+        cell.height = 3401;
+    }
+    for kind in 0..5 {
+        let mut malformed = table.clone();
+        match kind {
+            0 => malformed.common.height += 1,
+            1 => malformed.common.width += 1,
+            2 => malformed.cells[0].row_span = 2,
+            3 => malformed.cells[1].col_span = 2,
+            _ => malformed.cells[3].row = 0,
+        }
+        assert!(malformed
+            .shift_local_row_boundaries(&[3401; 3], &[(0, 1, 566)])
+            .is_err());
+        assert_eq!(malformed.row_count, 3);
+        assert_eq!(malformed.cells[0].height, 3401);
+    }
+}
+
 fn set_cell_text(table: &mut Table, row: u16, col: u16, text: &str) {
     let idx = table.cell_index_at(row, col).expect("cell index");
     let mut para = Paragraph::new_empty();

@@ -6,6 +6,7 @@ use crate::common::read_sample as sample_bytes;
 use rhwp::model::control::Control;
 use rhwp::model::document::Document;
 use rhwp::parser::hwpx::parse_hwpx;
+use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 use rhwp::serializer::hwpx::serialize_hwpx;
 use rhwp::{parse_document, wasm_api::HwpDocument};
 use serde_json::Value;
@@ -15,6 +16,341 @@ struct TablePos {
     section: usize,
     para: usize,
     control: usize,
+}
+
+fn first_rendered_table(node: &RenderNode) -> Option<&RenderNode> {
+    if matches!(node.node_type, RenderNodeType::Table(_)) {
+        return Some(node);
+    }
+    node.children.iter().find_map(first_rendered_table)
+}
+
+fn assert_native_spaced_render(bytes: &[u8], left_heights: &[u32], logical_rows: u16) {
+    let mut doc = HwpDocument::from_local_file_bytes(bytes).expect("load native spaced table");
+    assert_eq!(doc.page_count(), 1);
+    let tree = doc.build_page_render_tree(0).expect("render spaced table");
+    let table = first_rendered_table(&tree.root).expect("rendered table");
+    let RenderNodeType::Table(metadata) = &table.node_type else {
+        unreachable!();
+    };
+    assert_eq!((metadata.row_count, metadata.col_count), (logical_rows, 2));
+    let px = |hu: u32| f64::from(hu) * 96.0 / 7200.0;
+    let near = |actual: f64, expected: f64| {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    };
+    near(table.bbox.width, px(43652));
+    near(table.bbox.height, px(12467));
+    let right_heights = [3401, 3401, 3401];
+    let mut cell_boxes = Vec::<BoundingBox>::new();
+    for (col, heights) in [(0, left_heights), (1, right_heights.as_slice())] {
+        let mut cells: Vec<_> = table
+            .children
+            .iter()
+            .filter(|node| {
+                matches!(&node.node_type, RenderNodeType::TableCell(cell) if cell.col == col)
+            })
+            .collect();
+        cells.sort_by(|a, b| a.bbox.y.total_cmp(&b.bbox.y));
+        assert_eq!(cells.len(), heights.len());
+        let mut y = table.bbox.y + px(566);
+        for (cell, &height) in cells.iter().zip(heights) {
+            near(
+                cell.bbox.x,
+                table.bbox.x + px(566 + u32::from(col) * (20977 + 566)),
+            );
+            near(cell.bbox.y, y);
+            near(cell.bbox.width, px(20977));
+            near(cell.bbox.height, px(height));
+            cell_boxes.push(cell.bbox);
+            y += px(height + 566);
+        }
+        near(y, table.bbox.y + table.bbox.height);
+    }
+    let lines: Vec<_> = table
+        .children
+        .iter()
+        .filter_map(|node| match &node.node_type {
+            RenderNodeType::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines.len(), 28, "separate cell borders and an outer frame");
+    cell_boxes.push(table.bbox);
+    for bbox in cell_boxes {
+        for (x1, y1, x2, y2) in [
+            (bbox.x, bbox.y, bbox.x, bbox.y + bbox.height),
+            (
+                bbox.x + bbox.width,
+                bbox.y,
+                bbox.x + bbox.width,
+                bbox.y + bbox.height,
+            ),
+            (bbox.x, bbox.y, bbox.x + bbox.width, bbox.y),
+            (
+                bbox.x,
+                bbox.y + bbox.height,
+                bbox.x + bbox.width,
+                bbox.y + bbox.height,
+            ),
+        ] {
+            assert!(
+                lines.iter().any(|line| {
+                    (line.x1 - x1).abs() < 1e-6
+                        && (line.y1 - y1).abs() < 1e-6
+                        && (line.x2 - x2).abs() < 1e-6
+                        && (line.y2 - y2).abs() < 1e-6
+                }),
+                "missing physical border ({x1}, {y1}) -> ({x2}, {y2})"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_spaced_table_render_keeps_cell_gaps_and_outer_frame() {
+    let bytes = sample_bytes("samples/pr486-spaced-table-before.hwpx");
+    assert_native_spaced_render(&bytes, &[3401, 3401, 3401], 3);
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).expect("load native before");
+    let hwp = doc.export_hwp().expect("export spaced HWP");
+    assert_native_spaced_render(&hwp, &[3401, 3401, 3401], 3);
+}
+
+#[test]
+fn native_spaced_table_render_keeps_staggered_saved_cells_after_roundtrip() {
+    let bytes = sample_bytes("samples/pr486-spaced-table-after.hwpx");
+    assert_native_spaced_render(&bytes, &[3967, 2835, 3401], 4);
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).expect("load native after");
+    let roundtrip = doc.export_hwpx().expect("export spaced table");
+    assert_native_spaced_render(&roundtrip, &[3967, 2835, 3401], 4);
+    let hwp = doc.export_hwp().expect("export staggered spaced HWP");
+    assert_native_spaced_render(&hwp, &[3967, 2835, 3401], 4);
+}
+
+#[test]
+fn spaced_local_row_resize_matches_native_topology_and_persists() {
+    let bytes = sample_bytes("samples/pr486-spaced-table-before.hwpx");
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).unwrap();
+    let pos = find_first_table(doc.document());
+    let before = physical_cell_geometry(&doc, pos);
+    let before_snapshot = doc.save_snapshot();
+    resize_cells_to_render_heights(&mut doc, pos, &[(0, 3967), (2, 2835), (4, 3401)]);
+    let after = physical_cell_geometry(&doc, pos);
+    let after_snapshot = doc.save_snapshot();
+    assert_eq!(&before[3..], &after[3..], "right column must not move");
+
+    let native = parse_hwpx(&sample_bytes("samples/pr486-spaced-table-after.hwpx")).unwrap();
+    let native_pos = find_first_table(&native);
+    let Control::Table(native_table) = &native.sections[native_pos.section].paragraphs
+        [native_pos.para]
+        .controls[native_pos.control]
+    else {
+        panic!("native table");
+    };
+    let sizes = |table: &rhwp::model::table::Table| {
+        let mut cells: Vec<_> = table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.width, cell.height))
+            .collect();
+        cells.sort_unstable();
+        cells
+    };
+    for saved in [doc.export_hwpx().unwrap(), doc.export_hwp().unwrap()] {
+        let reopened = HwpDocument::from_local_file_bytes(&saved).unwrap();
+        let pos = find_first_table(reopened.document());
+        let Control::Table(table) =
+            &reopened.document().sections[pos.section].paragraphs[pos.para].controls[pos.control]
+        else {
+            panic!("saved table");
+        };
+        assert_eq!(table.row_count, native_table.row_count);
+        assert_eq!(table.cell_spacing, native_table.cell_spacing);
+        assert_eq!(table.common.width, native_table.common.width);
+        assert_eq!(table.common.height, native_table.common.height);
+        assert_eq!(sizes(table), sizes(native_table));
+        assert!(table.local_resize_cols.is_empty());
+        assert!(table.local_resize_cell_heights.is_empty());
+        assert_native_spaced_render(&saved, &[3967, 2835, 3401], 4);
+    }
+    doc.restore_snapshot(before_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), before);
+    doc.restore_snapshot(after_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), after);
+
+    resize_cells_to_render_heights(&mut doc, pos, &[(0, 4067), (2, 2735), (4, 3401)]);
+    let saved = doc.export_hwpx().unwrap();
+    assert_native_spaced_render(&saved, &[4067, 2735, 3401], 4);
+}
+
+#[test]
+fn spaced_local_row_noop_does_not_leave_transient_heights() {
+    let bytes = sample_bytes("samples/pr486-spaced-table-before.hwpx");
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).unwrap();
+    let pos = find_first_table(doc.document());
+    resize_cells_to_render_heights(&mut doc, pos, &[(0, 3398), (2, 3398), (4, 3398)]);
+    let Control::Table(table) =
+        &doc.document().sections[pos.section].paragraphs[pos.para].controls[pos.control]
+    else {
+        panic!("table");
+    };
+    assert!(table.local_resize_cols.is_empty());
+    assert!(table.local_resize_cell_heights.is_empty());
+    assert!(table.cells.iter().all(|cell| cell.height == 3401));
+    let saved = doc.export_hwpx().unwrap();
+    assert_native_spaced_render(&saved, &[3401, 3401, 3401], 3);
+}
+
+fn find_tall_zoned_table(doc: &Document) -> TablePos {
+    for (section, section_model) in doc.sections.iter().enumerate() {
+        for (para, paragraph) in section_model.paragraphs.iter().enumerate() {
+            for (control, ctrl) in paragraph.controls.iter().enumerate() {
+                if matches!(ctrl, Control::Table(table)
+                    if table.cells.len() == 6 && table.common.width == 47907
+                        && table.common.height == 76968 && table.zones.len() == 3)
+                {
+                    return TablePos {
+                        section,
+                        para,
+                        control,
+                    };
+                }
+            }
+        }
+    }
+    panic!("native tall zoned table");
+}
+
+fn tall_zoned_table(doc: &Document) -> &rhwp::model::table::Table {
+    let pos = find_tall_zoned_table(doc);
+    let Control::Table(table) =
+        &doc.sections[pos.section].paragraphs[pos.para].controls[pos.control]
+    else {
+        unreachable!()
+    };
+    table
+}
+
+fn tall_zone_signature(table: &rhwp::model::table::Table) -> Vec<(u16, u16, u16, u16, u16)> {
+    table
+        .zones
+        .iter()
+        .map(|z| {
+            (
+                z.border_fill_id,
+                z.start_row,
+                z.start_col,
+                z.end_row,
+                z.end_col,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn zoned_local_row_resize_matches_native_and_persists_without_expanding_zones() {
+    let bytes = sample_bytes("samples/pr486-tall-zone-before.hwpx");
+    let mut doc = HwpDocument::from_local_file_bytes(&bytes).unwrap();
+    let pos = find_tall_zoned_table(doc.document());
+    let table = tall_zoned_table(doc.document());
+    let upper = table
+        .cells
+        .iter()
+        .position(|c| c.col == 0 && c.row == 0)
+        .unwrap();
+    let lower = table
+        .cells
+        .iter()
+        .position(|c| c.col == 0 && c.row == 1)
+        .unwrap();
+    let before_zones = tall_zone_signature(table);
+    let before_snapshot = doc.save_snapshot();
+    resize_cells_to_render_heights(&mut doc, pos, &[(upper as u32, 6801), (lower as u32, 4537)]);
+    let after_snapshot = doc.save_snapshot();
+    let native_doc = parse_hwpx(&sample_bytes("samples/pr486-tall-zone-after.hwpx")).unwrap();
+    let native = tall_zoned_table(&native_doc);
+    let cells = |table: &rhwp::model::table::Table| {
+        let mut cells: Vec<_> = table
+            .cells
+            .iter()
+            .map(|c| (c.col, c.row, c.col_span, c.row_span, c.width, c.height))
+            .collect();
+        cells.sort_unstable();
+        cells
+    };
+    assert_eq!(cells(tall_zoned_table(doc.document())), cells(native));
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        tall_zone_signature(native)
+    );
+    let live_order = |table: &rhwp::model::table::Table| {
+        table
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col))
+            .collect::<Vec<_>>()
+    };
+    let original_order = live_order(tall_zoned_table(doc.document()));
+    for saved in [doc.export_hwpx().unwrap(), doc.export_hwp().unwrap()] {
+        let reopened = HwpDocument::from_local_file_bytes(&saved).unwrap();
+        let table = tall_zoned_table(reopened.document());
+        assert_eq!(table.row_count, native.row_count);
+        assert_eq!(cells(table), cells(native));
+        assert_eq!(tall_zone_signature(table), tall_zone_signature(native));
+        assert!(table.local_resize_cell_heights.is_empty());
+        assert_eq!(
+            live_order(table),
+            [(0, 0), (0, 1), (0, 2), (1, 2), (2, 0), (3, 0)]
+        );
+    }
+    assert_eq!(live_order(tall_zoned_table(doc.document())), original_order);
+    doc.restore_snapshot(before_snapshot).unwrap();
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        before_zones
+    );
+    doc.restore_snapshot(after_snapshot).unwrap();
+    assert_eq!(
+        tall_zone_signature(tall_zoned_table(doc.document())),
+        tall_zone_signature(native)
+    );
+}
+
+#[test]
+fn hwpx_roundtrip_preserves_signed_cell_margin_sentinels_and_switch() {
+    let bytes = sample_bytes("samples/셀보호2.hwpx");
+    for apply_inner_margin in [false, true] {
+        let mut doc = parse_hwpx(&bytes).expect("parse hwpx");
+        let pos = find_first_table(&doc);
+        let Control::Table(table) =
+            &mut doc.sections[pos.section].paragraphs[pos.para].controls[pos.control]
+        else {
+            panic!("expected table control");
+        };
+        let expected = rhwp::model::Padding {
+            left: -1,
+            right: -2,
+            top: i16::MIN,
+            bottom: i16::MAX,
+        };
+        table.cells[0].padding = expected;
+        table.cells[0].set_apply_inner_margin(apply_inner_margin);
+
+        let serialized = serialize_hwpx(&doc).expect("serialize hwpx");
+        let reopened = parse_hwpx(&serialized).expect("reopen hwpx");
+        let reopened_pos = find_first_table(&reopened);
+        let Control::Table(table) = &reopened.sections[reopened_pos.section].paragraphs
+            [reopened_pos.para]
+            .controls[reopened_pos.control]
+        else {
+            panic!("expected reopened table control");
+        };
+        let padding = table.cells[0].padding;
+        assert_eq!(
+            (padding.left, padding.right, padding.top, padding.bottom),
+            (expected.left, expected.right, expected.top, expected.bottom),
+        );
+        assert_eq!(table.cells[0].apply_inner_margin, apply_inner_margin);
+    }
 }
 
 fn find_first_table(doc: &Document) -> TablePos {
@@ -215,6 +551,111 @@ fn resize_cells_to_render_heights(doc: &mut HwpDocument, pos: TablePos, heights:
         &format!("[{updates}]"),
     )
     .expect("resize cells to render heights");
+}
+
+fn physical_cell_geometry(doc: &HwpDocument, pos: TablePos) -> Vec<(u64, f64, f64)> {
+    let json = doc
+        .get_table_cell_bboxes(
+            pos.section as u32,
+            pos.para as u32,
+            pos.control as u32,
+            Some(0),
+        )
+        .expect("table cell boxes");
+    let cells: Value = serde_json::from_str(&json).unwrap();
+    let mut geometry: Vec<_> = cells
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| {
+            (
+                cell["col"].as_u64().unwrap(),
+                cell["y"].as_f64().unwrap(),
+                cell["h"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    geometry.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    geometry
+}
+
+#[test]
+fn local_row_boundary_survives_hwpx_save_reopen_and_snapshot_restore() {
+    let bytes = sample_bytes("samples/hwpx/ref/ref_empty.hwpx");
+    let mut doc = HwpDocument::from_bytes(&bytes).unwrap();
+    doc.create_table(0, 0, 0, 3, 2).unwrap();
+    let pos = find_first_table(doc.document());
+    for idx in 0..6 {
+        doc.set_cell_properties(
+            pos.section as u32,
+            pos.para as u32,
+            pos.control as u32,
+            idx,
+            r#"{"height":3401}"#,
+        )
+        .unwrap();
+    }
+    let before = physical_cell_geometry(&doc, pos);
+    let before_snapshot = doc.save_snapshot();
+    let heights = [(0, 3967), (2, 2835), (4, 3401)];
+    resize_cells_to_render_heights(&mut doc, pos, &heights);
+    let after = physical_cell_geometry(&doc, pos);
+    let after_snapshot = doc.save_snapshot();
+    assert!(after[0].2 > before[0].2 + 5.0);
+    assert!(after[1].2 < before[1].2 - 5.0);
+    assert_eq!(&before[3..], &after[3..], "다른 열은 움직이지 않아야 함");
+
+    let saved = doc.export_hwpx().unwrap();
+    let reopened = HwpDocument::from_bytes(&saved).unwrap();
+    let reopened_pos = find_first_table(reopened.document());
+    let reopened_geometry = physical_cell_geometry(&reopened, reopened_pos);
+    for (edited, loaded) in after.iter().zip(&reopened_geometry) {
+        assert_eq!(edited.0, loaded.0);
+        assert!(
+            (edited.1 - loaded.1).abs() <= 0.2,
+            "{after:?} -> {reopened_geometry:?}"
+        );
+        assert!(
+            (edited.2 - loaded.2).abs() <= 0.2,
+            "{after:?} -> {reopened_geometry:?}"
+        );
+    }
+    let Control::Table(table) = &reopened.document().sections[reopened_pos.section].paragraphs
+        [reopened_pos.para]
+        .controls[reopened_pos.control]
+    else {
+        panic!("table");
+    };
+    assert_eq!(table.row_count, 4);
+    assert_eq!(table.cells.len(), 6);
+    assert!(table.cells.iter().any(|cell| cell.row_span == 2));
+
+    let hwp_bytes = doc.export_hwp().unwrap();
+    let hwp_reopened = HwpDocument::from_bytes(&hwp_bytes).unwrap();
+    let hwp_pos = find_first_table(hwp_reopened.document());
+    let Control::Table(hwp_table) = &hwp_reopened.document().sections[hwp_pos.section].paragraphs
+        [hwp_pos.para]
+        .controls[hwp_pos.control]
+    else {
+        panic!("HWP table");
+    };
+    assert_eq!(hwp_table.row_count, 4);
+    assert_eq!(hwp_table.cells.len(), 6);
+    let cell_sizes = |table: &rhwp::model::table::Table| {
+        let mut cells: Vec<_> = table
+            .cells
+            .iter()
+            .map(|cell| (cell.col, cell.row, cell.row_span, cell.width, cell.height))
+            .collect();
+        cells.sort_unstable();
+        cells
+    };
+    assert_eq!(cell_sizes(table), cell_sizes(hwp_table));
+
+    doc.restore_snapshot(before_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), before);
+    doc.restore_snapshot(after_snapshot).unwrap();
+    assert_eq!(physical_cell_geometry(&doc, pos), after);
 }
 
 fn hwpx_section0_xml(bytes: &[u8]) -> String {
@@ -966,16 +1407,13 @@ fn vertical_shift_local_height_keeps_unrelated_cells_stable() {
     else {
         panic!("expected table control");
     };
-    let local_height_cells = table
-        .local_resize_cell_heights
-        .iter()
-        .map(|(idx, _)| *idx as u32)
-        .collect::<std::collections::BTreeSet<_>>();
     assert!(
-        local_height_cells.contains(&target_idx)
-            && local_height_cells.contains(&neighbor_idx)
-            && local_height_cells.contains(&same_col_above_idx),
-        "세로 Shift local height 힌트는 대상/이웃 변경과 같은 열 보존 힌트를 함께 남겨야 함: {local_height_cells:?}"
+        table.local_resize_cell_heights.is_empty() && table.local_resize_cols.is_empty(),
+        "영속 논리 행 격자는 임시 높이 힌트에 의존하지 않아야 함"
+    );
+    assert!(
+        table.cells[target_idx as usize].row_span > 1,
+        "한컴처럼 이동한 경계를 논리 행 병합으로 표현해야 함"
     );
 
     let after_target_h = table_cell_bbox_value(&doc, pos, target_idx as u64, "h");
