@@ -110,9 +110,12 @@ export function createWorkbenchBrowser(options: {
   for (const [node, name] of [[back, 'browserBack'], [forward, 'browserForward'], [reload, 'refresh'], [recover, 'refresh'], [annotate, 'browserCapture'], [downloadsButton, 'browserDownload'], [dockButton, 'browserDock'], [floatButton, 'browserFloat'], [popoutButton, 'external']] as const) icon(node, name);
   const tabBar = document.createElement('div'); tabBar.className = 'ag-browser-tabbar'; tabBar.append(tabs);
   toolbar.prepend(navigation); toolbar.append(status); element.append(tabBar, toolbar);
+  // 주소 줄과 함께 떠 있는 창으로도 옮겨진다.
+  const returnControl = button('에이전트에게 제어권 반환', '에이전트에게 반환', () => handle(setControl('agent')), navigation); returnControl.className = 'ag-browser-return'; returnControl.hidden = true;
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
   const reconnectButton = button('브라우저 다시 연결', '다시 연결', () => { handle(reconnectBrowser()); }, error);
+  const stalledReload = button('페이지 다시 열기', '새로고침', () => { handle(reloadStalled()); }, error); stalledReload.hidden = true;
   element.append(error);
   const challenge = document.createElement('div'); challenge.className = 'ag-browser-challenge'; challenge.hidden = true; challenge.setAttribute('role', 'status');
   const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
@@ -238,11 +241,25 @@ export function createWorkbenchBrowser(options: {
     if (event.relatedTarget instanceof Node && !details.contains(event.relatedTarget)) details.open = false;
   });
   let agentPreviewTab: string | null = null;
+  const agentActing = new Map<string, number>(); let controlRequest: Promise<unknown> | null = null;
+  const agentBusy = (tab: BrowserTab | null) => !!tab && !tab.controller.held && (agentActing.get(tab.tabId) ?? 0) > 0;
+  // 에이전트가 쓰는 탭을 사용자가 만지면 먼저 제어권을 넘겨받는다. 실행 중인 작업은 끝난 뒤 넘어온다.
+  const needsTakeover = (tab: BrowserTab | null) => !!tab && !tab.controller.held && (agentPreviewTab === tab.tabId || agentBusy(tab));
+  const fresh = (tab: BrowserTab) => controller.state.tabs.find(row => row.tabId === tab.tabId) ?? tab;
+  async function setControl(owner: 'human' | 'agent', target = controller.tab()): Promise<void> {
+    if (!target) return;
+    if (owner === 'human' && fresh(target).controller.held) return;
+    if (owner === 'human' && controlRequest) { await controlRequest; return; }
+    const request = controller.action('control', { tabId: target.tabId, owner });
+    if (owner === 'human') { controlRequest = request; void request.catch(() => undefined).finally(() => { if (controlRequest === request) controlRequest = null; }); }
+    await request;
+  }
+  const takeover = (tab: BrowserTab | null) => needsTakeover(tab) ? setControl('human', tab!) : Promise.resolve();
   function endAgentPreview(): void {
     if (disposed || !agentPreviewTab) return;
     // 턴이 끝날 때 보기만 접고 탭과 로그인 상태는 유지한다.
     if (presentation.current() !== 'dock') presentation.hide();
-    agentPreviewTab = null; paint(); layout();
+    agentPreviewTab = null; agentActing.clear(); paint(); layout();
   }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
@@ -263,8 +280,8 @@ export function createWorkbenchBrowser(options: {
     nativePopout = false; presentation.present('float'); if (point) presentation.position(point.x, point.y);
   }
   function navigate(direction: string): void {
-    if (!controller.tab()) return;
-    handle(controller.action('navigate', { ...controller.identity(), direction }).then(() => controller.readFrame()));
+    const tab = controller.tab(); if (!tab) return;
+    handle(takeover(tab).then(() => controller.action('navigate', { ...controller.identity(fresh(tab)), direction })).then(() => controller.readFrame()));
   }
   async function navigateAddress(entered: string, target = controller.tab()): Promise<void> {
     let engine = 'google';
@@ -276,7 +293,7 @@ export function createWorkbenchBrowser(options: {
     if (disposed) return;
     wakeCurrentTab();
     if (!target) await controller.open(url);
-    else await controller.action('navigate', { ...controller.identity(target), url });
+    else { await takeover(target); await controller.action('navigate', { ...controller.identity(fresh(target)), url }); }
   }
   navigation.addEventListener('submit', event => {
     event.preventDefault(); const entered = address.value.trim(); if (!entered) return;
@@ -359,9 +376,13 @@ export function createWorkbenchBrowser(options: {
   function sendInput(args: Record<string, unknown>): void {
     const tab = controller.tab();
     if (!tab || !controller.state.connected) return;
+    const takeoverFirst = args.type !== 'release' && needsTakeover(tab);
     const identity = controller.identity();
     lastInputAt = performance.now();
-    inputChain = inputChain.catch(() => undefined).then(() => controller.request('input', { ...identity, ...args })).then(() => {
+    inputChain = inputChain.catch(() => undefined).then(async () => {
+      if (takeoverFirst) await setControl('human', tab);
+      return controller.request('input', { ...(takeoverFirst ? controller.identity(fresh(tab)) : identity), ...args });
+    }).then(() => {
       // 입력을 마친 화면은 다음 정기 캡처를 기다리지 않고 바로 표시한다.
       if (visible && (args.type !== 'pointer' || args.event === 'up')) handle(controller.readFrame());
     });
@@ -481,6 +502,7 @@ export function createWorkbenchBrowser(options: {
     const state = await native.getState({ tabId: placement.tabId, expectedTargetId: placement.expectedTargetId, checkPaint: true }) as Record<string, unknown> | undefined;
     if (!current()) return;
     const health = state?.presentationHealth;
+    if (stalled?.tabId === placement.tabId && health !== 'paint-timeout') stalled = null;
     if (health === 'loading' && !timedOut) {
       cancelNativeHealth();
       nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (current()) handle(checkNativeHealth(placement, sequence, true).catch(() => { if (current()) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
@@ -488,6 +510,11 @@ export function createWorkbenchBrowser(options: {
     }
     if (!['failed', 'paint-timeout'].includes(String(health)) && !(health === 'loading' && timedOut)) return;
     if (health === 'loading') return;
+    if (health === 'paint-timeout' && state?.presentationReloadSafe !== true) {
+      // 입력한 내용이나 제출 결과가 있는 페이지는 자동으로 다시 열지 않는다.
+      stalled = { tabId: placement.tabId, navigationEpoch: epoch, nativeEpoch: state?.navigationEpoch as number | undefined };
+      return;
+    }
     if (!native.reload || nativeReloadedIdentity === scope) throw new Error('브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.');
     nativeReloadedIdentity = scope; cancelNativeHealth();
     nativeRecovering = true; nativeError = null; paint();
@@ -507,6 +534,16 @@ export function createWorkbenchBrowser(options: {
       nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (generationAfterReload === nativeHealthGeneration) handle(checkNativeHealth(placement, nativeSequence, true).catch(() => { if (generationAfterReload === nativeHealthGeneration && controller.tab()?.tabId === placement.tabId) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
     } finally { nativeRecovering = false; paint(); layout(); }
   }
+  let stalled: { tabId: string; navigationEpoch?: number; nativeEpoch?: number } | null = null;
+  const stalledCurrent = () => !!stalled && stalled.tabId === controller.tab()?.tabId && stalled.navigationEpoch === controller.tab()?.navigationEpoch;
+  async function reloadStalled(): Promise<void> {
+    const native = nativeBrowserApi(); const tab = controller.tab(); const target = stalled;
+    stalled = null; paint();
+    if (!native?.reload || !tab || target?.tabId !== tab.tabId) return;
+    try { await native.reload({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, navigationEpoch: target.nativeEpoch, recovery: true }); }
+    catch { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; }
+    nativeHealthIdentity = ''; await controller.refresh(); paint(); layout();
+  }
   async function projectNative(): Promise<void> {
     const native = nativeBrowserApi(); if (!native) return;
     if (nativePending || reconnecting || nativePopout) return;
@@ -523,7 +560,8 @@ export function createWorkbenchBrowser(options: {
     if (disposed || sequence !== nativeSequence || !nativeSurfaceVisible() || nativeOverlayOpen() || !useNative || !target || nativePopout) return;
     const rect = surface.getBoundingClientRect(); if (rect.width < 1 || rect.height < 1) return;
     nativeTab = target;
-    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: agentPreviewTab === null };
+    // 에이전트 작업 중의 입력 차단과 제어권 요청은 네이티브 호스트가 판단한다.
+    const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: true };
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
     const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
     const healthIdentity = () => JSON.stringify([identity(), controller.tab()?.navigationEpoch]);
@@ -620,14 +658,16 @@ export function createWorkbenchBrowser(options: {
     const manuallySleeping = manualSleepingTab === tab?.tabId && tab !== null;
     const frame = manuallySleeping ? null : controller.frame();
     const agentControlled = agentPreviewTab !== null && tab !== null;
-    presentation.setAgentControlled(agentControlled);
-    element.dataset.agentControlled = String(agentControlled);
+    const held = tab?.controller.held === true; const busy = agentBusy(tab);
+    presentation.setAgentControlled(agentControlled, busy);
+    element.dataset.agentControlled = String(agentControlled); element.dataset.agentBusy = String(busy);
     reportSidebarView();
-    element.inert = agentControlled;
+    // 에이전트 작업이 실행 중일 때만 조작부를 막는다. 페이지 표면은 제어권 요청을 받는다.
+    toolbar.inert = busy; tabBar.inert = busy;
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
     menuSleep.textContent = manualSleepingTab === tab?.tabId ? '탭 깨우기' : '탭 잠자기';
-    status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
+    status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : held ? '직접 제어' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
     const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status]), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
@@ -664,7 +704,10 @@ export function createWorkbenchBrowser(options: {
     recover.hidden = reconnecting || !!nativePending || !tab || !['crashed', 'disconnected', 'restorable', 'failed'].includes(tab.status); recover.disabled = !connected || controller.state.busy;
     back.disabled ||= tab?.canGoBack === false; forward.disabled ||= tab?.canGoForward === false;
     reconnectButton.disabled = nativeRecovering || reconnecting || !!nativePending; reconnectButton.textContent = reconnecting ? '연결 중…' : '다시 연결';
-    errorMessage.textContent = controller.state.error ?? nativeError ?? ''; error.hidden = !controller.state.error && !nativeError;
+    returnControl.hidden = !held; returnControl.disabled = !connected || controller.state.busy;
+    const stalledPage = stalledCurrent() && !controller.state.error && !nativeError;
+    errorMessage.textContent = controller.state.error ?? nativeError ?? (stalledPage ? '화면을 표시하지 못했습니다.' : ''); error.hidden = !controller.state.error && !nativeError && !stalledPage;
+    reconnectButton.hidden = stalledPage; stalledReload.hidden = !stalledPage;
     sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
     wakeButton.hidden = !manuallySleeping;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
@@ -686,6 +729,11 @@ export function createWorkbenchBrowser(options: {
     uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
+    if (event.type === 'human-input') {
+      const target = controller.state.tabs.find(row => row.tabId === event.tabId);
+      if (target && !target.controller.held && (needsTakeover(target) || event.agentActive === true || event.controller === 'agent')) handle(setControl('human', target));
+      return;
+    }
     if (event.tabId === controller.tab()?.tabId) {
       // 이전 화면의 늦은 정리가 현재 게스트를 숨기면 캐시를 버리고 실제 배치를 복원한다.
       if (event.type === 'presentation' && event.mode === 'hidden' && nativeTab === event.tabId && manualSleepingTab !== event.tabId && nativeSurfaceVisible() && !nativeOverlayOpen()) {
@@ -728,7 +776,7 @@ export function createWorkbenchBrowser(options: {
       const target = controller.state.tabs.find((row) => row.tabId === event.tabId || row.nativeTargetId && (row.nativeTargetId === event.tabId || row.nativeTargetId === event.nativeTargetId));
       if (!target) return;
       controller.select(target.tabId);
-      if (event.command === 'take-control' || event.command === 'return-agent') { handle(controller.action('control', { ...controller.identity(target), owner: event.command === 'take-control' ? 'human' : 'agent' })); return; }
+      if (event.command === 'take-control' || event.command === 'return-agent') { handle(setControl(event.command === 'take-control' ? 'human' : 'agent', target)); return; }
       if (event.command === 'annotate' || event.command === 'capture') { handle(capture()); return; }
       if (event.command === 'navigate' && typeof event.url === 'string') { handle(navigateAddress(event.url, target)); return; }
       nativePopout = false; presentation.present('dock'); options.onDock();
@@ -752,6 +800,12 @@ export function createWorkbenchBrowser(options: {
       handle(controller.readFrame());
     },
     endAgentPreview,
+    agentActivity(tab: BrowserTab, active: boolean) {
+      if (disposed) return;
+      const count = Math.max(0, (agentActing.get(tab.tabId) ?? 0) + (active ? 1 : -1));
+      if (count) agentActing.set(tab.tabId, count); else agentActing.delete(tab.tabId);
+      controller.accept({ tab });
+    },
     suspendShared() {
       const tab = controller.tab(); const mode = presentation.current();
       if (agentPreviewTab || tab?.scope !== 'global' || !mode || mode === 'popout') return null;

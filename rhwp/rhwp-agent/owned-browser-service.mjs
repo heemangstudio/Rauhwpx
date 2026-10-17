@@ -42,6 +42,42 @@ const sameScope = (actor, tab) => tab.scope !== 'global' && actor.threadId === t
 const canAccessTab = (actor, tab) => tab.scope === 'global' || sameScope(actor, tab);
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
+// Playwright 실패는 첫 줄 사유와 복구 안내만 남긴다. URL·따옴표 안 값·페이지 예외 문구는 넣지 않는다.
+const reasonLine = (message) => {
+  const line = String(message ?? '').split('\n')[0].replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, '[url]').replace(/(["'])(?:(?!\1).){0,400}\1/g, '"…"').trim();
+  const method = line.match(/^([a-zA-Z]+\.[$a-zA-Z]+):/)?.[1];
+  if (!method) return '';
+  return (/evaluate|\$eval/i.test(method) ? `${method} failed` : line).slice(0, 160).replace(/\.?$/, '.');
+};
+const elementLabel = (html) => {
+  const tag = html.match(/^<([a-z][a-z0-9-]*)/i)?.[1]?.toLowerCase() ?? 'element';
+  const elementId = html.match(/\sid="([\w-]{1,40})"/)?.[1];
+  const classes = (html.match(/\sclass="([^"]{1,120})"/)?.[1] ?? '').split(/\s+/).filter(name => /^[\w-]{1,40}$/.test(name)).slice(0, 2);
+  return `${tag}${elementId ? `#${elementId}` : ''}${classes.map(name => `.${name}`).join('')}`;
+};
+const browserActionFailure = (failure) => {
+  const message = String(failure?.message ?? failure ?? '');
+  const cover = message.match(/^\s*-\s*(<[^\n]*?>)[^\n]*intercepts pointer events/m);
+  if (cover) return error('BROWSER_TARGET_COVERED', `Another element (${elementLabel(cover[1])}) covers the target. Dismiss it or scroll, then take a new snapshot.`, true);
+  if (/strict mode violation/i.test(message)) return error('BROWSER_TARGET_AMBIGUOUS', 'The target matches several elements. Take a new snapshot and choose one ref.', true);
+  if (/not attached to the DOM|Node is detached|No node with given id|JSHandle is disposed|Execution context was destroyed|Cannot find context with specified id|frame (?:was|got) detached|Target (?:page, context or browser )?(?:has been |was )?closed/i.test(message)) return error('BROWSER_TARGET_DETACHED', 'The target element is gone. Take a new snapshot before retrying.', true);
+  if (/not an <input>, <textarea>|not editable|Cannot type text into input/i.test(message)) return error('BROWSER_NOT_EDITABLE', 'The target is not an editable field. Choose a text field from a new snapshot.');
+  const reason = reasonLine(message);
+  if (failure?.name === 'TimeoutError' || /Timeout \d+ms exceeded/.test(message)) return error('BROWSER_ACTION_TIMEOUT', `${reason || 'The browser action timed out.'} Take a new snapshot before retrying.`, true);
+  return error('BROWSER_ACTION_FAILED', `${reason || 'The browser action did not complete.'} Observe the current page before retrying.`, true);
+};
+const userInControl = () => error('BROWSER_USER_IN_CONTROL', 'The user is controlling this tab; wait or ask the user to return control.');
+const abortable = (promise, signal) => !signal ? promise : new Promise((resolve, reject) => {
+  if (signal.aborted) { promise.catch(() => {}); reject(signal.reason); return; }
+  const stop = () => reject(signal.reason);
+  signal.addEventListener('abort', stop, { once: true });
+  promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+});
+const pause = (ms, signal) => new Promise((resolve) => {
+  const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, ms);
+  signal?.addEventListener('abort', done, { once: true });
+});
 const changesWebsiteURL = (value) => {
   try { const url = new URL(value); return /\/(delete|remove|destroy|send|purchase|checkout|logout)(\/|$)/i.test(url.pathname) || [...url.searchParams].some(([name, setting]) => mutatingParameter(name, setting)); }
   catch { return false; }
@@ -66,7 +102,7 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     const waiter = pending.get(message.id);
     if (!waiter) return;
     pending.delete(message.id); clearTimeout(waiter.timer);
-    message.ok ? waiter.resolve(message.value) : waiter.reject(error(message.error?.code ?? 'BROWSER_NATIVE_FAILED', message.error?.message ?? 'The desktop browser request failed.', true));
+    message.ok ? waiter.resolve(message.value) : waiter.reject(error(message.error?.code ?? 'BROWSER_NATIVE_FAILED', message.error?.message ?? 'The desktop browser request failed.', message.error?.retryable === true));
   };
   events.on('message', receive);
   const call = (operation, params = {}) => new Promise((resolve, reject) => {
@@ -186,8 +222,11 @@ export function createOwnedBrowserService(options = {}) {
   const limits = { maxTabs: options.maxTabs ?? 12, maxTabsPerAgent: options.maxTabsPerAgent ?? 3, maxSnapshotElements: options.maxSnapshotElements ?? 400, maxDownloadBytes: options.maxDownloadBytes ?? 100 * 1024 * 1024, maxFrameBytes: options.maxFrameBytes ?? 5 * 1024 * 1024 };
 
   const emit = (type, payload) => { try { onEvent({ type, ...payload }); } catch {} };
+  // 사용자 보류(hold)는 범위에서 나온 정책 소유자(controller.owner)와 별개다. 에이전트 쓰기만 막는다.
+  const userHolds = (tab) => tab.hold?.human === true;
+  const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: tab.hold?.human !== false, held: userHolds(tab) });
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: userHolds(tab) ? { ...tab.controller, held: true } : { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, tab.protectedValues);
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   const publish = (tab) => emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo() });
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
@@ -444,7 +483,7 @@ export function createOwnedBrowserService(options = {}) {
       const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, global: tab.scope === 'global' });
       tab.nativeGeneration = nativeState?.generation;
       tab.zoomFactor = nativeState?.zoomFactor;
-      await selectedAdapter().control?.({ targetId: tab.nativeTargetId, human: true });
+      await selectedAdapter().control?.(nativeControl(tab));
     }
   };
 
@@ -510,7 +549,7 @@ export function createOwnedBrowserService(options = {}) {
             const parent = opener && pageTabs.get(opener);
             if (!parent) return;
             if (tabs.size >= limits.maxTabs) { await page.close(); return; }
-            const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+            const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.hold = parent.hold; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
             try { await attach(tab, page); }
             catch (failure) {
               // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
@@ -533,7 +572,7 @@ export function createOwnedBrowserService(options = {}) {
           finally { await session.detach().catch(() => {}); }
           const logicalId = nativeInventory.find((tab) => tab.nativeTargetId === targetId)?.tabId;
           const retained = tabs.get(logicalId) ?? [...tabs.values()].find((tab) => tab.nativeTargetId === targetId);
-          if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
+          if (retained) { retained.controller = { owner: retained.scope === 'global' ? 'human' : 'agent' }; retained.hold = null; retained.controllerEpoch++; retained.status = 'ready'; await attach(retained, page); retained.restorePending = false; publish(retained); }
         }
         const observedRuntime = runtime;
         runtime.browser?.on('disconnected', () => {
@@ -835,7 +874,7 @@ export function createOwnedBrowserService(options = {}) {
     if (!allowed) throw error('BROWSER_SHORTCUT_BLOCKED', 'Use browser navigation and input tools. Clipboard and browser-window shortcuts are reserved for human control.');
   };
 
-  const waitForCondition = async (actor, tab, args) => {
+  const waitForCondition = async (actor, tab, args, signal) => {
     const page = requirePage(tab);
     const runtimeGeneration = generation;
     const condition = args.condition ?? 'ready';
@@ -844,18 +883,20 @@ export function createOwnedBrowserService(options = {}) {
     if (condition === 'text' && !needle) throw error('BROWSER_WAIT_TEXT_REQUIRED', 'Text waits require nonempty text.');
     const deadline = args.waitDeadline ?? Date.now() + bounded(args.timeoutMs, 1, 30_000, 10_000);
     const read = async operation => {
+      signal?.throwIfAborted();
       if (Date.now() >= deadline) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true);
       let timer;
       try {
-        return await Promise.race([operation(), new Promise((_, reject) => {
+        return await abortable(Promise.race([operation(), new Promise((_, reject) => {
           timer = setTimeout(() => reject(error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true)), Math.max(1, deadline - Date.now()));
-        })]);
+        })]), signal);
       } finally { clearTimeout(timer); }
     };
-    const observe = () => read(() => snapshot(tab, () => Date.now() <= deadline && generation === runtimeGeneration));
+    const observe = () => read(() => snapshot(tab, () => Date.now() <= deadline && generation === runtimeGeneration && !signal?.aborted));
     let settledSince;
     let observedEpoch;
     do {
+      signal?.throwIfAborted();
       if (generation !== runtimeGeneration || resetting || resetFailed || ownedTab(actor, tab.tabId) !== tab || requirePage(tab) !== page) throw error('BROWSER_RECONNECT_REQUIRED', 'The browser changed while waiting. Observe the current tab before retrying.', true);
       await read(() => assertPolicy(actor, 'wait', page.url(), tab, args));
       let observation;
@@ -884,12 +925,13 @@ export function createOwnedBrowserService(options = {}) {
       if (satisfied) return { completed: true, snapshot: observation ?? await observe() };
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      await new Promise(resolve => setTimeout(resolve, Math.min(250, remaining)));
-    } while (Date.now() <= deadline);
+      await pause(Math.min(250, remaining), signal);
+    } while (Date.now() <= deadline && !signal?.aborted);
+    signal?.throwIfAborted();
     throw error('BROWSER_ACTION_TIMEOUT', 'The browser condition did not appear before the wait timeout.', true);
   };
 
-  const operate = async (actor, action, tab, args) => {
+  const operate = async (actor, action, tab, args, signal) => {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
     if (action === 'snapshot') return { snapshot: await snapshot(tab) };
@@ -908,7 +950,7 @@ export function createOwnedBrowserService(options = {}) {
       }
       return result;
     }
-    if (action === 'wait') return waitForCondition(actor, tab, args);
+    if (action === 'wait') return waitForCondition(actor, tab, args, signal);
     if (action === 'navigate') {
       invalidate(tab);
       if (args.direction === 'stop') {
@@ -1062,7 +1104,7 @@ export function createOwnedBrowserService(options = {}) {
         clearInterval(checkpointTimer);
         if (runtime) { await saveCheckpoint().catch(() => {}); await runtime.close(); runtime = null; }
         await credentialBroker.deleteCheckpoint?.({ profileId: 'default' });
-        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; invalidate(tab); }
+        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; tab.hold = null; invalidate(tab); }
         runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = account.id;
         const start = options.signInFactory ?? startOwnedBrowserSignIn;
         signIn = await start({ dataDir, url, authenticationMethod: args.authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
@@ -1143,7 +1185,7 @@ export function createOwnedBrowserService(options = {}) {
         if (actor.isHuman && typeof args.openRequestId === 'string' && args.openRequestId.length <= 160) emit('owned_browser_tab', { tab: descriptor(tab), runtime: runtimeInfo(), openRequestId: args.openRequestId });
         previewActivity(actor, tab); tab.activeActor = actor; if (actor.isHuman && url !== 'about:blank') markHumanOrigin(new URL(url).origin); if (url !== 'about:blank') await tab.page.goto(url, { waitUntil: 'domcontentloaded' }); if (actor.isHuman) markHumanDocument(tab);
       }
-      catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure; }
+      catch (failure) { await tab.page?.close().catch(() => {}); tabs.delete(tab.tabId); throw failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure); }
       finally { previewActivity(actor, tab, false); tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
       if (actor.isHuman) await observeHumanSessions();
       else { await recordAgentSessions(url, agentSessionEpoch); await observeHumanSessions(); }
@@ -1151,7 +1193,8 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
-    if (!actor.isHuman) await dismissPendingDialog(tab);
+    // 사용자가 잡은 탭의 대화상자는 사용자의 것이다.
+    if (!actor.isHuman && !userHolds(tab)) await dismissPendingDialog(tab);
     tab.lastActivityAt = Date.now();
     if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
     if (action === 'sleep') {
@@ -1217,32 +1260,41 @@ export function createOwnedBrowserService(options = {}) {
       try { if (!tab.page) { tab.sessionId = actor.sessionId ?? tab.sessionId; tab.controllerEpoch++; invalidate(tab); await attach(tab, await runtime.context.newPage()); if (tab.url !== 'about:blank') { markHumanOrigin(new URL(tab.url).origin); await guard.resolve(tab.url); await tab.page.goto(tab.url, { waitUntil: 'domcontentloaded' }); } } }
       finally { tab.activeActor = null; }
       tab.status = 'ready'; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
-      await selectedAdapter()?.control?.({ targetId: tab.nativeTargetId, human: true });
+      await selectedAdapter()?.control?.(nativeControl(tab));
       markHumanDocument(tab); await observeHumanSessions(); publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo(), recovery: 'Page reloaded. Previous uncertain actions were not replayed.' };
     }
     if (action === 'control') {
       if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Only the user can transfer browser control.');
       epochs(tab, args);
-      tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' };
+      // 보류는 즉시 걸어 대기 중인 에이전트 쓰기를 막고, 실행 중인 작업은 끝난 뒤 넘겨받는다.
+      const epoch = ++tab.controllerEpoch;
+      tab.hold = { human: args.owner !== 'agent', clientId: actor.clientId };
       if (tab.controller.owner === 'human') markHumanDocument(tab);
       credentialBroker?.invalidateTab?.(tab.tabId);
+      publish(tab);
       // Invalidate queued agent input immediately, then drain before confirming the transfer.
       await dismissPendingDialog(tab);
       await tab.queue.catch(() => {}); await releaseInput(tab);
-      if (selectedAdapter()?.control) await selectedAdapter().control({ targetId: tab.nativeTargetId, human: true });
+      if (epoch === tab.controllerEpoch && selectedAdapter()?.control) await selectedAdapter().control(nativeControl(tab));
       publish(tab); return { ok: true, action, tab: descriptor(tab), runtime: runtimeInfo() };
     }
     const mutating = MUTATIONS.has(action);
     // 편집기의 탭 닫기는 페이지 입력 조작권을 넘겨받지 않아도 실행한다.
     const requiresControl = mutating && !(action === 'close' && actor.isHuman);
+    const blockedByUser = () => requiresControl && !actor.isHuman && userHolds(tab);
+    if (blockedByUser()) throw userInControl();
     epochs(tab, args, mutating);
     if (requiresControl) assertController(actor, tab);
+    // 사용자가 잡은 탭의 에이전트 읽기는 대기열 밖에서 관찰만 한다. 사용자 입력을 기다리게 하지 않는다.
+    const observeOnly = !actor.isHuman && !mutating && userHolds(tab);
     const queuedControlEpoch = tab.controllerEpoch;
     const waitDeadline = action === 'wait' ? Date.now() + bounded(args.timeoutMs, 1, 30_000, 10_000) : undefined;
+    const abort = waitDeadline === undefined ? null : new AbortController();
+    const signal = abort?.signal;
     let waitTimer;
-    const queued = enqueue(tab, async () => {
-      clearTimeout(waitTimer);
-      if (waitDeadline !== undefined && Date.now() >= waitDeadline) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out in the tab queue.', true);
+    const run = async () => {
+      signal?.throwIfAborted();
+      if (blockedByUser()) throw userInControl();
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
@@ -1250,6 +1302,7 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && challengeFor(tab) && (mutating && action !== 'close' && !(action === 'navigate' && args.url && !googleResearchURL(args.url)))) return challengeResult(action, tab);
       if (action === 'press') assertAgentKey(actor, args.key);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
+      if (blockedByUser()) throw userInControl();
       epochs(tab, args, mutating);
       if (requiresControl) assertController(actor, tab);
       if (!actor.isHuman && ['type', 'click', 'press'].includes(action)) {
@@ -1272,46 +1325,65 @@ export function createOwnedBrowserService(options = {}) {
         }
         if ((writesText || submits) && !search) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
-      tab.activeActor = actor;
+      // 관찰만 하는 읽기는 동시에 진행되는 사용자 입력의 네트워크 귀속을 바꾸지 않는다.
+      if (!observeOnly) tab.activeActor = actor;
       const agentSessionEpoch = humanSessionEpoch;
       if (actor.isHuman) { humanSessionEpoch++; humanActionsPending++; }
       if (actor.isHuman && mutating && action !== 'close') markHumanDocument(tab);
       try {
         if (action === 'navigate' && args.url && googleResearchURL(args.url)) tab.searchQuery = new URL(args.url).searchParams.get('q') || tab.searchQuery;
         const adapter = selectedAdapter();
-        const activity = adapter?.activity && action !== 'close' ? {
+        const activity = adapter?.activity && action !== 'close' && !observeOnly ? {
           targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId,
-          chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity'),
+          chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity'), agent: !actor.isHuman,
         } : null;
-        let value;
+        let value; let renewal;
         try {
-          if (activity) await adapter.activity({ ...activity, active: true });
-          if (action !== 'close') previewActivity(actor, tab);
-          value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline });
+          if (activity) await abortable(adapter.activity({ ...activity, active: true }), signal);
+          // 긴 작업 중에도 네이티브 활동 임대가 만료되지 않게 갱신한다.
+          if (activity) { renewal = setInterval(() => { void adapter.activity({ ...activity, active: true, renew: true }).catch(() => {}); }, 10_000); renewal.unref?.(); }
+          if (action !== 'close' && !observeOnly) previewActivity(actor, tab);
+          value = await operate(actor, action, tab, waitDeadline === undefined ? args : { ...args, waitDeadline }, signal);
         } finally {
-          if (activity) await adapter.activity({ ...activity, active: false }).catch(() => {});
-          if (action !== 'close') previewActivity(actor, tab, false);
+          clearInterval(renewal);
+          const released = activity ? adapter.activity({ ...activity, active: false }).catch(() => {}) : null;
+          if (released && !signal?.aborted) await released;
+          if (action !== 'close' && !observeOnly) previewActivity(actor, tab, false);
         }
+        signal?.throwIfAborted();
         if (actor.isHuman) { if (mutating && action !== 'close') markHumanDocument(tab); await observeHumanSessions(); }
-        else if (action !== 'close') { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
-        if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', 'Control changed during the action. Observe the current page before deciding what to do next.', true);
+        else if (action !== 'close' && !observeOnly) { await recordAgentSessions(requirePage(tab).url(), agentSessionEpoch); await observeHumanSessions(); }
+        if (mutating && action !== 'close' && queuedControlEpoch !== tab.controllerEpoch) throw error('BROWSER_ACTION_UNCERTAIN', !actor.isHuman && userHolds(tab) ? 'The user took control during this action. Observe the page, then wait or ask the user before continuing.' : 'Control changed during the action. Observe the current page before deciding what to do next.', true);
         if (action !== 'close') await assertPolicy(actor, action, requirePage(tab).url(), tab, args);
         if (value.capture) { const eventCapture = { ...value.capture }; delete eventCapture.screenshot; emit('owned_browser_capture', { capture: eventCapture }); }
         publish(tab); if (!actor.isHuman && action !== 'close' && challengeFor(tab)) return challengeResult(action, tab);
         return { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab), ...value };
       } catch (failure) {
         if (failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_')) throw failure;
-        throw error(failure.name === 'TimeoutError' ? 'BROWSER_ACTION_TIMEOUT' : 'BROWSER_ACTION_FAILED', 'The browser action did not complete. Observe the current page before retrying.', true);
-      } finally { tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
-    });
-    if (waitDeadline === undefined) return queued;
+        const mapped = browserActionFailure(failure);
+        mapped.message = redactValues(mapped.message, tab.protectedValues);
+        throw mapped;
+      } finally { if (!observeOnly) tab.activeActor = null; if (actor.isHuman) humanActionsPending--; }
+    };
+    const queued = observeOnly ? run() : enqueue(tab, run);
+    if (!abort) return queued;
+    // 기한이 지나면 대기열의 작업도 중단해 다음 조작을 막지 않는다.
     return Promise.race([queued, new Promise((_, reject) => {
-      waitTimer = setTimeout(() => reject(error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true)), Math.max(1, waitDeadline - Date.now()));
+      waitTimer = setTimeout(() => { const timeout = error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out.', true); abort.abort(timeout); reject(timeout); }, Math.max(1, waitDeadline - Date.now()));
     })]).finally(() => clearTimeout(waitTimer));
   };
   const request = performRequest;
   return {
     request, inventory, sweepSleepingTabs,
+    /** 새 사용자 턴은 같은 창이 잡았던 탭을 에이전트와 공유 상태로 되돌린다. */
+    async releaseHolds(actor) {
+      for (const tab of tabs.values()) {
+        if (!tab.hold || tab.hold.clientId !== actor?.clientId) continue;
+        tab.hold = null; tab.controllerEpoch++;
+        if (tab.page && !tab.page.isClosed()) await selectedAdapter()?.control?.(nativeControl(tab)).catch(() => {});
+        publish(tab);
+      }
+    },
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;

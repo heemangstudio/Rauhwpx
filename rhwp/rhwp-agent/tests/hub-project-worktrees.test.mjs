@@ -114,9 +114,10 @@ const json = (body) => ({ method: 'POST', headers: { 'Content-Type': 'applicatio
 
 test('worktree chats share one project, edit it concurrently, and rebind after a hub restart', { timeout: 120_000 }, async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-worktrees-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFakePi(path.join(root, 'pi'));
   let hub = await startHub(t, root);
+  // after 훅은 등록 순서대로 돈다. 다시 뜬 허브가 쓰기를 멈춘 뒤에 지워야 정리가 멈추지 않는다.
+  t.after(async () => { await hub.stop(); rmSync(root, { recursive: true, force: true }); });
   const main = await hub.session('worktree-main');
   const settings = await main.http('/project-settings', { ...json({ settings: { librarian: { enabled: false } } }), method: 'PUT' });
   assert.equal(settings.status, 200);
