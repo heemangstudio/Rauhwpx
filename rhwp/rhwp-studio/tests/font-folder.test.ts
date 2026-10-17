@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import {
   configureDesktopFonts,
@@ -18,7 +18,8 @@ import {
   resetFontFolderForTests,
   restoreFontFolder,
 } from '../src/core/font-folder.ts';
-import type { FolderDirectoryHandleLike, FolderFileHandleLike } from '../src/core/font-folder-index.ts';
+import { createFontFolderIndexer, type FolderDirectoryHandleLike, type FolderFileHandleLike } from '../src/core/font-folder-index.ts';
+import { sfntMetricsSubset } from '../src/core/sfnt-subset.ts';
 import {
   detectLocalFonts,
   getSessionLocalFontFace,
@@ -237,5 +238,52 @@ test('가져온 파일과 로컬 글꼴 감지 face도 레이아웃 메트릭에
   } finally {
     g.queryLocalFonts = originalQuery;
     harness.restore();
+  }
+});
+
+const WEB_FIXTURES = new URL('../../../tests/fixtures/fonts/', import.meta.url);
+const PKG = new URL('../../pkg/', import.meta.url);
+
+test('폴더의 WOFF·WOFF2는 브라우저 압축 해제로 SFNT가 되어 TTF와 같은 런타임 메트릭으로 등록된다', async (t) => {
+  const file = (name: string) => new File([readFileSync(new URL(name, WEB_FIXTURES))], name, { lastModified: 1 });
+  const names = ['NotoSansKRWebFixture.ttf', 'NotoSansKRWebFixture.woff', 'NotoSansKRWebFixture.woff2', 'RHWPVariableWeightFixture.woff2'];
+  const indexer = createFontFolderIndexer();
+  const index = await indexer.index({ kind: 'files', name: 'Web', files: names.map(file) });
+  assert.deepEqual(index.errors, []);
+  const byFile = (name: string) => index.faces.filter(face => face.path.endsWith(`/${name}`) && !face.instance);
+  assert.deepEqual(names.map(name => [byFile(name)[0]?.format, byFile(name)[0]?.families[0]]), [
+    ['ttf', 'Noto Sans KR'],
+    ['woff', 'Noto Sans KR'],
+    ['woff2', 'Noto Sans KR'],
+    ['woff2', 'RHWP Variable Fixture'],
+  ]);
+  const read = async (name: string) => indexer.read(byFile(name)[0]!.id);
+  const sfnt = await read('NotoSansKRWebFixture.woff2');
+  assert.equal(new DataView(sfnt.buffer, sfnt.byteOffset).getUint32(0), 0x00010000);
+
+  if (!existsSync(new URL('rhwp_bg.wasm', PKG))) {
+    t.skip('rhwp/pkg 의 WASM 빌드가 필요하다 (wasm-pack build --target web)');
+    return;
+  }
+  const rhwp = await import(new URL('rhwp.js', PKG).href);
+  rhwp.initSync({ module: readFileSync(new URL('rhwp_bg.wasm', PKG)) });
+  const register = (bytes: Uint8Array, variations?: Record<string, number>): string => {
+    rhwp.clearRuntimeFontMetrics();
+    const subset = sfntMetricsSubset(bytes.slice().buffer);
+    const result = variations
+      ? rhwp.registerRuntimeFontMetrics(subset, '["Web Fixture"]', false, false, JSON.stringify(variations))
+      : rhwp.registerRuntimeFontMetrics(subset, '["Web Fixture"]', false, false);
+    return String(result) + String(rhwp.getRuntimeFontMetricsReport());
+  };
+  try {
+    const ttf = register(await read('NotoSansKRWebFixture.ttf'));
+    assert.match(ttf, /"registered":true/);
+    assert.equal(register(await read('NotoSansKRWebFixture.woff')), ttf);
+    assert.equal(register(sfnt), ttf);
+    const variableTtf = new Uint8Array(readFileSync(new URL('../../tests/fixtures/fonts/RHWPVariableWeightFixture.ttf', import.meta.url)));
+    const variableWoff2 = await read('RHWPVariableWeightFixture.woff2');
+    assert.equal(register(variableWoff2, { wght: 600 }), register(variableTtf, { wght: 600 }));
+  } finally {
+    rhwp.clearRuntimeFontMetrics();
   }
 });
