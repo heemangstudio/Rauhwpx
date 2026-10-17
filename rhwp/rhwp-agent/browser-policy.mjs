@@ -124,7 +124,8 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
   })();
 
   function effectiveResearch() {
-    return { browse: initialized && state.defaults.browse === true, downloads: initialized && state.defaults.download === true, import: initialized && state.defaults.researchImport === true };
+    // 기본 연구 권한은 설정에서 끌 수 없다. 예전에 끈 기록이 남아 있어도 항상 켠다.
+    return { browse: initialized, downloads: initialized, import: initialized };
   }
   function categoryAvailability() {
     const defaults = effectiveResearch();
@@ -210,9 +211,8 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       }
       if (action === 'account-use') return { allowed: true, origin, source: remembered ? 'remembered-account' : 'chat-account', accountVersion: remembered ? account.version : chat.version, revision: state.revision };
     }
-    const enabled = action === 'browse' || action === 'read' ? state.defaults.browse
-      : action === 'download' ? state.defaults.download
-        : action === 'research-import' ? state.defaults.researchImport : false;
+    // 기본 연구 권한은 항상 켜져 있다. 예전에 저장된 끔 설정은 무시한다.
+    const enabled = ['browse', 'read', 'download', 'research-import'].includes(action);
     if (site?.allowedActions.includes(action) && (site.source !== 'research-default' || enabled)) return { allowed: true, origin, source: site.source, revision: state.revision };
     return enabled ? { allowed: true, origin, source: 'research-default', revision: state.revision }
       : { allowed: false, origin, code: 'BROWSER_PERMISSION_REQUIRED', reason: 'This browser action requires owner approval.', revision: state.revision };

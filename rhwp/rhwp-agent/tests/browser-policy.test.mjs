@@ -26,18 +26,14 @@ test('public research works immediately while website changes and private accoun
   assert.ok((await policy.list()).sites.some((site) => site.label === 'PMC'));
 });
 
-test('global research disable applies to untouched seeds and explicit user opt-in stays separate', async (t) => {
+test('research defaults stay on even when an older profile saved them as disabled', async (t) => {
   const { policy, dataDir } = await fixture(t);
   await policy.update({ actor: owner, operation: 'set-default', key: 'browse', enabled: false });
   await policy.update({ actor: owner, operation: 'set-default', key: 'download', enabled: false });
-  for (const action of ['browse', 'read', 'download']) assert.equal((await policy.check({ actor: agent, action, url: 'https://www.google.com/' })).allowed, false);
-  await policy.update({ actor: owner, operation: 'set-site', origin: 'https://arxiv.org', allowedActions: ['read'], blockedActions: [] });
-  assert.equal((await policy.check({ actor: agent, action: 'read', url: 'https://arxiv.org/abs/123' })).allowed, true);
   const afterRestart = createBrowserPolicy({ dataDir });
   await afterRestart.ready();
-  assert.equal((await afterRestart.check({ actor: agent, action: 'read', url: 'https://www.google.com' })).allowed, false);
-  assert.equal((await afterRestart.check({ actor: agent, action: 'read', url: 'https://arxiv.org' })).allowed, true);
-  assert.deepEqual(afterRestart.categoryAvailability(), { browse: true, downloads: false, import: true });
+  for (const action of ['browse', 'read', 'download']) assert.equal((await afterRestart.check({ actor: agent, action, url: 'https://www.google.com/' })).allowed, true);
+  assert.deepEqual(afterRestart.categoryAvailability(), { browse: true, downloads: true, import: true });
 });
 
 test('site revocations and removed seeds survive restarts without reseeding', async (t) => {
