@@ -633,7 +633,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const piKeyNote = el('p', 'ag-settings-note', 'OpenRouter 로그인 또는 API 키');
   const piOauth = el('button', 'ag-settings-btn ag-pi-oauth', '브라우저로 로그인');
   piOauth.type = 'button';
-  const piAuthDivider = el('div', 'ag-agent-auth-divider', '또는 API 키');
   const piKeyInput = createTextField('OpenRouter 키', {
     type: 'password',
     placeholder: 'sk-or-v1-…',
@@ -649,7 +648,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   piKeyGuide.target = '_blank';
   piKeyGuide.rel = 'noopener noreferrer';
   piKeyActions.append(piKeySubmit, piKeyCancel, piKeyGuide);
-  piKeyStep.append(piKeyNote, piOauth, piAuthDivider, piKeyInput.field, piKeyActions);
+  // 브라우저 로그인과 키 입력은 한 줄에 나란히 둔다.
+  const piAuthRow = el('div', 'ag-pi-auth-row');
+  piAuthRow.append(piOauth, el('span', 'ag-pi-auth-or', '또는'), piKeyInput.field);
+  piKeyStep.append(piKeyNote, piAuthRow, piKeyActions);
 
   // 3단계 — 카탈로그에서 모델 고르기
   const piCatalogStep = el('div', 'ag-pi-step');

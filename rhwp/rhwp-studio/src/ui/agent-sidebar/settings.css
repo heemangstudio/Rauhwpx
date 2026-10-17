@@ -1144,8 +1144,40 @@
   display: none;
 }
 
+.ag-pi-auth-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .ag-pi-oauth {
-  align-self: flex-start;
+  flex: 0 0 auto;
+}
+
+.ag-pi-auth-or {
+  flex: 0 0 auto;
+  color: var(--ag-text-muted);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-pi-auth-row > .ag-settings-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ag-pi-auth-row .ag-settings-field-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.ag-pi-auth-row .ag-settings-input {
+  width: 100%;
+  max-width: none;
+  height: 32px;
 }
 
 .ag-pi-key-guide {
