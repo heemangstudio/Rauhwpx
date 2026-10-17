@@ -10,6 +10,13 @@ const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', imp
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
+// 에이전트 탭은 사용자 로그인과 분리된 자체 쿠키 저장소를 쓴다.
+const PROFILE_DIRECTORIES = { user: 'native-profile', agent: 'agent-profile' };
+
+function cookieMatchesHosts(cookie, hosts) {
+  const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
+  return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
+}
 
 export function browserNavigationUrl(value) {
   if (value === 'about:blank') return value;
@@ -49,7 +56,6 @@ export class OwnedBrowserHost {
     this.getWindowForSession = getWindowForSession;
     this.onEvent = onEvent;
     this.tabs = new Map();
-    this.floatingWindows = new Map();
     this.pendingTabs = new Set();
     this.parkingWindow = null;
     this.aliases = new Map();
@@ -61,6 +67,7 @@ export class OwnedBrowserHost {
     this.lastOwner = null;
     this.proxy = null;
     this.session = null;
+    this.agentSession = null;
     this.startPromise = null;
     this.releasePromise = null;
     this.resetPromise = null;
@@ -88,26 +95,9 @@ export class OwnedBrowserHost {
     }
     await privateDirectory(this.dataDir);
     const canonicalProfile = await privateDirectory(expected);
-    if (!this.session) {
-      this.session = this.electronSession.fromPath(canonicalProfile);
-      this.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-      this.session.setPermissionCheckHandler(() => false);
-      this.webAuthn?.attachSession(this.session);
-      await this.adblock?.attach(this.session);
-      this.session.webRequest.onBeforeRequest((details, callback) => {
-        try {
-          const protocol = new URL(details.url).protocol;
-          const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
-          // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
-          // native guests never install Playwright's plaintext WebSocket route.
-          const cancel = !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:';
-          if (cancel) callback({ cancel: true });
-          else if (this.adblock) this.adblock.beforeRequest(details, callback);
-          else callback({ cancel: false });
-        } catch { callback({ cancel: true }); }
-      });
-      this.session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
-    }
+    const agentProfile = await privateDirectory(join(this.dataDir, 'browser', PROFILE_DIRECTORIES.agent));
+    if (!this.session) this.session = await this.configureSession(this.electronSession.fromPath(canonicalProfile));
+    if (!this.agentSession) this.agentSession = await this.configureSession(this.electronSession.fromPath(agentProfile));
     if (this.owner && this.owner !== owner) {
       await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
@@ -115,8 +105,10 @@ export class OwnedBrowserHost {
     this.owner = owner;
     this.lastOwner = owner;
     this.proxy = { ...proxy, host: proxyUrl.hostname, port: Number(proxyUrl.port) };
-    await this.session.setProxy({ proxyRules: proxy.server, proxyBypassRules: '<-loopback>' });
-    await this.session.closeAllConnections();
+    for (const session of this.sessions()) {
+      await session.setProxy({ proxyRules: proxy.server, proxyBypassRules: '<-loopback>' });
+      await session.closeAllConnections();
+    }
     for (const tab of this.tabs.values()) {
       if (!tab.closing && !this.cdp.tabs.has(tab.targetId) && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
         await this.cdp.add(tab);
@@ -133,30 +125,56 @@ export class OwnedBrowserHost {
     return { endpointURL, native: true, generation: this.generation, signInSupport: 'full-browser-required', authentication: { passkeys: this.webAuthn?.metadata() } };
   }
 
-  async createTab({ url = 'about:blank', parent = null, disposition = null } = {}) {
+  async createTab({ url = 'about:blank', parent = null, disposition = null, profile = 'user' } = {}) {
     const destination = browserNavigationUrl(url);
-    const tab = this.createNativeTab({ parent, disposition });
+    const tab = this.createNativeTab({ parent, disposition, profile });
     await this.initializeTab(tab, { loadBlank: true });
     if (destination !== 'about:blank') void tab.view.webContents.loadURL(destination).catch(() => {});
     return tab;
   }
 
-  guestPreferences() {
-    return { session: this.session, preload: GUEST_PRELOAD, sandbox: true,
+  async configureSession(session) {
+    session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    session.setPermissionCheckHandler(() => false);
+    this.webAuthn?.attachSession(session);
+    await this.adblock?.attach(session);
+    session.webRequest.onBeforeRequest((details, callback) => {
+      try {
+        const protocol = new URL(details.url).protocol;
+        const protectedSession = [...this.tabs.values()].some((tab) => tab.passwordShield);
+        // WSS stays TLS-encrypted through the guarded pinned CONNECT tunnel;
+        // native guests never install Playwright's plaintext WebSocket route.
+        const cancel = !this.proxy || !['http:', 'https:', 'ws:', 'wss:', 'blob:'].includes(protocol) || protectedSession && protocol === 'ws:';
+        if (cancel) callback({ cancel: true });
+        else if (this.adblock) this.adblock.beforeRequest(details, callback);
+        else callback({ cancel: false });
+      } catch { callback({ cancel: true }); }
+    });
+    session.on('will-download', (event, item, contents) => this.willDownload(event, item, contents));
+    return session;
+  }
+
+  sessions() { return [this.session, this.agentSession].filter(Boolean); }
+  sessionFor(profile) { return profile === 'agent' ? this.agentSession : this.session; }
+
+  guestPreferences(profile = 'user') {
+    return { session: this.sessionFor(profile), preload: GUEST_PRELOAD, sandbox: true,
       contextIsolation: true, nodeIntegration: false, webSecurity: true,
       webviewTag: false, allowRunningInsecureContent: false, devTools: false };
   }
 
-  createNativeTab({ parent = null, disposition = null, options = {} } = {}) {
+  createNativeTab({ parent = null, disposition = null, options = {}, profile = 'user' } = {}) {
     if (!this.owner || !this.proxy) throw new Error('Native browser runtime is disconnected');
     if (this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) throw new Error('Native browser tab limit reached');
+    // 팝업은 opener와 같은 저장소에 있어야 OAuth 창과 window.opener가 동작한다.
+    const tabProfile = parent?.profile ?? (profile === 'agent' ? 'agent' : 'user');
     const view = new this.WebContentsView({ ...(options.webContents ? { webContents: options.webContents } : {}),
-      webPreferences: { ...options.webPreferences, ...this.guestPreferences() } });
+      webPreferences: { ...options.webPreferences, ...this.guestPreferences(tabProfile) } });
     view.setBounds({ x: 0, y: 0, width: 1280, height: 800 });
     view.setVisible(false);
     const contents = view.webContents;
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-    const tab = { view, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
+    const tab = { view, profile: tabProfile, targetId: null, tabId: null, sessionId: parent?.sessionId ?? null, chatId: parent?.chatId ?? null, windowId: parent?.windowId ?? null,
       lastHiddenAt: Date.now(), placement: null, human: false, interactive: false, navigationEpoch: 0,
       frameId: null, lastError: null, crashed: false, openerTab: parent, openerTargetId: parent?.targetId, disposition };
     // 실제 opener를 읽을 수 있는 자식도 부모와 같은 비밀 보호 범위를 갖는다.
@@ -169,7 +187,7 @@ export class OwnedBrowserHost {
       try {
         const destination = browserNavigationUrl(details.url);
         if (!tab.tabId || tab.closing || !this.owner || !this.proxy || this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) return { action: 'deny' };
-        return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences() },
+        return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences(tab.profile) },
           createWindow: (options) => {
             // Chromium's guest carries the actual WindowProxy, opener and POST navigation.
             // Adopting it preserves OAuth messaging without exposing a new BrowserWindow.
@@ -263,8 +281,6 @@ export class OwnedBrowserHost {
     // 재연결은 같은 게스트를 유지한다. 대상 ID가 바뀌어도 논리 탭과 창 소유권은 유지한다.
     if (previousTargetId && previousTargetId !== tab.targetId) {
       this.tabs.delete(previousTargetId);
-      const floating = this.floatingWindows.get(previousTargetId);
-      if (floating) { this.floatingWindows.delete(previousTargetId); this.floatingWindows.set(tab.targetId, floating); }
       const popout = this.popouts.get(previousTargetId);
       if (popout) { this.popouts.delete(previousTargetId); this.popouts.set(tab.targetId, popout); }
     }
@@ -367,21 +383,16 @@ export class OwnedBrowserHost {
   state(tab) {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
-    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
+    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true, profile: tab.profile,
       generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition, passwordProtected: !!tab.passwordShield,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
       zoomFactor: alive ? contents.getZoomFactor() : 1,
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
-      controller: tab.human ? 'human' : 'agent', interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
+      controller: tab.human ? 'human' : 'agent', held: tab.held === true, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
     };
-    if (tab.placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === tab.placement.window) {
-      const area = tab.placement.ownerWindow.getContentBounds(); const bounds = tab.placement.window.getContentBounds();
-      state.nativeFloating = true;
-      state.floatingBounds = { left: bounds.x - area.x, top: bounds.y - area.y, width: bounds.width, height: bounds.height };
-    }
     if (tab.passwordShield) {
       try { const origin = new URL(state.url).origin; state.url = tab.passwordAllowedOrigins?.has(origin) ? `${origin}/` : 'about:blank'; }
       catch { state.url = 'about:blank'; }
@@ -402,89 +413,57 @@ export class OwnedBrowserHost {
     }
     const window = tab.sessionId && this.getWindowForSession(tab.sessionId);
     if (window && !window.isDestroyed()) window.webContents.send('desktop:browser-event', payload);
-    const popout = this.floatingWindows.get(tab.targetId) ?? this.popouts.get(tab.targetId);
+    const popout = this.popouts.get(tab.targetId);
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
     if (mode === 'popout') return this.popout(window, tab);
     const rect = browserViewBounds(bounds, window);
-    if (mode === 'float') return this.float(window, tab, rect, interactive);
-    const placementChanged = tab.placement?.window !== window || tab.placement?.mode !== mode;
+    // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
+    const windowChanged = tab.placement?.window !== window;
+    const placementChanged = windowChanged || tab.placement?.mode !== mode;
+    // 렌더러가 원한 입력 허용을 기억한다. 조작권 전환이 미리보기 잠금을 풀지 않게 한다.
+    tab.requestedInteractive = interactive === true;
     const nextInteractive = interactive === true && tab.human;
     const inputChanged = tab.interactive !== nextInteractive;
-    if (placementChanged) {
+    if (windowChanged) {
       this.unplace(tab);
       this.placeGuest(tab, window);
     }
     tab.interactive = nextInteractive;
+    tab.placement = { window, mode };
+    // 같은 창 안의 모드 전환은 뷰를 떼지 않는다. 다시 붙이면 페이지의 키보드 포커스가 풀린다.
+    if (mode === 'float') this.raiseFloat(tab);
+    this.setViewRadius(tab, mode === 'float' ? 10 : 0);
     const previous = tab.view.getBounds();
     if (previous.x !== rect.x || previous.y !== rect.y || previous.width !== rect.width || previous.height !== rect.height) tab.view.setBounds(rect);
-    tab.placement = { window, mode };
     void this.viewport(tab, rect).catch(() => {});
-    tab.view.setVisible(rect.width > 0 && rect.height > 0);
-    tab.placement = { window, mode };
+    // 이미 보이는 뷰를 다시 표시하면 macOS가 페이지의 키보드 포커스를 해제한다.
+    const visible = rect.width > 0 && rect.height > 0;
+    if (tab.view.getVisible() !== visible) tab.view.setVisible(visible);
+    // 직접 조작을 가져온 순간 키 입력이 바로 페이지로 가도록 한다.
+    if (focus === true && tab.interactive && visible && !tab.view.webContents.isFocused()) tab.view.webContents.focus();
     if (placementChanged || inputChanged) this.emit(tab, 'presentation');
     return this.state(tab);
   }
 
-  float(ownerWindow, tab, rect, interactive) {
-    let floating = this.floatingWindows.get(tab.targetId);
-    let created = false;
-    if (tab.placement?.window !== floating || !floating || floating.isDestroyed()) {
-      this.unplace(tab);
-      created = true;
-      floating = new this.BrowserWindow({ parent: ownerWindow, frame: false, show: false, width: Math.max(320, rect.width), height: Math.max(280, rect.height + 48),
-        minWidth: 320, minHeight: 280, skipTaskbar: true, title: 'Hama 브라우저', backgroundColor: '#181818',
-        webPreferences: { preload: POPOUT_PRELOAD, sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false } });
-      this.floatingWindows.set(tab.targetId, floating);
-      const child = floating;
-      child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-      child.webContents.on('will-navigate', event => event.preventDefault());
-      child.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
-      child.once('ready-to-show', () => { if (tab.placement?.window === child && !ownerWindow.isDestroyed() && ownerWindow.isVisible()) child.showInactive(); });
-      child.on('move', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.emit(tab, 'floating-geometry'); } });
-      child.on('resize', () => { if (tab.placement?.window === child) { this.rememberFloat(tab); this.layoutFloat(tab); this.emit(tab, 'floating-geometry'); } });
-      child.on('close', event => { if (this.disposing || this.quitRequested) return; event.preventDefault(); this.unplace(tab); this.emit(tab, 'browser-float-closed'); });
-      child.on('closed', () => { if (this.floatingWindows.get(tab.targetId) === child) this.floatingWindows.delete(tab.targetId); });
-      const followOwner = () => { if (tab.placement?.window !== child || child.isDestroyed()) return; const area = ownerWindow.getContentBounds(); const offset = tab.floatingOffset; if (offset) child.setPosition(area.x + offset.x, area.y + offset.y); this.rememberFloat(tab); };
-      ownerWindow.on('move', followOwner); ownerWindow.on('resize', followOwner);
-      child.once('closed', () => { ownerWindow.removeListener('move', followOwner); ownerWindow.removeListener('resize', followOwner); });
-      this.placeGuest(tab, child);
-      tab.placement = { window: child, ownerWindow, mode: 'float' };
-      void child.loadURL(`${POPOUT_URL}?presentation=float`);
-    }
-    const area = ownerWindow.getContentBounds();
-    const bounds = { x: area.x + rect.x, y: area.y + Math.max(0, rect.y - 36), width: rect.width, height: rect.height + 48 };
-    const previous = floating.getBounds();
-    // 네이티브 창의 이동이 기준이다. 늦게 도착한 DOM 배치로 사용자의 드래그를 되돌리지 않는다.
-    if (created && Object.keys(bounds).some(key => bounds[key] !== previous[key])) floating.setBounds(bounds);
-    tab.interactive = interactive === true && tab.human;
-    // 이미 보이는 뷰를 다시 표시하면 macOS가 페이지의 키보드 포커스를 해제한다.
-    if (created) tab.view.setVisible(true);
-    this.layoutFloat(tab); this.rememberFloat(tab);
-    if (!floating.webContents.isLoadingMainFrame() && ownerWindow.isVisible() && !floating.isVisible()) floating.showInactive();
-    this.emit(tab, 'presentation');
-    return this.state(tab);
+  // 띄운 페이지는 같은 창의 다른 게스트(사이드바) 위에 있어야 한다.
+  raiseFloat(tab) {
+    const content = tab.placement?.window.contentView;
+    if (!content || content.children.at(-1) === tab.view) return;
+    // 이미 붙은 뷰를 다시 추가하면 Electron은 순서만 맨 위로 바꾼다.
+    content.addChildView(tab.view);
   }
 
-  rememberFloat(tab) {
-    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed() || placement.ownerWindow.isDestroyed()) return;
-    const area = placement.ownerWindow.getContentBounds(); const bounds = placement.window.getBounds();
-    tab.floatingOffset = { x: bounds.x - area.x, y: bounds.y - area.y };
-  }
-
-  layoutFloat(tab) {
-    const placement = tab.placement; if (placement?.mode !== 'float' || placement.window.isDestroyed()) return;
-    const { width, height } = placement.window.getContentBounds();
-    const bounds = { x: 0, y: 36, width, height: Math.max(0, height - 48) };
-    const previous = tab.view.getBounds();
-    if (Object.keys(bounds).some(key => bounds[key] !== previous[key])) tab.view.setBounds(bounds);
-    void this.viewport(tab, bounds).catch(() => {});
+  setViewRadius(tab, radius) {
+    if ((tab.viewRadius ?? 0) === radius) return;
+    tab.view.setBorderRadius(radius);
+    tab.viewRadius = radius;
   }
 
   async presentationState(window, { tabId, expectedTargetId }) {
@@ -562,6 +541,7 @@ export class OwnedBrowserHost {
     tab.parkingWindow = null;
     tab.dialogParking = null;
     window.contentView.addChildView(tab.view);
+    for (const other of this.tabs.values()) if (other !== tab && other.placement?.window === window && other.placement.mode === 'float') this.raiseFloat(other);
   }
 
   parkGuest(tab) {
@@ -609,11 +589,8 @@ export class OwnedBrowserHost {
     tab.view.setVisible(false);
     tab.placement = null;
     tab.interactive = false;
+    if (tab.view.webContents && !tab.view.webContents.isDestroyed()) this.setViewRadius(tab, 0);
     this.parkGuest(tab);
-    if (placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === placement.window) {
-      this.floatingWindows.delete(tab.targetId);
-      if (!placement.window.isDestroyed()) placement.window.destroy();
-    }
     if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
@@ -739,32 +716,28 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  control({ targetId, tabId, human, owner }) {
+  control({ targetId, tabId, human, owner, held }) {
     const tab = this.tab(targetId ?? tabId);
     void this.clearActivity(tab);
     tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
     tab.passwordSnapshot = null;
     this.webAuthn?.cancelTab(tab);
     tab.human = human === true || owner === 'human';
-    tab.interactive = tab.human && !!tab.placement;
+    if (typeof held === 'boolean') tab.held = held;
+    // 물리 입력은 조작권과 렌더러의 배치 요청을 함께 따른다. 에이전트 미리보기 중에는 잠긴 채로 둔다.
+    tab.interactive = tab.human && !!tab.placement && (tab.placement.mode === 'popout' || tab.requestedInteractive === true);
     this.emit(tab, 'controller');
     return this.state(tab);
   }
 
   popoutCommand(sender, { command, url, factor } = {}) {
-    const pair = [...this.popouts, ...this.floatingWindows].find(([, window]) => window.webContents === sender && !window.isDestroyed());
+    const pair = [...this.popouts].find(([, window]) => window.webContents === sender && !window.isDestroyed());
     if (!pair) throw new Error('Browser popout sender is not owned');
     const tab = this.tab(pair[0]);
     const ownerWindow = this.getWindowForSession(tab.sessionId);
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
-    if (this.floatingWindows.has(tab.targetId) && !tab.interactive) throw new Error('Floating preview is controlled by the agent');
     if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
-    if (command === 'close') {
-      const floating = this.floatingWindows.has(tab.targetId);
-      const state = this.detach(ownerWindow, { tabId: tab.tabId });
-      if (floating) this.emit(tab, 'browser-float-closed');
-      return state;
-    }
+    if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
       this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });
@@ -842,12 +815,12 @@ export class OwnedBrowserHost {
   }
 
   cancelDownload(guid) { this.downloads.get(guid)?.cancel(); return {}; }
-  async getCookies() {
-    const cookies = await this.session.cookies.get({});
+  async getCookies(session = this.session) {
+    const cookies = await session.cookies.get({});
     return cookies.map((cookie) => ({ ...cookie, expires: cookie.session ? -1 : cookie.expirationDate,
       sameSite: { unspecified: 'Lax', no_restriction: 'None', lax: 'Lax', strict: 'Strict' }[cookie.sameSite] ?? 'Lax' }));
   }
-  async setCookies(cookies) {
+  async setCookies(cookies, session = this.session) {
     for (const cookie of cookies) {
       const url = cookie.url ?? `${cookie.secure ? 'https' : 'http'}://${String(cookie.domain).replace(/^\./, '')}${cookie.path || '/'}`;
       const details = { ...cookie, url,
@@ -856,31 +829,46 @@ export class OwnedBrowserHost {
       // Chromium 체크포인트의 점 없는 domain은 host-only다. domain을 넘기면
       // Electron이 도메인 쿠키로 바꾸어 유효한 __Host- 인증 쿠키도 거부한다.
       if (cookie.hostOnly === true || cookie.domain && !cookie.domain.startsWith('.')) delete details.domain;
-      await this.session.cookies.set(details);
+      await session.cookies.set(details);
     }
-    await this.session.cookies.flushStore();
+    await session.cookies.flushStore();
     return {};
   }
   async clearCookies() { await this.session.clearStorageData({ storages: ['cookies'] }); return {}; }
 
-  async importSession({ origins, state, clear = false, reload = false }) {
-    if (!Array.isArray(origins) || !origins.length || origins.length > 32 || !state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || state.cookies.length > 2048) throw new Error('Native session import is invalid');
-    const approved = new Set(origins.map((value) => {
+  approvedOrigins(origins, action) {
+    if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error(`Native session ${action} requires approved exact HTTPS origins`);
+    return [...new Set(origins.map((value) => {
       const url = new URL(value);
-      if (url.protocol !== 'https:' || url.username || url.password || url.origin !== value) throw new Error('Native session import requires approved exact HTTPS origins');
+      if (url.protocol !== 'https:' || url.username || url.password || url.origin !== value) throw new Error(`Native session ${action} requires approved exact HTTPS origins`);
       return value;
-    }));
-    if (clear) return this.clearSession({ origins: [...approved] });
+    }))];
+  }
+
+  // 사용자가 승인한 사이트의 로그인 쿠키만 사용자 저장소에서 에이전트 저장소로 복사한다.
+  async shareSession({ origins }) {
+    if (!this.session || !this.agentSession) throw new Error('Native browser runtime is disconnected');
+    const hosts = this.approvedOrigins(origins, 'sharing').map((origin) => new URL(origin).hostname);
+    const shared = (await this.getCookies(this.session)).filter((cookie) => cookieMatchesHosts(cookie, hosts));
+    for (const cookie of (await this.getCookies(this.agentSession)).filter((entry) => cookieMatchesHosts(entry, hosts))) {
+      await this.agentSession.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
+    }
+    await this.setCookies(shared, this.agentSession);
+    return { shared: true, cookies: shared.length };
+  }
+
+  async importSession({ origins, state, clear = false, reload = false, profile = 'user' }) {
+    if (clear) return this.clearSession({ origins, profile });
+    if (!Array.isArray(origins) || !state || !Array.isArray(state.cookies) || !Array.isArray(state.origins) || state.cookies.length > 2048) throw new Error('Native session import is invalid');
+    const approved = new Set(this.approvedOrigins(origins, 'import'));
+    const session = this.sessionFor(profile);
     const hosts = [...approved].map((origin) => new URL(origin).hostname);
-    const matches = (cookie) => {
-      const domain = String(cookie.domain ?? '').replace(/^\./, '').toLowerCase();
-      return !!domain && hosts.some((host) => host === domain || domain.includes('.') && host.endsWith(`.${domain}`));
-    };
+    const matches = (cookie) => cookieMatchesHosts(cookie, hosts);
     if (state.cookies.some((cookie) => !matches(cookie) || typeof cookie.name !== 'string' || typeof cookie.value !== 'string')) throw new Error('Native session cookies exceed the approved account origins');
     const storage = state.origins.map((entry) => {
       if (!approved.has(entry.origin) || !Array.isArray(entry.localStorage) || entry.localStorage.length > 2048 || entry.localStorage.some((item) => typeof item.name !== 'string' || typeof item.value !== 'string')) throw new Error('Native session storage exceeds the approved account origins');
       if (entry.indexedDB?.length) throw Object.assign(new Error('This sign-in session requires IndexedDB storage that native handoff cannot import.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
-      const tab = [...this.tabs.values()].find((candidate) => !candidate.closing && !candidate.view.webContents.isDestroyed() && new URL(candidate.view.webContents.getURL()).origin === entry.origin);
+      const tab = [...this.tabs.values()].find((candidate) => candidate.profile === profile && !candidate.closing && !candidate.view.webContents.isDestroyed() && new URL(candidate.view.webContents.getURL()).origin === entry.origin);
       if (!tab && entry.localStorage.length) throw Object.assign(new Error('Open the approved account website in a native tab before importing this session.'), { code: 'BROWSER_NATIVE_SESSION_STORAGE_UNSUPPORTED' });
       return { entry, tab };
     });
@@ -900,17 +888,17 @@ export class OwnedBrowserHost {
       if (previous === false) throw new Error('The native sign-in page changed before session import');
       previousStorage.push({ tab, origin: entry.origin, previous });
     }
-    const previousCookies = (await this.getCookies()).filter(matches);
+    const previousCookies = (await this.getCookies(session)).filter(matches);
     const removeScopedCookies = async () => {
-      for (const cookie of (await this.getCookies()).filter(matches)) await this.session.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
+      for (const cookie of (await this.getCookies(session)).filter(matches)) await session.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, cookie.name);
     };
     try {
-      await removeScopedCookies(); await this.setCookies(state.cookies);
+      await removeScopedCookies(); await this.setCookies(state.cookies, session);
       for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
       let reloaded = 0;
       if (reload) for (const tab of this.tabs.values()) {
         const contents = tab.view.webContents;
-        if (tab.closing || contents.isDestroyed()) continue;
+        if (tab.profile !== profile || tab.closing || contents.isDestroyed()) continue;
         let origin; try { origin = new URL(contents.getURL()).origin; } catch { continue; }
         if (!approved.has(origin)) continue;
         await new Promise((resolve, reject) => {
@@ -926,17 +914,17 @@ export class OwnedBrowserHost {
       }
       return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded };
     } catch {
-      await removeScopedCookies(); await this.setCookies(previousCookies);
+      await removeScopedCookies(); await this.setCookies(previousCookies, session);
       for (const { tab, origin, previous } of previousStorage) if (!tab.view.webContents.isDestroyed()) await applyStorage(tab, origin, previous).catch(() => {});
       throw new Error('The native account session could not be imported. The prior session was restored.');
     }
   }
 
-  async clearSession({ origins }) {
-    if (!Array.isArray(origins) || !origins.length || origins.length > 32) throw new Error('Native session clearing requires approved exact HTTPS origins');
-    const normalized = origins.map((origin) => { const url = new URL(origin); if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password) throw new Error('Native session clearing requires approved exact HTTPS origins'); return url.origin; });
+  async clearSession({ origins, profile = 'user' }) {
+    const normalized = this.approvedOrigins(origins, 'clearing');
+    const session = this.sessionFor(profile);
     for (const tab of this.tabs.values()) { tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; }
-    await this.session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
+    await session.clearData({ origins: normalized, dataTypes: ['cookies', 'localStorage', 'indexedDB', 'serviceWorkers', 'cache'] });
     return { clearedOrigins: normalized, clearedDomains: normalized.map((origin) => new URL(origin).hostname) };
   }
 
@@ -947,7 +935,7 @@ export class OwnedBrowserHost {
     contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
-  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
+  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.held = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
 
   async release(owner) {
     if (this.owner !== owner) return false;
@@ -960,7 +948,7 @@ export class OwnedBrowserHost {
       await Promise.all([...this.tabs.values()].map((tab) => this.clearActivity(tab)));
       await this.cdp.close();
       this.onAutomationDisconnected();
-      await this.session?.closeAllConnections();
+      for (const session of this.sessions()) await session.closeAllConnections();
       return true;
     })();
     try { return await this.releasePromise; } finally { this.releasePromise = null; }
@@ -996,14 +984,14 @@ export class OwnedBrowserHost {
       await this.passwords?.vault.clear();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
-      if (this.session) {
-        await this.session.closeAllConnections();
-        await this.session.clearData();
-        await this.session.clearAuthCache();
-        await this.session.clearHostResolverCache();
-        this.session.flushStorageData();
-        await this.session.cookies.flushStore();
-        await this.session.closeAllConnections();
+      for (const session of this.sessions()) {
+        await session.closeAllConnections();
+        await session.clearData();
+        await session.clearAuthCache();
+        await session.clearHostResolverCache();
+        session.flushStorageData();
+        await session.cookies.flushStore();
+        await session.closeAllConnections();
       }
       this.downloadPath = null;
       this.downloadBehavior = 'deny';
@@ -1044,6 +1032,7 @@ export class OwnedBrowserHost {
         }
         else if (message.operation === 'password-storage-state') response.value = this.passwords ? await this.passwords.storageState() : null;
         else if (message.operation === 'import-session') response.value = await this.importSession(params);
+        else if (message.operation === 'share-session') response.value = await this.shareSession(params);
         else if (message.operation === 'password-clear-session') response.value = await this.clearSession(params);
         else throw new Error('Unsupported native browser operation');
       }
@@ -1058,7 +1047,7 @@ export class OwnedBrowserHost {
     this.webAuthn?.dispose();
     this.adblock?.dispose();
     await this.cdp.close();
-    if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
+    for (const session of this.sessions()) { session.flushStorageData(); await session.cookies.flushStore(); }
     for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);
     if (this.parkingWindow && !this.parkingWindow.isDestroyed()) this.parkingWindow.destroy();
     this.parkingWindow = null;

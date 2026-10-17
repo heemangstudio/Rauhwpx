@@ -25,8 +25,8 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 
 | Tool | Arguments | Result and practical use |
 | --- | --- | --- |
-| `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse shared user-opened tabs and your assigned tabs and inspect readiness metadata. |
-| `browser_open` | Optional `url`, `intent` | Creates your tab and returns its descriptor. Omitted URL opens `about:blank`. Runtime starts lazily. |
+| `browser_status` | `{}` | `runtime`, scoped `tabs` (each with `profile`: `agent` is your own profile, `user` is the user’s browser), `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse shared user-opened tabs and your assigned tabs and inspect readiness metadata. |
+| `browser_open` | Optional `url`, `intent` | Creates your tab in your own browser profile, signed out of the user’s sites, and returns its descriptor. Omitted URL opens `about:blank`. Runtime starts lazily. |
 | `browser_navigate` | `tabId`, `url`, `epochs`; optional `intent` | Navigates the same tab. Snapshot afterward. The public schema has no back/forward/reload direction field. |
 | `browser_snapshot` | `tabId` | Returns `snapshot` and current tab state. Replaces refs, so choose actions from this result. |
 | `browser_click` | `target`; optional `intent` | Clicks the observed element. Snapshot for the resulting page; status for popup children. |
@@ -38,7 +38,7 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 | `browser_capture` | `tabId`; optional `snapshotId`, `ref`, `navigationEpoch`, `region`, `comment` | Page capture by default. Element capture uses current `snapshotId` and `ref`; region uses `{x,y,width,height}` in observed page CSS coordinates. Returns `capture` provenance and an image when available. Capture stays bound to the originating destination. |
 | `browser_downloads` | Optional `action`, `downloadId` | `action` is `list`, `cancel`, `retry`, or `save`, default `list`. Use a returned ID for cancel/retry/save. After completion, desktop `save` returns the actual `savedPath` in the local Downloads folder, retaining the filename without overwriting existing files. Returns scoped jobs or one job. Importing to another project is a human UI operation, absent from this agent schema. |
 | `browser_fill_account` | `tabId`, `accountId`, `snapshotId`, `passwordRef`, `epochs`; optional `usernameRef` | Secure local autofill for imported or manually saved logins. `accountId` must be a UUID from status. For matching accounts with `agentReuseApproved: true`, no extra approval or password request is needed. Supply refs for both login fields, including ID fields without autocomplete hints. The broker validates account, origin, field, and current binding. Returns metadata/results, never the password. |
-| `browser_request_account` | `tabId`, `origin`, `label`, `reason`; optional `accountId` | Root conversation only. Exact origin approval or secure save/use request. Returns `pending`, `requestId`, `origin`; end the turn and wait. |
+| `browser_request_account` | `tabId`, `origin`, `label`, `reason`; optional `accountId` | Root conversation only. Asks the user for a login: share their login for the site, save a password, or sign in in your tab. Sensitive sites return `BROWSER_SITE_SENSITIVE`. Returns `pending`, `requestId`, `origin`; end the turn and wait. |
 
 URLs must satisfy the browser's network guard. Public HTTPS research is the normal path; workspace preview access needs its configured allowance. Do not substitute raw HTTP requests or another browser to evade a refusal.
 

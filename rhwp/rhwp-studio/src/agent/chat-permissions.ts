@@ -41,6 +41,8 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     ...(text(request['origin'], 2048) ? { origin: request['origin'] } : {}),
     ...(text(request['accountId'], 256) ? { accountId: request['accountId'] } : {}),
     ...(text(request['accountLabel'], 256) ? { accountLabel: request['accountLabel'] } : {}),
+    ...(text(request['tabId'], 256) ? { tabId: request['tabId'] } : {}),
+    ...(request['canShare'] === true ? { canShare: true } : {}),
     ...(Array.isArray(request['origins']) && request['origins'].length <= 20 && request['origins'].every((value) => text(value, 2048)) ? { origins: request['origins'] as string[] } : {}),
   };
 }

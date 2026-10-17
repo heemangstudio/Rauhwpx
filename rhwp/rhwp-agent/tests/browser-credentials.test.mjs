@@ -192,24 +192,39 @@ test('standalone wrapping-key file must stay outside browser data and be owner-o
   }
 });
 
-test('unknown retained human sessions block agent reads across cookie subdomains until exact account approval', async (t) => {
+test('legacy session provenance no longer blocks agents or revokes an approved account', async (t) => {
   const { broker, dataDir, secretStore } = await fixture(t);
-  await broker.registerSessionOrigins({ profileId: 'default', origins: ['https://accounts.example.test'], domains: ['.example.test'], source: 'human' });
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: 'https://docs.example.test/private', tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await broker.assertBrowserAccess({ actor: owner, url: 'https://docs.example.test/private', tab: {} });
-  await broker.assertBrowserAccess({ actor: agent, url: 'https://unrelated.test/public', tab: {} });
-  const request = await broker.requestAccount({ actor: owner, intent: 'use', ...accountInput });
-  const { account } = await broker.approveAccount({ actor: owner, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, use: true }, account: accountInput });
-  await broker.assertBrowserAccess({ actor: agent, url: 'https://docs.example.test/private', tab: {} });
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: 'https://other.example.test/private', tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  const account = await savedAccount(broker, { account: { ...accountInput, origins: [accountInput.origin] } });
+  // 이전 버전은 사용자가 방문한 사이트를 세션 출처로 기록하고, 승인 뒤 바뀐 기록으로 승인을 무효화했다.
+  const file = path.join(dataDir, 'browser-accounts.json');
+  const legacy = JSON.parse(await fs.readFile(file, 'utf8'));
+  legacy.accounts[0].sessionVersion = 20;
+  legacy.sessions = [
+    { domain: 'google.com', profileId: 'default', source: 'human', version: 19 },
+    { origin: accountInput.origin, profileId: 'default', source: 'human', version: 22 },
+  ];
+  await fs.writeFile(file, JSON.stringify(legacy));
   const restarted = createBrowserCredentialBroker({ dataDir, secretStore, policy: createBrowserPolicy({ dataDir }) });
   await restarted.ready();
-  await restarted.assertBrowserAccess({ actor: { ...agent, projectId: 'project-b' }, url: 'https://docs.example.test/private', tab: {} });
-  await restarted.registerSessionOrigins({ profileId: 'default', domains: ['example.test'], source: 'human' });
-  assert.equal((await restarted.listAccounts()).accounts[0].sessionApprovalRequired, true);
-  await assert.rejects(restarted.assertBrowserAccess({ actor: agent, url: 'https://docs.example.test/private', tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await restarted.confirmAccountSession({ actor: owner, accountId: account.id });
-  await restarted.assertBrowserAccess({ actor: agent, url: 'https://docs.example.test/private', tab: {} });
+  const [listed] = (await restarted.listAccounts()).accounts;
+  assert.equal(listed.id, account.id);
+  assert.equal(listed.agentReuseApproved, true);
+  assert.equal('sessionVersion' in listed, false);
+  await restarted.assertBrowserAccess({ actor: agent, url: 'https://www.google.com/search?q=GPT', tab: {} });
+  await restarted.assertBrowserAccess({ actor: agent, url: accountInput.origin, tab: {} });
+  assert.equal('sessions' in JSON.parse(await fs.readFile(file, 'utf8')), false);
+  await restarted.revokeAccount({ actor: owner, accountId: account.id });
+  await assert.rejects(restarted.assertBrowserAccess({ actor: agent, url: accountInput.origin, tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+});
+
+test('agents cannot request logins for account-provider, banking or government sites', async (t) => {
+  const { broker } = await fixture(t);
+  for (const origin of ['https://accounts.google.com', 'https://nid.naver.com', 'https://obank.kbstar.com', 'https://www.hometax.go.kr']) {
+    await assert.rejects(broker.requestAccount({ actor: agent, origin, label: 'Sensitive' }), { code: 'BROWSER_SITE_SENSITIVE' });
+  }
+  const shopping = await broker.requestAccount({ actor: agent, origin: 'https://login.coupang.com', label: 'Coupang' });
+  assert.equal(shopping.origin, 'https://login.coupang.com');
+  assert.equal((await broker.requestAccount({ actor: owner, origin: 'https://accounts.google.com', label: 'Google' })).origin, 'https://accounts.google.com');
 });
 
 test('account denial consumes the exact pending request without saving a credential', async (t) => {
@@ -221,8 +236,8 @@ test('account denial consumes the exact pending request without saving a credent
   assert.equal((await broker.listAccounts()).accounts.length, 0);
 });
 
-test('sign-out and human account switch while the vault is reading cannot fill a stale login', async (t) => {
-  for (const operation of ['signout', 'human-session']) {
+test('sign-out while the vault is reading cannot fill a stale login', async (t) => {
+  {
     const memory = createMemorySecretStore();
     let release;
     let entered;
@@ -243,11 +258,10 @@ test('sign-out and human account switch while the vault is reading cannot fill a
     const use = await broker.issueHandle({ actor: agent, accountId: account.id, binding: target });
     let fills = 0;
     const rejected = assert.rejects(broker.fill({ actor: agent, handle: use.handle, binding: target, getBinding: async () => target, fill: async () => { fills++; } }), {
-      code: operation === 'signout' ? 'BROWSER_CREDENTIAL_BINDING_STALE' : 'BROWSER_ACCOUNT_APPROVAL_REQUIRED',
+      code: 'BROWSER_CREDENTIAL_BINDING_STALE',
     });
     await readEntered;
-    if (operation === 'signout') await broker.signOut({ actor: owner, accountId: account.id });
-    else await broker.registerSessionOrigins({ domains: ['example.test'], source: 'human' });
+    await broker.signOut({ actor: owner, accountId: account.id });
     release();
     await rejected;
     assert.equal(fills, 0);
@@ -287,8 +301,6 @@ test('explicit signed-in account confirmation binds the current human session an
   const request = await broker.requestAccount({ actor: owner, intent: 'use', ...accountInput });
   const { account } = await broker.approveAccount({ actor: owner, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, use: true }, account: accountInput });
   assert.equal(account.sessionStatus, 'session-retained');
-  await broker.registerSessionOrigins({ domains: ['example.test'], source: 'human' });
-  await assert.rejects(broker.assertBrowserAccess({ actor: agent, url: accountInput.origin, tab: {} }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   await assert.rejects(broker.confirmAccountSession({ actor: agent, accountId: account.id }), { code: 'BROWSER_OWNER_REQUIRED' });
   const confirmed = await broker.confirmAccountSession({ actor: owner, accountId: account.id });
   assert.equal(confirmed.account.sessionStatus, 'authenticated');
@@ -401,7 +413,6 @@ test('browser cleanup purges only its accounts and encryption keys while preserv
     phases.push(phase);
     if (phase === 'before') {
       await assert.rejects(broker.saveCheckpoint({ state: { cookies: [], origins: [] } }), { code: 'BROWSER_RESET_INCOMPLETE' });
-      await assert.rejects(broker.registerSessionOrigins({ domains: ['example.test'], source: 'human' }), { code: 'BROWSER_RESET_INCOMPLETE' });
     }
   });
   await assert.rejects(broker.resetBrowserData({ actor: agent }), { code: 'BROWSER_OWNER_REQUIRED' });
@@ -490,4 +501,22 @@ test('tab sleep preferences persist and reject invalid or agent configuration ch
   assert.equal((await broker.getConfiguration()).performance.idleMinutes, 1);
   await broker.updateConfiguration({ actor: owner, performance: { idleMinutes: 0 } });
   assert.equal((await broker.getConfiguration()).performance.idleMinutes, 0);
+});
+
+
+test('owner approval moves a legacy saved account to the requested native session without losing its password', async t => {
+  const { broker, secretStore } = await fixture(t);
+  const account = await savedAccount(broker, { use: false });
+  const access = { actor: agent, url: account.origin, tab: { profileId: 'native' } };
+  const request = await broker.requestAccount({ actor: agent, accountId: account.id, profileId: 'native' });
+  const approved = await broker.approveAccount({ actor: owner, requestId: request.requestId,
+    approval: { approved: true, requestId: request.requestId, use: true } });
+  assert.equal(approved.account.id, account.id);
+  assert.equal(approved.account.profileId, 'native');
+  assert.equal(approved.account.agentReuseApproved, true);
+  assert.ok(await secretStore.get(`browser.password.${account.id}`));
+  await broker.assertBrowserAccess(access);
+  await assert.rejects(broker.requestAccount({ actor: agent, accountId: account.id, profileId: 'native', origins: [account.origin, 'https://unapproved.example'] }), { code: 'BROWSER_ACCOUNT_ORIGIN_MISMATCH' });
+  await broker.revokeAccount({ actor: owner, accountId: account.id });
+  await assert.rejects(broker.assertBrowserAccess(access), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
 });

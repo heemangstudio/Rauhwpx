@@ -114,12 +114,11 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   if (screenshot) await screenshot('browser-workbench-float-dark');
   const floatRect = () => page.$eval('.ag-browser-floating:not([hidden])', node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; });
   const beforeResize = await floatRect();
-  const grip = await page.$('.ag-browser-floating:not([hidden]) .ag-browser-resize'); const gripBounds = await grip.boundingBox();
-  await page.mouse.move(gripBounds.x + gripBounds.width / 2, gripBounds.y + gripBounds.height / 2); await page.mouse.down();
-  await page.mouse.move(gripBounds.x + 75, gripBounds.y + 55); await page.mouse.up();
-  const resized = await floatRect(); assert.ok(resized.width > beforeResize.width && resized.height > beforeResize.height, 'resize grip follows the pointer');
-  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-resize'); await page.keyboard.press('ArrowLeft');
-  assert.ok((await floatRect()).width < resized.width, 'resize grip supports the keyboard');
+  await page.mouse.move(beforeResize.x + beforeResize.width, beforeResize.y); await page.mouse.down();
+  await page.mouse.move(beforeResize.x + beforeResize.width + 75, beforeResize.y - 55); await page.mouse.up();
+  const resized = await floatRect(); assert.ok(resized.width > beforeResize.width && resized.height > beforeResize.height && resized.x === beforeResize.x && resized.y + resized.height === beforeResize.y + beforeResize.height, 'corner resize follows the pointer and anchors the opposite corner');
+  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-move'); await page.keyboard.down('Shift'); await page.keyboard.press('ArrowLeft'); await page.keyboard.up('Shift');
+  assert.ok((await floatRect()).width < resized.width, 'Shift + arrow keys resize the floating browser');
   const beforeCancel = await floatRect();
   const moveBounds = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-move', node => { const r = node.getBoundingClientRect(); return { x: r.x + 20, y: r.y + 10 }; });
   await page.mouse.move(moveBounds.x, moveBounds.y); await page.mouse.down(); await page.mouse.move(moveBounds.x + 70, moveBounds.y + 30);
@@ -195,6 +194,13 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.click('.ag-browser-trigger');
   await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser', { visible: true });
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'reopening an editor float reuses the same browser tab');
+  // 다시 띄운 탭은 따로 뜬 창이 맡는다. 에이전트 작업은 그 창을 잠그고 빈 창을 하나 더 띄우지 않는다.
+  await page.evaluate(tabId => window.sidebarPreview.browserAsAgent('click', { tabId, x: 120, y: 160 }), floatingTab);
+  await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'true', { timeout: 3000 });
+  assert.equal(await page.$$eval('.ag-browser-floating:not([hidden])', nodes => nodes.length), 1, 'agent activity on a re-floated tab reuses the visible float');
+  assert.equal(await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-control', node => node.hidden), false, 'the locked float offers 직접 조작');
+  await page.click('.ag-browser-floating:not([hidden]) .ag-browser-control');
+  await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'false');
   await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-dock');
   await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && document.querySelector('.ag-workbench-panel[data-view="browser"] .ag-browser')?.getBoundingClientRect().width > 0 && !document.body.classList.contains('ag-fs-vt'));
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'docking from the normal editor preserves the same tab after fullscreen transition');
@@ -241,10 +247,10 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.evaluate(() => { window.popoverNative.host.style.display = 'none'; window.popoverNative.view.float(); });
   await page.waitForFunction(() => window.popoverNative.attach.at(-1).mode === 'float');
   const guestBounds = await page.evaluate(() => window.popoverNative.attach.at(-1).bounds);
-  const controlsOutsideGuest = await page.$eval('.ag-browser-floating:not([hidden])', (node, guest) => ['.ag-browser-floating:not([hidden]) .ag-browser-floating-close', '.ag-browser-floating:not([hidden]) .ag-browser-move', '.ag-browser-floating:not([hidden]) .ag-browser-resize'].every(selector => { const r = node.querySelector(selector).getBoundingClientRect(); return r.bottom <= guest.y || r.top >= guest.y + guest.height; }), guestBounds);
+  const controlsOutsideGuest = await page.$eval('.ag-browser-floating:not([hidden])', (node, guest) => [...node.querySelectorAll('.ag-browser-floating-close, .ag-browser-move, .ag-browser-float-edge')].every(control => { const r = control.getBoundingClientRect(); return r.bottom <= guest.y || r.top >= guest.y + guest.height || r.right <= guest.x || r.left >= guest.x + guest.width; }), guestBounds);
   assert.equal(controlsOutsideGuest, true, 'native guest never covers dismissal or manipulation controls');
   const floatAttachCount = await page.evaluate(() => window.popoverNative.attach.length);
-  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-resize'); await page.keyboard.press('ArrowRight');
+  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-move'); await page.keyboard.down('Shift'); await page.keyboard.press('ArrowRight'); await page.keyboard.up('Shift');
   await page.waitForFunction(count => window.popoverNative.attach.length > count, {}, floatAttachCount);
   assert.ok(await page.evaluate(width => window.popoverNative.attach.at(-1).bounds.width > width, guestBounds.width), 'native projection follows floating resize');
   const beforeAddressEscape = await page.evaluate(() => ({ tab: { ...window.popoverNative.view.controller.tab() }, detach: window.popoverNative.detach.length, guest: window.popoverNative.attach.at(-1).expectedTargetId }));
@@ -259,7 +265,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => window.popoverNative.detach.length), beforeAddressEscape.detach, 'floating address cancellation leaves the native guest attached');
   assert.equal(await page.evaluate(() => window.popoverNative.attach.at(-1).expectedTargetId), beforeAddressEscape.guest, 'floating address cancellation preserves native guest identity');
   const beforeHide = await page.evaluate(() => ({ attach: window.popoverNative.attach.length, detach: window.popoverNative.detach.length }));
-  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-resize'); await page.keyboard.press('Escape');
+  await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-move'); await page.keyboard.press('Escape');
   await page.waitForFunction(count => window.popoverNative.detach.length > count, {}, beforeHide.detach);
   await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])') === null);
   await page.evaluate(async () => { await window.popoverNative.view.controller.refresh(); });

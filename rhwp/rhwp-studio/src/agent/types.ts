@@ -159,6 +159,10 @@ export interface ChatPermissionRequest {
   origins?: string[];
   accountId?: string;
   accountLabel?: string;
+  /** 로그인을 요청한 에이전트 탭. */
+  tabId?: string;
+  /** 사용자 브라우저의 로그인을 이 사이트에 한해 에이전트에게 공유할 수 있다. */
+  canShare?: boolean;
   reason: string;
   createdAt: string;
 }
@@ -681,7 +685,9 @@ export interface BrowserTab {
   title: string;
   navigationEpoch: number;
   controllerEpoch: number;
-  controller: { owner: 'human' | 'agent'; clientId?: string };
+  controller: { owner: 'human' | 'agent'; clientId?: string; held?: boolean };
+  /** agent: 사용자 로그인과 분리된 에이전트 프로필, user: 사용자 브라우저. */
+  profile?: 'agent' | 'user';
   status: string;
   challenge?: BrowserChallenge | null;
   presentation?: 'native' | 'stream';

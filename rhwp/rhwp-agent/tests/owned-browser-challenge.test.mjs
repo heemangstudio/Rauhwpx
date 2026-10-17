@@ -22,17 +22,25 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
     } },
     runtimeFactory: async (options) => {
       const runtime = await startOwnedBrowserRuntime(options);
-      const newPage = runtime.context.newPage.bind(runtime.context);
-      runtime.context.newPage = async () => {
-        const page = await newPage(); pages.push(page);
-        const goto = page.goto.bind(page);
-        page.goto = (url, options) => goto(url.startsWith('https://www.google.com/search?') ? 'https://www.google.com/sorry/index?continue=private-token' : url, options);
-        await page.route('https://**/*', async (route) => {
-          const url = new URL(route.request().url()); visits.push(url.href);
-          await route.fulfill({ contentType: 'text/html', body: url.pathname === '/sorry/index' ? '<title>Traffic check</title><h1>Verify you are human</h1><button>Verify</button>' : '<title>Results</title><h1>Research results</h1>' });
-        });
-        return page;
+      // 에이전트 탭은 에이전트 프로필에서 열리므로 두 프로필의 새 페이지를 같은 가짜 공급자로 연결한다.
+      const instrument = (context) => {
+        const newPage = context.newPage.bind(context);
+        context.newPage = async () => {
+          const page = await newPage(); pages.push(page);
+          const goto = page.goto.bind(page);
+          page.goto = (url, options) => goto(url.startsWith('https://www.google.com/search?') ? 'https://www.google.com/sorry/index?continue=private-token' : url, options);
+          await page.route('https://**/*', async (route) => {
+            const url = new URL(route.request().url()); visits.push(url.href);
+            await route.fulfill({ contentType: 'text/html', body: url.pathname === '/sorry/index' ? '<title>Traffic check</title><h1>Verify you are human</h1><button>Verify</button>' : '<title>Results</title><h1>Research results</h1>' });
+          });
+          return page;
+        };
+        return context;
       };
+      instrument(runtime.context);
+      const openAgentContext = runtime.openAgentContext;
+      let agentContext;
+      runtime.openAgentContext = () => agentContext ??= openAgentContext().then(instrument);
       return runtime;
     },
   });
@@ -79,7 +87,7 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   denied = false;
   const taken = await browser.request(human, 'control', { ...identity(), owner: 'human' });
   assert.equal(taken.tab.tabId, opened.tab.tabId);
-  assert.equal(taken.tab.controller.owner, 'agent');
+  assert.deepEqual(taken.tab.controller, { owner: 'human', held: true });
   // Human continuation remains in the same Chromium page and session.
   await pages[0].goto('https://www.google.com/completed');
   assert.equal((await browser.inventory(human)).tabs[0].challenge, null);

@@ -79,11 +79,8 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.equal(report.presentation.navigations, 0);
   assert.equal(report.popoutClosePreservesPage, true);
   assert.equal(report.floatingAboveSidebar, true);
-  assert.equal(report.floatingPresentation.humanInput, true);
-  assert.equal(report.floatingPresentation.moveResizeMatchesViewport, true);
-  assert.equal(report.floatingPresentation.hiddenCapture, true);
-  assert.equal(report.floatingPresentation.hidePreservesPage, true);
-  assert.equal(report.floatingPresentation.dockRestoresPage, true);
+  assert.deepEqual(report.floatingPresentation, { inOwnerWindow: true, moveResizeMatchesViewport: true, focusSurvivesGeometry: true, humanInput: true,
+    modeSwitchKeepsView: true, hidePreservesPage: true, hiddenCapture: true, dockRestoresPage: true });
   assert.equal(report.hubRestart.retainedForm, true);
   assert.equal(report.sharedAuthentication, true);
   assert.equal(report.routeInterception, true);
@@ -97,4 +94,5 @@ test('real native guests retain form state across dock, float, popout and hub re
   assert.deepEqual(report.nativePopupNavigation, { foreground: true, openerBinding: true, otherChatRejected: true });
   assert.deepEqual(report.nativePresentationReconnect, { retainedForm: true, agentOwnership: true, windowIsolation: true, closedGuestNotRecreated: true });
   assert.deepEqual(report.nativeCheckpointStartup, { freshGuestOpened: true, checkpointAuthentication: true, hostOnlyPrefix: true, securePrefix: true, invalidPrefixRejected: true });
+  assert.deepEqual(report.agentProfile, { separateSession: true, cookiesIsolated: true, storageIsolated: true, sharedOnlyApprovedSite: true, sensitiveRefused: true });
 });

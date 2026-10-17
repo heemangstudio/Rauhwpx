@@ -48,8 +48,8 @@ test('failed native setup releases its owned connection before retry and concurr
     ownerOccupied = true; launches++;
     const firstLaunch = launches === 1;
     const context = Object.assign(new EventEmitter(), {
-      async storageState() { if (firstLaunch) { signalSetup(); return setup; } return { cookies: [], origins: [] }; },
-      async route() {}, pages: () => [],
+      async storageState() { return { cookies: [], origins: [] }; },
+      async route() { if (firstLaunch) { signalSetup(); return setup; } }, pages: () => [],
       async newPage() { pages++; return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [] }); },
     });
     return { kind: 'native', context, browser: new EventEmitter(), async close() { releases++; ownerOccupied = false; } };
@@ -194,7 +194,7 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
-  await browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch });
+  await assert.rejects(browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch }), { code: 'BROWSER_USER_CONTROL' });
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.ok(stillReadable.snapshot.text.includes('Research'));
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
@@ -252,13 +252,14 @@ test('encrypted profile checkpoint hooks run on shutdown and restore before obse
 });
 
 
-test('human tab closure retains epoch and agent scope checks without requiring page input takeover', async (t) => {
+test('human tab closure skips page takeover, and a human hold rejects agent changes until control returns', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-close-control-'));
   let closedPages = 0;
   const browser = createOwnedBrowserService({ dataDir, runtimeFactory: async () => {
     const context = Object.assign(new EventEmitter(), {
       async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
-      async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [] }); },
+      async newPage() { return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() { closedPages++; }, async routeWebSocket() {}, frames: () => [],
+        locator: () => ({ elementHandles: async () => [], innerText: async () => 'Fake research page' }), evaluate: async () => '' }); },
     });
     return { kind: 'chromium', context, browser: new EventEmitter(), async close() {} };
   } });
@@ -278,10 +279,18 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
   const humanOwned = await browser.request(human, 'open', {});
   const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
-  // 사용자의 입력 이후에도 소유 에이전트가 탭을 조작할 수 있다.
+  // 조작권은 사용자만 옮긴다. 사용자가 쥔 탭에서 에이전트 변경은 기다리지 않고 거절되고 읽기는 이어진다.
   const next = await browser.request(agent, 'open', {});
+  await assert.rejects(browser.request(agent, 'control', { tabId: next.tab.tabId, owner: 'agent' }), { code: 'BROWSER_HUMAN_REQUIRED' });
   const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
-  await browser.request(agent, 'close', identity(taken.tab));
+  assert.deepEqual(taken.tab.controller, { owner: 'human', held: true });
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_CONTROL' });
+  await assert.rejects(browser.request(agent, 'navigate', { ...identity(next.tab), url: 'about:blank' }), { code: 'BROWSER_USER_CONTROL' }, 'a stale agent epoch still reports the user hold');
+  assert.equal((await browser.request(agent, 'snapshot', { tabId: next.tab.tabId })).snapshot.text, 'Fake research page');
+  await assert.rejects(browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'nobody' }), { code: 'BROWSER_CONTROL_INVALID' });
+  const returned = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'agent' });
+  assert.deepEqual(returned.tab.controller, { owner: 'agent' });
+  await browser.request(agent, 'close', identity(returned.tab));
   await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
   assert.equal(closedPages, 3);
 });
@@ -296,9 +305,7 @@ test('restored native tabs materialize once on selection without transferring co
   await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, humanStorageOrigins: [origin], tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
   const policy = createBrowserPolicy({ dataDir });
   const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
-  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
   const retainedOwner = { threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a' };
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: retainedOwner, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const bindings = [];
   let actual; let creations = 0;
   const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker, workspaceTargets: [origin], autoInstall: false,
@@ -323,8 +330,8 @@ test('restored native tabs materialize once on selection without transferring co
   assert.equal(first.tab.threadId, 'chat-a'); assert.equal(first.tab.projectId, 'project-a');
   assert.deepEqual(first.tab.controller, { owner: 'agent' });
   assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
-  assert.equal(await actual.context.pages()[0].title(), 'Restored research', 'human restoration may display the quarantined retained origin');
-  assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'owned-tab access includes the retained session');
+  assert.equal(await actual.context.pages()[0].title(), 'Restored research');
+  assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'the owning agent can read its restored tab');
   assert.equal(browser.ownsTarget(retainedOwner, first.tab), true);
   assert.equal(browser.ownsTarget({ isHuman: true, sessionId: 'wrong-window' }, first.tab), false);
   assert.equal(browser.downloadTarget({ isHuman: true, sessionId: 'wrong-window' }, `${origin}/file.pdf`), null);
@@ -407,7 +414,8 @@ test('same-document navigation settles browser readiness while a real unfinished
   t.after(async () => { slowResponse?.end(); await browser.close(); await new Promise((resolve) => server.close(resolve)); await fs.rm(dataDir, { recursive: true, force: true }); });
   const actor = { threadId: 'research', agentId: 'owner' };
   const opened = (await browser.request(actor, 'open', { url: origin })).tab;
-  const page = runtime.context.pages().find((page) => page.url().startsWith(origin));
+  // 에이전트 탭은 관리형 Chromium의 에이전트 프로필에 열린다.
+  const page = (await runtime.openAgentContext()).pages().find((page) => page.url().startsWith(origin));
   const read = async () => (await browser.inventory(actor)).tabs.find((tab) => tab.tabId === opened.tabId);
   const waitFor = async (predicate) => { const deadline = Date.now() + 3000; while (Date.now() < deadline) { const tab = await read(); if (predicate(tab)) return tab; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Navigation state did not settle'); };
   await page.evaluate(() => { location.hash = 'section'; });
@@ -480,4 +488,69 @@ test('human link popups retain global ownership and downloads are attributed to 
   while (!captured && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(captured?.isHuman, true);
   assert.equal((await service.inventory({ agentId: 'other', threadId: 'other' })).tabs.length, 2, 'user popups are shared with agents too');
+});
+
+
+test('idle desktop native browser is ready without installing or starting managed Chromium', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-readiness-'));
+  const service = createOwnedBrowserService({ dataDir, nativeAdapter: { passwordAccounts: async () => ({ accounts: [] }) },
+    runtimeFactory: async () => { throw new Error('Status must not launch a browser'); } });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const status = await service.request({ isHuman: true, clientId: 'editor' }, 'status');
+  assert.equal(status.runtime.kind, 'native');
+  assert.equal(status.runtime.state, 'idle');
+  assert.equal(status.runtime.profileId, 'native');
+  assert.equal(status.readiness.installed, true);
+  assert.equal(status.readiness.state, 'ready');
+  assert.equal(status.readiness.retryAction, undefined);
+});
+
+test('agent tabs open in their own desktop profile, so human browsing never blocks agents or revokes approvals', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-profile-'));
+  const policy = createBrowserPolicy({ dataDir });
+  const broker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
+  const agent = { threadId: 'chat', agentId: 'researcher', sessionId: 'window' };
+  const owner = { ...agent, isHuman: true, clientId: 'editor' };
+  const origin = 'https://login.example.test';
+  const requested = await broker.requestAccount({ actor: owner, origin, profileId: 'native' });
+  const { account } = await broker.submit({ actor: owner, requestId: requested.requestId,
+    approval: { approved: true, requestId: requested.requestId, save: true, use: true },
+    username: 'fixture-user', password: 'fixture-password' });
+  const pages = []; const created = [];
+  const makePage = (target) => {
+    let url = 'about:blank';
+    const page = Object.assign(new EventEmitter(), { target, url: () => url, isClosed: () => false, frames: () => [{ url: () => url }],
+      async opener() { return null; }, async routeWebSocket() {}, async close() {}, async goto(next) { url = next; } });
+    pages.push(page); return page;
+  };
+  const context = Object.assign(new EventEmitter(), { async storageState() { return { cookies: [], origins: [] }; },
+    async route() {}, pages: () => [...pages], async newPage() { return makePage(`user-${pages.length}`); }, async waitForEvent() {},
+    async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; } });
+  const browser = Object.assign(new EventEmitter(), { async newBrowserCDPSession() {
+    return { async send(method, params) {
+      assert.equal(method, 'Target.createTarget');
+      created.push(params);
+      const page = makePage(`agent-${created.length}`); context.emit('page', page);
+      return { targetId: page.target };
+    }, async detach() {} };
+  } });
+  const service = createOwnedBrowserService({ dataDir, policy, credentialBroker: broker,
+    nativeAdapter: { agentProfile: true, async bind() {}, async control() {} }, lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    runtimeFactory: async () => ({ kind: 'native', context, browser, async close() {} }) });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const approved = () => broker.listAccounts().then(({ accounts }) => accounts.find(entry => entry.id === account.id).agentReuseApproved);
+
+  const shared = await service.request(owner, 'open', { url: 'https://www.google.com/' });
+  assert.equal(shared.tab.profile, 'user');
+  assert.deepEqual(created, [], 'user tabs stay in the user profile');
+  const research = await service.request(agent, 'open', { url: 'https://www.google.com/search?q=GPT+6.1' });
+  assert.equal(research.tab.profile, 'agent');
+  assert.deepEqual(created, [{ url: 'about:blank', browserContextId: 'rhwp-agent-profile' }]);
+  assert.equal(research.tab.nativeTargetId, 'agent-1');
+
+  await service.request(owner, 'control', { tabId: research.tab.tabId, owner: 'human' });
+  await service.request(owner, 'control', { tabId: research.tab.tabId, owner: 'agent' });
+  const login = await service.request(agent, 'open', { url: origin });
+  assert.equal(login.tab.profile, 'agent');
+  assert.equal(await approved(), true, 'taking and returning control keeps the approval');
 });

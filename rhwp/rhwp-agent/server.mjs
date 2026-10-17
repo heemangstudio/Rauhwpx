@@ -718,7 +718,8 @@ function assertBrowserAccountScope(pending, actor) {
 
 function publishBrowserAccountRequest(record, request) {
   const actor = request.actor;
-  const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
+  // 저장된 계정이 없는 사이트는 사용자 브라우저의 로그인을 에이전트 저장소로 공유할 수 있다.
+  const wrapped = { ...request, canShare: !request.accountId && ownedBrowser.canShareSession(request.origins), threadId: actor.threadId, documentId: actor.documentId,
     turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
     capability: 'browser', createdAt: new Date().toISOString() };
   record.pendingBrowserAccountRequests.set(request.requestId, wrapped);
@@ -768,6 +769,12 @@ function containsBrowserSecret(value) {
   return Object.entries(value).some(([key, child]) => /^(?:password|passphrase|secret|cookie|cookies|authorization|token|credentials)$/i.test(key) || containsBrowserSecret(child));
 }
 
+async function browserAccountsForCurrentProfile() {
+  const result = await credentialBroker.listAccounts();
+  return { ...result, accounts: result.accounts.map(account => account.profileId === ownedBrowser.profileId() ? account
+    : { ...account, agentReuseApproved: false }) };
+}
+
 async function handleBrowserRequest(record, sock, msg) {
   const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
   try {
@@ -787,16 +794,23 @@ async function handleBrowserRequest(record, sock, msg) {
       }
       case 'policy.list': result = await browserPolicy.list(); break;
       case 'policy.update': result = await browserPolicy.update({ ...args, actor }); break;
-      case 'accounts.list': result = await credentialBroker.listAccounts(); break;
-      case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
+      case 'accounts.list': result = await browserAccountsForCurrentProfile(); break;
+      case 'accounts.request': result = await credentialBroker.requestAccount({ profileId: ownedBrowser.profileId(), ...args, actor }); break;
       case 'accounts.approve': {
         let approval;
+        let shared = false;
+        const { share, shared: _ignored, ...approveArgs } = args;
         if (args.requestId) {
           const pending = await credentialBroker.getAccountRequest(args.requestId);
           assertBrowserAccountScope(pending, actor);
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
-        }
-        result = await credentialBroker.approveAccount({ ...args, actor, approval });
+          if (share === true) {
+            if (pending.accountId) throw workflowError('BROWSER_SHARE_UNAVAILABLE', 'Saved accounts sign in with their password.');
+            await ownedBrowser.shareSession(actor, pending.origins);
+            shared = true;
+          }
+        } else if (share === true) throw workflowError('BROWSER_SHARE_UNAVAILABLE', 'Share a login from the agent request.');
+        result = await ownedBrowser.approveAccount({ profileId: ownedBrowser.profileId(), ...approveArgs, actor, approval, shared });
         if (args.requestId) settleBrowserAccountRequest(args.requestId);
         break;
       }
@@ -825,7 +839,7 @@ async function handleBrowserAccountSubmit(record, sock, msg) {
     if (msg.consent?.save !== true || typeof msg.consent?.use !== 'boolean') {
       throw workflowError('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose whether to save and reuse this account');
     }
-    const result = await credentialBroker.submit({
+    const result = await ownedBrowser.submitAccount({
       actor, requestId: accountRequestId, account: msg.account,
       username: msg.username, password: msg.password, remember: msg.remember === true,
       approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),
@@ -6541,13 +6555,13 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            const request = await credentialBroker.requestAccount({ actor, ...args });
+            const request = await credentialBroker.requestAccount({ profileId: ownedBrowser.profileId(), actor, ...args });
             publishBrowserAccountRequest(record, request);
             return { pending: true, requestId: request.requestId, origin: request.origin };
           }
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {
-            const accounts = await credentialBroker.listAccounts();
+            const accounts = await browserAccountsForCurrentProfile();
             const nativeAccounts = result.accounts ?? [];
             result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts.accounts
               : accounts.accounts.filter((account) => account.agentReuseApproved));

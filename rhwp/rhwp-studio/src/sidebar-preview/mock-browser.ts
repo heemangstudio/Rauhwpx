@@ -57,7 +57,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (action === 'accounts.request') return { requestId: crypto.randomUUID() };
     if (action.startsWith('accounts.')) {
       if (action === 'accounts.approve' && args.account && typeof args.account === 'object') {
-        const account = args.account as Record<string, unknown>; const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: 'session-retained' }; accounts.push(row);
+        const account = args.account as Record<string, unknown>; const row = { profileId: 'default', origins: (account.origins as string[]) ?? [String(account.origin)], id: crypto.randomUUID(), origin: String(account.origin), label: String(account.label), hasPassword: false, agentReuseApproved: true, sessionStatus: args.share === true ? 'shared' : 'session-retained' }; accounts.push(row);
         return { account: structuredClone(row) };
       }
       const id = String(args.accountId ?? args.id ?? '');
@@ -85,14 +85,21 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       signInAccountId = null; account.sessionStatus = 'authenticated'; return { ok: true, account: structuredClone(account), runtime: runtime() };
     }
     if (action === 'open') {
-      const tab: BrowserTab = { tabId: crypto.randomUUID(), threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url: String(args.url ?? 'https://www.google.com/'), title: '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false };
+      const tab: BrowserTab = { tabId: crypto.randomUUID(), profile: actor.isHuman ? 'user' : 'agent', threadId: getThread(), projectId: getProject(), documentId: null, agentId: 'preview-agent', url: String(args.url ?? 'https://www.google.com/'), title: '연구 자료', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'agent' }, status: 'ready', canGoBack: false, canGoForward: false };
       tabs.push(tab); changed(tab); return { ok: true, tab: structuredClone(tab) };
     }
     const tab = tabs.find((row) => row.tabId === args.tabId);
     if (!tab) throw Object.assign(new Error('브라우저 탭을 찾을 수 없습니다.'), { code: 'BROWSER_TAB_NOT_FOUND' });
+    // 허브와 같이 사용자가 쥔 탭의 에이전트 변경은 바로 거절하고, 에이전트 작업은 미리보기로 알린다.
+    if (!actor.isHuman && tab.controller.held && ['navigate', 'click', 'type', 'press', 'scroll', 'close'].includes(action)) throw Object.assign(new Error('The user is controlling this tab. Wait for them to return control, or continue without it.'), { code: 'BROWSER_USER_CONTROL' });
+    if (!actor.isHuman) emit({ type: 'owned_browser_activity', active: true, tab: structuredClone(tab), runtime: runtime() });
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw Object.assign(new Error('페이지가 바뀌었습니다. 다시 캡처해 주세요.'), { code: 'STALE_NAVIGATION' });
     if (action === 'close') { tabs = tabs.filter((row) => row !== tab); changed(); return { ok: true }; }
-    if (action === 'control') { tab.controller.owner = 'agent'; tab.controllerEpoch++; changed(tab); }
+    if (action === 'control') {
+      if (!actor.isHuman) throw Object.assign(new Error('Only the user can transfer browser control.'), { code: 'BROWSER_HUMAN_REQUIRED' });
+      const held = args.owner === undefined ? tab.controller.held === true : args.owner === 'human';
+      tab.controller = held ? { owner: 'human', held: true } : { owner: 'agent' }; tab.controllerEpoch++; changed(tab);
+    }
     if (action === 'navigate') { if (args.url) tab.url = String(args.url); tab.navigationEpoch++; tab.canGoBack = true; changed(tab); }
     if (action === 'recover') { generation++; tab.status = 'ready'; changed(tab); }
     if (action === 'input') {

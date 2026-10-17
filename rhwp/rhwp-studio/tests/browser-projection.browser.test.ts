@@ -36,7 +36,14 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       } } });
       const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
       const tab = { tabId: 'same-tab', scope: 'global', nativeTargetId: 'same-target', runtime: 'native', url: 'https://example.com/retained', title: '자료', navigationEpoch: 3, controllerEpoch: 2, controller: { owner: 'human' }, status: 'ready' };
-      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string, args: Record<string, unknown> = {}) { calls.push({ action, ...args }); if (action === 'sleep') { attached = null; return { sleeping: true, tab: { ...tab, status: 'sleeping', nativeTargetId: undefined } }; } return action === 'status' ? { tabs: [tab] } : {}; } };
+      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string, args: Record<string, unknown> = {}) {
+        calls.push({ action, ...args }); if (action === 'sleep') { attached = null; return { sleeping: true, tab: { ...tab, status: 'sleeping', nativeTargetId: undefined } }; }
+        if (action === 'control') {
+          if ((window as any).projectionTest.rejectControl) throw new Error('조작권을 옮기지 못했습니다.');
+          const current = (window as any).projectionTest.view.controller.tab();
+          return { tab: { ...current, controllerEpoch: current.controllerEpoch + 1, controller: args.owner === 'human' ? { owner: 'human', held: true } : { owner: 'human' } } };
+        }
+        return action === 'status' ? { tabs: [tab] } : {}; } };
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
@@ -90,6 +97,9 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       harness.view.controller.accept({ tab: { ...harness.view.controller.tab(), navigationEpoch: 4 } });
     });
     await page.waitForFunction(() => (window as any).projectionTest.healthStarted);
+    const healthBounds = await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).bounds.width);
+    await page.evaluate(() => { document.querySelector<HTMLElement>('.ag-browser-floating')!.style.width = '640px'; });
+    await page.waitForFunction(width => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).bounds.width > width, { timeout: 2_000 }, healthBounds);
     await page.evaluate(() => { (document.querySelector('.ag-browser-details') as HTMLDetailsElement).open = true; });
     await page.evaluate(() => (window as any).projectionTest.failHealth());
     await page.waitForFunction(() => (window as any).projectionTest.attached === null);
@@ -141,6 +151,19 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'ending the agent turn keeps the page docked');
 
     await page.evaluate(() => {
+      // 긴 대기만 가상 시계로 돌려 실제 프레임과 네이티브 투영 검사는 그대로 실행한다.
+      const timers = new Map<number, { at: number; run: () => void }>();
+      let now = 0; let nextId = -1;
+      const schedule = window.setTimeout.bind(window); const cancel = window.clearTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, delay = 0, ...args: any[]) => {
+        if (delay < 60_000 || typeof handler !== 'function') return schedule(handler, delay, ...args);
+        const id = nextId--; timers.set(id, { at: now + delay, run: () => handler(...args) }); return id;
+      }) as typeof window.setTimeout;
+      window.clearTimeout = (id?: number) => { if (id !== undefined && timers.delete(id)) return; cancel(id); };
+      (window as any).projectionTest.advanceTime = (ms: number) => {
+        now += ms;
+        for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.run(); }
+      };
       const view = (window as any).projectionTest.view;
       view.setVisible(false);
       view.previewAgent({ ...view.controller.tab(), controller: { owner: 'agent' } });
@@ -148,8 +171,8 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.waitForFunction(() => (window as any).projectionTest.calls.at(-1)?.action === 'attach'
       && (window as any).projectionTest.calls.at(-1)?.interactive === false);
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'agent activity opens the floating preview');
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).inert), true, 'preview chrome rejects human input');
-    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).inert), true, 'preview page controls reject human input');
+    assert.equal(await page.$eval('.ag-browser-floating .ag-browser-navigation', node => (node as HTMLElement).inert), true, 'preview chrome rejects human input');
+    assert.equal(await page.$eval('.ag-browser-surface', node => (node as HTMLElement).inert), true, 'preview page controls reject human input');
     assert.equal(await page.$eval('.ag-browser-address', node => { (node as HTMLElement).focus(); return document.activeElement === node; }), false, 'URL input cannot steal agent control');
     await page.evaluate(() => document.documentElement.classList.add('document-home-open'));
     await attached('same-tab');
@@ -157,9 +180,71 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
     await page.evaluate(() => (window as any).projectionTest.view.controller.refresh());
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'idle browser state preserves the agent preview');
     await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'turn end collapses immediately');
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'turn end keeps the browser visible');
+    assert.equal(await page.$eval('.ag-browser-surface', node => (node as HTMLElement).inert), false, 'turn end immediately unlocks the lingering browser');
+    assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'the lingering browser stays visible on Home');
+    await attached('same-tab');
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(119_999));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'browser stays visible for two minutes');
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); h.advanceTime(1); });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'new agent use resets the idle deadline');
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(119_999));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'two idle minutes collapse the preview');
     await attached(null);
     assert.equal(await page.evaluate(() => (window as any).projectionTest.view.controller.tab().tabId), 'same-tab', 'collapse preserves the browser tab');
+    await page.evaluate(() => document.documentElement.classList.remove('document-home-open'));
+
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); });
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.float(); h.advanceTime(120_000); });
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'manual reopen cancels the old idle close');
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
+
+    await page.evaluate(() => { const h = (window as any).projectionTest; h.view.previewAgent(h.view.controller.tab()); h.view.endAgentPreview(); });
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held === true);
+    await page.evaluate(() => (window as any).projectionTest.advanceTime(120_000));
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'taking control during the idle grace period cancels automatic hiding');
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held !== true);
+    await page.click('.ag-browser-floating-close');
+    await attached(null);
+
+    // 직접 조작은 같은 게스트를 떼지 않고 입력만 풀며, 거절되면 미리보기 잠금으로 돌아가고, 턴이 끝나도 쓰던 창을 접지 않는다.
+    const lastAttach = () => page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1));
+    const detaches = () => page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'detach').length);
+    const surfaceInert = () => page.$eval('.ag-browser-surface', node => (node as HTMLElement).inert);
+    await page.evaluate(() => { document.documentElement.classList.remove('document-home-open'); const view = (window as any).projectionTest.view; view.previewAgent(view.controller.tab()); });
+    await page.waitForFunction(() => (window as any).projectionTest.attached === 'same-tab' && (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).interactive === false);
+    const detachedBefore = await detaches();
+    await page.click('.ag-browser-floating .ag-browser-control');
+    assert.equal(await surfaceInert(), false, 'taking control unlocks the page before the hub answers');
+    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'control' && call.owner === 'human'));
+    await page.waitForFunction(() => { const call = (window as any).projectionTest.calls.filter((entry: any) => entry.action === 'attach').at(-1); return call.interactive === true && call.focus === true; });
+    assert.equal(await detaches(), detachedBefore, 'taking control keeps the attached guest');
+    await page.evaluate(() => { const view = (window as any).projectionTest.view; view.previewAgent(view.controller.tab()); });
+    assert.equal(await surfaceInert(), false, 'agent reads keep the page the user holds');
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'control' && call.owner === 'agent'));
+    await page.waitForFunction(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).interactive === false);
+    assert.equal(await surfaceInert(), true, 'returning control restores the agent preview');
+    await page.evaluate(() => { (window as any).projectionTest.rejectControl = true; });
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => !document.querySelector<HTMLElement>('.ag-browser-error')!.hidden);
+    await page.waitForFunction(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').at(-1).interactive === false);
+    assert.equal(await surfaceInert(), true, 'a rejected transfer rolls back to the agent preview');
+    await page.evaluate(() => { (window as any).projectionTest.rejectControl = false; });
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held === true);
+    await page.evaluate(() => (window as any).projectionTest.view.endAgentPreview());
+    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'turn end keeps the float the user holds');
+    assert.equal((await lastAttach()).interactive, true);
+    assert.equal(await surfaceInert(), false);
+    await page.click('.ag-browser-floating .ag-browser-control');
+    await page.waitForFunction(() => (window as any).projectionTest.view.controller.tab().controller.held !== true);
+    assert.equal(await page.$eval('.ag-browser-floating .ag-browser-control', node => (node as HTMLElement).hidden), true, 'the control leaves once neither side is working');
     const handoff = await page.evaluate(async () => {
       const harness = (window as any).projectionTest;
       document.documentElement.classList.remove('document-home-open');
@@ -209,7 +294,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       const host = document.createElement('div'); document.body.append(host);
       const presentation = createBrowserPresentation(panel, () => {}); presentation.mount(host); presentation.present('float');
       const floating = panel.closest<HTMLElement>('.ag-browser-floating')!;
-      const grip = floating.querySelector<HTMLButtonElement>('.ag-browser-resize')!;
+      const grip = floating.querySelector<HTMLElement>('.ag-browser-float-edge[data-edge=se]')!;
       grip.setPointerCapture = () => {}; grip.hasPointerCapture = () => false;
       const original = floating.getBoundingClientRect.bind(floating); let reads = 0;
       floating.getBoundingClientRect = () => { reads++; return original(); };
@@ -217,8 +302,8 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       grip.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 4, clientX: 0, clientY: 0 }));
       for (let i = 1; i <= 60; i++) grip.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, clientX: -i, clientY: -i }));
       await new Promise(resolve => requestAnimationFrame(resolve));
-      grip.dispatchEvent(new PointerEvent('pointerup', { pointerId: 4 }));
-      const result = { reads, width: original().width, expected: before.width - 60 };
+      grip.dispatchEvent(new PointerEvent('pointerup', { pointerId: 4, clientX: -80, clientY: -80 }));
+      const result = { reads, width: original().width, expected: before.width - 80 };
       presentation.dispose(); host.remove(); return result;
     });
     assert.equal(resizeBurst.width, resizeBurst.expected, 'resize commits the latest pointer position');

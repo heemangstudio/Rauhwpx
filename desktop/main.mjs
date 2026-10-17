@@ -571,6 +571,10 @@ const browserHost = new OwnedBrowserHost({
 const browserAdblock = new BrowserAdblock({ host: browserHost, ipcMain });
 new NativeBrowserPasswords({
   host: browserHost,
+  readBrokerCredential: async (id) => {
+    const value = await secretVault?.get(`browser.password.${id}`);
+    return value ? JSON.parse(value) : null;
+  },
   dataDir: join(app.getPath('userData'), 'browser', 'password-vault'),
   safeStorage,
   Menu,

@@ -12,6 +12,9 @@ import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { BrowserAdblock } from '../../desktop/browser-adblock.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { LocalBrowserPasswordVault } from '../../desktop/browser-local-password-vault.mjs';
+import { createSecretVault } from '../../desktop/secret-vault.mjs';
+import { createBrowserPolicy } from '../../rhwp/rhwp-agent/browser-policy.mjs';
+import { createBrowserCredentialBroker } from '../../rhwp/rhwp-agent/browser-credentials.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
 import { startOwnedBrowserRuntime } from '../../rhwp/rhwp-agent/owned-browser-runtime.mjs';
 import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
@@ -58,7 +61,12 @@ try {
   const vault = new LocalBrowserPasswordVault({ dataDir: join(dataDir, 'password-vault'), safeStorage });
   let autocompleteChoices; let autocompleteShown;
   const Menu = { buildFromTemplate: (choices) => ({ popup: () => { autocompleteChoices = choices; autocompleteShown?.(); } }) };
-  const passwords = new NativeBrowserPasswords({ host, vault, Menu });
+  const ownerVault = createSecretVault({ filePath: join(root, 'owner-secrets.json'), safeStorage });
+  const secretStore = { available: true, get: key => ownerVault.get(key), set: (key, value) => ownerVault.set(key, value), delete: key => ownerVault.delete(key) };
+  const credentialBroker = createBrowserCredentialBroker({ dataDir, policy: createBrowserPolicy({ dataDir }), secretStore });
+  const passwords = new NativeBrowserPasswords({ host, vault, Menu, readBrokerCredential: async id => {
+    const value = await ownerVault.get(`browser.password.${id}`); return value ? JSON.parse(value) : null;
+  } });
   autocompleteListener = (event, payload) => { void passwords.autocomplete(event, payload); };
   ipcMain.on('desktop:browser-guest-autocomplete', autocompleteListener);
   saveListener = (event, payload) => { void passwords.saveLogin(event, payload); };
@@ -69,9 +77,13 @@ try {
   const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(JSON.stringify(message)); void host.handleRequest(message, owner).then((response) => { wire.push(JSON.stringify(response)); messages.emit('message', response); }); } });
   const originalSend = host.cdp.send.bind(host.cdp);
   host.cdp.send = (message, client) => { wire.push(JSON.stringify(message)); return originalSend(message, client); };
-  service = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
+  service = createOwnedBrowserService({ dataDir, credentialBroker, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
   report.stage = 'opening';
   const actor = { threadId: 'chat-one', agentId: 'agent-one', sessionId: 'editor', projectId: 'project-one' };
+  const idle = await service.request(actor, 'status');
+  assert.equal(idle.runtime.state, 'idle');
+  assert.equal(idle.readiness.installed, true);
+  assert.equal(idle.readiness.state, 'ready');
   const opened = await service.request(actor, 'open', { url: origin });
   report.stage = 'opened';
   const tabId = opened.tab.tabId;
@@ -249,6 +261,55 @@ try {
   const protectedReloadSession = tab.cdpSessionId;
   await assert.rejects(host.cdp.command({ method: 'Page.reload', sessionId: protectedReloadSession, params: { scriptToEvaluateOnLoad: 'document.querySelector("input").value' } }), /protect this page/);
   report.protectedReload = true;
+  // The secure account form stores this account in the owner vault, never the Chrome-import vault.
+  const ownerActor = { ...actor, isHuman: true, clientId: 'fixture-owner' };
+  const registration = await credentialBroker.requestAccount({ actor: ownerActor, origin, origins: [origin], profileId: 'default', label: 'Owner-vault fixture' });
+  const { account: brokerAccount } = await credentialBroker.submit({ actor: ownerActor, requestId: registration.requestId,
+    approval: { approved: true, requestId: registration.requestId, save: true, use: true },
+    account: { origin, origins: [origin], label: 'Owner-vault fixture', profileId: 'default' }, username: 'owner-vault-user', password: secret, remember: true });
+  assert.equal((await vault.list()).accounts.some(row => row.id === brokerAccount.id), false);
+  const nativeApproval = await credentialBroker.requestAccount({ actor, accountId: brokerAccount.id, profileId: 'native' });
+  await service.request(ownerActor, 'control', { tabId, owner: 'human' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=owner-login; path=/; Secure'; localStorage.setItem('approvalFixture','owner-login')");
+  const migrated = await service.approveAccount({ actor: ownerActor, requestId: nativeApproval.requestId,
+    approval: { approved: true, requestId: nativeApproval.requestId, use: true } });
+  assert.equal(migrated.account.id, brokerAccount.id);
+  await service.request(ownerActor, 'control', { tabId, owner: 'agent' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=site-refresh; path=/; Secure'; localStorage.setItem('approvalFixture','site-refresh')");
+  await service.inventory(actor);
+  assert.equal((await credentialBroker.listAccounts()).accounts.find(account => account.id === brokerAccount.id).agentReuseApproved, true,
+    'the approved native account survives normal cookie and localStorage refresh');
+  await service.request(ownerActor, 'control', { tabId, owner: 'human' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=owner-update; path=/; Secure'");
+  const update = await credentialBroker.requestAccount({ actor: ownerActor, accountId: brokerAccount.id, profileId: 'native', intent: 'save' });
+  const updated = await service.submitAccount({ actor: ownerActor, requestId: update.requestId,
+    username: 'owner-vault-user', password: secret, approval: { approved: true, requestId: update.requestId, save: true, use: true } });
+  assert.equal(updated.account.id, brokerAccount.id);
+  await service.request(ownerActor, 'control', { tabId, owner: 'agent' });
+  await tab.view.webContents.executeJavaScript("document.cookie='approvalFixture=after-save; path=/; Secure'");
+  await service.inventory(actor);
+  assert.equal((await credentialBroker.listAccounts()).accounts.find(account => account.id === brokerAccount.id).agentReuseApproved, true,
+    'saving an account with reuse consent also settles the current session');
+  report.brokerApprovalSurvivesSessionRefresh = true;
+  assert.equal(migrated.account.profileId, 'native');
+
+  const nativeObservation = await service.request(actor, 'snapshot', { tabId });
+  const userField = nativeObservation.snapshot.elements.find(row => row.tag === 'input' && row.inputType !== 'password');
+  const secretField = nativeObservation.snapshot.elements.find(row => row.inputType === 'password');
+  const nativeArgs = { tabId, accountId: brokerAccount.id, snapshotId: nativeObservation.snapshot.snapshotId,
+    usernameRef: userField.ref, passwordRef: secretField.ref, navigationEpoch: nativeObservation.tab.navigationEpoch, controllerEpoch: nativeObservation.tab.controllerEpoch };
+  const brokerFilled = await service.request(actor, 'fill-account', nativeArgs);
+  assert.equal(brokerFilled.completed, true);
+  assert.equal(await tab.view.webContents.executeJavaScript(`document.querySelector('#identity').value === 'owner-vault-user' && document.querySelector('#secret').value === ${JSON.stringify(secret)}`), true);
+  assert.equal(wire.some(message => message.includes(secret)), false, 'owner-vault password never crosses the native adapter wire');
+  const shielded = await service.request(actor, 'snapshot', { tabId });
+  assert.equal(JSON.stringify(shielded).includes(secret), false);
+  await credentialBroker.revokeAccount({ actor: ownerActor, accountId: brokerAccount.id });
+  // 승인 철회는 에이전트 저장소의 로그인도 지우므로 새 관찰로 다시 시도해도 거절된다.
+  const revoked = await service.request(actor, 'snapshot', { tabId });
+  await assert.rejects(service.request(actor, 'fill-account', { ...nativeArgs, snapshotId: revoked.snapshot.snapshotId,
+    navigationEpoch: revoked.tab.navigationEpoch, controllerEpoch: revoked.tab.controllerEpoch }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
+  report.brokerAccountAutofill = true;
   report.nativeSubmit = true; report.postNavigationInput = true; report.noSecretInHub = true; report.staleAndWrongOriginRejected = true; report.rawReadbackAndCaptureBlocked = true;
 } catch (error) { report.error = error.stack; process.exitCode = 1; }
 finally {

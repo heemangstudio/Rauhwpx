@@ -28,21 +28,23 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
   const signedInStorage = { cookies: [cookie('siteSession', 'site.example', 'after'), cookie('unrelatedSession', 'unrelated.example', 'private-unrelated')],
     origins: [{ origin, localStorage: [{ name: 'sessionFlag', value: 'approved' }] }, { origin: 'https://unrelated.example', localStorage: [{ name: 'unrelatedFlag', value: 'private' }] }] };
   const nativeAdapter = {
-    async bind(value) { bindings.push(value); }, async control() {},
+    agentProfile: true, async bind(value) { bindings.push(value); }, async control() {},
     async inventory() { return pages.map((page) => ({ nativeTargetId: page.target, passwordProtected: shielded, tabId: bindings.find((entry) => entry.targetId === page.target)?.tabId })); },
+  };
+  // 계정 연결로 얻은 로그인은 에이전트 저장소로만 들어간다.
+  nativeAdapter.importSession = async ({ origins, state, reload, profile }) => {
+    assert.equal(profile, 'agent');
+    assert.deepEqual(origins, [origin]);
+    assert.ok(state.cookies.every((entry) => entry.domain === 'site.example'));
+    assert.ok(state.origins.every((entry) => entry.origin === origin));
+    imports.push({ kind: 'main', state: structuredClone(state) });
+    nativeStorage = { cookies: [...nativeStorage.cookies.filter((entry) => entry.domain !== 'site.example'), ...state.cookies],
+      origins: [...nativeStorage.origins.filter((entry) => !origins.includes(entry.origin)), ...state.origins] };
+    if (reload) for (const page of pages) if (origins.includes(new URL(page.url()).origin)) await page.reload();
   };
   if (protectedAutofill) Object.assign(nativeAdapter, {
     async passwordFill() { shielded = true; return { completed: true }; },
     async passwordStorageState() { return shielded ? { cookies: structuredClone(nativeStorage.cookies), origins: [] } : null; },
-    async importSession({ origins, state, reload }) {
-      assert.deepEqual(origins, [origin]);
-      assert.ok(state.cookies.every((entry) => entry.domain === 'site.example'));
-      assert.ok(state.origins.every((entry) => entry.origin === origin));
-      imports.push({ kind: 'main', state: structuredClone(state) });
-      nativeStorage = { cookies: [...nativeStorage.cookies.filter((entry) => entry.domain !== 'site.example'), ...state.cookies],
-        origins: [...nativeStorage.origins.filter((entry) => !origins.includes(entry.origin)), ...state.origins] };
-      if (reload) for (const page of pages) if (origins.includes(new URL(page.url()).origin)) await page.reload();
-    },
   });
   const newNativePage = () => {
     let url = 'about:blank'; let closed = false;
@@ -73,7 +75,7 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
     },
     credentialBroker: {
       async listAccounts() { return { accounts: [account] }; }, setSessionClearer(clearer) { clearSession = clearer; },
-      async registerSessionOrigins() {}, async assertBrowserAccess() {},
+      async assertBrowserAccess() {},
       async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, structuredClone(state)); },
       async restoreCheckpoint({ profileId }) { return checkpoints.get(profileId) ?? null; },
       async deleteCheckpoint({ profileId }) { checkpoints.delete(profileId); },
