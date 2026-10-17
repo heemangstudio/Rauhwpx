@@ -27,6 +27,16 @@ function field(label: string, type = 'text', value = '') {
   input.autocomplete = type === 'password' ? 'new-password' : 'off'; input.spellcheck = false; root.append(input); return { root, input };
 }
 
+/** 사이트 권한 칸은 `coupang.com`처럼 주소만 써도 HTTPS 출처로 받는다. 다른 프로토콜은 받지 않는다. */
+export function httpsSiteOrigin(value: string): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+    return url.protocol === 'https:' && url.hostname.includes('.') && !url.username && !url.password ? url.origin : null;
+  } catch { return null; }
+}
+
 /** 비밀 값은 전용 인증 요청으로만 보내고 저장소와 채팅 메시지에 남기지 않는다. */
 export function createBrowserAccountForm(options: {
   submit: (args: Record<string, unknown>) => Promise<unknown>;
@@ -324,8 +334,15 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       }
       const newSite = section('사이트 권한 추가');
       const origin = field('사이트 주소', 'url'); origin.input.placeholder = 'https://example.com'; newSite.append(origin.root);
-      const addSite = (allow: boolean) => { try { const url = new URL(origin.input.value); if (url.protocol !== 'https:' || url.origin !== origin.input.value.replace(/\/$/, '')) throw new Error(); void mutate('policy.update', { operation: 'set-site', origin: url.origin, allowedActions: allow ? ['browse', 'read', 'download', 'research-import'] : [], blockedActions: allow ? [] : ['browse', 'read', 'download', 'research-import'] }); } catch { message.textContent = 'HTTPS 사이트 주소를 입력하세요.'; } };
-      const actions = node('div', 'ag-settings-actions'); actions.append(button('사이트 허용', () => addSite(true)), button('사이트 차단', () => addSite(false))); newSite.append(actions);
+      const siteError = node('p', 'ag-browser-message'); siteError.setAttribute('role', 'alert');
+      const addSite = (allow: boolean) => {
+        const site = httpsSiteOrigin(origin.input.value);
+        if (!site) { siteError.textContent = 'HTTPS 사이트 주소를 입력하세요.'; origin.input.focus(); return; }
+        siteError.textContent = '';
+        void mutate('policy.update', { operation: 'set-site', origin: site, allowedActions: allow ? ['browse', 'read', 'download', 'research-import'] : [], blockedActions: allow ? [] : ['browse', 'read', 'download', 'research-import'] });
+      };
+      origin.input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addSite(true); } });
+      const actions = node('div', 'ag-settings-actions'); actions.append(button('사이트 허용', () => addSite(true)), button('사이트 차단', () => addSite(false))); newSite.append(siteError, actions);
     } else {
       const runtime = (status.runtime ?? {}) as Record<string, unknown>; const readiness = (runtime.readiness ?? {}) as Record<string, unknown>;
       const adblock = createAdblockSettings(); if (adblock) body.append(adblock);
