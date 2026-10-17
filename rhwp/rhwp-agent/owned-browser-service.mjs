@@ -1229,7 +1229,7 @@ export function createOwnedBrowserService(options = {}) {
           if (!login) throw error('BROWSER_ACCOUNT_NOT_FOUND', 'The saved website account no longer exists.');
           if (!sameSite(login.origin, page.url())) throw error('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'This saved login belongs to a different website.');
           const decision = await assertPolicy(actor, 'fill-account', page.url(), tab, { policyAction: 'account-use', item: { accountId: login.id, blocked: login.agentBlocked === true } });
-          grant = { site: decision?.site, scope: decision?.source === 'chat' ? 'chat' : 'always', grantedAt: Date.now() };
+          grant = { site: decision?.key ?? decision?.site, scope: decision?.source === 'chat' ? 'chat' : 'always', grantedAt: Date.now() };
         }
         const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(grant ? { grant } : {}) });
         tab.snapshot.passwordProtected = true;
