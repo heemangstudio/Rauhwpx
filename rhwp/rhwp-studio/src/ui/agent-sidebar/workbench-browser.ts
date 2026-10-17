@@ -243,6 +243,8 @@ export function createWorkbenchBrowser(options: {
     if (event.relatedTarget instanceof Node && !details.contains(event.relatedTarget)) details.open = false;
   });
   let agentPreviewTab: string | null = null; let agentOpenedView = false;
+  let previewCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  function cancelPreviewClose(): void { if (previewCloseTimer !== null) clearTimeout(previewCloseTimer); previewCloseTimer = null; }
   // 조작권 전환은 허브 응답 전에 화면부터 바꾼다. 거절되면 허브의 상태로 되돌아간다.
   let controlPending: { tabId: string; held: boolean } | null = null; let focusPage = false;
   function holds(tab: BrowserTab | null): boolean {
@@ -253,6 +255,7 @@ export function createWorkbenchBrowser(options: {
   function previewLocked(): boolean { const tab = controller.tab(); return agentPreviewTab !== null && tab !== null && !holds(tab); }
   function setControl(target: BrowserTab, held: boolean): void {
     if (controlPending || disposed) return;
+    if (held) { cancelPreviewClose(); agentOpenedView = false; }
     controlPending = { tabId: target.tabId, held }; focusPage = held; nativeError = null;
     paint(); void projectNative();
     if (held && !controller.usesNativePresentation() && controller.tab()?.tabId === target.tabId) textInput.focus({ preventScroll: true });
@@ -262,9 +265,17 @@ export function createWorkbenchBrowser(options: {
   }
   function endAgentPreview(): void {
     if (disposed || !agentPreviewTab) return;
-    // 턴이 끝날 때 에이전트가 띄운 보기만 접고 탭과 로그인 상태는 유지한다. 사용자가 띄웠거나 쥔 탭은 쓰던 그대로 둔다.
-    if (agentOpenedView && presentation.current() !== 'dock' && !holds(controller.tab())) presentation.hide();
-    agentPreviewTab = null; agentOpenedView = false; paint(); layout();
+    // 입력 잠금은 바로 풀고, 에이전트가 띄운 보기는 마지막 사용 뒤 2분 동안 남긴다.
+    agentPreviewTab = null;
+    if (agentOpenedView && presentation.current() === 'float' && !holds(controller.tab())) {
+      cancelPreviewClose();
+      previewCloseTimer = setTimeout(() => {
+        previewCloseTimer = null;
+        if (!disposed && !agentPreviewTab && agentOpenedView && presentation.current() === 'float' && !holds(controller.tab())) presentation.hide();
+        agentOpenedView = false; paint(); layout();
+      }, 120_000);
+    } else agentOpenedView = false;
+    paint(); layout();
   }
   let visible = false; let nativeTab: string | null = null; let nativePopout = false;
   let frameTimer: ReturnType<typeof setTimeout> | null = null; let composing = false; let committedComposition: string | null = null; let disposed = false; let selectedFrameId = ''; let nativeSequence = 0;
@@ -276,6 +287,7 @@ export function createWorkbenchBrowser(options: {
   function cancelNativeHealth(): void { if (nativeHealthTimer) clearTimeout(nativeHealthTimer); nativeHealthTimer = null; }
   let lastInputAt = -Infinity;
   const presentation = createBrowserPresentation(element, (mode) => {
+    if (mode !== 'float') { cancelPreviewClose(); agentOpenedView = false; }
     if (mode === 'float' || mode === null) { details.open = false; showDownloads(false, false); }
     visible = mode !== null; watchNativeVisibility(); paint(); scheduleFrame(); void projectNative();
   }, { onLayout: () => { layout(); }, onDock: options.onDock, onClose: options.onClose, navigation, captureButton: annotate, controlButton });
@@ -591,7 +603,7 @@ export function createWorkbenchBrowser(options: {
     });
   };
   function nativeSurfaceVisible(): boolean {
-    return visible && surface.isConnected && (!document.documentElement.classList.contains('document-home-open') || (agentPreviewTab !== null || holds(controller.tab())) && presentation.current() === 'float')
+    return visible && surface.isConnected && (!document.documentElement.classList.contains('document-home-open') || (agentPreviewTab !== null || previewCloseTimer !== null || holds(controller.tab())) && presentation.current() === 'float')
       && getComputedStyle(surface).visibility === 'visible' && surface.getClientRects().length > 0;
   }
   let nativeSurfaceWasVisible = false;
@@ -644,13 +656,13 @@ export function createWorkbenchBrowser(options: {
     const manuallySleeping = manualSleepingTab === tab?.tabId && tab !== null;
     const frame = manuallySleeping ? null : controller.frame();
     const agentControlled = previewLocked(); const held = holds(tab);
-    presentation.setPreviewLock(agentControlled, agentPreviewTab !== null || held);
+    presentation.setPreviewLock(agentControlled, agentPreviewTab !== null || previewCloseTimer !== null || held);
     element.dataset.agentControlled = String(agentControlled);
     reportSidebarView();
     // 페이지와 도구는 잠그고 조작권 단추만 남긴다.
     for (const child of element.children) if (child !== toolbar) (child as HTMLElement).inert = agentControlled;
     for (const child of toolbar.children) if (child !== controlButton) (child as HTMLElement).inert = agentControlled;
-    controlButton.hidden = !tab || agentPreviewTab === null && !held;
+    controlButton.hidden = !tab || agentPreviewTab === null && previewCloseTimer === null && !held;
     controlButton.dataset.held = String(held); controlButton.setAttribute('aria-pressed', String(held));
     controlButton.title = held ? '에이전트에게 돌려주기' : '직접 조작'; controlButton.setAttribute('aria-label', controlButton.title);
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
@@ -768,6 +780,7 @@ export function createWorkbenchBrowser(options: {
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
     previewAgent(tab: BrowserTab) {
       if (disposed) return;
+      cancelPreviewClose();
       const current = controller.tab();
       manualSleepingTab = null; agentPreviewTab = tab.tabId;
       controller.accept({ tab });
@@ -806,7 +819,7 @@ export function createWorkbenchBrowser(options: {
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
     float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
     async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
-    dispose() { captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;
