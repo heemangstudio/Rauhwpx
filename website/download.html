@@ -300,7 +300,7 @@
       <a href="pricing.html">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="pricing.html">9,900원에 구매하기</a>
+      <a class="btn btn--primary" href="pricing.html">연 ₩9,900에 구매하기</a>
     </div>
   </div>
 </header>
@@ -502,7 +502,7 @@
                 <span class="lic__input">HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</span>
                 <span class="lic__btn">활성화</span>
               </div>
-              <p class="lic__buy">아직 키가 없나요? 9,900원에 구매하기</p>
+              <p class="lic__buy">아직 키가 없나요? 연 ₩9,900에 구매하기</p>
             </div>
           </div>
         </div>
@@ -547,6 +547,8 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
+      <span>운영자 하태욱</span>
+      <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
@@ -559,10 +561,14 @@
    [data-os] 는 고른 운영체제에서만 보여요. [data-dl] 링크는 고른 운영체제의 파일을,
    [data-dl="mac|windows"] 링크는 그 파일을 받고 페이지도 그 운영체제로 바꿔요.
    페이지에 들어오면 한 번 내려받기를 시작해요. 새로 고침으로 또 받지 않게 10분 동안은 건너뛰고,
-   주소에 ?nodl 이 있으면 받지 않아요(미리 보기용). */
+   주소에 ?nodl 이 있으면 받지 않아요(미리 보기용).
+   내려받기는 플랫폼별로 한 번 셉니다(P.trackDownloadOnce). 자동으로 시작한 뒤 '클릭' 링크를 또 눌러도 한 번이에요. */
 (function(){
   var P=window.HamaPurchase;if(!P)return;
   var URLS={mac:P.CONFIG.MAC_DMG_URL,windows:P.CONFIG.WIN_EXE_URL};
+  var PLATFORMS={mac:'mac-arm64',windows:'win-x64'};
+  var store=null;try{store=window.sessionStorage;}catch(_){}
+  function count(which){P.trackDownloadOnce(PLATFORMS[which],store);}
   var picked=/[?&]os=(mac|windows)(?:[&#]|$)/.exec(location.search);
   var os=picked?picked[1]:(/Windows/i.test(navigator.userAgent)?'windows':'mac');
   function each(sel,fn){Array.prototype.forEach.call(document.querySelectorAll(sel),fn);}
@@ -574,7 +580,9 @@
   show(os);
   document.addEventListener('click',function(e){
     var a=e.target.closest('[data-dl]');
-    var next=a&&a.getAttribute('data-dl');
+    if(!a)return;
+    var next=a.getAttribute('data-dl');
+    count(next||os);
     if(!next||next===os)return;
     // 링크는 그대로 파일을 받고, 화면은 그 운영체제의 설치 순서로 바꿔요. 새로 고쳐도 남게 주소에도 적어요.
     show(next);
@@ -589,6 +597,7 @@
   if(now-last<600000)return;
   try{sessionStorage.setItem(KEY,String(now));}catch(_){}
   var url=URLS[os];
+  count(os);
   // 파일 응답(attachment)이라 주소를 옮겨도 이 페이지는 그대로 남아요.
   setTimeout(function(){window.location.assign(url);},700);
 })();

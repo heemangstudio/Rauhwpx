@@ -10,7 +10,9 @@ function memoryStorage() {
 }
 
 test('config points at the live Groble product and the default API base', () => {
-  assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/uRshdR');
+  assert.equal(P.CONFIG.PLAN, 'annual', 'the yearly subscription is on sale');
+  assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
   assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
@@ -30,7 +32,7 @@ test('refs match the Groble sellerReference rule and are unique', () => {
 });
 
 test('checkout URL appends ?ref=', () => {
-  assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/uRshdR?ref=hama-abc');
+  assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/GLJFC9?ref=hama-abc');
   assert.equal(P.checkoutUrl('x', 'https://e.test/p?a=1'), 'https://e.test/p?a=1&ref=x');
   assert.throws(() => P.checkoutUrl('bad ref'));
 });
@@ -85,6 +87,9 @@ async function poll(responses, extra = {}) {
 test('pending then issued shows the key', async () => {
   const u = await poll([json(200, { status: 'pending' }), json(404, {}), json(200, { status: 'issued', key: 'HAMA-1234' })]);
   assert.deepEqual(u.map((x) => x.state), ['pending', 'pending', 'issued']);
+  assert.equal(u.at(-1).licenseExpiresAt, null);
+  const annual = await poll([json(200, { status: 'issued', key: 'HAMA-1234', licenseExpiresAt: 1823957999999 })]);
+  assert.equal(annual.at(-1).licenseExpiresAt, 1823957999999);
   assert.equal(u.at(-1).key, 'HAMA-1234');
 });
 
@@ -99,4 +104,69 @@ test('repeated errors end in error; a single blip does not', async () => {
   assert.equal(u.at(-1).state, 'error');
   const v = await poll([fail, json(500, {}), json(200, { status: 'issued', key: 'K' })]);
   assert.equal(v.at(-1).state, 'issued');
+});
+
+test('annual keys get the renewal line on the success page; lifetime keys get none', () => {
+  assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
+  assert.equal(P.renewalText(null), '');
+  assert.equal(P.renewalText(undefined), '');
+});
+
+test('download tracking sends platform and version by sendBeacon, falls back to keepalive fetch, never throws', () => {
+  const beacons = [];
+  const nav = { sendBeacon: (url, blob) => { beacons.push({ url, type: blob.type }); return true; } };
+  assert.equal(P.trackDownload('mac-arm64', 'latest', nav), true);
+  assert.deepEqual(beacons, [{ url: 'https://rau-credits-production.up.railway.app/v1/downloads', type: 'text/plain;charset=utf-8' }]);
+  const fetches = [];
+  const fetchImpl = (url, init) => { fetches.push({ url, init }); return Promise.resolve(); };
+  assert.equal(P.trackDownload('mac-arm64', 'latest', { sendBeacon: () => false }, fetchImpl), true);
+  assert.equal(fetches[0].init.keepalive, true);
+  assert.equal(fetches[0].init.credentials, 'omit');
+  assert.deepEqual(JSON.parse(fetches[0].init.body), { platform: 'mac-arm64', version: 'latest' });
+  assert.equal(P.trackDownload('mac-arm64', 'latest', { sendBeacon() { throw new Error('blocked'); } }, () => { throw new Error('x'); }), false);
+});
+
+test('switching PLAN back to onetime checks out on uRshdR; an unknown plan falls back to it too', () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const source = fs.readFileSync(require.resolve('./assets/purchase.js'), 'utf8');
+  const load = (plan) => {
+    const sandbox = {};
+    vm.runInNewContext(source.replace("PLAN: 'annual'", `PLAN: '${plan}'`), { window: sandbox });
+    return sandbox.HamaPurchase.CONFIG.GROBLE_CHECKOUT_URL;
+  };
+  assert.equal(load('annual'), 'https://groble.im/payment/GLJFC9');
+  assert.equal(load('onetime'), 'https://groble.im/payment/uRshdR');
+  assert.equal(load('typo'), 'https://groble.im/payment/uRshdR');
+});
+
+test('the download page counts each file once per tab, so the fallback link after the automatic download is not counted again', () => {
+  const sent = [];
+  const nav = { sendBeacon: (url, blob) => { sent.push(blob); return true; } };
+  const storage = memoryStorage();
+  const t = Date.parse('2026-10-20T10:00:00Z');
+  assert.equal(P.trackDownloadOnce('mac-arm64', storage, t, nav), true, 'automatic download');
+  assert.equal(P.trackDownloadOnce('mac-arm64', storage, t + 5000, nav), false, 'manual fallback click');
+  assert.equal(P.trackDownloadOnce('win-x64', storage, t + 6000, nav), true, 'the other OS is its own download');
+  assert.equal(P.trackDownloadOnce('mac-arm64', storage, t + 11 * 60 * 1000, nav), true, 'a later visit counts again');
+  assert.equal(sent.length, 3);
+  const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  assert.equal(P.trackDownloadOnce('mac-arm64', blocked, t, nav), true, 'blocked storage still counts');
+});
+
+test('every page sells the yearly subscription and none offers a one-time purchase', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const pages = fs.readdirSync(__dirname).filter((f) => f.endsWith('.html'));
+  for (const page of pages) {
+    const html = fs.readFileSync(path.join(__dirname, page), 'utf8');
+    assert.doesNotMatch(html, /일회성|평생|한 번 결제|1회 결제하여 구매/, `${page} has one-time purchase copy`);
+    assert.doesNotMatch(html, /9,900원에 구매/, `${page} has a price without 연`);
+    // 네이버 검수는 자바스크립트 없이 바닥글을 봐요.
+    assert.match(html, /운영자 하태욱/, `${page} names the operator`);
+    assert.match(html, /010-8512-1201/, `${page} shows the operator phone`);
+  }
+  const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  assert.match(pricing, /연 ₩9,900/);
+  assert.match(pricing, /자동 갱신 · 언제든 해지/);
 });
