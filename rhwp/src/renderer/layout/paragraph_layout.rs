@@ -5933,6 +5933,25 @@ impl LayoutEngine {
             && (self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx())
             && styles.font_metrics_policy
                 == crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        // 미주 raw 줄 소속은 본문의 HCR 메트릭 정책과 별도 계약이다.
+        // 호출자가 fresh 조판/원본 변경을 배제한 인증을 설치해야만 수락한다.
+        // 저장 높이가 같다는 이유만으로 여기서 인증을 새로 만들지 않는다.
+        let native_authored_endnote_tac = cell_ctx.is_none()
+            && self.is_body_flow_col_area(col_area)
+            && !self.profile.get().own_line_layout()
+            && !self.profile.get().session_edited()
+            && self
+                .endnote_para_source_for(para_index)
+                .is_some_and(|source| {
+                    source.section_index == section_index
+                        && source.note_para_index > 0
+                        && source.authored_tac_line_owners.is_some()
+                })
+            && matches!(
+                styles.font_metrics_policy,
+                crate::model::provenance::FontMetricsPolicy::HancomWindows
+                    | crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            );
         let exact_tac_assign = para.and_then(|p| {
             if p.line_segs
                 .iter()
@@ -5940,6 +5959,13 @@ impl LayoutEngine {
             {
                 stored_tac_line_assignment(p, composed)
             } else if native_authored_tac {
+                projected_tac_line_assignment(p, composed)
+            } else if native_authored_endnote_tac
+                && p.line_segs.first().is_some_and(|seg| seg.text_start == 0)
+                && p.line_segs
+                    .windows(2)
+                    .all(|pair| pair[0].text_start < pair[1].text_start)
+            {
                 projected_tac_line_assignment(p, composed)
             } else {
                 None
