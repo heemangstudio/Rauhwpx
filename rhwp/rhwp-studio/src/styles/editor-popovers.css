@@ -66,7 +66,7 @@
 .table-create-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   height: 39px;
   padding: 0 9px 0 13px;
   border-bottom: 1px solid var(--popover-border);
@@ -84,7 +84,7 @@
   cursor: default;
 }
 .table-create-header button:hover { background: var(--popover-hover); color: var(--popover-text); }
-.table-create-grid-wrap { padding: 13px 12px 10px; }
+.table-create-grid-wrap { padding: 12px; }
 .table-create-grid { margin: 0 auto; cursor: crosshair; }
 .table-create-cell {
   position: absolute;
@@ -99,11 +99,10 @@
   background: var(--popover-selected);
 }
 .table-create-size {
-  height: 19px;
-  margin-top: 9px;
+  flex: 1 1 auto;
   color: var(--popover-muted);
-  text-align: center;
-  font: 12px/19px var(--font-family-ui);
+  font: 12px var(--font-family-ui);
+  font-variant-numeric: tabular-nums;
 }
 .table-create-more {
   display: block;
