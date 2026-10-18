@@ -532,8 +532,48 @@ onEngineTrap(() => {
   trapRecoveryPage.begin();
   showTrapRecoveryToast();
 });
+// 한 번도 편집하지 않은 새 문서는 dirty 자동 저장본이 없다. 동기 체크포인트로 문서 ID까지
+// 남겨야 새로고침 뒤 살아 있는 에이전트 턴이 같은 문서에 다시 붙을 수 있다.
+const UNEDITED_DOCUMENT_RELOAD_KEY = 'rhwp-unedited-document-reload-v1';
+function checkpointUneditedDocument(): void {
+  try {
+    const storage = sessionStorageOrNull();
+    // 시작 복구가 끝나기 전에 다시 새로고침해도 아직 읽는 체크포인트를 지우지 않는다.
+    if (!engineTrap() && (documentIoCount > 0 || !wasm.hasLoadedDocument())) return;
+    storage?.removeItem(UNEDITED_DOCUMENT_RELOAD_KEY);
+    if (engineTrap() || !attachedSession.documentId || attachedSession.worktree
+      || !wasm.isNewDocument || wasm.currentFileHandle
+      || documentState.isDirty()) return;
+    storage?.setItem(UNEDITED_DOCUMENT_RELOAD_KEY, JSON.stringify({
+      documentId: attachedSession.documentId,
+      bytes: Array.from(wasm.exportHwpx()),
+    }));
+  } catch (error) {
+    console.warn('[recovery] 새 문서 새로고침 체크포인트 저장 실패:', error);
+  }
+}
+
+async function reopenUneditedDocumentAfterReload(): Promise<boolean> {
+  const storage = sessionStorageOrNull();
+  try {
+    const saved = storage?.getItem(UNEDITED_DOCUMENT_RELOAD_KEY);
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (!saved || navigation?.type !== 'reload' || shouldSkipInitialAutosaveRecovery()) return false;
+    const checkpoint = JSON.parse(saved);
+    if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId
+      || !Array.isArray(checkpoint.bytes) || checkpoint.bytes.length === 0) return false;
+    return await createNewDocument(new Uint8Array(checkpoint.bytes), checkpoint.documentId);
+  } catch (error) {
+    console.warn('[recovery] 새 문서 새로고침 복구 실패:', error);
+    return false;
+  } finally {
+    try { storage?.removeItem(UNEDITED_DOCUMENT_RELOAD_KEY); } catch { /* 저장소 접근 불가 */ }
+  }
+}
+
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
+    checkpointUneditedDocument();
     disposeAgentSidebar();
     for (const session of liveSessions) {
       void session.versions?.persistWorktree().catch(() => {});
@@ -1608,9 +1648,13 @@ async function initialize(): Promise<void> {
       // 엔진 trap 복구로 다시 불러온 페이지다. URL 문서 대신 멈추기 전에 열려 있던 문서를 다시 연다.
       void recoverDocumentsAfterTrap(trapRecoveryRun!);
     } else {
-      if (isPinnedDocumentEnabled()) void loadPinnedDocument();
-      else void loadFromUrlParam();
-      void offerAutosaveRecoveryAtStartup();
+      void (async () => {
+        if (!await reopenUneditedDocumentAfterReload()) {
+          if (isPinnedDocumentEnabled()) void loadPinnedDocument();
+          else void loadFromUrlParam();
+        }
+        void offerAutosaveRecoveryAtStartup();
+      })();
     }
     installPwaFileHandling(window as FileHandlingWindowLike, {
       openDocumentBytes(payload) {
@@ -5331,12 +5375,12 @@ async function openTrapEntryOnDemand(entry: TrapManifestEntry): Promise<string> 
 }
 
 /** template 이 있으면 그 문서를 내용으로 하는 이름 없는 새 문서를 만든다(문서 홈의 템플릿). */
-function createNewDocument(template?: Uint8Array): Promise<boolean> {
+function createNewDocument(template?: Uint8Array, restoredDocumentId?: string): Promise<boolean> {
   if (engineTrap()) return Promise.resolve(false);
-  return trackDocumentIo(() => createNewDocumentNow(template));
+  return trackDocumentIo(() => createNewDocumentNow(template, restoredDocumentId));
 }
 
-async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
+async function createNewDocumentNow(template?: Uint8Array, restoredDocumentId?: string): Promise<boolean> {
   const msg = sbMessage();
   // 템플릿은 세션 상태를 건드리기 전에 읽는다. 읽지 못하면 지금 문서·작업 트리·점유가 그대로다.
   let prepared: PreparedWasmDocument | null = null;
@@ -5357,7 +5401,7 @@ async function createNewDocumentNow(template?: Uint8Array): Promise<boolean> {
     target.worktreeWritable = false;
   }
   const previousFileHandle = wasm.currentFileHandle;
-  const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
+  const identity = { documentId: restoredDocumentId ?? createActiveDocumentId(), sourceDigest: null };
   const slotId = attachedSession.slotId;
   const reservationId = await reserveDesktopDocument(identity, null, undefined, slotId);
   if (reservationId === null) {

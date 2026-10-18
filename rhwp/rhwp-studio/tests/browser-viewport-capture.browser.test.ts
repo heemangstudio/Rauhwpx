@@ -61,13 +61,6 @@ test('현재 화면을 한 번 첨부하고 캡처 중에도 브라우저 입력
         scroll: document.querySelector('.ag-browser-surface')!.scrollTop };
     });
     assert.deepEqual(saved, { mode: 'page', thread: 'chat', width: 640, height: 500, captures: 1, detach: 0, blocked: false, scroll: 0 });
-    // 에이전트 턴에 사용자가 페이지를 만지면 제어권을 먼저 넘겨받고 그 입력을 보낸다.
-    const beforeTakeover = await page.evaluate(() => { const fixture = (window as any).captureTest; fixture.view.previewAgent(fixture.view.controller.tab()); return fixture.calls.length; });
-    await page.mouse.move(surface.x + 120, surface.y + 120); await page.mouse.wheel({ deltaY: 120 });
-    await page.waitForFunction(start => (window as any).captureTest.calls.slice(start).some((call: any) => call.action === 'input'), {}, beforeTakeover);
-    assert.deepEqual(await page.evaluate(start => (window as any).captureTest.calls.slice(start).filter((call: any) => ['control', 'input'].includes(call.action)).slice(0, 2)
-      .map((call: any) => `${call.action}:${call.args.owner ?? call.args.type}`), beforeTakeover), ['control:human', 'input:wheel']);
-    await page.evaluate(() => (window as any).captureTest.view.endAgentPreview());
     await page.click('[aria-label="브라우저 추가 메뉴"]');
     await page.click('.ag-browser-menu [aria-label="새로고침"]');
     await page.waitForFunction(() => (window as any).captureTest.calls.some((call: any) => call.action === 'navigate' && call.args.direction === 'reload'));

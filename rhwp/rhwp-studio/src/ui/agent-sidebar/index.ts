@@ -4897,9 +4897,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void ensureWorkbenchBrowser().controller.refresh();
       return;
     }
-    if (data.type !== 'owned_browser_activity' || !data.tab) return;
-    if (data.active === false) { workbenchBrowser?.agentActivity(data.tab, false); return; }
-    const view = ensureWorkbenchBrowser(); view.previewAgent(data.tab); view.agentActivity(data.tab, true);
+    if (data.type !== 'owned_browser_activity' || data.active === false) return;
+    // 따로 띄운 탭은 그 창에서 잠근다. 사이드바 브라우저는 이 탭을 걸러 내 빈 창만 하나 더 띄운다.
+    if (data.tab) (floatingBrowser && data.tab.tabId === floatingBrowserTab ? floatingBrowser : ensureWorkbenchBrowser()).previewAgent(data.tab);
   });
 
   workbench = createSidebarWorkbench({
@@ -9109,7 +9109,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setTurnRunning(running: boolean): void {
     const ended = turnRunning && !running;
     turnRunning = running;
-    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); }
+    if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); floatingBrowser?.endAgentPreview(); }
     // 일하는 동안 다른 창이 이 채팅을 이 문서에서 뗐으면 턴이 끝난 뒤 따른다(adoptStoredThreadLink).
     if (ended) queueMicrotask(() => {
       if (root.dataset.disposed !== 'true' && documentLinkThreadId === null && documentDetach === null) adoptStoredThreadLink();

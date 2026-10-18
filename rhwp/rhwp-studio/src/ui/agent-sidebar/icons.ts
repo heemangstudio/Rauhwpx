@@ -46,7 +46,6 @@ const STROKE_PATHS = {
   browserDownload: 'M6 1.8v5.3M3.8 5 6 7.2 8.2 5M2.3 8.1v2.1h7.4V8.1',
   browserDock: 'M2 2.5h8v7H2zM5 2.5v7',
   browserFloat: 'M2 6.8V2.1h5.3M4.1 4.1h5.8v5.8H4.1z',
-  browserResize: 'M4.4 9.5 9.5 4.4M7.2 9.5 9.5 7.2',
   document: 'M3 2.2h3.8L9 4.4v5.4H3zM6.8 2.2v2.2H9',
   folder: 'M2.2 3h2.7l1 1.2h3.9v5.2H2.2z',
   /* 문서 열기 — 문서 오른쪽 아래 귀퉁이에 더하기가 붙는다. */

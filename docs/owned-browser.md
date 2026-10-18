@@ -8,7 +8,7 @@ Open **Browser** from the sidebar workbench, the chat toolbar, or Home. A docume
 
 The compact icon toolbar offers navigation, reload, control, capture, downloads, and presentation. **Float** opens a draggable PiP panel inside the editor window. It keeps the document and chat available underneath. The separate-window option lives in **More**.
 
-**Take control**, or touching the page while an agent works in it, pauses agent input for that tab; the agent can still read it. **Return to agent** or your next message hands it back. Navigation, text input, Korean composition, clipboard text, and bounded human-selected uploads use the same tab. Closing the preview hides it; closing the tab ends it. Dock, Float, and the optional separate window preserve page state. The floating panel can be moved or resized with its handles and arrow keys; Shift + arrow resizes it.
+While an agent drives a tab its preview is locked. **직접 조작** (take control) unlocks the page and pauses agent changes to that tab; the agent can still read it. **돌려주기** (return) hands it back. The hold survives turn end and resets when the hub restarts. Navigation, text input, Korean composition, clipboard text, and bounded human-selected uploads use the same tab. Closing the preview hides it; closing the tab ends it. Dock, Float, and the optional separate window preserve page state. The floating panel can be moved or resized with its handles and arrow keys; Shift + arrow resizes it.
 
 The expandable connection panel identifies the runtime, tab, controller, and recovery state. After a browser crash, recover the tab and request a fresh snapshot. Uncertain clicks and submissions are never automatically replayed.
 

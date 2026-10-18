@@ -831,9 +831,9 @@ function finishChatRequest(record, entry, outcome, { continuation = null } = {})
   });
   if (entry.kind === 'browser' && outcome.status !== 'granted') {
     credentialBroker.discardAccountRequest(requestId);
-    // 사용자에게 넘긴 탭은 요청이 끝나면 에이전트와 다시 나눈다.
-    if (entry.request.tabId && ['browser-sign-in', 'browser-code'].includes(entry.request.kind)) {
-      void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true }), { tabId: entry.request.tabId }).catch(() => {});
+    // 사용자가 넘겨받기를 거절하면 그 탭을 에이전트에게 돌려준다. 만료나 새 메시지로는 돌려주지 않는다(돌려주기 단추가 남는다).
+    if (outcome.status === 'denied' && entry.request.tabId && ['browser-sign-in', 'browser-code'].includes(entry.request.kind)) {
+      void ownedBrowser.returnControl({ tabId: entry.request.tabId }).catch(() => {});
     }
   }
   // 답을 받지 못하고 만료된 에이전트 카드는 다음 턴 맥락에 한 줄로 남긴다.
@@ -2094,11 +2094,10 @@ function settleUserQuestion(record, outcome) {
   return true;
 }
 
-/** 사용자가 새 메시지를 보냈다. 이 채팅의 요청과 아직 열지 않은 이어 가기 턴을 끝내고, 잡아 둔 탭을 돌려준다. */
+/** 사용자가 새 메시지를 보냈다. 이 채팅의 요청과 아직 열지 않은 이어 가기 턴을 끝낸다. 사용자가 잡은 탭은 돌려줄 때까지 그대로 둔다. */
 function supersedeChatRequests(record, activeSession) {
   expireChatRequests(record, 'user-message');
   record.chatContinuations.drop(activeSession.threadId);
-  void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true })).catch(() => {});
 }
 
 function beginAgentTurn(record, activeSession, { userTurn = true } = {}) {

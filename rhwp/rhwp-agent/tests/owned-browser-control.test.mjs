@@ -46,7 +46,7 @@ test('a user takeover fails queued agent input fast, marks the in-flight action 
   const taking = browser.request(human, 'control', { tabId: opened.tabId, owner: 'human' });
   release();
   await assert.rejects(inFlight, { code: 'BROWSER_ACTION_UNCERTAIN' });
-  await assert.rejects(queued, { code: 'BROWSER_USER_IN_CONTROL' });
+  await assert.rejects(queued, { code: 'BROWSER_USER_CONTROL' });
   const taken = (await taking).tab;
   assert.equal(taken.controller.held, true);
   assert.equal(wheels, 1, 'queued agent input never reaches the page after the user takes control');
@@ -57,7 +57,7 @@ test('a user takeover fails queued agent input fast, marks the in-flight action 
   await running;
   const observed = await browser.request(agent, 'snapshot', { tabId: opened.tabId });
   assert.equal(observed.snapshot.outline, '- paragraph: Fixture page');
-  await assert.rejects(browser.request(agent, 'scroll', { ...ids(taken), deltaY: 10 }), { code: 'BROWSER_USER_IN_CONTROL' });
+  await assert.rejects(browser.request(agent, 'scroll', { ...ids(taken), deltaY: 10 }), { code: 'BROWSER_USER_CONTROL' });
   release(); await userInput;
 
   const returned = (await browser.request(human, 'control', { tabId: opened.tabId, owner: 'agent' })).tab;

@@ -150,7 +150,7 @@ export function createBrowserRequests({ policy, broker, ownedBrowser, userSecret
     await policy.markSignedIn({ profileId: ownedBrowser.profileId(), origin: request.origin, source: 'handoff' });
     if (request.actor?.threadId) await policy.grantSiteAccess({ actor, threadId: request.actor.threadId, origin: request.origin, scope: 'chat' });
     await ownedBrowser.refreshSites?.().catch(() => {});
-    if (request.tabId) await ownedBrowser.releaseHolds(actor, { tabId: request.tabId }).catch(() => {});
+    if (request.tabId) await ownedBrowser.returnControl({ tabId: request.tabId }).catch(() => {});
     settle(request.requestId, { status: 'granted' }, browserContinuationText(request, { status: 'granted' }));
     return { completed: true, origin: request.origin, site: done.site };
   }
