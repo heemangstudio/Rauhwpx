@@ -15,30 +15,21 @@ Default origin: `https://rau-credits-production.up.railway.app`.
 | Request | Response |
 | --- | --- |
 | `GET /v1/license/public-key` | `{alg:"Ed25519", kid, rawBase64, spkiDerBase64}` |
-| `POST /v1/license/activate {key,deviceId,appVersion,platform}` | `{ok:true,lease,keyId,tier,expiresAt,licenseExpiresAt,autoRenew,devicesUsed,deviceLimit}` |
+| `POST /v1/license/activate {key,deviceId,appVersion,platform}` | `{ok:true,lease,keyId,tier,expiresAt,devicesUsed,deviceLimit}` |
 | `POST /v1/license/validate {key,deviceId}` | Same lease response |
 | `POST /v1/license/deactivate {key,deviceId}` | `{ok:true,removed,tier,devicesUsed,deviceLimit}` |
 | `POST /v1/license/grandfather {installId}` | `{ok:true,key,created}` |
 
 `tier` is `paid` or `beta`. Beta-tester keys allow their own device count and get three-day leases; the app stores the tier for display only (title and revoked message), and a state file without it reads as `paid`.
 
-Errors are `{ok:false,error}`: `invalid_key` 404, `revoked` 403 (with `tier`), `expired` 403 (an annual key past its end, with `tier` and `licenseExpiresAt`), `device_limit` 409, `not_activated` 404, `device_id_invalid` 400, `server_not_configured` 503. Grandfather errors include `grandfather_disabled` 403, `not_eligible` 403 and `install_id_invalid` 400. Network and server failures preserve a still-valid signed lease. Revocation immediately removes editing rights after the next successful check.
+Errors are `{ok:false,error}`: `invalid_key` 404, `revoked` 403 (with `tier`), `device_limit` 409, `not_activated` 404, `device_id_invalid` 400, `server_not_configured` 503. Grandfather errors include `grandfather_disabled` 403, `not_eligible` 403 and `install_id_invalid` 400. Network and server failures preserve a still-valid signed lease. Revocation immediately removes editing rights after the next successful check.
 
 Keys have five groups of five Crockford base32 characters after `HAMA-`. Normalization matches the server: remove spaces and hyphens, uppercase, accept a missing prefix, map O to 0 and I/L to 1, validate the alphabet, then regroup.
 
-A lease is `base64url(JSON bytes).base64url(Ed25519 signature over the ASCII bytes of the first segment)`. Payload: `{v:1,kid,keyId,keyHash,deviceId,issuedAt,expiresAt[,licenseExpiresAt]}`. Times are epoch milliseconds. `keyHash` is SHA-256 of the submitted key after uppercase and whitespace removal; the client submits and stores the canonical key above. The client checks signature, version, signing-key ID, device, license ID, key hash, timestamps and a maximum seven-day lifetime. This matches PR #490's updated contract at `7440d09c` and `/workspace/hamaeditor/license-api-contract.md`.
+A lease is `base64url(JSON bytes).base64url(Ed25519 signature over the ASCII bytes of the first segment)`. Payload: `{v:1,kid,keyId,keyHash,deviceId,issuedAt,expiresAt}`. Times are epoch milliseconds. `keyHash` is SHA-256 of the submitted key after uppercase and whitespace removal; the client submits and stores the canonical key above. The client checks signature, version, signing-key ID, device, license ID, key hash, timestamps and a maximum seven-day lifetime. This matches PR #490's updated contract at `7440d09c` and `/workspace/hamaeditor/license-api-contract.md`.
 
 
 Grandfathering uses the existing `unique-install.json` install ID. Eligibility and cutoff are decided by the server's recorded first-seen time and platform. The client cannot grant eligibility itself. Eligible keys then go through the same pinned-key activation and two-device limit. Failed eligibility requests leave the trial unchanged and retry at launch or after 24 hours.
-
-## Annual keys
-
-Keys bought through the Groble 정기결제 product end at `licenseExpiresAt` (epoch ms, the end of the KST anniversary day) and renew on the server; lifetime keys have none. The server signs `licenseExpiresAt` into the lease, so the app enforces it offline, and also returns it with `autoRenew` for display. Lifetime leases are byte-for-byte what older builds expect.
-
-- Before the end date the app works as with a lifetime key, and settings and the activation window show `다음 갱신 <date>` (or `<date>까지` once auto-renewal is off).
-- Past the end date the app rechecks every hour (`EXPIRED_RECHECK_MS`). When the server answers `expired`, the app goes read-only at once (state `expired`, the same viewer mode as an ended trial, with the same one-time lock save). A renewal on the server unlocks it at the next recheck or `지금 확인`.
-- When the server cannot be reached, the app keeps working for `SUBSCRIPTION_OFFLINE_GRACE_MS` (7 days) past the end date, or until the held lease ends, whichever is first, and settings say the renewal needs checking. The server never signs a lease for a key past its end date, so the grace is bounded by the last lease too.
-- Older builds see `expired` as a server error and keep their lease, which ends at most 7 days later.
 
 ## Trial and read-only behavior
 

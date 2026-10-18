@@ -70,36 +70,3 @@ test('expired, revoked and lapsed states are read-only', () => {
   }
   assert.equal(licenseSummary(status({ state: 'lease_expired', canEdit: false, readOnly: true }), NOW).canDeactivate, true);
 });
-
-test('an annual key shows its renewal date, or its end date once auto-renewal is off; a lifetime key shows neither', () => {
-  const renewsAt = Date.parse('2027-10-20T23:59:59.999+09:00');
-  const licensed = (patch: Partial<NonNullable<LicenseStatus['license']>>) => licenseSummary(status({
-    state: 'licensed',
-    license: { maskedKey: 'HAMA-…AB12', leaseExpiresAt: NOW, lastCheckAt: NOW, lastError: null, ...patch },
-  }), NOW).detail;
-  assert.match(licensed({ licenseExpiresAt: renewsAt, autoRenew: true }), /HAMA-…AB12 · 다음 갱신 2027년 10월 20일 · 마지막 확인/);
-  assert.match(licensed({ licenseExpiresAt: renewsAt, autoRenew: false }), /2027년 10월 20일까지/);
-  assert.doesNotMatch(licensed({ licenseExpiresAt: null, autoRenew: null }), /갱신|까지/);
-  assert.doesNotMatch(licensed({}), /갱신|까지/, 'an older main process sends no expiry');
-});
-
-test('an annual key past its date: offline grace stays editable, expired is read-only with renew and deactivate', () => {
-  const endedAt = Date.parse('2027-10-20T23:59:59.999+09:00');
-  const grace = licenseSummary(status({
-    state: 'licensed',
-    license: { maskedKey: 'HAMA-…AB12', leaseExpiresAt: NOW, lastCheckAt: NOW, lastError: null, licenseExpiresAt: endedAt, autoRenew: true, graceEndsAt: endedAt + 6 * DAY },
-    offline: true,
-  }), NOW);
-  assert.equal(grace.readOnly, false);
-  assert.match(grace.title, /갱신 확인 필요/);
-  assert.match(grace.detail, /2027년 10월 20일에 기간이 끝났어요.*2027년 10월 26일까지 쓸 수 있어요/);
-
-  const expired = licenseSummary(status({
-    state: 'expired',
-    canEdit: false,
-    readOnly: true,
-    license: { maskedKey: 'HAMA-…AB12', leaseExpiresAt: null, lastCheckAt: NOW, lastError: null, licenseExpiresAt: endedAt, autoRenew: false },
-  }), NOW);
-  assert.deepEqual([expired.readOnly, expired.showActivate, expired.canDeactivate], [true, true, true]);
-  assert.match(expired.detail, /^2027년 10월 20일에 라이선스 기간이 끝났어요/);
-});

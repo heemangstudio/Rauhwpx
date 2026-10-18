@@ -6,8 +6,6 @@ export type LicenseState =
   | 'trial'
   | 'trial_expired'
   | 'revoked'
-  /** 연간 키의 기간이 끝났다(서버가 만료라고 했거나, 오프라인 유예 7일도 지났다). */
-  | 'expired'
   | 'lease_expired'
   | 'needs_activation'
   | 'unenforced';
@@ -24,12 +22,6 @@ export interface LicenseStatus {
     leaseExpiresAt: number | null;
     lastCheckAt: number | null;
     lastError: string | null;
-    /** 연간 키가 끝나는 시각. 평생 키와 예전 메인 프로세스는 null 이거나 보내지 않는다. */
-    licenseExpiresAt?: number | null;
-    /** 연간 키가 자동 갱신되는지. 평생 키는 null. */
-    autoRenew?: boolean | null;
-    /** 기간이 지났지만 서버에 닿지 못해 더 쓰는 동안, 그 끝. */
-    graceEndsAt?: number | null;
   } | null;
   offline: boolean;
 }
@@ -86,18 +78,6 @@ function formatTime(ms: number | null): string {
   return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms));
 }
 
-/** 연간 키의 날짜. 서버가 한국 시간 하루 끝까지로 정하므로 한국 시간으로 보인다. 예: 2027년 10월 20일 */
-export function formatLicenseDate(ms: number): string {
-  return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' }).format(new Date(ms));
-}
-
-/** 연간 키의 갱신일 또는 끝나는 날. 평생 키는 빈 문자열. */
-export function licenseTermText(license: LicenseStatus['license']): string {
-  const expiresAt = license?.licenseExpiresAt;
-  if (!expiresAt) return '';
-  return license?.autoRenew === false ? `${formatLicenseDate(expiresAt)}까지` : `다음 갱신 ${formatLicenseDate(expiresAt)}`;
-}
-
 /** 설정 화면에 보일 한 줄 요약과 버튼. DOM 없이 시험할 수 있게 따로 둔다. */
 export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   title: string;
@@ -109,33 +89,13 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   const license = status.license;
   const beta = license?.tier === 'beta';
   switch (status.state) {
-    case 'licensed': {
-      if (license?.graceEndsAt && license.licenseExpiresAt) {
-        return {
-          title: '정품 라이선스 · 갱신 확인 필요',
-          detail: `${formatLicenseDate(license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${formatLicenseDate(license.graceEndsAt)}까지 쓸 수 있어요.`,
-          readOnly: false,
-          canDeactivate: true,
-          showActivate: false,
-        };
-      }
-      const term = licenseTermText(license);
+    case 'licensed':
       return {
         title: beta ? '베타 테스터 라이선스' : '정품 라이선스',
-        detail: [license?.maskedKey ?? '', term, `마지막 확인 ${formatTime(license?.lastCheckAt ?? null)}`, status.offline ? '오프라인' : '']
-          .filter(Boolean).join(' · '),
+        detail: `${license?.maskedKey ?? ''} · 마지막 확인 ${formatTime(license?.lastCheckAt ?? null)}${status.offline ? ' · 오프라인' : ''}`,
         readOnly: false,
         canDeactivate: true,
         showActivate: false,
-      };
-    }
-    case 'expired':
-      return {
-        title: '기간 끝 · 읽기 전용',
-        detail: `${license?.licenseExpiresAt ? `${formatLicenseDate(license.licenseExpiresAt)}에 ` : ''}라이선스 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.`,
-        readOnly: true,
-        canDeactivate: true,
-        showActivate: true,
       };
     case 'trial':
       return {
