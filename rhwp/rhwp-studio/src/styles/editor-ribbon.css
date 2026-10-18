@@ -242,6 +242,7 @@
 #icon-toolbar #editor-toolbar-overflow .tb-caption { order: -1; grid-row: 1; padding: 0 4px 4px; }
 #icon-toolbar #editor-toolbar-overflow .tb-group-body { grid-row: 2; }
 #editor-toolbar-overflow .tb-sep { display: none; }
+#icon-toolbar #editor-toolbar-overflow .tb-label br { display: none; }
 #editor-toolbar-overflow .tb-split.open .tb-split-menu { position: absolute; }
 
 /* 구분선이 숨는 폭에서는 그룹 사이 여백으로 묶음을 나눈다. */

@@ -8,6 +8,7 @@ import { MenuBar } from '../ui/menu-bar.ts';
 import { CommandPalette } from '../ui/command-palette.ts';
 import { EditorToolbarOverflow } from '../ui/editor-toolbar-overflow.ts';
 import { EditorStyleOverflow } from '../ui/editor-style-overflow.ts';
+import { COMPACT_TOOLBAR_ATTR, CompactToolbarLayout } from '../ui/compact-toolbar.ts';
 
 /** Mount the production chrome around a plainly simulated document page. */
 export function mountEditorShell(report: (message: string) => void, eventBus: EventBus): void {
@@ -76,6 +77,7 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
           const collapsed = toolbar.classList.toggle('collapsed');
           header.querySelector('.sb-collapse-btn')?.setAttribute('aria-expanded', String(!collapsed));
         }
+        if (id === 'view:toolbox-compact') header.toggleAttribute(COMPACT_TOOLBAR_ATTR);
         report(`${label} · editor fixture`);
       },
     });
@@ -111,8 +113,9 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
       dispatcher.dispatch(button.dataset.cmd!, { anchorEl: button });
     });
   });
-  new EditorToolbarOverflow(header.querySelector<HTMLElement>('#icon-toolbar')!);
-  new EditorStyleOverflow(header.querySelector<HTMLElement>('#style-bar')!);
+  const ribbonOverflow = new EditorToolbarOverflow(header.querySelector<HTMLElement>('#icon-toolbar')!);
+  const styleOverflow = new EditorStyleOverflow(header.querySelector<HTMLElement>('#style-bar')!);
+  new CompactToolbarLayout(header, ribbonOverflow, styleOverflow);
   footer.addEventListener('click', (event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>('button');
     if (button) report(`${button.title} · editor fixture`);

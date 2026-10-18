@@ -11,6 +11,7 @@ import {
 } from '../../view/grid-settings';
 import { HWPUNIT_PER_MM } from '../../core/hwp-constants';
 import { calculateFitPageZoom, calculateFitWidthZoom } from '../../view/zoom-fit';
+import { COMPACT_TOOLBAR_ATTR } from '../../ui/compact-toolbar';
 
 const PX_TO_MM = 25.4 / 96;
 
@@ -69,6 +70,16 @@ export function syncBasicToolboxUi(expanded: boolean): void {
       btn.setAttribute('aria-label', expanded ? '기본 도구 상자 접기' : '기본 도구 상자 펼치기');
     }
   });
+}
+
+/** 한 줄 도구 상자를 켜거나 끈다. 배치는 CompactToolbarLayout 이 맡는다. */
+export function applyCompactToolbar(on: boolean): void {
+  const header = document.getElementById('studio-header');
+  if (!header) return;
+  header.toggleAttribute(COMPACT_TOOLBAR_ATTR, on);
+  syncToggleCommand('view:toolbox-compact', on);
+  if (on) setBasicToolboxExpanded(true);
+  else window.dispatchEvent(new Event('resize'));
 }
 
 /** 머리말/주석 모드처럼 도구 상자가 필요할 때 강제로 펼친다. */
@@ -347,6 +358,15 @@ export const viewCommands: CommandDef[] = [
       syncBasicToolboxUi(expanded);
       // 헤더 높이 변화 → 편집 영역/사이드바 배치 갱신
       window.dispatchEvent(new Event('resize'));
+    },
+  },
+  {
+    id: 'view:toolbox-compact',
+    label: '도구 상자 한 줄로 보기',
+    execute() {
+      const on = !document.getElementById('studio-header')?.hasAttribute(COMPACT_TOOLBAR_ATTR);
+      userSettings.setCompactToolbar(on);
+      applyCompactToolbar(on);
     },
   },
   (() => {

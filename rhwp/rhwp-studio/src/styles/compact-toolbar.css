@@ -1,0 +1,123 @@
+/* ================================================================
+   한 줄 도구 상자: 기본 도구 상자는 좁은 화면의 아이콘 막대로,
+   서식 도구 상자는 같은 줄 오른쪽에 둔다. 두 칸의 폭은 compact-toolbar.ts 가 나눈다.
+   ================================================================ */
+#studio-header[data-compact-toolbar] { flex-flow: row wrap; }
+#studio-header[data-compact-toolbar] > #menu-bar { flex: 0 0 100%; }
+#studio-header[data-compact-toolbar] > :is(#icon-toolbar, #style-bar) {
+  flex-grow: 0;
+  flex-shrink: 0;
+  min-width: 0;
+  height: 40px;
+  min-height: 40px;
+}
+#studio-header[data-compact-toolbar] > #style-bar { flex-grow: 1; }
+
+/* 기본 도구 상자: 아이콘만 */
+#studio-header[data-compact-toolbar] #icon-toolbar { padding: 4px 4px 4px 8px; }
+#studio-header[data-compact-toolbar] #icon-toolbar :is(.tb-group:not(.tb-mode-group), .tb-section) { display: flex; padding: 0; }
+#studio-header[data-compact-toolbar] #icon-toolbar :is(.tb-caption, .tb-label) { display: none; }
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-group-body { height: 32px; gap: 1px; }
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-stack { display: contents; }
+#studio-header[data-compact-toolbar] #icon-toolbar :is(.tb-lg, .tb-sm) {
+  flex-direction: row;
+  justify-content: center;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 6px;
+}
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-lg .tb-ico { width: 20px; height: 20px; stroke-width: 1.5; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-sep { display: block; margin: 8px 4px; }
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-split { flex-direction: row; }
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-split-main { border-radius: 4px 0 0 4px; }
+#studio-header[data-compact-toolbar] #icon-toolbar .tb-split-arrow { width: 14px; height: 32px; border-radius: 0 4px 4px 0; }
+#studio-header[data-compact-toolbar] #editor-toolbar-more { align-self: center; height: 32px; }
+#studio-header[data-compact-toolbar] #editor-toolbar-overflow .tb-label { display: block; }
+#studio-header[data-compact-toolbar] #icon-toolbar #editor-toolbar-overflow :is(.tb-group:not(.tb-mode-group), .tb-section) { display: block; }
+#studio-header[data-compact-toolbar] #icon-toolbar #editor-toolbar-overflow .tb-group-body { flex-wrap: wrap; height: auto; }
+#studio-header[data-compact-toolbar] #icon-toolbar #editor-toolbar-overflow :is(.tb-lg, .tb-sm) {
+  justify-content: flex-start;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px;
+}
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-context-group {
+  min-width: 0;
+  margin-right: 3px;
+  padding-right: 3px;
+}
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-context-group :is(.tb-group-body, .tb-btn) { height: 32px; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-context-group .tb-btn { flex-direction: row; gap: 5px; padding: 0 5px; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-context-group .tb-btn > .tb-ico { width: 18px; height: 18px; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-context-group .tb-table-menu-trigger > .tb-chev { display: none; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-tile-equal .tb-stack { display: contents; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .tb-table-tile-equal .tb-btn { width: auto; }
+
+/* 에이전트 버튼은 줄 끝에 고정한다. 서식 칸이 그 자리를 비워 둔다. */
+#studio-header[data-compact-toolbar] #icon-toolbar > .ag-collapse-tab {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  justify-content: center;
+  gap: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 6px;
+}
+#studio-header[data-compact-toolbar] #icon-toolbar > .ag-collapse-tab::after { display: none; }
+#studio-header[data-compact-toolbar] #icon-toolbar > .ag-collapse-tab .ag-rau-icon { flex-basis: 20px; width: 20px; height: 20px; }
+#studio-header[data-compact-toolbar]:has(#icon-toolbar > .ag-collapse-tab) > #style-bar { padding-right: 48px; }
+
+/* 서식 도구 상자: 기본 도구 상자와 구분선 하나로 나눈다. */
+#studio-header[data-compact-toolbar] > #style-bar { flex-wrap: nowrap; padding: 0 8px; }
+#studio-header[data-compact-toolbar] > #icon-toolbar:not(.collapsed) + #style-bar {
+  padding-left: 9px;
+  background: linear-gradient(var(--ui-border), var(--ui-border)) left center / 1px 22px no-repeat, var(--ui-surface);
+}
+#studio-header[data-compact-toolbar] #style-bar .sb-collapse-btn { display: none; }
+/* 휴대폰 폭의 두 줄 서식 배치를 쓰지 않는다. */
+#studio-header[data-compact-toolbar] #style-bar :is(.sb-ribbon-group, .sb-command-band) { width: auto; }
+#studio-header[data-compact-toolbar] #style-bar .sb-ribbon-group { padding-inline: 5px; border-right: 1px solid var(--ui-border); }
+#studio-header[data-compact-toolbar] #style-bar > .sb-command-band:last-of-type .sb-ribbon-group { border-right: 0; }
+
+/* 서식 더 보기: 접힌 필드와 명령을 막대와 같은 크기로 이어 놓고, 폭이 차면 다음 줄로 넘긴다. */
+#studio-header[data-compact-toolbar] #style-bar-overflow {
+  width: max-content;
+  max-width: min(276px, calc(100vw - 16px));
+  overflow: visible;
+  padding: 6px;
+}
+#studio-header[data-compact-toolbar] #style-bar-overflow > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+#studio-header[data-compact-toolbar] #style-bar-overflow :is(.sb-ribbon-group, .sb-command-group) {
+  display: flex;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+}
+#studio-header[data-compact-toolbar] #style-bar-overflow :is(.sb-color-wrap, .sb-dropdown) { display: inline-flex; }
+#studio-header[data-compact-toolbar] #style-bar-overflow .sb-btn {
+  justify-content: center;
+  gap: 0;
+  width: auto;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+#studio-header[data-compact-toolbar] #style-bar-overflow .sb-has-arrow { padding: 0 4px; }
+#studio-header[data-compact-toolbar] #style-bar-overflow .sb-btn::after { content: none; }
+#studio-header[data-compact-toolbar] #style-bar-overflow .sb-dropdown.open .sb-dropdown-menu {
+  position: absolute;
+  box-shadow: var(--shadow-dropdown);
+}
+
+/* 한 줄일 때 서식 칸이 사이드바 위에 오므로, 펼친 메뉴가 사이드바에 가리지 않게 헤더를 올린다. */
+#studio-header[data-compact-toolbar]:has(.sb-dropdown.open) { z-index: 100; }
+/* 기본 도구 상자 더 보기 안의 스플릿 메뉴가 창 밖으로 펼쳐지게 한다. */
+#studio-header[data-compact-toolbar] #editor-toolbar-overflow { overflow: visible; }

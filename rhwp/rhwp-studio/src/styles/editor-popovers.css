@@ -136,8 +136,17 @@
 #style-bar .sb-hl-palette { padding: 8px; }
 #style-bar .sb-hl-palette-row { gap: 3px; margin-bottom: 3px; }
 #style-bar .sb-hl-swatch { width: 18px; height: 18px; border-radius: 3px; }
-#style-bar .sb-hl-palette-actions { margin-top: 7px; padding-top: 7px; }
-#style-bar .sb-hl-palette-actions button { min-height: 28px; border-radius: 5px; }
+#style-bar .sb-hl-palette-actions { gap: 3px; margin-bottom: 6px; }
+#style-bar .sb-hl-palette-actions button {
+  min-height: 22px;
+  padding: 0 6px;
+  border-color: transparent;
+  border-radius: 4px;
+  background: var(--ui-hover);
+  color: var(--ui-text);
+  font: 11px var(--font-family-ui);
+}
+#style-bar .sb-hl-palette-actions button:hover { background: var(--ui-active); }
 
 .endnote-shape-preview-button {
   position: relative;

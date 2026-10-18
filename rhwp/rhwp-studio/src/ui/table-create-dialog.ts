@@ -3,7 +3,7 @@
  * 도구상자 버튼 아래에서 행×열을 빠르게 고른다.
  */
 
-import { makeOption } from './dom-utils';
+import { makeOption, menuAnchor } from './dom-utils';
 import { enableDialogDrag } from './dialog-drag';
 import { HWPUNIT_PER_MM } from '@/core/hwp-constants';
 
@@ -58,7 +58,7 @@ export class TableCreateDialog {
     document.body.appendChild(this.popup);
 
     if (anchor) {
-      const rect = anchor.getBoundingClientRect();
+      const rect = menuAnchor(anchor).getBoundingClientRect();
       this.popup.style.left = rect.left + 'px';
       this.popup.style.top = rect.bottom + 2 + 'px';
       this.popup.style.transform = 'none';
