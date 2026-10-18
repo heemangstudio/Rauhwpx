@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HamaEditor</title>
 <meta name="description" content="HamaEditor는 한글 문서 편집과 AI 에이전트 작업을 한 화면에서 하는 macOS·Windows 데스크톱 앱이에요. 9,900원 한 번 결제.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="HamaEditor">
 <meta property="og:description" content="한글 문서 편집과 AI 에이전트 작업을 한 화면에서.">
 <meta property="og:type" content="website">
@@ -29,50 +29,121 @@
 <style>
 /* 홈 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
 
-/* 히어로 */
-.hero__copy { padding-top: clamp(48px, 6.4vw, 92px); padding-bottom: 0; }
-.hero__copy .btn-row { margin-top: 32px; }
-.hero__stage { padding-top: 64px; padding-bottom: clamp(48px, 5.6vw, 80px); }
+/* 히어로: 큰 제목이 낱말마다 올라오고, 버튼, 앱 창, 하마 순서로 들어와요 */
+.hero__copy { padding-top: clamp(64px, 8.4vw, 132px); padding-bottom: 0; }
+.hero__copy .btn-row { margin-top: clamp(32px, 3.4vw, 48px); }
+.hero .display .w__i { --d0: 120ms; }
+.js .hero__copy .btn-row[data-reveal] { transition-delay: 620ms; }
+.hero__stage { padding-top: clamp(80px, 8vw, 120px); padding-bottom: clamp(72px, 8vw, 128px); }
 .win-wrap { position: relative; }
-.hero .win { --win-h: 468px; }
-.hero .page { --page-w: 444px; }
+.hero .win { --win-h: 520px; }
+.hero .page { --page-w: 460px; }
 .hero .perch { right: 104px; }
+.js .hero .win[data-reveal="rise"] {
+  transform: translateY(96px) scale(0.94);
+  transition-duration: 1500ms, 1500ms;
+  transition-delay: 760ms;
+}
+.js .hero .perch[data-reveal] { transition-delay: 1650ms; }
+
+/* 히어로 아래쪽 픽셀 구름 띠 두 겹. 앱 창이 구름 위에 떠 있어요 */
+.hero .sky::before, .hero .sky::after {
+  content: ""; position: absolute; left: -10%; right: -10%;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+.hero .sky::before {
+  bottom: 10%; height: 120px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 12' shape-rendering='crispEdges'%3E%3Cpath fill='%23f0f4fe' d='M20 2h6v1h-6zM17 3h13v1h-13zM15 4h18v1h-18zM14 5h22v1h-22zM14 6h22v1h-22zM64 4h4v1h-4zM62 5h11v1h-11zM60 6h16v1h-16zM60 7h16v1h-16zM104 1h8v1h-8zM101 2h15v1h-15zM98 3h22v1h-22zM96 4h27v1h-27zM96 5h27v1h-27zM96 6h27v1h-27z'/%3E%3Cpath fill='%23e6edfc' d='M15 7h20v1h-20zM61 8h14v1h-14zM97 7h25v1h-25z'/%3E%3C/svg%3E") 0 100% / auto 100% repeat-x;
+}
+.hero .sky::after {
+  bottom: 0; height: 144px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 12' shape-rendering='crispEdges'%3E%3Cpath fill='%23e4ecfd' d='M13 3h6v1h-6zM10 4h12v1h-12zM8 5h17v1h-17zM6 6h22v1h-22zM4 7h26v1h-26zM4 8h26v1h-26zM49 5h5v1h-5zM47 6h11v1h-11zM44 7h17v1h-17zM44 8h18v1h-18zM80 6h5v1h-5zM78 7h10v1h-10zM76 8h14v1h-14z'/%3E%3Cpath fill='%23d3e0fa' d='M5 9h24v1h-24zM45 9h16v1h-16zM77 9h12v1h-12z'/%3E%3C/svg%3E") 40% 100% / auto 100% repeat-x;
+}
+@keyframes sky-in { from { opacity: 0; } }
+.js .hero .sky { animation: sky-in 1600ms var(--ease-out) 200ms both; }
+
+@keyframes bank-near { to { translate: -6% -40px; } }
+@keyframes bank-far { to { translate: 3% -14px; } }
+@keyframes copy-out { to { translate: 0 -64px; opacity: 0.2; } }
+@keyframes win-settle {
+  from { transform: perspective(1800px) rotateX(11deg) scale(0.95); }
+  to { transform: none; }
+}
+@supports (animation-timeline: scroll()) {
+  @media (prefers-reduced-motion: no-preference) {
+    /* 내려가면 제목은 조금 물러나고, 기울어 있던 앱 창이 바로 서요 */
+    .hero__copy { animation: copy-out linear both; animation-timeline: scroll(root); animation-range: 0 85vh; }
+    .hero .win-wrap {
+      transform-origin: 50% 0;
+      animation: win-settle cubic-bezier(0.2, 0.7, 0.2, 1) both;
+      animation-timeline: scroll(root); animation-range: 0 60vh;
+    }
+    .hero .sky::after { animation: bank-near linear both; animation-timeline: --sky; }
+    .hero .sky::before { animation: bank-far linear both; animation-timeline: --sky; }
+  }
+}
 @media (max-width: 760px) {
   .hero .btn-row > .btn { flex: 1 1 100%; }
-  .hero__stage { padding-top: 76px; }
+  .hero__stage { padding-top: 84px; }
   .hero .win { --win-h: 420px; }
   .hero .perch { right: 18px; }
+  .hero .sky::before { height: 72px; }
+  .hero .sky::after { height: 88px; }
 }
 
-/* 01 기능: 줄마다 큰 화면 하나와 짧은 글. 화면은 줄마다 좌우를 바꿔요. */
+/* 01 기능: 줄마다 큰 화면 하나와 짧은 글. 화면은 줄마다 좌우를 바꿔요.
+   화면 가운데를 지나는 줄만 또렷하고(.is-focus), 나머지는 옅게 물러나요. */
 #features .cell--head { padding-bottom: 0; }
 .feats {
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(88px, 10vw, 128px);
-  padding-top: clamp(48px, 5.6vw, 72px);
-  padding-bottom: clamp(96px, 11vw, 144px);
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(120px, 14vw, 200px);
+  padding-top: clamp(64px, 7vw, 104px);
+  padding-bottom: clamp(120px, 13vw, 184px);
 }
 .feat { display: flex; align-items: flex-end; gap: 7%; }
 .feat:nth-child(odd) .feat__art { order: 2; }
 .feat__copy { flex: 1 1 0; min-width: 0; }
 .feat__title {
-  font-size: clamp(24px, 0.8vw + 19px, 30px); line-height: 1.34;
-  font-weight: 620; letter-spacing: -0.03em; text-wrap: balance;
+  font-size: clamp(30px, 1.8vw + 20px, 48px); line-height: 1.12;
+  font-weight: 800; letter-spacing: -0.04em; text-wrap: balance;
 }
-.feat__copy .text { margin-top: 18px; font-size: var(--fs-lead); line-height: 1.65; }
+.feat__copy .text { margin-top: 18px; font-size: var(--fs-lead); line-height: 1.6; }
 
-/* 화면 카드: 남색이 살짝 도는 면. 창은 왼쪽 위에서 시작해 오른쪽과 아래가 카드 끝에서 잘려요. */
+/* 화면 카드: 옅은 파랑 면에 픽셀 점. 창은 왼쪽 위에서 시작해 오른쪽과 아래가 카드 끝에서 잘려요. */
 .feat__art {
   position: relative; flex: 0 0 63%;
   aspect-ratio: 7 / 5;
-  border-radius: 10px; overflow: hidden;
+  border-radius: 16px; overflow: hidden;
   background:
-    radial-gradient(110% 90% at 0% 0%, color-mix(in srgb, var(--deep) 26%, transparent), transparent 64%),
-    var(--cloud-shade);
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath fill='%23d9e4ff' d='M0 0h2v2h-2z'/%3E%3C/svg%3E") 8px 8px / 16px 16px,
+    var(--paper-blue);
 }
 .feat__art::after {
   content: ""; position: absolute; inset: 0; z-index: 4;
-  border-radius: inherit; box-shadow: inset 0 0 0 1px var(--surface-ring);
+  border-radius: inherit; box-shadow: inset 0 0 0 1px #dbe4f7;
   pointer-events: none;
+}
+/* 주인공이 아닌 줄을 덮는 흰 막 (opacity 만 움직여요) */
+.feat__art::before {
+  content: ""; position: absolute; inset: 0; z-index: 5;
+  background: var(--paper);
+  opacity: 0; pointer-events: none;
+  transition: opacity 700ms var(--ease-out);
+}
+.feat__copy > * { transition: opacity 700ms var(--ease-out); }
+.feats.is-tracking .feat:not(.is-focus) .feat__art::before { opacity: 0.45; }
+.feats.is-tracking .feat:not(.is-focus) .feat__copy > * { opacity: 0.28; }
+
+@keyframes art-settle { from { translate: 0 96px; scale: 0.9; } }
+@keyframes copy-drift { from { translate: 0 48px; } to { translate: 0 -48px; } }
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .feat__art {
+      animation: art-settle cubic-bezier(0.2, 0.7, 0.2, 1) both;
+      animation-timeline: view(); animation-range: entry 0% cover 42%;
+    }
+    .feat__copy { animation: copy-drift linear both; animation-timeline: view(); animation-range: cover; }
+  }
 }
 .feat__art > .win {
   position: absolute; inset: 9% -12px -12px 6%;
@@ -90,6 +161,7 @@
 }
 
 @media (max-width: 900px) {
+  .feats { gap: clamp(88px, 16vw, 128px); }
   .feat { flex-direction: column; align-items: stretch; gap: 32px; }
   .feat__art { flex: none; aspect-ratio: 3 / 2; }
   .feat:nth-child(odd) .feat__art { order: 0; }
@@ -218,6 +290,15 @@
   .rs .win__side .tool, .rs .side__head { display: none; }
 }
 
+/* 02 예시: 영상 화면이 스크롤에 맞춰 커지며 자리를 잡아요 */
+@keyframes media-grow { from { scale: 0.86; translate: 0 48px; } }
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    #flow .cell--media { animation: media-grow cubic-bezier(0.2, 0.7, 0.2, 1) both; animation-timeline: view(); animation-range: entry 0% cover 45%; }
+  }
+}
+#flow .cell--media { padding-bottom: clamp(48px, 6vw, 96px); }
+
 /* 02 예시: 영상과 같이 가는 단계 */
 .flow-step { padding-bottom: clamp(32px, 4vw, 52px); }
 .flow-step__btn { all: unset; display: block; width: 100%; cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -241,6 +322,8 @@
 .prov__link:hover .link-arrow { opacity: 1; }
 .prov__link:hover .link-arrow::after { transform: translateX(3px); }
 .prov { padding-bottom: clamp(36px, 4.4vw, 56px); }
+.prov .tile { transition: transform 0.35s var(--ease-out); }
+.prov:hover .tile { transform: translateY(-4px); }
 @media (max-width: 900px) {
   .prov { padding-bottom: var(--cell-pad); }
   .prov, .prov__link { display: grid; grid-template-columns: 48px minmax(0, 1fr); column-gap: 18px; align-items: start; }
@@ -252,10 +335,16 @@
 /* 가격 */
 .apply { padding-bottom: clamp(88px, 10vw, 140px); }
 .apply .cell--head { padding-bottom: clamp(64px, 8vw, 104px); }
-.price-wrap { position: relative; width: min(100%, 520px); margin: 112px auto 0; }
+.price-wrap { position: relative; width: min(100%, 560px); margin: 120px auto 0; }
 .price-wrap .perch { width: 132px; height: 120px; left: 50%; margin-left: -66px; }
-.price { text-align: center; padding: 40px clamp(20px, 5vw, 44px) 36px; }
-.price__num { font-size: clamp(44px, 3vw + 30px, 60px); line-height: 1.05; font-weight: 700; letter-spacing: -0.04em; }
+.price { text-align: center; padding: 48px clamp(20px, 5vw, 48px) 40px; }
+.price__num { font-size: clamp(56px, 4vw + 36px, 96px); line-height: 1; font-weight: 800; letter-spacing: -0.05em; font-variant-numeric: tabular-nums; }
+@keyframes price-in { from { scale: 0.9; translate: 0 64px; } }
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .price-wrap { animation: price-in cubic-bezier(0.2, 0.7, 0.2, 1) both; animation-timeline: view(); animation-range: entry 0% cover 40%; }
+  }
+}
 .price .meta { margin-top: 10px; }
 .price .text { margin-top: 18px; }
 .price .btn-row { justify-content: center; margin-top: 28px; }
@@ -521,8 +610,8 @@
     </div>
     <div class="frame frame--top">
       <div class="cell cell--open hero__copy">
-        <h1 id="hero-title" class="display">조사, 계획, 편집. 한 곳에서<br><span class="tone-accent">HamaEditor</span></h1>
-        <div class="btn-row">
+        <h1 id="hero-title" class="display" data-reveal="words">조사, 계획, 편집. 한 곳에서<br><span class="tone-accent">HamaEditor</span></h1>
+        <div class="btn-row" data-reveal="chunk">
           <div class="dl-stack"><a class="btn btn--primary btn--white" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a><span class="dl-ver" data-app-version>v3.0.2</span></div>
           <a class="btn btn--secondary" href="pricing.html">라이선스 구매</a>
         </div>
@@ -563,11 +652,11 @@
     <div class="frame">
       <header class="cell cell--head cell--center">
         <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">01</span>기능</p>
-        <h2 id="f-title" class="h2" data-reveal="chunk" style="--i:1">한글 안에서 모든 것이 해결 가능한 <em class="tone-accent">유일한</em> 편집기</h2>
+        <h2 id="f-title" class="h2" data-reveal="words">한글 안에서 모든 것이 해결 가능한 <em class="tone-accent">유일한</em> 편집기</h2>
       </header>
 
-      <div class="cell cell--open feats">
-        <article class="feat feat--research" id="research">
+      <div class="cell cell--open feats" data-focus-group>
+        <article class="feat feat--research" data-focus id="research">
           <svg class="rs-sprite" aria-hidden="true" focusable="false">
             <symbol id="rs-i-pdf" viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z M9.5 1.5V5H13 M6 8.5h5 M6 11h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
             <symbol id="rs-i-web" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M1.8 8h12.4 M8 1.8c2 2 2 10.4 0 12.4 M8 1.8c-2 2-2 10.4 0 12.4" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
@@ -682,7 +771,7 @@
           </div>
         </article>
 
-        <article class="feat feat--browser">
+        <article class="feat feat--browser" data-focus>
           <div class="feat__art" data-demo data-loop="2600">
             <div class="win win--sm win--dock" data-reveal="rise" role="img" aria-label="앱 안의 브라우저에서 에이전트가 기상자료개방포털에 폭염일수를 검색하고, 결과를 내려 보며 PDF를 받아 프로젝트에 저장해요. 사이드바에는 웹 페이지 열기, 페이지에 입력하기, 페이지 요소 누르기, 페이지 스크롤, 브라우저 다운로드 단계가 차례로 쌓여요.">
               <div class="win__bar">
@@ -749,7 +838,7 @@
           </div>
         </article>
 
-        <article class="feat feat--plan">
+        <article class="feat feat--plan" data-focus>
           <div class="feat__art">
             <div class="plan" data-demo data-reveal="rise" role="img" aria-label="에이전트가 할 일 네 개를 정리한 계획 카드. 수정 요청, 전체 접근으로 실행, 에이전트로 실행 버튼이 있다">
               <p class="plan__head"><b class="plan__title">사업 제안서 개선 계획</b><span class="plan__phase">승인 대기</span></p>
@@ -773,7 +862,7 @@
           </div>
         </article>
 
-        <article class="feat feat--edit">
+        <article class="feat feat--edit" data-focus>
           <div class="feat__art" data-demo data-loop="4200">
             <div class="win win--sm" data-reveal="rise" role="img" aria-label="HamaEditor 화면. 사이드바에서 준비물과 집합 시간을 써 달라고 하면 에이전트가 가정통신문의 두 번째 문단을 바로 써요.">
               <div class="win__bar">
@@ -815,7 +904,7 @@
           </div>
         </article>
 
-        <article class="feat feat--review" id="gongmun">
+        <article class="feat feat--review" data-focus id="gongmun">
           <div class="feat__art" data-demo>
             <div class="win win--sm" data-reveal="rise" role="img" aria-label="에이전트가 보도자료의 표현 네 곳을 고치고, 바뀐 문장을 검토 카드로 보여 줘요. 변경 수락과 변경 거절 버튼이 있어요.">
               <div class="win__bar">
@@ -859,7 +948,7 @@
     <div class="frame">
       <header class="cell cell--head">
         <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">02</span>예시</p>
-        <h2 id="flow-title" class="h2" data-reveal="chunk" style="--i:1">브레인스토밍부터 문서 작성까지, <span class="nb">한 공간에서</span></h2>
+        <h2 id="flow-title" class="h2" data-reveal="words">브레인스토밍부터 문서 작성까지, <span class="nb">한 공간에서</span></h2>
       </header>
       <div class="cell cell--media">
         <div class="shot" data-reveal="rise">
@@ -876,7 +965,7 @@
     <div class="frame">
       <header class="cell cell--head">
         <p class="eyebrow" data-reveal="chunk"><span class="eyebrow__no">03</span>연결</p>
-        <h2 id="c-title" class="h2" data-reveal="chunk" style="--i:1">쓰던 계정을 연결하면 끝</h2>
+        <h2 id="c-title" class="h2" data-reveal="words">쓰던 계정을 연결하면 끝</h2>
       </header>
       <ul class="cells cells--3" role="list">
         <li class="cell prov" data-reveal style="--i:0">

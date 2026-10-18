@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>다운로드 | HamaEditor</title>
 <meta name="description" content="HamaEditor를 내려받고 Mac이나 Windows PC에 설치하는 순서예요. 설치 파일을 열고 안내대로 설치한 뒤 처음 실행하면 3일 체험이 시작돼요.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/download">
@@ -26,15 +26,15 @@
 .os-pick[hidden], .os-other[hidden] { display: none; }
 .os-pick__logo {
   flex: none; width: 52px; height: 52px; display: grid; place-items: center;
-  border-radius: 14px; background: #141414; color: var(--text);
-  box-shadow: inset 0 0 0 1px rgba(178, 226, 251, 0.16);
+  border-radius: 14px; background: var(--paper); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-strong), 0 8px 16px -10px rgba(11, 13, 18, 0.3);
 }
-.os-pick__name { font-size: var(--fs-h3); font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+.os-pick__name { font-size: var(--fs-h3); font-weight: 750; letter-spacing: -0.01em; color: var(--text); }
 .os-pick .meta { margin-top: 2px; }
 .os-other {
   display: flex; width: fit-content; margin-top: 8px;
   font-size: var(--fs-small); color: var(--meta);
-  text-decoration: underline; text-decoration-color: rgba(159, 185, 204, 0.3); text-underline-offset: 3px;
+  text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px;
   transition: color 0.15s ease;
 }
 .os-other:hover { color: var(--text); }
@@ -49,13 +49,15 @@
 .inst__step[hidden] { display: none; }
 .inst__step .eyebrow + .h3 { margin-top: 14px; }
 .inst__step .h3 { font-size: clamp(20px, 0.6vw + 17px, 24px); }
+.inst__art .win { transition: translate 0.5s var(--ease-out); }
+.inst__step:hover .inst__art .win { translate: 0 -4px; }
 .inst__step .h3 + .text { margin-top: 10px; max-width: 30em; }
 .inst__step .link-arrow { margin-top: 18px; font-size: var(--fs-small); }
 .inst__art { position: relative; width: 100%; max-width: 420px; }
 .inst__art .win__title { inset: 0 70px; }
 /* 테두리가 그림 바깥으로 나가서, 안의 창은 다른 단계와 같은 크기와 높이에 놓여요 */
 .inst__frame { margin: -54px -20px -20px; padding: 28px 20px 20px; width: calc(100% + 40px); min-width: 0; border: 1px solid var(--line-strong); border-radius: 18px; display: grid; place-items: center; }
-.inst__frame legend { padding: 0 10px; margin-inline: auto; font-size: var(--fs-small); font-weight: 600; color: var(--text); }
+.inst__frame legend { padding: 0 10px; margin-inline: auto; font-size: var(--fs-small); font-weight: 700; color: var(--text); }
 .cursor { position: absolute; z-index: 3; width: 18px; height: 22px; pointer-events: none; }
 
 /* 윈도우 창: 제목은 왼쪽, 최소화·최대화·닫기는 오른쪽 */
@@ -320,7 +322,7 @@
     <div class="frame frame--top">
       <div class="cell cell--open page-head install-head">
         <p class="eyebrow">다운로드</p>
-        <h1 id="install-title" class="h1">HamaEditor 다운로드</h1>
+        <h1 id="install-title" class="h1" data-reveal="words">HamaEditor 다운로드</h1>
         <div class="os-pick" data-os="mac">
           <span class="os-pick__logo"><svg viewBox="0 0 384 512" width="20" height="24" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg></span>
           <div>

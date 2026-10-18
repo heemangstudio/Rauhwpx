@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
 <meta name="description" content="HamaEditor는 9,900원(부가세 포함) 한 번 결제로 사는 macOS·Windows 앱이에요. 3일 동안 먼저 써 볼 수 있어요.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/pricing">
@@ -23,7 +23,7 @@
 .buy-wrap > .buy { flex: 1; }
 .buy { display: flex; flex-direction: column; }
 .buy__cta { margin-top: auto; }
-.buy--trial { background: #15181d; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 24px 48px -28px rgba(0, 0, 0, 0.6); }
+.buy--trial { background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line); }
 .buy--trial .buy__list { margin-bottom: 24px; }
 @media (max-width: 860px) {
   .buy-pair { grid-template-columns: 1fr; max-width: 520px; }
@@ -35,7 +35,7 @@
 .buy__top .eyebrow { justify-content: center; }
 .buy__num {
   margin-top: 14px;
-  font-size: clamp(44px, 3vw + 30px, 60px); line-height: 1.05; font-weight: 700; letter-spacing: -0.04em;
+  font-size: clamp(52px, 3vw + 36px, 80px); line-height: 1; font-weight: 800; letter-spacing: -0.05em;
   font-variant-numeric: tabular-nums;
 }
 .buy__top .meta { margin-top: 10px; }
@@ -56,7 +56,7 @@
 /* 동의 전에도 누르면 안내가 떠야 해서 클릭은 받아요 */
 .buy [data-buy][aria-disabled="true"] { pointer-events: auto; cursor: not-allowed; }
 .buy [data-buy][aria-disabled="true"]:active { transform: none; }
-.buy__note { margin-top: 12px; text-align: center; font-size: var(--fs-meta); line-height: 1.6; color: var(--soft); }
+.buy__note { margin-top: 12px; text-align: center; font-size: var(--fs-meta); line-height: 1.6; color: var(--accent); }
 .buy__note:empty { margin-top: 0; }
 .buy:has([data-consent]:checked) .buy__note { display: none; }
 
@@ -81,7 +81,7 @@
 .terms li { position: relative; padding-left: 18px; }
 .terms li::before { content: ""; position: absolute; left: 2px; top: 0.72em; width: 4px; height: 4px; background: var(--meta); }
 .terms b { color: var(--text); font-weight: 600; }
-.terms a { color: var(--soft); text-decoration: underline; text-decoration-color: rgba(178, 226, 251, 0.35); text-underline-offset: 3px; }
+.terms a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(31, 94, 255, 0.35); text-underline-offset: 3px; }
 .terms a:hover { text-decoration-color: currentColor; }
 
 .dl { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 32px; }

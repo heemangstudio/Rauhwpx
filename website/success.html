@@ -6,7 +6,7 @@
 <title>라이선스 키 | HamaEditor</title>
 <meta name="description" content="HamaEditor 결제를 마친 뒤 라이선스 키를 받는 페이지예요.">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/success">
@@ -31,17 +31,17 @@
 }
 .spin {
   flex: none; width: 16px; height: 16px; margin-top: 0.3em;
-  border: 2px solid rgba(178, 226, 251, 0.22); border-top-color: var(--accent); border-radius: 50%;
+  border: 2px solid var(--accent-line); border-top-color: var(--accent); border-radius: 50%;
 }
 @media (prefers-reduced-motion: no-preference) { .spin { animation: spin 0.9s linear infinite; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e9c08a; }
-.key:has(.status.is-bad) { box-shadow: inset 0 0 0 1px rgba(233, 192, 138, 0.26), 0 24px 48px -28px rgba(0, 0, 0, 0.6); }
+.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e0901f; }
+.key:has(.status.is-bad) { box-shadow: 0 0 0 1.5px #f0c27a, 0 24px 48px -28px rgba(11, 13, 18, 0.18); }
 
 /* 키 받음 */
 .key__issued { margin-top: 18px; }
 .key__issued .code-box { flex-wrap: wrap; padding: 10px 10px 10px 18px; }
-.key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--mist); user-select: all; }
+.key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--text); user-select: all; }
 .key__issued .code-box .btn { font-family: var(--font); letter-spacing: -0.01em; }
 .key__issued .meta { margin-top: 12px; }
 
@@ -49,7 +49,7 @@
 .key [data-retry-wrap] { margin-top: 20px; }
 .key__help {
   margin-top: 20px; padding: 16px 18px;
-  border-radius: 12px; background: #0a0d12; box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 12px; background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line);
   font-size: var(--fs-small); line-height: 1.7; color: var(--muted);
 }
 .ref { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
@@ -76,10 +76,10 @@
 
 /* 키 넣는 법 */
 .activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 40px; padding-bottom: clamp(36px, 5vw, 64px); }
-.activate > .h2 { font-size: clamp(24px, 0.8vw + 18px, 30px); }
+.activate > .h2 { font-size: clamp(28px, 1.4vw + 20px, 44px); }
 .activate .step .btn { margin-top: 14px; }
 .foot-note { padding-top: 20px; padding-bottom: 20px; }
-.foot-note a { color: var(--soft); text-decoration: underline; text-decoration-color: rgba(178, 226, 251, 0.35); text-underline-offset: 3px; }
+.foot-note a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(31, 94, 255, 0.35); text-underline-offset: 3px; }
 
 @media (max-width: 900px) {
   .activate { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -141,7 +141,7 @@
     <div class="frame frame--top">
       <header class="cell cell--open page-head cell--center">
         <p class="eyebrow">라이선스 키</p>
-        <h1 id="ok-title" class="h1">결제해 주셔서 고마워요</h1>
+        <h1 id="ok-title" class="h1" data-reveal="words">결제해 주셔서 고마워요</h1>
       </header>
 
       <div class="cell cell--open key-cell">

@@ -2,6 +2,8 @@
    - [data-nav]        : 스크롤하면 data-scrolled="true" 가 붙어 아래 선이 보여요.
    - [data-menu-toggle]: 좁은 화면 메뉴를 열고 닫아요 (aria-controls 로 메뉴를 찾아요).
    - [data-reveal]     : 화면에 들어오면 .is-in 이 붙어요. 한 번만 일어나요.
+                         data-reveal="words" 는 먼저 낱말마다 <span class="w"> 로 감싸서 한 낱말씩 올라오게 해요. 글자는 그대로예요.
+   - [data-focus-group]: 안의 [data-focus] 가운데 화면 한가운데를 지나는 하나에 .is-focus 를 줘요. 나머지는 조용히 물러나요.
    - [data-demo]       : 화면에 들어올 때마다 안의 [data-at] 조각을 시간 순서대로 켜요.
                          video[data-demo-video] 가 있으면 영상과 같이 가고, data-at="end" 는 영상이 끝날 때 켜져요.
                          data-loop="ms" 를 주면 끝나고 그만큼 쉬었다가 다시 해요.
@@ -70,6 +72,36 @@
     }
   }
 
+  /* ── 제목 낱말 나누기: 글자는 그대로 두고 낱말마다 상자를 씌워요 ── */
+  function splitWords(el) {
+    var n = 0;
+    (function walk(node) {
+      Array.prototype.slice.call(node.childNodes).forEach(function (child) {
+        if (child.nodeType === 3) {
+          if (!/\S/.test(child.nodeValue)) return;
+          var frag = document.createDocumentFragment();
+          child.nodeValue.split(/(\s+)/).forEach(function (part) {
+            if (!part) return;
+            if (!/\S/.test(part)) { frag.appendChild(document.createTextNode(part)); return; }
+            var box = document.createElement('span');
+            var inner = document.createElement('span');
+            box.className = 'w';
+            inner.className = 'w__i';
+            inner.style.setProperty('--wi', String(n++));
+            inner.textContent = part;
+            box.appendChild(inner);
+            frag.appendChild(box);
+          });
+          node.replaceChild(frag, child);
+        } else if (child.nodeType === 1 && child.tagName !== 'BR') {
+          walk(child);
+        }
+      });
+    })(el);
+    el.classList.add('is-split');
+  }
+  if (hasIO && !calm()) all('[data-reveal="words"]').forEach(splitWords);
+
   /* ── 나타나기 ── */
   var reveals = all('[data-reveal]');
   if (!hasIO || calm()) {
@@ -84,6 +116,23 @@
       });
     }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
     reveals.forEach(function (el) { revealIO.observe(el); });
+  }
+
+  /* ── 지금 보는 줄 하나만 또렷하게 ── */
+  if (hasIO && !calm()) {
+    all('[data-focus-group]').forEach(function (group) {
+      var items = all('[data-focus]', group);
+      if (!items.length) return;
+      group.classList.add('is-tracking');
+      // 화면 가운데 10% 띠에 걸린 줄이 주인공이에요. 줄 사이 빈칸에서는 앞의 주인공을 그대로 둬요.
+      var focusIO = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          items.forEach(function (item) { item.classList.toggle('is-focus', item === entry.target); });
+        });
+      }, { rootMargin: '-45% 0px -45% 0px' });
+      items.forEach(function (item) { focusIO.observe(item); });
+    });
   }
 
   /* ── 장면 (paper 처럼 보일 때마다 다시 재생해요) ── */
