@@ -1161,6 +1161,8 @@ impl SkiaTextReplay<'_> {
                         if cluster == " "
                             || cluster == "\t"
                             || cluster == "\u{2007}"
+                            // TAC 개체는 별도 노드가 그린다. 논리 위치와 폭 0은 유지한다.
+                            || cluster == "\u{FFFC}"
                             || nonprinting_spaces.binary_search(char_idx).is_ok()
                         {
                             continue;
@@ -1435,7 +1437,10 @@ impl SkiaTextReplay<'_> {
                             let mut dot_paint = Paint::default();
                             dot_paint.set_anti_alias(true);
                             dot_paint.set_color(colorref_to_skia(style.color, 1.0));
-                            for cx in &char_positions[..char_positions.len().saturating_sub(1)] {
+                            for (ch, cx) in text.chars().zip(&char_positions) {
+                                if ch == '\u{FFFC}' {
+                                    continue;
+                                }
                                 draw_text_run(
                                     canvas,
                                     dot,
@@ -1810,6 +1815,258 @@ mod tests {
         assert!(
             ink_above_header > 500,
             "ink above header bbox: {ink_above_header}"
+        );
+    }
+
+    /// 소유한 합성 폰트에 잉크가 확실한 U+FFFC를 추가한다. 시스템 OBJ 폴백에 의존하지 않는다.
+    fn inline_placeholder_fixture() -> Vec<u8> {
+        let fixture = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
+        let face = ttf_parser::Face::parse(fixture, 0).unwrap();
+        let mut mappings: Vec<(u32, u16)> = " AVTofice\u{301}한"
+            .chars()
+            .map(|ch| (ch as u32, face.glyph_index(ch).unwrap().0))
+            .collect();
+        let ink = face.glyph_index('한').unwrap().0;
+        mappings.extend([(',' as u32, ink), (0x25CF, ink), (0xFFFC, ink)]);
+        mappings.sort_unstable_by_key(|entry| entry.0);
+
+        // format 12의 단일 코드포인트 그룹으로 기존 글자와 테스트 글리프를 명시한다.
+        let mut cmap = vec![0, 0, 0, 1, 0, 3, 0, 10, 0, 0, 0, 12, 0, 12, 0, 0];
+        for value in [16 + 12 * mappings.len() as u32, 0, mappings.len() as u32] {
+            cmap.extend_from_slice(&value.to_be_bytes());
+        }
+        for (codepoint, glyph) in mappings {
+            for value in [codepoint, codepoint, u32::from(glyph)] {
+                cmap.extend_from_slice(&value.to_be_bytes());
+            }
+        }
+        let checksum = |bytes: &[u8]| {
+            bytes.chunks(4).fold(0_u32, |sum, chunk| {
+                let mut word = [0; 4];
+                word[..chunk.len()].copy_from_slice(chunk);
+                sum.wrapping_add(u32::from_be_bytes(word))
+            })
+        };
+        let mut out = fixture.to_vec();
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+        let cmap_offset = out.len() as u32;
+        out.extend_from_slice(&cmap);
+        let count = u16::from_be_bytes([out[4], out[5]]) as usize;
+        let mut head_offset = None;
+        for record in (0..count).map(|i| 12 + i * 16) {
+            if &out[record..record + 4] == b"cmap" {
+                for (offset, value) in [
+                    (4, checksum(&cmap)),
+                    (8, cmap_offset),
+                    (12, cmap.len() as u32),
+                ] {
+                    out[record + offset..record + offset + 4].copy_from_slice(&value.to_be_bytes());
+                }
+            } else if &out[record..record + 4] == b"head" {
+                head_offset = Some(u32::from_be_bytes(
+                    out[record + 8..record + 12].try_into().unwrap(),
+                ) as usize);
+            }
+        }
+        let adjustment = head_offset.unwrap() + 8;
+        out[adjustment..adjustment + 4].fill(0);
+        let value = 0xB1B0_AFBA_u32.wrapping_sub(checksum(&out));
+        out[adjustment..adjustment + 4].copy_from_slice(&value.to_be_bytes());
+        out
+    }
+
+    fn replay_inline_fixture(text: &str, style: &TextStyle, typeface: &Typeface) -> Vec<u8> {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((200, 120)).unwrap();
+        surface.canvas().clear(Color::WHITE);
+        let font_mgr = FontMgr::default();
+        let custom =
+            TypefaceCatalog::from([(style.font_family.to_lowercase(), vec![typeface.clone()])]);
+        let bundled = TypefaceCatalog::default();
+        let families = SystemFontFamilies::default();
+        let options = LayerOutputOptions::default();
+        let replay = SkiaTextReplay {
+            canvas: surface.canvas(),
+            font_mgr: &font_mgr,
+            custom_typefaces: &custom,
+            bundled_typefaces: &bundled,
+            system_families: &families,
+            output_options: &options,
+        };
+        replay.draw_text(
+            text,
+            BoundingBox::new(20.0, 20.0, 160.0, 70.0),
+            style,
+            60.0,
+            0.0,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            text,
+        );
+        let info = surface.image_info();
+        let mut pixels = vec![0; 200 * 120 * 4];
+        assert!(surface.read_pixels(&info, &mut pixels, 200 * 4, (0, 0)));
+        pixels
+    }
+
+    #[test]
+    fn native_inline_placeholder_has_no_ink_or_neighbor_advance_in_any_text_pass() {
+        let bytes = inline_placeholder_fixture();
+        let typeface = FontMgr::default().new_from_data(&bytes, None).unwrap();
+        let glyph = typeface.unichar_to_glyph(0xFFFC);
+        assert_ne!(glyph, 0, "U+FFFC가 폴백 대신 소유한 글리프를 사용");
+        let font = Font::new(typeface.clone(), 32.0);
+        assert!(!font.get_path(glyph).unwrap().bounds().is_empty());
+        let base = TextStyle {
+            font_family: typeface.family_name(),
+            font_size: 32.0,
+            ..Default::default()
+        };
+        for effect in 0..8 {
+            let mut style = base.clone();
+            match effect {
+                1 => {
+                    style.shadow_type = 1;
+                    style.shadow_offset_x = 7.0;
+                    style.shadow_offset_y = 5.0;
+                }
+                2 => style.outline_type = 1,
+                3 => {
+                    style.shadow_type = 1;
+                    style.shadow_offset_x = 7.0;
+                    style.outline_type = 1;
+                }
+                4 => style.emboss = true,
+                5 => style.engrave = true,
+                6 => style.bold = true,
+                7 => style.emphasis_dot = 1,
+                _ => {}
+            }
+            let blank = replay_inline_fixture("", &style, &typeface);
+            let object = replay_inline_fixture("\u{FFFC}", &style, &typeface);
+            assert_eq!(object, blank, "개체 placeholder 잉크, effect={effect}");
+            let ordinary = replay_inline_fixture("AV", &style, &typeface);
+            assert_ne!(ordinary, blank, "일반 글자는 그려야 한다, effect={effect}");
+            assert_eq!(
+                replay_inline_fixture("A\u{FFFC}V", &style, &typeface),
+                ordinary,
+                "앞뒤 문자 잉크와 위치, effect={effect}"
+            );
+            let positions = compute_char_positions("A\u{FFFC}V", &style);
+            let ordinary_positions = compute_char_positions("AV", &style);
+            assert_eq!(positions.len(), 4, "논리 caret 슬롯 유지");
+            assert_eq!(
+                positions,
+                vec![
+                    ordinary_positions[0],
+                    ordinary_positions[1],
+                    ordinary_positions[1],
+                    ordinary_positions[2]
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn native_inline_placeholder_three_equation_host_keeps_comma_and_control_order() {
+        use crate::model::control::{Control, Equation};
+        use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+        use crate::renderer::composer::compose_paragraph;
+
+        let bytes = inline_placeholder_fixture();
+        let typeface = FontMgr::default().new_from_data(&bytes, None).unwrap();
+        let style = TextStyle {
+            font_family: typeface.family_name(),
+            font_size: 32.0,
+            ..Default::default()
+        };
+        // June p14 audit469의 원본 구조: 0/8/16 extended EQ, comma24. 원본 U+FFFC 없음.
+        // 수식 내용은 소유한 합성 입력이며 원본 시험지 스크립트의 복제는 아니다.
+        let controls = ["S_1", "= 1 over 2", "= 7 over 3"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, script)| {
+                let mut eq = Equation::default();
+                eq.script = script.into();
+                // 원본 수식 서체의 전역 등록 상태와 무관하게 저장 폭을 사용한다.
+                eq.font_name = "RHWP Inline Placeholder Equation Fixture".into();
+                eq.common.treat_as_char = true;
+                eq.common.width = 1000 * (i as u32 + 1);
+                eq.common.height = 1200;
+                Control::Equation(Box::new(eq))
+            })
+            .collect();
+        let paragraph = Paragraph {
+            text: ",".into(),
+            char_offsets: vec![24],
+            char_count: 26,
+            controls,
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
+            line_segs: vec![LineSeg {
+                segment_width: 20000,
+                line_height: 1600,
+                text_height: 1200,
+                baseline_distance: 1000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let before = format!("{paragraph:?}");
+        let composed = compose_paragraph(&paragraph);
+        let text: String = composed
+            .lines
+            .iter()
+            .flat_map(|line| &line.runs)
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(text, "\u{FFFC}\u{FFFC}\u{FFFC},");
+        assert_eq!(
+            composed.tac_controls,
+            vec![(0, 1000, 0), (1, 2000, 1), (2, 3000, 2)]
+        );
+        assert_eq!(
+            format!("{paragraph:?}"),
+            before,
+            "원본 위치와 컨트롤 순서 보존"
+        );
+        assert_eq!(
+            compute_char_positions(&text, &style),
+            vec![0.0, 0.0, 0.0, 0.0, compute_char_positions(",", &style)[1]]
+        );
+        assert_eq!(
+            replay_inline_fixture(&text, &style, &typeface),
+            replay_inline_fixture(",", &style, &typeface),
+            "쉼표 위치와 잉크 보존"
+        );
+
+        // 인접 audit470처럼 텍스트가 없으면 composer가 합성하지 않는 대조군.
+        let mut adjacent = paragraph.clone();
+        adjacent.text.clear();
+        adjacent.char_offsets.clear();
+        adjacent.char_count = 25;
+        let composed = compose_paragraph(&adjacent);
+        assert_eq!(
+            composed.tac_controls,
+            vec![(0, 1000, 0), (1, 2000, 1), (2, 3000, 2)]
+        );
+        let text: String = composed
+            .lines
+            .iter()
+            .flat_map(|line| &line.runs)
+            .map(|run| run.text.as_str())
+            .collect();
+        assert!(text.is_empty());
+        assert_eq!(
+            replay_inline_fixture(&text, &style, &typeface),
+            replay_inline_fixture("", &style, &typeface)
         );
     }
 }
