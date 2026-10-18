@@ -18,8 +18,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  buildClaudeArgv,
-  buildClaudeSdkOptions,
+  buildClaudeArgv as buildPlatformClaudeArgv,
+  buildClaudeSdkOptions as buildPlatformClaudeSdkOptions,
   createClaudeSession,
   flushClaudeCredentialMirrors,
   prepareClaudeHome,
@@ -47,6 +47,10 @@ import {
   validateExecutionMode,
 } from '../agents/backend.mjs';
 import { RHWP_TOOL_RULES } from '../tools.mjs';
+
+// 기존 네이티브 도구 계약은 POSIX 프로필로 검증하고 Windows MCP 전용 경로는 별도로 검증한다.
+const buildClaudeArgv = (opts, id, resume, options = {}) => buildPlatformClaudeArgv(opts, id, resume, { platform: 'linux', ...options });
+const buildClaudeSdkOptions = (opts, id, resume, abort, options = {}) => buildPlatformClaudeSdkOptions(opts, id, resume, abort, { platform: 'linux', ...options });
 
 const testHome = mkdtempSync(path.join(os.tmpdir(), 'rhwp-backend-test-'));
 test.after(() => rmSync(testHome, { recursive: true, force: true }));
@@ -477,6 +481,43 @@ test('Claude SDK projects plan and build intent independently from access', () =
   assert.equal(build.tools.includes('Write'), true);
 });
 
+test('Windows restricted Claude uses only owned MCP tools without native execution', async () => {
+  for (const entry of [...matrix, { workflow: 'question', phase: 'questioning', permissionProfile: 'safe' }]) {
+    const opts = { ...baseOpts, ...entry, agentRole: 'chat', requestUserInput: async () => null };
+    const restricted = entry.permissionProfile !== 'unrestricted' || entry.phase === 'planning';
+    const cli = buildClaudeArgv(opts, sessionId, false, { platform: 'win32' });
+    const sdk = buildClaudeSdkOptions(opts, sessionId, false, new AbortController(), { platform: 'win32' });
+    if (!restricted) {
+      assert.ok(sdk.tools.includes('Bash'));
+      assert.equal(sdk.permissionMode, 'bypassPermissions');
+      continue;
+    }
+    assert.equal(argValue(cli, '--tools'), '');
+    assert.deepEqual(sdk.tools, ['AskUserQuestion']);
+    assert.deepEqual(sdk.allowedTools, ['mcp__rhwp__*', 'AskUserQuestion']);
+    assert.equal(sdk.settings.sandbox.enabled, false);
+    assert.equal(sdk.allowDangerouslySkipPermissions, undefined);
+    assert.equal(sdk.strictMcpConfig, true);
+    assert.deepEqual(Object.keys(sdk.mcpServers), ['rhwp']);
+    assert.deepEqual(sdk.agents, {});
+    assert.deepEqual(sdk.settingSources, []);
+    assert.equal(sdk.mcpServers.rhwp.env.RHWP_AGENT_WORKFLOW, entry.workflow);
+    assert.equal(sdk.mcpServers.rhwp.env.RHWP_AGENT_PHASE, entry.phase);
+    for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent', 'Workflow', 'Task', 'NotebookEdit']) {
+      assert.ok(sdk.disallowedTools.includes(tool));
+      assert.ok(sdk.settings.permissions.deny.includes(tool));
+      assert.ok(argValue(cli, '--disallowedTools').split(',').includes(tool));
+      assert.equal((await sdk.canUseTool(tool, { command: 'echo unsafe', file_path: '/outside' }, {})).behavior, 'deny');
+    }
+  }
+  const granted = buildClaudeSdkOptions({ ...baseOpts, workflow: 'direct', phase: 'implementing', permissionProfile: 'safe',
+    agentRole: 'chat', chatPermissionGrants: ['local-execution'], requestUserInput: async () => null },
+    sessionId, false, new AbortController(), { platform: 'win32' });
+  assert.ok(granted.tools.includes('Bash'));
+  assert.equal(granted.disallowedTools, undefined);
+  assert.equal(granted.settings.sandbox.enabled, false);
+});
+
 test('a chat-local native grant preserves document workflow and safe review across providers', async () => {
   for (const workflow of ['direct', 'question', 'plan']) {
     const phase = workflow === 'plan' ? 'planning' : workflow === 'question' ? 'questioning' : 'implementing';
@@ -784,7 +825,8 @@ for (const [agent, createSession] of [['claude', createClaudeSession], ['codex',
       const { argv, process } = spawns[index];
       if (agent === 'claude') {
         assert.equal(argValue(argv, '--tools').split(',').includes('Write'), grants.length > 0);
-        assert.equal(JSON.parse(argValue(argv, '--settings')).sandbox.enabled, grants.length === 0);
+        assert.equal(JSON.parse(argValue(argv, '--settings')).sandbox.enabled, grants.length === 0 && os.platform() !== 'win32');
+        if (!grants.length && os.platform() === 'win32') assert.equal(argValue(argv, '--tools'), '');
         process.emitJson({ type: 'system', subtype: 'init', session_id: 'same-chat' }, { type: 'result', subtype: 'success', stop_reason: 'end_turn' });
       } else {
         assert.ok(argv.includes(`sandbox_mode="${grants.length ? 'danger-full-access' : 'read-only'}"`));

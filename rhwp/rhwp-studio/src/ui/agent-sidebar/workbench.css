@@ -84,8 +84,8 @@
   padding-right: 124px;
   border-bottom: 0;
 }
-html.desktop-mac .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head { -webkit-app-region: drag; }
-html.desktop-mac .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-workbench-tabs *, button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head { -webkit-app-region: drag; }
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-workbench-tabs *, button, [role="tab"], [tabindex]:not([tabindex="-1"])) { -webkit-app-region: no-drag; }
 
 /* 환경·닫기·칸 열기 묶음은 무대 오른쪽 위에 고정된다. 칸이 열리면 탭 줄 오른쪽 끝에 놓인다. */
 .ag-workspace-corner { display: none; }
@@ -98,7 +98,7 @@ html.desktop-mac .ag-fullscreen .ag-workbench-head :is(.ag-workbench-tabs, .ag-w
   right: 10px;
   z-index: 21;
 }
-html.desktop-mac .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-corner { -webkit-app-region: no-drag; }
 .ag-fullscreen .ag-workspace-trailing { padding-right: 124px; }
 /* 작업 칸이 열리면 모서리 단추의 여백은 작업 칸 머리가 맡는다. */
 .ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-workspace-trailing { padding-right: 0; }

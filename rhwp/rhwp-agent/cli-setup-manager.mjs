@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { applyManagedCliLaunch, createNodeHost } from './npm-cli-launch.mjs';
+import { applyManagedCliLaunch, applyNodeHostEnv, createNodeHost, isNodeBinary } from './npm-cli-launch.mjs';
 import { bundledNpmLaunch } from './npm-runtime.mjs';
 import { API_KEY_MAX_BYTES, AUTH_CODE_MAX_BYTES, textFitsByteLimit } from './input-bounds.mjs';
 import { redactDiagnosticText } from './agents/backend.mjs';
@@ -199,6 +199,17 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     if (prefixCleanupUncertain) throw setupError('AGENT_INSTALL_CLEANUP_UNCERTAIN', '이전 CLI 설치 프로세스가 종료됐는지 확인할 수 없어 설치와 실행을 중단했어요.');
   }
   function binPath(agent) { const item = assertAgent(agent); return path.join(binDir, platform === 'win32' ? `${item.bin}.cmd` : item.bin); }
+  function managedLaunch(command, argv, env) {
+    return applyManagedCliLaunch(command, argv, {
+      platform, nodeCommand, env: applyNodeHostEnv(env, { nodeCommand, shimDir: nodeHostShimDir, platform }),
+    });
+  }
+  function terminalCommand(launch) {
+    // Windows GUI 실행 파일인 Electron은 ConPTY에 직접 붙이면 입출력이 사라진다.
+    // 기존 node.cmd를 통해 콘솔을 상속한다. 파이프 실행은 위의 직접 실행을 유지한다.
+    return platform === 'win32' && launch.command === nodeCommand && !isNodeBinary(nodeCommand)
+      ? path.join(nodeHostShimDir, 'node.cmd') : launch.command;
+  }
   function claudeCleanEnv() {
     const env = withoutHubPrivateEnv(baseEnv);
     for (const key of CLAUDE_AUTH_ENV_KEYS) delete env[key];
@@ -350,7 +361,11 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     // 실행 파일이 없거나(설치 중 교체) 실행 권한이 없거나 EMFILE 이면 spawn 이 던지거나 'error' 를 낸다.
     // 처리하지 않은 'error' 이벤트는 허브 프로세스를 끝내므로 실패한 실행 결과로 바꾼다.
     const { tree = false, timeoutMs = STATUS_TIMEOUT_MS, ...spawnOptions } = options;
-    try { child = spawnProcess(command, args, { ...spawnOptions, ...(tree ? processTreeSpawnOptions(platform) : {}), stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? withoutHubPrivateEnv(baseEnv) }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
+    try {
+      nodeHostShimDir = await ensureNodeHost();
+      const launch = managedLaunch(command, args, options.env ?? withoutHubPrivateEnv(baseEnv));
+      child = spawnProcess(launch.command, launch.argv, { ...spawnOptions, ...(tree ? processTreeSpawnOptions(platform) : { windowsHide: true }), stdio: ['ignore', 'pipe', 'pipe'], env: launch.env });
+    } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
     let stdout = ''; let stderr = '';
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); }); child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
     return await new Promise((resolve) => {
@@ -420,7 +435,8 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       assertPrefixAvailable();
       await launchReady;
       await load(); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
-      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      // 사용자 npm 설정의 global/cache 값이 관리자 폴더로 설치를 돌리지 않도록 고정한다.
+      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', path.join(rootDir, 'npm-cache'), `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
       assertPrefixAvailable();
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
     });
@@ -485,18 +501,20 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       onProgress?.({ state: 'done' }); return status(agent);
     }
     if (!['oauth', 'login'].includes(method)) throw setupError('AGENT_AUTH_INVALID', '지원하지 않는 로그인 방식이에요.');
+    nodeHostShimDir = await ensureNodeHost();
     if (agent !== 'claude') {
       const argv = agent === 'codex' ? ['login', '--device-auth'] : ['login'];
       // 앱이 설치한 CLI 가 없으면 PATH 의 CLI 로 로그인한다. 없는 경로를 실행하면 아무 출력 없이 멈춘다.
       const command = existsSync(binPath(agent)) ? binPath(agent) : CONFIG[agent].bin;
+      const launch = managedLaunch(command, argv, envFor(agent));
       onProgress?.({ state: 'authorizing', activity: true });
       let code;
       if (terminal) {
         // Studio 는 로그인 터미널을 열고 출력만 기다리므로 CLI 출력(기기 코드·주소)을 그대로 넘긴다.
         const session = createTerminal({
-          command,
-          argv,
-          env: envFor(agent),
+          command: terminalCommand(launch),
+          argv: launch.argv,
+          env: launch.env,
           cwd: rootDir,
           signal,
           timeoutMs: AUTH_TIMEOUT_MS,
@@ -506,7 +524,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
         onProgress?.({ state: 'authorizing', terminalReady: true });
         try { ({ code } = await session.done); } finally { if (authTerminals.get(agent) === session) authTerminals.delete(agent); }
       } else {
-        const proc = spawnProcess(command, argv, { env: envFor(agent), cwd: rootDir, stdio: ['pipe', 'pipe', 'pipe'] }); authProcesses.set(agent, proc);
+        const proc = spawnProcess(launch.command, launch.argv, { env: launch.env, cwd: rootDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); authProcesses.set(agent, proc);
         let output = '';
         const collect = (chunk) => {
           output = `${output}${String(chunk)}`.slice(-16_000);
@@ -542,6 +560,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       CLAUDE_CONFIG_DIR: configDir,
       ...(platform === 'darwin' ? {} : { CLAUDE_SECURESTORAGE_CONFIG_DIR: configDir }),
     };
+    const launch = managedLaunch(command, ['setup-token'], loginEnv);
     let output = '';
     const keep = (data) => { output = `${output}${String(data)}`.slice(-65_536); };
     const screen = terminal ? createLoginScreen() : null;
@@ -550,9 +569,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       let result;
       if (terminal) {
         const session = createTerminal({
-          command,
-          argv: ['setup-token'],
-          env: loginEnv,
+          command: terminalCommand(launch),
+          argv: launch.argv,
+          env: launch.env,
           cwd: runDir,
           signal,
           timeoutMs: AUTH_TIMEOUT_MS,
@@ -566,7 +585,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
           if (loginScreens.get(agent) === screen) loginScreens.delete(agent);
         }
       } else {
-        const proc = spawnProcess(command, ['setup-token'], { env: loginEnv, cwd: runDir, stdio: ['pipe', 'pipe', 'pipe'] });
+        const proc = spawnProcess(launch.command, launch.argv, { env: launch.env, cwd: runDir, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         authProcesses.set(agent, proc);
         const collect = (chunk) => {
           keep(chunk);

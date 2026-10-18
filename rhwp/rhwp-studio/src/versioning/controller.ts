@@ -487,7 +487,11 @@ export class DocumentVersionController implements VersionManagerController {
       });
     }
     if (this.#worktree && this.#wasm.hasLoadedDocument()) {
-      this.#setDirtyForFingerprint(fingerprintVersionContent(this.#wasm), 'worktree-loaded');
+      // 위에서 같은 revision 으로 내보낸 지문을 쓴다. 그사이 편집이 있었으면 revision 이 올라 다시 내보낸다.
+      this.#setDirtyForFingerprint(
+        this.#snapshotCache.fingerprint(this.#wasm, this.#getDocumentId(), this.#editorRevision),
+        'worktree-loaded',
+      );
     }
   }
 

@@ -1,5 +1,4 @@
-import { blake3 } from '@noble/hashes/blake3.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { blake3Hex } from '../../core/content-hash.ts';
 
 const RESOURCE_KEY_PATTERN = /^(img|svg):blake3:(0|[1-9][0-9]*):([0-9a-f]{64})$/;
 
@@ -13,5 +12,5 @@ export function layerResourceKeyMatches(
   const byteLength = Number(match[2]);
   return Number.isSafeInteger(byteLength)
     && byteLength === bytes.byteLength
-    && bytesToHex(blake3(bytes)) === match[3];
+    && blake3Hex(bytes) === match[3];
 }

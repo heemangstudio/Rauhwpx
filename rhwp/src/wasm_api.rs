@@ -64,6 +64,40 @@ pub fn gridfit_affine_sample_rgba(
     .unwrap_or_default()
 }
 
+/// BLAKE3 해시를 조각으로 받아 소문자 hex 로 낸다. 스튜디오의 문서·버전 지문
+/// (`blake3:<hex>`)을 JS 구현보다 빠르게 계산한다. 큰 입력도 호출마다 조각만 wasm
+/// 메모리로 복사되도록 JS 쪽이 나눠 넣는다.
+#[wasm_bindgen]
+pub struct Blake3Hasher {
+    inner: blake3::Hasher,
+}
+
+#[wasm_bindgen]
+impl Blake3Hasher {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Blake3Hasher {
+        Blake3Hasher {
+            inner: blake3::Hasher::new(),
+        }
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+
+    /// 지금까지 넣은 바이트의 해시. 해셔 상태는 바꾸지 않는다.
+    #[wasm_bindgen(js_name = finalizeHex)]
+    pub fn finalize_hex(&self) -> String {
+        self.inner.finalize().to_hex().to_string()
+    }
+}
+
+impl Default for Blake3Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 use crate::document_core::helpers::parse_removed_para_meta;
 use crate::document_core::{
     CaretParagraph, DeferredPaginationJobState, DeferredPaginationStepResult, DocumentCore,

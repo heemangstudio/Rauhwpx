@@ -8,8 +8,7 @@ import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns
 import type { CharShapeRun } from './types';
 import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
 import * as wasmExports from '@wasm/rhwp.js';
-import { blake3 } from '@noble/hashes/blake3.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { blake3Hex, setBlake3WasmApi, type Blake3HasherLike } from './content-hash';
 import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight } from './types';
 import { parseCanvasKitDocumentPreflight } from './canvaskit-document-preflight';
 import { DEFAULT_FONT_METRICS_POLICY } from './font-metrics-policy';
@@ -429,6 +428,8 @@ export class WasmBridge {
   }
   private initialized = false;
   private _fileName = FALLBACK_DOCUMENT_FILE_NAME;
+  /** 엔진 문서에 마지막으로 넣은 이름. 모르면 null — 다음 이름 지정이 엔진에 다시 넣는다. */
+  private engineFileName: string | null = null;
   private _currentFileHandle: FileSystemFileHandleLike | null = null;
   private _documentDigest: string | null = null;
   /** [#3313] 외부 연결 그림 비동기 주입 완료 훅 — 주입 성공(>0)시에만 호출된다.
@@ -449,6 +450,9 @@ export class WasmBridge {
     setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
     const affineSampleRgba = Reflect.get(wasmExports, 'gridfitAffineSampleRgba');
     setImageAffineSampleApi(typeof affineSampleRgba === 'function' ? affineSampleRgba : null);
+    // 이 기능 이전 wasm 빌드면 JS BLAKE3 를 그대로 쓴다.
+    const Blake3Hasher = Reflect.get(wasmExports, 'Blake3Hasher') as (new () => Blake3HasherLike) | undefined;
+    setBlake3WasmApi(typeof Blake3Hasher === 'function' ? () => new Blake3Hasher() : null);
     const sfntGlyphPathEm = Reflect.get(wasmExports, 'sfntGlyphPathEm');
     setSfntGlyphPathApi(typeof sfntGlyphPathEm === 'function'
       ? (bytes, faceIndex, glyphId) => String(sfntGlyphPathEm(bytes, faceIndex, glyphId))
@@ -566,6 +570,7 @@ export class WasmBridge {
       }
       this.doc = null;
     }
+    this.engineFileName = null;
     this._currentFileHandle = null;
     this._documentDigest = null;
   }
@@ -582,7 +587,7 @@ export class WasmBridge {
    */
   prepareDocument(data: Uint8Array, fileName?: string): PreparedWasmDocument {
     const nextFileName = fileName ?? FALLBACK_DOCUMENT_FILE_NAME;
-    const nextDocumentDigest = `blake3:${bytesToHex(blake3(data))}`;
+    const nextDocumentDigest = `blake3:${blake3Hex(data)}`;
     let nextDoc: HwpDocument | null = null;
     try {
       nextDoc = HwpDocument.fromBytesWithFontMetrics(data, DEFAULT_FONT_METRICS_POLICY);
@@ -624,6 +629,7 @@ export class WasmBridge {
     }
     this.doc = next.document;
     this._fileName = next.fileName;
+    this.engineFileName = next.fileName;
     this._currentFileHandle = null;
     this._documentDigest = next.documentDigest;
     console.log(`[WasmBridge] 문서 로드: ${next.info.pageCount}페이지`);
@@ -649,7 +655,7 @@ export class WasmBridge {
   ): DocumentInfo {
     this.releaseDocument();
     const nextFileName = fileName ?? FALLBACK_DOCUMENT_FILE_NAME;
-    const nextDocumentDigest = `blake3:${bytesToHex(blake3(data))}`;
+    const nextDocumentDigest = `blake3:${blake3Hex(data)}`;
     let nextDoc: HwpDocument | null = null;
     let info: DocumentInfo;
 
@@ -661,6 +667,7 @@ export class WasmBridge {
       this.doc.convertToEditable();
       this.ensureParagraphStableIds();
       this.doc.setFileName(this._fileName);
+      this.engineFileName = this._fileName;
       info = JSON.parse(this.doc.getDocumentInfo());
       console.log(`[WasmBridge] 문서 로드: ${info.pageCount}페이지`);
 
@@ -680,6 +687,7 @@ export class WasmBridge {
         }
       }
       this._fileName = FALLBACK_DOCUMENT_FILE_NAME;
+      this.engineFileName = null;
       this._currentFileHandle = null;
       this._documentDigest = null;
       this.onFileNameChanged?.(this._fileName);
@@ -695,6 +703,7 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     const raw = doc.replaceContentFromBytes(data);
+    this.engineFileName = null;
     this.documentGeneration = nextDocumentGeneration();
     const generation = this.documentGeneration;
     this.ensureParagraphStableIds();
@@ -814,7 +823,12 @@ export class WasmBridge {
   }
 
   set fileName(name: string) {
-    this.doc?.setFileName(name);
+    // 엔진에 이미 같은 이름이 있으면 부르지 않는다(엔진도 아무것도 하지 않는다). 엔진 쓰기 호출은 내보내기
+    // 기억을 버리므로, 부르면 저장 직후 버전 기록이 같은 내용을 한 번 더 내보낸다.
+    if (name !== this.engineFileName) {
+      this.doc?.setFileName(name);
+      this.engineFileName = this.doc ? name : null;
+    }
     this._fileName = name;
     this.onFileNameChanged?.(name);
   }
@@ -3651,6 +3665,7 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     doc.restoreSnapshot(id);
+    this.engineFileName = null;
     this.documentGeneration = nextDocumentGeneration();
     const generation = this.documentGeneration;
     void this.populateExternalImagesFromDevServer(doc, generation);

@@ -17,18 +17,18 @@
 
 /* macOS Electron 셸: 타이틀바가 숨겨져 메뉴바가 창 최상단에 온다.
    신호등과 컨트롤의 hit area를 분리하고 오른쪽 빈 면만 창 드래그로 쓴다. */
-html.desktop-mac {
+html:is(.desktop-mac, .desktop-windows) {
   --desktop-titlebar-height: 38px;
   --desktop-traffic-light-inset: 78px;
 }
 
-html.desktop-mac.desktop-fullscreen {
+html:is(.desktop-mac, .desktop-windows).desktop-fullscreen {
   --desktop-traffic-light-inset: 0px;
 }
 
 /* 문서 홈 단추 — 신호등 바로 오른쪽에 늘 떠 있다. 편집기·집중 화면·설정·문서 홈의
    제목 막대는 모두 이 자리(--desktop-home-reserve)를 비워 둔다. */
-html.desktop-mac {
+html:is(.desktop-mac, .desktop-windows) {
   /* 신호등 옆에 서고, 뒤따르는 컨트롤은 홈 단추 뒤에 4px 간격을 둔다. */
   --desktop-home-left: max(calc(var(--desktop-traffic-light-inset) - 1px), 8px);
   --desktop-home-reserve: calc(var(--desktop-home-left) + 28px + 4px);
@@ -36,7 +36,7 @@ html.desktop-mac {
 
 .app-home-button { display: none; }
 
-html.desktop-mac .app-home-button {
+html:is(.desktop-mac, .desktop-windows) .app-home-button {
   position: fixed;
   /* 신호등(y 12, 지름 14)·집중 화면 토글과 아이콘 가운데(19px)를 맞춘다. */
   top: calc((var(--desktop-titlebar-height) - 28px) / 2);
@@ -55,18 +55,18 @@ html.desktop-mac .app-home-button {
   -webkit-app-region: no-drag;
 }
 
-html.desktop-mac .app-home-button svg { width: 16px; height: 16px; }
-html.desktop-mac .app-home-button:hover { background: var(--ui-hover, rgba(127, 127, 127, 0.14)); color: var(--ui-text); }
-html.desktop-mac .app-home-button[aria-pressed='true'] { color: var(--ui-text); }
-html.desktop-mac .app-home-button:focus-visible { outline: 2px solid var(--focus-ring, currentColor); outline-offset: 1px; }
+html:is(.desktop-mac, .desktop-windows) .app-home-button svg { width: 16px; height: 16px; }
+html:is(.desktop-mac, .desktop-windows) .app-home-button:hover { background: var(--ui-hover, rgba(127, 127, 127, 0.14)); color: var(--ui-text); }
+html:is(.desktop-mac, .desktop-windows) .app-home-button[aria-pressed='true'] { color: var(--ui-text); }
+html:is(.desktop-mac, .desktop-windows) .app-home-button:focus-visible { outline: 2px solid var(--focus-ring, currentColor); outline-offset: 1px; }
 
-html.desktop-mac #menu-bar {
+html:is(.desktop-mac, .desktop-windows) #menu-bar {
   height: var(--desktop-titlebar-height);
   padding-left: var(--desktop-home-reserve);
   -webkit-app-region: no-drag;
 }
 
-html.desktop-mac #menu-bar::after {
+html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
   content: '';
   align-self: stretch;
   min-width: 36px;
@@ -112,7 +112,7 @@ html.desktop-mac #menu-bar::after {
 /* Focus mode paints its own bar over this row. Electron still includes
    covered drag regions in native hit testing, so retire this one completely
    while the focus workspace is open. */
-html.desktop-mac body.ag-fullscreen-open #menu-bar::after {
+html:is(.desktop-mac, .desktop-windows) body.ag-fullscreen-open #menu-bar::after {
   -webkit-app-region: no-drag;
 }
 
@@ -156,13 +156,13 @@ html.desktop-native-menu #menu-bar #editor-command-search {
   margin-left: auto;
 }
 
-html.desktop-mac #menu-bar .menu-item {
+html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-item {
   height: 100%;
   flex: 0 0 auto;
   -webkit-app-region: no-drag;
 }
 
-html.desktop-mac #menu-bar .menu-title {
+html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-title {
   display: inline-flex;
   height: 100%;
   align-items: center;
@@ -392,3 +392,88 @@ html.desktop-mac #menu-bar .menu-title {
 /* 어두운 테마의 채움은 회색조다 — 열린 메뉴도 회색 바탕에 본문 글자. */
 :root[data-theme-effective='dark'] .menu-title:hover { border-color: transparent; }
 :root[data-theme-effective='dark'] .menu-item.open > .menu-title { color: var(--ui-text); }
+/* Windows 통합 제목 막대: 홈·메뉴·검색은 왼쪽, 네이티브 창 단추는 오른쪽. */
+html.desktop-windows {
+  --desktop-traffic-light-inset: 0px;
+  --desktop-caption-inset: max(138px, calc(100vw - env(titlebar-area-width, calc(100vw - 138px))));
+}
+html.desktop-windows.desktop-fullscreen { --desktop-caption-inset: 0px; }
+html.desktop-windows #menu-bar {
+  padding-right: calc(var(--desktop-caption-inset) + 8px);
+  -webkit-app-region: drag;
+}
+html.desktop-windows #menu-bar::after { content: none; }
+html.desktop-windows #menu-bar :is(button, input, select, a, [role='button'], .desktop-document-menus, .desktop-document-menus *) {
+  -webkit-app-region: no-drag;
+}
+html.desktop-windows body:is(.ag-fullscreen-open, .merge-resolver-open) #menu-bar { -webkit-app-region: no-drag; }
+html.desktop-windows #editor-document-title {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  max-width: max(80px, calc(100% - 760px));
+  text-align: center;
+}
+html.desktop-windows #menu-bar #editor-command-search {
+  order: 0;
+  margin-left: 8px;
+}
+html.desktop-windows #menu-bar .license-pill { margin-left: auto; }
+html.desktop-windows .desktop-menu-toggle {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font-size: 17px;
+  flex: none;
+}
+html.desktop-windows .desktop-menu-toggle:hover { background: var(--ui-hover); }
+html.desktop-windows .desktop-menu-toggle:focus-visible { outline: 2px solid var(--focus-ring); }
+html.desktop-windows .desktop-document-menus {
+  position: absolute;
+  top: 100%;
+  left: var(--desktop-home-reserve);
+  z-index: 1001;
+  display: flex;
+  height: 32px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-dropdown);
+}
+html.desktop-windows .desktop-document-menus[hidden] { display: none; }
+html.desktop-windows :is(.dh-topbar, .ag-fullscreen .ag-workspace-bar, .merge-resolver-header) {
+  padding-right: calc(var(--desktop-caption-inset) + 8px);
+}
+@media (max-width: 1100px) {
+  html.desktop-windows #menu-bar .license-pill > :not(.license-pill-action) { display: none; }
+  html.desktop-windows #editor-document-title { max-width: calc(100% - 620px); }
+}
+/* 오른쪽 위 고정 도구도 네이티브 창 단추 영역을 비워 둔다. */
+html.desktop-windows .ag-fullscreen .ag-workspace-corner {
+  right: calc(var(--desktop-caption-inset) + 10px);
+}
+/* 환경 패널은 타이틀바 아래에 열리므로 창 단추 자리를 비울 필요 없이 창 오른쪽 끝에 붙는다.
+   모서리 묶음 기준 8px 에서 창 단추 폭만큼 오른쪽으로 민다 (macOS 와 같은 18px 여백). */
+html.desktop-windows .ag-fullscreen .ag-environment-panel {
+  right: calc(8px - var(--desktop-caption-inset));
+}
+html.desktop-windows .ag-fullscreen:not(.ag-workspace-compact) .ag-workbench-head {
+  padding-right: calc(var(--desktop-caption-inset) + 124px);
+}
+html.desktop-windows .ag-fullscreen:not(.ag-workspace-compact).ag-workbench-open .ag-workspace-bar {
+  padding-right: 8px;
+}
+html.desktop-windows .dh-topbar .dh-new-chat { margin-right: 0; }
+/* 집중 화면의 왼쪽 두 단추는 목록 토글, 홈 순서로 둔다. */
+html.desktop-windows:not(.document-home-open) body:has(.ag-fullscreen:not(.ag-settings-open)) .app-home-button {
+  left: calc(var(--desktop-home-left) + 32px);
+}
+html.desktop-windows .ag-fullscreen .ag-workspace-threads-btn {
+  transform: translateX(-32px);
+}

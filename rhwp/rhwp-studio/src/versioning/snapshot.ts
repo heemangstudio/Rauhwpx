@@ -4,6 +4,7 @@ import { buildSnapshotFromWasm, buildSnapshotFromWasmInSlices, compareSnapshots 
 import type { CompareDocumentSnapshot, CompareOptions } from '../compare/types.ts';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
+import { engineMutationEpoch } from '../core/engine-trap.ts';
 import { fingerprintBytes } from './hash.ts';
 import type { ContentFingerprint, VersionStats } from './types.ts';
 
@@ -40,6 +41,8 @@ export class VersionSnapshotCache {
   #key: string | null = null;
   #fingerprint: ContentFingerprint | null = null;
   #content: VersionContent | null = null;
+  /** #content 를 내보내기 직전의 엔진 변경 번호. 그 뒤로 엔진을 바꾼 호출이 없으면 다시 내보내도 같다. */
+  #contentEpoch = -1;
   #snapshot: CapturedVersionSnapshot | null = null;
   #releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -80,6 +83,7 @@ export class VersionSnapshotCache {
   content(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
     this.#select(wasm, documentId, revision);
     if (!this.#content) {
+      this.#contentEpoch = engineMutationEpoch();
       const bytes = exportVersionContent(wasm);
       this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
       this.#fingerprint = this.#content.fingerprint;
@@ -91,7 +95,14 @@ export class VersionSnapshotCache {
   /** 문서를 다시 내보내 캐시와 맞춘다. 내용이 그대로면 캐시한 지문과 스냅샷을 그대로 쓴다. */
   reexport(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
     this.#select(wasm, documentId, revision);
+    // 내보낸 뒤로 어떤 엔진 쓰기도 없었으면 같은 바이트가 나온다. 큰 문서는 내보내기만 1초 넘게 걸린다.
+    if (this.#content && this.#contentEpoch === engineMutationEpoch()) {
+      this.#scheduleRelease();
+      return this.#content;
+    }
+    const epoch = engineMutationEpoch();
     const bytes = exportVersionContent(wasm);
+    this.#contentEpoch = epoch;
     if (!this.#content || !sameBytes(this.#content.bytes, bytes)) {
       this.#snapshot = null;
       this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
@@ -136,6 +147,7 @@ export class VersionSnapshotCache {
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left === right) return true;
   if (left.byteLength !== right.byteLength) return false;
   for (let index = 0; index < left.byteLength; index += 1) {
     if (left[index] !== right[index]) return false;

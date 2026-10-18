@@ -38,6 +38,22 @@ export function browserNavigationUrl(value) {
   return url.href;
 }
 
+/**
+ * 페이지가 스스로 일으킨 이동(링크·리디렉션·window.open)에 쓰는 검사. 주소창·에이전트가 넘긴
+ * 주소는 browserNavigationUrl 만 쓴다. 웹 페이지가 만든 blob: 주소는 그 페이지의 출처를
+ * 이어받으므로 허용한다 — 막으면 다운로드 단추·PDF 보기·이미지 열기 클릭이 아무 일도 하지 않는다.
+ */
+export function pageNavigationUrl(value) {
+  const text = String(value);
+  if (text === 'about:blank' || text === 'about:srcdoc') return text;
+  const url = new URL(text);
+  if (url.protocol === 'blob:') {
+    if (!/^https?:\/\//.test(url.origin)) throw new Error('Browser navigation allows blob URLs from web pages only');
+    return url.href;
+  }
+  return browserNavigationUrl(text);
+}
+
 export function browserViewBounds(bounds, window) {
   const area = window.getContentBounds();
   if (!bounds || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key]))) {
@@ -185,7 +201,7 @@ export class OwnedBrowserHost {
     this.pendingTabs.add(tab);
     contents.setWindowOpenHandler((details) => {
       try {
-        const destination = browserNavigationUrl(details.url);
+        const destination = pageNavigationUrl(details.url);
         if (!tab.tabId || tab.closing || !this.owner || !this.proxy || this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) return { action: 'deny' };
         // 팝업 창이 다시 연 팝업은 막는다. 로그인 팝업은 한 단계면 충분하고 연쇄 팝업은 가로채기에 쓰인다.
         if (tab.openerTab && tab.disposition === 'new-window') return { action: 'deny' };
@@ -198,8 +214,10 @@ export class OwnedBrowserHost {
             // Chromium during a nonblank initial navigation. Wait for the native call to return.
             void new Promise(resolveReady => setImmediate(resolveReady)).then(() => this.initializeTab(popup, { loadBlank: !options.webContents })).then(() => {
               // Browser-process link opens can defer guest creation and navigation.
-              if (!options.webContents && destination !== 'about:blank') {
-                const postBody = details.postBody;
+              // Ctrl·Shift 클릭처럼 Chromium 이 게스트를 만들지 않은 경우 blob: 도 여기서 연다.
+              // 열지 않으면 빈 탭만 남는다. about:srcdoc 은 브라우저 프로세스가 열 수 없다.
+              if (!options.webContents && /^(https?|blob):/.test(destination)) {
+                const postBody = destination.startsWith('blob:') ? null : details.postBody;
                 void popup.view.webContents.loadURL(destination, { httpReferrer: details.referrer,
                   ...(postBody ? { postData: postBody.data, extraHeaders: `content-type: ${postBody.contentType}${postBody.boundary ? `; boundary=${postBody.boundary}` : ''}` } : {}) }).catch(() => {});
               }
@@ -209,7 +227,7 @@ export class OwnedBrowserHost {
       } catch { return { action: 'deny' }; }
     });
     contents.on('will-navigate', (event, rawUrl) => {
-      try { browserNavigationUrl(rawUrl); } catch { event.preventDefault(); }
+      try { pageNavigationUrl(rawUrl); } catch { event.preventDefault(); }
     });
     contents.on('will-redirect', (event, rawUrl) => {
       try { browserNavigationUrl(rawUrl); } catch { event.preventDefault(); }

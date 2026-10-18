@@ -15,6 +15,7 @@ Benches marked *dev server* need `npm run dev` running and `VITE_URL` pointing a
 - `npm run bench:typeset-line-width`: typeset line-width measurement cost (`--label=`).
 - `npm run bench:long-document-image-cache`: picture cache on a long picture document (*dev server*).
 - `npm run bench:canvaskit-image-cache`: CanvasKit picture cache budget (*dev server*).
+- `npm run bench:doc-switch`: document switch time from the sidebar document palette in an isolated Electron desktop (own Vite, hub and profile), split into phases, with JS heap and wasm memory after each switch (`--docs=a.hwp,b.hwp`, `--switches=`, `--edit` to save and commit before leaving, `--profile`, `--wasm-dir=` to try an engine build without touching `rhwp/pkg`). Results go to `<repo>/.run/doc-switch-bench/`.
 - `npm run bench:app-memory`: app and agent-process memory with documents and idle chats, using a fake Claude CLI (`--runs=`, `--output=`).
 - `npm run bench:agent-overlay`: pending-edit overlay renderer against a baseline commit, with power samples on macOS.
 

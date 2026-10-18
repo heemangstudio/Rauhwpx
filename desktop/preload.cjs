@@ -262,6 +262,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     { fileName: String(payload?.fileName ?? '') },
   ),
   isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
+  setWindowChromeTheme: (dark) => ipcRenderer.send('window:chrome-theme', dark),
   // 네이티브 인쇄 대화상자를 호출 창의 내용으로 연다 (인쇄 미리보기 자식 창).
   printCurrentWindow: () => ipcRenderer.invoke('desktop:print'),
   // PDF 내보내기: 저장 위치는 main 이 고르고 renderer 는 불투명 토큰만 받는다.

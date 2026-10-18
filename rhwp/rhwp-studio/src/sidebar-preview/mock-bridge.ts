@@ -55,6 +55,7 @@ export const failureKinds = [
   'cli-missing',
   'invalid',
   'unknown',
+  'sandbox',
   'start',
   'legacy',
 ] as const;
@@ -95,6 +96,8 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('invalid_request', 'Codex ran out of room in the model\'s context window. Start a new thread or clear earlier history before retrying.', 'codex:contextWindowExceeded', false);
     case 'unknown':
       return failure('unknown', 'Unexpected provider response: the stream ended without a terminal frame.', null, true);
+    case 'sandbox':
+      return failure('invalid_request', 'Sandbox required but unavailable: sandbox is enabled but the Windows sandbox is not active on this session (feature gate off).', 'sandbox_unavailable', false);
     case 'start':
       return failure('process_exited', 'spawn failed: the CLI exited before it was ready', 'AGENT_SPAWN_FAILED', true);
     case 'legacy':

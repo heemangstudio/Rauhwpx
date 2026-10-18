@@ -77,8 +77,10 @@ export function syncBasicToolboxUi(expanded: boolean): void {
 export function applyCompactToolbar(on: boolean): void {
   const header = document.getElementById('studio-header');
   if (!header) return;
-  header.toggleAttribute(COMPACT_TOOLBAR_ATTR, on);
   syncToggleCommand('view:toolbox-compact', on);
+  // 설정 미리보기·문서 열기마다 불리므로 상태가 그대로면 도구 상자 접힘을 건드리지 않는다.
+  if (header.hasAttribute(COMPACT_TOOLBAR_ATTR) === on) return;
+  header.toggleAttribute(COMPACT_TOOLBAR_ATTR, on);
   if (on) setBasicToolboxExpanded(true);
   else window.dispatchEvent(new Event('resize'));
 }

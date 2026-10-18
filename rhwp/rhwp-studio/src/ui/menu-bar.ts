@@ -23,6 +23,8 @@ export class MenuBar {
   private openMenu: HTMLElement | null = null;
   private returnFocus: HTMLElement | null = null;
   private onMenuOpen?: (menuName: string, menuEl: HTMLElement) => void;
+  private compactPanel: HTMLElement | null = null;
+  private compactToggle: HTMLButtonElement | null = null;
 
   /**
    * 서브메뉴 포인터 조준 상태. 패널이 CSS :hover 로만 열리면 포인터가
@@ -54,6 +56,35 @@ export class MenuBar {
     this.setupPointerAim();
     this.setupOutsideClose();
     this.setupKeyboardClose();
+    if (document.documentElement.classList.contains('desktop-windows')) this.setupCompactMenu();
+  }
+
+  /** Windows 통합 제목 막대에서는 기존 메뉴를 접어 둔다. 명령·키보드 처리는 그대로 쓴다. */
+  private setupCompactMenu(): void {
+    const panel = document.createElement('div');
+    panel.id = 'desktop-document-menus';
+    panel.className = 'desktop-document-menus';
+    panel.hidden = true;
+    panel.append(...this.menuItems);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'desktop-menu-toggle';
+    toggle.setAttribute('aria-label', '문서 메뉴');
+    toggle.setAttribute('aria-haspopup', 'menu');
+    toggle.setAttribute('aria-controls', panel.id);
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.textContent = '☰';
+    toggle.addEventListener('click', () => {
+      if (this.openMenu) this.closeAll();
+      else if (this.menuItems[0]) {
+        this.showMenu(this.menuItems[0]);
+        this.menuItems[0].querySelector<HTMLElement>('.menu-title')?.focus();
+      }
+    });
+    this.compactPanel = panel;
+    this.compactToggle = toggle;
+    this.container.prepend(toggle, panel);
+    this.container.querySelector('#editor-command-search')?.addEventListener('click', () => this.closeAll(false));
   }
 
   private setupAccessibility(): void {
@@ -83,6 +114,8 @@ export class MenuBar {
   }
 
   private showMenu(item: HTMLElement): void {
+    if (this.compactPanel) this.compactPanel.hidden = false;
+    this.compactToggle?.setAttribute('aria-expanded', 'true');
     if (!this.openMenu) {
       this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
@@ -327,6 +360,10 @@ export class MenuBar {
       if (!this.openMenu && target === launcher && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
         e.stopPropagation();
+        if (this.compactToggle) {
+          this.compactToggle.focus();
+          return;
+        }
         const menu = e.key === 'ArrowLeft' ? this.menuItems.at(-1) : this.menuItems[0];
         menu?.querySelector<HTMLElement>('.menu-title')?.focus();
         return;
@@ -501,6 +538,8 @@ export class MenuBar {
     this.openMenu?.querySelector('.menu-title')?.setAttribute('aria-expanded', 'false');
     this.container.querySelectorAll<HTMLElement>('.md-sub-panel').forEach(panel => { panel.style.display = ''; });
     this.openMenu = null;
+    if (this.compactPanel) this.compactPanel.hidden = true;
+    this.compactToggle?.setAttribute('aria-expanded', 'false');
     if (restoreFocus) this.returnFocus?.focus();
     this.returnFocus = null;
   }

@@ -266,6 +266,7 @@ test('Codex terminal login streams CLI output and falls back to the PATH binary'
   const launches = [];
   const manager = await createCliSetupManager({
     rootDir: await tmpRoot(t),
+    baseEnv: { PATH: '' },
     createTerminal(options) {
       launches.push(options);
       options.onOutput('Enter this one-time code');

@@ -61,6 +61,9 @@ import {
 // (CLI 확인: 2.1.235) planning 의 read-only 경계가 서브에이전트에서도 유지된다.
 const DIRECT_TOOLS = 'Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
 const PLANNING_TOOLS = 'Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
+// Windows의 기본 실행은 앱 MCP만 사용한다. 네이티브 도구를 제거하고 명시적으로도 차단한다.
+const MCP_ONLY_DENIED_TOOLS = [...DIRECT_TOOLS.split(','), 'Task', 'NotebookEdit'];
+const MCP_ONLY_BRIEF = '\n이 환경에서는 앱의 rhwp MCP 도구만 사용하세요. 문서 읽기·편집은 MCP로 수행하며, 네이티브 파일/셸 도구는 사용할 수 없습니다. 로컬 실행이 필요하면 앱의 권한 요청 도구로 사용자에게 요청하세요.';
 const LOCAL_EXECUTION_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
 const STDERR_TAIL_LIMIT = 16_000;
 /**
@@ -227,13 +230,14 @@ function usesNativePlanMode(opts) {
     && normalizeExecutionMode(opts).workflow !== 'question';
 }
 
-export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false } = {}) {
+export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false, platform = process.platform } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const localExecution = hasLocalExecutionGrant(opts);
   const planningRestricted = isPlanningRestricted(opts) && !localExecution;
   const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
-  const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
+  const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
+  const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
   const readOnlyRoots = providerReadOnlyRoots(opts);
   const runtime = mcpRuntimeFor(opts);
@@ -252,7 +256,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
       },
     },
   };
-  const allow = [
+  const allow = mcpOnly ? ['mcp__rhwp__*'] : [
     ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
@@ -265,7 +269,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = localExecution
+  const settings = mcpOnly
+    ? { permissions: { allow, deny: MCP_ONLY_DENIED_TOOLS }, sandbox: { enabled: false } }
+    : localExecution
     ? { permissions: { allow }, sandbox: { enabled: false } }
     : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
@@ -287,7 +293,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     // 서브에이전트 텍스트는 항상 전달받는다 — 사이드바 fleet 카드의 활동 줄이 이걸 쓴다.
     // (도구 호출/결과 전달은 플래그와 무관하게 항상 온다 — CLI 2.1.235 확인.)
     '--forward-subagent-text',
-    '--agents', agentsPath ?? JSON.stringify(RHWP_SUBAGENTS),
+    '--agents', mcpOnly ? '{}' : agentsPath ?? JSON.stringify(RHWP_SUBAGENTS),
     ...(resume ? ['--resume', sessionId] : ['--session-id', sessionId]),
     '--mcp-config', JSON.stringify(mcpConfig),
     '--strict-mcp-config',
@@ -296,13 +302,14 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     // (--disable-slash-commands 아래에서 /compact 는 "isn't available" 로 끝난다. CLI 2.1.295 확인.)
     ...(slashCommands ? [] : ['--disable-slash-commands']),
     '--tools', activeTools,
+    ...(mcpOnly ? ['--disallowedTools', MCP_ONLY_DENIED_TOOLS.join(',')] : []),
     '--settings', JSON.stringify(settings),
     ...(nativePlan
       ? ['--permission-mode', 'plan']
       : unrestricted && !planningRestricted
         ? ['--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions']
         : ['--permission-mode', 'dontAsk']),
-    '--append-system-prompt', systemBriefFor(opts),
+    '--append-system-prompt', systemBriefFor(opts) + (mcpOnly ? MCP_ONLY_BRIEF : ''),
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
   ];
@@ -314,17 +321,18 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
  * advertises requestUserInput. Without that host capability, buildClaudeArgv
  * remains the automatic MCP fallback.
  */
-export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false } = {}) {
+export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false, platform = process.platform } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const localExecution = hasLocalExecutionGrant(opts);
   const planningRestricted = isPlanningRestricted(opts) && !localExecution;
   const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
-  const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
+  const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
+  const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
   const readOnlyRoots = providerReadOnlyRoots(opts);
   const runtime = mcpRuntimeFor(opts);
-  const allow = [
+  const allow = mcpOnly ? ['mcp__rhwp__*'] : [
     ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
     ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
@@ -337,7 +345,9 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
     'mcp__rhwp__*',
   ];
-  const settings = localExecution
+  const settings = mcpOnly
+    ? { permissions: { allow, deny: MCP_ONLY_DENIED_TOOLS }, sandbox: { enabled: false } }
+    : localExecution
     ? { permissions: { allow }, sandbox: { enabled: false } }
     : unrestricted && !planningRestricted ? {} : {
     permissions: { allow },
@@ -358,7 +368,8 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     : requestPermission(toolName, input, context);
   return {
     abortController,
-    agents: RHWP_SUBAGENTS,
+    agents: mcpOnly ? {} : RHWP_SUBAGENTS,
+    ...(mcpOnly ? { disallowedTools: MCP_ONLY_DENIED_TOOLS } : {}),
     allowedTools: [...allow, 'AskUserQuestion'],
     canUseTool,
     cwd: opts.rootDir,
@@ -392,8 +403,8 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     settingSources: [],
     settings,
     strictMcpConfig: true,
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: systemBriefFor(opts) },
-    tools: [...activeTools.split(','), 'AskUserQuestion'],
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: systemBriefFor(opts) + (mcpOnly ? MCP_ONLY_BRIEF : '') },
+    tools: [...(activeTools ? activeTools.split(',') : []), 'AskUserQuestion'],
   };
 }
 
@@ -613,6 +624,7 @@ export function createClaudeSession(opts, {
 
   function buildArgv(resume) {
     return buildClaudeArgv(opts, sessionId, resume, {
+      platform,
       agentsPath: writeClaudeAgentsFile(opts.isolatedHome),
       slashCommands: turnKind === 'compact',
     });
@@ -1172,7 +1184,15 @@ export function createClaudeSession(opts, {
       // result 자체의 실패는 턴 실패다 — studio 가 스테이징 편집을 커밋하지 않고
       // 검토로 남기도록 turn-end 에 실린다.
       if (e.is_error) {
-        resultErrorMessage = String(e.result);
+        // 실패 result 는 성공 result 와 달리 result 대신 errors[] 를 보낸다.
+        // 없는 result 를 문자열로 바꾸면 실제 원인과 로그인/모델 복구 조치가 사라진다.
+        const errors = Array.isArray(e.errors)
+          ? e.errors.filter((value) => typeof value === 'string' && value.trim())
+          : [];
+        resultErrorMessage = errors.join('\n')
+          || (typeof e.result === 'string' ? e.result.trim() : '')
+          || turnErrorText
+          || 'Claude가 오류 원인을 보내지 않았습니다. 연결 설정을 확인한 뒤 다시 시도해 주세요.';
         const httpStatus = Number(e.api_error_status);
         turnErrorHint = {
           ...(turnErrorHint ?? {}),
@@ -1299,11 +1319,15 @@ export function createClaudeSession(opts, {
       const launch = claudeCliLaunch();
       const options = buildClaudeSdkOptions({
         ...opts,
-        ...(launch.leadingArgs[0] ? { claudeBin: launch.leadingArgs[0] } : {}),
+        ...(launch.leadingArgs[0]
+          ? { claudeBin: launch.leadingArgs[0] }
+          : platform === 'win32' && /\.exe$/i.test(launch.command) && path.isAbsolute(launch.command)
+            ? { claudeBin: launch.command }
+            : {}),
         requestUserInput(request, signal) {
           return requestSdkUserInput(owner, request, signal);
         },
-      }, sessionId, resume, owner.abortController, { slashCommands: turnKind === 'compact' });
+      }, sessionId, resume, owner.abortController, { slashCommands: turnKind === 'compact', platform });
       options.env = { ...options.env, ...launch.env };
       // SDK 는 pathToClaudeCodeExecutable 이 없으면 env.PATH 를 보지 않고 자체
       // 번들 바이너리로 떨어진다 — spawn 경로와 같은 바이너리를 가리키도록 PATH

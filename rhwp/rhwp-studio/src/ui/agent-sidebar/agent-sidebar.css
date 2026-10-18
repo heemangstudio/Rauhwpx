@@ -7136,26 +7136,26 @@ html.ag-fs-vt-exit::view-transition-new(root) {
 /* 집중 모드 bar 가 y=0 의 메뉴바 자리를 대신한다. 높이를 창 타이틀바와
    맞춰 신호등(y:12, 14px)과 컨트롤의 세로 중심을 같은 선에 둔다.
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
-html.desktop-mac .ag-fullscreen {
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
   /* 레일 토글은 홈 단추에 조금 더 붙는다. 두 아이콘 사이가 5px 이다. */
   --ag-workspace-lead-inset: calc(var(--desktop-home-reserve, 98px) - 3px);
 }
 
-html.desktop-mac .ag-fullscreen .ag-workspace-bar {
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar {
   -webkit-app-region: drag;
 }
 
-html.desktop-mac .ag-fullscreen .ag-workspace-title {
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-title {
   height: 100%;
 }
 
 /* 두 번 눌러 이름을 바꾸는 글자는 창 끌기에서 빼야 더블클릭이 창 확대로 가지 않는다. */
-html.desktop-mac .ag-fullscreen .ag-workspace-bar .ag-renamable {
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar .ag-renamable {
   -webkit-app-region: no-drag;
 }
 
-html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
+html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   button,
   a,
   input,
@@ -9569,11 +9569,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-plan-suggest .ag-icon { width: 13px; height: 13px; color: var(--ag-text-secondary); }
 
 /* macOS 셸에서는 문서 홈 단추가 신호등 옆에 늘 떠 있으므로 사이드바의 홈 단추는 숨긴다. */
-html.desktop-mac .ag-home-btn,
-html.desktop-mac .ag-workspace-home-btn {
+html:is(.desktop-mac, .desktop-windows) .ag-home-btn,
+html:is(.desktop-mac, .desktop-windows) .ag-workspace-home-btn {
   display: none;
 }
 
-html.desktop-mac .ag-root {
+html:is(.desktop-mac, .desktop-windows) .ag-root {
   --ag-workspace-home-w: 0px !important;
 }

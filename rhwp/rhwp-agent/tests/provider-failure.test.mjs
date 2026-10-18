@@ -16,6 +16,13 @@ import { redactableHead, redactDiagnosticText } from '../agents/backend.mjs';
 
 const classify = (input) => classifyProviderFailure({ agent: 'claude', origin: 'error', ...input });
 
+test('unavailable required sandbox offers setup recovery rather than retry', () => {
+  const failure = classify({ message: 'Sandbox required but unavailable: sandbox is enabled but the Windows sandbox is not active on this session (feature gate off).' });
+  assert.equal(failure.class, 'invalid_request');
+  assert.equal(failure.code, 'sandbox_unavailable');
+  assert.equal(failure.retryable, false);
+});
+
 test('structured provider codes decide the class before any text', () => {
   const cases = [
     [{ source: 'claude', code: 'authentication_failed' }, 'auth_required', 'claude:authentication_failed'],
