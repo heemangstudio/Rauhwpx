@@ -42,7 +42,16 @@ pub(crate) fn stored_body_wide_textbox_bottom(
     use crate::model::paragraph::LineSeg;
     use crate::model::shape::{SizeCriterion, TextWrap};
 
-    if !profile.native_hwp5_layout() || profile.session_edited() || profile.own_line_layout() {
+    // HWP3 변환 계보와 원본 HWP3 컨테이너는 다르다. HWP5의 저장 줄/현재
+    // 프레임이 아래에서 같은 경계를 증명하면 변환 계보가 있어도 그 경계를 쓴다.
+    if !(profile.native_hwp5_layout() || profile.hwp3_layout())
+        || profile.hwp3_native_layout()
+        || profile.hwpx_container()
+        || profile.hwpx_stored_layout()
+        || profile.hwp5_origin_hwpx()
+        || profile.session_edited()
+        || profile.own_line_layout()
+    {
         return None;
     }
     let Control::Shape(shape) = ctrl else {
@@ -1024,10 +1033,21 @@ impl LayoutEngine {
             }
 
             // 인라인 좌표 없으면 기존 방식 (정렬 기반 단독 배치)
-            let eq_w = hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi);
+            let eq_w = hwpunit_to_px(
+                crate::renderer::equation::content_width_hwp_with_policy(
+                    eq,
+                    styles.font_metrics_policy,
+                ),
+                self.dpi,
+            );
             let eq_h = hwpunit_to_px(eq.common.height as i32, self.dpi);
-            let eq_advance =
-                hwpunit_to_px(crate::renderer::equation::occupied_width_hwp(eq), self.dpi);
+            let eq_advance = hwpunit_to_px(
+                crate::renderer::equation::occupied_width_hwp_with_policy(
+                    eq,
+                    styles.font_metrics_policy,
+                ),
+                self.dpi,
+            );
             let eq_x = match alignment {
                 Alignment::Center | Alignment::Distribute => {
                     col_area.x + (col_area.width - eq_advance).max(0.0) / 2.0
@@ -1043,11 +1063,18 @@ impl LayoutEngine {
             let font_size_px = hwpunit_to_px(eq.font_size as i32, self.dpi);
             let layout_box =
                 super::super::equation::layout::EqLayout::with_font(font_size_px, &eq.font_name)
+                    .with_metrics_policy(styles.font_metrics_policy)
                     .with_version(&eq.version_info)
                     .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(
                         &ast,
-                        hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi),
+                        hwpunit_to_px(
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
+                            self.dpi,
+                        ),
                     );
             let color_str = super::super::equation::svg_render::eq_color_to_svg(eq.color);
             let svg_content =
@@ -3501,7 +3528,10 @@ impl LayoutEngine {
                     }
                     Control::Equation(eq) => {
                         total_inline_width += hwpunit_to_px(
-                            crate::renderer::equation::occupied_width_hwp(eq),
+                            crate::renderer::equation::occupied_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         max_inline_height =
@@ -3850,11 +3880,17 @@ impl LayoutEngine {
                     Control::Equation(eq) => {
                         // 글상자 내 수식: 항상 글자처럼 인라인 배치
                         let eq_w = hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_advance = hwpunit_to_px(
-                            crate::renderer::equation::occupied_width_hwp(eq),
+                            crate::renderer::equation::occupied_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_margin_x = hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
@@ -3910,12 +3946,16 @@ impl LayoutEngine {
                                 font_size_px,
                                 &eq.font_name,
                             )
+                            .with_metrics_policy(styles.font_metrics_policy)
                             .with_version(&eq.version_info)
                             .with_base_pt(eq.font_size as f64 / 100.0)
                             .layout_in_control_width(
                                 &ast,
                                 hwpunit_to_px(
-                                    crate::renderer::equation::content_width_hwp(eq),
+                                    crate::renderer::equation::content_width_hwp_with_policy(
+                                        eq,
+                                        styles.font_metrics_policy,
+                                    ),
                                     self.dpi,
                                 ),
                             );

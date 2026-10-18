@@ -924,6 +924,33 @@ fn render_box(
                 }
             }
         }
+        LayoutKind::Decoration {
+            kind: DecoKind::Box,
+            body,
+        } => {
+            let rect =
+                skia_safe::Rect::from_xywh(x as f32, y as f32, lb.width as f32, lb.height as f32);
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_color(Color::WHITE);
+            canvas.draw_rect(rect, &paint);
+            paint.set_style(paint::Style::Stroke);
+            paint.set_color(Color::BLACK);
+            paint.set_stroke_width(1.0);
+            canvas.draw_rect(rect, &paint);
+            render_box(
+                canvas,
+                fonts,
+                font_families,
+                body,
+                x,
+                y,
+                color,
+                fs,
+                italic,
+                bold,
+            );
+        }
         LayoutKind::Decoration { kind, body } => {
             render_box(
                 canvas,
@@ -1919,5 +1946,81 @@ mod tests {
 
         assert_eq!(selected.family_name(), "STIX Two Math");
         assert!(typeface_covers_text(&selected, "→"));
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::*;
+    use crate::renderer::equation::{layout::EqLayout, parser::parse};
+    use crate::renderer::skia::font_lookup::collect_system_families;
+
+    #[test]
+    fn box_frame_native_paints_white_background_black_frame_and_colored_child() {
+        let mgr = FontMgr::default();
+        let face = mgr
+            .new_from_data(
+                include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+                None,
+            )
+            .unwrap();
+        let mut custom = TypefaceCatalog::new();
+        custom.insert("rhwpboxfixture".into(), vec![face]);
+        let bundled = TypefaceCatalog::new();
+        let system = collect_system_families(&mgr);
+        let fonts = EqFonts {
+            mgr: &mgr,
+            custom: &custom,
+            bundled: &bundled,
+            system: &system,
+            modern: true,
+        };
+        let mut body = EqLayout::new(24.0).layout(&parse("A"));
+        body.x = 20.0;
+        body.y = 12.0;
+        let frame = LayoutBox {
+            resolved_font_size: Some(24.0),
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 48.0,
+            baseline: body.y + body.baseline,
+            kind: LayoutKind::Decoration {
+                kind: DecoKind::Box,
+                body: Box::new(body),
+            },
+        };
+        let mut surface = skia_safe::surfaces::raster_n32_premul((128, 96)).unwrap();
+        surface.canvas().clear(Color::BLUE);
+        render_box(
+            surface.canvas(),
+            &fonts,
+            &["RHWPBoxFixture"],
+            &frame,
+            16.0,
+            16.0,
+            Color::RED,
+            24.0,
+            false,
+            false,
+        );
+        let info = surface.image_info();
+        let mut pixels = vec![0_u8; 128 * 96 * 4];
+        assert!(surface.read_pixels(&info, &mut pixels, 128 * 4, (0, 0)));
+        let rgb = |x: usize, y: usize| &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3];
+        assert!(
+            rgb(24, 24).iter().all(|v| *v == 255),
+            "white frame interior"
+        );
+        assert!(rgb(40, 16).iter().all(|v| *v < 200), "black upper frame");
+        assert!(
+            (28..60).any(|y| (36..60).any(|x| {
+                let px = rgb(x, y);
+                px.iter().filter(|v| **v > 200).count() == 1
+                    && px.iter().filter(|v| **v < 80).count() == 2
+            })),
+            "colored child remains inside frame"
+        );
     }
 }

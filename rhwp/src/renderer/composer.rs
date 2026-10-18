@@ -640,7 +640,7 @@ pub fn compose_paragraph_with_policy(
     para: &Paragraph,
     policy: crate::model::provenance::FontMetricsPolicy,
 ) -> ComposedParagraph {
-    let mut composed = compose_paragraph(para);
+    let mut composed = compose_paragraph_impl(para, None, policy);
     select_literal_space_slots(&mut composed, policy);
     composed
 }
@@ -650,7 +650,7 @@ pub fn compose_paragraph_with_styles(
     para: &Paragraph,
     styles: &ResolvedStyleSet,
 ) -> ComposedParagraph {
-    let mut composed = compose_paragraph_impl(para, Some(styles));
+    let mut composed = compose_paragraph_impl(para, Some(styles), styles.font_metrics_policy);
     select_literal_space_slots(&mut composed, styles.font_metrics_policy);
     composed
 }
@@ -699,12 +699,17 @@ fn select_literal_space_slots(
 
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
-    compose_paragraph_impl(para, None)
+    compose_paragraph_impl(
+        para,
+        None,
+        crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+    )
 }
 
 fn compose_paragraph_impl(
     para: &Paragraph,
     styles: Option<&ResolvedStyleSet>,
+    policy: crate::model::provenance::FontMetricsPolicy,
 ) -> ComposedParagraph {
     // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
     let synth_para = synthesize_marker_paragraph(para);
@@ -758,7 +763,7 @@ fn compose_paragraph_impl(
                     // 13.13pt 전진 = 선언+여백, tab 경계 7840/8000HWU 격자와 일치).
                     // 한컴은 내용이 상자보다 작아도 상자 자리를 유지한다
                     // (eq-002 `f(n)` 전진 1788HWU ≈ 선언 1677+여백 112).
-                    let w = super::equation::occupied_width_hwp(eq);
+                    let w = super::equation::occupied_width_hwp_with_policy(eq, policy);
                     Some((pos, w, i))
                 }
                 Control::Ruby(r) if r.option == 0 => Some((pos, 0, i)),
@@ -5846,7 +5851,11 @@ pub(crate) fn recompose_textbox_line_metrics(
         };
         if !eq.common.treat_as_char
             || eq.version_info != "Equation Version 60"
-            || crate::renderer::equation::natural_width_hwp(eq).is_none()
+            || crate::renderer::equation::natural_width_hwp_with_policy(
+                eq,
+                styles.font_metrics_policy,
+            )
+            .is_none()
         {
             return false;
         }
@@ -5864,7 +5873,10 @@ fn compose_textbox_line_metrics(
     dpi: f64,
 ) -> bool {
     use crate::model::style::LineSpacingType;
-    let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+    let composed: Vec<_> = paragraphs
+        .iter()
+        .map(|para| compose_paragraph_with_styles(para, styles))
+        .collect();
     if paragraphs
         .iter()
         .zip(&composed)
@@ -5909,19 +5921,20 @@ fn compose_textbox_line_metrics(
                     continue;
                 };
                 let (_, natural_height, natural_baseline) =
-                    crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+                    crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
                         &eq.script,
                         eq.font_size,
                         &eq.font_name,
                         &eq.version_info,
+                        styles.font_metrics_policy,
                     );
                 let (natural_height, natural_baseline) =
-                    crate::renderer::equation::generated_draw_text_vector_flow_metrics_px(
+                    crate::renderer::equation::generated_draw_text_vector_flow_metrics_px_with_policy(
                         &eq.script,
                         eq.font_size,
                         dpi,
                         &eq.font_name,
-                        &eq.version_info,
+                        &eq.version_info, styles.font_metrics_policy,
                     )
                     .map(|metrics| {
                         (
@@ -5931,12 +5944,12 @@ fn compose_textbox_line_metrics(
                     })
                     .unwrap_or((natural_height as i32, natural_baseline as i32));
                 let occupied =
-                    crate::renderer::equation::generated_draw_text_fraction_flow_height_px(
+                    crate::renderer::equation::generated_draw_text_fraction_flow_height_px_with_policy(
                         &eq.script,
                         eq.font_size,
                         dpi,
                         &eq.font_name,
-                        &eq.version_info,
+                        &eq.version_info, styles.font_metrics_policy,
                     )
                     .map(|h| px_to_hwpunit(h, dpi))
                     .unwrap_or(natural_height);

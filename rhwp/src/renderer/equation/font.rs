@@ -200,9 +200,87 @@ pub(crate) fn modern_glyph_advance(
     (raw_advance / font_size * grid_size).round() * if synthetic_italic { 1.0 } else { 0.9 }
 }
 
+/// 문서가 고른 정책과 출력 좌표 배율. 기본 호출자는 기존 96dpi 측정을 유지한다.
+#[derive(Clone, Copy)]
+pub(crate) struct AdvanceContext {
+    pub policy: crate::model::provenance::FontMetricsPolicy,
+    pub scale: f64,
+}
+
+impl Default for AdvanceContext {
+    fn default() -> Self {
+        Self {
+            policy: Default::default(),
+            scale: 1.0,
+        }
+    }
+}
+
+impl AdvanceContext {
+    pub fn cache_key(self) -> (&'static str, u64) {
+        (self.policy.as_str(), self.scale.to_bits())
+    }
+}
+
+/// Windows 후보는 실제 HY cmap의 비합성 수학 PUA에만 적용한다.
+/// 일반 Roman, 굵게, CJK, fallback 및 이미 PUA인 미확인 입력은 기존 경로다.
+/// 0.12pt 출력 격자의 정확한 GDI 반올림을 재현한다는 뜻은 아니다.
+pub(crate) fn modern_source_glyph_advance(
+    raw_advance: f64,
+    font_size: f64,
+    character: char,
+    italic: bool,
+    bold: bool,
+    source_gid: u16,
+    context: AdvanceContext,
+) -> f64 {
+    let (mapped, synthetic) = legacy_equation_glyph(character, italic, true);
+    let admitted = context.policy == crate::model::provenance::FontMetricsPolicy::HancomWindows
+        && source_gid > 0
+        && mapped != character
+        && matches!(mapped, '\u{e000}'..='\u{e0ff}')
+        && !synthetic
+        && !bold
+        && context.scale.is_finite()
+        && context.scale > 0.0;
+    if !admitted {
+        return modern_glyph_advance(raw_advance, font_size, synthetic);
+    }
+    // 출력 DPI 대신 논리 96dpi에서 짝수 크기를 정하고 좌표계로 되돌린다.
+    modern_glyph_advance(raw_advance / context.scale, font_size / context.scale, true)
+        * context.scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_advance_policy_requires_a_real_source_math_gid() {
+        use crate::model::provenance::FontMetricsPolicy;
+        let fs = 11.0 * 4.0 / 3.0;
+        let windows = AdvanceContext {
+            policy: FontMetricsPolicy::HancomWindows,
+            scale: 1.0,
+        };
+        let measure = |ch, italic, bold, gid, context| {
+            modern_source_glyph_advance(fs * 0.5, fs, ch, italic, bold, gid, context)
+        };
+        assert!((measure('4', false, false, 1, windows) * 0.75 - 5.25).abs() < 1e-9);
+        for (ch, italic, bold, gid) in [
+            ('4', false, false, 0),
+            ('4', false, true, 1),
+            ('x', false, false, 1),
+            ('A', true, false, 1),
+            ('한', false, false, 1),
+            ('\u{e0ac}', false, false, 1),
+        ] {
+            assert_eq!(
+                measure(ch, italic, bold, gid, windows),
+                measure(ch, italic, bold, gid, AdvanceContext::default())
+            );
+        }
+    }
 
     #[test]
     fn modern_hinted_advance_matches_size_steps_without_scaling_the_glyph() {

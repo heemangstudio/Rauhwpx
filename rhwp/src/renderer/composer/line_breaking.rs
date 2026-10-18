@@ -3149,7 +3149,7 @@ fn inline_control_metrics_hwp_with_policy(
             if let Some(flow) =
                 crate::renderer::equation::windows_control_line_flow_hwp(eq, 0, policy)
             {
-                let width = crate::renderer::equation::occupied_width_hwp(eq);
+                let width = crate::renderer::equation::occupied_width_hwp_with_policy(eq, policy);
                 return (width > 0 && flow.height > 0).then_some(InlineControlMetricsHwp {
                     width,
                     height: flow.height,
@@ -3216,18 +3216,19 @@ fn inline_control_metrics_hwp_with_policy(
         }
         Control::Equation(eq) if eq.common.treat_as_char => {
             let (_, natural_height, natural_baseline) =
-                crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+                crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
                     &eq.script,
                     eq.font_size,
                     &eq.font_name,
                     &eq.version_info,
+                    policy,
                 );
             let margin = &eq.common.margin;
             // 인라인 수식의 줄 전진 = 선언(개체 상자) 폭 + 양쪽 outMargin — 개체 상자는
             // 내용이 작아도 그대로 점유하고, 넘치는 잉크도 상자 밖으로 전진을 넓히지
             // 않는다 (eq-002 실측: `=8` 전진 13.13pt = 선언 12.01+여백, `f(n)` 1788HWU =
             // 선언 1677+112 — paint 1651 이 아니라 선언 폭을 쓴다).
-            let width = crate::renderer::equation::occupied_width_hwp(eq);
+            let width = crate::renderer::equation::occupied_width_hwp_with_policy(eq, policy);
             // 한컴 저장 줄 높이는 수식 개체의 선언 높이 + 바깥 여백 그대로다 (HWPX 표본 수식
             // 줄 3,700여 건: vertsize = 높이 + 위/아래 여백, baseline = 위 여백 + 높이 ×
             // baseLine%). 잉크 기반 흐름 높이는 선언 높이가 없을 때만 쓴다.

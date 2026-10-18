@@ -114,6 +114,7 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let dpi = self.dpi;
+        let policy = self.document.doc_info.font_metrics_policy;
         let eq = self.find_note_equation_mut(
             kind,
             section_idx,
@@ -122,7 +123,7 @@ impl DocumentCore {
             note_para_idx,
             inner_control_idx,
         )?;
-        Self::apply_equation_properties(eq, dpi, props_json);
+        Self::apply_equation_properties_with_policy(eq, dpi, props_json, policy);
 
         let section = &mut self.document.sections[section_idx];
         section.raw_stream = None;

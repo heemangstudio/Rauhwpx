@@ -2980,12 +2980,12 @@ impl DocumentCore {
                             };
                         if eq.common.treat_as_char && available {
                             let metrics =
-                                crate::renderer::equation::intrinsic_metrics_px_with_version(
+                                crate::renderer::equation::intrinsic_metrics_px_with_version_with_policy(
                                     &eq.script,
                                     eq.font_size,
                                     dpi,
                                     &eq.font_name,
-                                    &eq.version_info,
+                                    &eq.version_info, styles.font_metrics_policy,
                                 );
                             let width = crate::renderer::px_to_hwpunit_round(metrics.width, dpi)
                                 .max(1) as u32;
@@ -3045,12 +3045,13 @@ impl DocumentCore {
                         return None;
                     }
                     let fraction_flow =
-                        crate::renderer::equation::generated_fraction_flow_height_px(
+                        crate::renderer::equation::generated_fraction_flow_height_px_with_policy(
                             &eq.script,
                             eq.font_size,
                             dpi,
                             &eq.font_name,
                             &eq.version_info,
+                            styles.font_metrics_policy,
                         );
                     let raw_object_height =
                         crate::renderer::hwpunit_to_px(eq.common.height as i32, dpi);
@@ -3061,13 +3062,15 @@ impl DocumentCore {
                     {
                         return None;
                     }
-                    let intrinsic = crate::renderer::equation::intrinsic_metrics_px_with_version(
-                        &eq.script,
-                        eq.font_size,
-                        dpi,
-                        &eq.font_name,
-                        &eq.version_info,
-                    );
+                    let intrinsic =
+                        crate::renderer::equation::intrinsic_metrics_px_with_version_with_policy(
+                            &eq.script,
+                            eq.font_size,
+                            dpi,
+                            &eq.font_name,
+                            &eq.version_info,
+                            styles.font_metrics_policy,
+                        );
                     let height = fraction_flow
                         .unwrap_or(intrinsic.height)
                         .max(em * font_height);
@@ -3169,13 +3172,15 @@ impl DocumentCore {
                     if raw_height > em * font_height {
                         return None;
                     }
-                    let intrinsic = crate::renderer::equation::intrinsic_metrics_px_with_version(
-                        &eq.script,
-                        eq.font_size,
-                        dpi,
-                        &eq.font_name,
-                        &eq.version_info,
-                    );
+                    let intrinsic =
+                        crate::renderer::equation::intrinsic_metrics_px_with_version_with_policy(
+                            &eq.script,
+                            eq.font_size,
+                            dpi,
+                            &eq.font_name,
+                            &eq.version_info,
+                            styles.font_metrics_policy,
+                        );
                     let flow_height = crate::renderer::equation::control_line_flow_height(
                         eq,
                         intrinsic.height,
@@ -6329,7 +6334,7 @@ impl DocumentCore {
         Self::reflow_zero_height_paragraphs(
             &mut self.document,
             &self.styles,
-            DEFAULT_DPI,
+            self.dpi,
             true,
             include_cell_empty,
             fully_unstored,
