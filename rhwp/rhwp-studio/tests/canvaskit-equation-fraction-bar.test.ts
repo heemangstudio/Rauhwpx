@@ -14,6 +14,8 @@ const fraction = {
 
 test('source fraction bars retain native sizing, fallback and prepared-face changes', async () => {
   const vite = await createTestModuleServer(fileURLToPath(new URL('../', import.meta.url)));
+  let renderer: any;
+  let setApi: ((api: any) => void) | undefined;
   try {
     const { CanvasKitLayerRenderer } = await vite.ssrLoadModule('/src/view/canvaskit-renderer.ts');
     const fonts: Array<{ face: any; size: number; deleted: boolean }> = [];
@@ -26,11 +28,18 @@ test('source fraction bars retain native sizing, fallback and prepared-face chan
       setEdging() {} setHinting() {} setEmbeddedBitmaps() {} setLinearMetrics() {} setSubpixel() {}
       getGlyphIDs(text: string) { assert.equal(text, '\ue06d'); return new Uint16Array([this.face.glyph]); }
       getGlyphWidths() { return new Float32Array([this.face.advance * this.size]); }
+      getGlyphBounds() { return new Float32Array(this.face.empty ? [0, 0, 0, 0] : [0, -8, 9, 0]); }
       delete() { assert.equal(this.deleted, false); this.deleted = true; }
     }
-    const kit = { Font: TestFont, FontEdging: { AntiAlias: 1 }, FontHinting: { None: 0 } };
-    const renderer = new CanvasKitLayerRenderer(kit, 'default', {}, null);
-    let prepared: { glyph: number; advance: number } | undefined = { glyph: 7, advance: 2 };
+    const paths: Array<{ deleted: boolean }> = [];
+    const kit = { Font: TestFont, FontEdging: { AntiAlias: 1 }, FontHinting: { None: 0 },
+      Path: { MakeFromSVGString(source: string) {
+        const path = { source, deleted: false, delete() { assert.equal(this.deleted, false); this.deleted = true; } };
+        paths.push(path); return path;
+      } } };
+    renderer = new CanvasKitLayerRenderer(kit, 'default', {}, null);
+    setApi = (await vite.ssrLoadModule('/src/core/sfnt-glyphs.ts')).setSfntGlyphPathApi;
+    let prepared: { glyph: number; advance: number; empty?: boolean } | undefined = { glyph: 7, advance: 2 };
     renderer.findPreparedTypeface = () => prepared ? { typeface: prepared } : undefined;
     const paint = () => {
       const result = { deleted: false, delete() { assert.equal(this.deleted, false); this.deleted = true; } };
@@ -49,6 +58,7 @@ test('source fraction bars retain native sizing, fallback and prepared-face chan
         calls.push(['text', text, x, y, font.size]); if (throws) throw failure;
       },
       drawLine(...coordinates: number[]) { calls.push(['line', ...coordinates.slice(0, 4)]); },
+      drawPath(path: any) { calls.push(['path', path.source]); if (throws) throw failure; },
     };
     const render = (modern: boolean, family = 'HYhwpEQ') => {
       calls.length = 0;
@@ -90,5 +100,35 @@ test('source fraction bars retain native sizing, fallback and prepared-face chan
     assert.deepEqual(calls.at(-1), ['restore']);
     assert.ok(fonts.every(font => font.deleted));
     assert.ok(paints.every(value => value.deleted));
-  } finally { await vite.close(); }
+    throws = false;
+    const bytesA = new Uint8Array([1, 2, 3]).buffer;
+    renderer.retainSfntTypefaceSource(prepared, bytesA);
+    const queries: any[] = [];
+    setApi!((bytes: Uint8Array, face: number, glyph: number) => {
+      queries.push([bytes.buffer, face, glyph]); return 'M0 0 L900 0 L900 -40 Z';
+    });
+    render(true);
+    assert.deepEqual(queries, [[bytesA, 0, 7]]);
+    assert.deepEqual(calls.filter(call => call[0] === 'translate'), [['translate', 4, 26], ['translate', 0, 0]]);
+    assert.deepEqual(calls.filter(call => call[0] === 'scale'), [['scale', 1.9, 1], ['scale', 0.01, 0.01]]);
+    assert.equal(calls.filter(call => call[0] === 'path').length, 1);
+    assert.equal(calls.some(call => call[0] === 'text' || call[0] === 'line'), false);
+    render(true); assert.equal(queries.length, 1, 'same face reuses the source outline');
+    const bytesB = new Uint8Array([4, 5, 6]).buffer;
+    prepared = { glyph: 9, advance: 2 };
+    renderer.retainSfntTypefaceSource(prepared, bytesB); render(true);
+    assert.deepEqual(queries.at(-1), [bytesB, 0, 9], 'replacement uses its own bytes and glyph');
+    setApi!(() => ''); render(true);
+    assert.equal(calls.some(call => call[0] === 'path'), false);
+    assert.equal(calls.filter(call => call[0] === 'text').length, 1, 'unproven nonempty outline falls back before paint');
+    prepared.empty = true; render(true);
+    assert.equal(calls.some(call => call[0] === 'path' || call[0] === 'text'), false, 'proven empty glyph has no ink');
+    prepared.empty = false;
+    setApi!(() => 'M0 0 L900 0 L900 -40 Z'); throws = true;
+    assert.throws(() => render(true), error => error === failure);
+    assert.deepEqual(calls.slice(-2), [['restore'], ['restore']], 'both outline and stretch transforms restore after failure');
+    assert.ok(fonts.every(font => font.deleted)); assert.ok(paints.every(value => value.deleted));
+    renderer.dispose(); renderer = null;
+    assert.ok(paths.every(path => path.deleted));
+  } finally { renderer?.dispose(); setApi?.(null); await vite.close(); }
 });

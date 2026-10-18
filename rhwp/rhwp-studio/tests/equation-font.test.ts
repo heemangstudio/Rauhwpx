@@ -28,6 +28,26 @@ test('equation variables and numbers choose distinct real italic and upright fac
   assert.equal(equationLocalFontFace(records, 'Cambria Math', false, false), undefined);
 });
 
+test('equation face selection ranks physical weights within slant and preserves registration ties', () => {
+  const face = (name: string, weight: number, italic = false): LocalFontRecord => ({
+    family: 'Haansoft Batang', fullName: `Haansoft Batang ${name}`, postscriptName: `Batang-${name}`,
+    style: name, displayName: 'Haansoft Batang', aliases: [], sfntStyle: { weight, italic },
+  });
+  const regular = face('Regular', 400), semibold = face('Semibold', 600), bold = face('Bold', 700);
+  const italic = face('Italic', 400, true), italicBold = face('BoldItalic', 700, true);
+  for (const records of [[regular, semibold, bold, italic, italicBold], [italicBold, italic, bold, semibold, regular]]) {
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', false, true), bold);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', false, false), regular);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', true, true), italicBold);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', true, false), italic);
+  }
+  assert.equal(equationLocalFontFace([italicBold, regular], 'Haansoft Batang', false, true), regular,
+    'missing physical bold keeps the requested slant and permits synthetic bold');
+  const alternate = face('OtherBold', 700);
+  assert.equal(equationLocalFontFace([bold, alternate], 'Haansoft Batang', false, true), bold);
+  assert.equal(equationLocalFontFace([alternate, bold], 'Haansoft Batang', false, true), alternate);
+});
+
 test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct', async () => {
   const { legacyEquationGlyph, legacyEquationRuns } = await import('../src/core/equation-font.ts');
   assert.deepEqual(legacyEquationGlyph('°', false, true), ['\ue0c8', false]);
@@ -99,6 +119,21 @@ test('cmap validation rejects malformed data and out-of-range glyph IDs', async 
   assert.equal(sfntCoversText(fontWithGlyph(0xe0f4, 0), '\ue0f4'), false);
   assert.equal(sfntCoversText(fontWithGlyph(0xe0f4, 0xffff), '\ue0f4'), false);
   assert.equal(sfntCoversText(new ArrayBuffer(2), '\ue0f4'), false);
+});
+
+test('exact equation coverage follows late bytes and replacement on the same registered record', async () => {
+  const { createEquationFontResolver } = await import('../src/core/equation-font.ts');
+  const record: LocalFontRecord = { family: 'HYhwpEQ', fullName: 'HYhwpEQ', postscriptName: 'HYhwpEQ', style: 'Regular', displayName: 'HYhwpEQ', aliases: [], runtimeFamily: '__hy' };
+  let bytes: ArrayBuffer | null = null;
+  const resolve = createEquationFontResolver(() => record, () => bytes);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), null);
+  bytes = fontWithGlyph(0xe034);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), '__hy');
+  bytes = fontWithGlyph(0xe035);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), null);
+  assert.equal(resolve('HYhwpEQ', '\ue035'), '__hy');
+  bytes = null;
+  assert.equal(resolve('HYhwpEQ', '\ue035'), null);
 });
 
 test('HFT bank lookup requires an imported exact face and leaves uncovered glyphs to fallback', async () => {
@@ -224,5 +259,9 @@ test('CJK pitch requires a loaded exact source with valid font data', () => {
 test('SFNT metadata selects localized equation italic and retains name fallback', () => {
   const italic: LocalFontRecord = { family: 'Times', fullName: 'Times Corsivo', postscriptName: 'Times-I', style: 'Corsivo', displayName: 'Times', aliases: ['Times'], sfntStyle: {weight: 400, italic: true} };
   assert.equal(equationLocalFontFace([italic], 'Times', true, false), italic);
-  assert.equal(equationLocalFontFace([italic], 'Times', false, false), undefined);
+  assert.equal(equationLocalFontFace([italic], 'Times', false, false), italic,
+    'a sole physical face remains the same fallback chosen by styled byte lookup');
+  const regular: LocalFontRecord = { ...italic, fullName: 'Times Tondo', postscriptName: 'Times-R', style: 'Tondo', sfntStyle: { weight: 400, italic: false } };
+  assert.equal(equationLocalFontFace([italic, regular], 'Times', false, false), regular);
+  assert.equal(equationLocalFontFace([regular, italic], 'Times', true, false), italic);
 });

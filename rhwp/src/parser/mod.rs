@@ -383,7 +383,7 @@ fn parse_hwp_with_cfb(
     // 자동 번호 할당 (문서 전체에서 순차적으로)
     assign_auto_numbers(&mut doc);
 
-    // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
+    // [Task #554] 기존 비율 휴리스틱에 따른 페이지네이션 허용치
     apply_hwp3_origin_fixup(&mut doc);
 
     // [Task #1001] HwpSummary HWP3 시대 년 AND PS/CS 비율 작음 → 변환본 확정.
@@ -494,22 +494,6 @@ fn normalize_variant_paragraph_vpos(doc: &mut crate::model::document::Document) 
     }
 }
 
-/// [Task #554] HWP3 → HWP5/HWPX 변환본 식별 휴리스틱 + 페이지 여백 보정
-///
-/// 한컴이 HWP3 → HWP5 로 변환할 때 한글97의 "마지막 줄 tolerance" (1600 HU)
-/// 동작이 누락되어 페이지 수가 +1 ~ +4 증가한다. 변환본을 식별 후 모든
-/// SectionDef.page_def.margin_bottom 을 1600 HU 줄여 한글97 페이지네이션과 정합.
-///
-/// ## 식별 휴리스틱 (Task #554 진단 결과)
-///
-/// 한컴은 HWP3 → HWP5 변환 시 ParaShape/CharShape 를 거의 재사용하지 않고 매우
-/// 적은 수만 생성하여 paragraph 대비 비율이 극도로 낮다. 직접 작성본은 작성자가
-/// 다양한 스타일을 사용하므로 비율이 paragraph 와 비슷하거나 더 높다.
-///
-/// - **`ParaShape/Paragraph < 0.05` AND `CharShape/Paragraph < 0.15`** → 변환본
-/// - **`Paragraph > 50`** 가드: 매우 짧은 문서는 비율이 왜곡되므로 제외
-///
-/// 27 fixture 검증에서 100% 정확 분류 (Stage 1 보고서 §3.2 참조).
 /// [Task #1001] 변환본의 line_segs 단위 보정.
 /// vertical_pos 만 ParaShape spacing 누적 영향으로 변환본에서 2배 단위.
 /// 나머지 필드 (line_height/text_height/baseline_distance/line_spacing/column_start/
@@ -530,11 +514,13 @@ fn fixup_line_segs_for_variant(paragraphs: &mut [crate::model::paragraph::Paragr
     }
 }
 
+/// [Task #554] 기존 비율 휴리스틱의 페이지네이션 허용치를 유지한다.
+/// 원본 PAGE_DEF 여백은 꼬리말·쪽 번호·저장에도 쓰이므로 변경하지 않는다.
+/// 비율은 호환 보정의 경험적 조건이며 HWP3 계보 판정은 caller에서 별도로 한다.
 fn apply_hwp3_origin_fixup(doc: &mut Document) {
     // [#1880 v2] rhwp HWPX→HWP 변환본(is_hwpx_variant, #1886 마커)은 한컴
     // HWP3→HWP5 변환본이 아니다 — 결정론 마커가 비율 휴리스틱에 우선한다.
-    // 미게이트 시 저-스타일 대형 문서(2959953)가 비율에 걸려 margin_bottom
-    // -1600 이 오발동, HWPX 렌더와 페이지 기하가 21.3px 어긋나 PI_MOVED 유발
+    // 미게이트 시 저-스타일 대형 문서(2959953)에 불필요한 허용치가 붙는다.
     // (HWPX 파스는 #1608 에서 동종 감지 제거됨).
     if doc.is_hwpx_variant {
         return;
@@ -546,16 +532,26 @@ fn apply_hwp3_origin_fixup(doc: &mut Document) {
     let ps_ratio = doc.doc_info.para_shapes.len() as f64 / total_paragraphs as f64;
     let cs_ratio = doc.doc_info.char_shapes.len() as f64 / total_paragraphs as f64;
     if ps_ratio < 0.05 && cs_ratio < 0.15 {
-        // [Task #554] 변환본 의심 시 margin_bottom 보정 (한글97 의 마지막 줄
-        // tolerance 모방). is_hwp3_variant 플래그 설정은 caller 가 별도 (HwpSummary
+        // [Task #554] 기존 saturating_sub(1600)와 같은 양만 페이지네이션에 허용.
+        // is_hwp3_variant 플래그 설정은 caller 가 별도 (HwpSummary
         // HWP3-era + 더 관대한 ratio AND 조건) 로 처리 — hwpspec.hwp 같은 spec 문서
         // false-positive 차단 위해 ratio 단독 변환본 확정 회피.
+        fn apply_allowance(page_def: &mut crate::model::page::PageDef) {
+            if page_def.pagination_bottom_tolerance == 0 {
+                page_def.pagination_bottom_tolerance = 1600.min(page_def.margin_bottom);
+            }
+        }
         for section in doc.sections.iter_mut() {
-            section.section_def.page_def.margin_bottom = section
-                .section_def
-                .page_def
-                .margin_bottom
-                .saturating_sub(1600);
+            apply_allowance(&mut section.section_def.page_def);
+            // 본문 컨트롤에서 SectionDef를 다시 가져와도 파생 허용치를 유지한다.
+            // 각 사본의 원본 여백과 이미 설정된 허용치는 덮어쓰지 않는다.
+            for paragraph in &mut section.paragraphs {
+                for control in &mut paragraph.controls {
+                    if let crate::model::control::Control::SectionDef(def) = control {
+                        apply_allowance(&mut def.page_def);
+                    }
+                }
+            }
         }
     }
 }
@@ -739,8 +735,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
 
     assign_auto_numbers(&mut doc);
 
-    // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
-    // [Task #1001] 변환본 식별 시 doc.is_hwp3_variant = true 설정
+    // [Task #554] strict 경로와 같은 페이지네이션 허용치. 계보 플래그는 변경하지 않는다.
     apply_hwp3_origin_fixup(&mut doc);
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 Picture.external_path 전달.
@@ -1940,6 +1935,140 @@ fn load_bin_data_content(
 }
 
 #[cfg(test)]
+mod footer_source_geometry_tests {
+    use super::*;
+    use crate::model::control::Control;
+    use crate::model::document::Section;
+    use crate::model::page::PageDef;
+    use crate::model::paragraph::Paragraph;
+    use crate::model::style::{CharShape, ParaShape};
+
+    fn candidate(bottom: u32, tolerance: u32) -> Document {
+        let mut doc = Document::default();
+        doc.doc_info.para_shapes = vec![ParaShape::default()];
+        doc.doc_info.char_shapes = vec![CharShape::default()];
+        let mut section = Section::default();
+        section.section_def.page_def = PageDef {
+            margin_bottom: bottom,
+            pagination_bottom_tolerance: tolerance,
+            ..PageDef::a4_default()
+        };
+        section.paragraphs = vec![Paragraph::default(); 100];
+        section.paragraphs[0]
+            .controls
+            .push(Control::SectionDef(Box::new(section.section_def.clone())));
+        doc.sections.push(section);
+        doc
+    }
+
+    fn assert_page(actual: &PageDef, source: &PageDef, tolerance: u32) {
+        assert_eq!(actual.pagination_bottom_tolerance, tolerance);
+        let mut physical = actual.clone();
+        physical.pagination_bottom_tolerance = source.pagination_bottom_tolerance;
+        assert_eq!(format!("{physical:?}"), format!("{source:?}"));
+    }
+
+    #[test]
+    fn allowance_clamps_preserves_source_and_is_idempotent_in_both_copies() {
+        for (bottom, existing, expected) in [
+            (0, 0, 0),
+            (700, 0, 700),
+            (1600, 0, 1600),
+            (8503, 0, 1600),
+            (8503, 777, 777),
+            (700, 2500, 2500),
+        ] {
+            let mut doc = candidate(bottom, existing);
+            let source = doc.sections[0].section_def.page_def.clone();
+            for _ in 0..3 {
+                apply_hwp3_origin_fixup(&mut doc);
+                assert_page(&doc.sections[0].section_def.page_def, &source, expected);
+                let Control::SectionDef(embedded) = &doc.sections[0].paragraphs[0].controls[0]
+                else {
+                    panic!("embedded SectionDef");
+                };
+                assert_page(&embedded.page_def, &source, expected);
+                assert!(!doc.is_hwp3_variant);
+                assert!(!doc.provenance.hwp3_lineage);
+            }
+        }
+    }
+
+    #[test]
+    fn allowance_keeps_each_sections_source_and_existing_tolerance() {
+        let mut doc = candidate(8503, 0);
+        doc.sections.push(candidate(700, 333).sections.remove(0));
+        apply_hwp3_origin_fixup(&mut doc);
+        assert_eq!(doc.sections[0].section_def.page_def.margin_bottom, 8503);
+        assert_eq!(
+            doc.sections[0]
+                .section_def
+                .page_def
+                .pagination_bottom_tolerance,
+            1600
+        );
+        assert_eq!(doc.sections[1].section_def.page_def.margin_bottom, 700);
+        assert_eq!(
+            doc.sections[1]
+                .section_def
+                .page_def
+                .pagination_bottom_tolerance,
+            333
+        );
+    }
+
+    #[test]
+    fn allowance_does_not_broaden_admission_or_override_hwpx_marker() {
+        for excluded in 0..4 {
+            let mut doc = candidate(8503, 0);
+            match excluded {
+                0 => doc.is_hwpx_variant = true,
+                1 => doc.sections[0].paragraphs.truncate(50),
+                2 => doc.doc_info.para_shapes = vec![ParaShape::default(); 5],
+                3 => doc.doc_info.char_shapes = vec![CharShape::default(); 15],
+                _ => unreachable!(),
+            }
+            // 계보가 참이어도 기존 비율 조건과 마커 제외를 우회하지 않는다.
+            doc.is_hwp3_variant = true;
+            doc.provenance.hwp3_lineage = true;
+            let source = doc.sections[0].section_def.page_def.clone();
+            apply_hwp3_origin_fixup(&mut doc);
+            assert_page(&doc.sections[0].section_def.page_def, &source, 0);
+            let Control::SectionDef(embedded) = &doc.sections[0].paragraphs[0].controls[0] else {
+                panic!("embedded SectionDef");
+            };
+            assert_page(&embedded.page_def, &source, 0);
+            assert!(doc.is_hwp3_variant);
+            assert!(doc.provenance.hwp3_lineage);
+        }
+    }
+
+    #[test]
+    fn lenient_import_keeps_real_source_bottom_and_admission() {
+        for (file, bottom, tolerance) in [
+            ("hwp3-sample-hwp5.hwp", 4252, 1600),
+            ("hwp3-sample16-hwp5.hwp", 2836, 0),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join(file);
+            let bytes = std::fs::read(path).expect("fixture");
+            // strict 성공 여부와 무관하게 복구 reader 경로를 직접 실행한다.
+            let reader = cfb_reader::LenientCfbReader::open(&bytes).expect("lenient CFB");
+            let doc = parse_hwp_with_lenient(reader).expect("lenient import");
+            assert!(!doc.sections.is_empty());
+            for section in &doc.sections {
+                assert_eq!(section.section_def.page_def.margin_bottom, bottom, "{file}");
+                assert_eq!(
+                    section.section_def.page_def.pagination_bottom_tolerance, tolerance,
+                    "{file}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2182,9 +2311,16 @@ mod tests {
         assert!(!doc.is_hwpx_variant);
         apply_hwp3_origin_fixup(&mut doc);
         assert_eq!(
-            doc.sections[0].section_def.page_def.margin_bottom,
-            4252 - 1600,
-            "native HWP5 의심본은 종전대로 margin_bottom 보정"
+            doc.sections[0].section_def.page_def.margin_bottom, 4252,
+            "native HWP5 의심본도 원본 margin_bottom 유지"
+        );
+        assert_eq!(
+            doc.sections[0]
+                .section_def
+                .page_def
+                .pagination_bottom_tolerance,
+            1600,
+            "HWP3-origin 하단 여유는 페이지 나눔 허용량으로 분리"
         );
     }
 
@@ -2196,6 +2332,14 @@ mod tests {
         assert_eq!(
             doc.sections[0].section_def.page_def.margin_bottom, 4252,
             "rhwp HWPX→HWP 변환본(마커)은 HWP3-origin 보정 오발동 금지 (#1880 v2, 2959953)"
+        );
+        assert_eq!(
+            doc.sections[0]
+                .section_def
+                .page_def
+                .pagination_bottom_tolerance,
+            0,
+            "마커가 있는 변환본은 HWP3-origin 페이지 나눔 허용량도 적용 금지"
         );
     }
 

@@ -2774,6 +2774,7 @@ mod border_rendering;
 mod paragraph_layout;
 mod picture_footnote;
 mod shape_layout;
+pub(crate) use shape_layout::stored_body_wide_textbox_bottom;
 mod table_cell_content;
 mod table_layout;
 mod table_partial;
@@ -3394,6 +3395,8 @@ impl LayoutEngine {
         wrap_around_paras: &[super::pagination::WrapAroundPara],
     ) -> PageRenderTree {
         let layout = &page_content.layout;
+        // 머리말/꼬리말 감추기와 무관하게 본문·바탕쪽의 Page AutoNumber도 현재 쪽을 쓴다.
+        self.current_page_number.set(page_content.page_number);
         self.set_page_layout_context(layout.page_width, layout.body_area);
         let mut tree = PageRenderTree::new(
             page_content.page_index,
@@ -12168,9 +12171,23 @@ impl LayoutEngine {
                                 } else {
                                     para_margin_left
                                 };
-                                let occupied_width = shape_w
-                                    + hwpunit_to_px(i32::from(common.margin.left), self.dpi)
-                                    + hwpunit_to_px(i32::from(common.margin.right), self.dpi);
+                                // 저장 줄이 없는 빈 TAC host도 실제 프레임과 같은 폭으로
+                                // 정렬한다. 퍼센트 common.width는 HU 폭으로 해석하지 않는다.
+                                let occupied_width = self
+                                    .relative_inline_shape_occupied_width(
+                                        shape,
+                                        col_area,
+                                        (col_area.width - para_margin_left - para_margin_right)
+                                            .max(0.0),
+                                    )
+                                    .unwrap_or_else(|| {
+                                        shape_w
+                                            + hwpunit_to_px(i32::from(common.margin.left), self.dpi)
+                                            + hwpunit_to_px(
+                                                i32::from(common.margin.right),
+                                                self.dpi,
+                                            )
+                                    });
                                 let avail_w =
                                     (col_area.width - effective_margin_left - para_margin_right)
                                         .max(occupied_width);

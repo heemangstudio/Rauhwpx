@@ -17,6 +17,29 @@ mod stale_spacing;
 pub(crate) use stale_metrics::repair_metric_stale_cell_lines;
 pub(crate) use stale_spacing::doubled_body_spacing_projection;
 
+/// 접힌 참조 번호의 원본 8-unit 제어 슬롯에 적용된 글자 모양만 해소한다.
+/// 가시 글자 위치는 제어 다음을 가리키므로 그 위치의 스타일을 빌리지 않는다.
+pub(crate) fn note_marker_char_style_id(para: &Paragraph, control_index: usize) -> Option<u32> {
+    if !matches!(
+        para.controls.get(control_index)?,
+        Control::Footnote(_) | Control::Endnote(_)
+    ) || para.char_offsets.len() != para.text.chars().count()
+        || para.char_offsets.is_empty()
+    {
+        return None;
+    }
+    let positions = para.control_text_positions();
+    let anchor = line_breaking::control_stream_starts(para, &positions)
+        .get(control_index)
+        .copied()
+        .flatten()?;
+    para.char_shapes
+        .iter()
+        .rev()
+        .find(|shape| shape.start_pos <= anchor)
+        .map(|shape| shape.char_shape_id)
+}
+
 /// 글자겹침(CharOverlap) 렌더링 정보
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CharOverlapInfo {

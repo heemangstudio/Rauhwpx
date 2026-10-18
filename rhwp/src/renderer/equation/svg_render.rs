@@ -449,6 +449,7 @@ fn render_box(
     bold: bool,
     font: &EquationSvgFont<'_>,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {
@@ -1664,6 +1665,62 @@ mod tests {
         assert!(!svg.contains("<path"));
     }
 
+    fn assert_composite_paint_sizes(font: &super::EquationSvgFont<'_>) {
+        use super::super::{layout::composite_paint_cases, parser::parse};
+        // base_unit=1100 at 96/144/192 DPI, including non-terminating pixel sizes.
+        for fs in [1100.0 / 75.0, 22.0, 1100.0 / 37.5] {
+            for &(script, path, ratio) in composite_paint_cases::CASES {
+                let layout = EqLayout::with_font(fs, "HYhwpEQ")
+                    .with_version("Equation Version 60")
+                    .layout(&parse(script));
+                let (child, x, y, italic) = composite_paint_cases::child(&layout, path);
+                let mut independent = child.clone();
+                independent.resolved_font_size = None;
+                let mut expected = String::new();
+                super::render_box(
+                    &mut expected,
+                    &independent,
+                    x,
+                    y,
+                    "black",
+                    fs * ratio,
+                    italic,
+                    false,
+                    font,
+                );
+                let mut actual = String::new();
+                super::render_box(
+                    &mut actual,
+                    &layout,
+                    17.25,
+                    29.5,
+                    "black",
+                    fs,
+                    true,
+                    false,
+                    font,
+                );
+                assert!(!expected.is_empty(), "{script}");
+                assert!(
+                    actual.contains(&expected),
+                    "{script}, {path:?}, {fs}: child paint origins/sizes differ\nexpected: {expected}\nactual: {actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn composite_paint_size_svg_fallback_matches_independent_child_requests() {
+        assert_composite_paint_sizes(&super::EquationSvgFont {
+            pua_font: None,
+            modern: true,
+            modern_hy: true,
+            stix_integral: false,
+            integral_pua_font: None,
+            css_family: String::new(),
+        });
+    }
+
     #[test]
     fn leaf_font_size_matches_measured_scripts_without_scaling_limit_name() {
         use super::super::{layout::EqLayout, parser::parse};
@@ -1691,6 +1748,7 @@ mod tests {
     #[test]
     fn measured_glyph_positions_preserve_unicode_text_and_spaces() {
         let layout = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: Some(vec![6.3, 2.0, 7.0]),
             x: 0.0,
             y: 0.0,
@@ -1737,6 +1795,14 @@ mod tests {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/fonts/HYhwpEQSourceFixture.ttf");
         crate::renderer::font_paths::register_font_face_availability(&[fixture]);
+        assert_composite_paint_sizes(&super::EquationSvgFont {
+            pua_font: Some("HyhwpEQ"),
+            modern: true,
+            modern_hy: true,
+            stix_integral: false,
+            integral_pua_font: None,
+            css_family: String::new(),
+        });
         let version = "Equation Version 60";
         let render = |script: &str| {
             let layout = EqLayout::with_font(12.0, "HYhwpEQ")

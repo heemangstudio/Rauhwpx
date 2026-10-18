@@ -5552,7 +5552,12 @@ impl TypesetEngine {
             // layout의 body_wide_reserved와 동일 조건으로 detect.
             if st.col_count > 1 && st.current_column == 0 && st.pending_body_wide_top_reserve == 0.0
             {
-                let reserve = compute_body_wide_top_reserve_for_para(para, &st.layout, self.dpi);
+                let reserve = compute_body_wide_top_reserve_for_para(
+                    para,
+                    &st.layout,
+                    self.dpi,
+                    self.profile.get(),
+                );
                 if reserve > 0.0 {
                     st.pending_body_wide_top_reserve = reserve;
                 }
@@ -6915,6 +6920,11 @@ impl TypesetEngine {
             mut cleared_single_line_internal_rewind_split,
             mut current_endnote_had_inline_object_vpos_overestimate,
         } = flow;
+        // 구분선/미주 사이 설정은 저장 풀이 줄의 pitch를 대체하지 않는다.
+        // 인증된 HWP5 줄 사다리는 fit 사본과 render 사본 모두 같은 spacing을 쓴다.
+        let preserve_authored_spacing = endnote_shape.is_some_and(|shape| {
+            authored_endnote_spacing_is_continuous(en_ctrl, shape, st.profile)
+        });
         let mut pre_emitted_endnote_para_indices = std::collections::HashSet::new();
         for (ep_idx, en_para) in en_ctrl.paragraphs.iter().enumerate() {
             if pre_emitted_endnote_para_indices.remove(&ep_idx) {
@@ -6923,12 +6933,13 @@ impl TypesetEngine {
             }
             let mut compact_no_separator_para;
             let render_en_para = en_para;
-            let compact_no_separator_spacing = endnote_shape
-                .map(|shape| {
-                    !endnote_has_visible_separator(shape)
-                        && endnote_between_notes_margin(shape) == 0
-                })
-                .unwrap_or(false);
+            let compact_no_separator_spacing = !preserve_authored_spacing
+                && endnote_shape
+                    .map(|shape| {
+                        !endnote_has_visible_separator(shape)
+                            && endnote_between_notes_margin(shape) == 0
+                    })
+                    .unwrap_or(false);
             let en_para = if compact_no_separator_spacing {
                 compact_no_separator_para = en_para.clone();
                 let divisor = 10;
@@ -22597,6 +22608,7 @@ fn compute_body_wide_top_reserve_for_para(
     para: &Paragraph,
     layout: &PageLayoutInfo,
     dpi: f64,
+    profile: crate::model::provenance::LayoutCompatibilityProfile,
 ) -> f64 {
     use crate::model::shape::{TextWrap, VertRelTo};
     let body_w = layout.body_area.width;
@@ -22604,6 +22616,16 @@ fn compute_body_wide_top_reserve_for_para(
     let body_top = layout.body_area.y;
     let mut max_bottom: f64 = 0.0;
     for ctrl in &para.controls {
+        if let Some(bottom) = super::layout::stored_body_wide_textbox_bottom(
+            para,
+            ctrl,
+            &layout.body_area,
+            dpi,
+            profile,
+        ) {
+            max_bottom = max_bottom.max(bottom - body_top);
+            continue;
+        }
         let common = match ctrl {
             Control::Shape(s) => s.common(),
             Control::Table(t) if !t.common.treat_as_char => &t.common,
@@ -22653,6 +22675,97 @@ fn compute_body_wide_top_reserve_for_para(
 
 fn endnote_separator_below_margin(shape: &FootnoteShape) -> i16 {
     shape.separator_below_margin_hu()
+}
+
+/// 원본 HWP5 주석의 양수 spacing과 연속 vpos가 함께 증명하는 줄 진행만 보존한다.
+/// 0으로 돌아가는 저장 단/쪽 경계는 별도 조각으로 두며 좌표를 다시 쓰지 않는다.
+/// 합성·편집·불완전 캐시와 모든 여백이 0인 압축 호환 경로는 기존 정책을 유지한다.
+fn authored_endnote_spacing_is_continuous(
+    note: &crate::model::footnote::Endnote,
+    shape: &FootnoteShape,
+    profile: crate::model::provenance::LayoutCompatibilityProfile,
+) -> bool {
+    if !(profile.native_hwp5_layout() || profile.hwp3_layout())
+        || profile.hwp3_native_layout()
+        || profile.hwpx_container()
+        || profile.hwpx_stored_layout()
+        || profile.hwp5_origin_hwpx()
+        || profile.own_line_layout()
+        || profile.session_edited()
+        || endnote_has_visible_separator(shape)
+        || endnote_between_notes_margin(shape) != 0
+        || (shape.separator_above_margin_hu() == 0 && shape.separator_below_margin_hu() == 0)
+    {
+        return false;
+    }
+    let mut previous: Option<&LineSeg> = None;
+    let mut fragment_lines = 0usize;
+    for para in &note.paragraphs {
+        // 파서가 보존한 원본 header의 줄 수와 실제 배열이 같은 캐시만 받는다.
+        let Some(count) = para.raw_header_extra.get(4..6) else {
+            return false;
+        };
+        if usize::from(u16::from_le_bytes([count[0], count[1]])) != para.line_segs.len()
+            || para.line_segs.is_empty()
+            || para.char_count == 0
+            || !para.field_ranges.is_empty()
+            || !para.orphan_field_ends.is_empty()
+            || para.controls.iter().any(|control| match control {
+                Control::AutoNumber(_) => false,
+                Control::Equation(eq) => !eq.common.treat_as_char,
+                Control::Picture(pic) => {
+                    !pic.common.treat_as_char || pic.common.vertical_offset != 0
+                }
+                _ => true,
+            })
+            || (para.has_para_text && para.para_text_terminal != para.char_count.checked_sub(1))
+            || (!para.has_para_text
+                && !(para.char_count == 1 && para.text.is_empty() && para.controls.is_empty()))
+            || para
+                .line_segs
+                .first()
+                .is_none_or(|line| line.text_start != 0)
+            || para
+                .line_segs
+                .windows(2)
+                .any(|pair| pair[1].text_start <= pair[0].text_start)
+        {
+            return false;
+        }
+        for line in &para.line_segs {
+            if line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                || line.tag & LineSeg::TAG_SINGLE_SEGMENT_LINE != LineSeg::TAG_SINGLE_SEGMENT_LINE
+                || line.text_start >= para.char_count
+                || line.vertical_pos < 0
+                || line.line_height <= 0
+                || line.text_height != line.line_height
+                || line.baseline_distance <= 0
+                || line.baseline_distance > line.text_height
+                || line.line_spacing <= 0
+                || line.segment_width <= 0
+            {
+                return false;
+            }
+            if let Some(prev) = previous {
+                let end = prev
+                    .vertical_pos
+                    .checked_add(prev.line_height)
+                    .and_then(|v| v.checked_add(prev.line_spacing));
+                if end != Some(line.vertical_pos) {
+                    // 저장 단/쪽 reset만 허용한다. forward gap·부분 파손은 인증하지 않는다.
+                    if line.vertical_pos != 0 || prev.vertical_pos <= 0 || fragment_lines < 2 {
+                        return false;
+                    }
+                    fragment_lines = 0;
+                }
+            } else if line.vertical_pos != 0 {
+                return false;
+            }
+            fragment_lines += 1;
+            previous = Some(line);
+        }
+    }
+    fragment_lines >= 2
 }
 
 fn endnote_between_notes_margin(shape: &FootnoteShape) -> u16 {
