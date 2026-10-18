@@ -23,7 +23,7 @@ Run the full engine, browser, and agent suites through pull-request CI before me
 
 ## Installing desktop updates
 
-The desktop updater installs only after the user chooses **Restart to install** or **Install now**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
+macOS, Windows and AppImage builds check for updates at launch and download them in the background. The desktop updater installs only after the user chooses **Restart to install**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds; Windows runs the NSIS installer silently and relaunches the app. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
 
 Choosing **Later** or canceling document closure preserves the downloaded update. **Check for Updates** offers it again. Debian packages continue to use the system package manager.
 
