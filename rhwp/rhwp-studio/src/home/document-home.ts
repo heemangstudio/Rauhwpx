@@ -74,6 +74,8 @@ export interface DocumentHomeDeps {
   newChat?(): void;
   /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
   mountTopbarTrailing?(slot: HTMLElement): void;
+  /** 오른쪽 아래 가장자리를 채운다(업데이트 하마). slot 은 홈 전체이고, 붙는 쪽이 자리를 잡는다. */
+  mountCorner?(slot: HTMLElement): void;
   /** 저장하지 않은 새 문서(다른 창 포함). 최근 문서 맨 앞에 점선 종이로 놓인다. */
   unsaved?: {
     list(): readonly UnsavedDocument[];
@@ -204,6 +206,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     settings.addEventListener('click', () => deps.openSettings?.());
     root.append(settings);
   }
+  deps.mountCorner?.(root);
 
   // ── 새로 만들기 ─────────────────────────────────────────
   const start = el('section', 'dh-start');
@@ -1215,7 +1218,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   });
   fitObserver.observe(scroller);
   fitObserver.observe(start);
-  fitObserver.observe(recentInner);
+  // 오른쪽 아래 하마가 팻말을 들면 목록 아래 여백(padding)이 늘어난다. 그것도 잰다.
+  fitObserver.observe(recentInner, { box: 'border-box' });
 
   // ── 보이기·숨기기 ───────────────────────────────────────
   function paintReturn(): void {
