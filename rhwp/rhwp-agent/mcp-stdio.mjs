@@ -44,7 +44,7 @@ const CONNECT_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 180_000;
 const MAX_PROVIDER_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_INFLIGHT_CALLS = 64;
-const HUMAN_WAIT_TOOLS = new Set(['ask_user_question', 'open_document', 'create_document']);
+const HUMAN_WAIT_TOOLS = new Set(['ask_user_question', 'detach_document']);
 
 // insert_image 가 읽을 수 있는 루트 디렉터리(세션 작업 공간·다운로드 등).
 // 어댑터가 루트를 넘겨주면 그 밖의 절대경로 읽기는 전부 거부한다.
@@ -187,8 +187,8 @@ async function callHub(tool, args, timing = null) {
   return new Promise((resolve, reject) => {
     // Human input is hub-owned and lives until answered, cancelled, or its provider
     // connection disappears. Applying the ordinary MCP timeout would turn a normal
-    // pause into a false tool failure. Document links wait for the user's link
-    // confirmation; the hub bounds that wait and the Studio open itself.
+    // pause into a false tool failure. Detaching may wait on the save dialog of a
+    // never-saved document; the hub bounds that wait.
     const timer = HUMAN_WAIT_TOOLS.has(tool)
       ? null
       : setTimeout(() => {

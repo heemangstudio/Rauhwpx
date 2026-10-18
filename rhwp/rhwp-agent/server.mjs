@@ -23,6 +23,7 @@ import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
+  detachCompactionNeeded,
   handoffBudget,
   handoffTokenCap,
   normalizeChatHistory,
@@ -50,7 +51,7 @@ import {
 import { resolveFileSource, resolveReadSource } from './read-source.mjs';
 import {
   OPEN_DOCUMENT_MAX_BYTES, OPENABLE_DOCUMENT_EXTENSIONS,
-  assertDocumentPathConsent, defaultDocumentFolder, enrichDocumentList, lookupDocumentPath, normalizeNewDocumentName,
+  assertDocumentPathConsent, enrichDocumentList, lookupDocumentPath, normalizeNewDocumentName,
   readDocumentPathContent, rememberDocumentPath, validateDocumentFolder, validateDocumentPath,
 } from './document-paths.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
@@ -121,9 +122,7 @@ import {
 } from './user-question.mjs';
 import {
   HUB_ONLY_CHAT_PERMISSIONS,
-  ONE_SHOT_CHAT_PERMISSIONS,
   createChatPermissionRequest,
-  createDocumentLinkRequest,
   isRequestPermissionTool,
   normalizeChatPermissionGrants,
   normalizeChatPermissionRequest,
@@ -133,7 +132,10 @@ import {
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
+  detachCompactionInstructions,
+  documentChangeBlock,
   liveDocumentBlock,
+  normalizeDetachedFrom,
   normalizeDocumentName,
   normalizeDocumentSnapshot,
   normalizeStableScopeId,
@@ -243,12 +245,15 @@ const STUDIO_REATTACH_FLUSH_MS = Number(process.env.RHWP_STUDIO_REATTACH_FLUSH_M
 // 프로바이더 이벤트와 별도 MCP 소켓의 도구 호출 순서가 뒤집힐 수 있어
 // 정확한 루트 범위 티켓이 도착할 짧은 여유를 둔다.
 const USER_QUESTION_SCOPE_WAIT_MS = 2_000;
-// 문서 연결(open_document·create_document): 사용자 확인을 기다리는 시간과, 확인 뒤 Studio 가 문서를 열거나
-// 만들어 연결하는 시간. Codex 의 MCP 도구 한도(tool_timeout_sec=600)보다 둘의 합이 짧아야 한다.
-const DOCUMENT_LINK_CONSENT_TIMEOUT_MS = Number(process.env.RHWP_DOCUMENT_LINK_CONSENT_TIMEOUT_MS ?? 5 * 60_000);
+// 문서 붙이기(open_document·create_document): Studio 가 문서를 열거나 만드는 시간. mcp-stdio 의 도구 한도(180초)보다 짧다.
 const DOCUMENT_LINK_STUDIO_TIMEOUT_MS = 120_000;
+// 문서 떼기(detach_document): 바뀐 문서를 저장하고(처음 저장이면 사용자가 저장 창에서 고른다) 채팅을 빈 문서 자리로
+// 옮기는 시간. 사람을 기다리므로 mcp-stdio 는 끊지 않고, Codex 의 MCP 도구 한도(tool_timeout_sec=600)보다 짧다.
+const DOCUMENT_DETACH_STUDIO_TIMEOUT_MS = 5 * 60_000;
 const DOCUMENT_LINK_TOOLS = new Set(['open_document', 'create_document']);
-const DOCUMENT_REQUIRED_MESSAGE = 'Create a document with create_document or link one with open_document first; files are saved to that document\'s 자료함.';
+// 떼기는 Studio 가 채팅을 새 브리지로 옮기므로 허브가 결과를 맡았다가 새 브리지가 붙으면 보낸다. 늦어도 이만큼 뒤에는 보낸다.
+const DOCUMENT_DETACH_HANDOFF_MS = 15_000;
+const DOCUMENT_REQUIRED_MESSAGE = 'This chat has no linked document. Create a document with create_document or link one with open_document first; files are saved to the linked document\'s 자료함.';
 const HARNESS_UPDATE_INITIAL_DELAY_MS = 8_000;
 const HARNESS_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const HARNESS_UPDATE_BUSY_RETRY_MS = 5 * 60 * 1000;
@@ -593,6 +598,14 @@ const sessions = new HubSessionRegistry({
       pendingTemplateCompletions: [],
       pendingDocumentSaved: null,
       pendingEditReport: null,
+      // 마지막으로 Studio 에 알린 묶인 프로젝트 — 묶임이 풀리면 project-bound(null) 을 한 번 보낸다.
+      announcedProjectId: null,
+      // 문서를 떼어 내거나 붙인 일 — 다음 사용자 턴에 한 번 알린다 ({ threadId, detach, attach }).
+      pendingDocumentNote: null,
+      // 이미 전한 떼어 냄 (`${threadId}\n${documentId}`) — 재연결로 다시 온 chat-start 가 또 쌓지 않는다.
+      deliveredDetachNote: null,
+      // 새 브리지가 붙으면 답할 detach_document 호출 { entry, socket, result, timer } (detachChatDocument).
+      documentDetachHandoff: null,
       downloadManager,
       documentSnapshotManager,
       artifactStore: new ArtifactStore({
@@ -1537,45 +1550,6 @@ function settleChatPermissionRequest(record, outcome) {
   return true;
 }
 
-/**
- * 문서 연결 확인 — 연결마다 한 번 묻고 답(granted·denied·expired)을 기다린다. 채팅 권한으로 남지 않는다.
- * 턴이 끝나거나 멈추면, 채팅이 바뀌면, 다른 경로로 문서가 연결되면, 시간이 지나면 expired 로 끝난다.
- */
-function requestDocumentLinkConsent(record, link, generation) {
-  const activeSession = record.agentSession;
-  if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
-    || !activeSession.turnId || activeSession.providerTurnStarted !== true) {
-    throw workflowError('NO_ACTIVE_TURN', 'Linking a document requires the active root turn');
-  }
-  if (record.pendingChatPermissionRequest) {
-    throw workflowError('INTERACTION_ALREADY_PENDING', 'Another permission request is waiting for the user');
-  }
-  if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
-    throw workflowError('NO_STUDIO', 'Studio must be connected to confirm a document link');
-  }
-  const request = createDocumentLinkRequest(link, activeSession);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (record.pendingChatPermissionRequest?.request.requestId === request.requestId) {
-        settleChatPermissionRequest(record, { status: 'expired', reason: 'timeout' });
-      }
-    }, DOCUMENT_LINK_CONSENT_TIMEOUT_MS);
-    timer.unref?.();
-    record.pendingChatPermissionRequest = {
-      request, session: activeSession, generation,
-      providerCapabilityResource: activeSession.providerCapabilityResource,
-      capabilityEpoch: activeSession.planning.capabilityEpoch,
-      resolve: (outcome) => {
-        clearTimeout(timer);
-        resolve(outcome);
-      },
-    };
-    if (!sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: structuredClone(request) })) {
-      settleChatPermissionRequest(record, { status: 'expired', reason: 'studio-disconnected' });
-    }
-  });
-}
-
 function requestChatPermission(record, args, generation) {
   const activeSession = record.agentSession;
   if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
@@ -1641,8 +1615,7 @@ async function answerChatPermission(record, sock, msg) {
       || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
       throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
     }
-    // 문서 연결은 이 한 번의 연결만 허락한다 — 채팅 권한으로 남기지 않고 공급자 실행 모드도 바꾸지 않는다.
-    if (msg.decision === 'grant' && !ONE_SHOT_CHAT_PERMISSIONS.includes(pending.request.capability)) {
+    if (msg.decision === 'grant') {
       const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, pending.request.capability]);
       // 허브만 확인하는 권한(다른 문서 읽기)은 공급자 실행 모드를 바꾸지 않는다 — 턴 중에도 바로 부여한다.
       if (!HUB_ONLY_CHAT_PERMISSIONS.includes(pending.request.capability)) {
@@ -1868,10 +1841,6 @@ function settleAgentTurn(record, activeSession, event) {
   }
   settleUserQuestion(record, userQuestionOutcomeForTurnEnd(event));
   if (!succeeded) settleChatPermissionRequest(record, { status: 'expired', reason: event.stopReason === 'interrupted' ? 'user-stop' : 'provider-disconnected' });
-  // 문서 연결 확인은 그 턴의 도구 호출에 속한다 — 턴과 함께 끝난다.
-  else if (ONE_SHOT_CHAT_PERMISSIONS.includes(record.pendingChatPermissionRequest?.request.capability)) {
-    settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
-  }
   failPendingProviderCallsForTurn(record, activeSession, settledTurnId);
   retireProviderSockets(record, activeSession, { turnId: settledTurnId });
   retirePiSubagentsForTurn(record, activeSession);
@@ -2014,13 +1983,14 @@ async function consumeChatPermissionScope(record, agent, args, generation) {
 
 /**
  * 루트 대화만 부를 수 있는 호출의 표 열쇠 — list_documents 는 path, open_document 는 documentId·path,
- * create_document 는 name·folder. 루트 확인이 필요 없는 호출(path 없는 list_documents)은 null.
+ * create_document 는 name·folder, detach_document 는 인자가 없다. 루트 확인이 필요 없는 호출(path 없는 list_documents)은 null.
  */
 function rootCallerScopeKey(tool, args) {
   if (!args || typeof args !== 'object') return null;
   if (tool === 'list_documents') return typeof args.path === 'string' ? JSON.stringify([args.path]) : null;
   if (tool === 'open_document') return JSON.stringify([args.documentId ?? null, args.path ?? null]);
   if (tool === 'create_document') return JSON.stringify([args.name ?? null, args.folder ?? null]);
+  if (tool === 'detach_document') return '[]';
   return null;
 }
 
@@ -3094,7 +3064,7 @@ function makeBackendEventHandler(record, generation) {
         if (record.pendingBrowserScopes.length > 64) record.pendingBrowserScopes.splice(0, record.pendingBrowserScopes.length - 64);
       } catch {}
     }
-    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:list_documents|open_document|create_document)$/.test(evt.tool ?? '')) {
+    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:list_documents|open_document|create_document|detach_document)$/.test(evt.tool ?? '')) {
       try {
         const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
         const key = rootCallerScopeKey(tool, JSON.parse(evt.argsJson ?? '{}'));
@@ -3483,10 +3453,18 @@ function sendToProjectStudios(projectId, frame) {
 
 async function sendProjectBound(record) {
   const projectId = record.boundProjectId;
-  if (!projectId) return;
+  if (!projectId) {
+    // 묶였던 프로젝트가 풀렸다(문서를 떼어 낸 채팅, 지워진 프로젝트) — 한 번 알린다.
+    if (record.announcedProjectId) {
+      record.announcedProjectId = null;
+      sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId: null, project: null });
+    }
+    return;
+  }
   try {
     const project = await projectStore.get(projectId);
     if (record.boundProjectId !== projectId) return;
+    record.announcedProjectId = projectId;
     sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId, project });
   } catch (error) {
     log(`project-bound failed: ${error?.message ?? error}`);
@@ -3697,6 +3675,11 @@ async function bindRecordProject(record, { threadId, documentId, documentName, c
   } catch (error) {
     log(`project binding failed: ${error?.message ?? error}`);
   }
+  // 다른 프로젝트로 옮기면(문서를 떼어 냄 포함) 예전 프로젝트의 정리 도우미가 이 채팅의 공급자를 쓰지 않게 한다.
+  const previousProjectId = record.boundProjectId;
+  if (previousProjectId && previousProjectId !== projectId && projectRecords.get(previousProjectId) === record) {
+    projectRecords.delete(previousProjectId);
+  }
   record.boundProjectId = projectId;
   record.boundDocumentId = documentId ?? null;
   record.boundDocumentName = documentName ?? null;
@@ -3738,9 +3721,10 @@ function threadLinkedDocumentElsewhere(record, threadId) {
 
 /**
  * Studio 의 chat-link-document: 문서 없는 채팅에 문서를 하나 연결한다. 공급자를 다시 띄우지 않고 세션의
- * 문서·프로젝트·자료 범위만 바꾸므로 턴 중에도 된다. 한 번 연결한 채팅은 다른 문서로 바꾸지 못하고
- * (THREAD_ALREADY_LINKED), 같은 문서를 다시 보내면 같은 답을 한다. 예전 스레드 프로젝트와 채팅 범위
- * 첨부는 문서 프로젝트로 옮긴다. 답: chat-document-linked { threadId, documentId, documentName, projectId }.
+ * 문서·프로젝트·자료 범위만 바꾸므로 턴 중에도 된다. 채팅의 문서는 한 번에 하나다 — 연결된 채팅은 다른
+ * 문서로 바꾸지 못하고(THREAD_ALREADY_LINKED, 먼저 Studio 에서 떼어 낸다), 같은 문서를 다시 보내면 같은
+ * 답을 한다. 예전 스레드 프로젝트와 채팅 범위 첨부는 문서 프로젝트로 옮기고, 다음 사용자 턴에 새 문서를
+ * 알린다. 답: chat-document-linked { threadId, documentId, documentName, projectId }.
  */
 async function linkChatDocument(record, sock, msg) {
   const requestId = typeof msg.requestId === 'string' && msg.requestId.length <= 256 ? msg.requestId : null;
@@ -3786,10 +3770,14 @@ async function linkChatDocument(record, sock, msg) {
     });
     return;
   }
-  // 대기 중인 동작이 바뀐 문서를 보기 전에 먼저 바꾼다. 문서 없는 채팅에 걸린 확인(문서 연결 확인 포함)은 끝낸다.
+  // 에이전트가 뗀 채팅이 새 자리로 옮기지 못하고 원래 문서에 다시 붙었다 — 맡아 둔 떼기는 실패로 답한다.
+  settleDocumentDetachHandoff(record, workflowError('DOCUMENT_DETACH_FAILED', `The chat could not move off the document and is attached to ${documentName ?? documentId} again`));
+  // 대기 중인 동작이 바뀐 문서를 보기 전에 먼저 바꾼다. 문서 없는 채팅에 걸린 확인은 끝낸다.
   activeSession.documentId = documentId;
   activeSession.documentName = documentName;
   activeSession.lastDocumentInfo = null;
+  activeSession.detachedFrom = null;
+  queueAttachNote(record, activeSession);
   settleChatPermissionRequest(record, { status: 'expired', reason: 'document-linked' });
   applyRecordRepository(record, documentId, msg);
   const threadId = activeSession.threadId;
@@ -3816,6 +3804,89 @@ async function linkChatDocument(record, sock, msg) {
   resumeLibrarianFor(projectId);
 }
 
+/**
+ * Studio 의 chat-detach-document: 채팅을 문서에서 뗐다. 공급자를 다시 띄우지 않고 세션의 문서·프로젝트·자료 범위만
+ * 비운다. Studio 는 이어서 옛 브리지를 닫고 빈 문서 자리의 새 브리지로 같은 허브 세션을 다시 잡는다.
+ * - 사용자의 분리(callId 없음): 다음 사용자 턴에 떼어 냄을 한 번 알린다.
+ * - 에이전트의 detach_document(callId 는 그 호출의 허브 id): 도는 턴 중에 온다. 공급자는 이 호출의 결과를
+ *   기다리므로, 허브가 호출을 맡았다가 새 브리지가 붙은 뒤에 답한다 — 새 브리지가 놓치는 출력이 없다.
+ * 답: chat-document-detached { threadId, documentId }.
+ */
+async function detachChatDocument(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' && msg.requestId.length <= 256 ? msg.requestId : null;
+  const activeSession = record.agentSession;
+  const fail = (error, fallback = 'DOCUMENT_DETACH_FAILED') => sendChatError(sock, error, fallback, {
+    requestType: 'chat-detach-document',
+    ...(requestId ? { requestId } : {}),
+  });
+  let documentId;
+  try {
+    if (!activeSession) throw workflowError('AGENT_NOT_STARTED', 'Start the chat before detaching its document');
+    if (Object.prototype.hasOwnProperty.call(msg, 'threadId')
+      && normalizeStableScopeId(msg.threadId, 'threadId') !== activeSession.threadId) {
+      throw workflowError('STALE_CHAT_SCOPE', 'chat-detach-document threadId does not match the active chat');
+    }
+    documentId = normalizeStableScopeId(msg.documentId, 'documentId');
+  } catch (error) {
+    fail(error, 'INVALID_REQUEST');
+    return;
+  }
+  const byAgent = msg.callId !== undefined && msg.callId !== null;
+  const entry = byAgent && Number.isSafeInteger(msg.callId) ? record.pendingCalls.get(msg.callId) : null;
+  if (byAgent && (!entry || entry.tool !== 'detach_document' || entry.sessionGeneration !== activeSession.generation)) {
+    fail(workflowError('REQUEST_INVALIDATED', 'No detach_document call of this chat is waiting'));
+    return;
+  }
+  if (activeSession.documentId !== documentId) {
+    fail(workflowError('STALE_CHAT_SCOPE', 'This chat is not attached to that document'));
+    return;
+  }
+  const threadId = activeSession.threadId;
+  const detachedFrom = { documentId, documentName: activeSession.documentName ?? null };
+  activeSession.documentId = null;
+  activeSession.documentName = null;
+  activeSession.lastDocumentInfo = null;
+  activeSession.lastObservedDocumentRevision = undefined;
+  activeSession.detachedFrom = detachedFrom;
+  if (entry) {
+    clearTimeout(entry.timer);
+    record.pendingCalls.delete(msg.callId);
+    // 에이전트가 스스로 뗐다 — 도구 결과가 알리므로 다음 사용자 턴에 떼어 냄을 다시 알리지 않는다.
+    if (record.pendingDocumentNote?.threadId === threadId) record.pendingDocumentNote = null;
+    record.deliveredDetachNote = `${threadId}\n${documentId}`;
+    record.documentDetachHandoff = {
+      entry,
+      socket: sock,
+      result: { detached: true, documentId, documentName: detachedFrom.documentName },
+      timer: setTimeout(() => settleDocumentDetachHandoff(record), DOCUMENT_DETACH_HANDOFF_MS),
+    };
+  } else {
+    queueDetachNote(record, activeSession, detachedFrom);
+  }
+  applyRecordRepository(record, null, msg);
+  const projectId = await bindRecordProject(record, { threadId, documentId: null, documentName: null });
+  if (record.agentSession === activeSession) {
+    activeSession.projectId = projectId;
+    const scopes = referenceScopesForSession(activeSession);
+    const releasePrevious = activeSession.releaseReferenceScopes;
+    activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+    try { releasePrevious?.(); } catch {}
+    await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+  }
+  sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
+  await sendProjectBound(record);
+}
+
+/** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
+function settleDocumentDetachHandoff(record, error = null) {
+  const handoff = record.documentDetachHandoff;
+  if (!handoff) return;
+  record.documentDetachHandoff = null;
+  clearTimeout(handoff.timer);
+  if (error) handoff.entry.sendError(error);
+  else handoff.entry.sendResult(handoff.result);
+}
+
 /** 문서 없는 채팅의 자료함 저장 — 에이전트에는 DOCUMENT_REQUIRED, Studio 에는 새 문서·문서 연결 줄을 띄우게 알린다. */
 function documentRequiredError(record, tool) {
   sendJson(record.studioSocket, {
@@ -3834,28 +3905,12 @@ async function checkedDocumentPath(check) {
   }
 }
 
-/** id 로 여는 문서의 보일 이름 — 다른 채팅에 묶인 이름이나 프로젝트 구성원 이름. 모르면 null (Studio 가 찾는다). */
-async function knownDocumentName(documentId) {
-  for (const other of sessions.values()) {
-    if (other.agentSession?.documentId === documentId && other.agentSession.documentName) return other.agentSession.documentName;
-    if (other.boundDocumentId === documentId && other.boundDocumentName) return other.boundDocumentName;
-  }
-  const projectId = projectStore.projectIdForDocument(documentId);
-  if (!projectId) return null;
-  try {
-    const member = (await projectStore.get(projectId)).members.find((entry) => entry.documentId === documentId);
-    return member?.name || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * open_document·create_document 의 인자를 확인해 Studio 로 보낼 인자와 확인 요청을 만든다.
+ * open_document·create_document 의 인자를 확인해 Studio 로 보낼 인자를 만든다.
  * - 경로(path, list_documents 의 file: id)는 데스크톱에서만, 연 뒤 저장할 수 있는 hwp/hwpx/hml 만.
- * - 새 문서 폴더는 데스크톱에서만, 홈 폴더 안의 실제 폴더. 없으면 데스크톱의 기본 폴더, 웹은 이름 있는 초안.
+ * - 새 문서 폴더는 데스크톱에서만, 홈 폴더 안의 실제 폴더. 없으면 데스크톱의 기본 폴더(문서/HamaEditor), 웹은 이름 있는 초안.
  */
-async function documentLinkTarget(record, tool, args) {
+async function documentLinkArgs(record, tool, args) {
   if (tool === 'create_document') {
     let name;
     try {
@@ -3863,17 +3918,9 @@ async function documentLinkTarget(record, tool, args) {
     } catch (error) {
       throw workflowError(error?.code ?? 'INVALID_ARGS', String(error?.message ?? error));
     }
-    // 폴더를 주지 않으면 데스크톱이 기본 폴더(문서/HamaEditor)를 만들어 쓴다. 그 경로는 확인 요청에 보여 주기만
-    // 하고 Studio 로는 보내지 않는다 — 보내면 아직 없는 기본 폴더가 '있어야 하는 폴더'로 검사돼 실패한다.
-    let folder = null;
-    if (args.folder !== undefined) {
-      if (!HOME_ACCESS) throw workflowError('PATH_UNAVAILABLE', 'Choosing a folder is only available in the desktop app; omit folder');
-      folder = await checkedDocumentPath(() => validateDocumentFolder(args.folder));
-    }
-    return {
-      args: { name, ...(folder ? { folder } : {}) },
-      request: { kind: 'create', documentName: `${name}.hwpx`, path: folder ?? (HOME_ACCESS ? defaultDocumentFolder() : null) },
-    };
+    if (args.folder === undefined) return { name };
+    if (!HOME_ACCESS) throw workflowError('PATH_UNAVAILABLE', 'Choosing a folder is only available in the desktop app; omit folder');
+    return { name, folder: await checkedDocumentPath(() => validateDocumentFolder(args.folder)) };
   }
   const fileHandle = typeof args.documentId === 'string' && args.documentId.startsWith('file:')
     ? args.documentId.slice('file:'.length)
@@ -3890,7 +3937,7 @@ async function documentLinkTarget(record, tool, args) {
       extensions: OPENABLE_DOCUMENT_EXTENSIONS,
       maxBytes: OPEN_DOCUMENT_MAX_BYTES,
     }));
-    return { args: { path: file.path }, request: { kind: 'open', documentName: file.name, path: file.path } };
+    return { path: file.path };
   }
   const documentId = args.documentId;
   if (documentId === 'template') {
@@ -3899,10 +3946,7 @@ async function documentLinkTarget(record, tool, args) {
   if (documentOpenElsewhere(record, documentId)) {
     throw workflowError('DOC_OPEN_ELSEWHERE', 'This document is open in another window; it can be read with documentId but not linked here');
   }
-  return {
-    args: { documentId },
-    request: { kind: 'open', documentName: await knownDocumentName(documentId), linkDocumentId: documentId },
-  };
+  return { documentId };
 }
 
 /**
@@ -3988,6 +4032,37 @@ function addEditReportContext(record, activeSession, prompt) {
   if (!report || report.threadId !== activeSession.threadId) return prompt;
   const block = ['<staged_edit_report trust="application-state">', ...report.notes, '</staged_edit_report>'].join('\n');
   return `${block}\n\n${prompt}`;
+}
+
+/** chat-start 의 detachedFrom — 떼어 낸 채팅의 다음 사용자 턴에 한 번 알린다. 다시 온 chat-start 는 겹치지 않는다. */
+function queueDetachNote(record, activeSession, detachedFrom) {
+  const key = `${activeSession.threadId}\n${detachedFrom.documentId}`;
+  if (record.deliveredDetachNote === key) return;
+  const pending = record.pendingDocumentNote;
+  if (pending?.threadId === activeSession.threadId && pending.detach?.documentId === detachedFrom.documentId) return;
+  // 떼어 내기 전에 쌓인 연결 알림은 낡았다.
+  record.pendingDocumentNote = { threadId: activeSession.threadId, detach: detachedFrom, attach: null };
+}
+
+/** 살아 있는 세션에 문서를 붙였다. 아직 전하지 못한 떼어 냄이 있으면 한 덩이로 합친다. */
+function queueAttachNote(record, activeSession) {
+  const pending = record.pendingDocumentNote?.threadId === activeSession.threadId ? record.pendingDocumentNote : null;
+  // 붙인 뒤 다시 떼어 내면 새 일이다.
+  record.deliveredDetachNote = null;
+  record.pendingDocumentNote = {
+    threadId: activeSession.threadId,
+    detach: pending?.detach ?? null,
+    attach: { documentId: activeSession.documentId, documentName: activeSession.documentName ?? null },
+  };
+}
+
+function addDocumentNoteContext(record, activeSession, prompt) {
+  const note = record.pendingDocumentNote;
+  if (!note || note.threadId !== activeSession.threadId) return prompt;
+  record.pendingDocumentNote = null;
+  if (note.detach) record.deliveredDetachNote = `${note.threadId}\n${note.detach.documentId}`;
+  const block = documentChangeBlock(note);
+  return block ? `${block}\n\n${prompt}` : prompt;
 }
 
 function addTemplateContext(record, activeSession, prompt) {
@@ -4170,7 +4245,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         addTemplateContext(
           record,
           activeSession,
-          addEditReportContext(record, activeSession, referencedPrompt),
+          addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, referencedPrompt)),
         ),
       );
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
@@ -4343,6 +4418,15 @@ function startManualCompaction(record, sock, msg) {
     reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
     return;
   }
+  // 문서를 뗀 뒤의 압축은 콘텍스트가 공급자 자동 압축 한도의 절반을 넘을 때만 한다 — 그 아래면 다음 사용자 턴의
+  // 떼어 냄 알림(document_change)으로 충분하다. 사용량을 모르면 압축한다.
+  if (msg.reason === 'document-detached' && !detachCompactionNeeded(activeSession.agent, {
+    usedTokens: activeSession.contextUsage?.usedTokens ?? activeSession.resumedUsedTokens,
+    contextWindow: activeSession.contextUsage?.maxTokens ?? activeSession.contextWindow,
+  })) {
+    reject('COMPACTION_NOT_NEEDED', 'The conversation is small enough that detaching does not need a compaction.');
+    return;
+  }
   // beginAgentTurn 은 쓰지 않는다 — 압축 턴이 플랜 실행 턴으로 잡히면 안 된다.
   record.userQuestionResponseReceipts.clear();
   activeSession.turnId = crypto.randomUUID();
@@ -4359,8 +4443,12 @@ function startManualCompaction(record, sock, msg) {
     settled: false,
   };
   sendJson(sock, { v: 1, type: 'chat-compact-accepted', requestId, compactionId });
+  // 문서를 떼어 낸 직후의 압축은 그 문서에 대해 나눈 이야기를 남기라고 공급자에게 지시한다 (Codex·Pi 는 무시한다).
+  const compactOptions = msg.reason === 'document-detached' && activeSession.detachedFrom
+    ? { instructions: detachCompactionInstructions(activeSession.detachedFrom) }
+    : undefined;
   try {
-    activeSession.backend.compact();
+    activeSession.backend.compact(compactOptions);
   } catch (error) {
     // 수락한 뒤의 실패는 압축 failed + turn-end 로 닫는다 (보통 턴 경로와 같은 정리).
     activeSession.emitBackendEvent({
@@ -4529,7 +4617,7 @@ async function startSession(
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
-    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: sessionDocumentLinkOpen(record, generation, { documentId, documentName }) }),
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
     providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
@@ -4579,6 +4667,8 @@ async function startSession(
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
     activeTemplateId: continuing ? currentSession.activeTemplateId : null,
+    // 사용자가 이 채팅을 떼어 낸 문서 { documentId, documentName } — 떼어 낸 직후의 압축 지시에 쓴다.
+    detachedFrom: continuing ? currentSession.detachedFrom ?? null : null,
     // list_documents({path}) 가 발급한 file: 핸들 → 경로. 이 채팅 세션에서만 유효하다.
     documentPaths: continuing && currentSession.documentPaths instanceof Map ? currentSession.documentPaths : new Map(),
     lastDocumentInfo: continuing ? currentSession.lastDocumentInfo : null,
@@ -4619,12 +4709,6 @@ async function startSession(
   queueMicrotask(() => drainTemplateCompletion(record));
   queueMicrotask(() => drainPlanningDocumentSaved(record));
   return record.agentSession;
-}
-
-/** 이 세대의 세션에 아직 문서가 없는가 (세션이 만들어지기 전에는 시작할 때의 문서로 본다). */
-function sessionDocumentLinkOpen(record, generation, initial) {
-  const session = record.agentSession;
-  return sessionHasNoDocument(session?.generation === generation ? session : initial);
 }
 
 function describeHubError(error, fallback = '알 수 없는 오류가 발생했습니다.') {
@@ -4992,6 +5076,12 @@ async function handleStudioMessage(record, sock, msg) {
         );
         // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
         if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        // 떼어 낸 채팅: 문서 없이 다시 연 세션만 받는다. 모양이 어긋나면 버린다.
+        const detachedFrom = sessionHasNoDocument(s) ? normalizeDetachedFrom(msg.detachedFrom) : null;
+        if (detachedFrom) {
+          s.detachedFrom = detachedFrom;
+          queueDetachNote(record, s, detachedFrom);
+        }
         const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
           && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
@@ -5028,6 +5118,11 @@ async function handleStudioMessage(record, sock, msg) {
     case 'chat-link-document': {
       // 턴 중에도 받는다 — 공급자를 다시 띄우지 않으므로 전환 대기열을 기다리지 않는다.
       await linkChatDocument(record, sock, msg);
+      return;
+    }
+    case 'chat-detach-document': {
+      // 에이전트의 detach_document 가 도는 턴 중에 온다 — 붙이기처럼 전환 대기열을 기다리지 않는다.
+      await detachChatDocument(record, sock, msg);
       return;
     }
     case 'project-bind': {
@@ -7193,7 +7288,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             ? 120_000
             : DOCUMENT_LINK_TOOLS.has(tool)
               ? DOCUMENT_LINK_STUDIO_TIMEOUT_MS
-              : STUDIO_TOOL_TIMEOUT_MS;
+              : tool === 'detach_document'
+                ? DOCUMENT_DETACH_STUDIO_TIMEOUT_MS
+                : STUDIO_TOOL_TIMEOUT_MS;
         const routed = target ? { readId: nextForeignReadId++, socket: target.studioSocket } : null;
         const timer = setTimeout(() => {
           const pendingEntry = record.pendingCalls.get(hubId);
@@ -7208,6 +7305,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
               ? `The window with this document did not answer within ${timeoutMs / 1000}s`
               : DOCUMENT_LINK_TOOLS.has(tool)
                 ? `Studio did not finish linking the document within ${timeoutMs / 1000}s; it may still link — check the active document before retrying`
+                : tool === 'detach_document'
+                ? `Studio did not finish detaching the document within ${timeoutMs / 1000}s; check get_document_info before retrying`
                 : readSource.foreign || LIVE_UNTRACKED_READ_TOOL_NAMES.includes(tool)
                 ? `Studio did not answer within ${timeoutMs / 1000}s; nothing was changed — read it again`
                 : `Studio did not answer within ${timeoutMs / 1000}s — the edit may still have applied; re-read with get_structure/get_text_range before retrying to avoid duplicates`,
@@ -7289,46 +7388,47 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           sendError(workflowError('NO_STUDIO', 'Studio disconnected before receiving the tool request'));
         }
       };
-      // 문서 연결: 루트 대화만, 문서 없는 채팅에서 한 번만. 전체 모드가 아니면 연결마다 사용자에게 묻고(문서 연결 확인),
-      // 허락되면 확인한 인자로 Studio 에 보낸다. Studio 는 문서를 열거나 만든 뒤 chat-link-document 를 먼저 보내고 답한다.
-      if (DOCUMENT_LINK_TOOLS.has(tool)) {
+      // 문서 붙이기·떼기: 루트 대화만, 채팅의 문서는 한 번에 하나다. 사용자에게 묻지 않는다 — 붙인 문서의 쓰기는
+      // 모드 규칙(에이전트 모드의 검토)을 그대로 따른다. 붙이기는 Studio 가 문서를 열거나 만든 뒤 chat-link-document 를
+      // 먼저 보내고 답한다. 떼기는 Studio 가 채팅을 빈 문서 자리로 옮기며 chat-detach-document 를 보내고, 허브가 그
+      // 호출을 맡았다가 새 브리지가 붙으면 답한다(detachChatDocument).
+      if (DOCUMENT_LINK_TOOLS.has(tool) || tool === 'detach_document') {
         const session = record.agentSession;
         if (workerJob || !session) {
-          sendError(workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root chat conversation may link a document'));
+          sendError(workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root chat conversation may attach or detach a document'));
           return;
         }
-        const alreadyLinked = () => workflowError(
-          'THREAD_ALREADY_LINKED',
-          `This chat is already linked to ${session.documentName ?? session.documentId}; a chat keeps one document`,
-        );
+        const detaching = tool === 'detach_document';
+        const checkAttachment = () => {
+          if (detaching && sessionHasNoDocument(session)) {
+            throw workflowError('NO_DOCUMENT', 'This chat has no document to detach; open_document or create_document attaches one');
+          }
+          if (!detaching && !sessionHasNoDocument(session)) {
+            throw workflowError(
+              'THREAD_ALREADY_LINKED',
+              `This chat is attached to ${session.documentName ?? session.documentId}; call detach_document first to switch documents`,
+            );
+          }
+        };
         void (async () => {
-          if (!sessionHasNoDocument(session)) throw alreadyLinked();
+          checkAttachment();
           const root = !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
             && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
-          if (!root) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may link a document');
-          if (!sessionHasNoDocument(session)) throw alreadyLinked();
-          if (session.documentLinkCall) throw workflowError('DOCUMENT_LINK_PENDING', 'Another document link is already in progress in this chat');
+          if (!root) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may attach or detach a document');
+          checkAttachment();
+          if (session.documentLinkCall) throw workflowError('DOCUMENT_LINK_PENDING', 'Another document attach or detach is already in progress in this chat');
           const linkCall = {};
           session.documentLinkCall = linkCall;
           onCallSettled = () => {
             if (session.documentLinkCall === linkCall) session.documentLinkCall = null;
           };
-          const target = await documentLinkTarget(record, tool, args);
-          if (session.permissionProfile !== 'unrestricted') {
-            const outcome = await requestDocumentLinkConsent(record, target.request, session.generation);
-            if (outcome.status !== 'granted') {
-              if (!sessionHasNoDocument(session)) throw alreadyLinked();
-              throw workflowError('PERMISSION_DENIED', outcome.status === 'denied'
-                ? 'The user declined linking this document to the chat'
-                : `The link confirmation expired before the user answered (${outcome.reason ?? 'expired'})`);
-            }
-          }
+          const studioArgs = detaching ? {} : await documentLinkArgs(record, tool, args);
           if (callSettled) return;
           if (providerTurn && !providerTurnIsActive(record, providerTurn)) throw noActiveProviderTurnError();
-          if (record.agentSession !== session) throw workflowError('REQUEST_INVALIDATED', 'The chat changed before the document was linked');
-          if (!sessionHasNoDocument(session)) throw alreadyLinked();
-          dispatchToStudio({ args: target.args, source: null, template: false, foreign: true });
-        })().catch((error) => sendError(error, 'DOCUMENT_LINK_FAILED'));
+          if (record.agentSession !== session) throw workflowError('REQUEST_INVALIDATED', 'The chat changed before the document was attached or detached');
+          checkAttachment();
+          dispatchToStudio({ args: studioArgs, source: null, template: false, foreign: true });
+        })().catch((error) => sendError(error, detaching ? 'DOCUMENT_DETACH_FAILED' : 'DOCUMENT_LINK_FAILED'));
         return;
       }
       // 참조 그림: 허브가 저장소를 읽어 바로 답하거나(자르지 않는 이미지), 인자를 채워 스튜디오로 넘긴다
@@ -7992,7 +8092,7 @@ const httpServer = http.createServer((req, res) => {
           projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
           requestable: !requestedWorkerJobId && !requestedSubagentId,
-          documentLink: !requestedWorkerJobId && !requestedSubagentId && sessionHasNoDocument(candidateSession?.agentSession),
+          documentLink: !requestedWorkerJobId && !requestedSubagentId,
           researchPermissions: gates.researchPermissions,
         },
       });
@@ -8236,6 +8336,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         hubSessionId: record.sessionId,
         session: sessionInfo(record),
       });
+      // 문서에서 뗀 채팅의 새 브리지가 붙었다 — 이 브리지가 세션을 받은 뒤에 공급자가 이어 간다.
+      if (record.documentDetachHandoff && record.documentDetachHandoff.socket !== ws) settleDocumentDetachHandoff(record);
       for (const authRun of authRuns.forSession(record.sessionId)) {
         sendJson(ws, {
           v: 1,
@@ -8432,6 +8534,7 @@ async function disposeRecord(record, reason) {
   clearStudioReattachFlush(record);
   settleUserQuestion(record, { status: 'expired', reason: 'hub-restarted' });
   failAllPendingCalls(record, 'Hub session is shutting down');
+  settleDocumentDetachHandoff(record, workflowError('NO_STUDIO', 'Hub session is shutting down'));
   const backendExit = disposeSession(record);
   const templateBackendExits = [];
   for (const job of record.templateJobs.values()) {

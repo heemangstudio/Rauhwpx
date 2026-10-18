@@ -301,6 +301,15 @@
   max-width: 260px;
 }
 
+/* 편집 중 잠금 — 슬라이더 오른쪽에 고른 눈금의 이름. 이름이 바뀌어도 슬라이더 폭이 흔들리지 않게 자리를 잡아 둔다. */
+.ag-settings-edit-lock-value {
+  flex: 0 0 76px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .ag-settings-input,
 .ag-settings-select {
   flex: 1 1 auto;

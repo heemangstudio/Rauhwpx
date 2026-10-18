@@ -105,14 +105,6 @@ export async function validateDocumentFolder(candidate, { platform = process.pla
   return real;
 }
 
-/** 새 문서의 기본 저장 폴더: 문서 폴더(RHWP_DOCUMENTS_DIR, 없으면 ~/Documents) 아래 HamaEditor. 없으면 데스크톱이 만든다. */
-export function defaultDocumentFolder({ env = process.env, home = os.homedir() } = {}) {
-  const documents = typeof env.RHWP_DOCUMENTS_DIR === 'string' && path.isAbsolute(env.RHWP_DOCUMENTS_DIR)
-    ? env.RHWP_DOCUMENTS_DIR
-    : path.join(home, 'Documents');
-  return path.join(path.resolve(documents), 'HamaEditor');
-}
-
 const RESERVED_FILE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
 /**

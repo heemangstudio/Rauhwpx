@@ -151,11 +151,8 @@ export interface DocumentMention {
 /** 한 메시지가 싣는 문서 멘션 수 — 허브와 같다. */
 export const MAX_DOCUMENT_MENTIONS = 5;
 
-/**
- * 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. document-link 는 문서 연결 한 번에만 묻는
- * 일회성 동의다 — 채팅 전체 권한으로 남지 않는다.
- */
-export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents' | 'document-link';
+/** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents';
 export type ChatPermissionDecision = 'grant' | 'deny';
 export type ChatPermissionOutcome =
   | { status: 'granted' }
@@ -168,14 +165,8 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
-  /** 브라우저 계정 요청이거나, document-link 면 열기(open)·만들기(create). */
-  kind?: 'browser-save-account' | 'browser-use-account' | 'open' | 'create';
-  /** document-link: 연결할 문서 이름. 최근 문서를 id 로 열면 비어 있을 수 있다(linkDocumentId 로 찾는다). */
-  documentName?: string;
-  /** document-link: 최근 문서를 id 로 열 때 그 문서. */
-  linkDocumentId?: string;
-  /** document-link: 데스크톱에서 경로로 열거나 만들 파일의 전체 경로. */
-  path?: string;
+  /** 브라우저 계정 요청. */
+  kind?: 'browser-save-account' | 'browser-use-account';
   origin?: string;
   origins?: string[];
   accountId?: string;
@@ -998,6 +989,13 @@ export type AgentStreamEvent =
 export type CompactionTrigger = 'auto' | 'manual';
 /** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
 export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+/** chat-compact 의 까닭. document-detached = 채팅을 문서에서 뗀 직후의 압축. */
+export type ChatCompactReason = 'document-detached';
+/** chat-start 의 detachedFrom — 이 채팅을 뗀 문서. */
+export interface ChatDetachedFrom {
+  documentId: string;
+  documentName: string | null;
+}
 
 /**
  * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
@@ -1250,6 +1248,11 @@ export interface AgentBridgeDeps {
    * 문서를 열고 채팅·허브를 이은 뒤 돌려준다. 실패는 ChatDocumentLinkError 로 던진다. 없으면 도구가 실패한다.
    */
   linkDocument?: (request: import('./document-link.ts').ChatDocumentLinkRequest) => Promise<import('./document-link.ts').ChatDocumentLinked>;
+  /**
+   * 에이전트의 detach_document. 편집기가 이 채팅을 빈 문서 자리로 옮긴다 — 옮기기 직전에 브리지의
+   * detachChatDocument 로 허브에 알리고 이 브리지를 닫는다. 옮기지 못하면 ChatDocumentLinkError 로 던진다.
+   */
+  detachDocument?: (request: import('./document-link.ts').ChatDocumentDetachRequest) => Promise<void>;
   /**
    * 이 문서를 만든 채팅 (에이전트가 create_document 로 만든 문서). 그 채팅의 쓰기는 에이전트 모드에서도
    * 검토 없이 바로 반영된다(쓰기 도구 하나 = 실행 취소 한 단계). 없거나 null 이면 모드 규칙대로다.
@@ -2083,7 +2086,8 @@ export interface ProjectLibrarianItemStatus {
 
 /** 허브 → 스튜디오 프로젝트 이벤트. 통합 단계에서 SidebarEvent 에 합친다. */
 export type ProjectSidebarEvent =
-  | { type: 'project-bound'; projectId: string; project: ProjectSnapshot }
+  /** projectId·project 가 null 이면 허브가 이 채팅을 프로젝트에서 풀었다(문서에서 뗀 채팅). */
+  | { type: 'project-bound'; projectId: string | null; project: ProjectSnapshot | null }
   | { type: 'project-changed'; projectId: string; revision: number; project: ProjectSnapshot }
   | {
       type: 'project-librarian-status';

@@ -346,6 +346,13 @@ export interface ChatThread {
   documentId: string | null;
   /** 문서 없이 시작해 문서를 이은 시각. 있으면 머리에 문서 칩을 둔다. */
   documentLinkedAt?: number;
+  /** 문서 연결이 마지막으로 바뀐(이었거나 뗀) 시각. 창 사이에서는 더 늦게 바꾼 사본의 연결이 남는다. */
+  documentLinkChangedAt?: number;
+  /**
+   * 문서에서 뗀 채팅의 그 문서 — 다음 chat-start 가 허브에 알린다. 다시 잇거나 뗀 뒤 첫 턴이 끝나면 지운다.
+   * compact 는 뗀 뒤 아직 압축을 청하지 않았다는 표다(뗄 때 대화가 있었다).
+   */
+  documentDetachedFrom?: DocumentDetachedFrom;
   /** 이 채팅에 고정된 기기 템플릿. 원본은 채팅에 내장하지 않는다. */
   activeTemplateId: string | null;
   /** Historical display data only. Phase/approval/capability authority is never persisted. */
@@ -361,6 +368,12 @@ export interface ChatThread {
   /** 마지막으로 보고된 콘텍스트 창 사용량 — 다시 열었을 때 콘텍스트 표시를 복원한다. */
   contextUsage?: ThreadContextUsage;
   messages: ThreadMessage[];
+}
+
+export interface DocumentDetachedFrom {
+  documentId: string;
+  docKey: string | null;
+  compact?: true;
 }
 
 export interface ProviderSessionCursor {
@@ -409,7 +422,7 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage' | 'pinOrder' | 'listOrder' | 'followUps' | 'archivedAt' | 'documentLinkedAt'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage' | 'pinOrder' | 'listOrder' | 'followUps' | 'archivedAt' | 'documentLinkedAt' | 'documentLinkChangedAt' | 'documentDetachedFrom'> & {
   followUps?: unknown;
   providerSessions?: unknown;
   contextUsage?: unknown;
@@ -424,6 +437,8 @@ type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | '
   listOrder?: unknown;
   archivedAt?: unknown;
   documentLinkedAt?: unknown;
+  documentLinkChangedAt?: unknown;
+  documentDetachedFrom?: unknown;
 };
 
 type ThreadPersistenceChange =
@@ -1014,6 +1029,17 @@ function normalizeProviderSessions(value: unknown): ChatThread['providerSessions
   return Object.keys(sessions).length ? sessions : undefined;
 }
 
+function normalizeDetachedFrom(value: unknown): DocumentDetachedFrom | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { documentId, docKey, compact } = value as Record<string, unknown>;
+  if (typeof documentId !== 'string' || !documentId) return undefined;
+  return {
+    documentId,
+    docKey: typeof docKey === 'string' && docKey ? docKey : null,
+    ...(compact === true ? { compact: true as const } : {}),
+  };
+}
+
 function normalizeContextUsage(value: unknown): ThreadContextUsage | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -1070,6 +1096,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     listOrder: storedListOrder,
     archivedAt: storedArchivedAt,
     documentLinkedAt: storedDocumentLinkedAt,
+    documentLinkChangedAt: storedDocumentLinkChangedAt,
+    documentDetachedFrom: storedDocumentDetachedFrom,
     followUps: storedFollowUps,
     ...rest
   } = thread;
@@ -1245,6 +1273,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
   const followUps = normalizeFollowUps(storedFollowUps);
   const providerSessions = normalizeProviderSessions(storedProviderSessions);
   const contextUsage = normalizeContextUsage(storedContextUsage);
+  const linked = typeof storedDocumentId === 'string' && storedDocumentId !== '';
+  const detachedFrom = linked ? undefined : normalizeDetachedFrom(storedDocumentDetachedFrom);
   const pendingAlreadyArchived = pendingUserQuestion
     ? messages.some((message) => message.kind === 'user-question'
       && message.interaction.interactionId === pendingUserQuestion.interaction.interactionId)
@@ -1261,10 +1291,13 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     ...(typeof storedPinOrder === 'number' && Number.isFinite(storedPinOrder) ? { pinOrder: storedPinOrder } : {}),
     ...(typeof storedListOrder === 'number' && Number.isFinite(storedListOrder) ? { listOrder: storedListOrder } : {}),
     ...(typeof storedArchivedAt === 'number' && Number.isFinite(storedArchivedAt) ? { archivedAt: storedArchivedAt } : {}),
-    ...(typeof storedDocumentLinkedAt === 'number' && Number.isFinite(storedDocumentLinkedAt)
-      && typeof storedDocumentId === 'string' && storedDocumentId
+    ...(typeof storedDocumentLinkedAt === 'number' && Number.isFinite(storedDocumentLinkedAt) && linked
       ? { documentLinkedAt: storedDocumentLinkedAt }
       : {}),
+    ...(typeof storedDocumentLinkChangedAt === 'number' && Number.isFinite(storedDocumentLinkChangedAt)
+      ? { documentLinkChangedAt: storedDocumentLinkChangedAt }
+      : {}),
+    ...(detachedFrom ? { documentDetachedFrom: detachedFrom } : {}),
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
@@ -1296,8 +1329,11 @@ function applyRemoteMessage(message: ThreadPersistenceMessage) {
   if (message.type === 'upsert') {
     const current = cache.get(message.thread.id);
     if (!current || current.updatedAt <= message.thread.updatedAt) {
-      cache.set(message.thread.id, cloneThread(message.thread));
+      // 문서 연결은 이 창이 더 늦게 바꿨으면 이 창의 것을 남긴다 — 그 창의 저장이 저장소를 맞추고 다시 알린다.
+      cache.set(message.thread.id, cloneThread(current ? mergeThreadLink(message.thread, current) : message.thread));
       deletedBeforeHydration.delete(message.thread.id);
+    } else if (threadLinkSupersedes(message.thread, current)) {
+      cache.set(current.id, mergeThreadLink(current, message.thread));
     }
   } else if (message.type === 'remove') {
     cache.delete(message.id);
@@ -1411,14 +1447,57 @@ function trimCache() {
   for (const thread of sorted.slice(MAX_THREADS)) cache.delete(thread.id);
 }
 
-/** thread 에 저장소의 문서 연결(문서·이름·연결 시각)을 되살린 사본. */
-function keepStoredLink(thread: ChatThread, stored: Pick<ChatThread, 'documentId' | 'docKey' | 'documentLinkedAt'>): ChatThread {
-  const { documentLinkedAt: _ignored, ...rest } = thread;
+type ThreadLink = Pick<ChatThread, 'documentId' | 'docKey' | 'documentLinkedAt' | 'documentLinkChangedAt' | 'documentDetachedFrom'>;
+
+/** 연결이 마지막으로 바뀐 시각. 이 필드 전에 이은 채팅은 이은 시각이고, 문서와 함께 태어난 채팅은 0 이다. */
+function linkChangedAt(thread: ThreadLink): number {
+  return thread.documentLinkChangedAt ?? thread.documentLinkedAt ?? 0;
+}
+
+function sameLink(a: ThreadLink, b: ThreadLink): boolean {
+  return a.documentId === b.documentId && (a.documentId !== null || a.docKey === b.docKey);
+}
+
+/**
+ * candidate 의 문서 연결이 current 의 것을 대신하는가 — 연결은 더 늦게 바꾼 쪽이 이긴다. 같은 때(둘 다 시각이
+ * 없는 옛 채팅)면 안정 ID 로 이은 쪽이 남고, 둘 다 이었으면 current 가 남는다.
+ */
+export function threadLinkSupersedes(candidate: ThreadLink, current: ThreadLink): boolean {
+  if (sameLink(candidate, current)) return false;
+  const candidateAt = linkChangedAt(candidate);
+  const currentAt = linkChangedAt(current);
+  if (candidateAt !== currentAt) return candidateAt > currentAt;
+  return candidate.documentId !== null && current.documentId === null;
+}
+
+/**
+ * base 의 내용에 두 사본 중 이긴 문서 연결을 얹는다. 연결·분리 전에 들고 있던 낡은 사본(다른 창)이 저장되어도
+ * 그 뒤의 연결·분리를 되돌리지 않는다. 같은 연결이면 base 를 따르되 바뀐 시각은 뒤로 가지 않는다.
+ */
+function mergeThreadLink(base: ChatThread, other: ThreadLink): ChatThread {
+  if (threadLinkSupersedes(other, base)) {
+    const { documentLinkedAt: _linked, documentLinkChangedAt: _changed, documentDetachedFrom: _detached, ...rest } = base;
+    return { ...rest, ...structuredClone(linkOf(other)) };
+  }
+  if (!sameLink(base, other)) return base;
+  const changedAt = Math.max(base.documentLinkChangedAt ?? 0, other.documentLinkChangedAt ?? 0);
+  const linkedAt = base.documentLinkedAt ?? other.documentLinkedAt;
+  if (changedAt === (base.documentLinkChangedAt ?? 0) && linkedAt === base.documentLinkedAt) return base;
   return {
-    ...rest,
-    documentId: stored.documentId,
-    docKey: stored.docKey,
-    ...(stored.documentLinkedAt !== undefined ? { documentLinkedAt: stored.documentLinkedAt } : {}),
+    ...base,
+    ...(changedAt > 0 ? { documentLinkChangedAt: changedAt } : {}),
+    ...(linkedAt !== undefined ? { documentLinkedAt: linkedAt } : {}),
+  };
+}
+
+/** 문서 연결 칸만 — 없는 칸은 싣지 않는다. */
+export function linkOf(thread: ThreadLink): ThreadLink {
+  return {
+    documentId: thread.documentId,
+    docKey: thread.docKey,
+    ...(thread.documentLinkedAt !== undefined ? { documentLinkedAt: thread.documentLinkedAt } : {}),
+    ...(thread.documentLinkChangedAt !== undefined ? { documentLinkChangedAt: thread.documentLinkChangedAt } : {}),
+    ...(thread.documentDetachedFrom ? { documentDetachedFrom: thread.documentDetachedFrom } : {}),
   };
 }
 
@@ -1427,16 +1506,13 @@ function persistUpsert(thread: ChatThread) {
     const tx = db.transaction(THREADS_STORE, 'readwrite');
     const store = tx.objectStore(THREADS_STORE);
     const existing = await requestResult(store.get(thread.id) as IDBRequest<StoredChatThread | undefined>);
-    // 다른 창이 같은 채팅을 먼저 다른 문서에 이어 저장했다 — 연결은 하나뿐이라 저장된 연결을 남긴다.
-    const storedLink = existing && isStoredChatThread(existing) ? normalizeStoredThread(existing) : null;
-    const relinked = storedLink && storedLink.documentId !== null
-      && thread.documentId !== null && storedLink.documentId !== thread.documentId
-      ? keepStoredLink(thread, storedLink)
-      : null;
-    const next = relinked ?? thread;
-    if (!existing || !isStoredChatThread(existing) || existing.updatedAt <= next.updatedAt) {
-      store.put(cloneThread(next));
-    }
+    // 다른 창이 그사이 같은 채팅을 저장했다. 내용은 더 새로 저장한 쪽, 문서 연결은 더 늦게 바꾼 쪽이 남는다.
+    const stored = existing && isStoredChatThread(existing) ? normalizeStoredThread(existing) : null;
+    const next = stored && stored.updatedAt > thread.updatedAt
+      ? mergeThreadLink(stored, thread)
+      : stored ? mergeThreadLink(thread, stored) : thread;
+    const corrected = next !== thread && next !== stored;
+    if (!stored || next !== stored) store.put(cloneThread(next));
     // 한도를 넘는 건 새 스레드가 한도에서 추가된 직후뿐이다 — 메시지마다 전체 스레드를
     // 역직렬화하지 않도록 개수부터 본다.
     const total = await requestResult(store.count());
@@ -1451,10 +1527,11 @@ function persistUpsert(thread: ChatThread) {
       for (const id of removed) store.delete(id);
     }
     await transactionDone(tx);
-    if (relinked && cache.has(relinked.id)) {
-      // 이 창의 사본도 저장된 연결로 되돌린다. 사이드바는 바뀐 알림으로 지금 채팅을 다시 읽는다.
-      cache.set(relinked.id, cloneThread(relinked));
-      publish({ type: 'upsert', thread: cloneThread(relinked) });
+    const cached = cache.get(next.id);
+    if (corrected && cached && cached.updatedAt <= next.updatedAt) {
+      // 이 창과 다른 창의 사본도 맞춘다. 사이드바는 바뀐 알림으로 지금 채팅을 다시 읽는다.
+      cache.set(next.id, cloneThread(next));
+      publish({ type: 'upsert', thread: cloneThread(next) });
       emitChanged();
     }
     return removed;
@@ -2378,16 +2455,18 @@ export function upsertThread(thread: ChatThread): void {
   // 저장되면서 사용자가 옮긴 자리를 되돌리지 않는다.
   const { pinOrder: _callerPinOrder, listOrder: _callerListOrder, archivedAt: _callerArchivedAt, ...rest } = thread;
   const placement = previous ?? thread;
-  // 문서 연결은 한 방향이다 — 연결 전에 들고 있던 낡은 사본(다른 창)이 저장되어도 이은 문서를 떼지 않고,
-  // 두 창이 같은 채팅을 서로 다른 문서에 이었으면 먼저 저장된 연결이 남는다.
-  const keepsLink = previous !== undefined && (previous.documentId !== null || previous.docKey !== null)
-    && ((thread.documentId === null && thread.docKey === null)
-      || (previous.documentId !== null && thread.documentId !== null && previous.documentId !== thread.documentId));
-  const linkedAt = keepsLink ? previous.documentLinkedAt : (thread.documentLinkedAt ?? previous?.documentLinkedAt);
+  // 문서 연결은 더 늦게 바꾼 사본을 따른다 — 잇거나 떼기 전에 들고 있던 낡은 사본(다른 창)이 저장되어도
+  // 그 뒤의 연결·분리를 되돌리지 않는다.
+  const link = linkOf(previous ? mergeThreadLink(thread, previous) : thread);
+  const {
+    documentLinkedAt: _callerLinkedAt,
+    documentLinkChangedAt: _callerLinkChangedAt,
+    documentDetachedFrom: _callerDetachedFrom,
+    ...content
+  } = rest;
   const capped: ChatThread = {
-    ...rest,
-    ...(keepsLink ? { documentId: previous.documentId, docKey: previous.docKey } : {}),
-    ...(linkedAt !== undefined ? { documentLinkedAt: linkedAt } : {}),
+    ...content,
+    ...structuredClone(link),
     ...(placement.pinOrder !== undefined ? { pinOrder: placement.pinOrder } : {}),
     ...(placement.listOrder !== undefined ? { listOrder: placement.listOrder } : {}),
     ...(placement.archivedAt !== undefined ? { archivedAt: placement.archivedAt } : {}),
@@ -2483,10 +2562,10 @@ export function renameThreadsDocument(documentId: string, docKey: string): void 
 }
 
 /**
- * 문서 없는 채팅에 문서를 잇는다. 한 방향이다 — 두 문서 칸이 모두 비어 있을 때만 잇고, 이미 문서가
- * 있으면 바꾸지 않고 null 을 돌려준다. 저장한 채팅이면 다른 창에도 알린다(레일이 따라간다). 아직
- * 저장하지 않은 빈 채팅(초안)은 저장소에 없으므로 null 이다 — 부른 쪽이 들고 있는 사본을 고친다.
- * 대화 활동이 아니므로 목록 자리는 그대로다.
+ * 문서 없는 채팅에 문서를 잇는다. 두 문서 칸이 모두 비어 있을 때만 잇고, 이미 문서가 있으면 바꾸지 않고
+ * null 을 돌려준다 — 다른 문서로 옮기려면 먼저 뗀다(detachThreadDocument). 저장한 채팅이면 다른 창에도
+ * 알린다(레일이 따라간다). 아직 저장하지 않은 빈 채팅(초안)은 저장소에 없으므로 null 이다 — 부른 쪽이 들고
+ * 있는 사본을 고친다. 대화 활동이 아니므로 목록 자리는 그대로다.
  */
 export function linkThreadDocument(
   id: string,
@@ -2496,12 +2575,48 @@ export function linkThreadDocument(
   if (!documentId) return null;
   const current = getThread(id);
   if (!current || current.documentId !== null || current.docKey !== null) return null;
+  const now = Date.now();
+  const changedAt = Math.max(now, linkChangedAt(current) + 1);
+  const { documentDetachedFrom: _detached, ...rest } = current;
   const next: ChatThread = {
-    ...current,
+    ...rest,
     documentId,
     docKey: link.docKey,
-    documentLinkedAt: Date.now(),
-    updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+    documentLinkedAt: changedAt,
+    documentLinkChangedAt: changedAt,
+    updatedAt: Math.max(now, current.updatedAt + 1),
+    lastActivityAt: threadActivityAt(current),
+  };
+  replaceStoredThread(next);
+  return next;
+}
+
+/**
+ * 채팅을 문서에서 뗀다. 문서 칸을 비우고 뗀 문서를 한 번 남긴다(documentDetachedFrom) — 다음 chat-start 가
+ * 허브에 알리고, 뗄 때 대화가 있었으면 다음 chat-started 가 한 번 압축한다. 에이전트가 스스로 뗐으면(byAgent)
+ * 그 도구 결과가 알리므로 남기지 않는다. 문서가 없거나 저장하지 않은 채팅이면 null. 대화 활동이 아니므로
+ * 목록 자리는 그대로다.
+ */
+export function detachThreadDocument(id: string, options: { byAgent?: boolean } = {}): ChatThread | null {
+  const current = getThread(id);
+  if (!current || (current.documentId === null && current.docKey === null)) return null;
+  const now = Date.now();
+  const { documentLinkedAt: _linked, documentDetachedFrom: _previous, ...rest } = current;
+  const next: ChatThread = {
+    ...rest,
+    documentId: null,
+    docKey: null,
+    documentLinkChangedAt: Math.max(now, linkChangedAt(current) + 1),
+    ...(current.documentId && !options.byAgent
+      ? {
+        documentDetachedFrom: {
+          documentId: current.documentId,
+          docKey: current.docKey,
+          ...(current.messages.some((message) => message.role === 'user') ? { compact: true as const } : {}),
+        },
+      }
+      : {}),
+    updatedAt: Math.max(now, current.updatedAt + 1),
     lastActivityAt: threadActivityAt(current),
   };
   replaceStoredThread(next);

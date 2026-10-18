@@ -14,11 +14,14 @@ import {
   type AgentModelGroup,
 } from '../../agent/models.ts';
 import {
+  AGENT_EDIT_LOCK_STEPS,
   loadAgentPrefs,
   normalizeAgentPrefs,
   trySaveAgentPrefs,
+  type AgentEditLock,
   type AgentPrefs,
 } from '../../agent/agent-prefs.ts';
+import { createEffortSlider } from './effort-slider.ts';
 import { createBrowserSettingsPane } from './browser-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
@@ -211,6 +214,19 @@ function createToggleRow(
   track.setAttribute('aria-hidden', 'true');
   root.append(copy, input, track);
   return { root, input };
+}
+
+/** 편집 중 잠금 눈금의 이름 — 왼쪽 끝은 잠그지 않음, 오른쪽 끝은 작업 내내. */
+function editLockLabel(lock: AgentEditLock): string {
+  if (lock === 'off') return '잠그지 않음';
+  if (lock === 'always') return '작업 내내';
+  return lock >= 60 ? `편집 후 ${lock / 60}분` : `편집 후 ${lock}초`;
+}
+
+const EDIT_LOCK_OPTIONS = AGENT_EDIT_LOCK_STEPS.map((lock) => ({ id: String(lock), label: editLockLabel(lock) }));
+
+function editLockFromId(id: string): AgentEditLock {
+  return AGENT_EDIT_LOCK_STEPS.find((lock) => String(lock) === id) ?? AGENT_EDIT_LOCK_STEPS[0]!;
 }
 
 function createSection(title: string): { root: HTMLElement; head: HTMLElement; body: HTMLElement } {
@@ -1012,6 +1028,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     stagePrefs({ defaultMode: isAgentMode(value) ? value : 'agent' });
   });
 
+  // 에이전트·전체 모드에서 에이전트가 문서를 고치는 동안 내 편집을 막는 시간. 대화만 할 때는 막지 않는다.
+  const editLockSection = createSection('에이전트 편집 중 문서 잠금');
+  const editLockValue = el('span', 'ag-settings-edit-lock-value');
+  const editLockSlider = createEffortSlider({
+    ariaLabel: '에이전트 편집 중 문서 잠금',
+    onChange: (id) => stagePrefs({ editLock: editLockFromId(id) }),
+    onPreview: (id) => { editLockValue.textContent = editLockLabel(editLockFromId(id)); },
+  });
+  const editLockField = el('div', 'ag-settings-field ag-settings-edit-lock');
+  editLockField.append(el('span', 'ag-settings-field-label', '잠금'), editLockSlider.root, editLockValue);
+  editLockSection.body.append(editLockField);
+
   const modelCatalogSection = createSection('사용할 모델');
   modelCatalogSection.root.classList.add('ag-settings-model-catalog-section');
   const modelCatalogCard = el('div', 'ag-settings-model-catalog-card');
@@ -1379,6 +1407,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const aiContent = el('div', 'ag-settings-destination-content');
   aiContent.append(
     defaults.root,
+    editLockSection.root,
     connection.root,
     quotaSection.root,
     modelCatalogSection.root,
@@ -1421,6 +1450,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       && left.defaultModel === right.defaultModel
       && left.defaultEffort === right.defaultEffort
       && left.defaultMode === right.defaultMode
+      && left.editLock === right.editLock
       && PLAN_AGENTS.every((agent) => left.selectedModels[agent].join('\u0000') === right.selectedModels[agent].join('\u0000'));
   }
 
@@ -1940,6 +1970,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       prefsDraft.defaultModel,
     );
     modeField.select.value = prefsDraft.defaultMode;
+    editLockSlider.setOptions(EDIT_LOCK_OPTIONS, String(prefsDraft.editLock));
+    editLockValue.textContent = editLockLabel(prefsDraft.editLock);
   }
 
   function renderConnection(): void {

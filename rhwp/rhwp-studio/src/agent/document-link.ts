@@ -1,7 +1,8 @@
 /**
- * 문서 없는 채팅에 문서 하나를 잇는다 — 사용자의 진입점(빈 문서 화면·문서 선택·저장 안내 줄)과
- * 에이전트 도구(open_document·create_document)가 같은 흐름을 쓴다. 연결은 한 번뿐이고 영구적이다.
- * 실제 열기는 편집기(main.ts)가 그 채팅의 문서 세션에 한다. 여기에는 대상·오류·도구 인자만 둔다.
+ * 채팅에 문서를 붙이고 뗀다. 문서 없는 채팅은 문서 하나를 잇는다 — 사용자의 진입점(빈 문서 화면·문서 선택·저장
+ * 안내 줄)과 에이전트 도구(open_document·create_document)가 같은 흐름을 쓴다. 붙은 채팅은 사용자의 분리 단추나
+ * 에이전트의 detach_document 로 떼어 문서 없는 채팅이 된다. 채팅의 문서는 한 번에 하나다.
+ * 실제 열기·옮기기는 편집기(main.ts)가 한다. 여기에는 대상·오류·도구 인자만 둔다.
  */
 import { AgentToolError } from './types.ts';
 
@@ -22,6 +23,13 @@ export interface ChatDocumentLinkRequest {
   origin: 'user' | 'agent';
   /** 도구 호출이 속한 채팅. 사이드바가 다른 채팅을 보이고 있으면 잇지 않는다. */
   threadId?: string | null;
+}
+
+/** 에이전트의 detach_document — 그 도구 호출(허브 id)이 속한 채팅을 문서에서 뗀다. */
+export interface ChatDocumentDetachRequest {
+  threadId: string | null;
+  /** 허브의 도구 호출 id. 허브가 이 호출을 맡았다가 새 브리지가 붙으면 답한다. */
+  callId: number;
 }
 
 export interface ChatDocumentLinked {
@@ -52,7 +60,11 @@ export type ChatDocumentLinkCode =
   | 'DESKTOP_ONLY'
   | 'CANCELLED'
   | 'LINK_UNAVAILABLE'
-  | 'LINK_FAILED';
+  | 'LINK_FAILED'
+  | 'NO_DOCUMENT'
+  | 'EDITS_PENDING_REVIEW'
+  | 'DETACH_UNAVAILABLE'
+  | 'DETACH_FAILED';
 
 /** 연결 실패. 도구 응답에는 code·message 그대로 싣는다. */
 export class ChatDocumentLinkError extends AgentToolError {
@@ -79,6 +91,10 @@ const LINK_ERROR_MESSAGES: Readonly<Record<ChatDocumentLinkCode, string>> = {
   CANCELLED: 'Linking was cancelled.',
   LINK_UNAVAILABLE: 'The chat is not available to link a document right now.',
   LINK_FAILED: 'The document could not be linked.',
+  NO_DOCUMENT: 'This chat has no document to detach.',
+  EDITS_PENDING_REVIEW: 'Edits from this turn are waiting for the user\'s review, which happens when the turn ends. Detach in a later turn.',
+  DETACH_UNAVAILABLE: 'The chat cannot detach right now. Try again after the current action finishes.',
+  DETACH_FAILED: 'The chat could not be detached from its document.',
 };
 
 export function linkError(code: ChatDocumentLinkCode, message = LINK_ERROR_MESSAGES[code]): ChatDocumentLinkError {
@@ -118,6 +134,7 @@ export function readDocumentLinkToolArgs(tool: string, args: unknown): ChatDocum
 }
 
 export const DOCUMENT_LINK_TOOLS: ReadonlySet<string> = new Set(['open_document', 'create_document']);
+export const DOCUMENT_DETACH_TOOL = 'detach_document';
 
 /** 허브가 보낸 연결 거절을 읽는다. 알 수 없는 코드는 LINK_FAILED. */
 export function readLinkFailure(frame: Record<string, unknown>): ChatDocumentLinkError {

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   codexHistoryItems,
+  detachCompactionNeeded,
   estimateTokens,
   handoffBudget,
   handoffTokenCap,
@@ -49,6 +50,18 @@ test('the context window prefers the model config, then the last reported window
   assert.equal(resolveContextWindow('codex', {}), 258_400);
   assert.equal(resolveContextWindow('claude', { reportedMaxTokens: 0 }), 200_000);
   assert.equal(resolveContextWindow('grok', {}), 128_000);
+});
+
+test('detaching compacts Claude and Codex only past half their auto-compact limit', () => {
+  // Claude 는 200K 창에서 167K, Codex 는 창의 90% 에서 스스로 압축한다.
+  assert.equal(detachCompactionNeeded('claude', { usedTokens: 60_000, contextWindow: 200_000 }), false);
+  assert.equal(detachCompactionNeeded('claude', { usedTokens: 90_000, contextWindow: 200_000 }), true);
+  assert.equal(detachCompactionNeeded('claude', { usedTokens: 300_000, contextWindow: 1_000_000 }), false);
+  assert.equal(detachCompactionNeeded('codex', { usedTokens: 100_000 }), false);
+  assert.equal(detachCompactionNeeded('codex', { usedTokens: 130_000 }), true);
+  // 사용량을 모르거나 한도를 모르는 공급자는 압축한다.
+  assert.equal(detachCompactionNeeded('claude', { contextWindow: 200_000 }), true);
+  assert.equal(detachCompactionNeeded('pi', { usedTokens: 1_000, contextWindow: 128_000 }), true);
 });
 
 test('history normalization validates entries without budget truncation', () => {

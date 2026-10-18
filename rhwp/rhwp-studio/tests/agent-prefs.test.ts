@@ -43,6 +43,7 @@ test('빈 저장소는 Claude/Sonnet/High/에이전트 기본값을 준다', () 
       claude: ['fable', 'opus', 'sonnet', 'haiku'],
       codex: ['astra', 'sol', 'luna', 'terra'],
     },
+    editLock: 3,
   });
   assert.deepEqual(prefs, defaultAgentPrefs());
   assert.equal(DEFAULT_CHAT_AGENT, 'claude');

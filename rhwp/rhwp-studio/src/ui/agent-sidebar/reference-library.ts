@@ -288,7 +288,8 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   function updateAvailability(): void {
     const context = options.getContext();
     const connected = connectionState === 'connected';
-    quickAddButton.disabled = !connected || !context.threadId;
+    // 잠깐 다시 붙는 동안(채팅을 다른 자리로 옮겨 이을 때)은 모양을 그대로 둔다 — 누르면 붙은 뒤에만 연다(openPicker).
+    quickAddButton.disabled = connectionState === 'disconnected' || connectionState === 'replaced' || !context.threadId;
     add.disabled = !connected || (activeScope === 'project' && !currentProject());
     if (!connected) add.title = '에이전트 서버 연결 대기';
     else add.removeAttribute('title');

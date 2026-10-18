@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
+import { DEFAULT_AGENT_EDIT_LOCK, saveAgentPrefs } from '../src/agent/agent-prefs.ts';
 
 registerHooks({
   load(url, context, next) {
@@ -147,6 +148,15 @@ function fixture() {
   return { bridge, frame, view, headless, viewRecords, headlessRecords, leases, tool, turnStart, turnEnd, insert, painted };
 }
 
+
+/** 이 검사는 일하는 내내 막는 잠금(작업 내내)을 전제로 한다. 끝나면 기본값으로 돌린다. */
+function lockWholeTurn(t: { after(fn: () => void): void }): void {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  saveAgentPrefs({ editLock: 'always' }, storage);
+  t.after(() => { saveAgentPrefs({ editLock: DEFAULT_AGENT_EDIT_LOCK }, storage); });
+}
+
 test('reopening a chat settles the old turn when its welcome snapshot was skipped', () => {
   const f = fixture();
   try {
@@ -169,7 +179,8 @@ test('reopening a chat settles the old turn when its welcome snapshot was skippe
   }
 });
 
-test('reopening a running chat restores its turn identity and rejects an older turn end', () => {
+test('reopening a running chat restores its turn identity and rejects an older turn end', (t) => {
+  lockWholeTurn(t);
   const f = fixture();
   try {
     f.bridge.startChat('codex', undefined, undefined, false, 'safe', 'direct', 'resumed-thread');

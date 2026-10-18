@@ -292,7 +292,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     '--mcp-config', JSON.stringify(mcpConfig),
     '--strict-mcp-config',
     '--setting-sources', '',
-    // 수동 압축 턴만 슬래시 명령을 켠다 — 그 턴의 프롬프트는 허브가 정한 "/compact" 하나다.
+    // 수동 압축 턴만 슬래시 명령을 켠다 — 그 턴의 프롬프트는 허브가 정한 "/compact [요약 지시]" 하나다.
     // (--disable-slash-commands 아래에서 /compact 는 "isn't available" 로 끝난다. CLI 2.1.295 확인.)
     ...(slashCommands ? [] : ['--disable-slash-commands']),
     '--tools', activeTools,
@@ -466,7 +466,7 @@ export function createClaudeSession(opts, {
   // 영구히 실패한다. 재스폰 시 완료된 turn 이 없으면 새 UUID 를 발급한다.
   let sessionIdConsumed = Boolean(resumeSessionId);
   // ── 이번 턴 ───────────────────────────────────────────────
-  // 'compact' 턴은 슬래시 명령을 켜고 "/compact" 만 보낸다.
+  // 'compact' 턴은 슬래시 명령을 켜고 "/compact [요약 지시]" 만 보낸다.
   let turnKind = 'message';
   /** 재개가 사라졌을 때 다시 보낼 글 (허브가 준 전체 기록 프롬프트, 없으면 원래 글). */
   let turnRetryText = null;
@@ -1802,9 +1802,14 @@ export function createClaudeSession(opts, {
         replaceSession: replaceSession === true,
       });
     },
-    /** 수동 압축: 슬래시 명령을 켠 스폰에 "/compact" 를 한 턴으로 보낸다. */
-    compact() {
-      queueTurn({ kind: 'compact', text: '/compact', retryText: '/compact' });
+    /**
+     * 수동 압축: 슬래시 명령을 켠 스폰에 "/compact" 를 한 턴으로 보낸다. instructions 는 "/compact <지시>" 로
+     * 붙는다 — CLI 의 /compact 는 뒤의 글을 요약 지시로 받는다 (argumentHint, CLI 2.1.296 확인).
+     */
+    compact({ instructions } = {}) {
+      const hint = typeof instructions === 'string' ? instructions.replace(/\s+/g, ' ').trim() : '';
+      const text = hint ? `/compact ${hint}` : '/compact';
+      queueTurn({ kind: 'compact', text, retryText: text });
     },
     async setPermissionProfile(profile) {
       if (turnOpen || queuedTurn) throw new Error('Permission profile can only change between turns');

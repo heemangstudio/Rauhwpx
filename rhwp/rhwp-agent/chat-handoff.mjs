@@ -56,6 +56,27 @@ export function resolveContextWindow(agent, { modelContextLength, reportedMaxTok
 }
 
 /**
+ * 공급자가 스스로 압축을 시작하는 사용량. Claude Code 는 창에서 출력 몫(20K)과 여유(13K)를 뺀 곳, Codex 는
+ * 창의 90% 에서 압축한다. 창을 모르면 기본 창으로 본다. 스스로 압축하는 한도를 모르는 공급자는 null.
+ */
+export function autoCompactTokenLimit(agent, contextWindow) {
+  const window = positive(contextWindow) ?? DEFAULT_CONTEXT_WINDOWS[agent];
+  if (agent === 'claude') return window - 33_000;
+  if (agent === 'codex') return Math.floor(window * 0.9);
+  return null;
+}
+
+/**
+ * 문서를 뗀 뒤 압축할지 — 자동 압축 한도를 아는 공급자(Claude·Codex)는 사용량이 그 절반을 넘을 때만 한다.
+ * 그 아래면 다음 사용자 턴의 떼어 냄 알림으로 충분하다. 한도나 사용량을 모르면 압축한다.
+ */
+export function detachCompactionNeeded(agent, { usedTokens, contextWindow } = {}) {
+  const limit = autoCompactTokenLimit(agent, contextWindow);
+  const used = positive(usedTokens);
+  return limit === null || used === undefined || used >= limit / 2;
+}
+
+/**
  * 기록에 쓸 수 있는 토큰 수. 창의 1/4(최소 16k)은 도구·지시문·이후 작업 몫으로 남긴다.
  * usedTokens 는 이어 받는 네이티브 세션이 이미 차지한 양이다 (새 세션은 0).
  */

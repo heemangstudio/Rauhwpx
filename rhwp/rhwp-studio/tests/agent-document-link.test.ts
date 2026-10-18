@@ -1,12 +1,11 @@
-// 문서 없는 채팅에 문서 하나 잇기 — 저장소의 한 방향 연결, 도구 응답 순서, 만든 문서의 검토 규칙,
-// 일회성 문서 연결 동의, 홈·파일 메뉴 열기와 지난 채팅의 길 고르기.
+// 문서 없는 채팅에 문서 하나 잇기와 문서에서 떼기 — 저장소의 연결(더 늦게 바꾼 사본이 이긴다), 도구 응답 순서,
+// 에이전트의 문서 떼기, 만든 문서의 검토 규칙, 홈·파일 메뉴 열기와 지난 채팅의 길 고르기.
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
-import { readChatPermissionGrants, readChatPermissionRequest } from '../src/agent/chat-permissions.ts';
-import { createEmptyThread, getThread, linkThreadDocument, listThreads, upsertThread } from '../src/agent/threads.ts';
-import type { ChatDocumentLinkRequest } from '../src/agent/document-link.ts';
+import { createEmptyThread, detachThreadDocument, getThread, linkThreadDocument, listThreads, upsertThread } from '../src/agent/threads.ts';
+import type { ChatDocumentDetachRequest, ChatDocumentLinkRequest } from '../src/agent/document-link.ts';
 import type { ChatPermissionRequest, SidebarEvent } from '../src/agent/types.ts';
 import { opensInNewSession, opensNestedInNavigation, routeUnlinkedThread, settledLinkLoad, type RoutingChat } from '../src/document-session-routing.ts';
 import { PendingRequestRegistry } from '../src/agent/pending-requests.ts';
@@ -37,7 +36,7 @@ function storedThread(fields: { documentId?: string | null; docKey?: string | nu
   return getThread(thread.id)!;
 }
 
-test('linkThreadDocument links a document-less chat once and never relinks it', async () => {
+test('linkThreadDocument links a document-less chat and never replaces a linked document', async () => {
   const thread = storedThread();
   // 같은 밀리초에 만든 두 채팅은 목록 순서가 정해지지 않는다 — 대화 시각을 갈라 둔다.
   await new Promise((resolve) => setTimeout(resolve, 5));
@@ -69,15 +68,77 @@ test('linkThreadDocument links a document-less chat once and never relinks it', 
   assert.equal(getThread(other.id)?.documentId, null);
 });
 
-test('a second window saving the same chat with another document keeps the first link', () => {
+test('a stale copy from a second window cannot replace a newer link', () => {
   const thread = storedThread();
   linkThreadDocument(thread.id, { documentId: 'doc-a', docKey: '보고서.hwpx' });
-  // 다른 창은 연결 전 사본에 자기 문서를 이어 저장한다.
+  // 다른 창은 연결 전 사본에 자기 문서를 적어 저장한다 — 연결을 바꾼 시각이 없다.
   upsertThread({ ...thread, documentId: 'doc-b', docKey: '다른 문서.hwpx', messages: [...thread.messages, { role: 'assistant', text: '이어서' }] });
   assert.deepEqual(
     { documentId: getThread(thread.id)?.documentId, docKey: getThread(thread.id)?.docKey, messages: getThread(thread.id)?.messages.length },
     { documentId: 'doc-a', docKey: '보고서.hwpx', messages: 2 },
   );
+});
+
+const linkState = (id: string) => {
+  const thread = getThread(id)!;
+  return { documentId: thread.documentId, docKey: thread.docKey, detachedFrom: thread.documentDetachedFrom };
+};
+
+test('a chat detaches from its document and links another, and stale copies undo neither', () => {
+  const born = storedThread({ documentId: 'doc-a', docKey: '보고서.hwpx' });
+  const other = storedThread();
+  const detached = detachThreadDocument(born.id);
+  assert.deepEqual(linkState(born.id), {
+    documentId: null, docKey: null, detachedFrom: { documentId: 'doc-a', docKey: '보고서.hwpx', compact: true },
+  }, 'the detached document is remembered once, with its compaction still to ask for');
+  assert.equal(getThread(born.id)?.messages.length, 1, 'the conversation stays');
+  assert.equal(getThread(born.id)?.lastActivityAt, born.lastActivityAt, 'detaching is not chat activity');
+  assert.equal(detachThreadDocument(born.id), null, 'a chat without a document has nothing to detach');
+  assert.equal(detachThreadDocument(other.id), null);
+
+  // 문서에 붙어 있던 사본(다른 창)이 답을 저장해도 떼기는 남는다.
+  upsertThread({ ...born, messages: [...born.messages, { role: 'assistant', text: '정리했어요' }] });
+  assert.deepEqual([getThread(born.id)?.documentId, getThread(born.id)?.messages.length], [null, 2]);
+
+  const relinked = linkThreadDocument(born.id, { documentId: 'doc-b', docKey: '계획서.hwpx' });
+  assert.deepEqual(linkState(born.id), { documentId: 'doc-b', docKey: '계획서.hwpx', detachedFrom: undefined });
+  assert.ok(relinked!.documentLinkChangedAt! > detached!.documentLinkChangedAt!);
+  // 뗀 때의 사본도, 처음 문서의 사본도 다시 이은 문서를 되돌리지 못한다.
+  upsertThread({ ...detached!, messages: [...detached!.messages, { role: 'assistant', text: '뗀 뒤 사본' }] });
+  assert.equal(getThread(born.id)?.documentId, 'doc-b');
+  upsertThread({ ...born, messages: [...born.messages, { role: 'assistant', text: '처음 사본' }] });
+  assert.deepEqual(linkState(born.id), { documentId: 'doc-b', docKey: '계획서.hwpx', detachedFrom: undefined });
+  assert.equal(getThread(born.id)?.messages.length, 2, 'the newest content still saves');
+
+  // 대화 없이 뗀 채팅은 압축할 것이 없다.
+  const quiet = storedThread({ documentId: 'doc-c', docKey: 'c.hwpx' });
+  upsertThread({ ...quiet, messages: [{ role: 'assistant', text: '안녕하세요' }] });
+  assert.deepEqual(detachThreadDocument(quiet.id)?.documentDetachedFrom, { documentId: 'doc-c', docKey: 'c.hwpx' });
+
+  // 에이전트가 스스로 뗀 채팅은 그 도구 결과가 알렸다 — 다음 시작에 실을 것도, 압축할 것도 없다.
+  const byAgent = storedThread({ documentId: 'doc-d', docKey: 'd.hwpx' });
+  assert.deepEqual(linkState(detachThreadDocument(byAgent.id, { byAgent: true })!.id),
+    { documentId: null, docKey: null, detachedFrom: undefined });
+});
+
+test('a detached chat\'s chat-start, resent after a reconnect too, carries the detached document only without one', () => {
+  const frames: Record<string, any>[] = [];
+  const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    state: 'connected', awaitingWelcome: false, chatStartSent: false, projectWorktreeBinding: null,
+    sendJson(frame: Record<string, any>) { frames.push(frame); return true; },
+    // 사이드바의 제공자는 보내는 순간의 스레드에서 뗀 문서를 읽는다.
+    chatStartContextProvider: () => ({ history: [], detachedFrom: { documentId: 'doc-a', documentName: '보고서.hwpx' } }),
+  }) as any;
+  const start = (documentId: string | null, documentName: string | null) => {
+    bridge.chatStartSent = false;
+    bridge.pendingChatStart = { requestId: `chat-start-${frames.length}`, agent: 'claude', workflow: 'direct', threadId: 'thread-1', documentId, documentName, history: [] };
+    bridge.sendPendingChatStart();
+    return frames.at(-1)!;
+  };
+  const detached = start(null, '보고서.hwpx');
+  assert.deepEqual([detached.documentId, detached.documentName, detached.detachedFrom],
+    [null, null, { documentId: 'doc-a', documentName: '보고서.hwpx' }]);
+  assert.equal('detachedFrom' in start('doc-b', '계획서.hwpx'), false, 'a start with a document never carries it');
 });
 
 /** 브리지의 도구 처리만 떼어 낸 모양 — 편집기의 연결 흐름은 linkDocument 로 흉내 낸다. */
@@ -93,7 +154,7 @@ function linkBridge(options: {
   const bridge = Object.create(AgentBridgeImpl.prototype) as any;
   Object.assign(bridge, {
     state: 'connected', threadId: 'thread-1', documentId: null, documentName: null, activeAgent: 'claude',
-    pendingChatStart: null, chatStartSent: false, requestSeq: 0, pendingDocumentLinkId: null,
+    pendingChatStart: null, chatStartSent: false, requestSeq: 0, pendingDocumentLinkId: null, pendingDocumentDetachId: null,
     requests: new PendingRequestRegistry(),
     activeProviderTurnId: 'turn-1', turnRunning: true, activeToolRequests: 0, activeToolRequestControllers: new Map(),
     inFlightWrites: new Set(), versionCommitInFlight: null, workflow: 'direct', phase: 'direct', permissionProfile: 'safe',
@@ -178,6 +239,45 @@ test('a hub refusal reaches the agent as THREAD_ALREADY_LINKED and bad arguments
   assert.deepEqual(invalid.responses.map((response) => response.error?.code), ['INVALID_ARGS', 'INVALID_NAME']);
 });
 
+test('detach_document hands the call to the editor, which tells the hub before the bridge closes', async () => {
+  const detaches: ChatDocumentDetachRequest[] = [];
+  let hubReply: (frame: Record<string, any>) => Record<string, unknown> = (frame) => ({
+    type: 'chat-document-detached', requestId: frame.requestId, threadId: frame.threadId, documentId: frame.documentId,
+  });
+  const { bridge, frames, responses, call } = linkBridge();
+  bridge.documentId = 'doc-old';
+  const send = bridge.sendJson;
+  bridge.sendJson = (frame: Record<string, any>) => {
+    if (frame.type === 'chat-detach-document') queueMicrotask(() => bridge.handleMessage(hubReply(frame)));
+    return send.call(bridge, frame);
+  };
+  // 편집기는 채팅을 옮기기 직전에 허브에 알린다. 그 뒤 이 브리지는 닫혀 도구 응답을 보내지 않는다.
+  bridge.detachDocument = async (request: ChatDocumentDetachRequest) => {
+    detaches.push(request);
+    await bridge.detachChatDocument({ threadId: 'thread-1', callId: request.callId });
+  };
+  call(7, 'detach_document', {});
+  await settle();
+  await settle();
+  assert.deepEqual(detaches, [{ threadId: 'thread-1', callId: 7 }]);
+  const detach = frames.find((frame) => frame.type === 'chat-detach-document');
+  assert.deepEqual(
+    { threadId: detach?.threadId, documentId: detach?.documentId, callId: detach?.callId },
+    { threadId: 'thread-1', documentId: 'doc-old', callId: 7 },
+  );
+  assert.equal(bridge.getDocumentSelectionIdentity().documentId, null, 'the chat no longer writes to the old document');
+  assert.ok(frames.indexOf(detach!) < frames.findIndex((frame) => frame.type === 'tool-response'));
+
+  // 허브가 거절하면 그 이유가 에이전트에게 간다 — 편집기는 옮기지 않고 되돌린다.
+  bridge.documentId = 'doc-old';
+  hubReply = (frame) => ({ type: 'chat-error', requestId: frame.requestId, requestType: 'chat-detach-document', code: 'REQUEST_INVALIDATED', message: 'no call' });
+  call(8, 'detach_document', {});
+  await settle();
+  await settle();
+  assert.deepEqual(responses.at(-1)?.error, { code: 'DETACH_FAILED', message: 'no call' });
+  assert.equal(bridge.getDocumentSelectionIdentity().documentId, 'doc-old');
+});
+
 test('a draft chat has no hub session to tell — its first chat-start carries the document', async () => {
   const { bridge, frames } = linkBridge();
   bridge.activeAgent = null;
@@ -230,23 +330,11 @@ test('in 에이전트 mode the chat that created a document writes to it directl
   assert.equal(planning.direct, false, 'plan mode before approval does not write');
 });
 
-const linkRequest: ChatPermissionRequest = {
-  requestId: 'link-1', threadId: 'thread-1', documentId: null, turnId: 'turn-1', agent: 'codex',
-  capability: 'document-link', kind: 'open', documentName: '2026 사업계획서.hwpx',
-  path: '/Users/hama/Documents/2026 사업계획서.hwpx', reason: '문서 연결', createdAt: '2026-10-17T00:00:00Z',
-};
-
-test('a document-link consent is one request only — never a chat-wide grant', () => {
-  assert.deepEqual(readChatPermissionRequest(linkRequest), linkRequest);
-  const { reason: _reason, ...withoutReason } = linkRequest;
-  assert.equal(readChatPermissionRequest(withoutReason)?.reason, '문서 연결 · 2026 사업계획서.hwpx');
-  assert.equal(readChatPermissionRequest({ ...linkRequest, documentName: '' }), null);
-  // 최근 문서를 id 로 여는 요청은 이름 없이 오고, 사이드바가 최근 문서에서 이름을 찾는다.
-  const byId = readChatPermissionRequest({ ...withoutReason, documentName: null, path: undefined, linkDocumentId: 'doc-recent' });
-  assert.deepEqual([byId?.documentName, byId?.linkDocumentId, byId?.reason], [undefined, 'doc-recent', '문서 연결']);
-  assert.equal(readChatPermissionRequest({ ...linkRequest, kind: 'browser-use-account' })?.kind, undefined);
-  assert.deepEqual(readChatPermissionGrants(['document-link', 'project-edit']), ['project-edit']);
-
+test('a permission request still closes when the chat gets a document while it waits', () => {
+  const request: ChatPermissionRequest = {
+    requestId: 'permission-1', threadId: 'thread-1', documentId: null, turnId: 'turn-1', agent: 'codex',
+    capability: 'project-edit', reason: '자료를 저장합니다', createdAt: '2026-10-17T00:00:00Z',
+  };
   const events: SidebarEvent[] = [];
   const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     threadId: 'thread-1', documentId: null, state: 'connected', pendingChatPermissionRequest: null,
@@ -254,29 +342,13 @@ test('a document-link consent is one request only — never a chat-wide grant', 
     referenceContext() { return { threadId: this.threadId, documentId: this.documentId }; },
     sendJson: () => true, syncEditingLease() {}, emit(event: SidebarEvent) { events.push(event); },
   });
-  bridge.handleMessage({ type: 'chat-permission-requested', request: linkRequest });
-  bridge.handleMessage({ type: 'chat-permission-resolved', requestId: 'link-1', threadId: 'thread-1', documentId: null,
-    outcome: { status: 'granted' }, grants: ['document-link'] });
-  assert.equal(bridge.getPendingChatPermissionRequest(), null, 'the granted link request resolves');
-  assert.deepEqual(bridge.getChatPermissionGrants(), [], 'and leaves no grant behind');
-  assert.ok(events.some((event) => event.type === 'chat-permission-resolved' && event.outcome.status === 'granted'));
-});
-
-test('a link made by the user while the agent asks to link still closes that question', () => {
-  const events: SidebarEvent[] = [];
-  const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
-    threadId: 'thread-1', documentId: null, state: 'connected', pendingChatPermissionRequest: null,
-    chatPermissionGrants: [], requestSeq: 0, turnRunning: false,
-    referenceContext() { return { threadId: this.threadId, documentId: this.documentId }; },
-    sendJson: () => true, syncEditingLease() {}, emit(event: SidebarEvent) { events.push(event); },
-  });
-  bridge.handleMessage({ type: 'chat-permission-requested', request: linkRequest });
-  // 사용자가 문서 선택으로 먼저 이었다. 허브는 기다리던 요청을 그 요청의 문서(null)로 끝낸다.
+  bridge.handleMessage({ type: 'chat-permission-requested', request });
+  // 사용자가 문서 선택으로 이었다. 허브는 기다리던 요청을 그 요청의 문서(null)로 끝낸다.
   bridge.documentId = 'doc-user';
-  bridge.handleMessage({ type: 'chat-permission-resolved', requestId: 'link-1', threadId: 'thread-1', documentId: null,
+  bridge.handleMessage({ type: 'chat-permission-resolved', requestId: 'permission-1', threadId: 'thread-1', documentId: null,
     outcome: { status: 'expired', reason: 'document-linked' }, grants: [] });
   assert.equal(bridge.getPendingChatPermissionRequest(), null);
-  assert.ok(events.some((event) => event.type === 'chat-permission-resolved' && event.requestId === 'link-1'));
+  assert.ok(events.some((event) => event.type === 'chat-permission-resolved' && event.requestId === 'permission-1'));
 });
 
 function chat(state: { unlinked: boolean; active: boolean; busy: boolean; threadId?: string | null }): RoutingChat {

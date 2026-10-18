@@ -1,0 +1,33 @@
+/* 문서 연결 단추 — 브라우저 단추(.ag-browser-trigger)와 같은 크기와 상태. */
+.ag-doc-link-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ag-text-secondary, var(--n-text-secondary));
+  cursor: pointer;
+}
+
+.ag-doc-link-toggle[hidden] {
+  display: none;
+}
+
+.ag-doc-link-toggle:hover:not([aria-disabled='true']) {
+  background: var(--ag-active);
+  color: var(--ag-text, var(--n-text));
+}
+
+.ag-doc-link-toggle:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-doc-link-toggle[aria-disabled='true'] {
+  color: var(--ag-text-disabled);
+  cursor: default;
+}

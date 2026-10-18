@@ -157,6 +157,17 @@ test('a resumed session compacts on request and maps the CLI compaction frames',
   await session.dispose();
 });
 
+test('compact instructions ride after /compact as the summarization hint', async () => {
+  const { session, children } = startSession({ resumeSessionId: SID });
+  session.compact({ instructions: 'Keep what was decided about the budget.' });
+  await waitUntil(() => children.length === 1);
+  assert.equal(children[0].argv.includes('--disable-slash-commands'), false);
+  assert.deepEqual(children[0].stdin.chunks.map((line) => JSON.parse(line).message.content[0].text), [
+    '/compact Keep what was decided about the budget.',
+  ]);
+  await session.dispose();
+});
+
 test('a resumed conversation missing from the store retries once on a fresh session with the full transcript', async () => {
   const { session, events, children } = startSession({ resumeSessionId: '11111111-2222-4333-8444-555555555555' });
   session.sendUserMessage('delta only', { resumeFallbackText: 'full transcript' });

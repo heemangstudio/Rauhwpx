@@ -3,11 +3,17 @@
  * 두 단추가 그 채팅에 문서를 잇는다(편집기가 정한다). 문서가 열리면 바로 내려간다.
  * 종이 테두리는 손으로 그은 듯 고르지 않은 점선이다. 종이를 눌러도 파일 열기와 같다. 종이 안에는 하마가 엎드려 잔다 — 스프라이트(hama-sprites.png)의
  * 깜빡임 자세 머리와 같은 색으로 그린 픽셀 그림이다. 모양은 styles/empty-document-view.css.
+ * 채팅이 문서를 떼고 이 자리로 오면(arrive) 종이 테두리가 한 변씩 그어지고 하마가 마지막에 비친다.
  */
 export interface EmptyDocumentView {
   readonly element: HTMLElement;
   setVisible(visible: boolean): void;
+  /** 다음에 보일 때(이미 보이면 지금) 한 번, 종이가 한 변씩 그어지고 하마가 마지막에 비친다. */
+  arrive(): void;
 }
+
+/** 도착 장면 길이(css 의 마지막 애니메이션이 끝나는 때와 같다). */
+const ARRIVAL_MS = 450;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** 하마 스프라이트의 다섯 색 — A 윗빛, D 몸, B 그늘, E 깊은 그늘, C 입·눈. */
@@ -153,10 +159,26 @@ export function createEmptyDocumentView(actions: { create(): void; open(): void 
   open.addEventListener('click', () => actions.open());
   row.append(create, open);
   element.append(paper, row);
+  let arrivalPending = false;
+  let arrivalTimer = 0;
+  const playArrival = (): void => {
+    arrivalPending = false;
+    window.clearTimeout(arrivalTimer);
+    // 이어서 부르면 처음부터 다시 그린다.
+    element.classList.remove('empty-document-arriving');
+    void element.offsetWidth;
+    element.classList.add('empty-document-arriving');
+    arrivalTimer = window.setTimeout(() => element.classList.remove('empty-document-arriving'), ARRIVAL_MS);
+  };
   return {
     element,
     setVisible(visible) {
       element.hidden = !visible;
+      if (visible && arrivalPending) playArrival();
+    },
+    arrive() {
+      if (element.hidden) arrivalPending = true;
+      else playArrival();
     },
   };
 }

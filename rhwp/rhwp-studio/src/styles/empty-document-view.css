@@ -143,7 +143,48 @@
   background: color-mix(in srgb, var(--ui-text) 86%, var(--ui-surface-raised));
 }
 
+/* 문서를 뗀 채팅이 이 자리로 오면: 종이 테두리가 위·오른쪽·아래·왼쪽 차례로 한 변씩 그어지고(덧선은 마지막 변과
+   함께), 단추가 두 칸에 걸쳐 비친 뒤 하마가 마지막에 두 칸으로 비친다. 모두 계단식이다. */
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke,
+.empty-document-arriving .empty-document-paper-retrace {
+  animation: empty-document-arrive 75ms steps(1, end) both;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(2) {
+  animation-delay: 75ms;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(3) {
+  animation-delay: 150ms;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(4),
+.empty-document-arriving .empty-document-paper-retrace {
+  animation-delay: 225ms;
+}
+
+.empty-document-arriving .empty-document-actions {
+  animation: empty-document-arrive 150ms steps(2, end) both;
+  animation-delay: 75ms;
+}
+
+.empty-document-arriving .empty-document-hama {
+  animation: empty-document-arrive 150ms steps(2, end) both;
+  animation-delay: 300ms;
+}
+
+@keyframes empty-document-arrive {
+  from { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke,
+  .empty-document-arriving .empty-document-paper-retrace,
+  .empty-document-arriving .empty-document-actions,
+  .empty-document-arriving .empty-document-hama {
+    animation: none;
+  }
+
   .empty-document-paper,
   .empty-document-paper-outline {
     transition: none;

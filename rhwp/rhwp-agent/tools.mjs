@@ -843,7 +843,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'open_document',
-    description: 'Link an existing document to this chat and open it: documentId from list_documents or mentions, or path (absolute .hwp/.hwpx/.hml, desktop app). The user confirms; a chat links one document, permanently, and writes then target it.',
+    description: 'Attach an existing document to this chat and open it: documentId from list_documents or mentions, or path (absolute .hwp/.hwpx/.hml, desktop app). A chat has one document at a time; call detach_document first to switch. Writes then target it.',
     shape: {
       documentId: z.string().min(1).max(256).optional(),
       path: z.string().min(1).max(4_096).optional(),
@@ -854,11 +854,16 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'create_document',
-    description: 'Create a blank .hwpx document named name and link it to this chat. The desktop app saves it in folder (absolute, inside home; default ~/Documents/HamaEditor). The user confirms; a chat links one document, permanently.',
+    description: 'Create a blank .hwpx document named name and attach it to this chat. The desktop app saves it in folder (absolute, inside home; default ~/Documents/HamaEditor). A chat has one document at a time; call detach_document first to switch.',
     shape: {
       name: z.string().min(1).max(120).describe('File name without extension'),
       folder: z.string().min(1).max(4_096).optional(),
     },
+  },
+  {
+    name: 'detach_document',
+    description: 'Detach this chat from its document. Unsaved changes are saved first and the document closes; for a never-saved document the user picks where to save, and if they cancel the chat stays attached. The conversation continues; the document stays readable by documentId, but this chat can no longer edit it or use its project files. open_document or create_document then attaches another.',
+    shape: {},
   },
   {
     name: 'template_get_page_layout',
@@ -1914,9 +1919,10 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   get_active_template: 'template-read',
   // 라이브 문서를 읽지 않는다 — 허브가 결과를 revision·문서 정보로 기록하지 않는다(LIVE_UNTRACKED_READ_TOOLS).
   list_documents: 'document-read',
-  // 문서 없는 채팅에 문서를 하나 연결한다 — 문서 없이 시작한 세션에만 등록된다(filterToolDefinitions documentLink).
+  // 채팅의 문서를 붙이고 뗀다 — 루트 채팅에만 등록된다(filterToolDefinitions documentLink). 붙었는지는 허브가 부를 때 본다.
   open_document: 'document-link',
   create_document: 'document-link',
+  detach_document: 'document-link',
   template_get_page_layout: 'template-read',
   get_structure: 'document-read',
   get_text_range: 'document-read',
@@ -2018,12 +2024,12 @@ export const FOREIGN_READ_TOOL_NAMES = Object.freeze(TOOL_DEFINITIONS
 // 서식 틀 작업자만 뺀다. 채팅의 프로젝트 쓰기·가져오기는 설정으로 끌 수 있다(filterToolDefinitions).
 const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'project-ingest']);
 
-// 문서 연결: open_document 는 모든 채팅 단계에, create_document 는 문서를 쓸 수 있는 단계(direct·implementing)에만 보인다.
+// 문서 연결: open_document·detach_document 는 모든 채팅 단계에, create_document 는 문서를 쓸 수 있는 단계(direct·implementing)에만 보인다.
 export const TOOL_PROFILES = Object.freeze({
   direct: Object.freeze(['browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
   implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
@@ -2050,7 +2056,7 @@ export const TOOL_PROFILES = Object.freeze({
  * MCP 프로세스 환경에서 프로젝트 도구 게이트를 읽는다. 허브가 mcpCapabilityEnv 로 넣는다.
  * - RHWP_PROJECT_WRITES=0: 채팅에서 프로젝트 쓰기·가져오기를 끈 설정(질문 워크플로에만 실린다).
  * - RHWP_HOME_SEARCH=1: 데스크톱 홈 폴더 검색이 켜져 있다.
- * - RHWP_DOCUMENT_LINK=1: 문서 없이 시작한 채팅이다(open_document·create_document).
+ * - RHWP_DOCUMENT_LINK=1: 루트 채팅이다 — 문서를 붙이고 뗄 수 있다(open_document·create_document·detach_document).
  * @param {Record<string, string|undefined>} env
  */
 export function projectToolGatesFromEnv(env = process.env) {
@@ -2082,7 +2088,7 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
     if (definition.name === 'browser_request_account' && !requestableProfile) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
-    // 문서 연결 도구는 문서 없이 시작한 채팅에만 보인다.
+    // 문서 연결 도구는 루트 채팅에만 보인다(작업자·하위 작업 제외).
     if (definition.category === 'document-link' && documentLink !== true) return false;
     if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;
     return true;
