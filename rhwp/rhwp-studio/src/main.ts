@@ -306,7 +306,10 @@ import {
   type KnownDocumentSources,
 } from './agent/foreign-documents.ts';
 import { initAgentSidebar, type DocumentDetachStart } from './ui/agent-sidebar/index.ts';
-import { markStudioReady } from './ui/boot-screen.ts';
+import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
+import { isInitialSetupActive, onInitialSetupInactive } from './ui/initial-setup/active.ts';
+import { desktopGiftApi } from './ui/special-event/gift.ts';
+import { startSpecialEvent } from './ui/special-event/special-event-trigger.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -5826,6 +5829,19 @@ function showLoadError(error: unknown): void {
 const initPromise = initialize();
 // 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
 void initPromise.then(markStudioReady, markStudioReady);
+// 특별 이벤트(macOS 데스크톱만). 라이선스 확인과 편집기 준비가 끝나고 부트 화면이 걷힌 뒤 본다.
+void initPromise.then(() => {
+  const gift = desktopGiftApi();
+  if (!gift) return;
+  startSpecialEvent({
+    gift,
+    storage: localStorage,
+    whenReady: afterBootScreen,
+    isSetupActive: isInitialSetupActive,
+    onSetupInactive: onInitialSetupInactive,
+    open: async (options) => (await import('./ui/special-event/special-event-popup.ts')).openSpecialEventPopup(options),
+  });
+}, () => {});
 
 installEmbedRuntime({
   hostWindow: window,

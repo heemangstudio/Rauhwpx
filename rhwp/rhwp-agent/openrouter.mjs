@@ -42,9 +42,11 @@ function creditKeyId(key) {
  * @property {boolean} supportsImages
  */
 
-function openRouterError(code, message) {
+function openRouterError(code, message, status) {
   const error = new Error(message);
   error.code = code;
+  // HTTP 상태를 실어 두면 부르는 쪽이 402(크레딧 소진)를 문구 없이 알아본다.
+  if (Number.isInteger(status)) error.status = status;
   return error;
 }
 
@@ -155,7 +157,9 @@ function messageText(message) {
  * OpenRouter REST 클라이언트. 네트워크는 전부 fetchImpl 로 주입 가능하다.
  *
  * @param {{ fetchImpl?: typeof fetch, now?: () => number, cacheDir?: string|null,
- *           baseUrl?: string, timeoutMs?: number, platform?: NodeJS.Platform }} [deps]
+ *           baseUrl?: string, timeoutMs?: number, platform?: NodeJS.Platform,
+ *           keyInfoPath?: string }} [deps]
+ *   keyInfoPath: 키 정보 경로. OpenRouter 는 /key, 선물 크레딧 프록시는 /auth/key 다.
  */
 export function createOpenRouter({
   fetchImpl = globalThis.fetch,
@@ -164,6 +168,7 @@ export function createOpenRouter({
   baseUrl = API_BASE,
   timeoutMs = REQUEST_TIMEOUT_MS,
   platform = process.platform,
+  keyInfoPath = '/key',
 } = {}) {
   const cachePath = cacheDir ? path.join(cacheDir, CATALOG_CACHE_FILE) : null;
   /** @type {{ models: CatalogModel[], fetchedAt: number } | null} */
@@ -237,6 +242,7 @@ export function createOpenRouter({
       detail
         ? `OpenRouter ${what} 요청이 실패했어요 (HTTP ${result.status}): ${detail}`
         : `OpenRouter ${what} 요청이 실패했어요 (HTTP ${result.status})`,
+      result.status,
     );
   }
 
@@ -290,6 +296,9 @@ export function createOpenRouter({
   }
 
   return {
+    /** 이 클라이언트가 요청을 보내는 API 주소. */
+    baseUrl,
+
     /**
      * 키가 유효한지 확인한다. 401/403 은 예외가 아니라 valid:false 로 돌려준다.
      *
@@ -298,7 +307,7 @@ export function createOpenRouter({
     async validateKey(key) {
       const trimmed = String(key ?? '').trim();
       if (!trimmed) return { valid: false, label: null, limit: null, usage: null, isFreeTier: false };
-      const result = await request('/key', { key: trimmed });
+      const result = await request(keyInfoPath, { key: trimmed });
       if (result.status === 401 || result.status === 403) {
         return { valid: false, label: null, limit: null, usage: null, isFreeTier: false };
       }
@@ -373,9 +382,9 @@ export function createOpenRouter({
         throw openRouterError('OPENROUTER_BUSY', 'OpenRouter 잔액 조회가 너무 많이 진행 중이에요');
       }
       const loading = (async () => {
-        const keyResult = await request('/key', { key: trimmed });
+        const keyResult = await request(keyInfoPath, { key: trimmed });
         if (keyResult.status === 401 || keyResult.status === 403) {
-          throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요');
+          throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요', keyResult.status);
         }
         if (!keyResult.ok) throw httpError(keyResult, '키 확인');
         const fromLimit = creditsFromKeyLimit(keyResult.parsed?.data ?? {}, now());
@@ -387,7 +396,7 @@ export function createOpenRouter({
         }
         const result = await request('/credits', { key: trimmed });
         if (result.status === 401 || result.status === 403) {
-          throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요');
+          throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요', result.status);
         }
         if (!result.ok) throw httpError(result, '잔액');
         const data = result.parsed?.data ?? {};
@@ -432,7 +441,7 @@ export function createOpenRouter({
         method: 'POST', key: trimmed, body, timeout,
       });
       if (result.status === 401 || result.status === 403) {
-        throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요');
+        throw openRouterError('OPENROUTER_KEY_INVALID', 'OpenRouter 키가 거절됐어요', result.status);
       }
       if (!result.ok) throw httpError(result, '응답 생성');
       const choice = result.parsed?.choices?.[0];

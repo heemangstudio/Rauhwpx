@@ -87,6 +87,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
     case 'auth_required':
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
+      if (failure.code === 'gift_credits') return '선물 크레딧을 모두 사용했어요';
       return failure.code === 'openrouter_credits' ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
       return `${label} 서버가 요청을 처리하지 못했어요`;
@@ -134,6 +135,12 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       }
       break;
     case 'usage_limit': {
+      if (failure.code === 'gift_credits') {
+        // 내 키가 있으면 허브가 다음 요청부터 그 키로 넘어가므로 다시 보내면 된다. 없으면 설정에서 키를 잇는다.
+        actions.push({ id: 'settings', label: '설정 열기' });
+        retryAllowed = true;
+        break;
+      }
       const credits = failure.code === 'openrouter_credits';
       const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
       if (ctx.resumeArmed && future) {

@@ -232,6 +232,8 @@ export interface MockLiveChat {
 
 export interface MockBridgeOptions {
   liveChat?: MockLiveChat;
+  /** Pi 가 선물 크레딧을 쓰는 중인지(mock-gift). 허브처럼 내 키보다 먼저 쓴다. */
+  piGift?: () => boolean;
 }
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
@@ -426,6 +428,44 @@ export function createMockBridge(
   const staged = new Map<string, T.StagedReference>();
   const emit = (event: T.SidebarEvent) =>
     listeners.forEach((listener) => listener(event));
+  /** 선물 프록시의 Claude 모델. 허브처럼 내 키의 모델과 따로 두고 처음에는 Sonnet·Haiku·Opus 를 고른다. */
+  const giftCatalog = [
+    { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', prompt: 0.000003, completion: 0.000015 },
+    { id: 'anthropic/claude-haiku-5.5', name: 'Claude Haiku 5.5', prompt: 0.000001, completion: 0.000005 },
+    { id: 'anthropic/claude-opus-5.5', name: 'Claude Opus 5.5', prompt: 0.000005, completion: 0.000025 },
+  ];
+  const giftModelConfig = (id: string, name: string, defaultEffort: T.PiModelConfig['defaultEffort'] = 'medium'): T.PiModelConfig => {
+    const entry = giftCatalog.find((model) => model.id === id);
+    return {
+      id,
+      name,
+      reasoning: true,
+      supportsImages: true,
+      efforts: ['low', 'medium', 'high'],
+      defaultEffort,
+      contextLength: 200000,
+      pricing: { prompt: entry?.prompt ?? 0.000003, completion: entry?.completion ?? 0.000015 },
+    };
+  };
+  let giftModels = giftCatalog.map((model) => giftModelConfig(model.id, model.name));
+  let giftDefaultModelId: string | null = giftModels[0].id;
+  const giftActive = () => options.piGift?.() === true;
+  /** 허브의 자격 우선순위: 선물 → 내 키 → 없음. 선물이면 내 키 없이도 설정이 끝나고 선물 모델이 보인다. */
+  const syncPi = (): T.PiStatus => {
+    data.pi.credential = giftActive() ? 'gift' : data.pi.keyConfigured ? 'own' : 'none';
+    if (data.pi.credential !== 'gift') return data.pi;
+    return {
+      ...data.pi,
+      models: giftModels,
+      defaultModelId: giftDefaultModelId,
+      setupComplete: data.pi.installed && giftModels.length > 0,
+    };
+  };
+  const emitPi = () => {
+    const status = syncPi();
+    setPiModels(status.models);
+    emit({ type: 'pi-status', status });
+  };
   const later = (fn: () => void, delay = 20) => {
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -569,7 +609,7 @@ export function createMockBridge(
     if (provider === 'pi') {
       data.pi.keyConfigured = true;
       data.pi.setupComplete = true;
-      emit({ type: 'pi-status', status: data.pi });
+      emitPi();
     }
     Object.assign(data.setups[provider], {
       connected: true,
@@ -1017,7 +1057,7 @@ export function createMockBridge(
       if (provider === 'pi') {
         data.pi.keyConfigured = false;
         data.pi.setupComplete = false;
-        emit({ type: 'pi-status', status: data.pi });
+        emitPi();
       }
       Object.assign(data.setups[provider], {
         connected: false,
@@ -1060,18 +1100,26 @@ export function createMockBridge(
       data.usage.plans[provider] = plan;
       return data.usage;
     },
-    requestPiStatus: async () => data.pi,
+    requestPiStatus: async () => syncPi(),
     installPi: async () => {
       await bridge.installAgent('pi');
-      emit({ type: 'pi-status', status: data.pi });
-      return data.pi;
+      emitPi();
+      return syncPi();
     },
     setPiKey: async () => {
       authenticate('pi');
       data.pi.keyTail = 'demo';
-      return data.pi;
+      return syncPi();
     },
-    requestPiCatalog: async () => [
+    requestPiCatalog: async () => giftActive() ? giftCatalog.map((model) => ({
+      id: model.id,
+      name: model.name,
+      provider: 'anthropic',
+      contextLength: 200000,
+      pricing: { prompt: model.prompt, completion: model.completion },
+      reasoning: true,
+      supportsImages: true,
+    })) : [
       { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6', provider: 'anthropic' },
       { id: 'anthropic/claude-opus-4.6', name: 'Claude Opus 4.6', provider: 'anthropic' },
       { id: 'openai/gpt-5.2', name: 'GPT-5.2', provider: 'openai' },
@@ -1085,6 +1133,12 @@ export function createMockBridge(
       supportsImages: true,
     })),
     setPiModels: async (models) => {
+      if (giftActive()) {
+        giftModels = models.map((model) => giftModelConfig(model.id, model.name ?? model.id, model.defaultEffort ?? 'medium'));
+        giftDefaultModelId = giftModels[0]?.id ?? null;
+        emitPi();
+        return syncPi();
+      }
       data.pi.models = models.map((model) => ({
         ...model,
         defaultEffort: model.defaultEffort ?? 'medium',
@@ -1095,9 +1149,8 @@ export function createMockBridge(
         pricing: { prompt: 0.000003, completion: 0.000015 },
       }));
       data.pi.defaultModelId = models[0]?.id ?? null;
-      setPiModels(data.pi.models);
-      emit({ type: 'pi-status', status: data.pi });
-      return data.pi;
+      emitPi();
+      return syncPi();
     },
     startChat: (
       provider,
@@ -2080,7 +2133,7 @@ export function createMockBridge(
       keyConfigured: configured,
       setupComplete: configured,
     });
-    emit({ type: 'pi-status', status: data.pi });
+    emitPi();
     emit({ type: 'provider-status', providers: data.providers });
     setupChanged();
   }
@@ -2175,8 +2228,7 @@ export function createMockBridge(
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {
-      setPiModels(data.pi.models);
-      emit({ type: 'pi-status', status: data.pi });
+      emitPi();
       emit({ type: 'provider-status', providers: data.providers });
       setupChanged();
       emit({ type: 'usage-report', usage: data.usage });
@@ -2184,6 +2236,8 @@ export function createMockBridge(
       if (!options.liveChat?.deferWelcome) deliverWelcome();
     },
     deliverWelcome,
+    /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */
+    syncPiStatus: emitPi,
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       compactions: compactions.map((entry) => ({ ...entry })),

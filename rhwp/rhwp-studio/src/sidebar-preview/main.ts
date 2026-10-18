@@ -47,6 +47,9 @@ import { mountCitationScenes } from './mock-citations.ts';
 import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-guard.ts';
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
+import { createMockGift, mockGiftMode } from './mock-gift.ts';
+import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
+import { isInitialSetupActive, onInitialSetupInactive } from '../ui/initial-setup/active.ts';
 
 const params = new URLSearchParams(location.search);
 /** `vault=1|empty|unsupported|fail`: 데스크톱 앱의 Chrome 비밀번호 보관함을 흉내 낸다. */
@@ -173,13 +176,19 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
       : reload === 'ended-error' ? { ended: 'error' as const } : {}),
   }
   : undefined;
+/*
+ * 선물 크레딧. `gift=unclaimed|claimed|exhausted|off` 가 Pi 설정의 선물 줄과 `event=special` 창을 함께 정한다.
+ * 받은 선물이 남아 있으면 Pi 상태의 credential 이 'gift' 다.
+ */
+const mockGift = createMockGift(mockGiftMode(params), { failClaim: params.get('claim') === 'fail' });
 const mock = createMockBridge(report, () => {
   undoState.entry = {};
   if (restoreState.turnKey) {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat });
+}, { liveChat, piGift: () => mockGift?.active() === true });
+mockGift?.api.onChange(() => mock.syncPiStatus());
 const previewProjects = mock.projects;
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
@@ -274,6 +283,23 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
 }
 applyTheme();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
+if (params.get('event') === 'special' && mockGift) {
+  // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
+  const records = new Map<string, string>();
+  startSpecialEvent({
+    gift: mockGift.api,
+    storage: { getItem: (key) => records.get(key) ?? null, setItem: (key, value) => { records.set(key, value); } },
+    whenReady: async () => {},
+    isSetupActive: isInitialSetupActive,
+    onSetupInactive: onInitialSetupInactive,
+    open: async (options) => {
+      const { openSpecialEventPopup } = await import('../ui/special-event/special-event-popup.ts');
+      const result = await openSpecialEventPopup(options);
+      report(`Special event closed: ${result} (sample)`);
+      return result;
+    },
+  });
+}
 
 /** Swap the document of the primary session, as the editor's move does. */
 async function moveDocument(
@@ -501,6 +527,7 @@ const sidebar = initAgentSidebar({
     return true;
   },
   turnRestore,
+  gift: mockGift?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
@@ -728,6 +755,7 @@ if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
+  gift: mockGift,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,

@@ -190,7 +190,12 @@ const SHARED_CODES = Object.freeze({
   cli_missing: 'process_exited',
   cleanup_uncertain: 'process_exited',
   openrouter_credits: 'usage_limit',
+  // Pi 선물 크레딧: 다 썼거나(gift_credits) 잔액이 있는데 잠깐 거절됐다(gift_retry).
+  gift_credits: 'usage_limit',
+  gift_retry: 'provider_error',
   PI_MODEL_MISSING: 'invalid_request',
+  // Pi 어댑터도 쓴다: 선물 크레딧이 떨어졌는데 내 키가 없을 때.
+  PI_NOT_CONFIGURED: 'auth_required',
 });
 
 /** 프로바이더 실패로 보는 허브 chat-error 코드. 나머지(AGENT_BUSY 등)는 평범한 허브 오류다. */
