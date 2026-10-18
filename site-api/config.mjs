@@ -28,6 +28,10 @@ export function resolveLicensesDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'licenses.json');
 }
 
+export function resolveDownloadsDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'downloads.json');
+}
+
 export function resolveWebhookLogDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'webhook-log.json');
 }

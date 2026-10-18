@@ -13,6 +13,7 @@ import {
   resolveUniqueInstallsDbPath,
   resolveWaitlistDbPath,
   resolveWebhookLogDbPath,
+  resolveDownloadsDbPath,
 } from './config.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
@@ -28,6 +29,7 @@ import {
   emptyUniqueInstallsState,
 } from './unique-installs.mjs';
 import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
+import { createDownloadsService, emptyDownloadsState } from './downloads.mjs';
 import { createWebhookAlerter } from './webhook-alert.mjs';
 import { createWebhookLog, emptyWebhookLogState, webhookLogEntry } from './webhook-log.mjs';
 
@@ -112,7 +114,7 @@ function errorStatus(error) {
   if (error?.licenseError && Number.isInteger(error.status)) return error.status;
   if (error?.code === 'RATE_LIMITED') return 429;
   if (error?.code === 'BODY_TOO_LARGE') return 413;
-  if (error?.code === 'WAITLIST_FORBIDDEN') return 403;
+  if (error?.code === 'WAITLIST_FORBIDDEN' || error?.code === 'DOWNLOADS_FORBIDDEN') return 403;
   if (error?.code === 'UNIQUE_INSTALLS_CAPACITY_EXCEEDED'
     || error?.code === 'WAITLIST_CAPACITY_EXCEEDED') return 503;
   if (error?.code === 'ERR_INVALID_URL' || error?.code?.endsWith?.('_INVALID')) return 400;
@@ -136,6 +138,7 @@ function securityHeaders(isHtml) {
 export function siteRequestListener({
   uniqueInstalls,
   waitlist,
+  downloads,
   licenses,
   gifts,
   licenseConfig = {},
@@ -408,6 +411,19 @@ export function siteRequestListener({
           allow('waitlist-read', 30, TEN_MINUTES);
           send(200, await waitlist.list(bearerToken(req)));
           return;
+        // Website download buttons (navigator.sendBeacon, text/plain JSON). Counts only; the IP is used
+        // only by the in-memory rate limiter and never stored.
+        case 'POST /v1/downloads':
+          if (!downloads) throw siteError('NOT_FOUND', 'not found');
+          cors = { 'Access-Control-Allow-Origin': '*' };
+          allow('downloads-write', 30, TEN_MINUTES);
+          send(200, await downloads.record(await readJson(req)));
+          return;
+        case 'GET /v1/admin/downloads':
+          if (!downloads) throw siteError('NOT_FOUND', 'not found');
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await downloads.summary(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
         default:
           send(404, { error: 'NOT_FOUND' });
       }
@@ -453,6 +469,11 @@ export function createSiteServer(env = process.env, options = {}) {
     telegramChatId: env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
   });
   const licenseConfig = resolveLicenseConfig(env);
+  const downloads = createDownloadsService({
+    store: createFileStore(resolveDownloadsDbPath(env), { emptyState: emptyDownloadsState }),
+    adminToken: licenseConfig.adminToken,
+    now: options.now,
+  });
   const signingKey = parseSigningPrivateKey(licenseConfig.signingPrivateKey);
   if (signingKey) {
     const publicKey = publicKeyFromPrivate(signingKey);
@@ -498,7 +519,7 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, log });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
   const server = http.createServer((req, res) => {

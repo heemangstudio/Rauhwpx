@@ -14,6 +14,7 @@
 //   node scripts/license-admin.mjs restore --key HAMA-...
 //   node scripts/license-admin.mjs reset-devices --key HAMA-...
 //   node scripts/license-admin.mjs resend-email --key HAMA-... [--email new@example.com]
+//   node scripts/license-admin.mjs downloads [--days 30]             # website download starts by day, platform and version
 //   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 import { adminRequest, siteApiBase } from './admin-request.mjs';
@@ -56,6 +57,7 @@ const gets = {
   orders: '/v1/admin/orders',
   webhooks: '/v1/admin/webhooks',
   gifts: '/v1/admin/gifts',
+  downloads: '/v1/admin/downloads',
 };
 if (command === 'webhooks') {
   if (args.rejected && args.held) { process.stderr.write('pick one of --rejected or --held\n'); process.exit(2); }
@@ -75,7 +77,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|extend|gifts|gift-disable [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|extend|downloads|gifts|gift-disable [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
@@ -89,6 +91,12 @@ function expiryLine(license) {
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
   return `${license.key} annual · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
+}
+if (command === 'downloads' && res.ok && parsed) {
+  const pairs = (counts) => Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ') || '-';
+  const lines = [`${parsed.total} downloads since ${parsed.since} · ${pairs(parsed.byPlatform)} · ${pairs(parsed.byVersion)}`];
+  for (const day of parsed.byDay) lines.push(`${day.day} ${day.total} (${pairs(day.counts)})`);
+  process.stdout.write(`\n${lines.join('\n')}\n`);
 }
 const listed = parsed?.licenses ?? (parsed?.license ? [parsed.license] : []);
 if (res.ok && listed.length && listed.every((l) => l.key)) {
