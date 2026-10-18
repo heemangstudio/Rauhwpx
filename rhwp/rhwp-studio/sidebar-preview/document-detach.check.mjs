@@ -32,7 +32,7 @@ export async function checkDocumentDetach({ page, open, screenshot }) {
   await startChat(page, open, 'hold=1');
   await page.waitForFunction(() => window.sidebarPreview.bridge.isTurnRunning());
   assert.deepEqual(await toggle(page), {
-    hidden: false, label: '문서에서 분리', disabled: true, title: '작업이 끝나면 분리할 수 있어요',
+    hidden: false, label: '문서에서 분리', disabled: true, title: '작업 진행 중',
   });
   assert.equal(await page.evaluate(() => window.sidebarPreview.sidebar.beginDocumentDetach()), null,
     'a running chat cannot be detached');

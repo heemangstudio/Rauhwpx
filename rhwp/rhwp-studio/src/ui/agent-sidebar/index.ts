@@ -2456,7 +2456,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return bridge.pendingEdits.getChangeSets().some((set) => set.ops.length > 0) ? '변경을 검토하면 분리할 수 있어요' : null;
     }
     if (isControlLocked() || questionController.hasPending() || bridge.getPendingChatPermissionRequest() !== null
-      || (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval')) return '작업이 끝나면 분리할 수 있어요';
+      || (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval')) return '작업 진행 중';
     if (hasPendingDocumentEdits()) return '변경을 검토하면 분리할 수 있어요';
     return null;
   }
