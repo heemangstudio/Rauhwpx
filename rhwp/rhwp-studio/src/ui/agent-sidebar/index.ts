@@ -1056,10 +1056,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let chatStartPendingThreadId: string | null = null;
   /** 현재 스트리밍 중인 assistant 텍스트 (tool-call 이후에는 새로 연다). */
   let streamBubble: HTMLElement | null = null;
-  /** 끝난 턴의 최종 답변. 다음 턴이 시작될 때까지 스크롤 기준점으로 남는다. */
-  let settledAnswer: HTMLElement | null = null;
-  /** '최근'을 누른 뒤에는 이번 턴 동안 답변 머리 대신 대화 끝을 따라간다. */
-  let followConversationEnd = false;
   const toolRows = new Map<string, ToolRowState>();
   let pendingExecutions: PendingExecution[] = [];
   /**
@@ -3443,11 +3439,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const onMessagesPointerDown = (event: PointerEvent): void => {
     if (event.target === messages && event.offsetX >= messages.clientWidth) stopFollowingConversation();
   };
+  let pointerOnMessagesScrollbar = false;
+  const onMessagesPointerMove = (event: PointerEvent): void => {
+    const onScrollbar = event.target === messages && event.offsetX >= messages.clientWidth;
+    if (onScrollbar === pointerOnMessagesScrollbar) return;
+    pointerOnMessagesScrollbar = onScrollbar;
+    scheduleLatestPillUpdate();
+  };
+  const onMessagesPointerLeave = (): void => {
+    if (!pointerOnMessagesScrollbar) return;
+    pointerOnMessagesScrollbar = false;
+    scheduleLatestPillUpdate();
+  };
   messages.addEventListener('scroll', onMessagesScroll, { passive: true });
   messages.addEventListener('wheel', onMessagesWheel, { passive: true });
   messages.addEventListener('touchstart', onMessagesTouchStart, { passive: true });
   messages.addEventListener('touchmove', onMessagesTouchMove, { passive: true });
   messages.addEventListener('pointerdown', onMessagesPointerDown);
+  messages.addEventListener('pointermove', onMessagesPointerMove, { passive: true });
+  messages.addEventListener('pointerleave', onMessagesPointerLeave);
   /*
    * 대화가 바뀐 뒤 여백·따라가기·최신 알약을 한 번에 잰다. 같은 작업 안의 변경
    * (스트리밍 렌더, 도구 행, 관찰자 알림)은 마이크로태스크 하나로 모여, 프레임마다
@@ -3488,6 +3498,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let messagesResizeFrame: number | null = null;
   const messagesResizeObserver = typeof ResizeObserver === 'function'
     ? new ResizeObserver(() => {
+        if (composerRestMoving) {
+          followComposerRest();
+          return;
+        }
         // 영역 크기가 바뀌면 다음 스프링 프레임부터 목표를 다시 잰다.
         conversationScrollTargetValue = null;
         // 계획 패널 전환 중 관찰한 레이아웃을 같은 전달 주기에서 다시 바꾸지 않는다.
@@ -3539,6 +3553,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (latestPillFrame !== null) return;
     latestPillFrame = window.requestAnimationFrame(() => {
       latestPillFrame = null;
+      // 스트리밍 답을 따라 내려가는 동안 스크롤 막대는 새 블록마다 튀었다가 따라온다.
+      // 그동안은 감추고, 위로 읽거나 막대를 가리키면 다시 보인다.
+      messages.classList.toggle('ag-messages-auto', turnRunning && followConversation && !pointerOnMessagesScrollbar);
       // 끝을 따라가는 중이면 곧 따라잡으므로 띄우지 않는다.
       const catchingUp = followConversation && latestTurnAnchor() === messagesEnd;
       // 나타나는 선과 사라지는 선을 벌려 두어 경계 근처의 작은 흔들림에 깜빡이지 않는다.
@@ -3551,7 +3568,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function scrollConversationToLatest(): void {
-    followConversationEnd = true;
     scrollConversationToMessage(messagesEnd, { smooth: true });
     latestPill.hidden = true;
   }
@@ -3942,22 +3958,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   const composer = el('form', 'ag-composer');
   let composerBottomDistance: number | null = null;
+  /** 펼치는 동안 지킬 맨 아래까지의 거리. 대화 영역이 줄 때마다 다시 맞춘다. */
+  let composerRestPinDistance: number | null = null;
+  let composerRestMoving = false;
+  let composerExpandedHeight = 0;
   const composerRest = createComposerRestingMotion({
     composer,
-    beforeChange: () => {
+    beforeChange: (next) => {
       composerBottomDistance = messages.scrollHeight - messages.clientHeight - messages.scrollTop;
+      if (next && !composerRestMoving) composerExpandedHeight = composer.offsetHeight;
     },
     // 펼쳐진 입력기는 대화 영역을 아래에서 줄인다. 아래쪽을 읽던 사람의 자리는
     // 맨 아래까지의 거리를 그대로 지켜, 마지막 줄이 입력기 뒤로 숨지 않게 한다.
+    // 전환 곡선은 아직 걸리기 전이라 지금의 배치가 도착 배치다.
     onChange: (resting) => {
+      if (!resting) composerExpandedHeight = composer.offsetHeight;
       const distance = composerBottomDistance;
       composerBottomDistance = null;
-      if (resting || distance === null || distance > messages.clientHeight) return;
-      const maxScroll = Math.max(0, messages.scrollHeight - messages.clientHeight);
-      lockConversationScroll(80);
-      messages.scrollTop = Math.max(0, maxScroll - distance);
-      composerRestLastScrollTop = messages.scrollTop;
-      conversationLastScrollTop = messages.scrollTop;
+      composerRestMoving = true;
+      composerRestPinDistance = !resting && distance !== null && distance <= messages.clientHeight ? distance : null;
+      if (composerRestPinDistance !== null) lockConversationScroll(400);
+    },
+    onSettled: () => {
+      composerRestMoving = false;
+      followComposerRest();
+      composerRestPinDistance = null;
+      // 전환 중 미뤄 둔 대화 따라가기를 도착한 크기로 한 번 맞춘다.
+      conversationScrollTargetValue = null;
+      syncConversationSpacer();
+      if (followConversation) scrollConversationToEnd();
       scheduleLatestPillUpdate();
     },
     // 흐름 안에 있는 행과 입력 줄의 요소만 제자리를 지킨다. 떠 있는 overlay·
@@ -3970,6 +3999,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ...Array.from(composerField.children).filter((child): child is HTMLElement => child instanceof HTMLElement),
     ],
   });
+  /** 입력기 전환 중 대화 영역이 바뀐 프레임마다 — 그리기 전에 맞춘다. */
+  function followComposerRest(): void {
+    if (composerRestPinDistance !== null) {
+      const top = Math.max(0, messages.scrollHeight - messages.clientHeight - composerRestPinDistance);
+      if (Math.abs(messages.scrollTop - top) >= 0.5) messages.scrollTop = top;
+      composerRestLastScrollTop = messages.scrollTop;
+      conversationLastScrollTop = messages.scrollTop;
+    }
+    // 접힌 입력기가 내준 높이만큼 스크롤 홈을 줄여, 스크롤 막대의 길이와 자리가
+    // 입력기를 따라 바뀌지 않게 한다.
+    const inset = composerRest.resting || composerRestMoving
+      ? Math.max(0, composerExpandedHeight - composer.offsetHeight)
+      : 0;
+    const value = inset > 0 ? `${inset}px` : '';
+    if (messages.style.getPropertyValue('--ag-messages-track-inset') === value) return;
+    if (value) messages.style.setProperty('--ag-messages-track-inset', value);
+    else messages.style.removeProperty('--ag-messages-track-inset');
+  }
+
   function canComposerRest(): boolean {
     return !configPanelOpen
       && slashMenu.hidden
@@ -6105,6 +6153,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       composerInputTransitionTimer = null;
     }
     input.style.transition = 'none';
+    // auto 로 재는 동안 대화 영역이 잠깐 커져 스크롤 위치가 잘린다. 재고 나서 되돌려
+    // 줄이 늘 때마다 대화가 뒤로 튀었다가 다시 따라 내려오지 않게 한다.
+    const messagesScrollTop = messages.scrollTop;
     input.style.height = 'auto';
     const cap = Number.parseFloat(getComputedStyle(input).maxHeight);
     const to = Number.isFinite(cap) ? Math.min(input.scrollHeight, cap) : input.scrollHeight;
@@ -6117,6 +6168,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else input.style.height = `${to}px`;
     // 전환을 되돌리기 전에 지금 높이를 확정해 auto → px 가 보간되지 않게 한다.
     void input.offsetHeight;
+    if (messages.scrollTop !== messagesScrollTop) messages.scrollTop = messagesScrollTop;
     if (!animate) {
       input.style.transition = '';
       return;
@@ -7423,13 +7475,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         });
       });
     }
-  }
-
-  /** 턴을 마친 스트리밍 답변을 다음 턴 전까지 스크롤 기준점으로 남긴다. */
-  function settleFinalAnswer(): void {
-    const bubble = streamBubble;
-    if (!bubble || bubble.parentElement !== messages || !hasRenderedBlocks(bubble)) return;
-    settledAnswer = bubble;
   }
 
   /** 보류하던 마지막 블록까지 모두 그려 스트리밍 답변을 확정한다. */
@@ -9048,6 +9093,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateTurnPending();
     updateComposer();
     rebuildReview();
+    scheduleLatestPillUpdate();
     // 다시 시도·리셋 후 이어서는 턴이 도는 동안 막힌다.
     failureNotices.refresh();
   }
@@ -9323,8 +9369,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function resetConversation(): void {
     replyPending = false;
-    settledAnswer = null;
-    followConversationEnd = false;
     turnPendingStatus.reset();
     turnPending.hidden = true;
     // 편대 카드는 도구 행처럼 휘발성이다 — 대화를 갈아 끼우면 타이머까지 버린다.
@@ -9350,13 +9394,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // Keep a newly sent prompt near the top, then follow the moving end of the
     // current agent output instead of remaining pinned to that prompt.
     if (content.classList.contains('ag-msg-user')) return content;
-    if (followConversationEnd) return messagesEnd;
-    // A long answer stops following once its first line reaches the focus line,
-    // so the reader starts at the top instead of chasing the newest paragraph.
-    if (answerVisible) return streamBubble;
-    // 끝난 답변 아래로 다른 내용이 붙으면 다시 끝을 따라간다.
-    const settledIsLast = settledAnswer !== null && content === settledAnswer;
-    return settledIsLast ? settledAnswer : messagesEnd;
+    return messagesEnd;
   }
 
   function conversationAnchorTop(node: HTMLElement): number {
@@ -10966,8 +11004,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         followConversation = true;
         // 이전 턴이 turn-end 없이 끊겼다면 보류하던 마지막 문단까지 그려 둔다.
         flushPendingAssistantRender();
-        settledAnswer = null;
-        followConversationEnd = false;
         updateTurnPending(event.agent);
         scrollConversationToEnd();
         assistantBuffer = '';
@@ -11070,7 +11106,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         const finalBubble =
           streamBubble?.parentElement === messages
           && Boolean((assistantBubbleSources.get(streamBubble) ?? streamBubble.textContent ?? '').trim());
-        if (finalBubble) settleFinalAnswer();
         setTurnRunning(false);
         flushAssistantBuffer();
         sweepUnresolvedToolRows();
@@ -11717,7 +11752,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         setTurnRunning(false);
         runStatus.settleIdle();
         flushPendingAssistantRender();
-        settleFinalAnswer();
         flushAssistantBuffer();
         sweepUnresolvedToolRows();
         sweepActivityTranscripts();
@@ -13204,6 +13238,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       messages.removeEventListener('touchstart', onMessagesTouchStart);
       messages.removeEventListener('touchmove', onMessagesTouchMove);
       messages.removeEventListener('pointerdown', onMessagesPointerDown);
+      messages.removeEventListener('pointermove', onMessagesPointerMove);
+      messages.removeEventListener('pointerleave', onMessagesPointerLeave);
       if (configHideTimer !== null) window.clearTimeout(configHideTimer);
       cancelConversationScroll();
       if (conversationScrollUnlock !== null) {
