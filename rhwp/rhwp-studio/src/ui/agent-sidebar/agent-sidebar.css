@@ -6146,10 +6146,6 @@ button.ag-skill-copy {
   display: none;
 }
 
-.ag-root:not(.ag-fullscreen).ag-composer-compact .ag-composer-meta .ag-llm {
-  flex: 1 1 auto;
-}
-
 .ag-root:not(.ag-fullscreen).ag-composer-compact:not(.ag-measuring-min) .ag-composer-meta .ag-llm-name {
   max-width: none;
 }
@@ -6180,6 +6176,10 @@ button.ag-skill-copy {
 }
 
 /* 프로바이더는 로고만 둔다. 이름은 펼친 메뉴에서 읽힌다. */
+.ag-composer-meta .ag-provider {
+  flex: none;
+}
+
 .ag-composer-meta .ag-provider .ag-model-trigger {
   padding: 4px 7px;
 }
