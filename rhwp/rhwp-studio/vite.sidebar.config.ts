@@ -20,6 +20,10 @@ export default defineConfig({
         import.meta.dirname,
         'src/sidebar-preview/pwa-placeholder.ts',
       ),
+      '@wasm/rhwp.js': resolve(
+        import.meta.dirname,
+        'src/sidebar-preview/wasm-placeholder.ts',
+      ),
     },
   },
   publicDir: resolve(import.meta.dirname, 'public'),

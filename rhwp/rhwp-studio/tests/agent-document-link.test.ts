@@ -37,8 +37,10 @@ function storedThread(fields: { documentId?: string | null; docKey?: string | nu
   return getThread(thread.id)!;
 }
 
-test('linkThreadDocument links a document-less chat once and never relinks it', () => {
+test('linkThreadDocument links a document-less chat once and never relinks it', async () => {
   const thread = storedThread();
+  // 같은 밀리초에 만든 두 채팅은 목록 순서가 정해지지 않는다 — 대화 시각을 갈라 둔다.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const other = storedThread();
   const order = listThreads().map((item) => item.id);
   const linked = linkThreadDocument(thread.id, { documentId: 'doc-a', docKey: '보고서.hwpx' });
