@@ -26,11 +26,10 @@ import {
   pdfPrintTitle,
   printProgressText,
   printReadyText,
-  type PrintFontResolver,
   type PrintIntent,
   type PrintPage,
 } from '@/command/print-pages';
-import { hasImportedLocalFontFace, resolveSessionLocalFont } from '@/core/local-fonts';
+import { createSessionFontResolver } from '@/core/local-fonts';
 import {
   createPrintPreviewSurface,
   createPrintSurface,
@@ -933,23 +932,12 @@ function setupPrintDocument(
   if (previewWindow) {
     appendPrintPreviewBar(doc, previewWindow, fileName, printPages.length);
   }
-  const resolveFont = createPrintFontResolver();
+  // 화면이 쓰는 세션 글꼴 face(예: 수식 HyhwpEQ)를 인쇄 SVG도 쓰게 한다.
+  const resolveFont = createSessionFontResolver();
   for (const printPage of printPages) {
     appendSvgPage(doc, doc.body, printPage, resolveFont);
   }
   mirrorDocumentFonts(document, doc);
-}
-
-/** 화면이 쓰는 세션 글꼴 face(예: 수식 HyhwpEQ)를 인쇄 SVG도 쓰게 한다. */
-function createPrintFontResolver(): PrintFontResolver {
-  const cache = new Map<string, string | null>();
-  return (family) => {
-    if (!cache.has(family)) {
-      const record = resolveSessionLocalFont(family);
-      cache.set(family, record?.runtimeFamily && hasImportedLocalFontFace(family) ? record.runtimeFamily : null);
-    }
-    return cache.get(family) ?? null;
-  };
 }
 
 function appendPrintPreviewBar(
