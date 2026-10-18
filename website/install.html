@@ -211,7 +211,7 @@
       <a href="pricing.html">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="pricing.html">연 ₩9,900에 구매하기</a>
+      <a class="btn btn--primary" href="pricing.html">9,900원에 구매하기</a>
     </div>
   </div>
 </header>
@@ -377,8 +377,6 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
-      <span>운영자 하태욱</span>
-      <span data-operator-phone hidden>전화 <a data-operator-phone-link href="#"></a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
@@ -392,8 +390,7 @@
 (function(){
   var P=window.HamaPurchase;if(!P)return;
   var links=document.querySelectorAll('[data-dmg]');
-  // 누를 때마다 한 번 셉니다(sendBeacon). 이동은 막지 않아요.
-  Array.prototype.forEach.call(links,function(a){a.href=P.CONFIG.MAC_DMG_URL;a.addEventListener('click',function(){P.trackDownload('mac-arm64','latest');});});
+  Array.prototype.forEach.call(links,function(a){a.href=P.CONFIG.MAC_DMG_URL;});
   if(/[?&]nodl(?:[=&#]|$)/.test(location.search)||!links.length)return;
   var KEY='hamaeditor.install.dl',now=Date.now(),last=0;
   try{last=+sessionStorage.getItem(KEY)||0;}catch(_){}
@@ -401,7 +398,6 @@
   try{sessionStorage.setItem(KEY,String(now));}catch(_){}
   var url=links[0].href;
   // 파일 응답(attachment)이라 주소를 옮겨도 이 페이지는 그대로 남아요.
-  P.trackDownload('mac-arm64','latest');
   setTimeout(function(){window.location.assign(url);},700);
 })();
 </script>

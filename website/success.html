@@ -13,7 +13,6 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="assets/site.css">
-<script src="assets/purchase.js"></script>
 <script>document.documentElement.classList.add('js');</script>
 <style>
 /* 결제 완료 전용 배치. 공통 부품은 assets/site.css 에 있어요.
@@ -45,7 +44,6 @@
 .key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--mist); user-select: all; }
 .key__issued .code-box .btn { font-family: var(--font); letter-spacing: -0.01em; }
 .key__issued .meta { margin-top: 12px; }
-.key__issued .term { margin-top: 14px; color: var(--mist); }
 
 /* 오류와 시간 초과 */
 .key [data-retry-wrap] { margin-top: 20px; }
@@ -164,7 +162,6 @@
                 <code data-key></code>
                 <button class="btn btn--primary btn--sm" type="button" data-copy>키 복사</button>
               </div>
-              <p class="term" data-term hidden></p>
               <p class="meta">이 키는 다시 보여 드리기 어려울 수 있어요. 복사해서 안전한 곳에 보관해 주세요.</p>
             </div>
 
@@ -240,20 +237,18 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
-      <span>운영자 하태욱</span>
-      <span data-operator-phone hidden>전화 <a data-operator-phone-link href="#"></a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
 </footer>
 
+<script src="assets/purchase.js"></script>
 <script>
 (function(){
   var P=window.HamaPurchase;
   var status=document.querySelector('[data-status]');
   var issued=document.querySelector('[data-issued]');
   var keyEl=document.querySelector('[data-key]');
-  var term=document.querySelector('[data-term]');
   var copy=document.querySelector('[data-copy]');
   var retryWrap=document.querySelector('[data-retry-wrap]');
   var retry=document.querySelector('[data-retry]');
@@ -286,8 +281,6 @@
           say(u.attempts>3?'결제 확인을 기다리는 중이에요. 보통 1분 안에 끝나요…':'결제를 확인하고 있어요…',false,true);
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
-          // 연간 구독 키는 갱신일을, 평생 키는 아무것도 보이지 않아요.
-          term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
         }else if(u.state==='timeout'){
           say('아직 결제 확인이 오지 않았어요. 잠시 뒤 다시 확인해 주세요.',true,false);

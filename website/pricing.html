@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="Mac용 HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함)이고 매년 자동 갱신돼요. 언제든 해지할 수 있고, 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="description" content="HamaEditor는 9,900원(부가세 포함) 한 번 결제로 사는 macOS 앱이에요. 3일 동안 먼저 써 볼 수 있어요.">
 <meta name="theme-color" content="#000000">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -12,7 +12,6 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="assets/site.css">
-<script src="assets/purchase.js"></script>
 <script>document.documentElement.classList.add('js');</script>
 <style>
 /* 가격 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
@@ -120,7 +119,7 @@
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="#price">연 ₩9,900에 구매하기</a>
+      <a class="btn btn--primary" href="#price">9,900원에 구매하기</a>
       <a class="btn btn--secondary" href="install.html">Mac용 체험판 내려받기</a>
     </div>
   </div>
@@ -162,21 +161,20 @@
           <article class="card card--navy buy" id="price" data-reveal="rise">
             <div class="buy__top">
               <p class="eyebrow">Mac용 HamaEditor 공식 라이선스</p>
-              <h1 id="price-title" class="buy__num"><span data-plan-show="annual">연 ₩9,900</span><span data-plan-show="onetime">9,900원</span></h1>
-              <p class="meta"><span data-plan-show="onetime">부가세 포함 · 일회성 구매</span><span data-plan-show="annual">부가세 포함 · 자동 갱신 · 언제든 해지</span></p>
+              <h1 id="price-title" class="buy__num">9,900원</h1>
+              <p class="meta">부가세 포함 · 일회성 구매</p>
             </div>
 
             <ul class="buy__list">
               <li id="mac-only"><span>앱의 모든 기능을 사용할수 있어요</span></li>
               <li><span>키 하나로 Mac 두 대까지 동시에 쓸 수 있어요.</span></li>
-              <li data-plan-show="annual"><span>언제든 해지할 수 있고, 해지해도 결제한 기간은 끝까지 써요.</span></li>
             </ul>
 
             <label class="check">
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true"><span data-plan-show="onetime">Groble에서 9,900원 결제하기</span><span data-plan-show="annual">Groble에서 연 ₩9,900 결제하기</span></a>
+            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true">Groble에서 9,900원 결제하기</a>
             <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
           </article>
         </div>
@@ -232,13 +230,12 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
-      <span>운영자 하태욱</span>
-      <span data-operator-phone hidden>전화 <a data-operator-phone-link href="#"></a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
 </footer>
 
+<script src="assets/purchase.js"></script>
 <script>
 (function(){
   var P=window.HamaPurchase;
