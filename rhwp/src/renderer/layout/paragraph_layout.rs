@@ -4850,6 +4850,12 @@ impl LayoutEngine {
                     );
                     Some(cloned)
                 } else if column_inner_width > 0.0
+                    && !(self
+                        .endnote_para_source_for(para_index)
+                        .is_some_and(|source| source.tac_row_origin.is_some())
+                        && comp.projected_tac_line_owners.is_some()
+                        && comp.projected_tac_line_owners
+                            == crate::document_core::endnote_tac::current_owners(para, comp))
                     && !self.profile.get().own_line_layout()
                     && crate::renderer::composer::stored_lines_stale_for_body(
                         comp,
@@ -5933,10 +5939,51 @@ impl LayoutEngine {
             && (self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx())
             && styles.font_metrics_policy
                 == crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        // 미주 raw 줄 소속은 본문의 HCR 메트릭 정책과 별도 계약이다.
+        // 호출자가 fresh 조판/원본 변경을 배제한 인증을 설치해야만 수락한다.
+        // 저장 높이가 같다는 이유만으로 여기서 인증을 새로 만들지 않는다.
+        let verified_endnote_tac = cell_ctx.is_none()
+            && self.is_body_flow_col_area(col_area)
+            && !self.profile.get().own_line_layout()
+            && self
+                .endnote_para_source_for(para_index)
+                .is_some_and(|source| {
+                    source.note_para_index > 0
+                        && source.verified_tac_line_owners.is_some()
+                        && source.tac_row_origin.is_some()
+                })
+            && matches!(
+                styles.font_metrics_policy,
+                crate::model::provenance::FontMetricsPolicy::HancomWindows
+                    | crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            );
+        // 현재 입력으로 재조판한 미주는 최소 단 너비의 줄을 더 넓은 단에서도 쓴다.
+        // 설치된 출처와 실제 조판의 raw 소속을 확인한 분기에서만 허용한다.
+        // 로드된 줄이나 일반 본문은 기존 단별 저장 줄 선택을 유지한다.
+        let mut reflowed_endnote_tac = false;
         let exact_tac_assign = para.and_then(|p| {
-            if p.line_segs
+            if verified_endnote_tac
+                && p.line_segs.first().is_some_and(|s| s.text_start == 0)
+                && p.line_segs
+                    .windows(2)
+                    .all(|s| s[0].text_start < s[1].text_start)
+            {
+                let installed = composed.projected_tac_line_owners.as_ref()?;
+                let current = crate::document_core::endnote_tac::current_owners(p, composed)?;
+                if installed != &current {
+                    return None;
+                }
+                reflowed_endnote_tac =
+                    self.endnote_para_source_for(para_index)
+                        .is_some_and(|source| {
+                            source.tac_row_origin
+                                == Some(crate::document_core::endnote_tac::RowOrigin::Reflowed)
+                        });
+                Some(current)
+            } else if p
+                .line_segs
                 .iter()
-                .any(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
+                .any(|s| s.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
             {
                 stored_tac_line_assignment(p, composed)
             } else if native_authored_tac {
@@ -5984,7 +6031,10 @@ impl LayoutEngine {
 
             // 다단 필터링: segment_width가 현재 단 너비와 불일치하면 건너뜀
             if let Some(col_w) = multi_col_width_hu {
-                if comp_line.segment_width > 0 && (comp_line.segment_width - col_w).abs() > 200 {
+                if comp_line.segment_width > 0
+                    && (comp_line.segment_width - col_w).abs() > 200
+                    && !(reflowed_endnote_tac && comp_line.segment_width <= col_w)
+                {
                     // char_offset만 진행하고 렌더링 건너뜀
                     for run in &comp_line.runs {
                         char_offset += run.text.chars().count();
