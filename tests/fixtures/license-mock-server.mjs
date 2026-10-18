@@ -15,6 +15,7 @@ export const DEV_KEYPAIR = {
 };
 export const DEV_PUBLIC_KEYS = Object.freeze({ [DEV_KEYPAIR.kid]: DEV_KEYPAIR.publicKeyBase64 });
 const LEASE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const BETA_LEASE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 export function signLease(payload, keypair = DEV_KEYPAIR) {
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   return `${body.toString('base64url')}.${sign(null, Buffer.from(body.toString('base64url'), 'ascii'), keypair.privateKey).toString('base64url')}`;
@@ -25,17 +26,20 @@ export function createMockLicenseServer({ keypair = DEV_KEYPAIR, now = Date.now,
   const calls = [];
   let offline = false;
 
-  function issueKey() {
+  function issueKey({ tier = 'paid' } = {}) {
     const raw = Array.from(randomBytes(25), n => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
     const key = `HAMA-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}-${raw.slice(20, 25)}`;
-    licenses.set(key, { id: `lic_${licenses.size + 1}`, devices: new Set(), revoked: false });
+    licenses.set(key, { id: `lic_${licenses.size + 1}`, tier, devices: new Set(), revoked: false });
     return key;
   }
 
+  const ttl = (license) => (license.tier === 'beta' ? BETA_LEASE_TTL_MS : LEASE_TTL_MS);
+
   function lease(key, deviceId) {
     const issuedAt = now();
+    const license = licenses.get(key);
     return signLease({
-      v: 1, kid: keypair.kid, keyId: licenses.get(key).id, keyHash: licenseKeyHash(key), deviceId, issuedAt, expiresAt: issuedAt + LEASE_TTL_MS,
+      v: 1, kid: keypair.kid, keyId: license.id, keyHash: licenseKeyHash(key), deviceId, issuedAt, expiresAt: issuedAt + ttl(license),
     }, keypair);
   }
 
@@ -57,17 +61,17 @@ export function createMockLicenseServer({ keypair = DEV_KEYPAIR, now = Date.now,
     if (!license) return [404, { ok: false, error: 'invalid_key' }];
     if (path === '/v1/license/deactivate') {
       const removed = license.devices.delete(deviceId);
-      return [200, { ok: true, removed, devicesUsed: license.devices.size, deviceLimit }];
+      return [200, { ok: true, removed, tier: license.tier, devicesUsed: license.devices.size, deviceLimit }];
     }
-    if (license.revoked) return [403, { ok: false, error: 'revoked' }];
+    if (license.revoked) return [403, { ok: false, error: 'revoked', tier: license.tier }];
     if (path === '/v1/license/activate') {
       if (!license.devices.has(deviceId) && license.devices.size >= deviceLimit) return [409, { ok: false, error: 'device_limit' }];
       license.devices.add(deviceId);
-      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, expiresAt: now() + LEASE_TTL_MS, devicesUsed: license.devices.size, deviceLimit }];
+      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license), devicesUsed: license.devices.size, deviceLimit }];
     }
     if (path === '/v1/license/validate') {
       if (!license.devices.has(deviceId)) return [404, { ok: false, error: 'not_activated' }];
-      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, expiresAt: now() + LEASE_TTL_MS, devicesUsed: license.devices.size, deviceLimit }];
+      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license), devicesUsed: license.devices.size, deviceLimit }];
     }
     return [404, { ok: false, error: 'not_found' }];
   }

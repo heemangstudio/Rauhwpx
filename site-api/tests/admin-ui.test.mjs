@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import test from 'node:test';
+
+import { createAdminUiServer, createKeychain } from '../admin-ui/server.mjs';
+
+async function listen(t, server) {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return server.address().port;
+}
+
+/** Records every call the admin page forwards. */
+async function fakeUpstream(t) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, betas: [] }));
+    });
+  });
+  const port = await listen(t, server);
+  return { calls, base: `http://127.0.0.1:${port}` };
+}
+
+/** Raw request so the test controls Host and Origin. */
+function request(port, { method = 'GET', path = '/', host = `127.0.0.1:${port}`, headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method, path, headers: { Host: host, ...headers } }, (res) => {
+      let text = '';
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        resolve({ status: res.statusCode, text, json });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.end(JSON.stringify(body));
+    else req.end();
+  });
+}
+
+test('admin page: only its own host, session and origin reach an allowlisted admin route, with the bearer added', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const port = await listen(t, createAdminUiServer({ port: 0, base: upstream.base, envToken: 'admin-secret', keychain: { read: async () => '' } }));
+
+  assert.equal((await request(port, { host: `evil.example:${port}` })).status, 421, 'DNS-rebound host');
+  const page = await request(port, { host: `localhost:${port}` });
+  assert.equal(page.status, 200);
+  assert.ok(!page.text.includes('admin-secret'), 'the token never reaches the page');
+  const session = page.text.match(/name="admin-session" content="([^"]+)"/)[1];
+
+  const json = { 'Content-Type': 'application/json' };
+  assert.equal((await request(port, { path: '/api/betas' })).json.error, 'bad_session');
+  assert.equal((await request(port, { path: '/api/betas', headers: { 'X-Admin-Session': 'guess' } })).json.error, 'bad_session');
+  assert.equal((await request(port, { path: '/api/betas', host: `evil.example:${port}`, headers: { 'X-Admin-Session': session } })).status, 421);
+  assert.equal((await request(port, {
+    method: 'POST', path: '/api/revoke', headers: { ...json, 'X-Admin-Session': session, Origin: 'https://evil.example' }, body: { key: 'k' },
+  })).json.error, 'bad_origin');
+  for (const path of ['/api/orders', '/api/../v1/admin/orders', '/v1/admin/licenses/betas']) {
+    assert.equal((await request(port, { path, headers: { 'X-Admin-Session': session } })).status, 404, path);
+  }
+  assert.equal(upstream.calls.length, 0, 'nothing rejected reached the admin API');
+
+  const ok = await request(port, {
+    method: 'POST',
+    path: '/api/revoke',
+    headers: { ...json, 'X-Admin-Session': session, Origin: `http://127.0.0.1:${port}` },
+    body: { key: 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE', amount: 1 },
+  });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(upstream.calls, [{
+    method: 'POST',
+    url: '/v1/admin/licenses/revoke',
+    auth: 'Bearer admin-secret',
+    body: { key: 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE' },
+  }]);
+});
+
+test('admin page: without a token it asks once and keeps it in the Keychain, never through a shell', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const runs = [];
+  let stored = '';
+  const keychain = createKeychain({
+    service: 'throwaway-test-service',
+    run: async (file, args) => {
+      runs.push([file, ...args]);
+      if (args[0] === 'add-generic-password') stored = args.at(-1);
+      if (args[0] === 'find-generic-password' && !stored) throw new Error('not found');
+      return { stdout: `${stored}\n` };
+    },
+  });
+  const port = await listen(t, createAdminUiServer({ port: 0, base: upstream.base, envToken: '', keychain }));
+  const session = (await request(port)).text.match(/name="admin-session" content="([^"]+)"/)[1];
+  const headers = { 'X-Admin-Session': session, 'Content-Type': 'application/json' };
+
+  if (process.platform !== 'darwin') return; // Keychain is macOS only.
+  assert.equal((await request(port, { path: '/api/state', headers })).json.tokenSource, null);
+  assert.equal((await request(port, { path: '/api/betas', headers })).json.error, 'token_missing');
+  assert.equal((await request(port, { method: 'POST', path: '/api/token', headers, body: { token: 'from-ui' } })).status, 200);
+  assert.deepEqual(runs.at(-1), ['security', 'add-generic-password', '-U', '-s', 'throwaway-test-service', '-a', 'admin', '-w', 'from-ui']);
+  assert.equal((await request(port, { path: '/api/betas', headers })).status, 200);
+  assert.equal(upstream.calls.at(-1).auth, 'Bearer from-ui');
+});

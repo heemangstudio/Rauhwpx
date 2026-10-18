@@ -17,6 +17,8 @@ export interface LicenseStatus {
   trial: { startedAt: number; endsAt: number; active: boolean };
   license: {
     maskedKey: string;
+    /** 서버가 정한 키 종류. 예전 메인 프로세스는 보내지 않는다. */
+    tier?: 'paid' | 'beta';
     leaseExpiresAt: number | null;
     lastCheckAt: number | null;
     lastError: string | null;
@@ -85,10 +87,11 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   showActivate: boolean;
 } {
   const license = status.license;
+  const beta = license?.tier === 'beta';
   switch (status.state) {
     case 'licensed':
       return {
-        title: '정품 라이선스',
+        title: beta ? '베타 테스터 라이선스' : '정품 라이선스',
         detail: `${license?.maskedKey ?? ''} · 마지막 확인 ${formatTime(license?.lastCheckAt ?? null)}${status.offline ? ' · 오프라인' : ''}`,
         readOnly: false,
         canDeactivate: true,
@@ -105,11 +108,17 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
     case 'trial_expired':
       return { title: '체험 끝 · 읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
     case 'revoked':
-      return { title: '해지된 라이선스 · 읽기 전용', detail: '환불 등으로 키가 해지되었어요. 새 키를 넣어 주세요.', readOnly: true, canDeactivate: false, showActivate: true };
+      return {
+        title: '해지된 라이선스 · 읽기 전용',
+        detail: beta ? '베타 테스트 기간이 끝나 키가 해지되었어요.' : '환불 등으로 키가 해지되었어요. 새 키를 넣어 주세요.',
+        readOnly: true,
+        canDeactivate: false,
+        showActivate: true,
+      };
     case 'lease_expired':
       return {
         title: '확인 필요 · 읽기 전용',
-        detail: '7일 넘게 라이선스를 확인하지 못했어요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.',
+        detail: `${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못했어요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`,
         readOnly: true,
         canDeactivate: true,
         showActivate: false,
@@ -117,7 +126,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
     case 'needs_activation':
       return {
         title: '다시 활성화 필요 · 읽기 전용',
-        detail: license?.lastError ?? '이 Mac에서 키를 다시 활성화해 주세요.',
+        detail: license?.lastError ?? '이 기기에서 키를 다시 활성화해 주세요.',
         readOnly: true,
         canDeactivate: false,
         showActivate: true,
@@ -185,7 +194,7 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
     void api.checkNow().then(render).finally(() => { check.disabled = false; });
   });
   deactivate.addEventListener('click', () => {
-    if (!window.confirm('이 Mac에서 라이선스를 비활성화할까요? 다른 Mac에서 이 키를 쓸 수 있게 되고, 이 Mac은 읽기 전용이 돼요.')) return;
+    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 이 키를 쓸 수 있게 되고, 이 기기는 읽기 전용이 돼요.')) return;
     deactivate.disabled = true;
     void api.deactivate().then((result) => {
       render(result.status);

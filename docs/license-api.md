@@ -15,12 +15,14 @@ Default origin: `https://rau-credits-production.up.railway.app`.
 | Request | Response |
 | --- | --- |
 | `GET /v1/license/public-key` | `{alg:"Ed25519", kid, rawBase64, spkiDerBase64}` |
-| `POST /v1/license/activate {key,deviceId,appVersion,platform}` | `{ok:true,lease,keyId,expiresAt,devicesUsed,deviceLimit}` |
+| `POST /v1/license/activate {key,deviceId,appVersion,platform}` | `{ok:true,lease,keyId,tier,expiresAt,devicesUsed,deviceLimit}` |
 | `POST /v1/license/validate {key,deviceId}` | Same lease response |
-| `POST /v1/license/deactivate {key,deviceId}` | `{ok:true,removed,devicesUsed,deviceLimit}` |
+| `POST /v1/license/deactivate {key,deviceId}` | `{ok:true,removed,tier,devicesUsed,deviceLimit}` |
 | `POST /v1/license/grandfather {installId}` | `{ok:true,key,created}` |
 
-Errors are `{ok:false,error}`: `invalid_key` 404, `revoked` 403, `device_limit` 409, `not_activated` 404, `device_id_invalid` 400, `server_not_configured` 503. Grandfather errors include `grandfather_disabled` 403, `not_eligible` 403 and `install_id_invalid` 400. Network and server failures preserve a still-valid signed lease. Revocation immediately removes editing rights after the next successful check.
+`tier` is `paid` or `beta`. Beta-tester keys allow their own device count and get three-day leases; the app stores the tier for display only (title and revoked message), and a state file without it reads as `paid`.
+
+Errors are `{ok:false,error}`: `invalid_key` 404, `revoked` 403 (with `tier`), `device_limit` 409, `not_activated` 404, `device_id_invalid` 400, `server_not_configured` 503. Grandfather errors include `grandfather_disabled` 403, `not_eligible` 403 and `install_id_invalid` 400. Network and server failures preserve a still-valid signed lease. Revocation immediately removes editing rights after the next successful check.
 
 Keys have five groups of five Crockford base32 characters after `HAMA-`. Normalization matches the server: remove spaces and hyphens, uppercase, accept a missing prefix, map O to 0 and I/L to 1, validate the alphabet, then regroup.
 

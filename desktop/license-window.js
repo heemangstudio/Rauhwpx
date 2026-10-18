@@ -29,6 +29,7 @@
   }
 
   function summaryFor(status) {
+    const beta = status.license?.tier === 'beta';
     switch (status.state) {
       case 'licensed':
         return [status.offline ? '라이선스가 활성화되어 있어요. 지금은 오프라인이라 마지막 확인으로 쓰고 있어요.' : '라이선스가 활성화되어 있어요.', false];
@@ -37,11 +38,13 @@
       case 'trial_expired':
         return ['체험이 끝나 읽기 전용이에요. 문서는 열어 볼 수 있지만 저장하려면 라이선스 키가 필요해요.', true];
       case 'revoked':
-        return ['이 라이선스는 해지되었어요(환불 등). 읽기 전용이에요. 새 키를 넣으면 다시 저장할 수 있어요.', true];
+        return [beta
+          ? '베타 테스트 기간이 끝나 키가 해지되었어요. 읽기 전용이에요.'
+          : '이 라이선스는 해지되었어요(환불 등). 읽기 전용이에요. 새 키를 넣으면 다시 저장할 수 있어요.', true];
       case 'lease_expired':
-        return ['7일 넘게 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.', true];
+        return [`${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`, true];
       case 'needs_activation':
-        return ['이 Mac에서 라이선스를 다시 활성화해야 해요. 키를 다시 넣어 주세요.', true];
+        return ['이 기기에서 라이선스를 다시 활성화해야 해요. 키를 다시 넣어 주세요.', true];
       default:
         return ['개발 빌드라 라이선스를 확인하지 않아요.', false];
     }
@@ -53,13 +56,15 @@
     summary.classList.toggle('bad', bad);
     const hasLicense = Boolean(status.license);
     const showLicensed = hasLicense && ['licensed', 'lease_expired'].includes(status.state);
+    $('title').textContent = showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
     $('licensed-section').hidden = !showLicensed;
     $('activate-section').hidden = showLicensed;
     if (hasLicense) {
       $('masked-key').textContent = status.license.maskedKey;
       $('last-check').textContent = when(status.license.lastCheckAt);
       $('lease-expires').textContent = when(status.license.leaseExpiresAt);
-      if (status.license.lastError && !showLicensed) activateNote.textContent = status.license.lastError;
+      // 해지는 요약 줄이 이미 말한다.
+      if (status.license.lastError && !showLicensed && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
     }
   }
 
@@ -91,7 +96,7 @@
   });
 
   $('deactivate').addEventListener('click', async (event) => {
-    if (!window.confirm('이 Mac에서 라이선스를 비활성화할까요? 다른 Mac에서 키를 쓸 수 있게 되고, 이 Mac은 읽기 전용이 돼요.')) return;
+    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기는 읽기 전용이 돼요.')) return;
     const result = await busy(event.currentTarget, () => api.deactivate());
     licensedNote.classList.remove('ok');
     licensedNote.textContent = result.ok ? '' : result.message;

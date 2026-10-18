@@ -23,6 +23,8 @@ import {
 
 export const LEASE_VERSION = 1;
 export const LEASE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Beta keys get a shorter lease so a revoked tester key stops working within 3 days offline. */
+export const BETA_LEASE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 export const DEFAULT_LEASE_KID = 'hama-prod-1';
 const ISSUED_AT_SKEW_MS = 10 * 60 * 1000;
 const MAX_LEASE_CHARS = 4096;

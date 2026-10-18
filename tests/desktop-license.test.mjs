@@ -171,12 +171,12 @@ test('activation errors come back as user-facing messages', async (t) => {
   assert.equal(revoked.code, 'revoked');
   assert.match(revoked.message, /해지/);
   const key2 = server.issueKey();
-  // Two other Macs already hold the key.
+  // Two other devices already hold the key.
   server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-0001' });
   server.handle('/v1/license/activate', { key: key2, deviceId: 'mac-0002' });
   const limited = await manager.activate(key2);
   assert.equal(limited.code, 'device_limit');
-  assert.match(limited.message, /2대/);
+  assert.match(limited.message, /다른 기기.*비활성화/);
   server.setOffline(true);
   assert.equal((await make().activate(key2)).code, 'network');
   void clock;
@@ -222,6 +222,34 @@ test('a refunded (revoked) key turns the app read-only at the next check', async
   await assert.rejects(manager.assertCanSave(), /해지/);
   const fresh = server.issueKey();
   assert.equal((await manager.activate(fresh)).status.state, 'licensed');
+});
+
+test('a beta key shows its tier, keeps it across restarts, and ends with the beta message', async (t) => {
+  const { dir, manager, make, server, clock } = await setup(t);
+  const key = server.issueKey({ tier: 'beta' });
+  let status = (await manager.activate(key)).status;
+  assert.equal(status.state, 'licensed');
+  assert.equal(status.license.tier, 'beta');
+  assert.equal(status.license.leaseExpiresAt, T0 + 3 * DAY, 'beta leases last 3 days');
+  assert.equal((await make().status()).license.tier, 'beta', 'the tier survives a restart');
+
+  // 해지된 베타 키는 오프라인이어도 lease 가 끝나는 3일 뒤에 잠긴다.
+  server.setOffline(true);
+  clock.t = T0 + 3 * DAY;
+  assert.equal((await make().check()).state, 'lease_expired');
+  server.setOffline(false);
+  server.revoke(key);
+  const relaunched = make();
+  status = await relaunched.check({ force: true });
+  assert.equal(status.state, 'revoked');
+  assert.equal(status.license.lastError, '베타 테스트 기간이 끝나 키가 해지되었어요.');
+  await assert.rejects(relaunched.assertCanSave(), /베타 테스트 기간이 끝나/);
+
+  // A state file written before tiers existed reads as a paid key.
+  const saved = JSON.parse(await readFile(join(dir, 'license.json'), 'utf8'));
+  delete saved.license.tier;
+  await writeFile(join(dir, 'license.json'), JSON.stringify(saved));
+  assert.equal((await make().status()).license.tier, 'paid');
 });
 
 test('deactivate frees the device slot; offline deactivate keeps the license', async (t) => {

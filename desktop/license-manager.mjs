@@ -2,9 +2,10 @@
 //
 // 규칙
 // - 체험: 이 기기에서 처음 실행한 때부터 3일(72시간) 동안 모든 기능을 쓸 수 있다. 저장 횟수는 세지 않는다.
-// - 키를 활성화하면 서버가 이 기기용 lease(7일)를 준다. 실행할 때와 24시간마다 다시 확인해 lease 를 늘린다.
+// - 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다. 실행할 때와 24시간마다 다시 확인해 lease 를 늘린다.
 // - 인터넷이 없으면 가진 lease 가 끝날 때까지(최대 7일) 그대로 쓴다.
-// - 환불 등으로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
+// - 환불이나 베타 종료로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
+// - 키 종류(tier: paid | beta)는 서버 응답에서 받아 표시에만 쓴다. 예전 상태 파일에 없으면 paid 다.
 // - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
 // - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
 //   한 번만 짧은 유예(1분)를 연다. 유예는 상태 파일에 남아 다시 실행해도 다시 열리지 않는다.
@@ -35,8 +36,10 @@ export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class LicenseReadOnlyError extends Error {
-  constructor(state) {
-    super(state === 'revoked'
+  constructor(state, tier = 'paid') {
+    super(state === 'revoked' && tier === 'beta'
+      ? `LICENSE_READ_ONLY: ${BETA_REVOKED_MESSAGE}`
+      : state === 'revoked'
       ? 'LICENSE_READ_ONLY: 라이선스가 해지되어 읽기 전용이에요. 새 라이선스 키를 넣으면 다시 저장할 수 있어요.'
       : state === 'lease_expired' || state === 'needs_activation'
         ? 'LICENSE_READ_ONLY: 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결하거나 키를 다시 활성화해 주세요.'
@@ -47,18 +50,21 @@ export class LicenseReadOnlyError extends Error {
   }
 }
 
+const BETA_REVOKED_MESSAGE = '베타 테스트 기간이 끝나 키가 해지되었어요.';
+
 const ERROR_MESSAGES = {
   invalid_key: '라이선스 키를 찾을 수 없어요. 키를 다시 확인해 주세요.',
   revoked: '해지된 라이선스 키예요. 환불된 주문의 키는 쓸 수 없어요.',
-  device_limit: '이 키는 이미 Mac 2대에서 쓰고 있어요. 다른 Mac의 설정에서 ‘이 기기 비활성화’를 누른 뒤 다시 시도해 주세요.',
-  not_activated: '이 Mac에서는 아직 활성화되지 않은 키예요. 키를 다시 넣어 주세요.',
+  device_limit: '이 키를 쓸 수 있는 기기 수를 모두 채웠어요. 다른 기기의 설정에서 ‘이 기기 비활성화’를 누른 뒤 다시 시도해 주세요.',
+  not_activated: '이 기기에서는 아직 활성화되지 않은 키예요. 키를 다시 넣어 주세요.',
   network: '라이선스 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.',
   server: '라이선스 서버가 잠시 응답하지 않아요. 조금 뒤 다시 시도해 주세요.',
   bad_lease: '라이선스 서버의 응답을 확인하지 못했어요. 앱을 최신 버전으로 업데이트해 주세요.',
   invalid_format: '라이선스 키 형식이 아니에요. 결제 완료 페이지의 키를 그대로 붙여 넣어 주세요.',
 };
 
-export function licenseErrorMessage(code) {
+export function licenseErrorMessage(code, tier = 'paid') {
+  if (code === 'revoked' && tier === 'beta') return BETA_REVOKED_MESSAGE;
   return ERROR_MESSAGES[code] ?? ERROR_MESSAGES.server;
 }
 
@@ -83,6 +89,7 @@ function sanitizeState(raw) {
     state.license = {
       key,
       keyId: typeof raw.license.keyId === 'string' ? raw.license.keyId : undefined,
+      tier: raw.license.tier === 'beta' ? 'beta' : 'paid',
       lease: typeof raw.license.lease === 'string' ? raw.license.lease : null,
       lastCheckAt: Number.isSafeInteger(raw.license.lastCheckAt) ? raw.license.lastCheckAt : 0,
       revokedAt: Number.isSafeInteger(raw.license.revokedAt) ? raw.license.revokedAt : null,
@@ -200,11 +207,12 @@ export function createLicenseManager({
       trial,
       license: license ? {
         maskedKey: maskLicenseKey(license.key),
+        tier: license.tier,
         leaseExpiresAt: lease.ok || lease.reason === 'expired' ? lease.payload.expiresAt : null,
         lastCheckAt: license.lastCheckAt || null,
         nextCheckAt: license.lastCheckAt ? license.lastCheckAt + checkIntervalMs : null,
         revokedAt: license.revokedAt,
-        lastError: license.lastErrorCode ? licenseErrorMessage(license.lastErrorCode) : null,
+        lastError: license.lastErrorCode ? licenseErrorMessage(license.lastErrorCode, license.tier) : null,
       } : null,
       offline: lastNetworkError !== null,
       pricingUrl: PRICING_URL,
@@ -216,13 +224,13 @@ export function createLicenseManager({
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
-  function acceptLease(key, { lease, keyId }, t) {
+  function acceptLease(key, { lease, keyId, tier }, t) {
     const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, keyId, now: t });
     if (!result.ok) {
       log.warn?.('[license] server lease rejected:', result.reason);
       throw new LicenseServerError('bad_lease');
     }
-    state.license = { key, keyId, lease, lastCheckAt: t, revokedAt: null, lastErrorCode: null };
+    state.license = { key, keyId, tier: tier === 'beta' ? 'beta' : 'paid', lease, lastCheckAt: t, revokedAt: null, lastErrorCode: null };
   }
 
   async function check({ force = false } = {}) {
@@ -261,6 +269,7 @@ export function createLicenseManager({
       } catch (error) {
         const code = error instanceof LicenseServerError ? error.code : 'network';
         if (code === 'revoked') {
+          if (error.tier === 'beta') license.tier = 'beta';
           license.revokedAt = clock();
           license.lease = null;
           license.lastErrorCode = 'revoked';
@@ -301,7 +310,7 @@ export function createLicenseManager({
         lastNetworkError = null;
       } catch (error) {
         const code = error instanceof LicenseServerError ? error.code : 'network';
-        return { ok: false, code, message: licenseErrorMessage(code), status: computeStatus() };
+        return { ok: false, code, message: licenseErrorMessage(code, error?.tier ?? 'paid'), status: computeStatus() };
       }
       await persist();
       changed();
@@ -377,7 +386,7 @@ export function createLicenseManager({
       if (requestedAt !== null && requestedAt < lockTransition.at) return status;
       if (expirySave && lockTransition.graceAt !== null && clock() < lockTransition.graceAt + expirySaveGraceMs) return status;
     }
-    throw new LicenseReadOnlyError(status.state);
+    throw new LicenseReadOnlyError(status.state, status.license?.tier);
   }
 
   function start({ setIntervalImpl = setInterval, clearIntervalImpl = clearInterval } = {}) {

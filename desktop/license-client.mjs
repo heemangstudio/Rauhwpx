@@ -1,20 +1,27 @@
 // 키 서버 HTTP 클라이언트. 계약은 docs/license-api.md.
-//   POST /v1/license/activate   {key, deviceId, appVersion, platform} → 200 {lease}
-//   POST /v1/license/validate   {key, deviceId}                       → 200 {lease}
+//   POST /v1/license/activate   {key, deviceId, appVersion, platform} → 200 {lease, keyId, tier}
+//   POST /v1/license/validate   {key, deviceId}                       → 200 {lease, keyId, tier}
 //   POST /v1/license/deactivate {key, deviceId}                       → 200 {ok:true}
-//   실패: 4xx {error: 'invalid_key' | 'revoked' | 'device_limit' | 'not_activated'}
+//   실패: 4xx {error: 'invalid_key' | 'revoked' | 'device_limit' | 'not_activated'}. revoked 는 tier 도 준다.
+// tier 는 'paid' | 'beta'. 표시에만 쓰고 권한은 서명한 lease 로만 정한다.
 export const DEFAULT_LICENSE_API_BASE = 'https://rau-credits-production.up.railway.app';
 export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'device_limit', 'not_activated', 'device_id_invalid', 'server_not_configured', 'grandfather_disabled', 'not_eligible', 'install_id_invalid']);
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export class LicenseServerError extends Error {
-  constructor(code, message = code, { status = null } = {}) {
+  constructor(code, message = code, { status = null, tier = null } = {}) {
     super(message);
     this.name = 'LicenseServerError';
     /** invalid_key | revoked | device_limit | not_activated | network | server */
     this.code = code;
     this.status = status;
+    /** 서버가 알려 준 키 종류. revoked 에만 온다. */
+    this.tier = tier;
   }
+}
+
+function tierFrom(body) {
+  return body?.tier === 'beta' ? 'beta' : 'paid';
 }
 
 export function createLicenseClient({
@@ -48,7 +55,7 @@ export function createLicenseClient({
     }
     const code = typeof parsed?.error === 'string' && LICENSE_ERRORS.includes(parsed.error) ? parsed.error : null;
     if (code && response.status >= 400 && response.status < 600) {
-      throw new LicenseServerError(code, code, { status: response.status });
+      throw new LicenseServerError(code, code, { status: response.status, tier: tierFrom(parsed) });
     }
     throw new LicenseServerError('server', `HTTP ${response.status}`, { status: response.status });
   }
@@ -56,7 +63,7 @@ export function createLicenseClient({
   function leaseFrom(body) {
     if (typeof body.lease !== 'string' || !body.lease) throw new LicenseServerError('server', 'response has no lease');
     if (typeof body.keyId !== 'string') throw new LicenseServerError('server', 'response has no keyId');
-    return { lease: body.lease, keyId: body.keyId };
+    return { lease: body.lease, keyId: body.keyId, tier: tierFrom(body) };
   }
 
   return {
