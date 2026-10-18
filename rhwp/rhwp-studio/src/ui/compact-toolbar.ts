@@ -43,6 +43,9 @@ export class CompactToolbarLayout {
     this.ribbon.refresh();
     this.style.refresh();
     this.layout();
+    // 켜고 끄는 명령이 보낸 resize 는 배치가 끝나기 전의 헤더 높이를 잰다.
+    // 다시 알려 편집 영역과 사이드바가 바뀐 헤더 아래에 자리 잡게 한다.
+    window.dispatchEvent(new Event('resize'));
   }
 
   private get ribbonBar(): HTMLElement {

@@ -112,16 +112,16 @@
 /* Table commands use the full ribbon height without stretching short labels. */
 #icon-toolbar .tb-table-context-group {
   flex: 0 0 auto;
-  min-width: 96px;
+  min-width: 0;
   margin-right: 4px;
   padding-right: 4px;
   border-right: 1px solid var(--ui-border);
 }
 #icon-toolbar .tb-table-tile-table { min-width: 68px; }
 #icon-toolbar .tb-table-tile-insert,
-#icon-toolbar .tb-table-tile-delete { min-width: 112px; }
-#icon-toolbar .tb-table-tile-equal { min-width: 130px; }
-#icon-toolbar .tb-table-tile-cell { min-width: 82px; }
+#icon-toolbar .tb-table-tile-delete { min-width: 84px; }
+#icon-toolbar .tb-table-tile-equal { min-width: 0; }
+#icon-toolbar .tb-table-tile-cell { min-width: 68px; }
 #icon-toolbar .tb-table-context-group .tb-group-body,
 #icon-toolbar .tb-table-context-group [data-table-ribbon-menu] { width: 100%; }
 #icon-toolbar .tb-table-context-group .tb-btn {
@@ -171,10 +171,10 @@
 .tb-table-menu-item {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   width: 100%;
-  min-height: 38px;
-  padding: 7px 10px;
+  min-height: 28px;
+  padding: 4px 8px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -188,7 +188,7 @@
 .tb-table-menu-item:focus-visible { background: var(--ui-hover); }
 .tb-table-menu-item:focus-visible { outline: 2px solid var(--ribbon-accent); outline-offset: -2px; }
 .tb-table-menu-item:disabled { opacity: .38; cursor: default; }
-.tb-table-menu-item > .tb-ico { width: 19px; height: 19px; }
+.tb-table-menu-item > .tb-ico { width: 18px; height: 18px; }
 .tb-table-menu-shortcut { margin-left: auto; padding-left: 18px; color: var(--ui-text-muted); }
 
 #icon-toolbar #editor-toolbar-overflow .tb-table-context-group {
@@ -202,14 +202,14 @@
 #icon-toolbar #editor-toolbar-overflow .tb-table-context-group .tb-btn {
   flex-direction: row;
   justify-content: flex-start;
-  gap: 10px;
-  height: 40px;
-  padding: 0 10px;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
 }
-#icon-toolbar #editor-toolbar-overflow .tb-table-context-group .tb-btn > .tb-ico { width: 20px; height: 20px; }
+#icon-toolbar #editor-toolbar-overflow .tb-table-context-group .tb-btn > .tb-ico { width: 18px; height: 18px; }
 #icon-toolbar #editor-toolbar-overflow .tb-table-context-group .tb-label { display: block; }
 #icon-toolbar #editor-toolbar-overflow .tb-table-menu-trigger > .tb-chev {
-  top: 16px;
+  top: 12px;
   right: 9px;
   left: auto;
 }

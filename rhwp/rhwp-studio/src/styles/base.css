@@ -603,17 +603,17 @@ body.window-inactive :is(
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   pointer-events: none;
 }
 
 .rhwp-toast {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  min-width: 280px;
+  gap: 10px;
+  min-width: 220px;
   max-width: 400px;
-  padding: 11px 12px 11px 14px;
+  padding: 8px 10px 8px 12px;
   border: 1px solid var(--n-hairline-strong);
   border-radius: 8px;
   background: var(--n-surface-raised);
