@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -10,9 +13,11 @@ let electron = process.env.RHWP_TEST_ELECTRON_BINARY;
 if (!electron) try { electron = require('electron'); } catch {}
 const unavailable = !electron || !existsSync(electron) || (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY);
 
-function runHarness(name, marker) {
+async function runHarness(t, name, marker) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hama-native-password-test-'));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5 }));
   const entry = fileURLToPath(new URL(`./electron/${name}`, import.meta.url));
-  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const env = { ...process.env, RHWP_BROWSER_TEST_DATA_DIR: root }; delete env.ELECTRON_RUN_AS_NODE;
   return new Promise((resolve, reject) => {
     const child = spawn(electron, [entry, '--use-mock-keychain', '-ApplePersistenceIgnoreState', 'YES'], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
@@ -30,14 +35,14 @@ function runHarness(name, marker) {
   });
 }
 
-test('real native password fill submits without exposing secrets to hub and preserves subsequent input', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async () => {
-  const report = await runHarness('browser-passwords.mjs', 'NATIVE_PASSWORD_REPORT');
+test('real native password fill submits without exposing secrets to hub and preserves subsequent input', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async (t) => {
+  const report = await runHarness(t, 'browser-passwords.mjs', 'NATIVE_PASSWORD_REPORT');
   assert.equal(report.error, undefined);
   for (const key of ['hostileObservation', 'armedCapture', 'protectedCapture', 'protectedReload', 'agentManualAutofill', 'schoolIdAutocomplete', 'schoolFormFill', 'manualSave', 'nativeFill', 'humanAutocomplete', 'nativeSubmit', 'protectedWebSocket', 'postNavigationInput', 'noSecretInHub', 'staleAndWrongOriginRejected', 'rawReadbackAndCaptureBlocked', 'redirectedPost']) assert.equal(report[key], true, key);
 });
 
-test('native secret fill checks origin and form before reading, types in the isolated world and shields the page', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async () => {
-  const report = await runHarness('browser-secret-fill.mjs', 'NATIVE_SECRET_REPORT');
+test('native secret fill checks origin and form before reading, types in the isolated world and shields the page', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 60_000 }, async (t) => {
+  const report = await runHarness(t, 'browser-secret-fill.mjs', 'NATIVE_SECRET_REPORT');
   assert.equal(report.error, undefined);
   for (const key of ['refusedBeforeRead', 'nativeSecretFill', 'observationsMasked', 'onlyFillRequestCarriesValue', 'otherTabMasked', 'nativeSubmit']) assert.equal(report[key], true, key);
 });

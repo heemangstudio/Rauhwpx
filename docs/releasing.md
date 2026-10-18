@@ -1,6 +1,6 @@
 # Desktop releases
 
-Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files. HamaEditor is sold for macOS only, so tagged releases no longer build Windows or Linux installers; `npm run dist:win` and `npm run dist:linux:*` still package them locally.
+Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files and an unsigned Windows x64 NSIS installer. Linux installers remain local builds via `npm run dist:linux:*`.
 
 ## Tagged release
 
@@ -13,7 +13,7 @@ git push origin "v$(node -p "require('./package.json').version")"
 
 [release.yml](../.github/workflows/release.yml) verifies the tagged source and publishes after all desktop builds succeed. The GitHub release contains installers, update metadata and SHA-256 checksums.
 
-Installed apps update from, and the website downloads from, the public [heemangstudio/hamaeditor-releases](https://github.com/heemangstudio/hamaeditor-releases) repository, so this source repository can be private. The publish job copies every release there with a fixed `HamaEditor-mac-arm64.dmg` name, which `website/assets/purchase.js` links to through `releases/latest/download`. It needs the `RELEASES_TOKEN` repository secret: a fine-grained token with Contents read and write on that repository only.
+Installed apps update from, and the website downloads from, the public [heemangstudio/hamaeditor-releases](https://github.com/heemangstudio/hamaeditor-releases) repository, so this source repository can be private. The publish job copies every release there with fixed `HamaEditor-mac-arm64.dmg` and `HamaEditor-win-x64.exe` aliases through `releases/latest/download`. Both aliases are included in `SHA256SUMS.txt`. Versioned Windows installers, their blockmaps and `latest.yml` must also be published there: Windows updates follow that descriptor, not the stable download alias. It needs the `RELEASES_TOKEN` repository secret: a fine-grained token with Contents read and write on that repository only.
 
 Run the full engine, browser, and agent suites through pull-request CI before merging. Tagged releases run repository and release contract checks and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
 
@@ -23,7 +23,7 @@ Run the full engine, browser, and agent suites through pull-request CI before me
 
 ## Installing desktop updates
 
-The desktop updater installs only after the user chooses **Restart to install** or **Install now**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
+macOS, Windows and AppImage builds check for updates at launch and download them in the background. The desktop updater installs only after the user chooses **Restart to install**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds; Windows runs the NSIS installer silently and relaunches the app. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
 
 Choosing **Later** or canceling document closure preserves the downloaded update. **Check for Updates** offers it again. Debian packages continue to use the system package manager.
 
@@ -33,7 +33,7 @@ Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2
 
 ## Signing and package checks
 
-Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS setup, builds and verification. macOS jobs use the `macos-release` environment and require these secrets:
+Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Both reuse the same Linux-built WASM artifact, avoiding the Windows Binaryen crash. Windows builds and verifies the native x64 extractor, packaged runtime, NSIS installer, blockmap and update descriptor; its unsigned-by-design signature check remains required. macOS jobs use the `macos-release` environment and require these secrets:
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`
@@ -41,7 +41,7 @@ Tagged desktop releases use [.github/actions/package-desktop](../.github/actions
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 
-Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Tagged publication requires every desktop build, so a failed macOS job blocks the release.
+Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Tagged publication requires verification and both desktop builds, so a failed macOS or Windows job blocks the release.
 
 Keep packaged runtime checks, artifact architecture checks, Developer ID verification and notarization validation when changing this workflow. npm production dependency audits block high and critical advisories. Nightly also reports lower-severity findings for maintenance review.
 

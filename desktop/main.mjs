@@ -788,9 +788,9 @@ async function checkForDebUpdates({ manual }) {
 function configureAutoUpdater() {
   autoUpdater.logger = console;
   const linuxAppImage = process.platform === 'linux' && Boolean(process.env.APPIMAGE);
-  // macOS and AppImage builds can stage compatible updates. Debian packages
+  // macOS, Windows and AppImage builds can stage compatible updates. Debian packages
   // stay under the system package manager and only link to the signed release.
-  autoUpdater.autoDownload = process.platform === 'darwin' || linuxAppImage;
+  autoUpdater.autoDownload = ['darwin', 'win32'].includes(process.platform) || linuxAppImage;
   updateLifecycle.configureUpdates();
   autoUpdater.on('update-not-available', () => {
     if (!manualUpdateCheck) return;
@@ -1937,7 +1937,7 @@ if (!hasSingleInstanceLock) {
     // 허브 시작 실패는 창이 뜬 뒤에도 오류 창을 띄우고 종료한다.
     await Promise.all([hubStartup, staleCleanup]);
     void finishUniqueInstallMetric();
-    if (app.isPackaged && ['darwin', 'linux'].includes(process.platform)) {
+    if (app.isPackaged && ['darwin', 'win32', 'linux'].includes(process.platform)) {
       setTimeout(() => {
         void checkForAppUpdates({ manual: false });
       }, 4000);

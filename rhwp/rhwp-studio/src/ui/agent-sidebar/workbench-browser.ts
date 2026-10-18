@@ -482,12 +482,14 @@ export function createWorkbenchBrowser(options: {
   }
   async function reconnectBrowser(): Promise<void> {
     if (reconnecting) return;
-    const tab = controller.tab(); if (!tab) { await controller.refresh(); return; }
     cancelNativeHealth(); nativeHealthGeneration++; nativeHealthIdentity = ''; nativeReloadedIdentity = '';
     reconnecting = true; nativeError = null; nativeFailedProjection = ''; paint();
     try {
       await nativePending?.catch(() => undefined);
       await controller.refresh();
+      const tab = controller.tab();
+      nativeProjection = '';
+      if (!tab) return;
       await controller.action(nativeBrowserApi() ? 'reconnect' : 'recover', { ...controller.identity(tab), restore: true });
       nativeProjection = ''; nativeFailedProjection = ''; nativeError = null;
       reconnecting = false;

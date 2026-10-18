@@ -312,8 +312,11 @@ export class PrivateBrowserCdp {
         if (url && method === 'Fetch.continueRequest' && params.url === undefined) params = { ...params, url };
       }
       let result;
-      try { result = await entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId); }
-      catch (error) {
+      try {
+        const send = () => entry.tab.view.webContents.debugger.sendCommand(method, params, entry.nativeSessionId);
+        result = method === 'Page.captureScreenshot' && this.host.withCaptureSurface
+          ? await this.host.withCaptureSurface(entry.tab, send) : await send();
+      } catch (error) {
         if (entry.tab.closing || entry.tab.view.webContents.isDestroyed?.()) throw new Error('Browser debugger target was closed');
         // 보호된 페이지의 오류 문구는 내보내지 않고 명령 이름만 남긴다.
         if (entry.tab.passwordShield) throw new Error(`Native browser command ${method} failed`);

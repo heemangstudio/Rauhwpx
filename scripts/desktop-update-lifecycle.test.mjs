@@ -108,7 +108,7 @@ for (const platform of ['win32', 'linux']) {
     assert.equal(await f.approveClose(), true);
     await tick();
     assert.deepEqual(f.calls.filter((call) => call !== 'quit-request'), [
-      'bookmarks', 'window-close', 'teardown', 'cleanup', ['install', false, true], 'native-quit',
+      'bookmarks', 'window-close', 'teardown', 'cleanup', ['install', platform === 'win32', true], 'native-quit',
     ]);
   });
 }

@@ -59,10 +59,8 @@ export function createUpdateLifecycle({
         const { response } = await showMessageBox({
           type: 'info',
           message: `HamaEditor ${downloaded.version ?? ''} is ready to install`,
-          detail: platform === 'win32'
-            ? 'Your documents will close before the installer opens. Windows may ask you to confirm the installer. Choose Check for Updates to install later.'
-            : 'HamaEditor will restart after your documents close. Choose Check for Updates to install later.',
-          buttons: [platform === 'win32' ? 'Install now' : 'Restart to install', 'Later'],
+          detail: 'HamaEditor will restart after your documents close. Choose Check for Updates to install later.',
+          buttons: ['Restart to install', 'Later'],
           defaultId: 1,
           cancelId: 1,
         });
@@ -108,7 +106,8 @@ export function createUpdateLifecycle({
     try {
       // On macOS this waits for Squirrel staging and invokes the native
       // quitAndInstall. Plain app.quit() cannot perform that handoff.
-      await updater.quitAndInstall(false, true);
+      // Windows installs silently so an update never reopens the setup wizard.
+      await updater.quitAndInstall(platform === 'win32', true);
     } catch (error) {
       await reportError(error);
     }

@@ -1543,7 +1543,7 @@ export class NativeFileHandleRegistry {
       const info = await handle.stat();
       if (!info.isFile()) return { ok: false, reason: 'unreadable' };
       if (info.size > maxBytes) return { ok: false, reason: 'too-large', size: info.size };
-      if (info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return { ok: false, reason: 'unreadable' };
+      if (process.platform !== 'win32' && info.size > 0 && typeof info.blocks === 'number' && info.blocks === 0) return { ok: false, reason: 'unreadable' };
       const bytes = Buffer.allocUnsafe(info.size);
       let offset = 0;
       while (offset < bytes.length) {

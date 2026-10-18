@@ -46,4 +46,24 @@ test('cleanup rejects missing ownership and a redirected profile without touchin
   await fs.symlink(outside, path.join(owned, 'browser/profile'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(removeOwnedBrowserState({ dataDir: owned }), { code: 'BROWSER_CLEANUP_FAILED' });
   assert.equal(await fs.readFile(path.join(outside, 'keep'), 'utf8'), 'preserve');
+  await fs.unlink(path.join(owned, 'browser/profile'));
+  await fs.symlink(outside, path.join(owned, 'browser/native-profile'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(removeOwnedBrowserState({ dataDir: owned, nativeStorageCleared: true }), { code: 'BROWSER_CLEANUP_FAILED' });
+  assert.equal(await fs.readFile(path.join(outside, 'keep'), 'utf8'), 'preserve');
+});
+
+test('only an acknowledged native reset retains the cleared Windows session directory', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'browser-native-cleanup-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'browser-policy.json'), JSON.stringify({ schema: 2, ownerId: 'local-owner', sites: [] }));
+  const native = path.join(root, 'browser/native-profile');
+  await fs.mkdir(native, { recursive: true });
+  await fs.writeFile(path.join(root, 'browser/tabs.json'), 'old tab metadata');
+  await removeOwnedBrowserState({ dataDir: root, nativeStorageCleared: true });
+  await assert.rejects(fs.stat(path.join(root, 'browser/tabs.json')), { code: 'ENOENT' });
+  if (process.platform === 'win32') assert.equal((await fs.stat(native)).isDirectory(), true);
+  else await assert.rejects(fs.stat(native), { code: 'ENOENT' });
+  await fs.mkdir(native, { recursive: true });
+  await removeOwnedBrowserState({ dataDir: root, nativeStorageCleared: 'true' });
+  await assert.rejects(fs.stat(native), { code: 'ENOENT' });
 });

@@ -44,6 +44,8 @@ const PARSE_CONCURRENCY = 8;
 const HANCOM_FONT_DIR = /^(fonts|ttf|hft)$/i;
 // Hancom Office HWP, Hancom Docs, 한컴오피스 한글 뷰어 등
 const HANCOM_APP = /hancom|한컴|hwp/i;
+const APPLICATION_FONT_DIR = /^(fonts?|dfonts|ttf|hft)$/i;
+const APPLICATION_SCAN_SKIP = /^(node_modules|\.git|cache|caches|installer|installers)$/i;
 /** 권한이 막힌 보호 폴더는 오류로 남기지 않고 건너뛴다. */
 const QUIET_ERRORS = new Set(['ENOENT', 'ENOTDIR', 'EPERM', 'EACCES']);
 export const ADDED_FOLDER_LABEL = 'added folder';
@@ -243,6 +245,38 @@ async function discoverHancomFontDirs(base, pathApi) {
   return found.sort();
 }
 
+export async function discoverApplicationFontDirs(bases, {
+  pathApi = path,
+  maxDepth = MAX_DEPTH,
+  maxDirs = MAX_DIRS,
+} = {}) {
+  const queue = bases.slice(0, maxDirs).map((dir) => ({ dir, depth: 0 }));
+  const seen = new Set();
+  const directories = new Set();
+  let capped = bases.length > maxDirs;
+  for (let index = 0; index < queue.length; index += 1) {
+    const { dir, depth } = queue[index];
+    if (depth >= maxDepth) continue;
+    let real;
+    try { real = await fs.realpath(dir); } catch { continue; }
+    if (seen.has(real)) continue;
+    if (seen.size >= maxDirs) { capped = true; break; }
+    seen.add(real);
+    for (const entry of await listDir(dir)) {
+      // Do not follow app junctions into unrelated folders or dependency trees.
+      if (!entry.isDirectory() || entry.isSymbolicLink() || APPLICATION_SCAN_SKIP.test(entry.name)) continue;
+      const child = pathApi.join(dir, entry.name);
+      if (APPLICATION_FONT_DIR.test(entry.name)) {
+        if (directories.size < maxDirs) directories.add(child);
+        else capped = true;
+      }
+      else if (queue.length < maxDirs) queue.push({ dir: child, depth: depth + 1 });
+      else capped = true;
+    }
+  }
+  return { directories: [...directories].sort(), capped };
+}
+
 /**
  * 플랫폼별 폰트 루트를 나열한다 (font-roots.mjs 카탈로그). 한컴 설치본은 installs 로 따로
  * 돌려주고 실제 폰트 폴더 탐색은 호출부가 한다. macOS 한컴 앱은 이름으로 찾는다.
@@ -260,6 +294,7 @@ export async function defaultFontRoots({
   const expanded = await expandFontRootCatalog({ platform, env, home, ...(catalog ? { catalog } : {}) });
   const roots = [...expanded.roots];
   const hancomInstalls = expanded.installs.map((install) => install.path);
+  const discoveryErrors = [];
   if (platform === 'darwin') {
     for (const appsDir of ['/Applications', pathApi.join(home, 'Applications')]) {
       for (const entry of await listDir(appsDir)) {
@@ -270,6 +305,16 @@ export async function defaultFontRoots({
         hancomInstalls.push(await isDirectory(shared) ? shared : pathApi.join(app, 'Contents/Resources'));
       }
     }
+  } else if (platform === 'win32') {
+    const applicationBases = dedupeRoots([
+      env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432,
+      env.CommonProgramFiles, env['CommonProgramFiles(x86)'], env.CommonProgramW6432,
+      env.LOCALAPPDATA && pathApi.join(env.LOCALAPPDATA, 'Programs'),
+    ].filter(Boolean).map((target) => ({ path: pathApi.resolve(target), kind: 'app' })), platform);
+    const discovered = await discoverApplicationFontDirs(applicationBases.map((root) => root.path), { pathApi });
+    // 카탈로그의 app 글꼴처럼 그 앱만 쓰는 사본이라 글꼴 메뉴에서는 뺀다.
+    for (const dir of discovered.directories) roots.push({ path: dir, kind: 'app', label: 'installed application', unlisted: true });
+    if (discovered.capped) discoveryErrors.push({ path: '*', message: `application font directory cap reached (${MAX_DIRS}); use RHWP_FONT_PATH for additional locations` });
   }
   for (const extra of splitEnvPaths(env.RHWP_FONT_PATH, platform)) {
     roots.push({ path: pathApi.resolve(extra), kind: 'user', label: 'RHWP_FONT_PATH' });
@@ -278,7 +323,7 @@ export async function defaultFontRoots({
     const covered = [...roots.map((root) => root.path), ...hancomInstalls];
     roots.push(...await enumerateOsFontRoots({ platform, covered, env, runCommand }));
   }
-  return { roots: dedupeRoots(rankRoots(roots), platform), hancomInstalls: [...new Set(hancomInstalls)] };
+  return { roots: dedupeRoots(rankRoots(roots), platform), hancomInstalls: [...new Set(hancomInstalls)], discoveryErrors };
 }
 
 /** 한컴 → 사용자 → 시스템 → 앱 순. 파일 상한에 걸리면 덜 쓸모 있는 출처가 먼저 빠진다. */
@@ -560,7 +605,7 @@ export function createSystemFontService(options = {}) {
 
   async function scan() {
     const started = performance.now();
-    const { roots: baseRoots, hancomInstalls } = await resolveRoots();
+    const { roots: baseRoots, hancomInstalls, discoveryErrors = [] } = await resolveRoots();
     const roots = [];
     const installReports = [];
     for (const install of hancomInstalls) {
@@ -574,7 +619,7 @@ export function createSystemFontService(options = {}) {
     roots.push(...baseRoots);
     const added = (await resolveAddedFolders()).map((folder) => ({ path: folder, kind: 'user', label: ADDED_FOLDER_LABEL }));
     const collected = await collectFiles(dedupeRoots([...rankRoots(roots), ...added], platform), { platform, pathApi });
-    const errors = [...collected.errors];
+    const errors = [...discoveryErrors, ...collected.errors];
     const cache = (await loadPersisted())?.files ?? {};
     const nextCache = {};
     let reused = 0;
