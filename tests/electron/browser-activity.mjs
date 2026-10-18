@@ -66,7 +66,7 @@ app.whenReady().then(async () => {
     const observe = () => service.request(actor, 'snapshot', { tabId: opened.tab.tabId });
     const ref = (observation, name) => ({ tabId: opened.tab.tabId, snapshotId: observation.snapshot.snapshotId,
       navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch,
-      ref: observation.snapshot.elements.find(element => element.name === name)?.ref });
+      ref: observation.snapshot.outline.split('\n').find(line => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1] });
     let observed = await observe();
     await publicCall('browser_type', { ...ref(observed, 'Draft'), text: 'preserved draft', submit: true, intent: 'search' });
     observed = await observe();
@@ -121,7 +121,7 @@ app.whenReady().then(async () => {
     for (const condition of ['ready', 'idle', 'visible', 'text']) {
       waited = await publicCall('browser_wait', { tabId: tab.tabId, condition, ...(['visible', 'text'].includes(condition) ? { text: 'Submit draft' } : {}), timeoutMs: 2000 });
       assert.ok(waited.snapshot.snapshotId);
-      assert.ok(waited.snapshot.elements.some(element => element.name === 'Draft'));
+      assert.match(waited.snapshot.outline, /"Draft" \[ref=/);
     }
     // Main-owned protection masks a fixture string echoed into visible document text.
     await evaluate('document.body.append(Object.assign(document.createElement("p"),{textContent:"fixture-protected-string"}))');
@@ -232,7 +232,7 @@ app.whenReady().then(async () => {
       assert.equal(await sharedTab.view.webContents.executeJavaScript('sessionStorage.getItem("global-state")'), 'kept');
       assert.throws(() => host.attach(window, { tabId: shared.tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 } }), /another editor window/);
       const sharedSnapshot = await service.request(actor, 'snapshot', { tabId: shared.tab.tabId });
-      assert.ok(sharedSnapshot.snapshot.elements.some(row => row.value === 'global draft'), 'agents can observe the retained global page');
+      assert.match(sharedSnapshot.snapshot.outline, /\]: global draft$/m, 'agents can observe the retained global page');
       report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentAccessible: true };
     } finally { sharedWindow.destroy(); }
     service.configureSleep({ idleMinutes: 1 });

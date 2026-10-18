@@ -102,15 +102,18 @@ try {
   assert.equal(await contents.executeJavaScript('location.pathname'), '/research');
   const agent = { threadId: 'research', agentId: 'owner', sessionId: 'editor' };
   console.error('NATIVE_PASSKEY_STAGE agent-snapshot');
-  const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  assert.ok(observed.snapshot.text.includes('Authenticated native guest'));
-  if (host.zoom) {
+  // 좌표는 모델에 보내지 않는다. 확대된 화면의 좌표 계산은 네이티브 관찰에서 직접 확인한다.
+  if (host.zoom && host.passwords) {
     assert.equal(contents.getZoomFactor(), 1.5);
-    assert.ok(Math.abs(observed.snapshot.viewport.width * 1.5 - nativeTab.viewport.width) <= 2, 'zoomed snapshot must use CSS viewport dimensions');
+    const geometry = await host.passwords.snapshot({ targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId });
+    assert.ok(Math.abs(geometry.viewport.width * 1.5 - nativeTab.viewport.width) <= 2, 'zoomed snapshot must use CSS viewport dimensions');
+    const box = geometry.elements.find((entry) => entry.name === 'Research field')?.rect;
+    assert.ok(box?.width > 0 && box.x + box.width <= geometry.viewport.width, 'research ref coordinates must fit the zoomed viewport');
   }
-  const field = observed.snapshot.elements.find((entry) => entry.name === 'Research field');
-  assert.ok(field?.rect.width > 0 && field.rect.x + field.rect.width <= observed.snapshot.viewport.width, 'research ref coordinates must fit the zoomed viewport');
-  assert.ok(field, 'the recovered browser must expose a usable research field');
+  const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  assert.ok(observed.snapshot.outline.includes('Authenticated native guest'));
+  const field = { ref: observed.snapshot.outline.split('\n').find((line) => line.includes('"Research field"'))?.match(/\[ref=([^\]]+)\]/)?.[1] };
+  assert.ok(field.ref, 'the recovered browser must expose a usable research field');
   console.error('NATIVE_PASSKEY_STAGE agent-type');
   await browser.request(agent, 'type', { tabId: opened.tab.tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch, ref: field.ref, text: 'agent research resumed' });
   assert.equal(await contents.executeJavaScript('document.querySelector("#research").value'), 'agent research resumed');

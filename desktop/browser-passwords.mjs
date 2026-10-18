@@ -8,27 +8,105 @@ const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete
 const SECRET = 'input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 
 // These functions run only in Electron's isolated world. Page scripts never see the ref map.
-function pageSnapshot(token, selector, maxElements) {
+// 허브가 Playwright aria 개요와 같은 노드 모양으로 그린다. 조작 가능한 요소와 범위 컨테이너만 ref를 받는다.
+function pageSnapshot(token, selector, maxElements, includeText) {
   const secrets = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]')].map(el => el.value).filter(Boolean);
   const scrub = value => { for (const secret of secrets) value = value.split(secret).join('[masked]'); return value; };
-  const refs = new Map(); const elements = [];
-  const candidates = document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary');
-  for (const el of candidates) {
-    if (elements.length >= maxElements) break;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') continue;
-    const sensitive = el.matches(selector);
-    const ref = `e${elements.length + 1}`; refs.set(ref, el);
-    elements.push({ ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox',
-      inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
-      formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action,
-      name: scrub(String(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '').trim().slice(0, 500)),
-      text: sensitive ? '[masked]' : scrub(String(el.textContent ?? '').trim().slice(0, 1000)), value: sensitive ? '[masked]' : scrub(String(el.value ?? '').slice(0, 1000)), sensitive, disabled: !!el.disabled,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
-  }
+  const squash = value => scrub(String(value ?? '').replace(/\s+/g, ' ').trim());
+  // 같은 문서 안에서는 같은 요소가 같은 ref를 유지한다.
+  const ids = globalThis.__rhwpNativeRefIds ??= { map: new WeakMap(), next: 0 };
+  const refFor = el => { let ref = ids.map.get(el); if (!ref) { ref = `e${++ids.next}`; ids.map.set(el, ref); } return ref; };
+  const CONTROLS = 'a[href],button,input,textarea,select,summary,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
+  const CONTAINERS = new Set(['main', 'navigation', 'contentinfo', 'form', 'search', 'dialog', 'alertdialog', 'region', 'table', 'grid', 'tablist', 'menu', 'menubar', 'tree']);
+  const FROM_CONTENT = new Set(['button', 'link', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem', 'heading', 'switch', 'checkbox', 'radio']);
+  const SKIP = new Set(['script', 'style', 'noscript', 'template', 'svg', 'canvas', 'iframe', 'frame', 'object', 'embed', 'head', 'meta', 'link', 'datalist']);
+  const TAGS = { p: 'paragraph', ul: 'list', ol: 'list', menu: 'list', li: 'listitem', nav: 'navigation', main: 'main', aside: 'complementary', form: 'form', search: 'search', dialog: 'dialog', table: 'table', tr: 'row', td: 'cell', th: 'columnheader', fieldset: 'group', blockquote: 'blockquote', article: 'article', details: 'group', textarea: 'textbox', summary: 'button', option: 'option' };
+  const implicitRole = el => {
+    const tag = el.localName;
+    if (tag === 'a') return el.hasAttribute('href') ? 'link' : null;
+    if (tag === 'button') return 'button';
+    if (tag === 'input') return el.type === 'hidden' ? null : ['button', 'submit', 'reset', 'image', 'file'].includes(el.type) ? 'button' : { checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', search: 'searchbox' }[el.type] ?? 'textbox';
+    if (tag === 'select') return el.multiple || el.size > 1 ? 'listbox' : 'combobox';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'img') return el.alt ? 'img' : null;
+    if (tag === 'section') return el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby') ? 'region' : null;
+    if (tag === 'footer') return el.parentElement?.closest('article,aside,main,nav,section') ? null : 'contentinfo';
+    if (el.isContentEditable && el.matches('[contenteditable]')) return 'textbox';
+    return TAGS[tag] ?? null;
+  };
+  // 라벨 안의 입력 칸과 선택지 글은 이름에 넣지 않는다.
+  const ownText = el => { let value = ''; const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: node => node.parentElement?.closest('select,textarea,script,style,[aria-hidden="true"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT }); while (walker.nextNode()) value += ` ${walker.currentNode.data}`; return value; };
+  const nameOf = (el, role) => {
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) { const value = labelledBy.split(/\s+/).map(id => document.getElementById(id)).filter(Boolean).map(ownText).join(' '); if (value.trim()) return value; }
+    const label = el.getAttribute('aria-label'); if (label?.trim()) return label;
+    if (el.localName === 'input' && ['button', 'submit', 'reset'].includes(el.type)) return el.value || { submit: 'Submit', reset: 'Reset' }[el.type] || '';
+    if (el.localName === 'input' && el.type === 'image') return el.alt || el.value || 'Submit';
+    if (el.labels?.length) { const value = [...el.labels].map(ownText).join(' '); if (value.trim()) return value; }
+    if (el.localName === 'img') return el.alt;
+    if (FROM_CONTENT.has(role)) { const value = ownText(el) || el.querySelector('img[alt]')?.alt; if (value?.trim()) return value; }
+    return el.getAttribute('placeholder') || el.getAttribute('title') || '';
+  };
+  const refs = new Map(); const elements = []; let count = 0; let truncated = false;
+  const visible = el => el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }) || (getComputedStyle(el).display === 'contents' ? 'contents' : false);
+  const walk = parent => {
+    const out = [];
+    const children = parent.localName === 'slot' ? parent.assignedNodes({ flatten: true }) : (parent.shadowRoot ?? parent).childNodes;
+    for (const child of children) {
+      if (count >= 6000) { truncated = true; break; }
+      if (child.nodeType === 3) { const value = squash(child.data); if (value) { out.push(value.slice(0, 1000)); count++; } continue; }
+      if (child.nodeType !== 1) continue;
+      const el = child; const tag = el.localName;
+      if (SKIP.has(tag) || el.getAttribute('aria-hidden') === 'true' || tag === 'input' && el.type === 'hidden') continue;
+      const shown = visible(el);
+      if (!shown) continue;
+      if (shown === 'contents') { out.push(...walk(el)); continue; }
+      const explicit = el.getAttribute('role')?.trim().split(/\s+/)[0];
+      const role = explicit && !['none', 'presentation', 'generic'].includes(explicit) ? explicit : implicitRole(el);
+      const control = el.matches(CONTROLS);
+      if (control) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || elements.length >= maxElements) { if (elements.length >= maxElements) truncated = true; out.push(...walk(el).filter(node => typeof node === 'object')); continue; }
+      }
+      if (!role) { out.push(...walk(el)); continue; }
+      count++;
+      const node = { role };
+      const name = squash(nameOf(el, role)).slice(0, 500); if (name) node.name = name;
+      if (role === 'heading') node.level = Number(el.getAttribute('aria-level')) || Number(tag[1]) || 2;
+      const sensitive = el.matches(selector);
+      if (control || CONTAINERS.has(role) && (role !== 'region' || name)) {
+        const ref = refFor(el); node.ref = ref; refs.set(ref, el);
+        const rect = el.getBoundingClientRect();
+        elements.push({ ref, tag, role: node.role, name: name.slice(0, 500), inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
+          formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action, sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+      }
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') node.disabled = true;
+      if (el instanceof HTMLInputElement && ['checkbox', 'radio'].includes(el.type)) node.checked = el.indeterminate ? 'mixed' : el.checked;
+      else if (el.hasAttribute('aria-checked')) node.checked = el.getAttribute('aria-checked') === 'mixed' ? 'mixed' : el.getAttribute('aria-checked') === 'true';
+      if (el.hasAttribute('aria-expanded')) node.expanded = el.getAttribute('aria-expanded') === 'true';
+      else if (tag === 'summary') node.expanded = !!el.parentElement?.open;
+      if (el.getAttribute('aria-selected') === 'true') node.selected = true;
+      if (el.hasAttribute('aria-pressed')) node.pressed = el.getAttribute('aria-pressed') === 'true';
+      if (node.checked === false) delete node.checked;
+      if (el instanceof HTMLSelectElement) {
+        node.children = [...el.options].slice(0, 500).map(option => ({ role: 'option', name: squash(option.label).slice(0, 500), ...(option.selected ? { selected: true } : {}) }));
+      } else if (el instanceof HTMLInputElement && !['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio'].includes(el.type) || el instanceof HTMLTextAreaElement || role === 'textbox' && el.isContentEditable) {
+        const value = el.isContentEditable && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) ? el.innerText : el.value;
+        if (value) node.value = sensitive ? '[masked]' : squash(value).slice(0, 1000);
+      } else if (sensitive) {
+        // 비공개로 표시한 영역의 내용은 읽지 않는다.
+      } else if (FROM_CONTENT.has(role) && name) {
+        // 내용에서 이름을 얻은 노드는 같은 글을 다시 담지 않고 안쪽 조작 요소만 남긴다.
+        const nested = walk(el).filter(entry => typeof entry === 'object'); if (nested.length) node.children = nested;
+      } else { const nested = walk(el); if (nested.length) node.children = nested; }
+      out.push(node);
+    }
+    return out;
+  };
+  const tree = document.body ? walk(document.body) : [];
   globalThis.__rhwpNativePasswordRefs = { token, refs };
   // Form values and selected text are excluded entirely from this native document observation.
-  return { elements, text: scrub(String(document.body?.innerText ?? '').slice(0, 24000)), selectedText: '', hasSecret: secrets.length > 0, truncated: candidates.length > maxElements,
+  return { tree, elements, ...(includeText ? { text: scrub(String(document.body?.innerText ?? '').slice(0, 24000)) } : {}), selectedText: '', hasSecret: secrets.length > 0, truncated,
     viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } };
 }
 
@@ -90,6 +168,15 @@ function pageAction(payload) {
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { error: 'target' };
     const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, payload.text);
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { completed: true };
+  }
+  if (payload.action === 'select') {
+    if (!(el instanceof HTMLSelectElement)) return { error: 'select' };
+    const wanted = String(payload.option ?? '').trim(); const options = [...el.options].filter(option => !option.disabled);
+    const option = options.find(entry => entry.label.trim() === wanted) ?? options.find(entry => entry.value === wanted) ?? options.find(entry => entry.label.trim().toLowerCase() === wanted.toLowerCase());
+    if (!option) return { error: 'option' };
+    el.focus(); option.selected = true;
     el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
     return { completed: true };
   }
@@ -176,7 +263,7 @@ export class NativeBrowserPasswords {
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
       ? await this.run(tab, captureViewport, [SECRET]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
-      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
+      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 1000, params.text === true]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
@@ -262,7 +349,7 @@ export class NativeBrowserPasswords {
     const tab = this.tab(params);
     if (params.action === 'stop') { tab.view.webContents.stop(); return { completed: true }; }
     const snapshot = this.assertSnapshot(tab, params);
-    const allowed = ['click', 'type', 'press', 'scroll', 'wait'];
+    const allowed = ['click', 'type', 'press', 'select', 'scroll', 'wait'];
     if (!allowed.includes(params.action)) throw passwordFailure('BROWSER_PASSWORD_ACTION_INVALID', 'This native browser action is unsupported.');
     let keyCode; let modifiers = [];
     if (params.action === 'press') {
@@ -281,6 +368,8 @@ export class NativeBrowserPasswords {
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (true);
     if (result?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+    if (result?.error === 'select') throw passwordFailure('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
+    if (result?.error === 'option') throw passwordFailure('BROWSER_OPTION_NOT_FOUND', 'No enabled option has this label or value. Snapshot the list box with scope to see its options.');
     if (!result?.completed) throw passwordFailure(result?.error === 'secret' ? 'BROWSER_SECRET_CHANNEL_REQUIRED' : 'BROWSER_PASSWORD_TARGET_INVALID', result?.error === 'secret' ? 'Use a saved account to fill this field.' : 'The selected browser field is no longer available.');
     if (params.action === 'press' || params.action === 'click') {
       this.assertSnapshot(tab, params);

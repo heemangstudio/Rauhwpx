@@ -791,9 +791,17 @@ async function answerBrowserAccountPermission(record, sock, msg) {
 }
 
 function browserMcpResult(result) {
-  if (!result?.capture?.screenshot?.data) return result;
-  const { screenshot, ...capture } = result.capture;
-  return { ...result, capture, image: screenshot };
+  if (result?.capture?.screenshot?.data) {
+    const { screenshot, ...capture } = result.capture;
+    return { ...result, capture, image: screenshot };
+  }
+  // 개요는 JSON 문자열에 넣지 않고 원문 블록으로 보낸다. 따옴표·줄바꿈 이스케이프가 붙지 않는다.
+  // 탭 식별자·주소·세대는 snapshot에 이미 있다. 탭 상태는 평소와 다를 때만 덧붙인다.
+  if (typeof result?.snapshot?.outline !== 'string') return result;
+  const { runtime: _runtime, tab, ...rest } = result;
+  const { outline, ...snapshot } = result.snapshot;
+  const state = { ...(tab?.status && tab.status !== 'ready' ? { status: tab.status } : {}), ...(tab?.controller?.held ? { held: true } : {}) };
+  return { ...result, mcpContent: [{ type: 'text', text: JSON.stringify({ ...rest, ...(Object.keys(state).length ? { tab: state } : {}), snapshot }) }, { type: 'text', text: outline }] };
 }
 
 function browserError(error, fallback = 'BROWSER_REQUEST_FAILED') {

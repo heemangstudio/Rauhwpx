@@ -30,6 +30,10 @@ async function fixture(t, handler, secure = false) {
   return { dataDir, server, cleanup: (operation) => cleanups.push(operation), origin: `${secure ? 'https' : 'http'}://127.0.0.1:${server.address().port}` };
 }
 async function needsBrowser(t) { if (!(await inspectOwnedBrowserRuntime()).installed) { t.skip('Install the pinned managed Chromium browser to run runtime security checks.'); return false; } return true; }
+// 개요 줄에서 ref를 꺼낸다. 이름은 따옴표 안, 입력값은 콜론 뒤에 있다.
+const lineRef = (observation, match) => { const line = observation.snapshot.outline.split('\n').find(match); assert.ok(line, 'expected outline line'); return { ref: line.match(/\[ref=([^\]]+)\]/)[1], line }; };
+const named = (observation, name) => lineRef(observation, (line) => line.includes(`"${name}"`) || line.endsWith(`: ${name}`));
+const textboxes = (observation) => observation.snapshot.outline.split('\n').filter((line) => /- textbox(?: |$)/.test(line.trim())).map((line) => ({ ref: line.match(/\[ref=([^\]]+)\]/)[1], line }));
 const refArgs = (observation, element) => ({ tabId: observation.tab.tabId, snapshotId: observation.snapshot.snapshotId, ref: element.ref, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch });
 async function testRuntime(options) {
   const runtime = await startOwnedBrowserRuntime(options);
@@ -69,8 +73,7 @@ test('revocation during credential readiness prevents each subsequent secret fie
     f.cleanup(() => browser.close());
     const opened = await browser.request(agent, 'open', { url: f.origin });
     const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-    const password = observation.snapshot.elements.find((element) => element.sensitive);
-    const username = observation.snapshot.elements.find((element) => !element.sensitive);
+    const [username, password] = textboxes(observation);
     const filling = browser.request(agent, 'fill-account', { ...refArgs(observation, password), accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
     const rejected = assert.rejects(filling, (failure) => failure.code?.startsWith('BROWSER_'));
     await eventually(() => waiting);
@@ -97,11 +100,11 @@ test('approved agent cookie rotation keeps exact nested-path provenance through 
   await first.browser.request(human, 'open', { url: `${f.origin}/nested/login` });
   const account = await approveSession(first.credentialBroker, f.origin);
   const opened = await first.browser.request(agent, 'open', { url: `${f.origin}/nested/research` });
-  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Approved private research'));
+  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved private research'));
   await first.browser.close();
   const second = build(); f.cleanup(() => second.browser.close());
   const reopened = await second.browser.request(agent, 'open', { url: `${f.origin}/nested/research` });
-  assert.ok((await second.browser.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.text.includes('Approved private research'));
+  assert.ok((await second.browser.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Approved private research'));
   assert.equal((await second.credentialBroker.listAccounts()).accounts.find((entry) => entry.id === account.id).agentReuseApproved, true);
 });
 
@@ -147,7 +150,7 @@ test('host-only and domain cookies with the same name retain separate approved p
   f.cleanup(() => browser.close());
   await browser.request(human, 'open', { url: `${origin}/login` }); await approveSession(credentialBroker, origin);
   const opened = await browser.request(agent, 'open', { url: `${origin}/refresh` });
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Approved research'));
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved research'));
 });
 
 test('human event streams release their header fence so public research can continue', async (t) => {
@@ -163,7 +166,7 @@ test('human event streams release their header fence so public research can cont
   f.cleanup(() => browser.close());
   await browser.request(human, 'open', { url: `${f.origin}/human` }); await eventually(() => streaming);
   const opened = await eventually(async () => { try { return await browser.request(agent, 'open', { url: f.origin }); } catch (failure) { if (failure.code === 'BROWSER_HUMAN_SESSION_PENDING') return false; throw failure; } });
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Public research'));
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Public research'));
 });
 
 test('a delayed human storage change is not attributed to an agent response', async (t) => {
@@ -211,7 +214,7 @@ test('human interaction keeps the owned page readable without approving external
   const pendingFrame = browser.request(agent, 'frame', { tabId: opened.tab.tabId });
   const completed = pendingFrame;
   await ready; await page.evaluate(() => window.storePrivateSession()); releaseFrame(); assert.equal((await completed).ok, true);
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Private identity'));
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Private identity'));
   await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
 });
 
@@ -226,11 +229,11 @@ test('explicit account confirmation permits normal agent storage refresh and enc
   const account = await approveSession(first.credentialBroker, f.origin);
   await first.browser.request(human, 'confirm-sign-in', { accountId: account.id });
   const opened = await first.browser.request(agent, 'open', { url: `${f.origin}/refresh` });
-  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.text.includes('Approved research'));
+  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved research'));
   await first.browser.close();
   const second = await build(); f.cleanup(() => second.browser.close());
   const reopened = await second.browser.request({ ...agent, threadId: 'another-chat', projectId: 'another-project' }, 'open', { url: `${f.origin}/refresh` });
-  assert.ok((await second.browser.request({ ...agent, threadId: 'another-chat', projectId: 'another-project' }, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.text.includes('Approved research'));
+  assert.ok((await second.browser.request({ ...agent, threadId: 'another-chat', projectId: 'another-project' }, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Approved research'));
   assert.equal((await second.credentialBroker.listAccounts()).accounts[0].agentReuseApproved, true);
 });
 
@@ -288,26 +291,27 @@ test('explicit website grants allow forms while secret and device boundaries rem
   };
   for (const [action, name, args] of [['click', 'Delete saved document', {}], ['press', 'Draft', { key: 'Enter' }], ['click', 'Confirm', {}], ['type', 'Pending change', { text: 'changed' }], ['click', 'Commit link', {}]]) {
     const observation = await reset();
-    const element = observation.snapshot.elements.find((entry) => entry.name === name || entry.value === name);
+    const element = named(observation, name);
     await browser.request(agent, action, { ...refArgs(observation, element), ...args });
   }
   await eventually(() => mutations >= 5);
   let observation = await reset();
-  await browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.name === 'Public query')), text: 'research' });
+  await browser.request(agent, 'type', { ...refArgs(observation, named(observation, 'Public query')), text: 'research' });
   await eventually(() => mutations >= 6);
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'button' && element.name === 'Search')) });
+  await browser.request(agent, 'click', { ...refArgs(observation, lineRef(observation, (line) => line.includes('button "Search"'))) });
   assert.equal(searches, 1);
   observation = await reset();
-  const username = observation.snapshot.elements.find((element) => element.name === 'Saved identity');
-  const password = observation.snapshot.elements.find((element) => element.sensitive);
+  const username = named(observation, 'Saved identity');
+  const password = lineRef(observation, (line) => /^- textbox \[ref=[^\]]+\]$/.test(line.trim()));
   await browser.request(agent, 'fill-account', { ...refArgs(observation, password), accountId: 'fixture-account', usernameRef: username.ref, passwordRef: password.ref });
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   assert.equal(JSON.stringify(observation).includes('BROKER_PRIVATE_'), false);
-  const privateField = observation.snapshot.elements.find((element) => element.tag === 'input' && element.sensitive && element.name === 'Saved identity');
+  const privateField = named(observation, 'Saved identity');
+  assert.match(privateField.line, /: \[masked\]$/);
   await browser.request(agent, 'press', { ...refArgs(observation, privateField), key: 'Meta+a' });
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  assert.equal(observation.snapshot.selectedText, '');
+  assert.equal(observation.snapshot.selectedText, undefined);
   for (const key of ['Meta+c', 'MetaLeft+c', 'MetaRight+x', 'ControlLeft+v', 'Shift+Insert', 'Copy', 'Meta+l', 'Control+o', 'F12']) await assert.rejects(browser.request(agent, 'press', { tabId: opened.tab.tabId, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, key }), { code: 'BROWSER_SHORTCUT_BLOCKED' });
   assert.equal(JSON.stringify(await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).includes('BROKER_PRIVATE_'), false);
 });
@@ -327,8 +331,8 @@ test('owned browser website websocket messages work without a separate website-c
   f.cleanup(() => browser.close());
   const opened = await browser.request(agent, 'open', { url: f.origin });
   await eventually(() => sockets.clients.size > 0);
-  const observation = await eventually(async () => { const result = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return result.snapshot.text.includes('Ready') && result; });
-  await assert.rejects(browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements[0]), text: 'private document data' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  const observation = await eventually(async () => { const result = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return result.snapshot.outline.includes('Ready') && result; });
+  await assert.rejects(browser.request(agent, 'type', { ...refArgs(observation, textboxes(observation)[0]), text: 'private document data' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
   await context.pages().find(page => page.url().startsWith(f.origin)).evaluate(() => socket.send('read-query'));
   await eventually(() => mutations === 1);
   assert.equal(sockets.clients.size, 1);
@@ -350,7 +354,7 @@ test('owned-browser retained sessions remain usable across encrypted restarts af
   const second = build();
   f.cleanup(() => second.close());
   const reopened = await second.request(agent, 'open', { url: `${f.origin}/research` });
-  assert.ok((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.text.includes('Public research'));
+  assert.ok((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Public research'));
   const humanTab = (await second.request(human, 'open', { url: `${f.origin}/human-login` })).tab;
   assert.equal((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).ok, true);
   await second.request(human, 'close', { tabId: humanTab.tabId, navigationEpoch: humanTab.navigationEpoch, controllerEpoch: humanTab.controllerEpoch });
@@ -382,15 +386,15 @@ test('owned-browser PDF exports require a website grant and stop when their logi
   const opened = await browser.request(agent, 'open', { url: f.origin });
   await policy.update({ actor: human, operation: 'set-site', origin: f.origin, allowedActions: ['browse', 'read', 'download'] });
   let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find(element => element.tag === 'button')), intent: 'research' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  await assert.rejects(browser.request(agent, 'click', { ...refArgs(observation, named(observation, 'Export PDF')), intent: 'research' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
   assert.equal(posted, false);
   await policy.update({ actor: human, operation: 'set-site', origin: f.origin, allowedActions: ['browse', 'read', 'download', 'website-change'] });
-  await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'button')), intent: 'research' });
+  await browser.request(agent, 'click', { ...refArgs(observation, named(observation, 'Export PDF')), intent: 'research' });
   const exported = await eventually(async () => (await downloads.list(agent)).find((job) => job.state === 'downloaded'));
   assert.equal(posted, true);
   assert.equal(exported.source.url, `${f.origin}/pdf/export`);
   observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await browser.request(agent, 'click', { ...refArgs(observation, observation.snapshot.elements.find((element) => element.tag === 'a')) });
+  await browser.request(agent, 'click', { ...refArgs(observation, named(observation, 'Slow PDF')) });
   const slow = await eventually(async () => (await downloads.list(agent)).find((job) => job.state === 'downloading'));
   const tab = (await browser.inventory(agent)).tabs.find((tab) => tab.tabId === opened.tab.tabId);
   assert.equal(browser.downloadTarget(agent, `${f.origin}/public-file.pdf`).tabId, tab.tabId);
@@ -451,7 +455,7 @@ test('hostile page prototypes and mirrored credentials cannot leak through brows
   f.cleanup(() => browser.close());
   const opened = await browser.request(agent, 'open', { url: f.origin });
   const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  assert.equal(observation.snapshot.elements.find(el => el.name === 'Password').sensitive, true);
+  assert.match(named(observation, 'Password').line, /: \[masked\]$/);
   assert.equal(JSON.stringify(observation).includes('fixture-secret-97531'), false);
   await assert.rejects(browser.request(agent, 'frame', { tabId: opened.tab.tabId }), { code: 'BROWSER_PASSWORD_CAPTURE_PROTECTED' });
 });
@@ -470,12 +474,12 @@ test('unapproved origins cannot receive typed document data or disguised export 
   const opened = await browser.request(agent, 'open', { url: f.origin });
   for (const [action, name, args] of [['type', 'Notes', { text: 'private-document' }], ['click', 'Export PDF', {}], ['click', 'Search', {}]]) {
     const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-    await assert.rejects(browser.request(agent, action, { ...refArgs(observation, observation.snapshot.elements.find(el => el.name === name)), ...args }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+    await assert.rejects(browser.request(agent, action, { ...refArgs(observation, named(observation, name)), ...args }), { code: 'BROWSER_PERMISSION_REQUIRED' });
   }
   assert.equal(writes, 0);
   await policy.update({ actor: human, operation: 'set-site', origin: f.origin, allowedActions: ['browse', 'read', 'website-change'] });
   const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await browser.request(agent, 'type', { ...refArgs(observation, observation.snapshot.elements.find(el => el.name === 'Notes')), text: 'approved input' });
+  await browser.request(agent, 'type', { ...refArgs(observation, named(observation, 'Notes')), text: 'approved input' });
   await eventually(() => writes === 1);
 });
 
@@ -496,8 +500,8 @@ test('saved-account fill bypasses page setters while delivering normal input eve
   f.cleanup(() => browser.close());
   const opened = await browser.request(agent, 'open', { url: f.origin });
   const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  const password = observed.snapshot.elements.find(element => element.sensitive);
-  const username = observed.snapshot.elements.find(element => element.name === 'Identity');
+  const password = named(observed, 'Password');
+  const username = named(observed, 'Identity');
   await browser.request(agent, 'fill-account', { ...refArgs(observed, password), accountId: 'fixture', passwordRef: password.ref, usernameRef: username.ref });
   const page = context.pages().find(page => page.url().startsWith(f.origin));
   assert.equal(await page.locator('input[type="password"]').inputValue(), 'fixture-broker-secret');

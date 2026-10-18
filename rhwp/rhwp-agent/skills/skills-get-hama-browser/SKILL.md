@@ -13,8 +13,8 @@ Use the app-owned `browser_*` tools. The user's hub runs the browser and retains
 ## Start and reuse
 
 1. Call `browser_status` once to find shared user-opened tabs, your assigned tabs, runtime state, and available account IDs. `activeTabId` is the page the user is viewing in the current sidebar. For a request about that page, snapshot and control that exact tab so the user sees your work there. Reuse a relevant tab; otherwise call `browser_open` with the destination URL.
-2. Call `browser_snapshot` to read the page and choose a current element ref. Keep its `snapshotId`, `navigationEpoch`, and `controllerEpoch` together.
-3. Perform the next supported action, then take the cheapest observation that answers whether it worked. Use a fresh snapshot after navigation, submission, scrolling, page changes, or user input. Use status to find a new popup tab or inspect runtime changes.
+2. Call `browser_snapshot` to read the page outline and choose a current `[ref=…]`. Keep its `snapshotId`, `navigationEpoch`, and `controllerEpoch` together. On long pages, pass `find` or `scope` instead of rereading everything.
+3. Perform the next supported action. Click, type, press and select wait briefly for the page to settle and return `navigated`, `url`, `title`, and `newTab` or `dialog` when they happened. Pass `snapshot: true` when you need the resulting outline. Refs stay valid until a navigation or a new snapshot.
 4. Finish when the requested fact, page state, capture, or completed download is established. Return the source link and outcome.
 
 Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. User-opened tabs are shared across documents and available to agents. Other agents’ assigned tabs remain scoped to their own tasks. When a sidebar is already showing your target, it stays docked during your work.
@@ -26,7 +26,7 @@ Navigate an existing tab for the next destination. Open another tab only when th
 - Prefer a known destination URL or a relevant result already on the page. Avoid intermediate pages and repeated inventory checks.
 - Calls on the same tab are sequential. Hama exposes individual actions, so do not invent a browser batch, JavaScript evaluation, coordinate-click, or cookie tool.
 - `browser_type` fills ordinary text. For an intended search submission, use `submit: true` with `intent: search` to fill and press Enter in one call. Other flows can use an observed submit button or `browser_press`. Declare `login`, `export`, or `website-change` intent when applicable.
-- Use bounded `browser_wait` for the needed readiness, idle, visible, or text condition. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
+- Use `browser_select` for native list boxes. Use bounded `browser_wait` only for content that arrives after an action settled. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
 
 ## Accounts and scope
 

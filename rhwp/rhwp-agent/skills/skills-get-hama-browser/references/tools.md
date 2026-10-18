@@ -1,10 +1,12 @@
 # Hama Browser tools
 
-The live tool definitions are the authority. This guide was checked against `tools.mjs`, `server.mjs`, and `owned-browser-service.mjs` at base commit `171820b3`, with submission and conditional-wait contracts from `95d54b99`, on 2026-10-11. MCP names have the `mcp__rhwp__` prefix where the provider requires it.
+The live tool definitions are the authority. This guide was checked against `tools.mjs`, `server.mjs`, and `owned-browser-service.mjs` at base commit `171820b3`, with submission and conditional-wait contracts from `95d54b99`, on 2026-10-11, and the outline, settle and select contracts added on 2026-10-16. MCP names have the `mcp__rhwp__` prefix where the provider requires it.
 
 ## Identity and results
 
 Ordinary successful tab calls return `ok`, `action`, `runtime`, and `tab`, plus their specific result. `completed: true` confirms the operation returned; inspect the page or download to establish the task outcome. Document readiness does not establish that dynamic results, an export, or a save finished.
+
+`browser_click`, `browser_type`, `browser_press`, and `browser_select` first wait about 0.5 s, then up to 5 s for a started navigation to load or for the requests the action started to answer. They return only `ok`, `action`, `navigated`, `url`, and `title`, plus `navigationEpoch` after a navigation, `newTab` for an opened popup, `dialog` for a dismissed alert or confirm, and `snapshot` when requested.
 
 | Returned value | Use |
 | --- | --- |
@@ -12,8 +14,8 @@ Ordinary successful tab calls return `ok`, `action`, `runtime`, and `tab`, plus 
 | `tab.openerTabId` | Identifies a popup's parent. Enumerate status to find the child. |
 | `tab.navigationEpoch`, `tab.controllerEpoch` | Latest values required by input, navigation, close, and account fill. Never increment them yourself. |
 | `runtime.generation`, `tab.runtimeGeneration` | Detect a runtime replacement. Refresh inventory and snapshot afterward. The public tool schemas do **not** accept a `runtimeGeneration` argument. |
-| `snapshot.snapshotId`, `snapshot.elements[].ref` | Current observation and target identity. A new snapshot replaces earlier refs. Navigation, zoom changes, and recovery can invalidate them. |
-| `snapshot.url`, `title`, `text`, `selectedText`, `elements`, `truncated` | Read observed content. Elements include `role`, `name`, `text`, `value`, `disabled`, `sensitive`, and `rect`; ordinary snapshot elements do not promise link `href` values. Sensitive values are masked. |
+| `snapshot.snapshotId`, `[ref=…]` in `snapshot.outline` | Current observation and target identity. A new snapshot replaces earlier refs. Navigation, zoom changes, and recovery can invalidate them. |
+| `snapshot.outline`, `url`, `title`, `truncated`, `hint` | One line per node, such as `- button "Save" [ref=e12]` or `- textbox "Email" [ref=e3]: value`. Controls and scopeable regions carry refs; headings, paragraphs and lists give structure. Links have no `href`. Private field values read `[masked]`. Menus and footers with more than 10 controls fold into one line such as `- navigation "Main" [ref=e7]: +23 links`; scope that ref or use `find` to list them. The outline stops near 20 KB with `truncated: true`. `text` and `selectedText` appear only when requested or present. |
 
 Agent ownership comes from the hub, not tool arguments. A tab ID from another agent is unavailable. The server serializes actions per tab. Never run dependent input calls concurrently.
 
@@ -28,12 +30,13 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 | `browser_status` | `{}` | `runtime`, scoped `tabs`, `limits`, and available `accounts`. Includes imported and manually saved logins. Match `origin`/`origins` to the website; `agentReuseApproved: true` permits direct local autofill for the task. Reuse shared user-opened tabs and your assigned tabs and inspect readiness metadata. |
 | `browser_open` | Optional `url`, `intent` | Creates your tab and returns its descriptor. Omitted URL opens `about:blank`. Runtime starts lazily. |
 | `browser_navigate` | `tabId`, `url`, `epochs`; optional `intent` | Navigates the same tab. Snapshot afterward. The public schema has no back/forward/reload direction field. |
-| `browser_snapshot` | `tabId` | Returns `snapshot` and current tab state. Replaces refs, so choose actions from this result. |
-| `browser_click` | `target`; optional `intent` | Clicks the observed element. Snapshot for the resulting page; status for popup children. |
-| `browser_type` | `target`, `text`; optional `intent`, `submit` | Fills ordinary text, maximum 16,000 characters. `submit: true` fills and presses Enter on that validated target. It defaults to false. Use `intent: search` for a search form. |
-| `browser_press` | `target`, `key`; optional `intent` | Presses on the observed element. `Enter`, navigation keys, single letters/digits, and select-all are supported. Clipboard/browser-window shortcuts are blocked. |
+| `browser_snapshot` | `tabId`; optional `scope`, `find`, `text` | Returns `snapshot` and current tab state. `scope` keeps one ref's subtree, `find` keeps matching lines with their ancestors and reports `matches`, `text: true` adds up to 24,000 characters of visible text; try `find` first. Replaces refs, so choose actions from this result. |
+| `browser_click` | `target`; optional `intent`, `snapshot` | Clicks the observed element and reports the settled result. `newTab.tabId` names an opened popup. |
+| `browser_type` | `target`, `text`; optional `intent`, `submit`, `snapshot` | Fills ordinary text, maximum 16,000 characters. `submit: true` fills and presses Enter on that validated target. It defaults to false. Use `intent: search` for a search form. |
+| `browser_press` | `target`, `key`; optional `intent`, `snapshot` | Presses on the observed element. `Enter`, navigation keys, single letters/digits, and select-all are supported. Clipboard/browser-window shortcuts are blocked. |
+| `browser_select` | `target`, `option`; optional `intent`, `snapshot` | Chooses an enabled `<select>` option by label, then value, then case-insensitive label. Custom menus are clicked instead. |
 | `browser_scroll` | `tabId`, `deltaY`, `epochs`; optional `deltaX` | Scroll, then snapshot. Schema permits deltas between -10,000 and 10,000; runtime clamps each delta to -2,000 through 2,000. |
-| `browser_wait` | `tabId`; optional `condition`, `text`, `timeoutMs` | Conditions are `ready`, `idle`, `visible`, `text`; default `ready`. Timeout is between 1 and 30,000 ms, default 10,000. Returns a fresh `snapshot` when the predicate succeeds. `text` requires nonempty text. See conditions below. |
+| `browser_wait` | `tabId`; optional `condition`, `text`, `find`, `timeoutMs` | Conditions are `ready`, `idle`, `visible`, `text`; default `ready`. Timeout is between 1 and 30,000 ms, default 10,000. Returns a fresh `snapshot` when the predicate succeeds. `text` requires nonempty text. See conditions below. |
 | `browser_close` | `tabId`, `epochs` | Explicitly closes your tab. Completed managed downloads survive. Hiding a preview is separate. |
 | `browser_capture` | `tabId`; optional `snapshotId`, `ref`, `navigationEpoch`, `region`, `comment` | Page capture by default. Element capture uses current `snapshotId` and `ref`; region uses `{x,y,width,height}` in observed page CSS coordinates. Returns `capture` provenance and an image when available. Capture stays bound to the originating destination. |
 | `browser_downloads` | Optional `action`, `downloadId` | `action` is `list`, `cancel`, `retry`, or `save`, default `list`. Use a returned ID for cancel/retry/save. After completion, desktop `save` returns the actual `savedPath` in the local Downloads folder, retaining the filename without overwriting existing files. Returns scoped jobs or one job. Importing to another project is a human UI operation, absent from this agent schema. |
@@ -42,7 +45,7 @@ Agent ownership comes from the hub, not tool arguments. A tab ID from another ag
 
 URLs must satisfy the browser's network guard. Public HTTPS research is the normal path; workspace preview access needs its configured allowance. Do not substitute raw HTTP requests or another browser to evade a refusal.
 
-Wait conditions use observable page state. `ready` waits for document readiness. `idle` waits for loading/navigation to settle for 500 ms, without requiring network silence. `visible` waits for a visible semantic element, optionally with a non-sensitive name/text containing the supplied `text`. `text` waits for supplied text in sanitized visible document text. Matching uses a case-sensitive substring. The timeout includes queued time and observation work. Treat the returned snapshot as the current observation and avoid another snapshot without a reason.
+Wait conditions use observable page state. `ready` waits for document readiness. `idle` waits for loading/navigation to settle for 500 ms, without requiring network silence. `visible` waits for a control with a ref, optionally with a non-masked name or value containing the supplied `text`. `text` waits for supplied text anywhere in the full outline, before its size limit. Matching uses a case-sensitive substring. The timeout includes queued time and observation work. Treat the returned snapshot as the current observation and avoid another snapshot without a reason.
 
 ## Minimal examples
 
@@ -64,7 +67,7 @@ After snapshot identifies the search input as `e4`, fill and submit with `browse
 {"tabId":"tab-returned-by-open","snapshotId":"snapshot-returned-by-snapshot","ref":"e4","navigationEpoch":1,"controllerEpoch":1,"text":"school sleep duration","submit":true,"intent":"search"}
 ```
 
-Observe results with a snapshot, or wait for expected text and use its returned snapshot:
+Add `"snapshot":true` to read the results in the same call, or wait for expected text that loads later and use its returned snapshot:
 
 ```json
 {"tabId":"tab-returned-by-open","condition":"text","text":"Search results","timeoutMs":10000}
