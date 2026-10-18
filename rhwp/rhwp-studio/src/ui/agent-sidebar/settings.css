@@ -1280,6 +1280,52 @@
   flex: 0 1 auto;
 }
 
+/* 선물 크레딧 한 줄 — 받기 전 제안, 받은 뒤 남은 양 막대. */
+.ag-pi-gift {
+  padding: 8px 10px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-field);
+  background: var(--ag-bg);
+}
+
+.ag-pi-gift[hidden],
+.ag-pi-gift [hidden] {
+  display: none;
+}
+
+.ag-pi-gift .ag-settings-meter-head {
+  align-items: center;
+  min-height: 24px;
+}
+
+.ag-pi-gift .ag-settings-meter-label {
+  color: var(--ag-text);
+}
+
+/* 특별 이벤트 창의 막대와 같은 Claude 색. Pi 설정 창은 .ag-root 밖에 뜨므로 여기서 다시 정한다. */
+.ag-pi-gift {
+  --ag-pi-gift-accent: #c4785a; /* token-ok */
+}
+
+:root[data-theme-effective='dark'] .ag-pi-gift {
+  --ag-pi-gift-accent: #d49174; /* token-ok */
+}
+
+.ag-pi-gift .ag-settings-meter-fill {
+  background: var(--ag-pi-gift-accent);
+}
+
+.ag-pi-gift[data-state='exhausted'] .ag-settings-meter-label {
+  color: var(--ag-text-muted);
+}
+
+.ag-pi-gift-claim {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  font-size: var(--ag-fs-secondary);
+}
+
 /* ── 사용량 ─────────────────────────────────────────── */
 
 .ag-settings-usage-block[hidden] {

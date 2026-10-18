@@ -67,6 +67,16 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       return () => ipcRenderer.removeListener('license:changed', listener);
     },
   },
+  // 선물 크레딧(macOS 전용). 서버와는 메인이 라이선스 lease 로 주고받는다.
+  gift: {
+    getStatus: (options) => ipcRenderer.invoke('gift:status', { refresh: options?.refresh === true }),
+    claim: () => ipcRenderer.invoke('gift:claim'),
+    onChange: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('gift:changed', listener);
+      return () => ipcRenderer.removeListener('gift:changed', listener);
+    },
+  },
   takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
   takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
   finishRebrandImport: (token, outcome) => ipcRenderer.invoke('desktop:finish-rebrand-import', token, outcome),

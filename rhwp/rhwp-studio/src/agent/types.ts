@@ -717,6 +717,11 @@ export interface PiStatus {
   latestVersion: string | null;
   updateRequired: boolean;
   error: string | null;
+  /**
+   * Pi 가 지금 쓰는 자격. 'gift' 면 선물 크레딧이라 내 키 없이도 쓴다.
+   * keyConfigured·keyTail 은 내 OpenRouter 키만 뜻한다. 옛 허브는 보내지 않는다.
+   */
+  credential?: 'gift' | 'own' | 'none';
 }
 
 /** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */

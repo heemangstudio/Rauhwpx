@@ -324,6 +324,7 @@ import { createRequestCardController } from './request-card.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
+import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import {
   isLicenseViewerMode,
@@ -342,6 +343,8 @@ export interface AgentSidebarDeps {
   /** inset 전환 후 용지 가운데 정렬을 요청할 때 사용 */
   eventBus?: EventBus;
   editorSettingsRuntime?: EditorSettingsRuntime;
+  /** 설정 → Pi 의 선물 크레딧. 생략하면 macOS 데스크톱의 rhwpDesktop.gift 를 쓰고, null 이면 없다. */
+  gift?: DesktopGiftApi | null;
   /** 헤더에 표시할 현재 문서와 선택 상태. */
   getDocumentContext?: () => {
     documentId?: string | null;
@@ -4641,6 +4644,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     skillsSettings: skillsShelf.root,
     refreshSkills: () => bridge.listSkills(),
     deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
+    gift: deps.gift === undefined ? desktopGiftApi() : deps.gift,
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {

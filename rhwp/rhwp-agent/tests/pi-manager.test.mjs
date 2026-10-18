@@ -209,6 +209,7 @@ test('status on a missing root reports not installed and never spawns', async ()
     latestVersion: null,
     updateRequired: false,
     error: null,
+    credential: 'none',
   });
   assert.equal(spawns.length, 0);
   assert.equal(manager.cheapestModel(), null);

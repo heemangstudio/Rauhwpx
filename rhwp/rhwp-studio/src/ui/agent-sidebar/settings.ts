@@ -49,6 +49,8 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { ChatThread } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
+import { createPiGiftLine } from './settings-gift.ts';
+import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
@@ -343,6 +345,8 @@ export interface SettingsPanelDeps {
   projectSettings?: ProjectService | null;
   /** 보관함에서 채팅을 영구히 지운다. 사이드바의 삭제 확인 경로를 쓴다. */
   deleteArchivedThread?: (thread: ChatThread) => Promise<boolean>;
+  /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
+  gift?: DesktopGiftApi | null;
 }
 
 export interface SettingsPanel {
@@ -629,6 +633,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   piHead.append(piHeadIcon, piHeadCopy);
   const piMessageLine = el('p', 'ag-settings-cliproxy-error');
   piMessageLine.hidden = true;
+  // 선물 크레딧 — 어느 단계에서든 카드 맨 위에 보인다.
+  const piGift = deps.gift ? createPiGiftLine(deps.gift) : null;
 
   // 1단계 — 설치
   const piInstallStep = el('div', 'ag-pi-step');
@@ -712,6 +718,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   piCard.append(
     piHead,
+    ...(piGift ? [piGift.root] : []),
     piMessageLine,
     piInstallStep,
     piKeyStep,
@@ -1511,7 +1518,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     modelCatalogList.inert = aiPrefsSaving;
     modelCatalogRefresh.disabled = aiPrefsSaving || connectionState !== 'connected'
       || (modelCatalogAgent === 'pi'
-        ? !piStatus?.installed || !piStatus.keyConfigured || piBusy || setupBusy || piCatalogLoading
+        ? !piStatus?.installed || !piHasCredential() || piBusy || setupBusy || piCatalogLoading
         : modelCatalogLoading.has(modelCatalogAgent));
   }
 
@@ -2217,7 +2224,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       setupDialog.focus();
     });
     void refreshSetupStatuses();
-    if (agent === 'pi') void refreshPiStatus();
+    if (agent === 'pi') {
+      void refreshPiStatus();
+      piGift?.refresh();
+    }
   }
 
   function isSetupOpen(): boolean {
@@ -2653,10 +2663,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // ── pi 마법사 ─────────────────────────────────────────
 
+  /** 내 키가 있거나 선물 크레딧을 쓰는 중이면 키 단계를 건너뛴다. */
+  function piHasCredential(): boolean {
+    return piStatus?.keyConfigured === true || piStatus?.credential === 'gift';
+  }
+
   function piCurrentStep(): PiStep {
     if (piStepOverride) return piStepOverride;
     if (!piStatus?.installed) return 'install';
-    if (!piStatus.keyConfigured) return 'key';
+    if (!piHasCredential()) return 'key';
     if (piStatus.models.length === 0) return 'catalog';
     return 'summary';
   }
@@ -2666,7 +2681,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (!piStatus) return connectionState === 'connected' ? '확인 중…' : '허브 연결 대기';
     const version = piStatus.version ?? '설치됨';
     if (!piStatus.installed) return '설치 안 됨';
-    if (!piStatus.keyConfigured) return `${version} · 키 필요`;
+    if (!piHasCredential()) return `${version} · 키 필요`;
     if (piStatus.models.length === 0) return `${version} · 모델 필요`;
     return `${version} · 모델 ${piStatus.models.length}개`;
   }
@@ -2758,7 +2773,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   function openPiModelCatalog(): void {
     if (piStepOverride !== 'catalog' && piStepOverride !== 'naming') resetPiDraft();
-    piStepOverride = piStatus?.installed && piStatus.keyConfigured ? 'catalog' : null;
+    piStepOverride = piStatus?.installed && piHasCredential() ? 'catalog' : null;
     piMessage = '';
     modelCatalogAgent = 'pi';
     modelCatalogSearch.value = '';
@@ -2767,11 +2782,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderPi();
     modelCatalogSection.root.scrollIntoView({ block: 'nearest' });
     modelCatalogSearch.focus({ preventScroll: true });
-    if (piStatus?.keyConfigured && !piCatalogTried) void loadPiCatalog(false);
+    if (piHasCredential() && !piCatalogTried) void loadPiCatalog(false);
   }
 
   function renderSharedPiCatalog(): void {
-    const ready = piStatus?.installed === true && piStatus.keyConfigured;
+    const ready = piStatus?.installed === true && piHasCredential();
     const online = connectionState === 'connected';
     const focusedId = modelCatalogList.contains(document.activeElement)
       ? (document.activeElement as HTMLElement).dataset.modelId : null;
@@ -2846,7 +2861,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return row;
       }),
     );
-    piSummaryKey.textContent = piStatus?.keyTail ? `키 ****${piStatus.keyTail}` : '';
+    // 선물 크레딧을 쓰는 동안 내 키는 소진 뒤에 넘어갈 곳이다.
+    const ownKey = piStatus?.keyConfigured && piStatus.keyTail ? `키 ****${piStatus.keyTail}` : '';
+    piSummaryKey.textContent = ownKey && piStatus?.credential === 'gift' ? `소진 후 ${ownKey}` : ownKey;
   }
 
   function renderPi(): void {
@@ -2870,7 +2887,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     piKeyCancel.hidden = piStepOverride !== 'key';
 
     renderModelCatalog();
-    if (modelCatalogAgent === 'pi' && piStatus?.keyConfigured && online && !piCatalogTried) {
+    if (modelCatalogAgent === 'pi' && piHasCredential() && online && !piCatalogTried) {
       void loadPiCatalog(false);
     }
 
@@ -3457,6 +3474,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           break;
         case 'pi-status': {
           const authenticated = ev.status.keyConfigured && (!piStatus?.keyConfigured || setupBusy);
+          // 선물과 내 키는 모델 목록이 다르다. 자격이 바뀌면 목록을 다시 받는다.
+          if (piStatus && (piStatus.credential ?? 'own') !== (ev.status.credential ?? 'own')) {
+            piCatalog = [];
+            piCatalogTried = false;
+          }
           piStatus = ev.status;
           if (authenticated && setupAgent === 'pi' && setupOverlay.getAttribute('aria-hidden') === 'false') {
             setupBusy = false;
@@ -3542,6 +3564,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       unsubscribeAttentionPrefs();
       unsubscribeInitialSetup();
       licenseSection?.dispose();
+      piGift?.dispose();
       editingSettings.dispose();
       element.remove();
       setupOverlay.remove();

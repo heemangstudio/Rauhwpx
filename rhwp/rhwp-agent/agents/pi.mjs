@@ -64,8 +64,29 @@ export function isOpenRouterCreditError(text) {
   return CREDIT_ERROR.test(String(text ?? ''));
 }
 
-export function formatOpenRouterCreditError(text) {
+/** 선물 크레딧이 떨어졌을 때. 내 키가 있으면 다음 요청부터 그 키로 간다. */
+export const GIFT_EXHAUSTED_OWN_KEY_MESSAGE = '선물 크레딧을 모두 사용했습니다. 다음 요청부터 내 OpenRouter 키를 씁니다.';
+export const GIFT_EXHAUSTED_NO_KEY_MESSAGE = '선물 크레딧을 모두 사용했습니다. Pi 설정에서 OpenRouter 키를 연결해 주세요.';
+/** 잔액이 있는데 잠깐 거절된 402 (OpenRouter 가 Retry-After 와 함께 돌려준 경우). */
+export const GIFT_RETRY_MESSAGE = '선물 크레딧 요청이 잠시 거절되었습니다. 잠시 뒤 다시 시도해 주세요.';
+/** 선물 프록시는 선물을 다 썼거나 끊겼을 때만 이 문구로 402 를 준다. */
+const GIFT_EXHAUSTED_ERROR = /insufficient credits/i;
+
+export function isGiftExhaustedError(text) {
+  return GIFT_EXHAUSTED_ERROR.test(String(text ?? ''));
+}
+const PI_KEY_MISSING_MESSAGE = 'Pi 설정에서 OpenRouter 키를 연결해 주세요.';
+
+/**
+ * @param {unknown} text
+ * @param {{ mode?: string, fallback?: string } | null} [access] 이 스폰이 쓴 자격 (resolvePiAccess)
+ */
+export function formatOpenRouterCreditError(text, access = null) {
   if (!isOpenRouterCreditError(text)) return null;
+  if (access?.mode === 'gift') {
+    if (!isGiftExhaustedError(text)) return GIFT_RETRY_MESSAGE;
+    return access.fallback === 'own' ? GIFT_EXHAUSTED_OWN_KEY_MESSAGE : GIFT_EXHAUSTED_NO_KEY_MESSAGE;
+  }
   return 'OpenRouter 크레딧이 부족합니다.';
 }
 
@@ -75,14 +96,28 @@ export function formatOpenRouterCreditError(text) {
  *   piRoot?: string,
  *   openRouterApiKey?: string,
  *   reasoning?: boolean,
+ *   piAgentDir?: string,
+ *   resolvePiAccess?: (model: string | null | undefined) => PiSpawnAccess | null,
+ *   onCreditExhausted?: (info: { mode: string, confirmed: boolean }) => void,
+ *   onAccessRejected?: (info: { mode: string, status: number }) => void,
  * }} PiBackendOptions
+ *
+ * @typedef {{ mode: 'gift'|'own'|'none', key: string|null, agentDir: string, model: string|null,
+ *   reasoning: boolean, fallback?: 'own'|'none', reason?: string }} PiSpawnAccess
  *
  * piBin  — pi 실행 파일 경로(`<piRoot>/prefix/node_modules/.bin/pi`).
  * piRoot — 영속 pi 루트. 에이전트 디렉터리는 `<piRoot>/agent`, 세션은 `<piRoot>/sessions`.
  * model  — provider 접두사 없는 OpenRouter 모델 id. argv 에서 `openrouter/` 를 붙인다.
  * effort — 추론 강도(low|medium|high) 또는 null.
  * reasoning — 선택한 모델이 thinking 을 지원하는지 여부.
+ * piAgentDir — Pi 에이전트 홈. 없으면 `<piRoot>/agent`. 선물 크레딧은 `<piRoot>/agent-gift` 를 쓴다.
+ * resolvePiAccess — 스폰마다 부른다. 그때의 자격(키·홈·모델)이 위 값들을 덮는다.
+ * onCreditExhausted — 선물 크레딧 스폰이 402 로 끝났을 때 부른다.
  */
+
+function piAgentDirOf(opts) {
+  return opts.piAgentDir ?? path.join(opts.piRoot ?? '', 'agent');
+}
 
 /** 계획 단계에서는 확장 도구 목록도 좁혀야 하므로 phase 기준으로 다시 계산한다. */
 function toolProfileFor(opts) {
@@ -114,7 +149,7 @@ export function buildPiArgv(opts, sessionId, env = process.env, { systemPromptPa
     ...piResourceArgs(),
     '--tools', piToolSelection(availableReadOnlyBuiltins({
       pathEnv: env.PATH ?? '',
-      binDir: path.join(piRoot, 'agent', 'bin'),
+      binDir: path.join(piAgentDirOf(opts), 'bin'),
     })),
   );
   // Safe Pi has no OS write sandbox. Never expose its general shell: even
@@ -172,7 +207,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
   const readOnlyRoots = providerReadOnlyRoots(opts);
   return {
     ...env,
-    PI_CODING_AGENT_DIR: path.join(piRoot, 'agent'),
+    PI_CODING_AGENT_DIR: piAgentDirOf(opts),
     ...(opts.openRouterApiKey ? { OPENROUTER_API_KEY: String(opts.openRouterApiKey) } : {}),
     // 버전 확인/카탈로그 갱신 같은 기동 시 네트워크 동작을 끈다.
     PI_OFFLINE: '1',
@@ -323,11 +358,12 @@ export function createPiFleetMapper(onEvent) {
  * @param {number | null} code
  * @param {NodeJS.Signals | null} signal
  * @param {string} token
+ * @param {PiSpawnAccess | null} [access] 이 스폰의 자격. 리스·키를 가리고 선물 문구를 고른다
  */
-export function formatPiExitError(stderrText, code, signal, token) {
-  const credit = formatOpenRouterCreditError(stderrText);
+export function formatPiExitError(stderrText, code, signal, token, access = null) {
+  const credit = formatOpenRouterCreditError(stderrText, access);
   if (credit) return credit;
-  const clean = redactDiagnosticText(stderrText, [token]);
+  const clean = redactDiagnosticText(stderrText, [token, access?.key]);
   const detail = clean
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -479,7 +515,36 @@ export function createPiSession(opts, {
   let uncertainTreeCleanup = false;
   /** @type {{ text: string } | null} */
   let queuedTurn = null;
+  /**
+   * 이번 스폰의 자격(resolvePiAccess). 선물 크레딧이면 리스를 키로, agent-gift 를 홈으로 쓴다.
+   * @type {PiSpawnAccess | null}
+   */
+  let turnAccess = null;
+  /** 이번 스폰이 실제로 쓴 모델. 자격이 바뀌면 opts.model 과 다를 수 있다. */
+  let turnModel = opts.model;
   const fleet = createPiFleetMapper(onEvent);
+
+  function spawnSecrets() {
+    return [opts.token, opts.openRouterApiKey, turnAccess?.key];
+  }
+
+  /**
+   * 크레딧 오류면 보여 줄 문구. 선물 크레딧이면 허브에 알린다 — 'Insufficient credits' 는 다 쓴 것이고,
+   * 그 밖의 402 는 허브가 서버 잔액을 다시 보고 정한다.
+   */
+  function creditFailureMessage(text) {
+    const message = formatOpenRouterCreditError(text, turnAccess);
+    if (message && turnAccess?.mode === 'gift') {
+      try { opts.onCreditExhausted?.({ mode: 'gift', confirmed: isGiftExhaustedError(text) }); } catch {}
+    }
+    return message;
+  }
+
+  /** 크레딧 실패 코드. 선물이면 다 쓴 것(gift_credits)과 잠깐 거절된 것(gift_retry)을 가른다. */
+  function creditFailureCode(text) {
+    if (turnAccess?.mode !== 'gift') return 'openrouter_credits';
+    return isGiftExhaustedError(text) ? 'gift_credits' : 'gift_retry';
+  }
 
   function endTurn(evt) {
     if (!turnOpen) return;
@@ -526,7 +591,7 @@ export function createPiSession(opts, {
             type: 'session-info',
             agent,
             sessionId,
-            model: opts.model ?? undefined,
+            model: turnModel ?? undefined,
           });
         }
         return;
@@ -585,7 +650,7 @@ export function createPiSession(opts, {
           onEvent({
             type: 'usage',
             agent,
-            model: opts.model ?? null,
+            model: turnModel ?? null,
             usage: usage.usage,
             costUsd: usage.costUsd,
           });
@@ -734,7 +799,32 @@ export function createPiSession(opts, {
         }
       }
 
-      if (!opts.model) {
+      // 자격은 스폰마다 새로 받는다 — 선물 리스가 갱신됐거나 크레딧이 떨어져 내 키로 넘어갔을 수 있다.
+      turnAccess = null;
+      if (typeof opts.resolvePiAccess === 'function') {
+        try { turnAccess = opts.resolvePiAccess(opts.model) ?? null; } catch { turnAccess = null; }
+      }
+      if (turnAccess?.mode === 'none') {
+        const giftUsedUp = turnAccess.reason === 'gift-exhausted';
+        const message = giftUsedUp ? GIFT_EXHAUSTED_NO_KEY_MESSAGE : PI_KEY_MISSING_MESSAGE;
+        const failure = { source: 'pi', code: giftUsedUp ? 'gift_credits' : 'PI_NOT_CONFIGURED' };
+        onEvent({ type: 'error', agent, message, failure });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
+        return;
+      }
+      /** @type {PiBackendOptions} */
+      const spawnOpts = turnAccess
+        ? {
+          ...opts,
+          model: turnAccess.model ?? opts.model,
+          reasoning: turnAccess.reasoning,
+          openRouterApiKey: turnAccess.key ?? undefined,
+          piAgentDir: turnAccess.agentDir,
+        }
+        : opts;
+      turnModel = spawnOpts.model;
+
+      if (!spawnOpts.model) {
         const failure = { source: 'pi', code: 'PI_MODEL_MISSING' };
         onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.', failure });
         endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
@@ -745,14 +835,14 @@ export function createPiSession(opts, {
       // 프롬프트는 stdin 으로 넘긴다. argv 로 넘기면 Linux 의 인자당 128 KiB,
       // Windows 의 명령줄 32,767자 한계에 걸리고 '-'/'@' 로 시작하는 메시지가
       // 플래그나 첨부 파일로 파싱된다.
-      const argv = buildPiArgv(opts, sessionId, process.env, {
-        systemPromptPath: writeSystemPromptFile(opts, sessionId),
+      const argv = buildPiArgv(spawnOpts, sessionId, process.env, {
+        systemPromptPath: writeSystemPromptFile(spawnOpts, sessionId),
       });
       stderrTail = '';
 
       let proc;
       try {
-        const spawnEnv = buildPiEnv(opts);
+        const spawnEnv = buildPiEnv(spawnOpts);
         const launched = applyManagedCliLaunch(opts.piBin ?? 'pi', argv, {
           platform, nodeCommand, env: spawnEnv,
         });
@@ -764,14 +854,14 @@ export function createPiSession(opts, {
           stdio: ['pipe', 'pipe', 'pipe'],
         }), {
           agent, transport: 'json', stdin: 'text', argv: launched.argv, env: launched.env,
-          secrets: [opts.token, opts.openRouterApiKey], cli: opts.providerCliVersion, platform,
+          secrets: spawnSecrets(), cli: opts.providerCliVersion, platform,
         });
       } catch (e) {
         const failure = { source: 'pi', code: e?.code === 'ENOENT' ? 'cli_missing' : 'process_exit' };
         onEvent({
           type: 'error',
           agent,
-          message: `failed to start pi: ${redactDiagnosticText(e?.message ?? e, [opts.token, opts.openRouterApiKey])}`,
+          message: `failed to start pi: ${redactDiagnosticText(e?.message ?? e, spawnSecrets())}`,
           failure,
         });
         endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
@@ -847,25 +937,30 @@ export function createPiSession(opts, {
           } else if (turnFailureMessage) {
             // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
             const detail = turnFailureMessage;
-            const credit = formatOpenRouterCreditError(detail);
+            const credit = creditFailureMessage(detail);
             const status = detail.match(/^\s*(\d{3})\b/);
+            if (!credit && status && turnAccess?.mode === 'gift' && (status[1] === '401' || status[1] === '403')) {
+              // 선물 프록시가 리스를 거절했다 (해지·미수령·다른 기기). 자격을 다시 받게 한다.
+              try { opts.onAccessRejected?.({ mode: 'gift', status: Number(status[1]) }); } catch {}
+            }
             const failure = {
               source: 'pi',
               ...(status ? { httpStatus: Number(status[1]) } : {}),
-              ...(credit ? { code: 'openrouter_credits' } : {}),
+              ...(credit ? { code: creditFailureCode(detail) } : {}),
             };
             const message = credit ? `${credit}\n${detail}` : detail;
             onEvent({ type: 'error', agent, message, failure });
             endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, failure });
           } else if (!completedAtDrain && code !== 0) {
+            const credit = creditFailureMessage(stderrTail);
             const failure = {
               source: 'pi',
-              code: isOpenRouterCreditError(stderrTail) ? 'openrouter_credits' : 'process_exit',
+              code: credit ? creditFailureCode(stderrTail) : 'process_exit',
             };
             onEvent({
               type: 'error',
               agent,
-              message: formatPiExitError(stderrTail, code, signal, opts.token),
+              message: credit ?? formatPiExitError(stderrTail, code, signal, opts.token, turnAccess),
               failure,
             });
             endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
@@ -928,7 +1023,7 @@ export function createPiSession(opts, {
         : Promise.resolve(true);
       // 기동 중 종료하면 EPIPE 가 난다. 턴 정리는 exit/close 처리가 맡는다.
       proc.stdin.on('error', (err) => {
-        process.stderr.write(`[pi] stdin write error: ${redactDiagnosticText(err?.message ?? err, [opts.token])}\n`);
+        process.stderr.write(`[pi] stdin write error: ${redactDiagnosticText(err?.message ?? err, spawnSecrets())}\n`);
       });
       // 시스템 프롬프트는 모드와 무관하다 — 현재 모드는 사용자 메시지 앞 블록으로 싣는다.
       proc.stdin.end(withModeTurnBlock(opts, text));
@@ -944,7 +1039,7 @@ export function createPiSession(opts, {
       proc.on('error', (err) => {
         if (proc !== child) return;
         discardOutputReader();
-        const safeError = redactDiagnosticText(err?.message ?? err, [opts.token]);
+        const safeError = redactDiagnosticText(err?.message ?? err, spawnSecrets());
         process.stderr.write(`[pi] spawn error: ${safeError}\n`);
         if (turnOpen) {
           // 여기서 알리지 않는다 — 출력이 닫히며 턴이 정착할 때 이 단서로 한 번만 알린다

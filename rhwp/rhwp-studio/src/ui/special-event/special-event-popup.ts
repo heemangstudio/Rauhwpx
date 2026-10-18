@@ -6,11 +6,12 @@
  * 바꾸면 여기도 같이 바꾼다. 둘은 한 칸에 같이 그려져 있어 어떤 자세에서도 손이 떨어지지
  * 않는다. 움직임은 스프라이트 픽셀(3px) 단위로만 끊고, 동작 줄이기 설정이면 움직이지 않는다.
  *
- * 크레딧을 받는 일은 넘겨받은 claim() 이 맡는다. 서버가 생기면 그 호출을 넘기면 된다.
- * 언제 띄울지(업데이트 뒤 한 번)는 부르는 쪽이 정한다.
+ * 크레딧을 받는 일은 넘겨받은 claim() 이 맡는다. GiftClaimError 로 거절하면 그 메시지를 보인다.
+ * 언제 띄울지(이벤트마다 한 번)는 special-event-trigger.ts 가 정한다.
  */
 import '../agent-sidebar/sheet.css';
 import './special-event-popup.css';
+import { GiftClaimError } from './gift.ts';
 
 export const SPECIAL_EVENT_FRAMES = ['idle', 'hippo-blink', 'clawd-blink', 'crouch', 'cheer'] as const;
 type Frame = (typeof SPECIAL_EVENT_FRAMES)[number];
@@ -25,7 +26,10 @@ export interface SpecialEventClaim {
 }
 
 export interface SpecialEventOptions {
-  /** 크레딧을 받는다. 실패하면 거부(reject)하고, 창은 다시 시도할 수 있게 남는다. */
+  /**
+   * 크레딧을 받는다. 실패하면 거부(reject)하고, 창은 다시 시도할 수 있게 남는다.
+   * GiftClaimError 면 그 메시지를, 다른 오류면 기본 문구를 보인다.
+   */
   claim(): Promise<SpecialEventClaim>;
   /** 주는 크레딧(달러). 문구와 남은 양 막대의 기준이다. */
   amountUsd?: number;
@@ -245,7 +249,7 @@ export function openSpecialEventPopup(options: SpecialEventOptions): Promise<Spe
 
   const meta = document.createElement('p');
   meta.className = 'se-meta';
-  meta.textContent = 'Pi에서 사용 · 소진 시 종료';
+  meta.textContent = 'Pi에서 사용 · 크레딧 소진 시 종료';
 
   const error = document.createElement('p');
   error.className = 'se-error';
@@ -325,12 +329,14 @@ export function openSpecialEventPopup(options: SpecialEventOptions): Promise<Spe
       error.hidden = true;
       options.claim().then(
         (result) => showClaimed(result.balanceUsd),
-        () => {
+        (reason: unknown) => {
           state = 'offer';
           claim.disabled = false;
           later.disabled = false;
           claim.textContent = '다시 받기';
-          error.textContent = '받지 못했습니다. 잠시 뒤 다시 시도해 주세요.';
+          error.textContent = reason instanceof GiftClaimError && reason.message
+            ? reason.message
+            : '받지 못했습니다. 잠시 뒤 다시 시도해 주세요.';
           error.hidden = false;
         },
       );

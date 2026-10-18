@@ -123,7 +123,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
 | `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
-| `?event=special` | Draft post-update special event popup (hippo and Clawd, $20 Claude credit for Pi); 받기 runs a sample claim and shows the remaining balance. Add `&claim=fail` for the retry path |
+| `?event=special` | Special event popup (hippo and Clawd, $20 Claude credit for Pi) through the app's show-once trigger with a mock gift API (`gift` defaults to `unclaimed` here); 받기 runs a sample claim and shows the remaining balance. Add `&claim=fail` for the server's rejection message and the retry path. With `&gift=claimed` or `exhausted` the popup does not open |
+| `?page=settings&destination=ai&surface=provider-setup&provider=pi&gift=unclaimed` | Pi card with the `Claude 크레딧 $20` line and 받기 (`&claim=fail` shows the inline error). `gift=claimed`: `$18.40 남음` and a thin meter, and Pi uses the gift (`credential: 'gift'`). `gift=exhausted`: `Claude 크레딧을 모두 사용했습니다`. `gift=off` (default): no line, as on the web or Windows. Add `&services=setup` to see the key step skipped once the gift is claimed |
 | `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |

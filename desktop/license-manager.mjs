@@ -410,6 +410,15 @@ export function createLicenseManager({
     load: () => serialize(load),
     status: async () => { await serialize(load); return computeStatus(); },
     check,
+    /**
+     * 지금 검증되는(서명·기기·만료) 저장된 lease. 해지됐거나 없으면 null. enforce 와 상관없다.
+     * 선물 크레딧이 서버 인증에 쓴다. 상태를 이미 읽었으면 진행 중인 서버 확인을 기다리지 않는다.
+     */
+    async currentLease() {
+      if (!state) await serialize(load);
+      if (!state.license?.lease || state.license.revokedAt) return null;
+      return leaseCheck(clock()).ok ? state.license.lease : null;
+    },
     activate,
     deactivate,
     assertCanSave,

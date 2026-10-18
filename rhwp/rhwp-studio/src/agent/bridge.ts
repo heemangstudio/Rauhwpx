@@ -1344,6 +1344,9 @@ function readPiStatus(value: unknown): PiStatus {
     latestVersion: typeof src['latestVersion'] === 'string' ? src['latestVersion'] : null,
     updateRequired: src['updateRequired'] === true,
     error: typeof src['error'] === 'string' ? src['error'] : null,
+    ...(src['credential'] === 'gift' || src['credential'] === 'own' || src['credential'] === 'none'
+      ? { credential: src['credential'] }
+      : {}),
   };
 }
 

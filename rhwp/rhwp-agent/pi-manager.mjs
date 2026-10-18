@@ -76,6 +76,20 @@ const INSTALL_STDERR_LIMIT_BYTES = 64 * 1024;
 /** 진행 이벤트는 이 간격으로만 내보낸다 — 청크마다 WS 를 두드리지 않는다. */
 const PROGRESS_INTERVAL_MS = 150;
 const PI_SECRET_ID = 'rhwp.pi.openrouter-api-key';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+/** 선물 크레딧은 Claude 모델만, 출력은 서버 상한(GIFT_MAX_OUTPUT_TOKENS)까지만 쓴다. */
+const GIFT_MODEL_PREFIX = 'anthropic/';
+export const GIFT_MAX_OUTPUT_TOKENS = 32_000;
+/** 기본 선물 모델 순서. 첫 번째가 기본 모델이다. */
+const GIFT_DEFAULT_FAMILIES = ['sonnet', 'haiku', 'opus'];
+/** 이보다 오래된 선물 자격은 스폰할 때 뒤에서 다시 받는다 (리스가 갱신됐을 수 있다). */
+const GIFT_CREDENTIALS_STALE_MS = 60_000;
+const GIFT_LEASE_MAX_BYTES = 16 * 1024;
+const GIFT_RECENT_LEASES = 8;
+/** 이보다 적게 남은 선물은 402 를 받으면 다 쓴 것으로 본다 (요청 하나도 치르기 어렵다). */
+const GIFT_EXHAUSTED_BELOW_USD = 0.5;
+/** 다 쓴 선물도 서버 잔액이 그 뒤로 본 가장 낮은 값보다 이만큼 늘면(한도를 늘려 준 경우) 다시 쓴다. */
+const GIFT_RESUME_STEP_USD = 1;
 const INSTALL_PROGRESS = Object.freeze({
   preparing: 8,
   downloadStart: 12,
@@ -122,6 +136,7 @@ const STALE_TEMP_MS = 60_000;
  * @property {string|null} latestVersion 고정 버전(PI_VERSION). 레지스트리에서 확인한 뒤에만 채운다
  * @property {boolean} updateRequired 설치본이 고정 버전과 다르다
  * @property {string|null} error
+ * @property {'gift'|'own'|'none'} credential Pi 가 지금 쓰는 자격. gift 면 models/defaultModelId 는 선물 모델이다
  */
 
 function piError(code, message) {
@@ -199,6 +214,99 @@ function outputCeiling(maxCompletionTokens, contextLength) {
 /** 예전 config.json 에서 읽어 카탈로그 필드가 아직 비어 있는 모델. */
 function needsCatalogFields(model) {
   return model.maxOutputTokens === undefined || model.pricing.cacheRead === undefined;
+}
+
+function emptyGiftConfig(eventId = null) {
+  return { eventId, models: [], defaultModelId: null, exhaustedAt: null, exhaustedRemainingUsd: null };
+}
+
+function isGiftModelId(id) {
+  return typeof id === 'string' && id.startsWith(GIFT_MODEL_PREFIX);
+}
+
+/** 모델 id 의 버전 숫자. 날짜 꼬리는 뺀다 — 'anthropic/claude-sonnet-4.5' → [4, 5]. */
+function modelVersion(id) {
+  return (id.split('/').pop().match(/\d+/g) ?? []).map(Number).filter((part) => part < 1000);
+}
+
+function compareVersions(a, b) {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? -1) - (b[index] ?? -1);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * 선물 카탈로그에서 기본 모델을 고른다: 가장 새 Sonnet, Haiku, Opus 순서. 변형(`:thinking` 등)은 뺀다.
+ * 셋 다 없으면 첫 Claude 모델 하나.
+ *
+ * @param {Array<{ id: string }>} catalog
+ */
+export function pickDefaultGiftModels(catalog) {
+  const entries = (Array.isArray(catalog) ? catalog : [])
+    .filter((entry) => isGiftModelId(entry?.id) && !entry.id.includes(':'));
+  const picks = [];
+  for (const family of GIFT_DEFAULT_FAMILIES) {
+    const pattern = new RegExp(`(?:^|[^a-z])${family}(?:[^a-z]|$)`);
+    let best = null;
+    for (const entry of entries) {
+      if (!pattern.test(entry.id.slice(GIFT_MODEL_PREFIX.length))) continue;
+      if (!best || compareVersions(modelVersion(entry.id), modelVersion(best.id)) > 0) best = entry;
+    }
+    if (best) picks.push(best);
+  }
+  return picks.length > 0 ? picks.slice(0, MAX_MODELS) : entries.slice(0, 1);
+}
+
+/** 선물 프록시 주소. https, 또는 개발용 루프백 http 만 받는다. OpenRouter 주소는 받지 않는다. */
+function giftBaseUrl(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  let url;
+  try { url = new URL(raw.trim()); } catch { return null; }
+  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  if (url.hostname === 'openrouter.ai' || url.hostname.endsWith('.openrouter.ai')) return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  return url.toString().replace(/\/+$/, '');
+}
+
+/** 데스크톱이 준 GiftCredentials 를 믿지 않고 다시 확인한다. 리스는 활성일 때만 남긴다. */
+function normalizeGiftCredentials(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const rawLease = typeof raw.lease === 'string' ? raw.lease.trim() : '';
+  const lease = rawLease && textFitsByteLimit(rawLease, GIFT_LEASE_MAX_BYTES) && !/[\s\x00-\x1f\x7f]/u.test(rawLease)
+    ? rawLease
+    : null;
+  const baseUrl = giftBaseUrl(raw.baseUrl);
+  const eventId = typeof raw.eventId === 'string' && raw.eventId.trim() && raw.eventId.length <= 128
+    ? raw.eventId.trim()
+    : null;
+  const remainingUsd = Number.isFinite(raw.remainingUsd) ? raw.remainingUsd : null;
+  const active = raw.available === true && raw.active === true && Boolean(lease && baseUrl && eventId)
+    && (remainingUsd === null || remainingUsd > 0);
+  return {
+    available: raw.available === true,
+    active,
+    lease: active ? lease : null,
+    baseUrl,
+    eventId,
+    amountUsd: Number.isFinite(raw.amountUsd) ? raw.amountUsd : null,
+    remainingUsd,
+    claimed: raw.claimed === true,
+  };
+}
+
+/** 서명된 라이선스 리스 모양(`base64url(JSON).base64url(서명)`). OpenRouter 키는 이 모양이 아니다. */
+function looksLikeLease(key) {
+  const match = /^([A-Za-z0-9_-]{16,})\.([A-Za-z0-9_-]{16,})$/.exec(key);
+  if (!match) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
+    return Boolean(payload && typeof payload === 'object' && 'keyId' in payload);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -286,8 +394,10 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  *           tarballMaxBytes?: number, oauthExchangeTimeoutMs?: number,
  *           replaceFile?: typeof replaceFileAtomically,
  *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile,
- *           routingSort?: string }} [deps]
+ *           routingSort?: string, giftSource?: { available: boolean, credentials: Function } | null,
+ *           giftClientFactory?: (options: { baseUrl: string }) => ReturnType<typeof createOpenRouter> }} [deps]
  *   routingSort: OpenRouter 제공자 정렬 (latency|throughput|price|off). 기본 throughput
+ *   giftSource: 선물 크레딧 자격 (gift-source.mjs). macOS 에서만 쓴다
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
@@ -306,6 +416,8 @@ export function createPiManager({
   replaceFile = replaceFileAtomically,
   writeNodeHostFile,
   routingSort = DEFAULT_ROUTING_SORT,
+  giftSource = null,
+  giftClientFactory = null,
 } = {}) {
   const providerSort = normalizePiRoutingSort(routingSort);
   const tarballLimitBytes = Number.isSafeInteger(tarballMaxBytes) && tarballMaxBytes > 0
@@ -320,6 +432,14 @@ export function createPiManager({
   const configPath = path.join(rootDir, CONFIG_FILE);
   const modelsPath = path.join(agentDir, 'models.json');
   const settingsPath = path.join(agentDir, 'settings.json');
+  /**
+   * 선물 크레딧 전용 에이전트 홈. provider id 는 그대로 openrouter 다 — Pi 는 이 id 일 때만
+   * Anthropic cache_control 을 붙인다. 주소만 선물 프록시이고 apiKey 는 두지 않는다 (리스는 env 로만).
+   * 내 키 세션과 홈이 갈라져 있어 하위 에이전트까지 키와 주소가 섞이지 않는다.
+   */
+  const giftAgentDir = path.join(rootDir, 'agent-gift');
+  const giftModelsPath = path.join(giftAgentDir, 'models.json');
+  const giftSettingsPath = path.join(giftAgentDir, 'settings.json');
   /** 예전 허브가 번들 스킬을 복사해 두던 곳. 지금은 번들에서 바로 싣고 이 사본은 지운다. */
   const legacySkillsDir = path.join(agentDir, 'skills');
   /** 정확한 버전이 박힌 스펙이면 그대로, 아니면 고정 버전을 붙여 npm 폴백도 같은 버전을 깐다. */
@@ -329,6 +449,10 @@ export function createPiManager({
     basePrefix, 'node_modules', ...packageSpec.split('/'), 'package.json',
   );
   const client = openRouter ?? createOpenRouter({ fetchImpl, now, cacheDir: rootDir });
+  const makeGiftClient = giftClientFactory ?? (({ baseUrl }) => createOpenRouter({
+    fetchImpl, now, baseUrl, keyInfoPath: '/auth/key', cacheDir: null, platform,
+  }));
+  const giftEnabled = platform === 'darwin' && giftSource?.available === true;
   const npmLaunch = bundledNpmLaunch({ nodeCommand, npmCommand });
   const ensureNodeHost = createNodeHost({
     rootDir, nodeCommand, platform, writeFile: writeNodeHostFile,
@@ -341,9 +465,21 @@ export function createPiManager({
     models: [],
     defaultModelId: null,
     setupComplete: false,
+    gift: emptyGiftConfig(),
   };
   /** 실제 키는 Electron의 OS-backed vault 안에만 산다. */
   let apiKey = null;
+  /** 마지막으로 받은 선물 자격. 리스는 메모리에만 둔다. */
+  let giftCredentials = null;
+  let giftCheckedAt = 0;
+  let giftClient = null;
+  let giftClientBase = null;
+  /** agent-gift/models.json 에 마지막으로 쓴 내용과 그 주소. 같은 내용이면 다시 쓰지 않는다. */
+  let giftWrittenText = null;
+  let giftWrittenBase = null;
+  let giftRefreshChain = Promise.resolve();
+  /** 최근에 받은 리스들. 라우터가 이 값들만 선물 프록시로 보낸다. */
+  const recentLeases = [];
   /** @type {Promise<void> | null} 첫 로드는 한 번만 돈다 — 동시에 들어와도 공유한다. */
   let loadPromise = null;
   let installedVersion = null;
@@ -478,6 +614,11 @@ export function createPiManager({
       const defaultModelId = models.some((model) => model.id === raw?.defaultModelId)
         ? raw.defaultModelId
         : (models[0]?.id ?? null);
+      const giftModels = (Array.isArray(raw?.gift?.models) ? raw.gift.models : [])
+        .map(normalizeStoredModel)
+        .filter((model) => model && isGiftModelId(model.id))
+        .slice(0, MAX_MODELS);
+      const giftExhaustedAt = Number(raw?.gift?.exhaustedAt);
       config = {
         version: CONFIG_VERSION,
         installedVersion: typeof raw?.installedVersion === 'string' ? raw.installedVersion : null,
@@ -485,6 +626,17 @@ export function createPiManager({
         models,
         defaultModelId,
         setupComplete: false,
+        gift: {
+          eventId: typeof raw?.gift?.eventId === 'string' ? raw.gift.eventId : null,
+          models: giftModels,
+          defaultModelId: giftModels.some((model) => model.id === raw?.gift?.defaultModelId)
+            ? raw.gift.defaultModelId
+            : (giftModels[0]?.id ?? null),
+          exhaustedAt: Number.isFinite(giftExhaustedAt) && giftExhaustedAt > 0 ? giftExhaustedAt : null,
+          exhaustedRemainingUsd: Number.isFinite(raw?.gift?.exhaustedRemainingUsd) && raw.gift.exhaustedRemainingUsd >= 0
+            ? raw.gift.exhaustedRemainingUsd
+            : null,
+        },
       };
     } catch {
       // 설정 파일이 없거나 깨졌으면 빈 상태로 시작한다.
@@ -529,8 +681,33 @@ export function createPiManager({
       models: config.models,
       defaultModelId: config.defaultModelId,
       setupComplete: config.setupComplete,
+      gift: config.gift,
     };
     return writeAtomic(configPath, `${JSON.stringify(payload, null, 2)}\n`);
+  }
+
+  /** models.json 의 모델 한 줄. maxTokens 가 null 이면 출력 토큰 필드를 두지 않는다. */
+  function piModelEntry(model, maxTokens) {
+    return {
+      id: model.id,
+      name: model.name,
+      reasoning: model.reasoning,
+      input: model.supportsImages ? ['text', 'image'] : ['text'],
+      contextWindow: model.contextLength ?? DEFAULT_CONTEXT_WINDOW,
+      ...(maxTokens === null ? {} : { maxTokens }),
+      ...(model.reasoning ? { thinkingLevelMap: thinkingLevelMap() } : {}),
+      // pi 는 이 값을 요청의 provider 필드로 그대로 보낸다.
+      ...(providerSort === 'off'
+        ? {}
+        : { compat: { openRouterRouting: { require_parameters: true, sort: providerSort } } }),
+      cost: {
+        // OpenRouter 는 토큰 1개당 USD, pi 는 100만 토큰당 USD 를 쓴다.
+        input: perMillion(model.pricing.prompt),
+        output: perMillion(model.pricing.completion),
+        cacheRead: perMillion(model.pricing.cacheRead ?? 0),
+        cacheWrite: 0,
+      },
+    };
   }
 
   /** agent/models.json에는 비밀이 아닌 모델 설정만 쓴다. */
@@ -543,29 +720,10 @@ export function createPiManager({
       // maxTokens <= 0 을 거부하고, 빠진 maxTokens 는 16384 로 채운다. modelOverrides 의
       // maxTokens 0 만 검증 없이 들어가 max_tokens/max_completion_tokens 를 생략시킨다.
       if (maxTokens === null) unlimited.push([model.id, { maxTokens: 0 }]);
-      return {
-        id: model.id,
-        name: model.name,
-        reasoning: model.reasoning,
-        input: model.supportsImages ? ['text', 'image'] : ['text'],
-        contextWindow: model.contextLength ?? DEFAULT_CONTEXT_WINDOW,
-        ...(maxTokens === null ? {} : { maxTokens }),
-        ...(model.reasoning ? { thinkingLevelMap: thinkingLevelMap() } : {}),
-        // pi 는 이 값을 요청의 provider 필드로 그대로 보낸다.
-        ...(providerSort === 'off'
-          ? {}
-          : { compat: { openRouterRouting: { require_parameters: true, sort: providerSort } } }),
-        cost: {
-          // OpenRouter 는 토큰 1개당 USD, pi 는 100만 토큰당 USD 를 쓴다.
-          input: perMillion(model.pricing.prompt),
-          output: perMillion(model.pricing.completion),
-          cacheRead: perMillion(model.pricing.cacheRead ?? 0),
-          cacheWrite: 0,
-        },
-      };
+      return piModelEntry(model, maxTokens);
     });
     const provider = {
-      baseUrl: 'https://openrouter.ai/api/v1',
+      baseUrl: OPENROUTER_BASE_URL,
       api: 'openai-completions',
       models,
       // fromEntries 는 '__proto__' 같은 id 도 평범한 키로 만든다.
@@ -578,6 +736,263 @@ export function createPiManager({
     const payload = { providers: { openrouter: provider } };
     await writeAtomic(modelsPath, `${JSON.stringify(payload, null, 2)}\n`);
   }
+
+  function settingsText() {
+    return `${JSON.stringify({
+      defaultProjectTrust: 'never',
+      enableSkillCommands: false,
+      enableInstallTelemetry: false,
+    }, null, 2)}\n`;
+  }
+
+  /**
+   * agent-gift/ 홈을 쓴다: 선물 프록시 주소와 선물 모델만 담고 apiKey 는 두지 않는다.
+   * 출력 토큰은 서버 상한으로 자른다. 내용이 같으면 다시 쓰지 않는다.
+   */
+  async function writeGiftAgentFiles({ force = false } = {}) {
+    const baseUrl = giftCredentials?.baseUrl;
+    if (!baseUrl || config.gift.models.length === 0) return;
+    const models = config.gift.models.map((model) => piModelEntry(
+      model,
+      Math.min(positiveInteger(model.maxOutputTokens) ?? GIFT_MAX_OUTPUT_TOKENS, GIFT_MAX_OUTPUT_TOKENS),
+    ));
+    const text = `${JSON.stringify({
+      providers: { openrouter: { baseUrl, api: 'openai-completions', models } },
+    }, null, 2)}\n`;
+    if (!force && text === giftWrittenText) return;
+    giftWrittenText = null;
+    giftWrittenBase = null;
+    await fs.mkdir(giftAgentDir, { recursive: true });
+    await writeAtomic(giftSettingsPath, settingsText());
+    await writeAtomic(giftModelsPath, text);
+    // Pi 가 내려받은 rg/fd 는 agent/bin 에 있다. 선물 홈에서도 같은 것을 쓴다.
+    const binLink = path.join(giftAgentDir, 'bin');
+    if (platform === 'darwin' && !(await fs.lstat(binLink).catch(() => null))
+      && (await fs.stat(path.join(agentDir, 'bin')).catch(() => null))?.isDirectory()) {
+      await fs.symlink(path.join('..', 'agent', 'bin'), binLink).catch(() => {});
+    }
+    giftWrittenText = text;
+    giftWrittenBase = baseUrl;
+  }
+
+  function giftExhaustedForEvent() {
+    return Boolean(config.gift.exhaustedAt) && config.gift.eventId === giftCredentials?.eventId;
+  }
+
+  /** 선물로 Pi 를 돌릴 수 있는가. 자격·모델·홈 파일이 모두 지금 이벤트와 맞아야 한다. */
+  function giftMode() {
+    return giftEnabled
+      && giftCredentials?.active === true
+      && config.gift.eventId === giftCredentials.eventId
+      && !config.gift.exhaustedAt
+      && config.gift.models.length > 0
+      && giftWrittenBase === giftCredentials.baseUrl;
+  }
+
+  /** 우선순위: 선물 > 내 키 > 없음. */
+  function currentAccess() {
+    if (giftMode()) {
+      return { mode: 'gift', key: giftCredentials.lease, agentDir: giftAgentDir, baseUrl: giftCredentials.baseUrl };
+    }
+    if (apiKey) return { mode: 'own', key: apiKey, agentDir, baseUrl: OPENROUTER_BASE_URL };
+    const giftUsedUp = giftEnabled && (giftExhaustedForEvent()
+      || (giftCredentials?.claimed === true && giftCredentials.remainingUsd !== null && giftCredentials.remainingUsd <= 0));
+    return { mode: 'none', key: null, agentDir, baseUrl: null, ...(giftUsedUp ? { reason: 'gift-exhausted' } : {}) };
+  }
+
+  function modeModels() {
+    return giftMode()
+      ? { models: config.gift.models, defaultModelId: config.gift.defaultModelId }
+      : { models: config.models, defaultModelId: config.defaultModelId };
+  }
+
+  function rememberLease(lease) {
+    if (!lease || recentLeases.includes(lease)) return;
+    recentLeases.push(lease);
+    while (recentLeases.length > GIFT_RECENT_LEASES) recentLeases.shift();
+  }
+
+  function isGiftLease(key) {
+    const trimmed = String(key ?? '').trim();
+    return Boolean(trimmed) && (recentLeases.includes(trimmed) || looksLikeLease(trimmed));
+  }
+
+  function currentGiftClient() {
+    const baseUrl = giftCredentials?.baseUrl;
+    if (!giftEnabled || !baseUrl) {
+      throw piError('GIFT_UNAVAILABLE', '선물 크레딧을 쓸 수 없습니다.');
+    }
+    if (!giftClient || giftClientBase !== baseUrl) {
+      giftClient = makeGiftClient({ baseUrl });
+      giftClientBase = baseUrl;
+    }
+    return giftClient;
+  }
+
+  async function giftCatalog(refresh, lease) {
+    const models = await currentGiftClient().catalog(refresh, lease);
+    return (Array.isArray(models) ? models : []).filter((entry) => isGiftModelId(normalizedModelId(entry?.id)));
+  }
+
+  /** 카탈로그 항목 → 저장할 모델 설정. */
+  function modelConfigFromCatalog(entry, { id = entry.id, name = null, effortDefault } = {}) {
+    const efforts = entry.reasoning ? [...EFFORTS] : [];
+    return {
+      id,
+      name: name ?? normalizedModelName(entry.name, id) ?? id,
+      reasoning: Boolean(entry.reasoning),
+      supportsImages: entry.supportsImages === true,
+      efforts,
+      defaultEffort: efforts.includes(effortDefault)
+        ? effortDefault
+        : (efforts.length > 0 ? DEFAULT_EFFORT : null),
+      contextLength: entry.contextLength ?? null,
+      maxOutputTokens: outputCeiling(entry.maxCompletionTokens, entry.contextLength),
+      pricing: {
+        prompt: nonNegativePrice(entry.pricing?.prompt),
+        completion: nonNegativePrice(entry.pricing?.completion),
+        cacheRead: nonNegativePrice(entry.pricing?.cacheRead),
+      },
+    };
+  }
+
+  /**
+   * 데스크톱에서 선물 자격을 다시 받고 상태를 맞춘다. 이벤트가 바뀌면 선물 설정을 새로 시작하고,
+   * 처음이면 선물 카탈로그에서 기본 모델을 고른다. 실패는 던지지 않는다 — 선물이 꺼진 것으로 본다.
+   */
+  async function refreshGiftNow({ refresh = false } = {}) {
+    await load();
+    if (!giftEnabled || closed) return currentStatus();
+    let next = null;
+    try {
+      next = normalizeGiftCredentials(await giftSource.credentials({ refresh }));
+    } catch {
+      next = null;
+    }
+    giftCredentials = next;
+    giftCheckedAt = now();
+    if (!next?.active) return currentStatus();
+    rememberLease(next.lease);
+    try {
+      let changed = false;
+      if (config.gift.eventId !== next.eventId) {
+        config.gift = emptyGiftConfig(next.eventId);
+        changed = true;
+      } else if (config.gift.exhaustedAt && next.remainingUsd !== null) {
+        // 402 직후의 잔액은 늦게 줄 수 있다. 그 뒤로 본 가장 낮은 잔액을 기준으로 삼는다.
+        const floor = config.gift.exhaustedRemainingUsd ?? 0;
+        if (next.remainingUsd >= floor + GIFT_RESUME_STEP_USD) {
+          config.gift.exhaustedAt = null;
+          config.gift.exhaustedRemainingUsd = null;
+          changed = true;
+        } else if (next.remainingUsd < floor) {
+          config.gift.exhaustedRemainingUsd = next.remainingUsd;
+          changed = true;
+        }
+      }
+      if (config.gift.models.length === 0 && !config.gift.exhaustedAt) {
+        const picks = pickDefaultGiftModels(await giftCatalog(false, next.lease).catch(() => []));
+        if (picks.length > 0) {
+          // 카탈로그 이름('Anthropic: Claude Sonnet 5.5')에서 회사 이름을 떼어 사이드바에 짧게 보인다.
+          config.gift.models = picks.map((entry) => modelConfigFromCatalog(entry, {
+            name: normalizedModelName(String(entry.name ?? '').replace(/^Anthropic:\s*/i, ''), entry.id),
+          }));
+          config.gift.defaultModelId = config.gift.models[0].id;
+          changed = true;
+        }
+      }
+      if (closed) return currentStatus();
+      await serialized(async () => {
+        await writeGiftAgentFiles();
+        if (changed) await persistConfig();
+      });
+    } catch {
+      // 다음 새로고침에서 다시 쓴다. 홈 파일이 없으면 giftMode() 가 거짓이라 내 키로 돈다.
+    }
+    return currentStatus();
+  }
+
+  function refreshGift(options = {}) {
+    const run = giftRefreshChain.then(() => refreshGiftNow(options));
+    giftRefreshChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  /**
+   * 402 를 받았을 때 부른다. 선물을 다 쓴 이벤트는 다시 쓰지 않고 다음 스폰부터 내 키(없으면 없음)로 간다.
+   * confirmed 가 아니면(잔액이 있는데 잠깐 거절된 402) 서버 잔액을 다시 보고, 거의 남지 않았을 때만 끝낸다.
+   *
+   * @param {{ confirmed?: boolean }} [options]
+   */
+  async function markGiftExhausted({ confirmed = true } = {}) {
+    if (!confirmed) {
+      await refreshGift({ refresh: true });
+      const remaining = giftCredentials?.remainingUsd;
+      if (!(remaining !== null && remaining !== undefined && remaining < GIFT_EXHAUSTED_BELOW_USD)) {
+        return currentStatus();
+      }
+    }
+    if (giftEnabled && config.gift.eventId && config.gift.eventId === giftCredentials?.eventId
+      && !config.gift.exhaustedAt) {
+      config.gift.exhaustedAt = now();
+      config.gift.exhaustedRemainingUsd = giftCredentials?.remainingUsd ?? 0;
+      if (!closed) void serialized(() => persistConfig()).catch(() => {});
+    }
+    return refreshGift({ refresh: true });
+  }
+
+  /** 선물 프록시로 보낼 모델. 고른 선물 모델이 아니면 가장 싼 선물 모델로 바꾼다. */
+  function giftChatModel(requested) {
+    const models = config.gift.models;
+    const found = models.find((model) => model.id === requested);
+    if (found) return found;
+    let cheapest = null;
+    for (const model of models) {
+      if (!cheapest || model.pricing.completion < cheapest.pricing.completion) cheapest = model;
+    }
+    if (!cheapest) throw piError('GIFT_UNAVAILABLE', '선물 크레딧을 쓸 수 없습니다.');
+    return cheapest;
+  }
+
+  /**
+   * createOpenRouter 와 같은 모양의 라우터. 키로만 길을 고른다 — 리스는 선물 프록시로만,
+   * 그 밖의 키(내 OpenRouter 키)는 openrouter.ai 로만 간다.
+   */
+  const router = {
+    async chat(options = {}) {
+      if (!isGiftLease(options.key)) return client.chat(options);
+      const model = giftChatModel(options.model);
+      const effort = typeof options.reasoningEffort === 'string' && options.reasoningEffort
+        ? (EFFORTS.includes(options.reasoningEffort) ? options.reasoningEffort : 'high')
+        : undefined;
+      const { reasoningEffort: _effort, ...rest } = options;
+      try {
+        return await currentGiftClient().chat({
+          ...rest,
+          model: model.id,
+          ...(effort && model.reasoning ? { reasoningEffort: effort } : {}),
+        });
+      } catch (error) {
+        if (error?.status === 402) {
+          void markGiftExhausted({ confirmed: /insufficient credits/i.test(String(error?.message ?? '')) });
+        }
+        throw error;
+      }
+    },
+    async catalog(refresh = false, key = null) {
+      return isGiftLease(key) ? giftCatalog(refresh, String(key).trim()) : client.catalog(refresh, key);
+    },
+    async credits(key, refresh = false) {
+      return isGiftLease(key) ? currentGiftClient().credits(key, refresh) : client.credits(key, refresh);
+    },
+    async validateKey(key) {
+      return isGiftLease(key) ? currentGiftClient().validateKey(key) : client.validateKey(key);
+    },
+    clearCache() {
+      client.clearCache();
+      giftClient?.clearCache?.();
+    },
+  };
 
   function snapshotSettingsState() {
     return {
@@ -620,6 +1035,7 @@ export function createPiManager({
       }
     }
     try { await writeModelsJson(); } catch (error) { rollbackErrors.push(error); }
+    try { await writeGiftAgentFiles(); } catch (error) { rollbackErrors.push(error); }
     try { await persistConfig(); } catch (error) { rollbackErrors.push(error); }
     if (clearClientCache) {
       try { client.clearCache(); } catch (error) { rollbackErrors.push(error); }
@@ -880,18 +1296,22 @@ export function createPiManager({
   }
 
   function currentStatus() {
+    const access = currentAccess();
+    const { models, defaultModelId } = modeModels();
     return {
       installed: Boolean(installedVersion),
       installing,
       version: installedVersion,
       keyConfigured: Boolean(apiKey),
       keyTail: apiKey ? keyTailOf(apiKey) : null,
-      models: config.models.map((model) => ({ ...model, pricing: { ...model.pricing } })),
-      defaultModelId: config.defaultModelId,
-      setupComplete: config.setupComplete,
+      models: models.map((model) => ({ ...model, pricing: { ...model.pricing } })),
+      defaultModelId,
+      // 선물 모드는 선물 모델이 있을 때만 켜지므로 그 자체로 설정이 끝난 것이다.
+      setupComplete: access.mode === 'gift' ? true : config.setupComplete,
       latestVersion,
       updateRequired,
       error: lastError ?? secretStoreError,
+      credential: access.mode,
     };
   }
 
@@ -959,17 +1379,14 @@ export function createPiManager({
     await fs.mkdir(sessionsDir, { recursive: true });
     // 확장·스킬은 pi/resources.mjs 가 매 스폰마다 -e/--skill 로 넘긴다. 이 파일에는 경로를 두지 않아
     // 개발 허브·벤치·패키지 앱이 같은 루트를 써도 서로의 설치 경로를 덮어쓰지 않는다.
-    await writeAtomic(settingsPath, `${JSON.stringify({
-      defaultProjectTrust: 'never',
-      enableSkillCommands: false,
-      enableInstallTelemetry: false,
-    }, null, 2)}\n`);
+    await writeAtomic(settingsPath, settingsText());
     const migrated = enrichStoredModels(migrationCatalog);
     // Rebuild the provider file on every startup so settings stay in sync.
     await writeModelsJson();
     if (migrated) await persistConfig();
     await fs.rm(legacySkillsDir, { recursive: true, force: true });
     await removeStaleTemps(agentDir, HUB_OWNED_AGENT_FILES);
+    await removeStaleTemps(giftAgentDir, HUB_OWNED_AGENT_FILES);
     await removeStaleTemps(rootDir, HUB_OWNED_ROOT_FILES);
   }
 
@@ -977,6 +1394,7 @@ export function createPiManager({
     rootDir,
     prefixDir,
     agentDir,
+    giftAgentDir,
     sessionsDir,
     configPath,
     modelsPath,
@@ -991,6 +1409,7 @@ export function createPiManager({
       await fs.mkdir(rootDir, { recursive: true }).catch(() => {});
       await recoverInterruptedFileReplacement(configPath, { platform });
       await recoverInterruptedFileReplacement(modelsPath, { platform });
+      await recoverInterruptedFileReplacement(giftModelsPath, { platform });
       await load();
       return this;
     },
@@ -1336,12 +1755,14 @@ export function createPiManager({
     },
 
     /**
-     * 쓸 모델을 최대 3개 고른다. id 는 라이브 카탈로그로 검증한다.
+     * 쓸 모델을 최대 3개 고른다. id 는 라이브 카탈로그로 검증한다. 선물 모드에서는 선물
+     * 카탈로그로 검증하고 선물 모델만 바꾼다 — 내 키의 모델은 그대로 둔다.
      *
      * @param {Array<{ id: string, name?: string, effortDefault?: string }>} models
      */
     async setModels(models) {
       await load();
+      const gift = giftMode();
       const requested = Array.isArray(models) ? models : [];
       if (requested.length === 0) throw piError('PI_MODELS_EMPTY', '모델을 하나 이상 고르세요');
       if (requested.length > MAX_MODELS) {
@@ -1360,7 +1781,9 @@ export function createPiManager({
         }
         return { item, id: id ?? '', name };
       });
-      const catalog = await client.catalog(false, apiKey);
+      const catalog = gift
+        ? await giftCatalog(false, giftCredentials.lease)
+        : await client.catalog(false, apiKey);
       const byId = new Map(catalog.flatMap((entry) => {
         const id = normalizedModelId(entry?.id);
         return id ? [[id, entry]] : [];
@@ -1373,30 +1796,20 @@ export function createPiManager({
         if (!entry) throw piError('PI_MODEL_UNKNOWN', `OpenRouter 에 없는 모델이에요: ${id || '(빈 값)'}`);
         if (seen.has(id)) continue;
         seen.add(id);
-        const name = requestedName ?? normalizedModelName(entry.name, id) ?? id;
-        const efforts = entry.reasoning ? [...EFFORTS] : [];
-        const defaultEffort = efforts.includes(item?.effortDefault)
-          ? item.effortDefault
-          : (efforts.length > 0 ? DEFAULT_EFFORT : null);
-        next.push({
-          id,
-          name,
-          reasoning: entry.reasoning,
-          supportsImages: entry.supportsImages,
-          efforts,
-          defaultEffort,
-          contextLength: entry.contextLength,
-          maxOutputTokens: outputCeiling(entry.maxCompletionTokens, entry.contextLength),
-          pricing: {
-            prompt: entry.pricing.prompt,
-            completion: entry.pricing.completion,
-            cacheRead: nonNegativePrice(entry.pricing.cacheRead),
-          },
-        });
+        next.push(modelConfigFromCatalog(entry, { id, name: requestedName, effortDefault: item?.effortDefault }));
       }
       return serialized(async () => {
         const previous = snapshotSettingsState();
         try {
+          if (gift) {
+            config.gift.models = next;
+            config.gift.defaultModelId = next.some((model) => model.id === config.gift.defaultModelId)
+              ? config.gift.defaultModelId
+              : next[0].id;
+            await writeGiftAgentFiles();
+            await persistConfig();
+            return currentStatus();
+          }
           config.models = next;
           config.defaultModelId = next.some((model) => model.id === config.defaultModelId)
             ? config.defaultModelId
@@ -1418,30 +1831,70 @@ export function createPiManager({
       });
     },
 
-    /** 설정된 모델 중 출력 단가가 가장 싼 것. 없으면 null. */
+    /** 지금 자격(선물 또는 내 키)의 모델 중 출력 단가가 가장 싼 것. 없으면 null. */
     cheapestModel() {
       let cheapest = null;
-      for (const model of config.models) {
+      for (const model of modeModels().models) {
         if (!cheapest || model.pricing.completion < cheapest.pricing.completion) cheapest = model;
       }
       return cheapest ? { ...cheapest, pricing: { ...cheapest.pricing } } : null;
     },
 
-    /** 기본 모델(없으면 첫 모델). */
+    /** 지금 자격의 기본 모델(없으면 첫 모델). */
     defaultModel() {
-      const found = config.models.find((model) => model.id === config.defaultModelId);
-      const model = found ?? config.models[0] ?? null;
+      const { models, defaultModelId } = modeModels();
+      const found = models.find((model) => model.id === defaultModelId);
+      const model = found ?? models[0] ?? null;
       return model ? { ...model, pricing: { ...model.pricing } } : null;
     },
 
-    /** 허브 내부 전용 — OpenRouter 직접 호출(제목·스킬 초안)에 쓴다. */
+    /**
+     * 허브 내부 전용 — 지금 쓸 자격. 선물 모드면 리스, 아니면 내 OpenRouter 키다.
+     * 이 값으로 직접 요청할 때는 반드시 router 를 거친다 (리스는 선물 프록시로만 간다).
+     */
     apiKey() {
+      return currentAccess().key;
+    },
+
+    /** 내 OpenRouter 키. 사용량 카드의 잔액은 이 키로만 본다. */
+    ownApiKey() {
       return apiKey;
     },
 
-    /** 카탈로그 조회는 그대로 위임한다. */
+    /** 지금 자격: { mode: 'gift'|'own'|'none', key, agentDir, baseUrl, reason? }. */
+    access() {
+      return currentAccess();
+    },
+
+    /**
+     * Pi 를 띄울 때마다 부른다. 지금 자격과 그 자격의 모델을 고른다 — 요청한 모델이 이 자격의
+     * 모델이 아니면 기본 모델로 바꾼다. fallback 은 선물이 떨어졌을 때 갈 곳이다.
+     *
+     * @param {string|null|undefined} requestedModel
+     */
+    resolveSpawn(requestedModel) {
+      if (giftEnabled && now() - giftCheckedAt > GIFT_CREDENTIALS_STALE_MS) void refreshGift();
+      const access = currentAccess();
+      const { models, defaultModelId } = modeModels();
+      const model = models.find((entry) => entry.id === requestedModel)
+        ?? models.find((entry) => entry.id === defaultModelId)
+        ?? models[0]
+        ?? null;
+      return {
+        ...access,
+        model: model?.id ?? (typeof requestedModel === 'string' && requestedModel ? requestedModel : null),
+        reasoning: Boolean(model?.reasoning),
+        fallback: apiKey ? 'own' : 'none',
+      };
+    },
+
+    refreshGift,
+    markGiftExhausted,
+    router,
+
+    /** 카탈로그. 선물 모드면 선물 프록시의 Claude 모델만 보인다. */
     catalog(refresh = false) {
-      return client.catalog(refresh, apiKey);
+      return giftMode() ? giftCatalog(refresh, giftCredentials.lease) : client.catalog(refresh, apiKey);
     },
 
     /** 잔액. 키가 없으면 null 을 돌려준다. */

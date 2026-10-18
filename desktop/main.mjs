@@ -108,6 +108,9 @@ import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
+import { createGiftClient } from './gift-client.mjs';
+import { createGiftManager } from './gift-manager.mjs';
+import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
 import { createFontFolderStore } from './font-folders.mjs';
 import {
@@ -414,6 +417,8 @@ class AgentHubOwner {
         RHWP_SECRET_BROKER: 'ipc',
         RHWP_BROWSER_HOST: 'ipc',
         RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
+        // 선물 크레딧은 macOS 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
+        ...(process.platform === 'darwin' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
       },
     });
@@ -431,6 +436,16 @@ class AgentHubOwner {
             return;
           }
           void browserHost.handleRequest(message, source).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
+          return;
+        }
+        if (message?.type === 'rhwp-gift-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send(staleGiftResponse(message));
+            return;
+          }
+          void handleGiftRequest(giftManager, message).then((response) => {
             if (response && source.connected) source.send(response);
           });
           return;
@@ -488,6 +503,13 @@ class AgentHubOwner {
 
   async ensure() {
     return this.start();
+  }
+
+  /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
+  notifyGiftChanged() {
+    const child = this.#child;
+    if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
+    try { child.send({ type: 'rhwp-gift-changed' }); } catch { /* 끝나는 자식 */ }
   }
 
   teardown() {
@@ -1146,12 +1168,31 @@ function licenseTrialDurationMs() {
   const value = Number(process.env.HAMA_LICENSE_DEV_TRIAL_MS);
   return Number.isSafeInteger(value) && value > 0 ? value : TRIAL_DURATION_MS;
 }
+const licenseApiBase = (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE;
+const isTrustedStudioEvent = (event) => {
+  try {
+    sessionForEvent(event);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const studioWebContents = () => sessions.windows().map((window) => window.webContents);
+// 선물 크레딧(macOS 전용): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
+const giftManager = createGiftManager({
+  client: createGiftClient({ baseUrl: licenseApiBase }),
+  currentLease: () => licenseManager.currentLease(),
+  platform: process.platform,
+  onChange: (status) => {
+    giftHost.broadcast(status);
+    hubOwner.notifyGiftChanged();
+  },
+});
+const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
 const licenseManager = createLicenseManager({
   statePath: licenseStatePath(app.getPath('userData')),
   trialDurationMs: licenseTrialDurationMs(),
-  client: createLicenseClient({
-    baseUrl: (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE,
-  }),
+  client: createLicenseClient({ baseUrl: licenseApiBase }),
   publicKeys: licensePublicKeys(),
   existingInstallId: async () => {
     try {
@@ -1164,6 +1205,7 @@ const licenseManager = createLicenseManager({
   onChange: (status) => {
     noteLicenseStatus(status);
     licenseHost.broadcast(status);
+    void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
   },
 });
 const licenseHost = installLicenseHost({
@@ -1171,15 +1213,8 @@ const licenseHost = installLicenseHost({
   BrowserWindow,
   shell,
   manager: licenseManager,
-  isTrustedStudioEvent: (event) => {
-    try {
-      sessionForEvent(event);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  studioWebContents: () => sessions.windows().map((window) => window.webContents),
+  isTrustedStudioEvent,
+  studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
 

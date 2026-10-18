@@ -93,6 +93,8 @@ interface NativeFileReadResult {
 
 export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
+  /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
+  gift?: import('./ui/special-event/gift.ts').DesktopGiftApi;
   ensureAgentHub?: () => Promise<{ started?: boolean; ready?: boolean } | boolean>;
   getSessionContext?: () => Promise<RendererSessionContext>;
   createAgentSession?: () => Promise<{ sessionId: string }>;

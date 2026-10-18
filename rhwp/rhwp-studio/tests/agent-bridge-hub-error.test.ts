@@ -130,3 +130,16 @@ test('a template changed while the hub runs a message travels with the next mess
   assert.equal(next.activeTemplateId, null, 'the next message carries the template the user chose');
   bridge.dispose();
 });
+
+test('a pushed pi-status keeps which credential Pi runs on', () => {
+  const { bridge, events, frame } = bridgeWithEvents();
+  const status = { installed: true, keyConfigured: false, models: [], setupComplete: true };
+  frame({ type: 'pi-status', status: { ...status, credential: 'gift' } });
+  frame({ type: 'pi-status', status: { ...status, credential: 'bogus' } });
+  const pushed = events.filter((event) => event.type === 'pi-status');
+  assert.equal(pushed.length, 2);
+  // 선물 크레딧이면 키 단계를 건너뛴다. 모르는 값은 옛 허브처럼 없는 것으로 둔다.
+  assert.equal(pushed[0].type === 'pi-status' && pushed[0].status.credential, 'gift');
+  assert.equal(pushed[1].type === 'pi-status' && 'credential' in pushed[1].status, false);
+  bridge.dispose();
+});

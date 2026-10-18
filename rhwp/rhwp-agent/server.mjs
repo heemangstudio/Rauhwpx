@@ -96,6 +96,7 @@ import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
 import { createCodexModelCatalog, createCodexModelResolver } from './codex-model-routing.mjs';
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
+import { createIpcGiftSource } from './gift-source.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
 import { PiSubagentCapabilityRegistry } from './pi/subagent-capabilities.mjs';
 import { resolveHwpExtractor } from './reference-extractor.mjs';
@@ -344,9 +345,13 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
+// 선물 크레딧 리스는 데스크톱(macOS)이 준다. 그 밖에서는 언제나 꺼져 있다.
+const giftSource = createIpcGiftSource();
 const piManager = createPiManager({
-  rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
+  rootDir: PI_ROOT, openRouter, secretStore, giftSource, routingSort: process.env.RHWP_PI_ROUTING_SORT,
 });
+/** 보조 작업이 쓰는 OpenRouter 라우터 — 리스는 선물 프록시로, 내 키는 openrouter.ai 로만 보낸다. */
+const piRouter = piManager.router;
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -402,7 +407,7 @@ let cliSetupStatus = { ...provisionalCliSetup };
 let piStatus = {
   installed: existsSync(piManager.piBin), installing: false, version: null,
   keyConfigured: false, keyTail: null, models: [], defaultModelId: null,
-  setupComplete: false, latestVersion: null, updateRequired: false, error: null,
+  setupComplete: false, latestVersion: null, updateRequired: false, error: null, credential: 'none',
 };
 /** OpenRouter 잔액. 키가 있을 때만 채워지고 사용량 리포트에 얹힌다. */
 let openRouterCredits = null;
@@ -420,6 +425,8 @@ function ensureBootWork() {
     process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
       .filter(Boolean).join(path.delimiter);
     piStatus = await piManager.status();
+    // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
+    if (giftSource.available) void refreshGiftAndBroadcast(false);
     await Promise.all([
       // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
       cliSetup.verifyAuth('claude')
@@ -1521,6 +1528,40 @@ async function refreshPiStatus() {
   return piStatus;
 }
 
+/** 바뀐 Pi 상태를 모든 Studio 탭에 보낸다 (선물 크레딧 수령·소진처럼 탭 밖에서 생긴 변화). */
+async function broadcastPiStatus() {
+  const status = await refreshPiStatus();
+  for (const record of sessions.values()) {
+    if (!record.studioSocket) continue;
+    sendJson(record.studioSocket, { v: 1, type: 'pi-status', status });
+    void agentSetupStatuses(record.sessionId)
+      .then((statuses) => sendJson(record.studioSocket, { v: 1, type: 'agent-setup-status', statuses }))
+      .catch((error) => log(`agent setup status push failed: ${error?.message ?? error}`));
+  }
+  return status;
+}
+
+function refreshGiftAndBroadcast(refresh = true) {
+  return piManager.refreshGift({ refresh })
+    .then(() => broadcastPiStatus())
+    .catch((error) => log(`gift refresh failed: ${error?.message ?? error}`));
+}
+
+giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
+
+/** Pi 스폰마다 자격을 새로 고르고, 선물 크레딧이 떨어지면 내 키로 넘긴다. 채팅과 레이아웃 작업이 함께 쓴다. */
+function piSpawnHooks() {
+  return {
+    resolvePiAccess: (model) => piManager.resolveSpawn(model),
+    onCreditExhausted: ({ confirmed = true } = {}) => {
+      void piManager.markGiftExhausted({ confirmed })
+        .then(() => broadcastPiStatus())
+        .catch((error) => log(`gift exhaustion update failed: ${error?.message ?? error}`));
+    },
+    onAccessRejected: () => { void refreshGiftAndBroadcast(true); },
+  };
+}
+
 
 function piAgentSetupStatus() {
   return {
@@ -1529,8 +1570,9 @@ function piAgentSetupStatus() {
     available: piStatus.installed,
     installing: piStatus.installing,
     version: piStatus.version,
-    authenticated: piStatus.keyConfigured,
-    authMethod: piStatus.keyConfigured ? 'api-key' : null,
+    // 선물 크레딧도 Pi 의 자격이다. keyTail 은 내 키만 보인다.
+    authenticated: piStatus.keyConfigured || piStatus.credential === 'gift',
+    authMethod: piStatus.keyConfigured || piStatus.credential === 'gift' ? 'api-key' : null,
     keyTail: piStatus.keyTail,
     authenticating: false,
     setupComplete: piStatus.setupComplete,
@@ -2560,7 +2602,8 @@ function replyToStudio(record, sock, obj) {
 function usageSnapshot() {
   const usage = usageStore.summary();
   usage.limits = providerLimits.snapshot();
-  const currentKey = piManager.apiKey();
+  // 사용량 카드의 잔액은 언제나 내 OpenRouter 키 기준이다 (선물 잔액은 데스크톱이 보여 준다).
+  const currentKey = piManager.ownApiKey();
   const keyId = currentKey ? crypto.createHash('sha256').update(currentKey).digest('hex') : null;
   const credits = keyId && keyId === openRouterCreditsKey ? openRouterCredits : null;
   if (credits) usage.openrouter = credits;
@@ -2591,7 +2634,7 @@ function emptyCreditsError(error) {
 
 /** 잔액 조회는 5분 캐시된다 — refresh 일 때만 실제로 다시 부른다. */
 async function refreshOpenRouterCredits(refresh = false) {
-  const key = piManager.apiKey();
+  const key = piManager.ownApiKey();
   if (!key) {
     openRouterCredits = null;
     openRouterCreditsKey = null;
@@ -2602,7 +2645,7 @@ async function refreshOpenRouterCredits(refresh = false) {
     } catch (error) {
       result = emptyCreditsError(error);
     }
-    if (piManager.apiKey() === key) {
+    if (piManager.ownApiKey() === key) {
       openRouterCredits = result;
       openRouterCreditsKey = crypto.createHash('sha256').update(key).digest('hex');
     }
@@ -2716,7 +2759,7 @@ function checkpointTitleDeps(record, health, signal) {
       claude: { ready: claude.ready, model: 'claude-haiku-4-5' },
     },
     piManager,
-    openRouter,
+    openRouter: piRouter,
     workDir: record.workDir,
     isolatedHome: record.isolatedHome,
     sessionId: record.sessionId,
@@ -2729,9 +2772,10 @@ function checkpointTitleDeps(record, health, signal) {
       claude: claudeRuntimeEnv(record.isolatedHome),
     },
     resolveCodexTitleModel: () => resolveModel('codex', 'luna', record),
-    resolvePiTitleModel: () => resolveOpenRouterTitleModel(
-      () => openRouter.catalog(false, piManager.apiKey()),
-    ),
+    // 선물 크레딧에는 DeepSeek 가 없다 — 선물 모델 중 가장 싼 것으로 쓴다.
+    resolvePiTitleModel: () => (piManager.access().mode === 'gift'
+      ? piManager.cheapestModel()?.id ?? null
+      : resolveOpenRouterTitleModel(() => openRouter.catalog(false, piManager.ownApiKey()))),
     spawnProcess: (command, args, options) => spawnAuxiliaryProcess(record, command, args, options),
     terminateProcess: terminateProcessTree,
     cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),
@@ -2745,7 +2789,7 @@ function auxDeps(record, requestedAgent, cliAgent) {
     ? requestedAgent
     : (record.agentSession?.agent ?? null);
   const manager = piManager;
-  const router = openRouter;
+  const router = piRouter;
   const health = providerHealth.cached();
   // 프로브 전이면 CLI 가 있다고 보고 기존 경로를 먼저 태운다.
   const cliAvailable = health ? health[cliAgent]?.available !== false : true;
@@ -3245,6 +3289,7 @@ async function launchTemplateJob(record, job) {
     buildCopyLayoutWorkerPrompt,
     piManager,
     piModelConfig,
+    piSpawnHooks,
     SESSION_FACTORIES,
     unknownAgentError
   });
@@ -3325,7 +3370,7 @@ const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', '
 
 /** 실패 문구에서 지울 이 세션의 비밀 값: MCP 세션 토큰, OpenRouter 키, CLI 설정 키. */
 function providerFailureSecrets(opts) {
-  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey()];
+  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey()];
   for (const [name, value] of Object.entries(opts.providerEnv ?? {})) {
     if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) values.push(value);
   }
@@ -5053,6 +5098,7 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    ...(agent === 'pi' ? piSpawnHooks() : {}),
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
     projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
@@ -5474,6 +5520,10 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       await ensureBootWork();
+      // 기동 직후라면 선물 자격을 아직 받는 중일 수 있다. 한 번 기다려 본다.
+      if (agent === 'pi' && !piStatus.setupComplete && giftSource.available) {
+        await piManager.refreshGift().then(() => refreshPiStatus()).catch(() => {});
+      }
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
         rejectStart(Object.assign(
@@ -6570,7 +6620,7 @@ async function handleStudioMessage(record, sock, msg) {
             {
               useOpenRouter: selection.agent === 'pi',
               piManager,
-              openRouter,
+              openRouter: piRouter,
               projectRoot: ROOT,
               workDir: record.workDir,
               isolatedHome: record.isolatedHome,
