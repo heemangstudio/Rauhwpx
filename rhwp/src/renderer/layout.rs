@@ -2878,6 +2878,12 @@ impl LayoutEngine {
         }
     }
 
+    /// 설정과 자동 번호 상태를 보존하고 출력 DPI만 바꾼다.
+    pub(crate) fn set_dpi(&mut self, dpi: f64) {
+        self.dpi = dpi;
+        self.clear_layout_caches();
+    }
+
     /// [Task #1949] 셀 단위 레이아웃 캐시를 비운다. 문서 재조판 등 IR 이 바뀌는
     /// 경계에서 호출해 포인터 키 재사용으로 인한 오재사용을 방지한다.
     pub fn clear_layout_caches(&self) {

@@ -6334,7 +6334,7 @@ impl DocumentCore {
         Self::reflow_zero_height_paragraphs(
             &mut self.document,
             &self.styles,
-            DEFAULT_DPI,
+            self.dpi,
             true,
             include_cell_empty,
             fully_unstored,

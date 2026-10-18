@@ -20,6 +20,7 @@ mod cli_exit_codes_dump_diag;
 mod cli_json_contract;
 mod common;
 mod doclang_export;
+mod document_dpi;
 mod dump_pages_cli;
 mod edit_fill_fields_contract;
 mod edit_pagination_consistency_contract;
