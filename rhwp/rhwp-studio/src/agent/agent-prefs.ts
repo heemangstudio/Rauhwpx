@@ -22,6 +22,16 @@ import { isAgentMode, type AgentMode, type AgentName } from './types.ts';
 
 const STORAGE_KEY = 'rhwp-agent-prefs';
 
+/**
+ * 에이전트·전체 모드에서 에이전트가 문서를 고칠 때 사용자 편집을 막는 방식. off 는 막지 않고, always 는 에이전트가
+ * 일하는 내내 막는다. 초(1–60)면 고치기 시작할 때부터 마지막 편집 뒤 그 초만큼만 막는다 — 대화만 할 때는 막지 않는다.
+ */
+export type AgentEditLock = 'off' | 'always' | number;
+
+/** 설정의 눈금 — 왼쪽 끝은 막지 않음, 오른쪽 끝은 항상 막음. */
+export const AGENT_EDIT_LOCK_STEPS: readonly AgentEditLock[] = ['off', 1, 2, 3, 5, 10, 20, 30, 60, 'always'];
+export const DEFAULT_AGENT_EDIT_LOCK: AgentEditLock = 3;
+
 export interface AgentPrefs {
   defaultAgent: AgentName;
   defaultModel: string;
@@ -29,6 +39,11 @@ export interface AgentPrefs {
   /** 새 대화의 모드. 이전 저장값(defaultPermissionProfile)은 읽을 때 옮긴다. */
   defaultMode: AgentMode;
   selectedModels: SelectedModels;
+  editLock: AgentEditLock;
+}
+
+function normalizeEditLock(value: unknown): AgentEditLock {
+  return AGENT_EDIT_LOCK_STEPS.includes(value as AgentEditLock) ? value as AgentEditLock : DEFAULT_AGENT_EDIT_LOCK;
 }
 
 /** localStorage 최소 계약 — 테스트가 자기 저장소를 넣을 수 있게 뺐다. */
@@ -74,6 +89,7 @@ export function defaultAgentPrefs(): AgentPrefs {
     defaultEffort: resolveEffortForAgent(agent, null, model),
     defaultMode: 'agent',
     selectedModels,
+    editLock: DEFAULT_AGENT_EDIT_LOCK,
   };
 }
 
@@ -110,6 +126,7 @@ export function normalizeAgentPrefs(raw: unknown): AgentPrefs {
     defaultEffort: effort,
     defaultMode: storedDefaultMode(src),
     selectedModels,
+    editLock: normalizeEditLock(src['editLock']),
   };
 }
 
@@ -155,6 +172,7 @@ export function trySaveAgentPrefs(
   try {
     store.setItem(STORAGE_KEY, JSON.stringify(next));
     setSelectedModels(next.selectedModels);
+    publishEditLock(next.editLock);
   } catch (err) {
     console.warn('[agent-prefs] localStorage 저장 실패:', err);
     return {
@@ -167,6 +185,47 @@ export function trySaveAgentPrefs(
 }
 
 export const AGENT_PREFS_STORAGE_KEY = STORAGE_KEY;
+
+/** 편집 중 잠금은 도구 호출마다 읽는다 — 저장소를 매번 풀지 않게 한 번 읽어 두고, 저장하면 바꾼다. */
+let cachedEditLock: AgentEditLock | null = null;
+const editLockListeners = new Set<(lock: AgentEditLock) => void>();
+
+function publishEditLock(lock: AgentEditLock): void {
+  if (cachedEditLock === lock) return;
+  cachedEditLock = lock;
+  for (const listener of editLockListeners) {
+    try { listener(lock); } catch (error) { console.warn('[agent-prefs] 편집 잠금 리스너 오류:', error); }
+  }
+}
+
+export function currentAgentEditLock(): AgentEditLock {
+  if (cachedEditLock !== null) return cachedEditLock;
+  try {
+    const raw = resolveStorage()?.getItem(STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) as Record<string, unknown> | null : null;
+    cachedEditLock = normalizeEditLock(parsed?.['editLock']);
+  } catch {
+    cachedEditLock = DEFAULT_AGENT_EDIT_LOCK;
+  }
+  return cachedEditLock;
+}
+
+/** 편집 중 잠금 설정이 바뀌면 부른다(이 창에서 저장했거나 다른 창이 저장했다). */
+export function onAgentEditLockChange(listener: (lock: AgentEditLock) => void): () => void {
+  editLockListeners.add(listener);
+  return () => { editLockListeners.delete(listener); };
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORAGE_KEY) return;
+    try {
+      publishEditLock(normalizeEditLock((event.newValue ? JSON.parse(event.newValue) as Record<string, unknown> : null)?.['editLock']));
+    } catch {
+      publishEditLock(DEFAULT_AGENT_EDIT_LOCK);
+    }
+  });
+}
 
 /** 사용자가 설정 탭에서 고른 값이 저장돼 있는지. 빈 프로필·깨진 JSON 은 false. */
 export function hasExplicitDefaultAgent(storage?: AgentPrefsStorage | null): boolean {

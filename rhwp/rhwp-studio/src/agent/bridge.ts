@@ -45,6 +45,7 @@ import {
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
+import { currentAgentEditLock, onAgentEditLockChange } from './agent-prefs.ts';
 import { chatPermissionMatchesContext, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
 import {
   DOCUMENT_DETACH_TOOL,
@@ -1586,6 +1587,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private editingLease: AgentEditingLease = { active: false, agent: 'codex' };
   /** 이 문서의 턴에서 파생된 잠금. 화면에 붙어 있을 때만 그대로 알린다. */
   private documentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
+  /** 지금 도는 문서 쓰기 도구 호출 수 — 편집 중 잠금은 이것과 마지막 쓰기 뒤 머무는 시간으로 정한다. */
+  private activeDocumentWrites = 0;
+  /** 마지막 문서 쓰기가 끝난 시각(performance.now). */
+  private lastDocumentWriteAt = Number.NEGATIVE_INFINITY;
+  private documentWriteHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly unsubscribeEditLock: () => void;
   private editingLeaseListeners = new Set<(lease: AgentEditingLease) => void>();
   /** 보낸 사용자 메시지가 아직 turn-start 로 이어지지 않았다 — 그 사이의 세션도 일하는 중이다. */
   private messageAwaitingTurn = false;
@@ -1692,6 +1699,8 @@ export class AgentBridgeImpl implements AgentBridge {
     this.linkDocument = deps.linkDocument;
     this.detachDocument = deps.detachDocument;
     this.documentCreatedBy = deps.documentCreatedBy;
+    // 설정에서 편집 중 잠금을 바꾸면 지금 도는 턴에도 바로 맞춘다.
+    this.unsubscribeEditLock = onAgentEditLockChange(() => this.syncEditingLease());
     const projectService = createProjectService({
       url: (pathname, query) => this.referenceUrl(pathname, query),
       fetch: (url, init) => fetch(url, {
@@ -2581,6 +2590,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private syncEditingLease(): void {
+    const editLock = currentAgentEditLock();
     this.documentEditingLease = deriveAgentEditingLease({
       turnRunning: this.turnRunning,
       activeToolRequests: this.activeToolRequests,
@@ -2588,9 +2598,29 @@ export class AgentBridgeImpl implements AgentBridge {
       workflow: this.workflow,
       phase: this.phase,
       waitingForUser: this.pendingUserQuestionId !== null || this.pendingChatPermissionRequest != null,
+      editLock,
+      editing: this.activeDocumentWrites > 0
+        || (typeof editLock === 'number' && performance.now() - this.lastDocumentWriteAt < editLock * 1000),
     });
     this.publishEditingLease();
     this.scheduleBusyCheck();
+  }
+
+  /**
+   * 문서 쓰기 도구 하나가 끝났다. 편집 중 잠금은 설정한 초만큼 더 머문 뒤 풀린다 — 그때 다시 잰다. 그사이 쓰기가 또
+   * 오면 잠금은 이어지고 머무는 시간은 그 쓰기가 끝난 때부터 다시 센다.
+   */
+  private endDocumentWrite(): void {
+    this.activeDocumentWrites = Math.max(0, this.activeDocumentWrites - 1);
+    this.lastDocumentWriteAt = performance.now();
+    if (this.documentWriteHoldTimer !== null) clearTimeout(this.documentWriteHoldTimer);
+    this.documentWriteHoldTimer = null;
+    const editLock = currentAgentEditLock();
+    if (typeof editLock !== 'number' || this.activeDocumentWrites > 0) return;
+    this.documentWriteHoldTimer = setTimeout(() => {
+      this.documentWriteHoldTimer = null;
+      if (!this.disposed) this.syncEditingLease();
+    }, editLock * 1000);
   }
 
   /** 화면에 붙은 동안만 이 문서의 잠금을 내건다. 화면 밖 문서의 턴이 보이는 편집기를 잠그면 안 된다. */
@@ -4046,10 +4076,12 @@ export class AgentBridgeImpl implements AgentBridge {
     if (previous) this.cancelActiveToolRequest(id, previous);
     const controller = new AbortController();
     let editingLeaseHeld = true;
+    let documentWriteHeld = false;
     const releaseEditingLease = () => {
       if (!editingLeaseHeld) return;
       editingLeaseHeld = false;
       this.activeToolRequests = Math.max(0, this.activeToolRequests - 1);
+      if (documentWriteHeld) this.endDocumentWrite();
       this.syncEditingLease();
     };
     const request = { controller, turnBound, providerTurnId, releaseEditingLease };
@@ -4080,6 +4112,11 @@ export class AgentBridgeImpl implements AgentBridge {
       ? { stIn: Math.round(this.frameReceivedAt * 1000) / 1000, stStart: toolTraceNow() }
       : null;
     this.activeToolRequests += 1;
+    // 문서를 고치는 도구가 오면 그때부터 사용자 편집을 막는다(편집 중 잠금 설정).
+    if (isDocumentWriteTool(tool) && tool !== 'commit_version') {
+      documentWriteHeld = true;
+      this.activeDocumentWrites += 1;
+    }
     this.syncEditingLease();
     // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
     if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
@@ -5563,6 +5600,9 @@ export class AgentBridgeImpl implements AgentBridge {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
     }
     this.disposed = true;
+    this.unsubscribeEditLock();
+    if (this.documentWriteHoldTimer !== null) clearTimeout(this.documentWriteHoldTimer);
+    this.documentWriteHoldTimer = null;
     this.clearMessageReceipts();
     this.busyWatch = null;
     for (const message of this.queuedMessages) message.resolve(null);
