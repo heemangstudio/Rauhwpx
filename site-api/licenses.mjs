@@ -1,7 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
-import { BETA_LEASE_TTL_MS, DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
+import {
+  BETA_LEASE_TTL_MS,
+  DEFAULT_LEASE_KID,
+  LEASE_TTL_MS,
+  licenseKeyHash,
+  publicKeyFromPrivate,
+  signLease,
+  verifyLease,
+} from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
 import { createWebhookLog } from './webhook-log.mjs';
@@ -51,7 +59,7 @@ function newKeyId(random = randomBytes) {
   return `lic_${random(9).toString('hex')}`;
 }
 
-function tokenEquals(given, expected) {
+export function tokenEquals(given, expected) {
   if (!expected || typeof given !== 'string' || !given) return false;
   const a = createHash('sha256').update(given).digest();
   const b = createHash('sha256').update(expected).digest();
@@ -531,6 +539,28 @@ export function createLicensesService({
     });
   }
 
+  let leasePublicKeys;
+
+  /**
+   * Check a lease the app presents as a bearer token: our own signature, not expired, the
+   * license still active, the device still activated and the key unchanged. Read-only.
+   * Returns `{ keyId, deviceId, platform, source }`; anything else is `unauthorized` (401).
+   */
+  async function authenticateLease(lease) {
+    if (!signingKey) throw licenseError('unauthorized', 401);
+    leasePublicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
+    const checked = verifyLease(lease, leasePublicKeys, { now: now() });
+    if (!checked.ok) throw licenseError('unauthorized', 401);
+    const { keyId, deviceId, keyHash } = checked.payload;
+    const state = await read();
+    const license = Object.hasOwn(state.licenses, keyId) ? state.licenses[keyId] : undefined;
+    const device = license?.devices && Object.hasOwn(license.devices, deviceId) ? license.devices[deviceId] : undefined;
+    if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash) {
+      throw licenseError('unauthorized', 401);
+    }
+    return { keyId, deviceId, platform: device.platform, source: license.source };
+  }
+
   // -------------------------------------------------------- grandfather
 
   async function grandfather(body) {
@@ -771,6 +801,7 @@ export function createLicensesService({
     validate,
     deactivate,
     grandfather,
+    authenticateLease,
     admin,
   };
 }

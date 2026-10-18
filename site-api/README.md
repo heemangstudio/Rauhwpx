@@ -54,6 +54,24 @@ node scripts/license-admin.mjs webhooks --rejected        # or --held, or neithe
   A manual key with a `merchantUid` is reused if the Groble webhook for that order arrives later, and a later refund webhook still revokes it.
 - Key email goes out after the webhook reply through Resend (`RESEND_API_KEY`, `LICENSE_EMAIL_FROM`). Without the API key the attempt is logged and marked `skipped`; the webhook still succeeds and the success page still shows the key. Failed sends retry up to 3 times, including after a restart. Every email is built on `email-layout.mjs` (banner, key card, download button, footer); its images live in `website/assets/email/` on GitHub Pages, and the deploy workflow waits for them to go live before it deploys the server. The key email's copy follows why it went out: a purchase or released hold, an admin `resend-email`, or an admin `issue --send-email` with no payment behind it.
 
+### Gift credits (SPECIAL EVENT)
+
+A one-time gift of `GIFT_AMOUNT_USD` of Claude usage for Pi, one per license key (shared by its devices) and macOS only. The app authenticates with its license lease as `Authorization: Bearer <lease>`; the server checks its own signature, expiry, that the license is active, that the lease's device is still activated with a `platform` in `GIFT_PLATFORMS`, and the key hash. Anything else is `unauthorized` (401); a valid lease on another platform is `not_eligible`.
+
+- `GET /v1/gift/status` → `{ok, event:{id, amountUsd, endsAt, active}, eligible, claimed, remainingUsd, usedUsd, claimedAt}`. Balances come from OpenRouter, cached 15 s, and are `null` when it does not answer.
+- `POST /v1/gift/claim` (body `{}`) is idempotent. The first call creates one OpenRouter key named `hama-gift-<event>-<keyId>` with `limit = GIFT_AMOUNT_USD` and keeps the key in `gifts.json`; it is never sent to the app. Errors: `unauthorized` 401, `not_eligible` 403, `event_inactive` 410 (event not configured or past `GIFT_ENDS_AT`), `budget_exhausted` 409 (the created limits would pass `GIFT_TOTAL_BUDGET_USD`), `upstream_unavailable` 502. A claim interrupted after OpenRouter created the key leaves a `provisioning` record; the next claim deletes keys with that name before creating a new one.
+- OpenAI-compatible proxy at `/v1/gift/openrouter` (Pi `baseUrl`, lease in place of the API key). Errors use OpenRouter's `{error:{code,message}}` shape: 401 `unauthorized`, 403 `not_eligible` or `gift_not_claimed`, 410 `event_inactive`, 402 `Insufficient credits: ...` once the key limit is spent or the gift is disabled.
+  - `POST /chat/completions` streams SSE through as it arrives, and a client disconnect aborts the upstream request. Models must start with one of `GIFT_MODEL_PREFIXES` (also every entry of `models`); `max_tokens`/`max_completion_tokens` are clamped to `GIFT_MAX_OUTPUT_TOKENS` and `max_tokens` is set when neither is given. Bodies up to 16 MiB, 4 concurrent requests and 60 per minute per license.
+  - `GET /models` is the OpenRouter catalog filtered to the allowed prefixes, cached 10 minutes. `GET /auth/key` (and `/key`) and `GET /credits` answer OpenRouter-shaped balances for the gift.
+- Admin: `GET /v1/admin/gifts?status=&eventId=` lists grants without their keys plus `committedUsd`; `POST /v1/admin/gifts/disable {keyId, reason}` disables the OpenRouter key (`PATCH /keys/{hash} {disabled:true}`) and marks the grant `revoked`. A revoked license loses the gift at once because its lease no longer authenticates.
+
+```sh
+node scripts/license-admin.mjs gifts [--status active]
+node scripts/license-admin.mjs gift-disable --key-id lic_... --reason abuse
+```
+
+Deploy checks: Railway's edge must keep long SSE responses open (idle and maximum request duration), so try a long streamed completion against production after the first deploy.
+
 Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford base32). The server assumes **one replica**: all license writes go through one in-process lock and an atomic temp-file rename.
 
 ## Data
@@ -64,6 +82,7 @@ Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford 
 | `unique-installs.json` | `{ installs: { [sha256(installId)]: { official, firstSeenAt, appVersion, os, arch } } }` |
 | `licenses.json` | `{ licenses, keyIndex, orders, refs, webhookEvents, grandfathered }`: keys, devices, Groble orders by `merchantUid`, `ref → merchantUid`, 8 days of webhook delivery keys |
 | `webhook-log.json` | `{ entries: [...] }`: the newest 200 rejected or held Groble webhooks |
+| `gifts.json` | `{ events: { [eventId]: { grants: { [keyId]: { status, name, limitUsd, openrouterHash, openrouterKey, claimedAt, ... } } } } }` |
 
 All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume; locally it defaults to the current directory.
 
@@ -86,6 +105,15 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GRANDFATHER_CUTOFF` | ISO-8601 time; Mac installs first seen before it get a free key. Unset disables grandfathering |
 | `GRANDFATHER_PLATFORMS` | Comma list of `os` values, default `darwin` |
 | `LICENSE_ALLOWED_ORIGINS` | CORS origins for by-ref, default `https://heemangstudios.com,https://www.heemangstudios.com,https://heemangstudio.github.io` |
+| `OPENROUTER_PROVISIONING_KEY` | OpenRouter management key that creates the gift keys. With `GIFT_EVENT_ID` it turns the gift routes on |
+| `GIFT_EVENT_ID` | Event id, e.g. `special-2026-10`. One gift per license per event |
+| `GIFT_AMOUNT_USD` | Limit of each gift key, default 20 |
+| `GIFT_ENDS_AT` | Optional ISO-8601 time after which no new gifts are claimed. Claimed gifts keep working |
+| `GIFT_TOTAL_BUDGET_USD` | Cap on the sum of created gift limits. Unset means no cap |
+| `GIFT_MODEL_PREFIXES` | Comma list of allowed model id prefixes, default `anthropic/` |
+| `GIFT_PLATFORMS` | Comma list of device platforms that get the gift, default `darwin` |
+| `GIFT_MAX_OUTPUT_TOKENS` | Output token cap per request, default 32000 |
+| `OPENROUTER_API_BASE` | OpenRouter API base, default `https://openrouter.ai/api/v1`. Only for local tests |
 | `LICENSE_DOWNLOAD_URL` | Download button in the key email. Unset or the homepage means the latest Mac dmg |
 
 ## Run and deploy

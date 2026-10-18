@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_PORT,
+  resolveGiftConfig,
+  resolveGiftsDbPath,
   resolveLicenseConfig,
   resolveLicensesDbPath,
   resolveUniqueInstallPingKey,
@@ -12,6 +14,7 @@ import {
   resolveWaitlistDbPath,
   resolveWebhookLogDbPath,
 } from './config.mjs';
+import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
@@ -134,6 +137,7 @@ export function siteRequestListener({
   uniqueInstalls,
   waitlist,
   licenses,
+  gifts,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
@@ -198,6 +202,19 @@ export function siteRequestListener({
       const route = `${req.method} ${pathname}`;
       if (pathname.startsWith('/v1/license/') || pathname.startsWith('/v1/admin/') || pathname === '/v1/groble/webhook') {
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
+      }
+      if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
+      if (pathname.startsWith(`${GIFT_PROXY_PREFIX}/`)) {
+        // Streams its own response (SSE), so it never goes through send().
+        allow('gift-proxy', 600, MINUTE);
+        try {
+          await gifts.handleProxy(req, res, pathname.slice(GIFT_PROXY_PREFIX.length));
+        } catch (error) {
+          log(`[site-api] gift proxy failed: ${error?.message ?? error}`);
+          if (res.headersSent) res.destroy();
+          else send(500, { error: { code: 500, message: 'server_error' } });
+        }
+        return;
       }
       switch (route) {
         case 'GET /v1/groble/webhook':
@@ -294,6 +311,24 @@ export function siteRequestListener({
             rawBase64: licenseConfig.publicKeyRawBase64,
             spkiDerBase64: licenseConfig.publicKeyDerBase64,
           });
+          return;
+        case 'GET /v1/gift/status':
+          allow('gift-status', 120, MINUTE);
+          req.resume?.();
+          send(200, await gifts.status(bearerToken(req)));
+          return;
+        case 'POST /v1/gift/claim':
+          allow('gift-claim', 20, TEN_MINUTES);
+          await readJson(req);
+          send(200, await gifts.claim(bearerToken(req)));
+          return;
+        case 'GET /v1/admin/gifts':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await gifts.admin.list(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/gifts/disable':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await gifts.admin.disable(bearerToken(req), await readJson(req)));
           return;
         case 'GET /v1/admin/licenses':
           allow('admin', 120, TEN_MINUTES);
@@ -442,7 +477,16 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, licenses, licenseConfig, webhookLog, webhookAlerts, log });
+  const gifts = createGiftsService({
+    store: createFileStore(resolveGiftsDbPath(env), { emptyState: emptyGiftsState }),
+    authenticate: (lease) => licenses.authenticateLease(lease),
+    config: resolveGiftConfig(env),
+    adminToken: licenseConfig.adminToken,
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+    log,
+  });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, log });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
   const server = http.createServer((req, res) => {

@@ -13,6 +13,8 @@
 //   node scripts/license-admin.mjs restore --key HAMA-...
 //   node scripts/license-admin.mjs reset-devices --key HAMA-...
 //   node scripts/license-admin.mjs resend-email --key HAMA-... [--email new@example.com]
+//   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
+//   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...rest] = process.argv.slice(2);
@@ -35,12 +37,14 @@ const posts = {
   'reset-devices': '/v1/admin/licenses/reset-devices',
   'resend-email': '/v1/admin/licenses/resend-email',
   release: '/v1/admin/orders/release',
+  'gift-disable': '/v1/admin/gifts/disable',
 };
 const gets = {
   lookup: '/v1/admin/licenses',
   betas: '/v1/admin/licenses/betas',
   orders: '/v1/admin/orders',
   webhooks: '/v1/admin/webhooks',
+  gifts: '/v1/admin/gifts',
 };
 if (command === 'webhooks') {
   if (args.rejected && args.held) { process.stderr.write('pick one of --rejected or --held\n'); process.exit(2); }
@@ -60,7 +64,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|gifts|gift-disable [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
