@@ -1102,7 +1102,7 @@ function applyLateDesktopFontReport(report: DesktopFontReport): void {
 }
 
 function applyLateFontReports(reports: readonly DesktopFontReport[]): void {
-  // HFT 윤곽선은 폭을 바꾸지 않지만 같은 경로로 다시 그린다.
+  // HFT 윤곽선·전진폭의 늦은 등록도 레이아웃과 화면에 반영한다.
   const hftChanged = takeHftOutlineChange();
   if (fontReportsChangedLayout(reports) || hftChanged) eventBus.emit('font-files-imported');
   for (const report of reports) finalizeDesktopFontReport(report);

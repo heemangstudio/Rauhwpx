@@ -612,8 +612,7 @@ fn reflow_matrix_textbox_para(
     }
 
     const MATRIX_TEXT_FIT_TOLERANCE_PX: f64 = 3.0;
-    let composed =
-        crate::renderer::composer::compose_paragraph_with_policy(para, styles.font_metrics_policy);
+    let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
     let text_len = para.text.chars().count();
     let full_width = measure_composed_text_range_width(&composed, styles, 0, text_len, None);
 
@@ -1013,6 +1012,43 @@ impl LayoutEngine {
                 para_y,
                 alignment,
             )
+        };
+
+        // 용지를 벗어난 제한 글상자는 쪽 기준으로 다시 놓되 원본 가장자리
+        // 오프셋을 보존한다. 용지 안의 여백 글상자와 선은 그대로 둔다.
+        let shape_x = if !common.treat_as_char
+            && common.flow_with_text
+            && matches!(shape, ShapeObject::Rectangle(rect) if rect.drawing.text_box.is_some())
+            && caption.is_none()
+            && !extract_shape_transform(shape.shape_attr()).has_transform()
+            && total_width <= body_area.width
+            && (shape_x < paper_area.x || shape_x + total_width > paper_area.x + paper_area.width)
+        {
+            let page_x = if common.horz_rel_to == HorzRelTo::Paper {
+                let mut page_relative = common.clone();
+                page_relative.horz_rel_to = HorzRelTo::Page;
+                self.compute_object_position(
+                    &page_relative,
+                    total_width,
+                    total_height,
+                    &shape_container,
+                    col_area,
+                    body_area,
+                    paper_area,
+                    para_y,
+                    alignment,
+                )
+                .0
+            } else {
+                shape_x
+            };
+            if page_x >= paper_area.x && page_x + total_width <= paper_area.x + paper_area.width {
+                page_x
+            } else {
+                page_x.clamp(body_area.x, body_area.x + body_area.width - total_width)
+            }
+        } else {
+            shape_x
         };
 
         // 캡션 방향에 따라 도형 위치 오프셋 계산
@@ -2938,12 +2974,7 @@ impl LayoutEngine {
                 // 이 텍스트박스는 연결된 텍스트박스의 타겟: 오버플로우 문단 렌더링
                 let composed_paras: Vec<_> = overflow_paras
                     .iter()
-                    .map(|p| {
-                        crate::renderer::composer::compose_paragraph_with_policy(
-                            p,
-                            styles.font_metrics_policy,
-                        )
-                    })
+                    .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &styles))
                     .collect();
                 let mut para_y = inner_area.y;
                 for (tb_para_idx, composed) in composed_paras.iter().enumerate() {
@@ -3074,12 +3105,7 @@ impl LayoutEngine {
 
         let mut composed_paras: Vec<_> = textbox_paragraphs[..para_count]
             .iter()
-            .map(|p| {
-                crate::renderer::composer::compose_paragraph_with_policy(
-                    p,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &styles))
             .collect();
 
         // AutoNumber(Page) 치환: 글상자 안의 쪽번호 필드를 현재 페이지 번호로 변환
@@ -3864,12 +3890,7 @@ impl LayoutEngine {
 
         let composed_paras: Vec<_> = paragraphs
             .iter()
-            .map(|p| {
-                crate::renderer::composer::compose_paragraph_with_policy(
-                    p,
-                    styles.font_metrics_policy,
-                )
-            })
+            .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &styles))
             .collect();
 
         let get_alignment = |para_style_id: u16| -> Alignment {
@@ -4742,6 +4763,104 @@ mod tests {
             assert!(
                 (actual - expected).abs() < 1e-9,
                 "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn restricted_textbox_crossing_paper_preserves_page_edge_offsets() {
+        use crate::model::shape::{RectangleShape, ShapeComponentAttr, TextBox, TextWrap};
+        let body = LayoutRect {
+            x: 40.0,
+            y: 75.0,
+            width: 520.0,
+            height: 750.0,
+        };
+        let paper = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 600.0,
+            height: 900.0,
+        };
+        for (width_hu, offset_hu, align, restricted, tac, expected_x) in [
+            (
+                7_500,
+                -1i32,
+                HorzAlign::Left,
+                true,
+                false,
+                40.0 - 1.0 / 75.0,
+            ),
+            (
+                7_500,
+                -266,
+                HorzAlign::Right,
+                true,
+                false,
+                460.0 + 266.0 / 75.0,
+            ),
+            (7_500, 45_001, HorzAlign::Left, true, false, 460.0),
+            (7_500, 1_500, HorzAlign::Left, true, false, 20.0),
+            (7_500, 37_500, HorzAlign::Left, true, false, 500.0),
+            (7_500, -1, HorzAlign::Left, false, false, -1.0 / 75.0),
+            (7_500, -1, HorzAlign::Left, true, true, -1.0 / 75.0),
+            (45_000, -1, HorzAlign::Left, true, false, -1.0 / 75.0),
+        ] {
+            let shape = ShapeObject::Rectangle(RectangleShape {
+                common: CommonObjAttr {
+                    width: width_hu,
+                    height: 1_500,
+                    horizontal_offset: offset_hu as u32,
+                    horz_rel_to: HorzRelTo::Paper,
+                    horz_align: align,
+                    vert_rel_to: VertRelTo::Para,
+                    text_wrap: TextWrap::InFrontOfText,
+                    flow_with_text: restricted,
+                    treat_as_char: tac,
+                    ..Default::default()
+                },
+                drawing: DrawingObjAttr {
+                    text_box: Some(TextBox::default()),
+                    shape_attr: ShapeComponentAttr {
+                        original_width: width_hu,
+                        current_width: width_hu,
+                        original_height: 1_500,
+                        current_height: 1_500,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let para = Paragraph {
+                controls: vec![Control::Shape(Box::new(shape))],
+                ..Default::default()
+            };
+            let engine = LayoutEngine::new(96.0);
+            let mut tree = PageRenderTree::new(0, paper.width, paper.height);
+            let mut node = tree.root.clone();
+            engine.layout_shape(
+                &mut tree,
+                &mut node,
+                &[para],
+                0,
+                0,
+                0,
+                &ResolvedStyleSet::default(),
+                &body,
+                &body,
+                &paper,
+                100.0,
+                Alignment::Left,
+                &[],
+                &std::collections::HashMap::new(),
+                false,
+                tac.then_some((-1.0 / 75.0, 100.0)),
+            );
+            tree.root = node;
+            assert!(
+                (one_authored_shape(&tree).bbox.x - expected_x).abs() < 1e-9,
+                "width={width_hu} offset={offset_hu} restricted={restricted} tac={tac}"
             );
         }
     }

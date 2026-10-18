@@ -1012,13 +1012,38 @@ impl WebCanvasRenderer {
             let _ = self.ctx.rotate(run.rotation * std::f64::consts::PI / 180.0);
             self.ctx.set_text_align("center");
             self.ctx.set_text_baseline("middle");
-            let _ = self.ctx.fill_text(run.display_or_text(), 0.0, 0.0);
+            let text = run.display_or_text();
+            let blank = run.style.nonprinting_control_space_indices(&run.text, text);
+            let draw = |stroke: bool| {
+                if blank.is_empty() {
+                    if stroke {
+                        let _ = self.ctx.stroke_text(text, 0.0, 0.0);
+                    } else {
+                        let _ = self.ctx.fill_text(text, 0.0, 0.0);
+                    }
+                } else {
+                    self.ctx.set_text_align("left");
+                    let positions = compute_char_positions(text, &run.style);
+                    for (index, cluster) in split_into_clusters(text) {
+                        if blank.binary_search(&index).is_ok() {
+                            continue;
+                        }
+                        let x = positions[index] - bbox.width / 2.0;
+                        if stroke {
+                            let _ = self.ctx.stroke_text(&cluster, x, 0.0);
+                        } else {
+                            let _ = self.ctx.fill_text(&cluster, x, 0.0);
+                        }
+                    }
+                }
+            };
+            draw(false);
             if let Some(stroke_width) = faux_bold_width {
                 self.ctx
                     .set_stroke_style_str(&color_to_css(run.style.color));
                 self.ctx.set_line_width(stroke_width);
                 self.ctx.set_line_join("round");
-                let _ = self.ctx.stroke_text(run.display_or_text(), 0.0, 0.0);
+                draw(true);
             }
             self.ctx.restore();
         } else {
@@ -1028,6 +1053,7 @@ impl WebCanvasRenderer {
                 bbox.y + run.baseline,
                 &run.style,
                 run.display_text.is_some(),
+                &run.text,
             );
         }
         if let Some(copy) = super::hft_vertical_bold_copy(
@@ -1050,7 +1076,14 @@ impl WebCanvasRenderer {
                 } else {
                     (dx, 0.0)
                 };
-                self.draw_text(run.display_or_text(), x, y, &glyph_style);
+                self.draw_projected_text(
+                    run.display_or_text(),
+                    x,
+                    y,
+                    &glyph_style,
+                    false,
+                    &run.text,
+                );
             }
             if copy.rotation != 0.0 {
                 self.ctx.restore();
@@ -2562,6 +2595,7 @@ impl WebCanvasRenderer {
         y: f64,
         style: &TextStyle,
         preserve_projection: bool,
+        source_text: &str,
     ) {
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) skip.
         // svg.rs::draw_text 와 동일 정합.
@@ -2617,6 +2651,7 @@ impl WebCanvasRenderer {
 
         // 클러스터 분할
         let clusters = split_into_clusters(text);
+        let nonprinting_spaces = style.nonprinting_control_space_indices(source_text, text);
 
         // 레이아웃 메트릭 기준으로 글자 위치 계산 (줄바꿈 결정과 동일한 메트릭 사용)
         let char_positions = compute_char_positions(text, style);
@@ -2646,6 +2681,7 @@ impl WebCanvasRenderer {
                 &clusters,
                 &char_positions,
                 &glyph_positions,
+                &nonprinting_spaces,
                 x,
                 y,
                 style,
@@ -2668,7 +2704,10 @@ impl WebCanvasRenderer {
                 && text
                     .chars()
                     .any(|ch| super::hft_glyph_for_style(style, ch).is_some());
-            if !hft_glyphs && canvas_uses_native_run_shaping(self.native_run_shaping, text, style) {
+            if nonprinting_spaces.is_empty()
+                && !hft_glyphs
+                && canvas_uses_native_run_shaping(self.native_run_shaping, text, style)
+            {
                 self.ctx.set_font(&font);
                 let target_advance = *glyph_positions.last().unwrap_or(&0.0);
                 let fit_scale = self
@@ -2689,7 +2728,11 @@ impl WebCanvasRenderer {
                 self.ctx.restore();
             } else {
                 for (char_idx, cluster_str) in &clusters {
-                    if cluster_str == " " || cluster_str == "\t" || cluster_str == "\u{2007}" {
+                    if cluster_str == " "
+                        || cluster_str == "\t"
+                        || cluster_str == "\u{2007}"
+                        || nonprinting_spaces.binary_search(char_idx).is_ok()
+                    {
                         continue;
                     }
                     if super::contains_old_hangul_jamo(cluster_str) {
@@ -2979,7 +3022,7 @@ impl Renderer for WebCanvasRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
-        self.draw_projected_text(text, x, y, style, false);
+        self.draw_projected_text(text, x, y, style, false, text);
     }
 
     fn draw_rect(
@@ -3264,6 +3307,7 @@ impl WebCanvasRenderer {
         clusters: &[(usize, String)],
         char_positions: &[f64],
         glyph_positions: &[f64],
+        nonprinting_spaces: &[usize],
         x: f64,
         y: f64,
         style: &TextStyle,
@@ -3290,7 +3334,11 @@ impl WebCanvasRenderer {
             }
             for (char_idx, cluster_str) in clusters {
                 let cs: &str = cluster_str;
-                if cs == " " || cs == "\t" || cs == "\u{2007}" {
+                if cs == " "
+                    || cs == "\t"
+                    || cs == "\u{2007}"
+                    || nonprinting_spaces.binary_search(char_idx).is_ok()
+                {
                     continue;
                 }
                 if super::contains_old_hangul_jamo(cs) {

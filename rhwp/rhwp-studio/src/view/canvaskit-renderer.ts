@@ -87,6 +87,7 @@ import { parseStaticSvgPathLayers, type StaticSvgPathLayer } from './static-svg-
 import { getImportedLocalFontBytes, getLocalFontRecords, loadLocalFontBytesFor, localFontFaceKey, resolveLocalFont, type LocalFontRecord } from '@/core/local-fonts';
 import type { CanvasKitBundledFontSource } from '@/core/font-loader';
 import { createOutlineSkiaFont } from '@/core/skia-font';
+import { getSfntGlyphPathApi, type SfntGlyphPathApi } from '@/core/sfnt-glyphs';
 import { hftGlyphPath } from '@/core/hft-glyphs';
 import { preferredFamilyStyleFaces, selectPreparedFontFace } from './canvaskit-font-style';
 import { createEquationLiteralFontResolver, equationHftBanks, equationFontFamilies, equationLocalFontFace, isLegacyEquationFont, legacyEquationRuns, modernShortSquarePaintMetrics } from '@/core/equation-font';
@@ -177,6 +178,13 @@ interface CanvasKitLocalTypeface {
   typeface: Typeface | null;
   fontManager: FontMgr | null;
   fontFamily: string | null;
+}
+
+interface SfntTypefaceSource {
+  bytes: Uint8Array;
+  faceIndex: number;
+  api: SfntGlyphPathApi | null;
+  paths: Map<number, Path | null>;
 }
 
 interface CanvasKitStyledTypeface {
@@ -277,6 +285,7 @@ export class CanvasKitLayerRenderer {
   private readonly svgGlyphPathCache = new Map<string, StaticSvgPathLayer[]>();
   private readonly svgGlyphParseFailures = new Set<string>();
   private readonly localTypefaces = new Map<string, CanvasKitLocalTypeface>();
+  private readonly sfntTypefaceSources = new Map<Typeface, SfntTypefaceSource>();
   private readonly localTypefaceRecords = new Map<string, LocalFontRecord>();
   private readonly equationTypefaces = new Map<string, EquationTypeface[]>();
   private readonly localTypefaceLoadFailures = new Set<string>();
@@ -494,6 +503,7 @@ export class CanvasKitLayerRenderer {
             ? fontManager.getFamilyName(0)
             : source.aliases[0];
           prepared = { typeface, fontManager, fontFamily };
+          if (typeface) this.retainSfntTypefaceSource(typeface, bytes);
           this.bundledTypefaces.set(source.url, prepared);
           registered += 1;
           typeface = null;
@@ -560,6 +570,7 @@ export class CanvasKitLayerRenderer {
       // record identity는 비동기 파싱 중 교체된 결과가 새 face를 덮는 것도 막는다.
       if (this.localTypefaceRecords.get(faceKey) !== record) {
         const previous = this.localTypefaces.get(faceKey);
+        if (previous?.typeface) this.releaseSfntTypefaceSource(previous.typeface);
         previous?.typeface?.delete?.();
         previous?.fontManager?.delete?.();
         this.localTypefaces.delete(faceKey);
@@ -600,6 +611,7 @@ export class CanvasKitLayerRenderer {
             ? fontManager.getFamilyName(0)
             : record.family;
           this.localTypefaces.set(faceKey, { typeface, fontManager, fontFamily });
+          if (typeface) this.retainSfntTypefaceSource(typeface, bytes);
           registered += 1;
         } catch (error) {
           typeface?.delete?.();
@@ -696,7 +708,7 @@ export class CanvasKitLayerRenderer {
       this.recordRenderFailure(error);
       throw error;
     } finally {
-      surface?.delete();
+      surface?.dispose();
       this.currentResources = undefined;
       this.currentShowParagraphMarks = false;
       this.currentShowControlCodes = false;
@@ -712,9 +724,12 @@ export class CanvasKitLayerRenderer {
     /* Per-tree native picture interning is not implemented yet. */
   }
 
-  resetDocumentResources(): void {
-    this.documentGeneration += 1;
-    this.cancelDocumentPreparation();
+  resetDocumentResources(options: { preserveFonts?: boolean } = {}): void {
+    // 같은 문서의 편집은 그림·쪽 캐시만 비운다. 준비 중인 글꼴도 계속 소유한다.
+    if (!options.preserveFonts) {
+      this.documentGeneration += 1;
+      this.cancelDocumentPreparation();
+    }
     for (const entry of this.imageCache.values()) entry.image?.delete?.();
     this.imageCache.clear();
     this.imageCachePixels = 0;
@@ -723,22 +738,25 @@ export class CanvasKitLayerRenderer {
     this.svgGlyphParseFailures.clear();
     this.currentResources = undefined;
     this.selectedTextVariantOps = new WeakSet<LayerPaintOp>();
-    for (const { typeface, fontManager } of this.localTypefaces.values()) {
-      typeface?.delete?.();
-      fontManager?.delete?.();
+    if (!options.preserveFonts) {
+      for (const typeface of this.sfntTypefaceSources.keys()) this.releaseSfntTypefaceSource(typeface);
+      for (const { typeface, fontManager } of this.localTypefaces.values()) {
+        typeface?.delete?.();
+        fontManager?.delete?.();
+      }
+      this.localTypefaces.clear();
+      this.localTypefaceRecords.clear();
+      this.equationTypefaces.clear();
+      this.localTypefaceLoadFailures.clear();
+      this.localTypefacePending.clear();
+      for (const { typeface, fontManager } of this.bundledTypefaces.values()) {
+        typeface?.delete?.();
+        fontManager?.delete?.();
+      }
+      this.bundledTypefaces.clear();
+      this.bundledTypefaceAliases.clear();
+      this.bundledTypefaceLoadFailures.clear();
     }
-    this.localTypefaces.clear();
-    this.localTypefaceRecords.clear();
-    this.equationTypefaces.clear();
-    this.localTypefaceLoadFailures.clear();
-    this.localTypefacePending.clear();
-    for (const { typeface, fontManager } of this.bundledTypefaces.values()) {
-      typeface?.delete?.();
-      fontManager?.delete?.();
-    }
-    this.bundledTypefaces.clear();
-    this.bundledTypefaceAliases.clear();
-    this.bundledTypefaceLoadFailures.clear();
     this.imageCacheHits = 0;
     this.imageCacheMisses = 0;
     this.imageCacheEvictions = 0;
@@ -2092,6 +2110,10 @@ export class CanvasKitLayerRenderer {
         - offsetDy;
     const rotation = op.rotation ?? 0;
     const codePoints = Array.from(replayText);
+    const nonprintingSpaces = new Set((Array.isArray(op.nonprintingSpaces) ? op.nonprintingSpaces : []).filter(index =>
+      Number.isInteger(index) && index >= 0
+      && (codePoints[index] === '\u00a0' || codePoints[index] === '\u2007')));
+    const hasNonprintingSpaces = nonprintingSpaces.size > 0;
     const needsPreservedAdvances = style.superscript || style.subscript;
     const hasSimpleScriptText = codePoints.every((codePoint) => {
       const code = codePoint.charCodeAt(0);
@@ -2155,7 +2177,7 @@ export class CanvasKitLayerRenderer {
     );
     const preparedTypeface = styledTypeface.prepared;
     if (requestedFontFamily && !preparedTypeface && this.requirePreparedFontFamilies
-      && !codePoints.every((codePoint, index) => codePoint === DISCRETIONARY_HYPHEN || !!hftPaths?.[index])) {
+      && !codePoints.every((codePoint, index) => codePoint === DISCRETIONARY_HYPHEN || nonprintingSpaces.has(index) || !!hftPaths?.[index])) {
       throw new Error(`CanvasKit font family가 준비되지 않았습니다: ${requestedFontFamily}`);
     }
     const typeface = preparedTypeface?.typeface ?? this.defaultTypeface;
@@ -2210,7 +2232,7 @@ export class CanvasKitLayerRenderer {
         }
       }
 
-      if (needsPreservedAdvances && !hasSimpleScriptText && !hasHftPaths) {
+      if (needsPreservedAdvances && !hasSimpleScriptText && !hasHftPaths && !hasNonprintingSpaces) {
         if (!this.renderShapedScriptText(
           canvas,
           paintText,
@@ -2236,7 +2258,7 @@ export class CanvasKitLayerRenderer {
         };
         adjustableFont.setEmbolden?.(styledTypeface.syntheticBold);
         adjustableFont.setSkewX?.(styledTypeface.syntheticItalic ? -0.2 : 0);
-        if (hasLayoutPositions || hasHftPaths) {
+        if (hasLayoutPositions || hasHftPaths || hasNonprintingSpaces) {
           const primaryGlyphIds = font.getGlyphIDs(replayText, codePoints.length);
           const glyphPositions = hasLayoutPositions ? replayPositions! : (() => {
             const widths = font!.getGlyphWidths(primaryGlyphIds) ?? [];
@@ -2251,7 +2273,7 @@ export class CanvasKitLayerRenderer {
           // 요청 face에 없는 반각 괄호·기호는 문서 대체 서체와 한컴 설치
           // 서체에서 먼저 찾는다. 웹 번들 부분집합에는 이 글리프가 없을 수 있다.
           if (primaryGlyphIds.some((glyphId, index) => glyphId === 0
-            && codePoints[index] !== DISCRETIONARY_HYPHEN && !hftPaths?.[index])) {
+            && codePoints[index] !== DISCRETIONARY_HYPHEN && !nonprintingSpaces.has(index) && !hftPaths?.[index])) {
             const faces = new Set([typeface]);
             // Native와 같은 순서: 설치된 run face의 누락 글리프는 함초롬돋움이
             // 먼저 받는다. FontMap은 face 자체가 없을 때의 치환 순서다.
@@ -2293,7 +2315,7 @@ export class CanvasKitLayerRenderer {
             candidateFonts.push(defaultFont);
             candidateGlyphIds.push(defaultFont.getGlyphIDs(replayText, codePoints.length));
           }
-          if (codePoints.some((codePoint, index) => codePoint !== DISCRETIONARY_HYPHEN
+          if (codePoints.some((codePoint, index) => codePoint !== DISCRETIONARY_HYPHEN && !nonprintingSpaces.has(index)
             && candidateGlyphIds.every(ids => (ids[index] ?? 0) === 0))
             && this.symbolFallbackTypeface !== null
             && typeface !== this.symbolFallbackTypeface
@@ -2313,7 +2335,7 @@ export class CanvasKitLayerRenderer {
           const selectedFontIndices = codePoints.map((codePoint, index) => {
             const code = codePoint.codePointAt(0) ?? 0;
             // 탭은 저장된 advance만 이동한다. HFT 은행의 제어문자 슬롯을 그리지 않는다.
-            if (codePoint === DISCRETIONARY_HYPHEN || code < 0x20 || code === 0x7f) return -3;
+            if (nonprintingSpaces.has(index) || codePoint === DISCRETIONARY_HYPHEN || code < 0x20 || code === 0x7f) return -3;
             if (hftPaths?.[index]) return -5;
             if ((code >= 0x1100 && code <= 0x11FF)
               || (code >= 0xA960 && code <= 0xA97F)
@@ -3484,16 +3506,17 @@ export class CanvasKitLayerRenderer {
         );
       case 'fraction':
         return child(layout.kind.numer)
-          && this.drawEquationLine(
-            canvas,
-            x + (layout.kind.barInset ?? fontSize * 0.05),
-            // canonical fraction_line_y: 분자 높이 + padding + 선 두께/2.
-            y + layout.kind.numer.height + fontSize * (0.2 + 0.04 / 2),
-            x + layout.width - (layout.kind.barInset ?? fontSize * 0.05),
-            y + layout.kind.numer.height + fontSize * (0.2 + 0.04 / 2),
-            color,
-            fontSize * 0.04,
-          )
+          && (this.drawEquationFractionBar(canvas, layout, x, y, fontSize, color, fontName, budget.modernHy)
+            || this.drawEquationLine(
+              canvas,
+              x + (layout.kind.barInset ?? fontSize * 0.05),
+              // canonical fraction_line_y: 원본 막대 글리프가 없을 때의 대체 선.
+              y + layout.kind.numer.height + fontSize * (0.2 + 0.04 / 2),
+              x + layout.width - (layout.kind.barInset ?? fontSize * 0.05),
+              y + layout.kind.numer.height + fontSize * (0.2 + 0.04 / 2),
+              color,
+              fontSize * 0.04,
+            ))
           && child(layout.kind.denom);
       case 'atop':
         return child(layout.kind.top) && child(layout.kind.bottom);
@@ -3739,6 +3762,46 @@ export class CanvasKitLayerRenderer {
       && layout.height >= 0;
   }
 
+  /** native와 같은 원본 HY 분수 막대의 em·기준선과 자연 advance를 쓴다. */
+  private drawEquationFractionBar(
+    canvas: SkCanvas,
+    layout: LayerEquationLayoutBox,
+    x: number,
+    y: number,
+    fontSize: number,
+    color: string,
+    fontName: string | undefined,
+    modernHy: boolean,
+  ): boolean {
+    if (layout.kind.type !== 'fraction' || !isLegacyEquationFont(fontName)) return false;
+    const face = this.findPreparedTypeface(fontName)?.typeface;
+    if (!face) return false;
+    const inset = layout.kind.barInset ?? fontSize * 0.05;
+    const width = layout.width - inset * 2;
+    const baseline = y + layout.baseline + fontSize * (modernHy ? 0.3 : 0.46);
+    if (![x, baseline, width, fontSize].every(Number.isFinite) || width <= 0 || fontSize <= 0) return false;
+    const font = createOutlineSkiaFont(this.canvasKit, face, fontSize * (modernHy ? 1 : 1.256));
+    let paint: SkPaint | null = null;
+    try {
+      const ids = font.getGlyphIDs('\ue06d', 1);
+      if (!ids?.[0]) return false;
+      const natural = font.getGlyphWidths(ids)?.[0] ?? 0;
+      if (!Number.isFinite(natural) || natural <= 0) return false;
+      paint = this.makeFillPaint(color);
+      canvas.save();
+      try {
+        canvas.translate(x + inset, baseline);
+        // native는 자연 advance와 2% 이내면 원본 가로 배율을 유지한다.
+        if (Math.abs(width - natural) / natural > 0.02) canvas.scale(width / natural, 1);
+        canvas.drawText('\ue06d', 0, 0, paint, font);
+      } finally { canvas.restore(); }
+      return true;
+    } finally {
+      paint?.delete?.();
+      font.delete();
+    }
+  }
+
   /** 원본 HYhwpEQ의 근호 부품만 가로로 늘리고 윗줄의 em 두께는 유지한다. */
   private drawEquationSqrt(
     canvas: SkCanvas,
@@ -3902,6 +3965,9 @@ export class CanvasKitLayerRenderer {
       };
       adjustableFont.setEmbolden?.(face.syntheticBold);
       let pen = centered ? x + (targetWidth - drawWidth) / 2 : x;
+      if (!face.syntheticBold && this.drawEquationOutlineRuns(
+        canvas, runs, pen, baselineY, fontSize, font, paint, face.typeface,
+      )) return true;
       for (const run of runs) {
         adjustableFont.setSkewX?.(run.italic ? -0.2 : 0);
         canvas.drawText(run.text, pen, baselineY + (run.baselineEm ?? 0) * fontSize, paint, font);
@@ -3913,6 +3979,85 @@ export class CanvasKitLayerRenderer {
       font?.delete?.();
       paint?.delete?.();
     }
+  }
+
+  private retainSfntTypefaceSource(typeface: Typeface, bytes: ArrayBuffer): void {
+    // 위 MakeFreeTypeFaceFromData/MakeTypefaceFromData가 선택한 collection 첫 face다.
+    this.sfntTypefaceSources.set(typeface, {
+      bytes: new Uint8Array(bytes), faceIndex: 0, api: null, paths: new Map(),
+    });
+  }
+
+  private releaseSfntTypefaceSource(typeface: Typeface): void {
+    const source = this.sfntTypefaceSources.get(typeface);
+    if (!source) return;
+    for (const path of source.paths.values()) path?.delete();
+    source.paths.clear();
+    this.sfntTypefaceSources.delete(typeface);
+  }
+
+  /** native의 pixel-canvas 경로처럼 glyph mask 대신 실제 준비된 face의 윤곽을 쓴다. */
+  private drawEquationOutlineRuns(
+    canvas: SkCanvas,
+    runs: Array<{ text: string; italic: boolean; baselineEm?: number }>,
+    x: number,
+    baselineY: number,
+    fontSize: number,
+    font: Font,
+    paint: SkPaint,
+    typeface: Typeface,
+  ): boolean {
+    const source = this.sfntTypefaceSources.get(typeface);
+    const api = getSfntGlyphPathApi();
+    if (!source) return false;
+    if (source.api !== api) {
+      for (const path of source.paths.values()) path?.delete();
+      source.paths.clear();
+      source.api = api;
+    }
+    if (!api || ![x, baselineY, fontSize].every(Number.isFinite) || fontSize < 1) return false;
+    const planned: Array<{ run: typeof runs[number]; glyphs: Array<{ path: Path | null; width: number }> }> = [];
+    // 한 glyph라도 윤곽/실제 빈 bounds를 증명하지 못하면 아무것도 칠하기 전에 기존 run으로 돌아간다.
+    try {
+      for (const run of runs) {
+        const ids = font.getGlyphIDs(run.text, Array.from(run.text).length);
+        if (!ids || ids.some(id => id === 0)) return false;
+        const widths = font.getGlyphWidths(ids);
+        const bounds = font.getGlyphBounds(ids);
+        if (!widths || widths.length !== ids.length || !bounds || bounds.length !== ids.length * 4
+          || !widths.every(Number.isFinite) || !bounds.every(Number.isFinite)) return false;
+        const glyphs: Array<{ path: Path | null; width: number }> = [];
+        for (let index = 0; index < ids.length; index += 1) {
+          const id = ids[index];
+          if (!source.paths.has(id)) {
+            const svg = api(source.bytes, source.faceIndex, id);
+            source.paths.set(id, svg ? this.canvasKit.Path.MakeFromSVGString(svg) : null);
+          }
+          const path = source.paths.get(id) ?? null;
+          const offset = index * 4;
+          const empty = bounds[offset] >= bounds[offset + 2] || bounds[offset + 1] >= bounds[offset + 3];
+          if (!path && !empty) return false;
+          glyphs.push({ path, width: widths[index] });
+        }
+        planned.push({ run, glyphs });
+      }
+    } catch { return false; }
+    let pen = x;
+    for (const { run, glyphs } of planned) {
+      for (const { path, width } of glyphs) {
+        if (path) {
+          canvas.save();
+          try {
+            canvas.translate(pen, baselineY + (run.baselineEm ?? 0) * fontSize);
+            canvas.scale(fontSize / 1000, fontSize / 1000);
+            if (run.italic) canvas.skew(-0.2, 0);
+            canvas.drawPath(path, paint);
+          } finally { canvas.restore(); }
+        }
+        pen += width;
+      }
+    }
+    return true;
   }
 
   /** 현대 HY 적분은 기존 논리 박스 안에서 STIX 원본 윤곽으로 그린다. */

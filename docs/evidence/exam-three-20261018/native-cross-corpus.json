@@ -1,0 +1,754 @@
+{
+  "scope": "17 documents / 161 native v36 pages, exact to reviewed v33 via v35. Scoring and independent no-material-regression review reused only after source/count/PNG checks.",
+  "status": "PASS_NO_MATERIAL_REGRESSION",
+  "all_v36_pages_exact_to_v35": true,
+  "receipt": {
+    "campaign_artifact_label": "cross-corpus/v36/receipt.json",
+    "sha256": "8c0f00bd0f66418e8a6377a14d0e34fc04e207a0d8e16b9d89e5334b8a8ac162"
+  },
+  "v36_reuse_proof": {
+    "campaign_artifact_label": "review/cross-v36-reused-independent.json",
+    "sha256": "babc75306f4679a042fc45f378ac8c5b4d0cc4ea5d1911b3511bdb0794176940"
+  },
+  "v35_reuse_proof": {
+    "campaign_artifact_label": "review/cross-v35-reused-independent.json",
+    "sha256": "19296072288a98af79bd900b4411823d8b7909c27f72e314d28c791064b04d6d"
+  },
+  "independent_review": {
+    "campaign_artifact_label": "review/cross-v33-independent-math/review.json",
+    "sha256": "a1cd0f7b8f7f9eff2daed71ef01fd22082c46cc955eaa0e280cb5a43003f901c"
+  },
+  "source_pins": [
+    {
+      "document": "field-01",
+      "sha256": "518cb939079e6e0640a5f813597f744e2528a17ca52ee418929f1c8f4b5380c0",
+      "pages": 3
+    },
+    {
+      "document": "ongoing-gov-lecturer",
+      "sha256": "811e1923c85d7211524ed156408acd2d438a5f4982175d9dbf47606f071709dd",
+      "pages": 8
+    },
+    {
+      "document": "ongoing-exam-social",
+      "sha256": "8c3529cdb1e68b41e4c168b5aea143519a7dc59030c4e479903219b85aba43a1",
+      "pages": 4
+    },
+    {
+      "document": "ongoing-mock-math",
+      "sha256": "2f98a77475cfb960a412545956209ead47f14d9eebd314ccc7a2a447aae7e94d",
+      "pages": 21
+    },
+    {
+      "document": "ongoing-fdi-annual",
+      "sha256": "229b5a78246d1b9ac8fd0961ead11c0e5d2db4777d3bfe4ad928f8a269f29351",
+      "pages": 9
+    },
+    {
+      "document": "ongoing-welfare",
+      "sha256": "dd5407c711d0222ab1c7abc9d3bd9036e1cf02c650fa38b3759110b622066a48",
+      "pages": 9
+    },
+    {
+      "document": "ongoing-mel",
+      "sha256": "b58003a1d63feb671573d7848beede56988cf2d1645f5a445ee92673b6e6e54f",
+      "pages": 20
+    },
+    {
+      "document": "ongoing-kwater",
+      "sha256": "29379b04dda083563609c9d3f84aad6b3ddef0c95259567658b6924b5e4e6513",
+      "pages": 27
+    },
+    {
+      "document": "business-plan",
+      "sha256": "8b786d6824622afae2220b203beeef6e5592157e1896fea055ebc602817113c1",
+      "pages": 6
+    },
+    {
+      "document": "monthly-statistical-report",
+      "sha256": "d2562d9219fc1d491dd6b9f6d787314153246efb79e18c42c63830ac22194958",
+      "pages": 6
+    },
+    {
+      "document": "wastewater-equipment-report",
+      "sha256": "5c1ddfddb4cb83a70992c2ec099f13be41eb83dda4275137b1cbd7d6612fc642",
+      "pages": 3
+    },
+    {
+      "document": "fire-incident-notice",
+      "sha256": "a8b5e2604e2bd35e3caf35c94d46999182240fa7d5747c79c15f00ee53fdb504",
+      "pages": 1
+    },
+    {
+      "document": "ktx-ai-operations-report",
+      "sha256": "b6c1492152f53e8dd7d4bbbb4faca88866bb8458e9018c70c936cd469ea6fab3",
+      "pages": 27
+    },
+    {
+      "document": "kftc-press-release",
+      "sha256": "f84d5ab47795b9933eef405d9ef611055cdd00091f4b03903398e543b471a2cd",
+      "pages": 4
+    },
+    {
+      "document": "pm-traffic-decision",
+      "sha256": "1a1814462b84a968729d08e1a2c162223b8a9431d5cf4d12f3e776934081aace",
+      "pages": 3
+    },
+    {
+      "document": "consulting-decision-report",
+      "sha256": "a0bd691420456e4b6c0b0127d526b6a38d7c1afc3f07e9b84cddb01495e48b0d",
+      "pages": 5
+    },
+    {
+      "document": "sewoon-decision-report",
+      "sha256": "fe5ee0bb2818f7d046cfee92ad1bee078e91aeadbd3a87f4507ce6aaca5aa723",
+      "pages": 5
+    }
+  ],
+  "pages": [
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_001.png",
+      "sha256": "d3bb9e033f751c68227c48228d4aa3969033a267e80d9137a1b7c174ecb6e8fd"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_002.png",
+      "sha256": "27f5e3dc30a7c7b26de716cfd217516ae2b0349add96d892b33e10eee59d9a97"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_003.png",
+      "sha256": "825130e9548f171f4916b168825029ec91f5d65ff55f562ea4d9142fe5744124"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_004.png",
+      "sha256": "60136e438bfffc115f507b77a5fffd3711e9dccc1f71d0c86b3bfe11a9fd9bdd"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_005.png",
+      "sha256": "077c4e0afd7c8f5d83f9f4efa206af980afaef5c4e667fbfe417646155b05c80"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/business-plan/ours/business-plan_006.png",
+      "sha256": "c32c4711d13dca82d7a74d641b3fb28510d76a4944b53dc2a48eeb0d9b4bd5cb"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/consulting-decision-report/ours/consulting-decision-report_001.png",
+      "sha256": "7be30d49d13cdea361fdef22272afbdbfb926da2fe62e61ba7e3466728d49f34"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/consulting-decision-report/ours/consulting-decision-report_002.png",
+      "sha256": "9237d4e5efa25eba0d32763ffab2805e75e22f1abd02fdc881f605e6f38d846e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/consulting-decision-report/ours/consulting-decision-report_003.png",
+      "sha256": "717c686ba71e57ea4b9bd1988d42f607ba1ca5c42cd140a48b13a60f6557686e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/consulting-decision-report/ours/consulting-decision-report_004.png",
+      "sha256": "7f77ae0aff0fc23a8ef29615ace206974b702f18b7e5e78cfa95db1f5970e4d4"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/consulting-decision-report/ours/consulting-decision-report_005.png",
+      "sha256": "4a23745dafdd4357377302e68a676dbe1ac10ed4f13f1a342415cf1ec755675b"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/field-01/ours/field-01_001.png",
+      "sha256": "a95cf9e5c861565040b353bee76e9c3cf33c19d7cfa9c929ef9ca723ae73740a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/field-01/ours/field-01_002.png",
+      "sha256": "cbc0b05a9b645e683905111cac584fb49cec3d631ec0898d009b8bdeb489a3ab"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/field-01/ours/field-01_003.png",
+      "sha256": "82a826c13d2415223eedb3ed7f298493e44222fceec1145a17bc29710d0f3a3c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/fire-incident-notice/ours/fire-incident-notice.png",
+      "sha256": "e5948d89868bb4f4d3db2f487629f86738eaac5dfd88b01cc750f24fe5a088aa"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/kftc-press-release/ours/kftc-press-release_001.png",
+      "sha256": "1e8e21f2cc2a52cbae264787442d20ee3bc608188eb2e87cbe76f5b0745b57ad"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/kftc-press-release/ours/kftc-press-release_002.png",
+      "sha256": "2153babbffdd319d9f28e83f94ec480ee1c9ca4f3ddac16d4403f69d8bf6f586"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/kftc-press-release/ours/kftc-press-release_003.png",
+      "sha256": "af9b20a507bb0bc6c01e69f867d6924003c52c5f232d36e717963ec704cd562e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/kftc-press-release/ours/kftc-press-release_004.png",
+      "sha256": "c39435a6a163ea4755a3ff798031048471e01fed4057f61f93dcd7fc4ae0bf0b"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_001.png",
+      "sha256": "cab1e664e885774b76ca6b776e09160e65b498203bf85e14d99148376167fd03"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_002.png",
+      "sha256": "2ebf9d7fe94adc8893e283ef0ca8fc2b10cfb1f97090aa28eca6e34d23f8da63"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_003.png",
+      "sha256": "0a2a0e07049f00c6f40e48de05eb81e74efaf290c563c5fa4e7b4b331b481966"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_004.png",
+      "sha256": "4f2225e34e77775a40d396c29d3d6ac3ac142e2ca09f753e205c652041d2205f"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_005.png",
+      "sha256": "cf959484326c2b6466e2b201b74b4c4561ba386465ce196365968c63e489b14c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_006.png",
+      "sha256": "1bd769df0eec7d1a8fb2e4fa4c0e2ed9186b449b9f84a3865ca6edf65209e7c4"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_007.png",
+      "sha256": "990fc84ae4daa869fd2c075b40f3ecf760882cf51b3acd65056b23d72d666bd3"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_008.png",
+      "sha256": "cf0a1438b5531e7b833abffd49d04fd3ee74313561edb054a36b36db0f8466a7"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_009.png",
+      "sha256": "e003b224f9074293431ecc7e3e7b3efa2ed5d03bea73d276ffd41f09f5a50462"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_010.png",
+      "sha256": "01998cdd92dbef5461412d069244c3a013e82e7dbf21f948e463681c18edcf20"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_011.png",
+      "sha256": "54d4295296cee0cf18976830b451e19b5994c5db5a63880ebb103a6747288341"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_012.png",
+      "sha256": "559ec6a6eed5049f1dab45ad6e9bc7419fbb071e0956c496c65ad9388d2e5062"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_013.png",
+      "sha256": "6b6473c89802f51a7b684228a93ee40f9d6c2f50ed35d3b09a6e294afea384f0"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_014.png",
+      "sha256": "0c66751ba953a1200f29ab58899a0dcf094cbec315cc26329bc433dafba61b11"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_015.png",
+      "sha256": "edba396c202ee369d7f0a154e5fbeea90c66733a5f2a91ae22bf3cc74efcc432"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_016.png",
+      "sha256": "4ba52415ed67a3c8f52c5db89687cef890b5369a8fb1d643ee9b0b18de731e20"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_017.png",
+      "sha256": "ea514ae7ce5057f5c0e2ad08fe5d9e98c702a34631b1bd70e2e5746ef456ff5e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_018.png",
+      "sha256": "0d7ccd2456f3f287618493a7573640f5cad2abc16a42b0a38db3b57490800edc"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_019.png",
+      "sha256": "7e20b66542489545d7ff47fae70ea2faf57bb1cea4e7ca444806ef2249b9efa8"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_020.png",
+      "sha256": "3f56503aa42ea483c5581e8af6704b1156abfe38db25df6473980f14eee7c35d"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_021.png",
+      "sha256": "035b57dcecd6036ae1477579312440fdfdb9729687ddfa0fedacdf50d4208172"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_022.png",
+      "sha256": "a8ca526dc0f60953952e66b250f4ee115e41b05e48ea8dbb21f8aedef28f60c9"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_023.png",
+      "sha256": "e4d39a2f511c2becaed38c4376aaa09be8be870397d4c0bf15946e0d79fdb2cf"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_024.png",
+      "sha256": "8a954a0ced6ada6c004c7108518df36b75c26533d63b77bdb71660df9d2aecf9"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_025.png",
+      "sha256": "dda348ab2893b223a48108dd2a6529981befbd0dab2c86fa92f57ed840c53356"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_026.png",
+      "sha256": "2a77346493d184ef185b40f735f10a10a356fdcfa40f6572f45f0d10cb87278e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ktx-ai-operations-report/ours/ktx-ai-operations-report_027.png",
+      "sha256": "c76c666136f4047328a93fbf332934fa088ba2bf4d2f58a93d64e648497ff635"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_001.png",
+      "sha256": "53fff7dd059acb79711bb1a279c6213665280803e787033d1b625b7f597320aa"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_002.png",
+      "sha256": "2b0b42a1da9d21914e292ee55ca4f3a92a63f4ec1c6938e6ab363d6b7121fabf"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_003.png",
+      "sha256": "64a15176928866d13dadbdcec72cee5dd7b8edaa5f43fc2b04c5ce71d07c558f"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_004.png",
+      "sha256": "3c11ba17e0fb038808ccb472438cc0cb49b2f63076db3cc744144ac55cd60121"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_005.png",
+      "sha256": "abdc724ffb91c67a5d4606f820bae9a1a886aaf809b5826eaa0decb7d1465204"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/monthly-statistical-report/ours/monthly-statistical-report_006.png",
+      "sha256": "040c87ecc6d37d712f051a61c36ba7568446dbefa19195c2c2030b9f18c91dc6"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-exam-social/ours/ongoing-exam-social_001.png",
+      "sha256": "6bcc0625d1da59f1c0874fdfae3edfc32ffc01b416bf3f3494ac4692de9ef164"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-exam-social/ours/ongoing-exam-social_002.png",
+      "sha256": "d1ca4bdcb3e726a4cad856a269d14a106fc04fcd814dcf053b281a4ca8d3d0b1"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-exam-social/ours/ongoing-exam-social_003.png",
+      "sha256": "c09f2f16e931a456a8709a21131e266f9d5d3a449804a53a9d08d6244713496b"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-exam-social/ours/ongoing-exam-social_004.png",
+      "sha256": "acda12e981fb48f187d6e3575b81e13032389f3bd48f7bbd05fcf8c6b005e816"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_001.png",
+      "sha256": "fd4cadaa145197a2164c35f9acc0b7706995f3d073fdab146774ea93c62e5d66"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_002.png",
+      "sha256": "af7e0deb7174b35c5bb4173fc46f4011dea525308a41b30664cfbaaeb700af74"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_003.png",
+      "sha256": "3243d75ec044c359f34080103e9d0136d12cbba8d0c7d5da58d8507711f61c5c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_004.png",
+      "sha256": "f1722086b0df9052e2a7fe762eb6fdfc9fe21f27243d97cc5997382ef2dd3801"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_005.png",
+      "sha256": "19b25a076e05eba7cb6c19dc3e64069040a6cda12dd942ace3eb2650f6558bd4"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_006.png",
+      "sha256": "2fe4d769de68df11cc280e7ba5bd63020827178308e1ef3553f257e202165d1a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_007.png",
+      "sha256": "a911592b901578e4148e94a087776b6363044a69d0616841a42b9ee4b9321501"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_008.png",
+      "sha256": "9208e39ba75f7250dea8a175481d9f380156c7df59e55dd272ddc64480a54713"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-fdi-annual/ours/ongoing-fdi-annual_009.png",
+      "sha256": "e584bab8faac4335937baabc318f08ec511937f504fa75d3586994fad16684bd"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_001.png",
+      "sha256": "9c3f8f1b96cd964e91cd59dda2c740d0b7ae6847d064a19c3a45ce939a6e5a2e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_002.png",
+      "sha256": "377b45576a7286b0adfa645adca7d5b9381eee6e335abba3d41dfc09f1b32e0b"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_003.png",
+      "sha256": "9d3e1ad2c2cff26d8d4301ea7c1cf6eeb27035f1f3a25eaf298b6feeca10f639"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_004.png",
+      "sha256": "295779bb53ebfbadf2141bd1e1aca4b0b8feb5d51953f80f1bde10fa4e09d7dc"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_005.png",
+      "sha256": "a07c56b40271d70de83c7e08cb90dd5749a5e82319fc223629db00addb552ff5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_006.png",
+      "sha256": "8cfd5ad1f12450f0983cca04159b2a4dea3cbe1fe2fdf5988345e1d5a0d03533"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_007.png",
+      "sha256": "c8f8cce01cc854f5d449a5415f914b5dbb4fe299a5d75841a22458171c91e419"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-gov-lecturer/ours/ongoing-gov-lecturer_008.png",
+      "sha256": "02fb92f54f22b72cb876c7cb7117e0c6e97c819a906f71ac8e95aa22c90b0c67"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_001.png",
+      "sha256": "81be6cee272082740baa3f7444132c00775e9cd4e453a4700baf9b95b08c215c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_002.png",
+      "sha256": "702b4d2c6d0eeca85c0ff5cbd571b1140bd4fb8f54eb020f10967488d6708aab"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_003.png",
+      "sha256": "1a25922d2d76ec6f16d6c63b1981b6f7b77704d842d7ce9ee0dbe46abfccef18"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_004.png",
+      "sha256": "1dfe50a5a60af86507d4b8eb6b7f655d452cfae8db27d3e99687c201efef1cdc"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_005.png",
+      "sha256": "fae7c3d52cc5efd9cefd469cc4075b514740b4f7b62c62b360cb68b1687c59d8"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_006.png",
+      "sha256": "c803ff79f444ce83b039ec1bc77fa94be33f2a969cf966ac6a47c0d5d5cc2bee"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_007.png",
+      "sha256": "46e6b6617399f4eda5edd637f53e5ad778cec8eada515991189263a657deb227"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_008.png",
+      "sha256": "1ba8bc38823c73cb9fb95179f8bd63ec16626ce26f97c7d0aea906a6aafca186"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_009.png",
+      "sha256": "060e3960001995d564e16879689398af5f206bdccec2112225cfcdcc1d975cbd"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_010.png",
+      "sha256": "74c0af038284ebb5747d01a1711fdf1912283a428867f216da8aef3945018808"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_011.png",
+      "sha256": "6bb79b63d77a322627ce6b5eb71d76ff73e5084588e2866a2de028936e7f98d8"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_012.png",
+      "sha256": "0a2d0d7720a361b322e34d38ecdcfae0ccb27b0f1e1245dbd940c4d91116e77f"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_013.png",
+      "sha256": "ab98d8aac89c3a32c16675148e96ae2904945d888a9aeb0d36a2fec9c9d64666"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_014.png",
+      "sha256": "587999a8945ff72ebe0a5c6bff2e84168e5dcc8dbc1a652f6cf3849c5a58c043"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_015.png",
+      "sha256": "a8aef42231037e3a13f1dddbf6497f414ba53aa66f66f2b1af34316e29f551b4"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_016.png",
+      "sha256": "49ba1c62c0a2a4d0a76238009ad9f8ab749cef75135ce0377928927d04310ffb"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_017.png",
+      "sha256": "2317366956ba8c8a864e07dfe5174c484f20739e61b2649dcf16a5898c88fdca"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_018.png",
+      "sha256": "f0aab4bf5996a6b3dcce70219e4aac520cd6c854d323e50b1a8ab06bbe2f48be"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_019.png",
+      "sha256": "4b0eb8b2818775943e9ef676bf59ca0ba9298da0f222d0d5cadbc5e68aca4f74"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_020.png",
+      "sha256": "f6b2dbf790a213f0ccd94bb21273b873b051cc6ac05fa46fa6cc5e36d602b57e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_021.png",
+      "sha256": "808432c03388fa5cd851434b6e0499e47a521a08a7ee3c84280a654ee37f1ef7"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_022.png",
+      "sha256": "2dd0353f80d23e3b44d8c547840b39638384609bec8d6df072b91e3fb931b8ae"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_023.png",
+      "sha256": "946097564c0f75f7e7a83df7b92f5837e433558e76c66eff00dd84a87adf0812"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_024.png",
+      "sha256": "aed474a6b6dfb41e819ae6b6d6f8cd7eb02a544b0e7103134d4084f857efc460"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_025.png",
+      "sha256": "1b7df05abee077636fba89b7f05acc002bd8991de33d4386aefbf032477431a5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_026.png",
+      "sha256": "28715825c73fe28bb62aeb09211a3ace1d9c4faaa76725ae062d5ddbde5daa74"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-kwater/ours/ongoing-kwater_027.png",
+      "sha256": "20f643ae67f47c121c3609758b5696ac671e75ac03ba11a34d41acb9ceacd141"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_001.png",
+      "sha256": "bea363fe5c1aacf54efcef9c9c27d9ffc7d09124b0e97a90775c4dbcd418907f"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_002.png",
+      "sha256": "298f5e207fd48b9772de8e4997d0deb03240108cd1f3ad5314183406b51bab42"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_003.png",
+      "sha256": "11e487a4c4468d473fccd624220ef7e2b6e14e2aacbc5d218985e60719faaaef"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_004.png",
+      "sha256": "c0d27df5efece8f0b46aa55ad57c9e816442e09fbc4dee97c37100789dcf5ced"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_005.png",
+      "sha256": "d36d0119a6863738163702855aa992026054061a39e87fe5b5d4f0814223ad5e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_006.png",
+      "sha256": "f3df9e9563f6f22bd8201b4f7b9df16813d6b9dc3dec84bf7227b8847e06f85e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_007.png",
+      "sha256": "201dca3f63fd6e6ec300c20b256493c6fc2749ba37dd39807bcbeddc7092cde5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_008.png",
+      "sha256": "187821760bf99ebe48e39752c29f15292084953ca6f6fd5ff33f9450ca36c8b9"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_009.png",
+      "sha256": "7187411fbd69b8d6261111b8bcb4e7f2ce8290eb080f610cba3cbe7748ed4d48"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_010.png",
+      "sha256": "2a8cad89a3eb84b3eac9f1fcea4f50410d252fe734c565a394f92583719685d5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_011.png",
+      "sha256": "36a9c93a54302b45c3e77b90a7988d563605a9b397d0360cb61b1f228472722d"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_012.png",
+      "sha256": "bcecfbf3514805d52c01c4d54b4c3d246359a44b24488760d6c49b21e97b5324"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_013.png",
+      "sha256": "302c7261e2a9f1f7a43d303af0d97ed6282812196c98df5f7ae30af377e037eb"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_014.png",
+      "sha256": "193399fec0822682ea9d6bba4c5c6070e2cca4c7f16fa0664fd6ef5c7b59ad39"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_015.png",
+      "sha256": "a48f6fe9279294d54af52132a674668a9acdb257b157f8a1631f3f64312a120e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_016.png",
+      "sha256": "5a9d0ded27502bf9ea6c214740b3912d875edd890db6d5c9715794550f785e98"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_017.png",
+      "sha256": "4398225d3ec0a406105dc42211610c5da8c2aac3a88bde3de68f6a63570d6dd8"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_018.png",
+      "sha256": "4dae0679d72c089c42070a2e8bf0bf6be8eed7725b62fbe3c1662ad72cbf3811"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_019.png",
+      "sha256": "41b9a03f5246de0a40692b9e4f683d4009be9507d0bdb0c09c7597781a21e5c1"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mel/ours/ongoing-mel_020.png",
+      "sha256": "e9effab75abfaf4e9be1134b5822dbdbbd7606b824de5b3028880ebeb5f6d2cc"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_001.png",
+      "sha256": "c4c99095738a6642e9b779ec2650cf58c62c32ba15c682b2375f3bf7a1801b15"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_002.png",
+      "sha256": "2ace650501296e1720c391598b15d05f43612765b33fc6b16f1dd15aed38aed1"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_003.png",
+      "sha256": "7a114ff49c59bb68bfd28dccff91de4c3da51111c1bbff3cfd26af997526786d"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_004.png",
+      "sha256": "d6772544e40891cb119f535e3f745a618933f254e939f232ec4ffd052b7a4489"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_005.png",
+      "sha256": "8feba76f5b8c24d15f6c680131a2edbeab6f52e2d04078ae8788693371f2b843"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_006.png",
+      "sha256": "fc32e74f0f49d71009883a55478e8c65f22972825fc13937d04da70076ee5214"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_007.png",
+      "sha256": "04f3182cff909c39082d67efa08d54c7608ed9f38ddd270b128b9bea166ead40"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_008.png",
+      "sha256": "7db9a10ec806fb635e0bbf1f11afb60f93c87cfdaf197577beae73b1e9128604"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_009.png",
+      "sha256": "cbc03fc14d5d4c889c21a211e03bf9b6f03465fdcb7f5f3c7b2dc4a1be69925a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_010.png",
+      "sha256": "8cabbaaf9927d4b05d59b7cf189d9f33c401748e19d4dc51b066200293f24d6b"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_011.png",
+      "sha256": "155c3852276c6b07816920c4a85622895c2e19993f617bf4a057e0c45dbcc812"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_012.png",
+      "sha256": "18cc9ba3ab335787948cd56e790c8d4272badd1d4a76a381f97eadea544c8b10"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_013.png",
+      "sha256": "269d614bca7c7395c9b965f5f38b9a72bb3f9c30e92fab40be3c7aafbc4cee94"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_014.png",
+      "sha256": "b5a4c6e730d295cffa96ac316340926661ab36f5e34b65a0c4a8f3b11326e0bc"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_015.png",
+      "sha256": "c24ad7a190be03df3c1ab67721d1a900b2badecf24f7003b2ae410562362ccc5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_016.png",
+      "sha256": "c7af797d5e25533b921e1c89137c88f60d41d2e846cd6cb0937a6755bccf2007"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_017.png",
+      "sha256": "1e9e712ea4132de3dd6c68870eaf85324bd2b2de89148a12a2bb1b2c1aeabb4c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_018.png",
+      "sha256": "3fdd706aa348f2a4797330c9892b9517249fcf83e09c45729d5f529b875356e3"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_019.png",
+      "sha256": "ce96e3fc600f7caf679ec5c203a7feb7d5450575b4db2bd3bda46360df5d6fdb"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_020.png",
+      "sha256": "644d429b84071c97542d7393b6fd46c5599d9e97ba70535ceef3a4cce929f0de"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-mock-math/ours/ongoing-mock-math_021.png",
+      "sha256": "f0bfeb86dff2a6f1c4f5855867c425537fcfcfa43af18adfa00ce3b4d97f5e44"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_001.png",
+      "sha256": "96770812bd70af4c6ee876276ff33ef20a57e3f16400aaf3f8a2dfd5016a7294"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_002.png",
+      "sha256": "5ef98452c3aef8dec3015d68f8297ddeae5f276c3636dbcbfb18d1f1f0624b94"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_003.png",
+      "sha256": "4def9a0d6a8b5c7fd3c0bd10d02a400e63e6eb759b8bdc7afee8f519942fc80a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_004.png",
+      "sha256": "2251fb22a1f48e9e2dd7aba0a1e8e5346f3724956ceeab3d50f4a2e8f3f5e0ef"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_005.png",
+      "sha256": "689866cfcbe1eb2ff0e45e8fcdd181fb7015bfbdc19b2b3176d77fef8361f072"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_006.png",
+      "sha256": "6587adfcb70ba9c5014b291df8bf8b39ce9533551d252a392be203e565bbc6bd"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_007.png",
+      "sha256": "04bf62fb040f786f638b183480cb19cc64e6b2016748c8b8150d5a432516ee92"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_008.png",
+      "sha256": "29824807dc0ea8d94edb042ec996aa01f6a5b45074918401aed5295bef908dce"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/ongoing-welfare/ours/ongoing-welfare_009.png",
+      "sha256": "52f7cea39c26d3823e2115d8060c21e9da417d35f6303355f3be1dede0aa37e5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/pm-traffic-decision/ours/pm-traffic-decision_001.png",
+      "sha256": "39d5142e2af6e18c84df00e94c32ac6c339ff434f65ab1fa1a5af2040c6e75a4"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/pm-traffic-decision/ours/pm-traffic-decision_002.png",
+      "sha256": "fb3385930864177ec2bc4a3727c76792d40429c8f040408ad1af685a2b05d18c"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/pm-traffic-decision/ours/pm-traffic-decision_003.png",
+      "sha256": "f6423b6fd52d1a3dbf67334278ea34a4791ec05f7cb1f7d324d91987938d4a8e"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/sewoon-decision-report/ours/sewoon-decision-report_001.png",
+      "sha256": "4aa9fd4605356c40537f2d3a8504790ab8ea72d6b07359900e0404b9e08862ee"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/sewoon-decision-report/ours/sewoon-decision-report_002.png",
+      "sha256": "c469289c3622d20d5113e9aaa8a6997f96d706929eb6d67977089fdfda7dba0a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/sewoon-decision-report/ours/sewoon-decision-report_003.png",
+      "sha256": "84d4b3e13676c4f5a4d3dc09c058ed2848fd9ad12b01e7061a98aa18d881011d"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/sewoon-decision-report/ours/sewoon-decision-report_004.png",
+      "sha256": "6959c6afc46870fc2f2cc2afd98824b424730cbd9be0ab15d5ad8ffaff986c0a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/sewoon-decision-report/ours/sewoon-decision-report_005.png",
+      "sha256": "a6a7d91c8ea7421ebb1c437249cab2ad5e99c134e1e8e36bd7f5b5c055d2a26a"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/wastewater-equipment-report/ours/wastewater-equipment-report_001.png",
+      "sha256": "c235047cfea0d7eaa579737a8beed2f9ffad4b7c7f346092793340dccd783df8"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/wastewater-equipment-report/ours/wastewater-equipment-report_002.png",
+      "sha256": "3b7a2c8461121d9f754c336ecfb97ce2cc898ff5d62e7c066589a65cb3dac5a5"
+    },
+    {
+      "campaign_artifact_label": "cross-corpus/v36/wastewater-equipment-report/ours/wastewater-equipment-report_003.png",
+      "sha256": "503d1f3a6545ddf45b6447bd8a358af6234f32a19485f44d75b2cbd97bd36a73"
+    }
+  ]
+}

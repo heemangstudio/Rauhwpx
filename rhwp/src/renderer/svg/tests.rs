@@ -937,3 +937,225 @@ fn test_compute_image_crop_src_legacy_banner_bottom_crop() {
     assert!((cropped_w - 639.2).abs() < 0.01);
     assert!((cropped_h - 58.213333).abs() < 0.01);
 }
+
+#[test]
+fn raw_nbspace_omits_glyph_and_shadow_but_keeps_advance_and_literal_glyph() {
+    use crate::model::paragraph::{SpecialSpaceOrigin, SpecialSpaceOriginKind};
+    let mut style = TextStyle {
+        font_size: 18.0,
+        font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        shadow_type: 1,
+        shadow_offset_x: 2.0,
+        control_space_base: Some(crate::renderer::ControlSpaceBase {
+            height_hu: 1350,
+            korean_relative_size: 100,
+            korean_ratio: 95,
+            raw31_eng_tracking_percent: None,
+        }),
+        special_space_origins: vec![SpecialSpaceOrigin {
+            char_idx: 1,
+            origin: SpecialSpaceOriginKind::NbSpace,
+        }],
+        ..Default::default()
+    };
+    let text = "A\u{00a0}B";
+    let positions = compute_char_positions(text, &style);
+    assert!((positions[2] - positions[1] - 8.533333333333333).abs() < 1e-9);
+    let mut renderer = SvgRenderer::new();
+    renderer.draw_text(text, 10.0, 20.0, &style);
+    assert!(
+        !renderer.output().contains('\u{00a0}'),
+        "no fallback glyph or shadow for raw control"
+    );
+    assert!(
+        renderer
+            .output()
+            .contains(&format!("translate({},20)", 10.0 + positions[2]))
+            || renderer
+                .output()
+                .contains(&format!("x=\"{}\" y=\"20\"", 10.0 + positions[2]))
+    );
+    assert_eq!(compute_char_positions(text, &style), positions);
+    style.special_space_origins[0].origin = SpecialSpaceOriginKind::Literal;
+    let mut literal = SvgRenderer::new();
+    literal.draw_text(text, 10.0, 20.0, &style);
+    assert!(
+        literal.output().contains('\u{00a0}'),
+        "literal NBSP keeps actual font glyph path"
+    );
+    assert_eq!(text, "A\u{00a0}B");
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+#[test]
+fn actual_source_raw_nbspace_stays_blank_and_keeps_origins_after_public_edit_reopen() {
+    use crate::document_core::DocumentCore;
+    use crate::model::provenance::FontMetricsPolicy;
+    use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+    let Some(hft_dir) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") else {
+        return;
+    };
+    let mut paths = crate::renderer::font_paths::env_font_paths();
+    paths.push(hft_dir.into());
+    if let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") {
+        paths.push(font.into());
+    }
+    crate::renderer::font_paths::register_font_face_availability(&paths);
+    crate::renderer::hft_glyphs::register_hft_sources(&paths);
+    let _measure = crate::renderer::layout::enter_measure_font_paths(paths.clone());
+    fn geometry(core: &DocumentCore, paths: &[std::path::PathBuf]) -> (String, Vec<f64>) {
+        fn find(
+            node: &RenderNode,
+        ) -> Option<(
+            &RenderNode,
+            &crate::renderer::render_tree::TextRunNode,
+            usize,
+        )> {
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.section_index == Some(0)
+                    && run.para_index == Some(6)
+                    && run.cell_context.is_none()
+                {
+                    if let Some(index) = run.text.chars().enumerate().find_map(|(index, ch)| {
+                        (ch == '\u{00a0}' && run.style.is_nonprinting_control_space(index, ch))
+                            .then_some(index)
+                    }) {
+                        return Some((node, run, index));
+                    }
+                }
+            }
+            node.children.iter().find_map(find)
+        }
+        let tree = core.build_page_render_tree(0).expect("source Q2 page");
+        let (node, run, index) = find(&tree.root).expect("source raw nbSpace occurrence");
+        let positions = compute_char_positions(&run.text, &run.style);
+        let x = node.bbox.x + positions[index];
+        let width = positions[index + 1] - positions[index];
+        assert!(
+            (width - 8.533333333333333).abs() < 0.01,
+            "authored reserved advance {width}"
+        );
+        let baseline = node.bbox.y + run.baseline;
+        let image =
+            image::load_from_memory(&core.render_page_png_native_with_fonts(0, paths).unwrap())
+                .unwrap()
+                .to_rgb8();
+        let scale = f64::from(image.width()) / tree.root.bbox.width;
+        let x0 = (x * scale + 1.0).ceil() as u32;
+        let x1 = ((x + width) * scale - 1.0).floor() as u32;
+        let y0 = ((baseline - run.style.font_size * 0.8) * scale).ceil() as u32;
+        let y1 = ((baseline + run.style.font_size * 0.1) * scale).floor() as u32;
+        assert!(x1 > x0 && y1 > y0);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                assert!(
+                    image.get_pixel(px, py).0.iter().all(|v| *v >= 250),
+                    "raw control painted ink at {px},{py}"
+                );
+            }
+        }
+        (
+            run.text.clone(),
+            positions.iter().map(|value| node.bbox.x + value).collect(),
+        )
+    }
+    let mut core = DocumentCore::from_bytes_with_font_metrics(
+        include_bytes!("../../../samples/exam_science.hwp"),
+        FontMetricsPolicy::HcrDeclared,
+    )
+    .unwrap();
+    let source = core.document.sections[0].paragraphs[6].clone();
+    let before = geometry(&core, &paths);
+    let section = core.document.sections.len() - 1;
+    let para = core.document.sections[section].paragraphs.len() - 1;
+    let end = core.document.sections[section].paragraphs[para]
+        .text
+        .chars()
+        .count();
+    core.insert_text_native(section, para, end, " ")
+        .expect("unrelated final paragraph edit");
+    let edited = geometry(&core, &paths);
+    let saved = core.export_hwpx_native().unwrap();
+    let reopened =
+        DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared).unwrap();
+    assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+    let after = geometry(&reopened, &paths);
+    for current in [&edited, &after] {
+        assert_eq!(before.0, current.0);
+        assert_eq!(before.1.len(), current.1.len());
+        for (a, b) in before.1.iter().zip(&current.1) {
+            assert!((a - b).abs() < 0.01, "source raw-space origin {a} -> {b}");
+        }
+    }
+    for model in [&core.document, &reopened.document] {
+        let current = &model.sections[0].paragraphs[6];
+        assert_eq!(current.text, source.text);
+        assert_eq!(current.char_offsets, source.char_offsets);
+        assert_eq!(current.special_space_origins, source.special_space_origins);
+    }
+}
+
+#[test]
+fn display_text_expansion_paints_literal_nbsp_and_omits_only_raw_nbspace() {
+    let source = "\u{e000}\u{00a0}\u{00a0}";
+    let display = "\u{1100}\u{1161}\u{00a0}\u{00a0}";
+    let run = crate::renderer::render_tree::TextRunNode {
+        text: source.into(),
+        display_text: Some(display.into()),
+        style: TextStyle {
+            font_size: 16.0,
+            special_space_origins: vec![
+                crate::model::paragraph::SpecialSpaceOrigin {
+                    char_idx: 1,
+                    origin: crate::model::paragraph::SpecialSpaceOriginKind::Literal,
+                },
+                crate::model::paragraph::SpecialSpaceOrigin {
+                    char_idx: 2,
+                    origin: crate::model::paragraph::SpecialSpaceOriginKind::NbSpace,
+                },
+            ],
+            ..Default::default()
+        },
+        char_shape_id: None,
+        para_shape_id: None,
+        section_index: None,
+        para_index: None,
+        char_start: None,
+        cell_context: None,
+        is_para_end: false,
+        is_line_break_end: false,
+        rotation: 0.0,
+        is_vertical: false,
+        char_overlap: None,
+        border_fill_id: 0,
+        baseline: 16.0,
+        field_marker: crate::renderer::render_tree::FieldMarkerType::None,
+    };
+    let positions = compute_char_positions(display, &run.style);
+    let node = crate::renderer::render_tree::RenderNode::new(
+        1,
+        crate::renderer::render_tree::RenderNodeType::TextRun(run),
+        crate::renderer::render_tree::BoundingBox::new(10.0, 20.0, 80.0, 18.0),
+    );
+    let mut renderer = SvgRenderer::new();
+    renderer.render_node(&node);
+    let visible: Vec<_> = renderer
+        .output()
+        .lines()
+        .filter(|line| line.contains(">\u{00a0}</text>"))
+        .collect();
+    assert_eq!(visible.len(), 1);
+    let x: f64 = visible[0]
+        .split("x=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (x - (10.0 + positions[2])).abs() < 0.001,
+        "literal occurrence must paint, not the later raw control"
+    );
+}

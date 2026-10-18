@@ -1,0 +1,159 @@
+[
+  {
+    "path": "science-before-after.png",
+    "sha256": "1c732acb3ef5500857a3437d1a9261c362f4415dbe8b81b86eb2a77bfd8a1940",
+    "panels": [
+      {
+        "label": "Before",
+        "campaign_source": "rounds/baseline/exam-science/ours/exam-science_001.png",
+        "sha256": "e2b4e291c963f94a6aa5e1d77481edbb689b3db5366c13c63e66afebd1ba3844",
+        "crop": [
+          0,
+          1860,
+          2142,
+          2170
+        ]
+      },
+      {
+        "label": "After",
+        "campaign_source": "rounds/v36/exam-science/ours/exam-science_001.png",
+        "sha256": "821cf00e635aff60304ceea3cbc6336d2d3bea34082e78ba3fd93fabbc93f85e",
+        "crop": [
+          0,
+          1860,
+          2142,
+          2170
+        ],
+        "native_v36_byte_exact": true
+      },
+      {
+        "label": "Hancom",
+        "campaign_source": "official/png200/exam-science/official_001.png",
+        "sha256": "cb3be261a8b42ed847d466e583bd7fcff3bde1cb9246e0676bafbf3e03020568",
+        "crop": [
+          0,
+          1860,
+          2142,
+          2170
+        ]
+      },
+      {
+        "label": "Before",
+        "campaign_source": "rounds/baseline/exam-science/ours/exam-science_004.png",
+        "sha256": "8f27598d4eb3d00f6dcc2bc552755467ab6bc2250baf47e49f9e00934650bcb1",
+        "crop": [
+          0,
+          1550,
+          2142,
+          1860
+        ]
+      },
+      {
+        "label": "After",
+        "campaign_source": "rounds/v36/exam-science/ours/exam-science_004.png",
+        "sha256": "33bdc3056408fe8db53331d30fe626d8f8f47db42aa5177ac25081c1c398b9f9",
+        "crop": [
+          0,
+          1550,
+          2142,
+          1860
+        ],
+        "native_v36_byte_exact": true
+      },
+      {
+        "label": "Hancom",
+        "campaign_source": "official/png200/exam-science/official_004.png",
+        "sha256": "fce5d102224b4f7f7c3e91355e166abf6f123ba5df4f31ca6a9465786dbe2f34",
+        "crop": [
+          0,
+          1550,
+          2142,
+          1860
+        ]
+      }
+    ],
+    "scope": "Native baseline / native v36 current / official crops. Existing image bytes reused only after exact after-panel hash proof; no browser implication."
+  },
+  {
+    "path": "english-before-after.png",
+    "sha256": "a2def9b08406c700ace6bf8ad6b36f90fbe5f4661339866e3c10e4f0e4c84dd5",
+    "panels": [
+      {
+        "label": "Before",
+        "campaign_source": "rounds/baseline/exam-english/ours/exam-english_004.png",
+        "sha256": "80465a6e5e568ece104837acc013ec4c7a30669c11a086131d523ab43e7daf1b",
+        "crop": [
+          0,
+          0,
+          2339,
+          1550
+        ]
+      },
+      {
+        "label": "After",
+        "campaign_source": "rounds/v36/exam-english/ours/exam-english_004.png",
+        "sha256": "cb88e328e5ad2540c823bb341031bd297ed46641f849986fc5f371c264999963",
+        "crop": [
+          0,
+          0,
+          2339,
+          1550
+        ],
+        "native_v36_byte_exact": true
+      },
+      {
+        "label": "Hancom",
+        "campaign_source": "official/png200/exam-english/official_004.png",
+        "sha256": "5a45c1df2a857f211f2e311d203b8c6e7d0e5e06d6f118f6e0d088e6989221be",
+        "crop": [
+          0,
+          0,
+          2339,
+          1550
+        ]
+      }
+    ],
+    "scope": "Native baseline / native v36 current / official crops. Existing image bytes reused only after exact after-panel hash proof; no browser implication."
+  },
+  {
+    "path": "math-before-after.png",
+    "sha256": "da72c29a927e15c494861fb9a92de46330e5dab7a6ecfb73b191a100c8320c9e",
+    "panels": [
+      {
+        "label": "Before",
+        "campaign_source": "rounds/baseline/math-exam/ours/math-exam_012.png",
+        "sha256": "33c2cacef77c586fc7418da23e393717f75e2c63479abdba847bff472884e57d",
+        "crop": [
+          0,
+          273,
+          2142,
+          1240
+        ]
+      },
+      {
+        "label": "After",
+        "campaign_source": "rounds/v36/math-exam/ours/math-exam_012.png",
+        "sha256": "91b87e41b6d185f7e7a5abd004fabbc0afc938dc59de5ae8ac9b9abf687f0dc1",
+        "crop": [
+          0,
+          273,
+          2142,
+          1240
+        ],
+        "native_v36_byte_exact": true
+      },
+      {
+        "label": "Hancom",
+        "campaign_source": "official/png200/math-exam/official_012.png",
+        "sha256": "a666acc6447ab38180c8b933eab90b96cf0b0c813af6b94ea60c52be644bcde6",
+        "crop": [
+          0,
+          273,
+          2142,
+          1240
+        ]
+      }
+    ],
+    "scope": "Native baseline / native v36 current / official crops. Existing image bytes reused only after exact after-panel hash proof; no browser implication."
+  }
+]

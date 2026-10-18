@@ -1307,12 +1307,38 @@ fn measure_style(style: &TextStyle) -> std::borrow::Cow<'_, TextStyle> {
     std::borrow::Cow::Owned(patched)
 }
 
+/// 별칭 face가 없고 실제 원본 라틴 폭이 있으면 그리는 HFT 은행으로 잰다.
+/// 직접 이름을 해석하는 종전 메트릭·실제 TTF·한양 보정 정책은 그대로 둔다.
+fn painted_hft_alias_advances(source: &TextStyle, legacy: &TextStyle) -> bool {
+    let hft = source.hft_family.trim();
+    source.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+        && !source.bold
+        && !source.italic
+        && !hft.is_empty()
+        && source.font_family.trim() != hft
+        && font_metrics_data::hanyang_hft_ascii(hft).is_none()
+        && crate::renderer::hft_glyphs::has_regular_latin_advances(hft)
+        && !source
+            .font_family
+            .split(',')
+            .next()
+            .is_some_and(|name| custom_font_face_available(name.trim()))
+        && !legacy
+            .font_family
+            .split(',')
+            .next()
+            .is_some_and(|name| custom_font_face_available(name.trim()))
+}
+
 /// 기존 대체·shaping 문맥은 유지하고 일반 글자 폭에만 원본 HFT 를 선택한다.
 fn source_hft_measure_style<'a>(
     source: &'a TextStyle,
     legacy: &TextStyle,
 ) -> Option<&'a TextStyle> {
     let hft = source.hft_family.trim();
+    if painted_hft_alias_advances(source, legacy) {
+        return Some(source);
+    }
     (source.font_metrics_policy == FontMetricsPolicy::HcrDeclared
         && !source.italic
         && !hft.is_empty()
@@ -1348,6 +1374,10 @@ fn ordinary_glyph_measure_style<'a>(
     }
     let Some(source) = source else { return legacy };
     let family = source.hft_family.trim();
+    // 별칭 run은 아래 실제 ASCII 은행 전진만 쓰고 나머지는 기존 대체 face를 따른다.
+    if source.font_family.trim() != family {
+        return legacy;
+    }
     let bold = source.bold
         && crate::renderer::macos_synthetic_bold_em(family, source.font_metrics_policy).is_none();
     if font_metrics_data::find_metric(family, bold, source.italic)
@@ -1365,6 +1395,27 @@ fn ordinary_glyph_measure_style<'a>(
     }
 }
 
+/// 일반 ASCII는 실제 그리는 regular 라틴 은행의 폭과 윤곽 지원을 함께 확인한다.
+/// 공백·클러스터·미지원 글자와 실제 TTF face는 기존 산출원에 맡긴다.
+fn painted_source_hft_base_px(
+    legacy: &TextStyle,
+    source: Option<&TextStyle>,
+    c: char,
+    font_size: f64,
+    cluster_len: usize,
+) -> Option<f64> {
+    let source = source?;
+    let family = source.hft_family.trim();
+    if cluster_len != 1
+        || !c.is_ascii_graphic()
+        || !painted_hft_alias_advances(source, legacy)
+        || !crate::renderer::hft_glyphs::source_glyph_available_styled(family, c, false, false)
+    {
+        return None;
+    }
+    crate::renderer::hft_glyphs::hft_advance_em(family, c).map(|advance| advance * font_size)
+}
+
 fn ordinary_glyph_base_px(
     legacy: &TextStyle,
     source: Option<&TextStyle>,
@@ -1372,6 +1423,9 @@ fn ordinary_glyph_base_px(
     font_size: f64,
     cluster_len: usize,
 ) -> Option<f64> {
+    if let Some(base) = painted_source_hft_base_px(legacy, source, c, font_size, cluster_len) {
+        return Some(base);
+    }
     let selected = ordinary_glyph_measure_style(legacy, source, c, cluster_len);
     measure_glyph_base_px(
         &selected.font_family,
@@ -1832,6 +1886,433 @@ pub(super) fn inline_tab_type(ext: &[u16; 7]) -> u8 {
     ((ext[2] >> 8) & 0xFF) as u8
 }
 
+/// 원본 수식 상자 + 저장 왼쪽 탭의 정지를 자연 폭 재계산 뒤에도 유지한다.
+/// 호출자는 원본 HWP 렌더 사본에만 적용한다. 논리 문자 위치와 원본 탭은 바꾸지 않는다.
+pub(crate) fn compensated_native_equation_tabs(
+    para: &crate::model::paragraph::Paragraph,
+) -> Option<Vec<[u16; 7]>> {
+    use crate::model::control::Control;
+    use crate::model::paragraph::LineSeg;
+    let chars: Vec<_> = para.text.chars().collect();
+    let tabs: Vec<_> = chars
+        .iter()
+        .enumerate()
+        .filter_map(|(index, ch)| (*ch == '\t').then_some(index))
+        .collect();
+    if tabs.is_empty()
+        || tabs.len() != para.tab_extended.len()
+        || para.char_offsets.len() != chars.len()
+        || para.char_offsets.windows(2).any(|pair| pair[1] <= pair[0])
+        || para.line_segs.is_empty()
+        || para.line_segs.iter().any(|line| {
+            line.segment_width <= 0 || line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+        })
+        || para
+            .line_segs
+            .windows(2)
+            .any(|pair| pair[1].text_start <= pair[0].text_start)
+        || !para.field_ranges.is_empty()
+        || !para.orphan_field_ends.is_empty()
+    {
+        return None;
+    }
+    let positions: Vec<_> = (0..para.controls.len())
+        .map(|index| crate::renderer::pagination::control_utf16_position(para, index))
+        .collect::<Option<_>>()?;
+    let mut result: Option<Vec<[u16; 7]>> = None;
+    let mut previous_tab_end = 0;
+    for (index, &char_index) in tabs.iter().enumerate() {
+        let tab_position = para.char_offsets[char_index];
+        let line_start = para
+            .line_segs
+            .iter()
+            .filter(|line| line.text_start <= tab_position)
+            .map(|line| line.text_start)
+            .max()?;
+        let interval_start = previous_tab_end.max(line_start);
+        previous_tab_end = tab_position.checked_add(8)?;
+        let tab = &para.tab_extended[index];
+        // XML 위치 재계산 표식과 자동 오른쪽 탭 표식은 원본 HWP 누적 폭이 아니다.
+        if inline_tab_type(tab) != 1 || tab[5] & 0xC000 != 0 {
+            continue;
+        }
+        let mut delta = 0i64;
+        let mut known = true;
+        for (control, &position) in para.controls.iter().zip(&positions) {
+            if position >= tab_position || position.saturating_add(8) <= interval_start {
+                continue;
+            }
+            if position < interval_start || position.saturating_add(8) > tab_position {
+                known = false;
+                break;
+            }
+            let Control::Equation(eq) = control else {
+                known = false;
+                break;
+            };
+            let natural = crate::renderer::equation::natural_width_hwp(eq);
+            if !eq.common.treat_as_char
+                || eq.common.width == 0
+                || eq.common.width_criterion != crate::model::shape::SizeCriterion::Absolute
+                || natural.is_none()
+            {
+                known = false;
+                break;
+            }
+            delta += i64::from(eq.common.width) - i64::from(natural.unwrap());
+        }
+        let adjusted = i64::from(tab[0]) + delta;
+        if known && delta != 0 && (0..=i64::from(u16::MAX)).contains(&adjusted) {
+            result.get_or_insert_with(|| para.tab_extended.clone())[index][0] = adjusted as u16;
+        }
+    }
+    result
+}
+
+/// 자동 오른쪽 탭 쌍이 재조판으로 두 줄에 걸치면 저장 정지도 새 줄에 맞춘다.
+/// 앞 LEFT가 이전 줄의 마지막 RIGHT가 되고, 새 줄의 RIGHT는 첫 LEFT 정지로 간다.
+/// 호출자는 원본 HWP의 검증된 forward-break 렌더 사본에만 이 캐시를 적용한다.
+pub(crate) fn reproject_native_wrapped_tab_pair(
+    source: &crate::model::paragraph::Paragraph,
+    projected: &crate::model::paragraph::Paragraph,
+    styles: &crate::renderer::style_resolver::ResolvedStyleSet,
+    dpi: f64,
+) -> Option<Vec<[u16; 7]>> {
+    use crate::model::control::Control;
+    use crate::model::style::{Alignment, HeadType};
+    use crate::renderer::composer::{compose_paragraph_with_styles, effective_text_for_metrics};
+
+    let style = styles.para_styles.get(source.para_shape_id as usize)?;
+    if styles.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+        || !style.auto_tab_right
+        || style.tab_stops.len() != 1
+        || style.alignment != Alignment::Left
+        || style.indent != 0.0
+        || style.head_type != HeadType::None
+        || style.margin_left <= 0.0
+        || source.text != projected.text
+        || source.char_offsets != projected.char_offsets
+        || source.text.contains(['\r', '\n'])
+        || source.line_segs.len() < 2
+        || source.line_segs.len() != projected.line_segs.len()
+        || !source.field_ranges.is_empty()
+        || !source.orphan_field_ends.is_empty()
+        || source.controls.iter().any(|c| {
+            !matches!(c,
+            Control::Equation(eq) if eq.common.treat_as_char
+                && crate::renderer::equation::natural_width_hwp(eq).is_some())
+        })
+    {
+        return None;
+    }
+    let chars: Vec<_> = source.text.chars().collect();
+    if source.char_offsets.len() != chars.len()
+        || source.char_offsets.windows(2).any(|p| p[1] <= p[0])
+    {
+        return None;
+    }
+    let tabs: Vec<_> = chars
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| (*c == '\t').then_some(i))
+        .collect();
+    let [first, second] = tabs.as_slice() else {
+        return None;
+    };
+    let [left, right] = source.tab_extended.as_slice() else {
+        return None;
+    };
+    if *second != first + 1
+        || inline_tab_type(left) != 1
+        || inline_tab_type(right) != 2
+        || [left, right]
+            .iter()
+            .any(|t| t[1] != 0 || t[2] & 0xff != 0 || t[5] & 0xc000 != 0)
+    {
+        return None;
+    }
+    let first_pos = *source.char_offsets.get(*first)?;
+    let second_pos = *source.char_offsets.get(*second)?;
+    if second_pos != first_pos.checked_add(8)? {
+        return None;
+    }
+    let last = source.line_segs.len() - 1;
+    if source.line_segs[last].text_start != first_pos
+        || projected.line_segs[last].text_start != second_pos
+        || source.line_segs[..last]
+            .iter()
+            .zip(&projected.line_segs[..last])
+            .any(|(a, b)| a.text_start != b.text_start)
+        || source
+            .line_segs
+            .iter()
+            .zip(&projected.line_segs)
+            .any(|(a, b)| a.column_start != b.column_start || a.segment_width != b.segment_width)
+    {
+        return None;
+    }
+    let width_hu = source.line_segs[last].segment_width;
+    if width_hu <= 0
+        || source.line_segs[last - 1].segment_width != width_hu
+        || source.line_segs[last - 1].column_start != source.line_segs[last].column_start
+        || crate::renderer::px_to_hwpunit_round(style.margin_left, dpi)
+            != source.line_segs[last].column_start
+    {
+        return None;
+    }
+    let width = crate::renderer::hwpunit_to_px(width_hu, dpi);
+    let (stop, kind, fill) = find_next_tab_stop(
+        style.margin_left,
+        &style.tab_stops,
+        style.default_tab_width,
+        style.auto_tab_right,
+        style.margin_left + width,
+    );
+    let left_delta = crate::renderer::px_to_hwpunit_round(stop - style.margin_left, dpi);
+    if kind != 0 || fill != 0 || left_delta != i32::from(left[0]) || left_delta <= 0 {
+        return None;
+    }
+
+    // 기존 composer의 원본 스타일과 실제 TAC 점유 폭을 재사용한다.
+    let composed = compose_paragraph_with_styles(projected, styles);
+    let line = composed.lines.get(last - 1)?;
+    let mut remaining = first.checked_sub(line.char_start)?;
+    let mut prefix_width = 0.0;
+    for run in &line.runs {
+        let take = remaining.min(run.text.chars().count());
+        if take == 0 {
+            break;
+        }
+        if run.char_overlap.is_some() || run.footnote_marker.is_some() || run.display_text.is_some()
+        {
+            return None;
+        }
+        let prefix = run.slice_scalars(0, take);
+        prefix_width += estimate_text_width(
+            effective_text_for_metrics(&prefix),
+            &prefix.text_style(styles),
+        );
+        remaining -= take;
+    }
+    if remaining != 0 || composed.tac_controls.len() != source.controls.len() {
+        return None;
+    }
+    prefix_width += composed
+        .tac_controls
+        .iter()
+        .filter(|(pos, _, _)| *pos >= line.char_start && *pos < *first)
+        .map(|(_, w, _)| crate::renderer::hwpunit_to_px(*w, dpi))
+        .sum::<f64>();
+    let right_delta = crate::renderer::px_to_hwpunit_round(width - prefix_width, dpi);
+    if right_delta <= 0 || right_delta > i32::from(u16::MAX) {
+        return None;
+    }
+    let mut tabs = source.tab_extended.clone();
+    tabs[0][0] = right_delta as u16;
+    tabs[0][2] = 2 << 8;
+    tabs[1][0] = left_delta as u16;
+    tabs[1][2] = 1 << 8;
+    Some(tabs)
+}
+
+#[cfg(test)]
+#[test]
+fn wrapped_native_tab_cache_uses_body_edge_and_declared_left_stop() {
+    use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+    use crate::model::style::Alignment;
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
+    use crate::renderer::{hwpunit_to_px, px_to_hwpunit_round, TabStop};
+
+    let margin = 24.0;
+    let left_gap = 8.0;
+    let styles = ResolvedStyleSet {
+        font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 16.0,
+            font_family: "Arial".into(),
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle {
+            alignment: Alignment::Left,
+            margin_left: margin,
+            auto_tab_right: true,
+            tab_stops: vec![TabStop {
+                position: margin + left_gap,
+                tab_type: 0,
+                fill_type: 0,
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let text_style = resolved_to_text_style(&styles, 0, 1);
+    let prefix = "ABCD";
+    let prefix_width = estimate_text_width(prefix, &text_style);
+    let body_hu = px_to_hwpunit_round(prefix_width, 96.0) + 750;
+    let left_hu = px_to_hwpunit_round(left_gap, 96.0) as u16;
+    let source = Paragraph {
+        text: format!("{prefix}\t\t😀A"),
+        char_count: 24,
+        char_offsets: vec![0, 1, 2, 3, 4, 12, 20, 22],
+        char_shapes: vec![CharShapeRef::default()],
+        tab_extended: vec![
+            [left_hu, 0, 1 << 8, 17, 23, 0, 9],
+            [1000, 0, 2 << 8, 31, 47, 0, 9],
+        ],
+        line_segs: vec![0, 4]
+            .into_iter()
+            .enumerate()
+            .map(|(i, start)| LineSeg {
+                text_start: start,
+                vertical_pos: i as i32 * 1600,
+                line_height: 1200,
+                text_height: 1200,
+                baseline_distance: 1020,
+                line_spacing: 400,
+                column_start: px_to_hwpunit_round(margin, 96.0),
+                segment_width: body_hu,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let raw = source.tab_extended.clone();
+    let mut projected = source.clone();
+    projected.line_segs[1].text_start = 12;
+    let cache = reproject_native_wrapped_tab_pair(&source, &projected, &styles, 96.0).unwrap();
+    assert_eq!(
+        (inline_tab_type(&cache[0]), inline_tab_type(&cache[1])),
+        (2, 1)
+    );
+    assert!(
+        (i32::from(cache[0][0]) + px_to_hwpunit_round(prefix_width, 96.0) - body_hu).abs() <= 1
+    );
+    assert_eq!(cache[1][0], left_hu);
+    for (before, after) in raw.iter().zip(&cache) {
+        assert_eq!(&before[3..], &after[3..]);
+    }
+    assert_eq!(source.tab_extended, raw);
+    assert_eq!(source.char_offsets, projected.char_offsets);
+    let mut line_style = text_style;
+    line_style.auto_tab_right = true;
+    line_style.available_width = hwpunit_to_px(body_hu, 96.0);
+    line_style.text_start_offset = margin;
+    line_style.line_x_offset = margin;
+    line_style.inline_tabs = vec![cache[1]];
+    assert!((compute_char_positions("\t😀A", &line_style)[1] - left_gap).abs() < 1e-8);
+    assert!(reproject_native_wrapped_tab_pair(&source, &source, &styles, 96.0).is_none());
+    for marker in [0x4000, 0x8000] {
+        let mut other = source.clone();
+        other.tab_extended[1][5] |= marker;
+        assert!(reproject_native_wrapped_tab_pair(&other, &projected, &styles, 96.0).is_none());
+    }
+    let mut custom_stop = styles.clone();
+    custom_stop.para_styles[0].tab_stops[0].position += 1.0;
+    assert!(reproject_native_wrapped_tab_pair(&source, &projected, &custom_stop, 96.0).is_none());
+    let mut no_auto = styles.clone();
+    no_auto.para_styles[0].auto_tab_right = false;
+    assert!(reproject_native_wrapped_tab_pair(&source, &projected, &no_auto, 96.0).is_none());
+}
+
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "native-skia"))]
+#[test]
+fn native_equation_tabs_keep_saved_stops_after_source_width_refresh() {
+    use crate::model::control::Control;
+    let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+        return;
+    };
+    let mut paths = crate::renderer::font_paths::env_font_paths();
+    paths.push(std::path::PathBuf::from(font));
+    crate::renderer::font_paths::register_font_face_availability(&paths);
+    let core = crate::document_core::DocumentCore::from_bytes_with_font_metrics(
+        include_bytes!("../../../samples/exam_math.hwp"),
+        FontMetricsPolicy::HcrDeclared,
+    )
+    .expect("original math HWP loads");
+    let _shaping = core.resolved_shaping_font_scope();
+    let _measure = enter_measure_font_paths(paths);
+    let source = &core.document.sections[0].paragraphs[42];
+    let adjusted = compensated_native_equation_tabs(source).expect("source widths refresh");
+    assert_eq!(
+        source
+            .tab_extended
+            .iter()
+            .map(|tab| tab[0])
+            .collect::<Vec<_>>(),
+        vec![4083, 3525, 3525, 3525]
+    );
+    // 저장된 정지는 원본 개체 점유 폭 + 탭 델타다. 실제 composer의 자연 폭
+    // 점유 슬롯으로 바뀌어도 같은 정지를 유지해야 한다.
+    for paragraph_index in [42, 63] {
+        let authored = &core.document.sections[0].paragraphs[paragraph_index];
+        let mut projected = authored.clone();
+        projected.tab_extended = compensated_native_equation_tabs(authored).unwrap();
+        let composed = crate::renderer::composer::compose_paragraph(&projected);
+        for (index, (raw, updated)) in authored
+            .tab_extended
+            .iter()
+            .zip(&projected.tab_extended)
+            .enumerate()
+        {
+            let Control::Equation(eq) = &authored.controls[index] else {
+                panic!("source choice equation")
+            };
+            let authored_occupied = i64::from(eq.common.width)
+                + i64::from(eq.common.margin.left)
+                + i64::from(eq.common.margin.right);
+            let actual_occupied = composed
+                .tac_controls
+                .iter()
+                .find(|(_, _, ci)| *ci == index)
+                .unwrap()
+                .1;
+            assert_eq!(
+                authored_occupied + i64::from(raw[0]),
+                i64::from(actual_occupied) + i64::from(updated[0]),
+                "paragraph {paragraph_index}, interval {index}: real occupied slot plus cached delta preserves the authored stop"
+            );
+        }
+    }
+    for (old, new) in source.tab_extended.iter().zip(&adjusted) {
+        assert_eq!(
+            &old[1..],
+            &new[1..],
+            "tab kind and provenance stay authored"
+        );
+    }
+    let mut unavailable = source.clone();
+    for control in &mut unavailable.controls {
+        if let Control::Equation(eq) = control {
+            eq.font_name = "Missing equation source face".into();
+        }
+    }
+    assert!(compensated_native_equation_tabs(&unavailable).is_none());
+    for marker in [0x8000, 0x4000] {
+        let mut other_policy = source.clone();
+        for tab in &mut other_policy.tab_extended {
+            tab[5] |= marker;
+        }
+        assert!(compensated_native_equation_tabs(&other_policy).is_none());
+    }
+    let mut right_tabs = source.clone();
+    for tab in &mut right_tabs.tab_extended {
+        tab[2] = 2 << 8;
+    }
+    assert!(compensated_native_equation_tabs(&right_tabs).is_none());
+    let mut unknown_interval = source.clone();
+    unknown_interval.controls[0] = Control::Picture(Box::default());
+    let adjusted = compensated_native_equation_tabs(&unknown_interval).unwrap();
+    assert_eq!(adjusted[0], source.tab_extended[0]);
+    assert_eq!(
+        adjusted[1],
+        compensated_native_equation_tabs(source).unwrap()[1],
+        "later independent intervals still preserve their stop"
+    );
+    let mut inconsistent = source.clone();
+    inconsistent.char_offsets[1] = inconsistent.char_offsets[0];
+    assert!(compensated_native_equation_tabs(&inconsistent).is_none());
+}
+
 /// HWPX 오른쪽 인라인 탭을 문단 탭 정의로 다시 해석해야 하는지.
 ///
 /// HWPX `<hp:tab type>` 은 한컴이 저장 당시 해석한 결과다. 한컴은 열 때 문단 탭
@@ -2149,11 +2630,89 @@ fn character_advance(base: f64, c: char, style: &TextStyle, font_size: f64, rati
     }
 }
 
-/// 원점을 가진 30/31의 intrinsic 폭과 기존 배치 여분을 합친다.
+/// 글꼴 빈칸은 영문 슬롯 공급자와 현재 extent 언어의 원본 크기·장평을 쓴다.
+/// 원본 한글 run과 측정 대체 face는 그대로 두고 U+0020의 전진만 해소한다.
+pub(crate) fn source_font_space_advance_px(ch: char, style: &TextStyle) -> Option<f64> {
+    let space = style.source_font_space.as_ref()?;
+    if ch != ' '
+        || style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+        || style.bold
+        || style.italic
+        || style.superscript
+        || style.subscript
+        || style.script_base_size > 0.0
+        || !style.font_size.is_finite()
+        || !style.ratio.is_finite()
+        || space.own_run_font_size <= 0.0
+        || !space.own_run_font_size.is_finite()
+        || space.own_run_ratio <= 0.0
+        || !space.own_run_ratio.is_finite()
+        || (style.font_size - space.own_run_font_size).abs() > 1e-9
+        || (style.ratio - space.own_run_ratio).abs() > 1e-9
+        || space.font_size <= 0.0
+        || !space.font_size.is_finite()
+        || space.ratio <= 0.0
+        || !space.ratio.is_finite()
+    {
+        return None;
+    }
+    let family = space.family.trim();
+    let substitute = space.substitute.trim();
+    // 실제 primary/내장/runtime face, 명시된 문서 대체, 원본 HFT 순서다.
+    // 자동 측정 fallback face의 설치 여부로 원본 공급자를 바꾸지 않는다.
+    let em = if !family.is_empty() && custom_font_face_available(family) {
+        custom_face_char_em_advance(family, false, false, ch)?
+    } else if !substitute.is_empty() && custom_font_face_available(substitute) {
+        custom_face_char_em_advance(substitute, false, false, ch)?
+    } else if !space.hft_family.trim().is_empty()
+        && crate::renderer::hft_glyphs::hft_family_available(&space.hft_family)
+        && crate::renderer::hft_glyphs::has_regular_latin_advances(&space.hft_family)
+    {
+        crate::renderer::hft_glyphs::hft_advance_em(&space.hft_family, ch).unwrap_or(0.5)
+    } else {
+        return None;
+    };
+    let mut selected = style.clone();
+    selected.font_size = space.font_size;
+    selected.ratio = space.ratio;
+    selected.letter_spacing = space.letter_spacing;
+    Some(
+        mac_glyph_advance_px(
+            em * space.font_size,
+            ch,
+            &selected,
+            space.font_size,
+            space.ratio,
+        ) + style.extra_word_spacing
+            + style.extra_char_spacing,
+    )
+}
+
+/// 출처가 확인된 일반 빈칸과 30/31의 intrinsic 폭에 기존 배치 여분을 합친다.
 /// 30은 scan/ordinary 경로의 direct tracking이 0이다.
 /// 31은 원본 ENG 자간(%)만 선택하고 기존 scalar/shaped 자간 모델은 유지한다.
 /// 실제 Q/profile/grid 결합과 native full advance는 아직 확정되지 않았다.
 fn control_space_advance_px(scalar: usize, ch: char, style: &TextStyle) -> Option<f64> {
+    if let Some(advance) = source_font_space_advance_px(ch, style) {
+        return Some(advance);
+    }
+    // 23474C: 원본 KOR relative MulDiv → SDIV8 → ratio MulDiv → LSL2.
+    // mask1, useFontSpace 해제의 원본 경로에 현재 ENG placement 자간을 더한다.
+    if ch == ' '
+        && style.source_standard_space
+        && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+        && !style.latin_space
+    {
+        let percent = style.ordinary_space_tracking_percent(ch)?;
+        let width = style
+            .control_space_base?
+            .ordinary_space_advance_hu(percent)?;
+        return Some(
+            hwpunit_to_px(width, style.control_space_dpi)
+                + style.extra_word_spacing
+                + style.extra_char_spacing,
+        );
+    }
     let width_hu = style.control_space_base_width_hu(scalar, ch)?;
     let intrinsic = hwpunit_to_px(width_hu, style.control_space_dpi);
     if ch == '\u{00A0}' {
@@ -3094,6 +3653,10 @@ impl WasmTextMeasurer {
                     hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
                 {
                     em * font_size
+                } else if let Some(base) =
+                    painted_source_hft_base_px(style, source, c, font_size, cluster_len[i])
+                {
+                    base
                 } else {
                     let selected = ordinary_glyph_measure_style(style, source, c, cluster_len[i]);
                     wasm_internals::measure_char_width_hwp(
@@ -3271,6 +3834,10 @@ impl WasmTextMeasurer {
                 hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
             {
                 em * font_size
+            } else if let Some(base) =
+                painted_source_hft_base_px(style, source, c, font_size, cluster_len[i])
+            {
+                base
             } else {
                 let selected = ordinary_glyph_measure_style(style, source, c, cluster_len[i]);
                 wasm_internals::measure_char_width_hwp(
@@ -3436,9 +4003,43 @@ pub(crate) fn resolved_to_text_style(
     lang_index: usize,
 ) -> TextStyle {
     if let Some(cs) = styles.char_styles.get(char_style_id as usize) {
+        // 해소 후 글상자 fit이 바꾼 base 크기는 원본 extent 분류에서 제외한다.
+        // 실제 모델의 글꼴 크기 편집은 해소기가 HU 기준과 px 크기를 함께 갱신한다.
+        let source_font_space = cs.use_font_space
+            && cs.font_size.is_finite()
+            && cs.font_size > 0.0
+            && cs.control_space_base.is_none_or(|base| {
+                base.height_hu > 0
+                    && cs.control_space_dpi.is_finite()
+                    && cs.control_space_dpi > 0.0
+                    && (cs.font_size - hwpunit_to_px(base.height_hu, cs.control_space_dpi)).abs()
+                        <= 1e-9
+            });
         let mut style = TextStyle {
             font_metrics_policy: cs.font_metrics_policy,
             control_space_base: cs.control_space_base,
+            source_standard_space: cs.source_standard_space,
+            source_font_space: source_font_space.then(|| crate::renderer::SourceFontSpace {
+                own_run_font_size: cs.font_size_for_lang(lang_index),
+                own_run_ratio: cs.ratio_for_lang(lang_index),
+                // HFT의 자동 OS 별칭은 원본 primary가 아니다. 실제 원본 face와
+                // 문서 대체·HFT 은행의 우선순위는 공급자 helper에서 유지한다.
+                family: if cs.hft_family_for_lang(1).is_empty() {
+                    cs.font_family_for_lang(1)
+                } else {
+                    cs.hft_family_for_lang(1)
+                }
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+                substitute: cs.font_subst_for_lang(1).to_string(),
+                hft_family: cs.hft_family_for_lang(1).to_string(),
+                font_size: cs.font_size_for_lang(lang_index),
+                ratio: cs.ratio_for_lang(lang_index),
+                letter_spacing: cs.letter_spacing_for_lang(1),
+            }),
             native_char_position: cs
                 .native_char_positions
                 .and_then(|(base_height_hu, offsets)| {
@@ -5276,6 +5877,9 @@ fn registered_glyph_advance_with_source_style(
         return registered_glyph_advance_with_source_style(c, &script, &source_script);
     }
     let source = source_hft_measure_style(original, style);
+    if let Some(base) = painted_source_hft_base_px(style, source, c, style_params(style).0, 1) {
+        return Some(base);
+    }
     let selected = ordinary_glyph_measure_style(style, source, c, 1);
     let c = if c == '\u{00AD}' && selected.font_family != style.font_family {
         '-'
@@ -7593,6 +8197,711 @@ mod tests {
 #[cfg(test)]
 mod source_hft_measurement_tests {
     use super::*;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn actual_source_hft_spaces_preserve_q1_origins_and_q6_fresh_breaks_after_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") else {
+            return;
+        };
+        // 자동 데스크톱 face 등록은 다른 물리 테스트의 전역 글꼴 환경과 분리한다.
+        const CHILD: &str = "RHWP_SOURCE_SPACE_PRIMARY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "renderer::layout::text_measurement::source_hft_measurement_tests::actual_source_hft_spaces_preserve_q1_origins_and_q6_fresh_breaks_after_reopen", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if let Some(path) = std::env::var_os("RHWP_HANCOM_AUTO_FONT_TEST") {
+            let bytes = std::fs::read(path).expect("automatic desktop face bytes");
+            crate::renderer::runtime_font_metrics::register(
+                &bytes,
+                &["HY신명조".into(), "HYSinMyeongJo M".into(), "H2mjsM".into()],
+                false,
+                false,
+            )
+            .expect("automatic desktop face registers");
+            close(
+                custom_face_char_em_advance("HY신명조", false, false, ' ').unwrap(),
+                341.0 / 1024.0,
+            );
+        }
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(hft.into());
+        if let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") {
+            paths.push(font.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        crate::renderer::hft_glyphs::register_hft_sources(&paths);
+        let _measure = enter_measure_font_paths(paths);
+        fn check(core: &DocumentCore) -> Vec<(String, Vec<f64>)> {
+            for (cs, hu) in [(106, 436), (107, 516), (140, 504)] {
+                assert!(core.styles.char_styles[cs].use_font_space);
+                let style = resolved_to_text_style(&core.styles, cs as u32, 0);
+                let expected = source_font_space_advance_px(' ', &style)
+                    .expect("explicit source LATIN space provider");
+                assert!(
+                    (expected * 75.0 - f64::from(hu)).abs() < 0.001,
+                    "CS{cs}: actual={}HU expected={hu}HU source={:?} run={style:?}",
+                    expected * 75.0,
+                    style.source_font_space,
+                );
+                assert!((estimate_text_width_unrounded(" ", &style) - expected).abs() < 1e-9);
+                let mut real = style.clone();
+                real.source_font_space.as_mut().unwrap().family = "함초롬바탕".into();
+                let ctx = real.source_font_space.as_ref().unwrap();
+                let em = custom_face_char_em_advance("함초롬바탕", false, false, ' ')
+                    .expect("actual primary TTF");
+                let mut selected = real.clone();
+                selected.font_size = ctx.font_size;
+                selected.ratio = ctx.ratio;
+                selected.letter_spacing = ctx.letter_spacing;
+                close(
+                    source_font_space_advance_px(' ', &real).unwrap(),
+                    character_advance(em * ctx.font_size, ' ', &selected, ctx.font_size, ctx.ratio),
+                );
+            }
+            if std::env::var_os("RHWP_HANCOM_AUTO_FONT_TEST").is_some() {
+                let mut explicit_ttf = resolved_to_text_style(&core.styles, 106, 0);
+                assert_eq!(
+                    explicit_ttf.source_font_space.as_ref().unwrap().family,
+                    "신명 중명조"
+                );
+                explicit_ttf.source_font_space.as_mut().unwrap().family = "HY신명조".into();
+                close(
+                    source_font_space_advance_px(' ', &explicit_ttf).unwrap() * 75.0,
+                    360.0,
+                );
+            }
+            let mut fresh = core.document.sections[0].paragraphs[27].clone();
+            fresh.line_segs.clear();
+            DocumentCore::reflow_cell_lines(
+                &mut fresh,
+                core.body_reflow_width(0, 27),
+                false,
+                &core.styles,
+                96.0,
+            );
+            assert_eq!(
+                fresh
+                    .line_segs
+                    .iter()
+                    .map(|line| line.text_start)
+                    .collect::<Vec<_>>(),
+                [0, 55, 89, 161]
+            );
+            fn visit(node: &RenderNode, active: bool, out: &mut Vec<(String, Vec<f64>)>) {
+                let active = match &node.node_type {
+                    RenderNodeType::TextLine(line) => {
+                        line.para_index == Some(1) && line.line_index == Some(1)
+                    }
+                    _ => active,
+                };
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if active && run.cell_context.is_none() {
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        for (i, ch) in run.text.chars().enumerate().filter(|(_, ch)| *ch == ' ') {
+                            let expected = character_advance(
+                                run.style.font_size / 2.0,
+                                ch,
+                                &run.style,
+                                run.style.font_size,
+                                run.style.ratio,
+                            );
+                            assert!((positions[i + 1] - positions[i] - expected).abs() < 1e-9);
+                        }
+                        out.push((
+                            run.text.clone(),
+                            positions.iter().map(|x| node.bbox.x + x).collect(),
+                        ));
+                    }
+                }
+                for child in &node.children {
+                    visit(child, active, out);
+                }
+            }
+            let tree = core.build_page_render_tree(0).unwrap();
+            let mut origins = Vec::new();
+            visit(&tree.root, false, &mut origins);
+            assert_eq!(
+                origins
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<String>(),
+                "(나)에 대한 자료이다."
+            );
+            fn q3(
+                node: &RenderNode,
+                active: bool,
+                found: &mut Vec<char>,
+                out: &mut Vec<(String, Vec<f64>)>,
+            ) {
+                let active = match &node.node_type {
+                    RenderNodeType::TextLine(line) => {
+                        line.para_index == Some(13) && line.line_index == Some(2)
+                    }
+                    _ => active,
+                };
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if active && run.cell_context.is_none() {
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        for (i, ch) in run.text.chars().enumerate() {
+                            let native = match ch {
+                                '는' => Some(71.52475),
+                                '임' => Some(86.7626),
+                                '원' => Some(123.72089),
+                                '기' => Some(149.87935),
+                                _ => None,
+                            };
+                            if let Some(native) = native {
+                                assert!(
+                                    ((node.bbox.x + positions[i]) * 0.75 - native).abs() < 0.09,
+                                    "Q3 {ch}: {} vs {native}",
+                                    (node.bbox.x + positions[i]) * 0.75
+                                );
+                                found.push(ch);
+                            }
+                        }
+                        out.push((
+                            format!("Q3:{}", run.text),
+                            positions.iter().map(|x| node.bbox.x + x).collect(),
+                        ));
+                    }
+                }
+                for child in &node.children {
+                    q3(child, active, found, out);
+                }
+            }
+            let mut found = Vec::new();
+            q3(&tree.root, false, &mut found, &mut origins);
+            assert_eq!(found, ['는', '임', '원', '기']);
+            origins
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_science.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let _shaping = core.resolved_shaping_font_scope();
+        let source = format!(
+            "{:?}",
+            (
+                &core.document.sections[0].paragraphs[1],
+                &core.document.sections[0].paragraphs[13],
+                &core.document.sections[0].paragraphs[27]
+            )
+        );
+        let before = check(&core);
+        let section = core.document.sections.len() - 1;
+        let para = core.document.sections[section].paragraphs.len() - 1;
+        let end = core.document.sections[section].paragraphs[para]
+            .text
+            .chars()
+            .count();
+        core.insert_text_native(section, para, end, " ").unwrap();
+        let edited = check(&core);
+        let saved = core.export_hwpx_native().unwrap();
+        assert_eq!(
+            format!(
+                "{:?}",
+                (
+                    &core.document.sections[0].paragraphs[1],
+                    &core.document.sections[0].paragraphs[13],
+                    &core.document.sections[0].paragraphs[27]
+                )
+            ),
+            source
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        let after = check(&reopened);
+        for current in [&edited, &after] {
+            assert_eq!(before.len(), current.len());
+            for ((text, positions), (new_text, new_positions)) in before.iter().zip(current) {
+                assert_eq!(text, new_text);
+                assert_eq!(positions.len(), new_positions.len());
+                assert!(positions
+                    .iter()
+                    .zip(new_positions)
+                    .all(|(a, b)| (a - b).abs() < 0.01));
+            }
+        }
+        for pi in [1, 13, 27] {
+            let a = &core.document.sections[0].paragraphs[pi];
+            let b = &reopened.document.sections[0].paragraphs[pi];
+            assert_eq!(a.text, b.text);
+            assert_eq!(a.char_offsets, b.char_offsets);
+            assert_eq!(
+                a.line_segs
+                    .iter()
+                    .map(|s| (
+                        s.text_start,
+                        s.segment_width,
+                        s.line_height,
+                        s.text_height,
+                        s.baseline_distance
+                    ))
+                    .collect::<Vec<_>>(),
+                b.line_segs
+                    .iter()
+                    .map(|s| (
+                        s.text_start,
+                        s.segment_width,
+                        s.line_height,
+                        s.text_height,
+                        s.baseline_distance
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn actual_mixed_glossary_space_uses_latin_face_geometry_after_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(hft.into());
+        if let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") {
+            paths.push(font.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        crate::renderer::hft_glyphs::register_hft_sources(&paths);
+        let _measure = enter_measure_font_paths(paths);
+        fn check(core: &DocumentCore) -> Vec<(String, Vec<f64>)> {
+            // 원본 colon 뒤 공백은 앞 영문 extent의 크기·장평을 유지한다.
+            let style = resolved_to_text_style(&core.styles, 14, 1);
+            let ctx = style.source_font_space.as_ref().unwrap();
+            assert_eq!(ctx.font_size, style.font_size);
+            assert_eq!(ctx.ratio, style.ratio);
+            assert!((ctx.ratio - 1.0).abs() < 1e-9);
+            let advance =
+                source_font_space_advance_px(' ', &style).expect("actual Latin TTF provider");
+            assert!((advance * 75.0 - 276.0).abs() < 0.001);
+            for (kind, expected_lang) in [
+                (crate::model::paragraph::SpecialSpaceOriginKind::Literal, 1),
+                (crate::model::paragraph::SpecialSpaceOriginKind::NbSpace, 0),
+            ] {
+                let para = crate::model::paragraph::Paragraph {
+                    text: "가\u{a0} 가".into(),
+                    char_offsets: vec![0, 1, 2, 3],
+                    char_shapes: vec![crate::model::paragraph::CharShapeRef {
+                        start_pos: 0,
+                        char_shape_id: 14,
+                    }],
+                    special_space_origins: vec![crate::model::paragraph::SpecialSpaceOrigin {
+                        char_idx: 1,
+                        origin: kind,
+                    }],
+                    ..Default::default()
+                };
+                let composed =
+                    crate::renderer::composer::compose_paragraph_with_styles(&para, &core.styles);
+                let run = composed
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.runs)
+                    .find(|run| run.text.contains(' '))
+                    .unwrap();
+                assert_eq!(run.lang_index, expected_lang, "{kind:?}");
+                let actual = run.text_style(&core.styles);
+                let expected = resolved_to_text_style(&core.styles, 14, expected_lang);
+                assert!(source_font_space_advance_px(' ', &actual).is_some());
+                close(
+                    estimate_text_width_unrounded(" ", &actual),
+                    estimate_text_width_unrounded(" ", &expected),
+                );
+                assert_eq!(para.text, "가\u{a0} 가");
+                assert_eq!(para.special_space_origins[0].origin, kind);
+            }
+            let mut scaled = core.styles.clone();
+            scaled.char_styles[14].font_size *= 0.8;
+            assert!(resolved_to_text_style(&scaled, 14, 1)
+                .source_font_space
+                .is_none());
+            let raw = vec![crate::renderer::composer::ComposedTextRun {
+                text: "A 가".into(),
+                char_style_id: 14,
+                ..Default::default()
+            }];
+            let signature = |runs: Vec<crate::renderer::composer::ComposedTextRun>| {
+                runs.into_iter()
+                    .map(|run| (run.text, run.lang_index))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                signature(crate::renderer::composer::split_runs_by_lang_with_styles(
+                    raw.clone(),
+                    &scaled
+                )),
+                signature(crate::renderer::composer::split_runs_by_lang(raw))
+            );
+            let mut edited_model = core.document.clone();
+            edited_model.doc_info.char_shapes[14].base_size += 100;
+            let fresh_styles =
+                crate::renderer::style_resolver::resolve_document_styles(&edited_model, 96.0);
+            assert!(resolved_to_text_style(&fresh_styles, 14, 1)
+                .source_font_space
+                .is_some());
+            let mut controlled = core.styles.clone();
+            let cs = &mut controlled.char_styles[14];
+            cs.font_size = hwpunit_to_px(1150, 96.0);
+            cs.control_space_base.as_mut().unwrap().height_hu = 1150;
+            cs.relative_sizes = vec![1.0, 1.06, 1.0, 1.0, 1.0, 1.0, 1.0];
+            cs.ratios = vec![0.95, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+            cs.letter_spacing = 0.0;
+            cs.letter_spacings.fill(0.0);
+            // PDF의 두 끝점은 각각 0.12pt 격자에 반올림된다. 원본 HU law는 유지한다.
+            for (lang, hu, native_eight_pt) in [(0, 272.0, 21.720001), (1, 304.0, 24.360004)] {
+                let selected = resolved_to_text_style(&controlled, 14, lang);
+                let width = source_font_space_advance_px(' ', &selected).unwrap();
+                assert!((width * 75.0 - hu).abs() < 0.001);
+                assert!((width * 0.75 * 8.0 - native_eight_pt).abs() <= 0.12);
+            }
+            fn visit(
+                node: &RenderNode,
+                active: bool,
+                found: &mut Vec<char>,
+                out: &mut Vec<(String, Vec<f64>)>,
+            ) {
+                let active = match &node.node_type {
+                    RenderNodeType::TextLine(line) => {
+                        line.para_index == Some(284) && line.line_index == Some(0)
+                    }
+                    _ => active,
+                };
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if active && run.cell_context.is_none() {
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        for (i, ch) in run.text.chars().enumerate() {
+                            let native = match ch {
+                                '영' => Some(169.0835),
+                                '해' => Some(264.4915),
+                                '생' => Some(377.529),
+                                _ => None,
+                            };
+                            if let Some(native) = native {
+                                assert!(
+                                    ((node.bbox.x + positions[i]) * 0.75 - native).abs() < 0.09,
+                                    "glossary {ch}"
+                                );
+                                found.push(ch);
+                            }
+                        }
+                        out.push((
+                            run.text.clone(),
+                            positions.iter().map(|x| node.bbox.x + x).collect(),
+                        ));
+                    }
+                }
+                for child in &node.children {
+                    visit(child, active, found, out);
+                }
+            }
+            let tree = core.build_page_render_tree(7).unwrap();
+            let mut found = Vec::new();
+            let mut out = Vec::new();
+            visit(&tree.root, false, &mut found, &mut out);
+            assert_eq!(found, ['영', '해', '생']);
+            out
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_eng.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let _shaping = core.resolved_shaping_font_scope();
+        let source = format!("{:?}", core.document.sections[0].paragraphs[284]);
+        let before = check(&core);
+        let section = core.document.sections.len() - 1;
+        let para = core.document.sections[section].paragraphs.len() - 1;
+        let end = core.document.sections[section].paragraphs[para]
+            .text
+            .chars()
+            .count();
+        core.insert_text_native(section, para, end, " ").unwrap();
+        let edited = check(&core);
+        let saved = core.export_hwpx_native().unwrap();
+        assert_eq!(
+            source,
+            format!("{:?}", core.document.sections[0].paragraphs[284])
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        let after = check(&reopened);
+        for current in [&edited, &after] {
+            assert_eq!(before.len(), current.len());
+            for ((text, positions), (new_text, new_positions)) in before.iter().zip(current) {
+                assert_eq!(text, new_text);
+                assert_eq!(positions.len(), new_positions.len());
+                assert!(positions
+                    .iter()
+                    .zip(new_positions)
+                    .all(|(a, b)| (a - b).abs() < 0.01));
+            }
+        }
+        let a = &core.document.sections[0].paragraphs[284];
+        let b = &reopened.document.sections[0].paragraphs[284];
+        assert_eq!(a.text, b.text);
+        assert_eq!(a.char_offsets, b.char_offsets);
+        assert_eq!(format!("{:?}", a.line_segs), format!("{:?}", b.line_segs));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn declared_latin_space_provider_preserves_source_roles_and_real_face_priority() {
+        const CHILD: &str = "RHWP_DECLARED_FONT_SPACE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "renderer::layout::text_measurement::source_hft_measurement_tests::declared_latin_space_provider_preserves_source_roles_and_real_face_priority", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let mut style = TextStyle {
+            font_family: "RHWP Korean Source".into(),
+            font_size: 13.0,
+            ratio: 0.8,
+            letter_spacing: -2.0,
+            latin_space: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            source_font_space: Some(crate::renderer::SourceFontSpace {
+                own_run_font_size: 13.0,
+                own_run_ratio: 0.8,
+                family: "RHWP Latin Alias".into(),
+                substitute: String::new(),
+                hft_family: String::new(),
+                font_size: 20.0,
+                ratio: 0.95,
+                letter_spacing: -1.0,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(source_font_space_advance_px(' ', &style), None);
+        for (family, width) in [
+            ("RHWP Latin Missing Space", 0u16),
+            ("RHWP Latin Present Space", 400),
+        ] {
+            let mut data = bank(family);
+            let at = data.len();
+            data[0x1aa..0x1ae].copy_from_slice(&(at as u32).to_le_bytes());
+            data.extend_from_slice(&14u32.to_le_bytes());
+            for value in [32u16, 33, 1, width, 500] {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            assert!(crate::renderer::hft_glyphs::register_hft_bytes(data));
+            style.source_font_space.as_mut().unwrap().hft_family = family.into();
+            let mut selected = style.clone();
+            selected.font_size = 20.0;
+            selected.ratio = 0.95;
+            selected.letter_spacing = -1.0;
+            let base = 20.0 * if width == 0 { 0.5 } else { 0.4 };
+            let expected = character_advance(base, ' ', &selected, 20.0, 0.95);
+            close(source_font_space_advance_px(' ', &style).unwrap(), expected);
+            close(estimate_text_width(" ", &style), expected);
+            close(estimate_text_width_unrounded(" ", &style), expected);
+            close(compute_char_positions(" ", &style)[1], expected);
+            selected.zero_tracking();
+            close(
+                compute_glyph_positions("  ", &style)[1],
+                character_advance(base, ' ', &selected, 20.0, 0.95),
+            );
+            let mut untracked = style.clone();
+            untracked.zero_tracking();
+            close(
+                source_font_space_advance_px(' ', &untracked).unwrap(),
+                character_advance(base, ' ', &selected, 20.0, 0.95),
+            );
+            let mut clamped = style.clone();
+            clamped.clamp_negative_tracking();
+            close(
+                source_font_space_advance_px(' ', &clamped).unwrap(),
+                source_font_space_advance_px(' ', &untracked).unwrap(),
+            );
+        }
+        for case in [
+            "no-source",
+            "no-bank",
+            "bold",
+            "italic",
+            "windows",
+            "superscript",
+            "subscript",
+            "script-base",
+            "fitted-size",
+            "fitted-ratio",
+        ] {
+            let mut other = style.clone();
+            match case {
+                "no-source" => other.source_font_space = None,
+                "no-bank" => {
+                    other.source_font_space.as_mut().unwrap().hft_family = "unknown source".into()
+                }
+                "bold" => other.bold = true,
+                "italic" => other.italic = true,
+                "windows" => other.font_metrics_policy = FontMetricsPolicy::HancomWindows,
+                "superscript" => other.superscript = true,
+                "subscript" => other.subscript = true,
+                "script-base" => other.script_base_size = 30.0,
+                "fitted-size" => other.font_size *= 0.8,
+                "fitted-ratio" => other.ratio *= 0.8,
+                _ => unreachable!(),
+            }
+            assert_eq!(source_font_space_advance_px(' ', &other), None, "{case}");
+            if matches!(case, "fitted-size" | "fitted-ratio") {
+                let mut legacy = other.clone();
+                legacy.source_font_space = None;
+                close(
+                    estimate_text_width(" ", &other),
+                    estimate_text_width(" ", &legacy),
+                );
+                assert_eq!(
+                    compute_char_positions(" ", &other),
+                    compute_char_positions(" ", &legacy)
+                );
+            }
+        }
+        for ch in ['A', '\u{00A0}', '\u{2007}', '\t'] {
+            assert_eq!(source_font_space_advance_px(ch, &style), None);
+        }
+        // 스타일 생성 뒤 등록한 실제 영문 face도 HFT 폭보다 먼저 선택한다.
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../../ttfs/opensource/NotoSansKR-Regular.ttf"),
+            &["RHWP Latin Alias".into()],
+            false,
+            false,
+        )
+        .unwrap();
+        let em = custom_face_char_em_advance("RHWP Latin Alias", false, false, ' ').unwrap();
+        let mut selected = style.clone();
+        selected.font_size = 20.0;
+        selected.ratio = 0.95;
+        selected.letter_spacing = -1.0;
+        let expected = character_advance(em * 20.0, ' ', &selected, 20.0, 0.95);
+        close(source_font_space_advance_px(' ', &style).unwrap(), expected);
+        style.source_font_space.as_mut().unwrap().family = "RHWP Missing Primary".into();
+        style.source_font_space.as_mut().unwrap().substitute = "RHWP Latin Alias".into();
+        close(source_font_space_advance_px(' ', &style).unwrap(), expected);
+        // 자동 OS 별칭의 실제 face가 준비돼도 선언 HFT primary를 빼앗지 않는다.
+        use crate::model::document::DocInfo;
+        use crate::model::style::{CharShape, Font, SubstFont};
+        let mut data = bank("신명 중명조");
+        let at = data.len();
+        data[0x1aa..0x1ae].copy_from_slice(&(at as u32).to_le_bytes());
+        data.extend_from_slice(&14u32.to_le_bytes());
+        for value in [32u16, 33, 1, 400, 500] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        assert!(crate::renderer::hft_glyphs::register_hft_bytes(data));
+        let bytes = include_bytes!("../../../ttfs/opensource/NotoSansKR-Regular.ttf");
+        crate::renderer::runtime_font_metrics::register(bytes, &["HY신명조".into()], false, false)
+            .unwrap();
+        let resolved = |font: Font| {
+            let info = DocInfo {
+                font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                font_faces: vec![vec![font]; 7],
+                char_shapes: vec![CharShape {
+                    base_size: 1150,
+                    ratios: [95, 100, 100, 100, 100, 100, 100],
+                    relative_sizes: [100; 7],
+                    use_font_space: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            crate::renderer::style_resolver::resolve_styles(&info, 96.0)
+        };
+        let font = Font {
+            name: "신명 중명조".into(),
+            alt_type: 2,
+            ..Default::default()
+        };
+        let styles = resolved(font.clone());
+        assert_eq!(styles.char_styles[0].font_family_for_lang(1), "HY신명조");
+        let source = resolved_to_text_style(&styles, 0, 0);
+        assert_eq!(
+            source.source_font_space.as_ref().unwrap().family,
+            "신명 중명조"
+        );
+        close(
+            source_font_space_advance_px(' ', &source).unwrap() * 75.0,
+            436.0,
+        );
+        close(compute_char_positions(" ", &source)[1] * 75.0, 436.0);
+        let alias_em = custom_face_char_em_advance("HY신명조", false, false, ' ').unwrap();
+        let actual = character_advance(
+            alias_em * source.font_size,
+            ' ',
+            &source,
+            source.font_size,
+            source.ratio,
+        );
+        assert!((actual * 75.0 - 436.0).abs() > 1.0);
+        // 같은 이름을 실제 TTF primary로 선언하면 실제 face 폭이 유지된다.
+        let ttf = resolved(Font {
+            name: "HY신명조".into(),
+            alt_type: 1,
+            ..Default::default()
+        });
+        close(
+            source_font_space_advance_px(' ', &resolved_to_text_style(&ttf, 0, 0)).unwrap(),
+            actual,
+        );
+        // 원본 face가 없는 문서의 명시 대체도 자동 별칭과 구별해 유지한다.
+        let substituted = resolved(Font {
+            name: "RHWP Missing Declared HFT".into(),
+            alt_type: 2,
+            subst_font: Some(SubstFont {
+                face: "HY신명조".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        close(
+            source_font_space_advance_px(' ', &resolved_to_text_style(&substituted, 0, 0)).unwrap(),
+            actual,
+        );
+        // 선언된 원본 이름 아래의 내장/실제 runtime face는 HFT 은행보다 우선한다.
+        with_resolved_shaping_fonts(
+            vec![ResolvedShapingFont {
+                family: "신명 중명조".into(),
+                bytes: std::sync::Arc::from(bytes.as_slice()),
+                face_index: 0,
+            }],
+            || close(source_font_space_advance_px(' ', &source).unwrap(), actual),
+        );
+        close(
+            source_font_space_advance_px(' ', &source).unwrap() * 75.0,
+            436.0,
+        );
+        crate::renderer::runtime_font_metrics::register(
+            bytes,
+            &["신명 중명조".into()],
+            false,
+            false,
+        )
+        .unwrap();
+        close(source_font_space_advance_px(' ', &source).unwrap(), actual);
+        crate::renderer::runtime_font_metrics::clear();
+    }
 
     // ASCII 은행은 독립적인 사각 윤곽만 담고, 실제 폭은 기존 HCI 메트릭을 쓴다.
     fn bank(family: &str) -> Vec<u8> {
@@ -7651,6 +8960,281 @@ mod source_hft_measurement_tests {
         data[ink + 8..ink + 10].copy_from_slice(&(body.len() as u16).to_le_bytes());
         data[ink + 10..].copy_from_slice(&body);
         data
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn painted_hft_aliases_share_source_advances_and_keep_real_faces() {
+        const CHILD: &str = "RHWP_PAINTED_HFT_ADVANCE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "renderer::layout::text_measurement::source_hft_measurement_tests::painted_hft_aliases_share_source_advances_and_keep_real_faces", "--nocapture"])
+                .env(CHILD, "1").output().expect("run isolated HFT provider test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use crate::renderer::hft_glyphs::{hft_advance_em, register_hft_bytes};
+        for (family, alias, advance) in [
+            ("#RHWP Raw Digit", "RHWP Raw Alias", 475u16),
+            ("RHWP Canon Digit", "RHWP Canon Alias", 690u16),
+        ] {
+            let style = TextStyle {
+                font_family: alias.into(),
+                hft_family: family.into(),
+                font_size: 20.0,
+                ratio: 0.93,
+                letter_spacing: -1.0,
+                font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                ..Default::default()
+            };
+            let mut legacy = style.clone();
+            legacy.hft_family.clear();
+            let old = compute_char_positions("5A한", &legacy);
+            assert!(source_hft_measure_style(&style, &measure_style(&style)).is_none());
+            let mut bytes = bank(family);
+            let table = 548;
+            let ink = table + 95 * 4 + 10;
+            let slot = table + usize::from(b'5' - 32) * 4;
+            bytes[slot..slot + 4].copy_from_slice(&((ink - table) as u32).to_le_bytes());
+            // 윤곽이 먼저 등록돼도 폭 디렉터리가 없으면 기존 provider를 유지한다.
+            assert!(register_hft_bytes(bytes.clone()));
+            assert!(source_hft_measure_style(&style, &measure_style(&style)).is_none());
+            let advances = bytes.len();
+            bytes[0x1aa..0x1ae].copy_from_slice(&(advances as u32).to_le_bytes());
+            bytes.extend_from_slice(&14u32.to_le_bytes());
+            for value in [53u16, 54, 1, advance, advance] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            assert!(register_hft_bytes(bytes));
+            assert_eq!(
+                hft_advance_em(family, '5'),
+                Some(f64::from(advance) / 1000.0)
+            );
+            let resolved = measure_style(&style);
+            let source = source_hft_measure_style(&style, &resolved);
+            assert!(source.is_some());
+            let base = f64::from(advance) / 1000.0 * 20.0;
+            close(
+                painted_source_hft_base_px(&resolved, source, '5', 20.0, 1).unwrap(),
+                base,
+            );
+            close(registered_glyph_advance('5', &style).unwrap(), base);
+            let positions = compute_char_positions("5A한", &style);
+            close(
+                positions[1],
+                character_advance(base, '5', &style, 20.0, 0.93),
+            );
+            close(positions[2] - positions[1], old[2] - old[1]);
+            close(positions[3] - positions[2], old[3] - old[2]);
+            let mut ink_style = style.clone();
+            ink_style.zero_tracking();
+            close(
+                compute_glyph_positions("5A한", &style)[1],
+                character_advance(base, '5', &ink_style, 20.0, 0.93),
+            );
+            close(estimate_text_width("5A한", &style), positions[3]);
+            close(estimate_text_width_unrounded("5A한", &style), positions[3]);
+            assert_eq!(style.font_family, alias);
+            for c in ['6', 'A', ' ', '\u{00a0}', '\u{2007}', '\u{FFFC}', '😀'] {
+                assert!(painted_source_hft_base_px(&resolved, source, c, 20.0, 1).is_none());
+            }
+            assert!(painted_source_hft_base_px(&resolved, source, '5', 20.0, 2).is_none());
+            for (bold, italic, policy) in [
+                (true, false, FontMetricsPolicy::HcrDeclared),
+                (false, true, FontMetricsPolicy::HcrDeclared),
+                (false, false, FontMetricsPolicy::HancomWindows),
+            ] {
+                let mut other = style.clone();
+                other.bold = bold;
+                other.italic = italic;
+                other.font_metrics_policy = policy;
+                assert!(source_hft_measure_style(&other, &measure_style(&other)).is_none());
+            }
+            let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(
+                include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf").as_slice(),
+            );
+            {
+                let _scope = enter_resolved_shaping_fonts(vec![ResolvedShapingFont {
+                    family: alias.into(),
+                    bytes: bytes.clone(),
+                    face_index: 0,
+                }]);
+                assert!(source_hft_measure_style(&style, &measure_style(&style)).is_none());
+                assert_eq!(
+                    compute_char_positions("5A", &style),
+                    compute_char_positions("5A", &legacy)
+                );
+            }
+            crate::renderer::runtime_font_metrics::register(&bytes, &[alias.into()], false, false)
+                .unwrap();
+            assert!(source_hft_measure_style(&style, &measure_style(&style)).is_none());
+            assert_eq!(
+                compute_char_positions("5A", &style),
+                compute_char_positions("5A", &legacy)
+            );
+            crate::renderer::runtime_font_metrics::clear();
+            // 별도의 문서 대체 face도 원본과 같은 실제 face 우선순위를 갖는다.
+            let real_legacy = TextStyle {
+                font_family: "RHWP Real Substitute".into(),
+                ..resolved.as_ref().clone()
+            };
+            let _scope = enter_resolved_shaping_fonts(vec![ResolvedShapingFont {
+                family: real_legacy.font_family.clone(),
+                bytes,
+                face_index: 0,
+            }]);
+            assert!(source_hft_measure_style(&style, &real_legacy).is_none());
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn actual_hft_label_and_mixed_heading_keep_glyph_origins_after_edit_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(hft_dir) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(std::path::PathBuf::from(hft_dir));
+        if let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") {
+            paths.push(font.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        crate::renderer::hft_glyphs::register_hft_sources(&paths);
+        let _measure = enter_measure_font_paths(paths);
+        fn geometry(core: &DocumentCore, math: bool) -> Vec<(String, Vec<f64>)> {
+            fn visit(node: &RenderNode, math: bool, out: &mut Vec<(String, Vec<f64>)>) {
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    let selected = if math {
+                        run.text == "5" && run.char_shape_id == Some(24)
+                    } else {
+                        run.para_index == Some(211)
+                            && run.text.chars().any(|c| c.is_ascii_graphic())
+                    };
+                    if selected {
+                        let legacy = measure_style(&run.style);
+                        let source = source_hft_measure_style(&run.style, &legacy);
+                        assert!(
+                            source.is_some(),
+                            "painted HFT provider {} / {}",
+                            run.text,
+                            run.style.font_family
+                        );
+                        let mut checked = false;
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        for (i, ch) in run
+                            .text
+                            .chars()
+                            .enumerate()
+                            .filter(|(_, ch)| ch.is_ascii_graphic())
+                        {
+                            let base = painted_source_hft_base_px(
+                                &legacy,
+                                source,
+                                ch,
+                                run.style.font_size,
+                                1,
+                            )
+                            .expect("actual selected source Latin glyph and advance");
+                            let expected = character_advance(
+                                base,
+                                ch,
+                                &run.style,
+                                run.style.font_size,
+                                run.style.ratio,
+                            );
+                            close(positions[i + 1] - positions[i], expected);
+                            checked = true;
+                        }
+                        assert!(checked);
+                        if math {
+                            assert_eq!(run.style.hft_family, "#태고딕");
+                            close(
+                                crate::renderer::hft_glyphs::hft_advance_em(
+                                    &run.style.hft_family,
+                                    '5',
+                                )
+                                .unwrap(),
+                                0.475,
+                            );
+                        } else if run.text.chars().any(|c| c.is_ascii_digit()) {
+                            assert_eq!(run.style.hft_family, "신명 태고딕");
+                            close(
+                                crate::renderer::hft_glyphs::hft_advance_em(
+                                    &run.style.hft_family,
+                                    '3',
+                                )
+                                .unwrap(),
+                                0.690,
+                            );
+                        }
+                        out.push((
+                            run.text.clone(),
+                            positions.iter().map(|x| node.bbox.x + x).collect(),
+                        ));
+                    }
+                }
+                for child in &node.children {
+                    visit(child, math, out);
+                }
+            }
+            let tree = core
+                .build_page_render_tree(if math { 0 } else { 4 })
+                .expect("actual source page paint");
+            let mut out = Vec::new();
+            visit(&tree.root, math, &mut out);
+            assert!(out.len() >= if math { 1 } else { 3 });
+            out
+        }
+        for (bytes, math) in [
+            (
+                include_bytes!("../../../samples/exam_math.hwp").as_slice(),
+                true,
+            ),
+            (
+                include_bytes!("../../../samples/exam_eng.hwp").as_slice(),
+                false,
+            ),
+        ] {
+            let mut core =
+                DocumentCore::from_bytes_with_font_metrics(bytes, FontMetricsPolicy::HcrDeclared)
+                    .unwrap();
+            let before = geometry(&core, math);
+            let section = core.document.sections.len() - 1;
+            let para = core.document.sections[section].paragraphs.len() - 1;
+            let end = core.document.sections[section].paragraphs[para]
+                .text
+                .chars()
+                .count();
+            core.insert_text_native(section, para, end, " ")
+                .expect("unrelated final paragraph edit");
+            let edited = geometry(&core, math);
+            let saved = core.export_hwpx_native().expect("public save");
+            let reopened =
+                DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                    .expect("public certified reopen");
+            assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+            let after = geometry(&reopened, math);
+            for current in [&edited, &after] {
+                assert_eq!(before.len(), current.len());
+                for ((text, x), (text_after, x_after)) in before.iter().zip(current) {
+                    assert_eq!(text, text_after);
+                    assert_eq!(x.len(), x_after.len());
+                    for (a, b) in x.iter().zip(x_after) {
+                        assert!(
+                            (a - b).abs() < 0.01,
+                            "public HFT glyph origin {text}: {a} -> {b}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[track_caller]
@@ -7947,5 +9531,329 @@ mod source_hft_measurement_tests {
             estimate_text_width_unrounded("I", &absent),
             estimate_text_width_unrounded("I", &measure_style(&absent)),
         );
+    }
+}
+
+#[cfg(test)]
+mod standard_hwp_space_geometry_tests {
+    use super::*;
+    use crate::renderer::ControlSpaceBase;
+
+    fn source_style() -> TextStyle {
+        TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            source_standard_space: true,
+            font_family: "Times New Roman".into(),
+            font_size: hwpunit_to_px(1219, 96.0),
+            control_space_dpi: 96.0,
+            control_space_base: Some(ControlSpaceBase {
+                height_hu: 1150,
+                korean_relative_size: 100,
+                korean_ratio: 95,
+                raw31_eng_tracking_percent: Some(0),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ordinary_space_keeps_source_base_across_latin_size_and_justification() {
+        let mut style = source_style();
+        style.extra_word_spacing = 0.75;
+        style.extra_char_spacing = -0.2;
+        let expected = hwpunit_to_px(544, 96.0) + 0.75 - 0.2;
+        for size in [12.0, hwpunit_to_px(1219, 96.0), 24.0] {
+            style.font_size = size;
+            let positions = compute_char_positions("A B", &style);
+            assert!((positions[2] - positions[1] - expected).abs() < 1e-9);
+            assert!((estimate_text_width("A B", &style) - positions[3]).abs() < 1e-9);
+            assert!((estimate_text_width_unrounded("A B", &style) - positions[3]).abs() < 1e-9);
+            assert_eq!(control_space_advance_px(0, '\u{00a0}', &style), None);
+            assert_eq!(control_space_advance_px(0, '\u{2007}', &style), None);
+        }
+        for case in [
+            "unknown",
+            "font-space",
+            "windows",
+            "no-source",
+            "unknown-tracking",
+        ] {
+            let mut excluded = style.clone();
+            match case {
+                "unknown" => excluded.source_standard_space = false,
+                "font-space" => excluded.latin_space = true,
+                "windows" => excluded.font_metrics_policy = FontMetricsPolicy::HancomWindows,
+                "no-source" => excluded.control_space_base = None,
+                "unknown-tracking" => {
+                    excluded
+                        .control_space_base
+                        .as_mut()
+                        .unwrap()
+                        .raw31_eng_tracking_percent = None
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(control_space_advance_px(0, ' ', &excluded), None, "{case}");
+        }
+    }
+
+    #[test]
+    fn ordinary_space_signed_tracking_uses_source_integer_base_and_reference_policy() {
+        let mut style = source_style();
+        style.extra_word_spacing = 0.75;
+        style.extra_char_spacing = -0.2;
+        for (percent, width_hu) in [(-4, 524), (0, 544), (4, 564), (-50, 272), (50, 816)] {
+            style
+                .control_space_base
+                .as_mut()
+                .unwrap()
+                .raw31_eng_tracking_percent = Some(percent);
+            let expected = hwpunit_to_px(width_hu, 96.0) + 0.55;
+            let positions = compute_char_positions("A B", &style);
+            assert!((positions[2] - positions[1] - expected).abs() < 1e-9);
+            assert!((estimate_text_width("A B", &style) - positions[3]).abs() < 1e-9);
+            assert!((estimate_text_width_unrounded("A B", &style) - positions[3]).abs() < 1e-9);
+            let mut reference = style.clone();
+            reference.zero_tracking();
+            assert!(
+                (control_space_advance_px(0, ' ', &reference).unwrap()
+                    - hwpunit_to_px(544, 96.0)
+                    - 0.55)
+                    .abs()
+                    < 1e-9
+            );
+            let mut clamped = style.clone();
+            clamped.clamp_negative_tracking();
+            let clamped_hu = if percent < 0 { 544 } else { width_hu };
+            assert!(
+                (control_space_advance_px(0, ' ', &clamped).unwrap()
+                    - hwpunit_to_px(clamped_hu, 96.0)
+                    - 0.55)
+                    .abs()
+                    < 1e-9
+            );
+        }
+        // q=137의 ±50%는 정확한 half이므로 양쪽 부호 모두 0에서 멀리 반올림한다.
+        let mut half = style.control_space_base.unwrap();
+        half.height_hu = 1158;
+        assert_eq!(half.ordinary_space_advance_hu(50), Some(824));
+        assert_eq!(half.ordinary_space_advance_hu(-50), Some(272));
+    }
+
+    #[test]
+    fn tracked_space_requires_known_non_grid_document_context() {
+        use crate::document_core::DocumentCore;
+        use crate::model::control::Control;
+        use crate::renderer::style_resolver::{resolve_document_styles, resolve_styles};
+        let core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_math.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let allowed = |document: &crate::model::document::Document| {
+            resolve_document_styles(document, 96.0).char_styles[12].source_standard_space
+        };
+        assert!(allowed(&core.document));
+        assert!(
+            !resolve_styles(&core.document.doc_info, 96.0).char_styles[12].source_standard_space
+        );
+        for case in [
+            "line-grid",
+            "char-grid",
+            "wonggoji",
+            "vertical",
+            "missing-section",
+            "stale-control",
+            "generic-hwpx",
+        ] {
+            let mut document = core.document.clone();
+            let section = &mut document.sections[1];
+            match case {
+                "line-grid" => section.section_def.line_grid = 1,
+                "char-grid" => section.section_def.char_grid = 1,
+                "wonggoji" => section.section_def.flags |= 1 << 22,
+                "vertical" => section.section_def.text_direction = 1,
+                "missing-section" => {
+                    for para in &mut section.paragraphs {
+                        para.controls
+                            .retain(|control| !matches!(control, Control::SectionDef(_)));
+                    }
+                }
+                "stale-control" => {
+                    for para in &mut section.paragraphs {
+                        for control in &mut para.controls {
+                            if let Control::SectionDef(def) = control {
+                                def.char_grid = 1;
+                            }
+                        }
+                    }
+                }
+                "generic-hwpx" => {
+                    document.provenance.format = crate::model::provenance::SourceFormat::Hwpx
+                }
+                _ => unreachable!(),
+            }
+            assert!(!allowed(&document), "{case}");
+        }
+    }
+
+    #[test]
+    fn public_native_math_edit_save_reopen_keeps_tracked_space_glyph_origins() {
+        use crate::document_core::DocumentCore;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        fn geometry(core: &DocumentCore) -> Vec<f64> {
+            fn find(node: &RenderNode) -> Option<Vec<f64>> {
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if let Some(byte) = run.text.find("두 초점이") {
+                        assert!(run.style.source_standard_space);
+                        let base = run.style.control_space_base.unwrap();
+                        assert_eq!(base.height_hu, 1150);
+                        assert_eq!(base.korean_relative_size, 100);
+                        assert_eq!(base.korean_ratio, 95);
+                        assert_eq!(base.raw31_eng_tracking_percent, Some(-4));
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        let scalar = run.text[..byte].chars().count() + 1;
+                        let expected = hwpunit_to_px(524, run.style.control_space_dpi)
+                            + run.style.extra_word_spacing
+                            + run.style.extra_char_spacing;
+                        assert!(
+                            (positions[scalar + 1] - positions[scalar] - expected).abs() < 1e-9
+                        );
+                        assert!((node.bbox.width - *positions.last().unwrap()).abs() < 0.01);
+                        return Some(positions.iter().map(|x| node.bbox.x + x).collect());
+                    }
+                }
+                node.children.iter().find_map(find)
+            }
+            let tree = core.build_page_render_tree(19).expect("Math page20");
+            find(&tree.root).expect("Q29 CS12 ordinary-space glyph origins")
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_math.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original Math HWP");
+        let before = geometry(&core);
+        let section = core.document.sections.len() - 1;
+        let para = core.document.sections[section].paragraphs.len() - 1;
+        let end = core.document.sections[section].paragraphs[para]
+            .text
+            .chars()
+            .count();
+        core.insert_text_native(section, para, end, " ")
+            .expect("unrelated final text edit");
+        let edited = geometry(&core);
+        let saved = core.export_hwpx_native().expect("public Math HWPX save");
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .expect("public Math HWPX reopen");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        let after = geometry(&reopened);
+        for current in [&edited, &after] {
+            assert_eq!(before.len(), current.len());
+            for (a, b) in before.iter().zip(current) {
+                assert!(
+                    (a - b).abs() < 0.01,
+                    "edit/roundtrip moved Q29 glyph origin: {a} -> {b}"
+                );
+            }
+        }
+        // 비격자 조건은 실제 저장·재열기 뒤 그리는 스타일에서도 해제되어야 한다.
+        core.document.sections[1].section_def.flags |= 1 << 22;
+        for para in &mut core.document.sections[1].paragraphs {
+            for control in &mut para.controls {
+                if let crate::model::control::Control::SectionDef(def) = control {
+                    def.flags |= 1 << 22;
+                }
+            }
+        }
+        let saved = core.export_hwpx_native().expect("wonggoji source save");
+        let grid =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .expect("wonggoji certified reopen");
+        assert!(grid.document.layout_profile().hwp5_origin_hwpx());
+        assert_ne!(grid.document.sections[1].section_def.flags & (1 << 22), 0);
+        assert!(!grid.styles.char_styles[12].source_standard_space);
+        fn excluded(node: &RenderNode) -> bool {
+            matches!(&node.node_type, RenderNodeType::TextRun(run)
+                if run.text.contains("두 초점이") && !run.style.source_standard_space)
+                || node.children.iter().any(excluded)
+        }
+        let tree = grid
+            .build_page_render_tree(19)
+            .expect("wonggoji Math page20");
+        assert!(excluded(&tree.root));
+    }
+
+    #[test]
+    fn public_native_save_reopen_keeps_standard_space_render_geometry() {
+        use crate::document_core::DocumentCore;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        fn geometry(core: &DocumentCore) -> Vec<f64> {
+            fn find(node: &RenderNode) -> Option<Vec<f64>> {
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if let Some(byte) = run.text.find("In that case") {
+                        assert!(run.style.source_standard_space);
+                        let positions = compute_char_positions(&run.text, &run.style);
+                        let scalar = run.text[..byte].chars().count() + 2;
+                        let expected = hwpunit_to_px(544, run.style.control_space_dpi);
+                        assert!(
+                            (positions[scalar + 1] - positions[scalar] - expected).abs() < 1e-9
+                        );
+                        assert!((node.bbox.width - *positions.last().unwrap()).abs() < 0.01);
+                        return Some(positions.iter().map(|x| node.bbox.x + x).collect());
+                    }
+                }
+                node.children.iter().find_map(find)
+            }
+            let tree = core.build_page_render_tree(0).expect("English page1");
+            find(&tree.root).expect("Q12 ordinary-space text run")
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_eng.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .expect("original English HWP");
+        let before = geometry(&core);
+        let section = core.document.sections.len() - 1;
+        let para = core.document.sections[section].paragraphs.len() - 1;
+        let image = core.document.bin_data_content[0].clone();
+        core.insert_picture_native(
+            section,
+            para,
+            0,
+            &[],
+            &image.data.load(),
+            100,
+            100,
+            1,
+            1,
+            &image.extension,
+            "unrelated end picture",
+            None,
+            None,
+        )
+        .expect("unrelated picture insertion at document end");
+        assert!(core.document.doc_info.raw_stream.is_none());
+        let edited = geometry(&core);
+        assert_eq!(before.len(), edited.len());
+        for (a, b) in before.iter().zip(&edited) {
+            assert!((a - b).abs() < 0.01, "unrelated edit moved Q12: {a} -> {b}");
+        }
+        let saved = core.export_hwpx_native().expect("public HWPX save");
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .expect("public HWPX reopen");
+        assert!(reopened.document.layout_profile().hwp5_origin_hwpx());
+        let after = geometry(&reopened);
+        assert_eq!(before.len(), after.len());
+        for (a, b) in before.iter().zip(after) {
+            assert!(
+                (a - b).abs() < 0.01,
+                "public roundtrip moved Q12: {a} -> {b}"
+            );
+        }
     }
 }

@@ -491,8 +491,10 @@ fn replace_secpr_scalars(xml: &str, sd: &SectionDef) -> String {
     let out = out.replacen(
         r#"<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>"#,
         &format!(
-            r#"<hp:grid lineGrid="{}" charGrid="{}" wonggojiFormat="0"/>"#,
-            sd.line_grid, sd.char_grid
+            r#"<hp:grid lineGrid="{}" charGrid="{}" wonggojiFormat="{}"/>"#,
+            sd.line_grid,
+            sd.char_grid,
+            (sd.flags >> 22) & 1
         ),
         1,
     );
@@ -4637,6 +4639,13 @@ mod tests {
             ),
             "시작 번호가 IR 값이어야 함: {xml:.600}"
         );
+        let mut wonggoji = section.clone();
+        wonggoji.section_def.flags |= 1 << 22;
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&wonggoji, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(xml.contains(r#"wonggojiFormat="1""#));
+        let reopened = crate::parser::hwpx::section::parse_hwpx_section(&xml).unwrap();
+        assert_ne!(reopened.section_def.flags & (1 << 22), 0);
     }
 
     #[test]

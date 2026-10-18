@@ -128,7 +128,7 @@ export class RendererSession {
     this.current = null;
     this.pending = null;
     if (options.resetResources !== false) {
-      this.canvaskitRenderer?.resetDocumentResources();
+      this.canvaskitRenderer?.resetDocumentResources({ preserveFonts: true });
     } else {
       this.canvaskitRenderer?.cancelDocumentPreparation?.();
     }

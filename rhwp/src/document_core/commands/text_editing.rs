@@ -2173,6 +2173,9 @@ impl DocumentCore {
         if !flow_changed {
             return Ok(());
         }
+        let _font_scope = crate::renderer::layout::enter_resolved_shaping_fonts(
+            self.collect_resolved_shaping_fonts(),
+        );
         // 로컬 크기 조정의 독립 셀 배분은 기존 renderer 경로가 소유한다.
         for level in 0..path.len() {
             let owner = if level == 0 {
@@ -2209,6 +2212,9 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() && !profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
+            .with_native_hwp5_cell_spacing(
+                profile.native_hwp5_layout() || profile.hwp5_origin_hwpx(),
+            )
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
         let mut changed = false;
@@ -2381,9 +2387,9 @@ impl DocumentCore {
                 .collect();
             if !shifted.is_empty() {
                 for para_index in shifted {
-                    let mut composed = crate::renderer::composer::compose_paragraph_with_policy(
+                    let mut composed = crate::renderer::composer::compose_paragraph_with_styles(
                         &self.document.sections[section_idx].paragraphs[para_index],
-                        styles.font_metrics_policy,
+                        &styles,
                     );
                     if let Some(slot) = self
                         .composed
@@ -2403,9 +2409,9 @@ impl DocumentCore {
             }
         }
         if changed {
-            let composed = crate::renderer::composer::compose_paragraph_with_policy(
+            let composed = crate::renderer::composer::compose_paragraph_with_styles(
                 &self.document.sections[section_idx].paragraphs[parent_para_idx],
-                styles.font_metrics_policy,
+                &styles,
             );
             if let Some(slot) = self
                 .composed

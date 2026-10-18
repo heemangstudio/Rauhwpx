@@ -219,7 +219,8 @@ pub(crate) const BIG_OP_SCALE: f64 = 1.5; // 큰 연산자(∑/∏) 크기 비�
 pub(crate) const MODERN_HY_SUM_SCALE: f64 = 1.8;
 /// U+E067 has 739 units of advance in the 1024-unit HYhwpEQ font.
 pub(crate) const MODERN_HY_SUM_ADVANCE_EM: f64 = 739.0 / 1024.0;
-pub(crate) const MODERN_HY_SUM_TRAIL_PAD: f64 = 0.03;
+// 현대 Σ의 limit stack 폭은 다음 피연산자의 원점까지다. 별도 tail은 없다.
+pub(crate) const MODERN_HY_SUM_TRAIL_PAD: f64 = 0.0;
 pub(crate) const MODERN_HY_SUM_BASELINE: f64 = 0.74;
 /// 적분(∫/∮ 등) 전용 크기 비율 — Task #1313.
 /// 적분 글리프는 ∑/∏ 보다 세로로 길게 그려져야 정답(한글 2022)과 정합한다. BIG_OP_SCALE
@@ -545,6 +546,23 @@ impl EqLayout {
                 _ => None,
             }
         }
+        // HY's NEQ/!=, SIM and SIMEQ use its binary spacing class (kind 3),
+        // while LEQ/GEQ retain relation class 4. Keep this source-font
+        // distinction out of the shared TeX atom classifier.
+        let prev = if matches!(symbol(prev_node), Some("≠" | "∼" | "≃")) {
+            Atom::of(MathClass::Bin)
+        } else {
+            prev
+        };
+        // HY TIMES는 TeX 행 끝 규칙으로 postfix가 되어도 원본 kind 3의 앞 간격을
+        // 유지한다. 앞 피연산자가 없는 단항 분류는 그대로 둔다.
+        let next = if matches!(symbol(next_node), Some("≠" | "∼" | "≃"))
+            || (next.postfix && symbol(next_node) == Some("×"))
+        {
+            Atom::of(MathClass::Bin)
+        } else {
+            next
+        };
         fn starts_with_glyph(node: &EqNode) -> bool {
             match unstyled(node) {
                 EqNode::Row(children) => children.first().is_some_and(starts_with_glyph),
@@ -1449,6 +1467,15 @@ impl EqLayout {
     }
 
     fn layout_row(&self, children: &[EqNode], fs: f64) -> LayoutBox {
+        self.layout_row_with_sum_limit(children, fs, false)
+    }
+
+    fn layout_row_with_sum_limit(
+        &self,
+        children: &[EqNode],
+        fs: f64,
+        sum_limit: bool,
+    ) -> LayoutBox {
         // Hancom combines two adjacent apostrophe tokens into one double-prime
         // glyph. Preserve the original AST and legacy rendering; only modern
         // HY layout needs the combined painted node.
@@ -1602,8 +1629,19 @@ impl EqLayout {
                         if !Self::leading_font_declaration(node) && !spaced_relation {
                             x -= overhang;
                         }
-                        let mut space =
-                            self.atom_space_em(prev_node, prev, node, atom, script, glue);
+                        // Σ의 위/아래 limit 행은 명시 backtick 없이도 '=' 옆 간격을 둔다.
+                        // 일반 첨자와 limit 안의 중첩 첨자에는 이 문맥을 전파하지 않는다.
+                        let limit_equality = sum_limit
+                            && (matches!(prev_node, EqNode::Symbol(s) if s == "=")
+                                || matches!(node, EqNode::Symbol(s) if s == "="));
+                        let mut space = self.atom_space_em(
+                            prev_node,
+                            prev,
+                            node,
+                            atom,
+                            script,
+                            glue || limit_equality,
+                        );
                         if composite_product_function[index] && !glue {
                             space += 0.125;
                         }
@@ -2570,12 +2608,14 @@ impl EqLayout {
         };
         let op_h = op_fs;
 
-        let sub_box = sub
-            .as_ref()
-            .map(|s| self.layout_node(s, self.script_font_size(fs)));
-        let sup_box = sup
-            .as_ref()
-            .map(|s| self.layout_node(s, self.script_font_size(fs)));
+        let layout_limit = |node: &EqNode| match node {
+            EqNode::Row(children) if modern_hy_sum => {
+                self.layout_row_with_sum_limit(children, self.script_font_size(fs), true)
+            }
+            _ => self.layout_node(node, self.script_font_size(fs)),
+        };
+        let sub_box = sub.as_deref().map(layout_limit);
+        let sup_box = sup.as_deref().map(layout_limit);
 
         let sup_h = sup_box
             .as_ref()
@@ -2617,7 +2657,7 @@ impl EqLayout {
             glyph_advances: None,
             x: 0.0,
             y: 0.0,
-            // 현대 HY Σ는 source glyph의 작은 우측 공백을 쓰고 아래첨자를 왼쪽에 붙인다.
+            // 현대 HY Σ는 limit stack 폭을 쓰고 아래첨자를 왼쪽에 붙인다.
             // 다른 큰 연산자는 종전 trailing 간격과 중앙 정렬을 유지한다.
             width: max_w
                 + fs * if modern_hy_sum {
@@ -3854,6 +3894,56 @@ mod tests {
     }
 
     #[test]
+    fn modern_sum_limits_keep_equality_spacing_and_stack_width() {
+        if isolate_source_face_test(
+            "renderer::equation::layout::tests::modern_sum_limits_keep_equality_spacing_and_stack_width",
+        ) { return; }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fonts/HYhwpEQSourceFixture.ttf");
+        crate::renderer::font_paths::register_font_face_availability(&[fixture]);
+        for fs in [12.0, 16.0, 20.0] {
+            let engine = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+            let limit = EqNode::Row(vec![
+                EqNode::Text("n".into()),
+                EqNode::Symbol("=".into()),
+                EqNode::Number("1".into()),
+            ]);
+            let ordinary = engine.layout_node(&limit, engine.script_font_size(fs));
+            let ast = EqNode::BigOp {
+                symbol: "∑".into(),
+                sub: Some(Box::new(limit.clone())),
+                sup: Some(Box::new(EqNode::MathSymbol("∞".into()))),
+            };
+            let big = engine.layout(&ast);
+            let LayoutKind::BigOp {
+                sub: Some(sub),
+                sup: Some(sup),
+                ..
+            } = &big.kind
+            else {
+                panic!("sum limits")
+            };
+            let plain = row_children(&ordinary);
+            let spaced = row_children(sub);
+            let gap = engine.script_font_size(fs) * 0.21;
+            assert!((spaced[1].x - plain[1].x - gap).abs() < 1e-9);
+            assert!((spaced[2].x - plain[2].x - 2.0 * gap).abs() < 1e-9);
+            assert!((sub.width - ordinary.width - 2.0 * gap).abs() < 1e-9);
+            let op_width = fs * MODERN_HY_SUM_SCALE * MODERN_HY_SUM_ADVANCE_EM;
+            let stack = op_width.max(sub.width).max(sup.width);
+            assert!((big.width - stack).abs() < 1e-9);
+            assert!(sub.x.abs() < 1e-9);
+            assert!((sup.x - (stack - sup.width) / 2.0).abs() < 1e-9);
+            let row = engine.layout(&EqNode::Row(vec![ast, EqNode::Text("x".into())]));
+            assert!((row_children(&row)[1].x - big.width).abs() < 1e-9);
+            // The separate ordinary-script row keeps its existing unspaced relation contract.
+            let again = engine.layout_node(&limit, engine.script_font_size(fs));
+            assert_eq!(row_children(&again)[1].x, plain[1].x);
+            assert_eq!(row_children(&again)[2].x, plain[2].x);
+        }
+    }
+
+    #[test]
     fn modern_limit_ellipsis_and_leading_relation_keep_source_spacing() {
         if isolate_source_face_test(
             "renderer::equation::layout::tests::modern_limit_ellipsis_and_leading_relation_keep_source_spacing",
@@ -4186,6 +4276,244 @@ mod tests {
         assert_eq!(gap(&equal, rel, &glyph_group, open), 0.21);
         let delimiter = EqParser::new(tokenize("LEFT (x RIGHT )")).parse();
         assert_eq!(gap(&var, ord, &delimiter, open), 0.0);
+    }
+
+    #[test]
+    fn modern_neq_aliases_use_binary_pitch_without_changing_tex_relations() {
+        if isolate_source_face_test(
+            "renderer::equation::layout::tests::modern_neq_aliases_use_binary_pitch_without_changing_tex_relations",
+        ) {
+            return;
+        }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fonts/HYhwpEQSourceFixture.ttf");
+        crate::renderer::font_paths::register_font_face_availability(&[fixture]);
+        for fs in [12.0, 16.0, 20.0] {
+            let modern = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+            assert!(modern.has_modern_hy_metrics(fs));
+            let tex = EqLayout::new(fs);
+            for (command, glyph, gap) in [
+                ("!=", "≠", 0.14),
+                ("NEQ", "≠", 0.14),
+                ("SIM", "∼", 0.14),
+                ("sim", "∼", 0.14),
+                ("\\SIMEQ", "≃", 0.14),
+                ("\\simeq", "≃", 0.14),
+                ("LEQ", "≤", 0.21),
+                ("GEQ", "≥", 0.21),
+            ] {
+                let ast = EqParser::new(tokenize(&format!("a {command} 3"))).parse();
+                let EqNode::Row(parts) = &ast else {
+                    panic!("operator row")
+                };
+                assert_eq!(parts.len(), 3, "{command}: {ast:?}");
+                assert!(
+                    matches!(&parts[1], EqNode::Symbol(s) | EqNode::MathSymbol(s) if s == glyph)
+                );
+                // The generic classifier and the ordinary TeX layout remain relational.
+                assert_eq!(symbol_class(glyph), MathClass::Rel);
+                let ordinary = tex.layout(&ast);
+                let ordinary_parts = row_children(&ordinary);
+                let ordinary_gap = fs * THICK_SPACE_EM;
+                assert!(
+                    (ordinary_parts[1].x - ordinary_parts[0].width - ordinary_gap).abs() < 1e-9
+                );
+                assert!(
+                    (ordinary_parts[2].x
+                        - ordinary_parts[1].x
+                        - ordinary_parts[1].width
+                        - ordinary_gap)
+                        .abs()
+                        < 1e-9
+                );
+                let laid = modern.layout(&ast);
+                let children = row_children(&laid);
+                assert!((children[1].x - children[0].width - fs * gap).abs() < 1e-9);
+                assert!(
+                    (children[2].x - children[1].x - children[1].width - fs * gap).abs() < 1e-9
+                );
+                assert!(
+                    (laid.width
+                        - children.iter().map(|child| child.width).sum::<f64>()
+                        - 2.0 * fs * gap)
+                        .abs()
+                        < 1e-9
+                );
+                // Ordinary script rows retain their existing unspaced relation contract.
+                let rel = Atom::of(MathClass::Rel);
+                let ord = Atom::of(MathClass::Ord);
+                assert_eq!(
+                    modern.atom_space_em(&parts[0], ord, &parts[1], rel, true, false),
+                    0.0
+                );
+                assert_eq!(
+                    modern.atom_space_em(&parts[1], rel, &parts[2], ord, true, false),
+                    0.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn modern_terminal_times_keeps_native_leading_pitch_and_tex_demotion() {
+        if isolate_source_face_test(
+            "renderer::equation::layout::tests::modern_terminal_times_keeps_native_leading_pitch_and_tex_demotion",
+        ) { return; }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fonts/HYhwpEQSourceFixture.ttf");
+        crate::renderer::font_paths::register_font_face_availability(&[fixture]);
+        for fs in [12.0, 16.0, 20.0] {
+            let modern = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+            assert!(modern.has_modern_hy_metrics(fs));
+            for alias in ["TIMES", "times", "\\times"] {
+                let ast = EqParser::new(tokenize(&format!("a {alias} "))).parse();
+                let EqNode::Row(parts) = &ast else {
+                    panic!("terminal operator row");
+                };
+                assert_eq!(parts.len(), 2, "{alias}: {ast:?}");
+                assert!(
+                    matches!(&parts[1], EqNode::Symbol(s) | EqNode::MathSymbol(s) if s == "×"),
+                    "{alias}: {ast:?}"
+                );
+                let slots = resolve_atoms(parts.iter().map(atom_of).collect(), true);
+                assert!(
+                    matches!(slots[1], AtomSlot::Atom(atom) if atom.postfix && atom.left == MathClass::Ord)
+                );
+                for (engine, gap) in [(modern.clone(), fs * 0.14), (EqLayout::new(fs), 0.0)] {
+                    let row = engine.layout(&ast);
+                    let children = row_children(&row);
+                    assert_eq!(children.len(), 2);
+                    assert!((children[1].x - children[0].width - gap).abs() < 1e-9);
+                    assert!((row.width - children[0].width - children[1].width - gap).abs() < 1e-9);
+                }
+            }
+            let ord = Atom::of(MathClass::Ord);
+            let rel = Atom::of(MathClass::Rel);
+            let relation = EqNode::Symbol("=".into());
+            let times = EqNode::MathSymbol("×".into());
+            let variable = EqNode::Text("a".into());
+            // 앞 피연산자가 없는 ×는 종전 단항 분류로 앞 간격을 넣지 않는다.
+            assert_eq!(
+                EqLayout::modern_atom_space_em(&relation, rel, &times, ord, false),
+                0.0
+            );
+            assert_eq!(
+                EqLayout::modern_atom_space_em(&times, ord, &variable, ord, false),
+                0.14
+            );
+            for sign in ["+", "-", "−"] {
+                let sign = EqNode::Symbol(sign.into());
+                let postfix = Atom {
+                    postfix: true,
+                    ..ord
+                };
+                assert_eq!(
+                    EqLayout::modern_atom_space_em(&variable, ord, &sign, postfix, false),
+                    0.14
+                );
+                assert_eq!(
+                    EqLayout::modern_atom_space_em(&relation, rel, &sign, ord, false),
+                    0.0
+                );
+                assert_eq!(
+                    EqLayout::modern_atom_space_em(&sign, ord, &variable, ord, false),
+                    0.14
+                );
+            }
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn native_terminal_times_paint_keeps_source_and_frame_after_reopen() {
+        use crate::document_core::DocumentCore;
+        use crate::model::{control::Control, provenance::FontMetricsPolicy};
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let Some(hft) = std::env::var_os("RHWP_HANCOM_HFT_TEST_DIR") else {
+            return;
+        };
+        let mut paths = crate::renderer::font_paths::env_font_paths();
+        paths.push(hft.into());
+        if let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") {
+            paths.push(font.into());
+        }
+        crate::renderer::font_paths::register_font_face_availability(&paths);
+        crate::renderer::hft_glyphs::register_hft_sources(&paths);
+        let _measure = crate::renderer::layout::enter_measure_font_paths(paths);
+        fn check(core: &DocumentCore) -> (f64, f64, f64) {
+            fn visit(node: &RenderNode, out: &mut Vec<(f64, f64, f64)>) {
+                if let RenderNodeType::Equation(eq) = &node.node_type {
+                    if eq.para_index == Some(120)
+                        && eq.control_index == Some(0)
+                        && eq.cell_context.is_none()
+                    {
+                        let children = row_children(&eq.layout_box);
+                        assert_eq!(children.len(), 2);
+                        // 실제 한컴 Q20: 자연 폭 1436HU, x→× 원점 거리 6.96pt.
+                        assert!(
+                            (crate::renderer::px_to_hwpunit_round(eq.layout_box.width, 96.0)
+                                - 1436)
+                                .abs()
+                                <= 1
+                        );
+                        assert!((children[1].x * 0.75 - 6.96).abs() < 0.06);
+                        assert!((node.bbox.x * 0.75 - 428.28).abs() < 0.08);
+                        out.push((node.bbox.x, node.bbox.width, children[1].x));
+                    }
+                }
+                for child in &node.children {
+                    visit(child, out);
+                }
+            }
+            let tree = core.build_page_render_tree(3).unwrap();
+            let mut out = Vec::new();
+            visit(&tree.root, &mut out);
+            assert_eq!(out.len(), 1);
+            out[0]
+        }
+        let mut core = DocumentCore::from_bytes_with_font_metrics(
+            include_bytes!("../../../samples/exam_science.hwp"),
+            FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
+        let _shaping = core.resolved_shaping_font_scope();
+        let source = core.document.sections[0].paragraphs[120].clone();
+        assert!(matches!(&source.controls[0], Control::Equation(eq) if eq.script == "x TIMES "));
+        let before = check(&core);
+        let si = core.document.sections.len() - 1;
+        let pi = core.document.sections[si].paragraphs.len() - 1;
+        let end = core.document.sections[si].paragraphs[pi]
+            .text
+            .chars()
+            .count();
+        core.insert_text_native(si, pi, end, " ").unwrap();
+        let edited = check(&core);
+        let saved = core.export_hwpx_native().unwrap();
+        assert_eq!(
+            format!("{:?}", core.document.sections[0].paragraphs[120]),
+            format!("{source:?}")
+        );
+        let reopened =
+            DocumentCore::from_bytes_with_font_metrics(&saved, FontMetricsPolicy::HcrDeclared)
+                .unwrap();
+        let after = check(&reopened);
+        for current in [edited, after] {
+            assert!(
+                (before.0 - current.0).abs() < 0.01
+                    && (before.1 - current.1).abs() < 0.01
+                    && (before.2 - current.2).abs() < 0.01
+            );
+        }
+        let reopened_source = &reopened.document.sections[0].paragraphs[120];
+        assert_eq!(source.text, reopened_source.text);
+        assert_eq!(source.char_offsets, reopened_source.char_offsets);
+        assert_eq!(
+            format!("{:?}", source.line_segs),
+            format!("{:?}", reopened_source.line_segs)
+        );
+        assert!(
+            matches!(&reopened_source.controls[0], Control::Equation(eq) if eq.script == "x TIMES ")
+        );
     }
 
     #[test]

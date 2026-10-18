@@ -1,0 +1,197 @@
+{
+  "status": "RESOLVED_HISTORICAL_V36_FINDING_CONFIRMED_BY_V37",
+  "capture_status": "COMPLETED_WITH_FINDING",
+  "scope": "No explicit font imports; automatic OS/desktop, web and embedded fonts remain available. No fontless or arbitrary missing-font parity claim.",
+  "wasm_sha256": "6255361c0445bba031707ce2fcda4a7ca5148c520288a6044be3bf52e56dce5a",
+  "capture_count": 96,
+  "source_verification": {
+    "campaign_artifact_label": "studio/v36-fallback/verification.json",
+    "sha256": "77dab15c9ba87dc5124820b4838997df1056a0da90f4ef194198a15a5308564a"
+  },
+  "empty_explicit_font_manifest": {
+    "campaign_artifact_label": "candidates/studio-capture-v3/empty-fonts.json",
+    "sha256": "ccf174d1b70c0f9364f280a4c19ae40fb0fa808122b17d63242327567d1ff360"
+  },
+  "passed": "Capture readiness/error gates, page counts and public edit persistence passed.",
+  "causal_status": "Same-document renderer invalidation released prepared fonts; bounded TS preserve-font resource reset applied. V37 normal, late and fallback retain prepared fonts, with real public edit/undo and repeated capture receipts.",
+  "documents": [
+    {
+      "document": "exam-science",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v36-fallback/exam-science/capture-result.json",
+        "sha256": "d5b9444d98ce1e2a1806132928868955eb4c5912cd8979b326c5bccaeab04735"
+      },
+      "page_counts": {
+        "original": 4,
+        "edited": 4,
+        "reopened": 4
+      },
+      "stages": {
+        "original": {
+          "pages": 4,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            22
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "edited": {
+          "pages": 4,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            0
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "reopened": {
+          "pages": 4,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            22
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        }
+      },
+      "public_edit_and_reopen_length_guard_passed": true,
+      "edited_reopened_exact_pages": 0,
+      "edited_reopened_different_pages": 4
+    },
+    {
+      "document": "exam-english",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v36-fallback/exam-english/capture-result.json",
+        "sha256": "d0c67289c7595a64e9c5bc27b6c8a9e523150fe442f462efb60627d5d65f5fae"
+      },
+      "page_counts": {
+        "original": 8,
+        "edited": 8,
+        "reopened": 8
+      },
+      "stages": {
+        "original": {
+          "pages": 8,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            14
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "edited": {
+          "pages": 8,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            0
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "reopened": {
+          "pages": 8,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            14
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        }
+      },
+      "public_edit_and_reopen_length_guard_passed": true,
+      "edited_reopened_exact_pages": 0,
+      "edited_reopened_different_pages": 8
+    },
+    {
+      "document": "math-exam",
+      "capture_receipt": {
+        "campaign_artifact_label": "studio/v36-fallback/math-exam/capture-result.json",
+        "sha256": "225f21884603a722ada4fdf4bfe36f771a9d7d999204ac54607be40730daf0b0"
+      },
+      "page_counts": {
+        "original": 20,
+        "edited": 20,
+        "reopened": 20
+      },
+      "stages": {
+        "original": {
+          "pages": 20,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            15
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "edited": {
+          "pages": 20,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            0
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        },
+        "reopened": {
+          "pages": 20,
+          "all_png_pins_valid": true,
+          "all_software_canvaskit_ready": true,
+          "all_pending_typefaces_zero": true,
+          "all_no_hidden_canvas2d": true,
+          "all_no_unexpected_ops_or_render_errors": true,
+          "local_typeface_counts": [
+            15
+          ],
+          "local_typeface_load_failure_counts": [
+            0
+          ]
+        }
+      },
+      "public_edit_and_reopen_length_guard_passed": true,
+      "edited_reopened_exact_pages": 0,
+      "edited_reopened_different_pages": 20
+    }
+  ],
+  "historical_finding": "V36 edited-stage local typeface counts fell to zero and all32 edited/reopened images differed. V37 preserve-font resource reset resolves the font loss; current smoke receipts verify prepared-font retention. Two unrelated pre-existing footer advance differences remain scoped separately."
+}

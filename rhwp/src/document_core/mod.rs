@@ -641,11 +641,7 @@ impl DocumentCore {
     /// `resolve_styles` 는 변형 보정을 끄므로, 편집 뒤 재해소에 쓰면 HWP3 변환본의
     /// 문단 여백·간격이 로드 때와 달라져 편집 한 번에 쪽 수가 바뀐다.
     pub(crate) fn resolve_document_styles(&self) -> ResolvedStyleSet {
-        crate::renderer::style_resolver::resolve_styles_with_variant(
-            &self.document.doc_info,
-            self.dpi,
-            self.document.layout_profile().hwp3_layout(),
-        )
+        crate::renderer::style_resolver::resolve_document_styles(&self.document, self.dpi)
     }
 
     /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
