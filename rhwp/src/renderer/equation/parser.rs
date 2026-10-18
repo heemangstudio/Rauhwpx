@@ -2733,6 +2733,104 @@ mod tests {
     }
 
     #[test]
+    fn math10_september_original_cases_parse_relations_without_leaked_letters() {
+        use super::super::layout::{EqLayout, LayoutKind};
+
+        // Saved source ends at the closing parenthesis, without a cases brace.
+        let original = "=cases{``-left(x+1right)^2 +7&&left(x<0right)#``-left(x-1right)^2 +7&&left(x ge0right)";
+        let engine = EqLayout::with_font(16.0, "HYhwpEQ").with_version("Equation Version 60");
+        for (relation, command, glyph) in [
+            ("ge", "GEQ", "≥"),
+            ("GE", "GEQ", "≥"),
+            ("gE", "GEQ", "≥"),
+            ("geq", "GEQ", "≥"),
+            ("GEQ", "GEQ", "≥"),
+            ("gEq", "GEQ", "≥"),
+            ("le", "LEQ", "≤"),
+            ("LE", "LEQ", "≤"),
+            ("lE", "LEQ", "≤"),
+            ("leq", "LEQ", "≤"),
+            ("LEQ", "LEQ", "≤"),
+            ("lEq", "LEQ", "≤"),
+        ] {
+            let expected = parse(&original.replace("ge0right", &format!("{command} 0 RIGHT")));
+            for right in ["right", "RIGHT", "rIgHt"] {
+                for spelling in [
+                    format!("{relation}0{right}"),
+                    format!("{relation} 0 {right}"),
+                ] {
+                    let script = original.replace("ge0right", &spelling);
+                    let actual = parse(&script);
+                    assert_eq!(actual, expected, "{script}");
+                    assert_eq!(
+                        actual,
+                        parse(&format!("{script}}}")),
+                        "missing-brace tolerance"
+                    );
+                    let EqNode::Row(parts) = &actual else {
+                        panic!("expected equation row")
+                    };
+                    let rows = parts
+                        .iter()
+                        .find_map(|node| match node {
+                            EqNode::Cases { rows } => Some(rows),
+                            _ => None,
+                        })
+                        .expect("saved equation retains cases");
+                    assert_eq!(rows.len(), 2);
+                    let EqNode::Row(second) = &rows[1] else {
+                        panic!("expected second cases row")
+                    };
+                    let condition = second.last().expect("second condition");
+                    let EqNode::Paren { left, right, body } = condition else {
+                        panic!("expected condition delimiter: {condition:?}")
+                    };
+                    assert_eq!((left.as_str(), right.as_str()), ("(", ")"));
+                    assert_eq!(body.as_ref(), &parse(&format!("x {command} 0")));
+
+                    let layout = engine.layout(condition);
+                    let LayoutKind::Paren {
+                        left, right, body, ..
+                    } = &layout.kind
+                    else {
+                        panic!("expected condition layout")
+                    };
+                    assert_eq!((left.as_str(), right.as_str()), ("(", ")"));
+                    let LayoutKind::Row(leaves) = &body.kind else {
+                        panic!("expected condition glyphs")
+                    };
+                    let glyphs: Vec<_> = leaves
+                        .iter()
+                        .map(|leaf| match &leaf.kind {
+                            LayoutKind::Text(text)
+                            | LayoutKind::Number(text)
+                            | LayoutKind::Symbol(text)
+                            | LayoutKind::MathSymbol(text) => text.as_str(),
+                            other => panic!("unexpected condition leaf: {other:?}"),
+                        })
+                        .collect();
+                    assert_eq!(glyphs, vec!["x", glyph, "0"], "{script}");
+                    let canonical = engine.layout(&parse(&format!("LEFT(x {command} 0 RIGHT)")));
+                    assert_eq!(
+                        (layout.width, layout.height, layout.baseline),
+                        (canonical.width, canonical.height, canonical.baseline)
+                    );
+                }
+            }
+        }
+        for identifier in [
+            "geometry",
+            "GEOMETRY",
+            "bright",
+            "sigmaRIGHTMOST",
+            "gevalue",
+            "legendre",
+        ] {
+            assert_eq!(parse(identifier), EqNode::Text(identifier.into()));
+        }
+    }
+
+    #[test]
     fn test_cases() {
         let ast = parse("CASES{ 1 & x>0 # -1 & x<0 }");
         match &ast {

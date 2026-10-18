@@ -2968,8 +2968,29 @@ impl EqLayout {
         }
     }
 
+    /// cases 행 높이를 소유하는 쌓임만 찾는다. 첨자 안의 분수는 승격하지 않는다.
+    /// atop은 충돌 회피에만 포함하고 over 분수의 기준선 보정에서는 제외한다.
+    fn cases_has_stack(node: &EqNode, include_atop: bool) -> bool {
+        match node {
+            EqNode::Fraction { .. } => true,
+            EqNode::Atop { .. } => include_atop,
+            EqNode::Row(children) => children
+                .iter()
+                .any(|child| Self::cases_has_stack(child, include_atop)),
+            EqNode::OperatorBody(body)
+            | EqNode::Paren { body, .. }
+            | EqNode::FontStyle { body, .. }
+            | EqNode::FontDeclaration { body, .. }
+            | EqNode::Color { body, .. } => Self::cases_has_stack(body, include_atop),
+            EqNode::Superscript { base, .. }
+            | EqNode::Subscript { base, .. }
+            | EqNode::SubSup { base, .. } => Self::cases_has_stack(base, include_atop),
+            _ => false,
+        }
+    }
+
     /// 현대 HY 경우 나눔(cases). 한컴 probe/math-001 실측:
-    /// - 줄 간격은 내용과 무관하게 1.17em, 전체 줄의 가운데가 수식 기준선이다
+    /// - 일반 행의 줄 간격은 1.17em, 전체 줄의 가운데가 수식 기준선이다
     ///   (`cases{a#b}` 13.0pt@11, math-001 세 줄 397.32/·/423.12 ↔ 기준선 410.16).
     /// - eqalign 의 줄은 그대로 줄 수에 들어간다 (끝의 빈 행도 한 줄).
     /// - `&` 는 열을 나눈다. 첫 `&` 는 0.19em, 이어진 `&` 는 각각 0.70em을 더한다.
@@ -3023,15 +3044,7 @@ impl EqLayout {
         // 분수처럼 위아래로 쌓인 항이 있는 행. 위첨자(x^2) 같은 일반 행은 고정 pitch 를 지킨다.
         let row_stacked: Vec<bool> = rows
             .iter()
-            .map(|row| {
-                let children: &[EqNode] = match row {
-                    EqNode::Row(children) => children,
-                    other => std::slice::from_ref(other),
-                };
-                children
-                    .iter()
-                    .any(|n| matches!(n, EqNode::Fraction { .. } | EqNode::Atop { .. }))
-            })
+            .map(|row| Self::cases_has_stack(row, true))
             .collect();
         let cols = rows_cells.iter().map(Vec::len).max().unwrap_or(0);
         let mut col_w = vec![0.0f64; cols];
@@ -3130,15 +3143,7 @@ impl EqLayout {
         bottom = bottom.max(plain_bottom);
         // over 분수가 쌓인 행은 한쪽 끝으로 뻗은 높이만큼 기준선을 옮긴다.
         // atop과 일반 행의 위첨자 돌출은 줄 기준선을 바꾸지 않는다.
-        let has_fraction = rows.iter().any(|row| {
-            let children: &[EqNode] = match row {
-                EqNode::Row(children) => children,
-                other => std::slice::from_ref(other),
-            };
-            children
-                .iter()
-                .any(|n| matches!(n, EqNode::Fraction { .. }))
-        });
+        let has_fraction = rows.iter().any(|row| Self::cases_has_stack(row, false));
         let baseline_from_first = if has_fraction {
             let extra_above = plain_top - top;
             let extra_below = bottom - plain_bottom;
@@ -6591,6 +6596,195 @@ mod tests {
             (plain - aligned).abs() < 0.01,
             "plain condition x={plain}, empty-eqalign condition x={aligned}"
         );
+    }
+
+    fn math10_cases_cells(layout: &LayoutBox) -> &[LayoutBox] {
+        let LayoutKind::Paren { body, .. } = &layout.kind else {
+            panic!("expected cases brace");
+        };
+        let LayoutKind::Row(cells) = &body.kind else {
+            panic!("expected cases cells");
+        };
+        cells
+    }
+
+    fn math10_condition_rows(condition: EqNode) -> Vec<EqNode> {
+        ["a", "b"]
+            .into_iter()
+            .map(|value| {
+                EqNode::Row(vec![
+                    EqNode::Text(value.into()),
+                    EqNode::Space(SpaceKind::Tab),
+                    condition.clone(),
+                ])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn math10_cases_wrapped_stacks_keep_direct_row_geometry() {
+        use crate::renderer::equation::symbols::FontStyleKind;
+
+        let fs = 16.0;
+        let engine = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+        for stack in [
+            EqNode::Fraction {
+                numer: Box::new(EqNode::Number("1".into())),
+                denom: Box::new(EqNode::Number("2".into())),
+            },
+            EqNode::Atop {
+                top: Box::new(EqNode::Number("1".into())),
+                bottom: Box::new(EqNode::Number("2".into())),
+            },
+        ] {
+            let direct = engine.layout_cases_modern(&math10_condition_rows(stack.clone()), fs);
+            let direct_cells = math10_cases_cells(&direct);
+            let direct_pitch = direct_cells[2].y - direct_cells[0].y;
+            let plain =
+                engine.layout_cases_modern(&math10_condition_rows(EqNode::Text("x".into())), fs);
+            let plain_cells = math10_cases_cells(&plain);
+            assert!(direct_pitch > plain_cells[2].y - plain_cells[0].y);
+
+            let wrappers = [
+                EqNode::Row(vec![stack.clone()]),
+                EqNode::Paren {
+                    left: "(".into(),
+                    right: ")".into(),
+                    body: Box::new(stack.clone()),
+                },
+                EqNode::FontStyle {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(stack.clone()),
+                },
+                EqNode::FontDeclaration {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(stack.clone()),
+                },
+                EqNode::Color {
+                    r: 10,
+                    g: 20,
+                    b: 30,
+                    body: Box::new(stack.clone()),
+                },
+                EqNode::OperatorBody(Box::new(stack)),
+            ];
+            for wrapped in wrappers {
+                let layout = engine.layout_cases_modern(&math10_condition_rows(wrapped), fs);
+                let cells = math10_cases_cells(&layout);
+                assert!((cells[2].y - cells[0].y - direct_pitch).abs() < 0.0001);
+                assert!((layout.height - direct.height).abs() < 0.0001);
+                assert!(
+                    (layout.baseline - direct.baseline).abs() < 0.0001,
+                    "wrappers must retain the stack's surrounding baseline"
+                );
+                let first_bottom = cells[..2]
+                    .iter()
+                    .map(|cell| cell.y + cell.height)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let second_top = cells[2..]
+                    .iter()
+                    .map(|cell| cell.y)
+                    .fold(f64::INFINITY, f64::min);
+                assert!(second_top >= first_bottom, "stacked condition rows overlap");
+            }
+        }
+    }
+
+    #[test]
+    fn math10_cases_script_fractions_keep_compact_row_centers() {
+        let fs = 16.0;
+        let engine = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+        let base = Box::new(EqNode::Text("x".into()));
+        let fraction = Box::new(EqNode::Fraction {
+            numer: Box::new(EqNode::Number("1".into())),
+            denom: Box::new(EqNode::Number("2".into())),
+        });
+        let plain = engine.layout_cases_modern(&math10_condition_rows((*base).clone()), fs);
+        let plain_cells = math10_cases_cells(&plain);
+        let plain_pitch = plain_cells[2].y - plain_cells[0].y;
+        for condition in [
+            EqNode::Superscript {
+                base: base.clone(),
+                sup: Box::new(EqNode::Number("2".into())),
+            },
+            EqNode::Superscript {
+                base: base.clone(),
+                sup: fraction.clone(),
+            },
+            EqNode::Subscript {
+                base: base.clone(),
+                sub: fraction.clone(),
+            },
+            EqNode::SubSup {
+                base,
+                sub: fraction.clone(),
+                sup: fraction,
+            },
+        ] {
+            let layout = engine.layout_cases_modern(&math10_condition_rows(condition), fs);
+            let cells = math10_cases_cells(&layout);
+            let first = cells[0].y + cells[0].baseline;
+            let second = cells[2].y + cells[2].baseline;
+            assert!((second - first - plain_pitch).abs() < 0.0001);
+            assert!((layout.baseline - (first + second) / 2.0).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn math10_may_original_cases_conditions_do_not_collide() {
+        // With the owned face supplied, also check the production layout entry.
+        let source_face = std::env::var_os("RHWP_HANCOM_TEST_FONT");
+        if let Some(path) = source_face.as_ref() {
+            crate::renderer::font_paths::register_font_face_availability(&[path.into()]);
+        }
+        let fs = 11.0 * 4.0 / 3.0;
+        let engine = EqLayout::with_font(fs, "HYhwpEQ").with_version("Equation Version 60");
+        let original = "h(x)=cases{4 x+2 &&  left(x<{1} over {2} right) #-2 x-3 &&  left(x  geq {1} over {2} right)}";
+        for script in [
+            original.to_string(),
+            original.replacen("{1} over {2}", "0", 1),
+            original.replace("geq {1} over {2}", "geq 0"),
+        ] {
+            let ast = crate::renderer::equation::parser::parse(&script);
+            let EqNode::Row(parts) = &ast else {
+                panic!("expected original equation row")
+            };
+            let cases = parts
+                .iter()
+                .find(|node| matches!(node, EqNode::Cases { .. }))
+                .expect("original equation retains its cases");
+            let EqNode::Cases { rows } = cases else {
+                unreachable!()
+            };
+            assert_eq!(rows.len(), 2);
+            let layout = engine.layout_cases_modern(rows, fs);
+            if source_face.is_some() {
+                assert!(
+                    engine.has_modern_hy_metrics(fs),
+                    "owned HY fixture did not load"
+                );
+                let production = engine.layout(cases);
+                assert_eq!(
+                    (production.height, production.baseline),
+                    (layout.height, layout.baseline)
+                );
+            }
+            let cells = math10_cases_cells(&layout);
+            assert_eq!(cells.len(), 4);
+            let first_bottom = cells[..2]
+                .iter()
+                .map(|cell| cell.y + cell.height)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let second_top = cells[2..]
+                .iter()
+                .map(|cell| cell.y)
+                .fold(f64::INFINITY, f64::min);
+            assert!(second_top >= first_bottom, "{script}: cases rows overlap");
+            let plain =
+                engine.layout_cases_modern(&math10_condition_rows(EqNode::Text("x".into())), fs);
+            let plain_cells = math10_cases_cells(&plain);
+            assert!(cells[2].y - cells[0].y > plain_cells[2].y - plain_cells[0].y);
+        }
     }
 
     #[test]
