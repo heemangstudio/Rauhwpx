@@ -195,3 +195,11 @@ codegen-units = 16
 # 비는 시점에 재판단한다. 그때까지 이 패치를 유지·관리한다.
 [patch.crates-io]
 svg2pdf = { git = "https://github.com/edwardkim/svg2pdf", branch = "determinism-0.13" }
+
+# Temporary BASELINE diagnostic targets. Never merge.
+[[test]]
+name = "math10_mixed_owned_baseline"
+path = "tests/math10_mixed_diagnostic/issue_math10_mixed_endnote_tables.rs"
+[[test]]
+name = "math10_mixed_original_source_probe"
+path = "tests/math10_mixed_diagnostic/owned_mixed_tables.rs"
