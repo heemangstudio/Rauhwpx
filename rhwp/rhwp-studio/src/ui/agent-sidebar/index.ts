@@ -1224,6 +1224,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsReturnsHome = false;
   /** 홈에서 설정을 열며 집중 화면으로 들어왔으면, 홈으로 돌아갈 때 그 화면을 접는다. */
   let settingsExitsFullscreenOnHome = false;
+  /** 설정은 집중 화면에만 있다 — 좁은 사이드바에서 열며 집중 화면으로 넓혔으면, 닫을 때 사이드바로 돌아간다. */
+  let settingsExitsFullscreen = false;
   /**
    * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
    * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
@@ -5633,6 +5635,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void requestSettingsClose(undefined, () => setFullscreen(true, opts));
       return;
     }
+    // 설정은 집중 화면에만 있다 — 집중 화면을 나가면 설정을 먼저 닫는다(적용하지 않은 변경은 묻는다).
+    if (!on && settingsPanelOpen) {
+      void requestSettingsClose(undefined, () => setFullscreen(false, opts));
+      return;
+    }
     fullscreen = on;
     // 교차 페이드가 배치를 다음 프레임에 바꿔도 페이지 표시는 상태와 함께 바로 바뀐다.
     syncFullscreenPageClass();
@@ -5862,6 +5869,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     settingsPanelOpen = false;
     settingsReturnsHome = false;
     settingsExitsFullscreenOnHome = false;
+    settingsExitsFullscreen = false;
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
@@ -5882,11 +5890,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!await settingsPanel.requestClose()) return false;
     const returnHome = settingsReturnsHome;
     const exitFullscreen = returnHome && settingsExitsFullscreenOnHome && fullscreen;
+    const backToSidebar = !returnHome && settingsExitsFullscreen;
     closeSettingsPage();
     chatPage.setAttribute('aria-hidden', 'false');
     root.classList.remove('ag-settings-open');
     returnFocus?.focus();
     afterClose?.();
+    if (backToSidebar && fullscreen) setFullscreen(false);
     // 설정에서 홈으로 돌아갈 때는 페이드 없이 덮는다. 페이드 동안 뒤의 채팅 화면이 비친다.
     // 집중 화면이 남아 있으면 홈의 돌아가기 단추가 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
     if (exitFullscreen) setFullscreen(false, { instant: true, then: () => openDocumentHome?.({ instant: true }) });
@@ -5945,6 +5955,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   skillsClose.addEventListener('click', () => { setSkillsPanelOpen(false); skillsBtn.focus(); });
 
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestination): void {
+    // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
+    if (open && !fullscreen && !settingsPanelOpen) {
+      setFullscreen(true, {
+        then: () => {
+          if (!fullscreen) return;
+          setSettingsPanelOpen(true, destination);
+          settingsExitsFullscreen = true;
+        },
+      });
+      return;
+    }
     if (open) workbench?.select(null);
     if (!open && settingsPanelOpen && settingsPanel.isDirty()) {
       void requestSettingsClose(fullscreen ? workspaceSettingsBtn : input);
