@@ -1,0 +1,211 @@
+/* 문서 홈 오른쪽 아래의 업데이트 하마 (update-hippo.ts). 한 칸은 그림과 같은 3px 이고,
+   팻말 테두리·그림자·단추 모서리·아이콘·막대도 그 칸으로 끊는다. 색은 문서 홈 토큰(--dh-*)을 읽는다. */
+.uh {
+  --uh-px: 3px;
+  --uh-board: var(--dh-raised, #ffffff);
+  --uh-edge: var(--dh-ink, #171b22);
+  --uh-shade: var(--dh-hairline-strong, #c4cad3);
+  --uh-text: var(--dh-text, #171b22);
+  --uh-warning: var(--theme-warning, #c27c0e);
+  --uh-press: var(--dh-hover, rgba(23, 27, 34, 0.06));
+
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  /* 팻말이 올라설 자리까지만 덮는다. 밖은 가장자리 밑이라 잘린다. */
+  width: 264px;
+  height: 216px;
+  overflow: hidden;
+  z-index: 3;
+  pointer-events: none;
+  user-select: none;
+}
+
+.uh[hidden] { display: none; }
+
+:root[data-theme-effective='dark'] .uh {
+  --uh-edge: var(--dh-text-secondary, #b4b4b4);
+  --uh-shade: #000000; /* 어두운 면 위의 그림자 */
+}
+
+.uh-rig {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 108px;
+  height: 78px;
+}
+
+/* 36×26 칸 다섯 개(가만히·깜빡임·귀 털기·내려감·귀만)를 3배로 키운다. 몸은 창 오른쪽·아래 끝으로 이어진다. */
+.uh-sprite {
+  position: absolute;
+  inset: 0;
+  background: url('./update-hippo-sprites.png') 0 0 / 540px 78px no-repeat;
+  image-rendering: pixelated;
+}
+
+.uh-hippo,
+.uh-ears {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* 막대 뒤 머리와 몸: 귀 끝부터 아래까지. */
+.uh-hippo {
+  left: 12px;
+  right: 0;
+  top: 36px;
+  bottom: 0;
+}
+
+/* 숨었을 때 귀와 눈 둘레. 보이는 세 줄보다 넉넉히 누른다. */
+.uh-ears {
+  right: 18px;
+  bottom: 0;
+  width: 60px;
+  height: 27px;
+}
+
+.uh-hippo[hidden],
+.uh-ears[hidden],
+.uh-board[hidden] { display: none; }
+
+.uh-hippo:focus-visible,
+.uh-ears:focus-visible {
+  outline: 2px solid var(--dh-focus, #4b5563);
+  outline-offset: -2px;
+}
+
+/* ── 팻말 ── 막대 위 끝을 덮고 선다. 테두리는 네 방향 3px 그림자라 모서리 칸이 빠진다. */
+.uh-board {
+  position: absolute;
+  /* 막대 위 네 칸을 덮는다. */
+  bottom: calc(78px - 4 * var(--uh-px));
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: max-content;
+  max-width: 252px;
+  min-height: 39px;
+  padding: 6px 9px 6px 12px;
+  background: var(--uh-board);
+  color: var(--uh-text);
+  box-shadow:
+    0 calc(-1 * var(--uh-px)) 0 0 var(--uh-edge),
+    0 var(--uh-px) 0 0 var(--uh-edge),
+    calc(-1 * var(--uh-px)) 0 0 0 var(--uh-edge),
+    var(--uh-px) 0 0 0 var(--uh-edge),
+    0 calc(2 * var(--uh-px)) 0 0 var(--uh-shade);
+  pointer-events: auto;
+}
+
+.uh-board[data-tone='warning'] { --uh-edge: var(--uh-warning); }
+
+.uh-board.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 9px 9px 9px 12px;
+}
+
+.uh-text {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  word-break: keep-all;
+}
+
+.uh-actions {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* 단추 모서리도 한 칸씩 깎는다. */
+.uh-act {
+  display: grid;
+  place-items: center;
+  height: 33px;
+  padding: 0;
+  border: 0;
+  clip-path: polygon(
+    var(--uh-px) 0, calc(100% - var(--uh-px)) 0, calc(100% - var(--uh-px)) var(--uh-px),
+    100% var(--uh-px), 100% calc(100% - var(--uh-px)), calc(100% - var(--uh-px)) calc(100% - var(--uh-px)),
+    calc(100% - var(--uh-px)) 100%, var(--uh-px) 100%, var(--uh-px) calc(100% - var(--uh-px)),
+    0 calc(100% - var(--uh-px)), 0 var(--uh-px), var(--uh-px) var(--uh-px)
+  );
+  font: inherit;
+  cursor: pointer;
+}
+
+.uh-act-icon {
+  width: 33px;
+  background: var(--uh-edge);
+  color: var(--uh-board);
+}
+
+.uh-act-icon:hover { background: color-mix(in srgb, var(--uh-edge) 82%, var(--uh-board)); }
+.uh-act-icon:active { transform: translateY(var(--uh-px)); }
+
+.uh-act-text {
+  padding: 0 9px;
+  background: transparent;
+  color: var(--uh-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.uh-act-text:hover { background: var(--uh-press); }
+
+.uh-act:focus-visible {
+  outline: 2px solid var(--dh-focus, #4b5563);
+  outline-offset: -2px;
+}
+
+.uh-icon { display: block; }
+.uh-icon path { fill: currentColor; }
+
+/* ── 내려받기 막대 ── 채움은 3px 칸으로 끊어 자란다. */
+.uh-progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+}
+
+.uh-bar {
+  position: relative;
+  width: 108px;
+  height: 9px;
+  margin: var(--uh-px);
+  box-shadow:
+    0 calc(-1 * var(--uh-px)) 0 0 var(--uh-edge),
+    0 var(--uh-px) 0 0 var(--uh-edge),
+    calc(-1 * var(--uh-px)) 0 0 0 var(--uh-edge),
+    var(--uh-px) 0 0 0 var(--uh-edge);
+}
+
+.uh-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: #62b3e2; /* 하마 몸 색 */
+}
+
+.uh-percent {
+  min-width: 33px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}

@@ -565,6 +565,14 @@ export interface AgentSidebarHandle {
    * 바꿨으면 true.
    */
   markInterrupted(reason: TurnInterruptionReason): boolean;
+  /**
+   * 앱 업데이트로 다시 켠 뒤 이 채팅의 끊긴 턴을 한 번 이어서 진행한다 — 단추를 누른 것과 같다. 그 채팅이
+   * 보이고 연결된 뒤에 누르고, 그 전에 채팅을 떠났거나 누가 이어 갔거나 질문의 답을 기다리다 끊긴 턴이면
+   * 거둔다. 눌렀으면 true 로 풀린다.
+   */
+  resumeAfterRestart(threadId: string): Promise<boolean>;
+  /** 보이는 채팅의 미뤄 둔 기록을 지금 저장소에 넘긴다(창을 닫기 직전). */
+  persistThread(): void;
   dispose(): void;
 }
 
@@ -1008,6 +1016,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const interruptionRows = new Map<string, TurnInterruptionRow>();
   /** 이어 가기 블록을 실어 보낸 마지막 메시지 — 허브가 이 receipt 로 거절하면 끊김을 다시 연다(S3). */
   let continuationMessage: { threadId: string; markerId: string; messageId: string } | null = null;
+  /**
+   * 앱 업데이트로 다시 켠 뒤 한 번 누를 이어서 진행(resumeAfterRestart). 누르거나 거두면 null 이고,
+   * settle 은 눌렀으면 true, 거뒀으면 false 를 받는다.
+   */
+  let restartResume: { threadId: string; settle: (resumed: boolean) => void } | null = null;
   /* 연결 점과 입력기 잠금은 400ms 를 넘긴 상태만 보인다 — 짧은 재연결이나 채팅 시작이
      점·잠긴 입력기로 깜빡이지 않는다. 다른 탭 사용(replaced)은 바로 보인다. 판단은
      언제나 실제 상태(connState 등)로 한다. */
@@ -10259,6 +10272,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 줄의 단추(보일지·막힐지)와 대기 메시지 수를 지금 상태에 맞춘다. */
   function syncInterruptionRows(): void {
+    // 단추를 막던 상태가 풀렸으면 앱 재시작 뒤 미뤄 둔 이어서 진행을 누른다.
+    tryRestartResume();
     if (interruptionRows.size === 0) return;
     for (const [markerId, row] of interruptionRows) {
       const marker = findTurnMarker(currentThread.messages, markerId);
@@ -10318,10 +10333,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 블록이 붙는다). 허브 재시작 뒤라 세션이 없으면 브리지가 채팅 시작부터 보낸다. 같은 틱에 대기열을
    * 풀어 그 턴이 정상으로 끝나면 대기 메시지를 보내게 한다(U1).
    */
-  function resumeInterruptedTurn(): void {
+  function resumeInterruptedTurn(): boolean {
     const pending = unresolvedInterruption(currentThread);
-    if (!pending || draftChat || readOnlyDocLabel !== null || mergeResolverLocked) return;
-    if (resumeBlockedReason(false) !== null) return;
+    if (!pending || draftChat || readOnlyDocLabel !== null || mergeResolverLocked) return false;
+    if (resumeBlockedReason(false) !== null) return false;
     // 누른 단추는 곧 사라진다 — 초점을 잃지 않게 입력기로 옮긴다(단추에 있던 초점만).
     const focusWasOnRow = document.activeElement instanceof HTMLElement
       && document.activeElement.closest('.ag-turn-interrupted') !== null;
@@ -10333,6 +10348,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
     followUps.release();
     if (focusWasOnRow && active && !input.disabled) input.focus({ preventScroll: true });
+    return true;
+  }
+
+  /**
+   * 미뤄 둔 이어서 진행 — 단추를 누른 것과 같다. 지금 누를 수 없으면(연결 전·채팅 시작 중) 상태가 바뀔 때마다
+   * 다시 본다. 그 채팅을 떠났거나, 누가 이미 이어 갔거나, 질문의 답을 기다리다 끊긴 턴이면 거둔다 — 그 턴은
+   * 사용자가 고른다.
+   */
+  function tryRestartResume(): void {
+    const pending = restartResume;
+    if (!pending) return;
+    const interruption = draftChat || readOnlyDocLabel !== null || currentThread.id !== pending.threadId
+      ? null
+      : unresolvedInterruption(currentThread);
+    if (!interruption || segmentHasExpiredQuestion(currentThread.messages, interruption.marker.messageId)) {
+      restartResume = null;
+      pending.settle(false);
+      return;
+    }
+    if (mergeResolverLocked || resumeBlockedReason(false) !== null) return;
+    restartResume = null;
+    // 입력기·연결 표시를 그리는 도중에 불릴 수 있다 — 보내기는 그 뒤에 한다.
+    queueMicrotask(() => pending.settle(resumeInterruptedTurn()));
   }
 
   /**
@@ -13200,8 +13238,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       chatChosen = true;
       pendingThreadSwitch = { threadId };
     },
+    resumeAfterRestart(threadId: string): Promise<boolean> {
+      if (root.dataset.disposed === 'true') return Promise.resolve(false);
+      restartResume?.settle(false);
+      return new Promise<boolean>((settle) => {
+        restartResume = { threadId, settle };
+        tryRestartResume();
+      });
+    },
+    persistThread(): void {
+      if (root.dataset.disposed !== 'true') flushTranscriptPersist();
+    },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
+      restartResume?.settle(false);
+      restartResume = null;
       browserActivation++;
       if (active) { sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null; sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null; }
       finishReplayNow();

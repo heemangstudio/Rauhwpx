@@ -153,6 +153,9 @@ html:is(.desktop-mac, .desktop-windows) .dh-topbar :is(button, a, input, [role='
 }
 
 .dh-recent { padding: 24px 0 28px; }
+/* 오른쪽 아래 가장자리에서 업데이트 하마가 팻말을 들고 있으면, 끝까지 내렸을 때 마지막 줄 카드가
+   팻말 밑에 깔리지 않게 그 높이만큼 비워 둔다. */
+.document-home:has(> .uh:not([hidden])) .dh-recent > .dh-inner { padding-bottom: 120px; }
 
 .dh-bar {
   display: flex;

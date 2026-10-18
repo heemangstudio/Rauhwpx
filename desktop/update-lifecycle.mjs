@@ -1,95 +1,48 @@
 // The application approves document closure and stops its services before an
 // installer can take over. electron-updater owns the final platform handoff.
 export function createUpdateLifecycle({
-  app, updater, nativeUpdater, platform, showMessageBox, openReleases,
-  cleanup, onQuitRequested, onTeardown, isInteractive = () => false, logger = console,
+  app, updater, nativeUpdater, platform, cleanup, onQuitRequested, onTeardown, logger = console,
 }) {
-  let downloaded = null;
-  let prompt = null;
-  let installRequested = false;
+  // null: plain quit. 'native': quitAndInstall. 'relaunch': the dev update seam restarts without installing.
+  let install = null;
   let handoffStarted = false;
   let updaterQuitting = false;
   let teardown = null;
-  let failureDialog = null;
-  const reportedErrors = new WeakSet();
+  let failed = false;
 
   function cancelQuit() {
-    installRequested = false;
+    install = null;
     onQuitRequested(false);
   }
 
-  async function reportError(error) {
-    logger.warn('[hamaeditor] update failed:', error?.message ?? error);
-    if (error && typeof error === 'object') {
-      if (reportedErrors.has(error)) return;
-      reportedErrors.add(error);
-    }
-    if (failureDialog) return failureDialog;
-    const failedInstall = handoffStarted;
-    if (!failedInstall && installRequested) cancelQuit();
-    failureDialog = (async () => {
-      try {
-        const { response } = await showMessageBox({
-          type: 'warning',
-          message: failedInstall ? 'HamaEditor could not install the update' : 'HamaEditor could not update',
-          detail: `${error?.message ?? String(error)}${failedInstall ? '\nRestart HamaEditor to try again, or download the latest release.' : '\nChoose Check for Updates to try again.'}`,
-          buttons: ['Open releases page', failedInstall ? 'Quit' : 'OK'],
-          defaultId: 1,
-          cancelId: 1,
-        });
-        if (response === 0) await openReleases();
-      } catch (dialogError) {
-        logger.warn('[hamaeditor] update error dialog failed:', dialogError);
-      } finally {
-        // Services have stopped and MacUpdater may retain a native staging
-        // listener after an error. Retry in a fresh process, never a second
-        // quitAndInstall call against that listener.
-        if (failedInstall) app.exit(1);
-        failureDialog = null;
-      }
-    })();
-    return failureDialog;
-  }
-
-  function offerInstall() {
-    if (!downloaded || installRequested || teardown || failureDialog) return Promise.resolve(false);
-    if (prompt) return prompt;
-    prompt = (async () => {
-      try {
-        const { response } = await showMessageBox({
-          type: 'info',
-          message: `HamaEditor ${downloaded.version ?? ''} is ready to install`,
-          detail: 'HamaEditor will restart after your documents close. Choose Check for Updates to install later.',
-          buttons: ['Restart to install', 'Later'],
-          defaultId: 1,
-          cancelId: 1,
-        });
-        if (response !== 0 || teardown) return false;
-        installRequested = true;
-        app.quit();
-        return true;
-      } catch (error) {
-        await reportError(error);
-        return false;
-      } finally {
-        prompt = null;
-      }
-    })();
-    return prompt;
+  // Services have stopped and MacUpdater may retain a native staging listener
+  // after an error. Retry in a fresh process, never a second quitAndInstall call
+  // against that listener. The relaunch restores the windows from the restart
+  // manifest and offers the update again.
+  function failAfterHandoff(error) {
+    logger.warn('[hamaeditor] update install failed:', error?.message ?? error);
+    if (failed) return;
+    failed = true;
+    app.relaunch();
+    app.exit(1);
   }
 
   function configureUpdates() {
     // A plain quit must never start a competing installer before our guards.
     updater.autoInstallOnAppQuit = false;
+    updater.autoDownload = false;
     updater.on('error', (error) => {
-      if (handoffStarted || installRequested || isInteractive()) void reportError(error);
-      else logger.warn('[hamaeditor] background update failed:', error?.message ?? error);
+      if (handoffStarted) failAfterHandoff(error);
+      else logger.warn('[hamaeditor] update failed:', error?.message ?? error);
     });
-    updater.on('update-downloaded', (info) => {
-      const alreadyDownloaded = downloaded !== null && downloaded.version === info?.version;
-      downloaded = info ?? {};
-      if (!alreadyDownloaded) void offerInstall();
-    });
+  }
+
+  /** Quits through the normal teardown, then installs. Windows must already be allowed to close. */
+  function requestInstall({ relaunchOnly = false } = {}) {
+    if (teardown || install) return false;
+    install = relaunchOnly ? 'relaunch' : 'native';
+    app.quit();
+    return true;
   }
 
   async function finishQuit() {
@@ -98,7 +51,12 @@ export function createUpdateLifecycle({
     } catch (error) {
       logger.warn('[hamaeditor] quit cleanup failed:', error);
     }
-    if (!installRequested) {
+    if (!install) {
+      app.exit(0);
+      return;
+    }
+    if (install === 'relaunch') {
+      app.relaunch();
       app.exit(0);
       return;
     }
@@ -109,7 +67,7 @@ export function createUpdateLifecycle({
       // Windows installs silently so an update never reopens the setup wizard.
       await updater.quitAndInstall(platform === 'win32', true);
     } catch (error) {
-      await reportError(error);
+      failAfterHandoff(error);
     }
   }
 
@@ -134,7 +92,7 @@ export function createUpdateLifecycle({
     });
   }
 
-  return { start, configureUpdates, cancelQuit, offerInstall, reportError, hasDownloadedUpdate: () => downloaded !== null };
+  return { start, configureUpdates, cancelQuit, requestInstall };
 }
 
 // A renderer has approved Save/Discard. Bookmark writes must finish before

@@ -80,11 +80,22 @@ import { BrowserWebAuthn } from './browser-webauthn.mjs';
 import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
+import { createFakeUpdater, createUpdateController } from './update-controller.mjs';
+import {
+  UPDATE_RESTART_FILE_NAME,
+  buildRestartManifest,
+  consumeRestartManifest,
+  createRestartPrepareBroker,
+  restoreSliceFor,
+  updateWasApplied,
+  writeRestartManifest,
+} from './update-restart.mjs';
 import { installAppMenu } from './app-menu.mjs';
 import {
   AgentAttention,
   WindowFrameStore,
   applyAppUserModelId,
+  clampBoundsToDisplay,
   applyDocumentState,
   installTextContextMenu,
   popupContextMenu,
@@ -729,9 +740,6 @@ const updateLifecycle = createUpdateLifecycle({
   updater: autoUpdater,
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
-  isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
-  showMessageBox: (options) => dialog.showMessageBox({ title: PRODUCT_NAME, ...options }),
-  openReleases: () => shell.openExternal(RELEASES_URL),
   cleanup: async () => {
     await hubOwner.teardown();
     await browserHost.dispose();
@@ -739,21 +747,21 @@ const updateLifecycle = createUpdateLifecycle({
   onQuitRequested: (requested) => { quitRequested = requested; browserHost.setQuitRequested(requested); },
   onTeardown: () => { quitting = true; },
 });
-let manualUpdateCheck = false;
-let interactiveUpdateDownload = false;
-let updateCheckPromise = null;
+// 개발 실행에서만 RHWP_FAKE_UPDATE=<버전> 으로 업데이트 흐름을 흉내 낸다. 설치는 하지 않고 다시 실행한다.
+const fakeUpdateVersion = app.isPackaged ? null : (String(process.env.RHWP_FAKE_UPDATE ?? '').trim() || null);
+const updateRestartFile = join(app.getPath('userData'), UPDATE_RESTART_FILE_NAME);
+const updatePrepareBroker = createRestartPrepareBroker();
+// 업데이트 재시작으로 창을 닫는 중이면 렌더러의 beforeunload 확인도 건너뛴다.
+let updateRestartClosing = false;
+let updates = null;
 
-async function showUpToDate() {
-  await dialog.showMessageBox({
-    title: PRODUCT_NAME,
-    type: 'info',
-    message: 'HamaEditor is up to date',
-    detail: `Version ${app.getVersion()} is the latest release.`,
-    buttons: ['OK'],
-  });
+function broadcastUpdateState(state) {
+  for (const window of sessions.windows()) {
+    if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-state', state);
+  }
 }
 
-async function checkForDebUpdates({ manual }) {
+async function checkForDebUpdates() {
   const response = await net.fetch(RELEASES_API_URL, {
     headers: {
       accept: 'application/vnd.github+json',
@@ -767,100 +775,116 @@ async function checkForDebUpdates({ manual }) {
     throw new Error('GitHub release metadata is too large');
   }
   const release = await response.json();
-  if (!isNewerStableVersion(release?.tag_name, app.getVersion())) {
-    if (manual) await showUpToDate();
-    return null;
-  }
+  if (!isNewerStableVersion(release?.tag_name, app.getVersion())) return null;
   const asset = selectDebAsset(release?.assets, process.arch);
-  const { response: choice } = await dialog.showMessageBox({
-    title: PRODUCT_NAME,
-    type: 'info',
-    message: `HamaEditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
-    detail: `You are running version ${app.getVersion()}. Download the signed Debian package and install it with your system package manager.`,
-    buttons: ['Open download page', 'Cancel'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (choice === 0) void shell.openExternal(asset?.browser_download_url ?? release?.html_url ?? RELEASES_URL);
-  return release;
+  return {
+    version: String(release.tag_name).replace(/^v/i, ''),
+    url: asset?.browser_download_url ?? release?.html_url ?? RELEASES_URL,
+  };
 }
 
-function configureAutoUpdater() {
-  autoUpdater.logger = console;
-  const linuxAppImage = process.platform === 'linux' && Boolean(process.env.APPIMAGE);
-  // macOS, Windows and AppImage builds can stage compatible updates. Debian packages
-  // stay under the system package manager and only link to the signed release.
-  autoUpdater.autoDownload = ['darwin', 'win32'].includes(process.platform) || linuxAppImage;
-  updateLifecycle.configureUpdates();
-  autoUpdater.on('update-not-available', () => {
-    if (!manualUpdateCheck) return;
-    void showUpToDate();
-  });
-  autoUpdater.on('update-available', (info) => {
-    const linuxDeb = process.platform === 'linux' && !process.env.APPIMAGE;
-    if (autoUpdater.autoDownload || (!manualUpdateCheck && !linuxDeb)) return;
-    void dialog.showMessageBox({
-      title: PRODUCT_NAME,
-      type: 'info',
-      message: `HamaEditor ${info?.version ?? ''} is available`,
-      detail: linuxDeb
-        ? `You are running version ${app.getVersion()}. Download the signed Debian package from Releases.`
-        : `You are running version ${app.getVersion()}. Download the installer now?`,
-      buttons: linuxDeb ? ['Open download page', 'Cancel'] : ['Download', 'Cancel'],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response !== 0) return;
-      if (linuxDeb) {
-        void shell.openExternal(RELEASES_URL);
-      } else {
-        interactiveUpdateDownload = true;
-        void autoUpdater.downloadUpdate().catch((error) => updateLifecycle.reportError(error)).finally(() => {
-          interactiveUpdateDownload = false;
-        });
-      }
-    }).catch((error) => updateLifecycle.reportError(error));
-  });
+function updateMode() {
+  if (fakeUpdateVersion) return 'in-app';
+  if (!app.isPackaged) return 'disabled';
+  if (process.platform === 'darwin' || process.platform === 'win32') return 'in-app';
+  // Debian packages stay under the system package manager and only link to the signed release.
+  if (process.platform === 'linux') return process.env.APPIMAGE ? 'in-app' : 'external';
+  return 'disabled';
 }
 
-async function checkForAppUpdates({ manual = true } = {}) {
-  if (manual && updateLifecycle.hasDownloadedUpdate()) return updateLifecycle.offerInstall();
-  if (updateCheckPromise) {
-    if (manual) manualUpdateCheck = true;
-    return updateCheckPromise;
-  }
-  manualUpdateCheck = manual;
-  updateCheckPromise = (async () => {
+function liveWindowSessions() {
+  return sessions.windows().flatMap((window) => {
     try {
-      if (process.platform === 'linux' && !process.env.APPIMAGE) {
-        return await checkForDebUpdates({ manual: manualUpdateCheck });
-      }
-      const result = await autoUpdater.checkForUpdates();
-      // Keep a user-requested automatic download interactive until it settles.
-      // The updater 'error' listener already logs a failed background download.
-      if (manualUpdateCheck && result?.downloadPromise) await result.downloadPromise;
-      else void result?.downloadPromise?.catch(() => {});
-      return result;
-    } catch (error) {
-      if (manualUpdateCheck) await updateLifecycle.reportError(error);
-      return null;
-    } finally {
-      manualUpdateCheck = false;
-      updateCheckPromise = null;
+      return [sessions.sessionForSender(window.webContents)];
+    } catch {
+      return [];
     }
-  })();
-  return updateCheckPromise;
+  });
+}
+
+/** 모든 창이 문서를 넘겨준 뒤 창 목록을 남기고, 확인 없이 창을 닫고 설치로 넘긴다. */
+async function restartForUpdate(state) {
+  const targets = [];
+  for (const session of liveWindowSessions()) {
+    const { window } = session;
+    // 문서를 띄우지 못한 창은 넘길 것이 없다.
+    if (!session.rendererLoaded || session.rendererLoadFailed || window.webContents.isCrashed()) continue;
+    targets.push({
+      session,
+      windowId: session.sessionId,
+      send: (requestId) => window.webContents.send('desktop:update-prepare-restart', { requestId }),
+    });
+  }
+  const prepared = await updatePrepareBroker.prepareAll(targets);
+  if (!prepared.ok) {
+    console.warn('[hamaeditor] update restart was not prepared:', prepared.reason);
+    return false;
+  }
+  const focused = BrowserWindow.getFocusedWindow();
+  // 초점이 있던 창을 마지막에 다시 열어 맨 앞에 둔다.
+  const restored = targets
+    .filter(({ session }) => prepared.slices.has(session.sessionId) && !session.window.isDestroyed())
+    .sort((a, b) => Number(a.session.window === focused) - Number(b.session.window === focused));
+  const manifest = buildRestartManifest({
+    fromVersion: app.getVersion(),
+    targetVersion: state.version,
+    createdAt: Date.now(),
+    fake: Boolean(fakeUpdateVersion),
+    windows: restored.map(({ session }) => ({
+      bounds: session.window.getNormalBounds(),
+      maximized: session.window.isMaximized(),
+      slice: prepared.slices.get(session.sessionId),
+      pathForHandle: (handleId) => nativeFiles.sourcePathForSender(session.sessionId, handleId),
+    })),
+  });
+  try {
+    await persistNativeBookmarks({ rejectOnError: true });
+    await writeRestartManifest(updateRestartFile, manifest, { writeAtomically: writeNativeFileAtomically });
+    // 렌더러가 남긴 복구 기록(localStorage)을 설치가 프로세스를 끝내기 전에 디스크에 쓴다.
+    electronSession.defaultSession.flushStorageData();
+  } catch (error) {
+    console.warn('[hamaeditor] update restart state could not be saved:', error);
+    return false;
+  }
+  updateRestartClosing = true;
+  for (const session of liveWindowSessions()) {
+    session.allowCloseOnce = true;
+    session.pendingCloseRequestId = null;
+  }
+  if (updateLifecycle.requestInstall({ relaunchOnly: Boolean(fakeUpdateVersion) })) return true;
+  updateRestartClosing = false;
+  await rm(updateRestartFile, { force: true }).catch(() => {});
+  return false;
+}
+
+function configureAutoUpdater({ restartManifest }) {
+  autoUpdater.logger = console;
+  updateLifecycle.configureUpdates();
+  const mode = updateMode();
+  const applied = restartManifest ? updateWasApplied(restartManifest, app.getVersion()) : false;
+  updates = createUpdateController({
+    currentVersion: app.getVersion(),
+    mode,
+    updater: mode !== 'in-app' ? null
+      : fakeUpdateVersion ? createFakeUpdater({ version: fakeUpdateVersion, applied })
+        : autoUpdater,
+    checkExternal: checkForDebUpdates,
+    openExternal: (url) => shell.openExternal(url),
+    broadcast: broadcastUpdateState,
+    restartApp: restartForUpdate,
+  });
+  if (restartManifest && !applied) updates.markNotApplied(restartManifest.targetVersion);
 }
 
 function installMenu() {
   appMenu = installAppMenu({
     agentEnabled: () => licenseAllowsAgent,
     checkForUpdates: () => {
-      if (!app.isPackaged) {
+      if (!app.isPackaged && !fakeUpdateVersion) {
         void shell.openExternal(RELEASES_URL);
         return;
       }
-      void checkForAppUpdates();
+      void updates?.check({ manual: true });
     },
     openNewWindow: () => queueLaunch(launchRequest({ source: 'new-window' })),
     isTrustedSender: (event) => {
@@ -874,6 +898,15 @@ function installMenu() {
   });
 }
 
+function updateRestartFrame(entry) {
+  if (!entry.bounds) return null;
+  const { workArea } = screen.getDisplayMatching(entry.bounds);
+  return {
+    bounds: clampBoundsToDisplay(entry.bounds, workArea, { width: 900, height: 640 }),
+    zoomed: entry.maximized,
+  };
+}
+
 function cascadedWindowPosition() {
   const source = BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1);
   if (!source || source.isDestroyed()) return {};
@@ -884,7 +917,7 @@ function cascadedWindowPosition() {
 // 앱 테마(프리셋·밝게·어둡게)의 바탕색. 창이 내용보다 먼저 그리는 배경과 다음 새 창의 배경에 쓴다.
 let lastWindowBackground = null;
 
-async function createWindow(launch = launchRequest(), { generatedDocument = null } = {}) {
+async function createWindow(launch = launchRequest(), { generatedDocument = null, updateRestore = null } = {}) {
   // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
   // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
   void hubOwner.ensure().catch(() => {});
@@ -892,9 +925,12 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   const backgroundColor = lastWindowBackground ?? (nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7');
   const isMac = process.platform === 'darwin';
   // 실행 후 첫 창만 지난 프레임을 되살리고, 이후 창은 28px 계단식으로 연다.
-  const restoredFrame = sessions.windows().length === 0
-    ? windowFrames.takeInitialFrame({ minWidth: 900, minHeight: 640 })
-    : null;
+  // 업데이트 재시작으로 다시 여는 창은 재시작 전 자리에 연다.
+  const restoredFrame = updateRestore
+    ? updateRestartFrame(updateRestore)
+    : sessions.windows().length === 0
+      ? windowFrames.takeInitialFrame({ minWidth: 900, minHeight: 640 })
+      : null;
   const window = new BrowserWindow({
     ...(restoredFrame ? restoredFrame.bounds : { ...cascadedWindowPosition(), width: 1440, height: 920 }),
     title: 'HamaEditor',
@@ -932,6 +968,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   session.generatedDocument = generatedDocument
     ? { launchDocumentId: randomUUID(), ...generatedDocument }
     : null;
+  session.updateRestore = null;
   session.allowCloseOnce = false;
   session.pendingCloseRequestId = null;
   // The renderer registers its close listener while main.ts evaluates, and an
@@ -969,6 +1006,8 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
     forgetUnsavedDocuments(session.sessionId);
+    updates?.forgetRunningChats(session.sessionId);
+    updatePrepareBroker.drop(session.sessionId);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
@@ -985,6 +1024,14 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
       }
       launchFiles.push(result.descriptor);
       noteRecentDocument(session.sessionId, result.descriptor.handleId);
+    }
+    if (updateRestore) {
+      session.updateRestore = await restoreSliceFor(updateRestore, {
+        register: async (filePath) => {
+          const result = await nativeFiles.create(session.sessionId, filePath);
+          return result.ok ? { ...result.descriptor, saveTargetCreated: result.created } : null;
+        },
+      });
     }
   } catch (error) {
     window.destroy();
@@ -1013,6 +1060,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // Agents of the dead page's background documents cannot be reached again.
     sessions.releaseAgentSessions(window);
     forgetUnsavedDocuments(session.sessionId);
+    updates?.forgetRunningChats(session.sessionId);
   });
   // A reloaded page knows only its window session and reopens the default
   // document itself. Background documents and their agents died with the old page.
@@ -1021,6 +1069,11 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
     // 다시 불러온 페이지가 자기 새 문서를 다시 알린다.
     forgetUnsavedDocuments(session.sessionId);
+    updates?.forgetRunningChats(session.sessionId);
+  });
+  // 업데이트 재시작은 문서를 이미 넘겨받았다. 저장 안 한 문서의 beforeunload 가 닫기를 막지 않게 한다.
+  window.webContents.on('will-prevent-unload', (event) => {
+    if (updateRestartClosing) event.preventDefault();
   });
   window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -1301,6 +1354,40 @@ ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   return session.generatedDocument;
 });
 ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(event).offersAutosaveRecovery === true);
+// 업데이트: 상태는 모든 창에 desktop:update-state 로 간다. 재시작은 창마다 문서를 넘겨받은 뒤에만 한다.
+ipcMain.handle('desktop:update-get-state', (event) => {
+  sessionForEvent(event);
+  return updates?.state() ?? null;
+});
+ipcMain.handle('desktop:update-check', async (event) => {
+  sessionForEvent(event);
+  await updates?.check({ manual: true });
+});
+ipcMain.handle('desktop:update-download', async (event) => {
+  sessionForEvent(event);
+  await updates?.download();
+});
+ipcMain.handle('desktop:update-restart', (event) => {
+  sessionForEvent(event);
+  return updates?.restart() ?? { ok: false };
+});
+ipcMain.on('desktop:update-running-chats', (event, count) => {
+  try {
+    updates?.setRunningChats(sessionForEvent(event).sessionId, count);
+  } catch (error) {
+    console.warn('[hamaeditor] running chat count update failed:', error);
+  }
+});
+ipcMain.handle('desktop:update-prepare-response', (event, requestId, slice) => (
+  updatePrepareBroker.respond(sessionForEvent(event).sessionId, requestId, slice)
+));
+// 재시작 전 이 창의 문서와 이어 갈 채팅. 창마다 한 번만 준다.
+ipcMain.handle('desktop:get-update-restore', (event) => {
+  const session = sessionForEvent(event);
+  const restore = session.updateRestore;
+  session.updateRestore = null;
+  return restore ?? null;
+});
 installPdfExport({
   ipcMain,
   dialog,
@@ -1899,7 +1986,9 @@ if (!hasSingleInstanceLock) {
     await browserWebAuthn.configure();
     const hubStartup = hubOwner.ensure();
     hubStartup.catch(() => {});
-    configureAutoUpdater();
+    // 업데이트로 재시작했으면 그 전의 창을 다시 연다. 30분이 지난 기록은 버린다.
+    const restartManifest = await consumeRestartManifest(updateRestartFile);
+    configureAutoUpdater({ restartManifest });
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
@@ -1916,8 +2005,17 @@ if (!hasSingleInstanceLock) {
     await licenseManager.status().then(noteLicenseStatus, () => {});
     licenseManager.start();
     desktopReady = true;
-    const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;
+    for (const entry of restartManifest?.windows ?? []) {
+      await createWindow(launchRequest({ source: 'update-restart' }), { updateRestore: entry }).catch((error) => {
+        failedLaunches += 1;
+        console.warn('[hamaeditor] update restart window failed to open:', error);
+      });
+    }
+    // 다시 연 창이 기본 첫 창을 대신한다. 파일을 연 실행 요청은 그대로 연다.
+    const launches = pendingLaunches.splice(0).filter((request) => (
+      sessions.windows().length === 0 || request.source !== 'initial' || request.openFiles.length > 0
+    ));
     for (const request of launches) {
       // One unreadable file must not abort the other startup launches.
       await openLaunch(request).catch((error) => {
@@ -1937,11 +2035,8 @@ if (!hasSingleInstanceLock) {
     // 허브 시작 실패는 창이 뜬 뒤에도 오류 창을 띄우고 종료한다.
     await Promise.all([hubStartup, staleCleanup]);
     void finishUniqueInstallMetric();
-    if (app.isPackaged && ['darwin', 'win32', 'linux'].includes(process.platform)) {
-      setTimeout(() => {
-        void checkForAppUpdates({ manual: false });
-      }, 4000);
-    }
+    // 실행 4초 뒤 확인하고, 그 뒤로 한 시간마다 확인한다.
+    updates.start();
   }).catch((error) => {
     resolveUniqueInstallSync();
     // 창이 먼저 뜨므로 시작 중에 종료하면 허브 시작이 거절될 수 있다. 그때는 알리지 않는다.

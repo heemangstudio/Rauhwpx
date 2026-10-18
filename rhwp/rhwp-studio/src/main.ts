@@ -219,8 +219,16 @@ import {
 import { TrapRecoveryPage, presentTrapRecoveryReport } from '@/recovery/trap-recovery-page';
 import { holdDocumentLoadingCommands } from '@/recovery/trap-command-guard';
 import { markThreadInterruptedByEngineTrap } from '@/recovery/trap-chat-notice';
+import {
+  orderUpdateRestore,
+  takeUpdateRestartRecord,
+  updateRestartKind,
+  writeUpdateRestartRecords,
+  type UpdateRestartRecord,
+} from '@/recovery/update-restart';
 import type { InterruptionScope } from '@/agent/turn-interruption';
 import { claimForExplorerGroup, claimForRecentDoc } from '@/project-file/claim';
+import type { ProjectFileLocation } from '@/project-file/open';
 import {
   ChatDocumentLinkError,
   linkError,
@@ -291,6 +299,11 @@ import {
   openNativeDocumentAtPath,
   createNamedNativeDocument,
   syncDesktopWindowBackground,
+  desktopUpdatesApi,
+  nativeFileHandleId,
+  restoredNativeFileHandle,
+  type UpdateRestartSlice,
+  type UpdateRestoreSlice,
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
@@ -298,7 +311,7 @@ import { loadAttentionPrefs, subscribeAttentionPrefs } from './agent/attention-p
 import { installAttentionToasts, installWebAgentAttention } from './ui/agent-attention.ts';
 import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
 import { checkTurnRestore, restoreTurn, type TurnRestoreGates } from './agent/turn-checkpoints.ts';
-import { detachThreadDocument, renameThreadsDocument } from './agent/threads.ts';
+import { detachThreadDocument, getThread, renameThreadsDocument, waitForThreadsPersistence } from './agent/threads.ts';
 import {
   ForeignDocumentPool,
   createRecentDocumentResolver,
@@ -329,6 +342,7 @@ import {
   versionErrorCode,
 } from './versioning/index.ts';
 import type { AgentEditingLease } from './agent/types.ts';
+import { mountUpdateHippo } from './ui/update-hippo/update-hippo.ts';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import {
   contextualEditingToolbarMode,
@@ -899,6 +913,15 @@ installDesktopCloseHandling(async () => {
     for (const session of liveSessions) session.documentState.permitNextUnload();
   }
   return allowClose;
+});
+// 업데이트 재시작은 창마다 문서를 넘겨받은 뒤 저장을 묻지 않고 닫는다.
+desktopUpdatesApi()?.onPrepareRestart(prepareUpdateRestart);
+// 메뉴의 업데이트 확인은 답을 홈의 하마가 한다. 그 메뉴를 고른 창(초점 창)만 홈을 연다.
+let manualUpdateCheck = false;
+desktopUpdatesApi()?.onState((state) => {
+  // 확인 중(checking)은 수동 확인에만 알린다. 이미 받아 둔 업데이트면 manual 만 켜진다.
+  if (state.manual && (state.status === 'checking' || !manualUpdateCheck) && document.hasFocus()) openDocumentHome();
+  manualUpdateCheck = state.manual;
 });
 
 const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
@@ -1675,6 +1698,12 @@ async function initialize(): Promise<void> {
       void recoverDocumentsAfterTrap(trapRecoveryRun!);
     } else {
       void (async () => {
+        // 업데이트로 다시 켠 창이다. 닫히기 전의 문서와 채팅을 다시 연다.
+        const restore = await desktopUpdatesApi()?.getRestore().catch(() => null) ?? null;
+        if (restore) {
+          await restoreWindowAfterUpdate(restore);
+          return;
+        }
         if (!await reopenUneditedDocumentAfterReload()) {
           if (isPinnedDocumentEnabled()) void loadPinnedDocument();
           else void loadFromUrlParam();
@@ -2310,9 +2339,11 @@ function installChatAgent(
       }
       if (event.type === 'workflow-changed') notifyChatModeLock(session, created);
       for (const listener of taps.events) listener(event);
+      reportRunningChats();
     }),
     bridge.onBusyChange((busy) => {
       notifyChatModeLock(session, created);
+      reportRunningChats();
       // 보이지 않는 채팅이 일을 마치면 닫는다. 기록은 채팅 목록에 남고, 허브 세션과 공급자를 놓는다.
       if (!busy) closeIdleHiddenChats(session);
     }),
@@ -2394,6 +2425,7 @@ function disposeChat(chat: ChatSession, options: { keepHubSession?: boolean } = 
   // 닫힌 채팅은 문서를 놓는다 — 다음으로 쥔 채팅이 주인이 된다.
   if (session.writer === chat) session.writer = null;
   notifyChatModeLock(session);
+  reportRunningChats();
   return chat.hubSession;
 }
 
@@ -2412,11 +2444,14 @@ function showChat(session: DocumentSession, chat: ChatSession): void {
   closeIdleHiddenChats(session);
 }
 
-/** 보이지 않는 채팅 중 일이 없는 것을 닫는다 (문서마다 보이는 채팅 하나는 남는다). */
+/**
+ * 보이지 않는 채팅 중 일이 없는 것을 닫는다 (문서마다 보이는 채팅 하나는 남는다). 앱 업데이트 뒤 이어서 진행을
+ * 기다리는 채팅은 아직 일을 시작하지 않았어도 남긴다.
+ */
 function closeIdleHiddenChats(session: DocumentSession): void {
   for (const chat of [...session.chats]) {
     if (session.chats.length < 2) return;
-    if (chat === session.activeChat || chat.bridge.isBusy()) continue;
+    if (chat === session.activeChat || chat.bridge.isBusy() || restartResumingChats.has(chat)) continue;
     disposeChat(chat);
   }
 }
@@ -2811,6 +2846,7 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => mountLicenseBuyButton(slot),
+    mountCorner: (slot) => mountUpdateHippo(slot),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
       subscribe: (listener) => unsavedDocumentStore.subscribe(listener),
@@ -5110,12 +5146,16 @@ async function restoreAutosaveDraftNow(draft: AutosaveDraftSummary): Promise<voi
 
 function restoreAutosaveDraftInAttachedSession(
   draft: AutosaveDraftSummary,
-  options: DraftRestoreOptions & { canMerge?: boolean } = {},
+  options: DraftRestoreOptions & {
+    canMerge?: boolean;
+    /** 이미 아는 원본 파일. 생략하면 찾아보고, null 이면 파일이 없는 문서다. */
+    original?: FileSystemFileHandleLike | null;
+  } = {},
 ): Promise<DraftRestoreOutcome> {
-  const { canMerge = true, ...restoreOptions } = options;
+  const { canMerge = true, original, ...restoreOptions } = options;
   return restoreAutosaveDraft(draft, {
     readDraft: (id) => getAutosaveDraft(id),
-    locateOriginal: locateAutosaveOriginal,
+    locateOriginal: original === undefined ? locateAutosaveOriginal : () => readKnownOriginal(original),
     digestOf: documentSourceDigest,
     releaseHandle: async (handle) => {
       await handle.releaseUnusedSaveTarget?.().catch(() => {});
@@ -5166,6 +5206,16 @@ async function locateAutosaveOriginal(draft: AutosaveDraft) {
     liveHandle: draft.fileHandle ?? recent?.handle ?? null,
     recentId: recent?.id ?? null,
   });
+}
+
+/** 이미 아는 원본 핸들(업데이트로 다시 켠 창에 메인이 다시 만든 것)을 읽는다. 없거나 읽지 못하면 원본이 없다. */
+async function readKnownOriginal(handle: FileSystemFileHandleLike | null): Promise<ProjectFileLocation> {
+  if (!handle) return { kind: 'missing' };
+  try {
+    return { kind: 'found', ...await readFileFromHandle(handle), handle };
+  } catch {
+    return { kind: 'missing' };
+  }
 }
 
 /**
@@ -5248,6 +5298,284 @@ async function mergeAutosaveDraft(draft: AutosaveDraft, original: FoundOriginal)
     draftBytes: draft.data,
   });
   return { kind: 'merging', ...recovery };
+}
+
+// ─── 앱 업데이트 재시작 ─────────────────────────────
+// 메인은 업데이트를 설치하기 전에 창마다 문서를 넘겨받고 저장을 묻지 않고 창을 닫는다. 다시 켠 창은 그 문서를 같은
+// 문서 ID·파일·채팅으로 다시 열고, 돌던 턴을 이어서 진행한다. 메인이 모르는 것(바뀐 문서인지, 그 복구본, 보던
+// 채팅)은 recovery/update-restart 가 문서마다 남긴다.
+
+function localStorageOrNull(): Storage | null {
+  try { return window.localStorage; } catch { return null; }
+}
+
+/** 턴이 돌고 있고 사용자의 답(질문·권한)을 기다리지 않는 채팅 — 다시 켠 뒤 이어서 진행한다. */
+function chatContinuesAfterRestart(chat: ChatSession): boolean {
+  return chat.bridge.isTurnRunning() && chat.bridge.getPendingUserQuestion() === null
+    && chat.bridge.getPendingChatPermissionRequests().length === 0;
+}
+
+let reportedRunningChats: number | null = null;
+
+/** 재시작 경고 팻말이 세는 이 창의 채팅 수를 메인에 알린다. 다시 켠 뒤 이어서 진행할 채팅과 같다. */
+function reportRunningChats(): void {
+  const updates = desktopUpdatesApi();
+  if (!updates) return;
+  const count = allChats().filter(chatContinuesAfterRestart).length;
+  if (count === reportedRunningChats) return;
+  reportedRunningChats = count;
+  updates.setRunningChatCount(count);
+}
+
+/** 이 문서의 복구본을 지금 내용으로 남긴다. 엔진이 멈췄으면 엔진 trap 복구본처럼 한 번만 시도한다. */
+async function keepUpdateRestartDraft(session: DocumentSession): Promise<boolean> {
+  if (engineTrap()) return (await session.autosave.saveForRecovery('update-restart').catch(() => null))?.ok === true;
+  return session.autosave.flushAndWait('update-restart').catch(() => false);
+}
+
+/**
+ * 업데이트 재시작 준비 — 메인이 창을 닫기 전에 부른다. 저장을 묻지 않고 닫히므로 문서마다 다시 여는 법을 남긴다:
+ * 바뀐 문서(검토 대기 편집 포함)와 파일 없는 문서는 복구본으로(복구용 자동 저장을 꺼 두었어도 이번에는 남긴다),
+ * 깨끗한 파일 문서는 그 파일로, 버전 기록의 작업 공간 문서는 작업 공간으로. 복구본을 남기지 못한 문서가 있으면
+ * 한 번 묻고, 거절하면 재시작하지 않는다. 돌던 채팅은 다시 켠 뒤 이어서 진행한다(질문·권한을 기다리면 뺀다).
+ */
+async function prepareUpdateRestart(): Promise<UpdateRestartSlice> {
+  // 진행 중인 저장이 끝나야 문서가 깨끗한지 안다.
+  await whenSavesIdle().catch(() => {});
+  try { inputHandler?.flushDeferredPaginationIfNeeded('update-restart'); } catch { /* 복구본은 그대로 남긴다 */ }
+  const prepared = await Promise.all(liveSessions
+    .filter((session) => session.documentId !== null && session.wasm.hasLoadedDocument())
+    .map(async (session) => {
+      const pendingAgentOps = session.chats.reduce((sum, chat) => sum + chat.bridge.pendingEdits.getChangeSets()
+        .reduce((count, set) => count + set.ops.length, 0), 0);
+      const kind = updateRestartKind({
+        managedWorktree: isManagedWorktree(session),
+        dirty: session.documentState.isDirty() || pendingAgentOps > 0,
+        hasFile: Boolean(session.wasm.currentFileHandle),
+      });
+      // 닫힐 때(pagehide)처럼 작업 공간에 지금 내용을 남긴다. 작업 공간 문서는 이것이 다시 열 내용이다.
+      const persisted = await (session.versions?.persistWorktree() ?? Promise.resolve()).then(() => true, () => false);
+      const kept = kind === 'file' ? true
+        // 다른 창이 편집하는 작업 공간(읽기 전용)은 남길 변경이 없다.
+        : kind === 'worktree' ? persisted || !session.worktreeWritable
+          : await keepUpdateRestartDraft(session);
+      return { session, kind, kept, pendingAgentOps };
+    }));
+  const lost = prepared.filter((entry) => !entry.kept);
+  if (lost.length > 0) {
+    const names = lost.map(({ session }) => `"${session.wasm.fileName}"`).join(', ');
+    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n재시작하면 저장하지 않은 변경이 사라져요.`)) {
+      return { ok: false, documents: [], continueThreadIds: [] };
+    }
+  }
+  const now = Date.now();
+  const records = new Map<string, UpdateRestartRecord>();
+  const documents: UpdateRestartSlice['documents'] = [];
+  for (const { session, kind, kept, pendingAgentOps } of prepared) {
+    const documentId = session.documentId!;
+    const hasFile = Boolean(session.wasm.currentFileHandle);
+    // 복구본을 남기지 못했으면 그 전 자동 저장본을, 그것도 없으면 파일을 연다. 둘 다 없으면 다시 열 수 없다.
+    const draftId = session.autosave.getLastSavedAt() !== null ? session.autosave.getCurrentDraftId() : null;
+    const restore = kind === 'draft' || kind === 'copy' ? (draftId ? kind : hasFile ? 'file' : null) : kind;
+    if (!restore) continue;
+    records.set(documentId, {
+      kind: restore,
+      // 작업 공간에서 다시 열면 이 문서의 자동 저장본은 지운다. 작업 공간에 남기지 못했으면 복구 제안에 둔다.
+      draftId: restore === 'file' || (restore === 'worktree' && !kept) ? null : draftId,
+      activeThreadId: session.activeChat?.sidebar.currentThreadId() ?? null,
+      pendingAgentOps,
+      hasFile,
+      readOnly: documentReadOnly,
+      savedAt: now,
+    });
+    documents.push({
+      documentId,
+      handleId: nativeFileHandleId(session.wasm.currentFileHandle),
+      fileName: session.wasm.fileName,
+      active: session === attachedSession,
+    });
+  }
+  // 기록을 남기지 못해도 재시작한다. 다시 켠 창은 파일 문서만 열고, 남은 복구본은 복구 제안에 나온다.
+  if (!writeUpdateRestartRecords(localStorageOrNull(), records, now)) {
+    console.warn('[update] 다시 켠 뒤 열 문서 기록을 남기지 못했습니다.');
+  }
+  const continueThreadIds = allChats().filter(chatContinuesAfterRestart)
+    .map((chat) => chat.sidebar.currentThreadId())
+    .filter((threadId): threadId is string => threadId !== null);
+  // 닫힐 때처럼 채팅 기록을 넘기고, 창이 닫히기 전에 저장소에 닿게 기다린다.
+  for (const chat of allChats()) chat.sidebar.persistThread();
+  await waitForThreadsPersistence().catch(() => {});
+  // 복구본을 남겼으니 저장하지 않은 문서의 나가기 확인을 이번 한 번 푼다.
+  for (const session of liveSessions) session.documentState.permitNextUnload();
+  return { ok: true, documents, continueThreadIds };
+}
+
+type UpdateRestoreDocument = UpdateRestoreSlice['documents'][number] & {
+  kind: UpdateRestartRecord['kind'];
+  record: UpdateRestartRecord;
+};
+
+/**
+ * 업데이트로 다시 켠 창 — 닫히기 전의 문서를 다시 연다. 보던 문서는 화면에 붙이고 나머지는 채팅 레일처럼 뒤에
+ * 둔다. 바뀐 문서는 복구본을 원래 문서에 dirty 로 얹고(자동 저장본 복구와 같은 길 — 디스크가 바뀌었으면 외부
+ * 변경으로 병합하고, 원본이 없으면 연결하지 않고 연다), 깨끗한 문서는 파일에서, 파일 없는 새 문서는 복구본에서
+ * 그 이름으로 연다. 한 문서를 열지 못해도 나머지는 연다. 다시 연 복구본은 이 창이 이어받으므로, 끝난 뒤의 복구
+ * 제안에는 열지 못한 문서의 복구본만 남는다.
+ */
+async function restoreWindowAfterUpdate(restore: UpdateRestoreSlice): Promise<void> {
+  try {
+    await runNavigation(async () => {
+      // 복구한 draft 를 이 창 이름으로 다시 기록하므로 창 세션을 먼저 받는다.
+      await rendererSessionContextPromise;
+      const drafts = await listAutosaveDrafts().catch((): AutosaveDraftSummary[] => []);
+      const storage = localStorageOrNull();
+      const now = Date.now();
+      const entries = restore.documents.flatMap((document): UpdateRestoreDocument[] => {
+        // 기록이 없으면(남기지 못했다) 파일 문서만 파일에서 연다. 복구본은 복구 제안에 남는다.
+        const record: UpdateRestartRecord | null = takeUpdateRestartRecord(storage, document.documentId, now)
+          ?? (document.file ? {
+            kind: 'file', draftId: null, activeThreadId: null, pendingAgentOps: 0, hasFile: true, readOnly: false, savedAt: now,
+          } : null);
+        return record ? [{ ...document, kind: record.kind, record }] : [];
+      });
+      let othersWaited = false;
+      for (const entry of orderUpdateRestore(entries)) {
+        const handle = entry.file ? restoredNativeFileHandle(entry.file) : null;
+        try {
+          if (liveSessionForDocument(entry.documentId)) continue;
+          const inPlace = entry.kind !== 'worktree' && !attachedSession.wasm.hasLoadedDocument();
+          if (!inPlace && !othersWaited) {
+            othersWaited = true;
+            // 첫 채팅이 시작 정리(끊긴 턴 정착)를 마친 뒤에 채팅을 더 연다 — 그 채팅들이 정착된 기록을 읽는다.
+            await firstSession.chats[0]?.sidebar.startupChatSettled();
+          }
+          if (entry.kind === 'worktree') {
+            await reopenWorktreeAfterUpdate(entry);
+          } else if (inPlace) {
+            await openUpdatedDocument(entry, handle, drafts);
+          } else {
+            const outcome = await openInNewSession(() => {}, () => openUpdatedDocument(entry, handle, drafts));
+            if (!outcome?.loaded) throw new Error('문서 세션을 만들지 못했습니다.');
+          }
+          if (entry.record.pendingAgentOps > 0) {
+            showToast({
+              message: `"${entry.fileName}"에 검토하지 않은 에이전트 변경 ${entry.record.pendingAgentOps}개가 반영된 채로 열렸어요.`,
+              durationMs: 6000,
+            });
+          }
+        } catch (error) {
+          console.warn('[update] 업데이트 전 문서를 다시 열지 못했습니다:', error);
+          showToast({ message: `"${entry.fileName}"을(를) 다시 열지 못했어요.`, durationMs: 5000 });
+        } finally {
+          await handle?.releaseUnusedSaveTarget?.().catch(() => {});
+        }
+      }
+      const active = liveSessionForDocument(restore.documents.find((document) => document.active)?.documentId);
+      if (active) await attachSession(active);
+    });
+  } catch (error) {
+    console.error('[update] 업데이트 전 문서를 다시 열지 못했습니다:', error);
+  } finally {
+    void offerAutosaveRecoveryAtStartup();
+  }
+  await continueChatsAfterUpdate(restore.continueThreadIds);
+}
+
+/** 지금 화면에 붙은 세션에 업데이트 전 문서 하나를 연다. 그 문서에서 보던 채팅이 따라 열린다. 열지 못하면 던진다. */
+async function openUpdatedDocument(
+  entry: UpdateRestoreDocument,
+  handle: FileSystemFileHandleLike | null,
+  drafts: readonly AutosaveDraftSummary[],
+): Promise<void> {
+  const { record } = entry;
+  if (record.activeThreadId) attachedSession.sidebar?.followThreadOnNextDocument(record.activeThreadId);
+  // 읽기 전용으로 보던 창(생성 문서 미리보기 등)은 다시 열어도 읽기 전용이다. 창 전체 설정이다.
+  if (record.readOnly) setDocumentReadOnly(true);
+  const draft = record.draftId ? drafts.find((row) => row.id === record.draftId && row.byteLength > 0) : undefined;
+  if (draft) {
+    const outcome = await restoreAutosaveDraftInAttachedSession(draft, {
+      // 메인이 다시 만든 원본 핸들. 경로를 잃었으면 북마크로 찾고, 파일이 없던 문서는 찾지 않는다.
+      original: record.hasFile ? handle ?? undefined : null,
+      // 병합 화면은 보던 문서에만 연다. 뒤에 둘 문서는 디스크가 바뀌었으면 연결하지 않고 연다.
+      canMerge: entry.active,
+      // 깨끗했던 파일 없는 문서(편집하지 않은 새 문서 등)는 깨끗하게 연다.
+      ...(record.kind === 'copy' ? { cleanAtTrap: true, readOnly: true } : {}),
+      // 원래 문서에 그대로 얹었으면 알리지 않는다. 원본 파일과 끊겼거나 병합해야 하면 알린다.
+      report: (outcome) => {
+        if (outcome.kind === 'merging' || (outcome.kind === 'opened' && record.hasFile && outcome.detached !== null)) {
+          showToast({ message: outcome.message, durationMs: 6000 });
+        }
+      },
+    });
+    if (outcome.kind === 'blocked') throw new Error(outcome.message);
+    if (outcome.kind === 'cancelled') throw new Error('다시 열기를 취소했습니다.');
+    return;
+  }
+  const reopened = handle
+    ? await reopenLocatedFile(await readKnownOriginal(handle), entry.documentId)
+    : await reopenTrapFile(entry);
+  if (reopened.kind === 'failed') throw new Error(reopened.message ?? reopened.reason);
+  if (record.kind !== 'file') {
+    showToast({
+      message: `"${entry.fileName}"의 저장하지 않은 변경을 복구하지 못해 마지막으로 저장한 상태로 열었어요.`,
+      durationMs: 6000,
+    });
+  }
+}
+
+/** 버전 기록의 작업 공간 문서를 작업 공간에서 다시 연다(새 세션). 보던 채팅을 잇고 남은 자동 저장본은 지운다. */
+async function reopenWorktreeAfterUpdate(entry: UpdateRestoreDocument): Promise<void> {
+  const worktree = await worktreeStore.findWorktreeByDocumentId(versionDocumentId(entry.documentId));
+  if (!worktree) throw new Error('워크트리가 삭제되었습니다.');
+  const session = await openWorktreeSession(worktree);
+  if (entry.record.activeThreadId) await focusThreadInSession(session, entry.record.activeThreadId);
+  if (entry.record.draftId) await deleteAutosaveDraft(entry.record.draftId).catch(() => {});
+}
+
+/** 앱 업데이트 뒤 이어서 진행을 기다리는 채팅. 보이지 않는 채팅이어도 그동안 닫지 않는다. */
+const restartResumingChats = new Set<ChatSession>();
+
+/**
+ * 업데이트 전 돌던 턴을 이어서 진행한다 — 앱 재시작으로 끊긴 턴의 이어서 진행 단추를 한 번 누른다. 그 채팅을
+ * 보이는 채팅 창이 없으면 그 문서에 채팅 창을 하나 더 열고(뒤에 있는 문서면 그 문서의 에이전트 세션에서),
+ * 문서 없는 채팅이면 문서 없는 세션에서 연다. 사이드바가 연결된 뒤 누르고, 질문의 답을 기다리다 끊겼거나 이미
+ * 이어 간 채팅은 건너뛴다. 목록은 메인이 한 번만 주므로 새로고침해도 다시 보내지 않는다.
+ */
+async function continueChatsAfterUpdate(threadIds: readonly string[]): Promise<void> {
+  if (threadIds.length === 0) return;
+  // 채팅 창마다 시작 채팅을 고른 뒤에 본다 — 곧 그 채팅을 고를 창 옆에 채팅 창을 하나 더 열지 않게.
+  await Promise.all(allChats().map((chat) => chat.sidebar.startupChatSettled()));
+  const routed = await runNavigation(async () => {
+    const chats: Array<{ chat: ChatSession; threadId: string }> = [];
+    for (const threadId of threadIds) {
+      const chat = await chatForRestartedThread(threadId).catch(() => null);
+      if (chat) chats.push({ chat, threadId });
+    }
+    return chats;
+  });
+  for (const { chat, threadId } of routed) {
+    restartResumingChats.add(chat);
+    void chat.sidebar.startupChatSettled()
+      .then(() => chat.sidebar.resumeAfterRestart(threadId))
+      .finally(() => restartResumingChats.delete(chat));
+  }
+}
+
+/** 그 채팅을 보일 채팅 창. 그 채팅의 문서가 이 창에 다시 열리지 않았으면 null. */
+async function chatForRestartedThread(threadId: string): Promise<ChatSession | null> {
+  const holder = allChats().find((chat) => chat.sidebar.currentThreadId() === threadId);
+  if (holder) return holder;
+  const thread = getThread(threadId);
+  if (!thread) return null;
+  const session = thread.documentId === null && thread.docKey === null
+    ? liveSessions.find((candidate) => !candidate.wasm.hasLoadedDocument()) ?? await createLiveSession()
+    : liveSessionForDocument(thread.documentId);
+  if (!session) return null;
+  // 아직 아무 채팅도 고르지 않은 채팅 창이 있으면 그 자리에서 연다.
+  const chat = session.chats.find((candidate) => candidate.sidebar.currentThreadId() === null && !candidate.bridge.isBusy())
+    ?? await createChatSession(session, { active: false });
+  chat?.sidebar.openThreadById(threadId);
+  return chat;
 }
 
 // ─── 엔진 trap 복구: 다시 불러온 페이지 ─────────────────────────────
@@ -5343,21 +5671,25 @@ async function openTrapEntryInAttached(
   }
 }
 
-/**
- * 깨끗했던 문서를 파일 선택 창 없이 그 파일에서 다시 연다. 파일 열기와 같은 길로 연다 — 버전 기록을
- * 함께 담은 .rhwpx 묶음은 문서를 꺼내 열어야 한다.
- */
-async function reopenTrapFile(entry: TrapManifestEntry): Promise<TrapOpenResult> {
+/** 깨끗했던 문서를 파일 선택 창 없이 그 파일에서 다시 연다. 최근 문서와 데스크톱 북마크로 파일을 찾는다. */
+async function reopenTrapFile(entry: Pick<TrapManifestEntry, 'documentId' | 'fileName'>): Promise<TrapOpenResult> {
   const claim = claimForExplorerGroup(
     { documentId: entry.documentId, displayName: entry.fileName },
     await listRecentDocs().catch(() => []),
   );
   if (!claim) return { kind: 'failed', reason: 'not-found' };
-  const located = await locateRecoveryOriginal(claim);
+  return reopenLocatedFile(await locateRecoveryOriginal(claim), claim.documentId);
+}
+
+/**
+ * 찾은 원본 파일에서 문서를 깨끗하게 다시 연다. 파일 열기와 같은 길로 연다 — 버전 기록을 함께 담은 .rhwpx
+ * 묶음은 문서를 꺼내 열어야 한다.
+ */
+async function reopenLocatedFile(located: ProjectFileLocation, documentId: string): Promise<TrapOpenResult> {
   if (located.kind === 'owned-elsewhere') return { kind: 'failed', reason: 'blocked' };
   if (located.kind === 'permission-denied') return { kind: 'failed', reason: 'permission-denied' };
   if (located.kind === 'missing') return { kind: 'failed', reason: 'not-found' };
-  const grant = { kind: 'verified' as const, documentId: claim.documentId };
+  const grant = { kind: 'verified' as const, documentId };
   let replaced = true;
   const opened = await loadRecoveredDocument(
     isPortableHistoryFileName(located.name) || isPortableHistoryBytes(located.bytes)

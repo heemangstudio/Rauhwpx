@@ -1,5 +1,17 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// 재시작 직전 메인이 창마다 문서를 묻는다. 받을 처리기가 없거나 실패하면 ok:false 로 재시작을 멈춘다.
+let prepareRestartHandler = null;
+ipcRenderer.on('desktop:update-prepare-restart', async (_event, request) => {
+  let slice = { ok: false };
+  try {
+    if (prepareRestartHandler) slice = await prepareRestartHandler();
+  } catch {
+    slice = { ok: false };
+  }
+  ipcRenderer.invoke('desktop:update-prepare-response', request?.requestId, slice).catch(() => {});
+});
+
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   browser: {
     native: true,
@@ -76,6 +88,29 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       ipcRenderer.on('gift:changed', listener);
       return () => ipcRenderer.removeListener('gift:changed', listener);
     },
+  },
+  // 앱 업데이트. 확인·다운로드·재시작은 메인이 하고, 렌더러는 상태를 받아 보여 준다.
+  updates: {
+    getState: () => ipcRenderer.invoke('desktop:update-get-state'),
+    onState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('desktop:update-state', listener);
+      return () => ipcRenderer.removeListener('desktop:update-state', listener);
+    },
+    check: () => ipcRenderer.invoke('desktop:update-check'),
+    download: () => ipcRenderer.invoke('desktop:update-download'),
+    restart: () => ipcRenderer.invoke('desktop:update-restart'),
+    setRunningChatCount: (count) => {
+      ipcRenderer.send('desktop:update-running-chats', Number.isSafeInteger(count) ? count : 0);
+    },
+    // 처리기는 문서를 저장해 두고 이 창의 몫을 돌려준다. ok:false 면 재시작하지 않는다.
+    onPrepareRestart: (handler) => {
+      prepareRestartHandler = handler;
+      return () => {
+        if (prepareRestartHandler === handler) prepareRestartHandler = null;
+      };
+    },
+    getRestore: () => ipcRenderer.invoke('desktop:get-update-restore'),
   },
   takeRebrandImport: () => ipcRenderer.invoke('desktop:take-rebrand-import'),
   takeRebrandImportChunk: (token, index) => ipcRenderer.invoke('desktop:take-rebrand-import-chunk', token, index),
