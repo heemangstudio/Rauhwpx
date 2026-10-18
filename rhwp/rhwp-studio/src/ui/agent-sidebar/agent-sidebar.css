@@ -7987,22 +7987,18 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fullscreen.ag-workspace-compact .ag-threads-page {
   z-index: 12;
   grid-row: auto;
-  opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateX(calc(-100% - 12px));
-  transition:
-    opacity var(--ag-dur-fast) var(--ag-motion-out),
-    transform var(--ag-dur-base) var(--ag-motion-out),
-    visibility 0s linear var(--ag-dur-slow);
 }
 
+/* 채팅 목록은 큰 화면처럼 움직임 없이 바로 열고 닫는다. */
 .ag-fullscreen.ag-workspace-compact.ag-compact-rail-open .ag-threads-page {
-  opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transform: translateX(0);
-  transition-delay: 0s;
+}
+
+.ag-fullscreen.ag-workspace-compact.ag-compact-rail-open .ag-workspace-drawer-scrim {
+  transition: none;
 }
 
 .ag-fullscreen.ag-workspace-compact .ag-review-column,
@@ -8039,7 +8035,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 @media (prefers-reduced-motion: reduce) {
   .ag-fullscreen.ag-workspace-compact .ag-workspace-drawer-scrim,
-  .ag-fullscreen.ag-workspace-compact .ag-threads-page,
   .ag-fullscreen.ag-workspace-compact .ag-review-column,
   .ag-fullscreen.ag-workspace-compact .ag-plan-column {
     transition: none;
