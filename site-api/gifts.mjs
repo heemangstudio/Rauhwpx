@@ -178,11 +178,14 @@ export function createGiftsService({
     return { status: response.status, ok: response.ok, body: parsed };
   }
 
-  /** POST /keys {name, limit, limit_reset:null} → 201 {key, data:{hash,...}}. */
+  /**
+   * POST /keys → 201 {key, data:{hash,...}}. include_byok_in_limit makes Claude calls billed to the
+   * owner's Anthropic key (BYOK) count toward the gift limit, so OpenRouter enforces the cap.
+   */
   async function createKey(name) {
     const { status, ok, body } = await upstreamJson(`${apiBase}/keys`, {
       method: 'POST',
-      body: { name, limit: amountUsd, limit_reset: null },
+      body: { name, limit: amountUsd, limit_reset: null, include_byok_in_limit: true },
     });
     const key = body?.key;
     const hash = body?.data?.hash;
@@ -209,16 +212,22 @@ export function createGiftsService({
   }
 
   const balances = new Map();
-  /** GET /key with the gift key → {limit, usage, remaining}. Cached briefly per license. */
+  /**
+   * GET /key with the gift key → {limit, usage, remaining}. `usage` there is OpenRouter credit spend
+   * only (BYOK fees) and `byok_usage` the spend on the owner's provider key; the limit counts both.
+   * Cached briefly per license.
+   */
   async function balance(grant, { fresh = false } = {}) {
     const cached = balances.get(grant.keyId);
     if (!fresh && cached && now() - cached.at < BALANCE_CACHE_MS) return cached.value;
     const { ok, body } = await upstreamJson(`${apiBase}/key`, { key: grant.openrouterKey });
     const limit = finite(body?.data?.limit) ?? grant.limitUsd;
-    const usage = finite(body?.data?.usage);
-    if (!ok || usage === null) throw upstreamFailure('upstream_key_failed');
-    const remaining = Math.max(0, finite(body?.data?.limit_remaining) ?? limit - usage);
-    const value = { limit, usage, remaining };
+    const credit = finite(body?.data?.usage);
+    if (!ok || credit === null) throw upstreamFailure('upstream_key_failed');
+    const spent = credit + (finite(body?.data?.byok_usage) ?? 0);
+    const reported = finite(body?.data?.limit_remaining);
+    const remaining = usd(Math.max(0, reported ?? limit - spent));
+    const value = { limit, usage: usd(Math.min(limit, reported === null ? spent : limit - remaining)), remaining };
     balances.set(grant.keyId, { at: now(), value });
     return value;
   }

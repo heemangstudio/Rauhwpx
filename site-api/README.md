@@ -58,8 +58,8 @@ node scripts/license-admin.mjs webhooks --rejected        # or --held, or neithe
 
 A one-time gift of `GIFT_AMOUNT_USD` of Claude usage for Pi, one per license key (shared by its devices) and macOS only. The app authenticates with its license lease as `Authorization: Bearer <lease>`; the server checks its own signature, expiry, that the license is active, that the lease's device is still activated with a `platform` in `GIFT_PLATFORMS`, and the key hash. Anything else is `unauthorized` (401); a valid lease on another platform is `not_eligible`.
 
-- `GET /v1/gift/status` → `{ok, event:{id, amountUsd, endsAt, active}, eligible, claimed, remainingUsd, usedUsd, claimedAt}`. Balances come from OpenRouter, cached 15 s, and are `null` when it does not answer.
-- `POST /v1/gift/claim` (body `{}`) is idempotent. The first call creates one OpenRouter key named `hama-gift-<event>-<keyId>` with `limit = GIFT_AMOUNT_USD` and keeps the key in `gifts.json`; it is never sent to the app. Errors: `unauthorized` 401, `not_eligible` 403, `event_inactive` 410 (event not configured or past `GIFT_ENDS_AT`), `budget_exhausted` 409 (the created limits would pass `GIFT_TOTAL_BUDGET_USD`), `upstream_unavailable` 502. A claim interrupted after OpenRouter created the key leaves a `provisioning` record; the next claim deletes keys with that name before creating a new one.
+- `GET /v1/gift/status` → `{ok, event:{id, amountUsd, endsAt, active}, eligible, claimed, remainingUsd, usedUsd, claimedAt}`. Balances come from the key's `limit_remaining` on OpenRouter (BYOK spend plus OpenRouter fees), cached 15 s, and are `null` when it does not answer.
+- `POST /v1/gift/claim` (body `{}`) is idempotent. The first call creates one OpenRouter key named `hama-gift-<event>-<keyId>` with `limit = GIFT_AMOUNT_USD` and `include_byok_in_limit: true`, and keeps the key in `gifts.json`; it is never sent to the app. Errors: `unauthorized` 401, `not_eligible` 403, `event_inactive` 410 (event not configured or past `GIFT_ENDS_AT`), `budget_exhausted` 409 (the created limits would pass `GIFT_TOTAL_BUDGET_USD`), `upstream_unavailable` 502. A claim interrupted after OpenRouter created the key leaves a `provisioning` record; the next claim deletes keys with that name before creating a new one.
 - OpenAI-compatible proxy at `/v1/gift/openrouter` (Pi `baseUrl`, lease in place of the API key). Errors use OpenRouter's `{error:{code,message}}` shape: 401 `unauthorized`, 403 `not_eligible` or `gift_not_claimed`, 410 `event_inactive`, 402 `Insufficient credits: ...` once the key limit is spent or the gift is disabled.
   - `POST /chat/completions` streams SSE through as it arrives, and a client disconnect aborts the upstream request. Models must start with one of `GIFT_MODEL_PREFIXES` (also every entry of `models`); `max_tokens`/`max_completion_tokens` are clamped to `GIFT_MAX_OUTPUT_TOKENS` and `max_tokens` is set when neither is given. Bodies up to 16 MiB, 4 concurrent requests and 60 per minute per license.
   - `GET /models` is the OpenRouter catalog filtered to the allowed prefixes, cached 10 minutes. `GET /auth/key` (and `/key`) and `GET /credits` answer OpenRouter-shaped balances for the gift.
@@ -69,6 +69,12 @@ A one-time gift of `GIFT_AMOUNT_USD` of Claude usage for Pi, one per license key
 node scripts/license-admin.mjs gifts [--status active]
 node scripts/license-admin.mjs gift-disable --key-id lic_... --reason abuse
 ```
+
+Owner setup on OpenRouter, so gift usage bills to Anthropic Console credit:
+
+1. OpenRouter → Settings → Integrations → Anthropic: add the Anthropic Console API key as a BYOK key in the **Prioritized** section, and set **Shared capacity fallback** to "Never use shared capacity for any model on this provider". Without that, a rate-limited or failing Anthropic key falls back to OpenRouter credits.
+2. Keep a small OpenRouter credit balance. BYOK requests cost 5% of the normal OpenRouter price from OpenRouter credits, after a monthly fee-free allowance ($25,000 of list-price usage on pay-as-you-go). A gift key's limit counts both the Anthropic spend and that fee.
+3. Create a management key at openrouter.ai/settings/management-keys and set it as `OPENROUTER_PROVISIONING_KEY`. If it has an expiration, replace the variable before that date; an expired key makes claims fail with `upstream_unavailable`.
 
 Deploy checks: Railway's edge must keep long SSE responses open (idle and maximum request duration), so try a long streamed completion against production after the first deploy.
 
@@ -105,7 +111,7 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GRANDFATHER_CUTOFF` | ISO-8601 time; Mac installs first seen before it get a free key. Unset disables grandfathering |
 | `GRANDFATHER_PLATFORMS` | Comma list of `os` values, default `darwin` |
 | `LICENSE_ALLOWED_ORIGINS` | CORS origins for by-ref, default `https://heemangstudios.com,https://www.heemangstudios.com,https://heemangstudio.github.io` |
-| `OPENROUTER_PROVISIONING_KEY` | OpenRouter management key that creates the gift keys. With `GIFT_EVENT_ID` it turns the gift routes on |
+| `OPENROUTER_PROVISIONING_KEY` | OpenRouter management key that creates the gift keys (BYOK setup above). With `GIFT_EVENT_ID` it turns the gift routes on |
 | `GIFT_EVENT_ID` | Event id, e.g. `special-2026-10`. One gift per license per event |
 | `GIFT_AMOUNT_USD` | Limit of each gift key, default 20 |
 | `GIFT_ENDS_AT` | Optional ISO-8601 time after which no new gifts are claimed. Claimed gifts keep working |

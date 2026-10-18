@@ -8,7 +8,7 @@ import http from 'node:http';
  * check) can see each chunk arrive on its own.
  */
 export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease = 0 } = {}) {
-  const keys = new Map(); // hash → { name, key, limit, usage, disabled }
+  const keys = new Map(); // hash → { name, key, limit, usage, byokUsage, includeByok, disabled }
   const calls = [];
   const chats = [];
   let createFailure = null; // { status, createAnyway }
@@ -22,9 +22,13 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
+  // Like OpenRouter: `usage` is credit spend, `byok_usage` provider-key spend; the limit counts
+  // BYOK spend only when the key was created with include_byok_in_limit.
+  const spent = (k) => k.usage + (k.includeByok ? k.byokUsage : 0);
   const keyInfo = (hash, k) => ({
     hash, name: k.name, label: `${k.key.slice(0, 12)}...`, disabled: k.disabled,
-    limit: k.limit, usage: k.usage, limit_remaining: Math.max(0, k.limit - k.usage), limit_reset: null,
+    limit: k.limit, usage: k.usage, byok_usage: k.byokUsage, include_byok_in_limit: k.includeByok,
+    limit_remaining: Math.max(0, k.limit - spent(k)), limit_reset: null,
   });
   const byKey = (auth) => [...keys.entries()].find(([, k]) => `Bearer ${k.key}` === auth);
 
@@ -43,7 +47,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
       createFailure = null;
       const hash = randomBytes(8).toString('hex');
       const key = `sk-or-v1-${randomBytes(16).toString('hex')}`;
-      if (!failure || failure.createAnyway) keys.set(hash, { name: body.name, key, limit: body.limit, usage: 0, disabled: false });
+      if (!failure || failure.createAnyway) keys.set(hash, { name: body.name, key, limit: body.limit, usage: 0, byokUsage: 0, includeByok: body.include_byok_in_limit === true, disabled: false });
       if (failure) return json(res, failure.status, { error: { code: failure.status, message: 'boom' } });
       return json(res, 201, { key, data: keyInfo(hash, keys.get(hash)) });
     }
@@ -79,10 +83,11 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
       const chat = { body, closed: false, finished: false };
       chats.push(chat);
       res.on('close', () => { chat.closed = !chat.finished; });
-      if (k.usage >= k.limit) {
+      if (spent(k) >= k.limit) {
         return json(res, 403, { error: { code: 403, message: 'Key limit exceeded (total limit).', metadata: { limit_source: 'openrouter_key_limit' } } });
       }
-      k.usage += 0.25;
+      k.byokUsage += 0.25; // Claude via the owner's BYOK key
+      k.usage += 0.0125; // OpenRouter's 5% BYOK fee
       if (!body.stream) {
         chat.finished = true;
         return json(res, 200, { id: 'gen-1', choices: [{ message: { role: 'assistant', content: 'hello' } }] });

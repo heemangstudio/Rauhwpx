@@ -83,7 +83,9 @@ test('claim is idempotent across parallel calls and both devices, and the key st
     return { status: res.status, text: await res.text() };
   }));
   assert.equal(creates(s.upstream).length, 1);
-  assert.deepEqual(creates(s.upstream)[0].body, { name: `hama-gift-special-test-${lic.keyId}`, limit: 20, limit_reset: null });
+  assert.deepEqual(creates(s.upstream)[0].body, {
+    name: `hama-gift-special-test-${lic.keyId}`, limit: 20, limit_reset: null, include_byok_in_limit: true,
+  });
   const [stored] = [...s.upstream.keys.values()];
   for (const r of results) {
     assert.equal(r.status, 200);
@@ -272,13 +274,20 @@ test('non-Claude models are refused and the catalog lists only allowed models', 
   assert.deepEqual(models.data.map((m) => m.id), [SONNET, 'anthropic/claude-opus-5.5']);
 });
 
-test('an exhausted or disabled gift answers 402 with an insufficient credits message', async (t) => {
+test('BYOK spend counts toward the gift, and an exhausted or disabled gift answers 402', async (t) => {
   const s = await setup(t);
   const lic = await s.license();
   const lease = await lic.activate(MAC_A);
   await s.claim(lease);
   const [hash, stored] = [...s.upstream.keys.entries()][0];
-  stored.usage = 20;
+  assert.equal((await s.chat(lease, { model: SONNET, messages: [] })).status, 200);
+  const partly = await (await s.status(lease)).json();
+  assert.equal(partly.usedUsd, 0.2625); // $0.25 on the Anthropic key + $0.0125 BYOK fee
+  assert.equal(partly.remainingUsd, 19.7375);
+
+  // Spent entirely through the owner's Anthropic key: OpenRouter credit usage stays tiny.
+  stored.usage = 1;
+  stored.byokUsage = 19;
 
   const exhausted = await s.chat(lease, { model: SONNET, messages: [] });
   assert.equal(exhausted.status, 402);
@@ -290,7 +299,6 @@ test('an exhausted or disabled gift answers 402 with an insufficient credits mes
   const credits = await fetch(`${s.origin}/v1/gift/openrouter/credits`, { headers: s.auth(lease) }).then((r) => r.json());
   assert.deepEqual(credits, { data: { total_credits: 20, total_usage: 20 } });
 
-  stored.usage = 1;
   const disabled = await s.admin('/v1/admin/gifts/disable', { keyId: lic.keyId, reason: 'abuse' });
   assert.equal(disabled.changed, true);
   assert.equal(disabled.gift.status, 'revoked');
