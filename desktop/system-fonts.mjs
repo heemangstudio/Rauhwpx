@@ -312,7 +312,8 @@ export async function defaultFontRoots({
       env.LOCALAPPDATA && pathApi.join(env.LOCALAPPDATA, 'Programs'),
     ].filter(Boolean).map((target) => ({ path: pathApi.resolve(target), kind: 'app' })), platform);
     const discovered = await discoverApplicationFontDirs(applicationBases.map((root) => root.path), { pathApi });
-    for (const dir of discovered.directories) roots.push({ path: dir, kind: 'app', label: 'installed application' });
+    // 카탈로그의 app 글꼴처럼 그 앱만 쓰는 사본이라 글꼴 메뉴에서는 뺀다.
+    for (const dir of discovered.directories) roots.push({ path: dir, kind: 'app', label: 'installed application', unlisted: true });
     if (discovered.capped) discoveryErrors.push({ path: '*', message: `application font directory cap reached (${MAX_DIRS}); use RHWP_FONT_PATH for additional locations` });
   }
   for (const extra of splitEnvPaths(env.RHWP_FONT_PATH, platform)) {

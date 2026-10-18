@@ -116,7 +116,7 @@ test('Windows application discovery preserves catalog metadata, OS enumeration a
     [explicitFonts, 'user'], [systemFonts, 'system'], [registeredFont, 'system'], [appFonts, 'app'],
   ]);
   assert.deepEqual(defaults.roots.find((entry) => entry.path === appFonts), {
-    path: appFonts, kind: 'app', label: 'catalog app', sniff: true, maxDepth: 0,
+    path: appFonts, kind: 'app', label: 'catalog app', sniff: true, maxDepth: 0, unlisted: true,
   });
   assert.equal(defaults.roots.find((entry) => entry.path === registeredFont).label, 'Windows registry');
   assert.deepEqual(defaults.discoveryErrors, []);
