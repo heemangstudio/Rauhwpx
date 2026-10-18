@@ -1,7 +1,7 @@
 /**
  * 문서가 없을 때 용지 자리 — 점선 종이 하나와 새 문서·파일 열기 두 단추. 문서 없는 채팅 옆에서는 이
  * 두 단추가 그 채팅에 문서를 잇는다(편집기가 정한다). 문서가 열리면 바로 내려간다.
- * 종이를 눌러도 파일 열기와 같다. 종이 안에는 하마가 엎드려 잔다 — 스프라이트(hama-sprites.png)의
+ * 종이 테두리는 손으로 그은 듯 고르지 않은 점선이다. 종이를 눌러도 파일 열기와 같다. 종이 안에는 하마가 엎드려 잔다 — 스프라이트(hama-sprites.png)의
  * 깜빡임 자세 머리와 같은 색으로 그린 픽셀 그림이다. 모양은 styles/empty-document-view.css.
  */
 export interface EmptyDocumentView {
@@ -44,6 +44,49 @@ const Z_LARGE = ['#####', '...#.', '..#..', '.#...', '#####'];
 const VIEW_W = 30;
 const VIEW_H = 28;
 const HAMA_TOP = 16;
+
+/** 종이 크기(css 와 같다). 테두리는 이 좌표로 손으로 그은 듯 그린다. */
+const PAPER_W = 118;
+const PAPER_H = 156;
+/**
+ * 네 변을 따로 긋는다. 변마다 살짝 휘고, 끝이 모서리를 조금 지나치거나 못 미쳐 모서리가 고르지 않다.
+ * 점선 간격도 변마다 시작점을 달리해 같은 무늬가 되풀이되지 않는다.
+ */
+const PAPER_EDGES = [
+  'M -0.6 1.7 C 30 0.5, 74 2.5, 117.4 0.9',
+  'M 116.5 -0.7 C 117.9 42, 116.0 104, 117.0 155.4',
+  'M 118.3 154.5 C 82 155.9, 38 153.8, 1.2 155.3',
+  'M 1.5 156.6 C 0.2 112, 2.3 48, 0.8 1.1',
+];
+const EDGE_DASH_OFFSETS = [0, 11, 5, 17];
+
+/** 종이 테두리 — 고르지 않은 점선 한 겹 위에 옅은 덧선 한 겹. 색은 currentColor 를 따른다. */
+function createPaperOutline(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'empty-document-paper-outline');
+  svg.setAttribute('viewBox', `0 0 ${PAPER_W} ${PAPER_H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const stroke = (d: string, className: string, offset: number): SVGPathElement => {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', className);
+    path.setAttribute('stroke-dashoffset', String(offset));
+    path.setAttribute('vector-effect', 'non-scaling-stroke');
+    return path;
+  };
+  PAPER_EDGES.forEach((d, index) => {
+    svg.append(stroke(d, 'empty-document-paper-stroke', EDGE_DASH_OFFSETS[index]!));
+  });
+  // 덧선은 같은 변을 반 픽셀 비켜 한 번 더 지나간 자국이다. 앞의 두 변에만 남긴다.
+  const retrace = document.createElementNS(SVG_NS, 'g');
+  retrace.setAttribute('class', 'empty-document-paper-retrace');
+  retrace.setAttribute('transform', 'translate(0.7 0.6)');
+  PAPER_EDGES.slice(0, 2).forEach((d, index) => {
+    retrace.append(stroke(d, 'empty-document-paper-stroke', EDGE_DASH_OFFSETS[index]! + 7));
+  });
+  svg.append(retrace);
+  return svg;
+}
 
 /** 글자 격자를 가로로 이어진 칸마다 rect 하나로 그린다. '.' 은 비운다. */
 function pixelGroup(rows: readonly string[], x0: number, y0: number, color: (cell: string) => string): SVGGElement {
@@ -94,7 +137,7 @@ export function createEmptyDocumentView(actions: { create(): void; open(): void 
   const paper = document.createElement('div');
   paper.className = 'empty-document-paper';
   paper.setAttribute('aria-hidden', 'true');
-  paper.append(createSleepingHama());
+  paper.append(createPaperOutline(), createSleepingHama());
   paper.addEventListener('click', () => actions.open());
   const row = document.createElement('div');
   row.className = 'empty-document-actions';
