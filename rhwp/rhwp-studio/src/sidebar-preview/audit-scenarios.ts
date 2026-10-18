@@ -75,6 +75,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('special-event', 'Connection and setup', 'Special event popup', 'Inspect the hippo and Clawd art, then 받기 (sample claim) for the remaining-credit state.', { event: 'special' }),
   scene('first-run-deferred', 'Connection and setup', 'Deferred setup chip', 'Inspect the chip shown when the first launch opened a document.', { 'initial-setup': 'deferred' }),
   scene('settings-editing', 'Settings', 'Editing preferences', 'Inspect preference groups, draft changes, apply, and cancel.', { page: 'settings', destination: 'editing' }),
+  scene('settings-theme', 'Settings', 'Theme', 'Pick a preset, mode, and accent; every change previews live until applied.', { page: 'settings', destination: 'theme' }),
   scene('settings-ai', 'Settings', 'AI preferences', 'Inspect model defaults, instructions, and calibration controls.', { page: 'settings', destination: 'ai' }),
   scene('settings-accounts', 'Settings', 'AI accounts and connections', 'Inspect account details, provider cards, and usage plans.', { page: 'settings', destination: 'ai' }),
   scene('settings-project', 'Settings', 'Project preferences', 'Inspect the librarian model, import rules, board defaults, and storage rows.', { page: 'settings', destination: 'project' }),
@@ -96,7 +97,7 @@ const reviewedKey = 'sidebar-preview-audit-reviewed-v1';
 /** A scene link starts clean, preserving only the current viewing preferences. */
 export function auditScenarioUrl(scenario: AuditScenario, params: URLSearchParams): string {
   const url = new URL(location.pathname, location.origin);
-  for (const key of ['theme', 'width']) {
+  for (const key of ['theme', 'preset', 'accent', 'width']) {
     const value = params.get(key);
     if (value) url.searchParams.set(key, value);
   }

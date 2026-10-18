@@ -7,19 +7,27 @@
 (() => {
   const root = document.documentElement;
   const isThemeMode = (value) => value === 'system' || value === 'light' || value === 'dark';
+  // 프리셋 이름과 어두운 구성만 가진 프리셋. src/core/user-settings.ts 의 THEME_PRESET_IDS,
+  // src/core/theme-presets/*.ts 의 schemes 와 같아야 한다. 강조색은 번들의 theme.ts 가 건다.
+  const PRESETS = ['default', 'catppuccin', 'hancom', 'hacker', 'absolutely', 'reset'];
+  const DARK_ONLY = ['hacker'];
   let mode = 'system';
+  let preset = 'default';
   try {
     const settings = JSON.parse(localStorage.getItem('rhwp-settings') || '{}');
     const storedMode = settings && settings.theme && settings.theme.mode;
     if (isThemeMode(storedMode)) mode = storedMode;
+    const storedPreset = settings && settings.theme && settings.theme.preset;
+    if (PRESETS.includes(storedPreset)) preset = storedPreset;
   } catch {
     mode = 'system';
   }
   const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const effective = mode === 'dark' || (mode === 'system' && prefersDark) ? 'dark' : 'light';
+  const effective = DARK_ONLY.includes(preset) || mode === 'dark' || (mode === 'system' && prefersDark) ? 'dark' : 'light';
   const scheme = `only ${effective}`;
   root.dataset.themeMode = mode;
   root.dataset.themeEffective = effective;
+  root.dataset.themePreset = preset;
   root.style.colorScheme = scheme;
   const colorSchemeMeta = document.querySelector('meta[name="color-scheme"]');
   if (colorSchemeMeta) colorSchemeMeta.setAttribute('content', scheme);

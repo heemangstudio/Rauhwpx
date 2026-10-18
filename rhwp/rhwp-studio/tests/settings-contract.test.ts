@@ -17,7 +17,6 @@ function editorSettings() {
       showRecentFonts: settings.font.showRecentFonts,
       recentFontCount: settings.font.recentFontCount,
     },
-    theme: settings.theme,
     dialog: settings.dialog,
     view: settings.view,
     versionControl: settings.versionControl,
@@ -29,8 +28,8 @@ test('편집 초안은 중첩 객체까지 복제하고 동등성을 판정한�
   const original = editorSettings();
   const clone = cloneEditorDraft(original);
   assert.ok(editorDraftEquals(original, clone));
-  clone.theme.mode = 'dark';
-  assert.equal(original.theme.mode, 'system');
+  clone.view.clipView = false;
+  assert.equal(original.view.clipView, true);
   assert.equal(editorDraftEquals(original, clone), false);
 });
 
@@ -49,10 +48,11 @@ test('초안 정규화는 표시 범위와 조판 부호 불변식을 지킨다'
   assert.equal(normalized.view.showControlCodes, true);
 });
 
-test('설정 목적지는 편집·AI·스킬·프로젝트·보관함만 받고 그 외 값은 버린다', () => {
+test('설정 목적지는 편집·테마·AI·스킬·프로젝트·보관함만 받고 그 외 값은 버린다', () => {
   assert.equal(isSettingsDestination('product'), false);
   assert.equal(normalizeSettingsDestination('project'), 'project');
   assert.equal(isSettingsDestination('editing'), true);
+  assert.equal(isSettingsDestination('theme'), true);
   assert.equal(isSettingsDestination('skills'), true);
   assert.equal(isSettingsDestination('archive'), true);
   assert.equal(isSettingsDestination('about'), false);

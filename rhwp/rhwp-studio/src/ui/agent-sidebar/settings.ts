@@ -26,6 +26,7 @@ import { createBrowserSettingsPane } from './browser-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createEditingSettings } from './settings-editing.ts';
+import { createThemeSettings } from './settings-theme.ts';
 import { createProjectSettingsPane } from './settings-project.ts';
 import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
@@ -494,6 +495,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string }> = [
     { id: 'editing', label: '편집' },
+    { id: 'theme', label: '테마' },
     { id: 'ai', label: 'AI' },
     { id: 'browser', label: '브라우저' },
     { id: 'skills', label: '스킬' },
@@ -535,6 +537,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
+  const themeSettings = createThemeSettings({
+    onDirtyChange: () => {
+      if (shellReady) renderDestinationState();
+    },
+  });
+  panes.get('theme')?.appendChild(themeSettings.element);
   // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'.
   const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
     .rhwpDesktop?.license;
@@ -1480,6 +1488,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     switch (currentDestination) {
       case 'editing':
         return editingSettings.isDirty();
+      case 'theme':
+        return themeSettings.isDirty();
       case 'ai':
         return isAiDirty();
       case 'browser':
@@ -1689,6 +1699,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'editing':
           editingSettings.cancel();
           return true;
+        case 'theme':
+          themeSettings.cancel();
+          return true;
         case 'ai':
           cancelAiDraft();
           return true;
@@ -1708,6 +1721,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     switch (currentDestination) {
       case 'editing':
         return editingSettings.apply();
+      case 'theme':
+        return themeSettings.apply();
       case 'ai':
         return applyAiDraft();
       case 'browser':
@@ -3271,6 +3286,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       // 웹의 알림 허락은 Studio 밖(사이트 설정)에서 바뀐다 — 열 때마다 다시 본다.
       syncNotificationsSection();
       editingSettings.open();
+      themeSettings.open();
       if (destination) selectDestination(destination);
       else selectDestination(lastDestination);
       syncPrefsInputs();
@@ -3297,6 +3313,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       browserPane.close();
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();
+      if (themeSettings.isDirty()) themeSettings.cancel();
       if (isAiDirty()) cancelAiDraft();
       if (projectPane.isDirty()) projectPane.cancel();
       closeAgentSetup();
@@ -3304,7 +3321,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     requestClose: resolveDirtyExit,
     isDirty(): boolean {
-      return editingSettings.isDirty() || isAiDirty() || projectPane.isDirty();
+      return editingSettings.isDirty() || themeSettings.isDirty() || isAiDirty() || projectPane.isDirty();
     },
     openAgentSetup,
     beginAgentConnect,
@@ -3566,6 +3583,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       licenseSection?.dispose();
       piGift?.dispose();
       editingSettings.dispose();
+      themeSettings.dispose();
       element.remove();
       setupOverlay.remove();
       finishTemplateName(null);

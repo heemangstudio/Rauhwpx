@@ -1342,7 +1342,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     recolor();
     requestDraw();
   });
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-effective', 'data-theme'] });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-effective', 'data-theme', 'data-theme-preset', 'style'] });
 
   return {
     element,

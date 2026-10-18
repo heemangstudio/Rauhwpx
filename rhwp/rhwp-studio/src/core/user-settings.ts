@@ -32,10 +32,18 @@ export interface FontSettings {
 /** 앱 UI 테마 설정값 */
 export type ThemeMode = 'system' | 'light' | 'dark';
 
+/** 테마 프리셋 이름. 메타데이터는 core/theme-presets/, 팔레트는 styles/themes/ 에 있다. */
+export const THEME_PRESET_IDS = ['default', 'catppuccin', 'hancom', 'hacker', 'absolutely', 'reset'] as const;
+export type ThemePresetId = (typeof THEME_PRESET_IDS)[number];
+
 /** 앱 UI 테마 설정 */
 export interface ThemeSettings {
   /** 사용자가 선택한 테마 모드 */
   mode: ThemeMode;
+  /** 색 구성 프리셋 */
+  preset: ThemePresetId;
+  /** 사용자가 고른 강조색(#rrggbb). null 이면 프리셋의 강조색을 쓴다. */
+  accent: string | null;
 }
 
 /** 대화상자 UI 설정 */
@@ -89,10 +97,9 @@ export interface AppSettings {
   autosave: AutosaveSettings;
 }
 
-/** 설정 허브에서 한 번에 초안/저장하는 편집기 스칼라 설정. */
+/** 설정 허브의 편집 탭이 한 번에 초안/저장하는 편집기 스칼라 설정. 테마는 테마 탭이 따로 다룬다. */
 export interface EditorScalarSettings {
   font: Pick<FontSettings, 'showRecentFonts' | 'recentFontCount'>;
-  theme: ThemeSettings;
   dialog: DialogSettings;
   view: ViewSettings;
   versionControl: VersionControlSettings;
@@ -159,6 +166,8 @@ function defaultSettings(): AppSettings {
     },
     theme: {
       mode: 'system',
+      preset: 'default',
+      accent: null,
     },
     dialog: {
       picturePropsKeepRatio: true,
@@ -185,6 +194,29 @@ function defaultSettings(): AppSettings {
 
 function normalizeThemeMode(value: unknown): ThemeMode {
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
+}
+
+export function normalizeThemePreset(value: unknown): ThemePresetId {
+  return THEME_PRESET_IDS.find((id) => id === value) ?? 'default';
+}
+
+/** #rgb·#rrggbb(대소문자 무관)만 받아 소문자 #rrggbb 로 맞춘다. 그 밖의 값은 null(프리셋 강조색). */
+export function normalizeThemeAccent(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const hex = value.trim().toLowerCase();
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(hex);
+  if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`;
+  return /^#[0-9a-f]{6}$/.test(hex) ? hex : null;
+}
+
+/** 저장된 테마 값을 지금 구조로 맞춘다. 모드만 있던 예전 값은 기본 프리셋·프리셋 강조색이 된다. */
+export function normalizeThemeSettings(value: unknown): ThemeSettings {
+  const raw = value && typeof value === 'object' ? value as Partial<Record<keyof ThemeSettings, unknown>> : {};
+  return {
+    mode: normalizeThemeMode(raw.mode),
+    preset: normalizeThemePreset(raw.preset),
+    accent: normalizeThemeAccent(raw.accent),
+  };
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
@@ -215,7 +247,6 @@ function normalizeRecentFonts(value: unknown): string[] {
 function cloneEditorScalarSettings(settings: EditorScalarSettings): EditorScalarSettings {
   return {
     font: { ...settings.font },
-    theme: { ...settings.theme },
     dialog: { ...settings.dialog },
     view: { ...settings.view },
     versionControl: { ...settings.versionControl },
@@ -244,7 +275,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       recentFontCount: normalizeNumber(parsed.font?.recentFontCount, defaults.font.recentFontCount, 1, 5),
       recentFonts: normalizeRecentFonts(parsed.font?.recentFonts),
     },
-    theme: { mode: normalizeThemeMode(parsed.theme?.mode) },
+    theme: normalizeThemeSettings(parsed.theme),
     dialog: {
       picturePropsKeepRatio: normalizeBoolean(dialog.picturePropsKeepRatio, defaults.dialog.picturePropsKeepRatio),
       showPdfPrintGuidance: normalizeBoolean(dialog.showPdfPrintGuidance, defaults.dialog.showPdfPrintGuidance),
@@ -340,7 +371,6 @@ class UserSettingsService {
         showRecentFonts: this.data.font.showRecentFonts,
         recentFontCount: this.data.font.recentFontCount,
       },
-      theme: this.data.theme,
       dialog: this.data.dialog,
       view: this.data.view,
       versionControl: this.data.versionControl,
@@ -355,7 +385,6 @@ class UserSettingsService {
         showRecentFonts: normalizeBoolean(next.font.showRecentFonts, true),
         recentFontCount: normalizeNumber(next.font.recentFontCount, 3, 1, 5),
       },
-      theme: { mode: normalizeThemeMode(next.theme.mode) },
       dialog: {
         picturePropsKeepRatio: normalizeBoolean(next.dialog.picturePropsKeepRatio, true),
         showPdfPrintGuidance: normalizeBoolean(next.dialog.showPdfPrintGuidance, true),
@@ -385,7 +414,6 @@ class UserSettingsService {
       ...previous,
       version: 2,
       font: { ...previous.font, ...normalized.font },
-      theme: normalized.theme,
       dialog: normalized.dialog,
       view: normalized.view,
       versionControl: normalized.versionControl,
@@ -435,8 +463,34 @@ class UserSettingsService {
 
   /** 테마 모드 설정 */
   setThemeMode(mode: ThemeMode): void {
-    this.data.theme.mode = normalizeThemeMode(mode);
+    this.data.theme = { ...this.data.theme, mode: normalizeThemeMode(mode) };
     this.save();
+  }
+
+  /** 테마 프리셋 설정 */
+  setThemePreset(preset: ThemePresetId): void {
+    this.data.theme = { ...this.data.theme, preset: normalizeThemePreset(preset) };
+    this.save();
+  }
+
+  /** 강조색 설정. null 이면 프리셋 강조색으로 돌아간다. */
+  setThemeAccent(accent: string | null): void {
+    this.data.theme = { ...this.data.theme, accent: normalizeThemeAccent(accent) };
+    this.save();
+  }
+
+  /** 테마 탭의 초안을 한 번의 localStorage 쓰기로 저장한다. 실패하면 메모리 값을 바꾸지 않는다. */
+  tryApplyThemeSettings(next: ThemeSettings): SettingsSaveResult<ThemeSettings> {
+    const theme = normalizeThemeSettings(next);
+    const updated: AppSettings = { ...this.data, theme };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    this.data = updated;
+    this.notify('local');
+    return { ok: true, value: { ...theme } };
   }
 
   /** 대화상자 UI 설정 반환 */

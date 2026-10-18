@@ -197,6 +197,11 @@
   accent-color: var(--color-primary);
 }
 
+/* 문단 모양의 첫 줄 라디오는 묶음 밖에 있어 따로 맞춘다. */
+.ps-dialog input[type="radio"] {
+  accent-color: var(--color-primary);
+}
+
 .dialog-footer {
   display: flex;
   justify-content: flex-end;

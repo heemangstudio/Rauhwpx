@@ -129,7 +129,8 @@
   opacity: 0;
 }
 
-/* 스위치 하나의 모양: 꺼짐 = 옅은 잉크 트랙, 켜짐 = 잉크 트랙. 손잡이는 두 테마 모두 흰색(--ag-knob). */
+/* 스위치 하나의 모양: 꺼짐 = 옅은 잉크 트랙, 켜짐 = 잉크 트랙(--ag-switch-on). 손잡이는 흰색이고,
+   프리셋이 켜진 손잡이(--ag-switch-on-knob)를 따로 정할 수 있다. */
 .ag-settings-toggle-track {
   position: relative;
   box-sizing: border-box;
@@ -156,10 +157,11 @@
 }
 
 .ag-settings-toggle-input:checked + .ag-settings-toggle-track {
-  background: var(--ag-primary-bg);
+  background: var(--ag-switch-on);
 }
 
 .ag-settings-toggle-input:checked + .ag-settings-toggle-track::after {
+  background: var(--ag-switch-on-knob);
   transform: translateX(14px);
 }
 
@@ -566,7 +568,7 @@
   --ag-text-muted: var(--n-text-muted);
   --ag-hover: var(--n-fill-hover);
   /* :root 에 성공색 토큰이 없어 .ag-root 의 값을 옮긴다(어두운 테마 값은 아래). */
-  --ag-ok: #2f7d4f; /* token-ok */
+  --ag-ok: var(--theme-success, #2f7d4f); /* token-ok */
   --ag-err: var(--ui-danger);
   --ag-r-chip: var(--n-radius-chip);
   --ag-r-field: var(--n-radius-field);
@@ -584,7 +586,7 @@
 }
 
 :root[data-theme-effective='dark'] .ag-agent-setup-dialog {
-  --ag-ok: #5cbb7f; /* token-ok */
+  --ag-ok: var(--theme-success, #5cbb7f); /* token-ok */
 }
 
 .ag-agent-setup-overlay.ag-open .ag-agent-setup-dialog {
@@ -1706,7 +1708,11 @@
 
 /* 설명 없는 행은 min-height를 풀어서 라벨+컨트롤만으로 높이를 잡는다. */
 .ag-settings-control-row:not(:has(.ag-settings-control-description)),
-.ag-settings-control-row.ag-settings-toggle-row:not(:has(.ag-settings-control-description)),
+.ag-settings-control-row.ag-settings-toggle-row:not(:has(.ag-settings-control-description)) {
+  min-height: 0;
+}
+
+.ag-settings-control-row[hidden],
 .ag-settings-resource-header[hidden],
 .ag-settings-actions .ag-settings-btn[hidden] {
   display: none;
@@ -2639,11 +2645,11 @@
 }
 
 .ag-root .ag-settings-page .ag-skill-toggle[aria-pressed='true'] {
-  background: var(--ag-primary-bg);
+  background: var(--ag-switch-on);
 }
 
 .ag-root .ag-settings-page .ag-skill-toggle[aria-pressed='true']::after {
-  background: var(--ag-knob);
+  background: var(--ag-switch-on-knob);
 }
 
 /* 행 안의 컨트롤은 설명 유무와 관계없이 세로 가운데에 선다. */

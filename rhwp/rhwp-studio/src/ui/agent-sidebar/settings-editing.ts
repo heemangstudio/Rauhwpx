@@ -178,34 +178,12 @@ export function createEditingSettings(options: {
   conflict.append(conflictCopy, conflictActions);
 
   const appearance = group('화면과 보기');
-  const themeRow = el('div', 'ag-settings-control-row');
-  const themeCopy = el('span', 'ag-settings-control-copy');
-  themeCopy.append(el('span', 'ag-settings-control-label', '테마'));
-  const themeChoices = el('div', 'ag-settings-segmented');
-  themeChoices.setAttribute('role', 'radiogroup');
-  themeChoices.setAttribute('aria-label', '테마');
-  const themeButtons = new Map<EditorScalarSettings['theme']['mode'], HTMLButtonElement>();
-  for (const [mode, label] of [['system', '시스템'], ['light', '밝게'], ['dark', '어둡게']] as const) {
-    const button = el('button', 'ag-settings-segment', label);
-    button.type = 'button';
-    button.dataset.value = mode;
-    button.setAttribute('role', 'radio');
-    button.addEventListener('click', () => {
-      draft.theme.mode = mode;
-      previewAndRender();
-    });
-    themeChoices.appendChild(button);
-    themeButtons.set(mode, button);
-  }
-  themeRow.append(themeCopy, themeChoices);
-
   const paragraphMarks = toggleRow('문단 부호', '문단 끝에 ¶ 표시를 보여 줍니다.');
   const controlCodes = toggleRow('조판 부호');
   const clipView = toggleRow('잘림 보기', '편집용지 경계 밖의 내용을 계속 보여 줍니다.');
   const pictureRatio = toggleRow('그림 비율 유지', '그림 속성을 열 때 너비와 높이의 비율을 기본으로 고정합니다.');
   const sidebarMotion = toggleRow('사이드바 움직임', '사이드바와 집중 화면을 열고 닫을 때 움직임을 보여 줍니다.');
   appearance.body.append(
-    themeRow,
     paragraphMarks.root,
     controlCodes.root,
     clipView.root,
@@ -614,11 +592,6 @@ export function createEditingSettings(options: {
   }
 
   function render(): void {
-    for (const [mode, button] of themeButtons) {
-      const selected = draft.theme.mode === mode;
-      button.classList.toggle('ag-active', selected);
-      button.setAttribute('aria-checked', String(selected));
-    }
     paragraphMarks.input.checked = draft.view.showParagraphMarks;
     controlCodes.input.checked = draft.view.showControlCodes;
     clipView.input.checked = draft.view.clipView;

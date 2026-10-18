@@ -881,11 +881,15 @@ function cascadedWindowPosition() {
   return { x: bounds.x + 28, y: bounds.y + 28 };
 }
 
+// 앱 테마(프리셋·밝게·어둡게)의 바탕색. 창이 내용보다 먼저 그리는 배경과 다음 새 창의 배경에 쓴다.
+let lastWindowBackground = null;
+
 async function createWindow(launch = launchRequest(), { generatedDocument = null } = {}) {
   // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
   // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
   void hubOwner.ensure().catch(() => {});
-  const backgroundColor = nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7';
+  // 렌더러가 테마의 바탕색을 알려 주면 새 창도 그 색으로 연다(앱을 다시 켜면 시스템 색으로 시작한다).
+  const backgroundColor = lastWindowBackground ?? (nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7');
   const isMac = process.platform === 'darwin';
   // 실행 후 첫 창만 지난 프레임을 되살리고, 이후 창은 28px 계단식으로 연다.
   const restoredFrame = sessions.windows().length === 0
@@ -1706,6 +1710,15 @@ ipcMain.on('desktop:set-document-state', (event, state) => {
     applyDocumentState(sessionForEvent(event).window, { edited: state?.edited === true });
   } catch (error) {
     console.warn('[hamaeditor] document state update failed:', error);
+  }
+});
+ipcMain.on('desktop:set-window-background', (event, color) => {
+  if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return;
+  try {
+    sessionForEvent(event).window.setBackgroundColor(color);
+    lastWindowBackground = color;
+  } catch (error) {
+    console.warn('[hamaeditor] window background update failed:', error);
   }
 });
 ipcMain.on('desktop:set-agent-attention-count', (event, count) => {

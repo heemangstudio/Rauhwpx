@@ -233,6 +233,10 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   setDocumentState: (state) => {
     ipcRenderer.send('desktop:set-document-state', { edited: state?.edited === true });
   },
+  // 창 배경색을 앱 테마의 바탕색에 맞춘다(#rrggbb 만 보낸다).
+  setWindowBackground: (color) => {
+    if (typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)) ipcRenderer.send('desktop:set-window-background', color);
+  },
   // 보지 않는 채팅의 알림. 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다.
   notifyAgentAttention: (payload) => {
     ipcRenderer.send('desktop:agent-attention', {

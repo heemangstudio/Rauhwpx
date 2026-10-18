@@ -58,15 +58,15 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
       popup?.document.documentElement.style.setProperty(name, value);
     }
     if (popup) {
-      for (const name of ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-color-scheme']) {
+      for (const name of ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-theme-preset', 'data-color-scheme']) {
         const value = document.documentElement.getAttribute(name); if (value === null) popup.document.documentElement.removeAttribute(name); else popup.document.documentElement.setAttribute(name, value);
       }
       popup.document.body.className = document.body.className;
     }
   }
   const themeObserver = new MutationObserver(syncTheme);
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-color-scheme', 'style'] });
-  themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-color-scheme', 'style'] });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-theme-preset', 'data-color-scheme', 'style'] });
+  themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-theme-mode', 'data-theme-effective', 'data-theme-preset', 'data-color-scheme', 'style'] });
   const moveHandle = document.createElement('button');
   moveHandle.className = 'ag-browser-move';
   moveHandle.type = 'button';

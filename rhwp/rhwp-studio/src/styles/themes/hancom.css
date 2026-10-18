@@ -1,0 +1,79 @@
+/* 한컴 — 팔레트 계약(index.css 머리말)의 --theme-* 만 정한다. 강조색은 core/theme-presets/hancom.ts 에 있다.
+   밝게: macOS용 한컴오피스 한/글의 밝은 크롬(도움말 intro_screen.png 표본 — 도구 막대 #f6f6f6, 서식 막대·상태 표시줄
+   #f4f4f4, 작업 창 #efefef, 입력 칸 흰색). 강조는 한/글 아이콘(hwp.icns)의 파랑 띠 #006dcc.
+   어둡게: 한컴오피스의 어두운 스킨(Resources/DarkTheme 눈금자 표식 — 바탕 #333333, 테두리 #8c8c8c, 비활성 #6e6e6e)과
+   그 스킨이 따르는 macOS 어두운 모양의 회색 단계. 강조는 한/글 아이콘 바탕 파랑 #42adff.
+   선택 행·포커스 고리는 강조색을 섞어 만들어 사용자가 고른 강조색도 따라간다. 문서 글자 선택은
+   형광펜과 헷갈리지 않도록 강조색과 상관없이 한/글 파랑으로 둔다. */
+
+:root[data-theme-preset='hancom'][data-theme-effective='light'] {
+  --theme-canvas: #f6f6f6;
+  --theme-surface: #f6f6f6;
+  --theme-surface-raised: #ffffff;
+  --theme-surface-sunken: #ececec;
+  --theme-desk: #e4e4e4;
+
+  --theme-text: #222222;
+  --theme-text-secondary: #474747;
+  --theme-text-muted: #636363;
+  --theme-text-placeholder: #6e6e6e;
+  --theme-text-disabled: #9a9a9a;
+
+  --theme-hairline: #dcdcdc;
+  --theme-hairline-strong: #c5c5c5;
+
+  --theme-fill-hover: #e9e9e9;
+  --theme-fill-active: #dedede;
+  --theme-fill-selected: color-mix(in oklab, var(--theme-accent) 14%, #ffffff);
+
+  --theme-focus-ring: color-mix(in oklab, var(--theme-accent) 85%, transparent);
+  --theme-selection: rgba(0, 109, 204, 0.28);
+
+  --theme-link: var(--theme-accent);
+
+  --theme-sidebar-surface: #efefef;
+  --theme-sidebar-raised: #ffffff;
+  --theme-sidebar-sunken: #e2e2e2;
+  --theme-sidebar-text: #222222;
+
+  /* 기본 단추와 켜진 스위치는 macOS·한/글처럼 강조색으로 채운다 */
+  --theme-primary: var(--theme-accent);
+  --theme-on-primary: var(--theme-on-accent);
+}
+
+:root[data-theme-preset='hancom'][data-theme-effective='dark'] {
+  --theme-canvas: #333333;
+  --theme-surface: #333333;
+  --theme-surface-raised: #3a3a3a;
+  --theme-surface-sunken: #282828;
+  --theme-desk: #1e1e1e;
+
+  --theme-text: #e6e6e6;
+  --theme-text-secondary: #c6c6c6;
+  --theme-text-muted: #ababab;
+  --theme-text-placeholder: #a3a3a3;
+  --theme-text-disabled: #6e6e6e;
+
+  --theme-hairline: #474747;
+  --theme-hairline-strong: #5a5a5a;
+
+  --theme-fill-hover: #444444;
+  --theme-fill-active: #4d4d4d;
+  --theme-fill-selected: color-mix(in oklab, var(--theme-accent) 26%, #333333);
+
+  --theme-focus-ring: color-mix(in oklab, var(--theme-accent) 85%, transparent);
+  --theme-selection: rgba(66, 173, 255, 0.36);
+
+  --theme-link: var(--theme-accent-light);
+
+  --theme-sidebar-surface: #2b2b2b;
+  --theme-sidebar-raised: #383838;
+  --theme-sidebar-sunken: #222222;
+  --theme-sidebar-text: #e6e6e6;
+
+  --theme-primary: var(--theme-accent);
+  --theme-on-primary: var(--theme-on-accent);
+  /* 메뉴 강조는 밝기만 눌러(L 0.5 이하) 짙은 파랑에 흰 글자를 얹는다. 어떤 강조색이든 흰 글자가 4.5:1 을 넘는다. */
+  --theme-menu-hover: oklch(from var(--theme-accent) min(l, 0.5) c h);
+  --theme-on-menu-hover: #ffffff;
+}

@@ -3,11 +3,20 @@ import '../style.css';
 import './preview.css';
 import { initAgentSidebar, type AgentSidebarHandle } from '../ui/agent-sidebar/index.ts';
 import { EventBus } from '../core/event-bus.ts';
-import { applyTheme, setThemeMode } from '../core/theme.ts';
+import {
+  getEffectiveTheme,
+  getThemeMode,
+  getThemeSettings,
+  initThemeSync,
+  setThemeAccent,
+  setThemeMode,
+  setThemePreset,
+} from '../core/theme.ts';
+import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
-import { userSettings } from '../core/user-settings.ts';
+import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
 import { listThreads, getThread, upsertThread, waitForThreadsPersistence } from '../agent/threads.ts';
 import {
@@ -281,7 +290,18 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
   userSettings.setUseHancomGit(true);
   localStorage.setItem('sidebar-preview-seeded', '1');
 }
-applyTheme();
+/*
+ * `theme=light|dark|system`, `preset=<id>`, `accent=<hex>|default` set the theme before the first paint
+ * (and keep it, like the settings would). `accent` accepts `ff6600`, `%23ff6600` or `#f60`.
+ */
+if (['light', 'dark', 'system'].includes(params.get('theme') ?? ''))
+  userSettings.setThemeMode(params.get('theme') as 'light' | 'dark' | 'system');
+if (params.has('preset')) userSettings.setThemePreset(normalizeThemePreset(params.get('preset')));
+if (params.has('accent')) {
+  const raw = params.get('accent') ?? '';
+  userSettings.setThemeAccent(normalizeThemeAccent(raw.startsWith('#') ? raw : `#${raw}`));
+}
+initThemeSync();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
 if (params.get('event') === 'special' && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
@@ -534,13 +554,10 @@ const sidebar = initAgentSidebar({
   navigateToChange: (position) => { navigation.calls.push(position); },
   openClassicVersionControl: () =>
     report('Classic document history placeholder'),
+  // 문서 보기 설정은 편집기 엔진이 없어 반영할 곳이 없다. 테마는 core/theme.ts 가 직접 건다.
   editorSettingsRuntime: {
-    preview: (settings) => {
-      applyTheme(settings.theme.mode);
-    },
-    committed: (settings) => {
-      applyTheme(settings.theme.mode);
-    },
+    preview: () => {},
+    committed: () => {},
   },
 });
 mock.boot();
@@ -636,12 +653,25 @@ services.addEventListener('change', () => {
   eventBus.emit('settings:open', { destination: 'ai' });
 });
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
-if (['light', 'dark', 'system'].includes(params.get('theme') ?? ''))
-  setThemeMode(params.get('theme') as 'light' | 'dark' | 'system');
 theme.value = userSettings.getThemeSettings().mode;
 theme.addEventListener('change', () =>
   setThemeMode(theme.value as 'light' | 'dark' | 'system'),
 );
+const presetSelect = document.querySelector<HTMLSelectElement>('#preset')!;
+for (const preset of THEME_PRESET_LIST) presetSelect.add(new Option(preset.label, preset.id));
+presetSelect.value = userSettings.getThemeSettings().preset;
+presetSelect.addEventListener('change', () => setThemePreset(normalizeThemePreset(presetSelect.value)));
+// Screenshot scripts drive the theme the same way as the editor's dev build.
+Object.assign(window, {
+  __theme: {
+    getThemeMode,
+    getEffectiveTheme,
+    getThemeSettings,
+    setThemeMode,
+    setPreset: setThemePreset,
+    setAccent: setThemeAccent,
+  },
+});
 documentSelect.addEventListener('change', () => {
   const empty = documentSelect.value === 'empty';
   showMockDocument(

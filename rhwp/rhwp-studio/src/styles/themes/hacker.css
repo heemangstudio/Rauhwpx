@@ -1,0 +1,52 @@
+/* Hacker — 어두운 색 구성만 있다(core/theme-presets/hacker.ts 의 schemes: ['dark']).
+   팔레트 계약(index.css 머리말)의 --theme-* 만 정한다. 강조색은 메타데이터에 있다.
+   초록 형광 단말기: 면은 초록 기운의 검정 몇 단계, 선이 초록을 맡는다. 글자는 눈부시지 않게 누른
+   형광 초록이고, 빨강(강조색·위험·글자 선택)은 드물게만 나온다. 리본 아이콘은 초록으로 둔다. */
+
+:root[data-theme-preset='hacker'][data-theme-effective='dark'] {
+  /* 면: 책상 < 바탕 < 크롬 < 떠 있는 면 */
+  --theme-canvas: #030604;
+  --theme-surface: #050a07;
+  --theme-surface-raised: #0a140d;
+  --theme-surface-sunken: #020403;
+  --theme-desk: #020503;
+
+  /* 글자: 본문 대비 약 13:1, 순수 #00ff00 은 쓰지 않는다 */
+  --theme-text: #a4dfa6;
+  --theme-text-secondary: #7bbb7e;
+  --theme-text-muted: #5e9a62;
+  --theme-text-placeholder: #528b57;
+  --theme-text-disabled: #2f5a35;
+
+  /* 선: 초록 윤곽 */
+  --theme-hairline: #1a4223;
+  --theme-hairline-strong: #2c7139;
+
+  --theme-fill-hover: #0c1d11;
+  --theme-fill-active: #102818;
+  --theme-fill-selected: #14361c;
+
+  --theme-ribbon-accent: #4be37a;
+  --theme-ribbon-accent-soft: rgba(75, 227, 122, 0.18);
+  --theme-focus-ring: rgba(75, 227, 122, 0.55);
+  /* 흰 용지 위 글자 선택은 강조색(기본 빨강)을 옅게 깐다 */
+  --theme-selection: color-mix(in srgb, var(--theme-accent) 32%, transparent);
+
+  --theme-danger: #ff5566;
+  --theme-warning: #d4b84a;
+  --theme-success: #4be37a;
+  --theme-link: #74eb98;
+
+  --theme-sidebar-surface: #040805;
+  --theme-sidebar-raised: #0a140d;
+  --theme-sidebar-sunken: #020403;
+  --theme-sidebar-text: #a4dfa6;
+
+  /* 크롬과 사이드바는 단말기처럼 고정폭 글꼴. 한글은 고정폭 글꼴에 없으므로 시스템 한글 글꼴로 넘어간다. */
+  --theme-font-ui: ui-monospace, 'SF Mono', Menlo, Consolas, 'Apple SD Gothic Neo', 'Malgun Gothic', monospace;
+
+  --theme-sidebar-hairline: #1a4223;
+  --theme-sidebar-hairline-strong: #2c7139;
+  /* 입력 칸·사이드바 글자 선택은 리본과 같은 초록(사용자 강조색이 있으면 그 색) */
+  --theme-ui-selection: color-mix(in srgb, var(--theme-ribbon-accent) 30%, transparent);
+}

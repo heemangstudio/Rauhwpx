@@ -1,6 +1,6 @@
 import type { EditorScalarSettings } from '../../core/user-settings.ts';
 
-export const SETTINGS_DESTINATIONS = ['editing', 'ai', 'browser', 'skills', 'project', 'archive'] as const;
+export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'browser', 'skills', 'project', 'archive'] as const;
 export type SettingsDestination = (typeof SETTINGS_DESTINATIONS)[number];
 
 /** 이전 설정 링크와 세션 값에서 사용하던 연결 탭 이름. */
@@ -24,7 +24,7 @@ export function isSettingsDestination(value: unknown): value is SettingsDestinat
 }
 
 export interface EditorSettingsRuntime {
-  /** 테마와 문서 보기 상태를 저장 없이 현재 창에 반영한다. */
+  /** 문서 보기 상태를 저장 없이 현재 창에 반영한다. 테마는 core/theme.ts 가 직접 건다. */
   preview(settings: EditorScalarSettings): void;
   /** 저장 뒤 자동저장, 메뉴, 글꼴 목록 같은 소비자를 갱신한다. */
   committed(settings: EditorScalarSettings): void;
@@ -35,7 +35,6 @@ export type DirtyExitChoice = 'apply' | 'discard' | 'continue';
 export function cloneEditorDraft(settings: EditorScalarSettings): EditorScalarSettings {
   return {
     font: { ...settings.font },
-    theme: { ...settings.theme },
     dialog: { ...settings.dialog },
     view: { ...settings.view },
     versionControl: { ...settings.versionControl },

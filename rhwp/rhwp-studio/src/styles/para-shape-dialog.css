@@ -79,12 +79,12 @@
   font: 600 12px var(--font-family-ui);
 }
 .ps-dialog .cs-right-col .dialog-btn-primary {
-  border-color: var(--ui-text);
-  background: var(--ui-text);
-  color: var(--ui-surface);
+  border-color: var(--theme-primary, var(--ui-text));
+  background: var(--theme-primary, var(--ui-text));
+  color: var(--theme-on-primary, var(--ui-surface));
 }
 .ps-dialog .cs-right-col .dialog-btn:hover { background: var(--ui-hover); }
-.ps-dialog .cs-right-col .dialog-btn-primary:hover { background: var(--ui-text); opacity: .82; }
+.ps-dialog .cs-right-col .dialog-btn-primary:hover { background: var(--theme-primary, var(--ui-text)); opacity: .82; }
 .ps-dialog .dialog-row { min-height: 30px; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .ps-dialog .dialog-row:last-child { margin-bottom: 0; }
 /* 체크박스·라디오 한 개만 있는 줄은 입력칸 높이를 비워 두지 않는다. */

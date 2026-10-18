@@ -1,14 +1,15 @@
 /* Editor-only popovers that are mounted outside the header. */
 .bullet-popup,
 .table-create-popup {
-  --popover-surface: #f8f9fb;
-  --popover-control: #fff;
-  --popover-text: #171b22;
-  --popover-muted: #626b77;
-  --popover-border: #d9dde3;
-  --popover-hover: #e5e8ed;
-  --popover-selected: #dfe5ec;
-  --popover-focus: #626b77;
+  /* body 에 붙으므로 편집기 범위 밖이다. 팔레트 계약을 직접 읽는다. */
+  --popover-surface: var(--theme-surface-raised, #f8f9fb);
+  --popover-control: var(--theme-surface, #fff);
+  --popover-text: var(--theme-text, #171b22);
+  --popover-muted: var(--theme-text-muted, #626b77);
+  --popover-border: var(--theme-hairline, #d9dde3);
+  --popover-hover: var(--theme-fill-hover, #e5e8ed);
+  --popover-selected: var(--theme-fill-selected, #dfe5ec);
+  --popover-focus: var(--theme-text-muted, #626b77);
   position: fixed;
   z-index: 1000;
   box-sizing: border-box;
@@ -22,14 +23,14 @@
 }
 
 :root[data-theme-effective='dark'] :is(.bullet-popup, .table-create-popup) {
-  --popover-surface: #181818;
-  --popover-control: #0f0f0f;
-  --popover-text: #e6e6e6;
-  --popover-muted: #8f8f8f;
-  --popover-border: #363636;
-  --popover-hover: #202020;
-  --popover-selected: #2e2e2e;
-  --popover-focus: #ef6a62;
+  --popover-surface: var(--theme-surface-raised, #181818);
+  --popover-control: var(--theme-surface, #0f0f0f);
+  --popover-text: var(--theme-text, #e6e6e6);
+  --popover-muted: var(--theme-text-muted, #8f8f8f);
+  --popover-border: var(--theme-hairline-strong, #363636);
+  --popover-hover: var(--theme-fill-hover, #202020);
+  --popover-selected: var(--theme-fill-selected, #2e2e2e);
+  --popover-focus: var(--theme-accent, #ef6a62);
   box-shadow: 0 16px 36px #0008;
   color-scheme: dark;
 }

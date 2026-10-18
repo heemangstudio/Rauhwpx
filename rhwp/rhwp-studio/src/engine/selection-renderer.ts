@@ -93,7 +93,7 @@ export class SelectionRenderer {
       div = document.createElement('div');
       div.className = 'selection-highlight';
       div.style.cssText =
-        'position:absolute;background:rgba(51,144,255,0.35);pointer-events:none;display:none;';
+        'position:absolute;background:var(--theme-selection, rgba(51,144,255,0.35));pointer-events:none;display:none;';
       this.layer.appendChild(div);
       this.highlights[index] = div;
     }

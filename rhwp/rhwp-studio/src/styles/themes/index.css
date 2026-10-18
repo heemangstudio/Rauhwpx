@@ -1,0 +1,102 @@
+/* ─── 테마 팔레트 계약 ─────────────────────────────────────
+   프리셋은 아래 --theme-* 변수만 정한다. 앱의 각 층(base.css 의 :root, 편집기 크롬
+   editor-shell.css·editor-ribbon.css, 사이드바 agent-sidebar.css, body 에 붙는 팝오버·
+   찾기·비교·문서 홈 …)은 이 변수를 읽고, 정해지지 않았으면 원래 값(fallback)을 쓴다.
+   기본 프리셋은 아무것도 정하지 않으므로 지금 모습 그대로다.
+
+   면
+     --theme-canvas             앱 바탕(창 배경)
+     --theme-surface            크롬 면: 메뉴바·리본·서식 막대·상태 표시줄·대화상자 바탕
+     --theme-surface-raised     떠 있는 면: 입력·카드·메뉴·팝오버
+     --theme-surface-sunken     가라앉은 면: 우물·트랙·문서 홈 띠
+     --theme-desk               문서 책상(용지 둘레). 용지(--doc-paper)는 늘 흰색이다.
+   글자
+     --theme-text  --theme-text-secondary  --theme-text-muted
+     --theme-text-placeholder  --theme-text-disabled
+   선
+     --theme-hairline  --theme-hairline-strong
+   채움(알파든 불투명이든 된다)
+     --theme-fill-hover  --theme-fill-active  --theme-fill-selected
+   강조
+     --theme-accent             강조색. 프리셋 메타데이터(core/theme-presets/<id>.ts)의 accent 를
+                                theme.ts 가 html 에 건다. 사용자가 고른 강조색이 있으면 그 색이다.
+     --theme-on-accent          강조색 위 글자. theme.ts 가 대비로 고른다(메타데이터 onAccent 우선).
+     --theme-accent-strong  -light  -hover  -subtle  -soft
+                                단계 색. 정하지 않으면 아래 --theme-derived-* 가 색 구성별로 만든다.
+     --theme-ribbon-accent      리본 아이콘 강조(없으면 강조색)
+     --theme-focus-ring         포커스 고리
+     --theme-selection          문서 글자 선택 채움(반투명)
+   상태
+     --theme-danger  --theme-warning  --theme-success  --theme-link
+   컨트롤
+     --theme-primary  --theme-on-primary
+                                채운 기본 버튼(적용·확인·대화상자 기본 단추). 없으면 글자색 잉크로 채운다.
+     --theme-switch-on          켜진 스위치 트랙(없으면 --theme-primary, 그것도 없으면 잉크)
+     --theme-switch-knob        켜진 스위치의 손잡이(없으면 흰색)
+     --theme-menu-hover  --theme-on-menu-hover
+                                메뉴 행 강조의 채움과 글자(없으면 강조색과 --theme-on-accent)
+     --theme-ui-selection       입력 칸·화면 글자 선택(없으면 강조색 30%, 어둡게 42%)
+     강조색이 걸려 있으면(html[data-theme-accent]) 체크 상자·라디오도 강조색(accent-color)을 따른다.
+   글꼴
+     --theme-font-ui            메뉴·리본·상태 표시줄·문서 홈과 사이드바 글꼴(없으면 시스템 글꼴).
+                                대화상자는 좁은 숫자 칸이 잘리지 않게 늘 시스템 글꼴이다.
+   사이드바(없으면 위의 면·글자를 따른다)
+     --theme-sidebar-surface  --theme-sidebar-raised  --theme-sidebar-sunken  --theme-sidebar-text
+     --theme-sidebar-hairline  --theme-sidebar-hairline-strong
+                                입력창·카드 테두리(없으면 사이드바 글자색 9%·16%)
+     --theme-sidebar-bubble     사용자 말풍선(없으면 밝게 = 글자색 5%, 어둡게 = 떠 있는 면)
+
+   프리셋 파일(<id>.css)의 선택자 모양:
+     :root[data-theme-preset='<id>'][data-theme-effective='light'] { … }
+     :root[data-theme-preset='<id>'][data-theme-effective='dark'] { … }
+   한 가지 색 구성만 가진 프리셋(메타데이터 schemes: ['dark'])은 그 블록 하나만 둔다.
+   강조색을 따라야 하는 값은 var(--theme-accent*) 로 적는다. 그러면 사용자가 고른 강조색도 따라간다.
+   사용자 강조색이 있으면 theme.ts 가 단계 색과 리본 강조를 인라인으로 다시 걸어 프리셋 값을 덮는다. */
+
+@import './catppuccin.css';
+@import './hancom.css';
+@import './hacker.css';
+@import './absolutely.css';
+@import './reset.css';
+
+/* ─── 파생 값 ──────────────────────────────────────────
+   원천 변수(--theme-accent 등)가 없으면 아래 값은 모두 무효가 되어 각 층의 fallback 이 쓰인다.
+   그래서 기본 프리셋에는 영향이 없다. 밝은 쪽은 진하게 눌러 강하게, 어두운 쪽은 밝게 띄워 강하게 만든다. */
+:root {
+  --theme-derived-accent-strong: color-mix(in oklab, var(--theme-accent) 80%, #000);
+  --theme-derived-accent-light: color-mix(in oklab, var(--theme-accent) 78%, #fff);
+  --theme-derived-accent-hover: color-mix(in oklab, var(--theme-accent) 88%, #fff);
+  --theme-derived-accent-subtle: color-mix(in oklab, var(--theme-accent) 38%, #fff);
+  --theme-derived-accent-soft: color-mix(in oklab, var(--theme-accent) 20%, transparent);
+
+  --theme-accent-strong: var(--theme-derived-accent-strong);
+  --theme-accent-light: var(--theme-derived-accent-light);
+  --theme-accent-hover: var(--theme-derived-accent-hover);
+  --theme-accent-subtle: var(--theme-derived-accent-subtle);
+  --theme-accent-soft: var(--theme-derived-accent-soft);
+  --theme-ribbon-accent: var(--theme-accent);
+  --theme-ribbon-accent-soft: color-mix(in oklab, var(--theme-ribbon-accent) 20%, transparent);
+
+  --theme-fill-selected-soft: color-mix(in oklab, var(--theme-fill-selected) 55%, transparent);
+  --theme-fill-hover-quiet: color-mix(in oklab, var(--theme-fill-hover) 75%, transparent);
+  --theme-danger-soft: color-mix(in oklab, var(--theme-danger) 16%, transparent);
+  --theme-warning-soft: color-mix(in oklab, var(--theme-warning) 14%, transparent);
+  --theme-warning-text: color-mix(in oklab, var(--theme-warning) 45%, var(--theme-text));
+  /* 떠 있는 메뉴의 반투명 유리면 */
+  --theme-glass: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  /* 입력 칸·화면 글자 선택(--theme-ui-selection 이 없을 때) */
+  --theme-derived-ui-selection: color-mix(in srgb, var(--theme-accent) 30%, transparent);
+}
+
+:root[data-theme-effective='dark'] {
+  --theme-derived-accent-strong: color-mix(in oklab, var(--theme-accent) 70%, #fff);
+  --theme-derived-accent-light: color-mix(in oklab, var(--theme-accent) 85%, #fff);
+  --theme-derived-accent-hover: color-mix(in oklab, var(--theme-accent) 85%, #000);
+  --theme-derived-accent-subtle: color-mix(in oklab, var(--theme-accent) 65%, #000);
+  --theme-derived-accent-soft: color-mix(in oklab, var(--theme-accent) 18%, transparent);
+  --theme-ribbon-accent-soft: color-mix(in oklab, var(--theme-ribbon-accent) 18%, transparent);
+  --theme-warning-soft: color-mix(in oklab, var(--theme-warning) 22%, transparent);
+  --theme-warning-text: color-mix(in oklab, var(--theme-warning) 60%, var(--theme-text));
+  --theme-glass: color-mix(in srgb, var(--theme-surface-raised) 95%, transparent);
+  --theme-derived-ui-selection: color-mix(in srgb, var(--theme-accent) 42%, transparent);
+}

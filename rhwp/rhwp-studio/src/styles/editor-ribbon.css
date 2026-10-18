@@ -1,13 +1,14 @@
 /* 리본 도구 모음: 큰 세로 명령 + 작은 명령 세로 목록 + 그룹 이름 */
+/* 아이콘 강조색은 팔레트 계약의 --theme-ribbon-accent(없으면 강조색)를 따른다. */
 :is(#studio-header, #editor-area, #status-bar, .modal-overlay, .cp-overlay, .font-picker-menu, .context-menu) {
-  --ribbon-accent: #2f69b0;
-  --ribbon-accent-soft: #2f69b033;
-  --ribbon-selected-edge: #b6bec9;
+  --ribbon-accent: var(--theme-ribbon-accent, #2f69b0);
+  --ribbon-accent-soft: var(--theme-ribbon-accent-soft, #2f69b033);
+  --ribbon-selected-edge: var(--theme-hairline-strong, #b6bec9);
 }
 :root[data-theme-effective='dark'] :is(#studio-header, #editor-area, #status-bar, .modal-overlay, .cp-overlay, .font-picker-menu, .context-menu) {
-  --ribbon-accent: #ef6a62;
-  --ribbon-accent-soft: #ef6a622e;
-  --ribbon-selected-edge: #3a3a3a;
+  --ribbon-accent: var(--theme-ribbon-accent, #ef6a62);
+  --ribbon-accent-soft: var(--theme-ribbon-accent-soft, #ef6a622e);
+  --ribbon-selected-edge: var(--theme-hairline-strong, #3a3a3a);
 }
 
 .tb-icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }

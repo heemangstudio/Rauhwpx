@@ -116,8 +116,9 @@ function createAttrIconContent(id: string): HTMLSpanElement {
       span.style.textDecoration = 'line-through';
       break;
     case 'outline':
-      span.style.color = 'transparent';
-      span.style.setProperty('-webkit-text-stroke', '1px #333');
+      // 윤곽은 단추 글자색으로 그린다. 고정색(#333)은 어두운 면에서 사라진다.
+      span.style.setProperty('-webkit-text-fill-color', 'transparent');
+      span.style.setProperty('-webkit-text-stroke', '1px currentColor');
       break;
     case 'shadow':
       span.style.textShadow = '2px 2px 0 #999';

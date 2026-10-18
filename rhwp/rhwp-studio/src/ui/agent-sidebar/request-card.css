@@ -246,8 +246,8 @@
   transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.ag-request-scope[aria-checked='true'] .ag-request-switch { background: var(--ag-primary-bg); }
-.ag-request-scope[aria-checked='true'] .ag-request-switch::after { transform: translateX(10px); }
+.ag-request-scope[aria-checked='true'] .ag-request-switch { background: var(--ag-switch-on); }
+.ag-request-scope[aria-checked='true'] .ag-request-switch::after { background: var(--ag-switch-on-knob); transform: translateX(10px); }
 
 /* 양식 — 계정 저장과 비밀 값 */
 .ag-request-form {

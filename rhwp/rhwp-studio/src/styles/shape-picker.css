@@ -1,11 +1,12 @@
 .shape-picker {
-  --shape-surface: #f7f8fa;
-  --shape-border: #cbd1d9;
-  --shape-text: #171b22;
-  --shape-muted: #626b77;
-  --shape-hover: #e5e8ed;
-  --shape-pressed: #dce1e8;
-  --shape-focus: #626b77;
+  /* body 에 붙으므로 편집기 범위 밖이다. 팔레트 계약을 직접 읽는다. */
+  --shape-surface: var(--theme-surface-raised, #f7f8fa);
+  --shape-border: var(--theme-hairline-strong, #cbd1d9);
+  --shape-text: var(--theme-text, #171b22);
+  --shape-muted: var(--theme-text-muted, #626b77);
+  --shape-hover: var(--theme-fill-hover, #e5e8ed);
+  --shape-pressed: var(--theme-fill-active, #dce1e8);
+  --shape-focus: var(--theme-text-muted, #626b77);
   position: fixed;
   z-index: 10000;
   box-sizing: border-box;
@@ -22,13 +23,13 @@
 }
 
 :root[data-theme-effective='dark'] .shape-picker {
-  --shape-surface: #181818;
-  --shape-border: #363636;
-  --shape-text: #e6e6e6;
-  --shape-muted: #8f8f8f;
-  --shape-hover: #202020;
-  --shape-pressed: #2e2e2e;
-  --shape-focus: #ef6a62;
+  --shape-surface: var(--theme-surface-raised, #181818);
+  --shape-border: var(--theme-hairline-strong, #363636);
+  --shape-text: var(--theme-text, #e6e6e6);
+  --shape-muted: var(--theme-text-muted, #8f8f8f);
+  --shape-hover: var(--theme-fill-hover, #202020);
+  --shape-pressed: var(--theme-fill-active, #2e2e2e);
+  --shape-focus: var(--theme-accent, #ef6a62);
   box-shadow: 0 16px 40px #0008;
 }
 
