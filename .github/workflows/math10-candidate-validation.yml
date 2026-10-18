@@ -1,392 +1,99 @@
-# Temporary validation only. Do not merge or ship this workflow.
-name: Math10 candidate r15 validation
+# Temporary diagnostic retrieval only. Do not merge or ship.
+name: Math10 diagnostic WASM recovery r16
 'on':
   push:
     branches: [ci/math10-candidate-r15]
 permissions:
   contents: read
 concurrency:
-  group: math10-candidate-r15-${{ github.ref }}
+  group: math10-wasm-debug-r16-${{ github.ref }}
   cancel-in-progress: false
 env:
   CANDIDATE: d778f395abd773e4d08d7ba972d88ce60ac04acc
-  LOCAL_HEAD: cbe9181c64d0e7f1f9b91522aaf189ee067cee36
   SOURCE_TREE: 74d5b8026102825d741025235e2e843fb67debbf
-  LOCAL_DIFF_SHA256: 406b6645b4ff35fb16b07bad235c007379d7618ac159b5408183d6474a0c448e
-  REMOTE_PARENT: da75d6ff8fb2238ebb1195ce72ddcf2f9c840395
+  ENGINE_FINGERPRINT: 280d257adbf3e72d7009f449227da7ab80ce310b82115f0ddef228e3648cf0ab
   GIT_LFS_SKIP_SMUDGE: '1'
-  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 jobs:
-  native:
-    runs-on: windows-latest
-    timeout-minutes: 90
-    env:
-      RUSTUP_TOOLCHAIN: 1.93.1-x86_64-pc-windows-msvc
-      CARGO_BUILD_JOBS: '1'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../math10-native-target-r15
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Reconstruct exact dirty source in disposable checkout
-        id: source
-        shell: python -u {0}
-        run: |
-          import hashlib, json, os, re, subprocess
-          from pathlib import Path
-          
-          out = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r15'
-          out.mkdir(parents=True, exist_ok=True)
-          def git(*args):
-              return subprocess.check_output(['git', *args], creationflags=0x08000000)
-          def save(name, value):
-              (out / name).write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
-          C, H, T, D = (os.environ[k] for k in ('CANDIDATE', 'LOCAL_HEAD', 'SOURCE_TREE', 'LOCAL_DIFF_SHA256'))
-          V = os.environ['GITHUB_SHA']
-          assert not Path(os.environ['CARGO_TARGET_DIR']).exists(), 'Require a fresh compilation directory'
-          wf = '.github/workflows/math10-candidate-validation.yml'
-          assert re.fullmatch('[0-9a-f]{40}', C), 'Root must fill the candidate commit constant'
-          assert git('rev-parse', C + '^{tree}').decode().strip() == T
-          assert git('rev-parse', C + '^').decode().strip() == os.environ['REMOTE_PARENT']
-          git('merge-base', '--is-ancestor', C, V)
-          assert git('diff-tree', '--no-commit-id', '--name-status', '-r', C, V).decode().strip() == 'A\t' + wf
-          assert not git('ls-tree', C, '--', wf), 'C must exclude validation workflow'
-          (out / 'validation-workflow.yml').write_bytes(git('show', V + ':' + wf))
-          save('publication.json', dict(candidate_commit=C, candidate_tree=T, validation_commit=V,
-               remote_parent=os.environ['REMOTE_PARENT'], run_url=os.environ['RUN_URL']))
-          git('config', '--local', 'core.autocrlf', 'input')
-          git('config', '--local', 'core.eol', 'lf')
-          git('config', '--local', 'core.filemode', 'false')
-          git('reset', '--hard', H)
-          git('read-tree', C)
-          git('checkout-index', '-a', '-f')
-          assert not Path(wf).exists() and not git('ls-files', '--', wf)
-          diff = git('diff', '--binary', 'HEAD', '--')
-          status = git('status', '--porcelain', '--untracked-files=normal')
-          files = git('diff', '--cached', '--name-status', 'HEAD', '--')
-          for name, data in [('source-before.diff', diff), ('source-before.status', status), ('source-before.files', files)]:
-              (out / name).write_bytes(data)
-          record = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),
-              diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),
-              status_rows=len(status.splitlines()), staged_files=len(files.splitlines()), diff_bytes=len(diff))
-          save('source-before.json', record)
-          assert record['head'] == H and record['staged_tree'] == T and record['diff_sha256'] == D, record
-          assert record['status_rows'] == record['staged_files'] == 63
-          assert not git('diff', '--name-only'), 'All source changes must be staged'
-          assert not git('ls-files', '--others', '--exclude-standard'), 'Unexpected untracked source'
-      - uses: ./.github/actions/setup-rust
-        id: rust
-        with:
-          cache: math10-native-r15
-      - name: Optimized native unit, integration and CLI validation
-        id: validation
-        if: ${{ always() && !cancelled() && steps.source.outcome == 'success' }}
-        env:
-          RUST_SETUP_OUTCOME: ${{ steps.rust.outcome }}
-        shell: python -u {0}
-        run: |
-          import hashlib, json, os, platform, re, shutil, subprocess, tomllib, traceback
-          from datetime import datetime, timezone
-          from pathlib import Path
-          
-          out = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r15'
-          out.mkdir(parents=True, exist_ok=True)
-          def now(): return datetime.now(timezone.utc).isoformat()
-          def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-          def save(name, value): (out / name).write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
-          def git(*args): return subprocess.check_output(['git', *args], creationflags=0x08000000)
-          unit = ['windows_advance_policy', 'fallback_ink_tests', 'font_cache_tests', 'native_inline_placeholder', 'math10_', 'modern_cases_', 'primary_metric_admission', 'box_frame', 'wrapped_native_tab_cache_uses_body_edge_and_declared_left_stop']
-          integration = ['issue_math10', 'issue_footer_source_geometry', 'page_count_pins::issue_554', 'issue_1035_alignment', 'page_count_pins::issue_2151_hwp3_sample11', 'issue_1608_hwpx_native_no_hwp3_tolerance', 'issue_1915_hwp3_pagedef', 'issue_1880::issue_1880_convert_hwp_roundtrip_render_is_self_consistent', 'page_count_pins::issue_2559_footnote_footer_band', 'page_count_pins::issue_1937_rowbreak_footnote', 'issue_1073_nested_table_split', 'issue_1070_tac_table_post_text_overflow', 'issue_6186_footer_vertalign_bottom', 'issue_1302_2022_nov_page18_multiline_endnote_continuation_keeps_line_spacing', 'issue_1293_2024_zero_endnote_spacing']
-          common = ['--locked', '--profile', 'release-test', '--features', 'native-skia']
-          tail = ['--nocapture', '--test-threads=1']
-          commands = [('unit', ['cargo', 'test', *common, '--lib', '-j1', '--', *unit, *tail]),
-              ('integration', ['cargo', 'test', *common, '--test', 'it', '-j1', '--', *integration, *tail]),
-              ('build', ['cargo', 'build', *common, '--bin', 'rhwp', '-j1'])]
-          stages = [dict(name=name, argv=argv, status='not_run', timeout_seconds=1500) for name, argv in commands]
-          receipt = dict(schema='math10-ci-native-r15', status='failed', exit_code=1, start_utc=now(), stages=stages,
-              source_commit=os.environ['LOCAL_HEAD'], compiled_commit=os.environ['LOCAL_HEAD'],
-              source_diff_sha256=os.environ['LOCAL_DIFF_SHA256'], candidate_commit=os.environ['CANDIDATE'],
-              source_tree=os.environ['SOURCE_TREE'], validation_commit=os.environ['GITHUB_SHA'],
-              compiled_checkout=str(Path.cwd()), run_url=os.environ['RUN_URL'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
-              integration_filter_origin={'path': 'C:\\Users\\manag\\parity-runs\\math10-20261018\\tools\\jobs\\native-integration-r6\\ledger.json', 'sha256': 'ce44581f56547c4d9124fa9791dcdc33e65dcd91faf7ca967e11690af9775085'}, unit_filter_origin={'path': 'C:\\Users\\manag\\parity-runs\\math10-20261018\\tools\\run-batch-r10.py', 'sha256': '73d3c84f48f578122d91b513c4f45fc5fe5707c6158c103bdde4eb4c75639450'},
-              compiler={}, limitations=['No proprietary HY font is installed or uploaded; older font-gated tests may return early.',
-              'Owned synthetic fixtures exercise policy and rendering; this is not real HY/corpus or live Studio validation.'])
-          try:
-              assert os.environ['RUST_SETUP_OUTCOME'] == 'success', 'Rust setup did not succeed'
-              assert not any(k.startswith('CARGO_PROFILE_') for k in os.environ), 'Unexpected profile override'
-              for k in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RHWP_FONT_PATH', 'RHWP_HANCOM_TEST_FONT',
-                        'RHWP_TABLE_DRIFT', 'RHWP_VPOS_DEBUG', 'RHWP_ENDNOTE_LINE_DEBUG'):
-                  os.environ.pop(k, None)
-              before = json.loads((out / 'source-before.json').read_text())
-              receipt['source_before'] = before
-              profile = tomllib.loads(Path('rhwp/Cargo.toml').read_text(encoding='utf-8'))['profile']
-              assert profile['release-test']['inherits'] == 'release' and profile['release-test'].get('opt-level', 3) == 3
-              receipt['profile'] = dict(name='release-test', opt_level=3, incremental=False, jobs=1, test_threads=1,
-                  overrides=False, definition=profile['release-test'])
-              for name, argv in [('rustc', ['rustc', '-vV']), ('cargo', ['cargo', '-V']), ('git', ['git', '--version'])]:
-                  receipt['compiler'][name] = subprocess.check_output(argv, cwd='rhwp', timeout=60, creationflags=0x08000000).decode()
-              assert 'release: 1.93.1' in receipt['compiler']['rustc'] and 'x86_64-pc-windows-msvc' in receipt['compiler']['rustc']
-              llvm = Path(os.environ['ProgramFiles']) / 'LLVM/bin'
-              if (llvm / 'libclang.dll').is_file(): os.environ['LIBCLANG_PATH'] = str(llvm)
-              receipt['compiler'].update(python=platform.python_version(), platform=platform.platform(),
-                  runner_image=os.environ.get('ImageVersion'), libclang_path=os.environ.get('LIBCLANG_PATH'))
-              vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
-              receipt['compiler']['visual_studio'] = subprocess.check_output([str(vswhere), '-latest', '-products', '*',
-                  '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'], timeout=60, creationflags=0x08000000).decode()
-              assert json.loads(receipt['compiler']['visual_studio']), 'MSVC C++ tools are required'
-              for stage in stages:
-                  stage.update(status='running', start_utc=now(), cwd=str(Path('rhwp').resolve()))
-                  save('execution.json', receipt)
-                  log = out / (stage['name'] + '.log')
-                  with log.open('wb') as stream:
-                      process = subprocess.Popen(stage['argv'], cwd='rhwp', stdout=stream, stderr=subprocess.STDOUT, creationflags=0x08000000)
-                      try:
-                          process.wait(timeout=stage['timeout_seconds'])
-                      except subprocess.TimeoutExpired:
-                          subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=stream, stderr=subprocess.STDOUT,
-                              timeout=30, creationflags=0x08000000, check=False)
-                          raise
-                  result = process
-                  stage.update(exit_code=result.returncode, end_utc=now(), log=str(log), log_sha256=sha(log), status='failed')
-                  assert result.returncode == 0, f"{stage['name']} failed; inspect {log}"
-                  if stage['name'] != 'build':
-                      text = log.read_text(encoding='utf-8', errors='replace')
-                      summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;', text)
-                      assert summaries and int(summaries[-1][0]) > 0, 'No passing tests executed'
-                      stage['actual_passed'], stage['actual_failed'], stage['actual_ignored'] = map(int, summaries[-1])
-                      for term in unit if stage['name'] == 'unit' else integration:
-                          assert re.search(r'test [^\r\n]*' + re.escape(term) + r'[^\r\n]* \.\.\. ok', text), 'Empty filter: ' + term
-                      if stage['name'] == 'integration':
-                          required = 'issue_math10_windows_equation_policy::windows_equation_policy_reaches_document_composition_paint_and_edit'
-                          assert required + ' ... ok' in text, 'Owned Windows policy test must execute'
-                  stage['status'] = 'succeeded'
-                  if stage['name'] != 'build': save(stage['name'] + '-result.json', stage)
-              receipt.update(status='succeeded', exit_code=0, argv=stages[-1]['argv'],
-                  start_utc=stages[-1]['start_utc'], integration_results=str(out / 'integration-result.json'))
-          except Exception:
-              receipt['error'] = traceback.format_exc()
-              print(receipt['error'])
-          finally:
-              for stage in stages:
-                  if stage['status'] == 'running': stage.update(status='failed', end_utc=now())
-              try:
-                  diff = git('diff', '--binary', 'HEAD', '--')
-                  status = git('status', '--porcelain', '--untracked-files=normal')
-                  files = git('diff', '--cached', '--name-status', 'HEAD', '--')
-                  for name, data in [('source-after.diff', diff), ('source-after.status', status), ('source-after.files', files)]:
-                      (out / name).write_bytes(data)
-                  after = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),
-                      diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),
-                      status_rows=len(status.splitlines()), staged_files=len(files.splitlines()), diff_bytes=len(diff))
-                  save('source-after.json', after)
-                  receipt['source_after'] = after
-                  assert after == receipt['source_before'] and not Path('.github/workflows/math10-candidate-validation.yml').exists()
-                  receipt['source_identity_unchanged_before_after_test_and_build'] = True
-              except Exception:
-                  receipt.update(status='failed', exit_code=1, source_check_error=traceback.format_exc())
-              receipt['end_utc'] = now()
-              save('execution.json', receipt)
-          if receipt['status'] == 'succeeded':
-              binary = Path(os.environ['CARGO_TARGET_DIR']) / 'release-test/rhwp.exe'
-              passed = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r15-pass'
-              passed.mkdir()
-              receipt.update(binary_sha256=sha(binary), build_artifact=str(binary), binary=str(passed / 'candidate-r15.exe'),
-                  build_ledger=dict(path=str(out / 'execution.json'), sha256=sha(out / 'execution.json')))
-              shutil.copyfile(binary, passed / 'candidate-r15.exe')
-              assert sha(passed / 'candidate-r15.exe') == receipt['binary_sha256']
-              save('candidate-r15.build.json', receipt)
-              shutil.copyfile(out / 'candidate-r15.build.json', passed / 'candidate-r15.build.json')
-          else:
-              save('candidate-r15.build.json', receipt)
-          raise SystemExit(receipt['exit_code'])
-      - name: Preserve native evidence, including failures
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: math10-native-r15-evidence
-          path: ${{ runner.temp }}/math10-native-r15
-          if-no-files-found: error
-          retention-days: 14
-      - name: Publish candidate pair only after every native gate passes
-        if: ${{ success() && steps.validation.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: math10-native-r15-pass
-          path: ${{ runner.temp }}/math10-native-r15-pass
-          if-no-files-found: error
-          retention-days: 14
-  wasm:
+  recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    env:
-      RUSTUP_TOOLCHAIN: 1.93.1
-      CARGO_BUILD_JOBS: '1'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/../math10-wasm-target-r15
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.CANDIDATE }}
-          fetch-depth: 0
+          ref: d778f395abd773e4d08d7ba972d88ce60ac04acc
+          fetch-depth: 1
           persist-credentials: false
-      - name: Bind clean WASM checkout to candidate source tree
-        id: source
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+      - name: Check exact source before cache restoration
         shell: python3 -u {0}
         run: |
           import hashlib, json, os, subprocess
           from pathlib import Path
-          
-          out = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-r15'
-          out.mkdir(parents=True, exist_ok=True)
           def git(*args): return subprocess.check_output(['git', *args])
-          C, T = os.environ['CANDIDATE'], os.environ['SOURCE_TREE']
-          assert not Path(os.environ['CARGO_TARGET_DIR']).exists(), 'Require a fresh compilation directory'
-          assert git('rev-parse', 'HEAD').decode().strip() == C
-          assert git('rev-parse', 'HEAD^{tree}').decode().strip() == T
-          assert git('rev-parse', 'HEAD^').decode().strip() == os.environ['REMOTE_PARENT']
-          assert not git('status', '--porcelain', '--untracked-files=normal')
-          assert not Path('.github/workflows/math10-candidate-validation.yml').exists()
-          files = git('ls-tree', '-r', '--full-tree', 'HEAD')
-          (out / 'source-tree.files').write_bytes(files)
-          record = dict(source_commit=C, source_tree=T, source_files_sha256=hashlib.sha256(files).hexdigest(),
-              checkout_diff_sha256=hashlib.sha256(git('diff', '--binary', 'HEAD', '--')).hexdigest(),
-              equivalent_local_head=os.environ['LOCAL_HEAD'], equivalent_local_full_diff_sha256=os.environ['LOCAL_DIFF_SHA256'],
-              compiled_checkout=str(Path.cwd()), validation_commit=os.environ['GITHUB_SHA'], run_url=os.environ['RUN_URL'])
-          (out / 'source-before.json').write_text(json.dumps(record, indent=2) + '\n')
-      - uses: actions/setup-node@v5
+          record = dict(head=git('rev-parse','HEAD').decode().strip(), tree=git('write-tree').decode().strip(),
+              status=git('status','--porcelain','--untracked-files=normal').decode(),
+              diff_sha256=hashlib.sha256(git('diff','--binary','HEAD','--')).hexdigest(),
+              engine_fingerprint=subprocess.check_output(['node','scripts/wasm-source-fingerprint.mjs']).decode().strip())
+          assert record['head'] == os.environ['CANDIDATE']
+          assert record['tree'] == os.environ['SOURCE_TREE']
+          assert record['engine_fingerprint'] == os.environ['ENGINE_FINGERPRINT']
+          assert not record['status']
+          out = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-debug-r16'
+          out.mkdir()
+          (out/'source-before.json').write_text(json.dumps(record,indent=2)+'\n')
+      - name: Restore exact branch-scoped diagnostic package without compiling
+        id: pkg
+        uses: actions/cache/restore@v4
         with:
-          node-version: 22.23.3
-      - name: Install repository dependencies
-        id: npm
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run setup 2>&1 | tee "$RUNNER_TEMP/math10-wasm-r15/npm-setup.log"
-      - uses: ./.github/actions/setup-rust
-        id: rust
-        with:
-          wasm: 'true'
-          cache: math10-wasm-r15
-      - uses: ./.github/actions/build-wasm
-        id: wasm_action
-        with:
-          setup-rust: 'false'
-      - name: Regenerate pkg even when the package action restored a cache
-        id: fresh
+          path: rhwp/pkg
+          key: wasm-pkg-v2-Linux-X64-280d257adbf3e72d7009f449227da7ab80ce310b82115f0ddef228e3648cf0ab
+          fail-on-cache-miss: true
+      - name: Verify package, source binding and diagnostic provenance
         shell: python3 -u {0}
-        run: |
-          import os, shutil, signal, subprocess
-          from pathlib import Path
-          pkg = Path('rhwp/pkg').resolve()
-          assert pkg == Path(os.environ['GITHUB_WORKSPACE']).resolve() / 'rhwp/pkg'
-          assert not subprocess.check_output(['git', 'ls-files', '--', 'rhwp/pkg'])
-          if pkg.exists(): shutil.rmtree(pkg)
-          log = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-r15/fresh-wasm.log'
-          with log.open('wb') as stream:
-              process = subprocess.Popen(['npm', 'run', 'build:wasm'], stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-              try:
-                  process.wait(timeout=1800)
-              except subprocess.TimeoutExpired:
-                  os.killpg(process.pid, signal.SIGKILL)
-                  process.wait(timeout=30)
-                  raise
-          raise SystemExit(process.returncode)
-      - name: Focused equation fixtures, actual CanvasKit and TypeScript
-        id: validation
-        if: ${{ always() && !cancelled() && steps.source.outcome == 'success' }}
         env:
-          NPM_OUTCOME: ${{ steps.npm.outcome }}
-          RUST_OUTCOME: ${{ steps.rust.outcome }}
-          WASM_ACTION_OUTCOME: ${{ steps.wasm_action.outcome }}
-          FRESH_BUILD_OUTCOME: ${{ steps.fresh.outcome }}
-        shell: python3 -u {0}
+          CACHE_HIT: ${{ steps.pkg.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.pkg.outputs.cache-matched-key }}
         run: |
-          import hashlib, json, os, re, shutil, signal, subprocess, traceback
-          from datetime import datetime, timezone
+          import hashlib, json, os, shutil, subprocess
           from pathlib import Path
-          
-          out = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-r15'
-          def now(): return datetime.now(timezone.utc).isoformat()
-          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
           def git(*args): return subprocess.check_output(['git', *args])
-          def save(name, value): (out / name).write_text(json.dumps(value, indent=2) + '\n')
-          files = ['canvaskit-equation-box.test.ts', 'canvaskit-equation-composite-size.test.ts', 'canvaskit-equation-fallback-font.test.ts', 'canvaskit-equation-fraction-bar.test.ts', 'canvaskit-equation-integral.test.ts', 'equation-fallback-layout.test.ts', 'equation-font.test.ts', 'equation-skia-font.test.ts', 'canvaskit-equation-outlines.test.ts']
-          commands = [('tsc', ['node', 'node_modules/typescript/bin/tsc', '--noEmit'])] + [
-              (Path(f).stem, ['node', '--test', '--test-reporter=tap', '--test-concurrency=1', 'tests/' + f]) for f in files]
-          stages = [dict(name=n, argv=a, status='not_run', timeout_seconds=600) for n, a in commands]
-          receipt = dict(schema='math10-ci-wasm-r15', status='failed', exit_code=1, start_utc=now(), stages=stages,
-              setup_outcomes={k: os.environ[k] for k in ('NPM_OUTCOME', 'RUST_OUTCOME', 'WASM_ACTION_OUTCOME', 'FRESH_BUILD_OUTCOME')},
-              limitations=['Node fixture tests include actual CanvasKit and WASM callbacks; FontFace/DOM registration is simulated.',
-              'No licensed HY font, actual document corpus, desktop UI or live Studio flow was verified.'])
-          try:
-              receipt.update(json.loads((out / 'source-before.json').read_text()))
-              assert all(v == 'success' for v in receipt['setup_outcomes'].values()), 'Setup or fresh WASM build failed'
-              receipt['compiler'] = {n: subprocess.check_output(a, cwd='rhwp', timeout=60).decode() for n, a in [
-                  ('rustc', ['rustc', '-vV']), ('cargo', ['cargo', '-V']), ('node', ['node', '-v']), ('wasm_pack', ['wasm-pack', '--version'])]}
-              receipt['engine_input_fingerprint'] = subprocess.check_output(['node', 'scripts/wasm-source-fingerprint.mjs']).decode().strip()
-              for stage in stages:
-                  stage.update(status='running', start_utc=now(), cwd=str(Path('rhwp/rhwp-studio').resolve()))
-                  save('execution.json', receipt)
-                  log = out / (stage['name'] + '.log')
-                  with log.open('wb') as stream:
-                      process = subprocess.Popen(stage['argv'], cwd='rhwp/rhwp-studio', stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-                      try:
-                          process.wait(timeout=stage['timeout_seconds'])
-                      except subprocess.TimeoutExpired:
-                          os.killpg(process.pid, signal.SIGKILL)
-                          process.wait(timeout=30)
-                          raise
-                  result = process
-                  stage.update(exit_code=result.returncode, end_utc=now(), log_sha256=sha(log), status='failed')
-                  assert result.returncode == 0, 'Failed: ' + stage['name']
-                  if stage['name'] != 'tsc':
-                      text = log.read_text(errors='replace')
-                      counts = {k: int(v) for k, v in re.findall(r'^# (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*$', text, re.M)}
-                      assert counts.get('tests', 0) > 0 and counts.get('pass', 0) > 0, 'No tests executed'
-                      assert all(counts.get(k) == 0 for k in ('fail', 'cancelled', 'skipped', 'todo')), counts
-                      stage['actual_counts'] = counts
-                  stage['status'] = 'succeeded'
-              receipt.update(status='succeeded', exit_code=0)
-          except Exception:
-              receipt['error'] = traceback.format_exc()
-              print(receipt['error'])
-          finally:
-              for stage in stages:
-                  if stage['status'] == 'running': stage.update(status='failed', end_utc=now())
-              try:
-                  after = dict(head=git('rev-parse', 'HEAD').decode().strip(), tree=git('write-tree').decode().strip(),
-                      diff_sha256=hashlib.sha256(git('diff', '--binary', 'HEAD', '--')).hexdigest(),
-                      status=git('status', '--porcelain', '--untracked-files=normal').decode())
-                  save('source-after.json', after)
-                  receipt['source_after'] = after
-                  assert after['head'] == os.environ['CANDIDATE'] and after['tree'] == os.environ['SOURCE_TREE']
-                  assert after['diff_sha256'] == receipt['checkout_diff_sha256'] and not after['status']
-              except Exception:
-                  receipt.update(status='failed', exit_code=1, source_check_error=traceback.format_exc())
-              receipt['end_utc'] = now()
-              save('wasm-r15.provenance.json', receipt)
-          if receipt['status'] == 'succeeded':
-              passed = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-r15-pass'
-              shutil.copytree('rhwp/pkg', passed / 'pkg')
-              receipt['package_sha256'] = {str(p.relative_to(passed)): sha(p) for p in sorted((passed / 'pkg').rglob('*')) if p.is_file()}
-              save('wasm-r15.provenance.json', receipt)
-              shutil.copyfile(out / 'wasm-r15.provenance.json', passed / 'wasm-r15.provenance.json')
-          raise SystemExit(receipt['exit_code'])
-      - name: Preserve WASM evidence, including failures
-        if: always()
-        uses: actions/upload-artifact@v4
+          def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+          out = Path(os.environ['RUNNER_TEMP']) / 'math10-wasm-debug-r16'
+          before = json.loads((out/'source-before.json').read_text())
+          after = dict(head=git('rev-parse','HEAD').decode().strip(), tree=git('write-tree').decode().strip(),
+              status=git('status','--porcelain','--untracked-files=normal').decode(),
+              diff_sha256=hashlib.sha256(git('diff','--binary','HEAD','--')).hexdigest(),
+              engine_fingerprint=subprocess.check_output(['node','scripts/wasm-source-fingerprint.mjs']).decode().strip())
+          assert before == after, (before,after)
+          assert os.environ['CACHE_HIT'] == 'true'
+          pkg = Path('rhwp/pkg')
+          required = ['rhwp_bg.wasm','rhwp.js','rhwp.d.ts','rhwp_bg.wasm.d.ts','package.json']
+          assert all((pkg/name).is_file() and (pkg/name).stat().st_size > 0 for name in required)
+          files = sorted(p for p in pkg.rglob('*') if p.is_file())
+          assert not any(p.suffix.lower() in ('.ttf','.otf','.ttc','.hft') for p in files)
+          hashes = {p.relative_to(pkg).as_posix(): sha(p) for p in files}
+          shutil.copytree(pkg,out/'pkg')
+          provenance = dict(schema='math10-wasm-debug-r16', classification='diagnostic fixture failure, not acceptance',
+              source_commit=os.environ['CANDIDATE'],source_tree=os.environ['SOURCE_TREE'],
+              engine_input_fingerprint=os.environ['ENGINE_FINGERPRINT'],cache_key=os.environ['CACHE_KEY'],
+              cache_hit=True,build_performed=False,package_sha256=hashes,
+              cache_origin_run=39132801685,cache_origin_job=117691234922,
+              prior_fixture_failure='equation-fallback-layout.test.ts:231',
+              diagnostic_run_url='https://github.com/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/'+os.environ['GITHUB_RUN_ID'],
+              diagnostic_workflow_commit=os.environ['GITHUB_SHA'],
+              limitations=['Branch cache package predates the separate fresh rebuild in r15. Same exact committed engine fingerprint.',
+                  'r15 fixture validation failed. This retrieval does not rerun tests and is not acceptance.',
+                  'No local compilation, native validation, licensed font upload, document corpus or live Studio check.'],
+              source_before=before,source_after=after)
+          (out/'source-after.json').write_text(json.dumps(after,indent=2)+'\n')
+          (out/'diagnostic.provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
+          (out/'FILES.sha256').write_text(''.join(h+'  pkg/'+p+'\n' for p,h in hashes.items()))
+      - uses: actions/upload-artifact@v4
         with:
-          name: math10-wasm-r15-evidence
-          path: ${{ runner.temp }}/math10-wasm-r15
+          name: math10-wasm-debug-r16-diagnostic-only
+          path: ${{ runner.temp }}/math10-wasm-debug-r16
           if-no-files-found: error
-          retention-days: 14
-      - name: Publish package and provenance only after focused gates pass
-        if: ${{ success() && steps.validation.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: math10-wasm-r15-pass
-          path: ${{ runner.temp }}/math10-wasm-r15-pass
-          if-no-files-found: error
-          retention-days: 14
+          include-hidden-files: true
+          retention-days: 7
