@@ -244,6 +244,8 @@ main {
 }
 .btn--secondary:hover { box-shadow: inset 0 0 0 1px rgba(178, 226, 251, 0.36); }
 .btn__icon { flex: none; margin-top: -2px; }
+/* 다운로드 버튼의 애플·윈도우 로고 한 쌍 */
+.btn__icons { flex: none; display: inline-flex; align-items: center; gap: 5px; }
 .btn--white { background: #ffffff; color: #000000; box-shadow: 0 8px 18px -10px rgba(0, 0, 0, 0.6); }
 .btn--white:hover { background: #e9e9e9; color: #000000; }
 .btn--sm { height: 38px; padding: 0 18px; font-size: 14px; border-radius: 10px; }

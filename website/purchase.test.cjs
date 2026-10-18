@@ -13,6 +13,7 @@ test('config points at the live Groble product and the default API base', () => 
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/uRshdR');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
+  assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
 });
 
 test('refs match the Groble sellerReference rule and are unique', () => {

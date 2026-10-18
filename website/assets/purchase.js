@@ -1,4 +1,4 @@
-/* HamaEditor 구매 흐름. pricing.html 과 success.html 이 같이 써요.
+/* HamaEditor 구매 흐름. pricing.html, success.html, download.html 이 같이 써요.
    설정은 아래 CONFIG 한 곳만 바꾸면 돼요. */
 (function (root) {
   'use strict';
@@ -10,6 +10,8 @@
     API_BASE: 'https://rau-credits-production.up.railway.app',
     // 맥 설치 파일. 공개 배포 저장소의 최신 릴리스를 가리키므로 버전마다 바꿀 필요가 없어요.
     MAC_DMG_URL: 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest/download/HamaEditor-mac-arm64.dmg',
+    // 윈도우 설치 파일. 맥 파일과 같은 릴리스에 올라가요.
+    WIN_EXE_URL: 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest/download/HamaEditor-win-x64.exe',
     RELEASES_URL: 'https://github.com/heemangstudio/hamaeditor-releases/releases/latest',
     POLL_INTERVAL_MS: 3000,
     POLL_TIMEOUT_MS: 180000,
