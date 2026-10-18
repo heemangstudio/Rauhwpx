@@ -30,6 +30,12 @@ export interface LicenseStatus {
     autoRenew?: boolean | null;
     /** 기간이 지났지만 서버에 닿지 못해 더 쓰는 동안, 그 끝. */
     graceEndsAt?: number | null;
+    /** 갱신 결제가 실패해 Groble 이 다시 시도하는 동안. 편집은 그대로 된다. */
+    paymentFailed?: boolean;
+    /** 결제 실패 유예의 끝. 이때까지 결제하면 같은 키로 이어서 쓴다. */
+    paymentGraceEndsAt?: number | null;
+    /** 결제 수단을 바꾸는 Groble 페이지. 연간 키에만 있다. */
+    paymentFixUrl?: string | null;
   } | null;
   offline: boolean;
 }
@@ -40,6 +46,8 @@ export interface DesktopLicenseApi {
   deactivate: () => Promise<{ ok: boolean; message?: string; status: LicenseStatus }>;
   openActivation: () => Promise<boolean>;
   openPricing: () => Promise<void>;
+  /** 결제 수단을 바꾸는 Groble 페이지를 연다. 예전 메인 프로세스에는 없다. */
+  openPaymentFix?: () => Promise<void>;
   /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
   beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
@@ -98,6 +106,38 @@ export function licenseTermText(license: LicenseStatus['license']): string {
   return license?.autoRenew === false ? `${formatLicenseDate(expiresAt)}까지` : `다음 갱신 ${formatLicenseDate(expiresAt)}`;
 }
 
+export const RENEWAL_PROMPT_TITLE = '키 만료, 연장할까요?';
+
+/**
+ * 결제가 실패했거나(편집은 됨) 기간이 끝난(읽기 전용) 연간 키에 띄우는 연장 안내. 해당 없으면 null.
+ * 설정, 편집 화면의 알림 카드, 활성화 창이 같은 글을 쓴다.
+ */
+export function renewalPrompt(status: LicenseStatus): {
+  kind: 'payment_failed' | 'lapsed';
+  title: string;
+  detail: string;
+  action: string;
+} | null {
+  const license = status.license;
+  if (status.state === 'licensed' && license?.paymentFailed && license.paymentGraceEndsAt) {
+    return {
+      kind: 'payment_failed',
+      title: RENEWAL_PROMPT_TITLE,
+      detail: `갱신 결제가 되지 않았어요. ${formatLicenseDate(license.paymentGraceEndsAt)}까지는 그대로 쓸 수 있고, Groble에서 결제 수단을 바꾸면 같은 키로 이어서 써요.`,
+      action: '결제 수단 바꾸기',
+    };
+  }
+  if (status.state === 'expired' && license?.licenseExpiresAt) {
+    return {
+      kind: 'lapsed',
+      title: RENEWAL_PROMPT_TITLE,
+      detail: `${formatLicenseDate(license.licenseExpiresAt)}에 기간이 끝나 읽기 전용이에요. Groble에서 연장하면 바로 다시 편집할 수 있어요.`,
+      action: 'Groble에서 연장하기',
+    };
+  }
+  return null;
+}
+
 /** 설정 화면에 보일 한 줄 요약과 버튼. DOM 없이 시험할 수 있게 따로 둔다. */
 export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   title: string;
@@ -110,6 +150,8 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   const beta = license?.tier === 'beta';
   switch (status.state) {
     case 'licensed': {
+      const prompt = renewalPrompt(status);
+      if (prompt) return { title: prompt.title, detail: prompt.detail, readOnly: false, canDeactivate: true, showActivate: false };
       if (license?.graceEndsAt && license.licenseExpiresAt) {
         return {
           title: '정품 라이선스 · 갱신 확인 필요',
@@ -211,24 +253,30 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const buy = button('구매하기');
   const check = button('지금 확인');
   const deactivate = button('이 기기 비활성화');
-  actions.append(activate, buy, check, deactivate);
+  const fixPayment = button('결제 수단 바꾸기');
+  actions.append(fixPayment, activate, buy, check, deactivate);
   row.append(copy, actions);
   body.append(row);
   root.append(head, body);
 
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
-    title.textContent = summary.title;
+    // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다.
+    title.textContent = renewalPrompt(status)?.title ?? summary.title;
     detail.textContent = summary.detail;
     activate.hidden = !summary.showActivate;
     buy.hidden = !summary.showActivate;
     check.hidden = !status.license;
     deactivate.hidden = !summary.canDeactivate;
+    const prompt = renewalPrompt(status);
+    fixPayment.hidden = !prompt || !api.openPaymentFix;
+    if (prompt) fixPayment.textContent = prompt.action;
     root.hidden = status.state === 'unenforced';
   }
 
   activate.addEventListener('click', () => { void api.openActivation(); });
   buy.addEventListener('click', () => { void api.openPricing(); });
+  fixPayment.addEventListener('click', () => { void api.openPaymentFix?.(); });
   check.addEventListener('click', () => {
     check.disabled = true;
     void api.checkNow().then(render).finally(() => { check.disabled = false; });

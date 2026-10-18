@@ -35,6 +35,9 @@
     const beta = status.license?.tier === 'beta';
     switch (status.state) {
       case 'licensed':
+        if (status.license?.paymentFailed && status.license.paymentGraceEndsAt) {
+          return [`갱신 결제가 되지 않았어요. ${date(status.license.paymentGraceEndsAt)}까지는 그대로 쓸 수 있고, Groble에서 결제 수단을 바꾸면 같은 키로 이어서 써요.`, true];
+        }
         if (status.license?.graceEndsAt && status.license.licenseExpiresAt) {
           return [`${date(status.license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${date(status.license.graceEndsAt)}까지 쓸 수 있어요.`, true];
         }
@@ -66,7 +69,10 @@
     const showLicensed = hasLicense && ['licensed', 'lease_expired'].includes(status.state);
     // 기간이 끝난 연간 키: 새 키 넣기 아래에 갱신을 바로 확인하는 줄을 둔다.
     const expired = hasLicense && status.state === 'expired';
-    $('title').textContent = showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
+    // 결제 실패·기간 끝은 Studio 의 연장 안내와 같은 제목을 쓴다.
+    const renewal = (status.state === 'licensed' && status.license?.paymentFailed) || (expired && status.license.licenseExpiresAt);
+    $('title').textContent = renewal ? '키 만료, 연장할까요?' : showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
+    $('fix-payment').hidden = !(status.state === 'licensed' && status.license?.paymentFailed);
     $('licensed-section').hidden = !showLicensed;
     $('activate-section').hidden = showLicensed;
     $('renewal-check').hidden = !expired;
@@ -133,6 +139,7 @@
   });
 
   $('pricing').addEventListener('click', () => { void api.openPricing(); });
+  for (const id of ['fix-payment', 'fix-lapsed']) $(id).addEventListener('click', () => { void api.openPaymentFix?.(); });
   $('close').addEventListener('click', () => { void api.close(); });
   api.onChange(render);
   api.getStatus().then(render);

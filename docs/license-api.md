@@ -38,7 +38,9 @@ Keys bought through the Groble 정기결제 product end at `licenseExpiresAt` (e
 - Before the end date the app works as with a lifetime key, and settings and the activation window show `다음 갱신 <date>` (or `<date>까지` once auto-renewal is off).
 - Past the end date the app rechecks every hour (`EXPIRED_RECHECK_MS`). When the server answers `expired`, the app goes read-only at once (state `expired`, the same viewer mode as an ended trial, with the same one-time lock save). A renewal on the server unlocks it at the next recheck or `지금 확인`.
 - When the server cannot be reached, the app keeps working for `SUBSCRIPTION_OFFLINE_GRACE_MS` (7 days) past the end date, or until the held lease ends, whichever is first, and settings say the renewal needs checking. The server never signs a lease for a key past its end date, so the grace is bounded by the last lease too.
-- Older builds see `expired` as a server error and keep their lease, which ends at most 7 days later.
+- **Failed renewal payment:** the server adds `licenseState: 'payment_failed'`, `paymentGraceEndsAt` (also signed into the lease) and `paymentFixUrl` (default `https://groble.im/manage/purchase`, Groble's buyer 주문조회; the app only opens `https://groble.im/` or `https://www.groble.im/` pages). Until `paymentGraceEndsAt` the key stays fully editable even past its end date. A non-blocking card titled **키 만료, 연장할까요?** sits bottom-right with `결제 수단 바꾸기`; settings and the activation window show the same title and button. Closing the card hides it for that window until the next launch.
+- Once the key fully lapses (state `expired`), the viewer screen shows the same card with `Groble에서 연장하기` and `새로 구매하기`, and the activation window adds `Groble에서 연장하기 · 연장했나요? 지금 확인`.
+- Older builds see `expired` as a server error and keep their lease, which ends at most 7 days later. They ignore the payment-failed fields.
 
 ## Trial and read-only behavior
 

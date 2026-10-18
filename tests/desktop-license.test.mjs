@@ -11,7 +11,7 @@ import {
 } from '../desktop/license-lease.mjs';
 import {
   createLicenseManager, EXPIRED_RECHECK_MS, EXPIRY_SAVE_GRACE_MS, LicenseReadOnlyError, PRICING_URL,
-  SUBSCRIPTION_OFFLINE_GRACE_MS, TRIAL_DURATION_MS,
+  DEFAULT_PAYMENT_FIX_URL, paymentFixUrlFrom, SUBSCRIPTION_OFFLINE_GRACE_MS, TRIAL_DURATION_MS,
 } from '../desktop/license-manager.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS, signLease } from './fixtures/license-mock-server.mjs';
 
@@ -295,6 +295,47 @@ test('the grace never passes 7 days after the expiry, even with a lease signed l
   assert.equal((await make().status()).state, 'licensed');
   clock.t = expiresAt + SUBSCRIPTION_OFFLINE_GRACE_MS;
   assert.equal((await make().status()).state, 'expired', 'the lease is still valid, the 7-day grace is not');
+});
+
+test('a failed renewal keeps the key editable through the payment grace with a fix link, then it expires', async (t) => {
+  const { manager, server, clock } = await setup(t);
+  const expiresAt = T0 + 30 * DAY;
+  const graceEndsAt = expiresAt + 10 * DAY;
+  const key = server.issueKey({ licenseExpiresAt: expiresAt });
+  await manager.activate(key);
+  assert.equal((await manager.status()).license.paymentFailed, false);
+
+  // Groble could not charge the renewal on the anniversary.
+  server.setLicenseExpiry(key, expiresAt, { paymentGraceEndsAt: graceEndsAt });
+  clock.t = expiresAt - HOUR;
+  let status = await manager.check({ force: true });
+  assert.deepEqual([status.state, status.canEdit, status.license.paymentFailed, status.license.paymentGraceEndsAt, status.license.paymentFixUrl],
+    ['licensed', true, true, graceEndsAt, DEFAULT_PAYMENT_FIX_URL]);
+
+  clock.t = expiresAt + 5 * DAY;
+  status = await manager.check();
+  assert.deepEqual([status.state, status.canEdit, status.license.paymentFailed], ['licensed', true, true], 'past the expiry and still editable');
+  await manager.assertCanSave();
+
+  clock.t = graceEndsAt + HOUR;
+  status = await manager.check();
+  assert.equal(status.state, 'expired');
+  assert.equal(status.license.paymentFailed, false);
+  assert.equal(status.license.paymentFixUrl, DEFAULT_PAYMENT_FIX_URL, 'the lapsed screen still knows where to renew');
+  await assert.rejects(manager.assertCanSave(), LicenseReadOnlyError);
+
+  // A late re-payment on Groble renews the key: editable again, no failure state.
+  server.setLicenseExpiry(key, clock.t + 365 * DAY);
+  status = await manager.check({ force: true });
+  assert.deepEqual([status.state, status.license.paymentFailed], ['licensed', false]);
+});
+
+test('the payment fix link only ever points at groble.im', () => {
+  assert.equal(paymentFixUrlFrom('https://groble.im/manage/purchase'), 'https://groble.im/manage/purchase');
+  assert.equal(paymentFixUrlFrom('https://www.groble.im/users/profile/payment-methods'), 'https://www.groble.im/users/profile/payment-methods');
+  for (const bad of ['http://groble.im/manage/purchase', 'https://groble.im.evil.example/', 'javascript:alert(1)', null, 42]) {
+    assert.equal(paymentFixUrlFrom(bad), DEFAULT_PAYMENT_FIX_URL, String(bad));
+  }
 });
 
 test('activating an expired annual key says so', async (t) => {

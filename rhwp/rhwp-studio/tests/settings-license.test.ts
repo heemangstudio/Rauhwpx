@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { licenseSummary, msUntilNextTrialTick, trialTimeLeft, type LicenseStatus } from '../src/ui/agent-sidebar/settings-license.ts';
+import { licenseSummary, msUntilNextTrialTick, renewalPrompt, RENEWAL_PROMPT_TITLE, trialTimeLeft, type LicenseStatus } from '../src/ui/agent-sidebar/settings-license.ts';
 
 const NOW = Date.UTC(2026, 9, 16);
 const MINUTE = 60 * 1000;
@@ -102,4 +102,25 @@ test('an annual key past its date: offline grace stays editable, expired is read
   }), NOW);
   assert.deepEqual([expired.readOnly, expired.showActivate, expired.canDeactivate], [true, true, true]);
   assert.match(expired.detail, /^2027년 10월 20일에 라이선스 기간이 끝났어요/);
+});
+
+test('a failed renewal and a lapsed key get the "키 만료, 연장할까요?" prompt; a healthy key gets none', () => {
+  const endedAt = Date.parse('2027-10-20T23:59:59.999+09:00');
+  const license = { maskedKey: 'HAMA-…AB12', leaseExpiresAt: NOW, lastCheckAt: NOW, lastError: null, licenseExpiresAt: endedAt, autoRenew: true };
+  assert.equal(RENEWAL_PROMPT_TITLE, '키 만료, 연장할까요?');
+  const failed = status({ state: 'licensed', license: { ...license, paymentFailed: true, paymentGraceEndsAt: endedAt + 10 * DAY, paymentFixUrl: 'https://groble.im/manage/purchase' } });
+  const prompt = renewalPrompt(failed);
+  assert.equal(prompt?.kind, 'payment_failed');
+  assert.match(prompt?.detail ?? '', /2027년 10월 30일까지는 그대로 쓸 수 있고/);
+  assert.equal(prompt?.action, '결제 수단 바꾸기');
+  const summary = licenseSummary(failed, NOW);
+  assert.deepEqual([summary.title, summary.readOnly], ['키 만료, 연장할까요?', false], 'non-blocking: still editable');
+
+  const lapsed = renewalPrompt(status({ state: 'expired', canEdit: false, readOnly: true, license: { ...license, autoRenew: false } }));
+  assert.equal(lapsed?.kind, 'lapsed');
+  assert.match(lapsed?.detail ?? '', /^2027년 10월 20일에 기간이 끝나 읽기 전용이에요/);
+
+  assert.equal(renewalPrompt(status({ state: 'licensed', license })), null);
+  assert.equal(renewalPrompt(status({ state: 'licensed', license: { ...license, licenseExpiresAt: null, autoRenew: null } })), null);
+  assert.equal(renewalPrompt(status({ state: 'trial_expired', canEdit: false, readOnly: true })), null);
 });

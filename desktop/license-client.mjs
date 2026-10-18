@@ -3,14 +3,15 @@
 //   POST /v1/license/validate   {key, deviceId}                       → 200 {lease, keyId, tier, licenseExpiresAt, autoRenew}
 //   POST /v1/license/deactivate {key, deviceId}                       → 200 {ok:true}
 //   실패: 4xx {error: 'invalid_key' | 'revoked' | 'expired' | 'device_limit' | 'not_activated'}. revoked·expired 는 tier 도,
-//   expired 는 licenseExpiresAt 도 준다. 권한은 lease 안의 서명한 licenseExpiresAt 으로 정하고, autoRenew 는 표시에만 쓴다.
+//   expired 는 licenseExpiresAt·paymentFixUrl 도 준다. 결제가 실패한 연간 키는 licenseState 'payment_failed' 와
+//   paymentGraceEndsAt 을 함께 받고, 그 끝은 lease 에도 서명되어 있다. 권한은 lease 안의 서명한 licenseExpiresAt 으로 정하고, autoRenew 는 표시에만 쓴다.
 // tier 는 'paid' | 'beta'. 표시에만 쓰고 권한은 서명한 lease 로만 정한다.
 export const DEFAULT_LICENSE_API_BASE = 'https://rau-credits-production.up.railway.app';
 export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'expired', 'device_limit', 'not_activated', 'device_id_invalid', 'server_not_configured', 'grandfather_disabled', 'not_eligible', 'install_id_invalid']);
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export class LicenseServerError extends Error {
-  constructor(code, message = code, { status = null, tier = null, licenseExpiresAt = null } = {}) {
+  constructor(code, message = code, { status = null, tier = null, licenseExpiresAt = null, paymentFixUrl = null } = {}) {
     super(message);
     this.name = 'LicenseServerError';
     /** invalid_key | revoked | expired | device_limit | not_activated | network | server */
@@ -20,6 +21,8 @@ export class LicenseServerError extends Error {
     this.tier = tier;
     /** 끝난 연간 키의 만료 시각. expired 에만 온다. */
     this.licenseExpiresAt = licenseExpiresAt;
+    /** 결제를 고치는 Groble 페이지. expired 에만 온다. */
+    this.paymentFixUrl = paymentFixUrl;
   }
 }
 
@@ -62,6 +65,7 @@ export function createLicenseClient({
         status: response.status,
         tier: tierFrom(parsed),
         licenseExpiresAt: Number.isSafeInteger(parsed?.licenseExpiresAt) ? parsed.licenseExpiresAt : null,
+        paymentFixUrl: typeof parsed?.paymentFixUrl === 'string' ? parsed.paymentFixUrl : null,
       });
     }
     throw new LicenseServerError('server', `HTTP ${response.status}`, { status: response.status });
@@ -70,7 +74,13 @@ export function createLicenseClient({
   function leaseFrom(body) {
     if (typeof body.lease !== 'string' || !body.lease) throw new LicenseServerError('server', 'response has no lease');
     if (typeof body.keyId !== 'string') throw new LicenseServerError('server', 'response has no keyId');
-    return { lease: body.lease, keyId: body.keyId, tier: tierFrom(body), autoRenew: body.autoRenew !== false };
+    return {
+      lease: body.lease,
+      keyId: body.keyId,
+      tier: tierFrom(body),
+      autoRenew: body.autoRenew !== false,
+      paymentFixUrl: typeof body.paymentFixUrl === 'string' ? body.paymentFixUrl : null,
+    };
   }
 
   return {

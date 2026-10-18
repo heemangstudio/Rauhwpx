@@ -9,6 +9,8 @@
 //   만료가 지나면 체험이 끝난 것과 같은 읽기 전용(expired)이 된다. 서버가 만료라고 답하면 바로,
 //   서버에 닿지 못하면 만료 뒤 최대 7일(SUBSCRIPTION_OFFLINE_GRACE_MS, 가진 lease 가 끝나면 그 전)까지 쓴다.
 //   서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 편집할 수 있다. 만료 뒤에는 1시간마다 다시 확인한다.
+// - 갱신 결제가 실패하면 lease 에 결제 유예 끝(paymentGraceEndsAt)이 들어온다. 그때까지는 만료가 지나도
+//   그대로 편집할 수 있고(payment_failed), 상태에 Groble 결제 수단 페이지(paymentFixUrl)를 함께 준다.
 // - 키 종류(tier: paid | beta)는 서버 응답에서 받아 표시에만 쓴다. 예전 상태 파일에 없으면 paid 다.
 // - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
 // - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
@@ -41,6 +43,13 @@ export const EXPIRED_RECHECK_MS = 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
 export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
+/** 결제가 실패한 구매자가 결제 수단을 바꾸는 Groble 주문조회. 서버가 paymentFixUrl 로 다른 주소를 주면 그것을 쓴다. */
+export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
+
+/** 서버가 준 주소는 groble.im 의 https 페이지일 때만 쓴다. */
+export function paymentFixUrlFrom(value) {
+  return typeof value === 'string' && /^https:\/\/(?:www\.)?groble\.im\/[^\s]*$/.test(value) ? value : DEFAULT_PAYMENT_FIX_URL;
+}
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class LicenseReadOnlyError extends Error {
@@ -109,6 +118,7 @@ function sanitizeState(raw) {
       licenseExpiresAt: Number.isSafeInteger(raw.license.licenseExpiresAt) ? raw.license.licenseExpiresAt : null,
       autoRenew: typeof raw.license.autoRenew === 'boolean' ? raw.license.autoRenew : null,
       expiredAt: Number.isSafeInteger(raw.license.expiredAt) ? raw.license.expiredAt : null,
+      paymentFixUrl: paymentFixUrlFrom(raw.license.paymentFixUrl),
     };
   }
   return state;
@@ -192,6 +202,11 @@ export function createLicenseManager({
     return verifyLease(license.lease, { publicKeys, deviceId: state.deviceId, key: license.key, keyId: license.keyId, now: t });
   }
 
+  /** 결제 실패 유예의 끝. 서명한 lease 에만 있다. */
+  function paymentGraceEnd(lease) {
+    return lease.ok && Number.isSafeInteger(lease.payload.paymentGraceEndsAt) ? lease.payload.paymentGraceEndsAt : null;
+  }
+
   /** 키의 만료 시각. lease 가 맞으면 서명한 값을, 아니면 마지막으로 받은 값을 쓴다. 평생 키는 null. */
   function licenseExpiry(lease) {
     if (lease.ok) return Number.isSafeInteger(lease.payload.licenseExpiresAt) ? lease.payload.licenseExpiresAt : null;
@@ -211,9 +226,12 @@ export function createLicenseManager({
     const license = state.license;
     const lease = leaseCheck(t);
     const expiresAt = license ? licenseExpiry(lease) : null;
-    const pastExpiry = expiresAt !== null && t >= expiresAt;
-    // 만료 뒤 서버에 닿지 못하는 동안: 7일과 가진 lease 중 먼저 끝나는 때까지.
-    const graceEndsAt = pastExpiry && lease.ok ? Math.min(expiresAt + offlineGraceMs, lease.payload.expiresAt) : null;
+    const paymentGraceEndsAt = license ? paymentGraceEnd(lease) : null;
+    // 쓸 수 있는 끝: 결제 유예가 있으면 그 끝까지, 아니면 만료까지.
+    const accessEndsAt = expiresAt === null ? null : Math.max(expiresAt, paymentGraceEndsAt ?? 0);
+    const pastExpiry = accessEndsAt !== null && t >= accessEndsAt;
+    // 그 끝을 지나 서버에 닿지 못하는 동안: 7일과 가진 lease 중 먼저 끝나는 때까지.
+    const graceEndsAt = pastExpiry && lease.ok ? Math.min(accessEndsAt + offlineGraceMs, lease.payload.expiresAt) : null;
     let value;
     if (!enforce) value = 'unenforced';
     else if (license?.revokedAt) value = 'revoked';
@@ -245,6 +263,10 @@ export function createLicenseManager({
         licenseExpiresAt: expiresAt,
         autoRenew: expiresAt === null ? null : license.autoRenew !== false,
         graceEndsAt: value === 'licensed' ? graceEndsAt : null,
+        // 갱신 결제가 실패해 Groble 이 다시 시도하는 동안. 편집은 그대로 되고 결제 수단을 바꾸라고 알린다.
+        paymentFailed: value === 'licensed' && paymentGraceEndsAt !== null && t < paymentGraceEndsAt,
+        paymentGraceEndsAt: value === 'licensed' ? paymentGraceEndsAt : null,
+        paymentFixUrl: expiresAt === null ? null : license.paymentFixUrl ?? DEFAULT_PAYMENT_FIX_URL,
       } : null,
       offline: lastNetworkError !== null,
       pricingUrl: PRICING_URL,
@@ -256,7 +278,7 @@ export function createLicenseManager({
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
-  function acceptLease(key, { lease, keyId, tier, autoRenew }, t) {
+  function acceptLease(key, { lease, keyId, tier, autoRenew, paymentFixUrl }, t) {
     const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, keyId, now: t });
     if (!result.ok) {
       log.warn?.('[license] server lease rejected:', result.reason);
@@ -274,6 +296,7 @@ export function createLicenseManager({
       licenseExpiresAt,
       autoRenew: licenseExpiresAt === null ? null : autoRenew !== false,
       expiredAt: null,
+      paymentFixUrl: paymentFixUrlFrom(paymentFixUrl),
     };
   }
 
@@ -305,8 +328,8 @@ export function createLicenseManager({
       const t = clock();
       const lease = leaseCheck(t);
       const expiresAt = licenseExpiry(lease);
-      // 만료가 지난 연간 키는 갱신을 놓치지 않게 더 자주 묻는다.
-      const lapsed = Boolean(license.expiredAt) || (expiresAt !== null && t >= expiresAt);
+      // 만료가 지난 연간 키(결제 유예 중 포함)는 갱신을 놓치지 않게 더 자주 묻는다.
+      const lapsed = Boolean(license.expiredAt) || (expiresAt !== null && t >= expiresAt) || paymentGraceEnd(lease) !== null;
       const interval = lapsed ? Math.min(checkIntervalMs, expiredRecheckMs) : checkIntervalMs;
       if (!force && license.lastCheckAt && t - license.lastCheckAt < interval && (lease.ok || license.expiredAt)) {
         return computeStatus();
@@ -327,6 +350,7 @@ export function createLicenseManager({
           license.expiredAt = clock();
           license.lease = null;
           if (Number.isSafeInteger(error.licenseExpiresAt)) license.licenseExpiresAt = error.licenseExpiresAt;
+          if (error.paymentFixUrl) license.paymentFixUrl = paymentFixUrlFrom(error.paymentFixUrl);
           license.lastErrorCode = 'expired';
           license.lastCheckAt = clock();
           lastNetworkError = null;

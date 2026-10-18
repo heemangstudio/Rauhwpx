@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('hamaLicense', {
   deactivate: () => ipcRenderer.invoke('license:deactivate'),
   checkNow: () => ipcRenderer.invoke('license:check'),
   openPricing: () => ipcRenderer.invoke('license:open-pricing'),
+  openPaymentFix: () => ipcRenderer.invoke('license:open-payment-fix'),
   close: () => ipcRenderer.invoke('license:close-window'),
   onChange: (callback) => {
     const listener = (_event, status) => callback(status);
