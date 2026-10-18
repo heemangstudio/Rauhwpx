@@ -121,6 +121,71 @@ pub(crate) fn control_baseline_hwp(eq: &crate::model::control::Equation, natural
     }
 }
 
+/// Windows Version 60 수식의 줄 메트릭. 점유 높이 H와 비율 간격 기준 B는 별개다.
+/// 잉크 배치 기준선(control_baseline_hwp)은 이 줄 기준선으로 대체하지 않는다.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ControlLineFlowHwp {
+    pub height: i32,
+    pub baseline: i32,
+    pub percent_spacing_basis: i32,
+}
+
+/// Windows 수식의 비율 간격: 4 * M(trunc0(B / 4), percent - 100, 100).
+/// 일반 텍스트/다른 플랫폼의 간격 산식은 바꾸지 않는다.
+pub(crate) fn windows_percent_line_spacing_hwp(basis: i32, percent: f64) -> i32 {
+    if percent < 0.0 || !percent.is_finite() {
+        return 0;
+    }
+    let product = i64::from(basis / 4) * (i64::from(percent as i32) - 100);
+    let rounded = (product.abs() + 50) / 100 * product.signum();
+    (rounded * 4).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+pub(crate) fn windows_control_line_flow_hwp(
+    eq: &crate::model::control::Equation,
+    text_height: i32,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<ControlLineFlowHwp> {
+    if policy != crate::model::provenance::FontMetricsPolicy::HancomWindows
+        || eq.version_info != "Equation Version 60"
+        || !font::is_legacy_equation_font(&eq.font_name)
+    {
+        return None;
+    }
+    let (_, natural_height, natural_baseline) = intrinsic_metrics_hwp_with_version(
+        &eq.script,
+        eq.font_size,
+        &eq.font_name,
+        &eq.version_info,
+    );
+    let content_height = if eq.common.height > 0 {
+        eq.common.height.min(i32::MAX as u32) as i32
+    } else {
+        natural_height.min(i32::MAX as u32) as i32
+    };
+    let height = content_height
+        .saturating_add(i32::from(eq.common.margin.top))
+        .saturating_add(i32::from(eq.common.margin.bottom))
+        .max(0);
+    let baseline = if eq.common.height > 0 && (1..=100).contains(&eq.baseline) {
+        // Foundation M(H, baseline%, 100): 전체 점유 H에서 정수 반올림한다.
+        ((i64::from(height) * i64::from(eq.baseline) + 50) / 100) as i32
+    } else {
+        (natural_baseline.min(i32::MAX as u32) as i32)
+            .saturating_add(i32::from(eq.common.margin.top))
+    };
+    Some(ControlLineFlowHwp {
+        height,
+        baseline: baseline.clamp(0, height),
+        // AffectLSpacing=false는 B만 style text height로 바꾼다. H는 유지한다.
+        percent_spacing_basis: if eq.common.affect_line_spacing {
+            height
+        } else {
+            text_height
+        },
+    })
+}
+
 /// The equation's ink box may extend below its line box. When `affectLSpacing` is
 /// false, its lower script overhang does not enlarge the line; a superscript
 /// above EqLayout's ordinary 0.8em ascent still needs room. The authored object
@@ -1369,6 +1434,7 @@ mod metric_tests {
         use layout::{LayoutBox, LayoutKind};
 
         let leaf = |height| LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,
@@ -1378,6 +1444,7 @@ mod metric_tests {
             kind: LayoutKind::Text("x".to_string()),
         };
         let fraction = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,
@@ -1391,6 +1458,7 @@ mod metric_tests {
             },
         };
         let row = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,

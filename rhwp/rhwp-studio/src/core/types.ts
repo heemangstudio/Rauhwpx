@@ -1371,6 +1371,8 @@ export type LayerEquationFontStyle =
 
 export interface LayerEquationLayoutBox {
   glyphAdvances?: number[];
+  /** 현대 HY layout에서 계산한 이 노드의 입력 em. 구형 JSON은 상속 크기를 쓴다. */
+  resolvedFontSize?: number;
   x: number;
   y: number;
   width: number;

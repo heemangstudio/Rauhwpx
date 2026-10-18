@@ -778,7 +778,7 @@ impl PaintOp {
                 buf.push('{');
                 buf.push_str("\"type\":\"footnoteMarker\",\"bbox\":");
                 write_bbox(buf, *bbox);
-                let font_size = (marker.base_font_size * 0.75).max(7.0);
+                let font_size = marker.font_size;
                 let baseline = marker.baseline - (marker.base_font_size - font_size) * 0.85;
                 let _ = write!(
                     buf,
@@ -2857,6 +2857,12 @@ fn write_equation_layout_box(buf: &mut String, layout: &LayoutBox) {
         layout.x, layout.y, layout.width, layout.height, layout.baseline,
     );
     write_equation_layout_kind(buf, &layout.kind);
+    if let Some(size) = layout
+        .resolved_font_size
+        .filter(|size| size.is_finite() && *size > 0.0)
+    {
+        let _ = write!(buf, ",\"resolvedFontSize\":{size:.6}");
+    }
     if let Some(advances) = &layout.glyph_advances {
         buf.push_str(",\"glyphAdvances\":[");
         for (index, advance) in advances.iter().enumerate() {
@@ -3538,6 +3544,7 @@ mod tests {
             let fs = crate::renderer::hwpunit_to_px(height_hu, 96.0);
             for altered in [false, true] {
                 let mut body = LayoutBox {
+                    resolved_font_size: None,
                     glyph_advances: None,
                     x: fs * 0.5,
                     y: 0.0,
@@ -3550,6 +3557,7 @@ mod tests {
                     body.x += fs * 0.125;
                 }
                 let layout = LayoutBox {
+                    resolved_font_size: None,
                     glyph_advances: None,
                     x: 0.0,
                     y: 0.0,
@@ -3607,8 +3615,63 @@ mod tests {
     }
 
     #[test]
+    fn composite_paint_size_json_preserves_layout_em_for_canvaskit() {
+        use crate::renderer::equation::{
+            layout::{composite_paint_cases, EqLayout},
+            parser::parse,
+        };
+        for fs in [1100.0 / 75.0, 22.0, 1100.0 / 37.5] {
+            for &(script, path, ratio) in composite_paint_cases::CASES {
+                let layout = EqLayout::with_font(fs, "HYhwpEQ")
+                    .with_version("Equation Version 60")
+                    .layout(&parse(script));
+                let mut json = String::new();
+                write_equation_layout_box(&mut json, &layout);
+                let root: Value = serde_json::from_str(&json).unwrap();
+                let mut child = &root;
+                for key in path {
+                    if matches!(*key, "first" | "last") {
+                        let children = child["kind"]["children"].as_array().unwrap();
+                        child = if *key == "first" {
+                            children.first()
+                        } else {
+                            children.last()
+                        }
+                        .unwrap();
+                        continue;
+                    }
+                    while child["kind"]["type"] == "row" {
+                        assert_eq!(child["kind"]["children"].as_array().unwrap().len(), 1);
+                        child = &child["kind"]["children"][0];
+                    }
+                    child = &child["kind"][key];
+                }
+                let em = child["resolvedFontSize"]
+                    .as_f64()
+                    .expect("resolved child em");
+                assert!((em - fs * ratio).abs() <= 0.0000005, "{script}: {child}");
+                // CanvasKit의 좌표와 em은 같은 정밀도로 전달한다. 각 자식은 부모의
+                // 0.7 추측값 대신 이 em을 써야 한다. 구형 상자는 필드를 생략한다.
+                let (child_box, _, _, _) = composite_paint_cases::child(&layout, path);
+                assert!((child["x"].as_f64().unwrap() - child_box.x).abs() <= 0.0000005);
+                assert!((child["y"].as_f64().unwrap() - child_box.y).abs() <= 0.0000005);
+            }
+        }
+        let mut layout =
+            crate::renderer::equation::layout::EqLayout::new(20.0).layout(&parse("x^{{1}over{2}}"));
+        for size in [None, Some(f64::NAN), Some(-1.0)] {
+            layout.resolved_font_size = size;
+            let mut json = String::new();
+            write_equation_layout_box(&mut json, &layout);
+            let root: Value = serde_json::from_str(&json).unwrap();
+            assert!(root.get("resolvedFontSize").is_none());
+        }
+    }
+
+    #[test]
     fn equation_layout_serializes_glyph_advances_and_limit_offsets() {
         let mut layout = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: Some(vec![6.3, 6.3]),
             x: 0.0,
             y: 0.0,
@@ -5081,6 +5144,7 @@ mod tests {
                         EquationNode {
                             svg_content: "<text>x</text>".to_string(),
                             layout_box: LayoutBox {
+                                resolved_font_size: None,
                                 glyph_advances: None,
                                 x: 0.0,
                                 y: 0.0,

@@ -936,6 +936,33 @@ fn line_equation_metrics_px(
     found.then_some((max_ascent, max_descent))
 }
 
+/// Windows의 새 Version 60 줄에서 H/기준선만 재결합한다. B는 조판 간격에 보존한다.
+fn line_windows_equation_metrics_hwp(
+    para: Option<&Paragraph>,
+    line_tac_offsets: &[(usize, f64, usize)],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<(i32, i32)> {
+    let para = para?;
+    let mut combined: Option<(i32, i32)> = None;
+    for (_, _, index) in line_tac_offsets {
+        let Some(Control::Equation(eq)) = para.controls.get(*index) else {
+            continue;
+        };
+        if !eq.common.treat_as_char {
+            continue;
+        }
+        // 레거시 수식이 섞인 줄은 종전 조합 경로를 유지한다.
+        let flow = crate::renderer::equation::windows_control_line_flow_hwp(eq, 0, policy)?;
+        if let Some((height, baseline)) = &mut combined {
+            *height = (*height).max(flow.height);
+            *baseline = (*baseline).max(flow.baseline);
+        } else {
+            combined = Some((flow.height, flow.baseline));
+        }
+    }
+    combined
+}
+
 fn align_line_metrics_to_equation(
     line_height: f64,
     baseline: f64,
@@ -2398,22 +2425,48 @@ pub(crate) fn leading_note_marker_width_px(
     let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
     let run = composed.lines.first()?.runs.first()?;
     let base = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
-    let marker_style = TextStyle {
-        font_size: (base.font_size * 0.75).max(7.0),
-        font_family: base.font_family,
-        bold: base.bold,
-        ..Default::default()
-    };
     Some(
         notes
             .iter()
-            .map(|(_, control, number)| {
+            .map(|(ci, control, number)| {
+                let (_, marker_style) = note_marker_style(Some(para), styles, *ci, &base);
                 estimate_text_width(
                     &note_marker_text_from_control(Some(control), *number),
                     &marker_style,
                 )
             })
             .sum(),
+    )
+}
+
+/// 원본 제어 슬롯을 해소한 경우에만 작은 저작 크기를 그대로 유지한다.
+/// 미지원/모호한 갭은 인접 본문의 기존 크기 하한을 보존한다.
+pub(super) fn note_marker_style(
+    para: Option<&Paragraph>,
+    styles: &ResolvedStyleSet,
+    control_index: usize,
+    fallback: &TextStyle,
+) -> (f64, TextStyle) {
+    let authored = para
+        .and_then(|p| crate::renderer::composer::note_marker_char_style_id(p, control_index))
+        .filter(|id| styles.char_styles.get(*id as usize).is_some())
+        .map(|id| resolved_to_text_style(styles, id, 0))
+        .filter(|style| style.font_size.is_finite() && style.font_size > 0.0);
+    let base = authored.as_ref().unwrap_or(fallback);
+    let scaled = base.font_size * 0.75;
+    (
+        base.font_size,
+        TextStyle {
+            font_size: if authored.is_some() {
+                scaled
+            } else {
+                scaled.max(7.0)
+            },
+            font_family: base.font_family.clone(),
+            bold: base.bold,
+            color: base.color,
+            ..Default::default()
+        },
     )
 }
 
@@ -2424,7 +2477,8 @@ pub(crate) fn leading_note_marker_width_px(
 fn push_note_marker_node(
     tree: &mut PageRenderTree,
     line_node: &mut RenderNode,
-    ctrl: Option<&Control>,
+    para: Option<&Paragraph>,
+    styles: &ResolvedStyleSet,
     number: u16,
     control_index: usize,
     base_ts: &TextStyle,
@@ -2433,14 +2487,9 @@ fn push_note_marker_node(
     section_index: usize,
     para_index: usize,
 ) -> f64 {
-    let text = note_marker_text_from_control(ctrl, number);
-    let sup_ts = TextStyle {
-        font_size: (base_ts.font_size * 0.75).max(7.0),
-        font_family: base_ts.font_family.clone(),
-        bold: base_ts.bold,
-        color: base_ts.color,
-        ..Default::default()
-    };
+    let text =
+        note_marker_text_from_control(para.and_then(|p| p.controls.get(control_index)), number);
+    let (base_font_size, sup_ts) = note_marker_style(para, styles, control_index, base_ts);
     let sup_w = estimate_text_width(&text, &sup_ts);
     let id = tree.next_id();
     line_node.children.push(RenderNode::new(
@@ -2448,11 +2497,12 @@ fn push_note_marker_node(
         RenderNodeType::FootnoteMarker(FootnoteMarkerNode {
             number,
             text,
-            base_font_size: base_ts.font_size,
+            base_font_size,
+            font_size: sup_ts.font_size,
             baseline,
-            font_family: base_ts.font_family.clone(),
-            bold: base_ts.bold,
-            color: base_ts.color,
+            font_family: sup_ts.font_family.clone(),
+            bold: sup_ts.bold,
+            color: sup_ts.color,
             section_index,
             para_index,
             control_index,
@@ -4237,11 +4287,11 @@ impl LayoutEngine {
 
                     for ch_idx in *s..*e {
                         // 각주 마커 삽입: 현재 문자 위치에 각주가 있으면 먼저 run flush + FootnoteMarker 노드 삽입
-                        if let Some(&(_, fn_num, fn_ctrl_idx)) = composed.and_then(|c| {
-                            c.footnote_positions
-                                .iter()
-                                .find(|&&(pos, _, _)| pos == ch_idx)
-                        }) {
+                        for &(_, fn_num, fn_ctrl_idx) in composed
+                            .into_iter()
+                            .flat_map(|c| &c.footnote_positions)
+                            .filter(|&&(pos, _, _)| pos == ch_idx)
+                        {
                             // 현재까지 누적된 run 출력
                             if ch_idx > line_run_start {
                                 let run_text: String =
@@ -4296,46 +4346,26 @@ impl LayoutEngine {
                                 line_run_x = inline_x;
                                 line_run_start = ch_idx;
                             }
-                            // FootnoteMarker 노드 삽입 (위첨자로 렌더링됨)
-                            let fn_text = note_marker_text_from_control(
-                                para.controls.get(fn_ctrl_idx),
-                                fn_num,
-                            );
                             let base_ts = resolved_to_text_style(styles, current_cs_id, 0);
-                            // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-                            let sup_font_size = (base_ts.font_size * 0.75).max(7.0);
-                            let sup_ts = TextStyle {
-                                font_size: sup_font_size,
-                                font_family: base_ts.font_family.clone(),
-                                bold: base_ts.bold,
-                                ..Default::default()
-                            };
-                            let sup_w = estimate_text_width(&fn_text, &sup_ts);
                             let run_bbox_h =
                                 stored_line_baseline_at(ch_idx).unwrap_or(if wrapped_below_table {
                                     text_line_baseline
                                 } else {
                                     baseline_dist
                                 });
-                            let marker_id = tree.next_id();
-                            let marker_node = RenderNode::new(
-                                marker_id,
-                                RenderNodeType::FootnoteMarker(FootnoteMarkerNode {
-                                    number: fn_num,
-                                    text: fn_text,
-                                    base_font_size: base_ts.font_size,
-                                    baseline: run_bbox_h,
-                                    font_family: base_ts.font_family.clone(),
-                                    bold: base_ts.bold,
-                                    color: base_ts.color,
-                                    section_index,
-                                    para_index,
-                                    control_index: fn_ctrl_idx,
-                                }),
-                                BoundingBox::new(inline_x, current_y, sup_w, run_bbox_h),
+                            inline_x += push_note_marker_node(
+                                tree,
+                                col_node,
+                                Some(para),
+                                styles,
+                                fn_num,
+                                fn_ctrl_idx,
+                                &base_ts,
+                                BoundingBox::new(inline_x, current_y, 0.0, run_bbox_h),
+                                run_bbox_h,
+                                section_index,
+                                para_index,
                             );
-                            col_node.children.push(marker_node);
-                            inline_x += sup_w;
                             line_run_x = inline_x;
                         }
 
@@ -5512,8 +5542,19 @@ impl LayoutEngine {
                 .iter()
                 .map(|(pos, w_hu, ci)| {
                     let w = para
-                        .and_then(|p| super::super::ruby::prepare(p, *ci, styles, self.dpi))
-                        .map(|r| r.main_width)
+                        .and_then(|p| p.controls.get(*ci))
+                        .and_then(|control| match control {
+                            Control::Shape(shape) => self.relative_inline_shape_occupied_width(
+                                shape,
+                                col_area,
+                                (col_area.width - box_margin_left - box_margin_right).max(0.0),
+                            ),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            para.and_then(|p| super::super::ruby::prepare(p, *ci, styles, self.dpi))
+                                .map(|r| r.main_width)
+                        })
                         .unwrap_or_else(|| hwpunit_to_px(*w_hu, self.dpi));
                     (*pos, w, *ci)
                 })
@@ -5996,7 +6037,7 @@ impl LayoutEngine {
                 ls_val,
                 source_metrics_reflow_eligible,
             );
-            let (mut line_height, line_spacing_px) =
+            let (mut line_height, mut line_spacing_px) =
                 crate::renderer::corrected_line_metrics_for_authored_source(
                     raw_lh,
                     raw_text_height,
@@ -6291,7 +6332,20 @@ impl LayoutEngine {
             // 다음 쪽으로 밀린다. 합성 줄이나 재조판/인라인 도형으로 저장 메트릭을
             // 바꾼 줄에만 자체 수식 메트릭을 적용한다.
             if !has_stored_equation_line_metrics {
-                if let Some((equation_ascent, equation_descent)) =
+                if let Some((height, line_baseline)) = line_windows_equation_metrics_hwp(
+                    para,
+                    &line_tac_offsets_for_width,
+                    styles.font_metrics_policy,
+                ) {
+                    line_height = line_height.max(hwpunit_to_px(height, self.dpi));
+                    baseline = baseline.max(hwpunit_to_px(line_baseline, self.dpi));
+                    if ls_type == LineSpacingType::Percent {
+                        // 조판은 가시 글자와 수식 제어 슬롯의 스타일에서 B를 따로
+                        // 계산했다. 빈 runs의 max_fs=0이나 개체가 키운 text_height로
+                        // 다시 계산하면 그 간격을 잃는다.
+                        line_spacing_px = hwpunit_to_px(comp_line.line_spacing, self.dpi);
+                    }
+                } else if let Some((equation_ascent, equation_descent)) =
                     line_equation_metrics_px(para, &line_tac_offsets_for_width, self.dpi)
                 {
                     (line_height, baseline) = align_line_metrics_to_equation(
@@ -8478,7 +8532,8 @@ impl LayoutEngine {
                             let sup_w = push_note_marker_node(
                                 tree,
                                 line_node,
-                                para.and_then(|p| p.controls.get(ctrl_idx)),
+                                para,
+                                styles,
                                 fnum,
                                 ctrl_idx,
                                 &text_style,
@@ -8628,7 +8683,8 @@ impl LayoutEngine {
                             x += push_note_marker_node(
                                 tree,
                                 line_node,
-                                para.and_then(|p| p.controls.get(ctrl_idx)),
+                                para,
+                                styles,
                                 fnum,
                                 ctrl_idx,
                                 &text_style,
@@ -9871,12 +9927,7 @@ impl LayoutEngine {
                         para.and_then(|p| p.controls.get(ctrl_idx)),
                         fnum,
                     );
-                    let sup_size = (ts.font_size * 0.75).max(7.0);
-                    let sup_ts = TextStyle {
-                        font_size: sup_size,
-                        font_family: ts.font_family.clone(),
-                        ..Default::default()
-                    };
+                    let (_, sup_ts) = note_marker_style(para, styles, ctrl_idx, &ts);
                     est_x += estimate_text_width(&fn_text, &sup_ts);
                 }
             }

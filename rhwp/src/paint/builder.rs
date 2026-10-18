@@ -582,6 +582,7 @@ mod tests {
                     number: 1,
                     text: "1)".to_string(),
                     base_font_size: 12.0,
+                    font_size: (12.0_f64 * 0.75).max(7.0),
                     baseline: 12.0,
                     font_family: "serif".to_string(),
                     bold: false,
@@ -1170,6 +1171,7 @@ mod tests {
         EquationNode {
             svg_content: "<text>x</text>".to_string(),
             layout_box: LayoutBox {
+                resolved_font_size: None,
                 glyph_advances: None,
                 x: 0.0,
                 y: 0.0,

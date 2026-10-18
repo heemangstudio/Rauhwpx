@@ -479,8 +479,8 @@ impl SvgRenderer {
                 }
             }
             RenderNodeType::FootnoteMarker(marker) => {
-                // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-                let sup_size = (marker.base_font_size * 0.75).max(7.0);
+                // 레이아웃에서 확정한 참조 번호 크기를 그대로 사용한다.
+                let sup_size = marker.font_size;
                 let color = color_to_svg(marker.color);
                 let font_family = if marker.font_family.is_empty() {
                     "sans-serif"
