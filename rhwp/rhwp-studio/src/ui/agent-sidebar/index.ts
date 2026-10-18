@@ -3278,11 +3278,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     setConversationReceding(who === 'compacting');
   });
+    const appearing = who !== null && turnPending.hidden;
   /**
    * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 콘텍스트 고리가 천천히 숨 쉰다 — 그
    * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
    */
   function setConversationReceding(on: boolean): void {
+    // 대화가 그 줄만큼 올라가는 동안 같은 길이로 떠오른다 — 툭 나타나지 않는다.
+    if (appearing) {
+      const tokens = getComputedStyle(root);
+      turnPending.animate([{ opacity: 0 }, { opacity: 1 }], {
+        duration: parseCssTimeMs(tokens.getPropertyValue('--ag-dur-base'), 180),
+        easing: tokens.getPropertyValue('--ag-ease-out').trim() || 'ease-out',
+      });
+    }
     if (on === (recededNodes.length > 0)) return;
     const tokens = getComputedStyle(root);
     const duration = parseCssTimeMs(tokens.getPropertyValue('--ag-dur-slow'), 320);
@@ -7680,7 +7689,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       appendConversation(pill);
     }
     if (documentRequiredRow?.dataset.threadId === thread.id && chatIsUnlinked()) appendConversation(documentRequiredRow);
-    scrollConversationToEnd();
+    landConversationAtEnd();
   }
 
   function renderUserQuestionHistory(
@@ -9557,6 +9566,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 따라갈지는 바꾸기 전에 정하고, 재기는 대화 변경 처리 한 번에 맡긴다.
    */
   function withAutoScroll(mutate: () => void): void {
+  /**
+   * 다시 그린 대화는 맨 위에서 시작한다 — 끝까지 스프링으로 내려오지 않고 그 자리에 바로 선다.
+   * 다른 세션으로 옮겨 연 채팅(문서 떼기 등)이 위로 튀었다 내려오지 않는다.
+   */
+  function landConversationAtEnd(): void {
+    cancelConversationScroll();
+    followConversation = true;
+    conversationScrollPaused = false;
+    // 빈 채팅 배치가 먼저 풀려야 대화 영역의 최종 높이로 잰다.
+    syncFocusGreeting();
+    syncConversationSpacer();
+    const anchor = active ? latestTurnAnchor() : null;
+    if (anchor) {
+      lockConversationScroll(80);
+      messages.scrollTop = roundedConversationTarget(anchor);
+    }
+    conversationLastScrollTop = messages.scrollTop;
+    composerRestLastScrollTop = messages.scrollTop;
+  }
+
     // 미뤄 둔 이벤트를 다시 흘려보내는 동안에는 줄마다 재지 않는다 — 대화 크기만큼 배치를 강제해 느려진다.
     const shouldFollow = followConversation
       || (!conversationScrollPaused && (replayingUnbound || isConversationFollowingTurn()));
