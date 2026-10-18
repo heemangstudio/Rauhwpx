@@ -88,7 +88,7 @@ test('chat never takes an editing lease and agent keeps it until all tools settl
   const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     view: {}, workflow: 'question', phase: 'questioning', editingAgent: 'codex',
     turnRunning: true, activeToolRequests: 0, pendingUserQuestionId: null,
-    pendingChatPermissionRequest: null, chatPermissionGrants: [],
+    pendingChatPermissionRequests: new Map(), chatPermissionGrants: [],
     editingLease: { active: false, agent: 'codex' }, documentEditingLease: { active: false, agent: 'codex' },
     editingLeaseListeners: new Set([(lease: { active: boolean }) => leases.push(lease.active)]),
     scheduleBusyCheck() {},
@@ -121,7 +121,7 @@ test('agent mode locks the document only while the agent edits and for the hold 
   const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     view: {}, workflow: 'direct', phase: 'direct', editingAgent: 'claude', turnRunning: true, activeToolRequests: 0,
     activeDocumentWrites: 0, lastDocumentWriteAt: Number.NEGATIVE_INFINITY, documentWriteHoldTimer: null,
-    pendingUserQuestionId: null, pendingChatPermissionRequest: null,
+    pendingUserQuestionId: null, pendingChatPermissionRequests: new Map(),
     editingLease: { active: false, agent: 'claude' }, documentEditingLease: { active: false, agent: 'claude' },
     editingLeaseListeners: new Set(), scheduleBusyCheck() {},
   });
@@ -238,6 +238,7 @@ test('a tool call outside a running turn holds the lease until it settles', asyn
     editingLease: { active: false, agent: 'claude' },
     editingLeaseListeners: new Set(),
     pendingUserQuestionId: null,
+    pendingChatPermissionRequests: new Map(),
     workflow: 'direct',
     phase: 'direct',
     capabilityEpoch: null,

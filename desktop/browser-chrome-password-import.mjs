@@ -23,7 +23,7 @@ export function decryptChromeMacPassword(encrypted, key) {
   finally { clear?.fill(0); }
 }
 
-function chromeKeychainPassword() {
+export function chromeKeychainPassword() {
   return new Promise((resolve, reject) => {
     // No shell, environment export, console or hub IPC ever receives this output.
     execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', 'Chrome Safe Storage', '-a', 'Chrome'], { encoding: 'buffer', maxBuffer: 4096, timeout: 120_000, windowsHide: true }, (error, stdout) => {
@@ -46,15 +46,16 @@ async function copyReadonly(file, destination) {
   try { await pipeline(handle.createReadStream({ autoClose: false }), createWriteStream(destination, { flags: 'wx', mode: 0o600 })); }
   finally { await handle.close(); }
 }
-async function loginRows(file) {
+// Reads a private WAL-consistent copy; `read(db)` only ever sees the snapshot.
+export async function readChromeDatabase(file, read, { busyMessage = 'Chrome passwords changed during import. Close Chrome and retry.', unavailableMessage = 'Chrome passwords could not be read. Close Chrome and retry the import.', sqliteMessage = 'This desktop version cannot read Chrome password databases.' } = {}) {
   let sqlite;
-  try { sqlite = await import('node:sqlite'); } catch { throw passwordFailure('BROWSER_CHROME_SQLITE_UNAVAILABLE', 'This desktop version cannot read Chrome password databases.'); }
+  try { sqlite = await import('node:sqlite'); } catch { throw passwordFailure('BROWSER_CHROME_SQLITE_UNAVAILABLE', sqliteMessage); }
   let directory; let snapshot;
   try {
     // Opening the original WAL database readOnly can create its -shm index.
     // Read file bytes only; SQLite opens the private copy and includes its WAL.
     for (let attempt = 0; attempt < 3; attempt++) {
-      directory = await mkdtemp(join(tmpdir(), 'hama-chrome-passwords-'));
+      directory = await mkdtemp(join(tmpdir(), 'hama-chrome-db-'));
       const before = await Promise.all([sourceInfo(file), sourceInfo(`${file}-wal`)]);
       if (!before[0]) throw new Error();
       await copyReadonly(file, join(directory, 'snapshot.sqlite'));
@@ -63,16 +64,21 @@ async function loginRows(file) {
       if (before.every((value, index) => value === after[index])) break;
       await rm(directory, { recursive: true, force: true }); directory = null;
     }
-    if (!directory) throw passwordFailure('BROWSER_CHROME_DATABASE_BUSY', 'Chrome passwords changed during import. Close Chrome and retry.');
+    if (!directory) throw passwordFailure('BROWSER_CHROME_DATABASE_BUSY', busyMessage);
     snapshot = new sqlite.DatabaseSync(join(directory, 'snapshot.sqlite'), { enableLoadExtension: false });
     snapshot.exec('PRAGMA query_only = ON');
-    const rows = snapshot.prepare('SELECT origin_url, signon_realm, username_value, password_value FROM logins WHERE blacklisted_by_user = 0 LIMIT 4097').all();
-    if (rows.length > 4096) throw passwordFailure('BROWSER_CHROME_IMPORT_LIMIT', 'This Chrome profile exceeds the password import limit.');
-    return rows;
+    return await read(snapshot);
   } catch (error) {
     if (error.code?.startsWith('BROWSER_')) throw error;
-    throw passwordFailure('BROWSER_CHROME_DATABASE_UNAVAILABLE', 'Chrome passwords could not be read. Close Chrome and retry the import.');
+    throw passwordFailure('BROWSER_CHROME_DATABASE_UNAVAILABLE', unavailableMessage);
   } finally { snapshot?.close(); if (directory) await rm(directory, { recursive: true, force: true }); }
+}
+function loginRows(file) {
+  return readChromeDatabase(file, (db) => {
+    const rows = db.prepare('SELECT origin_url, signon_realm, username_value, password_value FROM logins WHERE blacklisted_by_user = 0 LIMIT 4097').all();
+    if (rows.length > 4096) throw passwordFailure('BROWSER_CHROME_IMPORT_LIMIT', 'This Chrome profile exceeds the password import limit.');
+    return rows;
+  });
 }
 
 export class ChromePasswordImporter {

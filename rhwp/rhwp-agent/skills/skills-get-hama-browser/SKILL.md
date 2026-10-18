@@ -1,6 +1,6 @@
 ---
 name: skills-get-hama-browser
-description: Use Hama Browser to read websites, search, reuse approved accounts, collect source evidence, and download research files inside HamaEditor.
+description: Use Hama Browser to read websites, search, use saved logins with site access, collect source evidence, and download research files inside HamaEditor.
 metadata:
   rhwp:
     icon: book
@@ -13,8 +13,8 @@ Use the app-owned `browser_*` tools. The user's hub runs the browser and retains
 ## Start and reuse
 
 1. Call `browser_status` once to find shared user-opened tabs, your assigned tabs, runtime state, and available account IDs. `activeTabId` is the page the user is viewing in the current sidebar. For a request about that page, snapshot and control that exact tab so the user sees your work there. Reuse a relevant tab; otherwise call `browser_open` with the destination URL.
-2. Call `browser_snapshot` to read the page and choose a current element ref. Keep its `snapshotId`, `navigationEpoch`, and `controllerEpoch` together.
-3. Perform the next supported action, then take the cheapest observation that answers whether it worked. Use a fresh snapshot after navigation, submission, scrolling, page changes, or user input. Use status to find a new popup tab or inspect runtime changes.
+2. Call `browser_snapshot` to read the page outline and choose a current `[ref=…]`. Keep its `snapshotId`, `navigationEpoch`, and `controllerEpoch` together. On long pages, pass `find` or `scope` instead of rereading everything.
+3. Perform the next supported action. Click, type, press and select wait briefly for the page to settle and return `navigated`, `url`, `title`, and `newTab` or `dialog` when they happened. Pass `snapshot: true` when you need the resulting outline. Refs stay valid until a navigation or a new snapshot.
 4. Finish when the requested fact, page state, capture, or completed download is established. Return the source link and outcome.
 
 Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. User-opened tabs are shared across documents and available to agents. Other agents’ assigned tabs remain scoped to their own tasks. When a sidebar is already showing your target, it stays docked during your work.
@@ -25,14 +25,18 @@ Navigate an existing tab for the next destination. Open another tab only when th
 - Reuse an unchanged observation for reading. Refresh before acting if a page or control change could have invalidated it. A new snapshot replaces all earlier refs, even on the same URL.
 - Prefer a known destination URL or a relevant result already on the page. Avoid intermediate pages and repeated inventory checks.
 - Calls on the same tab are sequential. Hama exposes individual actions, so do not invent a browser batch, JavaScript evaluation, coordinate-click, or cookie tool.
-- `browser_type` fills ordinary text. For an intended search submission, use `submit: true` with `intent: search` to fill and press Enter in one call. Other flows can use an observed submit button or `browser_press`. Declare `login`, `export`, or `website-change` intent when applicable.
-- Use bounded `browser_wait` for the needed readiness, idle, visible, or text condition. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
+- `browser_type` fills ordinary text. For an intended search submission, use `submit: true` with `intent: search` to fill and press Enter in one call. Other flows can use an observed submit button or `browser_press`. Declare `website-change` intent when an action changes something the page cannot show as a form.
+- Use `browser_select` for native list boxes. Use bounded `browser_wait` only for content that arrives after an action settled. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
 
-## Accounts and scope
+## Site access
 
-Ordinary research uses the browser's existing permissions. Keep website actions within the user's request and honor any returned refusal. A browser tab does not authorize extracting account secrets or managing browser configuration.
+Public browsing, typing, select and GET searches are free on every site. Three things need **site access** for a site (its registrable domain, so `login.example.com` and `www.example.com` are one site): reading it while the owner is signed in there, changing things on it (a non-GET form, a same-site write during your click, a declared `website-change`), and using its saved logins or secrets. The root conversation asks for it once with `browser_request_account` and `kind: "site"`; `tabId` is optional. The user answers one card for this chat or for every chat.
 
-Saved logins include Chrome imports and credentials the user previously typed and saved with the browser’s password button. You have access to reuse accounts returned by `browser_status` with `agentReuseApproved: true` on their exact website origin for the user’s task. Use the opaque `accountId` with `browser_fill_account` and fresh refs for both the ID/username and password fields. These accounts need no additional password request or approval. If several accounts match and the task does not identify one, ask which account to use. When the task requires signing in, submit the observed login form after filling and inspect the resulting page to establish sign-in. For a missing account or origin approval, the root conversation calls `browser_request_account`; a pending result requires ending the turn and waiting for the secure form. Subagents report that need to the root conversation. Never put passwords, cookies, tokens, or MFA codes in chat, `browser_type`, tool arguments, or artifacts.
+Every refusal carries `request`: the exact next call. Make that call and end the turn. A pending result is not a grant; the chat resumes by itself when the user answers. `BROWSER_SITE_BLOCKED` means the owner turned something off; its `request` asks the owner to turn it back on. Subagents get `reportToRoot` and report the site to the root conversation instead. `browser_status.sites` shows what this chat already has.
+
+Saved logins in `browser_status.accounts` belong to their site. `usable: true` means `browser_fill_account` with the `accountId` and fresh refs for both the ID/username and password fields works now. If several logins match and the task does not identify one, ask which to use. After filling, submit the observed form and inspect the result to establish sign-in. Ask to save a login (`kind: "account"`) only when the site has none and the tab is not already signed in; when one exists, the hub shows the site card. The save card also lets the user report a Google-style sign-in instead; then reuse the signed-in session. When the page needs the user to sign in or type a code (`BROWSER_USER_CODE_REQUIRED`), call it with `kind: "sign-in"` or `kind: "code"` and the tab. Never put passwords, cookies, tokens, or MFA codes in chat, `browser_type`, tool arguments, or artifacts.
+
+For an API key, token, or other secret, use a `browser_status.secrets` entry with `usable: true` through `browser_fill_secret`. Otherwise the root conversation calls `request_secret` with a short label, the HTTPS origins, the kind, and the reason, then ends the turn. You never see secret values. Never ask for them in chat or place them in files, commands, or environment variables.
 
 For OAuth, passkeys, MFA, CAPTCHA, or full-browser sign-in, use the user's supported handoff. Resume after completion with status and a fresh snapshot. Honor an explicit user takeover or stop request; refresh after the user changes the page.
 

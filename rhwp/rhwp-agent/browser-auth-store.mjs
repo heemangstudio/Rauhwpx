@@ -66,10 +66,11 @@ export function createEncryptedBrowserAuthStore({ dataDir, secretStore, wrapping
     return keyPromise;
   }
 
+  const DIRECTORIES = { password: 'browser-credentials', usersecret: 'browser-user-secrets', session: 'browser-auth' };
   function location(purpose, id) {
-    return path.join(dataDir, purpose === 'password' ? 'browser-credentials' : 'browser-auth', `${storageId(id)}.json`);
+    return path.join(dataDir, DIRECTORIES[purpose], `${storageId(id)}.json`);
   }
-  function bound(purpose) { return purpose === 'password' ? MAX_PASSWORD_BYTES : maxCheckpointBytes; }
+  function bound(purpose) { return purpose === 'session' ? maxCheckpointBytes : MAX_PASSWORD_BYTES; }
   function serialize(operation) {
     const task = queue.then(operation, operation);
     queue = task.catch(() => {});
@@ -126,11 +127,15 @@ export function createEncryptedBrowserAuthStore({ dataDir, secretStore, wrapping
     savePassword: (id, value) => put('password', id, value),
     readPassword: (id) => get('password', id),
     deletePassword: (id) => remove('password', id),
+    saveSecret: (id, value) => put('usersecret', id, value),
+    readSecret: (id) => get('usersecret', id),
+    deleteSecret: (id) => remove('usersecret', id),
     beginReset: async () => { paused = true; await queue; if (keyPromise) await keyPromise.catch(() => {}); },
     endReset: () => { paused = false; },
     clearEncryptedData: () => serialize(async () => {
       await fs.rm(path.join(dataDir, 'browser-auth'), { recursive: true, force: true });
       await fs.rm(path.join(dataDir, 'browser-credentials'), { recursive: true, force: true });
+      await fs.rm(path.join(dataDir, 'browser-user-secrets'), { recursive: true, force: true });
       if (keyPromise) (await keyPromise.catch(() => null))?.fill(0);
       keyPromise = undefined;
     }),

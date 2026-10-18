@@ -154,9 +154,27 @@ export const MAX_DOCUMENT_MENTIONS = 5;
 /** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
 export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents';
 export type ChatPermissionDecision = 'grant' | 'deny';
+/** 허락이 이 채팅에서만 살지(chat), 다음 채팅에도 남을지(always). */
+export type ChatPermissionScope = 'chat' | 'always';
 export type ChatPermissionOutcome =
   | { status: 'granted' }
   | { status: 'denied' | 'expired'; reason?: string };
+
+/** 옛 허브의 browser-use-account·secret-use 는 읽을 때 사이트 사용 카드(browser-site-access)로 바뀐다. */
+export type ChatPermissionRequestKind =
+  | 'browser-save-account' | 'browser-site-access' | 'browser-sign-in' | 'browser-code' | 'secret-save';
+export type SecretKind = 'api-key' | 'token' | 'password' | 'other';
+
+/** 사이트 사용 카드에 보이는 저장된 로그인·비밀 값 한 줄. 값은 Studio 에 오지 않는다. */
+export interface SiteRequestItem {
+  id: string;
+  label: string;
+  /** 로그인 아이디처럼 이름과 다른 보조 글자. */
+  detail?: string;
+  secretKind?: SecretKind;
+  /** 사용자가 에이전트 사용을 꺼 둔 항목. 카드의 item 이 가리키는 항목만 승인으로 다시 켜진다. */
+  blocked?: boolean;
+}
 
 export interface ChatPermissionRequest {
   requestId: string;
@@ -165,14 +183,50 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
-  /** 브라우저 계정 요청. */
-  kind?: 'browser-save-account' | 'browser-use-account';
+  kind?: ChatPermissionRequestKind;
   origin?: string;
+  tabId?: string;
   origins?: string[];
+  /** browser-site-access 가 덮는 등록 도메인(하위 도메인 포함). IP·localhost 는 없다. */
+  siteDomain?: string | null;
   accountId?: string;
   accountLabel?: string;
+  /** browser-site-access: 이 사이트에서 함께 쓸 저장된 로그인과 비밀 값. */
+  logins?: SiteRequestItem[];
+  secrets?: SiteRequestItem[];
+  /** browser-site-access: 승인하면 풀리는 사용자 차단(동작 이름). 차단을 푸는 카드는 '항상'으로만 허용한다. */
+  blocked?: string[];
+  /** browser-site-access: 승인하면 다시 켜지는, 에이전트 사용을 꺼 둔 로그인 또는 비밀 값. */
+  item?: { accountId?: string; secretId?: string };
+  /** 있는 값을 바꾸는 secret-save. */
+  secretId?: string;
+  secretLabel?: string;
+  secretKind?: SecretKind;
+  /** 카드가 보일 범위 선택지. 첫 값이 기본이다. 없으면 고르지 않는다. */
+  scopes?: ChatPermissionScope[];
   reason: string;
   createdAt: string;
+}
+
+/** 저장한 비밀 값의 메타데이터. 값 자체는 Studio 에 오지 않는다. */
+export interface SecretMeta {
+  id: string;
+  label: string;
+  kind: SecretKind;
+  origins: string[];
+  /** 값을 어디까지 남기는지(always 는 저장, chat 은 이 채팅 동안만). 사용 허락은 사이트 사용이 정한다. */
+  scope: ChatPermissionScope;
+  /** 사용자가 에이전트 사용을 껐다. */
+  blocked: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface SecretSubmitResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  secret?: SecretMeta;
 }
 
 /** 에이전트 참고자료의 수명 범위. 파일 본문은 허브가 보관하며 브라우저에는 메타데이터만 둔다. */
@@ -693,7 +747,7 @@ export interface BrowserTab {
   title: string;
   navigationEpoch: number;
   controllerEpoch: number;
-  controller: { owner: 'human' | 'agent'; clientId?: string };
+  controller: { owner: 'human' | 'agent'; clientId?: string; held?: boolean };
   status: string;
   challenge?: BrowserChallenge | null;
   presentation?: 'native' | 'stream';
@@ -704,6 +758,10 @@ export interface BrowserTab {
   lastAction?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** 사람에게만 오는 사이트 아이콘(data: URI). */
+  faviconUrl?: string;
+  /** 비밀번호가 보호하는 탭 — 화면을 미리 보여 주지 않는다. */
+  passwordProtected?: boolean;
 }
 export interface BrowserFrame {
   frameId: string;
@@ -1066,7 +1124,7 @@ export type SidebarEvent =
   | { type: 'user-question-resolved'; interactionId: string; outcome: UserQuestionOutcome }
   | { type: 'user-question-answer-result'; interactionId: string; responseId: string; ok: boolean; code?: string; message?: string }
   | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
-  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[] }
+  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[]; alwaysGrants?: ChatPermissionCapability[] }
   | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
   /** 문서 없는 채팅에 문서가 이어졌다 (허브가 확인했다). */
   | { type: 'chat-document-linked'; threadId: string; documentId: string; documentName: string | null; projectId: string | null }

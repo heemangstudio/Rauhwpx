@@ -76,7 +76,7 @@ function bridgeFixture(permissionProfile: 'safe' | 'unrestricted') {
     editingAgent: null,
     editingLease: { active: false, agent: null, waitingForUser: false },
     editingLeaseListeners: new Set(),
-    pendingUserQuestionId: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
+    pendingUserQuestionId: null, pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(), chatPermissionGrants: [],
     workflow: 'direct',
     phase: 'direct',
     latestPlan: null,

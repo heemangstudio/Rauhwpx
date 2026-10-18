@@ -3,6 +3,9 @@ import path from 'node:path';
 
 const KEY_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/i;
 const BROWSER_KEY_RE = /^browser\.(?:password\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|wrapping-key\.v1)$/i;
+// 사용자가 에이전트에게 맡긴 비밀(API 키·토큰 등). 브라우저 도구만 페이지에 입력하므로 브라우저 데이터와 함께 지운다.
+const USER_SECRET_KEY_RE = /^usersecret\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const browserOwnedKey = (key) => BROWSER_KEY_RE.test(key) || USER_SECRET_KEY_RE.test(key);
 const LINUX_SECURE_STORAGE_BACKENDS = new Set([
   'gnome_libsecret',
   'kwallet',
@@ -323,6 +326,7 @@ export function createSecretVault({
   function assertKey(key) {
     if (!KEY_RE.test(String(key ?? ''))) throw new Error('Invalid secret identifier.');
     if (String(key).toLowerCase().startsWith('browser.') && !BROWSER_KEY_RE.test(key)) throw new Error('Invalid website secret identifier.');
+    if (String(key).toLowerCase().startsWith('usersecret.') && !USER_SECRET_KEY_RE.test(key)) throw new Error('Invalid user secret identifier.');
     return String(key);
   }
 
@@ -400,14 +404,14 @@ export function createSecretVault({
     },
     async resetBrowser() {
       return mutate(async (current) => {
-        const keys = Object.keys(current).filter((key) => BROWSER_KEY_RE.test(key));
+        const keys = Object.keys(current).filter(browserOwnedKey);
         for (const key of keys) delete current[key];
         return { next: current, value: keys.length > 0 };
       });
     },
     async resetProviders() {
       return mutate(async (current) => ({
-        next: Object.fromEntries(Object.entries(current).filter(([key]) => BROWSER_KEY_RE.test(key))),
+        next: Object.fromEntries(Object.entries(current).filter(([key]) => browserOwnedKey(key))),
         value: true,
       }));
     },

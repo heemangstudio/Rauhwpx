@@ -3,7 +3,7 @@
  * 도구상자 버튼 아래에서 행×열을 빠르게 고른다.
  */
 
-import { makeOption } from './dom-utils';
+import { makeOption, menuAnchor } from './dom-utils';
 import { enableDialogDrag } from './dialog-drag';
 import { HWPUNIT_PER_MM } from '@/core/hwp-constants';
 
@@ -35,7 +35,7 @@ function splitEvenly(total: number, count: number): number[] {
 export class TableCreateDialog {
   private overlay!: HTMLDivElement;
   private popup!: HTMLDivElement;
-  private label!: HTMLDivElement;
+  private label!: HTMLSpanElement;
   private cells: HTMLDivElement[] = [];
   private built = false;
 
@@ -58,7 +58,7 @@ export class TableCreateDialog {
     document.body.appendChild(this.popup);
 
     if (anchor) {
-      const rect = anchor.getBoundingClientRect();
+      const rect = menuAnchor(anchor).getBoundingClientRect();
       this.popup.style.left = rect.left + 'px';
       this.popup.style.top = rect.bottom + 2 + 'px';
       this.popup.style.transform = 'none';
@@ -100,7 +100,10 @@ export class TableCreateDialog {
     header.className = 'table-create-header';
     const heading = document.createElement('span');
     heading.textContent = '표 삽입';
-    header.appendChild(heading);
+    // 고르는 중인 크기 "3 × 4" 는 제목 옆에 보인다.
+    this.label = document.createElement('span');
+    this.label.className = 'table-create-size';
+    header.append(heading, this.label);
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.textContent = '×';
@@ -166,11 +169,6 @@ export class TableCreateDialog {
     });
 
     gridWrap.appendChild(grid);
-
-    // 라벨: "3 × 4"
-    this.label = document.createElement('div');
-    this.label.className = 'table-create-size';
-    gridWrap.appendChild(this.label);
 
     this.popup.appendChild(gridWrap);
 

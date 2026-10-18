@@ -290,7 +290,7 @@ function bridgeFixture(doc = fakeDocument(), overrides: Record<string, unknown> 
     activeProviderTurnId: null, interruptedProviderTurnId: null,
     activeToolRequests: 0, activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     pendingUserQuestion: null, pendingQuestionCancellation: null,
-    pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [], planExecutionTurn: null,
+    pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(), chatPermissionGrants: [], planExecutionTurn: null,
     pendingInterrupt: false,
     turnSnapshots: new TurnSnapshots(doc.deps),
     sendJson: (frame: unknown) => { frames.push(structuredClone(frame)); return true; },

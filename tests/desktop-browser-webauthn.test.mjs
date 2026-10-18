@@ -17,14 +17,15 @@ function fixture(options = {}) {
   const frame = { url: 'https://site.example/login' };
   const requests = [];
   const events = [];
+  const signIns = [];
   const configured = [];
   const service = new BrowserWebAuthn({ app: { whenReady: async () => {}, configureWebAuthn: (value) => configured.push(value) },
     systemPreferences: { canPromptTouchID: () => true }, platform: 'darwin', electronVersion: '43.3.0',
     checkEntitlement: async () => true, getTabForFrame: (value) => value === frame ? tab : null,
-    getWindowForTab: () => window, onState: (_tab, state) => events.push(state),
+    getWindowForTab: () => window, onState: (_tab, state) => events.push(state), onSignIn: (_tab, signIn) => signIns.push(signIn),
     dialog: { showMessageBox: (_window, request) => new Promise((resolve) => requests.push({ request, resolve })) }, ...options });
   const details = { frame, relyingPartyId: 'site.example', accounts: [{ credentialId: 'secret-handle-one', name: 'private-name-one' }, { credentialId: 'secret-handle-two', name: 'private-name-two' }] };
-  return { service, contents, window, tab, frame, requests, events, configured, details };
+  return { service, contents, window, tab, frame, requests, events, signIns, configured, details };
 }
 
 test('native Touch ID config requires the running signature and describes its credential scope', async () => {
@@ -54,6 +55,8 @@ test('only a human native account choice completes WebAuthn and metadata stays p
   await selection;
   assert.deepEqual(calls, ['secret-handle-two']);
   assert.equal(f.service.pending.size, 0);
+  // 사용자가 고른 패스키는 그 사이트에 로그인한 표시가 된다. 계정 정보는 싣지 않는다.
+  assert.deepEqual(f.signIns, [{ origin: 'https://site.example', relyingPartyId: 'site.example' }]);
 });
 
 test('navigation, renderer loss, window close and disposal cancel once despite a late selection', async () => {
@@ -85,6 +88,7 @@ test('stale bindings, unknown frames and explicit dismissal do not select a cred
   f.requests[1].resolve({ response: 0 });
   await dismissal;
   assert.deepEqual(calls, [undefined, undefined, undefined]);
+  assert.deepEqual(f.signIns, []);
 });
 
 const require = createRequire(import.meta.url);

@@ -48,8 +48,8 @@ test('failed native setup releases its owned connection before retry and concurr
     ownerOccupied = true; launches++;
     const firstLaunch = launches === 1;
     const context = Object.assign(new EventEmitter(), {
-      async storageState() { if (firstLaunch) { signalSetup(); return setup; } return { cookies: [], origins: [] }; },
-      async route() {}, pages: () => [],
+      async storageState() { return { cookies: [], origins: [] }; },
+      async route() { if (firstLaunch) { signalSetup(); return setup; } }, pages: () => [],
       async newPage() { pages++; return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [] }); },
     });
     return { kind: 'native', context, browser: new EventEmitter(), async close() { releases++; ownerOccupied = false; } };
@@ -187,16 +187,21 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'human observation does not spawn an agent preview');
   observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
   assert.equal(JSON.stringify(observation).includes('vault-secret'), false);
-  const query = observation.snapshot.elements.find((element) => element.tag === 'input' && !element.sensitive);
-  const inputArgs = { tabId: a.tabId, snapshotId: observation.snapshot.snapshotId, ref: query.ref, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, text: '한국어 research' };
+  const refOf = (snapshot, name) => snapshot.outline.split('\n').find(line => line.includes(`"${name}"`)).match(/\[ref=([^\]]+)\]/)[1];
+  assert.match(observation.snapshot.outline, /textbox "Password" \[ref=[^\]]+\]: \[masked\]/);
+  const inputArgs = { tabId: a.tabId, snapshotId: observation.snapshot.snapshotId, ref: refOf(observation.snapshot, 'Query'), navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch, text: '한국어 research' };
   await browser.request(alice, 'type', inputArgs);
   observation = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
+  assert.match(observation.snapshot.outline, /textbox "Query" \[ref=[^\]]+\]: 한국어 research/);
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
-  await browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch });
+  assert.equal(taken.tab.controller.held, true);
+  const press = { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch };
+  await assert.rejects(browser.request(alice, 'press', press), { code: 'BROWSER_USER_IN_CONTROL' });
+  events.length = 0;
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(stillReadable.snapshot.text.includes('Research'));
+  assert.ok(stillReadable.snapshot.outline.includes('Research'), 'agent reads continue while the user holds the tab');
+  assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'observe-only reads do not lock the user out');
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
   assert.equal(frame.frame.mimeType, 'image/jpeg');
   assert.ok(Buffer.from(frame.frame.data, 'base64').length > 100);
@@ -206,6 +211,8 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.equal(capture.capture.screenshot, undefined);
   assert.equal(capture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
   const returned = await browser.request(human, 'control', { tabId: a.tabId, owner: 'agent' });
+  assert.equal(returned.tab.controller.held, undefined);
+  await browser.request(alice, 'press', { ...press, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch });
   await assert.rejects(browser.request(alice, 'navigate', { tabId: a.tabId, url: `${origin}/redirect-private`, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch }), { code: 'BROWSER_ACTION_FAILED' });
   const shared = (await browser.request({ ...human, sessionId: 'window-a' }, 'open', { url: `${origin}/research` })).tab;
   const sidebarAgent = { ...bob, sessionId: 'window-b', activeBrowserTabId: shared.tabId };
@@ -214,14 +221,12 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.deepEqual(status.tabs.map(tab => tab.tabId).sort(), [b.tabId, shared.tabId].sort());
   const current = await browser.request(sidebarAgent, 'snapshot', { tabId: status.activeTabId });
   assert.equal(JSON.stringify(current).includes('vault-secret'), false, 'shared page observations still mask passwords');
-  const field = current.snapshot.elements.find(element => element.tag === 'input' && !element.sensitive);
-  await browser.request(sidebarAgent, 'type', { tabId: shared.tabId, snapshotId: current.snapshot.snapshotId, ref: field.ref,
+  await browser.request(sidebarAgent, 'type', { tabId: shared.tabId, snapshotId: current.snapshot.snapshotId, ref: refOf(current.snapshot, 'Query'),
     navigationEpoch: current.tab.navigationEpoch, controllerEpoch: current.tab.controllerEpoch, text: 'Shared sidebar research' });
   const filled = await browser.request(sidebarAgent, 'snapshot', { tabId: shared.tabId });
-  const search = filled.snapshot.elements.find(element => element.tag === 'button');
-  await browser.request(sidebarAgent, 'click', { tabId: shared.tabId, snapshotId: filled.snapshot.snapshotId, ref: search.ref,
+  await browser.request(sidebarAgent, 'click', { tabId: shared.tabId, snapshotId: filled.snapshot.snapshotId, ref: refOf(filled.snapshot, 'Search'),
     navigationEpoch: filled.tab.navigationEpoch, controllerEpoch: filled.tab.controllerEpoch });
-  assert.ok((await browser.request(human, 'snapshot', { tabId: shared.tabId })).snapshot.text.includes('Shared sidebar research'));
+  assert.ok((await browser.request(human, 'snapshot', { tabId: shared.tabId })).snapshot.outline.includes('Shared sidebar research'));
   assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === shared.tabId && event.sessionId === 'window-b'), 'activity follows the controlling chat instead of the tab creator');
 
 });
@@ -278,11 +283,17 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
   const humanOwned = await browser.request(human, 'open', {});
   const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
-  // 사용자의 입력 이후에도 소유 에이전트가 탭을 조작할 수 있다.
+  // 사용자가 잡은 탭은 같은 창의 새 턴이 시작되면 소유 에이전트가 다시 조작할 수 있다.
   const next = await browser.request(agent, 'open', {});
   const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
-  await browser.request(agent, 'close', identity(taken.tab));
-  await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_IN_CONTROL' });
+  await browser.releaseHolds({ clientId: 'another-editor' });
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_IN_CONTROL' });
+  await browser.releaseHolds(human);
+  const released = (await browser.inventory(agent)).tabs.find(tab => tab.tabId === next.tab.tabId);
+  assert.equal(released.controller.held, undefined);
+  await browser.request(agent, 'close', identity(released));
+  await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity((await browser.inventory(human)).tabs.find(tab => tab.tabId === controlled.tab.tabId)));
   assert.equal(closedPages, 3);
 });
 
@@ -296,9 +307,7 @@ test('restored native tabs materialize once on selection without transferring co
   await fs.writeFile(path.join(dataDir, 'browser', 'tabs.json'), JSON.stringify({ version: 1, humanStorageOrigins: [origin], tabs: [{ tabId: 'saved-research', nativeTargetId: 'retired-target', threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a', sessionId: 'retired-window', url: `${origin}/research`, navigationEpoch: 3, controllerEpoch: 2 }] }));
   const policy = createBrowserPolicy({ dataDir });
   const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
-  await credentialBroker.registerSessionOrigins({ profileId: 'native', origins: [origin], source: 'human' });
   const retainedOwner = { threadId: 'chat-a', agentId: 'researcher', projectId: 'project-a' };
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: retainedOwner, url: origin, tab: { profileId: 'native' } }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
   const bindings = [];
   let actual; let creations = 0;
   const browser = createOwnedBrowserService({ dataDir, policy, credentialBroker, workspaceTargets: [origin], autoInstall: false,
@@ -323,7 +332,7 @@ test('restored native tabs materialize once on selection without transferring co
   assert.equal(first.tab.threadId, 'chat-a'); assert.equal(first.tab.projectId, 'project-a');
   assert.deepEqual(first.tab.controller, { owner: 'agent' });
   assert.equal(first.tab.status, 'ready'); assert.equal(actual.context.pages().length, 1);
-  assert.equal(await actual.context.pages()[0].title(), 'Restored research', 'human restoration may display the quarantined retained origin');
+  assert.equal(await actual.context.pages()[0].title(), 'Restored research');
   assert.equal((await browser.request(retainedOwner, 'snapshot', args)).ok, true, 'owned-tab access includes the retained session');
   assert.equal(browser.ownsTarget(retainedOwner, first.tab), true);
   assert.equal(browser.ownsTarget({ isHuman: true, sessionId: 'wrong-window' }, first.tab), false);

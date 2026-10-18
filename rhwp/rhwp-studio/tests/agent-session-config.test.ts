@@ -116,6 +116,7 @@ test('stopping a chat drops full access so the next chat starts in the safe prof
     activeToolRequestControllers: new Map(),
     turnSnapshots: null,
     pendingUserQuestion: null,
+    pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(),
     permissionProfile: 'unrestricted',
     listeners: new Set(),
     syncEditingLease: () => {},

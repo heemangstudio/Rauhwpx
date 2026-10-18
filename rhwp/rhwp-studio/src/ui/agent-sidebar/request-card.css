@@ -1,0 +1,466 @@
+/* 에이전트 요청 카드 — 대화 흐름 안의 떠 있는 면. 정착하면 한 줄로 접힌다. */
+.ag-request-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  padding: 12px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-composer);
+  background: var(--ag-raised);
+  color: var(--ag-text);
+  box-shadow: var(--n-elev-1);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-request-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-request-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-active);
+  color: var(--ag-text);
+}
+
+.ag-request-mark .ag-icon { width: 12px; height: 12px; }
+.ag-request-mark.ag-request-mark-small { width: 16px; height: 16px; border-radius: var(--ag-r-code); background: transparent; }
+.ag-request-mark.ag-request-mark-small .ag-icon { width: 13px; height: 13px; }
+
+.ag-request-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px -4px -4px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-request-close .ag-icon { width: 12px; height: 12px; }
+
+.ag-request-title {
+  margin: 0;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
+}
+
+/* 사이트 사용 카드 — 함께 쓸 저장된 로그인·비밀 값, 한 줄씩 */
+.ag-request-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-request-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ag-text-secondary);
+}
+
+.ag-request-item .ag-icon { flex: 0 0 auto; width: 13px; height: 13px; color: var(--ag-text-tertiary); }
+
+.ag-request-item-label,
+.ag-request-item-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-request-item-label { flex: 0 1 auto; color: var(--ag-text); }
+.ag-request-item-detail { flex: 1 1 0; color: var(--ag-text-tertiary); font-size: var(--ag-fs-meta); }
+
+.ag-request-item-off {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: var(--ag-r-code);
+  background: var(--ag-hover);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-mono);
+}
+
+.ag-request-item[data-blocked='true'] .ag-request-item-label { color: var(--ag-text-secondary); }
+.ag-request-item-more { padding-left: 21px; color: var(--ag-text-tertiary); font-size: var(--ag-fs-meta); }
+
+/* 차단을 푸는 카드 — 풀릴 동작 한 줄 */
+.ag-request-blocked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--ag-r-row);
+  background: color-mix(in srgb, var(--ag-run) 10%, transparent);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-blocked .ag-icon { flex: 0 0 auto; width: 13px; height: 13px; color: var(--ag-run); }
+
+.ag-request-origins {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 넘김 카드의 탭 미리보기 */
+.ag-request-thumb {
+  position: relative;
+  height: 112px;
+  overflow: hidden;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-row);
+  background: var(--ag-paper-white);
+}
+
+.ag-request-thumb-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+
+.ag-request-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-hover);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-mono);
+  white-space: nowrap;
+}
+
+.ag-request-thumb .ag-request-chip {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  background: color-mix(in srgb, var(--ag-primary-bg) 88%, transparent);
+  color: var(--ag-primary-fg);
+}
+
+.ag-request-chip[data-holding='true'] { color: var(--ag-text); }
+.ag-request-thumb .ag-request-chip[data-holding='true'] { color: var(--ag-primary-fg); }
+
+.ag-request-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ag-request-pulse 1.6s var(--ag-ease-out, ease-out) infinite;
+}
+
+@keyframes ag-request-pulse {
+  50% { opacity: .35; }
+}
+
+.ag-request-status { display: flex; }
+
+/* 범위 고르기 */
+.ag-request-scope {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  margin: -4px 0;
+  padding: 0 4px 0 6px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: pointer;
+}
+
+.ag-request-scope[aria-checked='true'] { color: var(--ag-text); }
+.ag-request-scope:disabled { opacity: .55; cursor: default; }
+.ag-request-scope[data-locked='true']:disabled { opacity: 1; }
+.ag-request-scope:focus-visible { outline: var(--ag-focus-ring); outline-offset: 1px; }
+
+.ag-request-switch {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-quaternary);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-request-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ag-knob, #fff);
+  box-shadow: var(--n-elev-1);
+  transition: transform var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-request-scope[aria-checked='true'] .ag-request-switch { background: var(--ag-primary-bg); }
+.ag-request-scope[aria-checked='true'] .ag-request-switch::after { transform: translateX(10px); }
+
+/* 양식 — 계정 저장과 비밀 값 */
+.ag-request-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ag-request-form.ag-browser-account-form { gap: 6px; }
+.ag-request-form .ag-request-field { display: flex; margin: 0; }
+.ag-request-form .ag-request-field .ag-settings-input { flex: 1 1 auto; width: 100%; max-width: none; box-sizing: border-box; }
+
+.ag-request-input,
+.ag-request-form .ag-request-field .ag-settings-input {
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-r-row);
+  background: var(--ag-bg);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-request-input::placeholder { color: var(--ag-text-muted); }
+
+.ag-request-input:focus-visible,
+.ag-request-form .ag-request-field .ag-settings-input:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -1px;
+}
+
+.ag-request-secret {
+  position: relative;
+  display: flex;
+}
+
+.ag-request-secret .ag-request-input {
+  flex: 1;
+  padding-right: 36px;
+  font-family: var(--ag-mono);
+  letter-spacing: .04em;
+}
+
+.ag-request-secret .ag-request-input[type='password'] { letter-spacing: .12em; }
+.ag-request-secret .ag-request-input:placeholder-shown { font-family: inherit; letter-spacing: 0; }
+
+.ag-request-reveal {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-tertiary);
+  cursor: default;
+}
+
+.ag-request-reveal .ag-icon { width: 14px; height: 14px; }
+
+.ag-request-form .ag-browser-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-form .ag-request-link {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: default;
+}
+.ag-request-form .ag-request-link:hover { color: var(--ag-text); text-decoration: underline; }
+.ag-request-form .ag-request-link:focus-visible { outline: var(--ag-focus-ring); outline-offset: 2px; }
+
+.ag-request-form .ag-request-form-message:empty { display: none; }
+.ag-request-form .ag-request-form-message { margin: 0; color: var(--ag-err); font-size: var(--ag-fs-meta); }
+
+/* 오류 줄 */
+.ag-request-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--ag-r-row);
+  background: color-mix(in srgb, var(--ag-err) 8%, transparent);
+  color: var(--ag-err);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-request-error .ag-icon { flex: 0 0 auto; width: 13px; height: 13px; }
+.ag-request-error-text { flex: 1; min-width: 0; }
+
+.ag-request-retry {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--ag-fw-strong);
+  cursor: default;
+}
+
+/* 동작 */
+.ag-request-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.ag-request-primary,
+.ag-request-secondary {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  white-space: nowrap;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-request-primary { background: var(--ag-primary-bg); color: var(--ag-primary-fg); }
+.ag-request-secondary { background: var(--ag-active); color: var(--ag-text); }
+.ag-request-primary .ag-icon,
+.ag-request-secondary .ag-icon { width: 12px; height: 12px; }
+
+.ag-request-primary:disabled,
+.ag-request-secondary:disabled,
+.ag-request-close:disabled { opacity: .5; }
+.ag-request-primary[data-busy='true']:disabled { opacity: .8; }
+
+@media (hover: hover) {
+  .ag-request-primary:hover:not(:disabled) { background: var(--ag-primary-bg-hover); }
+  .ag-request-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--ag-active) 100%, var(--ag-hover)); }
+  .ag-request-close:hover:not(:disabled),
+  .ag-request-reveal:hover { background: var(--ag-hover); color: var(--ag-text); }
+  .ag-request-scope:hover:not(:disabled) { color: var(--ag-text); }
+}
+
+.ag-request-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: ag-request-spin .8s linear infinite;
+}
+
+@keyframes ag-request-spin { to { transform: rotate(360deg); } }
+
+.ag-request-card button:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* 정착한 카드 — 한 줄짜리 단색 알약. 높이가 고정이라 상태가 바뀌어도 흐름이 움직이지 않는다. */
+.ag-request-card[data-settled='true'] {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: auto;
+  max-width: 100%;
+  flex: 0 0 32px;
+  height: 32px;
+  align-self: flex-start;
+  padding: 0 14px 0 8px;
+  border-radius: var(--ag-r-pill);
+  box-shadow: none;
+  font-size: var(--ag-fs-meta);
+  line-height: 1;
+}
+
+.ag-request-done-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ag-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-request-done-status {
+  flex: 0 0 auto;
+  color: var(--ag-text-tertiary);
+  white-space: nowrap;
+}
+
+.ag-request-card[data-settled='true'] .ag-request-mark { color: var(--ag-text-tertiary); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-request-pulse,
+  .ag-request-spinner { animation: none; }
+}
+
+/* 어두운 면에서는 고른 칸이 바닥보다 한 단 밝다. */

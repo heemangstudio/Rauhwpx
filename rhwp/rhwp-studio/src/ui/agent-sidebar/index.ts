@@ -320,7 +320,7 @@ import {
   type TurnInterruptionRow,
   type TurnInterruptionRowState,
 } from './turn-interruption-row.ts';
-import { createChatPermissionController } from './chat-permission-pill.ts';
+import { createRequestCardController } from './request-card.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
@@ -1784,10 +1784,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerTrigger.type = 'button';
   providerTrigger.setAttribute('aria-expanded', 'false');
   providerTrigger.setAttribute('aria-controls', 'ag-config-panel');
-  providerTrigger.setAttribute('aria-label', '프로바이더 선택');
   let providerIcon = createProviderIcon(selectedAgent);
-  const providerName = el('span', 'ag-model-name', AGENT_LABEL[selectedAgent]);
-  providerTrigger.append(providerIcon, providerName);
+  providerTrigger.append(providerIcon);
 
   const providerMenu = el('div', 'ag-model-menu');
   providerMenu.setAttribute('role', 'menu');
@@ -4063,11 +4061,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 사이드바·전체 화면 어디로 옮겨져도 입력기를 따라간다.
   composer.appendChild(fleetView.root);
   const questionTimelineAnchor = el('span', 'ag-question-timeline-anchor');
-  const permissionController = createChatPermissionController({
+  const permissionController = createRequestCardController({
     context: () => ({ threadId: currentThread.id, documentId: currentDocumentId }),
-    respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
+    respond: (requestId, decision, scope) => bridge.respondChatPermission(requestId, decision, scope),
     requestBrowser: (action, args) => bridge.requestBrowser(action, args),
     submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
+    submitSecret: (args) => bridge.submitSecret(args),
+    browserTab: (tabId) => {
+      // 작업 공간이 이미 읽은 화면만 쓴다. 카드는 화면을 따로 요청하지 않는다.
+      for (const view of [floatingBrowser, workbenchBrowser]) {
+        const tab = view?.controller.state.tabs.find((row) => row.tabId === tabId);
+        if (tab) return { tab, frame: view!.controller.state.frames.get(tabId) ?? null };
+      }
+      return { tab: null, frame: null };
+    },
+    takeBrowserControl: async (tabId) => {
+      const view = floatingBrowserTab === tabId && floatingBrowser ? floatingBrowser : ensureWorkbenchBrowser();
+      await view.takeControl(tabId);
+      if (view === floatingBrowser) { view.float(); return; }
+      const dock = () => workbench?.select('browser'); if (!fullscreen) setFullscreen(true, { then: dock }); else dock();
+    },
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
@@ -4782,6 +4795,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function createBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]> = {}): WorkbenchBrowser {
+    const view = createWorkbenchBrowserView(extra);
+    // 넘김 카드의 미리보기는 작업 공간의 탭·화면을 따른다.
+    view.controller.subscribe(() => permissionController.browserChanged());
+    return view;
+  }
+  function createWorkbenchBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]>): WorkbenchBrowser {
     return createWorkbenchBrowser({ bridge,
       getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
       onCapture: (draft) => {
@@ -4878,8 +4897,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void ensureWorkbenchBrowser().controller.refresh();
       return;
     }
-    if (data.type !== 'owned_browser_activity' || data.active === false) return;
-    if (data.tab) ensureWorkbenchBrowser().previewAgent(data.tab);
+    if (data.type !== 'owned_browser_activity' || !data.tab) return;
+    if (data.active === false) { workbenchBrowser?.agentActivity(data.tab, false); return; }
+    const view = ensureWorkbenchBrowser(); view.previewAgent(data.tab); view.agentActivity(data.tab, true);
   });
 
   workbench = createSidebarWorkbench({
@@ -9025,7 +9045,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const agentChanged = agent !== selectedAgent;
     selectedAgent = agent;
     root.dataset.agent = agent;
-    providerName.textContent = AGENT_LABEL[agent];
+    providerTrigger.setAttribute('aria-label', `프로바이더 선택: ${AGENT_LABEL[agent]}`);
     if (agentChanged) {
       const nextIcon = createProviderIcon(agent);
       providerIcon.replaceWith(nextIcon);
@@ -11617,8 +11637,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         const liveQuestion = bridge.getPendingUserQuestion();
         if (liveQuestion?.threadId === currentThread.id) presentLiveQuestion(liveQuestion);
         expireStalePendingQuestion();
-        const livePermission = bridge.getPendingChatPermissionRequest();
-        if (livePermission) handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true });
+        for (const livePermission of bridge.getPendingChatPermissionRequests()) {
+          handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true });
+        }
         if (refocusInputOnChatStart) {
           refocusInputOnChatStart = false;
           if (active && !input.disabled && !input.readOnly) input.focus({ preventScroll: true });
@@ -12244,11 +12265,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function suggestPlanDraft(): void {
     dismissPlanDraftPill();
     if (chatWorkflow !== 'plan' || planningPhase !== 'planning' || (activePlan && !activePlanHistorical)) return;
-    const pill = el('section', 'ag-permission-pill ag-plan-suggest');
-    const write = el('button', 'ag-permission-grant');
+    const pill = el('section', 'ag-plan-suggest');
+    const write = el('button', 'ag-plan-suggest-write');
     write.type = 'button';
-    write.append(createIcon('plan'), el('span', 'ag-permission-label', '계획 초안 작성'));
-    const close = el('button', 'ag-permission-deny', '×');
+    write.append(createIcon('plan'), el('span', '', '계획 초안 작성'));
+    const close = el('button', 'ag-plan-suggest-close', '×');
     close.type = 'button';
     close.setAttribute('aria-label', '제안 닫기');
     write.addEventListener('click', () => { if (requestPlanDraft()) dismissPlanDraftPill(); });
@@ -12652,8 +12673,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (documentLinkThreadId === null && documentDetach === null) adoptStoredThreadLink();
     if (threadsListVisible()) rebuildThreadsList();
     if (restoringLiveQuestion) return;
-    const livePermission = bridge.getPendingChatPermissionRequest();
-    if (livePermission && !permissionController.hasRequest(livePermission.requestId) && getThread(livePermission.threadId)) {
+    for (const livePermission of bridge.getPendingChatPermissionRequests()) {
+      if (permissionController.hasRequest(livePermission.requestId) || !getThread(livePermission.threadId)) continue;
       restoringLiveQuestion = true;
       try { handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true }); }
       finally { restoringLiveQuestion = false; }

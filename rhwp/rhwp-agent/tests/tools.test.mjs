@@ -371,11 +371,11 @@ test('app-only AGENTS.md tools separate reads from bounded revision-checked writ
 
 test('browser actions require scoped current tab and semantic snapshot identities', () => {
   const identity = { tabId: 'tab-1', snapshotId: 'snapshot-1', ref: 'e1', navigationEpoch: 2, controllerEpoch: 3 };
-  for (const name of ['browser_click', 'browser_type', 'browser_press']) {
+  for (const name of ['browser_click', 'browser_type', 'browser_press', 'browser_select']) {
     const definition = byName.get(name);
     assert.equal(definition?.category, 'browser');
     const schema = z.object(definition.shape).strict();
-    const args = { ...identity, ...(name === 'browser_type' ? { text: 'research query' } : {}), ...(name === 'browser_press' ? { key: 'Enter' } : {}) };
+    const args = { ...identity, ...(name === 'browser_type' ? { text: 'research query' } : {}), ...(name === 'browser_press' ? { key: 'Enter' } : {}), ...(name === 'browser_select' ? { option: 'Medium' } : {}) };
     assert.equal(schema.safeParse(args).success, true, name);
     for (const field of Object.keys(identity)) {
       const incomplete = { ...args };
@@ -1174,8 +1174,9 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
 // 채팅별 권한 요청 도구의 정의를 포함한다.
 // 소유 브라우저의 구조화된 ref/epoch 도구를 모든 모드에 제공하는 비용도 제한한다.
-// 서식 틀 읽기 도구 6개는 읽기 도구의 documentId:"template" 로 접었다 (documentId 인자 비용 포함 약 −3,000자).
-const DIRECT_DEFINITION_TOTAL_LIMIT = 74_000;
+// browser_select와 개요의 범위·찾기·조작 후 관찰 인자 추가분만큼 올렸다. 관찰마다 줄어드는 양이 훨씬 크다.
+// 사용자 비밀 도구(request_secret·browser_fill_secret) 추가분만큼 올렸다. 기존 브라우저 설명을 줄여 일부를 메웠다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 76_500;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 // 문서 없이 시작한 데스크톱 채팅(문서 연결 도구 + 홈 폴더 검색 + 요청 가능한 도구)이 가장 큰 direct 목록이다.

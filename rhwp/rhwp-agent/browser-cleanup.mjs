@@ -15,9 +15,9 @@ export async function removeOwnedBrowserState({ dataDir } = {}) {
   }
   const markerPath = path.join(dataDir, 'browser-policy.json');
   const marker = await fs.lstat(markerPath);
-  if (!marker.isFile() || marker.isSymbolicLink() || marker.size > 1024 * 1024) throw failure('Browser ownership metadata is unavailable.');
+  if (!marker.isFile() || marker.isSymbolicLink() || marker.size > 4 * 1024 * 1024) throw failure('Browser ownership metadata is unavailable.');
   const policy = JSON.parse(await fs.readFile(markerPath, 'utf8'));
-  if (!policy || policy.schema !== 1 || typeof policy.ownerId !== 'string' || !Array.isArray(policy.accounts)) throw failure('Browser ownership metadata is invalid.');
+  if (!policy || ![1, 2].includes(policy.schema) || typeof policy.ownerId !== 'string' || !Array.isArray(policy.sites)) throw failure('Browser ownership metadata is invalid.');
 
   const browserRoot = path.join(dataDir, 'browser');
   let info;
@@ -27,10 +27,10 @@ export async function removeOwnedBrowserState({ dataDir } = {}) {
     if (!info.isDirectory() || info.isSymbolicLink()
       || (process.platform !== 'win32' && info.uid !== process.getuid())) throw failure('Browser profile storage is not owned by this app.');
     // Keep installed Chromium and runtime configuration. Only these fixed paths
-    // hold profile, history, unfinished transfer, or tab restoration data.
+    // hold profile, history, unfinished transfer, site icon, or tab restoration data.
     const entries = [];
     const tabPartials = (await fs.readdir(browserRoot)).filter((name) => /^tabs\.json\.[a-f0-9]{16}\.part$/.test(name));
-    for (const name of ['profile', 'native-profile', 'transfers', 'tabs.json', ...tabPartials]) {
+    for (const name of ['profile', 'native-profile', 'transfers', 'favicons', 'tabs.json', ...tabPartials]) {
       const location = path.join(browserRoot, name);
       let entry;
       try { entry = await fs.lstat(location); }

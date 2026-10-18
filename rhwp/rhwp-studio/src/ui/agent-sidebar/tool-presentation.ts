@@ -591,12 +591,22 @@ const SPECS: Record<string, ToolSpec> = {
   browser_click: { category: 'other', label: '페이지 요소 누르기' },
   browser_type: { category: 'other', label: '페이지에 입력하기' },
   browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
+  browser_select: { category: 'other', label: '목록에서 고르기', summary: (a) => str(a['option']) },
   browser_scroll: { category: 'other', label: '페이지 스크롤' },
   browser_wait: { category: 'other', label: '페이지 기다리기' },
   browser_capture: { category: 'other', label: '페이지 캡처' },
   browser_downloads: { category: 'other', label: '브라우저 다운로드' },
   browser_fill_account: { category: 'other', label: '저장한 계정 입력' },
-  browser_request_account: { category: 'other', label: '계정 사용 요청' },
+  browser_request_account: {
+    category: 'other',
+    label: (a) => ({ account: '계정 저장 요청', 'sign-in': '로그인 요청', code: '인증 코드 요청' } as Record<string, string>)[str(a['kind'])] ?? '사이트 사용 요청',
+    summary: (a) => host(str(a['origin'])),
+  },
+  browser_fill_secret: { category: 'other', label: '비밀 값 입력' },
+  request_secret: {
+    category: 'other', label: '비밀 값 요청',
+    summary: (a) => join([str(a['label']), Array.isArray(a['origins']) ? host(str(a['origins'][0])) : '']),
+  },
 };
 
 /** rhwp 밖의 흔한 CLI 도구 — 이름만 우리말로 바꾸고 대표 인자를 보인다. */
@@ -945,6 +955,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
   switch (name) {
     case 'request_permission': return result['status'] === 'granted' ? '이 채팅에 허용됨'
       : result['status'] === 'pending' ? '허용 대기' : '';
+    case 'request_secret': return result['pending'] === true ? '입력 대기' : '';
+    case 'browser_request_account': return result['granted'] === true ? '이미 허용됨' : result['pending'] === true ? '허용 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);
       return join([applied !== null ? `${applied}개 편집 적용` : '편집 적용', tail]);

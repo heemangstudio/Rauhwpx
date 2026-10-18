@@ -161,8 +161,8 @@
   position: fixed;
   z-index: 1200;
   display: grid;
-  grid-template-columns: 122px minmax(260px, 380px);
-  width: min(510px, calc(100vw - 8px));
+  grid-template-columns: 100px minmax(260px, 380px);
+  width: min(488px, calc(100vw - 8px));
   height: min(350px, calc(100vh - 8px));
   overflow: hidden;
   border: 1px solid var(--ui-border-strong);
@@ -570,9 +570,7 @@
 .sb-hl-palette-actions {
   display: flex;
   gap: 4px;
-  padding: 4px 0 2px;
-  border-top: 1px solid var(--ui-border-light);
-  margin-top: 2px;
+  margin-bottom: 4px;
 }
 .sb-hl-palette-actions button {
   flex: 1;

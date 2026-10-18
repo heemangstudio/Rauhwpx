@@ -357,13 +357,13 @@ export class PageBorderDialog extends ModalDialog {
 
   private tabContent(): HTMLDivElement {
     const root = document.createElement('div');
-    root.style.cssText = 'display:grid;gap:10px;padding:12px 14px;';
+    root.style.cssText = 'display:grid;gap:8px;padding-top:8px;';
     return root;
   }
 
   private group(title: string): HTMLFieldSetElement {
     const fieldset = document.createElement('fieldset');
-    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:10px 12px;margin:0;';
+    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:4px 10px 8px;margin:0;min-width:0;';
     const legend = document.createElement('legend');
     legend.textContent = title;
     legend.style.cssText = 'font-size:12px;color:var(--color-primary-dark);padding:0 4px;';

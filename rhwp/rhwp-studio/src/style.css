@@ -30,5 +30,6 @@
 @import './styles/editor-icons.css';
 @import './styles/editor-ribbon.css';
 @import './styles/editor-popovers.css';
+@import './styles/compact-toolbar.css';
 @import './styles/document-home.css';
 @import './styles/empty-document-view.css';

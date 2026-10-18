@@ -99,6 +99,8 @@ try {
   const direct = await directPopup; const directGuest = host.tab(direct.tab.tabId).view.webContents;
   await directGuest.executeJavaScript('document.readyState');
   assert.equal(await directGuest.executeJavaScript('!!opener'), true);
+  // 로그인 팝업이 다시 여는 팝업은 막는다.
+  assert.equal(await directGuest.executeJavaScript(`window.open(${JSON.stringify(providerOrigin + '/nested')},'nested-auth','popup') === null`, true), true);
   const directClosed = waitForEvent('owned_browser_closed');
   await directGuest.executeJavaScript('window.close()', true).catch(() => {}); await directClosed;
   assert.equal(await contents.executeJavaScript('authPopup.closed'), true);
@@ -197,7 +199,6 @@ try {
     if (tab.openerTab === parent) {
       assert.equal(tab.passwordShield, true);
       assert.notEqual(tab.protectedPasswords, parent.protectedPasswords);
-      assert.notEqual(tab.passwordAllowedOrigins, parent.passwordAllowedOrigins);
       assert.equal(tab.passwordSnapshot, null);
       shieldBeforeAttach = true;
     }

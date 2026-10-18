@@ -337,7 +337,8 @@ test('a permission request still closes when the chat gets a document while it w
   };
   const events: SidebarEvent[] = [];
   const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
-    threadId: 'thread-1', documentId: null, state: 'connected', pendingChatPermissionRequest: null,
+    threadId: 'thread-1', documentId: null, state: 'connected',
+    pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(),
     chatPermissionGrants: [], requestSeq: 0, turnRunning: false,
     referenceContext() { return { threadId: this.threadId, documentId: this.documentId }; },
     sendJson: () => true, syncEditingLease() {}, emit(event: SidebarEvent) { events.push(event); },

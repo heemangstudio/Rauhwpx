@@ -65,7 +65,6 @@ try {
   assert.equal((await host.presentationState(window, placement)).presentationHealth, 'paint-timeout', 'white pixels cannot hide visible form content');
   let captures = 0;
   tab.passwordShield = true;
-  tab.passwordAllowedOrigins = new Set([origin]);
   tab.view.webContents.capturePage = async () => { captures++; throw new Error('protected pixels'); };
   const protectedHealth = await host.presentationState(window, placement);
   assert.equal(protectedHealth.presentationHealth, 'ready'); assert.equal(captures, 0);

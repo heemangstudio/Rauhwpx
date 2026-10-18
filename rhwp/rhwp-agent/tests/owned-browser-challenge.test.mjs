@@ -16,9 +16,11 @@ test('traffic checks retain one owned tab, stop agent retries, and permit explic
   let denied = false;
   let denyFallback = false;
   const browser = createOwnedBrowserService({ dataDir, autoInstall: false,
-    policy: { assertBrowserAction: async ({ url }) => {
+    policy: { check: async ({ url }) => {
       policyCalls.push(url);
-      if (denied || denyFallback && url.startsWith('https://duckduckgo.com/')) throw Object.assign(new Error('Site access revoked'), { code: 'BROWSER_PERMISSION_REQUIRED' });
+      const origin = new URL(url).origin;
+      if (denied || denyFallback && url.startsWith('https://duckduckgo.com/')) return { allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: 'signed-in', origin, site: new URL(url).host };
+      return { allowed: true, origin };
     } },
     runtimeFactory: async (options) => {
       const runtime = await startOwnedBrowserRuntime(options);

@@ -24,6 +24,8 @@
 .dialog-hyperlink-preview { min-width: 30px; width: 30px; padding: 0; flex: 0 0 30px; display: grid; place-items: center; color: var(--color-primary); }
 .dialog-hyperlink-preview:disabled { color: var(--color-text-muted); opacity: .5; cursor: default; }
 .dialog-hyperlink #hyperlink-error { min-height: 1em; margin: 12px 0 0; color: var(--ui-danger); }
+/* 오류가 없을 때는 자리를 비워 두지 않는다. 알림 영역은 DOM에 그대로 둔다. */
+.dialog-hyperlink #hyperlink-error:empty { min-height: 0; margin: 0; }
 @media (max-width: 520px) {
   .dialog-wrap.dialog-hyperlink { display: block; }
   .dialog-hyperlink > .dialog-footer { flex-direction: row; justify-content: flex-end; padding: 0 16px 16px; }
@@ -31,12 +33,13 @@
 }
 
 .modal-overlay .dialog-wrap.dialog-hyperlink { display: flex; flex-direction: column; width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: hidden; }
-.dialog-hyperlink > .dialog-body { min-width: 0; padding: 16px 20px; overflow-y: auto; }
-.dialog-hyperlink > .dialog-footer { flex-direction: row; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--ui-border); background: var(--ui-surface); }
-.dialog-hyperlink .dialog-row { margin-bottom: 12px; }
+.dialog-hyperlink > .dialog-body { min-width: 0; padding: 8px 16px 12px; overflow-y: auto; }
+.dialog-hyperlink > .dialog-footer { flex-direction: row; justify-content: flex-end; gap: 8px; padding: 10px 16px 12px; border-top: 1px solid var(--ui-border); background: var(--ui-surface); }
+.dialog-hyperlink .dialog-row { margin-bottom: 8px; }
 .dialog-hyperlink .dialog-label { flex-basis: 82px; color: var(--ui-text-secondary); font-weight: 600; }
-.dialog-hyperlink-target { margin-top: 16px; }
-.dialog-hyperlink-panel { padding: 12px; border-color: var(--ui-border); border-radius: 0 0 8px 8px; background: var(--ui-surface-raised); }
+.dialog-hyperlink-target { margin-top: 12px; }
+.dialog-hyperlink-target legend { padding-bottom: 8px; }
+.dialog-hyperlink-panel { padding: 10px 12px; border-color: var(--ui-border); border-radius: 0 0 8px 8px; background: var(--ui-surface-raised); }
 .dialog-hyperlink-preview { color: var(--ui-text); }
 .dialog-hyperlink :is(button, input, select):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 @media (max-width: 520px) {

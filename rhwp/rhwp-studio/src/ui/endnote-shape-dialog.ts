@@ -144,7 +144,7 @@ export class EndnoteShapeDialog extends ModalDialog {
     private sectionIdx: number,
     private services?: CommandServices,
   ) {
-    super('미주', 620);
+    super('미주', 520);
   }
 
   show(): void {
@@ -162,7 +162,7 @@ export class EndnoteShapeDialog extends ModalDialog {
 
   protected createBody(): HTMLElement {
     const body = document.createElement('div');
-    body.style.cssText = 'padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:560px;';
+    body.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
 
     const tabs = document.createElement('div');
     tabs.className = 'dialog-tabs';
@@ -372,7 +372,7 @@ export class EndnoteShapeDialog extends ModalDialog {
 
   private group(title: string): HTMLFieldSetElement {
     const fieldset = document.createElement('fieldset');
-    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:9px 10px 10px;margin:0;';
+    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:4px 10px 6px;margin:0;min-width:0;';
     const legend = document.createElement('legend');
     legend.textContent = title;
     legend.style.cssText = 'font-size:12px;color:var(--color-primary-dark);padding:0 4px;';
@@ -382,7 +382,7 @@ export class EndnoteShapeDialog extends ModalDialog {
 
   private row(...children: HTMLElement[]): HTMLElement {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;flex-wrap:wrap;min-height:28px;';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:3px 0;font-size:13px;flex-wrap:wrap;min-height:28px;';
     row.append(...children);
     return row;
   }
@@ -396,7 +396,7 @@ export class EndnoteShapeDialog extends ModalDialog {
     const row = document.createElement('div');
     row.style.cssText = [
       'display:grid;grid-template-columns:48px 118px 48px minmax(0,1fr);',
-      'align-items:center;column-gap:10px;row-gap:6px;margin:5px 0;',
+      'align-items:center;column-gap:10px;row-gap:6px;margin:3px 0;',
       'font-size:13px;min-height:28px;',
     ].join('');
     row.append(

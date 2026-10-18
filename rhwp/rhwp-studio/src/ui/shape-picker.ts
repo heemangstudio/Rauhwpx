@@ -1,5 +1,7 @@
 /** 도형 선택 메뉴 — 도구상자 "도형" 버튼 클릭 시 표시. */
 
+import { menuAnchor } from './dom-utils';
+
 export type ShapeType = 'line' | 'rectangle' | 'ellipse' | 'polygon' | 'arc'
   | 'connector-straight' | 'connector-stroke' | 'connector-arc'
   | 'connector-straight-arrow' | 'connector-stroke-arrow' | 'connector-arc-arrow';
@@ -93,7 +95,7 @@ function onKeyDown(e: KeyboardEvent): void {
 
 function positionPicker(): void {
   if (!currentPicker || !currentAnchor) return;
-  const rect = currentAnchor.getBoundingClientRect();
+  const rect = menuAnchor(currentAnchor).getBoundingClientRect();
   const panel = currentPicker;
   const gap = 6;
   const margin = 8;

@@ -66,7 +66,7 @@ app.whenReady().then(async () => {
     const observe = () => service.request(actor, 'snapshot', { tabId: opened.tab.tabId });
     const ref = (observation, name) => ({ tabId: opened.tab.tabId, snapshotId: observation.snapshot.snapshotId,
       navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch,
-      ref: observation.snapshot.elements.find(element => element.name === name)?.ref });
+      ref: observation.snapshot.outline.split('\n').find(line => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1] });
     let observed = await observe();
     await publicCall('browser_type', { ...ref(observed, 'Draft'), text: 'preserved draft', submit: true, intent: 'search' });
     observed = await observe();
@@ -121,11 +121,11 @@ app.whenReady().then(async () => {
     for (const condition of ['ready', 'idle', 'visible', 'text']) {
       waited = await publicCall('browser_wait', { tabId: tab.tabId, condition, ...(['visible', 'text'].includes(condition) ? { text: 'Submit draft' } : {}), timeoutMs: 2000 });
       assert.ok(waited.snapshot.snapshotId);
-      assert.ok(waited.snapshot.elements.some(element => element.name === 'Draft'));
+      assert.match(waited.snapshot.outline, /"Draft" \[ref=/);
     }
     // Main-owned protection masks a fixture string echoed into visible document text.
     await evaluate('document.body.append(Object.assign(document.createElement("p"),{textContent:"fixture-protected-string"}))');
-    passwords.protectFamily(tab, origin, 'fixture-protected-string');
+    passwords.protectFamily(tab, 'fixture-protected-string');
     const safeWait = await publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'Submit draft', timeoutMs: 1000 });
     assert.equal(JSON.stringify(safeWait).includes('fixture-protected-string'), false);
     await assert.rejects(publicCall('browser_wait', { tabId: tab.tabId, condition: 'text', text: 'fixture-protected-string', timeoutMs: 70 }), { code: 'BROWSER_ACTION_TIMEOUT' });
@@ -189,6 +189,34 @@ app.whenReady().then(async () => {
     await evaluate('new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     assert.equal(await evaluate('clicks'), beforePreviewClick, 'read-only projection rejects human mouse input');
     report.preview = { humanMouseBlocked: true };
+    // 에이전트 작업이 실행 중일 때만 사람 입력을 막고, 막힌 입력은 편집기에 제어권 요청으로 알린다.
+    const nativeEvents = []; host.onEvent = event => nativeEvents.push(event);
+    host.control({ targetId: tab.targetId, human: true });
+    host.attach(window, { tabId: tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 }, interactive: true });
+    const humanClick = async () => {
+      const before = await evaluate('clicks');
+      tab.view.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+      tab.view.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
+      await evaluate('new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      return await evaluate('clicks') - before;
+    };
+    await host.activity({ ...scope, token: 'agent-action', active: true, agent: true });
+    assert.equal(await humanClick(), 0, 'human input waits while an agent action runs');
+    assert.ok(nativeEvents.some(event => event.type === 'human-input' && event.tabId === tab.tabId && event.agentActive === true), 'the blocked gesture asks the editor to take control');
+    await host.activity({ ...scope, token: 'agent-action', active: true, agent: true, renew: true });
+    await host.activity({ ...scope, token: 'agent-action', active: false });
+    assert.equal(await humanClick(), 1, 'the shared page accepts human input between agent actions');
+    host.control({ targetId: tab.targetId, human: true, held: true });
+    await host.activity({ ...scope, token: 'late-agent', active: true, agent: true });
+    nativeEvents.length = 0;
+    assert.equal(await humanClick(), 1, 'the user keeps input while holding the tab');
+    assert.equal(nativeEvents.some(event => event.type === 'human-input'), false);
+    const relaySession = [...host.cdp.sessions].find(([, entry]) => entry.tab === tab)?.[0];
+    await assert.rejects(host.cdp.command({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 1, y: 1 }, sessionId: relaySession }), /user controls/);
+    await host.activity({ ...scope, token: 'late-agent', active: false });
+    host.control({ targetId: tab.targetId, human: false });
+    assert.equal(await humanClick(), 0, 'a tab returned to the agent rejects human input');
+    report.control = { busyBlocked: true, idleShared: true, heldHuman: true, heldAutomationRejected: true, returnedBlocked: true };
     host.detach(window, { tabId: tab.tabId }); window.hide();
     await paused();
     const shared = await service.request({ isHuman: true, clientId: 'window-fixture', sessionId: 'window-fixture', threadId: 'chat-fixture', projectId: 'old-project' }, 'open', { url: origin });
@@ -204,7 +232,7 @@ app.whenReady().then(async () => {
       assert.equal(await sharedTab.view.webContents.executeJavaScript('sessionStorage.getItem("global-state")'), 'kept');
       assert.throws(() => host.attach(window, { tabId: shared.tab.tabId, bounds: { x: 0, y: 0, width: 420, height: 320 } }), /another editor window/);
       const sharedSnapshot = await service.request(actor, 'snapshot', { tabId: shared.tab.tabId });
-      assert.ok(sharedSnapshot.snapshot.elements.some(row => row.value === 'global draft'), 'agents can observe the retained global page');
+      assert.match(sharedSnapshot.snapshot.outline, /\]: global draft$/m, 'agents can observe the retained global page');
       report.globalBrowser = { pageRetained: true, draftRetained: true, sessionRetained: true, agentAccessible: true };
     } finally { sharedWindow.destroy(); }
     service.configureSleep({ idleMinutes: 1 });

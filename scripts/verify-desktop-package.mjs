@@ -26,6 +26,7 @@ const required = [
   join(unpackedAgent, 'owned-browser-service.mjs'),
   join(unpackedAgent, 'owned-browser-runtime.mjs'),
   join(unpackedAgent, 'owned-browser-network.mjs'),
+  join(unpackedAgent, 'owned-browser-outline.mjs'),
   ...['browser-policy', 'browser-credentials', 'browser-auth-store', 'browser-os-secret-store', 'browser-downloads', 'browser-cleanup']
     .map((name) => join(unpackedAgent, `${name}.mjs`)),
   join(unpackedAgent, 'package.json'),

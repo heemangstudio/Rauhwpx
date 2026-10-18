@@ -55,10 +55,7 @@ try {
     const options = { dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 8) };
     const secureBroker = createBrowserCredentialBroker(options);
     await secureBroker.ready();
-    const human = { isHuman: true };
-    const requested = await secureBroker.requestAccount({ actor: human, origin, origins: [origin], label: 'Synthetic restart archive' });
-    const { account } = await secureBroker.approveAccount({ actor: human, requestId: requested.requestId, approval: { approved: true, requestId: requested.requestId, use: true } });
-    await secureBroker.confirmAccountSession({ actor: human, accountId: account.id, additionalProfileId: 'native' });
+    // 체크포인트는 저장소만 담는다. 계정 승인 없이도 다시 시작한 뒤 그대로 돌아온다.
     await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [{ origin, localStorage: [{ name: 'fresh-archive-token', value: 'encrypted-approved-origin' }] }] } });
     await secureBroker.saveCheckpoint({ profileId: 'native', state: { cookies: [], origins: [], originsComplete: false } });
     const restarted = createBrowserCredentialBroker(options);
@@ -66,7 +63,7 @@ try {
     checkpoints.set('native', await restarted.restoreCheckpoint({ profileId: 'native' }));
     assert.equal(host.tabs.size, 0, 'the checkpoint must restore before any native guest exists');
   }
-  const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentReuseApproved: true };
+  const account = { id: 'local-native-fixture', profileId: 'default', origins: [origin], agentBlocked: false };
   const broker = {
     async listAccounts() { return { accounts: [account] }; }, async registerSessionOrigins() {}, setSessionClearer() {},
     async assertBrowserAccess() {}, async saveCheckpoint({ profileId, state }) { checkpoints.set(profileId, state); },
@@ -87,7 +84,7 @@ try {
   if (host.passwords) {
     const binding = { targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId };
     const snapshot = await host.passwords.snapshot(binding);
-    await host.passwords.fill({ ...binding, accountId: 'fixture', snapshotId: snapshot.snapshotId, passwordRef: snapshot.elements.find((entry) => entry.inputType === 'password').ref, usernameRef: snapshot.elements.find((entry) => entry.autocomplete === 'username').ref });
+    await host.passwords.fill({ ...binding, accountId: 'fixture', grant: { site: origin, scope: 'chat', grantedAt: Date.now() }, snapshotId: snapshot.snapshotId, passwordRef: snapshot.elements.find((entry) => entry.inputType === 'password').ref, usernameRef: snapshot.elements.find((entry) => entry.autocomplete === 'username').ref });
     assert.equal(nativeTab.passwordShield, true);
   }
   await browser.request(actor, 'sign-in', { accountId: account.id, url: `${origin}/login`, authenticationMethod: 'mac-passkey' });
@@ -102,15 +99,18 @@ try {
   assert.equal(await contents.executeJavaScript('location.pathname'), '/research');
   const agent = { threadId: 'research', agentId: 'owner', sessionId: 'editor' };
   console.error('NATIVE_PASSKEY_STAGE agent-snapshot');
-  const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  assert.ok(observed.snapshot.text.includes('Authenticated native guest'));
-  if (host.zoom) {
+  // 좌표는 모델에 보내지 않는다. 확대된 화면의 좌표 계산은 네이티브 관찰에서 직접 확인한다.
+  if (host.zoom && host.passwords) {
     assert.equal(contents.getZoomFactor(), 1.5);
-    assert.ok(Math.abs(observed.snapshot.viewport.width * 1.5 - nativeTab.viewport.width) <= 2, 'zoomed snapshot must use CSS viewport dimensions');
+    const geometry = await host.passwords.snapshot({ targetId: nativeTab.targetId, tabId: nativeTab.tabId, sessionId: nativeTab.sessionId, chatId: nativeTab.chatId });
+    assert.ok(Math.abs(geometry.viewport.width * 1.5 - nativeTab.viewport.width) <= 2, 'zoomed snapshot must use CSS viewport dimensions');
+    const box = geometry.elements.find((entry) => entry.name === 'Research field')?.rect;
+    assert.ok(box?.width > 0 && box.x + box.width <= geometry.viewport.width, 'research ref coordinates must fit the zoomed viewport');
   }
-  const field = observed.snapshot.elements.find((entry) => entry.name === 'Research field');
-  assert.ok(field?.rect.width > 0 && field.rect.x + field.rect.width <= observed.snapshot.viewport.width, 'research ref coordinates must fit the zoomed viewport');
-  assert.ok(field, 'the recovered browser must expose a usable research field');
+  const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  assert.ok(observed.snapshot.outline.includes('Authenticated native guest'));
+  const field = { ref: observed.snapshot.outline.split('\n').find((line) => line.includes('"Research field"'))?.match(/\[ref=([^\]]+)\]/)?.[1] };
+  assert.ok(field.ref, 'the recovered browser must expose a usable research field');
   console.error('NATIVE_PASSKEY_STAGE agent-type');
   await browser.request(agent, 'type', { tabId: opened.tab.tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch, ref: field.ref, text: 'agent research resumed' });
   assert.equal(await contents.executeJavaScript('document.querySelector("#research").value'), 'agent research resumed');

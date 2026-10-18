@@ -17,10 +17,10 @@ const label = (value) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009
 
 // 비밀키와 WebAuthn 응답은 Chromium과 macOS가 관리한다. 허브에는 기능 상태만 공개한다.
 export class BrowserWebAuthn {
-  constructor({ app, dialog, systemPreferences, getTabForFrame, getWindowForTab, onState = () => {},
+  constructor({ app, dialog, systemPreferences, getTabForFrame, getWindowForTab, onState = () => {}, onSignIn = () => {},
     platform = process.platform, electronVersion = process.versions.electron ?? '',
     checkEntitlement = hasWebAuthnEntitlement, selectionTimeoutMs = 120_000 }) {
-    Object.assign(this, { app, dialog, systemPreferences, getTabForFrame, getWindowForTab, onState,
+    Object.assign(this, { app, dialog, systemPreferences, getTabForFrame, getWindowForTab, onState, onSignIn,
       platform, electronVersion, checkEntitlement, selectionTimeoutMs });
     this.sessions = new Map();
     this.pending = new Map();
@@ -112,7 +112,10 @@ export class BrowserWebAuthn {
       const currentTab = this.getTabForFrame(frame);
       const current = !settled && currentTab === tab && !contents.isDestroyed() && !window.isDestroyed() &&
         Object.entries(binding).every(([key, value]) => tab[key] === value) && new URL(frame.url).origin === origin;
-      finish(current && Number.isInteger(response) && response > 0 ? accounts[response - 1]?.credentialId : undefined);
+      const credentialId = current && Number.isInteger(response) && response > 0 ? accounts[response - 1]?.credentialId : undefined;
+      finish(credentialId);
+      // 사용자가 직접 패스키를 고른 사이트는 로그인한 사이트로 알린다. 계정과 응답 값은 보내지 않는다.
+      if (credentialId) { try { this.onSignIn(tab, { origin, relyingPartyId: label(details.relyingPartyId) }); } catch {} }
     } catch { finish(); }
   }
 

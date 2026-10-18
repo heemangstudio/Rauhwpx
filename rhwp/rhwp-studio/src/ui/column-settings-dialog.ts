@@ -26,7 +26,7 @@ export class ColumnSettingsDialog extends ModalDialog {
   private spacingInput!: HTMLInputElement;
 
   constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, private services?: CommandServices) {
-    super('다단 설정', 360);
+    super('다단 설정', 300);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.sectionIdx = sectionIdx;

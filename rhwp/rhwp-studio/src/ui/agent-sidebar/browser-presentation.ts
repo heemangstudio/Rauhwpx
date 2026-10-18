@@ -162,6 +162,6 @@ export function createBrowserPresentation(element: HTMLElement, onChange: (mode:
       for (const key of ['left', 'top', 'width', 'height'] as const) floating.style.setProperty(key, `${bounds[key]}px`);
       remember(); onLayout?.();
     },
-    setAgentControlled(controlled: boolean) { floating.dataset.agentControlled = String(controlled); floating.inert = controlled; floating.setAttribute('aria-label', controlled ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저'); },
+    setAgentControlled(controlled: boolean, busy = false) { floating.dataset.agentControlled = String(controlled); chrome.inert = busy; floating.setAttribute('aria-label', controlled ? '에이전트가 사용 중인 브라우저 미리보기' : '떠 있는 브라우저'); },
     dispose() { hide(); themeObserver.disconnect(); window.removeEventListener('resize', clamp); floating.remove(); element.remove(); }, };
 }

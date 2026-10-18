@@ -11,6 +11,13 @@ export function appendSvgMarkup(parent: Element, svgMarkup: string): void {
   parent.appendChild(document.importNode(root, true));
 }
 
+/** 더 보기 창 안의 버튼이면, 명령 뒤 그 창이 닫히므로 창을 여는 버튼을 펼침 메뉴의 기준점으로 쓴다. */
+export function menuAnchor(element: HTMLElement): HTMLElement {
+  const popover = element.closest<HTMLElement>('[role="dialog"][id]');
+  const opener = popover && document.querySelector<HTMLElement>(`[aria-controls="${popover.id}"]`);
+  return opener?.getClientRects().length ? opener : element;
+}
+
 export function makeOption(value: string, label: string): HTMLOptionElement {
   const option = document.createElement('option');
   option.value = value;

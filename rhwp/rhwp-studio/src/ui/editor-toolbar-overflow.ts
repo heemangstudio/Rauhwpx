@@ -9,6 +9,9 @@ export class EditorToolbarOverflow {
   private lastWidth = -1;
   private lastMode = '';
   private lastCollapsed = false;
+  /** 마지막으로 잰 여백·묶음·더 보기 폭. 접혀 있으면 null. */
+  private measured: { fixed: number; groups: number[]; more: number } | null = null;
+  onLayout: (() => void) | null = null;
 
   constructor(private readonly toolbar: HTMLElement) {
     const children = Array.from(toolbar.children).filter((node): node is HTMLElement => node instanceof HTMLElement);
@@ -84,6 +87,7 @@ export class EditorToolbarOverflow {
     this.lastCollapsed = this.toolbar.classList.contains('collapsed');
     if (!width || this.lastCollapsed) {
       this.close(false);
+      if (this.lastCollapsed) this.measured = null;
       return;
     }
     this.lastWidth = width;
@@ -99,7 +103,7 @@ export class EditorToolbarOverflow {
     const gap = parseFloat(style.columnGap) || 0;
     const outerWidth = (element: HTMLElement): number => {
       const computed = getComputedStyle(element);
-      if (computed.display === 'none') return 0;
+      if (computed.display === 'none' || computed.position === 'absolute') return 0;
       return element.getBoundingClientRect().width
         + (parseFloat(computed.marginLeft) || 0) + (parseFloat(computed.marginRight) || 0);
     };
@@ -109,14 +113,19 @@ export class EditorToolbarOverflow {
       .filter(child => child !== this.more && child !== this.popover
         && !child.classList.contains('tb-group') && !child.classList.contains('tb-sep'))
       .reduce((sum, child) => sum + outerWidth(child), 0);
-    const available = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
-      - pinnedWidth - gap * (this.groups.length + 2);
+    const chrome = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + pinnedWidth;
+    const available = width - chrome - gap * (this.groups.length + 2);
     const active = this.groups.filter(({ group }) => getComputedStyle(group).display !== 'none');
     const size = (entry: typeof active[number], first: boolean): number =>
       outerWidth(entry.group)
         + (!first && entry.separator && getComputedStyle(entry.separator).display !== 'none'
           ? outerWidth(entry.separator) : 0);
     const total = active.reduce((sum, entry, index) => sum + size(entry, index === 0), 0);
+    this.measured = {
+      fixed: width - available,
+      groups: active.map((entry, index) => size(entry, index === 0)),
+      more: moreWidth,
+    };
     const limit = total <= available ? available : available - moreWidth;
     let used = 0;
     let overflowing = false;
@@ -141,6 +150,31 @@ export class EditorToolbarOverflow {
       else Array.from(this.toolbar.querySelectorAll<HTMLButtonElement>('.tb-group .tb-btn:not(:disabled)'))
         .find(button => button.getClientRects().length > 0)?.focus({ preventScroll: true });
     }
+    this.onLayout?.();
+  }
+
+  /** 모든 묶음을 펼쳤을 때의 폭 */
+  get naturalWidth(): number {
+    return this.fitWidth(Infinity);
+  }
+
+  /** 첫 묶음과 더 보기만 남겼을 때의 폭 */
+  get minimumWidth(): number {
+    return this.fitWidth(0);
+  }
+
+  /** budget 안에 refresh 가 펼쳐 둘 묶음과 더 보기가 실제로 차지하는 폭. 첫 묶음은 늘 남긴다. */
+  fitWidth(budget: number): number {
+    if (!this.measured) return 0;
+    const { fixed, groups, more } = this.measured;
+    const total = groups.reduce((sum, width) => sum + width, 0);
+    if (fixed + total <= budget) return Math.ceil(fixed + total);
+    let used = 0;
+    for (const [index, width] of groups.entries()) {
+      if (index > 0 && fixed + used + width + more > budget) break;
+      used += width;
+    }
+    return Math.ceil(fixed + used + more);
   }
 
   closePopover(): void {

@@ -226,7 +226,7 @@ try {
   assert.equal(host.tabs.size, 0);
   assert.equal(host.popouts.size, 0);
   assert.deepEqual(await host.session.cookies.get({}), []);
-  await writeFile(path.join(root, 'browser-data', 'browser-policy.json'), JSON.stringify({ schema: 1, ownerId: 'fixture-owner', accounts: [] }));
+  await writeFile(path.join(root, 'browser-data', 'browser-policy.json'), JSON.stringify({ schema: 2, ownerId: 'fixture-owner', sites: [] }));
   await removeOwnedBrowserState({ dataDir: path.join(root, 'browser-data') });
   const resetRuntime = await host.start(settings, restartedOwner);
   browser = await chromium.connectOverCDP(resetRuntime.endpointURL);

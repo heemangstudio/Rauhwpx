@@ -32,8 +32,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 52px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--n-ink-hairline);
   background: transparent;
 }
@@ -66,19 +66,19 @@
 .cp-list {
   overflow-y: auto;
   max-height: 380px;
-  padding: 6px 0;
+  padding: 4px 0;
 }
 
 .cp-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 30px;
+  padding: 0 10px;
   cursor: default;
   gap: 12px;
   border-radius: var(--ag-r-row);
-  margin: 0 6px;
+  margin: 0 4px;
 }
 
 .cp-item:hover,
@@ -104,7 +104,7 @@
   background: var(--n-ink-fill-hover);
   border: 0;
   border-radius: var(--ag-r-chip);
-  padding: 2px 8px;
+  padding: 1px 6px;
   white-space: nowrap;
   flex-shrink: 0;
   font-family: var(--font-family-mono);

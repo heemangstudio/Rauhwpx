@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { sameSite, siteScope } from './browser-site.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export function passwordFailure(code, message) { return Object.assign(new Error(message), { code }); }
+export function passwordFailure(code, message, details = {}) { return Object.assign(new Error(message), { code, ...details }); }
+const optionalTime = (value) => value === undefined || typeof value === 'string' && Number.isFinite(Date.parse(value));
+/** 예전 기록의 agentReuseApproved 는 읽기만 한다. 다음 저장부터 agentBlocked 만 남는다. */
+function normalizedRecord({ agentReuseApproved: _legacy, ...record }) {
+  return { ...record, agentBlocked: record.agentBlocked === true };
+}
 export function passwordOrigin(value) {
   let url;
   try { url = new URL(value); } catch { throw passwordFailure('BROWSER_PASSWORD_ORIGIN_INVALID', 'Saved passwords require an exact HTTPS origin.'); }
@@ -35,9 +41,11 @@ export class LocalBrowserPasswordVault {
         const state = JSON.parse(await readFile(this.file, 'utf8'));
         if (state.schema !== 1 || !Array.isArray(state.records) || state.records.length > 4096) throw new Error();
         for (const record of state.records) {
-          if (!UUID.test(record.id) || passwordOrigin(record.origin) !== record.origin || typeof record.username !== 'string' || typeof record.ciphertext !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.ciphertext)) throw new Error();
+          if (!UUID.test(record.id) || passwordOrigin(record.origin) !== record.origin || typeof record.username !== 'string' || typeof record.ciphertext !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.ciphertext)
+            || [record.agentReuseApproved, record.agentBlocked].some((value) => value !== undefined && typeof value !== 'boolean')
+            || !optionalTime(record.blockedAt) || !optionalTime(record.filledAt)) throw new Error();
         }
-        this.records = state.records;
+        this.records = state.records.map(normalizedRecord);
       } catch (error) {
         if (error.code === 'ENOENT') this.records = [];
         else throw passwordFailure('BROWSER_PASSWORD_STORAGE_INVALID', 'The local password vault could not be read.');
@@ -50,9 +58,9 @@ export class LocalBrowserPasswordVault {
     return !!(this.safeStorage?.isAsyncEncryptionAvailable ? await this.safeStorage.isAsyncEncryptionAvailable() : this.safeStorage?.isEncryptionAvailable?.());
   }
   metadata(record) {
-    return { id: record.id, origin: record.origin, origins: [record.origin], username: record.username,
+    return { id: record.id, origin: record.origin, origins: [record.origin], site: siteScope(record.origin).key, username: record.username,
       label: record.username || new URL(record.origin).hostname, source: 'chrome', sourceProfile: record.sourceProfile,
-      profileId: 'native', hasPassword: true, agentReuseApproved: true, sessionStatus: 'saved', updatedAt: record.updatedAt };
+      profileId: 'native', hasPassword: true, agentBlocked: record.agentBlocked === true, sessionStatus: 'saved', updatedAt: record.updatedAt };
   }
   async list() {
     await this.ready();
@@ -99,7 +107,9 @@ export class LocalBrowserPasswordVault {
           const plaintext = JSON.stringify({ id, origin, username, password });
           ciphertext = (this.safeStorage.encryptStringAsync ? await this.safeStorage.encryptStringAsync(plaintext) : this.safeStorage.encryptString(plaintext)).toString('base64');
         } catch { throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage could not save this account.'); }
-        const record = { id, origin, username, ciphertext, sourceProfile: String(sourceProfile ?? '').slice(0, 160), updatedAt: new Date().toISOString() };
+        // 에이전트는 사이트 사용 승인으로 이 계정을 쓴다. 다시 가져와도 사용자가 끈 에이전트 사용은 그대로 둔다.
+        const record = { id, origin, username, ciphertext, sourceProfile: String(sourceProfile ?? '').slice(0, 160), agentBlocked: previous?.agentBlocked === true,
+          ...(previous?.blockedAt ? { blockedAt: previous.blockedAt } : {}), ...(previous?.filledAt ? { filledAt: previous.filledAt } : {}), updatedAt: new Date().toISOString() };
         const index = next.findIndex((entry) => entry.id === id);
         if (index >= 0) next[index] = record; else next.push(record);
         imported.set(id, this.metadata(record));
@@ -110,20 +120,70 @@ export class LocalBrowserPasswordVault {
       return [...imported.values()];
     });
   }
-  async withCredential(id, operation) {
-    await this.ready();
-    const record = this.records.find((entry) => entry.id === id);
-    if (!record) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
+  /** 사용자의 설정이나 차단 해제 카드만 이 값을 바꾼다. 끄면 사이트 사용 승인이 있어도 에이전트가 쓰지 못한다. */
+  setAgentBlocked(id, blocked) {
+    return this.mutate(async () => {
+      const index = this.records.findIndex((record) => record.id === id);
+      if (index < 0) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
+      if (typeof blocked !== 'boolean') throw passwordFailure('BROWSER_PASSWORD_INVALID', 'The agent use choice is invalid.');
+      const { blockedAt: _previous, ...record } = this.records[index];
+      const next = [...this.records]; next[index] = { ...record, agentBlocked: blocked, ...(blocked ? { blockedAt: new Date().toISOString() } : {}) };
+      await this.persist(next);
+      return this.metadata(next[index]);
+    });
+  }
+  /** 입력한 시각을 남긴다. 다시 시작한 뒤 이 값이 보이는 페이지를 가리는 데 쓴다. */
+  markFilled(id) {
+    return this.mutate(async () => {
+      const index = this.records.findIndex((record) => record.id === id);
+      if (index < 0) return;
+      const next = [...this.records]; next[index] = { ...next[index], filledAt: new Date().toISOString() };
+      await this.persist(next);
+    });
+  }
+  async decrypt(record) {
     if (!await this.available()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage is unavailable.');
-    let credential;
     try {
       const bytes = Buffer.from(record.ciphertext, 'base64');
       const decrypted = this.safeStorage.decryptStringAsync ? (await this.safeStorage.decryptStringAsync(bytes)).result : this.safeStorage.decryptString(bytes);
-      credential = JSON.parse(decrypted);
-      if (credential.id !== id || credential.origin !== record.origin || credential.username !== record.username || typeof credential.password !== 'string' || !credential.password) throw new Error();
+      const credential = JSON.parse(decrypted);
+      if (credential.id !== record.id || credential.origin !== record.origin || credential.username !== record.username || typeof credential.password !== 'string' || !credential.password) throw new Error();
+      return credential;
     } catch { throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'OS password storage could not unlock this account.'); }
+  }
+  /** 최근에 입력한 비밀번호들. 입력한 적이 없으면 OS 보관함을 열지 않는다. 열 수 없는 기록은 건너뛴다. */
+  async recentPasswords({ maxAgeMs = 7 * 24 * 60 * 60 * 1000, limit = 32 } = {}) {
+    await this.ready();
+    const since = Date.now() - maxAgeMs;
+    const recent = this.records.filter((record) => record.filledAt && Date.parse(record.filledAt) >= since)
+      .sort((left, right) => Date.parse(right.filledAt) - Date.parse(left.filledAt)).slice(0, limit);
+    const values = [];
+    for (const record of recent) { try { values.push((await this.decrypt(record)).password); } catch {} }
+    return values;
+  }
+  /**
+   * agent: 허브가 이 계정의 사이트 사용을 확인하고 보낸 grant({ site, scope, grantedAt })가 있어야 한다.
+   * 계정 사이트와 grant 사이트가 같아야 하고, 사용자가 이 계정의 에이전트 사용을 껐다면 쓰지 않는다.
+   */
+  async withCredential(id, operation, { agent = false, grant = null } = {}) {
+    await this.ready();
+    const record = this.records.find((entry) => entry.id === id);
+    if (!record) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account no longer exists.');
+    const site = siteScope(record.origin);
+    const blocked = () => passwordFailure('BROWSER_SITE_BLOCKED', `The owner turned off agent use of this saved login. Call browser_request_account with kind 'site' for ${record.origin} and end the turn.`, { site: site.domain ?? site.key, origin: record.origin, item: { accountId: id } });
+    // Checked before decryption so an unapproved agent request never prompts the OS vault.
+    if (agent && record.agentBlocked) throw blocked();
+    if (agent && !(grant && typeof grant === 'object' && typeof grant.site === 'string' && ['chat', 'always'].includes(grant.scope) && Number.isFinite(grant.grantedAt))) {
+      throw passwordFailure('BROWSER_PERMISSION_REQUIRED', `Using ${site.domain ?? site.key} needs the owner's approval. Call browser_request_account with kind 'site' for ${record.origin} and end the turn.`, { reason: 'account-use', site: site.domain ?? site.key, origin: record.origin });
+    }
+    // 허브는 페이지 사이트의 사용 승인을 보낸다. 다른 사이트 승인이면 이 계정이 그 페이지 것이 아니다.
+    if (agent && !sameSite(/^[a-z][a-z0-9+.-]*:/i.test(grant.site) ? grant.site : `https://${grant.site}`, record.origin)) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
+    const credential = await this.decrypt(record);
+    // 에이전트 사용 끄기와 입력 시각 기록은 기록 객체를 바꾼다. 같은 비밀번호인 동안은 계속 쓸 수 있다.
     const assertCurrent = () => {
-      if (!this.records.includes(record)) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account was removed or replaced.');
+      const current = this.records.find((entry) => entry.id === id);
+      if (!current || current.ciphertext !== record.ciphertext || current.origin !== record.origin || current.username !== record.username) throw passwordFailure('BROWSER_PASSWORD_NOT_FOUND', 'The saved website account was removed or replaced.');
+      if (agent && current.agentBlocked) throw blocked();
     };
     const lease = { assertCurrent, write: async (write) => {
       assertCurrent();

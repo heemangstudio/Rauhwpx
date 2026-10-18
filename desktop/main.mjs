@@ -585,6 +585,7 @@ const browserWebAuthn = new BrowserWebAuthn({
   },
   getWindowForTab: (tab) => tab.placement?.window ?? browserHost.getWindowForSession(tab.sessionId),
   onState: (tab, extra) => browserHost.emit(tab, 'authentication', extra),
+  onSignIn: (tab, extra) => browserHost.emit(tab, 'sign-in', extra),
 });
 browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();

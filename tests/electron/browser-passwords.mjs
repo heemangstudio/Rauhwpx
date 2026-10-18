@@ -13,6 +13,7 @@ import { BrowserAdblock } from '../../desktop/browser-adblock.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { LocalBrowserPasswordVault } from '../../desktop/browser-local-password-vault.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
+import { createBrowserPolicy } from '../../rhwp/rhwp-agent/browser-policy.mjs';
 import { startOwnedBrowserRuntime } from '../../rhwp/rhwp-agent/owned-browser-runtime.mjs';
 import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
 const { WebSocketServer } = createRequire(new URL('../../rhwp/rhwp-agent/package.json', import.meta.url))('ws');
@@ -34,16 +35,22 @@ let autocompleteListener; let saveListener;
 const sockets = new Set();
 const report = {};
 const timer = setTimeout(() => { console.error('NATIVE_PASSWORD_TIMEOUT', report.stage); process.exit(1); }, 45_000);
+const outlineRef = (snapshot, name) => snapshot.outline.split('\n').find((line) => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1];
 async function main() {
 try {
   report.stage = 'ready';
-  let submitted = false; let receivedWebSocket = false;
+  let submitted = false; let receivedWebSocket = false; let paid = null;
   server = createServer({ key, cert }, (request, response) => {
     response.setHeader('content-type', 'text/html');
+    // 결제 화면으로 가는 307 은 본문을 그대로 다른 출처에 다시 보낸다.
+    if (request.url === '/checkout' && request.method === 'POST') { response.writeHead(307, { location: `https://localhost:${server.address().port}/pay` }); response.end(); return; }
+    if (request.url === '/pay' && request.method === 'POST') { let body = ''; request.on('data', (chunk) => { body += chunk; }); request.on('end', () => { paid = body; response.end('<title>Payment</title><h1>Payment page</h1>'); }); return; }
+    if (request.url === '/cart') { response.end('<title>Cart</title><form action="/checkout" method="post"><input type="hidden" name="item" value="kettle"><button>Pay now</button></form>'); return; }
     if (request.method === 'POST') {
       let body = ''; request.on('data', (chunk) => { body += chunk; });
       request.on('end', () => { const form = new URLSearchParams(body); submitted = form.get('identity') === 'fixture-user' && form.get('secret') === secret; response.end(`<title>Signed in</title><h1>Account research fixture</h1><input id="research"><button id="next">Continue research</button><script>window.socket=new WebSocket(location.origin.replace('https:','wss:')+'/channel');socket.onopen=()=>socket.send(${JSON.stringify(secret)});socket.onmessage=()=>{window.socketReady=true;};</script>`); });
-    } else response.end('<title>Sign in fixture</title><form action="/signed-in" method="post"><label>Username <input id="identity" name="identity" autocomplete="username"></label><label>Password <input id="secret" name="secret" type="password" autocomplete="current-password"></label><button id="submit" type="submit">Sign in</button></form>');
+    } else if (request.url === '/echo') response.end(`<title>Echo fixture</title><h1>Profile</h1><p>Saved password: ${secret}</p>`);
+    else response.end('<title>Sign in fixture</title><form action="/signed-in" method="post"><label>Username <input id="identity" name="identity" autocomplete="username"></label><label>Password <input id="secret" name="secret" type="password" autocomplete="current-password"></label><button id="submit" type="submit">Sign in</button></form>');
   });
   server.on('connection', (socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   webSockets = new WebSocketServer({ server, path: '/channel' });
@@ -67,9 +74,12 @@ try {
   const wire = [];
   const messages = new EventEmitter();
   const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(JSON.stringify(message)); void host.handleRequest(message, owner).then((response) => { wire.push(JSON.stringify(response)); messages.emit('message', response); }); } });
+  const hostOperation = async (operation, params) => { const response = await host.handleRequest({ type: 'rhwp-browser-request', id: randomUUID(), operation, params }, owner); if (!response.ok) throw Object.assign(new Error(response.error.message), { code: response.error.code }); return response.value; };
   const originalSend = host.cdp.send.bind(host.cdp);
   host.cdp.send = (message, client) => { wire.push(JSON.stringify(message)); return originalSend(message, client); };
-  service = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
+  // 허브의 실제 정책이 사이트 사용을 판정하고, 승인 결과(grant)를 보관함에 보낸다.
+  const policy = createBrowserPolicy({ dataDir });
+  service = createOwnedBrowserService({ dataDir, policy, nativeAdapter: adapter, workspaceTargets: [origin, `https://localhost:${server.address().port}`], lookup: async () => [{ address: '127.0.0.1', family: 4 }], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
   report.stage = 'opening';
   const actor = { threadId: 'chat-one', agentId: 'agent-one', sessionId: 'editor', projectId: 'project-one' };
   const opened = await service.request(actor, 'open', { url: origin });
@@ -104,7 +114,7 @@ try {
   report.armedCapture = true;
   const beforeCapture = await service.request(actor, 'snapshot', { tabId });
   await service.request(actor, 'capture', { tabId, mode: 'page' });
-  const publicUsername = beforeCapture.snapshot.elements.find(el => el.autocomplete === 'username');
+  const publicUsername = { ref: outlineRef(beforeCapture.snapshot, 'Username') };
   await service.request(actor, 'type', { tabId, snapshotId: beforeCapture.snapshot.snapshotId, navigationEpoch: beforeCapture.tab.navigationEpoch, controllerEpoch: beforeCapture.tab.controllerEpoch, ref: publicUsername.ref, text: 'still usable' });
   const originalCapture = tab.view.webContents.capturePage.bind(tab.view.webContents);
   tab.view.webContents.capturePage = async (...args) => { const image = await originalCapture(...args); tab.protectedPasswords = new Set([secret]); return image; };
@@ -115,26 +125,56 @@ try {
     assert.equal(tab.passwordCapturePending, false);
   } finally { tab.view.webContents.capturePage = originalCapture; tab.protectedPasswords.clear(); }
   tab.passwordShield = false;
+  await tab.view.webContents.executeJavaScript(`document.querySelector('form').insertAdjacentHTML('beforeend', '<input id="otp" name="otp" aria-label="Code" autocomplete="one-time-code">')`);
   const observed = await service.request(actor, 'snapshot', { tabId });
   report.stage = 'observed';
-  const username = observed.snapshot.elements.find((element) => element.autocomplete === 'username');
-  const password = observed.snapshot.elements.find((element) => element.inputType === 'password');
-  const submit = observed.snapshot.elements.find((element) => element.tag === 'button');
-  assert.ok(username && password && submit);
+  const [username, password, submit] = ['Username', 'Password', 'Sign in'].map((name) => ({ ref: outlineRef(observed.snapshot, name) }));
+  assert.ok(username.ref && password.ref && submit.ref);
   const args = { tabId, snapshotId: observed.snapshot.snapshotId, navigationEpoch: observed.tab.navigationEpoch, controllerEpoch: observed.tab.controllerEpoch };
   await service.request(actor, 'type', { ...args, ref: username.ref, text: 'public-identifier' });
+  const code = { ref: outlineRef(observed.snapshot, 'Code') };
+  assert.ok(code.ref);
+  await assert.rejects(service.request(actor, 'type', { ...args, ref: code.ref, text: '123456' }), { code: 'BROWSER_USER_CODE_REQUIRED' });
+  assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("otp").value'), '');
+  // 사이트 사용 승인 전에는 저장된 계정을 채울 수 없다.
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  await policy.grantSiteAccess({ actor: { isHuman: true, clientId: 'editor' }, threadId: actor.threadId, origin, scope: 'chat' });
+  // 승인된 결제 제출의 307 은 다른 출처의 결제 화면에 본문과 함께 도착한다(가로챈 리디렉션도 이어진다).
+  const cart = await service.request(actor, 'open', { url: `${origin}/cart` });
+  const cartView = await service.request(actor, 'snapshot', { tabId: cart.tab.tabId });
+  const paidClick = await service.request(actor, 'click', { tabId: cart.tab.tabId, snapshotId: cartView.snapshot.snapshotId, navigationEpoch: cartView.tab.navigationEpoch, controllerEpoch: cartView.tab.controllerEpoch, ref: outlineRef(cartView.snapshot, 'Pay now') });
+  assert.equal(paid, 'item=kettle');
+  const payment = await service.request(actor, 'snapshot', { tabId: cart.tab.tabId });
+  assert.match(payment.snapshot.outline, /Payment page/, JSON.stringify(paidClick));
+  await service.request(actor, 'close', { tabId: cart.tab.tabId, navigationEpoch: payment.tab.navigationEpoch, controllerEpoch: payment.tab.controllerEpoch });
+  report.redirectedPost = true;
+  // 사용자가 이 계정의 에이전트 사용을 끄면 사이트 승인이 있어도 채우지 않는다.
+  assert.equal((await hostOperation('password-block', { accountId: account.id, blocked: true })).agentBlocked, true);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), { code: 'BROWSER_SITE_BLOCKED' });
+  assert.equal((await hostOperation('password-block', { accountId: account.id, blocked: false })).agentBlocked, false);
+  assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), '');
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("identity").value'), 'public-identifier');
   await assert.rejects(service.request({ ...actor, threadId: 'chat-two' }, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref }), /belongs|assigned|own|scope/i);
   const other = await vault.importCredential({ origin: 'https://other.invalid', username: 'other', password: 'other-fixture-secret' });
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: other.id, passwordRef: password.ref }), /different website/);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='https://other.invalid/'`);
-  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /same-origin/);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /another site/);
+  // 이름이 action 인 칸으로 form.action 을 가려도 실제 전송 주소를 본다.
+  await tab.view.webContents.executeJavaScript(`document.querySelector('form').setAttribute('action', 'https://other.invalid/'); document.querySelector('form').insertAdjacentHTML('beforeend', '<input type="hidden" name="action" id="shadow-action">')`);
+  await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /another site/);
+  await tab.view.webContents.executeJavaScript(`document.getElementById('shadow-action').remove()`);
   assert.equal(tab.passwordShield, false);
   await tab.view.webContents.executeJavaScript(`document.querySelector('form').action='/signed-in'`);
   await service.request(actor, 'fill-account', { ...args, accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
   report.stage = 'filled';
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("secret").value'), secret);
   report.nativeFill = true;
+  // 입력한 비밀번호는 관련 없는 새 탭이 보여 줘도 가린다.
+  const echo = await service.request(actor, 'open', { url: `${origin}/echo` });
+  const echoed = await service.request(actor, 'snapshot', { tabId: echo.tab.tabId });
+  assert.match(echoed.snapshot.outline, /Saved password: \[masked\]/);
+  assert.equal(JSON.stringify(echoed).includes(secret), false);
+  report.globalRedaction = true;
   const protectedCapture = await service.request(actor, 'capture', { tabId, mode: 'page' });
   assert.equal(protectedCapture.capture.screenshot, undefined);
   assert.equal(protectedCapture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
@@ -164,7 +204,7 @@ try {
   await assert.rejects(host.cdp.command({ method: 'Page.captureScreenshot', sessionId: cdpSession }), /protect this page/);
   await assert.rejects(host.cdp.command({ method: 'Network.getRequestPostData', sessionId: cdpSession, params: { requestId: 'fixture' } }), /protect this page/);
   const masked = await service.request(actor, 'snapshot', { tabId });
-  assert.equal(masked.snapshot.elements.find((element) => element.inputType === 'password').value, '[masked]');
+  assert.match(masked.snapshot.outline, /textbox "Password" \[ref=[^\]]+\]: \[masked\]/);
   const currentArgs = { tabId, snapshotId: masked.snapshot.snapshotId, navigationEpoch: masked.tab.navigationEpoch, controllerEpoch: masked.tab.controllerEpoch };
   const navigation = new Promise((resolve) => tab.view.webContents.once('did-navigate', resolve));
   await service.request(actor, 'click', { ...currentArgs, ref: submit.ref });
@@ -184,8 +224,8 @@ try {
     try { signedIn = await service.request(actor, 'snapshot', { tabId }); }
     catch (error) { if (!error.code?.includes('STALE') || Date.now() >= deadline) throw error; await new Promise((resolve) => setTimeout(resolve, 20)); }
   }
-  assert.match(signedIn.snapshot.text, /Account research fixture/);
-  const input = signedIn.snapshot.elements.find((element) => element.tag === 'input');
+  assert.match(signedIn.snapshot.outline, /Account research fixture/);
+  const input = { ref: signedIn.snapshot.outline.match(/- textbox \[ref=([^\]]+)\]/)[1] };
   await service.request(actor, 'type', { tabId, snapshotId: signedIn.snapshot.snapshotId, ref: input.ref, text: 'Signed-in research', navigationEpoch: signedIn.tab.navigationEpoch, controllerEpoch: signedIn.tab.controllerEpoch });
   assert.equal(await tab.view.webContents.executeJavaScript('document.getElementById("research").value'), 'Signed-in research');
   await assert.rejects(service.request(actor, 'fill-account', { ...args, accountId: account.id, passwordRef: password.ref }), /changed|snapshot|stale/i);
@@ -213,11 +253,14 @@ try {
   // School login forms often omit both autocomplete and name attributes.
   await tab.view.webContents.executeJavaScript(`for (const field of document.querySelectorAll('input')) { field.removeAttribute('autocomplete'); field.removeAttribute('name'); field.value=''; } document.querySelector('#secret').focus()`);
   const inventory = await service.request(actor, 'status', {});
-  assert.ok(inventory.accounts.some(account => account.id === manual.id && account.agentReuseApproved === true));
+  assert.ok(inventory.accounts.some(account => account.id === manual.id));
   assert.equal(JSON.stringify(inventory).includes(secret), false);
+  const saved = await hostOperation('password-save', { origin, username: 'card-saved-user', password: `card-${secret}` });
+  assert.equal(saved.agentBlocked, false);
+  assert.equal(JSON.stringify(saved).includes(secret), false);
+  assert.ok((await vault.list()).accounts.some((entry) => entry.id === saved.id));
   const manualObservation = await service.request(actor, 'snapshot', { tabId });
-  const loginId = manualObservation.snapshot.elements.find(element => element.inputType === 'text');
-  const loginPassword = manualObservation.snapshot.elements.find(element => element.inputType === 'password');
+  const [loginId, loginPassword] = manualObservation.snapshot.outline.split('\n').filter((line) => line.includes('- textbox')).map((line) => ({ ref: line.match(/\[ref=([^\]]+)\]/)[1] }));
   assert.ok(loginId && loginPassword);
   const filledManual = await service.request(actor, 'fill-account', { tabId, accountId: manual.id,
     snapshotId: manualObservation.snapshot.snapshotId, usernameRef: loginId.ref, passwordRef: loginPassword.ref,

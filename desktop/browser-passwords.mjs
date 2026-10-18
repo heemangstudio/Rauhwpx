@@ -1,42 +1,128 @@
 import { randomUUID } from 'node:crypto';
 import { LocalBrowserPasswordVault, passwordFailure, passwordOrigin } from './browser-local-password-vault.mjs';
 import { ChromePasswordImporter } from './browser-chrome-password-import.mjs';
+import { ChromeCookieImporter } from './browser-chrome-cookie-import.mjs';
+import { sameSite, siteScope } from './browser-site.mjs';
 
 const WORLD = 1007;
 const SENSITIVE = 'input[type="password"],input[type="email"],input[autocomplete="username"],input[name="username"],input[name="email"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
 const SECRET = 'input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]';
+/** 앱 전체에서 가리는 입력값 수. 넘으면 가장 오래된 값부터 뺀다. */
+const PROTECTED_LIMIT = 256;
 
 // These functions run only in Electron's isolated world. Page scripts never see the ref map.
-function pageSnapshot(token, selector, maxElements) {
+// 허브가 Playwright aria 개요와 같은 노드 모양으로 그린다. 조작 가능한 요소와 범위 컨테이너만 ref를 받는다.
+function pageSnapshot(token, selector, maxElements, includeText) {
   const secrets = [...document.querySelectorAll('input[type="password"],input[autocomplete="current-password"],input[autocomplete="new-password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"],[data-rhwp-private-field]')].map(el => el.value).filter(Boolean);
   const scrub = value => { for (const secret of secrets) value = value.split(secret).join('[masked]'); return value; };
-  const refs = new Map(); const elements = [];
-  const candidates = document.querySelectorAll('a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable="true"],summary');
-  for (const el of candidates) {
-    if (elements.length >= maxElements) break;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(el).visibility === 'hidden') continue;
-    const sensitive = el.matches(selector);
-    const ref = `e${elements.length + 1}`; refs.set(ref, el);
-    elements.push({ ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || ({ A: 'link', BUTTON: 'button', INPUT: 'textbox', TEXTAREA: 'textbox', SELECT: 'combobox', SUMMARY: 'button' })[el.tagName] || 'textbox',
-      inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
-      formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action,
-      name: scrub(String(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.textContent || '').trim().slice(0, 500)),
-      text: sensitive ? '[masked]' : scrub(String(el.textContent ?? '').trim().slice(0, 1000)), value: sensitive ? '[masked]' : scrub(String(el.value ?? '').slice(0, 1000)), sensitive, disabled: !!el.disabled,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
-  }
+  const squash = value => scrub(String(value ?? '').replace(/\s+/g, ' ').trim());
+  // 같은 문서 안에서는 같은 요소가 같은 ref를 유지한다.
+  const ids = globalThis.__rhwpNativeRefIds ??= { map: new WeakMap(), next: 0 };
+  const refFor = el => { let ref = ids.map.get(el); if (!ref) { ref = `e${++ids.next}`; ids.map.set(el, ref); } return ref; };
+  const CONTROLS = 'a[href],button,input,textarea,select,summary,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="option"],[role="tab"],[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
+  const CONTAINERS = new Set(['main', 'navigation', 'contentinfo', 'form', 'search', 'dialog', 'alertdialog', 'region', 'table', 'grid', 'tablist', 'menu', 'menubar', 'tree']);
+  const FROM_CONTENT = new Set(['button', 'link', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem', 'heading', 'switch', 'checkbox', 'radio']);
+  const SKIP = new Set(['script', 'style', 'noscript', 'template', 'svg', 'canvas', 'iframe', 'frame', 'object', 'embed', 'head', 'meta', 'link', 'datalist']);
+  const TAGS = { p: 'paragraph', ul: 'list', ol: 'list', menu: 'list', li: 'listitem', nav: 'navigation', main: 'main', aside: 'complementary', form: 'form', search: 'search', dialog: 'dialog', table: 'table', tr: 'row', td: 'cell', th: 'columnheader', fieldset: 'group', blockquote: 'blockquote', article: 'article', details: 'group', textarea: 'textbox', summary: 'button', option: 'option' };
+  const implicitRole = el => {
+    const tag = el.localName;
+    if (tag === 'a') return el.hasAttribute('href') ? 'link' : null;
+    if (tag === 'button') return 'button';
+    if (tag === 'input') return el.type === 'hidden' ? null : ['button', 'submit', 'reset', 'image', 'file'].includes(el.type) ? 'button' : { checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', search: 'searchbox' }[el.type] ?? 'textbox';
+    if (tag === 'select') return el.multiple || el.size > 1 ? 'listbox' : 'combobox';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'img') return el.alt ? 'img' : null;
+    if (tag === 'section') return el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby') ? 'region' : null;
+    if (tag === 'footer') return el.parentElement?.closest('article,aside,main,nav,section') ? null : 'contentinfo';
+    if (el.isContentEditable && el.matches('[contenteditable]')) return 'textbox';
+    return TAGS[tag] ?? null;
+  };
+  // 라벨 안의 입력 칸과 선택지 글은 이름에 넣지 않는다.
+  const ownText = el => { let value = ''; const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: node => node.parentElement?.closest('select,textarea,script,style,[aria-hidden="true"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT }); while (walker.nextNode()) value += ` ${walker.currentNode.data}`; return value; };
+  const nameOf = (el, role) => {
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) { const value = labelledBy.split(/\s+/).map(id => document.getElementById(id)).filter(Boolean).map(ownText).join(' '); if (value.trim()) return value; }
+    const label = el.getAttribute('aria-label'); if (label?.trim()) return label;
+    if (el.localName === 'input' && ['button', 'submit', 'reset'].includes(el.type)) return el.value || { submit: 'Submit', reset: 'Reset' }[el.type] || '';
+    if (el.localName === 'input' && el.type === 'image') return el.alt || el.value || 'Submit';
+    if (el.labels?.length) { const value = [...el.labels].map(ownText).join(' '); if (value.trim()) return value; }
+    if (el.localName === 'img') return el.alt;
+    if (FROM_CONTENT.has(role)) { const value = ownText(el) || el.querySelector('img[alt]')?.alt; if (value?.trim()) return value; }
+    return el.getAttribute('placeholder') || el.getAttribute('title') || '';
+  };
+  const refs = new Map(); const elements = []; let count = 0; let truncated = false;
+  const visible = el => el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }) || (getComputedStyle(el).display === 'contents' ? 'contents' : false);
+  const walk = parent => {
+    const out = [];
+    const children = parent.localName === 'slot' ? parent.assignedNodes({ flatten: true }) : (parent.shadowRoot ?? parent).childNodes;
+    for (const child of children) {
+      if (count >= 6000) { truncated = true; break; }
+      if (child.nodeType === 3) { const value = squash(child.data); if (value) { out.push(value.slice(0, 1000)); count++; } continue; }
+      if (child.nodeType !== 1) continue;
+      const el = child; const tag = el.localName;
+      if (SKIP.has(tag) || el.getAttribute('aria-hidden') === 'true' || tag === 'input' && el.type === 'hidden') continue;
+      const shown = visible(el);
+      if (!shown) continue;
+      if (shown === 'contents') { out.push(...walk(el)); continue; }
+      const explicit = el.getAttribute('role')?.trim().split(/\s+/)[0];
+      const role = explicit && !['none', 'presentation', 'generic'].includes(explicit) ? explicit : implicitRole(el);
+      const control = el.matches(CONTROLS);
+      if (control) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || elements.length >= maxElements) { if (elements.length >= maxElements) truncated = true; out.push(...walk(el).filter(node => typeof node === 'object')); continue; }
+      }
+      if (!role) { out.push(...walk(el)); continue; }
+      count++;
+      const node = { role };
+      const name = squash(nameOf(el, role)).slice(0, 500); if (name) node.name = name;
+      if (role === 'heading') node.level = Number(el.getAttribute('aria-level')) || Number(tag[1]) || 2;
+      const sensitive = el.matches(selector);
+      if (control || CONTAINERS.has(role) && (role !== 'region' || name)) {
+        const ref = refFor(el); node.ref = ref; refs.set(ref, el);
+        const rect = el.getBoundingClientRect();
+        elements.push({ ref, tag, role: node.role, name: name.slice(0, 500), inputType: el instanceof HTMLInputElement ? el.type : undefined, autocomplete: ['username', 'current-password', 'new-password', 'one-time-code', 'email'].includes(el.autocomplete) ? el.autocomplete : undefined,
+          formMethod: el.closest('form')?.method, formAction: el.closest('form')?.action, sensitive, disabled: !!el.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+      }
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') node.disabled = true;
+      if (el instanceof HTMLInputElement && ['checkbox', 'radio'].includes(el.type)) node.checked = el.indeterminate ? 'mixed' : el.checked;
+      else if (el.hasAttribute('aria-checked')) node.checked = el.getAttribute('aria-checked') === 'mixed' ? 'mixed' : el.getAttribute('aria-checked') === 'true';
+      if (el.hasAttribute('aria-expanded')) node.expanded = el.getAttribute('aria-expanded') === 'true';
+      else if (tag === 'summary') node.expanded = !!el.parentElement?.open;
+      if (el.getAttribute('aria-selected') === 'true') node.selected = true;
+      if (el.hasAttribute('aria-pressed')) node.pressed = el.getAttribute('aria-pressed') === 'true';
+      if (node.checked === false) delete node.checked;
+      if (el instanceof HTMLSelectElement) {
+        node.children = [...el.options].slice(0, 500).map(option => ({ role: 'option', name: squash(option.label).slice(0, 500), ...(option.selected ? { selected: true } : {}) }));
+      } else if (el instanceof HTMLInputElement && !['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio'].includes(el.type) || el instanceof HTMLTextAreaElement || role === 'textbox' && el.isContentEditable) {
+        const value = el.isContentEditable && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) ? el.innerText : el.value;
+        if (value) node.value = sensitive ? '[masked]' : squash(value).slice(0, 1000);
+      } else if (sensitive) {
+        // 비공개로 표시한 영역의 내용은 읽지 않는다.
+      } else if (FROM_CONTENT.has(role) && name) {
+        // 내용에서 이름을 얻은 노드는 같은 글을 다시 담지 않고 안쪽 조작 요소만 남긴다.
+        const nested = walk(el).filter(entry => typeof entry === 'object'); if (nested.length) node.children = nested;
+      } else { const nested = walk(el); if (nested.length) node.children = nested; }
+      out.push(node);
+    }
+    return out;
+  };
+  const tree = document.body ? walk(document.body) : [];
   globalThis.__rhwpNativePasswordRefs = { token, refs };
   // Form values and selected text are excluded entirely from this native document observation.
-  return { elements, text: scrub(String(document.body?.innerText ?? '').slice(0, 24000)), selectedText: '', hasSecret: secrets.length > 0, truncated: candidates.length > maxElements,
+  return { tree, elements, ...(includeText ? { text: scrub(String(document.body?.innerText ?? '').slice(0, 24000)) } : {}), selectedText: '', hasSecret: secrets.length > 0, truncated,
     viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, scrollX, scrollY } };
 }
 
-function captureViewport(secretSelector) {
+function captureViewport(secretSelector, protectedValues = []) {
   const roots = [document]; let masked = true; let hasSecret = false;
+  // 허브가 다른 탭에 입력한 사용자 비밀을 사이트가 다시 보여 주는 페이지도 캡처하지 않는다.
+  const shows = (value) => typeof value === 'string' && protectedValues.some((secret) => value.includes(secret));
+  if (protectedValues.length && shows(String(document.documentElement?.innerText ?? ''))) hasSecret = true;
   for (let index = 0; index < roots.length; index++) {
     for (const el of roots[index].querySelectorAll('*')) {
       if (el.shadowRoot) roots.push(el.shadowRoot);
       if (el.matches(secretSelector) && el.value) hasSecret = true;
+      if (protectedValues.length && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && shows(el.value)) hasSecret = true;
       if (el.matches('input,textarea,select,[contenteditable],iframe,frame') && getComputedStyle(el).visibility !== 'hidden') masked = false;
     }
   }
@@ -56,13 +142,38 @@ function pageAction(payload) {
   if (payload.action === 'wait') return { completed: payload.state === 'hidden' ? !ready(el) : ready(el) };
   if (payload.action === 'scroll') { window.scrollBy(payload.deltaX, payload.deltaY); return { completed: true }; }
   if (!ready(el)) return { error: 'target' };
+  // 폼은 같은 사이트(등록 도메인)로만 보내야 한다. 등록 도메인이 없는 사이트는 정확한 출처만 된다.
+  // 이름이 action 인 칸이 form.action 을 가릴 수 있어 속성을 직접 읽는다. 제출 단추의 formaction 도 본다.
+  const onSite = (value) => {
+    let url; try { url = new URL(value, document.baseURI); } catch { return false; }
+    const key = new URL(payload.site.key);
+    if (!payload.site.domain) return url.origin === key.origin;
+    return url.protocol === key.protocol && url.port === key.port && (url.hostname === payload.site.domain || url.hostname.endsWith(`.${payload.site.domain}`));
+  };
+  const sendsOffSite = (form) => !!form && [form.getAttribute('action'), ...[...form.elements].filter((item) => ['submit', 'image'].includes(item.type)).map((item) => item.getAttribute('formaction'))].some((value) => value && !onSite(value));
+  if (payload.action === 'validate-secret' || payload.action === 'fill-secret') {
+    // 사용자가 승인한 비밀은 한 줄 글자 칸이나 textarea 한 곳에만 넣는다.
+    const textInput = el instanceof HTMLInputElement && ['text', 'password', 'email', 'tel', 'url'].includes(el.type);
+    if (!textInput && !(el instanceof HTMLTextAreaElement)) return { error: 'target' };
+    if (el.autocomplete === 'one-time-code') return { error: 'code' };
+    if (/^cc-/.test(el.autocomplete)) return { error: 'target' };
+    if (sendsOffSite(el.form)) return { error: 'origin' };
+    if (payload.action === 'validate-secret') return { completed: true };
+    const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    el.setAttribute('data-rhwp-private-field', 'true');
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, payload.value);
+    if (!ready(el) || location.origin !== payload.origin) return { error: 'target' };
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { completed: true };
+  }
   if (payload.action === 'fill' || payload.action === 'validate-fill') {
     const password = current.refs.get(payload.passwordRef);
     const username = payload.usernameRef ? current.refs.get(payload.usernameRef) : null;
     if (!ready(password) || !(password instanceof HTMLInputElement) || password.type !== 'password' || username && (!ready(username) || !(username instanceof HTMLInputElement) || !['text', 'email', 'tel'].includes(username.type))) return { error: 'target' };
     const form = password.form;
     if (username && username.form !== form) return { error: 'target' };
-    if (form?.action && new URL(form.action, location.href).origin !== payload.origin) return { error: 'origin' };
+    if (sendsOffSite(form)) return { error: 'origin' };
     if (payload.action === 'validate-fill') return { completed: true };
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     if (username) { username.setAttribute('data-rhwp-private-field', 'true'); setter.call(username, payload.username); }
@@ -82,16 +193,27 @@ function pageAction(payload) {
     if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight || !hit || !(hit === el || el.contains(hit))) return { error: 'target' };
     return { completed: true, point };
   }
+  // 일회용 코드는 사용자가 직접 입력한다. 비밀번호·카드 칸과 다른 안내를 준다.
+  const secretError = () => el.autocomplete === 'one-time-code' ? 'code' : 'secret';
   if (payload.action === 'type') {
-    if (el.matches(payload.sensitive)) return { error: 'secret' };
+    if (el.matches(payload.sensitive)) return { error: secretError() };
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { error: 'target' };
     const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, payload.text);
     el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
     return { completed: true };
   }
+  if (payload.action === 'select') {
+    if (!(el instanceof HTMLSelectElement)) return { error: 'select' };
+    const wanted = String(payload.option ?? '').trim(); const options = [...el.options].filter(option => !option.disabled);
+    const option = options.find(entry => entry.label.trim() === wanted) ?? options.find(entry => entry.value === wanted) ?? options.find(entry => entry.label.trim().toLowerCase() === wanted.toLowerCase());
+    if (!option) return { error: 'option' };
+    el.focus(); option.selected = true;
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { completed: true };
+  }
   if (payload.action === 'focus') {
-    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el.matches(payload.sensitive)) return { error: 'secret' };
+    if ((payload.key === 'Space' || /^[A-Za-z0-9]$/.test(payload.key)) && el.matches(payload.sensitive)) return { error: secretError() };
     el.focus();
     if (['Control+a', 'Meta+a', 'ControlOrMeta+a'].includes(payload.key) && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) el.select();
     return { completed: true };
@@ -118,14 +240,29 @@ export class NativeBrowserPasswords {
   constructor({ host, dataDir, safeStorage, vault, importer, Menu }) {
     this.host = host; this.vault = vault ?? new LocalBrowserPasswordVault({ dataDir, safeStorage });
     this.importer = importer ?? new ChromePasswordImporter({ vault: this.vault });
+    this.cookies = new ChromeCookieImporter({ host, profiles: this.importer });
     this.Menu = Menu;
+    /** 저장된 비밀번호와 사용자 비밀 중 이 앱에서 입력한 값. 모든 탭의 관찰·상태·CDP 메시지에서 가린다. */
+    this.protectedValues = new Set();
+    this.protectedLoad = null;
     host.passwords = this;
   }
+  protect(value) {
+    if (typeof value !== 'string' || !value) return;
+    this.protectedValues.delete(value); this.protectedValues.add(value);
+    while (this.protectedValues.size > PROTECTED_LIMIT) this.protectedValues.delete(this.protectedValues.values().next().value);
+  }
+  /** 다시 시작한 뒤 첫 관찰 전에 최근에 입력한 비밀번호를 다시 가린다. 입력 기록이 없으면 OS 보관함을 열지 않는다. */
+  loadProtectedValues() {
+    this.protectedLoad ??= Promise.resolve().then(() => this.vault.recentPasswords?.() ?? []).then((values) => { for (const value of [...values].reverse()) this.protect(value); }, () => {});
+    return this.protectedLoad;
+  }
+  clearProtectedValues() { this.protectedValues.clear(); this.protectedLoad = null; }
   async run(tab, fn, args = []) {
     try { return await tab.view.webContents.executeJavaScriptInIsolatedWorld(WORLD, [{ code: `(${fn.toString()})(...${JSON.stringify(args)})` }], true); }
     catch { throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The page changed before native browser input completed.'); }
   }
-  protectFamily(tab, origin, password) {
+  protectFamily(tab, password) {
     const candidates = new Set([...this.host.tabs.values(), ...(this.host.pendingTabs ?? []), tab]);
     const keys = (candidate) => {
       const result = new Set(); const visited = new Set();
@@ -150,9 +287,9 @@ export class NativeBrowserPasswords {
     } while (changed);
     for (const member of family) {
       member.passwordShield = true;
-      member.passwordAllowedOrigins = new Set(member.passwordAllowedOrigins ?? []); member.passwordAllowedOrigins.add(origin);
       member.protectedPasswords = new Set(member.protectedPasswords ?? []); member.protectedPasswords.add(password);
     }
+    this.protect(password);
   }
   tab(params, { human = false } = {}) {
     const tab = this.host.tab(params.targetId ?? params.tabId);
@@ -168,11 +305,12 @@ export class NativeBrowserPasswords {
   }
   async snapshot(params, { viewportOnly = false } = {}) {
     const tab = this.tab(params);
+    await this.loadProtectedValues();
     const epoch = tab.navigationEpoch; const snapshotId = `native-password-${randomUUID()}`;
     const lifetime = { generation: this.host.generation, owner: this.host.owner, targetId: tab.targetId, sessionId: tab.sessionId, chatId: tab.chatId, controlEpoch: tab.passwordControlEpoch ?? 0, zoomFactor: tab.view.webContents.getZoomFactor(), origin: new URL(tab.view.webContents.getURL()).origin };
     const observed = viewportOnly
-      ? await this.run(tab, captureViewport, [SECRET]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
-      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 400]);
+      ? await this.run(tab, captureViewport, [SECRET, [...new Set([...this.protectedValues, ...(Array.isArray(params.protectedValues) ? params.protectedValues.filter((value) => typeof value === 'string' && value).slice(0, 256) : [])])]]).then(({ hasSecret, width, height, deviceScaleFactor, scrollX, scrollY }) => ({ hasSecret, viewport: { width, height, deviceScaleFactor, scrollX, scrollY } }))
+      : await this.run(tab, pageSnapshot, [snapshotId, SENSITIVE, 1000, params.text === true]);
     if (lifetime.zoomFactor !== tab.view.webContents.getZoomFactor()) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'Page zoom changed during the browser snapshot.');
     if (tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || lifetime.generation !== this.host.generation || lifetime.owner !== this.host.owner || lifetime.targetId !== tab.targetId || lifetime.sessionId !== tab.sessionId || lifetime.chatId !== tab.chatId || lifetime.controlEpoch !== (tab.passwordControlEpoch ?? 0) || lifetime.origin !== new URL(tab.view.webContents.getURL()).origin) throw passwordFailure('BROWSER_PASSWORD_STALE_REFERENCE', 'The page changed during the browser snapshot.');
     const url = new URL(tab.view.webContents.getURL());
@@ -182,6 +320,7 @@ export class NativeBrowserPasswords {
   async capture(params) {
     const tab = this.tab(params);
     if (!tab.passwordShield) return { available: false };
+    await this.loadProtectedValues();
     const contents = tab.view.webContents;
     // 저장된 비밀번호는 페이지 본문에도 복사될 수 있어 이미지로 내보내지 않는다.
     const assertSafe = () => {
@@ -201,7 +340,7 @@ export class NativeBrowserPasswords {
       // 폼과 하위 프레임은 숨기고 실제 마스킹을 확인한다. 값은 읽거나 전송하지 않는다.
       css = await contents.insertCSS('input,textarea,select,[contenteditable],iframe,frame { visibility: hidden !important; }');
       current();
-      const viewport = await this.run(tab, captureViewport, [SECRET]);
+      const viewport = await this.run(tab, captureViewport, [SECRET, [...this.protectedValues]]);
       if (viewport.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
       if (!viewport.masked) throw passwordFailure('BROWSER_CAPTURE_MASK_FAILED', '입력 내용을 안전하게 가릴 수 없어 캡처를 중단했습니다.');
       const image = await Promise.race([
@@ -209,7 +348,7 @@ export class NativeBrowserPasswords {
         new Promise((_, reject) => { timer = setTimeout(() => reject(passwordFailure('BROWSER_CAPTURE_TIMEOUT', '화면 캡처 시간이 초과되었습니다. 다시 시도해 주세요.')), 5000); }),
       ]);
       current();
-      const after = await this.run(tab, captureViewport, [SECRET]);
+      const after = await this.run(tab, captureViewport, [SECRET, [...this.protectedValues]]);
       current();
       if (after.hasSecret) throw passwordFailure('BROWSER_PASSWORD_CAPTURE_PROTECTED', '비밀번호가 입력된 페이지는 캡처할 수 없습니다. 다른 탭에서 캡처해 주세요.');
       if (JSON.stringify(viewport) !== JSON.stringify(after)) throw passwordFailure('BROWSER_STALE_GEOMETRY', '페이지 크기가 변경되었습니다. 현재 화면을 다시 캡처해 주세요.');
@@ -232,33 +371,60 @@ export class NativeBrowserPasswords {
     current();
     return result;
   }
+  /** 허브가 사이트 사용을 확인하고 넘긴 사용자 비밀을 한 칸에 넣는다. 비밀의 사이트(등록 도메인) 안에서만 넣는다. 값은 응답·로그에 남기지 않는다. */
+  async fillSecret(params) {
+    const tab = this.tab(params);
+    const snapshot = this.assertSnapshot(tab, params);
+    const origin = passwordOrigin(tab.view.webContents.getURL());
+    if (!Array.isArray(params.origins) || !params.origins.some((entry) => sameSite(entry, origin))) throw passwordFailure('BROWSER_SECRET_ORIGIN_MISMATCH', 'This page is outside the websites saved for this secret.');
+    if (typeof params.value !== 'string' || !params.value || Buffer.byteLength(params.value) > 16 * 1024) throw passwordFailure('BROWSER_SECRET_INVALID', 'The secret value is unavailable.');
+    const { key, domain } = siteScope(origin);
+    const target = { snapshotId: snapshot.snapshotId, ref: params.ref, origin, site: { key, domain } };
+    const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-secret' }]);
+    this.assertSnapshot(tab, params);
+    if (checked?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+    if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_SECRET_FORM_ORIGIN' : 'BROWSER_SECRET_TARGET_INVALID', checked?.error === 'origin' ? 'This form sends its data to another site.' : 'Choose a visible text or password field for this secret.');
+    // 값이 페이지에 들어가기 전에 원시 읽기를 막는다(비밀번호 입력과 같은 보호).
+    const firstProtection = !tab.passwordShield;
+    this.protectFamily(tab, params.value);
+    if (firstProtection) await this.host.session?.closeAllConnections();
+    this.assertSnapshot(tab, params);
+    const result = await this.run(tab, pageAction, [{ ...target, action: 'fill-secret', value: params.value }]);
+    if (!result?.completed) throw passwordFailure('BROWSER_SECRET_TARGET_INVALID', 'Choose a visible text or password field for this secret.');
+    return { completed: true };
+  }
   async fill(params, { human = false } = {}) {
+    if (!human && params?.mode === 'secret') return this.fillSecret(params);
     const tab = this.tab(params, { human });
     const snapshot = this.assertSnapshot(tab, params);
     const origin = passwordOrigin(tab.view.webContents.getURL());
-    return this.vault.withCredential(params.accountId, async (credential, lease) => {
+    const { key, domain } = siteScope(origin);
+    const filled = await this.vault.withCredential(params.accountId, async (credential, lease) => {
       this.assertSnapshot(tab, params);
-      if (credential.origin !== origin) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
-      const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin };
+      // 로그인은 자기 사이트(등록 도메인) 안에서만 넣는다. www 에 저장한 계정도 login.* 에서 쓸 수 있다.
+      if (!sameSite(credential.origin, origin)) throw passwordFailure('BROWSER_PASSWORD_ORIGIN_MISMATCH', 'This saved account belongs to a different website.');
+      const target = { snapshotId: snapshot.snapshotId, ref: params.passwordRef, passwordRef: params.passwordRef, usernameRef: params.usernameRef, origin, site: { key, domain } };
       const checked = await this.run(tab, pageAction, [{ ...target, action: 'validate-fill' }]);
       this.assertSnapshot(tab, params);
       lease.assertCurrent();
-      if (!checked?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
+      if (!checked?.completed) throw passwordFailure(checked?.error === 'origin' ? 'BROWSER_PASSWORD_FORM_ORIGIN' : 'BROWSER_PASSWORD_TARGET_INVALID', checked?.error === 'origin' ? 'This sign-in form sends its data to another site.' : 'Choose a visible password field in a same-site sign-in form.');
       // Stop outstanding raw reads before the first secret enters the guest DOM.
       const firstProtection = !tab.passwordShield;
-      this.protectFamily(tab, origin, credential.password);
+      this.protectFamily(tab, credential.password);
       if (firstProtection) await this.host.session?.closeAllConnections();
       this.assertSnapshot(tab, params);
       const result = await lease.write(() => this.run(tab, pageAction, [{ ...target, action: 'fill', username: credential.username, password: credential.password }]));
-      if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-origin sign-in form.');
+      if (!result?.completed) throw passwordFailure('BROWSER_PASSWORD_TARGET_INVALID', 'Choose a visible password field in a same-site sign-in form.');
       return { completed: true, accountId: params.accountId };
-    });
+    }, { agent: !human, grant: human ? null : params.grant });
+    await Promise.resolve(this.vault.markFilled?.(params.accountId)).catch(() => {});
+    return filled;
   }
   async action(params) {
     const tab = this.tab(params);
     if (params.action === 'stop') { tab.view.webContents.stop(); return { completed: true }; }
     const snapshot = this.assertSnapshot(tab, params);
-    const allowed = ['click', 'type', 'press', 'scroll', 'wait'];
+    const allowed = ['click', 'type', 'press', 'select', 'scroll', 'wait'];
     if (!allowed.includes(params.action)) throw passwordFailure('BROWSER_PASSWORD_ACTION_INVALID', 'This native browser action is unsupported.');
     let keyCode; let modifiers = [];
     if (params.action === 'press') {
@@ -276,6 +442,9 @@ export class NativeBrowserPasswords {
       if (params.action !== 'wait' || result?.completed || Date.now() >= expiresAt) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (true);
+    if (result?.error === 'code') throw passwordFailure('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
+    if (result?.error === 'select') throw passwordFailure('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
+    if (result?.error === 'option') throw passwordFailure('BROWSER_OPTION_NOT_FOUND', 'No enabled option has this label or value. Snapshot the list box with scope to see its options.');
     if (!result?.completed) throw passwordFailure(result?.error === 'secret' ? 'BROWSER_SECRET_CHANNEL_REQUIRED' : 'BROWSER_PASSWORD_TARGET_INVALID', result?.error === 'secret' ? 'Use a saved account to fill this field.' : 'The selected browser field is no longer available.');
     if (params.action === 'press' || params.action === 'click') {
       this.assertSnapshot(tab, params);
@@ -301,8 +470,10 @@ export class NativeBrowserPasswords {
     }
     return { completed: true };
   }
+  /** tab 이 없으면 모든 탭의 보호 값까지 함께 가린다. */
   redact(tab, value) {
-    const secrets = [...tab?.protectedPasswords ?? []].flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]).filter(Boolean);
+    const tabValues = tab ? [...tab.protectedPasswords ?? []] : [...this.host.tabs?.values() ?? []].flatMap((entry) => [...entry.protectedPasswords ?? []]);
+    const secrets = [...new Set([...this.protectedValues, ...tabValues])].flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]).filter(Boolean);
     const scrub = (input) => {
       if (typeof input === 'string') { for (const secret of secrets) input = input.replaceAll(secret, '[masked]'); return input; }
       if (Array.isArray(input)) return input.map(scrub);
@@ -313,7 +484,7 @@ export class NativeBrowserPasswords {
   }
   forgetTab(tab) {
     tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
-    tab.passwordSnapshot = null; tab.protectedPasswords?.clear(); tab.passwordAllowedOrigins?.clear();
+    tab.passwordSnapshot = null; tab.protectedPasswords?.clear();
     tab.passwordShield = false;
   }
   async storageState() {
@@ -321,6 +492,12 @@ export class NativeBrowserPasswords {
     let value = { cookies: await this.host.getCookies(), origins: [], originsComplete: false };
     for (const tab of this.host.tabs.values()) value = this.redact(tab, value);
     return value;
+  }
+  /** 사용자가 승인한 저장 카드나 설정이 보낸 로그인을 OS 보관함에 저장한다. 응답에는 비밀번호가 없다. */
+  async save(payload) {
+    try {
+      return await this.vault.importCredential({ origin: payload?.origin, username: payload?.username, password: payload?.password, sourceProfile: 'Hama Browser' });
+    } finally { if (payload) payload.password = ''; }
   }
   async armSave(window, params) {
     const tab = this.host.ownedTab(params.tabId, window);
@@ -331,10 +508,7 @@ export class NativeBrowserPasswords {
     if (!tab.interactive || tab.closing || tab.view.webContents.isDestroyed() || epoch !== tab.navigationEpoch || origin !== passwordOrigin(tab.view.webContents.getURL())) throw passwordFailure('BROWSER_PASSWORD_TARGET_CHANGED', 'The login page changed. Try again.');
     const token = params.enabled === false ? null : randomUUID();
     tab.manualPasswordSave = token ? { token, origin, epoch: tab.navigationEpoch } : null;
-    if (token) {
-      tab.passwordShield = true;
-      tab.passwordAllowedOrigins = new Set(tab.passwordAllowedOrigins ?? []); tab.passwordAllowedOrigins.add(origin);
-    }
+    if (token) tab.passwordShield = true;
     tab.view.webContents.send('desktop:browser-guest-arm-save', token);
     return { enabled: !!token, navigationEpoch: epoch };
   }
@@ -354,7 +528,7 @@ export class NativeBrowserPasswords {
     let origin;
     try { origin = passwordOrigin(event.senderFrame.url); } catch { return; }
     if (origin !== armed.origin || typeof payload.username !== 'string' || typeof payload.password !== 'string' || !payload.username || !payload.password || Buffer.byteLength(payload.username) + Buffer.byteLength(payload.password) > 12 * 1024) return;
-    this.protectFamily(tab, origin, payload.password);
+    this.protectFamily(tab, payload.password);
     try {
       await this.vault.importCredential({ origin, username: payload.username, password: payload.password, sourceProfile: 'Hama Browser' });
       this.host.emit(tab, 'password-save', { state: 'saved' });
@@ -378,7 +552,8 @@ export class NativeBrowserPasswords {
     try { origin = passwordOrigin(event.sender.getURL()); } catch { return; }
     const epoch = tab.navigationEpoch;
     const { accounts } = await this.vault.list();
-    const matching = accounts.filter((account) => account.origin === origin);
+    // 같은 사이트의 로그인을 모두 보여 주고, 이 출처에 저장한 것을 먼저 둔다.
+    const matching = accounts.filter((account) => sameSite(account.origin, origin)).sort((left, right) => Number(right.origin === origin) - Number(left.origin === origin));
     if (!matching.length || epoch !== tab.navigationEpoch || !tab.interactive) return;
     const window = this.host.getWindowForSession(tab.sessionId);
     if (!window || window.isDestroyed()) return;
@@ -393,6 +568,9 @@ export function registerBrowserPasswordIpc({ ipcMain, browserHost, passwords = b
   const handlers = {
     profiles: () => passwords.importer.listProfiles(), import: (_window, payload) => passwords.importer.importProfile(payload),
     list: () => passwords.vault.list(), remove: (_window, payload) => passwords.vault.remove(payload?.id),
+    block: (_window, payload) => passwords.vault.setAgentBlocked(payload?.id, payload?.blocked),
+    save: (_window, payload) => passwords.save(payload),
+    cookieSites: (_window, payload) => passwords.cookies.listSites(payload), importCookies: (_window, payload) => passwords.cookies.importSites(payload),
     fill: (window, payload) => passwords.humanFill(window, payload),
     armSave: (window, payload) => passwords.armSave(window, payload),
   };

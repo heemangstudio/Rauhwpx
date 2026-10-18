@@ -60,11 +60,18 @@ async function attachProvider() {
   providers.push(provider); return provider;
 }
 function must(frame, scenario) { assert.equal(frame.ok, true, `${scenario}: ${frame.error?.code} ${frame.error?.message}`); return frame.result; }
-async function observe(provider, tabId) { return must(await provider.call('browser_snapshot', { tabId }), 'semantic observation').snapshot; }
+async function observe(provider, tabId) {
+  const result = must(await provider.call('browser_snapshot', { tabId }), 'semantic observation');
+  assert.equal(result.mcpContent?.at(-1)?.text, result.snapshot.outline, 'the outline reaches the model as raw text');
+  return result.snapshot;
+}
+// 개요 줄: - textbox "Research query" [ref=e3]: 입력값
+const outlineLine = (snapshot, name) => snapshot.outline.split('\n').find(line => line.includes(`"${name}"`));
+const fieldValue = (snapshot, name) => outlineLine(snapshot, name)?.match(/\]: (.*)$/)?.[1];
 function refArgs(snapshot, name, intent = 'research') {
-  const element = snapshot.elements.find(row => row.name === name);
-  assert.ok(element, `Real semantic snapshot contains ${name}`);
-  return { tabId: snapshot.tabId, snapshotId: snapshot.snapshotId, ref: element.ref, navigationEpoch: snapshot.navigationEpoch, controllerEpoch: snapshot.controllerEpoch, intent };
+  const ref = outlineLine(snapshot, name)?.match(/\[ref=([^\]]+)\]/)?.[1];
+  assert.ok(ref, `Real semantic snapshot contains ${name}`);
+  return { tabId: snapshot.tabId, snapshotId: snapshot.snapshotId, ref, navigationEpoch: snapshot.navigationEpoch, controllerEpoch: snapshot.controllerEpoch, intent };
 }
 async function clickRef(provider, tabId, name, intent = 'research') {
   const snapshot = await observe(provider, tabId);
@@ -117,9 +124,10 @@ try {
     const observation = await observe(provider, tab.tabId);
     must(await provider.call('browser_type', { ...refArgs(observation, 'Research query', 'search'), text: 'Shared sidebar query' }), 'agent types into user-opened page');
     await clickRef(provider, tab.tabId, 'Search references', 'search');
-    assert.ok((await observe(provider, tab.tabId)).text.includes('Result: Shared sidebar query'));
+    assert.ok((await observe(provider, tab.tabId)).outline.includes('Result: Shared sidebar query'));
     assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.presentation), 'dock');
-    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), true, 'sidebar indicates and protects ongoing agent control');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.dataset.agentControlled), 'true', 'sidebar indicates the agent turn');
+    assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), false, 'between agent actions the user can take the tab');
     assert.equal(await page.$$eval('.ag-browser-floating', rows => rows.some(row => !row.hidden)), false, 'agent reuses sidebar without an extra floating preview');
     await waitForState(page, 'sidebar frame recovers after agent navigation', () => document.querySelector('.ag-workbench-page .ag-browser-error')?.hidden === true && Boolean(document.querySelector('.ag-workbench-page .ag-browser-frame')?.src));
     await shot('shared-sidebar-agent-control');
@@ -137,16 +145,27 @@ try {
   results.source = { sessionId: provider.sessionId, tabId: tab.tabId, projectId: tab.projectId };
   await record('Agent opens actual managed Chromium through authenticated MCP', { tabId: tab.tabId });
   await clickRef(provider, tab.tabId, 'Sign in to fixture account', 'login');
-  const snapshot = await eventually('authenticated research page', () => observe(provider, tab.tabId), value => value.text.includes('Approved fixture account'));
+  const snapshot = await eventually('authenticated research page', () => observe(provider, tab.tabId), value => value.outline.includes('Approved fixture account'));
   const query = refArgs(snapshot, 'Research query', 'search');
   must(await provider.call('browser_type', { ...query, text: 'Korean HWP research' }), 'type semantic research query');
   await clickRef(provider, tab.tabId, 'Search references', 'search');
   const searched = await observe(provider, tab.tabId);
-  assert.ok(searched.text.includes('Result: Korean HWP research'));
+  assert.ok(searched.outline.includes('Result: Korean HWP research'));
   await record('Semantic snapshot refs drive real login, typing and search');
   const stale = await provider.call('browser_click', refArgs(snapshot, 'Search references', 'search'));
   assert.equal(stale.ok, false); assert.equal(stale.error.code, 'BROWSER_STALE_REFERENCE');
   await record('Stale semantic reference rejected without replay');
+  // 에이전트 턴의 미리보기를 사용자가 만지면 제어권을 넘겨받고, 에이전트 쓰기는 반환 전까지 즉시 거절된다.
+  const previewSurface = await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-surface', { visible: true });
+  const surfaceBox = await previewSurface.boundingBox();
+  await page.mouse.move(surfaceBox.x + surfaceBox.width / 2, surfaceBox.y + surfaceBox.height / 2); await page.mouse.wheel({ deltaY: 40 });
+  await eventually('touching the agent preview takes control', () => human('status'), status => status.tabs.find(row => row.tabId === tab.tabId)?.controller.held === true);
+  const refused = await provider.call('browser_click', refArgs(await observe(provider, tab.tabId), 'Search references', 'search'));
+  assert.equal(refused.ok, false); assert.equal(refused.error.code, 'BROWSER_USER_IN_CONTROL');
+  await page.click('.ag-browser-floating:not([hidden]) [aria-label="에이전트에게 제어권 반환"]');
+  await eventually('returning control releases the hold', () => human('status'), status => !status.tabs.find(row => row.tabId === tab.tabId)?.controller.held);
+  await clickRef(provider, tab.tabId, 'Search references', 'search');
+  await record('Touching the agent preview takes control; agent writes are refused until the user returns it');
   let broken;
   if (!chromeOnly) {
   for (const [name, intent] of [['Download authenticated GET PDF', 'export'], ['Export POST PDF', 'export'], ['Download blob PDF', 'export']]) {
@@ -196,8 +215,9 @@ try {
   assert.equal(await page.$eval('.ag-workbench-page .ag-browser', node => node.inert), false, 'turn completion returns human input');
   await record('Turn completion restores human browser input without a separate takeover button');
   const humanSnapshot = (await human('snapshot', { tabId: tab.tabId })).snapshot;
-  await human('type', { ...refArgs(humanSnapshot, 'Research query', 'search'), text: '' });
-  const queryElement = humanSnapshot.elements.find(row => row.name === 'Research query');
+  const queryRef = refArgs(humanSnapshot, 'Research query', 'search');
+  await human('type', { ...queryRef, text: '' });
+  const queryElement = (await human('capture', { tabId: tab.tabId, mode: 'element', snapshotId: queryRef.snapshotId, ref: queryRef.ref })).capture.element;
   const actualFrame = (await human('frame', { tabId: tab.tabId })).frame;
   const queryPoint = await page.$eval('.ag-browser-frame', (image, input) => {
     const rect = image.getBoundingClientRect();
@@ -210,12 +230,12 @@ try {
     input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '자료' }));
     input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '자료', inputType: 'insertCompositionText', isComposing: false }));
   });
-  await eventually('Korean composition reaches actual Chromium once', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => value.elements.find(row => row.name === 'Research query')?.value === '자료');
+  await eventually('Korean composition reaches actual Chromium once', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => fieldValue(value, 'Research query') === '자료');
   await page.evaluate(() => {
     const clipboard = new DataTransfer(); clipboard.setData('text/plain', ' 검토');
     document.querySelector('.ag-browser-ime').dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData: clipboard }));
   });
-  await eventually('clipboard paste reaches actual Chromium', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => value.elements.find(row => row.name === 'Research query')?.value === '자료 검토');
+  await eventually('clipboard paste reaches actual Chromium', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => fieldValue(value, 'Research query') === '자료 검토');
   await record('Production streamed pointer, Korean IME and clipboard paste reach the owned page once');
   const previousFrame = await page.$eval('.ag-browser-frame', image => image.src);
   const dragPoint = await page.$eval(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`, node => { const r = node.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
@@ -256,7 +276,7 @@ try {
     await page.mouse.move(160, 240, { steps: 12 }); await page.mouse.up();
     await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-frame', { visible: true });
     const reopened = (await human('snapshot', { tabId: tab.tabId })).snapshot;
-    assert.equal(reopened.elements.find(row => row.name === 'Research query').value, '자료 검토');
+    assert.equal(fieldValue(reopened, 'Research query'), '자료 검토');
     await record('Closing the floating preview docks it and dragging it out preserves the tab, form and controller');
   }
   await page.click('.ag-browser-floating:not([hidden]) [aria-label="작업 칸에 붙이기"]');
@@ -285,7 +305,7 @@ try {
   await popup.mouse.click(dockPoint.x, dockPoint.y);
   await page.waitForSelector('.ag-workbench-page .ag-browser-frame', { visible: true });
   const afterPopout = (await human('snapshot', { tabId: tab.tabId })).snapshot;
-  assert.equal(afterPopout.elements.find(row => row.name === 'Research query').value, '자료 검토');
+  assert.equal(fieldValue(afterPopout, 'Research query'), '자료 검토');
   await record('Popout and dock retain the same tab, authenticated page and form input');
   await page.click('.ag-browser [aria-label="현재 화면을 캡처해 채팅에 첨부"]');
   await page.waitForSelector('.ag-capture-inbox .ag-capture-pill', { visible: true });
@@ -362,10 +382,10 @@ try {
   await page.click(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`);
   await page.evaluate(() => window.__eventBus.emit('settings:open', { destination: 'browser', fullscreen: true }));
   await page.waitForSelector('.ag-browser-settings', { visible: true });
-  await page.locator('.ag-browser-settings button::-p-text(승인된 권한)').click();
-  await page.waitForFunction(() => document.querySelector('.ag-browser-settings-body')?.textContent?.includes('Google Search'));
-  await shot('real-stream-browser-approved-permissions');
-  await record('Production Browser Settings exposes durable research permissions');
+  await page.locator('.ag-browser-settings button::-p-text(권한)').click();
+  await page.waitForSelector('.ag-browser-settings-body .ag-browser-site-add');
+  await shot('real-stream-browser-site-permissions');
+  await record('Production Browser Settings shows the site list');
   assert.ok(site.requests.some(row => row.path === '/pdf/post' && row.method === 'POST' && row.authenticated));
   assert.equal(site.requests.filter(row => row.path === '/pdf/get').length, 1, 'authenticated PDF is never refetched');
   const publicResults = JSON.stringify(results.scenarios);
@@ -385,9 +405,9 @@ try {
   const inboxTab = (await human('open', { url: `${site.origin}/research` })).tab;
   assert.equal(inboxTab.projectId, null, 'new owner client has no invented project');
   let inboxSnapshot = (await human('snapshot', { tabId: inboxTab.tabId })).snapshot;
-  if (inboxSnapshot.elements.some(row => row.name === 'Sign in to fixture account')) {
+  if (outlineLine(inboxSnapshot, 'Sign in to fixture account')) {
     await human('click', refArgs(inboxSnapshot, 'Sign in to fixture account', 'login'));
-    inboxSnapshot = await eventually('standalone fixture login', async () => (await human('snapshot', { tabId: inboxTab.tabId })).snapshot, value => value.text.includes('Approved fixture account'));
+    inboxSnapshot = await eventually('standalone fixture login', async () => (await human('snapshot', { tabId: inboxTab.tabId })).snapshot, value => value.outline.includes('Approved fixture account'));
   }
   await human('click', refArgs(inboxSnapshot, 'Export POST PDF', 'export'));
   const inboxRows = await eventually('general inbox receives PDF', async () => (await human('downloads', { action: 'list' })).downloads, rows => rows.some(row => row.target.tabId === inboxTab.tabId && row.state === 'downloaded'));
