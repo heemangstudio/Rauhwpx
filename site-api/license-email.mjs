@@ -86,24 +86,44 @@ const LICENSE_EMAIL_COPY = {
   resend: { subject: '[HamaEditor] Mac 라이선스 키를 다시 보내드려요', heading: '라이선스 키를 다시 보내드려요.' },
   // Admin `issue --send-email` with no order or payment behind it (free or beta keys).
   free: { subject: '[HamaEditor] Mac 라이선스 키를 보내드려요', heading: 'HamaEditor 라이선스 키를 보내드려요.' },
+  // A subscription renewal paid on Groble extended the same key.
+  renewal: {
+    subject: '[HamaEditor] Mac 라이선스가 갱신됐어요',
+    heading: '라이선스가 갱신됐어요.',
+    noteHtml: '쓰던 키를 그대로 계속 쓰면 돼요. 키 하나로 <strong>Mac 2대</strong>까지 쓸 수 있어요.',
+  },
 };
+const DEFAULT_NOTE_HTML = '아래 키를 HamaEditor에 붙여 넣으면 바로 모든 기능을 쓸 수 있어요. 키 하나로 <strong>Mac 2대</strong>까지 쓸 수 있어요.';
 export const LICENSE_EMAIL_KINDS = Object.keys(LICENSE_EMAIL_COPY);
 export const LICENSE_EMAIL_SUBJECT = LICENSE_EMAIL_COPY.purchase.subject;
 
-/** Which copy a stored license gets: a resend wins, then any sign of payment, else a free key. */
+/** Which copy a stored license gets: a resend wins, then a renewal, then any sign of payment, else a free key. */
 export function licenseEmailKind(license) {
   if (license?.emailDelivery?.resend) return 'resend';
+  if (license?.emailDelivery?.renewal) return 'renewal';
   if (license?.source === 'groble' || license?.merchantUid || license?.amount > 0) return 'purchase';
   return 'free';
+}
+
+const KST_DATE = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
+
+/** The line under the key card for a subscription key, e.g. `다음 갱신일은 2027년 10월 19일이에요.` Lifetime keys get none. */
+export function licenseExpiryLine(expiresAt, { autoRenew = true } = {}) {
+  if (!Number.isSafeInteger(expiresAt)) return '';
+  const date = KST_DATE.format(new Date(expiresAt));
+  return autoRenew ? `매년 자동으로 갱신돼요. 다음 갱신일은 ${date}이에요.` : `${date}까지 쓸 수 있어요.`;
 }
 
 /**
  * License key email on the shared layout.
  * `downloadUrl` is the CTA target: a direct .dmg link works best; the homepage falls back to the dmg.
+ * `expiresAt` (epoch ms) adds the renewal or end date under the key card; the card itself holds only the key.
  */
 export function licenseEmail({
   key,
   kind = 'purchase',
+  expiresAt = null,
+  autoRenew = true,
   downloadUrl = MAC_DMG_URL,
   bannerUrl = EMAIL_BANNER_URL,
   keyIconUrl = EMAIL_KEY_ICON_URL,
@@ -120,8 +140,9 @@ export function licenseEmail({
     preheader,
     banner: { url: bannerUrl, alt: 'HamaEditor · Mac 라이선스 키' },
     heading: copy.heading,
-    noteHtml: '아래 키를 HamaEditor에 붙여 넣으면 바로 모든 기능을 쓸 수 있어요. 키 하나로 <strong>Mac 2대</strong>까지 쓸 수 있어요.',
+    noteHtml: copy.noteHtml ?? DEFAULT_NOTE_HTML,
     card: { value: key, iconUrl: keyIconUrl, bgUrl: cardBgUrl },
+    cardNote: licenseExpiryLine(expiresAt, { autoRenew }),
     cta: { href, label: 'Mac용 내려받기', icon: '&#8595;', caption: 'Apple Silicon (M1 이후) · .dmg' },
   });
   return { subject, text: String(key), html };

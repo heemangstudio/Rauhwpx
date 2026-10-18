@@ -24,6 +24,10 @@ export const REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/; // Groble sellerReference r
 const DEVICE_ID_RE = /^[A-Za-z0-9\-_.:]{8,128}$/;
 const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+/** Months one paid subscription round buys when Groble does not say (the GLJFC9 product bills every 12 months). */
+export const SUBSCRIPTION_CYCLE_MONTHS = 12;
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const MAX_EXTEND_YEARS = 10;
 
 export function emptyLicensesState() {
   return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {} };
@@ -79,6 +83,58 @@ function parseTime(value) {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+function iso(ms) {
+  return new Date(ms).toISOString();
+}
+
+/**
+ * End of the KST day `months` calendar months after `ms`. Groble bills a renewal on a KST date
+ * (`nextBillingDate`), so a subscription key runs through the whole anniversary day and a same-day
+ * renewal lands before it lapses. A day past the target month's end clamps (Feb 29 → Feb 28).
+ */
+export function subscriptionEnd(ms, months) {
+  const kst = new Date(ms + KST_OFFSET_MS);
+  const year = kst.getUTCFullYear();
+  const month = kst.getUTCMonth() + months;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return Date.UTC(year, month, Math.min(kst.getUTCDate(), lastDay), 23, 59, 59, 999) - KST_OFFSET_MS;
+}
+
+/** `YYYY-MM-DD` is the end of that KST day; anything else must be a full ISO-8601 time. */
+function parseUntil(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (date) {
+    const [year, month, day] = date.slice(1).map(Number);
+    const end = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+    if (end.getUTCMonth() !== month - 1 || end.getUTCDate() !== day) return undefined;
+    return end.getTime() - KST_OFFSET_MS;
+  }
+  return /^\d{4}-\d{2}-\d{2}T/.test(text) ? parseTime(text) : undefined;
+}
+
+/** Subscription keys carry `expiresAt`; every record without it (paid one-time, grandfathered, beta, manual) is lifetime. */
+function expiryOf(license) {
+  return parseTime(license?.expiresAt) ?? null;
+}
+
+/** End of Groble's retry and grace window after a failed renewal, while the subscription is past due. */
+function paymentGraceEndOf(license) {
+  return license?.subscription?.status === 'past_due' ? parseTime(license.subscription.paymentGraceEndsAt) ?? null : null;
+}
+
+/** When the key stops working: its paid end, or the end of the payment grace window when that is later. */
+function accessEndOf(license) {
+  const expiry = expiryOf(license);
+  if (expiry === null) return null;
+  return Math.max(expiry, paymentGraceEndOf(license) ?? 0);
+}
+
+function cycleMonths(object) {
+  const months = object?.subscription?.billingCycleMonths;
+  return Number.isInteger(months) && months >= 1 && months <= 12 ? months : SUBSCRIPTION_CYCLE_MONTHS;
+}
+
 function normalizeState(state) {
   const base = emptyLicensesState();
   const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
@@ -116,6 +172,10 @@ function licenseView(license, { includeKey = true } = {}) {
     createdAt: license.createdAt,
     revokedAt: license.revokedAt,
     revokeReason: license.revokeReason,
+    plan: expiryOf(license) === null ? 'lifetime' : 'annual',
+    expiresAt: license.expiresAt ?? null,
+    subscription: license.subscription,
+    extensions: license.extensions,
     note: license.note,
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, ...d })),
     emailDelivery: license.emailDelivery,
@@ -135,7 +195,10 @@ export function createLicensesService({
   signingKey = null,
   leaseKid = DEFAULT_LEASE_KID,
   emailProvider,
-  grobleContentId = 'uRshdR',
+  onetimeProductIds = ['uRshdR'],
+  subscriptionProductIds = ['GLJFC9'],
+  paymentGraceMs = 10 * 24 * 60 * 60 * 1000,
+  paymentFixUrl = 'https://groble.im/manage/purchase',
   expectedPrice = 9900,
   minAmount = expectedPrice,
   grandfatherCutoff = undefined,
@@ -201,11 +264,12 @@ export function createLicensesService({
     return true;
   }
 
-  function findLicense(state, { key, keyId, merchantUid } = {}) {
-    if (keyId && state.licenses[keyId]) return state.licenses[keyId];
+  function findLicense(state, { key, keyId, merchantUid, ref } = {}) {
+    if (keyId && Object.hasOwn(state.licenses, keyId)) return state.licenses[keyId];
     const normalized = normalizeLicenseKey(key);
     if (normalized && state.keyIndex[normalized]) return state.licenses[state.keyIndex[normalized]];
     if (merchantUid && state.orders[merchantUid]?.keyId) return state.licenses[state.orders[merchantUid].keyId];
+    if (typeof ref === 'string' && Object.hasOwn(state.refs, ref)) return findLicense(state, { merchantUid: state.refs[ref] });
     return undefined;
   }
 
@@ -222,28 +286,44 @@ export function createLicensesService({
   }
 
   // ---------------------------------------------------------------- Groble
+  //
+  // Event names and fields follow https://groble.im/help/guides/webhook-events (read 2026-10-19).
+  // One-time orders (`payment.*`, ONE_TIME products) issue lifetime keys. Subscription products
+  // (`subscription_payment.*`, `subscription.*`) issue one key on the INITIAL round with
+  // `expiresAt`, and every RENEWAL round extends that same key. A subscription is found by its
+  // `sellerReference` (the success-page ref, the same on every round); `merchantUid` is new each round.
 
-  function checkPurchase(object) {
-    const contentId = str(object?.content?.id, 128);
-    const paymentType = str(object?.content?.paymentType, 32);
+  function priceProblem(object, { renewal = false } = {}) {
     const finalAmount = num(object?.pricing?.finalAmount);
     const originalAmount = num(object?.pricing?.originalAmount);
-    if (grobleContentId && contentId !== grobleContentId) return `wrong_product:${contentId ?? 'missing'}`;
-    if (paymentType && paymentType !== 'ONE_TIME') return `wrong_payment_type:${paymentType}`;
     if (str(object?.pricing?.currency, 8) && object.pricing.currency !== 'KRW') return 'wrong_currency';
     if (finalAmount === undefined) return 'missing_amount';
+    // A renewal bills the price frozen at signup, so a later price change must not hold old subscribers.
+    if (renewal) return finalAmount > 0 ? null : `amount_below_minimum:${finalAmount}`;
     if (originalAmount !== undefined && originalAmount !== expectedPrice) return `wrong_price:${originalAmount}`;
     if (finalAmount < minAmount) return `amount_below_minimum:${finalAmount}`;
     return null;
   }
 
-  function onCompleted(state, event, object, occurredMs) {
+  function checkPurchase(object, { subscription = false, renewal = false } = {}) {
+    const contentId = str(object?.content?.id, 128);
+    const paymentType = str(object?.content?.paymentType, 32);
+    const products = subscription ? subscriptionProductIds : onetimeProductIds;
+    const expectedType = subscription ? 'SUBSCRIPTION' : 'ONE_TIME';
+    if (products.length && !products.includes(contentId)) return `wrong_product:${contentId ?? 'missing'}`;
+    if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
+    return priceProblem(object, { renewal });
+  }
+
+  /** Create or update the order record of one paid round. */
+  function recordOrder(state, event, object, kind) {
     const merchantUid = object.merchantUid;
     const ref = str(object.sellerReference, 128);
     const email = str(object?.buyer?.email, 254);
     const order = state.orders[merchantUid] ?? { merchantUid, createdAt: new Date(now()).toISOString() };
     state.orders[merchantUid] = order;
     Object.assign(order, {
+      ...(kind ? { kind } : {}),
       ref: order.ref ?? (ref && REF_RE.test(ref) ? ref : undefined),
       email: order.email ?? email,
       contentId: str(object?.content?.id, 128),
@@ -253,45 +333,208 @@ export function createLicensesService({
       purchasedAt: str(object?.payment?.purchasedAt, 64),
       completedAt: event.occurredAt,
       completedEventId: str(event.id, 128),
+      ...(kind ? {
+        billingCycleMonths: cycleMonths(object),
+        round: Number.isSafeInteger(object?.subscription?.currentRound) ? object.subscription.currentRound : undefined,
+      } : {}),
     });
     for (const k of Object.keys(order)) if (order[k] === undefined) delete order[k];
-    linkRef(state, order.ref, merchantUid);
+    // The first round claims the ref; renewals carry the same ref and leave the mapping alone.
+    if (kind !== 'renewal') linkRef(state, order.ref, merchantUid);
+    return order;
+  }
 
-    if (order.keyId) {
-      // Already issued (webhook retry with a new delivery key, or a manual backfill). Attach data only.
-      const license = state.licenses[order.keyId];
-      if (license) {
-        license.ref = license.ref ?? order.ref;
-        license.email = license.email ?? email;
-        license.amount = license.amount ?? order.amount;
-        license.occurredAt = license.occurredAt ?? event.occurredAt;
-      }
-      return { action: 'already_issued', keyId: order.keyId };
+  function hold(order, reason) {
+    order.status = 'held';
+    order.holdReason = reason;
+    log(`[site-api] groble order ${order.merchantUid} held: ${reason}`);
+    return { action: 'held', reason, needsReview: true };
+  }
+
+  /** When a round was paid: Groble's purchase time, else the event time, else now. */
+  function paidAtOf(order) {
+    return parseTime(order.purchasedAt) ?? parseTime(order.completedAt) ?? now();
+  }
+
+  /** License fields for a subscription key issued from its first paid round. */
+  function subscriptionStart(order, object = {}) {
+    const paidMs = paidAtOf(order);
+    const expiresMs = subscriptionEnd(paidMs, order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS);
+    order.grantFrom = iso(paidMs);
+    order.grantTo = iso(expiresMs);
+    const sub = object.subscription ?? {};
+    const subscription = {
+      productId: order.contentId,
+      status: 'active',
+      autoRenew: true,
+      billingCycleMonths: order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS,
+      activatedAt: str(sub.activatedAt, 64) ?? order.purchasedAt ?? order.completedAt,
+      lastPaidAt: iso(paidMs),
+      currentRound: order.round,
+      nextBillingDate: str(sub.nextBillingDate, 16),
+    };
+    for (const k of Object.keys(subscription)) if (subscription[k] === undefined) delete subscription[k];
+    return { expiresAt: iso(expiresMs), subscription };
+  }
+
+  /** The subscription key a renewal, failure, cancel or termination belongs to. */
+  function findSubscriptionLicense(state, object) {
+    const ref = str(object.sellerReference, 128);
+    if (ref && state.refs[ref]) {
+      const license = findLicense(state, { merchantUid: state.refs[ref] });
+      if (license?.subscription) return license;
     }
-    if (order.status === 'refunded') {
-      // Refund arrived before the completion (Groble does not guarantee order). Never issue.
-      return { action: 'refunded_before_completed' };
+    // A buyer who reached Groble without our ref (the store page itself) still renews: match the
+    // one live subscription key with the buyer's email for this product, and only when there is one.
+    const email = str(object?.buyer?.email, 254)?.toLowerCase();
+    if (ref || !email) return undefined;
+    const contentId = str(object?.content?.id, 128);
+    const matches = Object.values(state.licenses).filter((l) => l.subscription
+      && l.email?.toLowerCase() === email
+      && (!contentId || !l.subscription.productId || l.subscription.productId === contentId)
+      && l.subscription.status !== 'terminated');
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  function attachToIssued(state, order, email, event) {
+    const license = state.licenses[order.keyId];
+    if (license) {
+      license.ref = license.ref ?? order.ref;
+      license.email = license.email ?? email;
+      license.amount = license.amount ?? order.amount;
+      license.occurredAt = license.occurredAt ?? event.occurredAt;
     }
-    const problem = checkPurchase(object);
-    if (problem) {
-      order.status = 'held';
-      order.holdReason = problem;
-      log(`[site-api] groble order ${merchantUid} held: ${problem}`);
-      return { action: 'held', reason: problem };
-    }
+    return { action: 'already_issued', keyId: order.keyId };
+  }
+
+  /** One-time `payment.completed` or the INITIAL round of a subscription: one key per merchantUid. */
+  function onCompleted(state, event, object, { subscription = false } = {}) {
+    const order = recordOrder(state, event, object, subscription ? 'subscription' : undefined);
+    const email = str(object?.buyer?.email, 254);
+    // Already issued (webhook retry with a new delivery key, or a manual backfill). Attach data only.
+    if (order.keyId) return attachToIssued(state, order, email, event);
+    // Refund arrived before the completion (Groble does not guarantee order). Never issue.
+    if (order.status === 'refunded') return { action: 'refunded_before_completed' };
+    const problem = checkPurchase(object, { subscription });
+    if (problem) return hold(order, problem);
     const license = createLicense(state, {
       source: 'groble',
-      merchantUid,
+      merchantUid: order.merchantUid,
       ref: order.ref,
       email,
       amount: order.amount,
       occurredAt: event.occurredAt,
+      ...(subscription ? subscriptionStart(order, object) : {}),
     });
     queueEmail(license);
     order.status = 'issued';
     order.keyId = license.keyId;
     delete order.holdReason;
-    return { action: 'issued', keyId: license.keyId };
+    return { action: 'issued', keyId: license.keyId, ...(license.expiresAt ? { expiresAt: license.expiresAt } : {}) };
+  }
+
+  /**
+   * A RENEWAL round extends the same key by one billing cycle from its current expiry, or from the
+   * payment when it already lapsed. The round's merchantUid is recorded, so a replay never extends twice.
+   */
+  function onRenewal(state, event, object) {
+    const order = recordOrder(state, event, object, 'renewal');
+    if (order.keyId) return { action: 'already_renewed', keyId: order.keyId };
+    if (order.status === 'refunded') return { action: 'refunded_before_completed' };
+    const problem = checkPurchase(object, { subscription: true, renewal: true });
+    if (problem) return hold(order, problem);
+    const license = findSubscriptionLicense(state, object);
+    if (!license) return hold(order, 'renewal_unmatched');
+    if (license.status === 'revoked') return hold(order, 'renewal_for_revoked_key');
+    // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
+    const paidMs = paidAtOf(order);
+    const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
+    const to = subscriptionEnd(from, order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS);
+    license.expiresAt = iso(to);
+    order.status = 'renewed';
+    order.keyId = license.keyId;
+    order.grantFrom = iso(from);
+    order.grantTo = iso(to);
+    delete order.holdReason;
+    const sub = license.subscription;
+    // A renewal paid after a cancel request means the subscription is running again.
+    if (!sub.cancelRequestedAt || paidMs > (parseTime(sub.cancelRequestedAt) ?? 0)) {
+      sub.status = 'active';
+      sub.autoRenew = true;
+    }
+    sub.lastPaidAt = iso(paidMs);
+    if (order.round !== undefined) sub.currentRound = order.round;
+    const nextBillingDate = str(object?.subscription?.nextBillingDate, 16);
+    if (nextBillingDate) sub.nextBillingDate = nextBillingDate;
+    delete sub.lastFailure;
+    delete sub.paymentGraceEndsAt;
+    if (license.email) license.emailDelivery = { status: 'pending', queuedAt: new Date(now()).toISOString(), renewal: true };
+    return { action: 'renewed', keyId: license.keyId, expiresAt: license.expiresAt };
+  }
+
+  function unmatched(type) {
+    return { action: 'subscription_unmatched', reason: `subscription_unmatched:${type}`, needsReview: true };
+  }
+
+  /**
+   * A failed renewal keeps the key fully usable through Groble's retry and grace window: until
+   * `failure.gracePeriodEndsAt` when the event carries it (the final attempt does), else the key's
+   * expiry plus `paymentGraceMs`. `subscription.terminated` or the window's end stops it; a paid retry
+   * renews as usual.
+   */
+  function onPaymentFailed(state, event, object) {
+    const license = findSubscriptionLicense(state, object);
+    if (!license) return unmatched('subscription_payment.failed');
+    const failure = object?.failure ?? {};
+    const failedAt = str(failure.failedAt, 64) ?? event.occurredAt;
+    const sub = license.subscription;
+    if ((parseTime(failedAt) ?? 0) > (parseTime(sub.lastPaidAt) ?? 0) && sub.status !== 'terminated') {
+      sub.status = 'past_due';
+      sub.lastFailure = {
+        merchantUid: object.merchantUid,
+        attemptNumber: Number.isSafeInteger(failure.attemptNumber) ? failure.attemptNumber : undefined,
+        isFinal: failure.isFinal === true,
+        reason: str(failure.reason, 64),
+        failedAt,
+        nextRetryAt: str(failure.nextRetryAt, 64),
+        gracePeriodEndsAt: str(failure.gracePeriodEndsAt, 64),
+      };
+      for (const k of Object.keys(sub.lastFailure)) if (sub.lastFailure[k] === undefined) delete sub.lastFailure[k];
+      const fromEvent = parseTime(failure.gracePeriodEndsAt);
+      const derived = Math.max(parseTime(sub.paymentGraceEndsAt) ?? 0, (expiryOf(license) ?? now()) + paymentGraceMs);
+      sub.paymentGraceEndsAt = iso(fromEvent ?? derived);
+    }
+    return { action: 'payment_failure_recorded', keyId: license.keyId, paymentGraceEndsAt: sub.paymentGraceEndsAt };
+  }
+
+  /** Auto-renewal is off; the key still runs to its expiry. */
+  function onSubscriptionCancelRequested(state, event, object) {
+    const license = findSubscriptionLicense(state, object);
+    if (!license) return unmatched('subscription.cancel_requested');
+    const sub = license.subscription;
+    const request = object?.cancelRequest ?? {};
+    sub.autoRenew = false;
+    // A past-due subscription keeps its payment grace until Groble terminates it.
+    if (sub.status !== 'terminated' && sub.status !== 'past_due') sub.status = 'cancel_requested';
+    sub.cancelRequestedAt = str(request.requestedAt, 64) ?? str(object?.subscription?.cancelledAt, 64) ?? event.occurredAt;
+    sub.cancelRequestedBy = str(request.requestedBy, 16);
+    sub.serviceEndsAt = str(object.serviceEndsAt, 64);
+    for (const k of Object.keys(sub)) if (sub[k] === undefined) delete sub[k];
+    return { action: 'cancel_recorded', keyId: license.keyId };
+  }
+
+  /** The subscription ended on Groble's side. No more renewals; the key still runs to its expiry. */
+  function onSubscriptionTerminated(state, event, object) {
+    const license = findSubscriptionLicense(state, object);
+    if (!license) return unmatched('subscription.terminated');
+    const sub = license.subscription;
+    sub.status = 'terminated';
+    sub.autoRenew = false;
+    sub.terminatedAt = str(object?.termination?.terminatedAt, 64) ?? event.occurredAt;
+    sub.terminationReason = str(object?.termination?.reason, 64);
+    sub.cancelledBy = str(object.cancelledBy, 16);
+    for (const k of Object.keys(sub)) if (sub[k] === undefined) delete sub[k];
+    return { action: 'termination_recorded', keyId: license.keyId };
   }
 
   function onCancelRequested(state, event, object) {
@@ -309,6 +552,21 @@ export function createLicensesService({
       });
     }
     return { action: 'cancel_request_recorded' };
+  }
+
+  /**
+   * A full refund of a subscription round takes back the time that round bought. Once every paid
+   * round of the key is refunded, the key is revoked like a refunded one-time order.
+   */
+  function refundRound(state, order, refundedAt) {
+    const license = state.licenses[order.keyId];
+    const granted = (parseTime(order.grantTo) ?? 0) - (parseTime(order.grantFrom) ?? 0);
+    const expiry = expiryOf(license);
+    if (expiry !== null && granted > 0) license.expiresAt = iso(expiry - granted);
+    const paidRoundLeft = Object.values(state.orders).some((o) => o !== order && o.keyId === license.keyId
+      && o.grantTo && o.status !== 'refunded');
+    if (!paidRoundLeft) revoke(license, `groble_refund:${refundedAt}`);
+    return { action: paidRoundLeft ? 'round_refunded' : 'revoked', keyId: license.keyId, expiresAt: license.expiresAt };
   }
 
   function onRefunded(state, event, object) {
@@ -333,14 +591,33 @@ export function createLicensesService({
     const refundedTotal = order.refunds.reduce((sum, r) => sum + (r.amount ?? 0), 0);
     const full = order.refunds.some((r) => !r.partialRefund) || (paid !== undefined && paid > 0 && refundedTotal >= paid);
     if (!full) return { action: 'partial_refund_recorded', refundedTotal };
+    if (order.status === 'refunded') return { action: 'refund_already_recorded', keyId: order.keyId };
     order.status = 'refunded';
     order.refundedAt = refundedAt;
     const license = order.keyId ? state.licenses[order.keyId] : undefined;
+    if (license && order.grantTo) return refundRound(state, order, refundedAt);
     if (license) revoke(license, `groble_refund:${refundedAt}`);
     return { action: license ? 'revoked' : 'refund_recorded_no_key', keyId: license?.keyId };
   }
 
-  /** Process one verified Groble event. Returns a small summary (never buyer data). */
+  const GROBLE_HANDLERS = {
+    'payment.completed': (state, event, object) => onCompleted(state, event, object),
+    'payment.cancel_requested': onCancelRequested,
+    'payment.refunded': onRefunded,
+    'subscription_payment.completed': (state, event, object) => (object?.subscription?.billingReason === 'RENEWAL'
+      ? onRenewal(state, event, object)
+      : onCompleted(state, event, object, { subscription: true })),
+    'subscription_payment.refunded': onRefunded,
+    'subscription_payment.failed': onPaymentFailed,
+    'subscription.cancel_requested': onSubscriptionCancelRequested,
+    'subscription.terminated': onSubscriptionTerminated,
+  };
+
+  /**
+   * Process one verified Groble event. Returns a small summary (never buyer data). An event we
+   * cannot use (unknown type, unmatched subscription, held order) still answers 200 so Groble
+   * stops retrying, and carries `needsReview` so the server records it in the webhook log.
+   */
   async function handleGrobleEvent(event, { idempotencyKey } = {}) {
     if (!event || typeof event !== 'object' || Array.isArray(event)) {
       throw licenseError('webhook_payload_invalid', 400);
@@ -354,20 +631,19 @@ export function createLicensesService({
         return { dirty: false, value: { duplicate: true, action: state.webhookEvents[dedupeKey].action } };
       }
       let result;
-      const handled = ['payment.completed', 'payment.cancel_requested', 'payment.refunded'];
-      if (!handled.includes(type)) {
-        result = { action: 'ignored_event_type' };
+      const handler = Object.hasOwn(GROBLE_HANDLERS, type ?? '') ? GROBLE_HANDLERS[type] : null;
+      if (!handler) {
+        log(`[site-api] groble event type not handled: ${type ?? 'missing'}`);
+        result = { action: 'ignored_event_type', reason: `unknown_event_type:${type ?? 'missing'}`, needsReview: true };
       } else if (!object || typeof object !== 'object' || !str(object.merchantUid, 128)) {
-        result = { action: 'ignored_missing_merchant_uid' };
+        result = { action: 'ignored_missing_merchant_uid', reason: 'missing_merchant_uid', needsReview: true };
       } else {
         object.merchantUid = str(object.merchantUid, 128);
         const occurredMs = parseTime(event.occurredAt) ?? now();
-        if (type === 'payment.completed') result = onCompleted(state, event, object, occurredMs);
-        else if (type === 'payment.cancel_requested') result = onCancelRequested(state, event, object);
-        else result = onRefunded(state, event, object);
+        result = handler(state, event, object);
         const order = state.orders[object.merchantUid];
-        const last = parseTime(order.lastEventAt);
-        if (last === undefined || occurredMs > last) order.lastEventAt = new Date(occurredMs).toISOString();
+        const last = parseTime(order?.lastEventAt);
+        if (order && (last === undefined || occurredMs > last)) order.lastEventAt = new Date(occurredMs).toISOString();
       }
       if (dedupeKey) {
         state.webhookEvents[dedupeKey] = {
@@ -412,7 +688,13 @@ export function createLicensesService({
     const pending = Object.values(state.licenses).filter((l) => l.emailDelivery?.status === 'pending' && l.email);
     const results = [];
     for (const license of pending) {
-      const message = licenseEmail({ key: license.key, kind: licenseEmailKind(license), downloadUrl });
+      const message = licenseEmail({
+        key: license.key,
+        kind: licenseEmailKind(license),
+        downloadUrl,
+        expiresAt: expiryOf(license),
+        autoRenew: license.subscription?.autoRenew !== false,
+      });
       let outcome;
       try {
         outcome = await emailProvider.send({ to: license.email, ...message, idempotencyKey: `license-${license.keyId}-${license.emailDelivery?.queuedAt ?? ''}` });
@@ -448,7 +730,7 @@ export function createLicensesService({
     const merchantUid = state.refs[ref];
     const order = merchantUid ? state.orders[merchantUid] : undefined;
     const license = order?.keyId ? state.licenses[order.keyId] : undefined;
-    if (license?.status === 'active') return { status: 'issued', key: license.key };
+    if (license?.status === 'active') return { status: 'issued', key: license.key, licenseExpiresAt: expiryOf(license) };
     if (license?.status === 'revoked' || order?.status === 'refunded') return { status: 'revoked' };
     return { status: 'pending' };
   }
@@ -470,11 +752,17 @@ export function createLicensesService({
     const license = key ? state.licenses[state.keyIndex[key]] : undefined;
     if (!license) throw licenseError('invalid_key', 404);
     if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
+    const end = accessEndOf(license);
+    if (end !== null && now() >= end) {
+      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl });
+    }
     return license;
   }
 
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
   function leaseResponse(license, deviceId, submittedKey) {
+    const licenseExpiresAt = expiryOf(license);
+    const paymentGraceEndsAt = paymentGraceEndOf(license);
     const { lease, payload } = signLease({
       kid: leaseKid,
       keyId: license.keyId,
@@ -482,6 +770,8 @@ export function createLicensesService({
       deviceId,
       now: now(),
       ttlMs: tierOf(license) === 'beta' ? BETA_LEASE_TTL_MS : LEASE_TTL_MS,
+      licenseExpiresAt,
+      paymentGraceEndsAt,
     }, signingKey);
     return {
       ok: true,
@@ -489,6 +779,14 @@ export function createLicensesService({
       keyId: license.keyId,
       tier: tierOf(license),
       expiresAt: payload.expiresAt,
+      // The key's own end (null = lifetime). The lease's `expiresAt` above is only the offline window.
+      licenseExpiresAt,
+      autoRenew: licenseExpiresAt === null ? null : license.subscription?.autoRenew !== false,
+      // `payment_failed`: Groble could not charge the renewal. The key works until `paymentGraceEndsAt`;
+      // the buyer fixes the payment on `paymentFixUrl`.
+      licenseState: paymentGraceEndsAt === null ? 'active' : 'payment_failed',
+      paymentGraceEndsAt,
+      ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
     };
@@ -555,7 +853,9 @@ export function createLicensesService({
     const state = await read();
     const license = Object.hasOwn(state.licenses, keyId) ? state.licenses[keyId] : undefined;
     const device = license?.devices && Object.hasOwn(license.devices, deviceId) ? license.devices[deviceId] : undefined;
-    if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash) {
+    const end = accessEndOf(license);
+    if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash
+      || (end !== null && now() >= end)) {
       throw licenseError('unauthorized', 401);
     }
     return {
@@ -600,6 +900,25 @@ export function createLicensesService({
 
   // -------------------------------------------------------------- admin
 
+  /** `{years}` (1..10) or `{until}` (YYYY-MM-DD = end of that KST day, or ISO-8601). */
+  function parseTerm(body, { allowNone = false } = {}) {
+    const hasYears = body?.years !== undefined && body.years !== true;
+    const hasUntil = body?.until !== undefined && body.until !== true;
+    if (hasYears && hasUntil) throw licenseError('term_conflict', 400);
+    if (hasUntil) {
+      const until = parseUntil(body.until);
+      if (until === undefined) throw licenseError('until_invalid', 400);
+      return { until };
+    }
+    if (hasYears) {
+      const years = typeof body.years === 'string' ? Number(body.years) : body.years;
+      if (!Number.isInteger(years) || years < 1 || years > MAX_EXTEND_YEARS) throw licenseError('years_invalid', 400);
+      return { years };
+    }
+    if (body?.years === true || body?.until === true) throw licenseError('term_invalid', 400);
+    return allowNone ? null : { years: 1 };
+  }
+
   function requireAdmin(token) {
     if (!tokenEquals(token, adminToken)) throw licenseError('forbidden', 403);
   }
@@ -613,6 +932,8 @@ export function createLicensesService({
       const ref = str(body?.ref, 128);
       if (ref && !REF_RE.test(ref)) throw licenseError('ref_invalid', 400);
       const sendEmail = body?.sendEmail === true;
+      // `years` or `until` makes a subscription key (a backfilled subscription order); neither means lifetime.
+      const term = parseTerm(body, { allowNone: true });
       return mutate(async (state) => {
         if (merchantUid && state.orders[merchantUid]?.keyId) {
           const license = state.licenses[state.orders[merchantUid].keyId];
@@ -630,6 +951,10 @@ export function createLicensesService({
           amount: num(body?.amount),
           note: str(body?.note, 500),
           occurredAt: str(body?.occurredAt, 64),
+          ...(term ? {
+            expiresAt: iso(term.until ?? subscriptionEnd(now(), 12 * term.years)),
+            subscription: { productId: subscriptionProductIds[0], status: 'active', autoRenew: true, manual: true },
+          } : {}),
         });
         if (sendEmail) queueEmail(license);
         else license.emailDelivery = { status: 'manual' };
@@ -736,6 +1061,8 @@ export function createLicensesService({
         if (!order) throw licenseError('order_not_found', 404);
         if (order.keyId) return { dirty: false, value: { ok: true, created: false, license: licenseView(state.licenses[order.keyId]) } };
         if (order.status === 'refunded') throw licenseError('order_refunded', 409);
+        // A held renewal belongs to an existing key: `extend` that key instead of issuing a new one.
+        if (order.kind === 'renewal') throw licenseError('renewal_use_extend', 409);
         const license = createLicense(state, {
           source: 'groble',
           merchantUid,
@@ -744,6 +1071,7 @@ export function createLicensesService({
           amount: order.amount,
           occurredAt: order.completedAt,
           note: `released from hold: ${order.holdReason ?? ''}`.trim(),
+          ...(order.kind === 'subscription' ? subscriptionStart(order) : {}),
         });
         queueEmail(license);
         order.status = 'issued';
@@ -779,6 +1107,31 @@ export function createLicensesService({
         if (!license) throw licenseError('invalid_key', 404);
         license.devices = {};
         return { value: { ok: true, license: licenseView(license) } };
+      });
+    },
+    /**
+     * Extend a subscription key: `years` from its expiry (or from now when it lapsed), or set it to
+     * `until`. Lifetime keys have nothing to extend. Every extension is kept on the license.
+     */
+    async extend(token, body) {
+      requireAdmin(token);
+      const term = parseTerm(body);
+      return mutate(async (state) => {
+        const license = findLicense(state, body ?? {});
+        if (!license) throw licenseError('invalid_key', 404);
+        const before = expiryOf(license);
+        if (before === null) throw licenseError('lifetime_key', 409);
+        const to = term.until ?? subscriptionEnd(Math.max(before, now()), 12 * term.years);
+        license.expiresAt = iso(to);
+        license.extensions = Array.isArray(license.extensions) ? license.extensions : [];
+        license.extensions.push({
+          at: new Date(now()).toISOString(),
+          from: iso(before),
+          to: license.expiresAt,
+          ...(term.years ? { years: term.years } : {}),
+          note: str(body?.note, 200),
+        });
+        return { value: { ok: true, previousExpiresAt: iso(before), license: licenseView(license) } };
       });
     },
     async resendEmail(token, body) {

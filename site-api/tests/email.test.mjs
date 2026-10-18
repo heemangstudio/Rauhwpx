@@ -16,6 +16,7 @@ const EXPECTED = {
   purchase: { subject: '[HamaEditor] Mac 라이선스 키를 보내드려요', heading: '구매해 주셔서 고마워요.' },
   resend: { subject: '[HamaEditor] Mac 라이선스 키를 다시 보내드려요', heading: '라이선스 키를 다시 보내드려요.' },
   free: { subject: '[HamaEditor] Mac 라이선스 키를 보내드려요', heading: 'HamaEditor 라이선스 키를 보내드려요.' },
+  renewal: { subject: '[HamaEditor] Mac 라이선스가 갱신됐어요', heading: '라이선스가 갱신됐어요.' },
 };
 
 function imageUrls(html) {
@@ -48,7 +49,26 @@ test('license email: homepage download URL falls back to the dmg, other links pa
   assert.ok(licenseEmail({ key: '<b>x</b>' }).html.includes('&lt;b&gt;x&lt;/b&gt;'));
 });
 
+test('subscription keys show the renewal or end date under the card; the card holds only the key; lifetime keys show none', () => {
+  const expiresAt = Date.parse('2027-10-20T23:59:59.999+09:00');
+  const cardOf = (html) => html.slice(html.indexOf('<!-- card'), html.indexOf('<!-- CTA'));
+  const frameOf = (html) => html.slice(html.indexOf('<!-- card'), html.lastIndexOf('</table>', html.indexOf('<!-- CTA')));
+  for (const kind of ['purchase', 'renewal', 'resend']) {
+    const { html, text } = licenseEmail({ key: KEY, kind, expiresAt });
+    assert.equal(text, KEY);
+    const line = '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요.';
+    assert.ok(cardOf(html).includes(`>${line}</p>`), `${kind}: date line follows the card`);
+    assert.ok(!frameOf(html).includes('2027'), `${kind}: the key card itself has no date`);
+    assert.ok(cardOf(html).indexOf(KEY) < cardOf(html).indexOf(line));
+  }
+  assert.ok(licenseEmail({ key: KEY, expiresAt, autoRenew: false }).html.includes('>2027년 10월 20일까지 쓸 수 있어요.</p>'));
+  const lifetime = licenseEmail({ key: KEY }).html;
+  assert.ok(!/갱신|일까지 쓸 수/.test(lifetime), 'lifetime keys have no date');
+  assert.equal(lifetime, licenseEmail({ key: KEY, expiresAt: null }).html);
+});
+
 test('license email kind follows why the key goes out', () => {
+  assert.equal(licenseEmailKind({ source: 'groble', emailDelivery: { status: 'pending', renewal: true } }), 'renewal');
   assert.equal(licenseEmailKind({ source: 'groble' }), 'purchase');
   assert.equal(licenseEmailKind({ source: 'manual', merchantUid: 'm_1' }), 'purchase');
   assert.equal(licenseEmailKind({ source: 'manual', amount: 9900 }), 'purchase');

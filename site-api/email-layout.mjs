@@ -89,11 +89,16 @@ export function emailFooter() {
       </td></tr>`;
 }
 
+/** One centered line under the card, outside its frame (a date or term that belongs with the card's value). */
+export function emailCardNote(text) {
+  return `<p class="t2" style="margin:16px 0 0 0;text-align:center;font:15px/1.6 ${FONT};color:#3a3a38;">${escapeHtml(text)}</p>`;
+}
+
 /**
  * Full HTML document. `noteHtml` is trusted markup (it may carry <strong>);
- * every other string is escaped. `card` and `cta` are optional.
+ * every other string is escaped. `card`, `cardNote` and `cta` are optional.
  */
-export function renderEmail({ subject, preheader, banner = {}, heading, noteHtml, card, cta }) {
+export function renderEmail({ subject, preheader, banner = {}, heading, noteHtml, card, cardNote = '', cta }) {
   return `<!DOCTYPE html>
 <html lang="ko" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -134,7 +139,8 @@ export function renderEmail({ subject, preheader, banner = {}, heading, noteHtml
         <p class="t2" style="margin:0 0 26px 0;font:16px/1.65 ${FONT};color:#3a3a38;">${noteHtml}</p>
 ${card ? `
         <!-- card: pixel-stepped frame, starfield fill -->
-        ${emailCard(card)}
+        ${emailCard(card)}${cardNote ? `
+        ${emailCardNote(cardNote)}` : ''}
 ` : ''}${cta ? `
         <!-- CTA -->
         ${emailButton(cta)}
