@@ -31,6 +31,7 @@ import { checkDocumentMentions } from './document-mentions.check.mjs';
 import { checkDocumentLink } from './document-link.check.mjs';
 import { checkDocumentDetach } from './document-detach.check.mjs';
 import { checkDocumentNameWriter } from './document-name-writer.check.mjs';
+import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
@@ -50,6 +51,7 @@ const focusedChecks = {
   'document-link': (h) => checkDocumentLink(h),
   'document-detach': (h) => checkDocumentDetach(h),
   'document-name-writer': (h) => checkDocumentNameWriter(h),
+  'scroll-rail': (h) => checkChatScrollRail(h),
   'focus-composer': async ({ page, open }) => {
     await open('reset=1&fullscreen=1');
     const startNewChat = async () => {

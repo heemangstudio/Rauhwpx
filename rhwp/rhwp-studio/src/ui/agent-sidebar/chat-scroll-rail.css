@@ -1,0 +1,187 @@
+/* 집중 모드 대화의 턴 레일 (chat-scroll-rail.ts). 대화면 왼쪽 가장자리에 서서
+   스크롤바를 대신한다. 사이드바 모드에는 없다. */
+
+.ag-root {
+  /* 대화 목록 칸 경계의 폭 조절 손잡이(대화 쪽으로 3px)를 비켜 선다. */
+  --ag-scroll-rail-left: 8px;
+  --ag-scroll-rail-hit: 28px;
+}
+
+/* 레일이 스크롤바를 대신한다. 휠·터치·키 스크롤은 그대로다. */
+.ag-fullscreen .ag-messages {
+  scrollbar-width: none;
+}
+
+.ag-fullscreen .ag-messages::-webkit-scrollbar {
+  display: none;
+}
+
+.ag-scroll-rail {
+  position: absolute;
+  z-index: 4;
+  top: var(--ag-scroll-rail-center, 50%);
+  left: var(--ag-scroll-rail-left);
+  display: flex;
+  flex-direction: column;
+  transform: translateY(-50%);
+  /* scale 은 transform 보다 바깥에서 걸린다. 원점을 위끝에 두어야 translateY(-50%) 로
+     끌어올린 레일의 한가운데로 움츠러든다. */
+  transform-origin: left top;
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    scale var(--ag-dur-base) var(--ag-ease-out),
+    display var(--ag-dur-base) allow-discrete;
+}
+
+/* 칸 경계를 끄는 동안. */
+.ag-scroll-rail.ag-scroll-rail-shifting {
+  scale: 0.55;
+  opacity: 0.4;
+}
+
+.ag-scroll-rail[hidden],
+.ag-root:not(.ag-fullscreen) .ag-scroll-rail {
+  display: none;
+  opacity: 0;
+}
+
+@starting-style {
+  .ag-scroll-rail:not([hidden]) {
+    opacity: 0;
+  }
+}
+
+.ag-scroll-rail-tick {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-start;
+  width: var(--ag-scroll-rail-hit);
+  height: var(--ag-scroll-rail-pitch, 16px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: none;
+  cursor: pointer;
+}
+
+.ag-scroll-rail-tick:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+/* 왼쪽에 붙어 오른쪽으로 자란다. 크기는 transform 만 바꿔 배치를 건드리지 않는다. */
+.ag-scroll-rail-mark {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in oklab, var(--ag-text) 28%, transparent);
+  transform-origin: left center;
+  transition:
+    transform var(--ag-dur-fast) var(--ag-ease-out),
+    background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-scroll-rail-tick[data-current] .ag-scroll-rail-mark {
+  background: color-mix(in oklab, var(--ag-text) 92%, transparent);
+}
+
+.ag-scroll-rail-tick[data-near='2'] .ag-scroll-rail-mark {
+  transform: scaleX(1.25);
+}
+
+.ag-scroll-rail-tick[data-near='1'] .ag-scroll-rail-mark {
+  transform: scaleX(1.875);
+}
+
+.ag-scroll-rail-tick[data-near='0'] .ag-scroll-rail-mark {
+  transform: scaleX(3);
+}
+
+/* 카드 자리. 세로 위치는 translateY 로만 옮기고, 이미 떠 있을 때만 미끄러진다. */
+.ag-scroll-rail-peek {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: calc(var(--ag-scroll-rail-left) + var(--ag-scroll-rail-hit) + 8px);
+  width: min(340px, calc(100% - 96px));
+  pointer-events: none;
+}
+
+.ag-root:not(.ag-fullscreen) .ag-scroll-rail-peek {
+  display: none;
+}
+
+.ag-scroll-rail-peek.ag-scroll-rail-glide {
+  transition: transform var(--ag-dur-base) var(--ag-ease-out);
+}
+
+.ag-scroll-rail-card {
+  box-sizing: border-box;
+  padding: 10px 14px 11px;
+  border: 1px solid var(--ag-border);
+  border-radius: 16px;
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-6px) scale(0.98);
+  transform-origin: left center;
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-fast) var(--ag-ease-out),
+    visibility 0s linear var(--ag-dur-fast);
+}
+
+.ag-scroll-rail-open .ag-scroll-rail-card {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-fast) var(--ag-ease-out),
+    visibility 0s;
+}
+
+.ag-scroll-rail-prompt {
+  overflow: hidden;
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-scroll-rail-reply {
+  display: -webkit-box;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.ag-scroll-rail-reply[hidden] {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .ag-root {
+    --ag-scroll-rail-left: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-scroll-rail,
+  .ag-scroll-rail-mark,
+  .ag-scroll-rail-peek.ag-scroll-rail-glide,
+  .ag-scroll-rail-card,
+  .ag-scroll-rail-open .ag-scroll-rail-card {
+    transition: none;
+  }
+}

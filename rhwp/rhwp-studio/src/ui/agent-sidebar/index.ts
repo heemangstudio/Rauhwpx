@@ -189,6 +189,7 @@ import {
 import { detectPlatformKind, formatShortcutLabel } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
+import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
@@ -708,7 +709,6 @@ interface InsetMotion {
    --ag-fs-crossfade-duration 과 같은 값). 타이머는 끝날 때까지의 여유분을 포함한다. */
 const FS_CROSSFADE_MS = 220;
 const FS_MOTION_SETTLE_MS = FS_CROSSFADE_MS + 60;
-const COMPACT_RAIL_HOVER_OPEN_DELAY_MS = 260;
 const STREAMING_RENDER = { streaming: true, animate: true } as const;
 /** '최근' 버튼은 마지막 내용이 이만큼 가려지면 나타나고, 이 아래로 드러나면 사라진다. */
 const LATEST_SHOW_PX = 48;
@@ -1238,10 +1238,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let threadsRailCollapsed = readStoredThreadsRailCollapsed();
   let workspaceCompact = false;
   let compactThreadsRailOpen = false;
-  let compactRailHoverOpen = false;
-  let compactRailLastPointerX: number | null = null;
-  let compactRailHoverOpenTimer: number | null = null;
-  let compactRailHoverCloseTimer: number | null = null;
   let environmentPanelOpen = readStoredEnvironmentPanelOpen();
   let desktopEnvironmentPanelOpen = environmentPanelOpen;
   // 검토 drawer는 focus mode에 들어갈 때마다 닫힌 상태로 시작하며,
@@ -2783,8 +2779,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceDrawerScrim.type = 'button';
   workspaceDrawerScrim.tabIndex = -1;
   workspaceDrawerScrim.setAttribute('aria-label', '열린 패널 닫기');
-  const compactRailHoverTarget = el('div', 'ag-compact-rail-hover-target');
-  compactRailHoverTarget.setAttribute('aria-hidden', 'true');
   const workspaceLeading = el('div', 'ag-workspace-leading');
   const workspaceThreadsBtn = el('button', 'ag-workspace-icon-btn ag-workspace-threads-btn');
   workspaceThreadsBtn.type = 'button';
@@ -3145,7 +3139,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   workspaceThreadsBtn.addEventListener('click', () => {
     if (isCompactWorkspace()) {
-      compactRailHoverOpen = false;
       setCompactThreadsRailOpen(!compactThreadsRailOpen);
       return;
     }
@@ -3564,9 +3557,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function scrollConversationToTop(): void {
+    scrollConversationAway(0);
+  }
+
+  /** 턴 레일에서 고른 요청으로 — 새 턴이 서는 자리(위쪽)에 맞춘다. */
+  function scrollConversationToTurn(node: HTMLElement): void {
+    scrollConversationAway(conversationScrollTarget(node));
+  }
+
+  /** 대화 끝 따라가기를 멈추고 앞 대화로 옮긴다. 끝으로 다시 내려오면 따라가기가 돌아온다. */
+  function scrollConversationAway(top: number): void {
     stopFollowingConversation();
     messages.scrollTo({
-      top: 0,
+      top,
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
     });
     scheduleLatestPillUpdate();
@@ -4238,6 +4241,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
+  const scrollRail = createChatScrollRail({ messages, scrollToTurn: scrollConversationToTurn });
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
    *  펼쳐진 사이드바의 현재 폭이 아니라 max-content(말줄임 바닥)로 잰다.
@@ -5008,7 +5012,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   stage.append(
     workspaceBar,
     workspaceDrawerScrim,
-    compactRailHoverTarget,
     chatPage,
     threadsPage,
     referenceLibrary.page,
@@ -5080,6 +5083,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     root.classList.add('ag-col-resizing');
     setPageClass('ag-col-resizing', true);
+    if (kind === 'rail') scrollRail.setShifting(true);
     // The divider moves with the grid, so pointer events must continue even
     // after the cursor leaves its narrow hit target or pointer capture fails.
     window.addEventListener('pointermove', onColumnResizePointerMove, true);
@@ -5114,6 +5118,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     detachColumnResizeWindowListeners();
     root.classList.remove('ag-col-resizing');
     setPageClass('ag-col-resizing', false);
+    scrollRail.setShifting(false);
     const handle = columnHandle(kind);
     try {
       if (pointerId !== null && handle.hasPointerCapture(pointerId)) {
@@ -5154,7 +5159,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const expanded = fullscreen && (compact ? compactThreadsRailOpen : !threadsRailCollapsed);
     // 칸 폭은 한 번에 바꾸고(대화는 한 번만 다시 줄바꿈된다), 움직임을 켰으면 레일만
     // transform·opacity 로 들여온다. 합성기에서만 도는 움직임이라 느린 컴퓨터에서도 끊기지 않는다.
-    const opening = fullscreen && !compact && expanded && previousThreadsRailExpanded === false;
+    const railWasExpanded = previousThreadsRailExpanded;
+    const opening = fullscreen && !compact && expanded && railWasExpanded === false;
     previousThreadsRailExpanded = expanded;
     if (opening && sidebarMotionEnabled()) {
       threadsPage.animate(
@@ -5162,9 +5168,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
       );
     }
-    root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
-    root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
-    root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
+    const applyColumns = (): void => {
+      root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
+      root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
+    };
+    // 대화 칸이 옮겨 가면 턴 레일이 움츠러들며 따라가 다시 펴진다.
+    if (fullscreen && railWasExpanded !== null && railWasExpanded !== expanded) scrollRail.shift(applyColumns);
+    else applyColumns();
     if (!fullscreen) return;
     if (!expanded) closeThreadRailSurfaces(root);
     threadsBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
@@ -5226,23 +5236,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     versionManagerPage?.setChangeCount(dirty ? Math.max(count, 1) : 0);
   }
 
-  function clearCompactRailHoverClose(): void {
-    if (compactRailHoverCloseTimer === null) return;
-    window.clearTimeout(compactRailHoverCloseTimer);
-    compactRailHoverCloseTimer = null;
-  }
-
-  function clearCompactRailHoverOpen(): void {
-    if (compactRailHoverOpenTimer === null) return;
-    window.clearTimeout(compactRailHoverOpenTimer);
-    compactRailHoverOpenTimer = null;
-  }
-
   function setCompactThreadsRailOpen(open: boolean, opts?: { focus?: boolean }): void {
-    clearCompactRailHoverOpen();
-    clearCompactRailHoverClose();
     compactThreadsRailOpen = isCompactWorkspace() && open;
-    if (!compactThreadsRailOpen) compactRailHoverOpen = false;
     if (compactThreadsRailOpen) {
       detailColumn = null;
       applyReviewColState();
@@ -5256,57 +5251,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     }
   }
-
-  function scheduleCompactRailHoverClose(): void {
-    if (!compactRailHoverOpen) return;
-    clearCompactRailHoverClose();
-    compactRailHoverCloseTimer = window.setTimeout(() => {
-      compactRailHoverCloseTimer = null;
-      // 문서 필터·문서 열기 팝오버는 레일 밖에 떠 있어도 레일의 일부다.
-      if (!compactRailHoverOpen || threadsPage.contains(document.activeElement) || threadRailSurfaceOpen(root)) return;
-      setCompactThreadsRailOpen(false);
-    }, 100);
-  }
-
-  const onCompactRailPointerMove = (event: PointerEvent) => {
-    compactRailLastPointerX = event.clientX;
-  };
-  const onCompactRailPointerExit = () => {
-    compactRailLastPointerX = null;
-    clearCompactRailHoverOpen();
-  };
-  const onCompactRailEdgeEnter = (event: PointerEvent) => {
-    if (!isCompactWorkspace()) return;
-    if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) return;
-    if (compactRailLastPointerX === null || event.clientX >= compactRailLastPointerX) return;
-    clearCompactRailHoverOpen();
-    clearCompactRailHoverClose();
-    compactRailHoverOpenTimer = window.setTimeout(() => {
-      compactRailHoverOpenTimer = null;
-      if (!isCompactWorkspace()) return;
-      compactRailHoverOpen = true;
-      setCompactThreadsRailOpen(true, { focus: false });
-    }, COMPACT_RAIL_HOVER_OPEN_DELAY_MS);
-  };
-  const onCompactRailEdgeLeave = (event: PointerEvent) => {
-    clearCompactRailHoverOpen();
-    if (event.relatedTarget instanceof Node && threadsPage.contains(event.relatedTarget)) return;
-    scheduleCompactRailHoverClose();
-  };
-  const onCompactRailPointerEnter = () => {
-    clearCompactRailHoverOpen();
-    clearCompactRailHoverClose();
-  };
-  const onCompactRailPointerLeave = (event: PointerEvent) => {
-    if (event.relatedTarget instanceof Node && compactRailHoverTarget.contains(event.relatedTarget)) return;
-    scheduleCompactRailHoverClose();
-  };
-  compactRailHoverTarget.addEventListener('pointerenter', onCompactRailEdgeEnter);
-  compactRailHoverTarget.addEventListener('pointerleave', onCompactRailEdgeLeave);
-  threadsPage.addEventListener('pointerenter', onCompactRailPointerEnter);
-  threadsPage.addEventListener('pointerleave', onCompactRailPointerLeave);
-  root.addEventListener('pointermove', onCompactRailPointerMove, { passive: true });
-  root.addEventListener('pointerleave', onCompactRailPointerExit);
 
   function setThreadsRailCollapsed(collapsed: boolean): void {
     threadsRailCollapsed = collapsed;
@@ -5586,6 +5530,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     fullscreenLayoutOn = on;
     root.classList.toggle('ag-fullscreen', on);
     syncFullscreenPageClass();
+    scrollRail.setEnabled(on);
     syncFocusGreeting();
     applyEnvironmentPanelState();
     fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -7085,16 +7030,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.toggle('ag-workspace-compact', workspaceCompact);
     if (enteringCompact) {
       compactThreadsRailOpen = false;
-      compactRailHoverOpen = false;
-      clearCompactRailHoverOpen();
-      clearCompactRailHoverClose();
       detailColumn = null;
       if (environmentPanelOpen) setEnvironmentPanelOpen(false, { persist: false });
     } else if (!workspaceCompact) {
       compactThreadsRailOpen = false;
-      compactRailHoverOpen = false;
-      clearCompactRailHoverOpen();
-      clearCompactRailHoverClose();
     }
     applyThreadsRailState();
     if (compactChanged) applyReviewColState();
@@ -9011,7 +8950,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 전체 화면에서는 페이지 전환이 아니라 레일 접기 토글이다.
     if (fullscreen) {
       if (isCompactWorkspace()) {
-        compactRailHoverOpen = false;
         setCompactThreadsRailOpen(!compactThreadsRailOpen);
         return;
       }
@@ -13069,8 +13007,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (insetMotion) startInsetRecenterLoop({ instant: true });
     if (fullscreenLayoutOn !== fullscreen) applyFullscreenLayout(fullscreen);
     cancelFsMotionTimers();
-    clearCompactRailHoverOpen();
-    clearCompactRailHoverClose();
     closeThreadRailSurfaces(root);
     dismissOpenSheets();
     setConnPopoverOpen(false);
@@ -13271,6 +13207,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       window.removeEventListener('pagehide', onPageHide);
       composerRest.dispose();
       focusGreeting.dispose();
+      scrollRail.dispose();
       messages.removeEventListener('touchstart', onMessagesTouchStart);
       messages.removeEventListener('touchmove', onMessagesTouchMove);
       messages.removeEventListener('pointerdown', onMessagesPointerDown);
@@ -13286,14 +13223,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       window.removeEventListener('resize', onWindowResizeSettleInset);
       window.removeEventListener('resize', onWindowResizeMeasure);
-      clearCompactRailHoverOpen();
-      clearCompactRailHoverClose();
-      compactRailHoverTarget.removeEventListener('pointerenter', onCompactRailEdgeEnter);
-      compactRailHoverTarget.removeEventListener('pointerleave', onCompactRailEdgeLeave);
-      threadsPage.removeEventListener('pointerenter', onCompactRailPointerEnter);
-      threadsPage.removeEventListener('pointerleave', onCompactRailPointerLeave);
-      root.removeEventListener('pointermove', onCompactRailPointerMove);
-      root.removeEventListener('pointerleave', onCompactRailPointerExit);
       document.removeEventListener('pointerdown', onDocPointerDown);
       document.removeEventListener('pointerdown', onCompactDrawerPointerDown, true);
       document.removeEventListener('focusin', onCompactDrawerFocusIn);
