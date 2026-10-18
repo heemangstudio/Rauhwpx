@@ -203,6 +203,7 @@ export function createEditingSettings(options: {
   const controlCodes = toggleRow('조판 부호');
   const clipView = toggleRow('잘림 보기', '편집용지 경계 밖의 내용을 계속 보여 줍니다.');
   const pictureRatio = toggleRow('그림 비율 유지', '그림 속성을 열 때 너비와 높이의 비율을 기본으로 고정합니다.');
+  const compactToolbar = toggleRow('한 줄 도구 상자', '메뉴와 도구 상자를 한 줄에 모아 편집 화면을 넓힙니다.');
   const sidebarMotion = toggleRow('사이드바 움직임', '사이드바와 집중 화면을 열고 닫을 때 움직임을 보여 줍니다.');
   appearance.body.append(
     themeRow,
@@ -210,6 +211,7 @@ export function createEditingSettings(options: {
     controlCodes.root,
     clipView.root,
     pictureRatio.root,
+    compactToolbar.root,
     sidebarMotion.root,
   );
 
@@ -225,6 +227,10 @@ export function createEditingSettings(options: {
   });
   clipView.input.addEventListener('change', () => {
     draft.view.clipView = clipView.input.checked;
+    previewAndRender();
+  });
+  compactToolbar.input.addEventListener('change', () => {
+    draft.view.compactToolbar = compactToolbar.input.checked;
     previewAndRender();
   });
   sidebarMotion.input.addEventListener('change', () => {
@@ -623,6 +629,7 @@ export function createEditingSettings(options: {
     controlCodes.input.checked = draft.view.showControlCodes;
     clipView.input.checked = draft.view.clipView;
     pictureRatio.input.checked = draft.dialog.picturePropsKeepRatio;
+    compactToolbar.input.checked = draft.view.compactToolbar;
     sidebarMotion.input.checked = draft.view.sidebarMotion;
     recentFonts.input.checked = draft.font.showRecentFonts;
     recentCount.input.value = String(draft.font.recentFontCount);
