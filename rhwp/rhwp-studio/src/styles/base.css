@@ -730,3 +730,53 @@ html.theme-switching *::after {
     transition: none;
   }
 }
+
+/* ─── 스크롤바 ─────────────────────────────────────────
+   운영체제 스크롤바(Windows 의 화살표·회색 홈, macOS 의 기본 막대) 대신 앱 전체에
+   가는 둥근 막대 하나를 쓴다. 홈은 비우고, 막대는 글자색을 옅게 섞어 어느 면·테마
+   위에서도 조용히 보인다. 가리킨 스크롤 영역에서만 조금 짙어진다.
+   Chromium 은 scrollbar-width·scrollbar-color 가 있으면 아래 의사 요소를 무시하므로
+   표준 속성은 의사 요소가 없는 브라우저(Firefox)에만 건다. 막대를 숨기는 영역의
+   scrollbar-width: none 은 그대로 이긴다. */
+:root {
+  --ui-scrollbar-thumb: color-mix(in srgb, var(--ui-text) 22%, transparent);
+  --ui-scrollbar-thumb-hover: color-mix(in srgb, var(--ui-text) 36%, transparent);
+  --ui-scrollbar-thumb-active: color-mix(in srgb, var(--ui-text) 48%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* 투명 테두리로 막대를 홈 안쪽 6px 로 좁힌다. */
+::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--ui-scrollbar-thumb) padding-box;
+}
+
+:hover::-webkit-scrollbar-thumb {
+  background-color: var(--ui-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--ui-scrollbar-thumb-active);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ui-scrollbar-thumb) transparent;
+  }
+}
