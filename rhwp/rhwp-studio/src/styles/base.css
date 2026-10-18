@@ -25,6 +25,8 @@
 /* ─── 디자인 토큰 ─────────────────────────────────────
    --ui-* 는 앱 전체가 쓰는 의미 계층이고, 그 값은 아래 --n-*
    중성 램프에서 나온다. 색을 바꿀 일이 있으면 램프를 고친다.
+   램프의 원색은 테마 팔레트 계약(styles/themes/index.css)의 --theme-* 를 먼저 읽고,
+   없으면(기본 프리셋) 여기 적힌 값을 쓴다.
    경계는 실선(#c0c0c0)이 아니라 알파 헤어라인이라, 어떤 면 위에
    올라가든 그 면의 톤을 따라간다. */
 :root {
@@ -79,31 +81,31 @@
   --ui-canvas-inset: var(--n-inset-sunken);
   --ui-pressed-inset: var(--n-inset-pressed);
 
-  --ui-warning-bg: #fff8e4;
-  --ui-warning-border: #e8c65c;
-  --ui-warning-text: #6b5500;
-  --ui-link: #2563eb;
-  --ui-danger: #c8372d;
-  --ui-danger-strong: #c8372d;
-  --ui-danger-soft: rgba(200, 55, 45, 0.16);
-  --ui-focus-soft: rgba(74, 144, 217, 0.22);
+  --ui-warning-bg: var(--theme-warning-soft, #fff8e4);
+  --ui-warning-border: var(--theme-warning, #e8c65c);
+  --ui-warning-text: var(--theme-warning-text, #6b5500);
+  --ui-link: var(--theme-link, #2563eb);
+  --ui-danger: var(--theme-danger, #c8372d);
+  --ui-danger-strong: var(--theme-danger, #c8372d);
+  --ui-danger-soft: var(--theme-danger-soft, rgba(200, 55, 45, 0.16));
+  --ui-focus-soft: var(--theme-accent-soft, rgba(74, 144, 217, 0.22));
 
   /* 문서 영역 token: 앱 테마와 문서 렌더를 분리한다.
      용지는 항상 흰색이고, 책상만 앱 톤에 맞춰 식힌다. */
-  --doc-workspace: #e4e4ea;
+  --doc-workspace: var(--theme-desk, #e4e4ea);
   --doc-paper: #ffffff;
   --doc-shadow: rgba(0, 0, 0, 0.16);
   --doc-paper-shadow: var(--n-elev-paper);
 
   /* 포커스/선택/핸들 */
-  --focus-ring: rgba(23, 27, 34, 0.42);
+  --focus-ring: var(--theme-focus-ring, rgba(23, 27, 34, 0.42));
   --selection-fill: #b8d7ff;
   --caret-color: #111111;
-  --resize-handle: #3f78d8;
+  --resize-handle: var(--theme-accent, #3f78d8);
   --ui-align-icon-filter: none;
   --ui-icon-sprite-url: url(/images/icon_small_ko.svg);
-  --table-selection-fill: rgba(51, 122, 183, 0.25);
-  --table-selection-stroke: #337ab7;
+  --table-selection-fill: var(--theme-accent-soft, rgba(51, 122, 183, 0.25));
+  --table-selection-stroke: var(--theme-accent, #337ab7);
 
   /* 눈금자 — 작업 영역이 아니라 크롬 쪽에 속한다 */
   --ruler-bg: var(--n-surface-raised);
@@ -113,11 +115,11 @@
   --ruler-marker: var(--accent-primary);
 
   /* 브랜드/강조 */
-  --accent-primary: #6182d6;
-  --accent-strong: #335095;
-  --accent-light: #4a90d9;
-  --accent-hover: #a0b0d8;
-  --accent-subtle: #748bc9;
+  --accent-primary: var(--theme-accent, #6182d6);
+  --accent-strong: var(--theme-accent-strong, #335095);
+  --accent-light: var(--theme-accent-light, #4a90d9);
+  --accent-hover: var(--theme-accent-hover, #a0b0d8);
+  --accent-subtle: var(--theme-accent-subtle, #748bc9);
 
   /* 기존 CSS 호환 alias */
   --color-primary: var(--accent-primary);
@@ -160,7 +162,8 @@
   --overlay-bg: rgba(0, 0, 0, 0.2);
 
   /* 타이포그래피 */
-  --font-family-ui: -apple-system, BlinkMacSystemFont, '맑은 고딕', 'Malgun Gothic', 'Segoe UI', sans-serif;
+  --font-family-system-ui: -apple-system, BlinkMacSystemFont, '맑은 고딕', 'Malgun Gothic', 'Segoe UI', sans-serif;
+  --font-family-ui: var(--font-family-system-ui);
   --font-family-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Courier New', monospace;
   --font-mono: var(--font-family-mono);
   --font-size-xs: 10px;
@@ -194,40 +197,40 @@
      사이드바). 나머지 화면은 순차적으로 옮긴다. */
 
   /* 면: 아래로 갈수록 가라앉는다 */
-  --n-surface: #ffffff;
-  --n-surface-raised: #f7f7f8;
-  --n-surface-sunken: #f1f1f4;
-  --n-canvas: #f5f5f7;
+  --n-surface: var(--theme-surface, #ffffff);
+  --n-surface-raised: var(--theme-surface-raised, #f7f7f8);
+  --n-surface-sunken: var(--theme-surface-sunken, #f1f1f4);
+  --n-canvas: var(--theme-canvas, #f5f5f7);
 
   /* 경계: 실선이 아니라 헤어라인. 대부분 눈에 띄지 않는다 */
-  --n-hairline: rgba(0, 0, 0, 0.08);
-  --n-hairline-strong: rgba(0, 0, 0, 0.14);
+  --n-hairline: var(--theme-hairline, rgba(0, 0, 0, 0.08));
+  --n-hairline-strong: var(--theme-hairline-strong, rgba(0, 0, 0, 0.14));
 
   /* 글자 */
   /* muted/placeholder 도 본문 크기로 쓰이므로 4.5:1 을 넘긴다.
      흰 배경 기준 #6e6e73 ≈ 5.1:1, #757579 ≈ 4.6:1. */
-  --n-text: #1d1d1f;
-  --n-text-secondary: #545458;
-  --n-text-muted: #6e6e73;
-  --n-text-placeholder: #757579;
-  --n-text-disabled: #adadb2;
+  --n-text: var(--theme-text, #1d1d1f);
+  --n-text-secondary: var(--theme-text-secondary, #545458);
+  --n-text-muted: var(--theme-text-muted, #6e6e73);
+  --n-text-placeholder: var(--theme-text-placeholder, #757579);
+  --n-text-disabled: var(--theme-text-disabled, #adadb2);
 
   /* 상태 채움: 알파라서 어떤 면 위에서도 같은 세기로 읽힌다 */
-  --n-fill-hover: rgba(0, 0, 0, 0.055);
-  --n-fill-active: rgba(0, 0, 0, 0.10);
-  --n-fill-selected: rgba(97, 130, 214, 0.14);
-  --n-fill-selected-soft: rgba(97, 130, 214, 0.07);
+  --n-fill-hover: var(--theme-fill-hover, rgba(0, 0, 0, 0.055));
+  --n-fill-active: var(--theme-fill-active, rgba(0, 0, 0, 0.10));
+  --n-fill-selected: var(--theme-fill-selected, rgba(97, 130, 214, 0.14));
+  --n-fill-selected-soft: var(--theme-fill-selected-soft, rgba(97, 130, 214, 0.07));
   /* 누름: 어떤 채움 위에도 얹히는 덧칠. 채움을 약 8% 어둡게 누른다. */
   --n-fill-pressed: rgba(0, 0, 0, 0.08);
   /* 아이콘만 있는 버튼의 호버. 일반 호버보다 한 단계 옅다. */
-  --n-fill-hover-quiet: rgba(0, 0, 0, 0.04);
+  --n-fill-hover-quiet: var(--theme-fill-hover-quiet, rgba(0, 0, 0, 0.04));
   /* 창이 비활성일 때 액센트 채움과 선택 영역이 물러나는 중성 회색 */
   --n-inactive-fill: #dcdcdf;
   --n-inactive-ink: #3a3a3c;
   --n-inactive-selection: #dcdcdc;
 
   /* 밝은 테마의 액센트는 짙은 파랑이라 흰 글자가 맞는다. */
-  --n-on-accent: #ffffff;
+  --n-on-accent: var(--theme-on-accent, #ffffff);
 
   /* 모서리: 칩 → 입력/버튼 → 패널. 에이전트 UI 만 쓰며 --ag-r-* 척도와 같다
      (칩 6 / 행 8 / 카드 12). 편집기 크롬은 --radius-* 를 쓴다. */
@@ -277,72 +280,35 @@
 
 :root[data-theme-effective="dark"] {
   /* 밝은 테마와 같은 구조. 값만 어두운 램프에서 가져온다. */
-  --ui-bg: var(--n-canvas);
-  --ui-bg-light: var(--n-surface-raised);
-  --ui-surface: var(--n-surface);
-  --ui-surface-raised: var(--n-surface-raised);
-  --ui-surface-muted: var(--n-surface-sunken);
-  --ui-border: var(--n-hairline);
-  --ui-border-light: var(--n-hairline-strong);
-  --ui-border-subtle: var(--n-hairline);
-  --ui-border-strong: var(--n-hairline-strong);
-  --ui-text: var(--n-text);
-  --ui-text-secondary: var(--n-text-secondary);
-  --ui-text-muted: var(--n-text-muted);
-  --ui-text-hint: var(--n-text-muted);
-  --ui-text-disabled: var(--n-text-disabled);
-  --ui-text-placeholder: var(--n-text-placeholder);
-  --ui-text-on-accent: var(--n-on-accent);
+  /* --ui-* 별칭은 :root 의 선언이 같은 요소에서 어두운 램프로 다시 계산된다.
+     어두운 쪽에서 값이 다른 것만 여기 둔다. */
   --ui-on-accent-overlay: rgba(255, 255, 255, 0.24);
-  --ui-hover: var(--n-fill-hover);
-  --ui-hover-strong: var(--n-fill-active);
-  --ui-active: var(--n-fill-active);
-  --ui-selected: var(--n-fill-selected);
-  --ui-pressed: var(--n-fill-pressed);
-  --ui-hover-quiet: var(--n-fill-hover-quiet);
-  --ui-row-selected-bg: var(--accent-primary);
-  --ui-row-selected-fg: var(--n-on-accent);
   --ui-menu-open: var(--accent-primary);
   --ui-menu-open-border: var(--accent-light);
-  --ui-toolbar-bg-start: var(--n-surface-raised);
-  --ui-toolbar-bg-end: var(--n-surface-raised);
-  --ui-accent-bg: var(--n-fill-selected);
-  --ui-accent-bg-light: var(--n-fill-selected-soft);
-  --ui-note-bg: var(--n-surface-raised);
-  --ui-note-border: var(--n-hairline);
-  --ui-note-text: var(--n-text-secondary);
 
-  --ui-chrome-menu: var(--n-surface-sunken);
-  --ui-chrome-tool: var(--n-surface-raised);
-  --ui-chrome-edge: var(--n-edge-below);
-  --ui-footer-bg: var(--n-surface-raised);
-  --ui-footer-edge: var(--n-edge-above);
-  --ui-canvas-inset: var(--n-inset-sunken);
-  --ui-pressed-inset: var(--n-inset-pressed);
-
-  --ui-warning-bg: #3d3617;
-  --ui-warning-border: #7b6b23;
-  --ui-warning-text: #f0dfa0;
-  --ui-link: #f4877f;
-  --ui-danger: #ff6b60;
-  --ui-danger-strong: #ff6b60;
-  --ui-danger-soft: rgba(255, 107, 96, 0.22);
-  --ui-focus-soft: rgba(239, 106, 98, 0.22);
+  --ui-warning-bg: var(--theme-warning-soft, #3d3617);
+  --ui-warning-border: var(--theme-warning, #7b6b23);
+  --ui-warning-text: var(--theme-warning-text, #f0dfa0);
+  --ui-link: var(--theme-link, var(--theme-accent-light, #f4877f));
+  --ui-danger: var(--theme-danger, #ff6b60);
+  --ui-danger-strong: var(--theme-danger, #ff6b60);
+  --ui-danger-soft: var(--theme-danger-soft, rgba(255, 107, 96, 0.22));
+  --ui-focus-soft: var(--theme-accent-soft, rgba(239, 106, 98, 0.22));
 
   /* 책상은 크롬보다 한 단 밝은 먹색 — 흰 용지와의 대비를 누그러뜨린다. */
-  --doc-workspace: #191919;
+  --doc-workspace: var(--theme-desk, #191919);
   --doc-paper: #ffffff;
   --doc-shadow: rgba(0, 0, 0, 0.55);
   --doc-paper-shadow: var(--n-elev-paper);
 
-  --focus-ring: rgba(230, 230, 230, 0.48);
+  --focus-ring: var(--theme-focus-ring, rgba(230, 230, 230, 0.48));
   --selection-fill: #6a2a27;
   --caret-color: #111111;
-  --resize-handle: #ef6a62;
+  --resize-handle: var(--theme-accent, #ef6a62);
   --ui-align-icon-filter: invert(1) brightness(1.6);
   --ui-icon-sprite-url: url(/images/icon_small_ko_dark.svg);
-  --table-selection-fill: rgba(239, 106, 98, 0.26);
-  --table-selection-stroke: #ef6a62;
+  --table-selection-fill: var(--theme-accent-soft, rgba(239, 106, 98, 0.26));
+  --table-selection-stroke: var(--theme-accent, #ef6a62);
 
   --ruler-bg: var(--n-surface-raised);
   --ruler-body: var(--n-surface);
@@ -351,11 +317,11 @@
   --ruler-marker: var(--accent-light);
 
   /* 먹색 위의 부드러운 빨강 한 가지만 강조색으로 쓴다. */
-  --accent-primary: #ef6a62;
-  --accent-strong: #ff9a92;
-  --accent-light: #f4877f;
-  --accent-hover: #d4544d;
-  --accent-subtle: #a8443e;
+  --accent-primary: var(--theme-accent, #ef6a62);
+  --accent-strong: var(--theme-accent-strong, #ff9a92);
+  --accent-light: var(--theme-accent-light, #f4877f);
+  --accent-hover: var(--theme-accent-hover, #d4544d);
+  --accent-subtle: var(--theme-accent-subtle, #a8443e);
 
   --shadow-dropdown: var(--n-elev-2);
   --shadow-dialog: var(--n-elev-3);
@@ -365,31 +331,31 @@
 
   /* ─── 모던 셸 토큰: 어두운 테마 ─────────────────────
      어두운 쪽에서는 면이 위로 올라올수록 밝아진다. */
-  --n-surface: #0f0f0f;
-  --n-surface-raised: #181818;
-  --n-surface-sunken: #080808;
-  --n-canvas: #0f0f0f;
+  --n-surface: var(--theme-surface, #0f0f0f);
+  --n-surface-raised: var(--theme-surface-raised, #181818);
+  --n-surface-sunken: var(--theme-surface-sunken, #080808);
+  --n-canvas: var(--theme-canvas, #0f0f0f);
 
-  --n-hairline: rgba(255, 255, 255, 0.08);
-  --n-hairline-strong: rgba(255, 255, 255, 0.14);
+  --n-hairline: var(--theme-hairline, rgba(255, 255, 255, 0.08));
+  --n-hairline-strong: var(--theme-hairline-strong, rgba(255, 255, 255, 0.14));
 
   /* 글자는 순백이 아닌 따뜻한 회색 — 검정 위에서 눈부시지 않다. */
-  --n-text: #e6e6e6;
-  --n-text-secondary: #b4b4b4;
-  --n-text-muted: #8f8f8f;
-  --n-text-placeholder: #787878;
-  --n-text-disabled: #5a5a5a;
-  --n-fill-selected-soft: rgba(255, 255, 255, 0.05);
+  --n-text: var(--theme-text, #e6e6e6);
+  --n-text-secondary: var(--theme-text-secondary, #b4b4b4);
+  --n-text-muted: var(--theme-text-muted, #8f8f8f);
+  --n-text-placeholder: var(--theme-text-placeholder, #787878);
+  --n-text-disabled: var(--theme-text-disabled, #5a5a5a);
+  --n-fill-selected-soft: var(--theme-fill-selected-soft, rgba(255, 255, 255, 0.05));
 
   /* 어두운 테마의 액센트는 밝은 파랑이다. 그 위에 흰 글자를
      올리면 2:1 대로 무너지므로, 채워진 버튼은 어두운 잉크를 쓴다. */
-  --n-on-accent: #2a0e0c;
+  --n-on-accent: var(--theme-on-accent, #2a0e0c);
 
-  --n-fill-hover: rgba(255, 255, 255, 0.05);
-  --n-fill-active: rgba(255, 255, 255, 0.09);
-  --n-fill-selected: rgba(255, 255, 255, 0.10);
+  --n-fill-hover: var(--theme-fill-hover, rgba(255, 255, 255, 0.05));
+  --n-fill-active: var(--theme-fill-active, rgba(255, 255, 255, 0.09));
+  --n-fill-selected: var(--theme-fill-selected, rgba(255, 255, 255, 0.10));
   --n-fill-pressed: rgba(0, 0, 0, 0.2);
-  --n-fill-hover-quiet: rgba(255, 255, 255, 0.045);
+  --n-fill-hover-quiet: var(--theme-fill-hover-quiet, rgba(255, 255, 255, 0.045));
   --n-inactive-fill: #2c2c2c;
   --n-inactive-ink: #e6e6e6;
   --n-inactive-selection: #363636;
@@ -544,6 +510,17 @@ body.window-inactive {
 
 body.window-inactive ::selection {
   background: var(--n-inactive-selection);
+}
+
+/* 강조색이 걸리면(프리셋 또는 사용자 강조색, html[data-theme-accent]) 체크 상자·라디오 같은 기본 컨트롤과
+   화면 글자 선택도 그 색을 따른다. 강조색 없는 기본 테마는 브라우저 값 그대로다.
+   :where 로 우선순위를 낮춰 PDF 글자 층처럼 따로 정한 선택색이 이긴다. */
+:root[data-theme-accent] {
+  accent-color: var(--theme-accent);
+}
+
+:where(:root[data-theme-accent]) body:not(.window-inactive) ::selection {
+  background-color: var(--theme-ui-selection, var(--theme-derived-ui-selection));
 }
 
 body.window-inactive :is(

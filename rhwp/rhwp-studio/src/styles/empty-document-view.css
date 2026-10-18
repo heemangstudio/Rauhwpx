@@ -134,13 +134,13 @@
 }
 
 .empty-document-create {
-  border-color: var(--ui-text);
-  background: var(--ui-text);
-  color: var(--ui-surface-raised);
+  border-color: var(--theme-primary, var(--ui-text));
+  background: var(--theme-primary, var(--ui-text));
+  color: var(--theme-on-primary, var(--ui-surface-raised));
 }
 
 .empty-document-create:hover {
-  background: color-mix(in srgb, var(--ui-text) 86%, var(--ui-surface-raised));
+  background: color-mix(in srgb, var(--theme-primary, var(--ui-text)) 86%, var(--theme-on-primary, var(--ui-surface-raised)));
 }
 
 /* 문서를 뗀 채팅이 이 자리로 오면: 종이 테두리가 위·오른쪽·아래·왼쪽 차례로 한 변씩 그어지고(덧선은 마지막 변과

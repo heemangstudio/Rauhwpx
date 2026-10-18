@@ -418,12 +418,12 @@ html.desktop-mac .merge-resolver-header button { -webkit-app-region: no-drag; }
 }
 .merge-primary-button {
   padding: 7px 14px;
-  border-color: var(--ui-accent, #2563eb);
-  color: var(--ui-accent-text, #fff);
-  background: var(--ui-accent, #2563eb);
+  border-color: var(--ui-accent, var(--theme-accent, #2563eb));
+  color: var(--ui-accent-text, var(--theme-on-accent, #fff));
+  background: var(--ui-accent, var(--theme-accent, #2563eb));
   font-weight: 600;
 }
-.merge-primary-button:not(:disabled):hover { background: color-mix(in srgb, var(--ui-accent, #2563eb) 88%, #000); }
+.merge-primary-button:not(:disabled):hover { background: color-mix(in srgb, var(--ui-accent, var(--theme-accent, #2563eb)) 88%, #000); }
 .merge-secondary-button,
 .merge-danger-button { padding: 6px 12px; }
 .merge-secondary-button:not(:disabled):hover,

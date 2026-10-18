@@ -2,18 +2,19 @@
    밖(body)에 붙으므로 색을 여기서 정한다. 미리보기 용지는 두 테마 모두 흰 종이다 — 편집
    화면과 같다. */
 .document-home {
-  --dh-page: #f2f3f5;
-  --dh-strip: #e8eaee;
-  --dh-raised: #ffffff;
-  --dh-text: #171b22;
-  --dh-text-secondary: #424a55;
-  --dh-text-muted: #626b77;
-  --dh-hairline: #d9dde3;
-  --dh-hairline-strong: #c4cad3;
-  --dh-hover: rgba(23, 27, 34, 0.06);
-  --dh-pressed: rgba(23, 27, 34, 0.1);
-  --dh-chip: rgba(23, 27, 34, 0.07);
-  --dh-ink: #171b22;
+  /* 면·글자·선·채움은 테마 팔레트 계약(styles/themes/index.css)을 먼저 읽는다. */
+  --dh-page: var(--theme-surface, #f2f3f5);
+  --dh-strip: var(--theme-surface-sunken, #e8eaee);
+  --dh-raised: var(--theme-surface-raised, #ffffff);
+  --dh-text: var(--theme-text, #171b22);
+  --dh-text-secondary: var(--theme-text-secondary, #424a55);
+  --dh-text-muted: var(--theme-text-muted, #626b77);
+  --dh-hairline: var(--theme-hairline, #d9dde3);
+  --dh-hairline-strong: var(--theme-hairline-strong, #c4cad3);
+  --dh-hover: var(--theme-fill-hover, rgba(23, 27, 34, 0.06));
+  --dh-pressed: var(--theme-fill-active, rgba(23, 27, 34, 0.1));
+  --dh-chip: var(--theme-fill-selected, rgba(23, 27, 34, 0.07));
+  --dh-ink: var(--theme-text, #171b22);
   --dh-ink-inverse: #ffffff;
   --dh-paper: #ffffff;
   --dh-paper-blank: #ffffff;
@@ -22,7 +23,7 @@
   --dh-paper-shadow-hover: 0 0 0 1px #b6bec9, 0 6px 16px rgba(24, 37, 54, 0.12);
   --dh-detail-shadow: 0 0 0 1px var(--dh-hairline), 0 10px 28px rgba(24, 37, 54, 0.1);
   /* 홈 안의 초점 고리는 불투명한 중성색이다. 옅은 면 위에서도 또렷하다. */
-  --dh-focus: #4b5563;
+  --dh-focus: var(--theme-text-secondary, #4b5563);
 
   position: fixed;
   inset: 0;
@@ -41,18 +42,18 @@
 }
 
 :root[data-theme-effective='dark'] .document-home {
-  --dh-page: #0f0f0f;
-  --dh-strip: #181818;
-  --dh-raised: #1c1c1c;
-  --dh-text: #e6e6e6;
-  --dh-text-secondary: #b4b4b4;
-  --dh-text-muted: #8f8f8f;
-  --dh-hairline: #262626;
-  --dh-hairline-strong: #363636;
-  --dh-hover: rgba(255, 255, 255, 0.06);
-  --dh-pressed: rgba(255, 255, 255, 0.1);
-  --dh-chip: rgba(255, 255, 255, 0.08);
-  --dh-ink: #e6e6e6;
+  --dh-page: var(--theme-surface, #0f0f0f);
+  --dh-strip: var(--theme-surface-raised, #181818);
+  --dh-raised: var(--theme-surface-raised, #1c1c1c);
+  --dh-text: var(--theme-text, #e6e6e6);
+  --dh-text-secondary: var(--theme-text-secondary, #b4b4b4);
+  --dh-text-muted: var(--theme-text-muted, #8f8f8f);
+  --dh-hairline: var(--theme-hairline, #262626);
+  --dh-hairline-strong: var(--theme-hairline-strong, #363636);
+  --dh-hover: var(--theme-fill-hover, rgba(255, 255, 255, 0.06));
+  --dh-pressed: var(--theme-fill-active, rgba(255, 255, 255, 0.1));
+  --dh-chip: var(--theme-fill-selected, rgba(255, 255, 255, 0.08));
+  --dh-ink: var(--theme-text, #e6e6e6);
   --dh-ink-inverse: #171717;
   /* 미리보기가 없는 빈 종이는 어두운 면에서 눈부시지 않게 한 단 누른다. */
   --dh-paper-blank: #e6e6e6;
@@ -60,7 +61,7 @@
   --dh-paper-shadow: 0 0 0 1px var(--dh-paper-edge), 0 2px 6px rgba(0, 0, 0, 0.5);
   --dh-paper-shadow-hover: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 8px 22px rgba(0, 0, 0, 0.6);
   --dh-detail-shadow: 0 0 0 1px var(--dh-hairline-strong), 0 12px 32px rgba(0, 0, 0, 0.5);
-  --dh-focus: #d4d4d4;
+  --dh-focus: var(--theme-text-secondary, #d4d4d4);
 }
 
 .document-home[hidden] { display: none; }
@@ -893,12 +894,12 @@ html.desktop-mac .dh-new-chat {
 .dh-action-primary {
   padding: 0 14px;
   margin-right: 4px;
-  background: var(--dh-ink);
-  color: var(--dh-ink-inverse);
+  background: var(--theme-primary, var(--dh-ink));
+  color: var(--theme-on-primary, var(--dh-ink-inverse));
 }
 
-.dh-action-primary:hover { background: color-mix(in oklab, var(--dh-ink) 86%, var(--dh-ink-inverse)); }
-.dh-action-primary:active { background: color-mix(in oklab, var(--dh-ink) 74%, var(--dh-ink-inverse)); }
+.dh-action-primary:hover { background: color-mix(in oklab, var(--theme-primary, var(--dh-ink)) 86%, var(--theme-on-primary, var(--dh-ink-inverse))); }
+.dh-action-primary:active { background: color-mix(in oklab, var(--theme-primary, var(--dh-ink)) 74%, var(--theme-on-primary, var(--dh-ink-inverse))); }
 
 .dh-action-quiet { color: var(--dh-text-muted); }
 

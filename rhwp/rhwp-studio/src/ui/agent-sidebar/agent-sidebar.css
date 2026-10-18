@@ -89,8 +89,8 @@ body.ag-sidebar-resizing {
   --ag-fw-strong: 590;
   /* 14px 이상에만 건다 */
   --ag-track-tight: -0.01em;
-  --ag-font: -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo',
-    '맑은 고딕', 'Malgun Gothic', 'Segoe UI', sans-serif;
+  --ag-font: var(--theme-font-ui, -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo',
+    '맑은 고딕', 'Malgun Gothic', 'Segoe UI', sans-serif);
   --ag-mono: var(--font-family-mono, monospace);
   --ag-numeric: tabular-nums;
 
@@ -111,11 +111,11 @@ body.ag-sidebar-resizing {
   --ag-r-panel: var(--ag-r-card);
 
   /* 기본 버튼(보내기·확인): 잉크로 채우고 반전 글자를 얹는다.
-     액센트 파랑은 포커스·선택·링크·캐럿에만 남는다. */
-  --ag-primary-bg: var(--n-ink);
-  --ag-primary-fg: var(--n-ink-inverse);
-  --ag-primary-bg-hover: color-mix(in oklab, var(--n-ink) 86%, var(--n-ink-inverse));
-  --ag-primary-bg-pressed: color-mix(in oklab, var(--n-ink) 74%, var(--n-ink-inverse));
+     액센트 파랑은 포커스·선택·링크·캐럿에만 남는다. 프리셋은 --theme-primary 로 채움을 바꿀 수 있다. */
+  --ag-primary-bg: var(--theme-primary, var(--n-ink));
+  --ag-primary-fg: var(--theme-on-primary, var(--n-ink-inverse));
+  --ag-primary-bg-hover: color-mix(in oklab, var(--ag-primary-bg) 86%, var(--ag-primary-fg));
+  --ag-primary-bg-pressed: color-mix(in oklab, var(--ag-primary-bg) 74%, var(--ag-primary-fg));
   --ag-primary-bg-disabled: var(--n-ink-quaternary);
 
   /* 포커스: 2px 액센트 링, 2px 띄움 */
@@ -130,23 +130,27 @@ body.ag-sidebar-resizing {
 
   /* 토글·슬라이더 손잡이는 두 테마 모두 흰색이다. */
   --ag-knob: #fff;
+  /* 켜진 스위치: 기본 버튼과 같은 잉크 트랙 위 흰 손잡이. 프리셋이 따로 정할 수 있다. */
+  --ag-switch-on: var(--theme-switch-on, var(--ag-primary-bg));
+  --ag-switch-on-knob: var(--theme-switch-knob, var(--ag-knob));
 }
 
 /* --ag-* 는 이 파일 전체가 쓰는 간접층이다. 여기서 새 중성
    램프로 갈아끼우면 아래 규칙들이 함께 따라온다. 글자·채움·헤어라인은
    면 램프 대신 잉크 농도(--n-ink-*, base.css)에서 나온다. */
 .ag-root {
-  --n-surface: #f2f3f5;
-  --n-surface-raised: #fff;
-  --n-surface-sunken: #e8eaee;
-  --n-canvas: #f2f3f5;
-  --n-text: #171b22;
+  /* 면·글자는 테마 팔레트 계약의 사이드바 값, 없으면 앱 면·글자, 그것도 없으면(기본) 아래 값이다. */
+  --n-surface: var(--theme-sidebar-surface, var(--theme-surface, #f2f3f5));
+  --n-surface-raised: var(--theme-sidebar-raised, var(--theme-surface-raised, #fff));
+  --n-surface-sunken: var(--theme-sidebar-sunken, var(--theme-surface-sunken, #e8eaee));
+  --n-canvas: var(--theme-sidebar-surface, var(--theme-surface, #f2f3f5));
+  --n-text: var(--theme-sidebar-text, var(--theme-text, #171b22));
   --n-text-secondary: var(--n-ink-secondary);
   --n-text-muted: var(--n-ink-secondary);
   --n-text-placeholder: var(--n-ink-secondary);
   --n-text-disabled: var(--n-ink-quaternary);
-  --n-hairline: var(--n-ink-hairline);
-  --n-hairline-strong: var(--n-ink-hairline-strong);
+  --n-hairline: var(--theme-sidebar-hairline, var(--n-ink-hairline));
+  --n-hairline-strong: var(--theme-sidebar-hairline-strong, var(--n-ink-hairline-strong));
   --n-fill-hover: var(--n-ink-fill-hover);
   --n-fill-hover-quiet: var(--n-ink-fill-hover);
   --n-fill-active: var(--n-ink-fill-pressed);
@@ -171,7 +175,7 @@ body.ag-sidebar-resizing {
   --ag-text-disabled: var(--n-ink-quaternary);
   --ag-pressed: var(--n-fill-active);
   /* 사용자 말풍선: 테두리 없이 잉크 5% 로만 구분한다. */
-  --ag-bubble-bg: var(--n-ink-fill-hover);
+  --ag-bubble-bg: var(--theme-sidebar-bubble, var(--n-ink-fill-hover));
   /* 링크는 앱 파랑(포커스 링)을 잉크 쪽으로 당겨 본문 대비를 맞춘다. */
   --ag-link: color-mix(in oklab, var(--focus-ring) 72%, var(--n-ink));
   /* 문서 그림 미리보기는 종이 위에 그린다. */
@@ -204,7 +208,7 @@ body.ag-sidebar-resizing {
   --ag-grok: #758ca3;
   --ag-cursor: #7f7ca4;
   /* 터미널 todo 강조 — 앱 강조색(빨강). */
-  --ag-todo-accent: #b8433c;
+  --ag-todo-accent: var(--theme-accent, #b8433c);
   --ag-opencode: #a19b98;
   --ag-claude-wash: rgba(196, 120, 90, 0.10);
   --ag-codex-wash: rgba(91, 143, 212, 0.10);
@@ -221,8 +225,8 @@ body.ag-sidebar-resizing {
   --accent-primary: var(--ag-accent);
   --accent-strong: var(--ag-accent-strong);
   --n-on-accent: var(--ag-on-accent);
-  --ag-ok: #2f7d4f;
-  --ag-err: #c8372d;
+  --ag-ok: var(--theme-success, #2f7d4f);
+  --ag-err: var(--theme-danger, #c8372d);
   /* 실행 중 표시등 — 켜진 백열전구의 노랑. */
   --ag-run: #d9a514;
 
@@ -348,19 +352,19 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 :root[data-theme-effective='dark'] .ag-root {
   /* 거의 검정 — 문서보다 한 단계 깊게 가라앉는다. */
-  --n-surface: #0c0c0c;
+  --n-surface: var(--theme-sidebar-surface, var(--theme-surface, #0c0c0c));
   /* 사용자 말풍선은 바닥보다 한 단 밝은 무채색 면이다. */
-  --ag-bubble-bg: #141414;
-  --n-surface-raised: #181818;
-  --n-surface-sunken: #050505;
-  --n-canvas: #0c0c0c;
-  --n-text: #e6e6e6;
+  --ag-bubble-bg: var(--theme-sidebar-bubble, var(--theme-sidebar-raised, var(--theme-surface-raised, #141414)));
+  --n-surface-raised: var(--theme-sidebar-raised, var(--theme-surface-raised, #181818));
+  --n-surface-sunken: var(--theme-sidebar-sunken, var(--theme-surface-sunken, #050505));
+  --n-canvas: var(--theme-sidebar-surface, var(--theme-surface, #0c0c0c));
+  --n-text: var(--theme-sidebar-text, var(--theme-text, #e6e6e6));
   --ag-claude: #d49174;
   --ag-codex: #7aa8e0;
   --ag-pi: #6cc0aa;
   --ag-grok: #8fa8c0;
   --ag-cursor: #a9a5d1;
-  --ag-todo-accent: #ef6a62;
+  --ag-todo-accent: var(--theme-accent, #ef6a62);
   --ag-opencode: #cfcecd;
   --ag-claude-wash: rgba(212, 145, 116, 0.16);
   --ag-codex-wash: rgba(122, 168, 224, 0.16);
@@ -368,8 +372,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   --ag-grok-wash: rgba(143, 168, 192, 0.16);
   --ag-cursor-wash: rgba(169, 165, 209, 0.16);
   --ag-opencode-wash: rgba(207, 206, 205, 0.16);
-  --ag-ok: #5cbb7f;
-  --ag-err: #ff6b60;
+  --ag-ok: var(--theme-success, #5cbb7f);
+  --ag-err: var(--theme-danger, #ff6b60);
   --ag-run: #f0c24b;
   --ag-cite-hit: rgba(240, 194, 75, 0.34);
   box-shadow: var(--n-elev-2);

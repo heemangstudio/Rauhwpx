@@ -1,0 +1,84 @@
+/* Catppuccin — 팔레트 계약(index.css 머리말)의 --theme-* 만 정한다. 강조색은 core/theme-presets/catppuccin.ts 에 있다.
+   밝게는 Latte, 어둡게는 Mocha 의 공식 값(catppuccin/palette)이고, 역할은 Catppuccin 스타일 가이드를 따른다.
+   면: 크롬·사이드바 = mantle, 떠 있는 면 = base, 책상·우물 = crust. 채움 = surface0~1.
+   글자: text → subtext1 → subtext0 → overlay(자리표시) → overlay0(비활성). Latte 의 자리표시는 읽히도록 overlay2 를 쓴다.
+   선택 = overlay2 반투명. 용지는 늘 흰색이라 두 색 구성 모두 Latte 값이다. 상태 = red·yellow·green, 링크 = blue. */
+
+:root[data-theme-preset='catppuccin'][data-theme-effective='light'] {
+  --theme-canvas: #e6e9ef;
+  --theme-surface: #e6e9ef;
+  --theme-surface-raised: #eff1f5;
+  --theme-surface-sunken: #dce0e8;
+  --theme-desk: #dce0e8;
+
+  --theme-text: #4c4f69;
+  --theme-text-secondary: #5c5f77;
+  --theme-text-muted: #6c6f85;
+  --theme-text-placeholder: #7c7f93;
+  --theme-text-disabled: #9ca0b0;
+
+  --theme-hairline: #ccd0da;
+  --theme-hairline-strong: #bcc0cc;
+
+  --theme-fill-hover: #dce0e8;
+  --theme-fill-active: #ccd0da;
+  --theme-fill-selected: #ccd0da;
+
+  --theme-focus-ring: color-mix(in oklab, var(--theme-accent) 85%, transparent);
+  --theme-selection: rgba(124, 127, 147, 0.4);
+
+  --theme-danger: #d20f39;
+  --theme-warning: #df8e1d;
+  --theme-success: #40a02b;
+  --theme-link: #1e66f5;
+
+  --theme-sidebar-surface: #e6e9ef;
+  --theme-sidebar-raised: #eff1f5;
+  --theme-sidebar-sunken: #dce0e8;
+  --theme-sidebar-text: #4c4f69;
+
+  /* 기본 버튼·켜진 스위치는 강조색(공식 vscode 포트의 button.background = accent), 그 위는 Base */
+  --theme-primary: var(--theme-accent);
+  --theme-on-primary: var(--theme-on-accent);
+  --theme-switch-knob: var(--theme-on-accent);
+  --theme-ui-selection: rgba(124, 127, 147, 0.3);
+}
+
+:root[data-theme-preset='catppuccin'][data-theme-effective='dark'] {
+  --theme-canvas: #181825;
+  --theme-surface: #181825;
+  --theme-surface-raised: #1e1e2e;
+  --theme-surface-sunken: #11111b;
+  --theme-desk: #11111b;
+
+  --theme-text: #cdd6f4;
+  --theme-text-secondary: #bac2de;
+  --theme-text-muted: #a6adc8;
+  --theme-text-placeholder: #7f849c;
+  --theme-text-disabled: #6c7086;
+
+  --theme-hairline: #313244;
+  --theme-hairline-strong: #45475a;
+
+  --theme-fill-hover: #313244;
+  --theme-fill-active: #45475a;
+  --theme-fill-selected: #45475a;
+
+  --theme-focus-ring: color-mix(in oklab, var(--theme-accent) 70%, transparent);
+  --theme-selection: rgba(124, 127, 147, 0.4);
+
+  --theme-danger: #f38ba8;
+  --theme-warning: #f9e2af;
+  --theme-success: #a6e3a1;
+  --theme-link: #89b4fa;
+
+  --theme-sidebar-surface: #181825;
+  --theme-sidebar-raised: #1e1e2e;
+  --theme-sidebar-sunken: #11111b;
+  --theme-sidebar-text: #cdd6f4;
+
+  --theme-primary: var(--theme-accent);
+  --theme-on-primary: var(--theme-on-accent);
+  --theme-switch-knob: var(--theme-on-accent);
+  --theme-ui-selection: rgba(147, 153, 178, 0.3);
+}

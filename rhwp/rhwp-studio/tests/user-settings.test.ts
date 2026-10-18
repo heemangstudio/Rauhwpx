@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeAppSettings, userSettings } from '../src/core/user-settings.ts';
+import { normalizeAppSettings, normalizeThemeSettings, userSettings } from '../src/core/user-settings.ts';
 
 test('개체 속성 비율 유지 설정은 rhwp-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
@@ -345,4 +345,29 @@ test('최근 글꼴은 중복 없이 최신순 다섯 개만 남는다', () => {
     userSettings.updateFontSettings(original);
     (globalThis as { localStorage?: Storage }).localStorage = originalStorage;
   }
+});
+
+test('모드만 저장된 예전 테마 설정은 기본 프리셋과 프리셋 강조색으로 이어진다', () => {
+  assert.deepEqual(normalizeAppSettings({ version: 2, theme: { mode: 'dark' } }).theme, {
+    mode: 'dark',
+    preset: 'default',
+    accent: null,
+  });
+  assert.deepEqual(normalizeAppSettings({}).theme, { mode: 'system', preset: 'default', accent: null });
+});
+
+test('테마 설정은 모르는 프리셋·모드와 잘못된 강조색을 버리고 강조색을 #rrggbb 로 맞춘다', () => {
+  assert.deepEqual(normalizeThemeSettings({ mode: 'sepia', preset: 'solarized', accent: 'red' }), {
+    mode: 'system',
+    preset: 'default',
+    accent: null,
+  });
+  assert.deepEqual(normalizeThemeSettings({ mode: 'light', preset: 'hacker', accent: '#3AF' }), {
+    mode: 'light',
+    preset: 'hacker',
+    accent: '#33aaff',
+  });
+  assert.equal(normalizeThemeSettings({ accent: ' #12AB9f ' }).accent, '#12ab9f');
+  assert.equal(normalizeThemeSettings({ accent: '#12ab9' }).accent, null);
+  assert.equal(normalizeThemeSettings(null).preset, 'default');
 });

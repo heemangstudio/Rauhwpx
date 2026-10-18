@@ -127,6 +127,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&destination=ai&surface=provider-setup&provider=pi&gift=unclaimed` | Pi card with the `Claude 크레딧 $20` line and 받기 (`&claim=fail` shows the inline error). `gift=claimed`: `$18.40 남음` and a thin meter, and Pi uses the gift (`credential: 'gift'`). `gift=exhausted`: `Claude 크레딧을 모두 사용했습니다`. `gift=off` (default): no line, as on the web or Windows. Add `&services=setup` to see the key step skipped once the gift is claimed |
 | `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
+| `?preset=hacker&accent=2f9e5a` | Theme preset (`default`, `catppuccin`, `hancom`, `hacker`, `absolutely`, `reset`) and accent (`accent=default` returns to the preset accent); both persist like the setting |
+| `?page=settings&destination=theme` | Settings → 테마 (presets, mode, accent) |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
 | `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), with **확인 필요 3** under the rail toolbar and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |

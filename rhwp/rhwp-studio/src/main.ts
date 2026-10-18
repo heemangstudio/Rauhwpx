@@ -113,12 +113,13 @@ import type { LibraryDocumentTarget, LibraryMoveResult } from '@/library/move-to
 import { initRhwpDev } from '@/core/rhwp-dev';
 import type { DocumentDirtyState } from '@/core/document-dirty-state';
 import {
-  applyTheme,
   getEffectiveTheme,
   getThemeMode,
+  getThemeSettings,
   initThemeSync,
+  setThemeAccent,
   setThemeMode,
-  syncThemeMenu,
+  setThemePreset,
 } from '@/core/theme';
 import { initWindowActivity } from '@/core/window-activity';
 import { analyzeDocumentFonts } from '@/core/document-font-status';
@@ -289,6 +290,7 @@ import {
   revealNativeDocument,
   openNativeDocumentAtPath,
   createNamedNativeDocument,
+  syncDesktopWindowBackground,
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
@@ -584,9 +586,10 @@ window.addEventListener('pagehide', (event) => {
     }
   }
 });
-initThemeSync((effective, mode) => {
-  eventBus.emit('theme-changed', { mode, effective });
+initThemeSync((theme) => {
+  eventBus.emit('theme-changed', theme);
   eventBus.emit('command-state-changed');
+  syncDesktopWindowBackground(getComputedStyle(document.body).backgroundColor);
 });
 initWindowActivity();
 // 2.0.10까지 Cloud 채팅 초안(첨부 바이트 포함)을 담던 DB를 지운다. 없으면 아무 일도 하지 않는다.
@@ -634,7 +637,14 @@ if (import.meta.env.DEV) {
   (window as any).__eventBus = eventBus;
   (window as any).__documentState = documentState;
   (window as any).__autosaveManager = autosaveManager;
-  (window as any).__theme = { getThemeMode, getEffectiveTheme, setThemeMode };
+  (window as any).__theme = {
+    getThemeMode,
+    getEffectiveTheme,
+    getThemeSettings,
+    setThemeMode,
+    setPreset: setThemePreset,
+    setAccent: setThemeAccent,
+  };
   initRhwpDev(wasm);
 }
 let canvasView: CanvasView | null = null;
@@ -808,7 +818,7 @@ eventBus.on('settings:open', (payload) => {
   if (agentSidebarReady) return;
   const request = payload as { destination?: unknown; onOpen?: () => void } | undefined;
   const destination = request?.destination;
-  if (destination !== undefined && destination !== 'editing') return;
+  if (destination !== undefined && destination !== 'editing' && destination !== 'theme') return;
   request?.onOpen?.();
   showEditingSettingsFallback({
     eventBus,
@@ -4314,8 +4324,6 @@ function setupEventListeners(): void {
 }
 
 function applyEditorSettingsPreview(settings: EditorScalarSettings): void {
-  applyTheme(settings.theme.mode);
-  syncThemeMenu(settings.theme.mode);
   wasm.setShowControlCodes(settings.view.showControlCodes);
   wasm.setShowParagraphMarks(settings.view.showParagraphMarks);
   syncTextMarkMenu(settings.view.showControlCodes, settings.view.showParagraphMarks);

@@ -1,0 +1,80 @@
+/* Absolutely — 팔레트 계약(index.css 머리말)의 --theme-* 만 정한다. 강조색은 core/theme-presets/absolutely.ts 에 있다.
+   값은 claude.ai 스타일시트의 [data-theme="claude"] 토큰(--bg-*, --text-*, --border-*, --brand-*)에서 그대로 옮겼다. */
+
+:root[data-theme-preset='absolutely'][data-theme-effective='light'] {
+  --theme-canvas: #faf9f5; /* bg-100 */
+  --theme-surface: #faf9f5; /* bg-100 */
+  --theme-surface-raised: #ffffff; /* bg-000 */
+  --theme-surface-sunken: #f0eee6; /* bg-300 */
+  --theme-desk: #e8e6dc; /* bg-400 */
+
+  --theme-text: #141413; /* text-000 */
+  --theme-text-secondary: #3d3d3a; /* text-200 */
+  --theme-text-muted: #73726c; /* text-400 */
+  --theme-text-placeholder: #7b7a74;
+  --theme-text-disabled: #b0aea5;
+
+  --theme-hairline: rgba(31, 30, 29, 0.15); /* border-300 */
+  --theme-hairline-strong: rgba(31, 30, 29, 0.3);
+
+  /* bg-100 위에 얹으면 bg-300(#f0eee6)·bg-400(#e8e6dc)이 되는 따뜻한 반투명 채움 */
+  --theme-fill-hover: rgba(164, 156, 120, 0.12);
+  --theme-fill-active: rgba(164, 156, 120, 0.2);
+  --theme-fill-selected: rgba(164, 156, 120, 0.18);
+
+  --theme-focus-ring: rgba(31, 30, 29, 0.55);
+  --theme-selection: color-mix(in srgb, var(--theme-accent) 24%, transparent);
+
+  --theme-danger: #b53333; /* danger-100 */
+  --theme-warning: #da9e25;
+  --theme-success: #2f7613; /* success-100 */
+  --theme-link: #1b67b2; /* accent-000 */
+
+  --theme-sidebar-surface: #faf9f5;
+  --theme-sidebar-raised: #ffffff;
+  --theme-sidebar-sunken: #f0eee6;
+  --theme-sidebar-text: #141413;
+
+  --theme-on-primary: #faf9f5; /* 잉크 버튼 위 글자 */
+  --theme-sidebar-bubble: #f0eee6; /* bg-300 */
+}
+
+:root[data-theme-preset='absolutely'][data-theme-effective='dark'] {
+  --theme-canvas: #262624; /* bg-100 */
+  --theme-surface: #262624; /* bg-100 */
+  --theme-surface-raised: #30302e; /* bg-000 */
+  --theme-surface-sunken: #1f1e1d; /* bg-200 */
+  --theme-desk: #1f1e1d; /* bg-200 */
+
+  --theme-text: #faf9f5; /* text-000 */
+  --theme-text-secondary: #c2c0b6; /* text-200 */
+  --theme-text-muted: #9c9a92; /* text-400 */
+  --theme-text-placeholder: #918f88;
+  --theme-text-disabled: #5e5d59;
+
+  --theme-hairline: rgba(222, 220, 209, 0.15); /* border-300 */
+  --theme-hairline-strong: rgba(222, 220, 209, 0.3);
+
+  /* bg-100 위에 얹으면 bg-000(#30302e) 언저리가 되는 border-300 반투명 채움 */
+  --theme-fill-hover: rgba(222, 220, 209, 0.06);
+  --theme-fill-active: rgba(222, 220, 209, 0.1);
+  --theme-fill-selected: rgba(222, 220, 209, 0.1);
+
+  --theme-focus-ring: rgba(250, 249, 245, 0.45);
+  --theme-selection: color-mix(in srgb, var(--theme-accent) 30%, transparent);
+
+  --theme-danger: #e66767; /* v2 danger-100 */
+  --theme-warning: #da9e25; /* warning-000 */
+  --theme-success: #65bb30; /* success-000 */
+  --theme-link: #74abe2; /* accent-000 */
+
+  --theme-sidebar-surface: #262624;
+  --theme-sidebar-raised: #30302e;
+  --theme-sidebar-sunken: #1f1e1d;
+  --theme-sidebar-text: #faf9f5;
+
+  --theme-on-primary: #1f1e1d; /* 잉크(크림) 버튼 위 글자 */
+  /* 켜진 스위치 트랙이 크림색이라 흰 손잡이가 사라진다. 손잡이를 bg-100 으로 둔다. */
+  --theme-switch-knob: #262624;
+  --theme-sidebar-bubble: #141413; /* bg-300 */
+}

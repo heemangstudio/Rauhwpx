@@ -327,12 +327,12 @@
   font: 600 12px var(--font-family-ui);
 }
 .cs-dialog .cs-right-col .dialog-btn-primary {
-  border-color: var(--ui-text);
-  background: var(--ui-text);
-  color: var(--ui-surface);
+  border-color: var(--theme-primary, var(--ui-text));
+  background: var(--theme-primary, var(--ui-text));
+  color: var(--theme-on-primary, var(--ui-surface));
 }
 .cs-dialog .cs-right-col .dialog-btn:hover { background: var(--ui-hover); }
-.cs-dialog .cs-right-col .dialog-btn-primary:hover { opacity: .82; background: var(--ui-text); }
+.cs-dialog .cs-right-col .dialog-btn-primary:hover { opacity: .82; background: var(--theme-primary, var(--ui-text)); }
 @media (max-width: 600px) {
   .cs-dialog .dialog-tabs { margin-inline: 16px; max-width: calc(100% - 32px); }
   .cs-dialog .dialog-tab { padding-inline: 9px; }

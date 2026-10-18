@@ -1,0 +1,235 @@
+/* ─── 설정 → 테마 ───────────────────────────────────────
+   타일 견본 색(--tile-*)과 강조색 견본(--swatch)은 프리셋 메타데이터에서 인라인 변수로
+   온다. 나머지는 설정 화면의 잉크·면 토큰이다. 용지는 모든 테마에서 흰색이다. */
+
+.ag-settings-page .ag-theme-preset-body {
+  padding: 12px;
+}
+
+.ag-theme-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.ag-theme-tile {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ag-r-card);
+  background: transparent;
+  color: var(--n-ink);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-theme-tile:hover {
+  background: var(--n-ink-fill-hover);
+}
+
+.ag-theme-tile:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
+}
+
+.ag-theme-tile:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-theme-tile[aria-checked='true'] {
+  border-color: var(--n-ink);
+}
+
+/* 크롬 막대(강조 표식 하나) · 책상 위 흰 용지 · 오른쪽 사이드바 */
+.ag-theme-tile-preview {
+  display: grid;
+  grid-template-columns: 1fr 30%;
+  grid-template-rows: 22% 1fr;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--ag-r-chip);
+  background: var(--tile-desk);
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline);
+}
+
+.ag-theme-tile-bar {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8%;
+  background: var(--tile-chrome);
+}
+
+.ag-theme-tile-mark {
+  width: 12%;
+  height: 36%;
+  border-radius: 2px;
+  background: var(--tile-accent);
+}
+
+.ag-theme-tile-line {
+  width: 36%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--tile-text);
+  opacity: 0.45;
+}
+
+.ag-theme-tile-desk {
+  display: flex;
+  justify-content: center;
+  padding-top: 10%;
+}
+
+.ag-theme-tile-paper {
+  width: 58%;
+  border-radius: 1px 1px 0 0;
+  background: var(--ag-paper-white);
+  box-shadow: 0 1px 2px var(--ag-shadow-soft);
+}
+
+.ag-theme-tile-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16% 12%;
+  background: var(--tile-sidebar);
+}
+
+.ag-theme-tile-side .ag-theme-tile-line {
+  width: 100%;
+}
+
+.ag-theme-tile-side .ag-theme-tile-line-short {
+  width: 60%;
+}
+
+.ag-theme-tile-label {
+  overflow: hidden;
+  padding: 0 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-theme-tile-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-base) var(--ag-spring);
+}
+
+.ag-theme-tile-check .ag-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.ag-theme-tile[aria-checked='true'] .ag-theme-tile-check {
+  opacity: 1;
+  transform: none;
+}
+
+.ag-theme-row {
+  flex-wrap: wrap;
+}
+
+/* 한 가지 색 구성만 가진 테마에서는 모드가 잠긴다. 고정된 구성만 또렷하게 남긴다. */
+.ag-theme-modes .ag-settings-segment:disabled:not(.ag-active) {
+  opacity: 0.45;
+}
+
+.ag-theme-accents {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px;
+}
+
+.ag-theme-swatch {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline);
+  color: var(--n-ink-secondary);
+  cursor: default;
+}
+
+/* 첫 견본(테마 기본색)과 고른 색들 사이를 조금 띄운다. */
+.ag-theme-accents > .ag-theme-swatch:first-child {
+  margin-right: 8px;
+}
+
+.ag-theme-swatch:is([aria-checked='true'], .ag-checked) {
+  box-shadow: 0 0 0 2px var(--ag-set-card, var(--n-surface-raised)), 0 0 0 4px var(--n-ink);
+}
+
+.ag-theme-swatch:focus-visible,
+.ag-theme-swatch-custom:focus-within {
+  outline: var(--ag-focus-ring);
+  outline-offset: 5px;
+}
+
+.ag-theme-swatch-custom {
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline-strong);
+}
+
+.ag-theme-swatch-custom .ag-icon {
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+}
+
+.ag-theme-swatch-custom.ag-checked .ag-icon {
+  display: none;
+}
+
+.ag-theme-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-theme-tile,
+  .ag-theme-tile-check {
+    transition: none;
+  }
+}
+
+/* 편집 설정 대체 창에서는 바깥 바닥줄이 테마와 편집 초안을 함께 적용한다. */
+.ag-settings-fallback-body .ag-settings-theme-content > .ag-settings-apply-footer {
+  display: none;
+}

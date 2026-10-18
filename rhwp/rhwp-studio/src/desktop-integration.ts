@@ -234,6 +234,8 @@ export interface RhwpDesktopApi {
   onFontsChanged?: DesktopFontHostApi['onFontsChanged'];
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
+  /** 창 배경색(#rrggbb). 내용이 그려지기 전과 크기를 바꾸는 동안 보이는 색이다. */
+  setWindowBackground?: (color: string) => void;
   /** 보지 않는 채팅의 알림 — 창에 초점이 없을 때만 메인이 OS 알림으로 띄운다. */
   notifyAgentAttention?: (payload: { threadId: string; title: string; body: string }) => void;
   /** 알렸지만 아직 보지 않은 채팅 수 — 앱 아이콘 배지(macOS·Linux)와 작업 표시줄 표시(Windows). */
@@ -1592,6 +1594,24 @@ export function installDesktopDocumentState(
     queueMicrotask(flush);
   });
   flush();
+}
+
+let lastWindowBackground: string | null = null;
+
+/**
+ * 창 배경을 테마의 앱 바탕색에 맞춘다. CSS 색(rgb()·#hex)을 받아 #rrggbb 로 보내고,
+ * 같은 값은 다시 보내지 않는다. 읽을 수 없는 색(투명 등)은 건너뛴다.
+ */
+export function syncDesktopWindowBackground(cssColor: string, win?: DesktopHost): void {
+  const setWindowBackground = desktopHost(win)?.rhwpDesktop?.setWindowBackground;
+  if (!setWindowBackground) return;
+  const rgb = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)\s*(?:[,/]\s*([\d.]+%?))?\s*\)$/.exec(cssColor.trim());
+  const hex = /^#[0-9a-f]{6}$/i.test(cssColor.trim()) ? cssColor.trim().toLowerCase() : null;
+  if (rgb && rgb[4] !== undefined && Number.parseFloat(rgb[4]) < (rgb[4].endsWith('%') ? 100 : 1)) return;
+  const color = hex ?? (rgb ? `#${rgb.slice(1, 4).map((value) => Number(value).toString(16).padStart(2, '0')).join('')}` : null);
+  if (!color || color === lastWindowBackground) return;
+  lastWindowBackground = color;
+  setWindowBackground(color);
 }
 
 /**

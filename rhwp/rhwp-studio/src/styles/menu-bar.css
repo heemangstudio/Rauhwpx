@@ -267,11 +267,12 @@ html.desktop-mac #menu-bar .menu-title {
   line-height: 16px;
 }
 
-/* 마우스·키보드 강조는 하나의 액센트 채움이다. 하위 메뉴를 연 부모 행도 유지한다. */
+/* 마우스·키보드 강조는 하나의 액센트 채움이다. 하위 메뉴를 연 부모 행도 유지한다.
+   프리셋은 --theme-menu-hover / --theme-on-menu-hover 로 채움과 글자를 따로 정할 수 있다. */
 .md-item:not(.disabled):is(:hover, :focus-within),
 .md-sub:not(.disabled):is(:hover, :focus-within) {
-  background: var(--accent-primary);
-  color: var(--n-on-accent, var(--ui-text-on-accent));
+  background: var(--theme-menu-hover, var(--accent-primary));
+  color: var(--theme-on-menu-hover, var(--n-on-accent, var(--ui-text-on-accent)));
 }
 
 /* 토글은 채운 행이 아니라 왼쪽 체크 칸의 체크 표시로 켜짐을 보인다. */

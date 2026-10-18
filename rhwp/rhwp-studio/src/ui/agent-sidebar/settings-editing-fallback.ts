@@ -1,5 +1,6 @@
 import type { EventBus } from '../../core/event-bus.ts';
 import { createEditingSettings } from './settings-editing.ts';
+import { createThemeSettings } from './settings-theme.ts';
 import type { EditorSettingsRuntime } from './settings-contract.ts';
 import './motion.css';
 import './agent-sidebar.css';
@@ -59,23 +60,40 @@ export function showEditingSettingsFallback(options: EditingSettingsFallbackOpti
   apply.textContent = '적용';
   footer.append(cancel, apply);
 
+  let editingDirty = false;
+  let themeDirty = false;
   let dirty = false;
+  const syncDirty = (): void => {
+    dirty = editingDirty || themeDirty;
+    apply.disabled = !dirty;
+    cancel.disabled = !dirty;
+  };
+  // 사이드바가 없을 때도 테마는 여기서 바꿀 수 있다. 바깥 바닥줄이 두 초안을 함께 적용한다.
+  const theme = createThemeSettings({
+    onDirtyChange(nextDirty) {
+      themeDirty = nextDirty;
+      syncDirty();
+    },
+  });
   const controller = createEditingSettings({
     eventBus: options.eventBus,
     runtime: options.runtime,
     onDirtyChange(nextDirty) {
-      dirty = nextDirty;
-      apply.disabled = !dirty;
-      cancel.disabled = !dirty;
+      editingDirty = nextDirty;
+      syncDirty();
     },
   });
-  body.appendChild(controller.element);
+  body.append(theme.element, controller.element);
   dialog.append(header, body, footer);
   overlay.appendChild(dialog);
 
   const finish = (discard: boolean): void => {
-    if (discard) controller.cancel();
+    if (discard) {
+      controller.cancel();
+      theme.cancel();
+    }
     controller.dispose();
+    theme.dispose();
     overlay.remove();
     activeDialog = null;
     previousFocus?.focus();
@@ -88,7 +106,7 @@ export function showEditingSettingsFallback(options: EditingSettingsFallbackOpti
   close.addEventListener('click', () => void requestClose());
   cancel.addEventListener('click', () => finish(true));
   apply.addEventListener('click', () => {
-    if (controller.apply()) finish(false);
+    if ((!themeDirty || theme.apply()) && (!editingDirty || controller.apply())) finish(false);
   });
   overlay.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -99,6 +117,7 @@ export function showEditingSettingsFallback(options: EditingSettingsFallbackOpti
 
   activeDialog = dialog;
   document.body.appendChild(overlay);
+  theme.open();
   controller.open();
   dialog.focus();
 }

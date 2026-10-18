@@ -1,5 +1,5 @@
 import type { CommandDef } from '../types';
-import { setThemeMode, syncThemeMenu, type EffectiveTheme } from '../../core/theme';
+import { getLockedScheme, setThemeMode } from '../../core/theme';
 import { userSettings, type ThemeMode } from '../../core/user-settings';
 import { GridSettingsDialog } from '../../ui/grid-settings-dialog';
 import {
@@ -27,14 +27,15 @@ function zoomLevel(pct: number, shortcutLabel?: string): CommandDef {
   };
 }
 
+/** 한 가지 색 구성만 가진 프리셋(예: Hacker)이 켜져 있으면 모드를 바꿀 수 없다. */
 function themeModeCommand(mode: ThemeMode, label: string): CommandDef {
   return {
     id: `view:theme-${mode}`,
     label,
+    canExecute: () => getLockedScheme() === null,
     execute(services) {
-      const effective: EffectiveTheme = setThemeMode(mode);
-      syncThemeMenu(mode);
-      services.eventBus.emit('theme-changed', { mode, effective });
+      // 메뉴 체크와 theme-changed 알림은 core/theme.ts 의 적용 알림이 맡는다.
+      setThemeMode(mode);
       services.eventBus.emit('document-view-changed');
     },
   };
