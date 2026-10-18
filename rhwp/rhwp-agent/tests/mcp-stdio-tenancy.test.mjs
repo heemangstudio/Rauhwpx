@@ -158,3 +158,23 @@ test('MCP server sends the shared tool rules once and annotates every tool by ca
     if (category === 'document-write') assert.equal(tool.annotations.destructiveHint, false, tool.name);
   }
 });
+
+test('MCP stdio rejects documentId on tools that cannot read another document instead of stripping it', { timeout: 15_000 }, async (t) => {
+  const hub = await fakeHub(t);
+  const { client } = await startClient(t, hub);
+  const write = await client.callTool({ name: 'insert_text', arguments: {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, text: 'x', documentId: 'document-other',
+  } });
+  assert.match(errorText(write), /^INVALID_ARGS: documentId is read-only; writes target the live document$/);
+  const batched = await client.callTool({ name: 'apply_edits', arguments: {
+    expectedRevision: 1, edits: [{ tool: 'insert_text', paraIdx: 0, text: 'x', documentId: 'document-other' }],
+  } });
+  assert.match(errorText(batched), /^INVALID_ARGS: documentId is read-only/);
+  assert.equal(hub.calls.length, 0, 'rejected writes never reach the hub');
+
+  const read = client.callTool({ name: 'get_structure', arguments: { documentId: 'document-other' } });
+  await hub.waitFor(() => hub.calls.length === 1, 'read call');
+  assert.equal(hub.calls[0].args.documentId, 'document-other');
+  hub.reply({ v: 5, type: 'tool-result', id: hub.calls[0].id, ok: true, result: { name: 'other.hwp' } });
+  assert.notEqual((await read).isError, true);
+});

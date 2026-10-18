@@ -294,6 +294,7 @@ The optional transport accepts only same-origin usage reads and Codex reset requ
 | References | File picker/drop/paste UI, staged message attachments, scoped lists, filename search, and deletion; extraction returns sample metadata/snippets |
 | Settings | Real editing preferences, draft/apply/cancel, themes, model defaults, app instructions, and sample writing-style calibration |
 | Connections | Provider install/login, direct quota health bars, manual refresh, Codex banked reset confirmation, and model catalogs; provider credentials are never used by mocks |
+| Document-less chats | With **Document** set to *No document*: **Link document** links a new sample document (header chip with the Hama build), **Link consent** shows the agent's link pill, and **Save gate** shows the 새 문서 / 문서 연결 row after a message is sent. **Detach document** (or the link button next to the browser button) detaches the shown chat: Hama inhales the header name, the mock document closes, and the chat restarts without a document and compacts once (`detachCalls`, `snapshot().chatStarts`, `snapshot().compactions`) |
 | Versions | Graph, commit titles, checkpoints, restore/adopt metadata, branches, worktree create/open/close/remove, tags, shelves, and sample merges |
 | External/document actions | Local notice for browser pages, linked documents, full-workspace focus mode, and document comparisons |
 

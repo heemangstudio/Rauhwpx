@@ -84,6 +84,12 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     return path ? ipcRenderer.invoke('desktop:claim-native-dropped-file', path) : null;
   },
   pickNativeSaveFile: (options) => ipcRenderer.invoke('desktop:pick-native-save-file', options),
+  openNativeDocumentAtPath: (path) => ipcRenderer.invoke('desktop:open-native-document-at-path', path),
+  createNamedNativeDocument: (payload) => ipcRenderer.invoke('desktop:create-named-native-document', {
+    name: payload?.name,
+    folder: payload?.folder,
+    bytes: payload?.bytes,
+  }),
   releaseNativeFile: (handleId) => ipcRenderer.invoke('desktop:release-native-file', handleId),
   renameNativeFile: (handleId, nextName) => ipcRenderer.invoke('desktop:rename-native-file', handleId, nextName),
   readNativeFile: (handleId) => ipcRenderer.invoke('desktop:native-file-read', handleId),
@@ -142,9 +148,10 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     'desktop:relocate-native-document',
     documentId,
   ),
-  readRememberedNativeDocument: (documentId) => ipcRenderer.invoke(
+  readRememberedNativeDocument: (documentId, options) => ipcRenderer.invoke(
     'desktop:read-remembered-native-document',
     documentId,
+    options?.detailed === true ? { detailed: true } : undefined,
   ),
   revealNativeDocument: (documentId) => ipcRenderer.invoke('desktop:reveal-native-document', documentId),
   openNativeDocumentWindow: (documentId) => ipcRenderer.invoke(

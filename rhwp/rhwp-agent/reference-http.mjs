@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 
 import { normalizeReferenceScope } from './reference-store.mjs';
 
@@ -228,6 +229,29 @@ export function createReferenceHttpHandler({ store, tokens, allowedScopes }) {
         await store.activateScopes(scopes);
         const results = store.search({ query, scopes, maxResults });
         sendJson(res, 200, { status: 'ready', query, results }, origin);
+        return true;
+      }
+      const blobMatch = /^\/reference-files\/([^/]+)\/blob$/.exec(url.pathname);
+      if (req.method === 'GET' && blobMatch) {
+        // 스튜디오가 PDF 쪽을 그릴 원본 바이트 (프로젝트 밖 첨부). 요청한 범위의 파일만 준다.
+        const fileId = decodeURIComponent(blobMatch[1]);
+        if (!fileId || fileId.length > 128 || /[\u0000-\u001f\u007f]/.test(fileId)) {
+          const error = new Error('Invalid reference file id');
+          error.code = 'REFERENCE_ID_INVALID';
+          throw error;
+        }
+        const blob = await store.openBlob({ fileId, scopes: [resolvedScope] });
+        res.writeHead(200, {
+          'content-type': /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(String(blob.mimeType)) ? blob.mimeType : 'application/octet-stream',
+          'content-length': String(blob.size),
+          'cache-control': 'no-store, private',
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': "sandbox; default-src 'none'",
+          ...(origin ? { 'access-control-allow-origin': origin, 'access-control-expose-headers': 'Content-Length', vary: 'Origin' } : {}),
+        });
+        const stream = createReadStream(blob.path);
+        stream.on('error', () => res.destroy());
+        stream.pipe(res);
         return true;
       }
       if (req.method === 'DELETE' && url.pathname.startsWith('/reference-files/')) {

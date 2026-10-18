@@ -56,7 +56,7 @@ function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE) {
   writeFakeCliBin(binDir, 'pi', fixtureSource);
 }
 
-async function startHub(t, { fakePi = false, controlledCompletion = false, backendFixture = null } = {}) {
+async function startHub(t, { fakePi = false, controlledCompletion = false, backendFixture = null, env = {} } = {}) {
   if (!backendFixture) {
     let completePi = null;
     const hub = await startTestHub(t, {
@@ -142,6 +142,7 @@ async function startHub(t, { fakePi = false, controlledCompletion = false, backe
       RHWP_BROWSER_DATA_DIR: path.join(workRoot, 'browser'), RHWP_BROWSER_OS_KEYRING: '0', RHWP_BROWSER_HOST: '',
       ...(fakePi ? { RHWP_PI_DIR: piRoot } : {}),
       PATH: testPath,
+      ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -447,6 +448,60 @@ test('permission requests require one provider-stream root ticket for legacy MCP
     sendFrame(studio, { type: 'chat-interrupt' });
     await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
     id += 1;
+  }
+});
+
+test('path reads by a Claude Task subagent are refused through the provider-stream ticket', { timeout: 40_000 }, async (t) => {
+  const file = path.join(os.tmpdir(), 'rhwp-provenance-form.hwp');
+  const { port } = await startHub(t, {
+    env: { RHWP_HOME_ACCESS: '1' },
+    backendFixture: {
+      agent: 'claude',
+      source: () => `
+        export function prepareClaudeHome() { return []; }
+        export function flushClaudeCredentialMirrors() { return true; }
+        export function canResumeClaudeSession() { return false; }
+        export function createClaudeSession(opts) {
+          return {
+            getSessionId() { return 'path-provenance-fixture'; },
+            dispose() { return true; },
+            setExecutionMode() {},
+            interrupt() { opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'interrupted' }); },
+            sendUserMessage(prompt) {
+              opts.onEvent({ type: 'turn-start', agent: 'claude' });
+              const event = { type: 'tool-call', agent: 'claude', tool: 'mcp__rhwp__list_documents', argsJson: ${JSON.stringify(JSON.stringify({ path: file }))} };
+              if (prompt.includes('path-root-ticket') || prompt.includes('path-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'path-root' });
+              if (prompt.includes('path-child-ticket') || prompt.includes('path-ambiguous-ticket')) opts.onEvent({ ...event, callId: 'path-child', parentTaskId: 'child-task' });
+            },
+          };
+        }
+      `,
+    },
+  });
+  const sessionId = 'path-provider-provenance';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=path-provenance-page`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'agent-setup-status' && frame.statuses?.claude?.authenticated === true);
+  sendFrame(studio, { type: 'chat-start', agent: 'claude', threadId: 'path-provenance-thread', documentId: 'path-provenance-doc' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  const cases = [
+    ['path-missing-ticket', 'CALLER_SCOPE_UNKNOWN'],
+    ['path-child-ticket', 'ROOT_INTERACTION_REQUIRED'],
+    ['path-ambiguous-ticket', 'CALLER_SCOPE_UNKNOWN'],
+    // 루트 대화는 소유자 확인을 지나 동의 확인에 닿는다.
+    ['path-root-ticket', 'PERMISSION_REQUIRED'],
+  ];
+  for (const [index, [trigger, expectedError]] of cases.entries()) {
+    sendFrame(studio, { type: 'chat-user-message', text: trigger, threadId: started.threadId, documentId: started.documentId });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+    const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=claude&role=chat`);
+    t.after(() => closeClient(mcp));
+    sendFrame(mcp, { type: 'tool-call', id: 701 + index, tool: 'list_documents', args: { path: file } });
+    const result = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 701 + index);
+    assert.equal(result.error?.code, expectedError, `${trigger}: ${JSON.stringify(result)}`);
+    sendFrame(studio, { type: 'chat-interrupt' });
+    await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
   }
 });
 

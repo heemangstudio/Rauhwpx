@@ -139,6 +139,9 @@ export function buildCodexArgv(opts, threadId) {
     '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
+    // 기본 60초는 사용자 답을 기다리는 질문(ask_user_question), 저장 창을 기다릴 수 있는 문서 떼기(5분),
+    // Studio 가 문서를 붙이는 호출(2분)을 끊는다. 다른 도구는 mcp-stdio 의 180초가 먼저 끝낸다.
+    '-c', 'mcp_servers.rhwp.tool_timeout_sec=600',
     // auto 는 주석에 따라 연구 자료 저장에도 승인을 요구할 수 있다. 헤드리스 실행에서
     // 앱이 관리하는 자료 저장만 미리 승인한다. 모드·설정·세션 경계는 허브가 검사한다.
     // 최초 실행과 resume 하위 명령이 모두 이해하는 설정 키만 사용한다.

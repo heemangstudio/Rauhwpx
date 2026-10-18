@@ -16,6 +16,7 @@ import {
 } from './hub-session-registry.mjs';
 import {
   RHWP_TOOL_RULES,
+  documentIdArgError,
   filterToolDefinitions,
   projectToolGatesFromEnv,
   toToolContent,
@@ -43,6 +44,7 @@ const CONNECT_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 180_000;
 const MAX_PROVIDER_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_INFLIGHT_CALLS = 64;
+const HUMAN_WAIT_TOOLS = new Set(['ask_user_question', 'detach_document']);
 
 // insert_image 가 읽을 수 있는 루트 디렉터리(세션 작업 공간·다운로드 등).
 // 어댑터가 루트를 넘겨주면 그 밖의 절대경로 읽기는 전부 거부한다.
@@ -185,8 +187,9 @@ async function callHub(tool, args, timing = null) {
   return new Promise((resolve, reject) => {
     // Human input is hub-owned and lives until answered, cancelled, or its provider
     // connection disappears. Applying the ordinary MCP timeout would turn a normal
-    // pause into a false tool failure.
-    const timer = tool === 'ask_user_question'
+    // pause into a false tool failure. Detaching may wait on the save dialog of a
+    // never-saved document; the hub bounds that wait.
+    const timer = HUMAN_WAIT_TOOLS.has(tool)
       ? null
       : setTimeout(() => {
         inflight.delete(id);
@@ -319,8 +322,30 @@ server.server.setRequestHandler(ReadResourceRequestSchema, (request) => {
   throw new McpError(ErrorCode.InvalidParams, `rhwp exposes no MCP resources: ${request.params.uri}`);
 });
 
+// MCP SDK 는 스키마에 없는 인자를 조용히 지운다. 쓰기 도구에 온 documentId 가 지워진 채 열린 문서에
+// 적용되지 않도록, SDK 가 인자를 파싱하기 전에 원본 tools/call 요청에서 거절한다.
+const visibleToolsByName = new Map(visibleTools.map((def) => [def.name, def]));
+function guardDocumentIdArgs(transport) {
+  const deliver = transport.onmessage;
+  transport.onmessage = (message, extra) => {
+    const error = message?.method === 'tools/call' && message.id !== undefined
+      ? documentIdArgError(visibleToolsByName.get(message.params?.name), message.params?.arguments)
+      : null;
+    if (!error) {
+      deliver?.(message, extra);
+      return;
+    }
+    transport.send({
+      jsonrpc: '2.0',
+      id: message.id,
+      result: { content: [{ type: 'text', text: `INVALID_ARGS: ${error}` }], isError: true },
+    }).catch((e) => log(`documentId guard reply failed: ${e?.message ?? e}`));
+  };
+}
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
+guardDocumentIdArgs(transport);
 // server.connect 가 transport.onclose 를 소유하므로 Protocol 레벨 onclose 훅을 쓴다.
 server.server.onclose = () => shutdown('stdio transport closed');
 process.stdin.on('end', () => shutdown('stdin EOF'));

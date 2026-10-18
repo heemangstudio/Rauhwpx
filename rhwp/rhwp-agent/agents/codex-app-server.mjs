@@ -67,6 +67,9 @@ function capabilityConfig(opts) {
     '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
     '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
+    // 기본 60초는 사용자 답을 기다리는 질문(ask_user_question), 저장 창을 기다릴 수 있는 문서 떼기(5분),
+    // Studio 가 문서를 붙이는 호출(2분)을 끊는다. 다른 도구는 mcp-stdio 의 180초가 먼저 끝낸다.
+    '-c', 'mcp_servers.rhwp.tool_timeout_sec=600',
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
     // 자료 저장은 허브가 모드·설정·세션 경계를 검사하므로 승인 UI 없이 실행한다.
     ...codexManagedToolApprovalConfig(),
@@ -1427,7 +1430,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         resumeFallbackHandoff: resumeFallbackHandoff ?? null,
       });
     },
-    compact() {
+    /** thread/compact/start 는 threadId 만 받는다 — 요약 지시(instructions)는 버린다. */
+    compact(_options) {
       if (disposed) return;
       if (fallback) throw new Error('Codex legacy exec cannot compact on request');
       if (starting || turnOpen) throw new Error('A Codex turn is already running');

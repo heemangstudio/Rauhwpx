@@ -51,6 +51,7 @@ const capabilityIcons: Record<ChatPermissionCapability, SidebarIconName> = {
   downloads: 'browserDownload',
   browser: 'browser',
   'local-execution': 'terminal',
+  'other-documents': 'document',
 };
 
 const capabilityTitles: Record<ChatPermissionCapability, string> = {
@@ -58,6 +59,7 @@ const capabilityTitles: Record<ChatPermissionCapability, string> = {
   downloads: '파일을 내려받으려고 합니다',
   browser: '브라우저를 사용하려고 합니다',
   'local-execution': '로컬 파일과 명령을 실행하려고 합니다',
+  'other-documents': '다른 문서를 읽으려고 합니다',
 };
 
 const secretTitles: Record<string, string> = {

@@ -52,6 +52,18 @@ test('chat grants authorize only their app category and preserve plan approval a
   assert.throws(() => authorizeToolCall({ ...download, researchPermissions: { browse: true, downloads: false, import: true }, chatPermissionGrants: ['downloads'] }), { code: 'RESEARCH_PERMISSION_REVOKED' });
 });
 
+test('create_document needs a writing mode; open_document works in every mode', () => {
+  const call = (tool, workflow, phase) => () => authorizeToolCall({
+    category: 'document-link', tool, workflow, phase, expectedEpoch: 3, receivedEpoch: 3,
+  });
+  assert.equal(call('create_document', 'direct', 'implementing')(), true);
+  assert.equal(call('create_document', 'plan', 'implementing')(), true);
+  for (const [workflow, phase] of [['question', 'questioning'], ['plan', 'planning'], ['plan', 'awaiting-approval']]) {
+    assert.throws(call('create_document', workflow, phase), { code: 'MODE_FORBIDS_CREATE' }, `${workflow}/${phase}`);
+    assert.equal(call('open_document', workflow, phase)(), true, `${workflow}/${phase}`);
+  }
+});
+
 test('plan transition: planning -> awaiting -> switching -> implementing', () => {
   const workflow = state();
   const ready = workflow.present(plan());

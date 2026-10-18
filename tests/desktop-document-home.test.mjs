@@ -105,7 +105,12 @@ test('미리보기 읽기는 다른 창이 쥔 파일, 큰 파일, 심볼릭 링
 
     const owned = await registry.create('window-2', path);
     assert.equal(await registry.readRememberedDocument('window-1', 'doc-1', { maxBytes: 10 }), null);
+    // 다른 문서 읽기는 이유를 받는다 — 다른 창이 쥔 파일만 DOCUMENT_OPEN_ELSEWHERE 가 된다.
+    const reason = async () => (await registry.readRememberedDocumentResult('window-1', 'doc-1', { maxBytes: 100 })).reason;
+    assert.equal(await reason(), 'owned');
     registry.releaseHandle('window-2', owned.descriptor.handleId);
+    assert.equal((await registry.readRememberedDocumentResult('window-1', 'doc-1', { maxBytes: 2 })).reason, 'too-large');
+    assert.equal((await registry.readRememberedDocumentResult('window-1', 'unknown-doc')).reason, 'missing');
 
     if (process.platform !== 'win32') {
       const secret = join(dir, 'secret.txt');
@@ -113,7 +118,10 @@ test('미리보기 읽기는 다른 창이 쥔 파일, 큰 파일, 심볼릭 링
       unlinkSync(path);
       symlinkSync(secret, path);
       assert.equal(await registry.readRememberedDocument('window-1', 'doc-1', { maxBytes: 100 }), null);
+      assert.equal(await reason(), 'unreadable');
     }
+    unlinkSync(path);
+    assert.equal(await reason(), 'missing');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

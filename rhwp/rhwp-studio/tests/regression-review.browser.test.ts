@@ -90,7 +90,8 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
   );
   await page.click(toggle);
   const draft = !before;
-  await page.click('.ag-settings-close');
+  // 설정은 집중 화면에만 열린다 — 닫기는 머리 줄의 '설정 닫기'다.
+  await page.click('.ag-workspace-exit-btn');
   await page.waitForSelector('.ag-settings-dirty-dialog');
   assert.equal(
     await page.$eval('.ag-settings-dirty-dialog', (el: HTMLElement) =>
@@ -112,7 +113,7 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
     ),
     before,
   );
-  await page.click('.ag-settings-close');
+  await page.click('.ag-workspace-exit-btn');
   await clickText(page, '.ag-settings-dirty-dialog button', '버리기');
   await page.waitForFunction(
     () =>
@@ -127,7 +128,7 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
     before,
   );
   await page.click(toggle);
-  await page.click('.ag-settings-close');
+  await page.click('.ag-workspace-exit-btn');
   await clickText(page, '.ag-settings-dirty-dialog button', '적용');
   await page.waitForFunction(
     () =>

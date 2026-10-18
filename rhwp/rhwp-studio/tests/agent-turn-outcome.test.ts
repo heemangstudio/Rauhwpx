@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { DEFAULT_AGENT_EDIT_LOCK, saveAgentPrefs } from '../src/agent/agent-prefs.ts';
 
 // bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
 registerHooks({
@@ -17,6 +18,15 @@ registerHooks({
 const { AgentBridgeImpl, turnEndDisposition } = await import('../src/agent/bridge.ts');
 const { PendingEditManager } = await import('../src/agent/pending-edits.ts');
 const { makeEnv } = await import('./agent-test-env.ts');
+
+
+/** 이 검사는 일하는 내내 막는 잠금(작업 내내)을 전제로 한다. 끝나면 기본값으로 돌린다. */
+function lockWholeTurn(t: { after(fn: () => void): void }): void {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  saveAgentPrefs({ editLock: 'always' }, storage);
+  t.after(() => { saveAgentPrefs({ editLock: DEFAULT_AGENT_EDIT_LOCK }, storage); });
+}
 
 test('turnEndDisposition: 명시적 성공 종료만 프로필로 커밋 여부를 가른다', () => {
   for (const stopReason of ['end_turn', 'completed', 'success'] as const) {
@@ -334,7 +344,8 @@ function welcomeFixture(opts: { turnRunning: boolean; activeAgent: 'claude' | nu
   return { bridge, endTurnCalls, events, leases };
 }
 
-test('welcome session:null 은 턴이 돌던 채팅의 진행·편집 잠금·열린 편집 턴을 푼다', () => {
+test('welcome session:null 은 턴이 돌던 채팅의 진행·편집 잠금·열린 편집 턴을 푼다', (t) => {
+  lockWholeTurn(t);
   const { bridge, endTurnCalls, events, leases } = welcomeFixture({ turnRunning: true, activeAgent: 'claude' });
   assert.equal(bridge.getEditingLease().active, true, '턴 중에는 문서 교체가 막힌다');
   bridge.handleMessage({ type: 'welcome', session: null });

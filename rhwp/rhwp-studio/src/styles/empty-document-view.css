@@ -1,0 +1,201 @@
+/* 문서가 없을 때 용지 자리: 자는 하마가 든 점선 종이와 새 문서·파일 열기 */
+.empty-document-view {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  pointer-events: none;
+}
+
+.empty-document-view[hidden] {
+  display: none;
+}
+
+.empty-document-paper {
+  position: relative;
+  width: 118px;
+  height: 156px;
+  border-radius: 3px;
+  color: var(--ui-text-muted);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 120ms ease;
+}
+
+.empty-document-paper:hover {
+  background: var(--ui-hover-quiet);
+}
+
+/* 손으로 그은 테두리: 변마다 점선 길이가 고르지 않고, 모서리에서 선 끝이 조금 삐져나온다. */
+.empty-document-paper-outline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--ui-border-strong);
+  pointer-events: none;
+  transition: color 120ms ease;
+}
+
+.empty-document-paper:hover .empty-document-paper-outline {
+  color: color-mix(in srgb, var(--ui-border-strong) 55%, var(--ui-text-muted));
+}
+
+.empty-document-paper-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+  stroke-dasharray: 6 3.5 9 4 3.5 3.5 7.5 4.5;
+}
+
+.empty-document-paper-retrace {
+  opacity: 0.28;
+}
+
+.empty-document-paper-retrace .empty-document-paper-stroke {
+  stroke-width: 1px;
+}
+
+/* 자는 하마: 스프라이트 한 칸이 3px. 아래 16칸은 z 가 떠오르는 자리다. */
+.empty-document-hama {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  width: 90px;
+  height: 84px;
+  margin-left: -45px;
+  overflow: visible;
+}
+
+.empty-document-hama-inhale {
+  opacity: 0;
+  animation: empty-document-breathe 4.8s steps(1, end) infinite;
+}
+
+.empty-document-z {
+  opacity: 0;
+  animation: empty-document-z-rise 4.8s steps(3, end) infinite;
+}
+
+.empty-document-z-2 {
+  animation-delay: 0.8s;
+}
+
+.empty-document-z-3 {
+  animation-delay: 1.6s;
+}
+
+@keyframes empty-document-breathe {
+  0%, 55% { opacity: 0; }
+  60%, 90% { opacity: 1; }
+}
+
+/* 한 칸 아래에서 떠올라 두 칸 더 오른 뒤 사라진다. 계단식(steps)이라 픽셀이 번지지 않는다. */
+@keyframes empty-document-z-rise {
+  0% { opacity: 0; transform: translateY(1px); }
+  8% { opacity: 0.85; }
+  50% { opacity: 0.85; }
+  66% { opacity: 0; transform: translateY(-2px); }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
+.empty-document-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.empty-document-action {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 8px;
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.empty-document-action:hover {
+  background: var(--ui-hover);
+}
+
+.empty-document-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.empty-document-create {
+  border-color: var(--ui-text);
+  background: var(--ui-text);
+  color: var(--ui-surface-raised);
+}
+
+.empty-document-create:hover {
+  background: color-mix(in srgb, var(--ui-text) 86%, var(--ui-surface-raised));
+}
+
+/* 문서를 뗀 채팅이 이 자리로 오면: 종이 테두리가 위·오른쪽·아래·왼쪽 차례로 한 변씩 그어지고(덧선은 마지막 변과
+   함께), 단추가 두 칸에 걸쳐 비친 뒤 하마가 마지막에 두 칸으로 비친다. 모두 계단식이다. */
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke,
+.empty-document-arriving .empty-document-paper-retrace {
+  animation: empty-document-arrive 75ms steps(1, end) both;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(2) {
+  animation-delay: 75ms;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(3) {
+  animation-delay: 150ms;
+}
+
+.empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke:nth-of-type(4),
+.empty-document-arriving .empty-document-paper-retrace {
+  animation-delay: 225ms;
+}
+
+.empty-document-arriving .empty-document-actions {
+  animation: empty-document-arrive 150ms steps(2, end) both;
+  animation-delay: 75ms;
+}
+
+.empty-document-arriving .empty-document-hama {
+  animation: empty-document-arrive 150ms steps(2, end) both;
+  animation-delay: 300ms;
+}
+
+@keyframes empty-document-arrive {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-document-arriving .empty-document-paper-outline > .empty-document-paper-stroke,
+  .empty-document-arriving .empty-document-paper-retrace,
+  .empty-document-arriving .empty-document-actions,
+  .empty-document-arriving .empty-document-hama {
+    animation: none;
+  }
+
+  .empty-document-paper,
+  .empty-document-paper-outline {
+    transition: none;
+  }
+
+  .empty-document-hama-inhale {
+    animation: none;
+  }
+
+  .empty-document-z {
+    animation: none;
+    opacity: 0.85;
+  }
+}

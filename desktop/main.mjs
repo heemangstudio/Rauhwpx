@@ -40,6 +40,7 @@ import {
   waitForHubReadyLine,
 } from './agent-hub.mjs';
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
+import { createAgentDocument, defaultAgentDocumentFolder, openAgentDocumentAtPath } from './agent-documents.mjs';
 import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
@@ -404,6 +405,7 @@ class AgentHubOwner {
         RHWP_OWNER_PID: String(process.pid),
         RHWP_OWNER_IPC: '1',
         RHWP_HOME_ACCESS: '1',
+        RHWP_DOCUMENTS_DIR: app.getPath('documents'),
         RHWP_RUNTIME_DIR: runtimeDir,
         RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
@@ -1360,6 +1362,35 @@ ipcMain.handle('desktop:claim-native-dropped-file', async (event, filePath) => {
   noteRecentDocument(session.sessionId, result.descriptor.handleId);
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
+// 에이전트 도구(open_document·create_document). 열기 대화상자와 같은 핸들을 주되, 다른 창이 쥔
+// 문서는 그 창을 앞으로 가져오지 않고 DOC_OPEN_ELSEWHERE 로 알린다.
+ipcMain.handle('desktop:open-native-document-at-path', async (event, filePath) => {
+  const session = sessionForEvent(event);
+  const result = await openAgentDocumentAtPath(session.sessionId, filePath, { nativeFiles, documentLeases });
+  if (result.ok) noteRecentDocument(session.sessionId, result.handleId);
+  return result;
+});
+ipcMain.handle('desktop:create-named-native-document', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  try {
+    await licenseHost.guardSave();
+  } catch (error) {
+    if (error?.code === 'LICENSE_READ_ONLY') return { ok: false, code: 'LICENSE_READ_ONLY' };
+    throw error;
+  }
+  const result = await createAgentDocument(session.sessionId, {
+    name: payload?.name,
+    folder: payload?.folder,
+    bytes: payload?.bytes,
+  }, {
+    nativeFiles,
+    // 허브가 확인 요청에 보여 준 기본 폴더(RHWP_DOCUMENTS_DIR/HamaEditor)와 같은 곳이다.
+    defaultFolder: defaultAgentDocumentFolder(app.getPath('documents')),
+    home: app.getPath('home'),
+  });
+  if (result.ok) noteRecentDocument(session.sessionId, result.handleId);
+  return result;
+});
 ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const session = sessionForEvent(event);
   // 체험이 끝났으면 저장 위치를 고르기 전에 막고 활성화 창을 띄운다.
@@ -1549,10 +1580,14 @@ ipcMain.handle('desktop:relocate-native-document', (event, documentId) => {
   relocatingDocuments.set(key, search);
   return search;
 });
-ipcMain.handle('desktop:read-remembered-native-document', async (event, documentId) => {
+ipcMain.handle('desktop:read-remembered-native-document', async (event, documentId, options) => {
   const session = sessionForEvent(event);
-  if (typeof documentId !== 'string' || !documentId) return null;
-  return nativeFiles.readRememberedDocument(session.sessionId, documentId);
+  // detailed: 다른 문서 읽기 — 못 읽은 이유(다른 창이 쥠·없음·잠깐 못 읽음)를 함께 돌려준다.
+  const detailed = options?.detailed === true;
+  if (typeof documentId !== 'string' || !documentId) return detailed ? { ok: false, reason: 'missing' } : null;
+  return detailed
+    ? nativeFiles.readRememberedDocumentResult(session.sessionId, documentId)
+    : nativeFiles.readRememberedDocument(session.sessionId, documentId);
 });
 ipcMain.handle('desktop:reveal-native-document', async (event, documentId) => {
   sessionForEvent(event);

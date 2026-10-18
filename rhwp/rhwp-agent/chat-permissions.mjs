@@ -3,8 +3,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 export const CHAT_PERMISSION_CAPABILITIES = Object.freeze([
-  'project-edit', 'downloads', 'browser', 'local-execution',
+  'project-edit', 'downloads', 'browser', 'local-execution', 'other-documents',
 ]);
+
+/** 채팅 권한으로 남는(request_permission 으로 청할 수 있는) 권한. */
+export const GRANTABLE_CHAT_PERMISSIONS = CHAT_PERMISSION_CAPABILITIES;
+
+/** 허브만 확인하는 권한 — 공급자 실행 모드를 바꾸지 않으므로 턴 중에도 바로 부여한다. */
+export const HUB_ONLY_CHAT_PERMISSIONS = Object.freeze(['other-documents']);
 
 export function chatPermissionForCategory(category) {
   if (category === 'project-write' || category === 'project-ingest') return 'project-edit';
@@ -22,7 +28,7 @@ export function effectiveResearchPermissions(policy) {
 }
 
 export function normalizeChatPermissionGrants(grants) {
-  return CHAT_PERMISSION_CAPABILITIES.filter((capability) => Array.isArray(grants) && grants.includes(capability));
+  return GRANTABLE_CHAT_PERMISSIONS.filter((capability) => Array.isArray(grants) && grants.includes(capability));
 }
 
 export function normalizeChatPermissionRequest(value) {
@@ -35,9 +41,13 @@ export function normalizeChatPermissionRequest(value) {
 }
 
 export function createChatPermissionRequest(value, session) {
+  const normalized = normalizeChatPermissionRequest(value);
+  if (!GRANTABLE_CHAT_PERMISSIONS.includes(normalized.capability)) {
+    throw Object.assign(new Error(`${normalized.capability} is asked by the app itself and cannot be requested`), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
+  }
   return {
     requestId: crypto.randomUUID(),
-    ...normalizeChatPermissionRequest(value),
+    ...normalized,
     threadId: session.threadId,
     documentId: session.documentId,
     turnId: session.turnId,

@@ -856,6 +856,11 @@ export function createProjectStore(options: ProjectStoreOptions = {}): ProjectSt
         if (project) {
           if (message.type === 'project-bound' && confirmed?.id !== project.id) batches = [];
           accept(project);
+        } else if (message.type === 'project-bound' && message.project === null) {
+          // 허브가 이 채팅을 프로젝트에서 풀었다(문서에서 뗀 채팅) — 앞 문서의 프로젝트를 더 보이지 않는다.
+          confirmed = null;
+          batches = [];
+          rebuild();
         }
         return true;
       }

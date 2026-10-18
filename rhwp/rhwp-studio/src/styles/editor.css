@@ -114,6 +114,31 @@
   animation: agent-editing-dot 1.6s ease-in-out infinite;
 }
 
+/* 편집 중 뒤의 점 — . → .. → ... 를 되풀이한다. 자리는 늘 세 점만큼이라 알약 폭이 흔들리지 않는다. */
+.agent-editing-status-ellipsis > span:nth-child(2) {
+  animation: agent-editing-ellipsis-2 1.2s steps(1, end) infinite;
+}
+
+.agent-editing-status-ellipsis > span:nth-child(3) {
+  animation: agent-editing-ellipsis-3 1.2s steps(1, end) infinite;
+}
+
+#agent-editing-status[data-waiting='true'] .agent-editing-status-ellipsis {
+  display: none;
+}
+
+@keyframes agent-editing-ellipsis-2 {
+  from { visibility: hidden; }
+  33.333% { visibility: visible; }
+  to { visibility: visible; }
+}
+
+@keyframes agent-editing-ellipsis-3 {
+  from { visibility: hidden; }
+  66.667% { visibility: visible; }
+  to { visibility: visible; }
+}
+
 @keyframes agent-editing-sweep {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -284,7 +309,8 @@
     animation: none;
   }
 
-  .agent-editing-status-dot {
+  .agent-editing-status-dot,
+  .agent-editing-status-ellipsis > span {
     animation: none;
   }
 

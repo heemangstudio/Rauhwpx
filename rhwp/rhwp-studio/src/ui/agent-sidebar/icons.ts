@@ -5,6 +5,23 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
+/**
+ * 사슬 고리 둘 — 대각선으로 겹친 두 갈고리. 갈고리마다 M 뒤는 모두 상대 좌표라 시작점만 옮기면 통째로 옮겨진다.
+ * 끊으면 서로 걸린 안쪽 꼬리가 빠지고, 두 갈고리가 대각선을 따라 apart 만큼 멀어진다.
+ */
+function linkHooks(apart: number, hooked: boolean): string {
+  const at = (value: number): number => Math.round(value * 100) / 100;
+  const hook = (x: number, y: number, rest: string): string => `M${at(x)} ${at(y)}${rest}`;
+  return hooked
+    ? hook(6.88 - apart, 5.56 + apart, 'a2.2 2.2 0 0 0-3.32-.24l-1.32 1.32a2.2 2.2 0 0 0 3.11 3.11l.75-.75')
+      + hook(5.12 + apart, 6.44 - apart, 'a2.2 2.2 0 0 0 3.32.24l1.32-1.32a2.2 2.2 0 0 0-3.11-3.11l-.75.75')
+    : hook(3.56 - apart, 5.32 + apart, 'l-1.32 1.32a2.2 2.2 0 0 0 3.11 3.11l.75-.75')
+      + hook(8.44 + apart, 6.68 - apart, 'l1.32-1.32a2.2 2.2 0 0 0-3.11-3.11l-.75.75');
+}
+
+/** link 와 unlink 사이 한 칸 — 꼬리는 빠졌지만 아직 벌어지지 않은 고리. 단추가 두 모양을 오갈 때 끼운다. */
+export const LINK_PARTING_PATH = linkHooks(0, false);
+
 /** 스트로크로만 그리는 아이콘의 패스 정의. */
 const STROKE_PATHS = {
   check: 'M2.5 6.4 5 8.9l4.5-5.4',
@@ -97,6 +114,10 @@ const STROKE_PATHS = {
   pending: 'M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4',
   /* 두 줄 — 붙잡힌 대기 메시지. */
   pause: 'M4.5 3.2v5.6M7.5 3.2v5.6',
+  /* 겹친 사슬 고리 — 문서에 붙은 채팅. */
+  link: linkHooks(0, true),
+  /* 꼬리가 빠져 벌어진 고리 — 문서에서 떨어진 채팅. */
+  unlink: linkHooks(0.5, false),
   lock: 'M3.2 5.4h5.6a.6.6 0 0 1 .6.6v3.4a.6.6 0 0 1-.6.6H3.2a.6.6 0 0 1-.6-.6V6a.6.6 0 0 1 .6-.6zM4.3 5.4V4a1.7 1.7 0 0 1 3.4 0v1.4',
   key: 'M5.6 6a1.8 1.8 0 1 1-3.6 0 1.8 1.8 0 0 1 3.6 0zM5.6 6h4.2M8.4 6v1.6M9.8 6v1.2',
   eye: 'M1.5 6S3.2 2.8 6 2.8 10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6zM7.4 6a1.4 1.4 0 1 1-2.8 0 1.4 1.4 0 0 1 2.8 0z',

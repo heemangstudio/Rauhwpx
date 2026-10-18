@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { DEFAULT_AGENT_EDIT_LOCK, saveAgentPrefs } from '../src/agent/agent-prefs.ts';
 
 // bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
 registerHooks({
@@ -13,6 +14,15 @@ registerHooks({
 
 const { AgentBridgeImpl, ToolResponseBuffer, providerTurnEndMatches } = await import('../src/agent/bridge.ts');
 const { assertToolRequestActive } = await import('../src/agent/tool-executor.ts');
+
+
+/** 이 검사는 일하는 내내 막는 잠금(작업 내내)을 전제로 한다. 끝나면 기본값으로 돌린다. */
+function lockWholeTurn(t: { after(fn: () => void): void }): void {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  saveAgentPrefs({ editLock: 'always' }, storage);
+  t.after(() => { saveAgentPrefs({ editLock: DEFAULT_AGENT_EDIT_LOCK }, storage); });
+}
 
 test('ToolResponseBuffer: 담은 순서대로 흘려보내고 비운다', () => {
   const buffer = new ToolResponseBuffer();
@@ -55,7 +65,8 @@ test('a delayed old turn-end cannot settle a newer identified turn', () => {
   assert.equal(providerTurnEndMatches(null, 'turn-replayed'), true);
 });
 
-test('turn cancellation releases the editing lease before deferred tools settle', async () => {
+test('turn cancellation releases the editing lease before deferred tools settle', async (t) => {
+  lockWholeTurn(t);
   let releaseDeferredTools = () => {};
   const deferredTools = new Promise<void>((resolve) => { releaseDeferredTools = resolve; });
   const responses: unknown[] = [];

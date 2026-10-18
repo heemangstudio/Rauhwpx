@@ -16,6 +16,7 @@ import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { ForeignDocumentAccess } from './foreign-documents.ts';
 import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
@@ -140,8 +141,18 @@ export interface UserQuestionInteraction {
   questions: UserQuestion[];
 }
 
+/** chat-user-message 의 documentMentions 항목 — open 은 이 창에 열린 문서다. */
+export interface DocumentMention {
+  documentId: string;
+  title: string;
+  open?: true;
+}
+
+/** 한 메시지가 싣는 문서 멘션 수 — 허브와 같다. */
+export const MAX_DOCUMENT_MENTIONS = 5;
+
 /** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
-export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution';
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents';
 export type ChatPermissionDecision = 'grant' | 'deny';
 /** 허락이 이 채팅에서만 살지(chat), 다음 채팅에도 남을지(always). */
 export type ChatPermissionScope = 'chat' | 'always';
@@ -1036,6 +1047,13 @@ export type AgentStreamEvent =
 export type CompactionTrigger = 'auto' | 'manual';
 /** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
 export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+/** chat-compact 의 까닭. document-detached = 채팅을 문서에서 뗀 직후의 압축. */
+export type ChatCompactReason = 'document-detached';
+/** chat-start 의 detachedFrom — 이 채팅을 뗀 문서. */
+export interface ChatDetachedFrom {
+  documentId: string;
+  documentName: string | null;
+}
 
 /**
  * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
@@ -1108,6 +1126,10 @@ export type SidebarEvent =
   | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
   | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[]; alwaysGrants?: ChatPermissionCapability[] }
   | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
+  /** 문서 없는 채팅에 문서가 이어졌다 (허브가 확인했다). */
+  | { type: 'chat-document-linked'; threadId: string; documentId: string; documentName: string | null; projectId: string | null }
+  /** 허브가 프로젝트에 저장하려는 도구를 문서가 없어 막았다 — 채팅에 새 문서·문서 연결 줄을 띄운다. */
+  | { type: 'document-required'; tool: string; reason: 'project-save' }
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }
   | { type: 'agent-instructions'; status: AgentInstructionsStatus; changedBy: string }
@@ -1274,6 +1296,26 @@ export interface AgentBridgeDeps {
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
   view?: AgentViewHost | null;
+  /**
+   * 다른 문서 읽기 — 창 하나가 모든 채팅과 함께 쓰는 엔진 묶음과 문서 찾기. 열린 문서 찾기는
+   * 이 채팅의 문서를 빼고 돌려준다. 없으면 다른 문서를 찾지 못한다.
+   */
+  foreignDocuments?: ForeignDocumentAccess;
+  /**
+   * 문서 없는 채팅에 문서를 잇는다 (open_document·create_document). 편집기가 이 채팅의 문서 세션에
+   * 문서를 열고 채팅·허브를 이은 뒤 돌려준다. 실패는 ChatDocumentLinkError 로 던진다. 없으면 도구가 실패한다.
+   */
+  linkDocument?: (request: import('./document-link.ts').ChatDocumentLinkRequest) => Promise<import('./document-link.ts').ChatDocumentLinked>;
+  /**
+   * 에이전트의 detach_document. 편집기가 이 채팅을 빈 문서 자리로 옮긴다 — 옮기기 직전에 브리지의
+   * detachChatDocument 로 허브에 알리고 이 브리지를 닫는다. 옮기지 못하면 ChatDocumentLinkError 로 던진다.
+   */
+  detachDocument?: (request: import('./document-link.ts').ChatDocumentDetachRequest) => Promise<void>;
+  /**
+   * 이 문서를 만든 채팅 (에이전트가 create_document 로 만든 문서). 그 채팅의 쓰기는 에이전트 모드에서도
+   * 검토 없이 바로 반영된다(쓰기 도구 하나 = 실행 취소 한 단계). 없거나 null 이면 모드 규칙대로다.
+   */
+  documentCreatedBy?: () => string | null;
 }
 
 export interface AgentBridgeOptions {
@@ -2102,7 +2144,8 @@ export interface ProjectLibrarianItemStatus {
 
 /** 허브 → 스튜디오 프로젝트 이벤트. 통합 단계에서 SidebarEvent 에 합친다. */
 export type ProjectSidebarEvent =
-  | { type: 'project-bound'; projectId: string; project: ProjectSnapshot }
+  /** projectId·project 가 null 이면 허브가 이 채팅을 프로젝트에서 풀었다(문서에서 뗀 채팅). */
+  | { type: 'project-bound'; projectId: string | null; project: ProjectSnapshot | null }
   | { type: 'project-changed'; projectId: string; revision: number; project: ProjectSnapshot }
   | {
       type: 'project-librarian-status';

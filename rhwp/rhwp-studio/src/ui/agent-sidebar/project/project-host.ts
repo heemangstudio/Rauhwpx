@@ -8,10 +8,10 @@
  */
 import type { ProjectClient } from '../../../agent/project-service.ts';
 import type { ThreadMention } from '../../../agent/threads.ts';
-import type { ProjectSnapshot } from '../../../agent/types.ts';
+import { MAX_DOCUMENT_MENTIONS, type DocumentMention, type ProjectSnapshot } from '../../../agent/types.ts';
 import { refreshCitations } from '../chat-markdown.ts';
 import { createIcon } from '../icons.ts';
-import { createMentionPicker, renderMentionPill } from '../mention-picker.ts';
+import { createMentionPicker, renderMentionPill, type MentionDocument } from '../mention-picker.ts';
 import { projectCitationTarget, type CitationHooks, type CitationRequest } from '../wikilinks.ts';
 import { clipThumbElement } from './clip-thumbs.ts';
 import { createProjectColumn, type ProjectColumn, type ProjectPreviewTarget, type ProjectTab } from './project-column.ts';
@@ -172,10 +172,29 @@ const MAX_MENTIONS = 20;
 
 export interface ComposerMentionsDeps {
   client: ProjectClient | null;
+  /** @ 의 '문서' 묶음 — 이 창에 열린 문서와 최근 문서 (채팅의 문서는 뺀다). 없으면 묶음이 없다. */
+  listDocuments?: () => Promise<MentionDocument[]>;
   textarea: HTMLTextAreaElement;
   /** 칩을 놓을 첨부 줄. */
   row: HTMLElement;
   onChange?(): void;
+}
+
+/** 멘션 칩을 프로젝트 항목 id 와 문서 멘션으로 나눈다 — 메시지의 mentions·documentMentions. */
+export function splitThreadMentions(mentions: readonly ThreadMention[]): { itemIds: string[]; documents: DocumentMention[] } {
+  const itemIds: string[] = [];
+  const documents: DocumentMention[] = [];
+  for (const mention of mentions) {
+    if (mention.kind !== 'document') itemIds.push(mention.id);
+    else if (documents.length < MAX_DOCUMENT_MENTIONS && !documents.some((row) => row.documentId === mention.id)) {
+      documents.push({ documentId: mention.id, title: mention.title, ...(mention.open ? { open: true as const } : {}) });
+    }
+  }
+  return { itemIds, documents };
+}
+
+function mentionKey(mention: ThreadMention): string {
+  return `${mention.kind ?? 'item'}:${mention.id}`;
 }
 
 export interface ComposerMentions {
@@ -192,17 +211,33 @@ export interface ComposerMentions {
 export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMentions {
   const { client, textarea, row } = deps;
   const chips = new Map<string, { mention: ThreadMention; root: HTMLElement }>();
+  /** '문서' 묶음 — @ 를 입력할 때마다 다시 읽고, 그동안은 지난 목록을 보인다. */
+  let documents: MentionDocument[] = [];
+  let documentsLoad = 0;
 
-  function remove(id: string): void {
-    const chip = chips.get(id);
+  function loadDocuments(): void {
+    if (!deps.listDocuments) return;
+    const load = ++documentsLoad;
+    void deps.listDocuments().then((rows) => {
+      if (load !== documentsLoad) return;
+      documents = rows;
+      picker?.refresh();
+    }, () => undefined);
+  }
+
+  function remove(key: string): void {
+    const chip = chips.get(key);
     if (!chip) return;
     chip.root.remove();
-    chips.delete(id);
+    chips.delete(key);
     deps.onChange?.();
   }
 
   function add(mention: ThreadMention, kindIcon?: SVGSVGElement): void {
-    if (chips.has(mention.id) || chips.size >= MAX_MENTIONS) return;
+    const key = mentionKey(mention);
+    if (chips.has(key) || chips.size >= MAX_MENTIONS) return;
+    if (mention.kind === 'document'
+      && [...chips.values()].filter((chip) => chip.mention.kind === 'document').length >= MAX_DOCUMENT_MENTIONS) return;
     const root = el('span', 'ag-reference-upload-chip ag-mention-draft');
     root.dataset.mentionId = mention.id;
     root.title = mention.title;
@@ -212,21 +247,31 @@ export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMent
     close.setAttribute('aria-label', `${mention.title} 언급 빼기`);
     close.append(createIcon('close'));
     close.addEventListener('click', () => {
-      remove(mention.id);
+      remove(key);
       textarea.focus();
     });
-    root.append(kindIcon ?? projectIcon('file'), el('span', 'ag-reference-upload-chip-name', mention.title), close);
+    const icon = kindIcon ?? projectIcon(mention.kind === 'document' ? 'documentNode' : 'file');
+    root.append(icon, el('span', 'ag-reference-upload-chip-name', mention.title), close);
     row.append(root);
-    chips.set(mention.id, { mention, root });
+    chips.set(key, { mention, root });
     deps.onChange?.();
   }
 
-  const picker = client
+  const picker = client || deps.listDocuments
     ? createMentionPicker({
       textarea,
-      getItems: () => client.store.get()?.items ?? [],
-      columnName: (id) => client.store.get()?.columns.find((entry) => entry.id === id)?.name ?? null,
+      getItems: () => client?.store.get()?.items ?? [],
+      columnName: (id) => client?.store.get()?.columns.find((entry) => entry.id === id)?.name ?? null,
       onPick: (item) => add({ id: item.id, title: item.title }, projectIcon(itemIconName(item))),
+      ...(deps.listDocuments
+        ? {
+          getDocuments: () => documents,
+          onPickDocument: (document: MentionDocument) => add({
+            id: document.documentId, title: document.title, kind: 'document', ...(document.open ? { open: true as const } : {}),
+          }),
+          onOpen: loadDocuments,
+        }
+        : {}),
     })
     : null;
   const unsubscribe = client?.store.subscribe(() => picker?.refresh()) ?? (() => undefined);
@@ -248,7 +293,7 @@ export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMent
       clear();
       const items = client?.store.get()?.items ?? [];
       for (const mention of mentions) {
-        const item = items.find((entry) => entry.id === mention.id);
+        const item = mention.kind === 'document' ? undefined : items.find((entry) => entry.id === mention.id);
         add(mention, item ? projectIcon(itemIconName(item)) : undefined);
       }
       deps.onChange?.();
@@ -271,10 +316,15 @@ export function createComposerMentions(deps: ComposerMentionsDeps): ComposerMent
 }
 
 /** 사용자 말풍선의 멘션 칩 줄. 누르면 프로젝트 칸에서 그 항목을 연다. */
-export function renderMessageMentions(mentions: readonly ThreadMention[], hooks: CitationHooks): HTMLElement {
+export function renderMessageMentions(mentions: readonly ThreadMention[], hooks: CitationHooks | null): HTMLElement {
   const row = el('div', 'ag-msg-attachments ag-msg-mentions');
   for (const mention of mentions) {
     const pill = renderMentionPill(mention);
+    if (mention.kind === 'document' || !hooks) {
+      pill.tabIndex = -1;
+      row.append(pill);
+      continue;
+    }
     pill.setAttribute('aria-label', `${mention.title} 열기`);
     pill.addEventListener('click', () => {
       if (!hooks.resolveItem(mention.id, null)) return;

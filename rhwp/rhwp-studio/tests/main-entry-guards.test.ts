@@ -95,5 +95,5 @@ test('an agent editing lease blocks document replacement and file drops', () => 
   assert.match(main, /canReplaceCurrentDocument[\s\S]*if \(agentEditingLease\.active\)/);
   assert.match(main, /loadFile[\s\S]*canReplaceCurrentDocument\(options\.skipUnsavedGuard\)/);
   assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active\)/);
-  assert.match(main, /editorArea\?\.setAttribute\('aria-busy', lease\.active \? 'true' : 'false'\)/);
+  assert.match(main, /const shown = lease\.active && wasm\.hasLoadedDocument\(\);[\s\S]*editorArea\?\.setAttribute\('aria-busy', shown \? 'true' : 'false'\)/);
 });

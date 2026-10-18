@@ -16,6 +16,19 @@ import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, C
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
+import {
+  FILE_DOCUMENT_ID_PREFIX,
+  FOREIGN_DOCUMENT_MAX_BYTES,
+  ForeignDocumentPool,
+  fileSourceKey,
+  fileSourceNotFoundError,
+  mergeKnownDocuments,
+  sourceNotFoundError,
+  sourceTooLargeError,
+  type FileDocumentSource,
+  type ForeignDocumentAccess,
+  type ForeignDocumentBytes,
+} from './foreign-documents.ts';
 import { renderChartPng, validateChartSpec } from './chart-render.ts';
 import { cropImageOnCanvas, REFERENCE_READ_MAX_PIXELS, type ImageCropper, type PixelBox } from './image-crop.ts';
 import { renderPdfImage, type PdfImage, type PdfImageRenderer } from './pdf-render.ts';
@@ -60,6 +73,8 @@ export interface AgentToolExecutorDeps {
   revision: RevisionTracker;
   pending: PendingEditManager;
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
+  /** list_documents({path}) 로 고른 파일의 바이트 — 허브의 /document-sources 에서 받는다. */
+  loadFileSource?: (source: FileDocumentSource) => Promise<ForeignDocumentBytes>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
   /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. */
@@ -75,8 +90,15 @@ export interface AgentToolExecutorDeps {
   cropImage?: ImageCropper;
   /** 연구 프로젝트 파일 원본 (PDF 쪽·영역 조각을 그릴 때). 브리지가 프로젝트 HTTP 로 채운다. */
   loadProjectFile?: (projectId: string, itemId: string) => Promise<Uint8Array>;
+  /** 프로젝트 밖 참고 자료(채팅·문서 첨부)의 원본. 브리지가 참고 자료 HTTP 로 채운다. */
+  loadReferenceFile?: (scope: string, scopeId: string, fileId: string) => Promise<Uint8Array>;
   /** PDF 쪽 영역 그리기 — 기본은 pdf.js (테스트가 주입한다) */
   renderPdf?: PdfImageRenderer;
+  /**
+   * 다른 문서 읽기 (읽기 도구의 documentId) — 창의 엔진 묶음과 열린·닫힌 문서 찾기. 없으면 다른
+   * 문서는 찾지 못하고, 서식 틀은 이 실행기만의 엔진 묶음으로 읽는다.
+   */
+  foreignDocuments?: ForeignDocumentAccess;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
@@ -111,8 +133,6 @@ const NESTED_TABLE_PROBE_CONTROLS = 4;
 const CELL_SELECTION_END_OFFSET = 0x7fffffff;
 
 const MAX_SVG_BYTES = 800_000;
-/** 템플릿 문서는 마지막 템플릿 도구 뒤 이만큼 쉬면 내려놓고, 다음 템플릿 도구가 다시 읽는다. */
-export const TEMPLATE_IDLE_RELEASE_MS = 60_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
@@ -434,8 +454,8 @@ const BATCHABLE_EDIT_TOOLS: ReadonlySet<string> = new Set([
  * read_batch 에 넣을 수 있는 읽기 전용 문서 도구 — 허브의 BATCHABLE_READ_TOOL_NAMES
  * 와 일치해야 한다 (agent-write-tools-guard 소스 가드). render_page 와
  * materialize_document_snapshot 은 이미지/바이트 결과가 중첩 JSON 으로 의미를 잃어
- * 제외하고, 템플릿 읽기는 다른 문서를 여는 도구라 제외한다. 목록 밖의 이름은 항목
- * 오류로 개별 보고된다.
+ * 제외한다. 다른 문서는 항목이 아니라 read_batch 의 documentId 하나로 읽는다. 목록 밖의
+ * 이름은 항목 오류로 개별 보고된다.
  */
 const BATCHABLE_READ_TOOLS: ReadonlySet<string> = new Set([
   'get_structure',
@@ -460,6 +480,78 @@ const BATCHABLE_READ_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * documentId 로 다른 문서(열린 문서, 닫힌 최근 문서, 'template' = 활성 서식 틀)를 읽는 도구 — 허브의
+ * 읽기 도구 documentId 와 맞아야 한다. 결과에는 revision 이 없다 (그 문서에 쓸 수 없으므로).
+ */
+const FOREIGN_READ_TOOLS: ReadonlySet<string> = new Set([
+  'get_structure',
+  'get_outline',
+  'get_text_range',
+  'find_text',
+  'get_para_format',
+  'get_char_format',
+  'get_table_properties',
+  'get_table_layout',
+  'get_page_geometry',
+  'list_styles',
+  'render_page',
+  'read_batch',
+]);
+/** 다른 문서 read_batch 의 항목 — 다른 문서 읽기 도구 중 배치에 넣을 수 있는 것. */
+const FOREIGN_BATCH_READ_TOOLS: ReadonlySet<string> = new Set(
+  [...FOREIGN_READ_TOOLS].filter((tool) => BATCHABLE_READ_TOOLS.has(tool)),
+);
+/** 문서 정체(digest·dirty)를 함께 싣는 다른 문서 읽기 — 문서를 훑는 읽기에만 붙인다. */
+const FOREIGN_IDENTITY_TOOLS: ReadonlySet<string> = new Set(['get_structure', 'get_outline', 'read_batch']);
+const TEMPLATE_DOCUMENT_ID = 'template';
+const FOREIGN_DOCUMENT_ID_MAX_CHARS = 200;
+
+/** 다른 문서 읽기 하나가 읽는 문서 — 결과에 붙일 정체와 읽을 엔진. */
+interface ForeignReadTarget {
+  documentId: string;
+  name: string;
+  wasm: WasmBridge;
+  digest: string | null;
+  dirty: boolean;
+  pendingReview: boolean;
+}
+
+/** documentId 로 다른 문서에 돌릴 수 있는 읽기인가 — 쓰기, 다른 문서 읽기 밖의 도구, sinceRevision 은 INVALID_ARGS. */
+function assertForeignReadable(tool: string, args: Record<string, unknown>): void {
+  if (isDocumentWriteTool(tool)) {
+    throw new AgentToolError('INVALID_ARGS', 'documentId is read-only; writes target the live document. Drop documentId.');
+  }
+  if (!FOREIGN_READ_TOOLS.has(tool)) {
+    throw new AgentToolError('INVALID_ARGS', `${tool} reads only the live document; drop documentId.`);
+  }
+  if (args['sinceRevision'] !== undefined && args['sinceRevision'] !== null) {
+    throw new AgentToolError('INVALID_ARGS', 'sinceRevision applies only to the live document; drop it when passing documentId.');
+  }
+}
+
+/** 도구 실행 중 던져진 값을 응답 오류로 — engine trap 과 문서 없음은 제 코드로, 나머지는 RPC_ERROR. */
+function toolErrorOf(e: unknown): AgentToolError {
+  if (e instanceof AgentToolError) return e;
+  const message = e instanceof Error ? e.message : String(e);
+  if (reportEngineTrap(e)) return engineTrappedError(message);
+  if (message.includes(DOC_NOT_LOADED_MESSAGE)) {
+    return new AgentToolError('DOC_NOT_LOADED', 'No document is loaded in the studio; ask the user to open one.');
+  }
+  return new AgentToolError('RPC_ERROR', message);
+}
+
+/** 인자의 documentId — 없으면 null. 빈 값이나 문자열이 아니면 INVALID_ARGS. */
+function foreignDocumentIdOf(args: unknown): string | null {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const value = (args as Record<string, unknown>)['documentId'];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !value.trim() || value.length > FOREIGN_DOCUMENT_ID_MAX_CHARS) {
+    throw new AgentToolError('INVALID_ARGS', 'documentId must be a non-empty string');
+  }
+  return value;
+}
+
+/**
  * 허브가 도구 추적을 켠 요청(RHWP_TOOL_TRACE=1 → tool-request.trace)에만 붙는 스튜디오 구간
  * 타이밍. 값은 epoch ms 라 허브·mcp-stdio 행과 같은 시간축에 놓인다.
  */
@@ -468,6 +560,9 @@ export type ToolTraceTimings = Record<string, number>;
 export function toolTraceNow(): number {
   return Math.round((performance.timeOrigin + performance.now()) * 1000) / 1000;
 }
+
+/** tool-request 의 source — 허브가 documentId 를 확인한 앱 문서, 또는 경로로 고른 파일. */
+export type ToolDocumentSource = { kind: 'document'; documentId: string } | FileDocumentSource;
 
 export interface ToolCapabilityContext {
   workflow: AgentWorkflow;
@@ -478,6 +573,8 @@ export interface ToolCapabilityContext {
   activePhase?: AgentPhase;
   activeCapabilityEpoch?: number | null;
   template?: DocumentTemplate;
+  /** 허브가 확인한 다른 문서 — 읽기 도구의 documentId 가 가리킨다 (서식 틀은 template). */
+  source?: ToolDocumentSource;
   /** Exact hub turn/cancellation fence captured for this request. */
   requestIsActive?: () => boolean;
   /** 추적 중인 요청만: 실행 구간(기준선·dispatch·after 보고) 타이밍을 채운다. */
@@ -630,14 +727,14 @@ interface ImagePlacement {
   afterObjects: boolean;
 }
 
-/** 허브가 채운 PDF 원본 — 세션 프로젝트의 파일 항목과 쪽 (reference-tools.mjs pdfSourceFor) */
-interface PdfSourceArgs {
-  projectId: string;
-  itemId: string;
-  fileId: string;
-  name: string;
-  page: number;
-}
+/**
+ * 허브가 채운 PDF 원본과 쪽 (reference-tools.mjs pdfSourceFor) — 세션 프로젝트의 파일 항목이거나,
+ * 프로젝트 밖 첨부(문서 없는 채팅의 채팅 첨부 등)면 그 참고 자료 범위.
+ */
+type PdfSourceArgs = { fileId: string; name: string; page: number } & (
+  | { projectId: string; itemId: string; scope?: undefined; scopeId?: undefined }
+  | { projectId?: undefined; itemId?: undefined; scope: string; scopeId: string }
+);
 
 function optPdfSource(args: Record<string, unknown>): PdfSourceArgs | null {
   const raw = args['pdfSource'];
@@ -647,11 +744,14 @@ function optPdfSource(args: Record<string, unknown>): PdfSourceArgs | null {
   const text = (key: string) => (typeof r[key] === 'string' && r[key] ? r[key] as string : null);
   const projectId = text('projectId');
   const itemId = text('itemId');
+  const scope = text('scope');
+  const scopeId = text('scopeId');
   const fileId = text('fileId');
-  if (!projectId || !itemId || !fileId || typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) {
-    throw new AgentToolError('INVALID_ARGS', 'pdfSource must carry projectId, itemId, fileId and a 1-based page');
+  const located = projectId && itemId ? { projectId, itemId } : scope && scopeId ? { scope, scopeId } : null;
+  if (!located || !fileId || typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) {
+    throw new AgentToolError('INVALID_ARGS', 'pdfSource must carry projectId and itemId (or scope and scopeId), fileId and a 1-based page');
   }
-  return { projectId, itemId, fileId, name: text('name') ?? '', page };
+  return { ...located, fileId, name: text('name') ?? '', page };
 }
 
 /** 선택적 rect [x,y,w,h] (쪽 비율 0..1) */
@@ -782,6 +882,13 @@ const LIST_DEFAULT_NUMBER_FORMATS: number[] = [
   LIST_NUM_FMT.DIGIT, LIST_NUM_FMT.HANGUL, LIST_NUM_FMT.DIGIT, LIST_NUM_FMT.HANGUL,
   LIST_NUM_FMT.DIGIT, LIST_NUM_FMT.HANGUL, LIST_NUM_FMT.CIRCLE_DIGIT,
 ];
+
+/** 도구 결과를 객체로 — 객체가 아닌 결과는 {result} 로 감싼다. */
+function resultRecord(result: unknown): Record<string, unknown> {
+  return result !== null && typeof result === 'object' && !Array.isArray(result)
+    ? result as Record<string, unknown>
+    : { result };
+}
 
 function asRecord(args: unknown): Record<string, unknown> {
   if (args !== null && typeof args === 'object' && !Array.isArray(args)) {
@@ -1106,12 +1213,16 @@ function borderSpecOut(b: ParaBorderSpec | undefined): { type: number; widthMm: 
 
 export class AgentToolExecutor {
   private deps: AgentToolExecutorDeps;
-  private templateWasm: WasmBridge | null = null;
-  private templateBytes: Uint8Array | null = null;
-  private templateKey: string | null = null;
+  /** 창의 엔진 묶음을 받지 못한 실행기(테스트·단일 채팅 호스트)가 서식 틀을 읽을 때 쓰는 자기 묶음 */
+  private ownForeignPool: ForeignDocumentPool | null = null;
   private templateInspectionKey: string | null = null;
-  private templateUses = 0;
-  private templateIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** read_batch 항목으로 받는 도구 — 다른 문서를 읽는 중첩 실행기는 다른 문서 읽기 도구만 받는다. */
+  private batchReadTools: ReadonlySet<string> = BATCHABLE_READ_TOOLS;
+  /**
+   * 다른 문서·서식 틀을 읽는 중첩 실행기의 get_structure 머리 줄 — read_batch 항목처럼 label 을
+   * 따로 받지 않는 길에서도 부른 채팅의 revision 이 머리에 찍히지 않게 한다.
+   */
+  private foreignLabel: string | null = null;
   private documentInspectionRevision: number | null = null;
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { key: string; size: number | null } | null = null;
@@ -1162,6 +1273,15 @@ export class AgentToolExecutor {
       const trap = engineTrap();
       if (trap) throw engineTrappedError(trap.message);
       assertToolRequestActive(capability);
+      // 다른 문서 읽기는 쓰기 문(계획·채팅 모드, 쓰기 자리, 템플릿 검토)보다 먼저 갈라진다 — 이 문서에 닿지 않는다.
+      const foreignDocumentId = foreignDocumentIdOf(args);
+      if (foreignDocumentId !== null) {
+        if (trace) trace.dispatch0 = toolTraceNow();
+        const result = await this.foreignRead(tool, asRecord(args), foreignDocumentId, capability);
+        if (trace) trace.dispatch1 = toolTraceNow();
+        assertToolRequestActive(capability);
+        return result;
+      }
       assertToolCapability(tool, capability);
       if (isDocumentWriteTool(tool) && this.deps.isReadOnly?.()) {
         throw new AgentToolError(
@@ -1203,13 +1323,39 @@ export class AgentToolExecutor {
       if (trace) trace.report1 = toolTraceNow();
       return reported;
     } catch (e) {
-      if (e instanceof AgentToolError) throw e;
-      const message = e instanceof Error ? e.message : String(e);
-      if (reportEngineTrap(e)) throw engineTrappedError(message);
-      if (message.includes(DOC_NOT_LOADED_MESSAGE)) {
-        throw new AgentToolError('DOC_NOT_LOADED', 'No document is loaded in the studio; ask the user to open one.');
+      throw toolErrorOf(e);
+    }
+  }
+
+  /**
+   * 허브가 다른 창의 채팅에서 보낸 이 문서 읽기 (document-read-request) — 이 채팅의 엔진을 그대로
+   * 읽어 저장하지 않은 편집까지 보이고, 결과 모양은 같은 창의 다른 문서 읽기와 같다 (revision 없음).
+   * 쓰기 자리·턴·검사 표시(documentInspectionRevision 등)·대기 편집에 닿지 않는 중첩 실행기로 읽는다.
+   */
+  async readForOtherChat(
+    tool: string,
+    args: Record<string, unknown>,
+    owner: { documentId: string; pendingReview: boolean },
+  ): Promise<unknown> {
+    try {
+      const trap = engineTrap();
+      if (trap) throw engineTrappedError(trap.message);
+      if (tool === 'list_documents') {
+        throw new AgentToolError('INVALID_ARGS', 'list_documents runs in the calling chat; it cannot be routed to another window.');
       }
-      throw new AgentToolError('RPC_ERROR', message);
+      assertForeignReadable(tool, args);
+      const { documentId: _documentId, ...rest } = args;
+      const { wasm, documentState } = this.deps;
+      return await this.readForeignDocument(tool, rest, {
+        documentId: owner.documentId,
+        name: wasm.fileName,
+        wasm,
+        digest: wasm.documentDigest,
+        dirty: documentState.isDirty(),
+        pendingReview: owner.pendingReview,
+      });
+    } catch (e) {
+      throw toolErrorOf(e);
     }
   }
 
@@ -1234,18 +1380,13 @@ export class AgentToolExecutor {
       case 'get_engine_edit_capabilities': return this.getEngineEditCapabilities(args);
       case 'list_numberings': return this.listNumberings();
       case 'verify_changes': return this.verifyChanges(args, agent);
-      case 'template_get_structure': return this.holdTemplate(() => this.templateGetStructure(args, capability));
-      case 'template_get_text_range': return this.holdTemplate(() => this.templateRead('get_text_range', args, capability));
-      case 'template_get_para_format': return this.holdTemplate(() => this.templateRead('get_para_format', args, capability));
-      case 'template_get_char_format': return this.holdTemplate(() => this.templateRead('get_char_format', args, capability));
-      case 'template_list_styles': return this.holdTemplate(() => this.templateRead('list_styles', args, capability));
-      case 'template_get_page_layout': return this.holdTemplate(() => this.templateGetPageLayout(args, capability));
-      case 'template_render_page': return this.holdTemplate(() => this.templateRead('render_page', args, capability));
-      case 'template_apply_section_layout': return this.holdTemplate(() => this.templateApplySectionLayout(args, agent, capability));
-      case 'template_apply_paragraph_format': return this.holdTemplate(() => this.templateApplyParagraphFormat(args, agent, capability));
-      case 'template_insert_block': return this.holdTemplate(() => this.templateInsertBlock(args, agent, capability));
+      case 'template_get_page_layout': return this.templateGetPageLayout(args, capability);
+      case 'template_apply_section_layout': return this.templateApplySectionLayout(args, agent, capability);
+      case 'template_apply_paragraph_format': return this.templateApplyParagraphFormat(args, agent, capability);
+      case 'template_insert_block': return this.templateInsertBlock(args, agent, capability);
       case 'apply_edits': return this.applyEdits(args, agent);
       case 'read_batch': return this.readBatch(args, agent, capability);
+      case 'list_documents': return this.listDocuments(args);
       case 'insert_text': return this.insertText(args, agent);
       case 'delete_range': return this.deleteRange(args, agent);
       case 'replace_range': return this.replaceRange(args, agent);
@@ -1865,9 +2006,12 @@ export class AgentToolExecutor {
     if (given('pages') && (given('range') || given('sinceRevision'))) {
       throw new AgentToolError('INVALID_ARGS', 'pages cannot be combined with range or sinceRevision — pass one of them');
     }
-    // sinceRevision 델타는 라이브 문서 저널에만 의미가 있다 — 템플릿 읽기는
-    // revisionLabel 경로로 들어오므로 여기서 걸러진다.
-    if (given('sinceRevision') && revisionLabel === undefined) {
+    // sinceRevision 델타는 라이브 문서 저널에만 의미가 있다 — 다른 문서·서식 틀 읽기는 거절한다.
+    const label = revisionLabel ?? this.foreignLabel ?? undefined;
+    if (given('sinceRevision')) {
+      if (label !== undefined) {
+        throw new AgentToolError('INVALID_ARGS', 'sinceRevision applies only to the live document; drop it when passing documentId.');
+      }
       return this.getStructureDelta(args, format as 'text' | 'json');
     }
     const data = this.collectStructure(args);
@@ -1893,7 +2037,7 @@ export class AgentToolExecutor {
         sections: sectionsOut,
       };
     }
-    const text = this.renderCompactStructure(data, revisionLabel ?? `revision ${this.revision}`);
+    const text = this.renderCompactStructure(data, label ?? `revision ${this.revision}`);
     return {
       revision: this.revision,
       pageCount: data.pageCount,
@@ -5036,6 +5180,159 @@ export class AgentToolExecutor {
     };
   }
 
+  // ─── 다른 문서 읽기 (documentId) ───────────────────────────
+
+  /** 창의 엔진 묶음. 받지 못했으면 이 실행기만의 묶음을 쓴다. */
+  private foreignPool(): ForeignDocumentPool {
+    const shared = this.deps.foreignDocuments?.pool;
+    if (shared) return shared;
+    this.ownForeignPool ??= new ForeignDocumentPool();
+    return this.ownForeignPool;
+  }
+
+  /**
+   * 읽기 도구를 다른 문서에 돌린다 — 'template' 은 활성 서식 틀, 그 밖은 허브가 source 로 확인한 앱
+   * 문서다. 이 창에 열린 문서는 그 세션의 엔진을 그대로 읽고(저장하지 않은 편집 포함), 닫힌 문서는
+   * 창의 엔진 묶음에 올려 읽는다. 결과에는 revision 이 없다 — 그 문서의 revision 은 이 채팅의 쓰기에
+   * 쓸 수 없다.
+   */
+  private async foreignRead(
+    tool: string,
+    args: Record<string, unknown>,
+    documentId: string,
+    capability?: ToolCapabilityContext,
+  ): Promise<unknown> {
+    assertForeignReadable(tool, args);
+    const { documentId: _documentId, ...rest } = args;
+    if (documentId === TEMPLATE_DOCUMENT_ID) return this.templateDocumentRead(tool, rest, capability);
+    if (documentId.startsWith(FILE_DOCUMENT_ID_PREFIX)) return this.fileSourceRead(tool, rest, documentId, capability);
+    const source = capability?.source;
+    if (source?.kind !== 'document' || source.documentId !== documentId) throw sourceNotFoundError(documentId);
+    const access = this.deps.foreignDocuments;
+    const live = access?.resolveLiveDocument?.(documentId) ?? null;
+    if (live) {
+      return this.readForeignDocument(tool, rest, {
+        documentId,
+        name: live.name,
+        wasm: live.wasm,
+        digest: live.wasm.documentDigest,
+        dirty: live.dirty,
+        pendingReview: live.pendingReview,
+      }, capability);
+    }
+    if (!access?.resolveClosedDocument) throw sourceNotFoundError(documentId);
+    const closed = await access.resolveClosedDocument(documentId);
+    assertToolRequestActive(capability);
+    return this.foreignPool().use(
+      `doc:${documentId}:${closed.stamp}`,
+      closed.read,
+      (lease) => this.readForeignDocument(tool, rest, {
+        documentId,
+        name: closed.name,
+        wasm: lease.wasm,
+        digest: lease.digest,
+        dirty: false,
+        pendingReview: false,
+      }, capability),
+      { untrusted: true, family: `doc:${documentId}` },
+    );
+  }
+
+  /**
+   * 경로로 고른 파일(file: 핸들) 읽기 — 허브가 다시 확인한 크기·수정 시각을 열쇠로 엔진을 다시 쓰고,
+   * 엔진이 없을 때만 허브에서 바이트를 받는다. 앱 밖의 파일이므로 미리 읽기를 거친다.
+   */
+  private fileSourceRead(
+    tool: string,
+    args: Record<string, unknown>,
+    documentId: string,
+    capability?: ToolCapabilityContext,
+  ): Promise<unknown> {
+    const source = capability?.source;
+    if (source?.kind !== 'file' || `${FILE_DOCUMENT_ID_PREFIX}${source.handle}` !== documentId) {
+      throw fileSourceNotFoundError(documentId);
+    }
+    if (source.size > FOREIGN_DOCUMENT_MAX_BYTES) throw sourceTooLargeError(source.name, source.size);
+    const load = this.deps.loadFileSource;
+    if (!load) throw fileSourceNotFoundError(documentId);
+    return this.foreignPool().use(
+      fileSourceKey(source),
+      async () => {
+        const read = await load(source);
+        if (read.bytes.byteLength > FOREIGN_DOCUMENT_MAX_BYTES) throw sourceTooLargeError(source.name, read.bytes.byteLength);
+        return read;
+      },
+      (lease) => this.readForeignDocument(tool, args, {
+        documentId,
+        name: source.name,
+        wasm: lease.wasm,
+        digest: lease.digest,
+        dirty: false,
+        pendingReview: false,
+      }, capability),
+      { untrusted: true, family: `file:${source.handle}` },
+    );
+  }
+
+  /**
+   * list_documents — 이 창에 열린 문서와 최근 문서. 문서가 열려 있지 않아도 된다. 경로(path)는 허브가
+   * 처리하므로 여기까지 오지 않는다.
+   */
+  private async listDocuments(args: Record<string, unknown>): Promise<unknown> {
+    if (args['path'] !== undefined) throw new AgentToolError('INVALID_ARGS', 'list_documents path is resolved by the hub.');
+    const query = args['query'];
+    if (query !== undefined && query !== null && typeof query !== 'string') {
+      throw new AgentToolError('INVALID_ARGS', 'query must be a string');
+    }
+    const list = this.deps.foreignDocuments?.listDocuments;
+    const sources = list ? await list() : { open: [], recent: [] };
+    return mergeKnownDocuments(sources, typeof query === 'string' ? query : undefined);
+  }
+
+  private async readForeignDocument(
+    tool: string,
+    args: Record<string, unknown>,
+    target: ForeignReadTarget,
+    capability?: ToolCapabilityContext,
+  ): Promise<unknown> {
+    const label = `document ${JSON.stringify(target.name)}${target.dirty ? ' (unsaved edits)' : ''}`
+      + `${target.pendingReview ? ' (includes edits awaiting review)' : ''}`;
+    const result = await this.foreignExecutor(target.wasm, target.dirty, label).execute(tool, args);
+    assertToolRequestActive(capability);
+    const { revision: _revision, ...rest } = resultRecord(result);
+    return {
+      documentId: target.documentId,
+      name: target.name,
+      ...rest,
+      ...(FOREIGN_IDENTITY_TOOLS.has(tool) ? { digest: target.digest, dirty: target.dirty } : {}),
+      ...(target.pendingReview ? { pendingReview: true } : {}),
+    };
+  }
+
+  /**
+   * 다른 문서를 읽는 중첩 실행기 — 읽기 도구 구현을 그대로 쓰되, 이 채팅 문서의 경로·작업 트리·쓰기
+   * 자리는 넘기지 않는다. 쓰기는 중첩 실행기까지 오지 않지만 오더라도 읽기 전용으로 막힌다.
+   * label 은 get_structure 머리 줄이다 — read_batch 항목까지 부른 채팅의 revision 대신 이 이름을 쓴다.
+   */
+  private foreignExecutor(wasm: WasmBridge, dirty: boolean, label: string): AgentToolExecutor {
+    const nested = new AgentToolExecutor({
+      ...this.deps,
+      wasm,
+      documentState: { isDirty: () => dirty } as DocumentDirtyState,
+      loadTemplateBytes: undefined,
+      loadFileSource: undefined,
+      foreignDocuments: undefined,
+      getDocumentSourcePath: undefined,
+      getDocumentWorktree: undefined,
+      isReadOnly: () => true,
+      claimDocumentWrite: () => false,
+      beforeDocumentWrite: undefined,
+    });
+    nested.batchReadTools = FOREIGN_BATCH_READ_TOOLS;
+    nested.foreignLabel = label;
+    return nested;
+  }
+
   // ─── template context + structural transfer ─────────────────
 
   private requireTemplate(capability?: ToolCapabilityContext): DocumentTemplate {
@@ -5045,51 +5342,23 @@ export class AgentToolExecutor {
     return template;
   }
 
-  /** 템플릿 도구 하나를 감싼다. 도구가 도는 동안에는 템플릿 문서를 내려놓지 않는다. */
-  private async holdTemplate<T>(use: () => Promise<T>): Promise<T> {
-    this.templateUses += 1;
-    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
-    this.templateIdleTimer = null;
-    try {
-      return await use();
-    } finally {
-      this.templateUses -= 1;
-      if (this.templateUses === 0 && this.templateWasm) {
-        this.templateIdleTimer = setTimeout(() => this.releaseTemplate(), TEMPLATE_IDLE_RELEASE_MS);
-      }
-    }
-  }
-
-  /** 템플릿 엔진과 원본 바이트를 놓는다. 읽기 확인(templateInspectionKey)은 같은 revision 이면 그대로 유효하다. */
-  private releaseTemplate(): void {
-    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
-    this.templateIdleTimer = null;
-    this.templateWasm?.releaseDocument();
-    this.templateWasm = null;
-    this.templateBytes = null;
-    this.templateKey = null;
-  }
-
-  private async ensureTemplate(capability?: ToolCapabilityContext): Promise<{ template: DocumentTemplate; wasm: WasmBridge; bytes: Uint8Array }> {
+  /**
+   * 활성 서식 틀을 창의 엔진 묶음에서 쥐고 run 을 부른다. run 이 도는 동안에는 서식 틀 문서를
+   * 내려놓지 않는다. 원본 바이트는 블록 이식이 그대로 쓰도록 엔진과 함께 둔다.
+   */
+  private async useTemplate<T>(
+    capability: ToolCapabilityContext | undefined,
+    run: (opened: { template: DocumentTemplate; wasm: WasmBridge; bytes: Uint8Array }) => T | Promise<T>,
+  ): Promise<T> {
     const template = this.requireTemplate(capability);
     const loadTemplateBytes = this.deps.loadTemplateBytes;
     if (!loadTemplateBytes) throw new AgentToolError('TEMPLATE_UNAVAILABLE', 'Template loading is unavailable in this Studio.');
-    const key = `${template.id}:${template.revision}`;
-    if (this.templateWasm && this.templateBytes && this.templateKey === key) {
-      return { template, wasm: this.templateWasm, bytes: this.templateBytes };
-    }
-    this.templateWasm?.releaseDocument();
-    this.templateBytes = null;
-    const { WasmBridge } = await import('../core/wasm-bridge.ts');
-    const wasm = new WasmBridge();
-    await wasm.initialize();
-    const bytes = await loadTemplateBytes(template);
-    const exactSourceBytes = bytes.slice();
-    wasm.loadDocument(bytes, template.originalName);
-    this.templateWasm = wasm;
-    this.templateBytes = exactSourceBytes;
-    this.templateKey = key;
-    return { template, wasm, bytes: this.templateBytes };
+    return this.foreignPool().use(
+      `template:${template.id}:${template.revision}`,
+      async () => ({ bytes: await loadTemplateBytes(template), fileName: template.originalName }),
+      (lease) => run({ template, wasm: lease.wasm, bytes: lease.bytes ?? new Uint8Array() }),
+      { keepBytes: true, family: `template:${template.id}` },
+    );
   }
 
   private templateArgs(args: Record<string, unknown>, template: DocumentTemplate): Record<string, unknown> {
@@ -5101,53 +5370,42 @@ export class AgentToolExecutor {
     return rest;
   }
 
-  private async templateRead(
-    tool: string,
-    args: Record<string, unknown>,
-    capability?: ToolCapabilityContext,
-    marksInspection = false,
-  ): Promise<unknown> {
-    const { template, wasm } = await this.ensureTemplate(capability);
-    const nested = new AgentToolExecutor({ ...this.deps, wasm, loadTemplateBytes: undefined });
-    const result = await nested.execute(tool, this.templateArgs(args, template));
-    assertToolRequestActive(capability);
-    if (marksInspection) this.templateInspectionKey = `${template.id}:${template.revision}`;
-    if (result && typeof result === 'object' && !Array.isArray(result)) {
-      const { revision: _documentRevision, ...rest } = result as Record<string, unknown>;
-      return { templateId: template.id, templateRevision: template.revision, ...rest };
-    }
-    return { templateId: template.id, templateRevision: template.revision, result };
-  }
-
   /**
-   * template_get_structure — get_structure 와 같은 모양(기본 compact 텍스트, format:'json' 은 JSON)을
-   * 템플릿 문서로 만든다. compact 머리 줄에는 문서 revision 대신 템플릿 revision 을 쓴다.
+   * documentId:"template" 읽기 — 읽기 도구를 활성 서식 틀에 돌린다. 결과는 문서 revision 대신
+   * templateId·templateRevision 을 싣는다. 서식 틀 전체 구조를 읽으면 이식 도구의 매핑 문이 열린다.
    */
-  private async templateGetStructure(args: Record<string, unknown>, capability?: ToolCapabilityContext): Promise<unknown> {
-    const { template, wasm } = await this.ensureTemplate(capability);
-    const rest = this.templateArgs(args, template);
-    const nested = new AgentToolExecutor({ ...this.deps, wasm, loadTemplateBytes: undefined });
-    const result = asRecord(nested.getStructure(rest, `template ${template.id} revision ${template.revision}`));
-    assertToolRequestActive(capability);
-    this.templateInspectionKey = `${template.id}:${template.revision}`;
-    const { revision: _documentRevision, ...out } = result;
-    return { templateId: template.id, templateRevision: template.revision, ...out };
+  private templateDocumentRead(tool: string, args: Record<string, unknown>, capability?: ToolCapabilityContext): Promise<unknown> {
+    return this.useTemplate(capability, async ({ template, wasm }) => {
+      const requested = args['templateRevision'];
+      if (requested !== undefined && requested !== template.revision) {
+        throw new AgentToolError('TEMPLATE_REVISION_MISMATCH', `Template revision ${String(requested)} does not match ${template.revision}; inspect it again.`);
+      }
+      const { templateRevision: _requested, ...rest } = args;
+      const nested = this.foreignExecutor(wasm, false, `template ${template.id} revision ${template.revision}`);
+      const result = await nested.execute(tool, rest);
+      assertToolRequestActive(capability);
+      const { revision: _documentRevision, ...out } = resultRecord(result);
+      // 라이브 문서와 같은 규칙 — 서식 틀 구조를 끝까지 읽어야(range·pages 없이, 잘리지 않고) 매핑 문이 열린다.
+      if (nested.documentInspectionRevision !== null) this.templateInspectionKey = `${template.id}:${template.revision}`;
+      return { templateId: template.id, templateRevision: template.revision, ...out };
+    });
   }
 
-  private async templateGetPageLayout(args: Record<string, unknown>, capability?: ToolCapabilityContext): Promise<unknown> {
-    const { template, wasm } = await this.ensureTemplate(capability);
-    this.templateArgs(args, template);
-    const sectionIdx = reqInt(args, 'sectionIdx');
-    if (sectionIdx >= wasm.getSectionCount()) throw new AgentToolError('INVALID_ARGS', `Template section ${sectionIdx} does not exist.`);
-    return {
-      templateId: template.id,
-      templateRevision: template.revision,
-      sectionIdx,
-      page: wasm.getPageDef(sectionIdx),
-      section: wasm.getSectionDef(sectionIdx),
-      columns: wasm.getColumnDef(sectionIdx),
-      border: wasm.getPageBorderFill(sectionIdx),
-    };
+  private templateGetPageLayout(args: Record<string, unknown>, capability?: ToolCapabilityContext): Promise<unknown> {
+    return this.useTemplate(capability, ({ template, wasm }) => {
+      this.templateArgs(args, template);
+      const sectionIdx = reqInt(args, 'sectionIdx');
+      if (sectionIdx >= wasm.getSectionCount()) throw new AgentToolError('INVALID_ARGS', `Template section ${sectionIdx} does not exist.`);
+      return {
+        templateId: template.id,
+        templateRevision: template.revision,
+        sectionIdx,
+        page: wasm.getPageDef(sectionIdx),
+        section: wasm.getSectionDef(sectionIdx),
+        columns: wasm.getColumnDef(sectionIdx),
+        border: wasm.getPageBorderFill(sectionIdx),
+      };
+    });
   }
 
   private requireTemplateMapping(template: DocumentTemplate): void {
@@ -5166,77 +5424,78 @@ export class AgentToolExecutor {
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
     this.requireRevision(args);
-    const { template, wasm: source } = await this.ensureTemplate(capability);
-    assertToolRequestActive(capability);
-    this.templateArgs(args, template);
-    this.requireTemplateMapping(template);
-    const mappings = Array.isArray(args['mappings']) ? args['mappings'].map(asRecord) : [];
-    if (mappings.length === 0) throw new AgentToolError('INVALID_ARGS', 'mappings must contain at least one section mapping.');
-    const requested = Array.isArray(args['components'])
-      ? new Set(args['components'].filter((item): item is string => typeof item === 'string'))
-      : new Set(['page', 'columns', 'headersFooters', 'borders', 'sectionDefaults']);
-    const target = this.deps.wasm;
-    for (const mapping of mappings) {
-      const sourceSection = reqInt(mapping, 'templateSectionIdx');
-      const targetSection = reqInt(mapping, 'targetSectionIdx');
-      if (sourceSection >= source.getSectionCount() || targetSection >= target.getSectionCount()) {
-        throw new AgentToolError('INVALID_ARGS', `Invalid section mapping ${sourceSection} -> ${targetSection}.`);
+    return this.useTemplate(capability, ({ template, wasm: source }) => {
+      assertToolRequestActive(capability);
+      this.templateArgs(args, template);
+      this.requireTemplateMapping(template);
+      const mappings = Array.isArray(args['mappings']) ? args['mappings'].map(asRecord) : [];
+      if (mappings.length === 0) throw new AgentToolError('INVALID_ARGS', 'mappings must contain at least one section mapping.');
+      const requested = Array.isArray(args['components'])
+        ? new Set(args['components'].filter((item): item is string => typeof item === 'string'))
+        : new Set(['page', 'columns', 'headersFooters', 'borders', 'sectionDefaults']);
+      const target = this.deps.wasm;
+      for (const mapping of mappings) {
+        const sourceSection = reqInt(mapping, 'templateSectionIdx');
+        const targetSection = reqInt(mapping, 'targetSectionIdx');
+        if (sourceSection >= source.getSectionCount() || targetSection >= target.getSectionCount()) {
+          throw new AgentToolError('INVALID_ARGS', `Invalid section mapping ${sourceSection} -> ${targetSection}.`);
+        }
       }
-    }
-    const pending = this.deps.pending.addTemplateMutation(
-      agent,
-      `Apply ${template.name} section layout`,
-      template.revision,
-      () => {
-        const warnings: string[] = [];
-        const skippedFeatures: string[] = [];
-        const affectedSections: number[] = [];
-        let transferredHeaderFooters = 0;
-        for (const mapping of mappings) {
-          const sourceSection = reqInt(mapping, 'templateSectionIdx');
-          const targetSection = reqInt(mapping, 'targetSectionIdx');
-          if (requested.has('page')) target.setPageDef(targetSection, source.getPageDef(sourceSection));
-          if (requested.has('columns')) {
-            const column = source.getColumnDef(sourceSection);
-            target.setColumnDef(targetSection, column.columnCount, column.columnType, column.sameWidth ? 1 : 0, column.spacing);
-          }
-          if (requested.has('sectionDefaults')) target.setSectionDef(targetSection, source.getSectionDef(sourceSection));
-          if (requested.has('borders')) target.setPageBorderFill(targetSection, source.getPageBorderFill(sourceSection));
-          if (requested.has('headersFooters')) {
-            for (const isHeader of [true, false]) {
-              for (const applyTo of [0, 1, 2]) {
-                const sourceBlock = JSON.parse(source.getHeaderFooter(sourceSection, isHeader, applyTo)) as {
-                  exists?: boolean; text?: string;
-                };
-                if (sourceBlock.exists !== true) continue;
-                const targetBlock = JSON.parse(target.getHeaderFooter(targetSection, isHeader, applyTo)) as { exists?: boolean };
-                if (targetBlock.exists === true) target.deleteHeaderFooter(targetSection, isHeader, applyTo);
-                target.createHeaderFooter(targetSection, isHeader, applyTo);
-                const lines = String(sourceBlock.text ?? '').split('\n');
-                if (lines[0]) target.insertTextInHeaderFooter(targetSection, isHeader, applyTo, 0, 0, lines[0]);
-                for (let lineIndex = 1; lineIndex < lines.length; lineIndex++) {
-                  const previousLength = target.getHeaderFooterParaInfo(targetSection, isHeader, applyTo, lineIndex - 1);
-                  const parsed = JSON.parse(previousLength) as { charCount?: number };
-                  target.splitParagraphInHeaderFooter(
-                    targetSection, isHeader, applyTo, lineIndex - 1,
-                    Number(parsed.charCount ?? [...(lines[lineIndex - 1] ?? '')].length),
-                  );
-                  if (lines[lineIndex]) target.insertTextInHeaderFooter(targetSection, isHeader, applyTo, lineIndex, 0, lines[lineIndex]);
+      const pending = this.deps.pending.addTemplateMutation(
+        agent,
+        `Apply ${template.name} section layout`,
+        template.revision,
+        () => {
+          const warnings: string[] = [];
+          const skippedFeatures: string[] = [];
+          const affectedSections: number[] = [];
+          let transferredHeaderFooters = 0;
+          for (const mapping of mappings) {
+            const sourceSection = reqInt(mapping, 'templateSectionIdx');
+            const targetSection = reqInt(mapping, 'targetSectionIdx');
+            if (requested.has('page')) target.setPageDef(targetSection, source.getPageDef(sourceSection));
+            if (requested.has('columns')) {
+              const column = source.getColumnDef(sourceSection);
+              target.setColumnDef(targetSection, column.columnCount, column.columnType, column.sameWidth ? 1 : 0, column.spacing);
+            }
+            if (requested.has('sectionDefaults')) target.setSectionDef(targetSection, source.getSectionDef(sourceSection));
+            if (requested.has('borders')) target.setPageBorderFill(targetSection, source.getPageBorderFill(sourceSection));
+            if (requested.has('headersFooters')) {
+              for (const isHeader of [true, false]) {
+                for (const applyTo of [0, 1, 2]) {
+                  const sourceBlock = JSON.parse(source.getHeaderFooter(sourceSection, isHeader, applyTo)) as {
+                    exists?: boolean; text?: string;
+                  };
+                  if (sourceBlock.exists !== true) continue;
+                  const targetBlock = JSON.parse(target.getHeaderFooter(targetSection, isHeader, applyTo)) as { exists?: boolean };
+                  if (targetBlock.exists === true) target.deleteHeaderFooter(targetSection, isHeader, applyTo);
+                  target.createHeaderFooter(targetSection, isHeader, applyTo);
+                  const lines = String(sourceBlock.text ?? '').split('\n');
+                  if (lines[0]) target.insertTextInHeaderFooter(targetSection, isHeader, applyTo, 0, 0, lines[0]);
+                  for (let lineIndex = 1; lineIndex < lines.length; lineIndex++) {
+                    const previousLength = target.getHeaderFooterParaInfo(targetSection, isHeader, applyTo, lineIndex - 1);
+                    const parsed = JSON.parse(previousLength) as { charCount?: number };
+                    target.splitParagraphInHeaderFooter(
+                      targetSection, isHeader, applyTo, lineIndex - 1,
+                      Number(parsed.charCount ?? [...(lines[lineIndex - 1] ?? '')].length),
+                    );
+                    if (lines[lineIndex]) target.insertTextInHeaderFooter(targetSection, isHeader, applyTo, lineIndex, 0, lines[lineIndex]);
+                  }
+                  transferredHeaderFooters++;
                 }
-                transferredHeaderFooters++;
               }
             }
+            if (!affectedSections.includes(targetSection)) affectedSections.push(targetSection);
           }
-          if (!affectedSections.includes(targetSection)) affectedSections.push(targetSection);
-        }
-        if (transferredHeaderFooters > 0) {
-          skippedFeatures.push('headerFooterFormattingAndControls');
-          warnings.push('Header/footer text and page scope were transferred; rich formatting, fields, and unsupported controls use the target defaults or require a follow-up edit.');
-        }
-        return { warnings, skippedFeatures, affectedSections };
-      },
-    );
-    return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, transferredComponents: [...requested] };
+          if (transferredHeaderFooters > 0) {
+            skippedFeatures.push('headerFooterFormattingAndControls');
+            warnings.push('Header/footer text and page scope were transferred; rich formatting, fields, and unsupported controls use the target defaults or require a follow-up edit.');
+          }
+          return { warnings, skippedFeatures, affectedSections };
+        },
+      );
+      return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, transferredComponents: [...requested] };
+    });
   }
 
   private async templateApplyParagraphFormat(
@@ -5245,40 +5504,41 @@ export class AgentToolExecutor {
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
     this.requireRevision(args);
-    const { template, wasm: sourceWasm } = await this.ensureTemplate(capability);
-    assertToolRequestActive(capability);
-    this.templateArgs(args, template);
-    this.requireTemplateMapping(template);
-    const source = asRecord(args['source']);
-    const sourceSection = reqInt(source, 'sectionIdx');
-    const sourcePara = reqInt(source, 'paraIdx');
-    const targets = Array.isArray(args['targets']) ? args['targets'].map(asRecord) : [];
-    if (targets.length === 0) throw new AgentToolError('INVALID_ARGS', 'targets must contain at least one paragraph.');
-    const paraProps = sourceWasm.getParaPropertiesAt(sourceSection, sourcePara);
-    const charProps = sourceWasm.getCharPropertiesAt(sourceSection, sourcePara, 0);
-    for (const item of targets) this.validateAddress(reqInt(item, 'sectionIdx'), reqInt(item, 'paraIdx'), 0);
-    const pending = this.deps.pending.addTemplateMutation(
-      agent,
-      `Apply ${template.name} paragraph formatting`,
-      template.revision,
-      () => {
-        const affectedSections: number[] = [];
-        for (const item of targets) {
-          const sectionIdx = reqInt(item, 'sectionIdx');
-          const paraIdx = reqInt(item, 'paraIdx');
-          this.deps.wasm.applyParaFormat(sectionIdx, paraIdx, JSON.stringify(paraProps));
-          const length = this.deps.wasm.getParagraphLength(sectionIdx, paraIdx);
-          if (length > 0) this.deps.wasm.applyCharFormat(sectionIdx, paraIdx, 0, length, JSON.stringify(charProps));
-          if (!affectedSections.includes(sectionIdx)) affectedSections.push(sectionIdx);
-        }
-        return {
-          warnings: ['Style and numbering identifiers are resolved through the target document formatting APIs; unsupported attributes use the closest supported value.'],
-          skippedFeatures: [],
-          affectedSections,
-        };
-      },
-    );
-    return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, targetCount: targets.length };
+    return this.useTemplate(capability, ({ template, wasm: sourceWasm }) => {
+      assertToolRequestActive(capability);
+      this.templateArgs(args, template);
+      this.requireTemplateMapping(template);
+      const source = asRecord(args['source']);
+      const sourceSection = reqInt(source, 'sectionIdx');
+      const sourcePara = reqInt(source, 'paraIdx');
+      const targets = Array.isArray(args['targets']) ? args['targets'].map(asRecord) : [];
+      if (targets.length === 0) throw new AgentToolError('INVALID_ARGS', 'targets must contain at least one paragraph.');
+      const paraProps = sourceWasm.getParaPropertiesAt(sourceSection, sourcePara);
+      const charProps = sourceWasm.getCharPropertiesAt(sourceSection, sourcePara, 0);
+      for (const item of targets) this.validateAddress(reqInt(item, 'sectionIdx'), reqInt(item, 'paraIdx'), 0);
+      const pending = this.deps.pending.addTemplateMutation(
+        agent,
+        `Apply ${template.name} paragraph formatting`,
+        template.revision,
+        () => {
+          const affectedSections: number[] = [];
+          for (const item of targets) {
+            const sectionIdx = reqInt(item, 'sectionIdx');
+            const paraIdx = reqInt(item, 'paraIdx');
+            this.deps.wasm.applyParaFormat(sectionIdx, paraIdx, JSON.stringify(paraProps));
+            const length = this.deps.wasm.getParagraphLength(sectionIdx, paraIdx);
+            if (length > 0) this.deps.wasm.applyCharFormat(sectionIdx, paraIdx, 0, length, JSON.stringify(charProps));
+            if (!affectedSections.includes(sectionIdx)) affectedSections.push(sectionIdx);
+          }
+          return {
+            warnings: ['Style and numbering identifiers are resolved through the target document formatting APIs; unsupported attributes use the closest supported value.'],
+            skippedFeatures: [],
+            affectedSections,
+          };
+        },
+      );
+      return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, targetCount: targets.length };
+    });
   }
 
   private async templateInsertBlock(
@@ -5287,62 +5547,64 @@ export class AgentToolExecutor {
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
     this.requireRevision(args);
-    const { template, wasm: sourceWasm, bytes: templateBytes } = await this.ensureTemplate(capability);
-    assertToolRequestActive(capability);
-    this.templateArgs(args, template);
-    this.requireTemplateMapping(template);
-    const source = asRecord(args['source']);
-    const target = asRecord(args['target']);
-    const sourceSection = reqInt(source, 'sectionIdx');
-    const startPara = reqInt(source, 'startParaIdx');
-    const endPara = reqInt(source, 'endParaIdx');
-    if (endPara < startPara) throw new AgentToolError('INVALID_ARGS', 'Template block range is reversed.');
-    const targetSection = reqInt(target, 'sectionIdx');
-    const targetPara = reqInt(target, 'paraIdx');
-    const targetOffset = reqInt(target, 'charOffset');
-    this.validateAddress(targetSection, targetPara, targetOffset);
-    sourceWasm.getParagraphLength(sourceSection, startPara);
-    sourceWasm.getParagraphLength(sourceSection, endPara);
-    // Keep the exact approved source bytes. Re-serializing the inspection document
-    // can normalize package parts before the native importer sees them.
-    const sourceBytes = templateBytes.slice();
-    const pending = this.deps.pending.addTemplateMutation(
-      agent,
-      `Insert block from ${template.name}`,
-      template.revision,
-      () => {
-        const transfer = JSON.parse(this.deps.wasm.pasteDocumentBlock(
-          sourceBytes,
-          sourceSection,
-          startPara,
-          endPara,
-          targetSection,
-          targetPara,
-          targetOffset,
-        )) as {
-          ok?: boolean;
-          warnings?: string[];
-          skippedFeatures?: string[];
-          insertedParagraphCount?: number;
-          controlCounts?: Record<string, number>;
-        };
-        if (transfer.ok !== true) {
-          throw new AgentToolError('TEMPLATE_TRANSFER_FAILED', 'The native template block importer did not complete.');
-        }
-        return {
-          warnings: transfer.warnings ?? [],
-          skippedFeatures: transfer.skippedFeatures ?? [],
-          affectedSections: [targetSection],
-          insertedParagraphCount: transfer.insertedParagraphCount ?? 0,
-          controlCounts: transfer.controlCounts ?? {},
-        };
-      },
-    );
-    return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, source: { sectionIdx: sourceSection, startParaIdx: startPara, endParaIdx: endPara } };
+    return this.useTemplate(capability, ({ template, wasm: sourceWasm, bytes: templateBytes }) => {
+      assertToolRequestActive(capability);
+      this.templateArgs(args, template);
+      this.requireTemplateMapping(template);
+      const source = asRecord(args['source']);
+      const target = asRecord(args['target']);
+      const sourceSection = reqInt(source, 'sectionIdx');
+      const startPara = reqInt(source, 'startParaIdx');
+      const endPara = reqInt(source, 'endParaIdx');
+      if (endPara < startPara) throw new AgentToolError('INVALID_ARGS', 'Template block range is reversed.');
+      const targetSection = reqInt(target, 'sectionIdx');
+      const targetPara = reqInt(target, 'paraIdx');
+      const targetOffset = reqInt(target, 'charOffset');
+      this.validateAddress(targetSection, targetPara, targetOffset);
+      sourceWasm.getParagraphLength(sourceSection, startPara);
+      sourceWasm.getParagraphLength(sourceSection, endPara);
+      // Keep the exact approved source bytes. Re-serializing the inspection document
+      // can normalize package parts before the native importer sees them.
+      const sourceBytes = templateBytes.slice();
+      const pending = this.deps.pending.addTemplateMutation(
+        agent,
+        `Insert block from ${template.name}`,
+        template.revision,
+        () => {
+          const transfer = JSON.parse(this.deps.wasm.pasteDocumentBlock(
+            sourceBytes,
+            sourceSection,
+            startPara,
+            endPara,
+            targetSection,
+            targetPara,
+            targetOffset,
+          )) as {
+            ok?: boolean;
+            warnings?: string[];
+            skippedFeatures?: string[];
+            insertedParagraphCount?: number;
+            controlCounts?: Record<string, number>;
+          };
+          if (transfer.ok !== true) {
+            throw new AgentToolError('TEMPLATE_TRANSFER_FAILED', 'The native template block importer did not complete.');
+          }
+          return {
+            warnings: transfer.warnings ?? [],
+            skippedFeatures: transfer.skippedFeatures ?? [],
+            affectedSections: [targetSection],
+            insertedParagraphCount: transfer.insertedParagraphCount ?? 0,
+            controlCounts: transfer.controlCounts ?? {},
+          };
+        },
+      );
+      return { revision: this.revision, pending: true, ...pending, templateRevision: template.revision, source: { sectionIdx: sourceSection, startParaIdx: startPara, endParaIdx: endPara } };
+    });
   }
 
   dispose(): void {
-    this.releaseTemplate();
+    this.ownForeignPool?.dispose();
+    this.ownForeignPool = null;
     this.templateInspectionKey = null;
     this.documentInspectionRevision = null;
   }
@@ -5506,15 +5768,19 @@ export class AgentToolExecutor {
       const rec = asRecord(raw);
       const t = rec['tool'];
       tool = typeof t === 'string' ? t : null;
-      if (!tool || !BATCHABLE_READ_TOOLS.has(tool)) {
+      if (!tool || !this.batchReadTools.has(tool)) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          `read item tool must be one of ${[...BATCHABLE_READ_TOOLS].join('|')} (got ${JSON.stringify(t)})`,
+          `read item tool must be one of ${[...this.batchReadTools].join('|')} (got ${JSON.stringify(t)})`,
         );
       }
       // apply_edits 와 같은 항목 꼴을 받는다 — 평평한 {tool, …인자} 도 통과한다.
       const itemArgs = batchItemArgs(rec);
       if (!itemArgs) throw new AgentToolError('INVALID_ARGS', `args must be an object of ${tool} arguments`);
+      // 항목은 실행기 입구를 지나지 않는다 — 항목의 documentId 를 두면 말없이 이 문서를 읽게 된다.
+      if (foreignDocumentIdOf(itemArgs) !== null) {
+        throw new AgentToolError('INVALID_ARGS', 'read_batch takes one top-level documentId, not one per item');
+      }
       assertToolRequestActive(capability);
       assertToolCapability(tool, capability);
       const rawResult = await this.dispatch(tool, itemArgs, agent, capability);
@@ -7094,19 +7360,27 @@ export class AgentToolExecutor {
     return {
       ...result,
       ...(typeof args['clipId'] === 'string' ? { clipId: args['clipId'] } : {}),
-      source: { itemId: pdf.itemId, page: pdf.page, rect: out.rect, widthPx: out.widthPx, heightPx: out.heightPx },
+      source: { ...(pdf.itemId ? { itemId: pdf.itemId } : { fileId: pdf.fileId }), page: pdf.page, rect: out.rect, widthPx: out.widthPx, heightPx: out.heightPx },
     };
   }
 
-  /** 세션 프로젝트 PDF 의 쪽 영역을 그린다. 바이트는 프로젝트 HTTP 로 받고 fileId 로 잠시 붙든다. */
+  /** PDF 의 쪽 영역을 그린다. 바이트는 프로젝트(또는 참고 자료) HTTP 로 받고 fileId 로 잠시 붙든다. */
   private renderProjectPdf(
     pdf: PdfSourceArgs,
     request: { rect?: readonly number[]; cropPx?: PixelBox; zoom?: number; maxPixels: number; maxBytes?: number },
   ): Promise<PdfImage> {
-    const load = this.deps.loadProjectFile;
-    if (!load) throw new AgentToolError('RENDER_UNAVAILABLE', 'Project files are not reachable from this Studio tab');
+    let load: () => Promise<Uint8Array>;
+    if (pdf.projectId !== undefined) {
+      const loadProjectFile = this.deps.loadProjectFile;
+      if (!loadProjectFile) throw new AgentToolError('RENDER_UNAVAILABLE', 'Project files are not reachable from this Studio tab');
+      load = () => loadProjectFile(pdf.projectId, pdf.itemId);
+    } else {
+      const loadReferenceFile = this.deps.loadReferenceFile;
+      if (!loadReferenceFile) throw new AgentToolError('RENDER_UNAVAILABLE', 'Reference files are not reachable from this Studio tab');
+      load = () => loadReferenceFile(pdf.scope, pdf.scopeId, pdf.fileId);
+    }
     const render = this.deps.renderPdf ?? renderPdfImage;
-    return render({ fileId: pdf.fileId, page: pdf.page, ...request }, () => load(pdf.projectId, pdf.itemId));
+    return render({ fileId: pdf.fileId, page: pdf.page, ...request }, load);
   }
 
   /** 크기 결정 + insertImage 객체 op 등록 (insert_image 의 동기/잘라내기 경로 공통) */
@@ -7195,7 +7469,7 @@ export class AgentToolExecutor {
         rect: optRect(args), cropPx: optCropPx(args), zoom, maxPixels: REFERENCE_READ_MAX_PIXELS,
       });
       return {
-        itemId: pdf.itemId,
+        ...(pdf.itemId ? { itemId: pdf.itemId } : {}),
         ...echo,
         fileId: pdf.fileId,
         name: pdf.name,

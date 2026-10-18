@@ -1400,23 +1400,19 @@ export class ProjectStore {
     }));
   }
 
-  /** 문서 없는 채팅의 암묵 프로젝트. */
-  async projectForThread(threadId, { create = true } = {}) {
+  /**
+   * 문서 없는 채팅이 예전에 받은 암묵 프로젝트("채팅 자료"). 새로 만들지 않는다 — 문서 없는 채팅은
+   * 프로젝트 없이 시작하고, 자료함은 문서를 연결하면 그 문서의 것을 쓴다. 없으면 null.
+   */
+  async projectForThread(threadId) {
     if (typeof threadId !== 'string' || !threadId) throw projectError('PROJECT_OP_INVALID', 'threadId is required');
-    return this.#withIndex(async () => {
-      const existing = this.index.threadProjects[threadId];
-      if (existing && this.index.projects[existing]) return existing;
-      if (!create) return null;
-      const state = await this.#createProjectLocked({ name: '채팅 자료', implicit: true, nameSource: 'default' });
-      this.index.threadProjects[threadId] = state.id;
-      await this.#writeIndex();
-      return state.id;
-    });
+    const existing = this.index.threadProjects[threadId];
+    return existing && this.index.projects[existing] ? existing : null;
   }
 
   /**
    * 채팅 시작 때 세션이 묶일 프로젝트: 버전 저장소가 있으면 저장소 프로젝트, 아니면 문서 프로젝트,
-   * 문서가 없으면 스레드 암묵 프로젝트. create:false 면 이미 있는 프로젝트에만 묶는다(없으면 null).
+   * 문서가 없으면 예전 스레드 프로젝트(있을 때만). create:false 면 문서도 이미 있는 프로젝트에만 묶는다(없으면 null).
    */
   async bindSession({ threadId = null, documentId = null, documentName = null, repository = null, create = true } = {}) {
     if (typeof documentId === 'string' && documentId) {
@@ -1424,8 +1420,32 @@ export class ProjectStore {
       if (normalized) return this.projectForRepository(documentId, normalized, { name: documentName, create });
       return this.projectForDocument(documentId, { name: documentName, create });
     }
-    if (!create && (typeof threadId !== 'string' || !threadId)) return null;
-    return this.projectForThread(threadId, { create });
+    if (typeof threadId !== 'string' || !threadId) return null;
+    return this.projectForThread(threadId);
+  }
+
+  /**
+   * 문서 없는 채팅에 문서가 연결됐다: 그 스레드의 예전 프로젝트("채팅 자료")를 문서 프로젝트로 합치고
+   * 스레드 대응을 지운다. 다른 문서와 함께 쓰는(구성원이 있는) 프로젝트는 합치지 않고 대응만 지운다.
+   * 합친 프로젝트 id, 합칠 것이 없으면 null. 합치기가 멈추면 pendingMerges 가 남아 다음 부팅에 이어서 합친다.
+   */
+  async adoptThreadProject(threadId, projectId) {
+    if (typeof threadId !== 'string' || !threadId) return null;
+    return this.#withIndex(async () => {
+      const sourceId = this.index.threadProjects[threadId];
+      if (!sourceId) return null;
+      let merged = null;
+      if (sourceId !== projectId && this.hasProject(sourceId) && this.hasProject(projectId)) {
+        const source = await this.#load(sourceId);
+        if (source.implicit && source.members.length === 0) {
+          await this.#mergeInto(sourceId, projectId);
+          merged = sourceId;
+        }
+      }
+      delete this.index.threadProjects[threadId];
+      await this.#writeIndex();
+      return merged;
+    });
   }
 
   // ─── 읽기 ─────────────────────────────────────────────────

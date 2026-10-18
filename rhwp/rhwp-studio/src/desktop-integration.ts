@@ -55,6 +55,31 @@ export interface NativeFileHandleDescriptor {
   legacyPortableHistoryFolder?: true;
 }
 
+export type NativeAgentDocumentOpenFailure =
+  | 'DOC_OPEN_ELSEWHERE'
+  | 'NOT_FOUND'
+  | 'UNREADABLE'
+  | 'TOO_LARGE'
+  | 'INVALID_PATH';
+export type NativeAgentDocumentCreateFailure =
+  | 'INVALID_NAME'
+  | 'INVALID_FOLDER'
+  | 'WRITE_FAILED'
+  | 'LICENSE_READ_ONLY';
+
+type NativeAgentDocumentIpcResult<Code extends string> =
+  | (NativeFileHandleDescriptor & { ok: true; path: string; bytes?: Uint8Array })
+  | { ok: false; code: Code };
+
+/**
+ * 에이전트가 경로로 열거나 새로 만든 데스크톱 문서. handle·bytes·name 은 열기 대화상자로 고른
+ * 파일과 같다 — `open-document-bytes` 의 fileHandle·bytes·fileName 으로 넘기면 같은 흐름(문서 id·
+ * 문서 점유·북마크·같은 경로로 저장)을 탄다.
+ */
+export type NativeAgentDocument<Code extends string> =
+  | { ok: true; handle: FileSystemFileHandleLike; bytes: Uint8Array; name: string; path: string }
+  | { ok: false; code: Code };
+
 export interface DocumentOwnershipIdentity {
   documentId: string;
   sourceDigest: string | null;
@@ -95,6 +120,14 @@ export interface RhwpDesktopApi {
     documentId?: string;
   }) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   pickLegacyHistoryFolder?: () => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
+  /** 에이전트 open_document({path}). 다른 창이 쥔 문서는 그 창을 앞으로 가져오지 않고 코드로 알린다. */
+  openNativeDocumentAtPath?: (path: string) => Promise<NativeAgentDocumentIpcResult<NativeAgentDocumentOpenFailure>>;
+  /** 에이전트 create_document. <folder 또는 ~/Documents/HamaEditor>/<name>.hwpx 를 새로 만든다. */
+  createNamedNativeDocument?: (payload: {
+    name: string;
+    folder?: string;
+    bytes: Uint8Array;
+  }) => Promise<NativeAgentDocumentIpcResult<NativeAgentDocumentCreateFailure>>;
   claimNativeDroppedFile?: (
     file: File,
   ) => Promise<NativeFileHandleDescriptor | { owned: true } | null> | null;
@@ -141,7 +174,11 @@ export interface RhwpDesktopApi {
   /** 문서 홈: 기억한 위치의 파일 상태. 핸들을 만들지 않는다. */
   inspectNativeDocuments?: (documentIds: string[]) => Promise<ReadonlyArray<NativeDocumentPresence & { documentId: string }>>;
   relocateNativeDocument?: (documentId: string) => Promise<{ fileName: string } | null>;
-  readRememberedNativeDocument?: (documentId: string) => Promise<NativeFileReadResult | null>;
+  /** detailed 면 못 읽은 이유를 { ok:false, reason } 로 돌려준다. 아니면 못 읽을 때 null. */
+  readRememberedNativeDocument?: (
+    documentId: string,
+    options?: { detailed: true },
+  ) => Promise<NativeFileReadResult | { ok: false; reason?: unknown } | null>;
   revealNativeDocument?: (documentId: string) => Promise<boolean>;
   openNativeDocumentWindow?: (documentId: string) => Promise<boolean>;
   /** 이 창이 앱의 첫 창이라 자동 저장본 복구를 물어도 되는지. */
@@ -951,6 +988,86 @@ export async function pickDesktopNativeOpenFile(
   return createNativeFileHandle(result, api, { saveTarget: result.saveTargetCreated !== false });
 }
 
+const AGENT_OPEN_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentOpenFailure>([
+  'DOC_OPEN_ELSEWHERE', 'NOT_FOUND', 'UNREADABLE', 'TOO_LARGE', 'INVALID_PATH',
+]);
+const AGENT_CREATE_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentCreateFailure>([
+  'INVALID_NAME', 'INVALID_FOLDER', 'WRITE_FAILED', 'LICENSE_READ_ONLY',
+]);
+
+function nativeAgentDocumentResult<Code extends string>(
+  result: unknown,
+  api: RhwpDesktopApi,
+  failures: ReadonlySet<unknown>,
+  fallback: Code,
+  writtenBytes?: Uint8Array,
+): NativeAgentDocument<Code> {
+  const value = result as Record<string, unknown> | null;
+  if (!value || value.ok !== true) {
+    const code = failures.has(value?.code) ? value!.code as Code : fallback;
+    return { ok: false, code };
+  }
+  if (!validNativeDescriptor(value) || typeof value.path !== 'string' || !value.path) {
+    return { ok: false, code: fallback };
+  }
+  const descriptor: NativeFileHandleDescriptor = {
+    kind: 'file',
+    handleId: value.handleId,
+    name: value.name,
+    saveTargetCreated: value.saveTargetCreated !== false,
+    ...(value.verifiedDocumentId ? { verifiedDocumentId: value.verifiedDocumentId } : {}),
+  };
+  const read = writtenBytes
+    ? { name: descriptor.name, bytes: writtenBytes }
+    : checkedNativeFileReadResult({ name: value.name, bytes: value.bytes });
+  const handle = createNativeFileHandle(descriptor, api, { saveTarget: descriptor.saveTargetCreated !== false });
+  return { ok: true, handle, bytes: read.bytes, name: read.name, path: value.path };
+}
+
+/**
+ * 에이전트 open_document({path}) — 절대 경로의 hwp/hwpx/hml 을 이 창에서 열 수 있게 잡고 읽는다.
+ * 데스크톱이 아니면 null. 성공 결과는 열기 대화상자로 고른 파일과 같다({@link NativeAgentDocument}).
+ * 실패하면 핸들이 남지 않는다. 열기를 그만두면 handle.releaseUnusedSaveTarget() 으로 놓는다.
+ */
+export async function openNativeDocumentAtPath(
+  path: string,
+  win?: DesktopHost,
+): Promise<NativeAgentDocument<NativeAgentDocumentOpenFailure> | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.openNativeDocumentAtPath) return null;
+  try {
+    const result = await api.openNativeDocumentAtPath(path);
+    return nativeAgentDocumentResult(result, api, AGENT_OPEN_FAILURES, 'UNREADABLE');
+  } catch (error) {
+    console.warn('[desktop] open document at path failed:', error);
+    return { ok: false, code: 'UNREADABLE' };
+  }
+}
+
+/**
+ * 에이전트 create_document — bytes(빈 HWPX)를 <folder>/<name>.hwpx 로 새로 쓴다. folder 가 없으면
+ * ~/Documents/HamaEditor. 이름이 겹치면 "<name> (2).hwpx" … 로 비켜 가고 덮어쓰지 않는다.
+ * 데스크톱이 아니면 null. 성공 결과의 path 는 실제로 만든 파일이다.
+ */
+export async function createNamedNativeDocument(
+  options: { name: string; folder?: string; bytes: Uint8Array },
+  win?: DesktopHost,
+): Promise<NativeAgentDocument<NativeAgentDocumentCreateFailure> | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.createNamedNativeDocument) return null;
+  try {
+    const result = await api.createNamedNativeDocument({
+      name: options.name,
+      ...(options.folder ? { folder: options.folder } : {}),
+      bytes: options.bytes,
+    });
+    return nativeAgentDocumentResult(result, api, AGENT_CREATE_FAILURES, 'WRITE_FAILED', options.bytes);
+  } catch (error) {
+    console.warn('[desktop] create named document failed:', error);
+    return { ok: false, code: 'WRITE_FAILED' };
+  }
+}
+
 export async function pickDesktopLegacyHistoryFolder(
   win?: DesktopHost,
 ): Promise<FileSystemFileHandleLike | null | undefined> {
@@ -1169,9 +1286,38 @@ export async function readRememberedNativeDocument(
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.readRememberedNativeDocument) return null;
   const result = await api.readRememberedNativeDocument(documentId);
-  if (!result) return null;
+  if (!result || 'ok' in result) return null;
   const checked = checkedNativeFileReadResult(result);
   return { bytes: checked.bytes, fileName: checked.name };
+}
+
+/** 기억한 문서를 읽은 결과 — 못 읽었으면 그 이유. */
+export type RememberedNativeDocumentRead =
+  | { ok: true; bytes: Uint8Array; fileName: string }
+  | { ok: false; reason: 'owned' | 'missing' | 'too-large' | 'unreadable'; size?: number };
+
+type RememberedReadFailure = Extract<RememberedNativeDocumentRead, { ok: false }>['reason'];
+const REMEMBERED_READ_FAILURES: ReadonlySet<unknown> = new Set<RememberedReadFailure>(['owned', 'missing', 'too-large', 'unreadable']);
+
+/**
+ * 다른 문서 읽기용 — {@link readRememberedNativeDocument} 와 같이 읽되 못 읽은 이유(다른 창이 쥠·없음·
+ * 너무 큼·잠깐 못 읽음)를 돌려준다. 데스크톱이 아니면 null.
+ */
+export async function readRememberedNativeDocumentResult(
+  documentId: string,
+  win?: DesktopHost,
+): Promise<RememberedNativeDocumentRead | null> {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.readRememberedNativeDocument) return null;
+  const result = await api.readRememberedNativeDocument(documentId, { detailed: true });
+  if (!result) return { ok: false, reason: 'unreadable' };
+  if ('ok' in result && result.ok === false) {
+    const reason = REMEMBERED_READ_FAILURES.has(result.reason) ? result.reason as RememberedReadFailure : 'unreadable';
+    const size = (result as { size?: unknown }).size;
+    return { ok: false, reason, ...(typeof size === 'number' && Number.isSafeInteger(size) ? { size } : {}) };
+  }
+  const checked = checkedNativeFileReadResult(result);
+  return { ok: true, bytes: checked.bytes, fileName: checked.name };
 }
 
 export function canRevealNativeDocument(win?: DesktopHost): boolean {

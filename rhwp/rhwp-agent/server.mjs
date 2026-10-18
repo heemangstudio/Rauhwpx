@@ -23,6 +23,7 @@ import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
+  detachCompactionNeeded,
   handoffBudget,
   handoffTokenCap,
   normalizeChatHistory,
@@ -43,7 +44,16 @@ import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
-import { assertCellArgsPlacement, filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
+import {
+  assertCellArgsPlacement, documentIdArgError, filterToolDefinitions, FOREIGN_READ_TOOL_NAMES, LIVE_UNTRACKED_READ_TOOL_NAMES,
+  TOOL_DEFINITIONS,
+} from './tools.mjs';
+import { resolveFileSource, resolveReadSource } from './read-source.mjs';
+import {
+  OPEN_DOCUMENT_MAX_BYTES, OPENABLE_DOCUMENT_EXTENSIONS,
+  assertDocumentPathConsent, enrichDocumentList, lookupDocumentPath, normalizeNewDocumentName,
+  readDocumentPathContent, rememberDocumentPath, validateDocumentFolder, validateDocumentPath,
+} from './document-paths.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
 import { failureForHubError, normalizeProviderFailureEvent, redactFailureText } from './provider-failure.mjs';
@@ -96,7 +106,7 @@ import { ProjectStore, defaultProjectsRoot, normalizeRepository, originLabels } 
 import { ProjectSettingsStore } from './project-settings.mjs';
 import { createProjectHttpHandler, isProjectPath, createBrowserDownloadsHttpHandler, isBrowserDownloadsPath } from './project-http.mjs';
 import { executeProjectTool } from './project-tools.mjs';
-import { normalizeMentions, projectPromptContext } from './project-context.mjs';
+import { contextualPrompt, mentionedDocumentsBlock, normalizeDocumentMentions, normalizeMentions, projectPromptContext } from './project-context.mjs';
 import { createProjectIngest } from './project-ingest.mjs';
 import { createHomeSearch } from './home-search.mjs';
 import { createProjectLibrarian } from './project-librarian.mjs';
@@ -112,6 +122,7 @@ import {
   validateUserQuestionAnswers,
 } from './user-question.mjs';
 import {
+  HUB_ONLY_CHAT_PERMISSIONS,
   CHAT_PERMISSION_CAPABILITIES,
   createChatPermissionPolicy,
   createChatPermissionRequest,
@@ -134,11 +145,16 @@ import {
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
+  detachCompactionInstructions,
+  documentChangeBlock,
   liveDocumentBlock,
+  normalizeDetachedFrom,
+  normalizeDocumentName,
   normalizeDocumentSnapshot,
   normalizeStableScopeId,
   referenceScopesForSession,
   resolveSessionIdentity,
+  sessionHasNoDocument,
 } from './reference-session.mjs';
 import {
   executeReferenceTool,
@@ -225,7 +241,7 @@ await fs.mkdir(RECORDS_ROOT, { recursive: true, mode: 0o700 });
 ensureCredentialRetentionRootSync(WORK_ROOT);
 const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
 let hubPort = REQUESTED_PORT;
-const STUDIO_TOOL_TIMEOUT_MS = 30_000;
+const STUDIO_TOOL_TIMEOUT_MS = Number(process.env.RHWP_STUDIO_TOOL_TIMEOUT_MS ?? 30_000);
 const MAX_CHAT_MESSAGE_CHARS = 128_000;
 const MAX_USER_MESSAGE_RECEIPTS = 128;
 const PLAN_CHANGE_TEXT_LIMITS = Object.freeze({
@@ -247,6 +263,15 @@ const STUDIO_REATTACH_FLUSH_MS = Number(process.env.RHWP_STUDIO_REATTACH_FLUSH_M
 // 프로바이더 이벤트와 별도 MCP 소켓의 도구 호출 순서가 뒤집힐 수 있어
 // 정확한 루트 범위 티켓이 도착할 짧은 여유를 둔다.
 const USER_QUESTION_SCOPE_WAIT_MS = 2_000;
+// 문서 붙이기(open_document·create_document): Studio 가 문서를 열거나 만드는 시간. mcp-stdio 의 도구 한도(180초)보다 짧다.
+const DOCUMENT_LINK_STUDIO_TIMEOUT_MS = 120_000;
+// 문서 떼기(detach_document): 바뀐 문서를 저장하고(처음 저장이면 사용자가 저장 창에서 고른다) 채팅을 빈 문서 자리로
+// 옮기는 시간. 사람을 기다리므로 mcp-stdio 는 끊지 않고, Codex 의 MCP 도구 한도(tool_timeout_sec=600)보다 짧다.
+const DOCUMENT_DETACH_STUDIO_TIMEOUT_MS = 5 * 60_000;
+const DOCUMENT_LINK_TOOLS = new Set(['open_document', 'create_document']);
+// 떼기는 Studio 가 채팅을 새 브리지로 옮기므로 허브가 결과를 맡았다가 새 브리지가 붙으면 보낸다. 늦어도 이만큼 뒤에는 보낸다.
+const DOCUMENT_DETACH_HANDOFF_MS = 15_000;
+const DOCUMENT_REQUIRED_MESSAGE = 'This chat has no linked document. Create a document with create_document or link one with open_document first; files are saved to the linked document\'s 자료함.';
 const HARNESS_UPDATE_INITIAL_DELAY_MS = 8_000;
 const HARNESS_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const HARNESS_UPDATE_BUSY_RETRY_MS = 5 * 60 * 1000;
@@ -571,6 +596,8 @@ const sessions = new HubSessionRegistry({
       chatRequests: null,
       pendingChatPermissionScopes: [],
       pendingBrowserScopes: [],
+      // list_documents({path}) 호출 표 — 공급자 스트림이 본 호출자(루트·하위 작업)를 경로로 맞춘다.
+      pendingDocumentPathScopes: [],
       // 사용자가 답한 요청 — 턴이 비면 에이전트를 이어서 실행한다.
       chatContinuations: new ChatContinuationQueue(),
       suppressedChatPermissionCallIds: new Set(),
@@ -591,6 +618,14 @@ const sessions = new HubSessionRegistry({
       pendingTemplateCompletions: [],
       pendingDocumentSaved: null,
       pendingEditReport: null,
+      // 마지막으로 Studio 에 알린 묶인 프로젝트 — 묶임이 풀리면 project-bound(null) 을 한 번 보낸다.
+      announcedProjectId: null,
+      // 문서를 떼어 내거나 붙인 일 — 다음 사용자 턴에 한 번 알린다 ({ threadId, detach, attach }).
+      pendingDocumentNote: null,
+      // 이미 전한 떼어 냄 (`${threadId}\n${documentId}`) — 재연결로 다시 온 chat-start 가 또 쌓지 않는다.
+      deliveredDetachNote: null,
+      // 새 브리지가 붙으면 답할 detach_document 호출 { entry, socket, result, timer } (detachChatDocument).
+      documentDetachHandoff: null,
       downloadManager,
       documentSnapshotManager,
       artifactStore: new ArtifactStore({
@@ -719,7 +754,8 @@ function browserActorForRecord(record, { isHuman = false, taskId = null } = {}) 
     sessionId: record.sessionId,
     threadId,
     documentId: active?.documentId ?? record.boundDocumentId ?? null,
-    projectId: active?.projectId ?? record.boundProjectId ?? null,
+    // 문서 없는 채팅은 자료함에 저장하지 못한다 — 예전 스레드 프로젝트가 남아 있어도 내려받은 파일은 받은 파일함에 둔다.
+    projectId: active && sessionHasNoDocument(active) ? null : (active?.projectId ?? record.boundProjectId ?? null),
     agentId: taskId ? `${threadId}:task:${taskId}` : `${threadId ?? record.sessionId}:root`,
     taskId,
     clientId: record.studioInstanceId ?? record.sessionId,
@@ -1795,12 +1831,18 @@ function resolveServiceTier(agent, requested) {
 // 사라진다 — 30초 타임아웃까지 기다리지 말고 즉시 NO_STUDIO 로 실패시킨다.
 // 단순히 소켓만 잠깐 끊긴 경우(같은 인스턴스가 곧바로 재접속)에는 호출을 살려 두고,
 // 버퍼 응답이 올 시간만 준 뒤 답이 없는 것을 접는다(armStudioReattachFlush).
-function failAllPendingCalls(record, message) {
-  failPendingCalls(record, message);
+function failAllPendingCalls(record, message, readMessage = message) {
+  failPendingCalls(record, message, null, readMessage);
 }
 
-/** hubIds 를 주면 그 호출만, 없으면 모든 인플라이트 호출을 NO_STUDIO 로 실패시킨다. */
-function failPendingCalls(record, message, hubIds = null) {
+// 다른 문서·서식 틀 읽기와 문서 목록은 아무것도 바꾸지 않는다 — "편집이 적용됐을 수 있다" 대신 이 말로 접는다.
+const INTERRUPTED_READ_MESSAGE = 'The read was interrupted before Studio answered; nothing was changed — call it again';
+
+/**
+ * hubIds 를 주면 그 호출만, 없으면 모든 인플라이트 호출을 NO_STUDIO 로 실패시킨다. readMessage 는
+ * 문서를 바꾸지 않는 호출(entry.foreign — 다른 창으로 보낸 읽기 포함)에 쓴다.
+ */
+function failPendingCalls(record, message, hubIds = null, readMessage = message) {
   for (const [hubId, entry] of record.pendingCalls) {
     if (hubIds && !hubIds.has(hubId)) continue;
     clearTimeout(entry.timer);
@@ -1810,7 +1852,7 @@ function failPendingCalls(record, message, hubIds = null) {
       const job = record.templateJobs.get(entry.copyLayoutJobId);
       releaseCopyLayoutSnapshot(job);
     }
-    const error = workflowError('NO_STUDIO', message);
+    const error = workflowError('NO_STUDIO', entry.foreign ? readMessage : message);
     if (typeof entry.sendError === 'function') entry.sendError(error);
     else {
       sendJson(entry.mcpSocket, {
@@ -1838,8 +1880,9 @@ function clearStudioReattachFlush(record) {
 // 도착하므로 잠깐 기다린 뒤 스튜디오 메시지 큐 뒤에 줄 세워, 그때까지 답이 없는 것만 접는다.
 function armStudioReattachFlush(record) {
   clearStudioReattachFlush(record);
-  if (record.pendingCalls.size === 0) return;
-  const droppedIds = new Set(record.pendingCalls.keys());
+  // 다른 창으로 보낸 읽기는 이 창의 재접속과 무관하다.
+  const droppedIds = new Set([...record.pendingCalls].filter(([, entry]) => !entry.routed).map(([hubId]) => hubId));
+  if (droppedIds.size === 0) return;
   record.studioReattachFlushTimer = setTimeout(() => {
     record.studioReattachFlushTimer = null;
     record.studioMessageQueue = record.studioMessageQueue
@@ -1849,6 +1892,7 @@ function armStudioReattachFlush(record) {
           record,
           'Studio reconnected but dropped this in-flight tool call; the edit may still have applied — re-read with get_structure/get_text_range before retrying',
           droppedIds,
+          INTERRUPTED_READ_MESSAGE,
         );
       })
       .catch((error) => log(`studio reattach flush failed (session=${record.sessionId}): ${error?.message ?? error}`));
@@ -1864,7 +1908,11 @@ function armStudioReattachGrace(record) {
   record.studioReattachTimer = setTimeout(() => {
     record.studioReattachTimer = null;
     if (record.studioSocket) return;
-    failAllPendingCalls(record, 'Studio disconnected while tool calls were in flight; the edit may still have applied — re-read with get_structure/get_text_range before retrying');
+    failAllPendingCalls(
+      record,
+      'Studio disconnected while tool calls were in flight; the edit may still have applied — re-read with get_structure/get_text_range before retrying',
+      INTERRUPTED_READ_MESSAGE,
+    );
   }, STUDIO_REATTACH_GRACE_MS);
 }
 
@@ -1980,25 +2028,28 @@ async function answerChatPermission(record, sock, msg) {
     if (msg.decision === 'grant') {
       const capability = pending.request.capability;
       const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, capability]);
-      if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
-      requireWorkflowSwitchBackend(activeSession);
-      const previousGrants = [...activeSession.chatPermissionGrants];
-      try {
-        await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
-        if (record.agentSession !== activeSession || record.chatRequests.get(requestId) !== pending) {
-          throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
-        }
-      } catch (error) {
-        // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
-        if (record.agentSession === activeSession) {
-          try {
-            await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
-          } catch (rollbackError) {
-            log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
-            await disposeSession(record);
+      // 허브만 확인하는 권한(다른 문서 읽기)은 공급자 실행 모드를 바꾸지 않으므로 턴 중에도 바로 부여한다.
+      if (!HUB_ONLY_CHAT_PERMISSIONS.includes(capability)) {
+        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
+        requireWorkflowSwitchBackend(activeSession);
+        const previousGrants = [...activeSession.chatPermissionGrants];
+        try {
+          await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
+          if (record.agentSession !== activeSession || record.chatRequests.get(requestId) !== pending) {
+            throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
           }
+        } catch (error) {
+          // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
+          if (record.agentSession === activeSession) {
+            try {
+              await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
+            } catch (rollbackError) {
+              log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
+              await disposeSession(record);
+            }
+          }
+          throw error;
         }
-        throw error;
       }
       activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
       if (scope === 'always') {
@@ -2095,6 +2146,11 @@ function noActiveProviderTurnError() {
 }
 
 function cancelStudioToolRequest(record, hubId, entry, reason) {
+  // 다른 창으로 보낸 읽기는 호출한 창의 Studio 가 모른다 — 경로만 지운다. 늦은 답은 버려진다.
+  if (entry?.routed) {
+    foreignReads.delete(entry.routed.readId);
+    return;
+  }
   sendJson(record.studioSocket, {
     v: 1,
     type: 'tool-request-cancel',
@@ -2348,6 +2404,43 @@ async function consumeChatPermissionScope(record, agent, args, generation) {
   if (matches.length !== 1) throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique root permission request');
   const [scope] = record.pendingChatPermissionScopes.splice(matches[0].index, 1);
   if (scope.parentTaskId) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request permissions');
+}
+
+/**
+ * 루트 대화만 부를 수 있는 호출의 표 열쇠 — list_documents 는 path, open_document 는 documentId·path,
+ * create_document 는 name·folder, detach_document 는 인자가 없다. 루트 확인이 필요 없는 호출(path 없는 list_documents)은 null.
+ */
+function rootCallerScopeKey(tool, args) {
+  if (!args || typeof args !== 'object') return null;
+  if (tool === 'list_documents') return typeof args.path === 'string' ? JSON.stringify([args.path]) : null;
+  if (tool === 'open_document') return JSON.stringify([args.documentId ?? null, args.path ?? null]);
+  if (tool === 'create_document') return JSON.stringify([args.name ?? null, args.folder ?? null]);
+  if (tool === 'detach_document') return '[]';
+  return null;
+}
+
+/**
+ * Claude·Codex 의 하위 작업(Task)은 루트와 같은 MCP 소켓으로 부른다 — msg.parentTaskId 는 믿을 수 없으므로
+ * request_permission 처럼 공급자 스트림이 발급한 호출 표(같은 도구·인자)를 하나 소비해 루트 대화인지 가린다.
+ */
+async function documentPathCallerIsRoot(record, agent, tool, args) {
+  const active = record.agentSession;
+  const generation = active?.generation;
+  const turnId = active?.turnId;
+  const key = rootCallerScopeKey(tool, args);
+  const matchingScopes = () => record.pendingDocumentPathScopes
+    .map((scope, index) => ({ scope, index }))
+    .filter(({ scope }) => scope.agent === agent && scope.generation === generation
+      && scope.turnId === turnId && scope.tool === tool && scope.key === key);
+  const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
+  let matches = matchingScopes();
+  while (!matches.length && record.agentSession === active && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, deadline - Date.now())));
+    matches = matchingScopes();
+  }
+  if (matches.length !== 1) throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique root caller for this call');
+  const [scope] = record.pendingDocumentPathScopes.splice(matches[0].index, 1);
+  return !scope.parentTaskId;
 }
 
 function userQuestionAnswerFrame({ interactionId, responseId, ok, code, message }) {
@@ -3399,6 +3492,19 @@ function makeBackendEventHandler(record, generation) {
         if (record.pendingBrowserScopes.length > 64) record.pendingBrowserScopes.splice(0, record.pendingBrowserScopes.length - 64);
       } catch {}
     }
+    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:list_documents|open_document|create_document|detach_document)$/.test(evt.tool ?? '')) {
+      try {
+        const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
+        const key = rootCallerScopeKey(tool, JSON.parse(evt.argsJson ?? '{}'));
+        if (key !== null) {
+          record.pendingDocumentPathScopes.push({
+            agent: evt.agent ?? activeSession.agent, callId: evt.callId, parentTaskId: evt.parentTaskId ?? null,
+            generation, turnId: activeSession.turnId, tool, key,
+          });
+          if (record.pendingDocumentPathScopes.length > 16) record.pendingDocumentPathScopes.splice(0, record.pendingDocumentPathScopes.length - 16);
+        }
+      } catch {}
+    }
     if (evt.type === 'tool-call' && isRequestPermissionTool(evt.tool)) {
       if (evt.callId) record.suppressedChatPermissionCallIds.add(evt.callId);
       let request = null;
@@ -3538,6 +3644,7 @@ function makeBackendEventHandler(record, generation) {
       record.suppressedChatPermissionCallIds.clear();
       record.pendingChatPermissionScopes.length = 0;
       record.pendingBrowserScopes.length = 0;
+      record.pendingDocumentPathScopes.length = 0;
     }
     if (evt.type === 'turn-end') drainIdleWork(record);
   };
@@ -3572,6 +3679,7 @@ function disposeSession(record) {
   record.suppressedChatPermissionCallIds.clear();
   record.pendingChatPermissionScopes.length = 0;
   record.pendingBrowserScopes.length = 0;
+  record.pendingDocumentPathScopes.length = 0;
   record.userQuestionResponseReceipts.clear();
   record.suppressedUserQuestionCallIds.clear();
   record.pendingUserQuestionScopes.length = 0;
@@ -3719,25 +3827,33 @@ function referenceScopes(activeSession) {
 }
 
 /** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
-async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = [], { required = false } = {}) {
-  try {
-    const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
-    const repository = record ? repositoryContext(record) : null;
-    const block = await projectPromptContext({
-      projectStore,
-      referenceStore,
-      projectId: activeSession.projectId ?? null,
-      worktree: repository?.worktree ?? null,
-      worktreeCount: repository?.worktrees.length ?? 0,
-      worktreeBranch: (worktreeId) => (
-        repository?.worktrees.find((entry) => entry.id === worktreeId)?.branch ?? projectStore.worktreeBranch(worktreeId)
-      ),
-      scopes: referenceScopes(activeSession),
-      query,
-      mentions,
-      settings: projectSettings.get(),
-    });
-    const attached = messageAttachments.length > 0
+async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = [], { required = false, documentMentions = [] } = {}) {
+  const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
+  return contextualPrompt({
+    prompt,
+    required,
+    projectBlock: () => {
+      const repository = record ? repositoryContext(record) : null;
+      return projectPromptContext({
+        projectStore,
+        referenceStore,
+        projectId: activeSession.projectId ?? null,
+        worktree: repository?.worktree ?? null,
+        worktreeCount: repository?.worktrees.length ?? 0,
+        worktreeBranch: (worktreeId) => (
+          repository?.worktrees.find((entry) => entry.id === worktreeId)?.branch ?? projectStore.worktreeBranch(worktreeId)
+        ),
+        scopes: referenceScopes(activeSession),
+        query,
+        mentions,
+        settings: projectSettings.get(),
+      });
+    },
+    // @ 로 고른 문서 — 프로젝트가 없는 채팅에도 싣는다. 본문은 싣지 않고 읽기 도구로 읽게 한다.
+    documentsBlock: mentionedDocumentsBlock(documentMentions, {
+      openElsewhere: (documentId) => (record ? documentOpenElsewhere(record, documentId) : false),
+    }),
+    attachmentsBlock: messageAttachments.length > 0
       ? `<message_attachments trust="untrusted-data">\n${JSON.stringify(messageAttachments.map(({ id, itemId, name, mimeType, kind }) => ({
         ...(itemId ? { itemId } : {}),
         fileId: id,
@@ -3745,13 +3861,9 @@ async function addReferenceContext(activeSession, query, prompt, messageAttachme
         mimeType,
         kind,
       })))}\n</message_attachments>`
-      : '';
-    return [block, attached, prompt].filter(Boolean).join('\n\n');
-  } catch (error) {
-    log(`reference retrieval failed: ${error?.message ?? error}`);
-    if (required) throw error;
-    return prompt;
-  }
+      : '',
+    onError: (error) => log(`reference retrieval failed: ${error?.message ?? error}`),
+  });
 }
 
 /** MCP 등록·호출 게이트: 채팅의 프로젝트 변경 허용과 홈 폴더 검색 가능 여부. */
@@ -3768,10 +3880,18 @@ function sendToProjectStudios(projectId, frame) {
 
 async function sendProjectBound(record) {
   const projectId = record.boundProjectId;
-  if (!projectId) return;
+  if (!projectId) {
+    // 묶였던 프로젝트가 풀렸다(문서를 떼어 낸 채팅, 지워진 프로젝트) — 한 번 알린다.
+    if (record.announcedProjectId) {
+      record.announcedProjectId = null;
+      sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId: null, project: null });
+    }
+    return;
+  }
   try {
     const project = await projectStore.get(projectId);
     if (record.boundProjectId !== projectId) return;
+    record.announcedProjectId = projectId;
     sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId, project });
   } catch (error) {
     log(`project-bound failed: ${error?.message ?? error}`);
@@ -3823,6 +3943,145 @@ function repositoryContext(record) {
   return binding && binding.documentId === record.boundDocumentId ? binding.repository : null;
 }
 
+/**
+ * 다른 Studio 창(studioInstanceId 가 다른 연결된 기록)의 채팅이 이 문서에 묶여 있는가.
+ * 같은 창의 문서는 Studio 가 직접 open 으로 알린다.
+ */
+function documentOpenElsewhere(record, documentId) {
+  if (typeof documentId !== 'string' || !documentId) return false;
+  for (const other of sessions.values()) {
+    if (other.disposed || !other.studioSocket || sameStudioWindow(record, other)) continue;
+    if (recordDocumentId(other) === documentId) return true;
+  }
+  return false;
+}
+
+function recordDocumentId(record) {
+  return record.agentSession?.documentId ?? record.boundDocumentId;
+}
+
+function sameStudioWindow(record, other) {
+  return other === record || Boolean(record.studioInstanceId && other.studioInstanceId === record.studioInstanceId);
+}
+
+// 다른 창이 대신 답하는 읽기 — 허브 전역 id → { callerRecord, hubId, socket }.
+// 시간 제한·턴 종료·동시 호출 수는 호출한 기록의 pendingCalls 항목(routed)이 맡는다.
+const foreignReads = new Map();
+let nextForeignReadId = 1;
+const ROUTABLE_READ_TOOLS = new Set(FOREIGN_READ_TOOL_NAMES.filter((name) => !LIVE_UNTRACKED_READ_TOOL_NAMES.includes(name)));
+
+/**
+ * 다른 창에만 열린 문서를 읽을 창. 호출한 창(같은 studioInstanceId)에 열려 있으면 그 창의
+ * Studio 가 직접 라이브 세션을 읽으므로 null. 서식 틀·file: 핸들·쓰기 도구는 보내지 않는다.
+ */
+function foreignReadTarget(record, tool, documentId) {
+  if (!ROUTABLE_READ_TOOLS.has(tool) || typeof documentId !== 'string' || !documentId
+    || documentId === 'template' || documentId.startsWith('file:')) return null;
+  let target = null;
+  for (const other of sessions.values()) {
+    if (other.disposed || recordDocumentId(other) !== documentId) continue;
+    if (sameStudioWindow(record, other)) return null;
+    if (!target && other.studioSocket && other.studioSocket.readyState === other.studioSocket.OPEN) target = other;
+  }
+  return target;
+}
+
+/** 다른 창이 보낸 document-read-response. 요청을 받은 그 소켓의 답만 받는다. */
+function settleForeignReadResponse(sock, msg) {
+  const route = foreignReads.get(msg.id);
+  if (!route || route.socket !== sock) {
+    log(`document-read-response for unknown id ${String(msg.id)}`);
+    return;
+  }
+  foreignReads.delete(msg.id);
+  const caller = route.callerRecord;
+  if (caller.pendingCalls.get(route.hubId)?.routed?.readId !== msg.id) return;
+  const ok = msg.ok === true;
+  const response = {
+    id: route.hubId,
+    ok,
+    result: ok ? msg.result : undefined,
+    error: ok ? undefined : {
+      code: typeof msg.error?.code === 'string' && msg.error.code ? msg.error.code : 'RPC_ERROR',
+      message: typeof msg.error?.message === 'string' ? msg.error.message : 'The window with this document could not read it',
+    },
+    hubTrace: msg.hubTrace,
+    trace: msg.trace,
+  };
+  // 결과 처리는 호출한 기록의 Studio 메시지 큐에서 한다 — 일반 tool-response 와 같은 순서 보장.
+  caller.studioMessageQueue = caller.studioMessageQueue
+    .then(() => settleStudioToolResponse(caller, response))
+    .catch((error) => log(`foreign read settle failed (session=${caller.sessionId}): ${error?.stack ?? error}`));
+}
+
+/** 답할 창의 소켓이 닫히면 그 창으로 보낸 읽기를 바로 실패시킨다. */
+function failForeignReadsForSocket(sock) {
+  for (const [readId, route] of foreignReads) {
+    if (route.socket !== sock) continue;
+    foreignReads.delete(readId);
+    const caller = route.callerRecord;
+    const entry = caller.pendingCalls.get(route.hubId);
+    if (entry?.routed?.readId !== readId) continue;
+    clearTimeout(entry.timer);
+    caller.pendingCalls.delete(route.hubId);
+    entry.sendError?.(workflowError(
+      'DOCUMENT_OPEN_ELSEWHERE_CLOSED',
+      'The window that had this document open closed before answering; read it again',
+    ));
+  }
+}
+
+/** Studio 의 list_documents 결과에 다른 창의 문서 상태와 이 채팅 프로젝트의 구성원 문서를 더한다. */
+async function enrichListedDocuments(record, result, entry) {
+  let projectMembers = [];
+  const projectId = record.agentSession?.generation === entry.sessionGeneration ? record.agentSession?.projectId : null;
+  if (projectId) {
+    try { projectMembers = (await projectStore.get(projectId)).members ?? []; } catch {}
+  }
+  return enrichDocumentList({
+    result,
+    query: entry.listQuery ?? '',
+    liveDocumentId: entry.documentIdentity?.documentId ?? null,
+    openElsewhere: (documentId) => documentOpenElsewhere(record, documentId),
+    projectMembers,
+  });
+}
+
+/**
+ * list_documents({path}): 데스크톱에서만, 루트 대화가, 채팅 동의(other-documents 또는 local-execution)나
+ * 전체 모드일 때 경로의 문서에 이 세션 전용 file: 핸들을 발급한다.
+ */
+async function listDocumentByPath(record, { root, path: candidate }) {
+  const session = record.agentSession;
+  try {
+    assertDocumentPathConsent({
+      homeAccess: HOME_ACCESS,
+      root,
+      permissionProfile: session.permissionProfile,
+      grants: session.chatPermissionGrants,
+    });
+  } catch (error) {
+    throw workflowError(error.code, error.message);
+  }
+  let file;
+  try {
+    file = await validateDocumentPath(candidate);
+  } catch (error) {
+    throw workflowError(error?.code ?? 'PATH_REJECTED', String(error?.message ?? error));
+  }
+  if (record.agentSession !== session) throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the file was checked');
+  const handle = rememberDocumentPath(session.documentPaths, file);
+  return {
+    documents: [{
+      documentId: `file:${handle}`,
+      name: file.name,
+      size: file.size,
+      modifiedAt: new Date(file.mtimeMs).toISOString(),
+      state: 'closed',
+    }],
+  };
+}
+
 /** 세션의 작업 공간 표시 규칙 ('current' 와 새 항목 자동 표시). */
 function recordLabels(record) {
   return originLabels(repositoryContext(record));
@@ -3842,6 +4101,11 @@ async function bindRecordProject(record, { threadId, documentId, documentName, c
     });
   } catch (error) {
     log(`project binding failed: ${error?.message ?? error}`);
+  }
+  // 다른 프로젝트로 옮기면(문서를 떼어 냄 포함) 예전 프로젝트의 정리 도우미가 이 채팅의 공급자를 쓰지 않게 한다.
+  const previousProjectId = record.boundProjectId;
+  if (previousProjectId && previousProjectId !== projectId && projectRecords.get(previousProjectId) === record) {
+    projectRecords.delete(previousProjectId);
   }
   record.boundProjectId = projectId;
   record.boundDocumentId = documentId ?? null;
@@ -3868,6 +4132,268 @@ async function rebindRecordProject(record, { create = true } = {}) {
   }
   await sendProjectBound(record);
   resumeLibrarianFor(projectId);
+}
+
+/** 다른 기록(다른 창)이 같은 채팅을 묶어 둔 문서. 없으면 null. */
+function threadLinkedDocumentElsewhere(record, threadId) {
+  if (!threadId) return null;
+  for (const other of sessions.values()) {
+    if (other === record || other.disposed) continue;
+    const otherThreadId = other.agentSession?.threadId ?? other.boundThreadId ?? null;
+    const otherDocumentId = recordDocumentId(other);
+    if (otherThreadId === threadId && otherDocumentId) return otherDocumentId;
+  }
+  return null;
+}
+
+/**
+ * Studio 의 chat-link-document: 문서 없는 채팅에 문서를 하나 연결한다. 공급자를 다시 띄우지 않고 세션의
+ * 문서·프로젝트·자료 범위만 바꾸므로 턴 중에도 된다. 채팅의 문서는 한 번에 하나다 — 연결된 채팅은 다른
+ * 문서로 바꾸지 못하고(THREAD_ALREADY_LINKED, 먼저 Studio 에서 떼어 낸다), 같은 문서를 다시 보내면 같은
+ * 답을 한다. 예전 스레드 프로젝트와 채팅 범위 첨부는 문서 프로젝트로 옮기고, 다음 사용자 턴에 새 문서를
+ * 알린다. 답: chat-document-linked { threadId, documentId, documentName, projectId }.
+ */
+async function linkChatDocument(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' && msg.requestId.length <= 256 ? msg.requestId : null;
+  const activeSession = record.agentSession;
+  const fail = (error, fallback = 'DOCUMENT_LINK_FAILED', extra = {}) => sendChatError(sock, error, fallback, {
+    requestType: 'chat-link-document',
+    ...(requestId ? { requestId } : {}),
+    ...extra,
+  });
+  let documentId;
+  let documentName;
+  try {
+    if (!activeSession) throw workflowError('AGENT_NOT_STARTED', 'Start the chat before linking a document');
+    if (Object.prototype.hasOwnProperty.call(msg, 'threadId')
+      && normalizeStableScopeId(msg.threadId, 'threadId') !== activeSession.threadId) {
+      throw workflowError('STALE_CHAT_SCOPE', 'chat-link-document threadId does not match the active chat');
+    }
+    documentId = normalizeStableScopeId(msg.documentId, 'documentId');
+    documentName = normalizeDocumentName(msg.documentName);
+  } catch (error) {
+    fail(error, 'INVALID_REQUEST');
+    return;
+  }
+  const linked = () => sendJson(sock, {
+    v: 1, type: 'chat-document-linked', ...(requestId ? { requestId } : {}),
+    threadId: activeSession.threadId, documentId, documentName: activeSession.documentName, projectId: activeSession.projectId ?? null,
+  });
+  if (activeSession.documentId) {
+    if (activeSession.documentId === documentId) {
+      linked();
+      return;
+    }
+    fail(workflowError('THREAD_ALREADY_LINKED', 'This chat is already linked to another document'), 'THREAD_ALREADY_LINKED', {
+      linkedDocumentId: activeSession.documentId,
+    });
+    return;
+  }
+  // 연결은 채팅(스레드)마다 하나다 — 다른 창이 같은 채팅을 이미 다른 문서에 이었으면 이 창도 그 문서뿐이다.
+  const linkedElsewhere = threadLinkedDocumentElsewhere(record, activeSession.threadId);
+  if (linkedElsewhere && linkedElsewhere !== documentId) {
+    fail(workflowError('THREAD_ALREADY_LINKED', 'This chat is already linked to another document'), 'THREAD_ALREADY_LINKED', {
+      linkedDocumentId: linkedElsewhere,
+    });
+    return;
+  }
+  // 에이전트가 뗀 채팅이 새 자리로 옮기지 못하고 원래 문서에 다시 붙었다 — 맡아 둔 떼기는 실패로 답한다.
+  settleDocumentDetachHandoff(record, workflowError('DOCUMENT_DETACH_FAILED', `The chat could not move off the document and is attached to ${documentName ?? documentId} again`));
+  // 대기 중인 동작이 바뀐 문서를 보기 전에 먼저 바꾼다. 문서 없는 채팅에 걸린 확인은 끝낸다.
+  activeSession.documentId = documentId;
+  activeSession.documentName = documentName;
+  activeSession.lastDocumentInfo = null;
+  activeSession.detachedFrom = null;
+  queueAttachNote(record, activeSession);
+  // 문서 없이 건 이 채팅의 권한 요청은 문서가 바뀌어 답할 수 없다 — 끝낸다.
+  expireChatRequests(record, 'document-linked', (entry) => entry.kind === 'generic'
+    && entry.threadId === activeSession.threadId && (entry.documentId ?? null) === null);
+  applyRecordRepository(record, documentId, msg);
+  const threadId = activeSession.threadId;
+  const projectId = await bindRecordProject(record, { threadId, documentId, documentName });
+  if (projectId) {
+    try {
+      await projectStore.adoptThreadProject(threadId, projectId);
+    } catch (error) {
+      log(`thread project adoption failed: ${error?.message ?? error}`);
+    }
+    await projectStore.migrateChatReferences(threadId, projectId)
+      .catch((error) => log(`chat reference migration failed: ${error?.message ?? error}`));
+  }
+  if (record.agentSession === activeSession) {
+    activeSession.projectId = projectId;
+    const scopes = referenceScopesForSession(activeSession);
+    const releasePrevious = activeSession.releaseReferenceScopes;
+    activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+    try { releasePrevious?.(); } catch {}
+    await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+  }
+  linked();
+  await sendProjectBound(record);
+  resumeLibrarianFor(projectId);
+}
+
+/**
+ * Studio 의 chat-detach-document: 채팅을 문서에서 뗐다. 공급자를 다시 띄우지 않고 세션의 문서·프로젝트·자료 범위만
+ * 비운다. Studio 는 이어서 옛 브리지를 닫고 빈 문서 자리의 새 브리지로 같은 허브 세션을 다시 잡는다.
+ * - 사용자의 분리(callId 없음): 다음 사용자 턴에 떼어 냄을 한 번 알린다.
+ * - 에이전트의 detach_document(callId 는 그 호출의 허브 id): 도는 턴 중에 온다. 공급자는 이 호출의 결과를
+ *   기다리므로, 허브가 호출을 맡았다가 새 브리지가 붙은 뒤에 답한다 — 새 브리지가 놓치는 출력이 없다.
+ * 답: chat-document-detached { threadId, documentId }.
+ */
+async function detachChatDocument(record, sock, msg) {
+  const requestId = typeof msg.requestId === 'string' && msg.requestId.length <= 256 ? msg.requestId : null;
+  const activeSession = record.agentSession;
+  const fail = (error, fallback = 'DOCUMENT_DETACH_FAILED') => sendChatError(sock, error, fallback, {
+    requestType: 'chat-detach-document',
+    ...(requestId ? { requestId } : {}),
+  });
+  let documentId;
+  try {
+    if (!activeSession) throw workflowError('AGENT_NOT_STARTED', 'Start the chat before detaching its document');
+    if (Object.prototype.hasOwnProperty.call(msg, 'threadId')
+      && normalizeStableScopeId(msg.threadId, 'threadId') !== activeSession.threadId) {
+      throw workflowError('STALE_CHAT_SCOPE', 'chat-detach-document threadId does not match the active chat');
+    }
+    documentId = normalizeStableScopeId(msg.documentId, 'documentId');
+  } catch (error) {
+    fail(error, 'INVALID_REQUEST');
+    return;
+  }
+  const byAgent = msg.callId !== undefined && msg.callId !== null;
+  const entry = byAgent && Number.isSafeInteger(msg.callId) ? record.pendingCalls.get(msg.callId) : null;
+  if (byAgent && (!entry || entry.tool !== 'detach_document' || entry.sessionGeneration !== activeSession.generation)) {
+    fail(workflowError('REQUEST_INVALIDATED', 'No detach_document call of this chat is waiting'));
+    return;
+  }
+  if (activeSession.documentId !== documentId) {
+    fail(workflowError('STALE_CHAT_SCOPE', 'This chat is not attached to that document'));
+    return;
+  }
+  const threadId = activeSession.threadId;
+  const detachedFrom = { documentId, documentName: activeSession.documentName ?? null };
+  activeSession.documentId = null;
+  activeSession.documentName = null;
+  activeSession.lastDocumentInfo = null;
+  activeSession.lastObservedDocumentRevision = undefined;
+  activeSession.detachedFrom = detachedFrom;
+  if (entry) {
+    clearTimeout(entry.timer);
+    record.pendingCalls.delete(msg.callId);
+    // 에이전트가 스스로 뗐다 — 도구 결과가 알리므로 다음 사용자 턴에 떼어 냄을 다시 알리지 않는다.
+    if (record.pendingDocumentNote?.threadId === threadId) record.pendingDocumentNote = null;
+    record.deliveredDetachNote = `${threadId}\n${documentId}`;
+    record.documentDetachHandoff = {
+      entry,
+      socket: sock,
+      result: { detached: true, documentId, documentName: detachedFrom.documentName },
+      timer: setTimeout(() => settleDocumentDetachHandoff(record), DOCUMENT_DETACH_HANDOFF_MS),
+    };
+  } else {
+    queueDetachNote(record, activeSession, detachedFrom);
+  }
+  applyRecordRepository(record, null, msg);
+  const projectId = await bindRecordProject(record, { threadId, documentId: null, documentName: null });
+  if (record.agentSession === activeSession) {
+    activeSession.projectId = projectId;
+    const scopes = referenceScopesForSession(activeSession);
+    const releasePrevious = activeSession.releaseReferenceScopes;
+    activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+    try { releasePrevious?.(); } catch {}
+    await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+  }
+  sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
+  await sendProjectBound(record);
+}
+
+/** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
+function settleDocumentDetachHandoff(record, error = null) {
+  const handoff = record.documentDetachHandoff;
+  if (!handoff) return;
+  record.documentDetachHandoff = null;
+  clearTimeout(handoff.timer);
+  if (error) handoff.entry.sendError(error);
+  else handoff.entry.sendResult(handoff.result);
+}
+
+/** 문서 없는 채팅의 자료함 저장 — 에이전트에는 DOCUMENT_REQUIRED, Studio 에는 새 문서·문서 연결 줄을 띄우게 알린다. */
+function documentRequiredError(record, tool) {
+  sendJson(record.studioSocket, {
+    v: 1, type: 'document-required', tool, reason: 'project-save', threadId: record.agentSession?.threadId ?? null,
+  });
+  return workflowError('DOCUMENT_REQUIRED', DOCUMENT_REQUIRED_MESSAGE);
+}
+
+/** 문서 경로 검사 오류를 도구 오류로 — 없는 파일·폴더는 NOT_FOUND. */
+async function checkedDocumentPath(check) {
+  try {
+    return await check();
+  } catch (error) {
+    const code = error?.code === 'PATH_NOT_FOUND' ? 'NOT_FOUND' : (error?.code ?? 'PATH_REJECTED');
+    throw workflowError(code, String(error?.message ?? error));
+  }
+}
+
+/**
+ * open_document·create_document 의 인자를 확인해 Studio 로 보낼 인자를 만든다.
+ * - 경로(path, list_documents 의 file: id)는 데스크톱에서만, 연 뒤 저장할 수 있는 hwp/hwpx/hml 만.
+ * - 새 문서 폴더는 데스크톱에서만, 홈 폴더 안의 실제 폴더. 없으면 데스크톱의 기본 폴더(문서/HamaEditor), 웹은 이름 있는 초안.
+ */
+async function documentLinkArgs(record, tool, args) {
+  if (tool === 'create_document') {
+    let name;
+    try {
+      name = normalizeNewDocumentName(args.name);
+    } catch (error) {
+      throw workflowError(error?.code ?? 'INVALID_ARGS', String(error?.message ?? error));
+    }
+    if (args.folder === undefined) return { name };
+    if (!HOME_ACCESS) throw workflowError('PATH_UNAVAILABLE', 'Choosing a folder is only available in the desktop app; omit folder');
+    return { name, folder: await checkedDocumentPath(() => validateDocumentFolder(args.folder)) };
+  }
+  const fileHandle = typeof args.documentId === 'string' && args.documentId.startsWith('file:')
+    ? args.documentId.slice('file:'.length)
+    : null;
+  if (args.path !== undefined || fileHandle !== null) {
+    if (!HOME_ACCESS) throw workflowError('PATH_UNAVAILABLE', 'Opening a document by path is only available in the desktop app');
+    let candidate = args.path;
+    if (fileHandle !== null) {
+      const entry = lookupDocumentPath(record.agentSession?.documentPaths, fileHandle);
+      if (!entry) throw workflowError('NOT_FOUND', 'file: ids come from list_documents in this chat');
+      candidate = entry.path;
+    }
+    const file = await checkedDocumentPath(() => validateDocumentPath(candidate, {
+      extensions: OPENABLE_DOCUMENT_EXTENSIONS,
+      maxBytes: OPEN_DOCUMENT_MAX_BYTES,
+    }));
+    return { path: file.path };
+  }
+  const documentId = args.documentId;
+  if (documentId === 'template') {
+    throw workflowError('INVALID_ARGS', 'The active template cannot be linked; create_document makes a new document');
+  }
+  if (documentOpenElsewhere(record, documentId)) {
+    throw workflowError('DOC_OPEN_ELSEWHERE', 'This document is open in another window; it can be read with documentId but not linked here');
+  }
+  return { documentId };
+}
+
+/**
+ * Studio 가 open_document·create_document 를 끝냈다. 그 전에 보낸 chat-link-document 로 이 채팅이 결과의
+ * 문서에 연결돼 있어야 한다. 결과의 revision 은 라이브 문서를 읽은 것으로 기록한다 — 다음 쓰기의 expectedRevision.
+ */
+function linkedDocumentResult(record, entry, result) {
+  const session = record.agentSession;
+  if (!session || session.generation !== entry.sessionGeneration) {
+    throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the document was being linked');
+  }
+  const documentId = typeof result?.documentId === 'string' ? result.documentId : null;
+  if (!session.documentId) throw workflowError('DOCUMENT_LINK_FAILED', 'The document opened but was not linked to this chat');
+  if (session.documentId !== documentId) {
+    throw workflowError('THREAD_ALREADY_LINKED', `This chat is already linked to ${session.documentName ?? session.documentId}`);
+  }
+  if (Number.isSafeInteger(result.revision)) session.lastObservedDocumentRevision = result.revision;
+  return { ...result, linked: true };
 }
 
 async function reconcileProjectBindings() {
@@ -3945,6 +4471,37 @@ function addEditReportContext(record, activeSession, prompt) {
   return `${block}\n\n${prompt}`;
 }
 
+/** chat-start 의 detachedFrom — 떼어 낸 채팅의 다음 사용자 턴에 한 번 알린다. 다시 온 chat-start 는 겹치지 않는다. */
+function queueDetachNote(record, activeSession, detachedFrom) {
+  const key = `${activeSession.threadId}\n${detachedFrom.documentId}`;
+  if (record.deliveredDetachNote === key) return;
+  const pending = record.pendingDocumentNote;
+  if (pending?.threadId === activeSession.threadId && pending.detach?.documentId === detachedFrom.documentId) return;
+  // 떼어 내기 전에 쌓인 연결 알림은 낡았다.
+  record.pendingDocumentNote = { threadId: activeSession.threadId, detach: detachedFrom, attach: null };
+}
+
+/** 살아 있는 세션에 문서를 붙였다. 아직 전하지 못한 떼어 냄이 있으면 한 덩이로 합친다. */
+function queueAttachNote(record, activeSession) {
+  const pending = record.pendingDocumentNote?.threadId === activeSession.threadId ? record.pendingDocumentNote : null;
+  // 붙인 뒤 다시 떼어 내면 새 일이다.
+  record.deliveredDetachNote = null;
+  record.pendingDocumentNote = {
+    threadId: activeSession.threadId,
+    detach: pending?.detach ?? null,
+    attach: { documentId: activeSession.documentId, documentName: activeSession.documentName ?? null },
+  };
+}
+
+function addDocumentNoteContext(record, activeSession, prompt) {
+  const note = record.pendingDocumentNote;
+  if (!note || note.threadId !== activeSession.threadId) return prompt;
+  record.pendingDocumentNote = null;
+  if (note.detach) record.deliveredDetachNote = `${note.threadId}\n${note.detach.documentId}`;
+  const block = documentChangeBlock(note);
+  return block ? `${block}\n\n${prompt}` : prompt;
+}
+
 function addTemplateContext(record, activeSession, prompt) {
   if (!activeSession?.activeTemplateId) return prompt;
   try {
@@ -3954,7 +4511,7 @@ function addTemplateContext(record, activeSession, prompt) {
       JSON.stringify(template),
       'Treat the open document as the editable draft and this template as read-only context.',
       'Inspect both documents and map the whole open document before writing. If meaningful source content has no clear template destination, ask the user before editing.',
-      'Use template inspection and transfer tools for structural fidelity. Preserve the open document format. Report any transfer warnings or skipped features.',
+      'Read the template with documentId:"template" on the read tools and use the template_* transfer tools for structural fidelity. Preserve the open document format. Report any transfer warnings or skipped features.',
       '</active_document_template>',
     ].join('\n');
     return [block, prompt].filter(Boolean).join('\n\n');
@@ -3975,6 +4532,7 @@ function userMessageFingerprint(msg, activeSession) {
     text: msg.text,
     skillName: msg.skillName ?? null,
     mentions: normalizeMentions(msg.mentions),
+    documentMentions: normalizeDocumentMentions(msg.documentMentions),
     activeTemplateId: msg.activeTemplateId ?? null,
     attachmentCount: Array.isArray(msg.stagedReferenceIds) ? msg.stagedReferenceIds.length : 0,
   })).digest('hex');
@@ -4108,9 +4666,10 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
-      const referencedPrompt = msg.requireAcceptance === true
-        ? await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), { required: true })
-        : await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
+      const referencedPrompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), {
+        required: msg.requireAcceptance === true,
+        documentMentions: normalizeDocumentMentions(msg.documentMentions),
+      });
       if (!providerTurnIsCurrent(record, providerTurn)) {
         rejectUserMessage(record, sock, msg, workflowError('REQUEST_INVALIDATED', 'The turn ended before accepting the message'), 'REQUEST_INVALIDATED', false);
         return;
@@ -4123,7 +4682,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         addTemplateContext(
           record,
           activeSession,
-          addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, referencedPrompt)),
+          addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, referencedPrompt))),
         ),
       );
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
@@ -4211,8 +4770,9 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
   });
   const settled = await Promise.allSettled(
     stageIds.map(async (stageId) => {
-      // 첨부는 채팅의 연구 프로젝트 파일로 바로 올린다. 프로젝트가 없으면 채팅 범위에 둔다.
-      const projectId = activeSession.projectId;
+      // 첨부는 채팅의 연구 프로젝트 파일로 바로 올린다. 문서 없는 채팅(예전 스레드 프로젝트가 있어도)은
+      // 채팅 범위에 두고, 문서를 연결하면 그 문서의 자료함으로 옮긴다.
+      const projectId = sessionHasNoDocument(activeSession) ? null : activeSession.projectId;
       const promoted = await referenceStore.promoteStaged({
         stageId,
         scopeId: activeSession.threadId,
@@ -4295,6 +4855,15 @@ function startManualCompaction(record, sock, msg) {
     reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
     return;
   }
+  // 문서를 뗀 뒤의 압축은 콘텍스트가 공급자 자동 압축 한도의 절반을 넘을 때만 한다 — 그 아래면 다음 사용자 턴의
+  // 떼어 냄 알림(document_change)으로 충분하다. 사용량을 모르면 압축한다.
+  if (msg.reason === 'document-detached' && !detachCompactionNeeded(activeSession.agent, {
+    usedTokens: activeSession.contextUsage?.usedTokens ?? activeSession.resumedUsedTokens,
+    contextWindow: activeSession.contextUsage?.maxTokens ?? activeSession.contextWindow,
+  })) {
+    reject('COMPACTION_NOT_NEEDED', 'The conversation is small enough that detaching does not need a compaction.');
+    return;
+  }
   // beginAgentTurn 은 쓰지 않는다 — 압축 턴이 플랜 실행 턴으로 잡히면 안 된다.
   record.userQuestionResponseReceipts.clear();
   activeSession.turnId = crypto.randomUUID();
@@ -4311,8 +4880,12 @@ function startManualCompaction(record, sock, msg) {
     settled: false,
   };
   sendJson(sock, { v: 1, type: 'chat-compact-accepted', requestId, compactionId });
+  // 문서를 떼어 낸 직후의 압축은 그 문서에 대해 나눈 이야기를 남기라고 공급자에게 지시한다 (Codex·Pi 는 무시한다).
+  const compactOptions = msg.reason === 'document-detached' && activeSession.detachedFrom
+    ? { instructions: detachCompactionInstructions(activeSession.detachedFrom) }
+    : undefined;
   try {
-    activeSession.backend.compact();
+    activeSession.backend.compact(compactOptions);
   } catch (error) {
     // 수락한 뒤의 실패는 압축 failed + turn-end 로 닫는다 (보통 턴 경로와 같은 정리).
     activeSession.emitBackendEvent({
@@ -4403,10 +4976,10 @@ async function startSession(
   const continuing = !force && currentSession
     && currentSession.threadId === threadId && currentSession.documentId === documentId;
   if (!await disposeSession(record)) throw agentProcessCleanupUncertain();
-  // 세션은 문서의 연구 프로젝트(문서가 없으면 스레드 프로젝트)에 묶인다. 이 스레드의 옛 chat 범위
-  // 자료는 이제야 문서를 알 수 있어 여기서 프로젝트로 옮긴다.
+  // 세션은 문서의 연구 프로젝트에 묶인다. 문서 없는 채팅은 예전 스레드 프로젝트가 있을 때만 묶이고 새로
+  // 만들지 않는다. 이 스레드의 chat 범위 자료(문서 없을 때의 첨부)는 문서를 알게 된 여기서 프로젝트로 옮긴다.
   const projectId = await bindRecordProject(record, { threadId, documentId, documentName });
-  if (projectId) {
+  if (projectId && !sessionHasNoDocument({ documentId, documentName })) {
     await projectStore.migrateChatReferences(threadId, projectId)
       .catch((error) => log(`chat reference migration failed: ${error?.message ?? error}`));
   }
@@ -4481,7 +5054,8 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
-    projectToolGates: () => ({ ...projectToolGates(), requestable: true }),
+    // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
     providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
@@ -4532,6 +5106,10 @@ async function startSession(
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
     activeTemplateId: continuing ? currentSession.activeTemplateId : null,
+    // 사용자가 이 채팅을 떼어 낸 문서 { documentId, documentName } — 떼어 낸 직후의 압축 지시에 쓴다.
+    detachedFrom: continuing ? currentSession.detachedFrom ?? null : null,
+    // list_documents({path}) 가 발급한 file: 핸들 → 경로. 이 채팅 세션에서만 유효하다.
+    documentPaths: continuing && currentSession.documentPaths instanceof Map ? currentSession.documentPaths : new Map(),
     lastDocumentInfo: continuing ? currentSession.lastDocumentInfo : null,
     lastObservedDocumentRevision: continuing ? currentSession.lastObservedDocumentRevision : undefined,
     planExecutionTurnId: continuing ? currentSession.planExecutionTurnId : null,
@@ -4933,6 +5511,12 @@ async function handleStudioMessage(record, sock, msg) {
         );
         // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
         if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        // 떼어 낸 채팅: 문서 없이 다시 연 세션만 받는다. 모양이 어긋나면 버린다.
+        const detachedFrom = sessionHasNoDocument(s) ? normalizeDetachedFrom(msg.detachedFrom) : null;
+        if (detachedFrom) {
+          s.detachedFrom = detachedFrom;
+          queueDetachNote(record, s, detachedFrom);
+        }
         const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
           && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
@@ -4966,6 +5550,16 @@ async function handleStudioMessage(record, sock, msg) {
         if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
         rejectStart(e, 'AGENT_SPAWN_FAILED');
       }
+      return;
+    }
+    case 'chat-link-document': {
+      // 턴 중에도 받는다 — 공급자를 다시 띄우지 않으므로 전환 대기열을 기다리지 않는다.
+      await linkChatDocument(record, sock, msg);
+      return;
+    }
+    case 'chat-detach-document': {
+      // 에이전트의 detach_document 가 도는 턴 중에 온다 — 붙이기처럼 전환 대기열을 기다리지 않는다.
+      await detachChatDocument(record, sock, msg);
       return;
     }
     case 'project-bind': {
@@ -6097,157 +6691,172 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'tool-response': {
-      const entry = record.pendingCalls.get(msg.id);
-      if (!entry) {
-        log(`tool-response for unknown id ${msg.id}`);
-        return;
-      }
-      record.pendingCalls.delete(msg.id);
-      clearTimeout(entry.timer);
-      if (entry.trace && msg.hubTrace) {
-        Object.assign(entry.trace, {
-          hubRespIn: msg.hubTrace.respIn,
-          hubRespDeq: msg.hubTrace.respDeq,
-          respBytes: msg.hubTrace.respBytes,
-          studio: sanitizeTraceFields(msg.trace),
-        });
-      }
-      const releaseSnapshotClaim = () => {
-        if (entry.tool !== 'materialize_document_snapshot' || !entry.copyLayoutJobId) return;
-        const job = record.templateJobs.get(entry.copyLayoutJobId);
-        releaseCopyLayoutSnapshot(job);
-      };
-      const assertProviderTurn = () => {
-        if (entry.providerTurn && !providerTurnIsActive(record, entry.providerTurn)) {
-          throw noActiveProviderTurnError();
-        }
-      };
-      let unboundMaterialization = null;
-      try {
-        assertProviderTurn();
-        if (entry.mcpSocket.readyState !== entry.mcpSocket.OPEN) return;
-        if (msg.ok) {
-          try {
-            let result;
-            if (entry.tool === 'get_document_info') {
-              result = attachActiveDocumentIdentity(msg.result, entry.documentIdentity);
-            } else if (entry.tool === 'materialize_document_snapshot') {
-              const snapshotJob = entry.copyLayoutJobId
-                ? record.templateJobs.get(entry.copyLayoutJobId)
-                : null;
-              if (entry.copyLayoutJobId && (!snapshotJob || snapshotJob.status !== 'running')) {
-                throw workflowError('COPY_LAYOUT_JOB_SETTLED', 'The copy-layout job settled before its snapshot was bound');
-              }
-              if (snapshotJob && (
-                msg.result?.digest !== snapshotJob.binding.digest
-                || msg.result?.sourceFormat !== snapshotJob.binding.sourceFormat
-              )) {
-                throw workflowError('COPY_LAYOUT_SOURCE_MISMATCH', 'Studio returned snapshot bytes for a different document revision or format');
-              }
-              const materialization = record.documentSnapshotManager.materialize({
-                chatId: entry.chatId,
-                documentIdentity: entry.documentIdentity,
-                snapshot: msg.result,
-              });
-              if (snapshotJob) snapshotJob.snapshotPromise = materialization;
-              try {
-                result = await materialization;
-                // Until this exact turn receives the path (or the owning
-                // copy-layout job binds it), the allocation is provisional.
-                // Turn settlement can happen while fsync is in flight.
-                unboundMaterialization = result;
-              } finally {
-                if (snapshotJob?.snapshotPromise === materialization) snapshotJob.snapshotPromise = null;
-              }
-            } else if (entry.renderSavePath) {
-              const saved = await writeRenderPng({
-                workDir: record.workDir,
-                target: entry.renderSavePath,
-                data: msg.result?.image?.data,
-              });
-              result = { ...msg.result, ...saved };
-            } else {
-              result = msg.result;
-            }
-            assertProviderTurn();
-            if (!entry.copyLayoutJobId && record.agentSession?.generation === entry.sessionGeneration
-              && toolDefinitionsByName.get(entry.tool)?.category === 'document-read'
-              && Number.isSafeInteger(result?.revision)) {
-              record.agentSession.lastObservedDocumentRevision = result.revision;
-            }
-            if (entry.tool === 'get_document_info' && !entry.copyLayoutJobId
-              && record.agentSession?.generation === entry.sessionGeneration) {
-              record.agentSession.lastDocumentInfo = Object.freeze({
-                documentId: result.documentId,
-                digest: result.digest,
-                sourceFormat: result.sourceFormat,
-                dirty: result.dirty === true,
-                sourcePath: result.sourcePath ?? null,
-              });
-            }
-            if (entry.tool === 'materialize_document_snapshot' && entry.copyLayoutJobId) {
-              const workerJob = record.templateJobs.get(entry.copyLayoutJobId);
-              if (!workerJob || workerJob.status !== 'running') {
-                throw workflowError('COPY_LAYOUT_JOB_SETTLED', 'The copy-layout job settled before its snapshot was bound');
-              }
-              if (result.documentId !== workerJob.binding.documentId
-                || result.digest !== workerJob.binding.digest
-                || result.sourceFormat !== workerJob.binding.sourceFormat) {
-                throw workflowError('COPY_LAYOUT_SOURCE_MISMATCH', 'The immutable snapshot no longer matches the delegated document binding');
-              }
-              if (workerJob.snapshot) {
-                if (workerJob.snapshot.checksum !== result.checksum
-                  || workerJob.snapshot.digest !== result.digest
-                  || workerJob.snapshot.path !== result.path) {
-                  throw workflowError('COPY_LAYOUT_SNAPSHOT_ALREADY_BOUND', 'This job is already bound to a different immutable snapshot');
-                }
-              } else {
-                workerJob.snapshot = Object.freeze({ ...result });
-                unboundMaterialization = null;
-              }
-            }
-            const delivered = typeof entry.sendResult === 'function'
-              ? entry.sendResult(result)
-              : sendJson(entry.mcpSocket, { v: 1, type: 'tool-result', id: entry.clientId, ok: true, result });
-            if (delivered && !entry.copyLayoutJobId) unboundMaterialization = null;
-          } catch (error) {
-            if (typeof entry.sendError === 'function') entry.sendError(error, 'SNAPSHOT_WRITE_FAILED');
-            else {
-              sendJson(entry.mcpSocket, {
-                v: 1, type: 'tool-result', id: entry.clientId, ok: false,
-                error: {
-                  code: error?.code ?? 'SNAPSHOT_WRITE_FAILED',
-                  message: String(error?.message ?? error),
-                },
-              });
-            }
-          }
-        } else {
-          const error = msg.error ?? { code: 'RPC_ERROR', message: 'unknown studio error' };
-          if (typeof entry.sendError === 'function') entry.sendError(error, 'RPC_ERROR');
-          else {
-            sendJson(entry.mcpSocket, {
-              v: 1, type: 'tool-result', id: entry.clientId, ok: false,
-              error,
-            });
-          }
-        }
-      } catch (error) {
-        if (typeof entry.sendError === 'function') entry.sendError(error);
-      } finally {
-        if (unboundMaterialization) {
-          try {
-            await record.documentSnapshotManager.discard(unboundMaterialization);
-          } catch (error) {
-            log(`undelivered document snapshot cleanup failed: ${error?.message ?? error}`);
-          }
-        }
-        releaseSnapshotClaim();
-      }
+      await settleStudioToolResponse(record, msg);
+      return;
+    }
+    case 'document-read-response': {
+      await settleForeignReadResponse(sock, msg);
       return;
     }
     default:
       log(`ignoring unknown studio message type: ${String(msg.type)}`);
+  }
+}
+
+/** Studio 도구 응답(또는 다른 창이 대신 답한 읽기)을 호출한 MCP 에 돌려준다. msg: { id(hubId), ok, result?, error? } */
+async function settleStudioToolResponse(record, msg) {
+  const entry = record.pendingCalls.get(msg.id);
+  if (!entry) {
+    log(`tool-response for unknown id ${msg.id}`);
+    return;
+  }
+  record.pendingCalls.delete(msg.id);
+  clearTimeout(entry.timer);
+  if (entry.trace && msg.hubTrace) {
+    Object.assign(entry.trace, {
+      hubRespIn: msg.hubTrace.respIn,
+      hubRespDeq: msg.hubTrace.respDeq,
+      respBytes: msg.hubTrace.respBytes,
+      studio: sanitizeTraceFields(msg.trace),
+    });
+  }
+  const releaseSnapshotClaim = () => {
+    if (entry.tool !== 'materialize_document_snapshot' || !entry.copyLayoutJobId) return;
+    const job = record.templateJobs.get(entry.copyLayoutJobId);
+    releaseCopyLayoutSnapshot(job);
+  };
+  const assertProviderTurn = () => {
+    if (entry.providerTurn && !providerTurnIsActive(record, entry.providerTurn)) {
+      throw noActiveProviderTurnError();
+    }
+  };
+  let unboundMaterialization = null;
+  try {
+    assertProviderTurn();
+    if (entry.mcpSocket.readyState !== entry.mcpSocket.OPEN) return;
+    if (msg.ok) {
+      try {
+        let result;
+        if (entry.tool === 'get_document_info') {
+          result = attachActiveDocumentIdentity(msg.result, entry.documentIdentity);
+        } else if (entry.tool === 'list_documents') {
+          result = await enrichListedDocuments(record, msg.result, entry);
+        } else if (DOCUMENT_LINK_TOOLS.has(entry.tool)) {
+          result = linkedDocumentResult(record, entry, msg.result);
+        } else if (entry.tool === 'materialize_document_snapshot') {
+          const snapshotJob = entry.copyLayoutJobId
+            ? record.templateJobs.get(entry.copyLayoutJobId)
+            : null;
+          if (entry.copyLayoutJobId && (!snapshotJob || snapshotJob.status !== 'running')) {
+            throw workflowError('COPY_LAYOUT_JOB_SETTLED', 'The copy-layout job settled before its snapshot was bound');
+          }
+          if (snapshotJob && (
+            msg.result?.digest !== snapshotJob.binding.digest
+            || msg.result?.sourceFormat !== snapshotJob.binding.sourceFormat
+          )) {
+            throw workflowError('COPY_LAYOUT_SOURCE_MISMATCH', 'Studio returned snapshot bytes for a different document revision or format');
+          }
+          const materialization = record.documentSnapshotManager.materialize({
+            chatId: entry.chatId,
+            documentIdentity: entry.documentIdentity,
+            snapshot: msg.result,
+          });
+          if (snapshotJob) snapshotJob.snapshotPromise = materialization;
+          try {
+            result = await materialization;
+            // Until this exact turn receives the path (or the owning
+            // copy-layout job binds it), the allocation is provisional.
+            // Turn settlement can happen while fsync is in flight.
+            unboundMaterialization = result;
+          } finally {
+            if (snapshotJob?.snapshotPromise === materialization) snapshotJob.snapshotPromise = null;
+          }
+        } else if (entry.renderSavePath) {
+          const saved = await writeRenderPng({
+            workDir: record.workDir,
+            target: entry.renderSavePath,
+            data: msg.result?.image?.data,
+          });
+          result = { ...msg.result, ...saved };
+        } else {
+          result = msg.result;
+        }
+        assertProviderTurn();
+        if (!entry.copyLayoutJobId && !entry.foreign && record.agentSession?.generation === entry.sessionGeneration
+          && toolDefinitionsByName.get(entry.tool)?.category === 'document-read'
+          && Number.isSafeInteger(result?.revision)) {
+          record.agentSession.lastObservedDocumentRevision = result.revision;
+        }
+        if (entry.tool === 'get_document_info' && !entry.copyLayoutJobId && !entry.foreign
+          && record.agentSession?.generation === entry.sessionGeneration) {
+          record.agentSession.lastDocumentInfo = Object.freeze({
+            documentId: result.documentId,
+            digest: result.digest,
+            sourceFormat: result.sourceFormat,
+            dirty: result.dirty === true,
+            sourcePath: result.sourcePath ?? null,
+          });
+        }
+        if (entry.tool === 'materialize_document_snapshot' && entry.copyLayoutJobId) {
+          const workerJob = record.templateJobs.get(entry.copyLayoutJobId);
+          if (!workerJob || workerJob.status !== 'running') {
+            throw workflowError('COPY_LAYOUT_JOB_SETTLED', 'The copy-layout job settled before its snapshot was bound');
+          }
+          if (result.documentId !== workerJob.binding.documentId
+            || result.digest !== workerJob.binding.digest
+            || result.sourceFormat !== workerJob.binding.sourceFormat) {
+            throw workflowError('COPY_LAYOUT_SOURCE_MISMATCH', 'The immutable snapshot no longer matches the delegated document binding');
+          }
+          if (workerJob.snapshot) {
+            if (workerJob.snapshot.checksum !== result.checksum
+              || workerJob.snapshot.digest !== result.digest
+              || workerJob.snapshot.path !== result.path) {
+              throw workflowError('COPY_LAYOUT_SNAPSHOT_ALREADY_BOUND', 'This job is already bound to a different immutable snapshot');
+            }
+          } else {
+            workerJob.snapshot = Object.freeze({ ...result });
+            unboundMaterialization = null;
+          }
+        }
+        const delivered = typeof entry.sendResult === 'function'
+          ? entry.sendResult(result)
+          : sendJson(entry.mcpSocket, { v: 1, type: 'tool-result', id: entry.clientId, ok: true, result });
+        if (delivered && !entry.copyLayoutJobId) unboundMaterialization = null;
+      } catch (error) {
+        if (typeof entry.sendError === 'function') entry.sendError(error, 'SNAPSHOT_WRITE_FAILED');
+        else {
+          sendJson(entry.mcpSocket, {
+            v: 1, type: 'tool-result', id: entry.clientId, ok: false,
+            error: {
+              code: error?.code ?? 'SNAPSHOT_WRITE_FAILED',
+              message: String(error?.message ?? error),
+            },
+          });
+        }
+      }
+    } else {
+      const error = msg.error ?? { code: 'RPC_ERROR', message: 'unknown studio error' };
+      // 호출한 창이 "다른 창에 열려 있다" 고 답했고 지금 그 창이 보이면 한 번만 그 창으로 다시 보낸다.
+      if (error?.code === 'DOCUMENT_OPEN_ELSEWHERE' && entry.rerouteOpenElsewhere?.()) return;
+      if (typeof entry.sendError === 'function') entry.sendError(error, 'RPC_ERROR');
+      else {
+        sendJson(entry.mcpSocket, {
+          v: 1, type: 'tool-result', id: entry.clientId, ok: false,
+          error,
+        });
+      }
+    }
+  } catch (error) {
+    if (typeof entry.sendError === 'function') entry.sendError(error);
+  } finally {
+    if (unboundMaterialization) {
+      try {
+        await record.documentSnapshotManager.discard(unboundMaterialization);
+      } catch (error) {
+        log(`undelivered document snapshot cleanup failed: ${error?.message ?? error}`);
+      }
+    }
+    releaseSnapshotClaim();
   }
 }
 
@@ -6281,6 +6890,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         : null;
       let providerTurn = null;
       let callSettled = false;
+      // 호출이 끝날 때 한 번 부른다 (문서 연결의 진행 표시를 푼다).
+      let onCallSettled = null;
       const telemetryCall = startToolCall(tool, msg.args);
       // 추적 행 — 허브 구간(수신→스튜디오 전달→응답 수신→큐 통과→MCP 로 전송)과 스튜디오 구간.
       const trace = TOOL_TRACE_ENABLED ? {
@@ -6312,6 +6923,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           ? noActiveProviderTurnError()
           : error;
         callSettled = true;
+        onCallSettled?.();
         telemetryCall.finish(toolTelemetryForTurn(record, providerTurn), {
           errorCode: reported?.code ?? fallback,
           errorMessage: String(reported?.message ?? reported),
@@ -6354,6 +6966,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           return false;
         }
         callSettled = true;
+        onCallSettled?.();
         telemetryCall.finish(toolTelemetryForTurn(record, providerTurn), { result });
         const delivered = sendRaw(sock, frame);
         if (trace) {
@@ -6412,6 +7025,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       let args;
       try {
         assertCellArgsPlacement(tool, msg.args);
+        const documentIdError = documentIdArgError(definition, msg.args);
+        if (documentIdError) throw workflowError('INVALID_ARGS', documentIdError);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
         if ((tool === 'present_implementation_plan' || tool === 'update_todos' || tool === 'request_permission' || tool === 'browser_request_account')
@@ -6455,6 +7070,11 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       } catch (error) {
         if (error?.name === 'ZodError') error.code = 'INVALID_ARGS';
         sendError(error, 'INVALID_ARGS');
+        return;
+      }
+      // 문서 없는 채팅은 자료함에 저장하지 못한다 — 문서를 만들거나 연결하면 그 문서의 자료함에 저장한다.
+      if (!workerJob && (tool === 'project_edit' || tool === 'project_import') && sessionHasNoDocument(record.agentSession)) {
+        sendError(documentRequiredError(record, tool));
         return;
       }
       if (tool === 'read_product_skill') {
@@ -6858,6 +7478,14 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           .catch((error) => sendError(error, 'REFERENCE_READ_FAILED'));
         return;
       }
+      if (tool === 'list_documents' && args.path !== undefined) {
+        void (async () => {
+          const root = !workerJob && !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+          return listDocumentByPath(record, { root, path: args.path });
+        })().then(sendResult).catch((error) => sendError(error, 'PATH_REJECTED'));
+        return;
+      }
       if (tool === 'get_active_template') {
         try {
           if (!record.agentSession?.activeTemplateId) throw workflowError('TEMPLATE_NOT_SELECTED', 'Select a template with /templates first.');
@@ -6909,6 +7537,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'download_file') {
+        // 문서 없는 채팅의 행위자에는 프로젝트가 없다(browserActorForRecord) — 받은 파일함으로 내려받는다.
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
           const target = ownedBrowser.downloadTarget(actor, args.url);
           if (!target) await browserPolicy.assertAllowed({ actor, action: 'download', url: args.url });
@@ -7022,7 +7651,41 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       // 스튜디오 전달 — 참조 이미지 경로는 허브가 인자를 채운 뒤 비동기로 호출한다.
       const forwardToStudio = (args) => {
-        if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
+        // 읽기 도구의 documentId — 이 채팅 문서면 지우고, 다른 문서·서식 틀이면 출처를 붙인다.
+        let readSource;
+        try {
+          readSource = resolveReadSource({
+            tool,
+            args,
+            liveDocumentId: workerJob ? workerJob.binding.documentId : activeDocumentIdentity(record.agentSession).documentId,
+            documentPaths: workerJob ? null : record.agentSession?.documentPaths,
+          });
+        } catch (error) {
+          sendError(error, 'INVALID_ARGS');
+          return;
+        }
+        if (!readSource.fileHandle) {
+          dispatchToStudio(readSource);
+          return;
+        }
+        // file: 핸들은 경로를 다시 확인한 뒤 보낸다 — 바뀐 크기·시각이 Studio 캐시 키가 된다.
+        void resolveFileSource({ documentPaths: record.agentSession?.documentPaths, fileHandle: readSource.fileHandle })
+          .then((source) => {
+            if (callSettled) return;
+            if (providerTurn && !providerTurnIsActive(record, providerTurn)) {
+              sendError(noActiveProviderTurnError());
+              return;
+            }
+            dispatchToStudio({ ...readSource, source });
+          })
+          .catch((error) => sendError(error, 'SOURCE_UNREADABLE'));
+      };
+      const dispatchToStudio = (readSource, retryTarget = null) => {
+        const args = readSource.args;
+        // 다른 창에만 열린 문서는 그 창이 저장 안 된 편집까지 담은 라이브 상태로 답한다.
+        const foreignDocumentId = readSource.source?.kind === 'document' ? readSource.source.documentId : null;
+        const target = retryTarget ?? (foreignDocumentId ? foreignReadTarget(record, tool, foreignDocumentId) : null);
+        if (!target && (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN)) {
           sendError(workflowError('NO_STUDIO', 'Studio is not connected; open rhwp-studio in a browser'));
           return;
         }
@@ -7034,11 +7697,12 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           return;
         }
         let activeTemplate = null;
-        if (tool.startsWith('template_')) {
+        if (readSource.template || tool.startsWith('template_')) {
           try {
             if (!record.agentSession?.activeTemplateId) throw workflowError('TEMPLATE_NOT_SELECTED', 'Select a template with /templates first.');
             activeTemplate = templateStore.get(record.agentSession.activeTemplateId);
-            if (args.templateRevision !== activeTemplate.revision) {
+            // 서식 틀 읽기(documentId:"template")는 revision 없이 현재 틀을 읽는다. 옮기기 도구만 확인한다.
+            if (tool.startsWith('template_') && args.templateRevision !== activeTemplate.revision) {
               throw workflowError('TEMPLATE_REVISION_MISMATCH', `Template changed from revision ${String(args.templateRevision)} to ${activeTemplate.revision}; inspect it again before continuing.`);
             }
           } catch (error) {
@@ -7075,7 +7739,12 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           ? Math.min(STUDIO_TOOL_TIMEOUT_MS + 2_000 * (Array.isArray(batchItems) ? batchItems.length : 0), 120_000)
           : tool === 'materialize_document_snapshot'
             ? 120_000
-            : STUDIO_TOOL_TIMEOUT_MS;
+            : DOCUMENT_LINK_TOOLS.has(tool)
+              ? DOCUMENT_LINK_STUDIO_TIMEOUT_MS
+              : tool === 'detach_document'
+                ? DOCUMENT_DETACH_STUDIO_TIMEOUT_MS
+                : STUDIO_TOOL_TIMEOUT_MS;
+        const routed = target ? { readId: nextForeignReadId++, socket: target.studioSocket } : null;
         const timer = setTimeout(() => {
           const pendingEntry = record.pendingCalls.get(hubId);
           record.pendingCalls.delete(hubId);
@@ -7085,7 +7754,15 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           }
           sendError(workflowError(
             'STUDIO_TIMEOUT',
-            `Studio did not answer within ${timeoutMs / 1000}s — the edit may still have applied; re-read with get_structure/get_text_range before retrying to avoid duplicates`,
+            routed
+              ? `The window with this document did not answer within ${timeoutMs / 1000}s`
+              : DOCUMENT_LINK_TOOLS.has(tool)
+                ? `Studio did not finish linking the document within ${timeoutMs / 1000}s; it may still link — check the active document before retrying`
+                : tool === 'detach_document'
+                ? `Studio did not finish detaching the document within ${timeoutMs / 1000}s; check get_document_info before retrying`
+                : readSource.foreign || LIVE_UNTRACKED_READ_TOOL_NAMES.includes(tool)
+                ? `Studio did not answer within ${timeoutMs / 1000}s; nothing was changed — read it again`
+                : `Studio did not answer within ${timeoutMs / 1000}s — the edit may still have applied; re-read with get_structure/get_text_range before retrying to avoid duplicates`,
           ));
         }, timeoutMs);
         record.pendingCalls.set(hubId, {
@@ -7106,9 +7783,36 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           copyLayoutJobId: workerJob?.jobId ?? null,
           sessionGeneration: record.agentSession?.generation ?? null,
           renderSavePath,
+          // 다른 문서·서식 틀 읽기와 문서 목록 — 결과를 라이브 문서 상태(revision·문서 정보)로 기록하지 않는다.
+          foreign: readSource.foreign || LIVE_UNTRACKED_READ_TOOL_NAMES.includes(tool),
+          ...(tool === 'list_documents' ? { listQuery: args.query ?? '' } : {}),
+          ...(routed ? { routed } : {}),
+          // 호출한 창이 DOCUMENT_OPEN_ELSEWHERE 로 답하면 그 사이 보인 다른 창으로 한 번만 다시 보낸다.
+          ...(foreignDocumentId && !routed && !retryTarget ? {
+            rerouteOpenElsewhere: () => {
+              const elsewhere = foreignReadTarget(record, tool, foreignDocumentId);
+              if (!elsewhere) return false;
+              dispatchToStudio(readSource, elsewhere);
+              return true;
+            },
+          } : {}),
           trace,
         });
         if (trace) trace.hubId = hubId;
+        if (routed) {
+          foreignReads.set(routed.readId, { callerRecord: record, hubId, socket: routed.socket });
+          const sent = sendJson(routed.socket, {
+            v: 1, type: 'document-read-request', id: routed.readId, documentId: foreignDocumentId, tool, args,
+          });
+          if (trace) trace.hubFwd = traceNow();
+          if (!sent) {
+            clearTimeout(timer);
+            record.pendingCalls.delete(hubId);
+            foreignReads.delete(routed.readId);
+            sendError(workflowError('DOCUMENT_OPEN_ELSEWHERE_CLOSED', 'The window that had this document open closed before answering; read it again'));
+          }
+          return;
+        }
         const forwarded = sendJson(record.studioSocket, {
           ...(trace ? { trace: 1 } : {}),
           v: 1, type: 'tool-request', id: hubId,
@@ -7118,6 +7822,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           tool,
           args,
           ...(activeTemplate ? { template: activeTemplate } : {}),
+          ...(readSource.source ? { source: readSource.source } : {}),
           workflow: record.agentSession?.planning.snapshot().workflow,
           phase: record.agentSession?.planning.snapshot().phase,
           capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
@@ -7136,6 +7841,49 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           sendError(workflowError('NO_STUDIO', 'Studio disconnected before receiving the tool request'));
         }
       };
+      // 문서 붙이기·떼기: 루트 대화만, 채팅의 문서는 한 번에 하나다. 사용자에게 묻지 않는다 — 붙인 문서의 쓰기는
+      // 모드 규칙(에이전트 모드의 검토)을 그대로 따른다. 붙이기는 Studio 가 문서를 열거나 만든 뒤 chat-link-document 를
+      // 먼저 보내고 답한다. 떼기는 Studio 가 채팅을 빈 문서 자리로 옮기며 chat-detach-document 를 보내고, 허브가 그
+      // 호출을 맡았다가 새 브리지가 붙으면 답한다(detachChatDocument).
+      if (DOCUMENT_LINK_TOOLS.has(tool) || tool === 'detach_document') {
+        const session = record.agentSession;
+        if (workerJob || !session) {
+          sendError(workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root chat conversation may attach or detach a document'));
+          return;
+        }
+        const detaching = tool === 'detach_document';
+        const checkAttachment = () => {
+          if (detaching && sessionHasNoDocument(session)) {
+            throw workflowError('NO_DOCUMENT', 'This chat has no document to detach; open_document or create_document attaches one');
+          }
+          if (!detaching && !sessionHasNoDocument(session)) {
+            throw workflowError(
+              'THREAD_ALREADY_LINKED',
+              `This chat is attached to ${session.documentName ?? session.documentId}; call detach_document first to switch documents`,
+            );
+          }
+        };
+        void (async () => {
+          checkAttachment();
+          const root = !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+          if (!root) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may attach or detach a document');
+          checkAttachment();
+          if (session.documentLinkCall) throw workflowError('DOCUMENT_LINK_PENDING', 'Another document attach or detach is already in progress in this chat');
+          const linkCall = {};
+          session.documentLinkCall = linkCall;
+          onCallSettled = () => {
+            if (session.documentLinkCall === linkCall) session.documentLinkCall = null;
+          };
+          const studioArgs = detaching ? {} : await documentLinkArgs(record, tool, args);
+          if (callSettled) return;
+          if (providerTurn && !providerTurnIsActive(record, providerTurn)) throw noActiveProviderTurnError();
+          if (record.agentSession !== session) throw workflowError('REQUEST_INVALIDATED', 'The chat changed before the document was attached or detached');
+          checkAttachment();
+          dispatchToStudio({ args: studioArgs, source: null, template: false, foreign: true });
+        })().catch((error) => sendError(error, detaching ? 'DOCUMENT_DETACH_FAILED' : 'DOCUMENT_LINK_FAILED'));
+        return;
+      }
       // 참조 그림: 허브가 저장소를 읽어 바로 답하거나(자르지 않는 이미지), 인자를 채워 스튜디오로 넘긴다
       // (잘라내기·확대·삽입, PDF 쪽과 영역 조각은 스튜디오가 HTTP 로 받아 그린다).
       if (referenceImage) {
@@ -7216,7 +7964,7 @@ function attachSocket(record, sock, role) {
       if (role === 'studio') {
         // WebSocket 은 async 메시지 리스너를 동시에 실행한다. Studio 명령을 직렬화해
         // 빠른 중지/시작/열기 조작이 옛 채팅을 되살리지 못하게 한다.
-        if (traceIn && msg?.type === 'tool-response' && msg.trace) {
+        if (traceIn && (msg?.type === 'tool-response' || msg?.type === 'document-read-response') && msg.trace) {
           msg.hubTrace = { respIn: traceIn, respBytes: frameBytes };
         }
         record.studioMessageQueue = record.studioMessageQueue
@@ -7225,7 +7973,8 @@ function attachSocket(record, sock, role) {
             // 닫힌 소켓의 명령은 버리되 tool-response 는 처리한다 — hubId 로만 살아 있는
             // pendingCalls 를 마무리하고, 교체된 인스턴스의 호출은 이미 실패 처리돼 있다.
             // 느린 항목 뒤에 줄 서 있던 응답이 소켓 종료로 사라지면 30초 타임아웃까지 간다.
-            if (record.studioSocket !== sock && msg.type !== 'tool-response') return;
+            // document-read-response 는 요청을 받은 소켓인지 settleForeignReadResponse 가 확인한다.
+            if (record.studioSocket !== sock && msg.type !== 'tool-response' && msg.type !== 'document-read-response') return;
             return handleStudioMessage(record, sock, msg);
           })
           .catch((error) => {
@@ -7328,6 +8077,68 @@ function isLoopbackHost(hostHeader) {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1';
 }
 
+/**
+ * GET /document-sources/<handle>/content?sessionId=… — list_documents({path}) 가 발급한 file: 핸들의 바이트.
+ * 서식 틀 내용과 같은 인증(템플릿 capability Bearer + sessionId)이며, 그 세션의 핸들만 내준다.
+ * 읽을 때 경로를 다시 확인하고 O_NOFOLLOW 로 24 MiB 까지만 읽는다.
+ */
+async function handleDocumentSourceHttp(req, res, url) {
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : null;
+  const cors = origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {};
+  if (origin && !isAllowedStudioOrigin(origin)) {
+    sendHttpJson(res, 403, { error: { code: 'SOURCE_ORIGIN_DENIED', message: 'Document sources accept only local Studio origins.' } });
+    return;
+  }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      ...cors,
+      'access-control-allow-methods': 'GET, OPTIONS',
+      'access-control-allow-headers': 'Authorization',
+      'access-control-max-age': '600',
+    });
+    res.end();
+    return;
+  }
+  const reply = (status, code, message) => {
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors });
+    res.end(JSON.stringify({ error: { code, message } }));
+  };
+  // 서식 틀 경로처럼 Authorization 헤더로만 받는다 — URL 토큰은 기록에 남는다.
+  if (!String(req.headers.authorization ?? '').startsWith('Bearer ')) {
+    reply(401, 'SOURCE_UNAUTHORIZED', 'A valid bearer token is required.');
+    return;
+  }
+  const record = sessions.require(authenticateHttpSession(req, url, { audience: HUB_CAPABILITY_AUDIENCES.TEMPLATE }));
+  const match = url.pathname.match(/^\/document-sources\/([^/]+)\/content$/);
+  if (!match) {
+    reply(404, 'SOURCE_NOT_FOUND', 'Document source route was not found.');
+    return;
+  }
+  if (req.method !== 'GET') {
+    reply(405, 'SOURCE_METHOD_NOT_ALLOWED', 'Method not allowed.');
+    return;
+  }
+  let handle;
+  try { handle = decodeURIComponent(match[1]); } catch { handle = ''; }
+  const content = await readDocumentPathContent(record.agentSession?.documentPaths, handle);
+  if (content.status !== 200) {
+    reply(content.status, content.code, content.status === 404
+      ? 'This file handle is unknown or the file is gone; call list_documents again.'
+      : 'The file can no longer be read.');
+    return;
+  }
+  res.writeHead(200, {
+    'content-type': 'application/octet-stream',
+    'content-length': String(content.bytes.length),
+    'cache-control': 'no-store, private',
+    'x-content-type-options': 'nosniff',
+    'x-document-mtime': String(content.mtimeMs),
+    ...(origin ? { 'access-control-expose-headers': 'X-Document-Mtime, Content-Length' } : {}),
+    ...cors,
+  });
+  res.end(content.bytes);
+}
+
 // 브라우저 Studio가 허브 PC의 설치 글꼴을 쓰게 한다. 참고자료와 같은 세션 capability로 인증한다.
 const handleFontHttp = createFontHttpHandler({
   authenticate: (req, url) => sessions.require(authenticateHttpSession(req, url, {
@@ -7390,6 +8201,10 @@ const httpServer = http.createServer((req, res) => {
     }
     if (isFontPath(url.pathname)) {
       await handleFontHttp(req, res, url);
+      return;
+    }
+    if (url.pathname.startsWith('/document-sources/')) {
+      await handleDocumentSourceHttp(req, res, url);
       return;
     }
     if (isReferencePath(url.pathname) || isTemplatePath(url.pathname)) {
@@ -7730,6 +8545,7 @@ const httpServer = http.createServer((req, res) => {
           projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
           requestable: !requestedWorkerJobId && !requestedSubagentId,
+          documentLink: !requestedWorkerJobId && !requestedSubagentId,
           researchPermissions: gates.researchPermissions,
         },
       });
@@ -7937,7 +8753,8 @@ httpServer.on('upgrade', (req, socket, head) => {
       if (!instanceId || instanceId !== previousInstanceId) {
         failAllPendingCalls(record, replacing
           ? 'Studio connection was replaced by a new tab; the edit may still have applied — re-read with get_structure/get_text_range before retrying'
-          : 'Studio reloaded while tool calls were in flight; the edit may still have applied — re-read with get_structure/get_text_range before retrying');
+          : 'Studio reloaded while tool calls were in flight; the edit may still have applied — re-read with get_structure/get_text_range before retrying',
+        INTERRUPTED_READ_MESSAGE);
       } else {
         armStudioReattachFlush(record);
       }
@@ -7947,6 +8764,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       // 같은 세션으로 돌아온다. 대신 유예 타이머를 걸어 돌아오지 않는 경우만 실패시킨다.
       ws.on('close', () => {
         studioFrames.discard(ws);
+        failForeignReadsForSocket(ws);
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
@@ -7971,6 +8789,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         hubSessionId: record.sessionId,
         session: sessionInfo(record),
       });
+      // 문서에서 뗀 채팅의 새 브리지가 붙었다 — 이 브리지가 세션을 받은 뒤에 공급자가 이어 간다.
+      if (record.documentDetachHandoff && record.documentDetachHandoff.socket !== ws) settleDocumentDetachHandoff(record);
       for (const authRun of authRuns.forSession(record.sessionId)) {
         sendJson(ws, {
           v: 1,
@@ -8166,6 +8986,7 @@ async function disposeRecord(record, reason) {
   expireChatRequests(record, 'hub-restarted');
   record.chatContinuations.clear();
   failAllPendingCalls(record, 'Hub session is shutting down');
+  settleDocumentDetachHandoff(record, workflowError('NO_STUDIO', 'Hub session is shutting down'));
   const backendExit = disposeSession(record);
   const templateBackendExits = [];
   for (const job of record.templateJobs.values()) {

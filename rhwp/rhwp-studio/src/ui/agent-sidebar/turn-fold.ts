@@ -17,7 +17,7 @@ import { createChevron } from '../chevron.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
 import { parseCssTimeMs } from './motion-model.ts';
 import { formatFleetClock, isSpawnToolName } from './subagent-fleet.ts';
-import { baseToolName } from './tool-presentation.ts';
+import { FOREIGN_READ_TOOLS, baseToolName } from './tool-presentation.ts';
 
 // ─── 작업 요약 ─────────────────────────────────────────
 
@@ -97,11 +97,15 @@ const CATEGORIES = {
   pageRead: counted('read', (n) => `쪽 ${n}개 읽음`),
   documentRead: plain('read', '문서 읽음'),
   templateRead: plain('read', '서식 틀 읽음'),
+  otherDocumentRead: counted('read', (n) => `다른 문서 ${n}개 읽음`),
   referenceRead: plain('read', '참고 자료 읽음'),
   projectEdit: plain('other', '연구 자료 정리'),
   projectImport: plain('other', '연구 자료 가져옴'),
   search: counted('search', (n) => `검색 ${n}번`),
   version: plain('other', '버전 저장'),
+  documentLink: plain('other', '문서 연결'),
+  documentCreate: plain('other', '새 문서 만듦'),
+  documentDetach: plain('other', '문서에서 분리'),
   fileExport: counted('other', (n) => `파일 ${n}개 내보냄`),
   fileDownload: counted('other', (n) => `파일 ${n}개 내려받음`),
   web: plain('other', '웹 탐색'),
@@ -165,6 +169,7 @@ const INSERT_TOOLS: Readonly<Record<string, CategoryId>> = {
   find_text: 'search',
   search_reference_files: 'search',
   find_home_files: 'search',
+  list_documents: 'search',
 };
 const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   edit_header_footer: 'headerFooter',
@@ -174,6 +179,9 @@ const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   verify_changes: 'verify',
   preview_equation: 'equationCheck',
   commit_version: 'version',
+  open_document: 'documentLink',
+  create_document: 'documentCreate',
+  detach_document: 'documentDetach',
   update_agent_instructions: 'instructions',
   commit_product_skill: 'skill',
   project_edit: 'projectEdit',
@@ -284,6 +292,15 @@ function batchHits(list: unknown, unique: string): Hit[] {
 /** 성공한 호출 하나가 어느 분류에 무엇을 더하는지. 모르는 도구는 “도구 N번”이다. */
 function classifyCall(name: string, a: Args, unique: string, expandBatch = true): Hit[] {
   if (TURN_SUMMARY_IGNORED_TOOLS.has(name) || isSpawnToolName(name) || !name) return [];
+  // documentId 를 준 읽기는 그 문서를 읽은 것이다 — 서식 틀 쪽 그림만 쪽 확인으로 센다.
+  const documentId = str(a['documentId']);
+  if (documentId && FOREIGN_READ_TOOLS.has(name)) {
+    if (documentId !== 'template') return [{ category: 'otherDocumentRead', keys: [documentId] }];
+    const page = name === 'render_page' ? index(a['pageIndex']) : null;
+    return page !== null
+      ? [{ category: 'pageCheck', keys: [`template|${page}`] }]
+      : [{ category: 'templateRead', keys: ['*'] }];
+  }
   if (expandBatch && name === 'apply_edits') return batchHits(a['edits'], unique);
   if (expandBatch && name === 'read_batch') return batchHits(a['reads'], unique);
   if (PARA_TEXT_TOOLS.has(name)) {
@@ -316,11 +333,9 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
       const operations = Array.isArray(a['operations']) ? a['operations'].length : 0;
       return [{ category: 'engineEdit', keys: Array.from({ length: Math.max(1, operations) }, (_, i) => `${unique}:${i}`) }];
     }
-    case 'render_page':
-    case 'template_render_page': {
+    case 'render_page': {
       const page = index(a['pageIndex']);
-      const space = name === 'render_page' ? 'doc' : 'template';
-      return [{ category: 'pageCheck', keys: [page !== null ? `${space}|${page}` : unique] }];
+      return [{ category: 'pageCheck', keys: [page !== null ? `doc|${page}` : unique] }];
     }
     case 'get_text_range':
     case 'get_para_format':
@@ -349,7 +364,7 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
   }
   if (DOCUMENT_READ_TOOLS.has(name)) return [{ category: 'documentRead', keys: ['*'] }];
   if (REFERENCE_READ_TOOLS.has(name)) return [{ category: 'referenceRead', keys: ['*'] }];
-  if (name.startsWith('template_get_') || name === 'template_list_styles') return [{ category: 'templateRead', keys: ['*'] }];
+  if (name === 'template_get_page_layout') return [{ category: 'templateRead', keys: ['*'] }];
   if (name.startsWith('browser_')) return [{ category: 'web', keys: ['*'] }];
   if (COPY_LAYOUT_TOOLS.has(name)) return [{ category: 'copyLayout', keys: ['*'] }];
   return [{ category: 'foreign', keys: [unique] }];

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { CommandDispatcher } from '../src/command/dispatcher.ts';
 import { EventBus } from '../src/core/event-bus.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from '../src/agent/editing-lease.ts';
+import { DEFAULT_AGENT_EDIT_LOCK, saveAgentPrefs, type AgentEditLock } from '../src/agent/agent-prefs.ts';
 import { createTestModuleServer } from './support/module-server.ts';
 
 registerHooks({
@@ -71,7 +72,18 @@ test('the derived lease stays active while a turn or tool call runs', () => {
   );
 });
 
-test('chat never takes an editing lease and agent keeps it until all tools settle', () => {
+/** 편집 중 잠금 설정을 바꾼다 — 저장하면 브리지가 읽는 값이 바뀐다. 테스트가 끝나면 기본값으로 돌린다. */
+function useEditLock(t: { after(fn: () => void): void }, lock: AgentEditLock): (next: AgentEditLock) => void {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const set = (next: AgentEditLock) => { saveAgentPrefs({ editLock: next }, storage); };
+  set(lock);
+  t.after(() => set(DEFAULT_AGENT_EDIT_LOCK));
+  return set;
+}
+
+test('chat never takes an editing lease and agent keeps it until all tools settle', (t) => {
+  useEditLock(t, 'always');
   const leases: boolean[] = [];
   const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
     view: {}, workflow: 'question', phase: 'questioning', editingAgent: 'codex',
@@ -101,6 +113,34 @@ test('chat never takes an editing lease and agent keeps it until all tools settl
   runtime.syncEditingLease();
   assert.equal(runtime.getEditingLease().active, false);
   assert.deepEqual(leases, [true, false]);
+});
+
+test('agent mode locks the document only while the agent edits and for the hold after it', (t) => {
+  const setEditLock = useEditLock(t, 3);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    view: {}, workflow: 'direct', phase: 'direct', editingAgent: 'claude', turnRunning: true, activeToolRequests: 0,
+    activeDocumentWrites: 0, lastDocumentWriteAt: Number.NEGATIVE_INFINITY, documentWriteHoldTimer: null,
+    pendingUserQuestionId: null, pendingChatPermissionRequests: new Map(),
+    editingLease: { active: false, agent: 'claude' }, documentEditingLease: { active: false, agent: 'claude' },
+    editingLeaseListeners: new Set(), scheduleBusyCheck() {},
+  });
+  const locked = () => { runtime.syncEditingLease(); return runtime.getEditingLease().active; };
+  assert.equal(locked(), false, 'chatting in agent mode leaves the document editable');
+  runtime.activeDocumentWrites = 1;
+  assert.equal(locked(), true, 'an edit locks the document');
+  runtime.endDocumentWrite();
+  assert.equal(locked(), true, 'the lock stays for the hold after the edit');
+  // 머무는 시간이 지났다 — 타이머가 잠금을 다시 재서 푼다. 턴은 계속 돈다.
+  runtime.lastDocumentWriteAt -= 3_000;
+  t.mock.timers.tick(3_000);
+  assert.equal(runtime.getEditingLease().active, false, 'the lock lifts after the hold while the turn goes on');
+
+  setEditLock('always');
+  assert.equal(locked(), true, 'always locks the whole turn');
+  setEditLock('off');
+  runtime.activeDocumentWrites = 1;
+  assert.equal(locked(), false, 'off never locks');
 });
 
 test('plan mode leaves the document editable while a planning turn is running', () => {
@@ -190,6 +230,8 @@ test('a tool call outside a running turn holds the lease until it settles', asyn
     turnRunning: false,
     editingAgent: 'claude',
     activeToolRequests: 0,
+    activeDocumentWrites: 0,
+    lastDocumentWriteAt: Number.NEGATIVE_INFINITY,
     activeToolRequestControllers: new Map(),
     inFlightWrites: new Set(),
     versionCommitInFlight: null,

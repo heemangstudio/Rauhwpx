@@ -206,12 +206,9 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   white-space: nowrap;
 }
 
-/* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px. */
-.dh-settings {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  z-index: 2;
+/* 글자 없는 아이콘 단추: 톱니와 위 막대 오른쪽 끝의 새 채팅(라이선스 단추 오른쪽). */
+.dh-settings,
+.dh-new-chat {
   display: grid;
   place-items: center;
   width: 32px;
@@ -222,10 +219,26 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
   background: transparent;
   color: var(--dh-text-secondary);
 }
-.dh-settings .ag-icon { width: 15px; height: 15px; }
+.dh-settings .ag-icon,
+.dh-new-chat .ag-icon { width: 15px; height: 15px; }
+
+/* 새 채팅은 위 막대 모서리에서 위·오른쪽 여백이 같게 선다(막대 오른쪽 안쪽 여백 16px 를 덜어 낸다). */
+.dh-new-chat { margin-right: calc((48px - 32px) / 2 - 16px); }
+html.desktop-mac .dh-new-chat {
+  margin-right: calc((var(--desktop-titlebar-height, 38px) - 32px) / 2 - 16px);
+}
+
+/* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px. */
+.dh-settings {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
+}
 
 .dh-ghost:hover,
 .dh-settings:hover,
+.dh-new-chat:hover,
 .dh-back:hover { background: var(--dh-hover); color: var(--dh-text); }
 .dh-ghost:active,
 .dh-back:active { background: var(--dh-pressed); }

@@ -2,6 +2,7 @@ import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts
 import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import { isChatPermissionCapability, readChatPermissionRequest } from '../agent/chat-permissions.ts';
+import { linkError } from '../agent/document-link.ts';
 import {
   defaultModelForAgent,
   setModelCatalog,
@@ -275,7 +276,12 @@ export function createMockBridge(
     permissionProfile: T.PermissionProfile;
     /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 콘텍스트). */
     history: string[];
+    documentId: string | null;
+    /** 문서를 뗀 채팅이 문서 없이 다시 열 때 실은 뗀 문서. */
+    detachedFrom: T.ChatDetachedFrom | null;
   }> = [];
+  /** 받은 chat-compact 의 까닭 — 문서를 뗀 뒤의 압축은 'document-detached'. */
+  const compactions: Array<{ reason: T.ChatCompactReason | null }> = [];
   /**
    * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 콘텍스트 제공자로 다시
    * 만든다(제공자가 없으면 startChat 이 건넨 기록) — 세션을 잃은 뒤 메시지가 스스로 여는 시작도 같다.
@@ -283,6 +289,7 @@ export function createMockBridge(
   let startHistory: string[] = [];
   let messagesSent = 0;
   const sentMentions: string[][] = [];
+  const sentDocumentMentions: T.DocumentMention[][] = [];
   const projectParams = new URLSearchParams(location.search);
   const projects = createPreviewProjects({
     homeAccess: projectParams.get('home') === '1',
@@ -360,6 +367,8 @@ export function createMockBridge(
   ];
   /** 허브처럼 비밀 값 목록이 바뀌면 열린 설정에 알린다. */
   const secretsChanged = () => emit({ type: 'browser-event', event: { type: 'user-secrets-changed' } });
+  /** 허브에 보낸 chat-link-document — 검사가 연결 순서와 대상을 읽는다. */
+  const documentLinks: Array<{ threadId: string; documentId: string; documentName: string | null; createdByThread: string | null; running: boolean }> = [];
   /* 콘텍스트 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
   const CONTEXT_MAX = 200_000;
   const contextParam = Number(new URLSearchParams(location.search).get('context'));
@@ -380,7 +389,12 @@ export function createMockBridge(
       handoff: context?.handoffHistory?.length ?? 0,
       history: context?.history.length ?? 0,
     };
-    chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
+    chatStarts.push({
+      threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory],
+      documentId: chatDocumentId,
+      // 실제 브리지처럼 문서 없이 여는 시작만 뗀 문서를 싣는다.
+      detachedFrom: chatDocumentId === null && context?.detachedFrom ? { ...context.detachedFrom } : null,
+    });
     return context;
   };
   let activeTemplate: T.DocumentTemplate | null = null;
@@ -791,6 +805,22 @@ export function createMockBridge(
         resolvePermission(requestId, decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' });
       }
     }),
+    linkChatDocument: async (link) => {
+      if (link.threadId !== threadId || hubChatThreadId !== link.threadId) return null;
+      if (chatDocumentId !== null && chatDocumentId !== link.documentId) throw linkError('THREAD_ALREADY_LINKED');
+      chatDocumentId = link.documentId;
+      documentLinks.push({ ...link, createdByThread: link.createdByThread ?? null, running });
+      const reply = { documentId: link.documentId, documentName: link.documentName, projectId: null };
+      emit({ type: 'chat-document-linked', threadId: link.threadId, ...reply });
+      return reply;
+    },
+    // 미리보기는 사이드바가 하나라 에이전트의 떼기도 그 자리에서 문서를 비운다.
+    detachChatDocument: async (detach) => {
+      if (detach.threadId !== threadId || chatDocumentId === null) return false;
+      chatDocumentId = null;
+      return true;
+    },
+    continueHubChat: () => {},
     submitSecret: async (args) => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       const pending = permissionRequests.get(args.requestId);
@@ -1136,7 +1166,8 @@ export function createMockBridge(
     setChatStartContextProvider: (provider) => {
       contextProvider = provider;
     },
-    compactChat: async () => {
+    compactChat: async (options) => {
+      compactions.push({ reason: options?.reason ?? null });
       if (running) return { ok: false, code: 'AGENT_BUSY', message: 'A turn is already in progress.' };
       if (sessionCompaction(agent) !== 'manual') return { ok: false, code: 'COMPACTION_UNSUPPORTED', message: '' };
       const turnGeneration = ++generation;
@@ -1186,10 +1217,11 @@ export function createMockBridge(
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false, _signal, mentions = []) => {
+    sendUserMessage: async (text, skillName, referenceIds = [], requireReceipt = false, _signal, mentions = [], _acceptance, documentMentions = []) => {
       messagesSent += 1;
       sentMessages.push({ text, ...(skillName ? { skillName } : {}), referenceIds: [...referenceIds], requireReceipt });
       sentMentions.push([...mentions]);
+      sentDocumentMentions.push(documentMentions.map((mention) => ({ ...mention })));
       const messageId = crypto.randomUUID();
       // 실제 브리지처럼 receipt 가 필요한 메시지(첨부·대기 메시지)만 id 를 돌려준다.
       const receipt = referenceIds.length > 0 || requireReceipt ? messageId : null;
@@ -2130,6 +2162,10 @@ export function createMockBridge(
       generation++;
       failTurn(kind, currentTurnId ?? `turn-${generation}`);
     },
+    /** 허브가 문서 없는 채팅의 프로젝트 저장을 막았다 (DOCUMENT_REQUIRED). */
+    emitDocumentRequired: (tool = 'project_edit') => {
+      emit({ type: 'document-required', tool, reason: 'project-save' });
+    },
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
@@ -2148,10 +2184,14 @@ export function createMockBridge(
     deliverWelcome,
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
+      compactions: compactions.map((entry) => ({ ...entry })),
       messagesSent,
       sentMentions: sentMentions.map((ids) => [...ids]),
+      sentDocumentMentions: sentDocumentMentions.map((rows) => rows.map((row) => ({ ...row }))),
       interrupts,
       permissionResponses: permissionResponses.map((response) => ({ ...response })),
+      documentLinks: documentLinks.map((link) => ({ ...link })),
+      chatDocumentId,
       chatPermissionGrants: [...chatPermissionGrants],
       alwaysGrants: [...alwaysGrants],
       pendingRequests: [...permissionRequests.values()].map((request) => ({ requestId: request.requestId, kind: request.kind ?? 'permission' })),
