@@ -10,6 +10,21 @@ const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', imp
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
+// 작성 중인 입력이나 재생 중인 미디어가 있으면 true. 값은 밖으로 보내지 않는다.
+const PAGE_STATE_SCRIPT = `(() => {
+  const protectedFrame = win => {
+    try {
+      const doc = win.document;
+      if ([...doc.querySelectorAll('input,textarea,select,[contenteditable="true"]')].some(el =>
+        el.isContentEditable ? el.textContent.trim() : el.tagName === 'SELECT' ? [...el.options].some(option => option.selected !== option.defaultSelected)
+          : ['checkbox','radio'].includes(el.type) ? el.checked !== el.defaultChecked
+            : !['hidden','submit','button','reset'].includes(el.type) && !!el.value)) return true;
+      if ([...doc.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
+      return Array.from({ length: win.frames.length }, (_, index) => win.frames[index]).some(protectedFrame);
+    } catch { return true; }
+  };
+  return protectedFrame(window);
+})()`;
 
 export function browserNavigationUrl(value) {
   if (value === 'about:blank') return value;
@@ -200,8 +215,12 @@ export class OwnedBrowserHost {
         callback(this.proxy.username, this.proxy.password);
       } else callback();
     });
-    const blockHumanInput = (event) => {
-      if ((!tab.human || !tab.interactive) && !tab.automationInputDepth) event.preventDefault();
+    const blockHumanInput = (event, input) => {
+      if (tab.automationInputDepth) return;
+      // 에이전트 작업이 실행 중이면 사용자 입력을 막는다. 사용자가 잡은 탭의 에이전트 입력은 허브와 CDP가 거부한다.
+      if (!tab.human || !tab.interactive || !tab.held && tab.agentActivity?.size) event.preventDefault();
+      // 잡지 않은 탭의 클릭·키 입력은 편집기가 제어권을 넘겨받을 수 있게 알린다.
+      if (!tab.held && ['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
     };
     contents.on('before-input-event', blockHumanInput);
     contents.on('before-mouse-event', blockHumanInput);
@@ -298,28 +317,33 @@ export class OwnedBrowserHost {
   }
 
   // Only the private hub operation scope can temporarily wake a hidden guest.
-  async activity({ targetId, tabId, sessionId, chatId, generation, token, active }) {
+  async activity({ targetId, tabId, sessionId, chatId, generation, token, active, agent = false, renew = false }) {
     const tab = this.tab(targetId);
     const currentScope = generation === this.generation && tab.targetId === targetId && tab.tabId === tabId && tab.sessionId === sessionId && tab.chatId === chatId;
     if (active === false) {
       if (!currentScope) return { active: false };
       const timer = tab.activityLeases?.get(token);
       if (!timer) return { active: false };
-      clearTimeout(timer); tab.activityLeases.delete(token);
+      clearTimeout(timer); tab.activityLeases.delete(token); tab.agentActivity?.delete(token);
       await this.syncActivity(tab);
       return { active: false };
     }
     if (active !== true || !currentScope || typeof token !== 'string' || !ID_RE.test(token)) throw new Error('Native activity scope is stale');
     tab.activityLeases ??= new Map();
-    if (tab.activityLeases.has(token)) throw new Error('Native activity token is already active');
+    const existing = tab.activityLeases.get(token);
+    if (existing && renew !== true) throw new Error('Native activity token is already active');
+    // 허브가 긴 작업 동안 같은 임대를 갱신한다. 허브가 멈추면 30초 뒤 만료된다.
+    clearTimeout(existing);
     const timer = setTimeout(() => {
-      tab.activityLeases.delete(token);
+      tab.activityLeases.delete(token); tab.agentActivity?.delete(token);
       void this.syncActivity(tab).catch(() => {});
     }, 30_000);
     timer.unref?.();
     tab.activityLeases.set(token, timer);
+    if (agent === true) (tab.agentActivity ??= new Set()).add(token);
+    if (existing) return { active: true };
     try { await this.syncActivity(tab); }
-    catch (error) { clearTimeout(timer); tab.activityLeases.delete(token); await this.syncActivity(tab).catch(() => {}); throw error; }
+    catch (error) { clearTimeout(timer); tab.activityLeases.delete(token); tab.agentActivity?.delete(token); await this.syncActivity(tab).catch(() => {}); throw error; }
     return { active: true };
   }
 
@@ -334,7 +358,7 @@ export class OwnedBrowserHost {
 
   clearActivity(tab) {
     for (const timer of tab.activityLeases?.values() ?? []) clearTimeout(timer);
-    tab.activityLeases?.clear();
+    tab.activityLeases?.clear(); tab.agentActivity?.clear();
     return this.syncActivity(tab).catch(() => {});
   }
 
@@ -374,7 +398,7 @@ export class OwnedBrowserHost {
       zoomFactor: alive ? contents.getZoomFactor() : 1,
       canGoBack: !!alive && contents.navigationHistory.canGoBack(),
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
-      controller: tab.human ? 'human' : 'agent', interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
+      controller: tab.human ? 'human' : 'agent', held: tab.held === true, agentActive: !!tab.agentActivity?.size, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
     };
     if (tab.placement?.mode === 'float' && this.floatingWindows.get(tab.targetId) === tab.placement.window) {
@@ -493,13 +517,14 @@ export class OwnedBrowserHost {
     const contents = tab.view.webContents;
     const placement = tab.placement; const epoch = tab.navigationEpoch; const generation = this.generation;
     const current = () => this.generation === generation && tab.navigationEpoch === epoch && this.tabs.get(tab.targetId) === tab && (tab.placement?.window === window || tab.placement?.ownerWindow === window) && tab.placement?.window === placement?.window && tab.placement?.mode === placement?.mode && window.isVisible?.() !== false && placement.window.isVisible?.() !== false && !contents.isDestroyed();
-    const result = health => ({ ...this.state(tab), presentationHealth: health });
+    const result = (health, extra = {}) => ({ ...this.state(tab), presentationHealth: health, ...extra });
     if (!current()) return result('unavailable');
     if (tab.crashed || tab.lastError) return result('failed');
     if (contents.isLoadingMainFrame()) return result('loading');
     // 비밀 보호 페이지는 캡처 경로를 열지 않는다. 픽셀이나 본문은 반환하지 않는다.
     if (tab.passwordShield || contents.getURL() === 'about:blank') return result('ready');
-    let timer; let accepting = true;
+    let accepting = true;
+    const within = (promise, ms, fallback = null) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve(fallback), ms); })]).finally(() => clearTimeout(timer)); };
     const whiteFrame = image => {
       if (!image || image.isEmpty()) return false;
       const bitmap = image.toBitmap();
@@ -513,28 +538,41 @@ export class OwnedBrowserHost {
       if (!accepting || !current() || tab.passwordShield) return null;
       try { return await contents.capturePage({}, { stayAwake: true }); } catch { return null; }
     };
+    // 다시 그려도 비어 있으면 입력·제출 결과가 없는 페이지만 자동으로 다시 열 수 있다.
+    const stalled = async () => {
+      let reloadSafe = false;
+      try {
+        const history = await within(contents.debugger.sendCommand('Page.getNavigationHistory'), 500);
+        reloadSafe = !!history && history.entries?.[history.currentIndex]?.transitionType !== 'form_submit'
+          && await within(contents.executeJavaScript(PAGE_STATE_SCRIPT), 500, true) === false;
+      } catch {}
+      return current() ? result('paint-timeout', { presentationReloadSafe: reloadSafe && !tab.passwordShield }) : result('unavailable');
+    };
     try {
       const paint = async () => {
         await this.viewport(tab, tab.view.getBounds());
         let image = await capture();
         if ((!image || image.isEmpty() || whiteFrame(image)) && accepting && current() && !tab.passwordShield) {
-          // 첫 부착 프레임은 아직 비어 있을 수 있다. 다시 열기 전에 합성을 기다린다.
+          // 첫 부착 프레임은 아직 비어 있을 수 있다. 다시 열기 전에 다시 그리고 합성을 기다린다.
+          contents.invalidate();
           await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
           image = await capture();
         }
         return image;
       };
-      const image = await Promise.race([
-        paint(), new Promise(resolve => { timer = setTimeout(() => { accepting = false; resolve(null); }, 1500); }),
-      ]);
+      let image = await within(paint(), 1500);
+      if (!image || image.isEmpty()) {
+        accepting = current() && !tab.passwordShield;
+        if (accepting) { contents.invalidate(); image = await within(capture(), 1000); }
+      }
+      accepting = false;
       if (!current()) return result('unavailable');
       if (tab.passwordShield) return result('ready');
-      if (!image || image.isEmpty()) return result('paint-timeout');
+      if (!image || image.isEmpty()) return stalled();
       if (!whiteFrame(image)) return result('ready');
       // 흰 화면만으로 정상 빈 문서를 다시 열지 않는다. 예상되는 가시 콘텐츠 유무만 확인한다.
       if (!current() || tab.passwordShield) return result(tab.passwordShield ? 'ready' : 'unavailable');
-      const expectedPaint = await Promise.race([
-        contents.executeJavaScript(`(() => {
+      const expectedPaint = await within(contents.executeJavaScript(`(() => {
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
           let node = document.body;
           for (let count = 0; node && count < 200; count++, node = walker.nextNode()) {
@@ -546,13 +584,11 @@ export class OwnedBrowserHost {
               || (node.nodeType === Node.TEXT_NODE && !!node.nodeValue.trim() && !/rgba?\\(255, 255, 255/.test(style.color)))) return true;
           }
           return false;
-        })()`),
-        new Promise(resolve => { clearTimeout(timer); timer = setTimeout(() => resolve(false), 500); }),
-      ]);
+        })()`), 500, false);
       if (!current()) return result('unavailable');
-      return result(!tab.passwordShield && expectedPaint ? 'paint-timeout' : 'ready');
-    } catch { return result(!current() ? 'unavailable' : tab.passwordShield ? 'ready' : 'paint-timeout'); }
-    finally { accepting = false; clearTimeout(timer); }
+      return !tab.passwordShield && expectedPaint ? stalled() : result('ready');
+    } catch { return !current() ? result('unavailable') : tab.passwordShield ? result('ready') : stalled(); }
+    finally { accepting = false; }
   }
 
   setQuitRequested(requested) { this.quitRequested = requested === true; }
@@ -629,20 +665,7 @@ export class OwnedBrowserHost {
     // 입력 값은 밖으로 보내지 않고 작성 중인 폼과 재생 중인 미디어는 유지한다.
     let protectedPage = true;
     try {
-      protectedPage = await contents.executeJavaScript(`(() => {
-        const protectedFrame = win => {
-          try {
-            const doc = win.document;
-            if ([...doc.querySelectorAll('input,textarea,select,[contenteditable="true"]')].some(el =>
-              el.isContentEditable ? el.textContent.trim() : el.tagName === 'SELECT' ? [...el.options].some(option => option.selected !== option.defaultSelected)
-                : ['checkbox','radio'].includes(el.type) ? el.checked !== el.defaultChecked
-                  : !['hidden','submit','button','reset'].includes(el.type) && !!el.value)) return true;
-            if ([...doc.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
-            return Array.from({ length: win.frames.length }, (_, index) => win.frames[index]).some(protectedFrame);
-          } catch { return true; }
-        };
-        return protectedFrame(window);
-      })()`);
+      protectedPage = await contents.executeJavaScript(PAGE_STATE_SCRIPT);
     } catch {}
     if (!safe()) return { sleeping: false, reason: 'busy' };
     if ((protectedPage || tab.passwordShield) && !(manual && discard)) return { sleeping: false, reason: 'protected' };
@@ -739,13 +762,14 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  control({ targetId, tabId, human, owner }) {
+  control({ targetId, tabId, human, owner, held = false }) {
     const tab = this.tab(targetId ?? tabId);
     void this.clearActivity(tab);
     tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1;
     tab.passwordSnapshot = null;
     this.webAuthn?.cancelTab(tab);
     tab.human = human === true || owner === 'human';
+    tab.held = tab.human && held === true;
     tab.interactive = tab.human && !!tab.placement;
     this.emit(tab, 'controller');
     return this.state(tab);
@@ -907,24 +931,22 @@ export class OwnedBrowserHost {
     try {
       await removeScopedCookies(); await this.setCookies(state.cookies);
       for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
-      let reloaded = 0;
-      if (reload) for (const tab of this.tabs.values()) {
-        const contents = tab.view.webContents;
-        if (tab.closing || contents.isDestroyed()) continue;
-        let origin; try { origin = new URL(contents.getURL()).origin; } catch { continue; }
-        if (!approved.has(origin)) continue;
-        await new Promise((resolve, reject) => {
-          const finish = (error) => { clearTimeout(timer); contents.off('did-finish-load', done); contents.off('did-fail-load', failed); contents.off('destroyed', closed); error ? reject(error) : resolve(); };
-          const done = () => finish();
-          const failed = (_event, _code, _description, _url, mainFrame) => { if (mainFrame) finish(new Error('Native session reload failed')); };
-          const closed = () => finish(new Error('Native session tab closed'));
-          const timer = setTimeout(() => finish(new Error('Native session reload timed out')), 15000);
-          contents.once('did-finish-load', done); contents.on('did-fail-load', failed); contents.once('destroyed', closed);
-          contents.reload();
-        });
-        reloaded++;
-      }
-      return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded };
+      // 승인된 탭을 함께 다시 연다. 전체 기한은 허브 IPC 제한(20초)보다 짧다.
+      const reloads = !reload ? [] : [...this.tabs.values()].filter((tab) => {
+        if (tab.closing || tab.view.webContents.isDestroyed()) return false;
+        try { return approved.has(new URL(tab.view.webContents.getURL()).origin); } catch { return false; }
+      }).map((tab) => tab.view.webContents);
+      const deadline = Date.now() + 10_000;
+      await Promise.all(reloads.map((contents) => new Promise((resolve, reject) => {
+        const finish = (error) => { clearTimeout(timer); contents.off('did-finish-load', done); contents.off('did-fail-load', failed); contents.off('destroyed', closed); error ? reject(error) : resolve(); };
+        const done = () => finish();
+        const failed = (_event, _code, _description, _url, mainFrame) => { if (mainFrame) finish(new Error('Native session reload failed')); };
+        const closed = () => finish(new Error('Native session tab closed'));
+        const timer = setTimeout(() => finish(new Error('Native session reload timed out')), Math.max(1, deadline - Date.now()));
+        contents.once('did-finish-load', done); contents.on('did-fail-load', failed); contents.once('destroyed', closed);
+        contents.reload();
+      })));
+      return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded: reloads.length };
     } catch {
       await removeScopedCookies(); await this.setCookies(previousCookies);
       for (const { tab, origin, previous } of previousStorage) if (!tab.view.webContents.isDestroyed()) await applyStorage(tab, origin, previous).catch(() => {});
@@ -947,7 +969,7 @@ export class OwnedBrowserHost {
     contents.closeDevTools();
     this.emit(tab, 'debugger-disconnected', { reason, recovery: 'reconnect' });
   }
-  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
+  onAutomationDisconnected() { for (const tab of this.tabs.values()) { void this.clearActivity(tab); tab.passwordSnapshot = null; tab.passwordControlEpoch = (tab.passwordControlEpoch ?? 0) + 1; this.webAuthn?.cancelTab(tab); tab.human = false; tab.held = false; tab.interactive = false; this.emit(tab, 'runtime-disconnected'); } }
 
   async release(owner) {
     if (this.owner !== owner) return false;

@@ -40,7 +40,7 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       const createView = () => createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: '채팅' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
       const view = createView();
       view.mount(document.querySelector<HTMLElement>('#host')!); view.setVisible(true);
-      Object.assign(window, { projectionTest: { view, calls, createView, dropPresentation() { attached = null; for (const callback of nativeEvents) callback({ type: 'presentation', tabId: 'same-tab', mode: 'hidden' }); }, holdHealth() { holdHealth = true; }, get healthStarted() { return !!rejectHealth; }, failHealth() { holdHealth = false; rejectHealth?.(new Error('Presentation hidden by menu')); }, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
+      Object.assign(window, { projectionTest: { view, calls, createView, dropPresentation() { attached = null; for (const callback of nativeEvents) callback({ type: 'presentation', tabId: 'same-tab', mode: 'hidden' }); }, nativeEvent(event: any) { for (const callback of nativeEvents) callback(event); }, holdHealth() { holdHealth = true; }, get healthStarted() { return !!rejectHealth; }, failHealth() { holdHealth = false; rejectHealth?.(new Error('Presentation hidden by menu')); }, get attached() { return attached; }, hold() { hold = true; }, release() { hold = false; release?.(); } } });
     });
     const attached = (value: string | null) => page.waitForFunction(value => (window as any).projectionTest.attached === value, { timeout: 2000 }, value);
     await attached('same-tab');
@@ -131,7 +131,8 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
 
 
     await page.evaluate(() => { const view = (window as any).projectionTest.view; view.previewAgent(view.controller.tab()); });
-    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'attach' && call.mode === 'dock' && call.interactive === false));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.ok(await page.evaluate(() => (window as any).projectionTest.calls.filter((call: any) => call.action === 'attach').every((call: any) => call.interactive === true)), 'the native host gates input per agent action');
     assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).dataset.presentation), 'dock', 'agent control preserves the visible sidebar');
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), true, 'docked agent control does not spawn a duplicate float');
     assert.ok(await page.evaluate(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'view' && call.visible === true && call.tabId === 'same-tab')), 'selected sidebar tab is reported to the hub');
@@ -146,11 +147,17 @@ test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복�
       view.previewAgent({ ...view.controller.tab(), controller: { owner: 'agent' } });
     });
     await page.waitForFunction(() => (window as any).projectionTest.calls.at(-1)?.action === 'attach'
-      && (window as any).projectionTest.calls.at(-1)?.interactive === false);
+      && (window as any).projectionTest.calls.at(-1)?.mode === 'float');
     assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).hidden), false, 'agent activity opens the floating preview');
-    assert.equal(await page.$eval('.ag-browser-floating', node => (node as HTMLElement).inert), true, 'preview chrome rejects human input');
-    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).inert), true, 'preview page controls reject human input');
-    assert.equal(await page.$eval('.ag-browser-address', node => { (node as HTMLElement).focus(); return document.activeElement === node; }), false, 'URL input cannot steal agent control');
+    await page.evaluate(() => { const view = (window as any).projectionTest.view; view.agentActivity(view.controller.tab(), true); });
+    assert.equal(await page.$eval('.ag-browser-floating-chrome', node => (node as HTMLElement).inert), true, 'preview chrome waits while an agent action runs');
+    assert.equal(await page.$eval('.ag-browser-toolbar', node => (node as HTMLElement).inert), true, 'page controls wait while an agent action runs');
+    assert.equal(await page.$eval('.ag-browser-address', node => { (node as HTMLElement).focus(); return document.activeElement === node; }), false, 'URL input cannot interrupt a running agent action');
+    await page.evaluate(() => (window as any).projectionTest.nativeEvent({ type: 'human-input', tabId: 'same-tab', agentActive: true }));
+    await page.waitForFunction(() => (window as any).projectionTest.calls.some((call: any) => call.action === 'control' && call.owner === 'human' && call.tabId === 'same-tab'));
+    await page.evaluate(() => { const view = (window as any).projectionTest.view; view.agentActivity(view.controller.tab(), false); });
+    assert.equal(await page.$eval('.ag-browser-floating-chrome', node => (node as HTMLElement).inert), false, 'preview chrome accepts input between agent actions');
+    assert.equal(await page.$eval('.ag-browser', node => (node as HTMLElement).inert), false);
     await page.evaluate(() => document.documentElement.classList.add('document-home-open'));
     await attached('same-tab');
     assert.equal(await page.$eval('.ag-browser-floating', node => getComputedStyle(node).visibility), 'visible', 'agent preview remains visible on Home');

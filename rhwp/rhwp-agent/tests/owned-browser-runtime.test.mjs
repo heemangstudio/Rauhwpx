@@ -194,9 +194,13 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.ok(observation.snapshot.elements.some((element) => element.value === '한국어 research'));
   await assert.rejects(browser.request(alice, 'type', inputArgs), { code: 'BROWSER_STALE_REFERENCE' });
   const taken = await browser.request(human, 'control', { tabId: a.tabId, owner: 'human' });
-  await browser.request(alice, 'press', { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch });
+  assert.equal(taken.tab.controller.held, true);
+  const press = { tabId: a.tabId, key: 'Enter', navigationEpoch: taken.tab.navigationEpoch, controllerEpoch: taken.tab.controllerEpoch };
+  await assert.rejects(browser.request(alice, 'press', press), { code: 'BROWSER_USER_IN_CONTROL' });
+  events.length = 0;
   const stillReadable = await browser.request(alice, 'snapshot', { tabId: a.tabId });
-  assert.ok(stillReadable.snapshot.text.includes('Research'));
+  assert.ok(stillReadable.snapshot.text.includes('Research'), 'agent reads continue while the user holds the tab');
+  assert.equal(events.some(event => event.type === 'owned_browser_activity'), false, 'observe-only reads do not lock the user out');
   const frame = await browser.request(human, 'frame', { tabId: a.tabId });
   assert.equal(frame.frame.mimeType, 'image/jpeg');
   assert.ok(Buffer.from(frame.frame.data, 'base64').length > 100);
@@ -206,6 +210,8 @@ test('real managed browser keeps login shared while refs and input stay tab scop
   assert.equal(capture.capture.screenshot, undefined);
   assert.equal(capture.capture.screenshotError.code, 'BROWSER_PASSWORD_CAPTURE_PROTECTED');
   const returned = await browser.request(human, 'control', { tabId: a.tabId, owner: 'agent' });
+  assert.equal(returned.tab.controller.held, undefined);
+  await browser.request(alice, 'press', { ...press, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch });
   await assert.rejects(browser.request(alice, 'navigate', { tabId: a.tabId, url: `${origin}/redirect-private`, navigationEpoch: returned.tab.navigationEpoch, controllerEpoch: returned.tab.controllerEpoch }), { code: 'BROWSER_ACTION_FAILED' });
   const shared = (await browser.request({ ...human, sessionId: 'window-a' }, 'open', { url: `${origin}/research` })).tab;
   const sidebarAgent = { ...bob, sessionId: 'window-b', activeBrowserTabId: shared.tabId };
@@ -278,11 +284,17 @@ test('human tab closure retains epoch and agent scope checks without requiring p
   assert.equal(closed.completed, true); assert.equal(closedPages, 1); assert.equal((await browser.inventory(human)).tabs.length, 0);
   const humanOwned = await browser.request(human, 'open', {});
   const controlled = await browser.request(human, 'control', { tabId: humanOwned.tab.tabId, owner: 'human' });
-  // 사용자의 입력 이후에도 소유 에이전트가 탭을 조작할 수 있다.
+  // 사용자가 잡은 탭은 같은 창의 새 턴이 시작되면 소유 에이전트가 다시 조작할 수 있다.
   const next = await browser.request(agent, 'open', {});
   const taken = await browser.request(human, 'control', { tabId: next.tab.tabId, owner: 'human' });
-  await browser.request(agent, 'close', identity(taken.tab));
-  await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity(controlled.tab));
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_IN_CONTROL' });
+  await browser.releaseHolds({ clientId: 'another-editor' });
+  await assert.rejects(browser.request(agent, 'close', identity(taken.tab)), { code: 'BROWSER_USER_IN_CONTROL' });
+  await browser.releaseHolds(human);
+  const released = (await browser.inventory(agent)).tabs.find(tab => tab.tabId === next.tab.tabId);
+  assert.equal(released.controller.held, undefined);
+  await browser.request(agent, 'close', identity(released));
+  await browser.request({ isHuman: true, clientId: 'another-editor' }, 'close', identity((await browser.inventory(human)).tabs.find(tab => tab.tabId === controlled.tab.tabId)));
   assert.equal(closedPages, 3);
 });
 

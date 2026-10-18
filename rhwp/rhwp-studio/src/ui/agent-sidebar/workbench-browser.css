@@ -123,6 +123,8 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 html.document-home-open .ag-browser-floating[data-agent-controlled="true"] { visibility: visible; pointer-events: auto; }
 
 .ag-browser button[data-downloading=true] { color: var(--ag-accent); }
+.ag-browser-navigation button.ag-browser-return { flex: 0 0 auto; width: auto; height: 24px; margin-left: 4px; padding: 0 8px; border: 1px solid var(--ag-accent); border-radius: 6px; background: transparent; color: var(--ag-accent); font-size: 11px; white-space: nowrap; cursor: pointer; }
+.ag-browser-navigation button.ag-browser-return[hidden] { display: none; }
 
 .ag-browser-floating { contain: layout paint; }
 .ag-browser-floating[data-gesture] { box-shadow: 0 4px 12px var(--ag-shadow-soft), 0 0 0 1px var(--ag-shadow-faint); }

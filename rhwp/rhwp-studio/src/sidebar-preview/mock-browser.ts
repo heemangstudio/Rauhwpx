@@ -92,7 +92,7 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (!tab) throw Object.assign(new Error('브라우저 탭을 찾을 수 없습니다.'), { code: 'BROWSER_TAB_NOT_FOUND' });
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw Object.assign(new Error('페이지가 바뀌었습니다. 다시 캡처해 주세요.'), { code: 'STALE_NAVIGATION' });
     if (action === 'close') { tabs = tabs.filter((row) => row !== tab); changed(); return { ok: true }; }
-    if (action === 'control') { tab.controller.owner = 'agent'; tab.controllerEpoch++; changed(tab); }
+    if (action === 'control') { tab.controller = { owner: tab.controller.owner, ...(args.owner === 'agent' ? {} : { held: true }) }; tab.controllerEpoch++; changed(tab); }
     if (action === 'navigate') { if (args.url) tab.url = String(args.url); tab.navigationEpoch++; tab.canGoBack = true; changed(tab); }
     if (action === 'recover') { generation++; tab.status = 'ready'; changed(tab); }
     if (action === 'input') {
