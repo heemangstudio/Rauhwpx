@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFile, writeFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
@@ -28,7 +28,7 @@ app.whenReady().then(async () => {
     });
     await new Promise(resolve => site.listen(0, '127.0.0.1', resolve));
     const origin = `http://article.example:${site.address().port}`;
-    const { createServer: createVite } = await import(require.resolve('vite'));
+    const { createServer: createVite } = await import(pathToFileURL(require.resolve('vite')).href);
     vite = await createVite({ root: fileURLToPath(new URL('../../rhwp/rhwp-studio/', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'adblock-settings', configureServer(server) {
       server.middlewares.use((request, response, next) => {
         if (request.url !== '/adblock-settings') return next();

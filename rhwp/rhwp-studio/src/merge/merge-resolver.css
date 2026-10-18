@@ -2,7 +2,7 @@ body.merge-resolver-open {
   overflow: hidden;
 }
 
-html.desktop-mac body.merge-resolver-open #menu-bar::after {
+html:is(.desktop-mac, .desktop-windows) body.merge-resolver-open #menu-bar::after {
   -webkit-app-region: no-drag;
 }
 
@@ -64,15 +64,15 @@ html.desktop-mac body.merge-resolver-open #menu-bar::after {
 .merge-confirm-actions { display: flex; align-items: center; gap: 8px; }
 .merge-history-actions { gap: 2px; }
 
-html.desktop-mac .merge-resolver-window { -webkit-app-region: no-drag; }
-html.desktop-mac .merge-resolver-header {
+html:is(.desktop-mac, .desktop-windows) .merge-resolver-window { -webkit-app-region: no-drag; }
+html:is(.desktop-mac, .desktop-windows) .merge-resolver-header {
   min-height: var(--desktop-titlebar-height, 38px);
   padding-left: calc(16px + var(--desktop-traffic-light-inset, 78px));
   -webkit-app-region: drag;
 }
-html.desktop-mac.desktop-fullscreen .merge-resolver-header { padding-left: 16px; }
-html.desktop-mac .merge-resolver-header-actions,
-html.desktop-mac .merge-resolver-header button { -webkit-app-region: no-drag; }
+html:is(.desktop-mac, .desktop-windows).desktop-fullscreen .merge-resolver-header { padding-left: 16px; }
+html:is(.desktop-mac, .desktop-windows) .merge-resolver-header-actions,
+html:is(.desktop-mac, .desktop-windows) .merge-resolver-header button { -webkit-app-region: no-drag; }
 
 /* 본문 배치 */
 .merge-resolver-body {

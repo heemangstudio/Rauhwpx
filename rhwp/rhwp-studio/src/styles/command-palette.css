@@ -69,6 +69,11 @@
   padding: 4px 0;
 }
 
+/* Windows 의 고전 스크롤 막대는 목록 오른쪽을 가린다. 휠·키보드 스크롤은 그대로 둔다. */
+html.desktop-windows .cp-list {
+  scrollbar-width: none;
+}
+
 .cp-item {
   display: flex;
   align-items: center;

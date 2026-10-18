@@ -1,5 +1,4 @@
-import { blake3 } from '@noble/hashes/blake3.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { blake3Hex } from '../core/content-hash.ts';
 
 import type { CompareDocumentSnapshot } from '../compare/types.ts';
 import {
@@ -23,7 +22,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export function hashBytes(bytes: Uint8Array): BlobId {
-  return blobId(`blake3:${bytesToHex(blake3(bytes))}`);
+  return blobId(`blake3:${blake3Hex(bytes)}`);
 }
 
 export function fingerprintBytes(bytes: Uint8Array): ContentFingerprint {

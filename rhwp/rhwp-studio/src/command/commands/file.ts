@@ -834,14 +834,17 @@ function projectFileDeps(
   return {
     ...projectFileLookupDeps(claim),
     // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
+    // 열기는 onLoaded 가 없어도 해야 한다. `onLoaded?.(await 열기())` 처럼 쓰면 onLoaded 가 없을 때
+    // 인자(열기)까지 건너뛰어, 문서를 열지 않고도 'opened' 가 된다(채팅을 따라 문서 옮기기가 멈춘 원인).
     loadBound: async (bytes, name, handle, documentId) => {
-      onLoaded?.(await openDocumentBytesWithOutcome(services, {
+      const outcome = await openDocumentBytesWithOutcome(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
         ...(skipUnsavedGuard ? { skipUnsavedGuard: true } : {}),
         grant: { kind: 'verified', documentId },
-      }));
+      });
+      onLoaded?.(outcome);
     },
     pickForProject: async (displayName) => {
       const desktop = await pickDesktopNativeProjectFile({
@@ -913,9 +916,17 @@ function libraryMoveDeps(
     }),
     saveCurrent: () => saveCurrentDocument(services),
     listRecent: listRecentDocs,
-    openProjectFile: (claim) => openProjectFile(claim, projectFileDeps(services, claim, {
-      skipUnsavedGuard: true,
-    })),
+    // 파일을 찾았어도 문서로 열지 못했으면(취소·읽기 실패) 옮긴 것이 아니다.
+    openProjectFile: async (claim) => {
+      let loaded: OpenBytesOutcome | null = null;
+      const outcome = await openProjectFile(claim, projectFileDeps(services, claim, {
+        skipUnsavedGuard: true,
+        onLoaded: (result) => { loaded = result; },
+      }));
+      const result = loaded as OpenBytesOutcome | null;
+      if (outcome.kind !== 'opened' || !result || result.ok) return outcome;
+      return result.cancelled ? { kind: 'cancelled' } : { kind: 'not-this-file' };
+    },
     openViaPicker: () => openFileViaPicker(services),
     toast: (message) => showToast({ message, durationMs: 3500 }),
     commitCurrent,

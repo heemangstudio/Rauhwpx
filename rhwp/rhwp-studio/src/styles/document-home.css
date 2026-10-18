@@ -95,13 +95,13 @@ html.document-home-open :is(#studio-root, #agent-sidebar) *::after {
 
 /* macOS 셸: 창 제목 막대 자리다. 신호등을 비켜 두고 빈 면으로 창을 끈다. 끌기 영역은
    문서 순서로 적용되므로 막대(끌기) 뒤에 오는 단추가 no-drag 로 덮는다. */
-html.desktop-mac .dh-topbar {
+html:is(.desktop-mac, .desktop-windows) .dh-topbar {
   height: var(--desktop-titlebar-height, 38px);
   padding-left: calc(var(--desktop-home-reserve, 98px) + 2px);
   -webkit-app-region: drag;
 }
 
-html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
+html:is(.desktop-mac, .desktop-windows) .dh-topbar :is(button, a, input, [role='button']) {
   -webkit-app-region: no-drag;
 }
 
@@ -225,7 +225,7 @@ html.desktop-mac .dh-topbar :is(button, a, input, [role='button']) {
 
 /* 새 채팅은 위 막대 모서리에서 위·오른쪽 여백이 같게 선다(막대 오른쪽 안쪽 여백 16px 를 덜어 낸다). */
 .dh-new-chat { margin-right: calc((48px - 32px) / 2 - 16px); }
-html.desktop-mac .dh-new-chat {
+html:is(.desktop-mac, .desktop-windows) .dh-new-chat {
   margin-right: calc((var(--desktop-titlebar-height, 38px) - 32px) / 2 - 16px);
 }
 

@@ -122,7 +122,8 @@ async function main() {
     if (editor && !editor.isDestroyed()) editor.destroy();
     for (const socket of sockets) socket.destroy();
     if (server) await new Promise((resolve) => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    // Windows 에서는 Electron 이 끝나기 전까지 프로필 파일(DIPS 등)을 잡고 있어 지우기가 실패한다. 결과 보고를 막지 않는다.
+    await rm(root, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
     console.log(`NATIVE_SECRET_REPORT ${JSON.stringify(report)}`);
     app.exit(process.exitCode || 0);
   }

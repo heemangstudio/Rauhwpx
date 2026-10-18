@@ -208,6 +208,7 @@ export interface RhwpDesktopApi {
   }) => void) => void;
   platform?: string;
   isFullScreen?: () => Promise<boolean>;
+  setWindowChromeTheme?: (dark: boolean) => void;
   /** 네이티브 인쇄 대화상자를 호출 창의 내용으로 연다 (Electron 데스크톱 전용). */
   printCurrentWindow?: () => Promise<void>;
   /** PDF 저장 위치를 고른다. 경로 대신 한 번 쓰는 토큰을 돌려준다. */
@@ -1537,11 +1538,11 @@ export function installDesktopPlainTextPasteHandling(
 }
 
 /**
- * macOS Electron 창 크롬 연동.
+ * macOS·Windows Electron 통합 제목 막대 연동.
  *
  * 셸이 titleBarStyle: 'hidden' 으로 뜨므로 메뉴바가 창 최상단을 차지한다.
- * `desktop-mac` 클래스로 신호등 버튼 자리(왼쪽 여백)와 드래그 영역을 켜고,
- * 전체 화면에서는 신호등이 사라지므로 `desktop-fullscreen` 으로 여백을 되돌린다.
+ * 플랫폼 클래스로 네이티브 창 단추 자리와 드래그 영역을 켜고,
+ * 전체 화면에서는 `desktop-fullscreen` 으로 창 단추 여백을 되돌린다.
  */
 export function installDesktopWindowChrome(win?: DesktopHost): void {
   if (!isDesktopApp(win) || typeof document === 'undefined') return;
@@ -1550,9 +1551,14 @@ export function installDesktopWindowChrome(win?: DesktopHost): void {
     ?? (typeof navigator !== 'undefined' && /Macintosh|Mac OS X/i.test(navigator.userAgent)
       ? 'darwin'
       : '');
-  if (platform !== 'darwin') return;
+  if (platform !== 'darwin' && platform !== 'win32') return;
   const root = document.documentElement;
-  root.classList.add('desktop-mac');
+  root.classList.add(platform === 'darwin' ? 'desktop-mac' : 'desktop-windows');
+  if (platform === 'win32') {
+    const syncTheme = () => api?.setWindowChromeTheme?.(root.dataset.themeEffective === 'dark');
+    new MutationObserver(syncTheme).observe(root, { attributes: true, attributeFilter: ['data-theme-effective'] });
+    syncTheme();
+  }
   const setFullscreen = (fullscreen: boolean) => {
     root.classList.toggle('desktop-fullscreen', fullscreen);
   };

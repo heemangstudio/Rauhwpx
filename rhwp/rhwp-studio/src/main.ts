@@ -190,7 +190,7 @@ import {
   type ChatSession,
   type DocumentSession,
 } from './document-session.ts';
-import { opensInNewSession, opensNestedInNavigation, routeUnlinkedThread, settledLinkLoad, type LinkLoad } from './document-session-routing.ts';
+import { opensInNewSession, opensNestedInNavigation, routeUnlinkedThread, sessionHoldsActiveUnlinkedChat, settledLinkLoad, type LinkLoad } from './document-session-routing.ts';
 import {
   BLOCKED_RESTORE_MESSAGE,
   offerAutosaveRecovery,
@@ -1067,10 +1067,23 @@ function waitForNextPaint(): Promise<void> {
   });
 }
 
-async function updateLoadProgress(percent: number, label: string): Promise<void> {
+/**
+ * 진행 문구를 그리려고 프레임을 기다리는 최소 간격. 문서 하나를 열며 열 번 가까이 부르므로 매번 기다리면
+ * 그것만으로 수백 ms 가 든다. 오래 걸린 단계 뒤에는 기다려 문구가 화면에 남게 한다.
+ */
+const LOAD_PROGRESS_PAINT_INTERVAL_MS = 100;
+let lastLoadProgressPaintAt = -Infinity;
+
+async function updateLoadProgress(
+  percent: number,
+  label: string,
+  options: { paint?: boolean } = {},
+): Promise<void> {
   const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
   sbMessage().textContent = `파일 로딩 ${safePercent}% - ${label}`;
+  if (!options.paint && performance.now() - lastLoadProgressPaintAt < LOAD_PROGRESS_PAINT_INTERVAL_MS) return;
   await waitForNextPaint();
+  lastLoadProgressPaintAt = performance.now();
 }
 
 /** 문서 로드가 데스크톱 글꼴 연결을 기다리는 최대 시간. 넘기면 백그라운드에서 마저 연결한다. */
@@ -3335,7 +3348,9 @@ async function moveFromSessionNow(
     if (options.threadId) await focusThreadInSession(live, options.threadId);
     return 'moved';
   }
-  if (isDocumentSessionBusy(session)) {
+  // 쓰이는 문서 없는 채팅도 뒤에 둔다 — 그 자리에 열면 열기가 어차피 새 세션으로 비키는데, 그 세션의
+  // 사이드바는 고른 채팅을 모른다. 따라갈 채팅을 새 세션에 먼저 알려 둔다.
+  if (isDocumentSessionBusy(session) || sessionHoldsActiveUnlinkedChat(session)) {
     const outcome = await openInNewSession(
       (fresh) => {
         if (options.threadId) fresh.sidebar?.followThreadOnNextDocument(options.threadId);
@@ -4461,7 +4476,7 @@ async function initializeDocument(
     }
 
     // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
-    await updateLoadProgress(96, '편집 상태 초기화 중...');
+    await updateLoadProgress(96, '편집 상태 초기화 중...', { paint: true });
     inputHandler?.activateWithCaretPosition();
     eventBus.emit('document-context-changed');
     scheduleCharacterStatus(true);

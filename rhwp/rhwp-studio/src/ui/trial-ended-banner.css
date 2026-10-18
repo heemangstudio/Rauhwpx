@@ -129,4 +129,4 @@
 }
 
 /* 잠긴 카드 위로도 제목 막대의 홈 단추는 누를 수 있게 둔다. */
-html.desktop-mac body:has(.trial-ended-overlay-locked) .app-home-button { z-index: 15001; }
+html:is(.desktop-mac, .desktop-windows) body:has(.trial-ended-overlay-locked) .app-home-button { z-index: 15001; }

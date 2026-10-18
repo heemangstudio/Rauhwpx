@@ -12,6 +12,8 @@ export const WINDOWS_CMD_LINE_LIMIT = 8191;
 const BATCH_EXT = /\.(?:cmd|bat)$/i;
 /** npm/pnpm/yarn cmd-shim: node (or %_prog%) plus a quoted JS entry, forwarding %*. */
 const NODE_SHIM_INVOCATION = /(?:^|[\s&])(?:node(?:\.exe)?|"(?:[^"\r\n]*[/\\])?node(?:\.exe)?"|"%_prog%")[ \t]+"([^"\r\n]+\.(?:cjs|mjs|js))"[ \t]+%\*/gi;
+/** npm cmd-shim for a package `bin` that is itself a native .exe (Claude Code 2.1.30x+). */
+const NATIVE_SHIM_INVOCATION = /(?:^|[\s&])"([^"\r\n]+\.exe)"[ \t]+%\*/gi;
 const NODE_BIN = /^(?:node|node\.exe)$/i;
 
 /**
@@ -145,6 +147,24 @@ export function parseNpmCmdShimScript(cmdPath, contents, deps = {}) {
   return null;
 }
 
+/**
+ * npm 이 네이티브 `.exe` bin 에 만드는 `.cmd` 심에서 실행 파일 경로를 꺼낸다.
+ * node.exe 는 제외한다 (스크립트 없는 node 호출은 위 파서의 몫이 아니다).
+ *
+ * @param {string} cmdPath
+ * @param {string} contents
+ * @param {{ existsSync?: typeof fsExistsSync }} [deps]
+ * @returns {string | null}
+ */
+export function parseNativeCmdShimExecutable(cmdPath, contents, deps = {}) {
+  const existsSync = deps.existsSync ?? fsExistsSync;
+  for (const match of String(contents).matchAll(NATIVE_SHIM_INVOCATION)) {
+    const resolved = path.resolve(expandCmdVars(match[1], cmdPath));
+    if (!isNodeBinary(resolved) && existsSync(resolved)) return resolved;
+  }
+  return null;
+}
+
 function resolveWindowsCommand(command, deps = {}) {
   const existsSync = deps.existsSync ?? fsExistsSync;
   const whichSync = deps.whichSync ?? ((cmd, opt) => which.sync(cmd, { ...opt, nothrow: true }));
@@ -194,7 +214,12 @@ export function resolveNpmCliLaunch(command, deps = {}) {
     return { command: resolved, leadingArgs: [], env: {} };
   }
   const script = parseNpmCmdShimScript(resolved, contents, deps);
-  if (!script) return { command: resolved, leadingArgs: [], env: {} };
+  if (!script) {
+    // 네이티브 .exe 를 감싼 심은 exe 를 직접 띄운다. cmd.exe 를 거치면 8191 상한에 걸리고
+    // Agent SDK 는 .cmd 를 spawn 하지 못한다 (EINVAL).
+    const native = parseNativeCmdShimExecutable(resolved, contents, deps);
+    return { command: native ?? resolved, leadingArgs: [], env: {} };
+  }
 
   return {
     command: nodeCommand,

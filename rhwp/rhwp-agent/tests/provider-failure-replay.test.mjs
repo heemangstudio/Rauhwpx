@@ -109,6 +109,39 @@ test('claude/usage-limit: usage_limit with the rejected window reset, not the wa
   assert.match(end.failure.message, /resets 3pm/, 'the provider text stays readable under details');
 });
 
+test('claude: failure result errors survive the adapter and select the right recovery', { timeout: 20_000 }, async (t) => {
+  for (const [message, expectedClass] of [
+    ['Invalid API key · Please run /login', 'auth_required'],
+    ['Model not found: claude-unavailable', 'invalid_request'],
+    ['Connection error: ECONNRESET', 'network'],
+    ['Sandbox required but unavailable: sandbox is enabled but the Windows sandbox is not active on this session (feature gate off).', 'invalid_request'],
+  ]) {
+    await t.test(expectedClass, async (t) => {
+      const bundle = fixtureVariant('claude/auth-failure', 'SDK error result uses errors[] without result', (records) => records
+        .filter((record) => record.json?.type !== 'assistant')
+        .map((record) => {
+          if (record.json?.type !== 'result') return record;
+          const { result, api_error_status, terminal_reason, ...rest } = record.json;
+          return { ...record, json: { ...rest, subtype: 'error_during_execution', errors: [message] } };
+        }));
+      const { end, events } = await replayTurn(t, bundle);
+      assert.equal(end.failure.message, message);
+      assert.equal(end.failure.class, expectedClass);
+      assert.deepEqual(events.filter((event) => event.type === 'text-delta'), []);
+    });
+  }
+});
+
+test('claude: empty failure result keeps the assistant error instead of undefined', { timeout: 20_000 }, async (t) => {
+  const bundle = fixtureVariant('claude/auth-failure', 'result without error text', (records) => records.map((record) => {
+    if (record.json?.type !== 'result') return record;
+    const { result, ...rest } = record.json;
+    return { ...record, json: { ...rest, errors: [] } };
+  }));
+  const { end } = await replayTurn(t, bundle);
+  assert.equal(end.failure.message, 'Invalid API key · Please run /login');
+});
+
 test('claude/crash-mid-turn: process_exited, retryable, no secret', { timeout: 20_000 }, async (t) => {
   const { events, end } = await replayTurn(t, 'claude/crash-mid-turn');
   assert.equal(end.stopReason, 'exited');

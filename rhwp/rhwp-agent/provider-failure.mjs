@@ -233,6 +233,7 @@ const INVALID_TEXT = /invalid[_ ]request|\b40[04]\b|\b413\b/i;
 /** 허브·어댑터가 직접 쓰는 정리 실패 문구 (영문 고정 문구). */
 const CLEANUP_TEXT = /cleanup (?:could not be confirmed|remains unconfirmed)|could not be confirmed stopped/i;
 const CLI_MISSING_TEXT = /\bENOENT\b|command not found|is not recognized as an internal or external command/i;
+const SANDBOX_UNAVAILABLE_TEXT = /sandbox required but unavailable/i;
 /** Claude 레거시 사용 한도 문구의 `…|<epoch 초>` 꼬리 — 유일하게 모호하지 않은 문구 속 시각. */
 const CLAUDE_EPOCH_SUFFIX = /\|(\d{10})(?!\d)/;
 
@@ -260,6 +261,7 @@ function withoutPathTokens(text) {
 
 /** 종료 문구가 로그인·한도·모델 문제를 말하는지 — 경로와 스택 위치를 지운 문구로 본다. */
 function exitTextClass(raw) {
+  if (SANDBOX_UNAVAILABLE_TEXT.test(raw)) return { class: 'invalid_request', code: 'sandbox_unavailable' };
   if (EXIT_LOGIN_COMMAND.test(raw)) return { class: 'auth_required' };
   const text = withoutPathTokens(raw);
   if (EXIT_AUTH_TEXT.test(text)) return { class: 'auth_required' };
@@ -271,6 +273,7 @@ function exitTextClass(raw) {
 }
 
 function textClass(text) {
+  if (SANDBOX_UNAVAILABLE_TEXT.test(text)) return { class: 'invalid_request', code: 'sandbox_unavailable' };
   if (AUTH_TEXT.test(text)) return { class: 'auth_required', code: null };
   // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };

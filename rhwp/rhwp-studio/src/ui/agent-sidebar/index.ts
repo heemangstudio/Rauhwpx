@@ -12,6 +12,7 @@ import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
+import { installSelectMenus } from './select-menu.ts';
 import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
 import { TurnChanges, invalidatedMessage } from './turn-changes.ts';
@@ -1405,6 +1406,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   root.id = 'agent-sidebar';
   root.className = 'ag-root';
   root.dataset.agent = selectedAgent;
+  installSelectMenus(root);
 
   const collapseTab = el('button', 'ag-collapse-tab');
   collapseTab.type = 'button';
@@ -1423,6 +1425,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   resizeHandle.tabIndex = 0;
 
   let sidebarWidthMin = SIDEBAR_WIDTH_MIN_FALLBACK;
+  /** scheduleSidebarWidthMin 이 걸어 둔 프레임 */
+  let sidebarWidthMinFrame: number | null = null;
   let sidebarWidth = readStoredSidebarWidth(sidebarWidthMin);
 
   /** --ag-sidebar-width 를 읽는 요소들. 끄는 동안에는 이들에만 걸어 문서 전체 재스타일을 피한다. */
@@ -4309,9 +4313,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function refreshSidebarWidthMin(): number {
+    cancelScheduledSidebarWidthMin();
     if (!composer.isConnected) return sidebarWidthMin;
-    const packed = measureComposerMetaFloor();
-    if (packed <= 0) return sidebarWidthMin;
+    // 여백은 재기 전(평소 상태)에 읽는다. 잰 뒤에 읽으면 측정용 클래스를 걷어 낸 스타일을 한 번 더 계산한다.
     const chrome = horizontalChrome(composer, [
       'margin-left',
       'margin-right',
@@ -4320,6 +4324,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       'border-left-width',
       'border-right-width',
     ]) + horizontalChrome(root, ['border-left-width']);
+    const packed = measureComposerMetaFloor();
+    if (packed <= 0) return sidebarWidthMin;
     const nextMin = Math.min(
       SIDEBAR_WIDTH_DEFAULT,
       Math.max(
@@ -4334,6 +4340,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     sidebarWidthMin = nextMin;
     applySidebarWidth(sidebarWidth, { persist: true, recenter: true });
     return sidebarWidthMin;
+  }
+
+  /**
+   * 다음 프레임에 한 번만 잰다. 재기는 레이아웃을 강제하므로, 문서를 바꾸는 동안 모드·워크플로·모델 표시가
+   * 연달아 바뀔 때마다 재면 큰 문서에서는 한 번에 100ms 넘게 걸린다. 값을 바로 써야 하는 곳은
+   * refreshSidebarWidthMin 을 부른다.
+   */
+  function scheduleSidebarWidthMin(): void {
+    if (sidebarWidthMinFrame !== null) return;
+    sidebarWidthMinFrame = window.requestAnimationFrame(() => {
+      sidebarWidthMinFrame = null;
+      if (root.dataset.disposed === 'true') return;
+      refreshSidebarWidthMin();
+    });
+  }
+  function cancelScheduledSidebarWidthMin(): void {
+    if (sidebarWidthMinFrame === null) return;
+    window.cancelAnimationFrame(sidebarWidthMinFrame);
+    sidebarWidthMinFrame = null;
   }
 
   const threadsPage = el('div', 'ag-threads-page');
@@ -5715,7 +5740,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       hint: planRun ? '승인한 계획을 실행 중' : (chatModeLockReason ?? ''),
       chatOnlyReason: chatModeLockReason,
     });
-    refreshSidebarWidthMin();
+    scheduleSidebarWidthMin();
   }
 
   /**
@@ -11714,7 +11739,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         rebuildLlmMenu();
         rebuildEffortMenu();
-        refreshSidebarWidthMin();
+        scheduleSidebarWidthMin();
         break;
       case 'agent-setup-status':
         receiveSetupStatuses(e.statuses);
@@ -11729,7 +11754,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           selectedEffort = resolveEffortForAgent(selectedAgent, selectedEffort, selectedModel);
           rebuildLlmMenu();
           rebuildEffortMenu();
-          refreshSidebarWidthMin();
+          scheduleSidebarWidthMin();
         }
         updateComposer();
         break;
@@ -11920,7 +11945,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.dataset.planningPhase = planningPhase;
     updateModeChip();
     root.dataset.agentMode = currentMode();
-    refreshSidebarWidthMin();
+    scheduleSidebarWidthMin();
   }
 
   function setPlanningPhase(phase: AgentPhase): void {
@@ -13227,6 +13252,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workspaceBrandObserver?.disconnect();
       turnFoldResizeObserver?.disconnect();
       if (messagesResizeFrame !== null) window.cancelAnimationFrame(messagesResizeFrame);
+      cancelScheduledSidebarWidthMin();
       dockResizeObserver?.disconnect();
       composerStackResizeObserver?.disconnect();
       cancelAnimationFrame(composerStackFrame);

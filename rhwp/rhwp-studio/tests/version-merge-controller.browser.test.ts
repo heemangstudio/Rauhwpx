@@ -107,19 +107,22 @@ test('snapshot cache shares an export across reads and invalidates on editor or 
         wasm.insertText(0, 0, 0, '새 내용');
         const edited = cache.capture(wasm, 'document-a', 1);
         const editExports = exports;
-        cache.capture(wasm, 'document-b', 1);
+        const otherDocument = cache.capture(wasm, 'document-b', 1);
         const documentExports = exports;
         wasm.fileName = 'renamed.hwp';
-        cache.capture(wasm, 'document-b', 1);
+        const renamed = cache.capture(wasm, 'document-b', 1);
         const renamedExports = exports;
         cache.clear();
         cache.capture(wasm, 'document-b', 1);
         return { initialExports, editExports, documentExports, renamedExports, finalExports: exports,
-          sameFingerprint: initial === captured.fingerprint, reused, changed: edited.fingerprint !== initial };
+          sameFingerprint: initial === captured.fingerprint, reused, changed: edited.fingerprint !== initial,
+          recaptured: otherDocument !== edited && renamed !== otherDocument };
       } finally { wasm.releaseDocument(); }
     });
-    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 3,
-      renamedExports: 4, finalExports: 5, sameFingerprint: true, reused: true, changed: true });
+    // 캐시 키가 바뀌면 새로 캡처한다. 엔진에 쓰기가 없었으면(다른 문서 id·clear) 같은 바이트를 다시 내보내지
+    // 않고, 엔진 이름을 바꾸면 다시 내보낸다.
+    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 2,
+      renamedExports: 3, finalExports: 3, sameFingerprint: true, reused: true, changed: true, recaptured: true });
   } finally { await page.close(); }
 });
 

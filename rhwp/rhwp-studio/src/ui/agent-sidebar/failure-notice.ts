@@ -99,6 +99,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
       if (origin === 'start') return `${label} CLI를 시작하지 못했어요`;
       return `${label} 실행이 중간에 멈췄어요`;
     case 'invalid_request':
+      if (failure.code === 'sandbox_unavailable') return `${label}의 안전 실행을 사용할 수 없어요`;
       if (failure.code && CONTEXT_CODES.has(failure.code)) return `대화가 너무 길어 ${label}가 처리하지 못했어요`;
       if (failure.code === 'PI_MODEL_MISSING') return 'Pi 모델이 선택되지 않았어요';
       if (failure.code && MODEL_CODES.has(failure.code)) return `${label} 모델을 찾지 못했어요`;
@@ -110,8 +111,15 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
 
 /** 실패 하나를 알림의 모양으로 — 순수 함수. */
 export function failureView(failure: ProviderFailure, origin: string, ctx: FailureViewContext): FailureView {
+  // 분류 수정 전에 저장된 실패도 재전송 없이 복구 안내를 보여 준다.
+  if (failure.class === 'unknown' && /sandbox required but unavailable/i.test(failure.message)) {
+    failure = { ...failure, class: 'invalid_request', code: 'sandbox_unavailable', retryable: false };
+  }
   const title = titleFor(failure, ctx.agentLabel, origin);
-  const detail = failure.message;
+  // 이전 버전에서 저장한 "undefined" 도 다시 보여 주지 않는다.
+  const detail = /^(?:undefined|null)?$/i.test(failure.message.trim())
+    ? '오류 원인이 기록되지 않았어요. 다시 시도하면 새 오류 내용을 확인할 수 있어요.'
+    : failure.message;
   if (!ctx.isLatest) return { title, line: null, actions: [], detail, compact: true };
   const actions: FailureAction[] = [];
   let line: string | null = null;
@@ -171,7 +179,16 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });
       break;
     case 'invalid_request':
+      if (failure.code === 'sandbox_unavailable') {
+        line = '현재 환경에서 필요한 실행 보호 기능이 지원되지 않아요. AI 설정에서 다른 AI를 선택해 주세요.';
+        actions.push({ id: 'settings', label: '다른 AI 연결' });
+        retryAllowed = false;
+      }
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });
+      break;
+    case 'unknown':
+      line = '원인을 확인하지 못했어요. 다시 시도하거나 AI 연결 설정을 확인해 주세요.';
+      actions.push({ id: 'settings', label: '연결 설정 확인' });
       break;
     default:
       break;

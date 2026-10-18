@@ -1,5 +1,4 @@
-import { blake3 } from '@noble/hashes/blake3.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { blake3Hex } from '../core/content-hash.ts';
 import type { FileSystemFileHandleLike } from '../command/file-system-access.ts';
 import type { RecentDoc } from './recent-store.ts';
 
@@ -62,7 +61,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 export function documentSourceDigest(bytes: Uint8Array): `blake3:${string}` {
-  return `blake3:${bytesToHex(blake3(bytes))}`;
+  return `blake3:${blake3Hex(bytes)}`;
 }
 
 /** Resolve stable identity before WASM receives bytes, using the recent-store rules. */

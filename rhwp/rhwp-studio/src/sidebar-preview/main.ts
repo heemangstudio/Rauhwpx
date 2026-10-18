@@ -50,7 +50,7 @@ import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contr
 import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
 import { applyAuditState } from './audit-state.ts';
-import { mountEditorShell } from './editor-shell.ts';
+import { applyPreviewCompactToolbar, mountEditorShell } from './editor-shell.ts';
 import { createProjectScene } from './project-scene.ts';
 import { mountCitationScenes } from './mock-citations.ts';
 import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-guard.ts';
@@ -556,8 +556,8 @@ const sidebar = initAgentSidebar({
     report('Classic document history placeholder'),
   // 문서 보기 설정은 편집기 엔진이 없어 반영할 곳이 없다. 테마는 core/theme.ts 가 직접 건다.
   editorSettingsRuntime: {
-    preview: () => {},
-    committed: () => {},
+    preview: (settings) => applyPreviewCompactToolbar(settings.view.compactToolbar),
+    committed: (settings) => applyPreviewCompactToolbar(settings.view.compactToolbar),
   },
 });
 mock.boot();

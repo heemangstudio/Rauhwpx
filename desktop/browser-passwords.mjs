@@ -134,8 +134,10 @@ function pageAction(payload) {
   const current = globalThis.__rhwpNativePasswordRefs;
   if (!current || current.token !== payload.snapshotId || location.origin !== payload.origin) return { error: 'stale' };
   const el = current.refs.get(payload.ref);
-  const ready = (field) => {
-    if (!field?.isConnected || field.disabled || field.readOnly) return false;
+  // 읽기 전용은 값을 쓰는 동작에서만 막는다. 읽기 전용 칸으로 만든 목록·날짜 선택기도 누를 수 있어야 한다.
+  const writes = ['type', 'fill', 'validate-fill', 'fill-secret', 'validate-secret'].includes(payload.action);
+  const ready = (field, editable = writes) => {
+    if (!field?.isConnected || field.disabled || editable && field.readOnly) return false;
     const rect = field.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 && getComputedStyle(field).visibility !== 'hidden';
   };
@@ -170,7 +172,7 @@ function pageAction(payload) {
   if (payload.action === 'fill' || payload.action === 'validate-fill') {
     const password = current.refs.get(payload.passwordRef);
     const username = payload.usernameRef ? current.refs.get(payload.usernameRef) : null;
-    if (!ready(password) || !(password instanceof HTMLInputElement) || password.type !== 'password' || username && (!ready(username) || !(username instanceof HTMLInputElement) || !['text', 'email', 'tel'].includes(username.type))) return { error: 'target' };
+    if (!ready(password, true) || !(password instanceof HTMLInputElement) || password.type !== 'password' || username && (!ready(username, true) || !(username instanceof HTMLInputElement) || !['text', 'email', 'tel'].includes(username.type))) return { error: 'target' };
     const form = password.form;
     if (username && username.form !== form) return { error: 'target' };
     if (sendsOffSite(form)) return { error: 'origin' };
@@ -187,11 +189,32 @@ function pageAction(payload) {
     return { completed: true };
   }
   if (payload.action === 'click') {
-    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
-    const rect = el.getBoundingClientRect(); const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-    const hit = document.elementFromPoint(point.x, point.y);
-    if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight || !hit || !(hit === el || el.contains(hit))) return { error: 'target' };
-    return { completed: true, point };
+    // 고정 머리글 아래로 숨지 않도록 가운데로 올린다.
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = el.getBoundingClientRect();
+    // 화면 안에 보이는 부분만 누른다. 화면보다 큰 요소는 가운데가 화면 밖일 수 있다.
+    const left = Math.max(rect.left, 0), top = Math.max(rect.top, 0);
+    const right = Math.min(rect.right, innerWidth), bottom = Math.min(rect.bottom, innerHeight);
+    if (right - left < 1 || bottom - top < 1) return { error: 'target' };
+    // 웹 컴포넌트 안까지 내려가 실제로 눌릴 요소를 찾는다. document 기준 결과는 그림자 호스트에서 멈춘다.
+    const deepHit = (x, y) => {
+      let hit = document.elementFromPoint(x, y);
+      for (let depth = 0; hit?.shadowRoot && depth < 32; depth++) { const inner = hit.shadowRoot.elementFromPoint(x, y); if (!inner || inner === hit) break; hit = inner; }
+      return hit;
+    };
+    // 눌린 요소가 대상 안(그림자 경계·slot 포함)이거나 대상과 연결된 label 이면 대상을 누른 것이다.
+    const reaches = (hit) => {
+      for (let node = hit; node; node = node.assignedSlot ?? node.parentNode ?? node.host) if (node === el) return true;
+      const label = hit?.closest?.('label');
+      return !!label && label.control === el;
+    };
+    const w = right - left, h = bottom - top, cx = left + w / 2, cy = top + h / 2;
+    // 가운데를 배너·쿠키 알림이 가리면 요소 안의 다른 지점을 시도한다.
+    const points = [[cx, cy], [left + w * 0.25, cy], [left + w * 0.75, cy], [cx, top + h * 0.25], [cx, top + h * 0.75], [left + Math.min(4, w / 2), top + Math.min(4, h / 2)], [right - Math.min(4, w / 2), bottom - Math.min(4, h / 2)]];
+    for (const [x, y] of points) {
+      if (reaches(deepHit(x, y))) return { completed: true, point: { x, y } };
+    }
+    return { error: 'target' };
   }
   // 일회용 코드는 사용자가 직접 입력한다. 비밀번호·카드 칸과 다른 안내를 준다.
   const secretError = () => el.autocomplete === 'one-time-code' ? 'code' : 'secret';

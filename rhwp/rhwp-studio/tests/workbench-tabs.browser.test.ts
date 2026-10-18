@@ -157,5 +157,38 @@ test('wide browser panes keep the chat header out of tab pointer targets', { tim
     const row = '.ag-workbench-tab-row:has([data-resource-id="browser:g1"])';
     await page.hover(row); await page.click(`${row} .ag-workbench-tab-close`);
     assert.equal(await page.$('[data-resource-id="browser:g1"]'), null, 'the first close button is reachable too');
+    // Windows 창 단추를 모사해 실제 탭·모서리 조작부가 가려지지 않는지 확인한다.
+    await page.evaluate(async () => {
+      await import('../src/styles/menu-bar.css');
+      document.documentElement.className = 'desktop-windows';
+      const corner = document.createElement('div');
+      corner.className = 'ag-workspace-corner';
+      corner.innerHTML = '<button class="ag-workspace-icon-btn">환경</button><button class="ag-workspace-icon-btn">축소</button><button class="ag-workspace-icon-btn">작업 칸</button>';
+      document.querySelector('.ag-stage')!.append(corner);
+      const caption = document.createElement('div');
+      caption.id = 'native-caption';
+      caption.style.cssText = 'position:fixed;right:0;top:0;width:138px;height:38px;z-index:99999';
+      document.body.append(caption);
+    });
+    for (const width of [900, 1300, 1536]) {
+      await page.setViewport({ width, height: 900 });
+      for (const fullscreen of [false, true]) {
+        await page.evaluate(({width, fullscreen}) => {
+          document.documentElement.classList.toggle('desktop-fullscreen', fullscreen);
+          document.querySelector<HTMLElement>('#native-caption')!.hidden = fullscreen;
+          const root = document.querySelector<HTMLElement>('.ag-root')!;
+          root.classList.toggle('ag-workspace-compact', width < 1000);
+          root.style.setProperty('--ag-review-w', width < 1000 ? '560px' : '660px');
+        }, {width, fullscreen});
+        for (const selector of ['.ag-workspace-corner button', '.ag-workbench-tab']) {
+          assert.equal(await page.$$eval(selector, nodes => nodes.every(node => {
+            const r = node.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return r.width > 0 && r.right <= innerWidth && (hit === node || node.contains(hit));
+          })), true, 'window controls must not cover workspace controls or browser tabs at ' + width);
+        }
+      }
+    }
+
   } finally { await browser?.close(); await server.close(); }
 });

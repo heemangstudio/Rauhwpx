@@ -902,9 +902,17 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     minHeight: 640,
     show: false,
     backgroundColor,
+    autoHideMenuBar: process.platform === 'win32',
     ...(isMac ? {
       titleBarStyle: 'hidden',
       trafficLightPosition: { x: 14, y: 12 },
+    } : process.platform === 'win32' ? {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: {
+        color: '#00000000',
+        symbolColor: nativeTheme.shouldUseDarkColors ? '#e6e6e6' : '#171b22',
+        height: 38,
+      },
     } : {}),
     webPreferences: {
       preload: PRELOAD_PATH,
@@ -1705,6 +1713,12 @@ ipcMain.handle('desktop:document-release', (event, slotId) => {
   documentLeases.releaseSlot(session.sessionId, slotId);
 });
 ipcMain.handle('window:is-fullscreen', (event) => sessionForEvent(event).window.isFullScreen());
+ipcMain.on('window:chrome-theme', (event, dark) => {
+  const window = sessionForEvent(event).window;
+  if (process.platform === 'win32' && typeof dark === 'boolean') {
+    window.setTitleBarOverlay({ symbolColor: dark ? '#e6e6e6' : '#171b22' });
+  }
+});
 ipcMain.on('desktop:set-document-state', (event, state) => {
   try {
     applyDocumentState(sessionForEvent(event).window, { edited: state?.edited === true });

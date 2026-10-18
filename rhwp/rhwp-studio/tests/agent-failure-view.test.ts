@@ -103,6 +103,26 @@ test('only the newest notice keeps actions; older ones keep the title only', () 
   assert.equal(view.title, 'Claude에 연결하지 못했어요');
 });
 
+test('unknown failures provide connection settings and recover unreadable saved details', () => {
+  const unknown = failure({ message: 'undefined' });
+  const view = failureView(unknown, 'turn', ctx());
+  assert.deepEqual(actions(view), ['retry', 'settings']);
+  assert.ok(view.line);
+  assert.notEqual(view.detail, 'undefined');
+  assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ hasRetry: false }))), ['settings']);
+  assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ isLatest: false }))), []);
+});
+
+test('unsupported sandbox offers another provider without retrying or weakening permissions', () => {
+  const view = failureView(failure({ class: 'invalid_request', code: 'sandbox_unavailable', retryable: false }), 'turn', ctx());
+  assert.deepEqual(actions(view), ['settings']);
+  assert.match(view.title, /안전 실행/);
+  assert.match(view.line!, /다른 AI/);
+  const saved = failureView(failure({ message: 'Sandbox required but unavailable: Windows sandbox is not active.' }), 'turn', ctx());
+  assert.equal(saved.title, view.title);
+  assert.deepEqual(actions(saved), ['settings']);
+});
+
 test('formatResetAt shows the time on the same day and the date on another day, in the viewer time zone', () => {
   assert.equal(formatResetAt(NOW + 3 * HOUR, NOW, 'Asia/Seoul'), '오후 3:00');
   assert.equal(formatResetAt(NOW + 45 * HOUR, NOW, 'Asia/Seoul'), '10월 12일 오전 9:00');

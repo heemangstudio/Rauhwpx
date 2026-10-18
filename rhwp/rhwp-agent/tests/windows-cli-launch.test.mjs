@@ -361,6 +361,82 @@ test('native Claude SDK launch unwraps Windows .cmd and merges Electron env', as
   assert.equal(/\.(?:cmd|bat)$/i.test(sdkOptions[0].pathToClaudeCodeExecutable), false);
 });
 
+// npm 11 cmd-shim for Claude Code 2.1.30x, whose package bin is a native claude.exe.
+function writeNativeExeCmdShim(root) {
+  const binDir = path.join(root, 'prefix', 'node_modules', '.bin');
+  const exePath = path.join(root, 'prefix', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(path.dirname(exePath), { recursive: true });
+  writeFileSync(exePath, '');
+  const cmdPath = path.join(binDir, 'claude.cmd');
+  writeFileSync(cmdPath, [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '"%dp0%\\..\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*',
+    '',
+  ].join('\r\n'));
+  return { cmdPath, exePath };
+}
+
+test('Windows npm .cmd around a native exe launches the exe directly, skipping cmd.exe', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-native-cmd-shim-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, exePath } = writeNativeExeCmdShim(root);
+  const argv = buildClaudeArgv(claudeOpts, sessionId, true);
+  const launched = applyManagedCliLaunch(cmdPath, argv, {
+    platform: 'win32',
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
+    env: { PATH: '' },
+  });
+  assert.equal(launched.command, exePath);
+  assert.deepEqual(launched.argv, argv);
+  assert.equal(launched.env.ELECTRON_RUN_AS_NODE, undefined);
+});
+
+test('native Claude SDK launch points at the exe behind a Windows npm .cmd', async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-sdk-native-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, exePath } = writeNativeExeCmdShim(root);
+  const events = [];
+  const sdkOptions = [];
+  const session = createClaudeSession({
+    ...claudeOpts,
+    claudeBin: cmdPath,
+    agentRole: 'chat',
+    requestUserInput: async () => ({ status: 'cancelled', reason: 'user-stop' }),
+    onEvent: (event) => events.push(event),
+  }, {
+    platform: 'win32',
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
+    queryAgent({ prompt, options }) {
+      sdkOptions.push(options);
+      const query = (async function* () {
+        for await (const _message of prompt) {
+          yield { type: 'system', subtype: 'init', session_id: options.sessionId ?? options.resume, model: 'claude-test' };
+          yield { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'done' };
+        }
+      })();
+      query.close = () => {};
+      return query;
+    },
+    spawnProcess() { throw new Error('legacy transport should not spawn'); },
+    terminateProcess() { return true; },
+    waitForExit: async () => true,
+    closeGraceMs: 1,
+  });
+  t.after(() => session.dispose());
+  session.sendUserMessage('review');
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  assert.equal(sdkOptions.length, 1);
+  assert.equal(sdkOptions[0].pathToClaudeCodeExecutable, exePath);
+});
+
 test('managed launch without env does not replace process.env with an empty object', () => {
   const launched = applyManagedCliLaunch('claude', ['--version'], {
     platform: 'linux',

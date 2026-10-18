@@ -45,6 +45,41 @@ export class EngineTrappedError extends Error {
  */
 const CALLS_ALLOWED_AFTER_TRAP = new Set(['exportHwp', 'exportHwpx', 'exportHml', 'getSourceFormat', 'free']);
 
+/**
+ * 문서 내용을 바꾸지 않는 엔진 메서드 이름 (wasm_api.rs 의 `&self` 메서드). 이름이 읽기처럼 보여도
+ * `&mut self` 인 메서드는 아래 예외에 둔다 — tests/engine-mutation-epoch.test.ts 가 wasm_api.rs 와 맞춰 본다.
+ */
+export const ENGINE_READ_CALL = /^(get|export|render|hitTest|has|is|find|count|measure|search)[A-Z0-9]/;
+export const ENGINE_MUTATING_READ_NAMES: ReadonlySet<string> = new Set([
+  'exportHwpVerify',
+  'findOrCreateFontId',
+  'findOrCreateFontIdForLang',
+  'getCharShapeRunsInCellByPath',
+  'getCellCharPropertiesAtByPath',
+  'getCellParaPropertiesAtByPath',
+]);
+
+/** 이름 규칙에 들지 않는 `&self` 메서드 가운데 화면·입력이 자주 부르는 것. 빠지면 지문을 다시 낼 뿐이다. */
+export const ENGINE_READ_NAMES: ReadonlySet<string> = new Set([
+  'canBatchBodyText', 'clipboardHasControl', 'clipboardIsSingleControl', 'hitTest',
+  'logicalToTextOffset', 'logicalToTextOffsetInCell', 'logicalToTextOffsetInCellByPath',
+  'moveVertical', 'moveVerticalByPath', 'moveVerticalEx', 'navigateHeaderFooterByPage',
+  'navigateNextEditable', 'pageCount', 'pageHasFootnoteFootholds', 'pendingTaskCount',
+  'textToLogicalOffset', 'textToLogicalOffsetInCellByPath', 'visiblePages',
+]);
+
+export function isEngineReadCall(name: string): boolean {
+  if (ENGINE_READ_NAMES.has(name)) return true;
+  return ENGINE_READ_CALL.test(name) && !ENGINE_MUTATING_READ_NAMES.has(name);
+}
+
+/** 읽기가 아닌 엔진 호출마다 오른다 (모든 문서 공통). 같은 값이면 그사이 어떤 문서도 바뀌지 않았다. */
+let mutationEpoch = 0;
+
+export function engineMutationEpoch(): number {
+  return mutationEpoch;
+}
+
 let trapped: EngineTrapInfo | null = null;
 const listeners = new Set<(info: EngineTrapInfo) => void>();
 
@@ -95,8 +130,10 @@ export function guardEngineCalls(proto: object): void {
     const original = descriptor?.value;
     if (typeof original !== 'function' || !descriptor?.writable) continue;
     const allowedAfterTrap = CALLS_ALLOWED_AFTER_TRAP.has(name);
+    const mutates = !isEngineReadCall(name);
     target[name] = function guarded(this: unknown, ...args: unknown[]) {
       if (trapped && !allowedAfterTrap) throw new EngineTrappedError(trapped.message);
+      if (mutates) mutationEpoch += 1;
       try {
         return original.apply(this, args);
       } catch (error) {

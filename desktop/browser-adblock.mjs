@@ -11,6 +11,15 @@ function hostname(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.hostname : ''; } catch { return ''; }
 }
 
+// 로그인 제공자 페이지와 그쪽으로 가는 요청은 거르지 않는다. 필터 목록이 Google 로그인의
+// 연결 확인(accounts.google.com/generate_204)을 막으면 '다음'이 멈춘다.
+export const SIGN_IN_HOSTS = new Set([
+  'accounts.google.com', 'accounts.youtube.com', 'appleid.apple.com', 'idmsa.apple.com',
+  'login.microsoftonline.com', 'login.live.com', 'login.microsoft.com', 'account.live.com',
+  'nid.naver.com', 'accounts.kakao.com', 'kauth.kakao.com',
+]);
+export function isSignInHost(host) { return SIGN_IN_HOSTS.has(host); }
+
 /** 기존 보안 요청 핸들러 뒤에서 Ghostery를 호출하는 네이티브 브라우저 연결부. */
 export class BrowserAdblock {
   constructor({ host, ipcMain, fetcher = fetch }) {
@@ -65,6 +74,7 @@ export class BrowserAdblock {
   shouldFilter(details) {
     // 첫 탐색과 서비스 워커 요청도 referrer로 판정하고, 페이지 전체의 일시 중지는 최상위 사이트에 적용한다.
     const source = details.resourceType === 'mainFrame' ? details.url : details.webContents?.getURL() || details.referrer || details.url;
+    if (isSignInHost(hostname(source)) || isSignInHost(hostname(details.url))) return false;
     return !!this.engine && this.active(source);
   }
   beforeRequest(details, callback) {

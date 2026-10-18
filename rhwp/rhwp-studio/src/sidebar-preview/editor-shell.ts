@@ -9,6 +9,12 @@ import { CommandPalette } from '../ui/command-palette.ts';
 import { EditorToolbarOverflow } from '../ui/editor-toolbar-overflow.ts';
 import { EditorStyleOverflow } from '../ui/editor-style-overflow.ts';
 import { COMPACT_TOOLBAR_ATTR, CompactToolbarLayout } from '../ui/compact-toolbar.ts';
+import { userSettings } from '../core/user-settings.ts';
+
+/** Mirror the editor runtime: the settings switch and the View menu share view.compactToolbar. */
+export function applyPreviewCompactToolbar(on: boolean): void {
+  document.getElementById('studio-header')?.toggleAttribute(COMPACT_TOOLBAR_ATTR, on);
+}
 
 /** Mount the production chrome around a plainly simulated document page. */
 export function mountEditorShell(report: (message: string) => void, eventBus: EventBus): void {
@@ -77,7 +83,11 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
           const collapsed = toolbar.classList.toggle('collapsed');
           header.querySelector('.sb-collapse-btn')?.setAttribute('aria-expanded', String(!collapsed));
         }
-        if (id === 'view:toolbox-compact') header.toggleAttribute(COMPACT_TOOLBAR_ATTR);
+        if (id === 'view:toolbox-compact') {
+          const on = !header.hasAttribute(COMPACT_TOOLBAR_ATTR);
+          userSettings.setCompactToolbar(on);
+          header.toggleAttribute(COMPACT_TOOLBAR_ATTR, on);
+        }
         report(`${label} · editor fixture`);
       },
     });
@@ -115,6 +125,7 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
   });
   const ribbonOverflow = new EditorToolbarOverflow(header.querySelector<HTMLElement>('#icon-toolbar')!);
   const styleOverflow = new EditorStyleOverflow(header.querySelector<HTMLElement>('#style-bar')!);
+  header.toggleAttribute(COMPACT_TOOLBAR_ATTR, userSettings.getViewSettings().compactToolbar);
   new CompactToolbarLayout(header, ribbonOverflow, styleOverflow);
   footer.addEventListener('click', (event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>('button');
