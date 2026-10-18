@@ -34,7 +34,7 @@ import { Toolbar } from '@/ui/toolbar';
 import { EditorToolbarOverflow } from '@/ui/editor-toolbar-overflow';
 import { setupTableRibbonMenus, type TableRibbonMenusController } from '@/ui/table-ribbon-menu';
 import { EditorStyleOverflow } from '@/ui/editor-style-overflow';
-import { CompactToolbarLayout } from '@/ui/compact-toolbar';
+import { COMPACT_TOOLBAR_ATTR, CompactToolbarLayout } from '@/ui/compact-toolbar';
 import { setupStatusZoomSlider } from '@/ui/status-zoom';
 import { describePaperSize } from '@/ui/status-paper-size';
 import { StatusCharacterCounter } from '@/ui/status-character-count';
@@ -4322,6 +4322,11 @@ function applyEditorSettingsPreview(settings: EditorScalarSettings): void {
   const clipEnabled = !settings.view.clipView;
   wasm.setClipEnabled(clipEnabled);
   syncClipMenu(clipEnabled);
+  // 꺼질 때마다 배치를 다시 재므로 바뀐 경우에만 건다.
+  const header = document.getElementById('studio-header');
+  if (header && header.hasAttribute(COMPACT_TOOLBAR_ATTR) !== settings.view.compactToolbar) {
+    applyCompactToolbar(settings.view.compactToolbar);
+  }
   eventBus.emit('document-view-changed');
 }
 
