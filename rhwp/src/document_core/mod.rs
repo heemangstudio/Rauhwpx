@@ -8,6 +8,7 @@ pub(crate) use helpers::*;
 
 pub mod builders;
 mod commands;
+pub(crate) mod endnote_tac;
 
 /// 설정 시(`=1`) 로드 단계에서 저장 LINE_SEG 를 모두 버리고 누락 경로로 조판한다
 /// (`rhwp lineseg-oracle` 강제 재조판 계측용).
@@ -350,6 +351,7 @@ pub(crate) struct DocumentSnapshot {
 /// 문서 데이터, 레이아웃 상태, 설정, 캐시를 포함한다.
 /// WASM 바인딩 없이 순수 Rust 타입만 사용한다.
 pub struct DocumentCore {
+    pub(crate) endnote_tac_sources: endnote_tac::EndnoteTacSources,
     /// IR 문서
     pub(crate) document: Document,
     /// 페이지 분할 결과
@@ -633,6 +635,8 @@ impl DocumentCore {
     /// 빠뜨리면 스냅샷이 직전 스냅샷의 문단을 공유하고, 복원이 현재 문단을 그대로
     /// 재사용해 undo/redo 가 바뀐 IR 을 되돌리지 못한다.
     pub(crate) fn mark_body_paragraph_changed(&mut self, section_idx: usize, para_idx: usize) {
+        self.endnote_tac_sources
+            .invalidate_host(section_idx, para_idx);
         self.event_log.mark_paragraph_changed(section_idx, para_idx);
     }
 
@@ -673,6 +677,7 @@ impl DocumentCore {
     /// 빈 문서를 생성한다 (테스트/미리보기용).
     pub fn new_empty() -> Self {
         DocumentCore {
+            endnote_tac_sources: endnote_tac::EndnoteTacSources::default(),
             document: Document::default(),
             pagination: Vec::new(),
             section_carry: Vec::new(),

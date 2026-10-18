@@ -355,6 +355,8 @@ impl DocumentCore {
         control_idx: usize,
         fn_para_idx: usize,
     ) -> Result<&mut Paragraph, HwpError> {
+        self.endnote_tac_sources
+            .invalidate_host(section_idx, para_idx);
         let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
             HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
         })?;
@@ -479,6 +481,8 @@ impl DocumentCore {
         control_idx: usize,
         fn_para_idx: usize,
     ) {
+        self.endnote_tac_sources
+            .invalidate_host(section_idx, para_idx);
         let Some(para_shape_id) = self
             .get_footnote_paragraph_ref(section_idx, para_idx, control_idx, fn_para_idx)
             .map(|p| p.para_shape_id)
