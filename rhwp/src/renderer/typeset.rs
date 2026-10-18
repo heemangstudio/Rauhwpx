@@ -588,6 +588,8 @@ pub struct TypesetEngine {
     profile: std::cell::Cell<crate::model::provenance::LayoutCompatibilityProfile>,
     /// 미주 흐름 조판 중 — 미주 문단은 기존 저장 줄높이(vertsize) 진행 모델을 유지한다.
     formatting_endnotes: std::cell::Cell<bool>,
+    /// 현재 원본 구역이 제공한 저장 미주 출처. 기본 엔진/합성 입력은 인증하지 않는다.
+    authored_endnote_source_section: Option<usize>,
     /// Shared derived geometry used by measurement, fragment cuts, and final layout.
     render_normalization:
         std::sync::Arc<crate::renderer::render_normalization::RenderNormalizationOverlay>,
@@ -3348,10 +3350,22 @@ impl TypesetEngine {
             native_natural_input: None,
             profile: std::cell::Cell::new(Default::default()),
             formatting_endnotes: std::cell::Cell::new(false),
+            authored_endnote_source_section: None,
             render_normalization: std::sync::Arc::new(
                 crate::renderer::render_normalization::RenderNormalizationOverlay::default(),
             ),
         }
+    }
+
+    pub(crate) fn with_authored_endnote_source(
+        mut self,
+        document: &crate::model::document::Document,
+        section_index: usize,
+    ) -> Self {
+        self.authored_endnote_source_section =
+            super::pagination::authored_endnote_source_is_current(document, section_index)
+                .then_some(section_index);
+        self
     }
 
     pub(crate) fn with_native_natural_flow_source(
@@ -6921,6 +6935,80 @@ impl TypesetEngine {
             })
     }
 
+    /// 빈 guide 판정 전 원본 수식 슬롯만 검증한다. 최종 방출 인증은 별도다.
+    fn authored_endnote_tac_raw_owners(
+        &self,
+        section_index: usize,
+        original: &Paragraph,
+        formatted_source: &Paragraph,
+        projected: &Paragraph,
+        composed: &ComposedParagraph,
+    ) -> Option<Vec<(usize, usize)>> {
+        let profile = self.profile.get();
+        if profile.own_line_layout()
+            || profile.session_edited()
+            || self.authored_endnote_source_section != Some(section_index)
+            // clone된 spacing 투영은 원본 주소와 같지 않다.
+            || !std::ptr::eq(original, formatted_source)
+            || !super::pagination::authored_endnote_tac_projection_matches(original, projected)
+            || composed.lines.len() != original.line_segs.len()
+            || composed.lines.iter().flat_map(|line| line.runs.iter())
+                .map(|run| run.text.as_str()).collect::<String>() != original.text
+            || composed.tac_controls.len() != original.controls.len()
+            || composed.tac_controls.iter().enumerate().any(|(ci, (_, _, owner))| *owner != ci)
+            || composed.lines.iter().zip(&original.line_segs).any(|(line, seg)| {
+                !super::line_metric_pair_is_authored(Some(seg), line)
+            })
+        {
+            return None;
+        }
+        let mut checked = composed.clone();
+        super::layout::LayoutEngine::certify_projected_tac_line_owners(projected, &mut checked);
+        checked.projected_tac_line_owners
+    }
+
+    /// 이미 계산한 실제 formatter 결과만 사용한다. 재조판/간격 투영은 인증하지 않는다.
+    fn authored_endnote_tac_line_owners(
+        &self,
+        section_index: usize,
+        original: &Paragraph,
+        formatted_source: &Paragraph,
+        projected: &Paragraph,
+        composed: &ComposedParagraph,
+        fmt: &FormattedParagraph,
+    ) -> Option<Vec<(usize, usize)>> {
+        let owners = self.authored_endnote_tac_raw_owners(
+            section_index,
+            original,
+            formatted_source,
+            projected,
+            composed,
+        )?;
+        if fmt.fresh_recomposed
+            || fmt.line_heights.len() != original.line_segs.len()
+            || fmt.line_spacings.len() != original.line_segs.len()
+            || fmt
+                .line_heights
+                .iter()
+                .zip(&original.line_segs)
+                .any(|(height, seg)| {
+                    !height.is_finite()
+                        || (*height - hwpunit_to_px(seg.line_height, self.dpi)).abs() > 1e-6
+                })
+            || fmt
+                .line_spacings
+                .iter()
+                .zip(&original.line_segs)
+                .any(|(spacing, seg)| {
+                    !spacing.is_finite()
+                        || (*spacing - hwpunit_to_px(seg.line_spacing, self.dpi)).abs() > 1e-6
+                })
+        {
+            return None;
+        }
+        Some(owners)
+    }
+
     /// [#2026 추출] 한 미주(en_ctrl)의 문단들을 조판·방출하는 en_para 루프 본체 —
     /// #1904 라운드 1 이연분. 미주-간 흐름 캐리는 `EndnoteFlowState` 값 왕복
     /// (컬렉션 pre_emitted 는 함수 로컬로 흡수). 원본 무변경 이동.
@@ -7003,13 +7091,29 @@ impl TypesetEngine {
                                      composed: Option<&ComposedParagraph>,
                                      styles: &ResolvedStyleSet,
                                      width: Option<f64>| {
-            let advances = en_ctrl
+            let source_index = en_ctrl
                 .paragraphs
                 .iter()
-                .position(|source| std::ptr::eq(source, para))
-                .and_then(|index| certified_advances.as_ref()?.get(index));
-            self.format_paragraph(para, composed, styles, width)
-                .with_certified_endnote_advances(para, advances.map(Vec::as_slice), self.dpi)
+                .position(|source| std::ptr::eq(source, para));
+            let advances = source_index.and_then(|index| certified_advances.as_ref()?.get(index));
+            // 번호가 삽입되는 첫 문단, 이연 구역, spacing 사본은 기존 경로를 쓴다.
+            let raw_owners = source_index
+                .filter(|index| *index > 0 && en_ref.section_index == section_index)
+                .and_then(|_| {
+                    self.authored_endnote_tac_raw_owners(section_index, para, para, para, composed?)
+                });
+            self.format_paragraph_with_endnote_tac(
+                para,
+                composed,
+                styles,
+                width,
+                raw_owners.as_deref(),
+            )
+            .with_certified_endnote_advances(
+                para,
+                advances.map(Vec::as_slice),
+                self.dpi,
+            )
         };
         // 원본의 마지막 빈 줄 높이는 남기고, 다음 미주 경계의 trailing spacing만
         // "미주 사이 0"으로 투영한다. 내부 pitch와 원본 reset 좌표는 변경하지 않는다.
@@ -7082,6 +7186,7 @@ impl TypesetEngine {
                 para_index: en_ref.para_index,
                 control_index: en_ref.control_index,
                 note_para_index: ep_idx,
+                authored_tac_line_owners: None,
                 certified_line_advances_hu: certified_advances.as_ref().map(|rows| {
                     let mut advances = rows[ep_idx].clone();
                     if zero_authored_tail {
@@ -7108,9 +7213,38 @@ impl TypesetEngine {
                 .endnote_para_sources
                 .last()
                 .and_then(|source| source.certified_line_advances_hu.clone());
+            let raw_owners = (ep_idx > 0 && en_ref.section_index == section_index)
+                .then(|| {
+                    self.authored_endnote_tac_raw_owners(
+                        section_index,
+                        &en_ctrl.paragraphs[ep_idx],
+                        en_para,
+                        &st.endnote_paragraphs[en_para_local_idx],
+                        &composed,
+                    )
+                })
+                .flatten();
             let fmt = self
-                .format_paragraph(en_para, Some(&composed), &styles, Some(en_col_w))
+                .format_paragraph_with_endnote_tac(
+                    en_para,
+                    Some(&composed),
+                    &styles,
+                    Some(en_col_w),
+                    raw_owners.as_deref(),
+                )
                 .with_certified_endnote_advances(en_para, para_advances.as_deref(), self.dpi);
+            // 첫 문단 번호 삽입과 구역을 넘겨 이연한 원본은 별도 좌표 증명이 필요하다.
+            if ep_idx > 0 && en_ref.section_index == section_index {
+                let owners = self.authored_endnote_tac_line_owners(
+                    section_index,
+                    &en_ctrl.paragraphs[ep_idx],
+                    en_para,
+                    &st.endnote_paragraphs[en_para_local_idx],
+                    &composed,
+                    &fmt,
+                );
+                st.endnote_para_sources[en_para_local_idx].authored_tac_line_owners = owners;
+            }
             if std::env::var("RHWP_ENDNOTE_LINE_DEBUG").is_ok() {
                 debug_print_endnote_line_segments(
                     en_ref.number,
@@ -9873,6 +10007,7 @@ impl TypesetEngine {
                         para_index: en_ref.para_index,
                         control_index: en_ref.control_index,
                         note_para_index: ep_idx + 1,
+                        authored_tac_line_owners: None,
                         certified_line_advances_hu: certified_advances
                             .as_ref()
                             .map(|rows| rows[ep_idx + 1].clone()),
@@ -9884,6 +10019,18 @@ impl TypesetEngine {
                     );
                     let next_fmt =
                         format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                    if en_ref.section_index == section_index {
+                        let local_idx = st.endnote_paragraphs.len() - 1;
+                        let owners = self.authored_endnote_tac_line_owners(
+                            section_index,
+                            &en_ctrl.paragraphs[ep_idx + 1],
+                            next_para,
+                            &st.endnote_paragraphs[local_idx],
+                            &next_comp,
+                            &next_fmt,
+                        );
+                        st.endnote_para_sources[local_idx].authored_tac_line_owners = owners;
+                    }
                     st.current_items.push(PageItem::FullParagraph {
                         para_index: next_para_idx,
                     });
@@ -14916,6 +15063,18 @@ impl TypesetEngine {
         styles: &ResolvedStyleSet,
         column_width_px: Option<f64>,
     ) -> FormattedParagraph {
+        self.format_paragraph_with_endnote_tac(para, composed, styles, column_width_px, None)
+    }
+
+    /// 엄격한 원본 슬롯 증명은 빈 guide 판정에만 쓰고 재조판에는 넘기지 않는다.
+    fn format_paragraph_with_endnote_tac(
+        &self,
+        para: &Paragraph,
+        composed: Option<&ComposedParagraph>,
+        styles: &ResolvedStyleSet,
+        column_width_px: Option<f64>,
+        authored_endnote_tac_owners: Option<&[(usize, usize)]>,
+    ) -> FormattedParagraph {
         let para_style_id = composed.map(|c| c.para_style_id as usize).unwrap_or(0);
         let para_style = styles.para_styles.get(para_style_id);
 
@@ -14966,6 +15125,7 @@ impl TypesetEngine {
         // NO_LS fallback 는 기존 post-place dirty 경로가 별도로 처리한다. 여기서는
         // 저장 lineSeg 를 실제로 폐기한 경우만 뒤 사다리를 dirty 로 전파한다.
         let fresh_recomposed = recomposed.is_some() && !para.line_segs.is_empty();
+        let authored_endnote_tac_owners = authored_endnote_tac_owners.filter(|_| !fresh_recomposed);
         let composed = recomposed.as_ref().or(composed);
         let raw_spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
@@ -15100,7 +15260,10 @@ impl TypesetEngine {
                     continue;
                 }
                 let runs_all_whitespace = line.runs.iter().all(|r| r.text.trim().is_empty());
-                let line_has_tac_control = line_has_tac_control(para, comp, line_idx);
+                // 가시 [0,0) 경계여도 엄격한 raw 슬롯 소유자가 있으면 콘텐츠 줄이다.
+                let line_has_tac_control = line_has_tac_control(para, comp, line_idx)
+                    || authored_endnote_tac_owners
+                        .is_some_and(|owners| owners.iter().any(|(_, owner)| *owner == line_idx));
                 let empty_tac_guide_line = runs_all_whitespace
                     && !line_has_tac_control
                     && comp

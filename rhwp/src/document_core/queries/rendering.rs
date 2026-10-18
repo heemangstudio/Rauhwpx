@@ -4840,6 +4840,7 @@ impl DocumentCore {
                     .natural_flow_source_words()
                     .filter(|_| !self.document.doc_info.apply_next_spacing_of_last_para);
                 let typesetter = TypesetEngine::new(self.dpi)
+                    .with_authored_endnote_source(&self.document, idx)
                     .with_native_natural_flow_source(
                         source_words,
                         &section.section_def,
@@ -6899,7 +6900,56 @@ impl DocumentCore {
             combined_paragraphs = paragraphs.iter().chain(en_paras.iter()).cloned().collect();
             let en_composed: Vec<_> = en_paras
                 .iter()
-                .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, &self.styles))
+                .enumerate()
+                .map(|(local_idx, p)| {
+                    let mut c =
+                        crate::renderer::composer::compose_paragraph_with_styles(p, &self.styles);
+                    // 인증은 같은 현재 pagination 결과의 문단/원본 주소에만 속한다.
+                    // dirty 결과나 다른 세대를 raw metrics만으로 다시 인증하지 않는다.
+                    let carried = self.pagination.get(sec_idx).and_then(|pr| {
+                        let profile = self.document.layout_profile();
+                        if profile.own_line_layout()
+                            || profile.session_edited()
+                            || !crate::renderer::pagination::authored_endnote_source_is_current(
+                                &self.document,
+                                sec_idx,
+                            )
+                            || self.dirty_sections.get(sec_idx).copied().unwrap_or(true)
+                            || pr.endnote_para_sources.len() != en_paras.len()
+                            || !std::ptr::eq(pr.endnote_paragraphs.get(local_idx)?, p)
+                        {
+                            return None;
+                        }
+                        let source = pr.endnote_para_sources.get(local_idx)?;
+                        if source.section_index != sec_idx || source.note_para_index == 0 {
+                            return None;
+                        }
+                        let owners = source.authored_tac_line_owners.as_ref()?;
+                        let original = match paragraphs
+                            .get(source.para_index)?
+                            .controls
+                            .get(source.control_index)?
+                        {
+                            crate::model::control::Control::Endnote(note) => {
+                                note.paragraphs.get(source.note_para_index)?
+                            }
+                            _ => return None,
+                        };
+                        crate::renderer::pagination::authored_endnote_tac_projection_matches(
+                            original, p,
+                        )
+                        .then_some(owners)
+                    });
+                    if let Some(owners) = carried {
+                        crate::renderer::layout::LayoutEngine::certify_projected_tac_line_owners(
+                            p, &mut c,
+                        );
+                        if c.projected_tac_line_owners.as_ref() != Some(owners) {
+                            c.projected_tac_line_owners = None;
+                        }
+                    }
+                    c
+                })
                 .collect();
             combined_composed = composed
                 .iter()
