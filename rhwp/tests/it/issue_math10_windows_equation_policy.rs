@@ -54,11 +54,12 @@ fn checksum(bytes: &[u8]) -> u32 {
     })
 }
 
-// MIT 소유 face의 사각형만 사용하고 hmtx 비율을 1/2 또는 4/5 em으로 바꾼다.
-fn source_bytes(numerator: u16, denominator: u16) -> Vec<u8> {
+// MIT 소유 1000 em face의 사각형만 사용하고 hmtx를 500 또는 800으로 바꾼다.
+fn source_bytes(advance: u16) -> Vec<u8> {
     let mut bytes = include_bytes!("../fixtures/fonts/HYhwpEQSourceFixture.ttf").to_vec();
-    let (glyph, metric_count, em) = {
+    let (glyph, metric_count) = {
         let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        assert_eq!(face.units_per_em(), 1000, "owned source fixture em");
         let gid = face.glyph_index('\u{e034}').unwrap().0;
         for ch in ['\u{e037}', '\u{e038}', '\u{e0fc}'] {
             assert_eq!(
@@ -67,11 +68,7 @@ fn source_bytes(numerator: u16, denominator: u16) -> Vec<u8> {
                 "owned common rectangle"
             );
         }
-        (
-            gid,
-            face.tables().hhea.number_of_metrics,
-            face.units_per_em(),
-        )
+        (gid, face.tables().hhea.number_of_metrics)
     };
     let count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
     let directory = |tag: &[u8; 4]| {
@@ -87,7 +84,7 @@ fn source_bytes(numerator: u16, denominator: u16) -> Vec<u8> {
     let hmtx =
         u32::from_be_bytes(bytes[hmtx_record + 8..hmtx_record + 12].try_into().unwrap()) as usize;
     let offset = hmtx + usize::from(glyph.min(metric_count - 1)) * 4;
-    bytes[offset..offset + 2].copy_from_slice(&(em * numerator / denominator).to_be_bytes());
+    bytes[offset..offset + 2].copy_from_slice(&advance.to_be_bytes());
     bytes[head + 8..head + 12].fill(0);
     for record in [head_record, hmtx_record] {
         let start = u32::from_be_bytes(bytes[record + 8..record + 12].try_into().unwrap()) as usize;
@@ -99,6 +96,14 @@ fn source_bytes(numerator: u16, denominator: u16) -> Vec<u8> {
     let adjustment = 0xb1b0afbau32.wrapping_sub(checksum(&bytes));
     bytes[head + 8..head + 12].copy_from_slice(&adjustment.to_be_bytes());
     assert_eq!(checksum(&bytes), 0xb1b0afba);
+    let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+    for ch in ['\u{e034}', '\u{e037}', '\u{e038}', '\u{e0fc}'] {
+        assert_eq!(
+            face.glyph_hor_advance(face.glyph_index(ch).unwrap()),
+            Some(advance),
+            "rewritten source hmtx for {ch:?}"
+        );
+    }
     bytes
 }
 
@@ -129,6 +134,7 @@ impl Drop for SourceFixture {
     }
 }
 
+#[track_caller]
 fn near(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < 0.02,
@@ -330,7 +336,7 @@ fn windows_equation_policy_reaches_document_composition_paint_and_edit() {
     if isolated() {
         return;
     }
-    let half_em = source_bytes(1, 2);
+    let half_em = source_bytes(500);
     let fixture = SourceFixture::new(&half_em);
     // 4x/5x의 숫자→변수는 Windows 5.25pt, Mac 4.725pt. 같은 source 등록으로 번갈아 호출한다.
     for policy in [HancomWindows, HcrDeclared, HancomWindows, HcrDeclared] {
@@ -430,13 +436,14 @@ fn windows_equation_policy_reaches_document_composition_paint_and_edit() {
         document(HcrDeclared, "4x", 0),
         document(HancomWindows, "4x", 0),
     ];
-    std::fs::write(&fixture.path, source_bytes(4, 5)).unwrap();
+    std::fs::write(&fixture.path, source_bytes(800)).unwrap();
+    // 11pt의 14px 격자에서 800/1000 em은 11px로 반올림한 뒤 HcrDeclared만 0.9배다.
     for (index, core) in warmed.iter_mut().enumerate() {
         core.refresh_layout_native();
         check_render(
             core,
-            if index == 0 { 10.08 } else { 11.2 },
-            if index == 0 { 1512 } else { 1680 },
+            if index == 0 { 9.9 } else { 11.0 },
+            if index == 0 { 1485 } else { 1650 },
             0,
         );
     }

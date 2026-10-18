@@ -114,15 +114,27 @@ fn dpi_before_insertion_and_warm_roundtrip_scale_equation_text_and_cached_paint(
         let initial = equation_geometry(&core);
         near(initial[6], 1100.0 / 75.0);
         assert!(initial[9] > 0.0, "숫자 다음 변수의 실제 advance");
-        let fresh = equation_document(policy, 200.0);
-        near(equation_geometry(&fresh)[6], 1100.0 / 75.0 * 200.0 / 96.0);
         for dpi in [200.0, 96.0] {
+            let fresh = equation_document(policy, dpi);
+            let cold = equation_geometry(&fresh);
+            near(cold[6], 1100.0 / 75.0 * dpi / 96.0);
             core.set_dpi(dpi);
-            for (actual, original) in equation_geometry(&core).iter().zip(&initial) {
-                near(*actual, original * dpi / 96.0);
+            let warm = equation_geometry(&core);
+            assert_eq!(warm.len(), cold.len());
+            // 원본 HY가 없을 때와 HCR 정책은 출력 px에서 advance를 양자화한다.
+            // 폭·advance·자연 높이는 같은 DPI의 새 문서와 비교한다.
+            for (actual, expected) in warm.iter().zip(&cold) {
+                near(*actual, *expected);
+            }
+            near(warm[6], 1100.0 / 75.0 * dpi / 96.0);
+            // 쪽 크기, 첫 수식 x, 저장 TAC 폭 뒤의 본문 x, 본문 명목 em.
+            // 글리프 실측 폭과 수식 기준선에 따른 y는 선형 비례를 요구하지 않는다.
+            for index in [0, 1, 2, 10, 14] {
+                near(warm[index], initial[index] * dpi / 96.0);
             }
         }
         let restored = equation_geometry(&core);
+        assert_eq!(restored, initial, "96 DPI 복귀는 최초 공개 기하를 복원한다");
         for invalid in [0.0, -96.0, f64::NAN, f64::INFINITY] {
             core.set_dpi(invalid);
             assert_eq!(equation_geometry(&core), restored);

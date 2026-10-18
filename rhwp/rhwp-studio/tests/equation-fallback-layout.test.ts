@@ -225,7 +225,8 @@ test('registered fallback uses actual WASM callback ink for radical layout and u
             assert.equal(JSON.parse(doc.insertEquation(0, 0, 0, `${digit}x`, 1100, 0)).ok, true);
             const op = findEquation(JSON.parse(doc.getPageLayerTree(0)));
             assert.ok(op?.versionInfo, 'document layout retains the actual modern equation version');
-            const step = (policy === 'hancom-windows' ? 7 : 6.3) * scale;
+            // HcrDeclared는 출력 px 격자, Windows는 논리 96dpi 격자를 유지한다.
+            const step = policy === 'hancom-windows' ? 7 * scale : dpi === 96 ? 6.3 : 13.5;
             const callback = calls.find(call => call.text === digit && call.policy === policy
               && Math.abs((call.scale ?? 0) - scale) < 1e-9 && call.metrics);
             assert.ok(callback, `document WASM forwards ${policy} and output scale ${scale}`);
@@ -252,7 +253,7 @@ test('registered fallback uses actual WASM callback ink for radical layout and u
         calls.length = 0; doc.insertEquation(0, 0, 0, '4x', 1100, 0);
         const op = findEquation(JSON.parse(doc.getPageLayerTree(0)));
         assert.ok(op);
-        const expected = policy === 'hancom-windows' ? 11.2 : 10.08;
+        const expected = policy === 'hancom-windows' ? 11 : 9.9;
         const callback = calls.find(call => call.text === '4' && call.policy === policy && call.metrics);
         assert.ok(callback && Math.abs(callback.metrics.advance - expected) < 1e-7,
           'replaced source bytes invalidate both policy measurements in the real document');
