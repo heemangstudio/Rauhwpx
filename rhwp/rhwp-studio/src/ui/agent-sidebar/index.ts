@@ -1662,10 +1662,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerTrigger.type = 'button';
   providerTrigger.setAttribute('aria-expanded', 'false');
   providerTrigger.setAttribute('aria-controls', 'ag-config-panel');
-  providerTrigger.setAttribute('aria-label', '프로바이더 선택');
   let providerIcon = createProviderIcon(selectedAgent);
-  const providerName = el('span', 'ag-model-name', AGENT_LABEL[selectedAgent]);
-  providerTrigger.append(providerIcon, providerName);
+  providerTrigger.append(providerIcon);
 
   const providerMenu = el('div', 'ag-model-menu');
   providerMenu.setAttribute('role', 'menu');
@@ -8461,7 +8459,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const agentChanged = agent !== selectedAgent;
     selectedAgent = agent;
     root.dataset.agent = agent;
-    providerName.textContent = AGENT_LABEL[agent];
+    providerTrigger.setAttribute('aria-label', `프로바이더 선택: ${AGENT_LABEL[agent]}`);
     if (agentChanged) {
       const nextIcon = createProviderIcon(agent);
       providerIcon.replaceWith(nextIcon);

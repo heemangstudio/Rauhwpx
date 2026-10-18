@@ -54,7 +54,7 @@ export async function checkContextPreview(page, origin, artifacts) {
   assert.equal(toCodex.agent, 'codex');
   assert.equal(toCodex.providerSessionId, null);
   // Claude 로 돌아가면 자기 세션을 이어 받고, Codex 가 나눈 대화만 넘겨받는다. 피커만 바꾼 것은 구분선을 남기지 않는다.
-  await page.click('[aria-label="프로바이더 선택"]');
+  await page.click('[aria-label^="프로바이더 선택"]');
   await page.click('.ag-provider-item[data-agent="claude"]');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().lastChatStart?.agent === 'claude');
   const back = await page.evaluate(() => window.sidebarPreview.snapshot().lastChatStart);
