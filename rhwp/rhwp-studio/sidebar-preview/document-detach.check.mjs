@@ -10,6 +10,7 @@ const toggle = (page) => page.$eval('.ag-doc-link-toggle', (button) => ({
   disabled: button.getAttribute('aria-disabled') === 'true',
   title: button.title,
 }));
+const toggleBusy = (page) => page.$eval('.ag-doc-link-toggle', (button) => button.getAttribute('aria-busy') === 'true');
 
 const dockedName = (page) => page.$eval('.ag-document-name', (name) => name.textContent);
 
@@ -70,7 +71,10 @@ async function checkDetachAndRelink(page, open, screenshot) {
   const before = await page.evaluate(() => window.sidebarPreview.snapshot());
   await page.click('.ag-doc-link-toggle');
   await page.waitForSelector('.ag-document-context .ag-doc-name-fx');
-  assert.equal((await toggle(page)).disabled, true, 'the button waits while the chat is detaching');
+  // 떼는 동안 단추는 모양을 그대로 두고(비활성으로 흐려지지 않는다) 누름만 받지 않는다. 사슬은 하마와 함께 풀린다.
+  assert.equal(await toggleBusy(page), true, 'the button waits while the chat is detaching');
+  assert.equal((await toggle(page)).disabled, false, 'the button keeps its look while waiting');
+  assert.equal((await toggle(page)).label, '문서 연결', 'the chain parts while Hama eats the name');
   if (screenshot) await screenshot('document-detach-inhale');
   await page.waitForFunction(() => window.sidebarPreview.sidebar.isUnlinkedChat(), { timeout: 10_000 });
   await page.waitForFunction(() => !document.querySelector('.ag-doc-name-fx'));
@@ -79,15 +83,14 @@ async function checkDetachAndRelink(page, open, screenshot) {
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.detachCalls), [
     { threadId, documentId: 'preview-proposal', draft: false },
   ]);
+  // 같은 허브 세션에서 문서 없이 다시 시작하고, 뗀 문서를 싣는다. 압축은 한 번, 문서를 뗀 까닭으로 청한다.
+  await page.waitForFunction((count) => window.sidebarPreview.snapshot().compactions.length > count, {},
+    before.compactions.length);
   const stored = await page.evaluate((id) => window.sidebarPreview.threadStore.getThread(id), threadId);
   assert.deepEqual([stored.documentId, stored.docKey, stored.documentLinkedAt], [null, null, undefined]);
   assert.equal(typeof stored.documentLinkChangedAt, 'number');
   assert.deepEqual(stored.documentDetachedFrom, { documentId: 'preview-proposal', docKey: '사업 제안서.hwpx' },
     'the detach is remembered and its compaction was asked for');
-
-  // 같은 허브 세션에서 문서 없이 다시 시작하고, 뗀 문서를 싣는다. 압축은 한 번, 문서를 뗀 까닭으로 청한다.
-  await page.waitForFunction((count) => window.sidebarPreview.snapshot().compactions.length > count, {},
-    before.compactions.length);
   await page.waitForSelector('.ag-marker-compaction', { timeout: 10_000 });
   await idle(page);
   const after = await page.evaluate(() => window.sidebarPreview.snapshot());

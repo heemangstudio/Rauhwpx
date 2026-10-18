@@ -3541,12 +3541,12 @@ function openUnlinkedThread(session: DocumentSession, threadId: string): Promise
 
 // ─── 채팅을 문서에서 떼기 ─────────────────────────────
 // 문서에 붙은 채팅은 그 문서를 뗄 수 있다. 뗀 채팅은 문서 없는 새 세션(빈 종이) 옆에서 이어진다 — 대화와 열람은
-// 그대로고 그 문서의 프로젝트와 쓰기는 잃는다. 허브 세션은 새 채팅이 넘겨받는다: 공급자의 네이티브 세션이 그 허브
-// 기록에 있어서, 문서 없는 chat-start 가 그 세션을 이어받아 압축한다. 허브의 채팅은 멈추지도(chat-stop) 놓지도
-// 않는다. 지금 문서는 다른 문서로 옮겨 갈 때처럼 저장하고, 일하는 다른 채팅이 없으면 닫는다.
-// 에이전트의 detach_document 도 같은 길로 옮긴다. 그 턴이 도는 중이라, 옮기기 직전에 허브에 떼기를 알리고
-// (chat-detach-document) 새 채팅이 그 턴을 그대로 잇는다. 저장도 같다 — 바뀐 문서는 저장하고(처음 저장이면 저장
-// 창이 뜬다) 닫아서, 저장하지 않은 문서가 탭으로 쌓이지 않는다. 사용자가 저장을 취소하면 떼지 않는다.
+// 그대로고 그 문서의 프로젝트와 쓰기는 잃는다. 옮기기 직전에 허브에 떼기를 알리면(chat-detach-document) 허브는
+// 공급자를 다시 띄우지 않고 세션의 문서만 비우고, 새 채팅이 그 허브 채팅을 그대로 잇는다(continueHubChat) — 화면은
+// 하마가 이름을 삼킨 그대로다. 지금 문서는 다른 문서로 옮겨 갈 때처럼 저장하고, 일하는 다른 채팅이 없으면 닫는다.
+// 에이전트의 detach_document 도 같은 길로 옮긴다. 그 턴이 도는 중이라 허브가 그 도구 호출을 맡았다가 새 채팅이
+// 붙으면 답한다. 저장도 같다 — 바뀐 문서는 저장하고(처음 저장이면 저장 창이 뜬다) 닫아서, 저장하지 않은 문서가
+// 탭으로 쌓이지 않는다. 사용자가 저장을 취소하면 떼지 않는다.
 
 type DetachFailure = Extract<ChatDocumentLinkCode, 'NO_DOCUMENT' | 'EDITS_PENDING_REVIEW' | 'DETACH_UNAVAILABLE' | 'DETACH_FAILED' | 'CANCELLED'>;
 
@@ -3601,8 +3601,14 @@ async function detachChatDocumentNow(chat: ChatSession, agent: ChatDocumentDetac
   const closing = !session.chats.some((other) => (agent === null || other !== chat) && other.bridge.isBusy())
     && !isManagedWorktree(session);
   let fresh: DocumentSession | null = null;
-  // 아직 아무것도 옮기지 않았다 — 원래 문서로 돌아가고 머리의 이름을 되돌린다.
+  let hubDetached = false;
+  // 아직 아무것도 옮기지 않았다 — 원래 문서로 돌아가고 머리의 이름을 되돌린다. 허브에 떼기를 이미 알렸으면 다시 잇는다
+  // (에이전트의 떼기면 허브가 맡아 둔 호출을 실패로 답한다).
   const giveUp = async (failure: DetachFailure = 'DETACH_FAILED'): Promise<DetachFailure> => {
+    if (hubDetached && detach.documentId && liveSessions.includes(session) && session.chats.includes(chat)) {
+      await chat.bridge.linkChatDocument({ threadId: detach.threadId, documentId: detach.documentId, documentName: detach.docKey })
+        .catch((error) => console.warn('[sessions] 떼지 못한 채팅을 허브에 다시 잇지 못했습니다:', error));
+    }
     if (attachedSession !== session && liveSessions.includes(session)) await attachSession(session);
     if (fresh) await disposeSession(fresh);
     return cancel(failure);
@@ -3619,6 +3625,28 @@ async function detachChatDocumentNow(chat: ChatSession, agent: ChatDocumentDetac
     }
     fresh = await createEmptySession();
     if (!fresh) return cancel('DETACH_FAILED');
+  } catch (error) {
+    console.error('[sessions] 문서에서 떼지 못했습니다:', error);
+    return giveUp();
+  }
+  // 허브가 세션의 문서를 비운다. 에이전트의 떼기면 이 도구 호출을 맡는다 — 새 채팅이 붙으면 허브가 답하고 턴이
+  // 이어진다. 허브에 이 채팅이 없으면(초안·연결 끊김) 새 채팅의 chat-start 가 뗀 문서를 싣는다. 옛 사이드바가 아직
+  // 화면에 있을 때 기다린다 — 아래의 사이드바 바꾸기는 한 프레임 안에서 끝나야 빈 자리가 비치지 않는다.
+  if (!detach.draft) {
+    try {
+      hubDetached = await chat.bridge.detachChatDocument({
+        threadId: detach.threadId,
+        ...(agent ? { callId: agent.callId } : {}),
+      });
+    } catch (error) {
+      console.warn('[sessions] 허브가 문서 떼기를 받지 않았습니다:', error);
+      return giveUp();
+    }
+  }
+  if (agent && !hubDetached) return giveUp();
+  // 쓰던 글과 초점은 새 사이드바가 이어 받는다 — 옛 사이드바가 화면에서 내려가기 전에 잡는다.
+  const handoff = chat.sidebar.captureHandoff();
+  try {
     await attachSession(fresh);
   } catch (error) {
     console.error('[sessions] 문서에서 떼지 못했습니다:', error);
@@ -3626,15 +3654,6 @@ async function detachChatDocumentNow(chat: ChatSession, agent: ChatDocumentDetac
   }
   if (attachedSession !== fresh || !session.chats.includes(chat) || (agent === null && chat.bridge.isBusy())) {
     return giveUp('DETACH_UNAVAILABLE');
-  }
-  if (agent) {
-    // 허브가 세션의 문서를 비우고 이 도구 호출을 맡는다 — 새 채팅이 붙으면 허브가 답하고 턴이 이어진다.
-    try {
-      await chat.bridge.detachChatDocument({ threadId: detach.threadId, callId: agent.callId });
-    } catch (error) {
-      console.warn('[sessions] 허브가 문서 떼기를 받지 않았습니다:', error);
-      return giveUp();
-    }
   }
   emptyDocumentView?.arrive();
   // 옛 채팅을 먼저 걷는다 — 허브 기록에는 브리지가 하나만 붙는다. 새 채팅이 그 허브 세션으로 같은 채팅을 잇는다.
@@ -3644,17 +3663,18 @@ async function detachChatDocumentNow(chat: ChatSession, agent: ChatDocumentDetac
     moved = installChatAgent(fresh, lease, false);
   } catch (error) {
     console.error('[sessions] 뗀 채팅을 새 세션에 달지 못했습니다:', error);
-    await restoreUndetachedChat(session, fresh, lease, detach, agent !== null);
+    await restoreUndetachedChat(session, fresh, lease, detach, hubDetached);
     return 'DETACH_FAILED';
   }
-  // 새 채팅이 섰다 — 이제 저장소의 채팅을 뗀다. 새 사이드바는 문서 없는 채팅으로 연다.
+  // 새 채팅이 섰다 — 이제 저장소의 채팅을 뗀다. 새 사이드바는 문서 없는 채팅으로 연다. 초점은 옮기지 않는다.
   if (!detach.draft) detachThreadDocument(detach.threadId, { byAgent: agent !== null });
   if (session.createdDocument?.threadId === detach.threadId) session.createdDocument = null;
+  if (hubDetached) moved.bridge.continueHubChat(detach.threadId);
   moved.sidebar.activate();
   setAgentEditingLease(documentEditingLease(fresh));
   reinstallInlinePrompt();
   if (detach.draft) moved.sidebar.startDraftChat();
-  else moved.sidebar.openThreadById(detach.threadId);
+  else moved.sidebar.openThreadById(detach.threadId, { handoff });
   if (closing && !isDocumentSessionBusy(session)) {
     await disposeSession(session);
   } else if (session.chats.length === 0 && liveSessions.includes(session)) {
@@ -3677,6 +3697,7 @@ async function restoreUndetachedChat(
 ): Promise<void> {
   try {
     const chat = installChatAgent(session, lease, true);
+    if (relink) chat.bridge.continueHubChat(detach.threadId);
     if (attachedSession !== session) await attachSession(session);
     if (!detach.draft) chat.sidebar.openThreadById(detach.threadId);
     if (relink && detach.documentId) {

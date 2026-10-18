@@ -9,8 +9,11 @@ import './document-link-toggle.css';
 
 export interface DocumentLinkToggle {
   readonly element: HTMLButtonElement;
-  /** linked: 문서에 붙은 채팅(겹친 사슬, 누르면 분리), 아니면 끊긴 사슬(누르면 연결). disabledReason 이 있으면 비활성이고 툴팁이 그 이유다. hidden 이면 숨긴다. */
-  update(state: { linked: boolean; disabledReason: string | null; hidden: boolean }): void;
+  /**
+   * linked: 문서에 붙은 채팅(겹친 사슬, 누르면 분리), 아니면 끊긴 사슬(누르면 연결). disabledReason 이 있으면 비활성이고
+   * 툴팁이 그 이유다. busy 는 붙이거나 떼는 중 — 모양은 그대로 두고 누름만 받지 않는다. hidden 이면 숨긴다.
+   */
+  update(state: { linked: boolean; disabledReason: string | null; hidden: boolean; busy?: boolean }): void;
 }
 
 /** 사이 한 칸을 보이는 시간. 다음 모양까지 두 칸, 200ms 쯤이다. */
@@ -27,12 +30,13 @@ export function createDocumentLinkToggle(onActivate: (linked: boolean) => void):
 
   let linked: boolean | null = null;
   let disabled = false;
+  let busy = false;
   let step = 0;
   const show = (state: boolean): void => {
     element.replaceChildren(createIcon(state ? 'link' : 'unlink'));
   };
   element.addEventListener('click', () => {
-    if (disabled || linked === null) return;
+    if (disabled || busy || linked === null) return;
     onActivate(linked);
   });
 
@@ -41,6 +45,9 @@ export function createDocumentLinkToggle(onActivate: (linked: boolean) => void):
     update(state) {
       element.hidden = state.hidden;
       disabled = state.disabledReason !== null;
+      busy = state.busy === true;
+      if (busy) element.setAttribute('aria-busy', 'true');
+      else element.removeAttribute('aria-busy');
       // 비활성이어도 초점과 툴팁은 남긴다 — 툴팁이 이유다.
       if (disabled) element.setAttribute('aria-disabled', 'true');
       else element.removeAttribute('aria-disabled');

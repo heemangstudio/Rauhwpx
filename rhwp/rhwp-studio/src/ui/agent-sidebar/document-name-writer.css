@@ -14,7 +14,10 @@
 /* 잇는 중에 먼저 열린 문서의 이름은 하마가 쓰기 전까지 자리만 차지한다. */
 .ag-doc-name-pending > .ag-workspace-title-sep,
 .ag-doc-name-pending > .ag-workspace-document-name,
-.ag-doc-name-pending > .ag-document-name {
+.ag-doc-name-pending > .ag-document-name,
+.ag-doc-name-none > .ag-workspace-title-sep,
+.ag-doc-name-none > .ag-workspace-document-name,
+.ag-doc-name-none > .ag-document-name {
   visibility: hidden;
 }
 

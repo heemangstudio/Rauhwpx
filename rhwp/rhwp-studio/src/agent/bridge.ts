@@ -356,11 +356,17 @@ export interface AgentBridge {
     createdByThread?: string | null;
   }): Promise<ChatDocumentLinkReply | null>;
   /**
-   * 에이전트의 detach_document 로 이 채팅을 문서에서 뗀다고 허브에 알린다 (chat-detach-document). 허브는 세션의
-   * 문서를 비우고 callId 의 도구 호출을 맡았다가, 같은 허브 세션에 새 브리지가 붙으면 답한다. 편집기는 이 뒤에
-   * 이 브리지를 닫는다. 허브가 거절하면 ChatDocumentLinkError(DETACH_FAILED)를 던진다.
+   * 이 채팅을 문서에서 뗀다고 허브에 알린다 (chat-detach-document). 허브는 공급자를 다시 띄우지 않고 세션의 문서를
+   * 비운다. 편집기는 이 뒤에 이 브리지를 닫고, 새 브리지가 continueHubChat 으로 같은 허브 채팅을 잇는다. callId 는
+   * 에이전트의 detach_document 호출이다 — 허브가 그 호출을 맡았다가 새 브리지가 붙으면 답한다. 허브에 이 채팅의
+   * 세션이 없으면 알릴 것이 없어 false. 허브가 거절하면 ChatDocumentLinkError(DETACH_FAILED)를 던진다.
    */
-  detachChatDocument(detach: { threadId: string; callId: number }): Promise<void>;
+  detachChatDocument(detach: { threadId: string; callId?: number }): Promise<boolean>;
+  /**
+   * 다른 브리지가 문서에서 떼고 넘긴 허브 채팅을 이 브리지가 잇는다. 사이드바가 그 채팅을 열며 보낼 시작 요청은,
+   * 허브가 같은 채팅을 들고 있으면 보내지 않고 그 세션을 그대로 잡는다 — 공급자를 다시 띄우지 않는다.
+   */
+  continueHubChat(threadId: string): void;
   /**
    * 이 페이지에서 허브의 첫 답(welcome)을 반영했거나, 첫 연결 시도가 답 없이 끝났거나(재시도 예약),
    * 다른 탭에 밀려났거나, 폐기되면 풀린다. 새로고침 뒤 사이드바는 이것을 기다렸다가 채팅을 고른다.
@@ -1472,6 +1478,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private pendingDocumentLinkId: string | null = null;
   /** 허브의 답을 기다리는 chat-detach-document 의 requestId. */
   private pendingDocumentDetachId: string | null = null;
+  /** 문서에서 떼며 다른 브리지가 넘긴 허브 채팅 — 첫 welcome 에서 시작 요청 대신 그 세션을 잡는다. */
+  private continuingHubChatThreadId: string | null = null;
   readonly projects: ProjectClient;
   private readonly claimDocumentWrite?: () => boolean;
   /** 문서 세션의 턴 체크포인트 — 첫 쓰기 전 문서와 이 채팅의 승인·거절·턴 끝을 알린다. */
@@ -2398,9 +2406,10 @@ export class AgentBridgeImpl implements AgentBridge {
     return { detached: true };
   }
 
-  async detachChatDocument(detach: { threadId: string; callId: number }): Promise<void> {
+  async detachChatDocument(detach: { threadId: string; callId?: number }): Promise<boolean> {
     const documentId = this.documentId;
-    if (detach.threadId !== this.threadId || documentId === null) throw linkError('DETACH_UNAVAILABLE');
+    if (detach.threadId !== this.threadId || documentId === null
+      || this.state !== 'connected' || this.awaitingWelcome || this.activeAgent === null || this.pendingChatStart) return false;
     const requestId = `chat-detach-document-${++this.requestSeq}`;
     this.pendingDocumentDetachId = requestId;
     const reply = this.requests.create<Record<string, unknown>>(requestId, REQUEST_TIMEOUT_MS);
@@ -2410,7 +2419,7 @@ export class AgentBridgeImpl implements AgentBridge {
       requestId,
       threadId: detach.threadId,
       documentId,
-      callId: detach.callId,
+      ...(detach.callId !== undefined ? { callId: detach.callId } : {}),
     });
     if (!sent) this.requests.settle(requestId, null);
     const frame = await reply;
@@ -2422,6 +2431,11 @@ export class AgentBridgeImpl implements AgentBridge {
     }
     this.documentId = null;
     this.documentName = null;
+    return true;
+  }
+
+  continueHubChat(threadId: string): void {
+    this.continuingHubChatThreadId = threadId;
   }
 
   /** chat-document-detached·떼기 거절을 기다리는 요청에 넘긴다. */
@@ -2811,21 +2825,28 @@ export class AgentBridgeImpl implements AgentBridge {
           }
         }
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
+        const continuing = this.continuingHubChatThreadId;
+        this.continuingHubChatThreadId = null;
         if (pendingStart) {
           // 붙잡아 둔 시작 요청을 스냅샷과 맞춘다. 같은 채팅의 턴이 허브에서 살아 있으면(새로고침
-          // 전 페이지의 턴·질문·계획 승인 대기) 다시 시작하지 않고 그대로 잇는다.
-          const sameChatBusy = Boolean(session) && sessionThreadId === pendingStart.threadId
+          // 전 페이지의 턴·질문·계획 승인 대기) 다시 시작하지 않고 그대로 잇는다. 문서에서 떼며 넘겨받은
+          // 채팅(continueHubChat)은 쉬는 중이어도 그 세션을 잇는다.
+          const sameChat = Boolean(session) && sessionThreadId === pendingStart.threadId;
+          const sameChatBusy = sameChat
             && (session.status === 'running'
               || Boolean(session.pendingUserQuestion)
               || session.phase === 'awaiting-approval');
-          if (!sameChatBusy) {
+          if (!sameChatBusy && !(sameChat && continuing === pendingStart.threadId)) {
             // 이 시작 요청이 스냅샷의 세션을 바꾼다 — 스냅샷과 그 재생 프레임은 쓰지 않는다.
             this.sendPendingChatStart();
             return;
           }
-          // 바쁜 세션은 시작 뒤에 줄 선 메시지를 AGENT_BUSY 로 거절한다 — 보내지 않고 접는다.
-          for (const message of this.queuedMessages) message.resolve(null);
-          this.queuedMessages = [];
+          // 바쁜 세션은 시작 뒤에 줄 선 메시지를 AGENT_BUSY 로 거절한다 — 보내지 않고 접는다. 쉬는 세션을
+          // 이으면 줄 선 메시지는 welcome 뒤에 그대로 나간다.
+          if (sameChatBusy) {
+            for (const message of this.queuedMessages) message.resolve(null);
+            this.queuedMessages = [];
+          }
           this.pendingChatStart = null;
           this.chatStartSent = false;
         }

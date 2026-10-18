@@ -446,6 +446,12 @@ export interface AgentSidebarDeps {
 const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
 
 /** 떼기 시작한 채팅 — 저장소의 id 와 뗄 문서. draft 면 저장하지 않은 초안이다. */
+/** 채팅을 다른 사이드바로 옮길 때 넘기는 입력기 상태 — 쓰던 글·첨부·멘션과 초점이 있던 자리. */
+export interface ChatHandoff {
+  draft: { text: string; files: File[]; mentions?: ThreadMention[] } | null;
+  focus: 'input' | 'document-link' | null;
+}
+
 export interface DocumentDetachStart {
   threadId: string;
   documentId: string | null;
@@ -466,8 +472,13 @@ export interface AgentSidebarHandle {
   /** 화면에서 내린다. 브리지와 대화 상태는 그대로 두고, 페이지 배치는 다음 사이드바에 넘긴다. */
   deactivate(): void;
   isActive(): boolean;
-  /** 이 문서의 채팅을 연다 — 편집기가 이 사이드바를 올린 뒤 부른다. */
-  openThreadById(threadId: string): void;
+  /**
+   * 이 문서의 채팅을 연다 — 편집기가 이 사이드바를 올린 뒤 부른다. handoff 는 다른 사이드바에서 옮겨 온 채팅의
+   * 입력기 상태다 — 쓰던 글을 그대로 두고 초점도 그 자리로 돌려놓는다(없으면 옮기지 않는다).
+   */
+  openThreadById(threadId: string, options?: { handoff?: ChatHandoff }): void;
+  /** 이 채팅을 다른 사이드바로 옮기기 직전의 입력기 상태. */
+  captureHandoff(): ChatHandoff;
   /** 이 세션에 다음으로 열리는 문서가 그 채팅의 문서면 그 채팅을 잇는다. */
   /** 사용자가 문서를 열면 집중 화면을 접는다. */
   exitFullscreen(): void;
@@ -2823,6 +2834,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const detaching = documentDetach?.inhaled === true && documentDetach.threadId === currentThread.id;
     documentContext.classList.toggle('ag-doc-name-pending', linking || detaching);
     workspaceDocumentContext.classList.toggle('ag-doc-name-pending', linking || detaching);
+    // 문서 없는 채팅의 머리는 하마가 이름을 삼킨 모습 그대로 채팅 이름만 둔다. 자리는 남아 이을 때 하마가 그 자리에 쓴다.
+    const noDocument = !getDocumentContext?.()?.documentName;
+    documentContext.classList.toggle('ag-doc-name-none', noDocument);
+    workspaceDocumentContext.classList.toggle('ag-doc-name-none', noDocument);
     if (documentNameWriter.target && documentNameWriterThreadId !== currentThread.id) {
       documentNameWriter.cancel();
       documentNameWriterThreadId = null;
@@ -2945,6 +2960,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 이 채팅의 질문이 직접 입력 중이었으면 되살린 초안을 맡기고 답을 다시 보인다.
     questionController.reclaimComposer();
     resizeComposerInput();
+    syncSendIdle();
   }
 
   const workspaceTrailing = el('div', 'ag-workspace-trailing');
@@ -3773,10 +3789,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   /** 연결 단추를 지금 채팅에 맞춘다. 다른 문서의 채팅을 열람할 때와, 편집기가 그 길을 주지 않으면 숨긴다. */
+  /**
+   * 붙이거나 떼는 동안 단추는 모양을 그대로 두고 누름만 받지 않는다. 떼기를 시작하면 하마가 이름을 삼키는 동안 사슬이
+   * 함께 풀린다 — 채팅을 옮겨 이은 새 사이드바의 단추가 같은 모양으로 이어 받는다. 떼지 못하면 다시 걸린다.
+   */
   function syncDocumentLinkToggle(): void {
-    const linked = !chatIsUnlinked();
-    const hidden = readOnlyDocLabel !== null || (linked ? !detachDocument : !linkDocument);
-    documentLinkToggle.update({ linked, hidden, disabledReason: hidden ? null : documentLinkBlockedReason(linked) });
+    const linked = !chatIsUnlinked() && documentDetach === null;
+    const hidden = readOnlyDocLabel !== null || (chatIsUnlinked() ? !linkDocument : !detachDocument);
+    const busy = documentDetach !== null || documentLinkThreadId !== null;
+    documentLinkToggle.update({
+      linked, hidden, busy, disabledReason: hidden || busy ? null : documentLinkBlockedReason(linked),
+    });
   }
 
   /* 콘텍스트 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
@@ -5667,7 +5690,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const planRun = chatWorkflow === 'plan' && planningPhase === 'implementing';
     modeMenu.update({
       mode: keyboardModeTarget ?? currentMode(),
-      disabled: isControlLocked() || connState !== 'connected',
+      disabled: controlsLookLocked(),
       hint: planRun ? '승인한 계획을 실행 중' : (chatModeLockReason ?? ''),
       chatOnlyReason: chatModeLockReason,
     });
@@ -8681,7 +8704,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 채팅을 연다. routed 는 편집기가 이미 이 문서로 옮겨 온 경우다 — 다시
    * 편집기에 맡기지 않는다(문서가 맞지 않으면 읽기 전용으로 연다).
    */
-  function openThread(id: string, opts?: { viewOnly?: boolean; routed?: boolean }): void {
+  function openThread(id: string, opts?: { viewOnly?: boolean; routed?: boolean; focus?: boolean }): void {
     // 흘려보내던 이 채팅의 이벤트를 먼저 마친다 — 남은 것이 다음 채팅에 그려지지 않게.
     finishReplayNow();
     // 연 채팅을 보고 있으면(열기를 마친 뒤) 완료·오류 점이 걷힌다. 입력·검토 대기와 다른 탭의
@@ -8796,7 +8819,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     startCurrentBridgeChat(true);
     setThreadsPanelOpen(false);
-    input.focus();
+    if (opts?.focus !== false) input.focus();
   }
 
   /**
@@ -9261,14 +9284,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || referenceLibrary.hasBlockingDrafts()
       || readOnlyDocLabel !== null
       || mergeResolverLocked;
-    // 실행 중이거나 작업 방식/계획→실행 전환 중에는 모드·모델·권한을 잠근다.
-    const controlsLocked = isControlLocked();
+    // 실행 중이거나 작업 방식/계획→실행 전환 중에는 모드·모델·권한을 잠근다. 잠깐 지나가는 잠금은 입력기처럼
+    // 늦게 보인다(controlsLookLocked). 누르면 고르는 처리기가 실제 잠금(isSelectionLocked)으로 막는다.
     const selectionLocked = isSelectionLocked();
-    providerTrigger.disabled = selectionLocked;
-    llmTrigger.disabled = selectionLocked;
-    effortTrigger.disabled = selectionLocked;
-    effortSlider.setDisabled(selectionLocked);
-    const selectionHint = selectionLocked
+    const selectionLooksLocked = readOnlyDocLabel !== null || controlsLookLocked();
+    providerTrigger.disabled = selectionLooksLocked;
+    llmTrigger.disabled = selectionLooksLocked;
+    effortTrigger.disabled = selectionLooksLocked;
+    effortSlider.setDisabled(selectionLooksLocked);
+    const selectionHint = selectionLooksLocked
       ? '진행 중인 작업이 끝나면 바꿀 수 있습니다'
       : '프로바이더 · 모델 · 추론 강도 변경 (다음 턴부터 적용)';
     providerTrigger.title = selectionHint;
@@ -11848,6 +11872,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return readOnlyDocLabel !== null || isControlLocked();
   }
 
+  /**
+   * 모드·모델 칩이 잠겨 보이는가. 일하는 중·압축처럼 머무는 잠금은 바로 보이고, 연결·채팅 시작·전환·첨부처럼
+   * 잠깐 지나가는 잠금은 입력기처럼 400ms 를 넘긴 뒤에만 보인다 — 채팅을 옮겨 이을 때 칩이 깜빡이지 않는다.
+   */
+  function controlsLookLocked(): boolean {
+    return mergeResolverLocked || agentWorking() || planningPhase === 'switching' || activeCompaction !== null
+      || composerLock.shown !== null;
+  }
+
   function isControlLocked(): boolean {
     if (mergeResolverLocked) return true;
     // 보낸 메시지가 턴을 기다리는 동안(replyPending)도 잠근다 — 허브는 이미 그 메시지를 돌리고 있어
@@ -13036,11 +13069,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     activate,
     deactivate,
     isActive: () => active,
-    openThreadById(threadId: string): void {
+    openThreadById(threadId: string, options: { handoff?: ChatHandoff } = {}): void {
       if (root.dataset.disposed === 'true') return;
       chatChosen = true;
       if (pendingThreadSwitch?.threadId === threadId) pendingThreadSwitch = null;
-      openThread(threadId, { routed: true });
+      const handoff = options.handoff;
+      if (handoff?.draft) threadComposerDrafts.set(threadId, handoff.draft);
+      openThread(threadId, { routed: true, focus: handoff ? false : undefined });
+      if (!handoff || currentThread.id !== threadId) return;
+      if (handoff.focus === 'input') input.focus({ preventScroll: true });
+      else if (handoff.focus === 'document-link') documentLinkToggle.element.focus({ preventScroll: true });
+      // 옮겨 온 채팅은 옛 사이드바의 마지막 모습에서 이어진다 — 새로 그리고 초점을 되돌리며 걸린 전이(보내기 단추,
+      // 입력기 테두리)는 끝 상태로 둔다.
+      finishReplayedAnimations();
+    },
+    captureHandoff(): ChatHandoff {
+      rememberThreadComposerDraft();
+      const focused = document.activeElement;
+      return {
+        draft: threadComposerDrafts.get(currentThread.id) ?? null,
+        focus: focused === input ? 'input' : focused === documentLinkToggle.element ? 'document-link' : null,
+      };
     },
     startDraftChat(): void {
       if (root.dataset.disposed === 'true') return;

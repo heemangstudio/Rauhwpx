@@ -178,6 +178,28 @@ test('the agent detaches mid-turn; the hub answers once the moved chat\'s new br
   assert.match(prompt, /This chat is now attached to the document "다음.hwpx" \(documentId doc-next\)\./);
 });
 
+test('the user detaches in place: the provider keeps running and hears about it once on the next turn', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: 'doc-old' });
+  const started = await hub.start({ documentName: '옛 문서.hwpx' });
+  const before = await hub.promptOf('첫 턴', { documentId: 'doc-old' });
+  assert.doesNotMatch(before, /<document_change/);
+  const health = async () => (await (await fetch(`http://127.0.0.1:${hub.port}/healthz?token=${HUB_TOKEN}`)).json())
+    .sessions.find((entry) => entry.sessionId === hub.sessionId).session;
+  const providerBefore = (await health()).sessionId;
+
+  hub.studio.send({ type: 'chat-detach-document', requestId: 'user-detach', threadId: hub.threadId, documentId: 'doc-old' });
+  assert.equal((await hub.studio.next((frame) => frame.requestId === 'user-detach')).type, 'chat-document-detached');
+  await hub.studio.next((frame) => frame.type === 'project-bound' && frame.projectId === null);
+  const after = await health();
+  assert.deepEqual([after.documentId, after.sessionId, after.status], [null, providerBefore, 'idle'], 'the same provider session stays');
+  assert.notEqual(started.projectId, null);
+
+  const next = await hub.promptOf('이어서', { documentId: null });
+  assert.equal(occurrences(next, DETACH_LINE), 1, next);
+  assert.match(next, /No document is linked to this chat/);
+  assert.doesNotMatch(await hub.promptOf('또', { documentId: null }), /<document_change/);
+});
+
 test('the root conversation attaches without asking; unopenable paths are refused first', { timeout: 60_000 }, async (t) => {
   const home = tempDir(t, 'rhwp-link-home-');
   const folder = path.join(home, '보고서');

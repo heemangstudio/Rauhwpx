@@ -1,6 +1,8 @@
 /**
- * E2E: 에이전트가 자기 턴 중에 채팅을 문서에서 떼고(detach_document) 다른 문서를 붙인다(create_document) —
- * 실제 허브와 Vite 개발 서버, 가짜 Pi(턴을 끝내지 않는다), 가짜 MCP 공급자로 본다.
+ * E2E: 채팅을 문서에서 떼고 다른 문서를 붙인다 — 실제 허브와 Vite 개발 서버, 가짜 Pi, 가짜 MCP 공급자로 본다.
+ *
+ * 0. 사용자가 분리 단추로 뗀다. 허브는 공급자를 다시 띄우지 않고(chat-start·chat-stop 없음, 같은 프로바이더 세션)
+ *    새 사이드바가 그 채팅을 잇는다. 쓰던 글과 초점은 그대로고 머리에는 채팅 이름만 남는다.
  *
  * 1. 새 문서에 붙은 채팅의 턴에서 공급자가 detach_document 를 부른다. 채팅은 빈 종이 자리로 옮기고 머리에서
  *    문서 이름이 사라진다. 같은 허브 세션·프로바이더 턴이 그대로 돈다(chat-start·chat-stop·chat-interrupt 없음).
@@ -30,8 +32,9 @@ ensureChromePath();
 const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || 7970), 5);
 const vitePort = await findAvailablePort(Number(process.env.VITE_PORT || 7975), 5);
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-document-detach-e2e-'));
-// 턴을 끝낼 파일을 만들지 않으므로 가짜 Pi 의 턴은 열린 채로 남는다.
-const { piRoot } = writeFakePi(fixtureRoot);
+// 턴 끝 파일이 있으면 가짜 Pi 의 턴은 바로 끝나고, 없으면 열린 채로 남는다 — 사용자의 떼기는 쉬는 채팅에서, 에이전트의
+// 떼기는 도는 턴에서 본다.
+const { piRoot, finishTurnPath } = writeFakePi(fixtureRoot);
 
 let hub = null;
 let vite = null;
@@ -111,18 +114,70 @@ try {
     return { launchId: health.launchId, sessionId, session: record?.session ?? null };
   }
 
+  const recordSentFrames = (page) => page.evaluateOnNewDocument(() => {
+    window.__sentFrameTypes = [];
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function sendAndRecord(data) {
+      if (typeof data === 'string') {
+        try { window.__sentFrameTypes.push(JSON.parse(data)?.type ?? null); } catch { /* JSON 이 아닌 프레임 */ }
+      }
+      return send.call(this, data);
+    };
+  });
+
+  fs.writeFileSync(finishTurnPath, '1');
+  await runTest('The user detaches in place: same provider session, the composer stays as it was', async ({ page }) => {
+    await recordSentFrames(page);
+    await page.evaluate(() => localStorage.setItem('rhwp-agent-prefs', JSON.stringify({
+      defaultAgent: 'pi', defaultModel: 'mock-model', defaultEffort: '', defaultMode: 'agent',
+    })));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForState(page, 'app ready', () => Boolean(window.__wasm && window.__canvasView));
+    await createNewDocument(page);
+    await page.waitForFunction(() => window.__agentBridge?.getConnectionState?.() === 'connected', { timeout: 30_000 });
+    await page.waitForFunction(() => [...document.querySelectorAll('.ag-root')].some((root) => root.dataset.composerReady === 'true'), { timeout: 20_000 });
+    await page.type('.ag-input', PROMPT);
+    await page.click('.ag-send');
+    await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi' && !window.__agentBridge.isTurnRunning()
+      && [...document.querySelectorAll('.ag-root')].some((root) => root.dataset.composerReady === 'true'), { timeout: 30_000 });
+    const before = await shown(page);
+    const hubBefore = await hubSession(page);
+
+    step('type a draft, then press the detach toggle');
+    await page.type('.ag-input', '보내지 않은 글');
+    await page.waitForFunction(() => {
+      const toggle = document.querySelector('.ag-doc-link-toggle');
+      return toggle && !toggle.hidden && toggle.getAttribute('aria-disabled') !== 'true' && toggle.getAttribute('aria-busy') !== 'true';
+    }, { timeout: 15_000 });
+    const framesBefore = await page.evaluate(() => window.__sentFrameTypes.length);
+    await page.click('.ag-doc-link-toggle');
+    await page.waitForFunction(() => !window.__documentSessions.attached().wasm.hasLoadedDocument()
+      && window.__documentSessions.attached().activeChat.sidebar.isUnlinkedChat(), { timeout: 15_000 });
+    await page.waitForFunction(() => [...document.querySelectorAll('.ag-root')].some((root) => root.dataset.composerReady === 'true'), { timeout: 15_000 });
+    const after = await shown(page);
+    assert(after.threadId === before.threadId, 'The same chat continues beside an empty paper');
+    const sent = await page.evaluate((from) => window.__sentFrameTypes.slice(from), framesBefore);
+    assert(sent.includes('chat-detach-document'), 'The chat told the hub it detached');
+    const restarts = sent.filter((type) => RESTART_FRAMES.includes(type));
+    assert(restarts.length === 0, `Detaching restarts nothing (${restarts.join(', ') || 'none'})`);
+    const hubAfter = await hubSession(page);
+    assert(hubAfter.session?.sessionId === hubBefore.session?.sessionId && hubAfter.session?.documentId === null,
+      'The hub keeps the same provider session, now without a document');
+    const composer = await page.evaluate(() => ({
+      text: document.querySelector('.ag-input')?.value,
+      focus: document.activeElement?.classList.contains('ag-doc-link-toggle'),
+      headerEmpty: document.querySelector('.ag-document-context')?.classList.contains('ag-doc-name-none'),
+    }));
+    assert(composer.text === '보내지 않은 글', 'The typed draft stays in the composer');
+    assert(composer.focus === true, 'Focus stays on the link toggle');
+    assert(composer.headerEmpty === true, 'The header keeps only the chat name');
+    await screenshot(page, 'user-detached-in-place');
+  });
+  fs.rmSync(finishTurnPath, { force: true });
+
   await runTest('The agent detaches its chat mid-turn and attaches a new document without asking', async ({ page }) => {
     page.on('pageerror', (error) => console.log(`  [browser:pageerror] ${error.stack ?? error.message}`));
-    await page.evaluateOnNewDocument(() => {
-      window.__sentFrameTypes = [];
-      const send = WebSocket.prototype.send;
-      WebSocket.prototype.send = function sendAndRecord(data) {
-        if (typeof data === 'string') {
-          try { window.__sentFrameTypes.push(JSON.parse(data)?.type ?? null); } catch { /* JSON 이 아닌 프레임 */ }
-        }
-        return send.call(this, data);
-      };
-    });
+    await recordSentFrames(page);
     await page.evaluate(() => localStorage.setItem('rhwp-agent-prefs', JSON.stringify({
       defaultAgent: 'pi', defaultModel: 'mock-model', defaultEffort: '', defaultMode: 'agent',
     })));

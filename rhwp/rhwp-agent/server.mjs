@@ -3805,10 +3805,11 @@ async function linkChatDocument(record, sock, msg) {
 }
 
 /**
- * Studio 의 chat-detach-document: 에이전트의 detach_document 로 채팅을 문서에서 뗐다. 공급자를 다시 띄우지 않고
- * 세션의 문서·프로젝트·자료 범위만 비운다 — 그 도구 호출이 도는 턴 중에 온다. callId 는 그 호출의 허브 id 다.
- * Studio 는 이어서 옛 브리지를 닫고 빈 문서 자리의 새 브리지로 같은 허브 세션에 붙는다. 그동안 공급자는 이 호출의
- * 결과를 기다리므로, 허브가 호출을 맡았다가 새 브리지가 붙은 뒤에 답한다 — 새 브리지가 놓치는 출력이 없다.
+ * Studio 의 chat-detach-document: 채팅을 문서에서 뗐다. 공급자를 다시 띄우지 않고 세션의 문서·프로젝트·자료 범위만
+ * 비운다. Studio 는 이어서 옛 브리지를 닫고 빈 문서 자리의 새 브리지로 같은 허브 세션을 다시 잡는다.
+ * - 사용자의 분리(callId 없음): 다음 사용자 턴에 떼어 냄을 한 번 알린다.
+ * - 에이전트의 detach_document(callId 는 그 호출의 허브 id): 도는 턴 중에 온다. 공급자는 이 호출의 결과를
+ *   기다리므로, 허브가 호출을 맡았다가 새 브리지가 붙은 뒤에 답한다 — 새 브리지가 놓치는 출력이 없다.
  * 답: chat-document-detached { threadId, documentId }.
  */
 async function detachChatDocument(record, sock, msg) {
@@ -3830,8 +3831,9 @@ async function detachChatDocument(record, sock, msg) {
     fail(error, 'INVALID_REQUEST');
     return;
   }
-  const entry = Number.isSafeInteger(msg.callId) ? record.pendingCalls.get(msg.callId) : null;
-  if (!entry || entry.tool !== 'detach_document' || entry.sessionGeneration !== activeSession.generation) {
+  const byAgent = msg.callId !== undefined && msg.callId !== null;
+  const entry = byAgent && Number.isSafeInteger(msg.callId) ? record.pendingCalls.get(msg.callId) : null;
+  if (byAgent && (!entry || entry.tool !== 'detach_document' || entry.sessionGeneration !== activeSession.generation)) {
     fail(workflowError('REQUEST_INVALIDATED', 'No detach_document call of this chat is waiting'));
     return;
   }
@@ -3839,8 +3841,6 @@ async function detachChatDocument(record, sock, msg) {
     fail(workflowError('STALE_CHAT_SCOPE', 'This chat is not attached to that document'));
     return;
   }
-  clearTimeout(entry.timer);
-  record.pendingCalls.delete(msg.callId);
   const threadId = activeSession.threadId;
   const detachedFrom = { documentId, documentName: activeSession.documentName ?? null };
   activeSession.documentId = null;
@@ -3848,15 +3848,21 @@ async function detachChatDocument(record, sock, msg) {
   activeSession.lastDocumentInfo = null;
   activeSession.lastObservedDocumentRevision = undefined;
   activeSession.detachedFrom = detachedFrom;
-  // 에이전트가 스스로 뗐다 — 도구 결과가 알리므로 다음 사용자 턴에 떼어 냄을 다시 알리지 않는다.
-  if (record.pendingDocumentNote?.threadId === threadId) record.pendingDocumentNote = null;
-  record.deliveredDetachNote = `${threadId}\n${documentId}`;
-  record.documentDetachHandoff = {
-    entry,
-    socket: sock,
-    result: { detached: true, documentId, documentName: detachedFrom.documentName },
-    timer: setTimeout(() => settleDocumentDetachHandoff(record), DOCUMENT_DETACH_HANDOFF_MS),
-  };
+  if (entry) {
+    clearTimeout(entry.timer);
+    record.pendingCalls.delete(msg.callId);
+    // 에이전트가 스스로 뗐다 — 도구 결과가 알리므로 다음 사용자 턴에 떼어 냄을 다시 알리지 않는다.
+    if (record.pendingDocumentNote?.threadId === threadId) record.pendingDocumentNote = null;
+    record.deliveredDetachNote = `${threadId}\n${documentId}`;
+    record.documentDetachHandoff = {
+      entry,
+      socket: sock,
+      result: { detached: true, documentId, documentName: detachedFrom.documentName },
+      timer: setTimeout(() => settleDocumentDetachHandoff(record), DOCUMENT_DETACH_HANDOFF_MS),
+    };
+  } else {
+    queueDetachNote(record, activeSession, detachedFrom);
+  }
   applyRecordRepository(record, null, msg);
   const projectId = await bindRecordProject(record, { threadId, documentId: null, documentName: null });
   if (record.agentSession === activeSession) {

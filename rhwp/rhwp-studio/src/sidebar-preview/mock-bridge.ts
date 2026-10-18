@@ -685,9 +685,11 @@ export function createMockBridge(
     },
     // 미리보기는 사이드바가 하나라 에이전트의 떼기도 그 자리에서 문서를 비운다.
     detachChatDocument: async (detach) => {
-      if (detach.threadId !== threadId || chatDocumentId === null) throw linkError('DETACH_UNAVAILABLE');
+      if (detach.threadId !== threadId || chatDocumentId === null) return false;
       chatDocumentId = null;
+      return true;
     },
+    continueHubChat: () => {},
     hubSessionKnown: () => welcome,
     getHubIdentity: () => ({ hubInstanceId: hubInstance, hubSessionId: 'preview-session' }),
     getHubChat: () => (hubChatThreadId
