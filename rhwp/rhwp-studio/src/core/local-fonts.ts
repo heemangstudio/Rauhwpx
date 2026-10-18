@@ -1723,6 +1723,21 @@ export function hasImportedLocalFontFace(fontName: string): boolean {
   return !!record?.runtimeFamily && importedFontFaces.has(localFontFaceKey(record));
 }
 
+/**
+ * 글꼴 이름 → 이번 세션에 등록된 runtime family. 엔진 SVG는 원래 이름(예: 수식
+ * HyhwpEQ)을 쓰지만 세션 face는 runtime family로만 등록돼, 그대로 붙이면 빈 상자가 된다.
+ */
+export function createSessionFontResolver(): (family: string) => string | null {
+  const cache = new Map<string, string | null>();
+  return (family) => {
+    if (!cache.has(family)) {
+      const record = resolveSessionLocalFont(family);
+      cache.set(family, record?.runtimeFamily && hasImportedLocalFontFace(family) ? record.runtimeFamily : null);
+    }
+    return cache.get(family) ?? null;
+  };
+}
+
 /** CSS family와 달리 style별 native Typeface cache를 구분하는 안정 키다. */
 export function localFontFaceKey(record: Pick<LocalFontRecord, 'family' | 'fullName' | 'postscriptName'>): string {
   return normalizeFontAlias(record.postscriptName || record.fullName || record.family);

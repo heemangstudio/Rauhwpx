@@ -232,7 +232,7 @@ export function mapCssFontFamilyList(value: string, resolve: PrintFontResolver):
   return changed ? mapped.join(', ') : value;
 }
 
-function remapSvgFontFamilies(root: Element, resolve: PrintFontResolver): void {
+export function remapSvgFontFamilies(root: Element, resolve: PrintFontResolver): void {
   const elements = [root, ...Array.from(root.querySelectorAll('[font-family], [style*="font-family"]'))];
   for (const element of elements) {
     const attribute = element.getAttribute('font-family');

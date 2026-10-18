@@ -3,6 +3,8 @@ import type { EventBus } from '@/core/event-bus';
 import type { CellPathLike, EquationProperties, NoteControlRef, ObjectRef } from '@/core/types';
 import type { CommandServices } from '@/command/types';
 import { appendSvgMarkup } from './dom-utils';
+import { remapSvgFontFamilies } from '@/command/print-pages';
+import { createSessionFontResolver } from '@/core/local-fonts';
 import { enableDialogDrag } from './dialog-drag';
 import {
   equationScriptForStorage,
@@ -775,7 +777,11 @@ export class EquationEditorDialog {
       this.previewContainer.replaceChildren();
       appendSvgMarkup(this.previewContainer, preview.svg);
       const svg = this.previewContainer.querySelector('svg');
-      if (svg) this.fitPreviewInk(svg);
+      if (svg) {
+        // 수식 HyhwpEQ 같은 세션 글꼴은 runtime family로만 등록돼 있다.
+        remapSvgFontFamilies(svg, createSessionFontResolver());
+        this.fitPreviewInk(svg);
+      }
       this.showDiagnostics(preview);
     } catch (err) {
       this.showPreviewMessage('eq-preview-error', '미리보기 오류');
