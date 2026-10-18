@@ -93,9 +93,16 @@ test('gift client maps server errors, bad bodies, network failures and timeouts'
   await rejectsWith(reply(200, JSON.stringify({ ok: true, eligible: 'yes' })).status('lease'), 'server');
   await rejectsWith(reply(200, JSON.stringify({ ok: true, claimed: true })).claim('lease'), 'server');
 
+  // AbortSignal.timeout 타이머는 unref 라서, 실제 소켓처럼 이벤트 루프를 붙잡는 핸들이 없으면 중단 전에 루프가 끝난다.
   const hanging = createGiftClient({
     timeoutMs: 20,
-    fetchImpl: (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))),
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      const socket = setInterval(() => {}, 1_000);
+      init.signal.addEventListener('abort', () => {
+        clearInterval(socket);
+        reject(init.signal.reason);
+      }, { once: true });
+    }),
   });
   await rejectsWith(hanging.status('lease'), 'network');
 });
