@@ -71,7 +71,7 @@ thread_local! {
         (bool, bool), std::rc::Rc<LegacyTables>
     >> = std::cell::RefCell::new(std::collections::HashMap::new());
     static RUN_CACHE: std::cell::RefCell<std::collections::HashMap<
-        (String, u64, bool, bool, bool), Option<LegacyRunMetrics>
+        (String, u64, bool, bool, bool, (&'static str, u64)), Option<LegacyRunMetrics>
     >> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
@@ -324,11 +324,22 @@ pub(crate) fn measure_modern_text_run_native(
     italic: bool,
     bold: bool,
 ) -> Option<LegacyRunMetrics> {
+    measure_modern_text_run_native_with_policy(text, font_size, italic, bold, Default::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_text_run_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    context: super::font::AdvanceContext,
+) -> Option<LegacyRunMetrics> {
     if !text
         .chars()
         .any(|ch| super::font::modern_hancom_fallback_advance_em(ch).is_some())
     {
-        return measure_legacy_run_native(text, font_size, italic, bold, true);
+        return measure_legacy_run_native_with_policy(text, font_size, italic, bold, true, context);
     }
     let generation = super::sync_measurement_caches();
     let mut result = LegacyRunMetrics {
@@ -339,8 +350,14 @@ pub(crate) fn measure_modern_text_run_native(
     for (index, ch) in text.chars().enumerate() {
         let effective_italic =
             italic && super::font::modern_hancom_fallback_advance_em(ch).is_none();
-        let measured =
-            measure_legacy_run_native(&ch.to_string(), font_size, effective_italic, bold, true)?;
+        let measured = measure_legacy_run_native_with_policy(
+            &ch.to_string(),
+            font_size,
+            effective_italic,
+            bold,
+            true,
+            context,
+        )?;
         if index == 0 {
             result.ink_left = measured.ink_left;
         }
@@ -360,6 +377,25 @@ pub(crate) fn measure_modern_run_advance_native(
     bold: bool,
     literal: bool,
 ) -> Option<f64> {
+    measure_modern_run_advance_native_with_policy(
+        text,
+        font_size,
+        italic,
+        bold,
+        literal,
+        Default::default(),
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_run_advance_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    literal: bool,
+    context: super::font::AdvanceContext,
+) -> Option<f64> {
     let generation = super::sync_measurement_caches();
     if !text
         .chars()
@@ -370,9 +406,14 @@ pub(crate) fn measure_modern_run_advance_native(
     let advance = text.chars().try_fold(0.0, |advance, ch| {
         let admitted = super::font::modern_hancom_fallback_advance_em(ch);
         let effective_italic = italic && !(literal && admitted.is_some());
-        if let Some(metrics) =
-            measure_legacy_run_native(&ch.to_string(), font_size, effective_italic, bold, true)
-        {
+        if let Some(metrics) = measure_legacy_run_native_with_policy(
+            &ch.to_string(),
+            font_size,
+            effective_italic,
+            bold,
+            true,
+            context,
+        ) {
             return Some(advance + metrics.advance);
         }
         let admitted = admitted?;
@@ -419,8 +460,27 @@ pub(crate) fn measure_legacy_run_native(
     bold: bool,
     modern: bool,
 ) -> Option<LegacyRunMetrics> {
+    measure_legacy_run_native_with_policy(text, font_size, italic, bold, modern, Default::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_legacy_run_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    modern: bool,
+    context: super::font::AdvanceContext,
+) -> Option<LegacyRunMetrics> {
     let generation = super::sync_measurement_caches();
-    let key = (text.to_string(), font_size.to_bits(), italic, bold, modern);
+    let key = (
+        text.to_string(),
+        font_size.to_bits(),
+        italic,
+        bold,
+        modern,
+        context.cache_key(),
+    );
     // The Haansoft fallback may be registered after the HY face. Keep its
     // metrics live so an earlier generic fallback cannot stay cached.
     let cacheable = !modern
@@ -461,10 +521,14 @@ pub(crate) fn measure_legacy_run_native(
             let raw = tables.advance(gid as u16);
             // 현대 HY 글립은 힌팅된 advance로 연결한다.
             let adv = if modern {
-                super::font::modern_glyph_advance(
+                super::font::modern_source_glyph_advance(
                     raw * font_size,
                     font_size,
-                    super::font::legacy_equation_glyph(ch, italic, true).1,
+                    ch,
+                    italic,
+                    bold,
+                    gid,
+                    context,
                 ) / font_size
             } else {
                 raw
@@ -867,6 +931,234 @@ mod fallback_ink_tests {
     }
     fn engine() -> EqLayout {
         EqLayout::with_font(10.0, "HYhwpEQ").with_version("Equation Version 60")
+    }
+
+    // 500/1000 em reproduces the retained source digit's 512/1024 em advance.
+    // All outlines here belong to the existing MIT shaping fixture.
+    const POLICY_GLYPHS: &str =
+        "\u{e03d}\u{e034}\u{e035}\u{e036}\u{e037}\u{e038}\u{e0fc}\u{e000}xA";
+
+    fn policy_engine(policy: crate::model::provenance::FontMetricsPolicy, scale: f64) -> EqLayout {
+        EqLayout::with_font(11.0 * 4.0 / 3.0 * scale, "HYhwpEQ")
+            .with_version("Equation Version 60")
+            .with_base_pt(11.0)
+            .with_metrics_policy(policy)
+    }
+
+    #[test]
+    fn windows_advance_policy_preserves_ink_paint_size_scripts_and_cache_identity() {
+        if isolated("windows_advance_policy_preserves_ink_paint_size_scripts_and_cache_identity") {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        use crate::renderer::equation::symbols::FontStyleKind;
+        use crate::renderer::equation::{font::AdvanceContext, natural_width_hwp_with_policy};
+        let fixture = Fixture::new();
+        fixture.install(
+            "hy.ttf",
+            &font(
+                "HYhwpEQ",
+                POLICY_GLYPHS,
+                1,
+                500,
+                false,
+                false,
+                Some((50, 550)),
+            ),
+        );
+        let generation = super::super::measurement_generation();
+        let fs = 11.0 * 4.0 / 3.0;
+        let mut equation = crate::model::control::Equation::default();
+        equation.script = "45".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.version_info = "Equation Version 60".into();
+        equation.font_size = 1100;
+        let mac = policy_engine(HcrDeclared, 1.0);
+        for policy in [HancomWindows, HcrDeclared, HancomWindows, HcrDeclared] {
+            let engine = policy_engine(policy, 1.0);
+            let windows = policy == HancomWindows;
+            let step = if windows { 7.0 } else { 6.3 };
+            let script_step = if windows { 5.0 } else { 4.5 };
+            for digit in ["4", "5"] {
+                let row = engine.layout(&EqNode::Row(vec![
+                    EqNode::Number(digit.into()),
+                    EqNode::Text("x".into()),
+                ]));
+                let LayoutKind::Row(children) = &row.kind else {
+                    panic!("pair row");
+                };
+                near(children[1].x - children[0].x, step);
+                near(
+                    (children[1].x - children[0].x) * 0.75,
+                    if windows { 5.25 } else { 4.725 },
+                );
+            }
+            let number = engine.layout(&EqNode::Number("45".into()));
+            let positioned = number.positioned_glyphs().unwrap();
+            near(positioned[1].x, step);
+            near(number.width, 2.0 * step);
+            near(positioned[1].paint_font_size(fs), fs);
+            let context = AdvanceContext { policy, scale: 1.0 };
+            let leaf = measure_legacy_run_native_with_policy("4", fs, false, false, true, context)
+                .unwrap();
+            let old_leaf = measure_legacy_run_native("4", fs, false, false, true).unwrap();
+            near(leaf.ink_left, old_leaf.ink_left);
+            near(leaf.ink_right, old_leaf.ink_right);
+            let script_node = EqNode::Superscript {
+                base: Box::new(EqNode::Text("x".into())),
+                sup: Box::new(EqNode::Number("23".into())),
+            };
+            let scripted = engine.layout(&script_node);
+            let LayoutKind::Superscript { sup, .. } = &scripted.kind else {
+                panic!("superscript");
+            };
+            near(sup.positioned_glyphs().unwrap()[1].x, script_step);
+            near(sup.paint_font_size(fs), fs * 0.68);
+            let old_scripted = mac.layout(&script_node);
+            near(scripted.height, old_scripted.height);
+            near(scripted.baseline, old_scripted.baseline);
+            for node in [
+                EqNode::Text("한".into()),
+                EqNode::Text("A".into()),
+                EqNode::FontStyle {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(EqNode::Text("x".into())),
+                },
+                EqNode::FontStyle {
+                    style: FontStyleKind::Bold,
+                    body: Box::new(EqNode::Number("45".into())),
+                },
+            ] {
+                near(engine.layout(&node).width, mac.layout(&node).width);
+            }
+            let legacy = engine
+                .clone()
+                .with_version("")
+                .layout(&EqNode::Number("45".into()));
+            near(
+                legacy.width,
+                mac.clone()
+                    .with_version("")
+                    .layout(&EqNode::Number("45".into()))
+                    .width,
+            );
+            assert_eq!(
+                natural_width_hwp_with_policy(&equation, policy),
+                Some(if windows { 1050 } else { 945 })
+            );
+            let scaled =
+                policy_engine(HancomWindows, 200.0 / 96.0).layout(&EqNode::Number("45".into()));
+            near(
+                scaled.positioned_glyphs().unwrap()[1].x / (200.0 / 96.0),
+                7.0,
+            );
+        }
+        assert_eq!(super::super::measurement_generation(), generation);
+        // Legacy callers remain Mac even after a Windows run warms the same generation.
+        near(
+            EqLayout::with_font(fs, "HYhwpEQ")
+                .layout(&EqNode::Number("45".into()))
+                .width,
+            12.6,
+        );
+    }
+
+    #[test]
+    fn windows_advance_policy_refreshes_both_policies_after_source_generation_change() {
+        if isolated("windows_advance_policy_refreshes_both_policies_after_source_generation_change")
+        {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        use crate::renderer::equation::{
+            content_width_hwp_with_policy, natural_width_hwp_with_policy,
+        };
+        let fixture = Fixture::new();
+        let bytes = font(
+            "HYhwpEQ",
+            POLICY_GLYPHS,
+            1,
+            500,
+            false,
+            false,
+            Some((50, 550)),
+        );
+        let path = fixture.install("hy.ttf", &bytes);
+        let mut equation = crate::model::control::Equation::default();
+        equation.script = "45".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.version_info = "Equation Version 60".into();
+        equation.font_size = 1100;
+        equation.common.width = 1234;
+        let before = [HcrDeclared, HancomWindows]
+            .map(|p| natural_width_hwp_with_policy(&equation, p).unwrap());
+        let generation = super::super::measurement_generation();
+        fixture.install(
+            "hy.ttf",
+            &font(
+                "HYhwpEQ",
+                POLICY_GLYPHS,
+                1,
+                800,
+                false,
+                false,
+                Some((50, 550)),
+            ),
+        );
+        crate::renderer::layout::clear_measure_caches();
+        assert!(super::super::measurement_generation() > generation);
+        for (index, policy) in [HcrDeclared, HancomWindows].into_iter().enumerate() {
+            assert!(natural_width_hwp_with_policy(&equation, policy).unwrap() > before[index]);
+        }
+        #[cfg(not(feature = "native-skia"))]
+        {
+            std::fs::remove_file(&path).unwrap();
+            crate::renderer::font_paths::register_font_face_availability(&[path]);
+            crate::renderer::layout::clear_measure_caches();
+            for policy in [HancomWindows, HcrDeclared] {
+                assert_eq!(natural_width_hwp_with_policy(&equation, policy), None);
+                assert_eq!(content_width_hwp_with_policy(&equation, policy), 1234);
+            }
+            fixture.install("hy.ttf", &bytes);
+            crate::renderer::layout::clear_measure_caches();
+            assert_eq!(
+                [HcrDeclared, HancomWindows]
+                    .map(|p| natural_width_hwp_with_policy(&equation, p).unwrap()),
+                before
+            );
+        }
+        #[cfg(feature = "native-skia")]
+        let _ = (path, content_width_hwp_with_policy(&equation, HcrDeclared));
+    }
+
+    #[test]
+    fn windows_advance_policy_keeps_fallback_width_without_inventing_ink() {
+        if isolated("windows_advance_policy_keeps_fallback_width_without_inventing_ink") {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        let fixture = Fixture::new();
+        fixture.hy(POLICY_GLYPHS);
+        let fallback = without_ink(
+            &font("Haansoft Batang", "□∆′″", 3, 800, false, false, None),
+            None,
+        );
+        fixture.install("fallback.ttf", &fallback);
+        crate::renderer::layout::clear_measure_caches();
+        for policy in [HancomWindows, HcrDeclared, HancomWindows] {
+            let context = super::super::font::AdvanceContext { policy, scale: 1.0 };
+            assert!(
+                measure_legacy_run_native_with_policy("□", 10.0, false, false, true, context)
+                    .is_none()
+            );
+            near(
+                engine()
+                    .with_metrics_policy(policy)
+                    .layout(&EqNode::Text("□".into()))
+                    .width,
+                7.2,
+            );
+        }
     }
 
     fn assert_width_without_fallback_ink() {

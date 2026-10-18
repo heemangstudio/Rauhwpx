@@ -1,8 +1,8 @@
 //! 표 레이아웃 (layout_table + 셀 높이/줄범위 계산)
 
-use super::super::composer::{
-    compose_paragraph, inline_picture_occupied_width_hu, ComposedLine, ComposedParagraph,
-};
+#[cfg(test)]
+use super::super::composer::compose_paragraph;
+use super::super::composer::{inline_picture_occupied_width_hu, ComposedLine, ComposedParagraph};
 use super::super::height_measurer::{
     grow_rows_for_span_requirements, hwpx_structural_cell_tail, include_table_cell_line_spacing,
     include_table_cell_spacing_after, table_cell_stored_vpos_step_hu, MeasuredTable,
@@ -1055,7 +1055,7 @@ impl LayoutEngine {
             return false;
         }
         let body_height = self.current_body_area.get().3;
-        let composed = compose_paragraph(para);
+        let composed = crate::renderer::composer::compose_paragraph_with_styles(para, styles);
         let para_style = styles.para_styles.get(para.para_shape_id as usize);
         let host_height: f64 = composed
             .lines
@@ -3420,7 +3420,7 @@ impl LayoutEngine {
             .iter()
             .enumerate()
             .map(|(pidx, p)| {
-                let mut comp = compose_paragraph(p);
+                let mut comp = crate::renderer::composer::compose_paragraph_with_styles(p, styles);
                 // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                 // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                 // 측정/렌더링 일관성 보장 (table_layout.rs:1226 의 렌더링 경로와 동일).
@@ -4608,7 +4608,10 @@ impl LayoutEngine {
                         Control::Equation(eq) => (
                             true,
                             hwpunit_to_px(
-                                crate::renderer::equation::content_width_hwp(eq),
+                                crate::renderer::equation::content_width_hwp_with_policy(
+                                    eq,
+                                    styles.font_metrics_policy,
+                                ),
                                 self.dpi,
                             ),
                         ),
@@ -5478,11 +5481,17 @@ impl LayoutEngine {
                     Control::Equation(eq) => {
                         // 수식 컨트롤: 글자처럼 인라인 배치
                         let eq_w = hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_advance = hwpunit_to_px(
-                            crate::renderer::equation::occupied_width_hwp(eq),
+                            crate::renderer::equation::occupied_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_margin_x = hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
@@ -5522,12 +5531,16 @@ impl LayoutEngine {
                                 font_size_px,
                                 &eq.font_name,
                             )
+                            .with_metrics_policy(styles.font_metrics_policy)
                             .with_version(&eq.version_info)
                             .with_base_pt(eq.font_size as f64 / 100.0)
                             .layout_in_control_width(
                                 &ast,
                                 hwpunit_to_px(
-                                    crate::renderer::equation::content_width_hwp(eq),
+                                    crate::renderer::equation::content_width_hwp_with_policy(
+                                        eq,
+                                        styles.font_metrics_policy,
+                                    ),
                                     self.dpi,
                                 ),
                             );
@@ -6376,7 +6389,7 @@ impl LayoutEngine {
             let mut composed_paras: Vec<_> = cell
                 .paragraphs
                 .iter()
-                .map(|p| compose_paragraph(p))
+                .map(|p| crate::renderer::composer::compose_paragraph_with_styles(p, styles))
                 .collect();
 
             // [Task #1073] 중첩 표 분할 연속 페이지(row_filter sr>0)에서 분할 시작 행보다
@@ -6896,7 +6909,8 @@ impl LayoutEngine {
                             || self.profile.get().hwp5_origin_hwpx())
                         && !self.profile.get().own_line_layout()
                         && {
-                            let composed = compose_paragraph(p);
+                            let composed =
+                                crate::renderer::composer::compose_paragraph_with_styles(p, styles);
                             self.preserve_first_cell_spacing_before_for_source(
                                 p,
                                 composed.lines.first(),
@@ -6949,7 +6963,7 @@ impl LayoutEngine {
                 let (nested_h, float_bottom) = {
                     // 같은 줄에 나란히 놓이는 TAC 표는 높이가 겹친다 — 줄별
                     // 최댓값만 세로 범위에 반영한다 (tac_table_ctrls_by_line 참조).
-                    let comp = crate::renderer::composer::compose_paragraph(p);
+                    let comp = crate::renderer::composer::compose_paragraph_with_styles(p, styles);
                     let groups = if shared_inline_width.is_some_and(|width| {
                         crate::renderer::composer::fresh_adjacent_tac_tables_fit(
                             p, width, styles, self.dpi, true,
@@ -7012,7 +7026,7 @@ impl LayoutEngine {
         let mut total = 0.0;
         let cell_para_count = cell.paragraphs.len();
         for (pidx, p) in cell.paragraphs.iter().enumerate() {
-            let comp = compose_paragraph(p);
+            let comp = crate::renderer::composer::compose_paragraph_with_styles(p, styles);
             let para_style = styles.para_styles.get(p.para_shape_id as usize);
             let is_last_para = pidx + 1 == cell_para_count;
             let spacing_before = if pidx > 0
@@ -7462,7 +7476,8 @@ impl LayoutEngine {
             let inner_width = (cell_w - pad_left - pad_right).max(0.0);
             let mut cell_units = Vec::new();
             for (pi, para) in cell.paragraphs.iter().enumerate() {
-                let mut comp = compose_paragraph(para);
+                let mut comp =
+                    crate::renderer::composer::compose_paragraph_with_styles(para, styles);
                 crate::renderer::composer::recompose_for_cell_width_for_source(
                     &mut comp,
                     para,
@@ -7645,7 +7660,8 @@ impl LayoutEngine {
                         inner_width,
                     );
                     for (pi, para) in cell.paragraphs.iter().enumerate() {
-                        let mut comp = compose_paragraph(para);
+                        let mut comp =
+                            crate::renderer::composer::compose_paragraph_with_styles(para, styles);
                         crate::renderer::composer::recompose_for_cell_width_for_source(
                             &mut comp,
                             para,
@@ -8233,7 +8249,7 @@ impl LayoutEngine {
             let (para_top_and_bottom_h, para_other_non_inline_h) =
                 self.paragraph_cell_non_inline_control_flow_parts(&p.controls, inner_width);
             let para_non_inline_h = para_top_and_bottom_h + para_other_non_inline_h;
-            let mut comp = compose_paragraph(p);
+            let mut comp = crate::renderer::composer::compose_paragraph_with_styles(p, styles);
             crate::renderer::composer::recompose_for_cell_width_for_source(
                 &mut comp,
                 p,
@@ -8437,9 +8453,15 @@ impl LayoutEngine {
                 // than its saved em box. Use the same ascent/descent calculation
                 // as paragraph paint so row cuts retain that occupied height.
                 let occupied_lh =
-                    crate::renderer::equation::composed_line_flow_height_px(p, &comp, li, self.dpi)
-                        .map(|height| raw_lh.max(height))
-                        .unwrap_or(raw_lh);
+                    crate::renderer::equation::composed_line_flow_height_px_with_policy(
+                        p,
+                        &comp,
+                        li,
+                        self.dpi,
+                        styles.font_metrics_policy,
+                    )
+                    .map(|height| raw_lh.max(height))
+                    .unwrap_or(raw_lh);
                 // [Task #1811] HWPX RowBreak 셀의 synthetic lineSeg 는 저장 근거가 아니라
                 // reflow 산물이다. row cut 측정에서 다시 corrected_line_height 를 적용하면
                 // HWP 기준보다 줄 유닛이 커져 p4→p5 split 이 한 유닛 빨라진다.

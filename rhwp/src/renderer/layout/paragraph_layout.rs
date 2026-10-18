@@ -860,8 +860,16 @@ fn is_treat_as_char_equation_control(ctrl: Option<&Control>) -> bool {
 /// #374 이후 줄 전진은 min(선언 폭, paint 폭+여백)이라 선언 폭보다 좁을 수 있는데,
 /// bbox 를 선언 폭 그대로 두면 이웃 수식 bbox 와 겹쳐 커서·hit-test 가 되감긴다.
 /// 렌더러는 bbox 의 x/y 만 쓰므로 그림에는 영향이 없다.
-fn inline_equation_box_width_px(eq: &crate::model::control::Equation, tac_w: f64, dpi: f64) -> f64 {
-    let declared = hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), dpi);
+fn inline_equation_box_width_px(
+    eq: &crate::model::control::Equation,
+    tac_w: f64,
+    dpi: f64,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> f64 {
+    let declared = hwpunit_to_px(
+        crate::renderer::equation::content_width_hwp_with_policy(eq, policy),
+        dpi,
+    );
     let margins = hwpunit_to_px(
         i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
         dpi,
@@ -913,6 +921,7 @@ fn line_equation_metrics_px(
     para: Option<&Paragraph>,
     line_tac_offsets: &[(usize, f64, usize)],
     dpi: f64,
+    policy: crate::model::provenance::FontMetricsPolicy,
 ) -> Option<(f64, f64)> {
     let para = para?;
     let mut max_ascent = 0.0f64;
@@ -927,7 +936,8 @@ fn line_equation_metrics_px(
             continue;
         }
 
-        let (ascent, descent) = crate::renderer::equation::control_flow_ascent_descent_px(eq, dpi);
+        let (ascent, descent) =
+            crate::renderer::equation::control_flow_ascent_descent_px_with_policy(eq, dpi, policy);
         max_ascent = max_ascent.max(ascent);
         max_descent = max_descent.max(descent);
         found = true;
@@ -1209,11 +1219,23 @@ mod inline_equation_alignment_tests {
             controls: vec![Control::Equation(Box::new(eq))],
             ..Paragraph::default()
         };
-        let false_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        let false_metrics = line_equation_metrics_px(
+            Some(&para),
+            &[(0, 0.0, 0)],
+            96.0,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
         if let Control::Equation(eq) = &mut para.controls[0] {
             eq.common.affect_line_spacing = true;
         }
-        let true_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        let true_metrics = line_equation_metrics_px(
+            Some(&para),
+            &[(0, 0.0, 0)],
+            96.0,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
         assert_eq!(false_metrics.0, true_metrics.0);
         assert!(true_metrics.1 > false_metrics.1);
     }
@@ -3252,7 +3274,7 @@ fn cached_prefix_tabs_allow_word_compression(
         || para.controls.iter().skip(leading_headers).any(|control| {
             !matches!(control,
             Control::Equation(eq) if eq.common.treat_as_char
-                && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                && crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some())
         })
     {
         return false;
@@ -5269,11 +5291,18 @@ impl LayoutEngine {
                         font_size_px,
                         &eq.font_name,
                     )
+                    .with_metrics_policy(styles.font_metrics_policy)
                     .with_version(&eq.version_info)
                     .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(
                         &ast,
-                        hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi),
+                        hwpunit_to_px(
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
+                            self.dpi,
+                        ),
                     );
                     let color_str =
                         crate::renderer::equation::svg_render::eq_color_to_svg(eq.color);
@@ -5296,7 +5325,12 @@ impl LayoutEngine {
                     // 쓰면 내용이 ~6pt 위로 치솟는다).
                     let eq_y = row_y + baseline - layout_box.baseline;
                     let eq_x = inline_x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                    let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
+                    let eq_w = inline_equation_box_width_px(
+                        eq,
+                        tac_w,
+                        self.dpi,
+                        styles.font_metrics_policy,
+                    );
                     let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                         (
                             Some(ctx.path[0].cell_index),
@@ -5581,18 +5615,29 @@ impl LayoutEngine {
                         // 원본 서체로 다시 잰 자연 폭은 한컴이 문서를 열 때 재계산한 개체
                         // 폭이다 — 전진은 개체 폭 + 바깥 여백 그대로다(mock-exam 미주 `a_2+a_4`
                         // `=a_1r+…` 연속 수식). 저장 폭 상한은 자연 폭이 없을 때만 쓴다.
-                        if crate::renderer::equation::natural_width_hwp(eq).is_some() {
+                        if crate::renderer::equation::natural_width_hwp_with_policy(
+                            eq,
+                            styles.font_metrics_policy,
+                        )
+                        .is_some()
+                        {
                             continue;
                         }
                         let painted_px = hwpunit_to_px(
-                            super::super::equation::fitted_width_hwp(eq) as i32,
+                            super::super::equation::fitted_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ) as i32,
                             self.dpi,
                         ) + hwpunit_to_px(
                             i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
                             self.dpi,
                         );
                         let declared_px = hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         *w = painted_px.min(declared_px);
@@ -5866,7 +5911,14 @@ impl LayoutEngine {
         } else {
             None
         };
+        // 인증된 HU 진행은 full-H/음수 spacing clamp와 별도로 받는다.
+        let certified_endnote_advances = (cell_ctx.is_none())
+            .then(|| self.endnote_para_source_for(para_index))
+            .flatten()
+            .and_then(|source| source.certified_line_advances_hu)
+            .filter(|rows| rows.len() == composed.lines.len());
         let mut endnote_upper_compaction_hu = 0;
+        let mut certified_content_bottom: Option<f64> = None;
         let mut endnote_line_vpos_y_end: Option<f64> = None;
         let mut endnote_auto_wrap_y_end: Option<f64> = None;
         let mut prev_line_reserved_tac_picture_height: Option<f64> = None;
@@ -6055,13 +6107,14 @@ impl LayoutEngine {
                 .hwpx_stored_layout()
                 .then(|| {
                     para.and_then(|p| {
-                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                            p, composed, line_idx,
+                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                            p, composed, line_idx, styles.font_metrics_policy,
                         )
                     })
                 })
                 .flatten();
-            if endnote_line_vpos_base.is_some() {
+            // 인증된 successor 진행은 legacy 수식 textH 압축을 다시 빼지 않는다.
+            if endnote_line_vpos_base.is_some() && certified_endnote_advances.is_none() {
                 if let (Some((height, _)), Some(seg)) = (
                     source_upper_equation_metrics,
                     para.and_then(|p| p.line_segs.get(line_idx)),
@@ -6093,6 +6146,11 @@ impl LayoutEngine {
             });
             if let Some((height, _)) = source_upper_equation_metrics {
                 line_height = hwpunit_to_px(height, self.dpi);
+            }
+            if certified_endnote_advances.is_some() {
+                if let Some(seg) = para.and_then(|p| p.line_segs.get(line_idx)) {
+                    line_height = hwpunit_to_px(seg.line_height, self.dpi);
+                }
             }
             // [#2279 진단] 줄별 pitch 분해 — 동작 불변.
             if let Ok(pat) = std::env::var("RHWP_DIAG_PITCH") {
@@ -6311,7 +6369,7 @@ impl LayoutEngine {
                 && line_tac_offsets_for_width.iter().all(|(_, _, ci)| {
                     matches!(para.and_then(|p| p.controls.get(*ci)),
                         Some(Control::Equation(eq)) if eq.common.treat_as_char
-                            && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                            && crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some())
                 });
             let has_stored_equation_line_metrics = authored_center_equation_metrics
                 || source_upper_equation_metrics.is_some()
@@ -6345,9 +6403,12 @@ impl LayoutEngine {
                         // 다시 계산하면 그 간격을 잃는다.
                         line_spacing_px = hwpunit_to_px(comp_line.line_spacing, self.dpi);
                     }
-                } else if let Some((equation_ascent, equation_descent)) =
-                    line_equation_metrics_px(para, &line_tac_offsets_for_width, self.dpi)
-                {
+                } else if let Some((equation_ascent, equation_descent)) = line_equation_metrics_px(
+                    para,
+                    &line_tac_offsets_for_width,
+                    self.dpi,
+                    styles.font_metrics_policy,
+                ) {
                     (line_height, baseline) = align_line_metrics_to_equation(
                         line_height,
                         baseline,
@@ -7687,12 +7748,26 @@ impl LayoutEngine {
                 } else {
                     y + render_line_flow_height
                 };
+                let content_bottom = if certified_endnote_advances.is_some() {
+                    let bottom = certified_content_bottom
+                        .map(|prior| prior.max(content_bottom))
+                        .unwrap_or(content_bottom);
+                    certified_content_bottom = Some(bottom);
+                    bottom
+                } else {
+                    content_bottom
+                };
                 self.last_item_content_bottom.set(content_bottom);
                 if equation_only_endnote_tail_line && content_bottom > col_bottom {
                     self.last_item_endnote_equation_tail_line_box.set(true);
                 }
             }
-            if endnote_line_vpos_base.is_some() {
+            if let Some(advances) = &certified_endnote_advances {
+                // bbox/content-bottom은 위의 full-H를 유지하고 다음 원점만 이동한다.
+                last_line_trailing_ls = render_line_spacing_px;
+                y += hwpunit_to_px(advances[line_idx], self.dpi);
+                endnote_line_vpos_y_end = Some(y);
+            } else if endnote_line_vpos_base.is_some() {
                 let line_bottom = if skip_advance_empty_line {
                     y
                 } else {
@@ -8945,12 +9020,16 @@ impl LayoutEngine {
                                     font_size_px,
                                     &eq.font_name,
                                 )
+                                .with_metrics_policy(styles.font_metrics_policy)
                                 .with_version(&eq.version_info)
                                 .with_base_pt(eq.font_size as f64 / 100.0)
                                 .layout_in_control_width(
                                     &ast,
                                     hwpunit_to_px(
-                                        crate::renderer::equation::content_width_hwp(eq),
+                                        crate::renderer::equation::content_width_hwp_with_policy(
+                                            eq,
+                                            styles.font_metrics_policy,
+                                        ),
                                         self.dpi,
                                     ),
                                 );
@@ -8973,7 +9052,12 @@ impl LayoutEngine {
                             // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다 (위와 동일).
                             let eq_y = y + baseline - layout_box.baseline;
                             let eq_x = x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                            let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
+                            let eq_w = inline_equation_box_width_px(
+                                eq,
+                                tac_w,
+                                self.dpi,
+                                styles.font_metrics_policy,
+                            );
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                                 (
                                     Some(ctx.path[0].cell_index),

@@ -644,11 +644,30 @@ impl DocumentCore {
         crate::renderer::style_resolver::resolve_document_styles(&self.document, self.dpi)
     }
 
-    /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
+    /// 양의 유한 DPI를 설정하고 조판·측정·렌더 캐시를 다시 만든다.
     pub fn set_dpi(&mut self, dpi: f64) {
+        if !dpi.is_finite() || dpi <= 0.0 || dpi == self.dpi {
+            return;
+        }
+        let scale = dpi / self.dpi;
         self.dpi = dpi;
-        self.styles = self.resolve_document_styles();
-        self.paginate();
+        self.layout_engine.set_dpi(dpi);
+        // refresh_layout_native는 편집 행의 로드 시점 하한을 보존한다. 이 참조만
+        // 새 px 단위로 바꾼다. 명시적 baseline이 없으면 현재 row/raw가 하한이다.
+        for section in &mut self.measured_sections {
+            for table in &mut section.tables {
+                for height in table
+                    .row_heights
+                    .iter_mut()
+                    .chain(&mut table.raw_row_heights)
+                    .chain(table.baseline_row_heights.iter_mut().flatten())
+                    .chain(table.baseline_raw_row_heights.iter_mut().flatten())
+                {
+                    *height *= scale;
+                }
+            }
+        }
+        self.refresh_layout_native();
     }
 
     /// 빈 문서를 생성한다 (테스트/미리보기용).

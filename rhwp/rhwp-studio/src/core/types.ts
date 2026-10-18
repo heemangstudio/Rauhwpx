@@ -1358,7 +1358,8 @@ export type LayerEquationDecoration =
   | 'arch'
   | 'underline'
   | 'overline'
-  | 'strikeThrough';
+  | 'strikeThrough'
+  | 'box';
 export type LayerEquationFontStyle =
   | 'roman'
   | 'italic'

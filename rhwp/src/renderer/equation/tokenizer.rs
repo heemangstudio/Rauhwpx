@@ -272,6 +272,8 @@ impl Tokenizer {
             && alpha_len < value.len()
             && value.bytes().skip(alpha_len).all(|b| b.is_ascii_digit())
             && is_eq_keyword(&value[..alpha_len])
+            // BOX1은 숫자 피연산자가 아니라 식별자다. BOX/box/Box만 이 분리에서 제외한다.
+            && !super::symbols::is_box_command(&value[..alpha_len])
         {
             self.pos = start + alpha_len;
             return Token::new(TokenType::Command, value[..alpha_len].to_string(), start);
@@ -1111,5 +1113,32 @@ mod tests {
         assert_eq!(values(&tokens), vec!["a", "times", "b"]);
         let tokens = tokenize("rmA SIM C");
         assert_eq!(values(&tokens), vec!["rm", "A", "SIM", "C"]);
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::*;
+
+    #[test]
+    fn box_frame_tokens_keep_whole_identifiers_and_explicit_spaces() {
+        for command in [
+            "BOX",
+            "box",
+            "Box",
+            "BOXER",
+            "BOX1",
+            "box12",
+            "Box007",
+            "BOX1RIGHT",
+            "BOX12x",
+            "bOX",
+        ] {
+            let tokens = tokenize(&format!("{command}{{~(가)~}}"));
+            assert_eq!(tokens[0].value, command);
+            assert_eq!(tokens[1].ty, TokenType::LBrace);
+            assert_eq!(tokens.iter().filter(|token| token.value == "~").count(), 2);
+        }
+        assert_eq!(tokenize("BOXplot")[0].value, "BOXplot");
     }
 }

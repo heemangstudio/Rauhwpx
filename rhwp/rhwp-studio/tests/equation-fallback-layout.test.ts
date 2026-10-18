@@ -31,7 +31,7 @@ test('registered fallback uses actual WASM callback ink for radical layout and u
   const keys = ['document', 'window', 'FontFace', 'measureEquationTextMetrics', 'resolveEquationFontFamily', 'resolveEquationLiteralFont'];
   const globals = globalThis as Record<string, any>;
   const previous = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globals, key)]));
-  const calls: Array<{ source: string; text: string; size: number; italic: boolean; bold: boolean; metrics: any }> = [];
+  const calls: Array<{ source: string; text: string; size: number; italic: boolean; bold: boolean; policy?: string; scale?: number; metrics: any }> = [];
   globals.FontFace = class { async load() { return this; } };
   globals.document = { fonts: { add() {}, delete() { return true; } }, createElement: () => ({ getContext: () => ({
     font: '', measureText() { throw new Error('owned full SFNT fixtures must use exact metrics'); },
@@ -39,9 +39,9 @@ test('registered fallback uses actual WASM callback ink for radical layout and u
   globals.window = { setTimeout };
   local.resetLocalFontsForTests(); engine.clearRuntimeFontMetrics();
   const measure = equation.createEquationTextMeasurer(local.resolveLocalFont, local.getImportedLocalFontBytes);
-  globals.measureEquationTextMetrics = (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold: boolean) => {
-    const metrics = measure(source, text, size, italic, hft, literal, bold);
-    calls.push({ source, text, size, italic, bold, metrics }); return metrics;
+  globals.measureEquationTextMetrics = (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold: boolean, policy?: 'hcr-declared' | 'hancom-windows', scale?: number) => {
+    const metrics = measure(source, text, size, italic, hft, literal, bold, policy, scale);
+    calls.push({ source, text, size, italic, bold, policy, scale, metrics }); return metrics;
   };
   globals.resolveEquationFontFamily = equation.createEquationFontResolver(local.resolveLocalFont, local.getImportedLocalFontBytes);
   globals.resolveEquationLiteralFont = equation.createEquationLiteralFontResolver(local.resolveLocalFont, local.getImportedLocalFontBytes);
@@ -209,6 +209,59 @@ test('registered fallback uses actual WASM callback ink for radical layout and u
           } finally { doc.free(); }
         }
       }
+    }
+
+    local.resetLocalFontsForTests(); renderer.resetDocumentResources(); registered.clear();
+    // MIT 소유 SFNT만 사용한다. 500/1000 em은 원본 숫자 512/1024 advance 비율이다.
+    await register('HYhwpEQ', '\ue03d\ue034\ue035\ue036\ue037\ue038\ue0fcx', 1, 500);
+    for (const dpi of [96, 200]) {
+      const scale = dpi / 96;
+      for (const policy of ['hancom-windows', 'hcr-declared', 'hancom-windows', 'hcr-declared']) {
+        for (const digit of ['4', '5']) {
+          const doc = engine.HwpDocument.createEmpty();
+          try {
+            doc.createBlankDocument(); doc.setDpi(dpi); doc.setFontMetricsPolicy(policy);
+            calls.length = 0;
+            assert.equal(JSON.parse(doc.insertEquation(0, 0, 0, `${digit}x`, 1100, 0)).ok, true);
+            const op = findEquation(JSON.parse(doc.getPageLayerTree(0)));
+            assert.ok(op?.versionInfo, 'document layout retains the actual modern equation version');
+            // HcrDeclared는 출력 px 격자, Windows는 논리 96dpi 격자를 유지한다.
+            const step = policy === 'hancom-windows' ? 7 * scale : dpi === 96 ? 6.3 : 13.5;
+            const callback = calls.find(call => call.text === digit && call.policy === policy
+              && Math.abs((call.scale ?? 0) - scale) < 1e-9 && call.metrics);
+            assert.ok(callback, `document WASM forwards ${policy} and output scale ${scale}`);
+            assert.ok(Math.abs(callback.metrics.advance - step) < 1e-7,
+              `source advance before accumulation: ${callback.metrics.advance}, expected ${step}`);
+            painted.length = 0; canvas.clear(kit.WHITE);
+            assert.equal(renderer.renderEquationBox(observed, op.layoutBox, 0, 0, op.color, op.fontSize, op.fontName,
+              true, false, 0, { remainingNodes: 100, modernHy: true, hft: false }), true);
+            assert.equal(painted.length, 2, 'real document layout paints one digit and one variable');
+            assert.ok(Math.abs((painted[1].x - painted[0].x) / scale - step / scale) < 1e-5,
+              `CanvasKit consumes the ${policy} document origins at ${dpi} DPI`);
+            for (const glyph of painted) assert.ok(Math.abs(glyph.size - 1100 / 75 * scale) < 1e-5,
+              'advance policy preserves nominal paint size');
+          } finally { doc.free(); }
+        }
+      }
+    }
+    // 같은 경로의 source 등록 세대가 바뀌어도 두 정책의 실제 WASM 배치를 다시 잰다.
+    await register('HYhwpEQ', '\ue03d\ue034\ue035\ue036\ue037\ue038\ue0fcx', 1, 800);
+    for (const policy of ['hancom-windows', 'hcr-declared']) {
+      const doc = engine.HwpDocument.createEmpty();
+      try {
+        doc.createBlankDocument(); doc.setDpi(96); doc.setFontMetricsPolicy(policy);
+        calls.length = 0; doc.insertEquation(0, 0, 0, '4x', 1100, 0);
+        const op = findEquation(JSON.parse(doc.getPageLayerTree(0)));
+        assert.ok(op);
+        const expected = policy === 'hancom-windows' ? 11 : 9.9;
+        const callback = calls.find(call => call.text === '4' && call.policy === policy && call.metrics);
+        assert.ok(callback && Math.abs(callback.metrics.advance - expected) < 1e-7,
+          'replaced source bytes invalidate both policy measurements in the real document');
+        painted.length = 0;
+        assert.equal(renderer.renderEquationBox(observed, op.layoutBox, 0, 0, op.color, op.fontSize, op.fontName,
+          true, false, 0, { remainingNodes: 100, modernHy: true, hft: false }), true);
+        assert.ok(Math.abs(painted[1].x - painted[0].x - expected) < 1e-5);
+      } finally { doc.free(); }
     }
   } finally {
     renderer.dispose(); surface.delete(); local.resetLocalFontsForTests(); engine.clearRuntimeFontMetrics();

@@ -265,3 +265,42 @@ test('SFNT metadata selects localized equation italic and retains name fallback'
   assert.equal(equationLocalFontFace([italic, regular], 'Times', false, false), regular);
   assert.equal(equationLocalFontFace([regular, italic], 'Times', true, false), italic);
 });
+
+
+test('Windows equation policy alternates source PUA advances without changing glyph ink or fallback routes', async () => {
+  const { syntheticEquationFont } = await import('./support/equation-font-fixture.ts');
+  const chars = '\ue034\ue035\ue036\ue037\ue038\ue03d\ue0fc\ue000xA';
+  let bytes: ArrayBuffer | null = syntheticEquationFont(chars, 1, 500);
+  let record: LocalFontRecord | null = modernHyRecord;
+  const measure = createEquationTextMeasurer(() => record, () => bytes);
+  const size = 11 * 4 / 3;
+  const oldLeaf = measure('HYhwpEQ', '4', size, false, false, false)!;
+  for (const policy of ['hancom-windows', 'hcr-declared', 'hancom-windows', 'hcr-declared'] as const) {
+    const step = policy === 'hancom-windows' ? 7 : 6.3;
+    for (const text of ['4x', '5x']) {
+      const run = measure('HYhwpEQ', text, size, true, false, true, false, policy)!;
+      const leaf = measure('HYhwpEQ', text[0], size, false, false, false, false, policy)!;
+      assert.ok(Math.abs(leaf.advance - step) < 1e-9);
+      assert.ok(Math.abs(run.advance - 2 * step) < 1e-9);
+      assert.equal(leaf.inkLeft, oldLeaf.inkLeft);
+      assert.equal(leaf.inkRight, oldLeaf.inkRight);
+    }
+    const script = measure('HYhwpEQ', '23', size * .68, false, false, false, false, policy)!;
+    assert.ok(Math.abs(script.advance - (policy === 'hancom-windows' ? 10 : 9)) < 1e-9);
+    for (const [text, italic, bold] of [['x', false, false], ['A', true, false], ['4', false, true], ['한', false, false], ['\ue0fc', false, false]] as const) {
+      assert.deepEqual(measure('HYhwpEQ', text, size, italic, false, true, bold, policy),
+        measure('HYhwpEQ', text, size, italic, false, true, bold));
+    }
+  }
+  const scaled = measure('HYhwpEQ', '4', size * 200 / 96, false, false, false, false, 'hancom-windows', 200 / 96)!;
+  assert.ok(Math.abs(scaled.advance / (200 / 96) - 7) < 1e-9);
+  const before = measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows')!;
+  bytes = syntheticEquationFont(chars, 1, 800);
+  assert.ok(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows')!.advance > before.advance);
+  bytes = syntheticEquationFont(chars, 0, 500);
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+  bytes = null;
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+  bytes = syntheticEquationFont(chars, 1, 500); record = null;
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+});
