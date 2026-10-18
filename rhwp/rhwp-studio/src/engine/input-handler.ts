@@ -350,6 +350,13 @@ export class InputHandler {
 
   // 표 경계선 hover 상태
   private resizeHoverRafId = 0;
+  private pendingHoverEvent: MouseEvent | null = null;
+  private pointerHoverEvent: MouseEvent | null = null;
+  private hoverRefreshRafId = 0;
+  private onMouseLeaveBound = () => {
+    this.pointerHoverEvent = null;
+    this.clearPointerHover();
+  };
   private cachedTableRef: {
     sec: number;
     ppi: number;
@@ -693,6 +700,7 @@ export class InputHandler {
     container.addEventListener('dblclick', this.onDblClickBound);
     container.addEventListener('contextmenu', this.onContextMenuBound);
     container.addEventListener('mousemove', this.onMouseMoveBound);
+    container.addEventListener('mouseleave', this.onMouseLeaveBound);
     this.textarea.dataset.rhwpEditorInput = 'true';
     this.textarea.addEventListener('keydown', this.onKeyDownBound);
     this.textarea.addEventListener('keyup', this.onKeyUpBound);
@@ -709,6 +717,7 @@ export class InputHandler {
     // 움직이는 모든 이벤트에서 호출해야 한다 — 창 리사이즈, 사이드바 여백 변화,
     // 가상 스크롤 재배치 후에도 하이라이트가 옛 좌표(엉뚱한 텍스트 위)에 남지 않는다.
     const repositionOverlays = () => {
+      this.refreshPointerHover();
       if (this.active) {
         const rect = this.cursor.getRect();
         if (rect) {
@@ -748,6 +757,7 @@ export class InputHandler {
     // HF 선택은 같은 정의를 쓰는 visible page마다 투영한다. ViewportManager가 scroll
     // 이벤트를 rAF당 한 번으로 합치므로 여기서는 추가 프레임을 중첩하지 않는다.
     eventBus.on('viewport-scroll', () => {
+      this.refreshPointerHover();
       if (this.cursor.getHeaderFooterSelectionOrdered()) this.updateSelection();
     });
 
@@ -847,8 +857,42 @@ export class InputHandler {
   private onMouseMove(e: MouseEvent): void {
     this.lastPointerClientX = e.clientX;
     this.lastPointerClientY = e.clientY;
+    this.pointerHoverEvent = e;
     if (this.readOnly || this.userEditingLocked) return;
     _mouse.onMouseMove.call(this, e);
+  }
+
+  private isPointerDragging(): boolean {
+    return this.isDragging || this.isResizeDragging || this.isMoveDragging
+      || this.isPictureMoveDragging || this.isPictureResizeDragging
+      || this.isPictureRotateDragging || this.isLineEndpointDragging
+      || !!this.cellSelectionDragState || !!this.imagePlacementDrag || !!this.textboxPlacementDrag;
+  }
+
+  /** 화면 좌표로 그린 hover 는 배치가 바뀌는 즉시 걷어낸다. */
+  private clearPointerHover(): void {
+    if (this.resizeHoverRafId) cancelAnimationFrame(this.resizeHoverRafId);
+    this.resizeHoverRafId = 0;
+    this.pendingHoverEvent = null;
+    if (this.hoverRefreshRafId) cancelAnimationFrame(this.hoverRefreshRafId);
+    this.hoverRefreshRafId = 0;
+    _mouse.clearHoverFeedback.call(this);
+  }
+
+  private refreshPointerHover(): void {
+    this.clearPointerHover();
+    if (!this.pointerHoverEvent || this.isPointerDragging()) return;
+    // CanvasView 가 쪽 배치와 앵커 스크롤을 모두 반영한 뒤 다시 판정한다.
+    this.hoverRefreshRafId = requestAnimationFrame(() => {
+      this.hoverRefreshRafId = 0;
+      if (this.viewportManager.isZoomAnimating() || !this.pointerHoverEvent
+        || this.isPointerDragging() || this.readOnly || this.userEditingLocked) return;
+      const { clientX, clientY } = this.pointerHoverEvent;
+      const target = document.elementFromPoint(clientX, clientY);
+      if (target && this.container.contains(target)) {
+        _mouse.onMouseMove.call(this, this.pointerHoverEvent);
+      }
+    });
   }
 
   /** 표 경계선 hover 감지 처리 */
@@ -4576,14 +4620,12 @@ export class InputHandler {
 
   /** 끌기 자동 스크롤과 hover rAF 를 멈춘다. */
   private stopPointerFrames(): void {
+    this.pointerHoverEvent = null;
+    this.clearPointerHover();
     this.stopTextSelectionDragAutoScroll();
     if (this.dragRafId) {
       cancelAnimationFrame(this.dragRafId);
       this.dragRafId = 0;
-    }
-    if (this.resizeHoverRafId) {
-      cancelAnimationFrame(this.resizeHoverRafId);
-      this.resizeHoverRafId = 0;
     }
     this.cellSelectionDragState = null;
     this.cellSelectionDragCandidate = null;
@@ -4591,6 +4633,8 @@ export class InputHandler {
 
   /** deactivate·detach 공통 — 캐럿·선택·IME·지연 조판 상태를 걷어낸다. 히스토리는 그대로 둔다. */
   private releaseDocumentView(): void {
+    this.pointerHoverEvent = null;
+    this.clearPointerHover();
     this.cancelPicturePreviewDrags();
     this.active = false;
     this.lockedUserSelection = null;
@@ -4670,6 +4714,8 @@ export class InputHandler {
   }
 
   dispose(): void {
+    this.pointerHoverEvent = null;
+    this.clearPointerHover();
     this.flushDeferredPaginationIfNeeded('before-dispose', false);
     this.cancelPicturePreviewDrags();
     if (this.isResizeDragging) {
@@ -4682,10 +4728,6 @@ export class InputHandler {
     this.cellSelectionDragState = null;
     this.cellSelectionDragCandidate = null;
     this.stopTextSelectionDragAutoScroll();
-    if (this.resizeHoverRafId) {
-      cancelAnimationFrame(this.resizeHoverRafId);
-      this.resizeHoverRafId = 0;
-    }
     this.cancelDeferredPaginationFlush();
     this.deferredPaginationRunner.cancel();
     this.deferredPaginationPending = false;
@@ -4712,6 +4754,7 @@ export class InputHandler {
     this.container.removeEventListener('dblclick', this.onDblClickBound);
     this.container.removeEventListener('contextmenu', this.onContextMenuBound);
     this.container.removeEventListener('mousemove', this.onMouseMoveBound);
+    this.container.removeEventListener('mouseleave', this.onMouseLeaveBound);
     document.removeEventListener('mousemove', this.onMouseMoveBound);
     document.removeEventListener('mouseup', this.onMouseUpBound);
     this.textarea.removeEventListener('keydown', this.onKeyDownBound);

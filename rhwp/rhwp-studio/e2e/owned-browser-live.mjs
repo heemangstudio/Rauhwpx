@@ -237,12 +237,32 @@ try {
   });
   await eventually('clipboard paste reaches actual Chromium', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot, value => fieldValue(value, 'Research query') === '자료 검토');
   await record('Production streamed pointer, Korean IME and clipboard paste reach the owned page once');
-  const previousFrame = await page.$eval('.ag-browser-frame', image => image.src);
   const dragPoint = await page.$eval(`[role="tab"][data-resource-id="browser:${tab.tabId}"]`, node => { const r = node.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
   await page.mouse.move(dragPoint.x, dragPoint.y); await page.mouse.down();
   await page.mouse.move(160, 240, { steps: 12 }); await page.mouse.up();
   await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser-frame', { visible: true });
-  await page.waitForFunction(previous => document.querySelector('.ag-browser-floating:not([hidden]) .ag-browser-frame')?.src !== previous, {}, previousFrame);
+  // 같은 페이지를 옮기기만 하면 새 프레임도 같은 JPEG일 수 있다. 띄운 화면에서 실제 입력과 결과 표시를 확인한다.
+  const floatingSnapshot = (await human('snapshot', { tabId: tab.tabId })).snapshot;
+  assert.ok(!floatingSnapshot.outline.includes('Result: 자료 검토'), 'the floating search starts with the previous result');
+  const searchRef = refArgs(floatingSnapshot, 'Search references', 'search');
+  const searchElement = (await human('capture', { tabId: tab.tabId, mode: 'element', snapshotId: searchRef.snapshotId, ref: searchRef.ref })).capture.element;
+  const floatingFrame = (await human('frame', { tabId: tab.tabId })).frame;
+  const searchPoint = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-frame', (image, input) => {
+    const rect = image.getBoundingClientRect();
+    return { x: rect.left + (input.rect.x + input.rect.width / 2) * rect.width / input.width, y: rect.top + (input.rect.y + input.rect.height / 2) * rect.height / input.height };
+  }, { rect: searchElement.rect, width: floatingFrame.width, height: floatingFrame.height });
+  const previousFrame = await page.$eval('.ag-browser-floating:not([hidden]) .ag-browser-frame', image => image.src);
+  await page.mouse.click(searchPoint.x, searchPoint.y);
+  await eventually('floating pointer updates the owned page search result', async () => (await human('snapshot', { tabId: tab.tabId })).snapshot,
+    snapshot => snapshot.outline.includes('Result: 자료 검토'));
+  const searchedFrame = (await human('frame', { tabId: tab.tabId })).frame;
+  const searchedSource = `data:${searchedFrame.mimeType};base64,${searchedFrame.data}`;
+  assert.notEqual(searchedSource, previousFrame, 'the search result changes the rendered page');
+  await page.waitForFunction(source => {
+    const image = document.querySelector('.ag-browser-floating:not([hidden]) .ag-browser-frame');
+    return image?.src === source && image.complete && image.naturalWidth > 0;
+  }, {}, searchedSource);
+  await record('Floating browser pointer input updates the owned page and displays its decoded result frame');
   await shot('real-stream-human-float');
   if (chromeOnly) {
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));

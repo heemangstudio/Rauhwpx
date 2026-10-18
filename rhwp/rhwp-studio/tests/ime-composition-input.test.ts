@@ -85,6 +85,7 @@ function createHandler(initialText: string, caretOffset: number, options: Record
     textareaConsumed: 0,
     imeSession: new ImeSession(),
     textarea,
+    container: { style: {} },
     cursor,
     caret: {
       hideComposition: () => caretCalls.push('hideComposition'),

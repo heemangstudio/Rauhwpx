@@ -182,6 +182,20 @@ function hideProtectedCellHover(self: any): void {
   }
 }
 
+export function clearHoverFeedback(this: any): void {
+  if (!this.isResizeDragging) this.tableResizeRenderer?.clear();
+  hideProtectedCellHover(this);
+  if (this.hyperlinkHover) this.container.removeAttribute('title');
+  this.hyperlinkHover = false;
+  this.hyperlinkHoverKey = null;
+  _connector.removeConnectionPointOverlay.call(this);
+  _connector.removeConnectorPreview.call(this);
+  if (!this.isPointerDragging()) {
+    this.container.style.cursor = this.connectorDrawingMode || this.polygonDrawingMode
+      || this.imagePlacementMode || this.textboxPlacementMode ? 'crosshair' : '';
+  }
+}
+
 function selectTableObject(this: any, tableRef: { sec: number; ppi: number; ci: number }): void {
   hideProtectedCellHover(this);
   this.cursor.clearSelection();
@@ -2073,7 +2087,11 @@ export function onMouseMove(this: any, e: MouseEvent): void {
     // 같은 프레임의 hover 판정들이 scroll-content 사각형을 한 번만 읽는다.
     const scrollContent = this.container.querySelector('#scroll-content') as HTMLElement | null;
     const contentRect = scrollContent?.getBoundingClientRect() ?? null;
-    if (hoverHyperlink(this, hoverEvent, contentRect)) return;
+    if (hoverHyperlink(this, hoverEvent, contentRect)) {
+      this.tableResizeRenderer?.clear();
+      hideProtectedCellHover(this);
+      return;
+    }
     if (this.tableResizeRenderer) {
       handleResizeHover.call(this, hoverEvent, contentRect);
     } else if (this.container.style.cursor) {
