@@ -10,6 +10,9 @@
   const licensedNote = $('licensed-note');
   const dateTime = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
   const when = (ms) => (ms ? dateTime.format(new Date(ms)) : '—');
+  // 연간 키의 날짜. 서버가 한국 시간 하루 끝까지로 정한다.
+  const day = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' });
+  const date = (ms) => day.format(new Date(ms));
 
   /** 체험 남은 시간. Studio 의 trialTimeLeft 와 같은 규칙이다. */
   function timeLeft(endsAt) {
@@ -32,7 +35,12 @@
     const beta = status.license?.tier === 'beta';
     switch (status.state) {
       case 'licensed':
+        if (status.license?.graceEndsAt && status.license.licenseExpiresAt) {
+          return [`${date(status.license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${date(status.license.graceEndsAt)}까지 쓸 수 있어요.`, true];
+        }
         return [status.offline ? '라이선스가 활성화되어 있어요. 지금은 오프라인이라 마지막 확인으로 쓰고 있어요.' : '라이선스가 활성화되어 있어요.', false];
+      case 'expired':
+        return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}라이선스 기간이 끝나 읽기 전용이에요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.`, true];
       case 'trial':
         return [`체험 중이에요. ${timeLeft(status.trial.endsAt)} 남았어요.`, false];
       case 'trial_expired':
@@ -56,15 +64,25 @@
     summary.classList.toggle('bad', bad);
     const hasLicense = Boolean(status.license);
     const showLicensed = hasLicense && ['licensed', 'lease_expired'].includes(status.state);
+    // 기간이 끝난 연간 키: 새 키 넣기 아래에 갱신을 바로 확인하는 줄을 둔다.
+    const expired = hasLicense && status.state === 'expired';
     $('title').textContent = showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
     $('licensed-section').hidden = !showLicensed;
     $('activate-section').hidden = showLicensed;
+    $('renewal-check').hidden = !expired;
     if (hasLicense) {
       $('masked-key').textContent = status.license.maskedKey;
       $('last-check').textContent = when(status.license.lastCheckAt);
       $('lease-expires').textContent = when(status.license.leaseExpiresAt);
+      const expiresAt = status.license.licenseExpiresAt;
+      $('license-term-label').hidden = !expiresAt;
+      $('license-term').hidden = !expiresAt;
+      if (expiresAt) {
+        $('license-term-label').textContent = status.license.autoRenew === false ? '사용 기한' : '다음 갱신';
+        $('license-term').textContent = date(expiresAt);
+      }
       // 해지는 요약 줄이 이미 말한다.
-      if (status.license.lastError && !showLicensed && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
+      if (status.license.lastError && !showLicensed && !expired && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
     }
   }
 
@@ -92,6 +110,17 @@
     licensedNote.classList.remove('ok');
     const status = await busy(event.currentTarget, () => api.checkNow());
     licensedNote.textContent = status.offline ? '라이선스 서버에 연결하지 못했어요.' : '';
+    render(status);
+  });
+
+  $('check-renewal').addEventListener('click', async (event) => {
+    const status = await busy(event.currentTarget, () => api.checkNow());
+    activateNote.classList.remove('ok');
+    activateNote.textContent = status.offline ? '라이선스 서버에 연결하지 못했어요.' : status.state === 'expired' ? '아직 갱신되지 않았어요.' : '';
+    if (status.state === 'licensed') {
+      licensedNote.classList.add('ok');
+      licensedNote.textContent = '갱신을 확인했어요. 이제 저장할 수 있어요.';
+    }
     render(status);
   });
 
