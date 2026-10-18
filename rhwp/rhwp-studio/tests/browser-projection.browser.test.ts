@@ -5,6 +5,52 @@ import { createServer } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
 
+test('retry discards a deleted native tab after refreshing the reset inventory', { timeout: 30_000 }, async () => {
+  const server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 },
+    plugins: [{ name: 'reset-harness', configureServer(vite) {
+      vite.middlewares.use((request, response, next) => {
+        if (request.url !== '/reset-harness') return next();
+        response.setHeader('Content-Type', 'text/html'); response.end('<html><head><style>.ag-browser { height:100% }</style></head><body></body></html>');
+      });
+    } }],
+  });
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+  try {
+    await server.listen(); const address = server.httpServer!.address(); assert.ok(address && typeof address !== 'string');
+    browser = await puppeteer.launch({ executablePath: browserExecutable(), headless: true, args: browserLaunchArgs() });
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}/reset-harness`);
+    await page.evaluate(async () => {
+      document.body.innerHTML = '<div id="reset-host" style="width:800px;height:600px"></div>';
+      const calls: string[] = []; let reset = false;
+      const tab = { tabId: 'deleted-tab', scope: 'global', nativeTargetId: 'deleted-target', runtime: 'native', url: 'https://example.com/', title: 'Reset fixture', navigationEpoch: 1, controllerEpoch: 1, controller: { owner: 'human' }, status: 'ready' };
+      Object.assign(window, { rhwpDesktop: { browser: {
+        onEvent: () => () => {},
+        async attach() { throw new Error('Controlled unavailable native target'); },
+        async detach() {},
+      } } });
+      const bridge = { getConnectionState: () => 'connected', onBrowserEvent: () => () => {}, onEvent: () => () => {}, async requestBrowser(action: string) {
+        calls.push(action);
+        if (action === 'status') return { tabs: reset ? [] : [tab] };
+        if (action === 'reconnect') throw new Error('BROWSER_TAB_NOT_FOUND');
+        return {};
+      } };
+      const { createWorkbenchBrowser } = await import('../src/ui/agent-sidebar/workbench-browser.ts');
+      const view = createWorkbenchBrowser({ bridge: bridge as any, getDestination: () => ({ threadId: 'chat', projectId: null, documentId: null, label: 'Reset' }), onCapture() {}, onOpenDownload() {}, onDock() {}, onChat() {} });
+      view.mount(document.querySelector<HTMLElement>('#reset-host')!); view.setVisible(true);
+      Object.assign(window, { resetTest: { view, calls, reset() { reset = true; } } });
+    });
+    await page.waitForFunction(() => !document.querySelector<HTMLElement>('.ag-browser-error')!.hidden);
+    await page.evaluate(() => (window as any).resetTest.reset());
+    await page.click('.ag-browser-error button');
+    await page.waitForFunction(() => (window as any).resetTest.view.controller.state.tabs.length === 0);
+    await page.waitForFunction(() => document.querySelector<HTMLElement>('.ag-browser-error')!.hidden);
+    assert.equal(await page.evaluate(() => (window as any).resetTest.calls.includes('reconnect')), false, 'retry must not reconnect the tab deleted by Settings');
+    assert.equal(await page.$eval('.ag-browser-placeholder button', node => (node as HTMLButtonElement).hidden), false, 'the empty browser offers a fresh tab');
+    await page.evaluate(() => (window as any).resetTest.view.dispose());
+  } finally { await browser?.close(); await server.close(); }
+});
+
 /** 실제 브라우저 UI와 레이아웃을 사용하고 Electron 연결만 대체한다. */
 test('숨긴 부모의 네이티브 페이지를 분리하고 같은 탭을 복원하며 늦은 연결을 취소한다', { timeout: 30_000 }, async t => {
   const server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 },

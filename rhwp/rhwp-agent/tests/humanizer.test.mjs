@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { RHWP_SUBAGENTS, systemBriefFor } from '../agents/backend.mjs';
 import { HUMANIZE_KOREAN_RULES, humanizerPromptBlock, isBuildPhase } from '../humanizer.mjs';
@@ -36,7 +37,7 @@ test('모든 하네스의 시스템 브리프와 문서 편집 서브에이전�
 
 test('번들 humanize-korean 스킬이 카탈로그에 뜬다', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-humanizer-'));
-  const registry = await new SkillRegistry({ bundledRoot: new URL('../skills', import.meta.url).pathname, userRoot: path.join(root, 'user') }).init();
+  const registry = await new SkillRegistry({ bundledRoot: fileURLToPath(new URL('../skills', import.meta.url)), userRoot: path.join(root, 'user') }).init();
   const row = (await registry.catalog()).rows.find((item) => item.name === 'humanize-korean');
   assert.equal(row?.kind, 'skill');
   await fs.rm(root, { recursive: true, force: true });

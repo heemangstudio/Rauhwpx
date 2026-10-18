@@ -27,6 +27,7 @@ const capabilityPi = (root) => `
     clearInterval(timer);
     fs.rmSync(release);
     console.log(JSON.stringify({ type: 'agent_settled' }));
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   }, 20);
 `;
 

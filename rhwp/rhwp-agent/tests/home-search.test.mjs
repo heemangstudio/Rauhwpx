@@ -10,6 +10,8 @@ import crossSpawn from 'cross-spawn';
 import { buildMdfindQuery, createHomeSearch, HOME_HIT_TTL_MS } from '../home-search.mjs';
 
 const FAKE_MDFIND = fileURLToPath(new URL('./fixtures/fake-mdfind.mjs', import.meta.url));
+const POSIX_FIXTURE_ONLY = process.platform === 'win32' ? 'Spotlight fixtures require POSIX filesystem paths' : false;
+const WALK_PLATFORM = process.platform === 'win32' ? 'win32' : 'linux';
 
 async function makeHome(t) {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-home-search-')));
@@ -78,7 +80,7 @@ test('Spotlight queries escape every word and restrict extensions', () => {
     + ' && (kMDItemFSName == "*.pdf"c || kMDItemFSName == "*.hwp"c)');
 });
 
-test('macOS search filters mdfind output to safe home files and hands out session-bound hit ids', async (t) => {
+test('macOS search filters mdfind output to safe home files and hands out session-bound hit ids', { skip: POSIX_FIXTURE_ONLY }, async (t) => {
   const { base, home, files } = await makeHome(t);
   const fake = fakeSpawn(base, [...Object.values(files), '/etc/hosts', 'relative/보고서.pdf']);
   await fake.ready;
@@ -136,16 +138,27 @@ test('home search is off without desktop access or when settings disable it', as
   await assert.rejects(disabled.resolve('hx', 's'), { code: 'HOME_ACCESS_DISABLED' });
 });
 
-test('filename walk covers Windows/Linux and a hung mdfind, with the same exclusions', async (t) => {
-  const { base, home } = await makeHome(t);
-  const linux = createHomeSearch({ home, platform: 'linux', settings: settings(), access: true });
-  const walked = await linux.find({ query: '보고서', sessionKey: 's' });
+test('filename walk covers Windows/Linux with the same exclusions', async (t) => {
+  const { home, files } = await makeHome(t);
+  const walker = createHomeSearch({ home, platform: WALK_PLATFORM, settings: settings(), access: true });
+  const walked = await walker.find({ query: '보고서', sessionKey: 's' });
   assert.deepEqual(walked.hits.map((hit) => hit.homePath).sort(), [
     '~/Documents/보고서 초안.pdf',
     `~/Documents/${'보고서 한글'.normalize('NFD')}.pdf`.normalize('NFC'),
   ].sort());
-  const narrowed = await linux.find({ query: '보고서 초안', types: ['pdf'], sessionKey: 's' });
+  const narrowed = await walker.find({ query: '보고서 초안', types: ['pdf'], sessionKey: 's' });
   assert.deepEqual(narrowed.hits.map((hit) => hit.name), ['보고서 초안.pdf']);
+
+  const hit = narrowed.hits[0];
+  assert.equal(await walker.resolve(hit.hitId, 's'), files.report);
+  await assert.rejects(walker.resolve(hit.hitId, 'another-session'), { code: 'HOME_HIT_INVALID' });
+  await fs.rm(files.report);
+  await fs.symlink(files.outside, files.report);
+  await assert.rejects(walker.resolve(hit.hitId, 's'), { code: 'HOME_HIT_UNAVAILABLE' });
+});
+
+test('filename walk falls back after a hung mdfind with the same exclusions', { skip: POSIX_FIXTURE_ONLY }, async (t) => {
+  const { base, home } = await makeHome(t);
 
   const fake = fakeSpawn(base, [], { mode: 'hang' });
   await fake.ready;
@@ -164,7 +177,7 @@ test('a folder whose opendir never returns (pending macOS privacy prompt) is ski
   await fs.writeFile(path.join(home, 'Desktop', '보고서 바탕.pdf'), '%PDF-1.4\n');
   const opened = [];
   const linux = createHomeSearch({
-    home, platform: 'linux', settings: settings(), access: true,
+    home, platform: WALK_PLATFORM, settings: settings(), access: true,
     openDir: (dir) => {
       opened.push(dir);
       return dir.endsWith(`${path.sep}Desktop`) ? new Promise(() => {}) : fs.opendir(dir);

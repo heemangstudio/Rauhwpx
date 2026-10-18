@@ -14,7 +14,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
 import WebSocket from 'ws';
-import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { registerHubSession, requestHubShutdown } from '../../../desktop/agent-hub.mjs';
 import { ALIVE_PI_FIXTURE_SOURCE, writeFakeCliBin } from './fake-cli-bin.mjs';
 import { ReferenceStore } from '../reference-store.mjs';
 
@@ -151,9 +151,13 @@ async function startHub(t, { seed, env = {} } = {}) {
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   t.after(async () => {
-    if (child.exitCode === null) child.kill('SIGTERM');
-    if (child.exitCode === null) await once(child, 'exit');
-    rmSync(workRoot, { recursive: true, force: true });
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit');
+      if (process.platform === 'win32') assert.equal((await requestHubShutdown({ port: ready.port, token: TOKEN, launchId: LAUNCH_ID, timeoutMs: 15_000 })).status, 'prepared');
+      else child.kill('SIGTERM');
+      await exited;
+    }
+    rmSync(workRoot, { recursive: true, force: true, maxRetries: 5 });
   });
   const readyLine = await waitForLine(child.stdout, (line) => line.startsWith('RHWP_HUB_READY '));
   const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));

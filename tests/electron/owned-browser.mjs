@@ -45,7 +45,9 @@ try {
   const first = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   const second = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   windows.set('window-one', first); windows.set('window-two', second);
+  await first.loadURL('data:text/html,<title>Owning editor fixture</title><body>Native browser owner</body>');
   first.show();
+  assert.equal(first.isVisible(), true);
   const owner = { id: 'fixture-hub-1' };
   const events = [];
   host = new OwnedBrowserHost({ BrowserWindow, WebContentsView, electronSession: session, dataDir: path.join(root, 'browser-data'), getWindowForSession: (id) => windows.get(id), onEvent: (event) => events.push(event) });
@@ -258,7 +260,8 @@ try {
   assert.equal(host.popouts.size, 0);
   assert.deepEqual(await host.session.cookies.get({}), []);
   await writeFile(path.join(root, 'browser-data', 'browser-policy.json'), JSON.stringify({ schema: 2, ownerId: 'fixture-owner', sites: [] }));
-  await removeOwnedBrowserState({ dataDir: path.join(root, 'browser-data') });
+  assert.equal(reset.value.nativeStorageCleared, true);
+  await removeOwnedBrowserState({ dataDir: path.join(root, 'browser-data'), nativeStorageCleared: reset.value.nativeStorageCleared });
   const resetRuntime = await host.start(settings, restartedOwner);
   browser = await chromium.connectOverCDP(resetRuntime.endpointURL);
   const resetContext = browser.contexts()[0];
@@ -267,7 +270,7 @@ try {
   const cleanPage = await resetContext.newPage();
   await cleanPage.goto('http://browser-fixture.invalid/');
   assert.equal(await cleanPage.evaluate(() => localStorage.getItem('owned-note')), null);
-  report.browserReset = { staleOwnerRejected: true, releasedOwnerAllowed: true, guestsClosed: true, cookiesCleared: true, profileDeleted: true, storageClearedAfterRestart: true };
+  report.browserReset = { staleOwnerRejected: true, releasedOwnerAllowed: true, guestsClosed: true, cookiesCleared: true, profileDeleted: process.platform !== 'win32', nativeStorageCleared: true, storageClearedAfterRestart: true };
   console.error('OWNED_BROWSER_STAGE browser-reset');
   serviceSite = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end('<title>Recovered native tab</title><input id="draft"><a id="popup" href="/popup" target="_blank">Open result</a>'); });
   await new Promise((resolve) => serviceSite.listen(0, '127.0.0.1', resolve));

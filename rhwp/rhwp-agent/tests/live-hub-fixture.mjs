@@ -7,8 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import WebSocket from 'ws';
-import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { registerHubSession, requestHubShutdown } from '../../../desktop/agent-hub.mjs';
 import { writeFakeCliBin } from './fake-cli-bin.mjs';
+import { terminateAndWaitForProcessTreeExit } from '../process-tree.mjs';
 
 export const HUB_TOKEN = 'live-hub-test';
 const LAUNCH_ID = 'live-hub-launch';
@@ -24,6 +25,7 @@ export const ECHO_PI_SCRIPT = `
   } else {
     emit(JSON.stringify({ prompt }));
     console.log(JSON.stringify({ type: 'agent_settled' }));
+    if (process.platform === 'win32') setInterval(() => {}, 1000);
   }
 `;
 
@@ -95,17 +97,26 @@ export async function startLiveHub(t, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let errors = '';
+  let owner;
   child.stderr.on('data', (chunk) => { errors += chunk; });
   t.after(async () => {
-    if (child.exitCode === null) {
-      // 정상 종료가 막히면(예: 멈춘 파일 읽기) 강제로 끝내 테스트가 매달리지 않게 한다.
+    if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit');
-      child.kill('SIGTERM');
-      const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
-      await exited;
-      clearTimeout(timer);
+      if (process.platform === 'win32' && owner) {
+        assert.equal((await requestHubShutdown(owner)).status, 'prepared');
+        await exited;
+      } else if (process.platform === 'win32') {
+        assert.equal(await terminateAndWaitForProcessTreeExit(child), true);
+        await exited;
+      } else {
+        // 정상 종료가 막히면(예: 멈춘 파일 읽기) 강제로 끝내 테스트가 매달리지 않게 한다.
+        child.kill('SIGTERM');
+        const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+        await exited;
+        clearTimeout(timer);
+      }
     }
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
   });
   const lines = createInterface({ input: child.stdout });
   const ready = await new Promise((resolve, reject) => {
@@ -118,6 +129,7 @@ export async function startLiveHub(t, {
     });
   });
   const port = ready.port;
+  owner = { port, token: HUB_TOKEN, launchId: LAUNCH_ID, timeoutMs: 15_000 };
   const sessionId = 'live-hub';
   const capabilities = await registerHubSession({ port, token: HUB_TOKEN, launchId: LAUNCH_ID, sessionId });
   const studioUrl = `ws://127.0.0.1:${port}/studio?token=${capabilities.studio}&sessionId=${sessionId}&instance=live-hub-test`;
