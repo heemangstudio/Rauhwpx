@@ -3,8 +3,8 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 32px;
-  min-height: 32px;
+  height: 28px;
+  min-height: 28px;
   padding: 0 10px;
   position: relative;
   z-index: 5;
@@ -27,7 +27,7 @@
   scrollbar-width: none;
 }
 .stb-document::-webkit-scrollbar { display: none; }
-.stb-item { flex: 0 0 auto; white-space: nowrap; line-height: 28px; }
+.stb-item { flex: 0 0 auto; white-space: nowrap; line-height: 24px; }
 .stb-count { color: var(--ui-text); }
 .stb-secondary { color: var(--ui-text-muted); }
 
@@ -43,7 +43,7 @@
 
 #status-bar .stb-action {
   flex: 0 0 auto;
-  height: 22px;
+  height: 20px;
   margin: 0 8px 0 0;
   padding: 0 8px;
   border: 1px solid var(--ui-border, currentColor);
@@ -60,7 +60,7 @@
 /* 문서 글꼴 상태. 누르면 글꼴 목록을 연다. */
 #status-bar .stb-link {
   flex: 0 0 auto;
-  height: 22px;
+  height: 20px;
   margin: 0 8px 0 0;
   padding: 0 6px;
   border: 0;
@@ -93,7 +93,7 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  height: 26px;
+  height: 24px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -104,7 +104,7 @@
   cursor: default;
   flex-shrink: 0;
 }
-#status-bar .stb-icon-btn { width: 26px; }
+#status-bar .stb-icon-btn { width: 24px; }
 #status-bar .stb-icon-btn .tb-sprite { width: 17px; height: 17px; }
 #status-bar .stb-zoom-val { width: 46px; color: var(--ui-text); }
 #status-bar :is(.stb-icon-btn, .stb-zoom-val):hover { background: var(--ui-hover-quiet, var(--ui-hover)); }
@@ -148,6 +148,10 @@
 #sb-zoom-range::-moz-range-thumb { width: 11px; height: 11px; border: 1px solid var(--ui-border-strong); border-radius: 50%; background: var(--ui-text); }
 #sb-zoom-range:disabled { opacity: .4; cursor: default; }
 
+/* 터치 기기는 36px 단추가 들어가도록 줄을 키운다. */
+@media (pointer: coarse) {
+  #status-bar { height: 40px; min-height: 40px; }
+}
 @media (max-width: 900px) {
   #status-bar { gap: 12px; }
   .stb-document { gap: 12px; }

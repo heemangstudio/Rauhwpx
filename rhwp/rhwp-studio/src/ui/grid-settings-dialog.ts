@@ -44,7 +44,7 @@ export class GridSettingsDialog extends ModalDialog {
     body.style.padding = '14px 16px';
     body.style.display = 'flex';
     body.style.flexDirection = 'column';
-    body.style.gap = '12px';
+    body.style.gap = '8px';
 
     this.visibleInput = document.createElement('input');
     this.visibleInput.type = 'checkbox';
@@ -116,7 +116,7 @@ export class GridSettingsDialog extends ModalDialog {
 
   private group(title: string): HTMLElement {
     const fieldset = document.createElement('fieldset');
-    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:10px 12px 12px;margin:0;';
+    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:4px 10px 8px;margin:0;min-width:0;';
     const legend = document.createElement('legend');
     legend.textContent = title;
     legend.style.cssText = 'font-size:12px;color:var(--color-primary-dark);padding:0 4px;';
@@ -151,7 +151,7 @@ export class GridSettingsDialog extends ModalDialog {
   private originGroup(): HTMLElement {
     const fieldset = this.group('격자 기준 위치');
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px 14px;margin-bottom:8px;color:var(--color-text);';
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:6px;color:var(--color-text);';
 
     for (const [value, labelText] of [
       ['page', '쪽'],

@@ -168,6 +168,8 @@
    이게 없으면 .md-sub-panel 이 사이드바 아래에 깔려서
    패널을 향한 포인터 이벤트가 전부 사이드바로 빠진다. */
 #studio-header:has(.menu-item.open) { z-index: 100; }
+/* 리본 스플릿 메뉴도 사이드바에 가리지 않게 한다. */
+#studio-header:has(.tb-split.open) { z-index: 100; }
 .editor-command-search {
   display: inline-flex;
   align-items: center;
@@ -215,9 +217,9 @@
 .modal-overlay .dialog-body { padding: 16px; }
 .cp-overlay { padding: min(16vh, 128px) 16px 16px; }
 .cp-panel { width: min(560px, 100%); max-height: min(500px, 76dvh); border-radius: 12px; border-color: var(--ui-border-strong); }
-.cp-input-wrap { min-height: 56px; background: transparent; }
+.cp-input-wrap { min-height: 44px; background: transparent; }
 .cp-input { font: 14px var(--font-family-ui); }
-.cp-item { min-height: 38px; }
+.cp-item { min-height: 30px; }
 .cp-item--disabled { opacity: .5; cursor: default; }
 .cp-item--disabled:hover { background: transparent; }
 /* Glass belongs to floating surfaces. Opaque first, with no blur animation. */
@@ -301,10 +303,11 @@ html.desktop-mac #editor-command-search { -webkit-app-region: no-drag; }
 #style-bar-overflow {
   position: fixed;
   z-index: 1200;
-  width: min(350px, calc(100vw - 16px));
+  width: max-content;
+  max-width: min(350px, calc(100vw - 16px));
   max-height: min(520px, calc(100dvh - 80px));
   overflow: auto;
-  padding: 8px;
+  padding: 4px;
   border: 1px solid var(--ui-border-strong);
   border-radius: 8px;
   background: var(--ui-surface);
@@ -314,10 +317,10 @@ html.desktop-mac #editor-command-search { -webkit-app-region: no-drag; }
 #style-bar #style-bar-overflow .sb-command-band {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
+  gap: 1px 2px;
   width: auto;
   min-width: 0;
-  padding: 5px 0;
+  padding: 4px 0;
   border: 0;
   border-bottom: 1px solid var(--ui-border);
 }
@@ -327,9 +330,9 @@ html.desktop-mac #editor-command-search { -webkit-app-region: no-drag; }
 #style-bar #style-bar-overflow .sb-btn {
   display: flex;
   justify-content: flex-start;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  height: 34px;
+  height: 28px;
   padding: 0 8px;
   text-align: left;
   white-space: nowrap;

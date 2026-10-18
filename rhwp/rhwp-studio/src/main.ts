@@ -34,6 +34,7 @@ import { Toolbar } from '@/ui/toolbar';
 import { EditorToolbarOverflow } from '@/ui/editor-toolbar-overflow';
 import { setupTableRibbonMenus, type TableRibbonMenusController } from '@/ui/table-ribbon-menu';
 import { EditorStyleOverflow } from '@/ui/editor-style-overflow';
+import { CompactToolbarLayout } from '@/ui/compact-toolbar';
 import { setupStatusZoomSlider } from '@/ui/status-zoom';
 import { describePaperSize } from '@/ui/status-paper-size';
 import { StatusCharacterCounter } from '@/ui/status-character-count';
@@ -61,6 +62,7 @@ import {
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
 import {
+  applyCompactToolbar,
   setBasicToolboxExpanded,
   syncClipMenu,
   syncTextMarkMenu,
@@ -1534,6 +1536,10 @@ async function initialize(): Promise<void> {
     );
     editorToolbarOverflow = new EditorToolbarOverflow(document.getElementById('icon-toolbar')!);
     editorStyleOverflow?.refresh();
+    if (editorStyleOverflow) {
+      new CompactToolbarLayout(document.getElementById('studio-header')!, editorToolbarOverflow, editorStyleOverflow);
+      applyCompactToolbar(userSettings.getViewSettings().compactToolbar);
+    }
     setupGlobalShortcuts();
     installDesktopFileHandling((handles) => {
       const handle = handles[0];

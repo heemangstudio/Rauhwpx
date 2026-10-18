@@ -56,6 +56,8 @@ export interface ViewSettings {
   clipView: boolean;
   /** 사이드바 펼침·집중 화면 전환을 움직임으로 보일지. 기본은 꺼짐(바로 바뀜). */
   sidebarMotion: boolean;
+  /** 기본 도구 상자와 서식 도구 상자를 한 줄로 합칠지 여부 */
+  compactToolbar: boolean;
 }
 
 /** 버전 관리 설정 */
@@ -167,6 +169,7 @@ function defaultSettings(): AppSettings {
       showControlCodes: false,
       clipView: true,
       sidebarMotion: false,
+      compactToolbar: false,
     },
     versionControl: {
       useHancomGit: true,
@@ -251,6 +254,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       showControlCodes,
       clipView: normalizeBoolean(view.clipView, defaults.view.clipView),
       sidebarMotion: normalizeBoolean(view.sidebarMotion, defaults.view.sidebarMotion),
+      compactToolbar: normalizeBoolean(view.compactToolbar, defaults.view.compactToolbar),
     },
     versionControl: {
       useHancomGit: normalizeBoolean(versionControl.useHancomGit, defaults.versionControl.useHancomGit),
@@ -361,6 +365,7 @@ class UserSettingsService {
         showControlCodes: normalizeBoolean(next.view.showControlCodes, false),
         clipView: normalizeBoolean(next.view.clipView, true),
         sidebarMotion: normalizeBoolean(next.view.sidebarMotion, false),
+        compactToolbar: normalizeBoolean(next.view.compactToolbar, false),
       },
       versionControl: {
         useHancomGit: normalizeBoolean(next.versionControl.useHancomGit, true),
@@ -477,6 +482,12 @@ class UserSettingsService {
   setShowControlCodes(value: boolean): void {
     this.data.view.showControlCodes = value;
     if (value) this.data.view.showParagraphMarks = true;
+    this.save();
+  }
+
+  /** 한 줄 도구 상자 설정 */
+  setCompactToolbar(value: boolean): void {
+    this.data.view.compactToolbar = value;
     this.save();
   }
 

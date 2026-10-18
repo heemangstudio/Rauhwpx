@@ -1,7 +1,6 @@
 /* ── 개체 속성 대화상자 (picture-props, pp-) ─── */
 .pp-dialog {
-  width: min(675px, calc(100vw - 32px));
-  height: min(720px, calc(100vh - 32px));
+  width: min(600px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
 }
@@ -21,8 +20,6 @@
   box-sizing: border-box;
 }
 .pp-dialog .dialog-tab-panel {
-  height: 100%;
-  overflow-y: auto;
   box-sizing: border-box;
 }
 .pp-dialog .dialog-label {
@@ -327,15 +324,18 @@
   margin: 0 8px;
 }
 
-.modal-overlay .dialog-wrap.pp-dialog { width: min(760px, calc(100vw - 24px)); height: min(720px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); overflow: hidden; }
+/* 높이는 탭 내용에 맞춘다. 고정 높이는 짧은 탭 아래에 빈 영역을 남긴다. */
+.modal-overlay .dialog-wrap.pp-dialog { width: min(600px, calc(100vw - 24px)); height: auto; max-height: calc(100dvh - 24px); overflow: hidden; }
 .pp-dialog .cs-main-row { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .pp-dialog .cs-left-col { min-height: 0; flex: 1 1 auto; overflow: hidden; }
 .pp-dialog .dialog-tabs { flex: 0 0 auto; }
-.pp-dialog .dialog-body { overflow-y: auto; padding: 12px 18px; }
+.pp-dialog .dialog-body { overflow-y: auto; padding: 10px 16px 12px; }
 .pp-dialog .dialog-tab-panel { height: auto; overflow: visible; }
-.pp-dialog .cs-right-col { flex: 0 0 auto; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; padding: 12px 18px; border-left: 0; border-top: 1px solid var(--ui-border); background: var(--ui-surface); }
-.pp-dialog .cs-right-col .dialog-btn { width: auto; min-width: 76px; height: 34px; }
-.pp-dialog .cs-fieldset { border-color: var(--ui-border); border-radius: 8px; padding: 10px 12px; }
+.pp-dialog .cs-right-col { flex: 0 0 auto; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; padding: 10px 16px 12px; border-left: 0; border-top: 1px solid var(--ui-border); background: var(--ui-surface); }
+.pp-dialog .cs-right-col .dialog-btn { width: auto; min-width: 72px; height: 32px; }
+.pp-dialog .cs-fieldset { border-color: var(--ui-border); border-radius: 8px; padding: 6px 12px 8px; }
+.pp-dialog .dialog-tab-panel > .cs-fieldset:first-child { margin-top: 0; }
+.pp-dialog .dialog-tab-panel > .cs-fieldset:last-child { margin-bottom: 0; }
 .pp-wrap-btn, .pp-preset-btn, .pp-sync-arrow-btn, .pp-rot-preview, .pp-desc-textarea { border-color: var(--ui-border); background: var(--ui-surface-raised); color: var(--ui-text); }
 .pp-wrap-btn:hover:not(:disabled), .pp-sync-arrow-btn:hover { border-color: var(--ui-border-strong); background: var(--ui-hover); }
 .pp-wrap-btn.active, .pp-preset-btn.active { border-color: var(--ui-text); background: var(--ui-selected); box-shadow: inset 0 0 0 1px var(--ui-text); }

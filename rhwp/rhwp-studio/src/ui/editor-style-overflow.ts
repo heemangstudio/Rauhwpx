@@ -1,18 +1,38 @@
+type OverflowItem = { element: HTMLElement; anchor: Comment; field: boolean };
+
 /** Keeps the formatting fields compact while preserving each command's original listener. */
 export class EditorStyleOverflow {
-  private readonly bands: Array<{ element: HTMLElement; anchor: Comment }>;
+  /** 문서 순서. 더 보기 창에도 이 순서로 쌓는다. */
+  private readonly items: OverflowItem[];
+  /** 폭이 모자랄 때 먼저 접는 순서. 기본은 명령 띠 단위, 한 줄 도구 상자는 필드와 명령 묶음 단위. */
+  private readonly bandFoldOrder: OverflowItem[];
+  private readonly singleRowFoldOrder: OverflowItem[];
   private readonly more: HTMLButtonElement;
   private readonly popover: HTMLDivElement;
   private readonly content: HTMLDivElement;
   private readonly observer: ResizeObserver;
   private lastWidth = -1;
+  /** 한 줄 도구 상자: 두 줄 격자 대신 필드도 더 보기로 접는다. */
+  singleRow = false;
+  /** 모든 필드와 명령을 펼쳤을 때의 폭 */
+  naturalWidth = 0;
+  onLayout: (() => void) | null = null;
 
   constructor(private readonly bar: HTMLElement) {
-    this.bands = Array.from(bar.querySelectorAll<HTMLElement>(':scope > .sb-command-band')).map(element => {
-      const anchor = document.createComment('format band');
-      bar.insertBefore(anchor, element);
-      return { element, anchor };
-    });
+    const item = (element: HTMLElement, field: boolean): OverflowItem => {
+      const anchor = document.createComment(field ? 'format field' : 'format band');
+      element.before(anchor);
+      return { element, anchor, field };
+    };
+    const field = (selector: string) => item(bar.querySelector(selector)!.closest<HTMLElement>('.sb-field')!, true);
+    const [styleName, fontLang, lineSpacing] = ['#style-name', '#font-lang', '#linespacing-select'].map(field);
+    const bands = Array.from(bar.querySelectorAll<HTMLElement>(':scope > .sb-command-band')).map(band => item(band, false));
+    const groups = Array.from(bar.querySelectorAll<HTMLElement>(':scope > .sb-command-band > .sb-ribbon-group'))
+      .map(group => item(group, false));
+    this.items = [styleName, fontLang, lineSpacing, ...bands, ...groups];
+    this.bandFoldOrder = [...bands].reverse();
+    // 문단 정렬부터 접고, 필드 다음 글자색·글자 서식 순서로 접는다.
+    this.singleRowFoldOrder = [groups[groups.length - 1], lineSpacing, styleName, fontLang, ...groups.slice(0, -1).reverse()];
     this.more = document.createElement('button');
     this.more.id = 'style-bar-more';
     this.more.type = 'button';
@@ -58,34 +78,37 @@ export class EditorStyleOverflow {
     this.bar.style.visibility = 'hidden';
     this.restore();
     this.bar.removeAttribute('data-style-compact');
-    this.bar.toggleAttribute('data-style-condensed', width < 700);
+    this.bar.toggleAttribute('data-style-condensed', this.singleRow || width < 700);
     this.more.hidden = false;
     const field = this.bar.querySelector<HTMLElement>('.sb-field-ribbon-group')!;
     const collapse = this.bar.querySelector<HTMLElement>('.sb-collapse-btn')!;
     const style = getComputedStyle(this.bar);
     const outer = (element: HTMLElement): number => {
       const css = getComputedStyle(element);
+      if (css.display === 'none') return 0;
       return element.getBoundingClientRect().width
         + (parseFloat(css.marginLeft) || 0) + (parseFloat(css.marginRight) || 0);
     };
-    const available = width - (parseFloat(style.paddingLeft) || 0)
-      - (parseFloat(style.paddingRight) || 0);
-    const compact = outer(field) + outer(this.more) + outer(collapse) > available;
-    if (compact) {
+    const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const available = width - padding;
+    const used = Array.from(this.bar.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement
+        && child !== this.more && child !== this.popover)
+      .reduce((sum, child) => sum + outer(child), 0);
+    this.naturalWidth = Math.ceil(padding + used);
+    if (!this.singleRow && outer(field) + outer(this.more) + outer(collapse) > available) {
       this.bar.setAttribute('data-style-compact', '');
-      this.bands.forEach(({ element }) => this.content.append(element));
-    } else {
-      const bandWidths = this.bands.map(({ element }) => outer(element));
-      const total = outer(field) + outer(collapse) + bandWidths.reduce((a, b) => a + b, 0);
-      const limit = available - (total > available ? outer(this.more) : 0);
-      let used = outer(field) + outer(collapse);
-      let overflow = false;
-      this.bands.forEach(({ element }, i) => {
-        if (overflow || used + bandWidths[i] > limit) {
-          overflow = true;
-          this.content.append(element);
-        } else used += bandWidths[i];
-      });
+      this.items.filter(item => this.bandFoldOrder.includes(item)).forEach(({ element }) => this.content.append(element));
+    } else if (used > available) {
+      const fieldGap = parseFloat(getComputedStyle(field.querySelector('.sb-field-grid')!).columnGap) || 0;
+      let remaining = used + outer(this.more);
+      const folded = new Set<OverflowItem>();
+      for (const item of this.singleRow ? this.singleRowFoldOrder : this.bandFoldOrder) {
+        if (remaining <= available) break;
+        remaining -= outer(item.element) + (item.field ? fieldGap : 0);
+        folded.add(item);
+      }
+      this.items.filter(item => folded.has(item)).forEach(({ element }) => this.content.append(element));
     }
     this.more.hidden = this.content.childElementCount === 0;
     if (this.more.hidden || !wasOpen) this.close(false);
@@ -95,10 +118,11 @@ export class EditorStyleOverflow {
       if (focused.getClientRects().length && !this.popover.hidden) focused.focus({ preventScroll: true });
       else if (!this.more.hidden) this.more.focus({ preventScroll: true });
     }
+    this.onLayout?.();
   }
 
   private restore(): void {
-    this.bands.forEach(({ element, anchor }) => anchor.after(element));
+    this.items.forEach(({ element, anchor }) => anchor.after(element));
   }
 
   private open(): void {

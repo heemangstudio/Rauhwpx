@@ -872,7 +872,7 @@ export class Toolbar {
     menu.append(categories, content);
 
     const rect = this.fontName.getBoundingClientRect();
-    menu.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 510))}px`;
+    menu.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 492))}px`;
     menu.style.top = `${Math.min(rect.bottom + 2, window.innerHeight - 360)}px`;
     document.body.appendChild(menu);
     this.fontMenu = menu;
