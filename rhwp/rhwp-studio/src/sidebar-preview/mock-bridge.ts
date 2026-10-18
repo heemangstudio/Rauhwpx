@@ -22,6 +22,7 @@ export const scenarios = [
   'plan',
   'question',
   'permission',
+  'sign-in',
   'review',
   'fleet',
   'error',
@@ -695,7 +696,24 @@ export function createMockBridge(
       return models;
     },
     requestAgentSetupStatus: async () => data.setups,
-    requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => previewBrowser.request(action, args) as Promise<R>,
+    requestBrowser: async <R = T.BrowserResult>(action: string, args?: Record<string, unknown>): Promise<R> => {
+      const pending = permissionRequest;
+      if (action === 'accounts.complete' && pending && args?.['requestId'] === pending.requestId) {
+        // 허브처럼 탭을 에이전트에게 돌려주고 요청을 닫은 뒤 이어지는 턴을 연다.
+        if (pending.tabId) await previewBrowser.request('control', { tabId: pending.tabId, owner: 'agent' });
+        completePermission({ status: 'granted' });
+        const turnGeneration = ++generation;
+        later(() => {
+          if (generation !== turnGeneration) return;
+          setRunning(true);
+          stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+          stream({ type: 'text-delta', agent, text: '로그인을 확인했습니다. 이어서 진행합니다.' });
+          if (!holdReply) later(() => finish(), 100);
+        });
+        return { completed: true, origin: pending.origin } as R;
+      }
+      return previewBrowser.request(action, args) as Promise<R>;
+    },
     onBrowserEvent: (callback) => { const listener = (event: T.SidebarEvent) => { if (event.type === 'browser-event') callback(event.event); }; listeners.add(listener); return () => { listeners.delete(listener); }; },
     submitBrowserAccount: (args) => previewBrowser.submit(args),
     readBrowserDownload: async () => { throw new Error('미리보기에서 다운로드 파일이 없습니다.'); },
@@ -1031,6 +1049,25 @@ export function createMockBridge(
         if (generation !== turnGeneration) return;
         setRunning(true);
         stream({ type: 'turn-start', agent, turnId: `turn-${turnGeneration}` });
+        if (reply === 'sign-in') {
+          // ?scenario=sign-in&handoff=code — 에이전트가 로그인·인증 코드 입력을 사용자에게 넘긴다.
+          const code = projectParams.get('handoff') === 'code';
+          void previewBrowser.request('open', { url: 'https://accounts.example.com/verify' }).then((opened) => {
+            if (generation !== turnGeneration) return;
+            const tabId = (opened as { tab?: { tabId?: string } }).tab?.tabId;
+            permissionRequest = { requestId: crypto.randomUUID(), threadId, documentId: chatDocumentId,
+              turnId: `turn-${turnGeneration}`, agent, capability: 'browser', kind: code ? 'browser-code' : 'browser-sign-in',
+              origin: 'https://accounts.example.com', ...(tabId ? { tabId } : {}), accountLabel: 'Example',
+              reason: code ? 'The site sent a verification code.' : 'The site needs the user to sign in.', createdAt: new Date().toISOString() };
+            const callArgs = { tabId, origin: permissionRequest.origin, label: 'Example', reason: permissionRequest.reason, kind: code ? 'code' : 'sign-in' };
+            stream({ type: 'tool-call', agent, callId: `handoff-${turnGeneration}`, tool: 'mcp__rhwp__browser_request_account', argsJson: JSON.stringify(callArgs) });
+            stream({ type: 'tool-result', agent, callId: `handoff-${turnGeneration}`, ok: true,
+              resultPreview: JSON.stringify({ pending: true, requestId: permissionRequest.requestId, origin: permissionRequest.origin, kind: callArgs.kind }) });
+            emit({ type: 'chat-permission-requested', request: permissionRequest });
+            if (!holdReply) later(() => finish(), 100);
+          });
+          return;
+        }
         if (reply === 'permission') {
           const selected = projectParams.get('permissionCapability');
           if (selected !== null && !isChatPermissionCapability(selected)) {

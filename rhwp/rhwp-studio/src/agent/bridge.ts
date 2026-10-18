@@ -2794,8 +2794,9 @@ export class AgentBridgeImpl implements AgentBridge {
           || msg.threadId !== pending.threadId || msg.documentId !== pending.documentId
           || !chatPermissionMatchesContext(pending, this.referenceContext())) break;
         const grants = readChatPermissionGrants(msg.grants);
-        if (outcome.status === 'granted' && !grants.includes(pending.capability)) break;
-        this.chatPermissionGrants = grants;
+        // 브라우저 계정·로그인 요청의 승인은 채팅 권한을 늘리지 않는다.
+        if (outcome.status === 'granted' && !pending.kind && !grants.includes(pending.capability)) break;
+        if (!pending.kind || Array.isArray(msg.grants)) this.chatPermissionGrants = grants;
         this.clearChatPermissionRequest(outcome);
         if (this.turnRunning) this.beginPendingTurn(this.editingAgent);
         this.syncEditingLease();

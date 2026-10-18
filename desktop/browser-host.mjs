@@ -184,6 +184,8 @@ export class OwnedBrowserHost {
       try {
         const destination = browserNavigationUrl(details.url);
         if (!tab.tabId || tab.closing || !this.owner || !this.proxy || this.tabs.size + this.pendingTabs.size >= MAX_NATIVE_TABS) return { action: 'deny' };
+        // 팝업 창이 다시 연 팝업은 막는다. 로그인 팝업은 한 단계면 충분하고 연쇄 팝업은 가로채기에 쓰인다.
+        if (tab.openerTab && tab.disposition === 'new-window') return { action: 'deny' };
         return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: this.guestPreferences() },
           createWindow: (options) => {
             // Chromium's guest carries the actual WindowProxy, opener and POST navigation.
@@ -994,7 +996,7 @@ export class OwnedBrowserHost {
       throw new Error('Native browser reset owner is stale');
     }
     if (this.resetPromise) return this.resetPromise;
-    this.passwords?.importer.beginReset();
+    this.passwords?.importer.beginReset(); this.passwords?.cookies?.beginReset();
     this.lastOwner = owner;
     this.resetPromise = (async () => {
       await this.releasePromise;
@@ -1032,7 +1034,7 @@ export class OwnedBrowserHost {
       this.generation = randomUUID();
       return { tabsClosed: guests.length, generation: this.generation };
     })();
-    try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); }
+    try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); this.passwords?.cookies?.endReset(); }
   }
 
   async handleRequest(message, owner) {
@@ -1063,6 +1065,11 @@ export class OwnedBrowserHost {
         else if (message.operation === 'password-action') {
           if (!this.passwords) throw new Error('Native password input is unavailable');
           response.value = await this.passwords.action(params);
+        }
+        else if (message.operation === 'password-approve') {
+          if (!this.passwords) throw new Error('Native password storage is unavailable');
+          // 허브는 사용자가 사이드바에서 승인한 계정 요청에만 이 동작을 보낸다.
+          response.value = await this.passwords.vault.setAgentReuse(params.accountId, params.approved === true);
         }
         else if (message.operation === 'password-storage-state') response.value = this.passwords ? await this.passwords.storageState() : null;
         else if (message.operation === 'import-session') response.value = await this.importSession(params);

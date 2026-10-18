@@ -1875,13 +1875,13 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_fill_account',
-    description: 'Autofill a sign-in form locally using an account ID from browser_status, including previously typed/saved logins. For an exact origin with agentReuseApproved=true, proceed without another approval. Supply current username/password snapshot refs. Credential values never enter tool arguments/results.',
+    description: 'Autofill a sign-in form locally using an account ID from browser_status, including previously typed/saved logins. For an exact origin with agentReuseApproved=true, proceed without another approval; otherwise request it with browser_request_account. Supply current username/password snapshot refs. Credential values never enter tool arguments/results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. Request a saved website account or a secure save-and-use form for an exact approved origin. Returns pending; end the turn and wait for the secure form. Never ask for passwords in chat or tool arguments.',
-    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional() },
+    description: 'Root conversation only. Ask the user for website access for an exact origin. kind account (default): approve accountId, or open a secure save form. kind sign-in or code: the user signs in or enters a verification code in tabId. Returns pending; end the turn. The chat resumes when the user finishes. Never ask for passwords or codes in chat.',
+    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'sign-in', 'code']).optional() },
   },
 ];
 
