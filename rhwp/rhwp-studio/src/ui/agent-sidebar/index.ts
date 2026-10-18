@@ -5083,7 +5083,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     root.classList.add('ag-col-resizing');
     setPageClass('ag-col-resizing', true);
-    if (kind === 'rail') scrollRail.setShifting(true);
     // The divider moves with the grid, so pointer events must continue even
     // after the cursor leaves its narrow hit target or pointer capture fails.
     window.addEventListener('pointermove', onColumnResizePointerMove, true);
@@ -5118,7 +5117,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     detachColumnResizeWindowListeners();
     root.classList.remove('ag-col-resizing');
     setPageClass('ag-col-resizing', false);
-    scrollRail.setShifting(false);
     const handle = columnHandle(kind);
     try {
       if (pointerId !== null && handle.hasPointerCapture(pointerId)) {
@@ -5168,13 +5166,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
       );
     }
-    const applyColumns = (): void => {
-      root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
-      root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
-    };
-    // 대화 칸이 옮겨 가면 턴 레일이 움츠러들며 따라가 다시 펴진다.
-    if (fullscreen && railWasExpanded !== null && railWasExpanded !== expanded) scrollRail.shift(applyColumns);
-    else applyColumns();
+    root.classList.toggle('ag-compact-rail-open', compact && compactThreadsRailOpen);
+    root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
     if (!fullscreen) return;
     if (!expanded) closeThreadRailSurfaces(root);
     threadsBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');

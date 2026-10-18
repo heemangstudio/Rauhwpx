@@ -24,19 +24,9 @@
   display: flex;
   flex-direction: column;
   transform: translateY(-50%);
-  /* scale 은 transform 보다 바깥에서 걸린다. 원점을 위끝에 두어야 translateY(-50%) 로
-     끌어올린 레일의 한가운데로 움츠러든다. */
-  transform-origin: left top;
   transition:
     opacity var(--ag-dur-base) var(--ag-ease-out),
-    scale var(--ag-dur-base) var(--ag-ease-out),
     display var(--ag-dur-base) allow-discrete;
-}
-
-/* 칸 경계를 끄는 동안. */
-.ag-scroll-rail.ag-scroll-rail-shifting {
-  scale: 0.55;
-  opacity: 0.4;
 }
 
 .ag-scroll-rail[hidden],

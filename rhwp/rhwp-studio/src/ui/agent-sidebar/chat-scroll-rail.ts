@@ -12,11 +12,6 @@ export interface ChatScrollRail {
   readonly root: HTMLElement;
   /** 집중 모드에서만 켠다. 꺼져 있으면 관찰도 쉰다. */
   setEnabled(on: boolean): void;
-  /** 대화 목록 칸이 열리고 닫히며 대화 칸이 옮겨 갈 때 — change 가 칸을 바꾸고, 레일은
-   *  옛 자리에서 새 자리로 움츠러들며 건너간 뒤 다시 펴진다. */
-  shift(change: () => void): void;
-  /** 칸 경계를 끄는 동안 움츠러들어 있다가 놓으면 펴진다. */
-  setShifting(on: boolean): void;
   dispose(): void;
 }
 
@@ -29,8 +24,6 @@ const PEEK_EDGE_PX = 8;
 /** 레일을 떠난 뒤 카드를 거두기까지 — 대각선으로 옮겨도 깜빡이지 않는다. */
 const LEAVE_GRACE_MS = 120;
 const LABEL_MAX = 60;
-/** 칸이 옮겨 갈 때 레일이 움츠렸다 펴지는 시간(ms). 목록 칸이 들어오는 160ms 를 감싼다. */
-const SHIFT_MS = 380;
 const REPLY_MAX = 220;
 
 function collapse(text: string | null | undefined): string {
@@ -90,7 +83,6 @@ export function createChatScrollRail(opts: {
   let frame: number | null = null;
   let leaveTimer: number | null = null;
   let lastBox = '';
-  let shiftAnimation: Animation | null = null;
 
   const schedule = (): void => {
     if (!enabled || frame !== null) return;
@@ -258,27 +250,6 @@ export function createChatScrollRail(opts: {
     ticks[target]!.focus();
   });
 
-  const reducedMotion = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  function shift(change: () => void): void {
-    const before = enabled && !root.hidden && !reducedMotion() ? root.getBoundingClientRect().left : null;
-    change();
-    if (before === null || typeof root.animate !== 'function') return;
-    clearHover();
-    const dx = before - root.getBoundingClientRect().left;
-    shiftAnimation?.cancel();
-    shiftAnimation = root.animate([
-      { translate: `${dx}px 0`, scale: '1', opacity: 1 },
-      { translate: `${Math.round(dx * 0.3)}px 0`, scale: '0.55', opacity: 0.4, offset: 0.4 },
-      { translate: '0 0', scale: '1', opacity: 1 },
-    ], { duration: SHIFT_MS, easing: 'cubic-bezier(0.2, 0, 0, 1)' });
-  }
-
-  function setShifting(on: boolean): void {
-    if (on) clearHover();
-    root.classList.toggle('ag-scroll-rail-shifting', on);
-  }
-
   function setEnabled(on: boolean): void {
     if (enabled === on) return;
     enabled = on;
@@ -304,11 +275,8 @@ export function createChatScrollRail(opts: {
   return {
     root,
     setEnabled,
-    shift,
-    setShifting,
     dispose(): void {
       setEnabled(false);
-      shiftAnimation?.cancel();
       clearHover();
       root.remove();
       peek.remove();
