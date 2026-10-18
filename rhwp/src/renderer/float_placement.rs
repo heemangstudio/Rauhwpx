@@ -213,7 +213,7 @@ fn leading_table_inputs(table: &Table) -> Option<crate::model::paragraph::Leadin
     })
 }
 
-fn para_style_inputs(
+pub(crate) fn para_style_inputs(
     s: &super::style_resolver::ResolvedParaStyle,
 ) -> crate::model::paragraph::LeadingParaStyleInputs {
     use crate::model::paragraph::LeadingParaStyleInputs;
@@ -290,7 +290,7 @@ fn has_host_text(p: &Paragraph) -> bool {
         .any(|c| c > '\u{001f}' && c != '\u{fffc}' && !c.is_whitespace())
 }
 
-fn section_geometry_inputs(
+pub(crate) fn section_geometry_inputs(
     s: &crate::model::document::SectionDef,
 ) -> crate::model::paragraph::LeadingSectionGeometryInputs {
     use crate::model::paragraph::LeadingSectionGeometryInputs;
@@ -327,7 +327,7 @@ fn section_geometry_inputs(
     }
 }
 
-fn column_inputs(
+pub(crate) fn column_inputs(
     c: &crate::model::page::ColumnDef,
 ) -> crate::model::paragraph::LeadingColumnInputs {
     use crate::model::paragraph::LeadingColumnInputs;
