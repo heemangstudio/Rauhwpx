@@ -191,13 +191,25 @@ impl Tokenizer {
         // 긴 letter 식별자와의 충돌(Task #576 주석) 회피. 한 글자 root 피연산자는
         // 아래에서 별도로 분리한다. GEQ/LEQ 를 GE/LE 보다 먼저 검사
         // (긴 매칭 우선; digit-guard 로도 안전하나 명시적 순서 유지).
-        for kw in ["root", "sqrt", "ROOT", "SQRT", "GEQ", "LEQ", "GE", "LE"] {
+        for kw in ["root", "sqrt", "ROOT", "SQRT"] {
             if self.matches_at(kw) {
                 let after = self.peek(kw.len());
                 if matches!(after, Some(c) if c.is_ascii_digit()) {
                     self.pos += kw.len();
                     return Token::new(TokenType::Command, kw, start);
                 }
+            }
+        }
+
+        // 숫자에 붙은 관계식은 대소문자를 가리지 않는다 (`ge0right` → ge, 0, right).
+        // 숫자 guard를 유지해 geometry 같은 일반 식별자를 나누지 않는다.
+        for kw in ["GEQ", "LEQ", "GE", "LE"] {
+            if self.matches_at_ascii_ci(kw)
+                && matches!(self.peek(kw.len()), Some(c) if c.is_ascii_digit())
+            {
+                let value: String = self.chars[start..start + kw.len()].iter().collect();
+                self.pos += kw.len();
+                return Token::new(TokenType::Command, value, start);
             }
         }
 
@@ -911,6 +923,42 @@ mod tests {
             values(&tokenize("root {4} of {x}")),
             vec!["root", "{", "4", "}", "of", "{", "x", "}"]
         );
+    }
+
+    #[test]
+    fn math10_digit_glued_relations_expose_closing_right_in_any_case() {
+        for relation in [
+            "ge", "GE", "gE", "geq", "GEQ", "gEq", "le", "LE", "lE", "leq", "LEQ", "lEq",
+        ] {
+            for right in ["right", "RIGHT", "rIgHt"] {
+                for operand in ["0", "0.5", "123"] {
+                    for source in [
+                        format!("left(x {relation}{operand}{right})"),
+                        format!("left(x {relation} {operand} {right})"),
+                    ] {
+                        let tokens = tokenize(&source);
+                        assert_eq!(
+                            values(&tokens),
+                            vec!["left", "(", "x", relation, operand, right, ")"],
+                            "{source}"
+                        );
+                        assert_eq!(tokens[3].ty, TokenType::Command);
+                        assert_eq!(tokens[4].ty, TokenType::Number);
+                        assert_eq!(tokens[5].ty, TokenType::Command);
+                    }
+                }
+            }
+        }
+        for identifier in [
+            "geometry",
+            "GEOMETRY",
+            "bright",
+            "sigmaRIGHTMOST",
+            "gevalue",
+            "legendre",
+        ] {
+            assert_eq!(values(&tokenize(identifier)), vec![identifier]);
+        }
     }
 
     #[test]
