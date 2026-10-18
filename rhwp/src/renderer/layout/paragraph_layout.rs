@@ -4850,6 +4850,12 @@ impl LayoutEngine {
                     );
                     Some(cloned)
                 } else if column_inner_width > 0.0
+                    && !(self
+                        .endnote_para_source_for(para_index)
+                        .is_some_and(|source| source.tac_row_origin.is_some())
+                        && comp.projected_tac_line_owners.is_some()
+                        && comp.projected_tac_line_owners
+                            == crate::document_core::endnote_tac::current_owners(para, comp))
                     && !self.profile.get().own_line_layout()
                     && crate::renderer::composer::stored_lines_stale_for_body(
                         comp,
@@ -5933,10 +5939,51 @@ impl LayoutEngine {
             && (self.profile.get().native_hwp5_layout() || self.profile.get().hwp5_origin_hwpx())
             && styles.font_metrics_policy
                 == crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        // 미주 raw 줄 소속은 본문의 HCR 메트릭 정책과 별도 계약이다.
+        // 호출자가 fresh 조판/원본 변경을 배제한 인증을 설치해야만 수락한다.
+        // 저장 높이가 같다는 이유만으로 여기서 인증을 새로 만들지 않는다.
+        let verified_endnote_tac = cell_ctx.is_none()
+            && self.is_body_flow_col_area(col_area)
+            && !self.profile.get().own_line_layout()
+            && self
+                .endnote_para_source_for(para_index)
+                .is_some_and(|source| {
+                    source.note_para_index > 0
+                        && source.verified_tac_line_owners.is_some()
+                        && source.tac_row_origin.is_some()
+                })
+            && matches!(
+                styles.font_metrics_policy,
+                crate::model::provenance::FontMetricsPolicy::HancomWindows
+                    | crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            );
+        // 현재 입력으로 재조판한 미주는 최소 단 너비의 줄을 더 넓은 단에서도 쓴다.
+        // 설치된 출처와 실제 조판의 raw 소속을 확인한 분기에서만 허용한다.
+        // 로드된 줄이나 일반 본문은 기존 단별 저장 줄 선택을 유지한다.
+        let mut reflowed_endnote_tac = false;
         let exact_tac_assign = para.and_then(|p| {
-            if p.line_segs
+            if verified_endnote_tac
+                && p.line_segs.first().is_some_and(|s| s.text_start == 0)
+                && p.line_segs
+                    .windows(2)
+                    .all(|s| s[0].text_start < s[1].text_start)
+            {
+                let installed = composed.projected_tac_line_owners.as_ref()?;
+                let current = crate::document_core::endnote_tac::current_owners(p, composed)?;
+                if installed != &current {
+                    return None;
+                }
+                reflowed_endnote_tac =
+                    self.endnote_para_source_for(para_index)
+                        .is_some_and(|source| {
+                            source.tac_row_origin
+                                == Some(crate::document_core::endnote_tac::RowOrigin::Reflowed)
+                        });
+                Some(current)
+            } else if p
+                .line_segs
                 .iter()
-                .any(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
+                .any(|s| s.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
             {
                 stored_tac_line_assignment(p, composed)
             } else if native_authored_tac {
@@ -5946,11 +5993,22 @@ impl LayoutEngine {
             }
         });
         let exact_tac_ownership = exact_tac_assign.is_some();
+        let compact_mixed_rows = if verified_endnote_tac {
+            para.and_then(|p| {
+                let source = self.endnote_para_source_for(para_index)?;
+                let rows = source.compact_mixed_rows?;
+                rows.matches(p, composed, exact_tac_assign.as_deref()?, source.tac_row_origin?,
+                    styles, col_area.width, self.dpi).then_some(rows)
+            })
+        } else { None };
+        let compact_fragment_y = y;
         for line_idx in start_line..end {
             let comp_line = &composed.lines[line_idx];
             let mut current_line_reserved_tac_picture_height: Option<f64> = None;
             let mut endnote_used_auto_wrap_y = false;
-            if let (Some((base_vpos, base_y)), Some(seg)) = (
+            if let Some(rows) = &compact_mixed_rows {
+                y = compact_fragment_y + rows.origin(line_idx) - rows.origin(start_line);
+            } else if let (Some((base_vpos, base_y)), Some(seg)) = (
                 endnote_line_vpos_base,
                 para.and_then(|p| p.line_segs.get(line_idx)),
             ) {
@@ -5984,7 +6042,10 @@ impl LayoutEngine {
 
             // 다단 필터링: segment_width가 현재 단 너비와 불일치하면 건너뜀
             if let Some(col_w) = multi_col_width_hu {
-                if comp_line.segment_width > 0 && (comp_line.segment_width - col_w).abs() > 200 {
+                if comp_line.segment_width > 0
+                    && (comp_line.segment_width - col_w).abs() > 200
+                    && !(reflowed_endnote_tac && comp_line.segment_width <= col_w)
+                {
                     // char_offset만 진행하고 렌더링 건너뜀
                     for run in &comp_line.runs {
                         char_offset += run.text.chars().count();
@@ -6147,7 +6208,7 @@ impl LayoutEngine {
             if let Some((height, _)) = source_upper_equation_metrics {
                 line_height = hwpunit_to_px(height, self.dpi);
             }
-            if certified_endnote_advances.is_some() {
+            if certified_endnote_advances.is_some() || compact_mixed_rows.is_some() {
                 if let Some(seg) = para.and_then(|p| p.line_segs.get(line_idx)) {
                     line_height = hwpunit_to_px(seg.line_height, self.dpi);
                 }
@@ -6417,6 +6478,11 @@ impl LayoutEngine {
                         equation_descent,
                     );
                 }
+            }
+            if compact_mixed_rows.is_some() {
+                // 검증된 mixed row의 full 상자와 간격을 유지한다. 다음 원점은 별도다.
+                line_height = hwpunit_to_px(comp_line.line_height, self.dpi);
+                line_spacing_px = hwpunit_to_px(comp_line.line_spacing, self.dpi);
             }
             // 들여쓰기/내어쓰기: 문단 여백은 무조건 적용
             // - 보통(ind=0): 모든 줄 margin_left
@@ -7556,6 +7622,55 @@ impl LayoutEngine {
                 },
             );
 
+            // One owner row emits mixed inline and block Tables through the existing
+            // cell renderer. Full/Partial fragments visit only their own row interval.
+            // Its returned table advance is deliberately not added to the line cursor.
+            if verified_endnote_tac && cell_ctx.is_none() {
+                if let (Some(p), Some(bdc), Some(owners)) = (para, bin_data_content, exact_tac_assign.as_ref()) {
+                    for (ci, _) in owners.iter().filter(|(_, owner)| *owner == line_idx) {
+                        let Some(Control::Table(table)) = p.controls.get(*ci) else { continue; };
+                        if tree.get_inline_shape_position(section_index, para_index, *ci, None).is_some() { continue; }
+                        let inline = crate::renderer::height_measurer::is_tac_table_inline_in_para(table, comp_line.segment_width, p);
+                        let top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
+                        let left = hwpunit_to_px(table.outer_margin_left as i32, self.dpi);
+                        let right = hwpunit_to_px(table.outer_margin_right as i32, self.dpi);
+                        let table_width = hwpunit_to_px(table.get_column_widths().iter().sum::<u32>() as i32, self.dpi);
+                        let table_x = if inline {
+                            // Nonempty inline tables normally emitted in emit_line_runs.
+                            // Reconstruct the same prefix for an otherwise unmatched edge slot.
+                            let position = composed.tac_controls.iter().find(|(_, _, control)| control == ci).map_or(comp_line.char_start, |(pos, _, _)| *pos);
+                            let mut remaining = position.saturating_sub(comp_line.char_start);
+                            let mut prefix = 0.0;
+                            for run in &comp_line.runs {
+                                let text: String = run.text.chars().take(remaining).collect();
+                                remaining = remaining.saturating_sub(text.chars().count());
+                                prefix += estimate_text_width(&text, &run.text_style(styles));
+                            }
+                            prefix += line_tac_offsets.iter().filter(|(pos, _, control)| *pos <= position && *control < *ci).map(|(_, width, _)| *width).sum::<f64>();
+                            x_start + prefix + left
+                        } else {
+                            // Block classification is intentional. Anchor to this row's
+                            // frame, independently of the last equation's horizontal advance.
+                            let slack = (available_width - table_width - left - right).max(0.0);
+                            effective_col_x + effective_margin_left + left + match alignment {
+                                Alignment::Center | Alignment::Distribute => slack / 2.0,
+                                Alignment::Right => slack,
+                                _ => 0.0,
+                            }
+                        };
+                        let row_y = compact_mixed_rows.as_ref().map(|rows|
+                            compact_fragment_y + rows.origin(line_idx) - rows.origin(start_line)
+                        ).unwrap_or(y);
+                        let table_y = row_y + top;
+                        self.layout_table(tree, col_node, table, section_index, styles, 0,
+                            col_area, table_y, bdc, None, 0, Some((para_index, *ci)),
+                            alignment, None, 0.0, 0.0, Some(table_x), None, None,
+                            false, false, false);
+                        tree.set_inline_shape_position(section_index, para_index, *ci, None, table_x, table_y);
+                    }
+                }
+            }
+
             if authored_center_equation_metrics && equation_tac_extra_rows == 0 {
                 if let Some((source, seg)) = para.zip(para.and_then(|p| p.line_segs.get(line_idx)))
                 {
@@ -7748,7 +7863,7 @@ impl LayoutEngine {
                 } else {
                     y + render_line_flow_height
                 };
-                let content_bottom = if certified_endnote_advances.is_some() {
+                let content_bottom = if certified_endnote_advances.is_some() || compact_mixed_rows.is_some() {
                     let bottom = certified_content_bottom
                         .map(|prior| prior.max(content_bottom))
                         .unwrap_or(content_bottom);
@@ -7762,7 +7877,13 @@ impl LayoutEngine {
                     self.last_item_endnote_equation_tail_line_box.set(true);
                 }
             }
-            if let Some(advances) = &certified_endnote_advances {
+            if let Some(rows) = &compact_mixed_rows {
+                // full bbox/표 예약은 보존하고, 다음 원점만 실제 formatter 진행량을 쓴다.
+                last_line_trailing_ls = render_line_spacing_px;
+                y = compact_fragment_y + rows.origin(line_idx) - rows.origin(start_line)
+                    + rows.advance(line_idx);
+                endnote_line_vpos_y_end = Some(y);
+            } else if let Some(advances) = &certified_endnote_advances {
                 // bbox/content-bottom은 위의 full-H를 유지하고 다음 원점만 이동한다.
                 last_line_trailing_ls = render_line_spacing_px;
                 y += hwpunit_to_px(advances[line_idx], self.dpi);

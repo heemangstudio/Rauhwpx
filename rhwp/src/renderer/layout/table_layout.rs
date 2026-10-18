@@ -2893,6 +2893,15 @@ impl LayoutEngine {
         col_widths
     }
 
+    /// Mixed endnotes deliberately share the uncached current table geometry.
+    /// Never address a virtual table through its body Endnote host index.
+    pub(crate) fn endnote_table_reservation_px(&self, table: &crate::model::table::Table, styles: &ResolvedStyleSet) -> f64 {
+        let rows = self.resolve_row_heights(table, table.col_count as usize, table.row_count as usize, None, styles, table.common.treat_as_char);
+        rows.iter().sum::<f64>()
+            + hwpunit_to_px(table.cell_spacing as i32, self.dpi) * rows.len().saturating_sub(1) as f64
+            + hwpunit_to_px(i32::from(table.outer_margin_top) + i32::from(table.outer_margin_bottom), self.dpi)
+    }
+
     /// 행 높이 계산 (MeasuredTable 우선, 없으면 셀/병합/컨텐츠 기반)
     pub(crate) fn resolve_row_heights(
         &self,

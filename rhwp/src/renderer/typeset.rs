@@ -588,6 +588,8 @@ pub struct TypesetEngine {
     profile: std::cell::Cell<crate::model::provenance::LayoutCompatibilityProfile>,
     /// 미주 흐름 조판 중 — 미주 문단은 기존 저장 줄높이(vertsize) 진행 모델을 유지한다.
     formatting_endnotes: std::cell::Cell<bool>,
+    /// 현재 원본 구역이 제공한 저장 미주 출처. 기본 엔진/합성 입력은 인증하지 않는다.
+    endnote_tac_sources: crate::document_core::endnote_tac::PreparedSources,
     /// Shared derived geometry used by measurement, fragment cuts, and final layout.
     render_normalization:
         std::sync::Arc<crate::renderer::render_normalization::RenderNormalizationOverlay>,
@@ -2911,6 +2913,8 @@ struct FormattedParagraph {
     line_spacings: Vec<f64>,
     /// 인증된 미주 진행량(px). line_heights는 full ink/object 경계를 유지한다.
     certified_line_advances: Option<Vec<f64>>,
+    /// 검증된 mixed 간격 투영만 legacy fit 허용량 대신 full 행 경계를 쓴다.
+    compact_mixed_full_fit: bool,
     /// spacing_before
     spacing_before: f64,
     /// spacing_after
@@ -2976,6 +2980,45 @@ impl FormattedParagraph {
             self.certified_line_advances = Some(advances);
         }
         self
+    }
+
+    fn with_compact_mixed_rows(
+        mut self, rows: Option<&crate::renderer::endnote_table::CompactMixedRows>,
+    ) -> Self {
+        if let Some(rows) = rows {
+            let advances = rows.advances();
+            let full_bottom = self.line_heights.iter().enumerate()
+                .map(|(i, height)| rows.origin(i) + height).fold(0.0f64, f64::max);
+            self.total_height = self.spacing_before + advances.iter().sum::<f64>() + self.spacing_after;
+            self.height_for_fit = self.spacing_before + full_bottom;
+            self.spacing_trimmed_advance =
+                (self.total_height - self.line_spacings.last().copied().unwrap_or(0.0)).max(0.0);
+            self.certified_line_advances = Some(advances.to_vec());
+            self.compact_mixed_full_fit = true;
+        }
+        self
+    }
+
+    /// full 상자는 compact advance와 별도로 목적 단의 실제 경계 안에 있어야 한다.
+    fn compact_mixed_fits_frame(&self, y: f64, capacity: f64) -> bool {
+        !self.compact_mixed_full_fit
+            || y + self.spacing_before.max(0.0) + self.height_for_fit - self.spacing_before
+                <= capacity + 1e-6
+    }
+
+    fn compact_mixed_fit_end(&self, start: usize, room: f64) -> usize {
+        let mut origin = 0.0;
+        let mut bottom = 0.0f64;
+        let mut end = start;
+        for row in start..self.line_heights.len() {
+            bottom = bottom.max(origin + self.line_heights[row]);
+            if bottom > room + 1e-6 {
+                break;
+            }
+            origin += self.line_advance(row);
+            end = row + 1;
+        }
+        end
     }
 
     fn natural_ink_height(&self) -> f64 {
@@ -3348,10 +3391,19 @@ impl TypesetEngine {
             native_natural_input: None,
             profile: std::cell::Cell::new(Default::default()),
             formatting_endnotes: std::cell::Cell::new(false),
+            endnote_tac_sources: Default::default(),
             render_normalization: std::sync::Arc::new(
                 crate::renderer::render_normalization::RenderNormalizationOverlay::default(),
             ),
         }
+    }
+
+    pub(crate) fn with_endnote_tac_sources(
+        mut self,
+        sources: &crate::document_core::endnote_tac::PreparedSources,
+    ) -> Self {
+        self.endnote_tac_sources = sources.clone();
+        self
     }
 
     pub(crate) fn with_native_natural_flow_source(
@@ -3435,6 +3487,59 @@ impl TypesetEngine {
         Self::new(DEFAULT_DPI)
     }
 
+    /// 현재 pagination이 운반한 주소/원점/소속을 복제 문단에서도 다시 검증한다.
+    /// 본문, 첫 번호 문단, 미인증 투영은 보통 조판을 유지한다.
+    fn format_virtual_endnote_rows(
+        &self,
+        para: &Paragraph,
+        source: Option<&EndnoteParaSource>,
+        styles: &ResolvedStyleSet,
+        width: Option<f64>,
+    ) -> (ComposedParagraph, FormattedParagraph, Option<EndnoteParaSource>) {
+        let admitted = (|| {
+            let source = source.filter(|s| s.note_para_index > 0)?;
+            let address = (source.section_index, source.para_index,
+                source.control_index, source.note_para_index);
+            let proof = self.endnote_tac_sources.get(&address)?;
+            if Some(proof.origin) != source.tac_row_origin
+                || !width.is_some_and(|w| proof.matches_width(w, styles, para, self.dpi)) {
+                return None;
+            }
+            let original = proof.projected_source(para)?;
+            let mut comp = crate::renderer::composer::compose_endnote_with_styles(para, styles);
+            let owners = self.admitted_endnote_tac_raw_owners(
+                address, original, para, para, &comp,
+            )?;
+            if source.verified_tac_line_owners.as_ref() != Some(&owners) { return None; }
+            let fmt = self.format_paragraph_with_endnote_tac(
+                para, Some(&comp), styles, width, Some(&owners),
+            ).with_certified_endnote_advances(
+                para, source.certified_line_advances_hu.as_deref(), self.dpi,
+            );
+            let actual = self.formatted_endnote_tac_line_owners(
+                address, original, para, para, &comp, &fmt,
+            )?;
+            if actual != owners { return None; }
+            comp.projected_tac_line_owners = Some(actual);
+            let mut source = source.clone();
+            source.compact_mixed_rows = proof.compact_mixed_rows(
+                para, &comp, &fmt.line_heights, &fmt.line_spacings, self.dpi);
+            let fmt = fmt.with_compact_mixed_rows(source.compact_mixed_rows.as_ref());
+            Some((comp, fmt, Some(source)))
+        })();
+        admitted.unwrap_or_else(|| {
+            let comp = crate::renderer::composer::compose_paragraph_with_styles(para, styles);
+            let fmt = self.format_paragraph(para, Some(&comp), styles, width);
+            (comp, fmt, None)
+        })
+    }
+
+    fn virtual_endnote_source<'a>(
+        &self, st: &'a TypesetState, paragraphs: &[Paragraph], pi: usize,
+    ) -> Option<&'a EndnoteParaSource> {
+        st.endnote_para_sources.get(pi.checked_sub(paragraphs.len())?)
+    }
+
     fn predict_current_column_para_y(
         &self,
         st: &TypesetState,
@@ -3499,10 +3604,9 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed =
-                crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
-            let item_fmt =
-                self.format_paragraph(item_para, Some(&item_composed), styles, column_width);
+            let (_, item_fmt, _) = self.format_virtual_endnote_rows(
+                item_para, self.virtual_endnote_source(st, paragraphs, pi), styles, column_width,
+            );
             y += match item {
                 PageItem::PartialParagraph {
                     start_line,
@@ -6287,6 +6391,60 @@ impl TypesetEngine {
         ssot_level: EnSsotLevel,
         tac_picture_rewind_height: Option<f64>,
     ) -> bool {
+        if fmt.compact_mixed_full_fit {
+            // legacy whole-note/tail/rewind 판단은 진행량을 쓸 수 있지만,
+            // 최종 Full/Partial은 실제 목적 단에서 full 행 상자로 다시 검사한다.
+            let count = fmt.line_heights.len();
+            let mut start = 0;
+            let mut fragmented = false;
+            let mut no_fit_advances = 0u16;
+            while start < count {
+                let capacity = st.available_height();
+                let before = if start == 0 { fmt.spacing_before.max(0.0) } else { 0.0 };
+                let mut end = fmt.compact_mixed_fit_end(start, capacity - st.current_height - before);
+                if start == 0 {
+                    if let Some(split) = split_candidate.filter(|split| *split > 0 && *split < count) {
+                        end = end.min(split);
+                    }
+                }
+                // 빈 items라도 BODY 전폭 예약/각주/존이 목적 단을 점유할 수 있다.
+                // 남은 현재 쪽의 단을 지나 새 쪽까지 검사하되, 비분할 초과 행은
+                // 최대 col_count번 재시도 뒤 한 번 방출해 진행을 보장한다.
+                let destination_occupied = !st.current_items.is_empty()
+                    || st.current_height.max(st.current_start_height) > 0.0
+                    || st.pending_body_wide_top_reserve > 0.0
+                    || capacity < st.base_available_height();
+                if end == start
+                    && destination_occupied
+                    && no_fit_advances < st.col_count.max(1)
+                {
+                    no_fit_advances += 1;
+                    st.advance_column_or_new_page();
+                    continue;
+                }
+                no_fit_advances = 0;
+                // 단 하나보다 큰 행은 기존 비분할 개체 정책대로 한 번 방출한다.
+                // fit하는 행을 축소하거나 같은 빈 단에서 무한 재시도하지 않는다.
+                end = end.max(start + 1);
+                if start == 0 && end == count {
+                    st.current_items.push(PageItem::FullParagraph { para_index: en_para_idx });
+                } else {
+                    st.current_items.push(PageItem::PartialParagraph {
+                        para_index: en_para_idx, start_line: start, end_line: end,
+                    });
+                    fragmented = true;
+                }
+                st.current_height += before + fmt.line_advances_sum(start..end);
+                st.current_endnote_flow = true;
+                start = end;
+                if start < count {
+                    st.advance_column_or_new_page();
+                } else {
+                    st.current_height += fmt.spacing_after;
+                }
+            }
+            return fragmented;
+        }
         let mut emitted = false;
         if let Some(split_line) = split_candidate {
             let first_h = fmt.line_advances_sum(0..split_line);
@@ -6565,6 +6723,8 @@ impl TypesetEngine {
         internal_vpos_rewind: bool,
         large_between_small_equation_tail_bleeds_previous_column: bool,
         local_vpos_rewind: bool,
+        format_note: &dyn Fn(&Paragraph, Option<&ComposedParagraph>, &ResolvedStyleSet, Option<f64>) -> FormattedParagraph,
+        compose_note: &dyn Fn(&Paragraph, &ResolvedStyleSet) -> ComposedParagraph,
     ) -> bool {
         !default_between_notes_gap
             && compact_endnote_separator_profile
@@ -6582,9 +6742,9 @@ impl TypesetEngine {
             && line_is_equation_tac_text_run_only(en_para, &composed, 0)
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
                 let next_comp =
-                    crate::renderer::composer::compose_paragraph_with_styles(next_para, &styles);
+                    compose_note(next_para, &styles);
                 let next_fmt =
-                    self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                    format_note(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 next_fmt.line_heights.len() == 1
                     && next_fmt.line_advance(0) <= 24.0
                     && line_has_visible_text(&next_comp, 0)
@@ -6893,6 +7053,8 @@ impl TypesetEngine {
         has_visible_endnote_separator: bool,
         large_separator_block: bool,
         non_tac_object_height: Option<f64>,
+        format_note: &dyn Fn(&Paragraph, Option<&ComposedParagraph>, &ResolvedStyleSet, Option<f64>) -> FormattedParagraph,
+        compose_note: &dyn Fn(&Paragraph, &ResolvedStyleSet) -> ComposedParagraph,
     ) -> bool {
         advance_for_fit
             && compact_endnote_separator_profile
@@ -6909,9 +7071,9 @@ impl TypesetEngine {
             && st.current_height > available * 0.90
             && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
                 let next_comp =
-                    crate::renderer::composer::compose_paragraph_with_styles(next_para, &styles);
+                    compose_note(next_para, &styles);
                 let next_fmt =
-                    self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                    format_note(next_para, Some(&next_comp), &styles, Some(en_col_w));
                 para_has_visible_text_or_equation(next_para)
                     && !para_has_non_tac_picture_or_shape(next_para)
                     && !para_has_treat_as_char_picture_or_shape(next_para)
@@ -6919,6 +7081,83 @@ impl TypesetEngine {
                     && st.current_height + next_fmt.total_height
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 2.0
             })
+    }
+
+    /// 현재 pagination 전에 검증된 원본만 빈 guide 판정에 사용한다.
+    fn admitted_endnote_tac_raw_owners(
+        &self,
+        address: crate::document_core::endnote_tac::Address,
+        original: &Paragraph,
+        formatted_source: &Paragraph,
+        projected: &Paragraph,
+        composed: &ComposedParagraph,
+    ) -> Option<Vec<(usize, usize)>> {
+        let proof = self.endnote_tac_sources.get(&address)?;
+        if self.profile.get().own_line_layout()
+            || !proof.matches_paragraph(original)
+            || !super::pagination::endnote_tac_spacing_projection_matches(
+                original,
+                formatted_source,
+            )
+            || !super::pagination::endnote_tac_projection_matches(formatted_source, projected)
+        {
+            return None;
+        }
+        crate::document_core::endnote_tac::current_owners(projected, composed)
+    }
+
+    fn formatted_endnote_tac_line_owners(
+        &self,
+        address: crate::document_core::endnote_tac::Address,
+        original: &Paragraph,
+        formatted_source: &Paragraph,
+        projected: &Paragraph,
+        composed: &ComposedParagraph,
+        fmt: &FormattedParagraph,
+    ) -> Option<Vec<(usize, usize)>> {
+        let owners = self.admitted_endnote_tac_raw_owners(
+            address,
+            original,
+            formatted_source,
+            projected,
+            composed,
+        )?;
+        if fmt.fresh_recomposed
+            || fmt.line_heights.len() != formatted_source.line_segs.len()
+            || fmt.line_spacings.len() != formatted_source.line_segs.len()
+            || fmt.line_heights.iter().any(|h| !h.is_finite() || *h <= 0.0)
+            || fmt.line_spacings.iter().any(|s| !s.is_finite())
+        {
+            return None;
+        }
+        // 로드 줄 소속도 현재 spacing 투영의 실제 formatter 값까지 같아야 한다.
+        if self.endnote_tac_sources.get(&address)?.origin
+            == crate::document_core::endnote_tac::RowOrigin::Loaded
+            && (fmt
+                .line_heights
+                .iter()
+                .zip(&formatted_source.line_segs)
+                .any(|(h, s)| (*h - hwpunit_to_px(s.line_height, self.dpi)).abs() > 1e-6)
+                || fmt
+                    .line_spacings
+                    .iter()
+                    .zip(&formatted_source.line_segs)
+                    .any(|(h, s)| (*h - hwpunit_to_px(s.line_spacing, self.dpi)).abs() > 1e-6))
+        {
+            return None;
+        }
+        // 압축 mixed 투영은 현재/reflow 줄도 실제 formatter의 full-H와 같아야 한다.
+        // 음수 간격을 요청했지만 이 계약을 만들 수 없으면 소속 인증도 넘기지 않는다.
+        if crate::document_core::endnote_tac::mixed_supported(formatted_source)
+            && original.line_segs.iter().zip(&formatted_source.line_segs)
+                .any(|(a,b)| a.line_spacing != b.line_spacing)
+            && self.endnote_tac_sources.get(&address)?.compact_mixed_rows(
+                projected, composed, &fmt.line_heights, &fmt.line_spacings, self.dpi,
+            ).is_none()
+        {
+            return None;
+        }
+        Some(owners)
     }
 
     /// [#2026 추출] 한 미주(en_ctrl)의 문단들을 조판·방출하는 en_para 루프 본체 —
@@ -6999,17 +7238,50 @@ impl TypesetEngine {
             });
         let preserve_authored_spacing = certified_advances.is_some();
         // 다음 문단 예측도 같은 진행 영역을 쓴다. 본문 등 소유 밖 문단에는 적용하지 않는다.
-        let format_note_paragraph = |para: &Paragraph,
-                                     composed: Option<&ComposedParagraph>,
+        let compose_note = |para: &Paragraph, styles: &ResolvedStyleSet| {
+            let admitted = en_ctrl.paragraphs.iter().position(|p| std::ptr::eq(p, para))
+                .filter(|index| *index > 0)
+                .and_then(|index| self.endnote_tac_sources.get(&(en_ref.section_index, en_ref.para_index, en_ref.control_index, index)))
+                .is_some_and(|proof| proof.matches_paragraph(para));
+            if admitted { crate::renderer::composer::compose_endnote_with_styles(para, styles) }
+            else { crate::renderer::composer::compose_paragraph_with_styles(para, styles) }
+        };
+        let compact_prediction_spacing = !preserve_authored_spacing
+            && endnote_shape.is_some_and(|shape| !endnote_has_visible_separator(shape) && endnote_between_notes_margin(shape) == 0);
+        let format_note_paragraph = |original: &Paragraph,
+                                     supplied: Option<&ComposedParagraph>,
                                      styles: &ResolvedStyleSet,
                                      width: Option<f64>| {
-            let advances = en_ctrl
-                .paragraphs
-                .iter()
-                .position(|source| std::ptr::eq(source, para))
-                .and_then(|index| certified_advances.as_ref()?.get(index));
-            self.format_paragraph(para, composed, styles, width)
-                .with_certified_endnote_advances(para, advances.map(Vec::as_slice), self.dpi)
+            let source_index = en_ctrl.paragraphs.iter().position(|source| std::ptr::eq(source, original));
+            let mut projected = original.clone();
+            let prepared_mixed = source_index.filter(|index| *index > 0)
+                .and_then(|index| self.endnote_tac_sources.get(&(en_ref.section_index, en_ref.para_index, en_ref.control_index, index)))
+                .is_some_and(|proof| proof.matches_paragraph(original));
+            if prepared_mixed && compact_prediction_spacing && crate::document_core::endnote_tac::mixed_supported(original) {
+                for row in &mut projected.line_segs { row.line_spacing = -(row.line_height / 10); }
+            }
+            let para = if source_index.is_some() { &projected } else { original };
+            let fresh = source_index.map(|_| crate::renderer::composer::compose_endnote_with_styles(para, styles));
+            let composed = fresh.as_ref().or(supplied);
+            let advances = source_index.and_then(|index| certified_advances.as_ref()?.get(index));
+            let owners = source_index.filter(|index| *index > 0).and_then(|index| {
+                let address = (en_ref.section_index, en_ref.para_index, en_ref.control_index, index);
+                let proof = self.endnote_tac_sources.get(&address)?;
+                if !width.is_some_and(|w| proof.matches_width(w, styles, para, self.dpi)) { return None; }
+                self.admitted_endnote_tac_raw_owners(address, original, para, para, composed?)
+            });
+            let fallback = (source_index.is_some() && owners.is_none())
+                .then(|| crate::renderer::composer::compose_paragraph_with_styles(para, styles));
+            let composed = fallback.as_ref().or(composed);
+            let fmt = self.format_paragraph_with_endnote_tac(para, composed, styles, width, owners.as_deref())
+                .with_certified_endnote_advances(para, advances.map(Vec::as_slice), self.dpi);
+            let compact = source_index.filter(|_| owners.is_some()).and_then(|index| {
+                let address = (en_ref.section_index, en_ref.para_index, en_ref.control_index, index);
+                self.formatted_endnote_tac_line_owners(address, original, para, para, composed?, &fmt)?;
+                self.endnote_tac_sources.get(&address)?.compact_mixed_rows(
+                    para, composed?, &fmt.line_heights, &fmt.line_spacings, self.dpi)
+            });
+            fmt.with_compact_mixed_rows(compact.as_ref())
         };
         // 원본의 마지막 빈 줄 높이는 남기고, 다음 미주 경계의 trailing spacing만
         // "미주 사이 0"으로 투영한다. 내부 pitch와 원본 reset 좌표는 변경하지 않는다.
@@ -7082,6 +7354,9 @@ impl TypesetEngine {
                 para_index: en_ref.para_index,
                 control_index: en_ref.control_index,
                 note_para_index: ep_idx,
+                tac_row_origin: None,
+                compact_mixed_rows: None,
+                verified_tac_line_owners: None,
                 certified_line_advances_hu: certified_advances.as_ref().map(|rows| {
                     let mut advances = rows[ep_idx].clone();
                     if zero_authored_tail {
@@ -7096,8 +7371,8 @@ impl TypesetEngine {
             });
             last_render_endnote_para_local_idx = Some(en_para_local_idx);
 
-            let composed =
-                crate::renderer::composer::compose_paragraph_with_styles(en_para, &styles);
+            let mut composed =
+                crate::renderer::composer::compose_endnote_with_styles(en_para, &styles);
             let en_col_w = st
                 .layout
                 .column_areas
@@ -7108,9 +7383,82 @@ impl TypesetEngine {
                 .endnote_para_sources
                 .last()
                 .and_then(|source| source.certified_line_advances_hu.clone());
-            let fmt = self
-                .format_paragraph(en_para, Some(&composed), &styles, Some(en_col_w))
+            let raw_owners = (ep_idx > 0
+                && self
+                    .endnote_tac_sources
+                    .get(&(
+                        en_ref.section_index,
+                        en_ref.para_index,
+                        en_ref.control_index,
+                        ep_idx,
+                    ))
+                    .is_some_and(|proof| proof.matches_width(en_col_w, styles, en_para, self.dpi)))
+            .then(|| {
+                self.admitted_endnote_tac_raw_owners(
+                    (
+                        en_ref.section_index,
+                        en_ref.para_index,
+                        en_ref.control_index,
+                        ep_idx,
+                    ),
+                    &en_ctrl.paragraphs[ep_idx],
+                    en_para,
+                    &st.endnote_paragraphs[en_para_local_idx],
+                    &composed,
+                )
+            })
+            .flatten();
+            if raw_owners.is_none() {
+                // Row candidates cannot change an unadmitted note's legacy composition.
+                composed = crate::renderer::composer::compose_paragraph_with_styles(en_para, styles);
+            }
+            let mut fmt = self
+                .format_paragraph_with_endnote_tac(
+                    en_para,
+                    Some(&composed),
+                    &styles,
+                    Some(en_col_w),
+                    raw_owners.as_deref(),
+                )
                 .with_certified_endnote_advances(en_para, para_advances.as_deref(), self.dpi);
+            // 첫 문단 번호 삽입과 구역을 넘겨 이연한 원본은 별도 좌표 증명이 필요하다.
+            if ep_idx > 0 && raw_owners.is_some() {
+                let owners = self.formatted_endnote_tac_line_owners(
+                    (
+                        en_ref.section_index,
+                        en_ref.para_index,
+                        en_ref.control_index,
+                        ep_idx,
+                    ),
+                    &en_ctrl.paragraphs[ep_idx],
+                    en_para,
+                    &st.endnote_paragraphs[en_para_local_idx],
+                    &composed,
+                    &fmt,
+                );
+                st.endnote_para_sources[en_para_local_idx].tac_row_origin =
+                    owners.as_ref().and_then(|_| {
+                        self.endnote_tac_sources
+                            .get(&(
+                                en_ref.section_index,
+                                en_ref.para_index,
+                                en_ref.control_index,
+                                ep_idx,
+                            ))
+                            .map(|p| p.origin)
+                    });
+                let compact = owners.as_ref().and_then(|_| {
+                    self.endnote_tac_sources.get(&(
+                        en_ref.section_index, en_ref.para_index, en_ref.control_index, ep_idx,
+                    ))?.compact_mixed_rows(
+                        &st.endnote_paragraphs[en_para_local_idx], &composed,
+                        &fmt.line_heights, &fmt.line_spacings, self.dpi,
+                    )
+                });
+                fmt = fmt.with_compact_mixed_rows(compact.as_ref());
+                st.endnote_para_sources[en_para_local_idx].compact_mixed_rows = compact;
+                st.endnote_para_sources[en_para_local_idx].verified_tac_line_owners = owners;
+            }
             if std::env::var("RHWP_ENDNOTE_LINE_DEBUG").is_ok() {
                 debug_print_endnote_line_segments(
                     en_ref.number,
@@ -7328,7 +7676,7 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                    compose_note(
                                         tail_para, &styles,
                                     );
                                 format_note_paragraph(
@@ -7372,7 +7720,7 @@ impl TypesetEngine {
                             .skip(ep_idx)
                             .map(|tail_para| {
                                 let tail_comp =
-                                    crate::renderer::composer::compose_paragraph_with_styles(
+                                    compose_note(
                                         tail_para, &styles,
                                     );
                                 format_note_paragraph(
@@ -7732,7 +8080,7 @@ impl TypesetEngine {
                 && no_separator_large_between_notes_gap
             {
                 en_ctrl.paragraphs.get(1).map(|body_para| {
-                    let body_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let body_comp = compose_note(
                         body_para, &styles,
                     );
                     let body_fmt =
@@ -7973,7 +8321,7 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         &next_para, &styles,
                     );
                     let next_fmt = format_note_paragraph(
@@ -8000,7 +8348,7 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         &next_para, &styles,
                     );
                     let next_fmt = format_note_paragraph(
@@ -8026,7 +8374,7 @@ impl TypesetEngine {
                     let mut next_para = next_ctrl.paragraphs.first()?.clone();
                     prepend_endnote_marker_text(&mut next_para, next_ctrl);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         &next_para, &styles,
                     );
                     let next_fmt = format_note_paragraph(
@@ -8056,7 +8404,7 @@ impl TypesetEngine {
                                 return false;
                             }
                             let next_comp =
-                                crate::renderer::composer::compose_paragraph_with_styles(
+                                compose_note(
                                     next_para, &styles,
                                 );
                             let next_fmt = format_note_paragraph(
@@ -8224,7 +8572,7 @@ impl TypesetEngine {
                 && st.current_height + en_fit
                     <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
                 && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         next_para, &styles,
                     );
                     let next_fmt =
@@ -8355,7 +8703,8 @@ impl TypesetEngine {
                     && st.current_column + 1 >= st.col_count
                     && st.current_height + en_fit > available
                     && endnote_has_visible_payload;
-                !single_line_tail_split_at_bottom && !large_separator_title_tail_split
+                (!single_line_tail_split_at_bottom && !large_separator_title_tail_split)
+                    || !fmt.compact_mixed_fits_frame(st.current_height, st.available_height())
             });
             if no_separator_visible_multiline_tail_fits_with_bleed {
                 // 구분선이 없는 큰 미주 block에서 이미 보이는 다줄 tail이
@@ -8369,7 +8718,8 @@ impl TypesetEngine {
                 && internal_vpos_rewind
                 && st.current_height <= 2.0
                 && st.current_height + total_advance_fit
-                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX;
+                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                && fmt.compact_mixed_fits_frame(st.current_height, st.available_height());
             if compact_non_default_empty_column_rewind_fits {
                 // 이전 단 하단에서 다음 단/쪽으로 넘어온 내부 rewind 문단이
                 // 새 단 맨 위에서 통째로 들어가면 다시 줄 단위로 쪼개지 않는다.
@@ -8693,7 +9043,7 @@ impl TypesetEngine {
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 80.0
                     && line_is_equation_tac_text_run_only(en_para, &composed, 0)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -8725,6 +9075,8 @@ impl TypesetEngine {
                     internal_vpos_rewind,
                     large_between_small_equation_tail_bleeds_previous_column,
                     local_vpos_rewind,
+                    &format_note_paragraph,
+                    &compose_note,
                 );
             let large_between_title_tail_render_overflows = if !default_between_notes_gap
                 && ep_idx == 0
@@ -8889,7 +9241,7 @@ impl TypesetEngine {
             }
             let next_endnote_first_line_advance = if ep_idx == 0 {
                 en_ctrl.paragraphs.get(1).map(|next_para| {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         next_para, &styles,
                     );
                     format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w))
@@ -8902,7 +9254,7 @@ impl TypesetEngine {
                 let mut total = 0.0;
                 let mut count = 0;
                 for next_para in en_ctrl.paragraphs.iter().skip(1).take(2) {
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         next_para, &styles,
                     );
                     let next_fmt =
@@ -9265,7 +9617,7 @@ impl TypesetEngine {
                     && visible_large_between_notes_gap
                     && st.current_column + 1 >= st.col_count
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -9516,7 +9868,7 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -9549,7 +9901,7 @@ impl TypesetEngine {
                     && !para_has_treat_as_char_picture_or_shape(en_para)
                     && !para_has_non_tac_picture_or_shape(en_para)
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -9579,7 +9931,7 @@ impl TypesetEngine {
                     && st.current_height + fmt.line_advance(0)
                         <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 2.0
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -9644,7 +9996,7 @@ impl TypesetEngine {
                         line_has_tac_equation_control(en_para, &composed, last_line)
                     }
                     && en_ctrl.paragraphs.get(ep_idx + 1).is_some_and(|next_para| {
-                        let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                        let next_comp = compose_note(
                             next_para, &styles,
                         );
                         let next_fmt = format_note_paragraph(
@@ -9859,11 +10211,23 @@ impl TypesetEngine {
                     has_visible_endnote_separator,
                     large_separator_block,
                     non_tac_object_height,
+                    &format_note_paragraph,
+                    &compose_note,
                 );
             if pre_emit_tail_before_non_tac_object_advance {
                 if let Some(next_para) = en_ctrl.paragraphs.get(ep_idx + 1) {
                     let next_para_idx = paragraphs.len() + st.endnote_paragraphs.len();
                     let mut next_para_copy = next_para.clone();
+                    let next_address = (en_ref.section_index, en_ref.para_index,
+                        en_ref.control_index, ep_idx + 1);
+                    if compact_prediction_spacing
+                        && crate::document_core::endnote_tac::mixed_supported(next_para)
+                        && self.endnote_tac_sources.get(&next_address)
+                            .is_some_and(|proof| proof.matches_paragraph(next_para)) {
+                        for row in &mut next_para_copy.line_segs {
+                            row.line_spacing = -(row.line_height / 10);
+                        }
+                    }
                     for ls in &mut next_para_copy.line_segs {
                         ls.vertical_pos += endnote_start;
                     }
@@ -9873,17 +10237,68 @@ impl TypesetEngine {
                         para_index: en_ref.para_index,
                         control_index: en_ref.control_index,
                         note_para_index: ep_idx + 1,
+                        tac_row_origin: None,
+                        compact_mixed_rows: None,
+                        verified_tac_line_owners: None,
                         certified_line_advances_hu: certified_advances
                             .as_ref()
                             .map(|rows| rows[ep_idx + 1].clone()),
                     });
                     last_render_endnote_para_local_idx = Some(st.endnote_paragraphs.len() - 1);
 
-                    let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
+                    let next_comp = compose_note(
                         next_para, &styles,
                     );
                     let next_fmt =
                         format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                    if self
+                        .endnote_tac_sources
+                        .get(&(
+                            en_ref.section_index,
+                            en_ref.para_index,
+                            en_ref.control_index,
+                            ep_idx + 1,
+                        ))
+                        .is_some_and(|proof| {
+                            proof.matches_width(en_col_w, styles, next_para, self.dpi)
+                        })
+                    {
+                        let local_idx = st.endnote_paragraphs.len() - 1;
+                        let owners = self.formatted_endnote_tac_line_owners(
+                            (
+                                en_ref.section_index,
+                                en_ref.para_index,
+                                en_ref.control_index,
+                                ep_idx + 1,
+                            ),
+                            &en_ctrl.paragraphs[ep_idx + 1],
+                            &st.endnote_paragraphs[local_idx],
+                            &st.endnote_paragraphs[local_idx],
+                            &next_comp,
+                            &next_fmt,
+                        );
+                        st.endnote_para_sources[local_idx].tac_row_origin =
+                            owners.as_ref().and_then(|_| {
+                                self.endnote_tac_sources
+                                    .get(&(
+                                        en_ref.section_index,
+                                        en_ref.para_index,
+                                        en_ref.control_index,
+                                        ep_idx + 1,
+                                    ))
+                                    .map(|p| p.origin)
+                            });
+                        st.endnote_para_sources[local_idx].compact_mixed_rows =
+                            owners.as_ref().and_then(|_| {
+                                self.endnote_tac_sources.get(&(
+                                    en_ref.section_index, en_ref.para_index, en_ref.control_index, ep_idx + 1,
+                                ))?.compact_mixed_rows(
+                                    &st.endnote_paragraphs[local_idx], &next_comp,
+                                    &next_fmt.line_heights, &next_fmt.line_spacings, self.dpi,
+                                )
+                            });
+                        st.endnote_para_sources[local_idx].verified_tac_line_owners = owners;
+                    }
                     st.current_items.push(PageItem::FullParagraph {
                         para_index: next_para_idx,
                     });
@@ -10131,7 +10546,7 @@ impl TypesetEngine {
                             .paragraphs
                             .iter()
                             .map(|p| {
-                                let comp = crate::renderer::composer::compose_paragraph_with_styles(
+                                let comp = compose_note(
                                     p, &styles,
                                 );
                                 format_note_paragraph(p, Some(&comp), &styles, Some(en_col_w))
@@ -10589,7 +11004,8 @@ impl TypesetEngine {
             let suppress_empty_column_rewind_split = internal_rewind_position.is_some()
                 && st.current_height < 5.0
                 && st.current_height + total_advance_fit
-                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX;
+                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                && fmt.compact_mixed_fits_frame(st.current_height, st.available_height());
             let suppress_empty_column_fit_split = split_endnote_to_fit.is_some()
                 && compact_endnote_separator_profile
                 && !has_visible_endnote_separator
@@ -10598,7 +11014,8 @@ impl TypesetEngine {
                 && !local_vpos_rewind
                 && !internal_vpos_rewind
                 && st.current_height + total_advance_fit
-                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX;
+                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                && fmt.compact_mixed_fits_frame(st.current_height, st.available_height());
             let split_candidate = if compact_non_default_empty_column_rewind_fits
                 || suppress_empty_column_rewind_split
                 || suppress_empty_column_fit_split
@@ -13233,6 +13650,12 @@ impl TypesetEngine {
                 local_indices.push((pi, local));
             }
         }
+        local_indices.sort_by_key(|(global, _)| *global);
+        local_paras = local_indices.iter_mut().enumerate().map(|(local, (global, slot))| {
+            *slot = local;
+            paragraph_by_global_index(paragraphs, &st.endnote_paragraphs, *global)
+                .expect("collected paragraph address").clone()
+        }).collect();
         let lookup_local = |pi: usize| {
             local_indices
                 .iter()
@@ -13251,10 +13674,27 @@ impl TypesetEngine {
             let a3_paras: Vec<Paragraph> = std::iter::once(Paragraph::default())
                 .chain(local_paras.iter().cloned())
                 .collect();
-            let a3_composed: Vec<crate::renderer::composer::ComposedParagraph> = a3_paras
-                .iter()
-                .map(|para| crate::renderer::composer::compose_paragraph_with_styles(para, styles))
-                .collect();
+            let mut a3_composed = vec![
+                crate::renderer::composer::compose_paragraph_with_styles(&a3_paras[0], styles)
+            ];
+            let mut a3_sources = Vec::new();
+            for (global, local) in &local_indices {
+                let source = self.virtual_endnote_source(st, paragraphs, *global);
+                let (comp, _, validated) = self.format_virtual_endnote_rows(
+                    &a3_paras[*local + 1], source, styles, Some(en_col_w),
+                );
+                a3_composed.push(comp);
+                if let Some(source) = source {
+                    let mut remapped = validated.clone().unwrap_or_else(|| source.clone());
+                    // 원본 주소는 유지하고 인증 실패한 소속은 scratch에 넘기지 않는다.
+                    if validated.is_none() {
+                        remapped.verified_tac_line_owners = None;
+                        remapped.tac_row_origin = None;
+                        remapped.compact_mixed_rows = None;
+                    }
+                    a3_sources.push(remapped);
+                }
+            }
             let remap = |item: &PageItem| -> Option<PageItem> {
                 match item {
                     PageItem::FullParagraph { para_index } => lookup_local(*para_index)
@@ -13347,19 +13787,13 @@ impl TypesetEngine {
                 .iter()
                 .position(|(global, _)| *global >= paragraphs.len())
                 .unwrap_or(local_indices.len());
-            let mut note_sources: Vec<_> = local_indices[note_base..]
-                .iter()
-                .filter_map(|(global, _)| {
-                    st.endnote_para_sources
-                        .get(global - paragraphs.len())
-                        .cloned()
-                })
-                .collect();
+            let mut note_sources = a3_sources;
+            if note_sources.len() != local_indices.len() - note_base { return None; }
             // 다줄 미주 문단의 마지막 줄 간격은 다음 문단이 같은 미주인지에
             // 따라 달라진다. 측정 범위 밖의 후속 문단 출처도 함께 보존한다.
             if let Some(source) = note_sources.last() {
-                let next_source = paragraphs
-                    .get(source.para_index)
+                let next_source = (source.section_index == st.section_index)
+                    .then(|| paragraphs.get(source.para_index)).flatten()
                     .and_then(|para| para.controls.get(source.control_index))
                     .and_then(|ctrl| match ctrl {
                         Control::Endnote(note)
@@ -13367,6 +13801,12 @@ impl TypesetEngine {
                         {
                             let mut next = source.clone();
                             next.note_para_index += 1;
+                            // 범위 밖 successor는 같은 미주 경계 식별만 한다.
+                            // 직전 문단의 줄 인증을 다음 주소로 복사하지 않는다.
+                            next.certified_line_advances_hu = None;
+                            next.verified_tac_line_owners = None;
+                            next.tac_row_origin = None;
+                            next.compact_mixed_rows = None;
                             Some(next)
                         }
                         _ => None,
@@ -13428,8 +13868,9 @@ impl TypesetEngine {
             };
             y = hc.vpos_adjust(y, local, &local_paras, styles);
             let item_para = &local_paras[local];
-            let item_composed =
-                crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
+            let (item_composed, item_fmt, validated) = self.format_virtual_endnote_rows(
+                item_para, self.virtual_endnote_source(st, paragraphs, pi), styles, Some(en_col_w),
+            );
             // [Task #1363 v2 Stage 3] 휴리스틱 advance 추정. 렌더러는 미주 텍스트/수식 para 를
             // **저장 line_segs**(hancom 레이아웃)로 그린다 — format_paragraph reflow(total_height)가
             // 아님. 수식 다줄 para 는 reflow 가 저장 span 보다 큼(pi=1126: 237 vs 185.8) → 단 과대.
@@ -13438,13 +13879,15 @@ impl TypesetEngine {
             // 내부 vpos rewind para 는 line_segs vpos 범위가 작지만(되감김) 렌더러는 순차
             // 적층(Divergence A) → line_advances_sum 사용. (sep20/20 pi=522: saved 32.5 vs 실제 183)
             let heuristic_advance = {
-                let item_fmt =
-                    self.format_paragraph(item_para, Some(&item_composed), styles, Some(en_col_w));
                 let internal_rewind = item_para
                     .line_segs
                     .windows(2)
                     .any(|w| w[1].vertical_pos < w[0].vertical_pos);
-                let para_advance_full = if para_has_treat_as_char_picture_or_shape(item_para) {
+                let para_advance_full = if validated.as_ref()
+                    .is_some_and(|source| source.compact_mixed_rows.is_some()) {
+                    // 인증된 mixed 줄은 저장 vpos span이 아닌 실제 투영 진행량을 쓴다.
+                    item_fmt.total_height
+                } else if para_has_treat_as_char_picture_or_shape(item_para) {
                     item_fmt.total_height
                 } else if internal_rewind {
                     item_fmt.line_advances_sum(0..item_fmt.line_heights.len())
@@ -13611,10 +14054,9 @@ impl TypesetEngine {
                 };
                 y = hc.vpos_adjust(y, local, &local_paras, &styles);
                 let item_para = &local_paras[local];
-                let item_composed =
-                    crate::renderer::composer::compose_paragraph_with_styles(item_para, &styles);
-                let item_fmt =
-                    self.format_paragraph(item_para, Some(&item_composed), &styles, Some(en_col_w));
+                let (_, item_fmt, _) = self.format_virtual_endnote_rows(
+                    item_para, self.virtual_endnote_source(st, paragraphs, pi), styles, Some(en_col_w),
+                );
                 y += match item {
                     PageItem::PartialParagraph {
                         start_line,
@@ -14916,6 +15358,18 @@ impl TypesetEngine {
         styles: &ResolvedStyleSet,
         column_width_px: Option<f64>,
     ) -> FormattedParagraph {
+        self.format_paragraph_with_endnote_tac(para, composed, styles, column_width_px, None)
+    }
+
+    /// 엄격한 원본 슬롯 증명은 빈 guide 판정에만 쓰고 재조판에는 넘기지 않는다.
+    fn format_paragraph_with_endnote_tac(
+        &self,
+        para: &Paragraph,
+        composed: Option<&ComposedParagraph>,
+        styles: &ResolvedStyleSet,
+        column_width_px: Option<f64>,
+        verified_endnote_tac_owners: Option<&[(usize, usize)]>,
+    ) -> FormattedParagraph {
         let para_style_id = composed.map(|c| c.para_style_id as usize).unwrap_or(0);
         let para_style = styles.para_styles.get(para_style_id);
 
@@ -14942,6 +15396,7 @@ impl TypesetEngine {
                     );
                     Some(cloned)
                 } else if inner > 0.0
+                    && verified_endnote_tac_owners.is_none()
                     && !self.profile.get().own_line_layout()
                     && crate::renderer::composer::stored_lines_stale_for_body(
                         c, para, inner, styles,
@@ -14966,6 +15421,7 @@ impl TypesetEngine {
         // NO_LS fallback 는 기존 post-place dirty 경로가 별도로 처리한다. 여기서는
         // 저장 lineSeg 를 실제로 폐기한 경우만 뒤 사다리를 dirty 로 전파한다.
         let fresh_recomposed = recomposed.is_some() && !para.line_segs.is_empty();
+        let verified_endnote_tac_owners = verified_endnote_tac_owners.filter(|_| !fresh_recomposed);
         let composed = recomposed.as_ref().or(composed);
         let raw_spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
@@ -15100,7 +15556,10 @@ impl TypesetEngine {
                     continue;
                 }
                 let runs_all_whitespace = line.runs.iter().all(|r| r.text.trim().is_empty());
-                let line_has_tac_control = line_has_tac_control(para, comp, line_idx);
+                // 가시 [0,0) 경계여도 엄격한 raw 슬롯 소유자가 있으면 콘텐츠 줄이다.
+                let line_has_tac_control = line_has_tac_control(para, comp, line_idx)
+                    || verified_endnote_tac_owners
+                        .is_some_and(|owners| owners.iter().any(|(_, owner)| *owner == line_idx));
                 let empty_tac_guide_line = runs_all_whitespace
                     && !line_has_tac_control
                     && comp
@@ -15384,6 +15843,7 @@ impl TypesetEngine {
             line_heights,
             line_spacings,
             certified_line_advances: None,
+            compact_mixed_full_fit: false,
             spacing_before,
             spacing_after,
             height_for_fit,
@@ -23298,6 +23758,7 @@ mod tests {
                 line_heights: vec![hwpunit_to_px(1_150, dpi); 2],
                 line_spacings: vec![hwpunit_to_px(-40, dpi); 2],
                 certified_line_advances: None,
+                compact_mixed_full_fit: false,
             };
             state.record_natural_lines(0, &para, &fmt, 0..2, fmt.spacing_before);
             assert_eq!(
@@ -28416,6 +28877,7 @@ mod tests {
             line_heights: vec![1.0, 1.0],
             line_spacings: vec![0.0, 0.0],
             certified_line_advances: None,
+            compact_mixed_full_fit: false,
             spacing_before: 0.0,
             spacing_after: 0.0,
             height_for_fit: 0.0,

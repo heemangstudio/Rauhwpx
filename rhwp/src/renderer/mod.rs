@@ -13,6 +13,7 @@ pub(crate) mod cache_budget;
 pub mod canvas;
 pub mod canvaskit_policy;
 pub mod composer;
+pub(crate) mod endnote_table;
 pub mod equation;
 pub(crate) mod equation_tac_flow;
 pub mod float_placement;

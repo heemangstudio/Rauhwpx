@@ -5654,7 +5654,7 @@ impl LayoutEngine {
             Vec::new()
         };
 
-        for col_content in &page_content.column_contents {
+        for (column_position, col_content) in page_content.column_contents.iter().enumerate() {
             let zone_layout = col_content.zone_layout.as_ref().unwrap_or(layout);
             let col_idx = col_content.column_index as usize;
             let col_area_base = if col_idx < zone_layout.column_areas.len() {
@@ -5750,6 +5750,39 @@ impl LayoutEngine {
                 if zone_layout.column_areas.len() >= 2 && zone_layout.separator_type > 0 {
                     prev_zone_layout_for_sep = Some(zone_layout.clone());
                     prev_zone_sep_y_start = current_zone_start_y.max(zone_layout.body_area.y);
+                    // 저장 글상자와 본문 줄이 증명한 제목 경계를 단 구분선에도 적용한다.
+                    // 현재 zone의 연속된 단만 검사하며 본문 배치와 구분선 하단은 유지한다.
+                    for zone_column in page_content.column_contents[column_position..]
+                        .iter()
+                        .take_while(|column| {
+                            (column.zone_y_offset - col_content.zone_y_offset).abs() <= 0.1
+                        })
+                    {
+                        for item in &zone_column.items {
+                            let PageItem::Shape {
+                                para_index,
+                                control_index,
+                            } = item
+                            else {
+                                continue;
+                            };
+                            let Some(para) = paragraphs.get(*para_index) else {
+                                continue;
+                            };
+                            let Some(control) = para.controls.get(*control_index) else {
+                                continue;
+                            };
+                            if let Some(bottom) = shape_layout::stored_body_wide_textbox_bottom(
+                                para,
+                                control,
+                                &zone_layout.body_area,
+                                self.dpi,
+                                self.profile.get(),
+                            ) {
+                                prev_zone_sep_y_start = prev_zone_sep_y_start.max(bottom);
+                            }
+                        }
+                    }
                 } else {
                     prev_zone_layout_for_sep = None;
                 }
@@ -8159,7 +8192,12 @@ impl LayoutEngine {
                         .any(|c| matches!(c, Control::Table(t) if !t.common.treat_as_char
                             || (t.common.treat_as_char
                                 && !crate::renderer::height_measurer::is_tac_table_inline_in_para(t, seg_width, para))));
-                    if has_block_table {
+                    let verified_mixed_rows = composed.get(*para_index).is_some_and(|comp| {
+                        self.endnote_para_source_for(*para_index).is_some_and(|source| source.tac_row_origin.is_some())
+                            && comp.projected_tac_line_owners.is_some()
+                            && comp.projected_tac_line_owners == crate::document_core::endnote_tac::current_owners(para, comp)
+                    });
+                    if has_block_table && !verified_mixed_rows {
                         let stored_layout = self.profile.get().hwpx_stored_layout()
                             || self.profile.get().hwp5_origin_hwpx();
                         if para_is_empty_topbottom_table_anchor(stored_layout, para) {
@@ -8265,7 +8303,7 @@ impl LayoutEngine {
                         _ => false,
                     });
 
-                    if has_inline_tables && !has_other_inline_ctrls {
+                    if has_inline_tables && !has_other_inline_ctrls && !verified_mixed_rows {
                         // 인라인 표 문단도 번호 카운터 전진 필요
                         self.apply_paragraph_numbering(
                             composed.get(*para_index),

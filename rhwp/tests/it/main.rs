@@ -333,6 +333,7 @@ mod issue_insert_para_section_break;
 mod issue_justify_line_end_reason;
 mod issue_math10_authored_endnote_spacing;
 mod issue_math10_authored_note_marker_style;
+mod issue_math10_endnote_tac_ownership;
 mod issue_math10_equation_flow;
 mod issue_math10_relative_inline_shape_width;
 mod issue_math10_stored_frame_geometry;
@@ -406,3 +407,8 @@ mod issue_2292_chart_png_clip;
 mod issue_2293_chart_png_text;
 #[cfg(feature = "native-skia")]
 mod render_p37_direct_pdf_export;
+
+mod issue_math10_endnote_body_edit_repair;
+
+mod issue_math10_divider_title_reservation;
+mod issue_math10_mixed_endnote_tables;

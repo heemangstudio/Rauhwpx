@@ -655,6 +655,55 @@ pub fn compose_paragraph_with_styles(
     composed
 }
 
+/// Compose saved/current endnote rows without relocating TAC/newline metrics.
+/// This returns row candidates; callers still validate source history and formatter output.
+pub fn compose_endnote_with_styles(para: &Paragraph, styles: &ResolvedStyleSet) -> ComposedParagraph {
+    compose_endnote_impl(para, Some(styles), styles.font_metrics_policy)
+}
+
+pub fn compose_endnote_with_policy(para: &Paragraph, policy: crate::model::provenance::FontMetricsPolicy) -> ComposedParagraph {
+    compose_endnote_impl(para, None, policy)
+}
+
+fn compose_endnote_impl(para: &Paragraph, styles: Option<&ResolvedStyleSet>, policy: crate::model::provenance::FontMetricsPolicy) -> ComposedParagraph {
+    let mut composed = compose_paragraph_impl(para, styles, policy);
+    if para.controls.iter().any(|c| matches!(c, Control::Table(_)))
+        && crate::document_core::endnote_tac::mixed_supported(para)
+        && !para.line_segs.is_empty()
+        && para.line_segs.first().is_some_and(|s| s.text_start == 0)
+        && para.line_segs.windows(2).all(|s| s[0].text_start < s[1].text_start)
+    {
+        let chars: Vec<_> = para.text.chars().collect();
+        let starts = char_shape_visible_starts(&para.char_offsets, &para.char_shapes);
+        let mut lines = Vec::new();
+        for (i, seg) in para.line_segs.iter().enumerate() {
+            let start = para.char_offsets.partition_point(|o| *o < seg.text_start);
+            let end = para.line_segs.get(i + 1).map_or(chars.len(), |next| para.char_offsets.partition_point(|o| *o < next.text_start));
+            let slice = &chars[start..end];
+            // A saved row may end in a newline. An interior newline needs actual reflow.
+            if slice.iter().take(slice.len().saturating_sub(1)).any(|c| *c == '\n') { return composed; }
+            let text: String = slice.iter().copied().filter(|c| *c != '\n').collect();
+            lines.push(ComposedLine {
+                runs: split_by_char_shapes(&text, start, end, &para.char_offsets, &para.char_shapes, &starts, styles),
+                line_height: seg.line_height,
+                baseline_distance: seg.baseline_distance,
+                segment_width: seg.segment_width,
+                column_start: seg.column_start,
+                line_spacing: seg.line_spacing,
+                has_line_break: slice.last() == Some(&'\n'),
+                char_start: start,
+            });
+        }
+        // 새 런도 원본 scalar 위치에 결합한 뒤 표시 문자/언어 슬롯을 변환한다.
+        bind_line_origins(&mut lines, para);
+        composed.lines = lines;
+        convert_pua_enclosed_numbers(&mut composed);
+        convert_pua_display_text(&mut composed);
+    }
+    select_literal_space_slots(&mut composed, policy);
+    composed
+}
+
 pub fn compose_section_with_styles(
     section: &Section,
     styles: &ResolvedStyleSet,

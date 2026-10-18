@@ -2621,6 +2621,8 @@ impl DocumentCore {
         let check_textrun_reflow =
             matches!(source_format, crate::parser::FileFormat::Hwpx) && !hwp5_origin_hwpx;
         let validation_report = Self::validate_linesegs(&document, check_textrun_reflow);
+        let endnote_tac_sources =
+            super::super::endnote_tac::EndnoteTacSources::capture(&document, &styles, DEFAULT_DPI);
         if tac_origin_route {
             let section_count = document.sections.len();
             for (si, section) in document.sections.iter_mut().enumerate() {
@@ -2734,6 +2736,7 @@ impl DocumentCore {
         );
         let sec_count = document.sections.len();
         let mut doc = DocumentCore {
+            endnote_tac_sources,
             document,
             pagination: Vec::new(),
             section_carry: Vec::new(),
@@ -2818,6 +2821,7 @@ impl DocumentCore {
         replacement.convert_to_editable_native()?;
 
         self.section_carry.clear();
+        self.endnote_tac_sources = replacement.endnote_tac_sources;
         self.document = replacement.document;
         // 새 문서의 저장 줄은 이전 문서 번호 폭과 비교하지 않는다.
         self.composed = replacement.composed;
@@ -5171,6 +5175,7 @@ impl DocumentCore {
         let sec_count = document.sections.len();
 
         self.section_carry.clear();
+        self.endnote_tac_sources = super::super::endnote_tac::EndnoteTacSources::default();
         self.document = document;
         self.styles = styles;
         self.composed = composed;
@@ -6013,12 +6018,16 @@ impl DocumentCore {
 
     /// 문서 IR의 가변 참조를 반환한다. WASM 외부 그림 주입에서도 사용한다.
     pub fn document_mut(&mut self) -> &mut Document {
+        // 현재 pagination은 late source/context 검사로 보호한다. 가변 참조만 얻은
+        // no-op이 직전의 유효한 그림을 잃지 않도록 로드 eligibility만 폐기한다.
+        self.endnote_tac_sources.invalidate_loaded();
         &mut self.document
     }
 
     /// 문서 IR을 직접 설정한다 (테스트/네이티브 전용).
     pub fn set_document(&mut self, doc: Document) {
         self.section_carry.clear();
+        self.endnote_tac_sources = super::super::endnote_tac::EndnoteTacSources::default();
         self.document = doc;
         self.styles = self.resolve_document_styles();
         self.recompose_body_sections();
@@ -6269,7 +6278,7 @@ impl DocumentCore {
         }
     }
 
-    /// 현재 Document IR은 건드리지 않고, 그로부터 파생된 모든 조판 캐시를 다시 만든다.
+    /// 조판 캐시를 다시 만든다. 출처가 만료된 지원 미주 수식은 현재 입력으로 reflow한다.
     ///
     /// 여러 저수준 편집을 연달아 수행하는 호출자는 각 단계의 증분 캐시를 최종 결과로
     /// 노출하면 안 된다. 특히 에이전트 미리보기처럼 split/delete/format을 한 논리
@@ -6533,6 +6542,7 @@ impl DocumentCore {
         if !same_section_count {
             self.section_carry.clear();
         }
+        self.endnote_tac_sources.current.clear();
         self.document = restored;
         if same_section_count {
             self.styles = self.resolve_document_styles();
@@ -6573,7 +6583,7 @@ impl DocumentCore {
                 &self.styles,
                 &mut self.composed,
             );
-            if !changed_sections.is_empty() {
+            if !changed_sections.is_empty() || self.endnote_tac_sources.has_tracked() {
                 self.paginate();
             }
         } else {

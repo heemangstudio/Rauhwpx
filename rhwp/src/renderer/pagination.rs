@@ -96,6 +96,194 @@ pub struct EndnoteParaSource {
     pub note_para_index: usize,
     /// 원본 successor가 증명한 줄별 진행량(HU). full line_height와 별도다.
     pub certified_line_advances_hu: Option<Vec<i32>>,
+    /// 같은 pagination 결과의 실제 formatter가 검증한 TAC 줄 소속.
+    /// 간격 인증과 독립적이며, 재구성 시 원본 주소/투영/소속을 다시 검증한다.
+    pub verified_tac_line_owners: Option<Vec<(usize, usize)>>,
+    /// 로드 줄 보존과 현재 reflow 줄을 구분한다. 파일에는 쓰지 않는다.
+    pub(crate) tac_row_origin: Option<crate::document_core::endnote_tac::RowOrigin>,
+    /// 실제 mixed 압축 줄의 진행 원점. 모델/파일에는 쓰지 않는다.
+    pub(crate) compact_mixed_rows: Option<crate::renderer::endnote_table::CompactMixedRows>,
+}
+
+/// 저장 미주 소속의 출처 증명. 레이아웃 호환 비트와 컨테이너 출처를 분리한다.
+/// HWP3 계보 HWP5도 현재 raw 구역 봉인이 있으면 HWP5 제어 슬롯을 보존한다.
+pub(crate) fn authored_endnote_source_is_current(
+    document: &crate::model::document::Document,
+    section_index: usize,
+) -> bool {
+    use crate::model::provenance::SourceFormat;
+    let profile = document.layout_profile();
+    let Some(section) = document.sections.get(section_index) else {
+        return false;
+    };
+    if profile.own_line_layout() || profile.session_edited() {
+        return false;
+    }
+    match document.provenance.format {
+        SourceFormat::Hwp5 => {
+            document.header.version.major == 5
+                && !document.provenance.hwpx_lineage
+                && section.raw_provenance.is_some()
+                && section
+                    .raw_stream
+                    .as_ref()
+                    .is_some_and(|raw| !raw.is_empty())
+        }
+        // HWP5→HWPX 내보내기 마커는 기존 저장 줄 계약을 유지한다.
+        SourceFormat::Hwpx => profile.hwp5_origin_hwpx(),
+        SourceFormat::Hwp3 | SourceFormat::Hml => false,
+    }
+}
+
+/// 원본을 복제한 미주 투영에서 일정한 vertical_pos 이동만 허용한다.
+/// 이 경로는 수식만 있는 제어 목록에 한정한다. 다른 제어는 기존 경로를 쓴다.
+pub(crate) fn authored_endnote_tac_projection_matches(
+    source: &Paragraph,
+    projected: &Paragraph,
+) -> bool {
+    source.line_segs.len() >= 2
+        && source
+            .line_segs
+            .iter()
+            .all(|s| s.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0)
+        && endnote_tac_projection_matches(source, projected)
+}
+
+/// 현재 원본과 렌더 투영의 비교. 이 비교만으로 로드 출처를 인증하지 않는다.
+pub(crate) fn endnote_tac_projection_matches(source: &Paragraph, projected: &Paragraph) -> bool {
+    endnote_tac_projection_matches_impl(source, projected, false)
+}
+
+/// 엔진이 같은 pagination에서 만든 spacing 투영만 허용한다. 원본 출처 판정에는 쓰지 않는다.
+pub(crate) fn endnote_tac_spacing_projection_matches(
+    source: &Paragraph,
+    projected: &Paragraph,
+) -> bool {
+    endnote_tac_projection_matches_impl(source, projected, true)
+}
+
+fn endnote_tac_projection_matches_impl(
+    source: &Paragraph,
+    projected: &Paragraph,
+    allow_spacing: bool,
+) -> bool {
+    if source.text != projected.text
+        || source.char_count != projected.char_count
+        || source.char_offsets != projected.char_offsets
+        || source.special_space_origins != projected.special_space_origins
+        || source.column_type != projected.column_type
+        || source.raw_break_type != projected.raw_break_type
+        || source.tab_extended != projected.tab_extended
+        || source.numbering_restart != projected.numbering_restart
+        || source.markpen_marks != projected.markpen_marks
+        || source.range_tags.len() != projected.range_tags.len()
+        || source
+            .range_tags
+            .iter()
+            .zip(&projected.range_tags)
+            .any(|(a, b)| (a.start, a.end, a.tag) != (b.start, b.end, b.tag))
+        || source.char_offsets.len() != source.text.chars().count()
+        || source
+            .char_offsets
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || source.control_mask != projected.control_mask
+        || source.para_shape_id != projected.para_shape_id
+        || source.style_id != projected.style_id
+        || source.char_shapes.len() != projected.char_shapes.len()
+        || source
+            .char_shapes
+            .iter()
+            .zip(&projected.char_shapes)
+            .any(|(a, b)| a.start_pos != b.start_pos || a.char_shape_id != b.char_shape_id)
+        || source.controls.is_empty()
+        || source.controls.len() != projected.controls.len()
+        || source.ctrl_data_records != projected.ctrl_data_records
+        || source.line_segs.is_empty()
+        || source.line_segs.len() != projected.line_segs.len()
+        || source.line_segs[0].text_start != 0
+        || source
+            .line_segs
+            .windows(2)
+            .any(|rows| rows[0].text_start >= rows[1].text_start)
+    {
+        return false;
+    }
+    let shift = i64::from(projected.line_segs[0].vertical_pos)
+        - i64::from(source.line_segs[0].vertical_pos);
+    source
+        .line_segs
+        .iter()
+        .zip(&projected.line_segs)
+        .all(|(a, b)| {
+            a.text_start == b.text_start
+                && a.line_height == b.line_height
+                && a.text_height == b.text_height
+                && a.baseline_distance == b.baseline_distance
+                && (a.line_spacing == b.line_spacing
+                    || (allow_spacing
+                        && (!crate::document_core::endnote_tac::mixed_supported(source)
+                            || b.line_spacing == -(a.line_height / 10))))
+                && a.column_start == b.column_start
+                && a.segment_width == b.segment_width
+                && a.tag == b.tag
+                && i64::from(b.vertical_pos) - i64::from(a.vertical_pos) == shift
+        })
+        && source
+            .controls
+            .iter()
+            .zip(&projected.controls)
+            .all(|(a, b)| match (a, b) {
+                (Control::Equation(a), Control::Equation(b)) => {
+                    a.attr == b.attr
+                        && a.script == b.script
+                        && a.font_size == b.font_size
+                        && a.color == b.color
+                        && a.baseline == b.baseline
+                        && a.unknown == b.unknown
+                        && a.eqedit == b.eqedit
+                        && a.version_info == b.version_info
+                        && a.font_name == b.font_name
+                        && a.raw_ctrl_data == b.raw_ctrl_data
+                        && a.common.ctrl_id == b.common.ctrl_id
+                        && a.common.attr == b.common.attr
+                        && a.common.vertical_offset == b.common.vertical_offset
+                        && a.common.horizontal_offset == b.common.horizontal_offset
+                        && a.common.width == b.common.width
+                        && a.common.height == b.common.height
+                        && a.common.z_order == b.common.z_order
+                        && a.common.instance_id == b.common.instance_id
+                        && a.common.prevent_page_break == b.common.prevent_page_break
+                        && a.common.treat_as_char == b.common.treat_as_char
+                        && a.common.flow_with_text == b.common.flow_with_text
+                        && a.common.allow_overlap == b.common.allow_overlap
+                        && a.common.affect_line_spacing == b.common.affect_line_spacing
+                        && a.common.hwp5_gen_shape_attr_bit26 == b.common.hwp5_gen_shape_attr_bit26
+                        && a.common.size_protect == b.common.size_protect
+                        && a.common.hwp5_gen_shape_attr_bit28 == b.common.hwp5_gen_shape_attr_bit28
+                        && a.common.vert_rel_to == b.common.vert_rel_to
+                        && a.common.vert_align == b.common.vert_align
+                        && a.common.horz_rel_to == b.common.horz_rel_to
+                        && a.common.horz_align == b.common.horz_align
+                        && a.common.text_wrap == b.common.text_wrap
+                        && a.common.text_flow == b.common.text_flow
+                        && a.common.width_criterion == b.common.width_criterion
+                        && a.common.height_criterion == b.common.height_criterion
+                        && a.common.description == b.common.description
+                        && a.common.numbering_type == b.common.numbering_type
+                        && a.common.drop_cap_style == b.common.drop_cap_style
+                        && a.common.raw_extra == b.common.raw_extra
+                        && a.common.locked == b.common.locked
+                        && a.common.margin.left == b.common.margin.left
+                        && a.common.margin.right == b.common.margin.right
+                        && a.common.margin.top == b.common.margin.top
+                        && a.common.margin.bottom == b.common.margin.bottom
+                }
+                (Control::Table(_), Control::Table(_)) | (Control::Picture(_), Control::Picture(_)) => {
+                    super::endnote_table::controls_match(a, b)
+                }
+                _ => false,
+            })
 }
 
 /// 조판에서 실제 수락한 줄의 현재 프레임 기준 원점.
