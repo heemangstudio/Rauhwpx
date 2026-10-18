@@ -152,10 +152,10 @@ export function createThemeSettings(options: {
 
   const accentRow = el('div', 'ag-settings-control-row ag-theme-row');
   const accentCopy = el('span', 'ag-settings-control-copy');
-  accentCopy.append(el('span', 'ag-settings-control-label', '강조색'));
+  accentCopy.append(el('span', 'ag-settings-control-label', '악센트'));
   const accentChoices = el('div', 'ag-theme-accents');
   accentChoices.setAttribute('role', 'radiogroup');
-  accentChoices.setAttribute('aria-label', '강조색');
+  accentChoices.setAttribute('aria-label', '악센트');
   const presetAccent = button('ag-theme-swatch');
   presetAccent.setAttribute('role', 'radio');
   presetAccent.setAttribute('aria-label', '테마 기본색');
