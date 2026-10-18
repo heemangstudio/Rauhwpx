@@ -4,16 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="admin-session" content="__SESSION__">
+  <meta name="theme-color" content="#0b0f14">
   <title>라이선스 관리</title>
+  <link rel="preload" href="/fonts/galmuri11-bold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main>
-    <header>
-      <h1>라이선스</h1>
-      <span id="upstream" class="muted mono"></span>
-    </header>
+  <div id="stage" class="stage">
+    <div class="drift">
+      <canvas aria-hidden="true"></canvas>
+      <div class="column">
+        <header class="bar">
+          <h1>라이선스</h1>
+          <span id="upstream" class="host"></span>
+          <button type="button" id="wall-toggle" class="ghost" aria-keyshortcuts="F">전체 화면</button>
+        </header>
+        <dl class="stats" aria-live="polite">
+          <div><dt>테스터</dt><dd id="stat-testers">–</dd></div>
+          <div><dt>기기</dt><dd id="stat-devices">–</dd></div>
+          <div><dt>최근 24시간</dt><dd id="stat-recent">–</dd></div>
+        </dl>
+        <ol id="roster" class="roster" aria-label="테스터"></ol>
+      </div>
+    </div>
+  </div>
 
+  <main class="manage">
     <form id="token-form" class="row" hidden>
       <input id="token" type="password" autocomplete="off" placeholder="관리자 토큰" aria-label="관리자 토큰" required>
       <button type="submit" class="primary">키체인에 저장</button>
@@ -32,12 +48,14 @@
         <button type="button" id="created-key" class="key mono" title="복사"></button>
       </div>
       <p id="beta-error" class="error" role="alert"></p>
-      <table id="beta-table">
-        <thead>
-          <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="scroll">
+        <table id="beta-table">
+          <thead>
+            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <p id="beta-empty" class="muted" hidden>아직 베타 키가 없어요.</p>
     </section>
 
@@ -48,14 +66,17 @@
         <button type="submit">찾기</button>
       </form>
       <p id="lookup-error" class="error" role="alert"></p>
-      <table id="lookup-table" hidden>
-        <thead>
-          <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="scroll">
+        <table id="lookup-table" hidden>
+          <thead>
+            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
   </main>
+  <script src="/scene.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

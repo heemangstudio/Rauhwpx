@@ -62,6 +62,10 @@
     return devices.map((d) => d.lastSeenAt).filter(Boolean).sort().at(-1);
   }
 
+  const DAY = 24 * 60 * 60 * 1000;
+  const recent = (value) => Boolean(value) && Date.now() - new Date(value).getTime() < DAY;
+  const lamp = (on) => el('span', on ? 'lamp on' : 'lamp');
+
   /** 두 번 눌러야 실행되는 단추. 첫 번째 누름은 3초 동안 확인을 묻는다. */
   function confirmButton(label, confirmLabel, run, className = '') {
     const button = el('button', className, label);
@@ -98,8 +102,9 @@
       toggle.setAttribute('aria-expanded', String(!detail.hidden));
     });
 
+    const devices = license.devices ?? [];
     const name = el('td');
-    name.append(document.createTextNode(license.name || license.email || '—'));
+    name.append(lamp(!revoked && recent(lastSeen(devices))), document.createTextNode(license.name || license.email || '—'));
     if (showTier && license.tier === 'beta') name.append(el('span', 'tag', '베타'));
     const keyCell = el('td');
     const keyButton = el('button', 'key mono', mask(license.key));
@@ -108,7 +113,6 @@
     keyButton.addEventListener('click', () => { void copy(keyButton, license.key); });
     keyCell.append(keyButton);
 
-    const devices = license.devices ?? [];
     const act = (path) => async () => {
       try {
         await api('POST', path, { keyId: license.keyId });
@@ -179,14 +183,60 @@
     }
   }
 
-  async function loadBetas() {
+  const relative = new Intl.RelativeTimeFormat('ko', { numeric: 'auto' });
+  function ago(value) {
+    if (!value) return '—';
+    const minutes = Math.round((Date.now() - new Date(value).getTime()) / 60000);
+    if (minutes < 1) return '방금';
+    if (minutes < 60) return relative.format(-minutes, 'minute');
+    if (minutes < 60 * 24) return relative.format(-Math.round(minutes / 60), 'hour');
+    return relative.format(-Math.round(minutes / 60 / 24), 'day');
+  }
+
+  /** 벽 화면용 숫자와 목록. 해지한 키는 세지 않아요. */
+  function showOverview(betas) {
+    const active = betas.filter((b) => b.status !== 'revoked');
+    const devices = active.flatMap((b) => b.devices ?? []);
+    $('stat-testers').textContent = active.length;
+    $('stat-devices').textContent = devices.length;
+    $('stat-recent').textContent = devices.filter((d) => recent(d.lastSeenAt)).length;
+
+    const list = active
+      .map((b) => ({ name: b.name || '—', devices: b.devices ?? [], limit: b.deviceLimit ?? 2, seen: lastSeen(b.devices ?? []) }))
+      .sort((a, b) => String(b.seen ?? '').localeCompare(String(a.seen ?? '')));
+    $('roster').replaceChildren(...list.map((tester) => {
+      const item = el('li', recent(tester.seen) ? '' : 'quiet');
+      item.append(
+        lamp(recent(tester.seen)),
+        el('span', 'who', tester.name),
+        el('span', 'num', `${tester.devices.length}/${tester.limit}`),
+        el('span', 'seen', ago(tester.seen)),
+      );
+      return item;
+    }));
+  }
+
+  /** 새로 나타난 기기가 있으면 하마가 별똥별을 봐요. 첫 불러오기는 세지 않아요. */
+  let knownDevices = null;
+  function noticeNewDevices(betas) {
+    const ids = new Set(betas.flatMap((b) => (b.devices ?? []).map((d) => `${b.keyId}:${d.deviceId}`)));
+    const fresh = knownDevices && [...ids].some((id) => !knownDevices.has(id));
+    knownDevices = ids;
+    if (fresh) window.hamaScene?.celebrate();
+  }
+
+  async function loadBetas({ background = false } = {}) {
     try {
       const { betas } = await api('GET', '/api/betas');
+      showOverview(betas);
+      noticeNewDevices(betas);
+      // 확인을 묻는 단추가 있으면 자동 새로고침이 그 상태를 지우지 않게 표만 그대로 둬요.
+      if (background && document.querySelector('#beta-table .armed')) return;
       render('beta-table', betas, { errorTarget: 'beta-error', refresh: loadBetas, showTier: false });
       $('beta-table').hidden = betas.length === 0;
       $('beta-empty').hidden = betas.length > 0;
     } catch (error) {
-      showError('beta-error', error);
+      if (!background) showError('beta-error', error);
     }
   }
 
@@ -223,6 +273,7 @@
       $('created').hidden = false;
       $('name').value = '';
       $('note').value = '';
+      window.hamaScene?.celebrate();
       await loadBetas();
     } catch (error) {
       showError('beta-error', error);
@@ -262,8 +313,58 @@
         return;
       }
       await loadBetas();
+      setInterval(() => { void loadBetas({ background: true }); }, 60_000);
     } catch (error) {
       showError('beta-error', error);
     }
   })();
+
+  // ─────────── 벽에 거는 화면 ───────────
+  const root = document.documentElement;
+  const toggle = $('wall-toggle');
+  function setWall(on) {
+    root.classList.toggle('wall', on);
+    toggle.textContent = on ? '나가기' : '전체 화면';
+    toggle.setAttribute('aria-pressed', String(on));
+    window.hamaScene?.layout();
+    wake();
+  }
+  async function toggleWall() {
+    const on = !root.classList.contains('wall');
+    if (!document.fullscreenEnabled) return setWall(on);
+    try {
+      if (on) await root.requestFullscreen();
+      else if (document.fullscreenElement) await document.exitFullscreen();
+      else setWall(false);
+    } catch {
+      setWall(on);
+    }
+  }
+  document.addEventListener('fullscreenchange', () => setWall(Boolean(document.fullscreenElement)));
+  toggle.addEventListener('click', () => { void toggleWall(); });
+  document.addEventListener('keydown', (event) => {
+    if (event.target.closest?.('input, textarea, select') || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === 'f' || event.key === 'F') { event.preventDefault(); void toggleWall(); }
+    else if (event.key === 'Escape' && root.classList.contains('wall') && !document.fullscreenElement) setWall(false);
+  });
+
+  // 가만히 3초가 지나면 커서와 단추를 숨겨요.
+  let idleTimer = 0;
+  function wake() {
+    root.classList.remove('idle');
+    clearTimeout(idleTimer);
+    if (root.classList.contains('wall')) idleTimer = setTimeout(() => root.classList.add('idle'), 3000);
+  }
+  for (const type of ['pointermove', 'pointerdown', 'keydown']) document.addEventListener(type, wake, { passive: true });
+
+  // 화면이 타지 않게 장면 전체를 3분마다 몇 픽셀씩 옮겨요.
+  const DRIFT = [[0, 0], [2, 1], [4, 2], [5, 4], [3, 5], [1, 4], [-1, 2], [-2, 0], [-1, -2], [1, -1]];
+  let driftStep = 0;
+  setInterval(() => {
+    driftStep = (driftStep + 1) % DRIFT.length;
+    const [x, y] = DRIFT[driftStep];
+    document.querySelector('.drift').style.transform = `translate(${x}px, ${y}px)`;
+  }, 180_000);
+
+  window.hamaScene?.mount($('stage'));
 })();

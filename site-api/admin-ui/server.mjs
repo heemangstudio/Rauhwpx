@@ -25,6 +25,9 @@ const MAX_BODY_BYTES = 16 * 1024;
 const STATIC = {
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/scene.js': ['scene.js', 'text/javascript; charset=utf-8'],
+  '/fonts/galmuri11.woff2': ['fonts/galmuri11.woff2', 'font/woff2'],
+  '/fonts/galmuri11-bold.woff2': ['fonts/galmuri11-bold.woff2', 'font/woff2'],
 };
 
 /** The only upstream calls the page can make. Bodies and queries are cut down to these fields. */
@@ -134,7 +137,7 @@ export function createAdminUiServer({
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'",
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
       });
