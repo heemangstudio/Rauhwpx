@@ -84,6 +84,7 @@ fn render_box(
     italic: bool,
     bold: bool,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {
@@ -1011,6 +1012,8 @@ fn draw_text_tracked(
     centered: bool,
     legacy_tracking: f64,
 ) {
+    #[cfg(test)]
+    tests::record_paint_request(text, x, baseline_y, font_size, None);
     if text.is_empty() {
         return;
     }
@@ -1137,6 +1140,8 @@ fn draw_legacy_pua_glyph(
     advance_w: Option<f64>,
     color: Color,
 ) -> bool {
+    #[cfg(test)]
+    tests::record_paint_request(&glyph.to_string(), x, baseline_y, font_size, advance_w);
     let Some(family) = font_families
         .iter()
         .copied()
@@ -1712,6 +1717,131 @@ fn colorref_to_skia(color: u32, alpha_scale: f32) -> Color {
 mod tests {
     use super::*;
     use crate::renderer::skia::font_lookup::collect_system_families;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct PaintRequest {
+        text: String,
+        x: f64,
+        y: f64,
+        size: f64,
+        advance: Option<f64>,
+    }
+
+    thread_local! {
+        static PAINT_REQUESTS: std::cell::RefCell<Option<Vec<PaintRequest>>> = const {
+            std::cell::RefCell::new(None)
+        };
+    }
+
+    pub(super) fn record_paint_request(
+        text: &str,
+        x: f64,
+        y: f64,
+        size: f64,
+        advance: Option<f64>,
+    ) {
+        PAINT_REQUESTS.with_borrow_mut(|requests| {
+            if let Some(requests) = requests {
+                requests.push(PaintRequest {
+                    text: text.into(),
+                    x,
+                    y,
+                    size,
+                    advance,
+                });
+            }
+        });
+    }
+
+    fn same_request(a: &PaintRequest, b: &PaintRequest) -> bool {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        a.text == b.text
+            && close(a.x, b.x)
+            && close(a.y, b.y)
+            && close(a.size, b.size)
+            && match (a.advance, b.advance) {
+                (Some(a), Some(b)) => close(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    fn capture_paint_requests(paint: impl FnOnce()) -> Vec<PaintRequest> {
+        PAINT_REQUESTS.with_borrow_mut(|requests| *requests = Some(Vec::new()));
+        paint();
+        PAINT_REQUESTS.with_borrow_mut(|requests| requests.take().unwrap())
+    }
+
+    #[test]
+    fn composite_paint_size_native_matches_independent_child_requests() {
+        use crate::renderer::equation::{
+            layout::{composite_paint_cases, EqLayout},
+            parser::parse,
+        };
+        let font_mgr = FontMgr::default();
+        let face = font_mgr
+            .new_from_data(
+                include_bytes!("../../../tests/fixtures/fonts/HYhwpEQSourceFixture.ttf"),
+                None,
+            )
+            .expect("HY source fixture");
+        let mut custom = TypefaceCatalog::new();
+        custom.insert("hyhwpeq".into(), vec![face]);
+        let bundled = TypefaceCatalog::new();
+        let system = collect_system_families(&font_mgr);
+        let fonts = EqFonts {
+            mgr: &font_mgr,
+            custom: &custom,
+            bundled: &bundled,
+            system: &system,
+            modern: true,
+        };
+        // 등록된 원본 글립과 글립 없는 fallback을 모두 실제 painter에 보낸다.
+        for families in [["HYhwpEQ"], ["RHWP missing composite font"]] {
+            for fs in [1100.0 / 75.0, 22.0, 1100.0 / 37.5] {
+                for &(script, path, ratio) in composite_paint_cases::CASES {
+                    let layout = EqLayout::with_font(fs, "HYhwpEQ")
+                        .with_version("Equation Version 60")
+                        .layout(&parse(script));
+                    let (child, x, y, italic) = composite_paint_cases::child(&layout, path);
+                    let mut independent = child.clone();
+                    independent.resolved_font_size = None;
+                    let mut surface = skia_safe::surfaces::raster_n32_premul((256, 256)).unwrap();
+                    let expected = capture_paint_requests(|| {
+                        render_box(
+                            surface.canvas(),
+                            &fonts,
+                            &families,
+                            &independent,
+                            x,
+                            y,
+                            Color::BLACK,
+                            fs * ratio,
+                            italic,
+                            false,
+                        )
+                    });
+                    let actual = capture_paint_requests(|| {
+                        render_box(
+                            surface.canvas(),
+                            &fonts,
+                            &families,
+                            &layout,
+                            17.25,
+                            29.5,
+                            Color::BLACK,
+                            fs,
+                            true,
+                            false,
+                        )
+                    });
+                    assert!(!expected.is_empty(), "{script}");
+                    assert!(actual.windows(expected.len()).any(|window| window.iter().zip(&expected).all(|(a, b)| same_request(a, b))),
+                        "{script}, {path:?}, {fs}, {families:?}: child glyph origins/em/widths differ\nexpected: {expected:?}\nactual: {actual:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn installed_stix_text_italic_precedes_regular_only_math_face() {

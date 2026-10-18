@@ -272,6 +272,8 @@ struct CustomFaceVariant {
     index: u32,
     weight: u16,
     italic: bool,
+    width: u16,
+    oblique: bool,
 }
 
 /// 같은 family의 Regular/Bold/Italic face를 실제 hmtx 선택에도 보존한다.
@@ -364,6 +366,8 @@ fn register_font_file_faces(file: &Path) -> bool {
             index,
             weight: face.weight().to_number(),
             italic: face.is_italic(),
+            width: face.width().to_number(),
+            oblique: face.is_oblique(),
         };
         if index == 0 {
             if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
@@ -484,6 +488,125 @@ pub fn custom_face_source(name: &str) -> Option<(PathBuf, u32)> {
         .read()
         .ok()
         .and_then(|sources| sources.get(&alias).cloned())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+thread_local! {
+    // 미설치 face마다 시스템 IPC를 반복하지 않는다. 명시적 refresh가 세대를 바꾼다.
+    static EQUATION_SYSTEM_FONTS: std::cell::RefCell<Option<(
+        usize, skia_safe::FontMgr, std::collections::BTreeSet<String>
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 수식 painter와 같은 slant → width → weight → 조달 순서로 고른 원본 데이터.
+/// advance와 잉크는 반드시 이 한 face/index에서 함께 읽는다.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn equation_face_data(name: &str, bold: bool, italic: bool) -> Option<(Vec<u8>, u32)> {
+    let alias = normalize_face_alias(name)?;
+    let custom = CUSTOM_FACE_VARIANTS.read().ok()?.get(&alias).cloned();
+    if let Some(faces) = custom {
+        return equation_variant_data(&faces, bold, italic);
+    }
+    #[cfg(feature = "native-skia")]
+    {
+        let system = EQUATION_SYSTEM_FONTS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let generation = crate::renderer::equation::measurement_generation();
+            if slot.as_ref().is_none_or(|(seen, _, _)| *seen != generation) {
+                let mgr = skia_safe::FontMgr::default();
+                let families = mgr.family_names().collect();
+                *slot = Some((generation, mgr, families));
+            }
+            let (_, mgr, families) = slot.as_ref()?;
+            if !families.contains(name) {
+                return None;
+            }
+            let style = match (bold, italic) {
+                (true, true) => skia_safe::FontStyle::bold_italic(),
+                (true, false) => skia_safe::FontStyle::bold(),
+                (false, true) => skia_safe::FontStyle::italic(),
+                (false, false) => skia_safe::FontStyle::normal(),
+            };
+            mgr.match_family_style(name, style)
+        });
+        if let Some(face) = system {
+            // 선택된 face의 바이트를 못 얻으면 다른 source를 실측으로 꾸미지 않는다.
+            return face
+                .to_font_data()
+                .map(|(data, index)| (data.to_vec(), index as u32));
+        }
+    }
+    // 번들 face도 custom/system 뒤에서만 찾는다. 레지스트리에 등록하지 않는다.
+    let mut bundled = Vec::new();
+    for file in font_files(&bundled_font_dirs()) {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        for index in 0..ttf_parser::fonts_in_collection(&bytes).unwrap_or(1) {
+            let Ok(face) = ttf_parser::Face::parse(&bytes, index) else {
+                continue;
+            };
+            if face.names().into_iter().any(|entry| {
+                matches!(entry.name_id, 1 | 4 | 6 | 16 | 18 | 21)
+                    && entry
+                        .to_string()
+                        .and_then(|s| normalize_face_alias(&s))
+                        .as_ref()
+                        == Some(&alias)
+            }) {
+                bundled.push(CustomFaceVariant {
+                    file: file.clone(),
+                    index,
+                    weight: face.weight().to_number(),
+                    italic: face.is_italic(),
+                    width: face.width().to_number(),
+                    oblique: face.is_oblique(),
+                });
+            }
+        }
+    }
+    equation_variant_data(&bundled, bold, italic)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn equation_variant_data(
+    faces: &[CustomFaceVariant],
+    bold: bool,
+    italic: bool,
+) -> Option<(Vec<u8>, u32)> {
+    // native-skia에서는 painter가 실제로 적재한 것과 같은 Skia style을 사용한다.
+    // portable CLI는 같은 SFNT의 OS/2/head style로 고르고 Skia에 의존하지 않는다.
+    faces
+        .iter()
+        .enumerate()
+        .filter_map(|(order, face)| {
+            let bytes = std::fs::read(&face.file).ok()?;
+            #[cfg(not(feature = "native-skia"))]
+            let style = (
+                u8::from(face.oblique) * 2 + u8::from(face.italic && !face.oblique),
+                face.width as i32,
+                face.weight as i32,
+            );
+            #[cfg(feature = "native-skia")]
+            let style = {
+                let loaded = skia_safe::FontMgr::default()
+                    .new_from_data(&bytes, Some(face.index as usize))?;
+                let actual = loaded.font_style();
+                (actual.slant() as u8, *actual.width(), *actual.weight())
+            };
+            Some((
+                (
+                    u8::from(style.0 != u8::from(italic)),
+                    (style.1 - 5).abs(),
+                    (style.2 - if bold { 700 } else { 400 }).abs(),
+                    order,
+                ),
+                bytes,
+                face.index,
+            ))
+        })
+        .min_by_key(|(rank, _, _)| *rank)
+        .map(|(_, bytes, index)| (bytes, index))
 }
 
 /// face 이름의 등록 파일에서 cmap·hmtx 를 한 번만 읽어 캐시한다.

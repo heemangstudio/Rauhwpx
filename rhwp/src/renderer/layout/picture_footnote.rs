@@ -1401,7 +1401,7 @@ impl LayoutEngine {
         tree: &mut PageRenderTree,
         parent: &mut RenderNode,
         para: &Paragraph,
-        _styles: &ResolvedStyleSet,
+        styles: &ResolvedStyleSet,
     ) {
         // layout_composed_paragraph에서 이미 인라인 FootnoteMarker를 삽입한 경우 건너뜀
         let has_inline_markers = parent.children.iter().any(|line| {
@@ -1416,7 +1416,7 @@ impl LayoutEngine {
         // 각주/미주의 (번호, 텍스트 위치) 수집 — ComposedParagraph에서 미리 계산된 위치 사용
         // 폴백: find_control_text_positions로 직접 계산
         let ctrl_positions = crate::document_core::helpers::find_control_text_positions(para);
-        let mut footnotes: Vec<(String, usize)> = Vec::new();
+        let mut footnotes: Vec<(String, usize, usize)> = Vec::new();
         for (ci, ctrl) in para.controls.iter().enumerate() {
             let marker_text = match ctrl {
                 Control::Footnote(fn_ctrl) => Some(format_control_note_marker(
@@ -1435,7 +1435,7 @@ impl LayoutEngine {
             };
             if let Some(text) = marker_text {
                 let pos = ctrl_positions.get(ci).copied().unwrap_or(usize::MAX);
-                footnotes.push((text, pos));
+                footnotes.push((text, pos, ci));
             }
         }
 
@@ -1444,7 +1444,7 @@ impl LayoutEngine {
         }
 
         // 각 각주 위첨자를 렌더링: char_start 기반으로 정확한 TextRun 위치에 삽입
-        for (_fn_idx, (number_text, char_pos)) in footnotes.iter().enumerate() {
+        for (number_text, char_pos, control_index) in &footnotes {
             let mut target_line_idx: Option<usize> = None;
             let mut insert_x = 0.0;
             let mut line_height = 18.0;
@@ -1525,15 +1525,18 @@ impl LayoutEngine {
             }
 
             if let Some(line_idx) = target_line_idx {
-                // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-                let sup_font_size = (base_font_size * 0.75).max(7.0);
-                // 본문 baseline 에서 (본문-위첨자) 크기 차만큼만 올려 top 정렬
-                let sup_y_offset = (base_font_size - sup_font_size) * 0.85;
-                let style = TextStyle {
-                    font_size: sup_font_size,
+                let fallback = TextStyle {
+                    font_size: base_font_size,
                     font_family: base_font_family,
                     ..Default::default()
                 };
+                let (base_font_size, style) = super::paragraph_layout::note_marker_style(
+                    Some(para),
+                    styles,
+                    *control_index,
+                    &fallback,
+                );
+                let sup_y_offset = (base_font_size - style.font_size) * 0.85;
                 let width = estimate_text_width(&number_text, &style);
 
                 let run_id = tree.next_id();

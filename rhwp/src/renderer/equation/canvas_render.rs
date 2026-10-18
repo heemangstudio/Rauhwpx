@@ -67,6 +67,7 @@ fn render_box(
     bold: bool,
     font_family: &EquationFont,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {

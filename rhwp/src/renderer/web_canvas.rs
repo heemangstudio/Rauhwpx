@@ -1407,10 +1407,10 @@ impl WebCanvasRenderer {
     }
 
     fn render_footnote_marker(&mut self, bbox: &BoundingBox, marker: &FootnoteMarkerNode) {
-        // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-        let sup_size = (marker.base_font_size * 0.75).max(7.0);
+        // 레이아웃에서 확정한 참조 번호 크기를 추가 배율 없이 사용한다.
+        let sup_size = marker.font_size;
         let font = format!(
-            "{}{:.1}px {}",
+            "{}{}px {}",
             if marker.bold { "bold " } else { "" },
             sup_size,
             marker.font_family
