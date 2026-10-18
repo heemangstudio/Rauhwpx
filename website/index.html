@@ -92,27 +92,121 @@
   .hero .sky::after { height: 88px; }
 }
 
-/* 01 기능: 줄마다 큰 화면 하나와 짧은 글. 화면은 줄마다 좌우를 바꿔요.
-   화면 가운데를 지나는 줄만 또렷하고(.is-focus), 나머지는 옅게 물러나요. */
+/* 01 기능: 기능 하나가 장면 하나예요. 긴 트랙(.feat) 안에서 무대(.feat__stage)가 화면에 붙어 있어요.
+   스크롤하면 기울어진 작은 창이 올라와 가운데 크게 자리를 잡고(도착), 제목과 글이 올라온 뒤,
+   끝에서 살짝 작아지며 사라지고 다음 장면이 올라와요(퇴장).
+   진행은 CSS 스크롤 타임라인(--scene)이 맡아요. 지원하지 않는 브라우저에서는 site.js 가 같은 구간으로
+   --in(도착), --out(퇴장), --p(트랙 전체) 를 줘요. 구간을 바꾸면 site.js 의 SCENE 도 같이 바꿔요.
+   창이 자리를 잡으면 site.js 가 글을 올리고 데모([data-demo])를 시작해요. */
 #features .cell--head { padding-bottom: 0; }
-.feats {
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(120px, 14vw, 200px);
-  padding-top: clamp(64px, 7vw, 104px);
-  padding-bottom: clamp(120px, 13vw, 184px);
+.feats { padding-top: clamp(16px, 3vw, 40px); padding-bottom: clamp(48px, 6vw, 96px); }
+.feat {
+  --track: 230vh;
+  --ratio: 1.6;          /* 화면 카드 가로:세로 */
+  --reserve: 260px;      /* 무대 높이 가운데 카드가 아닌 몫: 내비, 글, 여백 */
+  --tilt: 14deg;
+  --from-y: 14vh;
+  --from-scale: 0.8;
+  --out-y: -6vh;
+  position: relative;
+  view-timeline: --scene block;
 }
-.feat { display: flex; align-items: flex-end; gap: 7%; }
-.feat:nth-child(odd) .feat__art { order: 2; }
-.feat__copy { flex: 1 1 0; min-width: 0; }
+.feat__stage {
+  position: relative; isolation: isolate;
+  display: grid; place-items: center;
+}
+.feat__scene { width: 100%; }
+.feat__shot { position: relative; transform-origin: 50% 0; }
+/* 창이 내려앉을수록 짙어지는 그림자 (opacity 만 움직여요) */
+.feat__shot::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  border-radius: 16px;
+  box-shadow: 0 18px 36px -14px rgba(11, 13, 18, 0.2), 0 56px 96px -40px rgba(20, 50, 130, 0.32);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .feat { height: var(--track); scroll-margin-top: calc((var(--track) - 100vh) * -0.3 - var(--nav-h) - 8px); }
+  .feat__stage {
+    position: sticky; top: 0;
+    height: 100vh; height: 100svh;
+    padding-top: var(--nav-h);
+  }
+  .feat__scene { width: min(100%, calc((100vh - var(--reserve)) * var(--ratio))); width: min(100%, calc((100svh - var(--reserve)) * var(--ratio))); }
+  .feat__shot, .feat__scene { will-change: transform, opacity; }
+  /* 무대 뒤 픽셀 구름 두 점. 창보다 느리게 흘러서 깊이가 생겨요 */
+  .feat__stage::before {
+    content: ""; position: absolute; inset: var(--nav-h) 0 0; z-index: -1;
+    pointer-events: none; image-rendering: pixelated;
+    --cloud: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 6' shape-rendering='crispEdges'%3E%3Cpath fill='%23e4ecfd' d='M4 0h4v1h-4zM3 1h6v1h-6zM10 1h3v1h-3zM1 2h13v1h-13zM0 3h15v1h-15zM0 4h16v1h-16z'/%3E%3Cpath fill='%23d3e0fa' d='M1 5h14v1h-14z'/%3E%3C/svg%3E");
+    background: var(--cloud) 0 18% / 128px 48px no-repeat, var(--cloud) 100% 82% / 96px 36px no-repeat;
+  }
+  .feat:nth-child(even) .feat__stage::before { transform: scaleX(-1); }
+}
+
+/* 도착: 아래에서 기울어진 채 작게 → 가운데 크게. 퇴장: 조금 작아지며 위로 사라져요 */
+@keyframes scene-arrive {
+  0% { opacity: 0; transform: perspective(1600px) translateY(var(--from-y)) rotateX(var(--tilt)) scale(var(--from-scale)); }
+  40% { opacity: 1; }
+  100% { opacity: 1; transform: perspective(1600px) translateY(0) rotateX(0deg) scale(1); }
+}
+@keyframes scene-shadow { from { opacity: 0; } }
+@keyframes scene-depart { to { opacity: 0; transform: translateY(var(--out-y)) scale(0.92); } }
+@keyframes scene-drift { from { translate: 0 10vh; } to { translate: 0 -10vh; } }
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .feat__shot {
+      animation: scene-arrive cubic-bezier(0.3, 0.2, 0.25, 1) both;
+      animation-timeline: --scene; animation-range: entry 60% contain 35%;
+    }
+    .feat__shot::before {
+      animation: scene-shadow linear both;
+      animation-timeline: --scene; animation-range: contain 0% contain 35%;
+    }
+    .feat__scene {
+      animation: scene-depart cubic-bezier(0.5, 0, 0.75, 0) both;
+      animation-timeline: --scene; animation-range: contain 80% exit 60%;
+    }
+    .feat__stage::before { animation: scene-drift linear both; animation-timeline: --scene; animation-range: cover; }
+  }
+}
+@supports not (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .feat__shot {
+      opacity: min(1, calc(var(--in, 1) * 2.5));
+      transform: perspective(1600px)
+        translateY(calc((1 - var(--in, 1)) * var(--from-y)))
+        rotateX(calc((1 - var(--in, 1)) * var(--tilt)))
+        scale(calc(1 - (1 - var(--in, 1)) * (1 - var(--from-scale))));
+    }
+    .feat__shot::before { opacity: var(--in, 1); }
+    .feat__scene {
+      opacity: calc(1 - var(--out, 0));
+      transform: translateY(calc(var(--out, 0) * var(--out-y))) scale(calc(1 - var(--out, 0) * 0.08));
+    }
+    .feat__stage::before { transform: translateY(calc((0.5 - var(--p, 0.5)) * 20vh)); }
+    .feat:nth-child(even) .feat__stage::before { transform: translateY(calc((0.5 - var(--p, 0.5)) * 20vh)) scaleX(-1); }
+  }
+}
+
+/* 제목은 낱말마다, 글은 한 덩어리로 조금 늦게 올라와요 (site.js 가 창이 자리를 잡을 때 켜요) */
+.feat__copy {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 10px 48px;
+  margin-top: clamp(24px, 3.4vh, 40px);
+}
 .feat__title {
-  font-size: clamp(30px, 1.8vw + 20px, 48px); line-height: 1.12;
+  flex: none;
+  font-size: clamp(30px, 2.2vw + 18px, 54px); line-height: 1.12;
   font-weight: 800; letter-spacing: -0.04em; text-wrap: balance;
 }
-.feat__copy .text { margin-top: 18px; font-size: var(--fs-lead); line-height: 1.6; }
+.feat__copy .text { flex: 0 1 28em; font-size: var(--fs-lead); line-height: 1.6; }
+.feat__copy .h3 + .text { margin-top: 0; }
+.js .feat__copy .text[data-reveal] { transition-delay: 280ms; }
 
-/* 화면 카드: 옅은 파랑 면에 픽셀 점. 창은 왼쪽 위에서 시작해 오른쪽과 아래가 카드 끝에서 잘려요. */
+/* 화면 카드: 옅은 파랑 면에 픽셀 점. 창은 가운데에 서서 아래쪽만 카드 끝에서 잘려요. */
 .feat__art {
-  position: relative; flex: 0 0 63%;
-  aspect-ratio: 7 / 5;
+  position: relative;
+  aspect-ratio: var(--ratio);
   border-radius: 16px; overflow: hidden;
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' shape-rendering='crispEdges'%3E%3Cpath fill='%23d9e4ff' d='M0 0h2v2h-2z'/%3E%3C/svg%3E") 8px 8px / 16px 16px,
@@ -123,56 +217,39 @@
   border-radius: inherit; box-shadow: inset 0 0 0 1px #dbe4f7;
   pointer-events: none;
 }
-/* 주인공이 아닌 줄을 덮는 흰 막 (opacity 만 움직여요) */
-.feat__art::before {
-  content: ""; position: absolute; inset: 0; z-index: 5;
-  background: var(--paper);
-  opacity: 0; pointer-events: none;
-  transition: opacity 700ms var(--ease-out);
-}
-.feat__copy > * { transition: opacity 700ms var(--ease-out); }
-.feats.is-tracking .feat:not(.is-focus) .feat__art::before { opacity: 0.45; }
-.feats.is-tracking .feat:not(.is-focus) .feat__copy > * { opacity: 0.28; }
-
-@keyframes art-settle { from { translate: 0 96px; scale: 0.9; } }
-@keyframes copy-drift { from { translate: 0 48px; } to { translate: 0 -48px; } }
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .feat__art {
-      animation: art-settle cubic-bezier(0.2, 0.7, 0.2, 1) both;
-      animation-timeline: view(); animation-range: entry 0% cover 42%;
-    }
-    .feat__copy { animation: copy-drift linear both; animation-timeline: view(); animation-range: cover; }
-  }
-}
 .feat__art > .win {
-  position: absolute; inset: 9% -12px -12px 6%;
+  position: absolute; inset: 8% 8% -12px;
   display: flex; flex-direction: column;
 }
 .feat__art > .win > .win__body { flex: 1; height: auto; min-height: 0; }
 /* 자료조사 창은 앱 전체 화면이라 조금 작게 그려서 프로젝트 칸까지 보여 줘요 */
 @media (min-width: 901px) {
-  .feat__art > .rs { zoom: 0.8; }
+  .feat__art > .rs { zoom: 0.85; }
 }
 /* 계획 카드는 창 없이 카드 가운데에 떠 있어요 */
 .feat--plan .feat__art { display: grid; place-items: center; padding: 24px; }
 @media (min-width: 901px) {
-  .feat--plan .plan { zoom: 1.1; }
+  .feat--plan .plan { zoom: 1.3; }
 }
 
 @media (max-width: 900px) {
-  .feats { gap: clamp(88px, 16vw, 128px); }
-  .feat { flex-direction: column; align-items: stretch; gap: 32px; }
-  .feat__art { flex: none; aspect-ratio: 3 / 2; }
-  .feat:nth-child(odd) .feat__art { order: 0; }
-  .feat__copy { max-width: 34em; }
-  .feat__copy .text { margin-top: 12px; }
+  .feat { --ratio: 1.5; }
+  .feat__stage::before { display: none; }
+}
+/* 좁은 화면: 트랙이 짧고, 기울기와 이동 없이 커지며 나타나기만 해요 */
+@media (max-width: 760px) {
+  .feat { --track: 140vh; --reserve: 300px; --tilt: 0deg; --from-y: 0px; --from-scale: 0.88; --out-y: 0px; }
+  .feat__copy { flex-direction: column; align-items: flex-start; margin-top: 20px; }
+  .feat__copy .text { flex: none; max-width: 34em; }
 }
 @media (max-width: 560px) {
-  .feat { gap: 24px; }
-  .feat__art { aspect-ratio: 1 / 1.08; }
-  .feat__art > .win { inset: 7% -12px -12px 5%; }
+  .feat { --ratio: 0.93; }
+  .feat__art > .win { inset: 7% 5% -12px; }
   .feat--plan .feat__art { padding: 10px; }
+}
+/* 움직임 줄이기: 붙지 않고 장면이 차례로 쌓여 있어요 */
+@media (prefers-reduced-motion: reduce) {
+  .feat + .feat { margin-top: clamp(88px, 10vw, 160px); }
 }
 
 /* 문서 완성: 고친 문서 영상과 검토 카드 */
@@ -655,8 +732,8 @@
         <h2 id="f-title" class="h2" data-reveal="words">한글 안에서 모든 것이 해결 가능한 <em class="tone-accent">유일한</em> 편집기</h2>
       </header>
 
-      <div class="cell cell--open feats" data-focus-group>
-        <article class="feat feat--research" data-focus id="research">
+      <div class="cell cell--open feats">
+        <article class="feat feat--research" data-scene id="research">
           <svg class="rs-sprite" aria-hidden="true" focusable="false">
             <symbol id="rs-i-pdf" viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z M9.5 1.5V5H13 M6 8.5h5 M6 11h4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
             <symbol id="rs-i-web" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M1.8 8h12.4 M8 1.8c2 2 2 10.4 0 12.4 M8 1.8c-2 2-2 10.4 0 12.4" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
@@ -664,279 +741,309 @@
             <symbol id="rs-i-note" viewBox="0 0 16 16"><path d="M3 3h10 M3 6.5h10 M3 10h6 M11 13.5l3-3-1.5-1.5-3 3V13.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
             <symbol id="rs-i-clip" viewBox="0 0 16 16"><path d="M4 1v11h11 M1 4h11v11" fill="none" stroke="currentColor" stroke-width="1.2"/></symbol>
           </svg>
-          <div class="feat__art" data-demo data-loop="5200">
-            <div class="win rs" data-reveal="rise" role="img" aria-label="HamaEditor 화면. 왼쪽 프로젝트 보드의 수집함에 웹 자료와 PDF가 들어오고, 정리 도우미가 이름과 태그를 붙여요. 에이전트는 문서 2장을 쓰면서 답변에 PDF 12쪽 인용을 달고, 인용한 구절이 PDF 미리보기에서 강조돼요.">
-              <div class="win__bar">
-                <span class="win__dots"><i></i><i></i><i></i></span>
-                <span class="win__title">청소년 독서 실태 보고서.hwpx</span>
+          <div class="feat__stage">
+            <div class="feat__scene">
+              <div class="feat__shot">
+                <div class="feat__art" data-demo data-loop="5200">
+                  <div class="win rs" data-reveal="rise" role="img" aria-label="HamaEditor 화면. 왼쪽 프로젝트 보드의 수집함에 웹 자료와 PDF가 들어오고, 정리 도우미가 이름과 태그를 붙여요. 에이전트는 문서 2장을 쓰면서 답변에 PDF 12쪽 인용을 달고, 인용한 구절이 PDF 미리보기에서 강조돼요.">
+                    <div class="win__bar">
+                      <span class="win__dots"><i></i><i></i><i></i></span>
+                      <span class="win__title">청소년 독서 실태 보고서.hwpx</span>
+                    </div>
+                    <div class="win__body">
+                      <div class="rs-rail">
+                        <div class="rs-head">
+                          <div class="rs-heading">
+                            <p class="rs-name">청소년 독서 실태</p>
+                            <p class="rs-goal">학년별 독서량과 도서관 이용 변화를 정리한 보고서</p>
+                          </div>
+                          <span class="rs-lib" data-at="1150"><i></i>정리 중 · 2</span>
+                        </div>
+                        <div class="rs-tabs"><span class="is-current">보드</span><span>그래프</span><span>파일</span></div>
+                        <div class="rs-board">
+                          <div class="rs-col" style="--c:#379cff">
+                            <p class="rs-col__head"><i></i>수집함<b data-count=".rs-in">2</b></p>
+                            <div class="rs-card rs-in" data-at="900" data-fx="pop">
+                              <p class="rs-card__head"><svg><use href="#rs-i-web"/></svg><span class="rs-raw">kosis.kr/statHtml</span><span class="rs-named" data-at="2500">공공도서관 이용 통계</span></p>
+                              <p class="rs-card__foot"><span class="rs-state">정리 중</span><span class="rs-tags" data-at="2500"><span class="rs-tag" style="--t:#379cff">통계</span><span class="rs-tag" style="--t:#53bdab">도서관</span></span></p>
+                            </div>
+                            <div class="rs-card rs-in" data-at="1500" data-fx="pop">
+                              <p class="rs-card__head"><svg><use href="#rs-i-pdf"/></svg><span>2025 국민독서실태조사.pdf</span></p>
+                              <p class="rs-card__foot"><span class="rs-state">정리 중</span><span class="rs-tags" data-at="2800" data-done><span class="rs-tag" style="--t:#379cff">통계</span><span class="rs-tag" style="--t:#e7ae45">독서율</span></span></p>
+                            </div>
+                          </div>
+                          <div class="rs-col" style="--c:#e7ae45">
+                            <p class="rs-col__head"><i></i>검토 중<b>2</b></p>
+                            <div class="rs-card">
+                              <p class="rs-card__head"><svg><use href="#rs-i-hwp"/></svg><span>학교도서관 운영 현황.hwp</span></p>
+                              <p class="rs-card__foot"><span class="rs-tag" style="--t:#53bdab">도서관</span></p>
+                            </div>
+                            <div class="rs-card">
+                              <p class="rs-card__head"><svg><use href="#rs-i-note"/></svg><span>독서 동아리 인터뷰 메모</span></p>
+                              <p class="rs-card__foot"><span class="rs-tag" style="--t:#ed8592">인터뷰</span></p>
+                            </div>
+                          </div>
+                          <div class="rs-col" style="--c:#53bdab">
+                            <p class="rs-col__head"><i></i>핵심<b>1</b></p>
+                            <div class="rs-card">
+                              <div class="rs-thumb"><i style="--h:44%"></i><i style="--h:62%"></i><i style="--h:80%"></i><i style="--h:58%"></i><i style="--h:36%"></i></div>
+                              <p class="rs-card__head"><svg><use href="#rs-i-clip"/></svg><span>연령별 독서율 그래프</span></p>
+                              <p class="rs-card__foot"><span class="rs-meta">영역 · p.8</span></p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="win__doc">
+                        <div class="page page--sketch">
+                          <h4>2. 독서 현황</h4>
+                          <div class="ln" style="width:100%"></div>
+                          <div class="ln" style="width:94%"></div>
+                          <div class="ln" style="width:52%"></div>
+                          <div class="ln-gap"></div>
+                          <div class="ln ln--new" style="width:100%" data-at="3300" data-fx="grow"></div>
+                          <div class="ln ln--new" style="width:96%" data-at="3600" data-fx="grow"></div>
+                          <div class="ln ln--new" style="width:89%" data-at="3900" data-fx="grow"></div>
+                          <div class="ln-row"><div class="ln ln--new" style="width:44%" data-at="4200" data-fx="grow"></div><span class="caret caret--blink" data-at="4200"></span></div>
+                          <div class="ln-gap"></div>
+                          <div class="ln" style="width:100%"></div>
+                          <div class="ln" style="width:81%"></div>
+                          <div class="ln-gap"></div>
+                          <h4 class="rs-h4">3. 도서관 이용</h4>
+                          <div class="ln" style="width:100%"></div>
+                          <div class="ln" style="width:97%"></div>
+                          <div class="ln" style="width:90%"></div>
+                          <div class="ln" style="width:38%"></div>
+                        </div>
+                        <div class="rs-preview" data-at="4300" data-fx="spring">
+                          <p class="rs-preview__bar"><span class="rs-back">‹ 뒤로</span><span class="rs-preview__title">2025 국민독서실태조사.pdf</span><span class="rs-meta">12쪽</span></p>
+                          <p class="rs-preview__tools"><span>축소</span><span>맞춤</span><span>확대</span><span>영역 그리기</span></p>
+                          <div class="rs-pdf">
+                            <div class="rs-pdf__h"></div>
+                            <div class="ln" style="width:100%"></div>
+                            <div class="ln" style="width:92%"></div>
+                            <div class="rs-mark">
+                              <div class="ln" style="width:100%"></div>
+                              <div class="ln" style="width:74%"></div>
+                              <span class="rs-mark__hl" data-at="4800" data-fx="grow"></span>
+                            </div>
+                            <div class="ln" style="width:96%"></div>
+                            <div class="ln" style="width:60%"></div>
+                            <div class="rs-pdf__chart"><i style="--h:40%"></i><i style="--h:55%"></i><i style="--h:70%"></i><i style="--h:52%"></i><i style="--h:34%"></i><i style="--h:46%"></i></div>
+                            <div class="ln" style="width:88%"></div>
+                          </div>
+                        </div>
+                      </div>
+                      <aside class="win__side">
+                        <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
+                        <p class="bubble" data-at="300">도서관 통계와 올해 독서실태조사를 모아서 2장 현황을 써 주세요.</p>
+                        <p class="tool" data-at="700">자료 가져오기 · kosis.kr</p>
+                        <p class="tool" data-at="1300">자료 가져오기 · 2025 국민독서실태조사.pdf</p>
+                        <p class="tool" data-at="3000">프로젝트 읽기</p>
+                        <p class="agent" data-at="3800">2장에 학년별 독서량 변화를 정리했어요. 수치는 <span class="rs-cite"><svg><use href="#rs-i-pdf"/></svg>2025 국민독서실태조사<b>p.12</b></span> 기준이에요.</p>
+                        <div class="side__composer"><span class="caret caret--blink"></span>@로 자료 언급<span class="side__send">↑</span></div>
+                      </aside>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div class="win__body">
-                <div class="rs-rail">
-                  <div class="rs-head">
-                    <div class="rs-heading">
-                      <p class="rs-name">청소년 독서 실태</p>
-                      <p class="rs-goal">학년별 독서량과 도서관 이용 변화를 정리한 보고서</p>
-                    </div>
-                    <span class="rs-lib" data-at="1150"><i></i>정리 중 · 2</span>
-                  </div>
-                  <div class="rs-tabs"><span class="is-current">보드</span><span>그래프</span><span>파일</span></div>
-                  <div class="rs-board">
-                    <div class="rs-col" style="--c:#379cff">
-                      <p class="rs-col__head"><i></i>수집함<b data-count=".rs-in">2</b></p>
-                      <div class="rs-card rs-in" data-at="900" data-fx="pop">
-                        <p class="rs-card__head"><svg><use href="#rs-i-web"/></svg><span class="rs-raw">kosis.kr/statHtml</span><span class="rs-named" data-at="2500">공공도서관 이용 통계</span></p>
-                        <p class="rs-card__foot"><span class="rs-state">정리 중</span><span class="rs-tags" data-at="2500"><span class="rs-tag" style="--t:#379cff">통계</span><span class="rs-tag" style="--t:#53bdab">도서관</span></span></p>
-                      </div>
-                      <div class="rs-card rs-in" data-at="1500" data-fx="pop">
-                        <p class="rs-card__head"><svg><use href="#rs-i-pdf"/></svg><span>2025 국민독서실태조사.pdf</span></p>
-                        <p class="rs-card__foot"><span class="rs-state">정리 중</span><span class="rs-tags" data-at="2800" data-done><span class="rs-tag" style="--t:#379cff">통계</span><span class="rs-tag" style="--t:#e7ae45">독서율</span></span></p>
-                      </div>
-                    </div>
-                    <div class="rs-col" style="--c:#e7ae45">
-                      <p class="rs-col__head"><i></i>검토 중<b>2</b></p>
-                      <div class="rs-card">
-                        <p class="rs-card__head"><svg><use href="#rs-i-hwp"/></svg><span>학교도서관 운영 현황.hwp</span></p>
-                        <p class="rs-card__foot"><span class="rs-tag" style="--t:#53bdab">도서관</span></p>
-                      </div>
-                      <div class="rs-card">
-                        <p class="rs-card__head"><svg><use href="#rs-i-note"/></svg><span>독서 동아리 인터뷰 메모</span></p>
-                        <p class="rs-card__foot"><span class="rs-tag" style="--t:#ed8592">인터뷰</span></p>
-                      </div>
-                    </div>
-                    <div class="rs-col" style="--c:#53bdab">
-                      <p class="rs-col__head"><i></i>핵심<b>1</b></p>
-                      <div class="rs-card">
-                        <div class="rs-thumb"><i style="--h:44%"></i><i style="--h:62%"></i><i style="--h:80%"></i><i style="--h:58%"></i><i style="--h:36%"></i></div>
-                        <p class="rs-card__head"><svg><use href="#rs-i-clip"/></svg><span>연령별 독서율 그래프</span></p>
-                        <p class="rs-card__foot"><span class="rs-meta">영역 · p.8</span></p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="win__doc">
-                  <div class="page page--sketch">
-                    <h4>2. 독서 현황</h4>
-                    <div class="ln" style="width:100%"></div>
-                    <div class="ln" style="width:94%"></div>
-                    <div class="ln" style="width:52%"></div>
-                    <div class="ln-gap"></div>
-                    <div class="ln ln--new" style="width:100%" data-at="3300" data-fx="grow"></div>
-                    <div class="ln ln--new" style="width:96%" data-at="3600" data-fx="grow"></div>
-                    <div class="ln ln--new" style="width:89%" data-at="3900" data-fx="grow"></div>
-                    <div class="ln-row"><div class="ln ln--new" style="width:44%" data-at="4200" data-fx="grow"></div><span class="caret caret--blink" data-at="4200"></span></div>
-                    <div class="ln-gap"></div>
-                    <div class="ln" style="width:100%"></div>
-                    <div class="ln" style="width:81%"></div>
-                    <div class="ln-gap"></div>
-                    <h4 class="rs-h4">3. 도서관 이용</h4>
-                    <div class="ln" style="width:100%"></div>
-                    <div class="ln" style="width:97%"></div>
-                    <div class="ln" style="width:90%"></div>
-                    <div class="ln" style="width:38%"></div>
-                  </div>
-                  <div class="rs-preview" data-at="4300" data-fx="spring">
-                    <p class="rs-preview__bar"><span class="rs-back">‹ 뒤로</span><span class="rs-preview__title">2025 국민독서실태조사.pdf</span><span class="rs-meta">12쪽</span></p>
-                    <p class="rs-preview__tools"><span>축소</span><span>맞춤</span><span>확대</span><span>영역 그리기</span></p>
-                    <div class="rs-pdf">
-                      <div class="rs-pdf__h"></div>
-                      <div class="ln" style="width:100%"></div>
-                      <div class="ln" style="width:92%"></div>
-                      <div class="rs-mark">
-                        <div class="ln" style="width:100%"></div>
-                        <div class="ln" style="width:74%"></div>
-                        <span class="rs-mark__hl" data-at="4800" data-fx="grow"></span>
-                      </div>
-                      <div class="ln" style="width:96%"></div>
-                      <div class="ln" style="width:60%"></div>
-                      <div class="rs-pdf__chart"><i style="--h:40%"></i><i style="--h:55%"></i><i style="--h:70%"></i><i style="--h:52%"></i><i style="--h:34%"></i><i style="--h:46%"></i></div>
-                      <div class="ln" style="width:88%"></div>
-                    </div>
-                  </div>
-                </div>
-                <aside class="win__side">
-                  <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
-                  <p class="bubble" data-at="300">도서관 통계와 올해 독서실태조사를 모아서 2장 현황을 써 주세요.</p>
-                  <p class="tool" data-at="700">자료 가져오기 · kosis.kr</p>
-                  <p class="tool" data-at="1300">자료 가져오기 · 2025 국민독서실태조사.pdf</p>
-                  <p class="tool" data-at="3000">프로젝트 읽기</p>
-                  <p class="agent" data-at="3800">2장에 학년별 독서량 변화를 정리했어요. 수치는 <span class="rs-cite"><svg><use href="#rs-i-pdf"/></svg>2025 국민독서실태조사<b>p.12</b></span> 기준이에요.</p>
-                  <div class="side__composer"><span class="caret caret--blink"></span>@로 자료 언급<span class="side__send">↑</span></div>
-                </aside>
+              <div class="feat__copy" data-scene-copy>
+                <h3 class="h3 feat__title" data-reveal="words">자료조사</h3>
+                <p class="text" data-reveal="chunk">문서 개개인별로 자료함을 만들고, 파일을 체계적으로 연결하고 정리해서 <em class="tone-accent">자료 정리</em></p>
               </div>
             </div>
-          </div>
-          <div class="feat__copy" data-reveal="chunk">
-            <h3 class="h3 feat__title">자료조사</h3>
-            <p class="text">문서 개개인별로 자료함을 만들고, 파일을 체계적으로 연결하고 정리해서 <em class="tone-accent">자료 정리</em></p>
           </div>
         </article>
 
-        <article class="feat feat--browser" data-focus>
-          <div class="feat__art" data-demo data-loop="2600">
-            <div class="win win--sm win--dock" data-reveal="rise" role="img" aria-label="앱 안의 브라우저에서 에이전트가 기상자료개방포털에 폭염일수를 검색하고, 결과를 내려 보며 PDF를 받아 프로젝트에 저장해요. 사이드바에는 웹 페이지 열기, 페이지에 입력하기, 페이지 요소 누르기, 페이지 스크롤, 브라우저 다운로드 단계가 차례로 쌓여요.">
-              <div class="win__bar">
-                <span class="win__dots"><i></i><i></i><i></i></span>
-                <span class="win__title">여름철 폭염 대응 보고서.hwpx</span>
-              </div>
-              <div class="win__body">
-                <div class="bw">
-                  <div class="bw__tabs"><span class="bw__tab"><i></i>기상자료개방포털</span><span>+</span></div>
-                  <div class="bw__nav"><span>‹</span><span>›</span><span>↻</span><span class="bw__url">data.kma.go.kr</span></div>
-                  <div class="bw__view">
-                    <div class="bw__page">
-                      <p class="bw__brand"><i></i>기상자료개방포털</p>
-                      <div class="bw__search">
-                        <span class="bw__field"><span class="bw__typed" data-at="1300">폭염일수 2025</span></span>
-                        <span class="bw__go">검색</span>
-                      </div>
-                      <div class="bw__hit" data-at="2300">
-                        <p>2025 폭염 특보 통계</p>
-                        <div class="ln" style="width:94%"></div>
-                        <div class="ln" style="width:62%"></div>
-                      </div>
-                      <div class="bw__hit" data-at="2400">
-                        <p>지역별 폭염일수 연보</p>
-                        <div class="ln" style="width:88%"></div>
-                        <span class="bw__file">PDF 받기</span>
-                      </div>
-                      <div class="bw__hit" data-at="2500">
-                        <p>열대야 일수 추이</p>
-                        <div class="ln" style="width:90%"></div>
-                        <div class="ln" style="width:48%"></div>
-                      </div>
+        <article class="feat feat--browser" data-scene>
+          <div class="feat__stage">
+            <div class="feat__scene">
+              <div class="feat__shot">
+                <div class="feat__art" data-demo data-loop="2600">
+                  <div class="win win--sm win--dock" data-reveal="rise" role="img" aria-label="앱 안의 브라우저에서 에이전트가 기상자료개방포털에 폭염일수를 검색하고, 결과를 내려 보며 PDF를 받아 프로젝트에 저장해요. 사이드바에는 웹 페이지 열기, 페이지에 입력하기, 페이지 요소 누르기, 페이지 스크롤, 브라우저 다운로드 단계가 차례로 쌓여요.">
+                    <div class="win__bar">
+                      <span class="win__dots"><i></i><i></i><i></i></span>
+                      <span class="win__title">여름철 폭염 대응 보고서.hwpx</span>
                     </div>
-                    <div class="bw__toast" data-at="3900" data-fx="spring">
-                      <p><span>지역별 폭염일수 연보.pdf</span><span class="bw__st"><span data-at="3900">받는 중</span><span data-at="4700">프로젝트에 저장됨</span></span></p>
-                      <div class="bw__bar"><i></i></div>
+                    <div class="win__body">
+                      <div class="bw">
+                        <div class="bw__tabs"><span class="bw__tab"><i></i>기상자료개방포털</span><span>+</span></div>
+                        <div class="bw__nav"><span>‹</span><span>›</span><span>↻</span><span class="bw__url">data.kma.go.kr</span></div>
+                        <div class="bw__view">
+                          <div class="bw__page">
+                            <p class="bw__brand"><i></i>기상자료개방포털</p>
+                            <div class="bw__search">
+                              <span class="bw__field"><span class="bw__typed" data-at="1300">폭염일수 2025</span></span>
+                              <span class="bw__go">검색</span>
+                            </div>
+                            <div class="bw__hit" data-at="2300">
+                              <p>2025 폭염 특보 통계</p>
+                              <div class="ln" style="width:94%"></div>
+                              <div class="ln" style="width:62%"></div>
+                            </div>
+                            <div class="bw__hit" data-at="2400">
+                              <p>지역별 폭염일수 연보</p>
+                              <div class="ln" style="width:88%"></div>
+                              <span class="bw__file">PDF 받기</span>
+                            </div>
+                            <div class="bw__hit" data-at="2500">
+                              <p>열대야 일수 추이</p>
+                              <div class="ln" style="width:90%"></div>
+                              <div class="ln" style="width:48%"></div>
+                            </div>
+                          </div>
+                          <div class="bw__toast" data-at="3900" data-fx="spring">
+                            <p><span>지역별 폭염일수 연보.pdf</span><span class="bw__st"><span data-at="3900">받는 중</span><span data-at="4700">프로젝트에 저장됨</span></span></p>
+                            <div class="bw__bar"><i></i></div>
+                          </div>
+                        </div>
+                        <span class="bw__cursor">
+                          <span class="bw__ring bw__ring--go"></span>
+                          <span class="bw__ring bw__ring--file"></span>
+                          <svg viewBox="0 0 14 18"><path d="M1 1v14.2l3.6-3.4 2.3 5.2 2.4-1-2.3-5.1H12z" fill="#62b3e2" stroke="#0c2536" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                        </span>
+                        <i class="bw__mk bw__mk--1" data-at="1000"></i>
+                        <i class="bw__mk bw__mk--2" data-at="1900"></i>
+                        <i class="bw__mk bw__mk--3" data-at="2800"></i>
+                        <i class="bw__mk bw__mk--4" data-at="3300"></i>
+                      </div>
+                      <div class="win__side">
+                        <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
+                        <p class="tool" data-at="500">웹 페이지 열기</p>
+                        <p class="tool" data-at="1100">페이지에 입력하기</p>
+                        <p class="tool" data-at="1950">페이지 요소 누르기</p>
+                        <p class="tool" data-at="2800">페이지 스크롤</p>
+                        <p class="tool" data-at="3400">브라우저 다운로드</p>
+                        <p class="agent" data-at="end">폭염일수 연보를 자료함에 넣었어요.</p>
+                      </div>
                     </div>
                   </div>
-                  <span class="bw__cursor">
-                    <span class="bw__ring bw__ring--go"></span>
-                    <span class="bw__ring bw__ring--file"></span>
-                    <svg viewBox="0 0 14 18"><path d="M1 1v14.2l3.6-3.4 2.3 5.2 2.4-1-2.3-5.1H12z" fill="#62b3e2" stroke="#0c2536" stroke-width="1.2" stroke-linejoin="round"/></svg>
-                  </span>
-                  <i class="bw__mk bw__mk--1" data-at="1000"></i>
-                  <i class="bw__mk bw__mk--2" data-at="1900"></i>
-                  <i class="bw__mk bw__mk--3" data-at="2800"></i>
-                  <i class="bw__mk bw__mk--4" data-at="3300"></i>
-                </div>
-                <div class="win__side">
-                  <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
-                  <p class="tool" data-at="500">웹 페이지 열기</p>
-                  <p class="tool" data-at="1100">페이지에 입력하기</p>
-                  <p class="tool" data-at="1950">페이지 요소 누르기</p>
-                  <p class="tool" data-at="2800">페이지 스크롤</p>
-                  <p class="tool" data-at="3400">브라우저 다운로드</p>
-                  <p class="agent" data-at="end">폭염일수 연보를 자료함에 넣었어요.</p>
                 </div>
               </div>
+              <div class="feat__copy" data-scene-copy>
+                <h3 class="h3 feat__title" data-reveal="words">인앱 브라우저</h3>
+                <p class="text" data-reveal="chunk">에이전트가 직접 브라우저로 <em class="tone-accent">자료 조사</em>해서 다운로드.</p>
+              </div>
             </div>
-          </div>
-          <div class="feat__copy" data-reveal="chunk">
-            <h3 class="h3 feat__title">인앱 브라우저</h3>
-            <p class="text">에이전트가 직접 브라우저로 <em class="tone-accent">자료 조사</em>해서 다운로드.</p>
           </div>
         </article>
 
-        <article class="feat feat--plan" data-focus>
-          <div class="feat__art">
-            <div class="plan" data-demo data-reveal="rise" role="img" aria-label="에이전트가 할 일 네 개를 정리한 계획 카드. 수정 요청, 전체 접근으로 실행, 에이전트로 실행 버튼이 있다">
-              <p class="plan__head"><b class="plan__title">사업 제안서 개선 계획</b><span class="plan__phase">승인 대기</span></p>
-              <p class="plan__todo">할 일<span>4개</span></p>
-              <ol>
-                <li data-at="250"><span>□</span>사업 개요 첫 문단을 목적 중심으로 다시 쓰기</li>
-                <li data-at="450"><span>□</span>기대 효과를 세 줄 목록으로 정리</li>
-                <li data-at="650"><span>□</span>추진 일정 표의 날짜와 담당자 확인</li>
-                <li data-at="850"><span>□</span>일정 표를 한 쪽에 맞게 정리</li>
-              </ol>
-              <div class="plan__acts" data-at="1200">
-                <span class="plan__ghost">수정 요청</span>
-                <span class="plan__ghost">전체 접근으로 실행</span>
-                <span class="plan__go">에이전트로 실행<i class="plan__ring" data-at="1900" data-fx="pop"></i></span>
+        <article class="feat feat--plan" data-scene>
+          <div class="feat__stage">
+            <div class="feat__scene">
+              <div class="feat__shot">
+                <div class="feat__art">
+                  <div class="plan" data-demo data-reveal="rise" role="img" aria-label="에이전트가 할 일 네 개를 정리한 계획 카드. 수정 요청, 전체 접근으로 실행, 에이전트로 실행 버튼이 있다">
+                    <p class="plan__head"><b class="plan__title">사업 제안서 개선 계획</b><span class="plan__phase">승인 대기</span></p>
+                    <p class="plan__todo">할 일<span>4개</span></p>
+                    <ol>
+                      <li data-at="250"><span>□</span>사업 개요 첫 문단을 목적 중심으로 다시 쓰기</li>
+                      <li data-at="450"><span>□</span>기대 효과를 세 줄 목록으로 정리</li>
+                      <li data-at="650"><span>□</span>추진 일정 표의 날짜와 담당자 확인</li>
+                      <li data-at="850"><span>□</span>일정 표를 한 쪽에 맞게 정리</li>
+                    </ol>
+                    <div class="plan__acts" data-at="1200">
+                      <span class="plan__ghost">수정 요청</span>
+                      <span class="plan__ghost">전체 접근으로 실행</span>
+                      <span class="plan__go">에이전트로 실행<i class="plan__ring" data-at="1900" data-fx="pop"></i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="feat__copy" data-scene-copy>
+                <h3 class="h3 feat__title" data-reveal="words">계획 먼저</h3>
+                <p class="text" data-reveal="chunk">자료를 바탕으로 근거 있는 <em class="tone-accent">계획과 목표</em> 설정</p>
               </div>
             </div>
           </div>
-          <div class="feat__copy" data-reveal="chunk">
-            <h3 class="h3 feat__title">계획 먼저</h3>
-            <p class="text">자료를 바탕으로 근거 있는 <em class="tone-accent">계획과 목표</em> 설정</p>
+        </article>
+
+        <article class="feat feat--edit" data-scene>
+          <div class="feat__stage">
+            <div class="feat__scene">
+              <div class="feat__shot">
+                <div class="feat__art" data-demo data-loop="4200">
+                  <div class="win win--sm" data-reveal="rise" role="img" aria-label="HamaEditor 화면. 사이드바에서 준비물과 집합 시간을 써 달라고 하면 에이전트가 가정통신문의 두 번째 문단을 바로 써요.">
+                    <div class="win__bar">
+                      <span class="win__dots"><i></i><i></i><i></i></span>
+                      <span class="win__title">10월 가정통신문.hwpx</span>
+                    </div>
+                    <div class="win__body">
+                      <div class="win__doc">
+                        <div class="page ed-page">
+                          <p class="ed-org">한빛초등학교 2학년</p>
+                          <h4 class="ed-title">10월 현장체험학습 안내</h4>
+                          <p class="ed-p">학부모님 안녕하세요. 10월 24일(금) 2학년 학생들이 국립과천과학관으로 현장체험학습을 다녀옵니다.</p>
+                          <i class="ed-settle" data-at="3900" hidden></i>
+                          <div class="ed-new" data-at="1300">
+                            <div>
+                              <span class="ed-ln" data-at="1500">준비물은 도시락, 물, 돗자리입니다.</span>
+                              <span class="ed-ln" data-at="2100">오전 8시 40분까지 학교 정문으로</span>
+                              <span class="ed-ln" data-at="2700">보내 주시기 바랍니다.<span class="caret caret--blink"></span></span>
+                            </div>
+                          </div>
+                          <p class="ed-p">당일에는 급식이 없으며, 오후 2시 30분에 학교로 돌아옵니다.</p>
+                          <div class="ed-fill" style="width:100%"></div>
+                          <div class="ed-fill" style="width:72%"></div>
+                        </div>
+                      </div>
+                      <aside class="win__side">
+                        <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
+                        <p class="bubble" data-at="300">준비물과 집합 시간을 써 주세요.</p>
+                        <p class="tool" data-at="900">문서 편집</p>
+                        <p class="agent" data-at="3400">두 번째 문단에 넣었어요.</p>
+                        <div class="side__composer"><span class="caret caret--blink"></span>메시지<span class="side__send">↑</span></div>
+                      </aside>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="feat__copy" data-scene-copy>
+                <h3 class="h3 feat__title" data-reveal="words">편집</h3>
+                <p class="text" data-reveal="chunk">에이전트가 <em class="tone-accent">표와 수식</em> 을 자유롭게 다루면서 문서 편집</p>
+              </div>
+            </div>
           </div>
         </article>
 
-        <article class="feat feat--edit" data-focus>
-          <div class="feat__art" data-demo data-loop="4200">
-            <div class="win win--sm" data-reveal="rise" role="img" aria-label="HamaEditor 화면. 사이드바에서 준비물과 집합 시간을 써 달라고 하면 에이전트가 가정통신문의 두 번째 문단을 바로 써요.">
-              <div class="win__bar">
-                <span class="win__dots"><i></i><i></i><i></i></span>
-                <span class="win__title">10월 가정통신문.hwpx</span>
-              </div>
-              <div class="win__body">
-                <div class="win__doc">
-                  <div class="page ed-page">
-                    <p class="ed-org">한빛초등학교 2학년</p>
-                    <h4 class="ed-title">10월 현장체험학습 안내</h4>
-                    <p class="ed-p">학부모님 안녕하세요. 10월 24일(금) 2학년 학생들이 국립과천과학관으로 현장체험학습을 다녀옵니다.</p>
-                    <i class="ed-settle" data-at="3900" hidden></i>
-                    <div class="ed-new" data-at="1300">
-                      <div>
-                        <span class="ed-ln" data-at="1500">준비물은 도시락, 물, 돗자리입니다.</span>
-                        <span class="ed-ln" data-at="2100">오전 8시 40분까지 학교 정문으로</span>
-                        <span class="ed-ln" data-at="2700">보내 주시기 바랍니다.<span class="caret caret--blink"></span></span>
+        <article class="feat feat--review" data-scene id="gongmun">
+          <div class="feat__stage">
+            <div class="feat__scene">
+              <div class="feat__shot">
+                <div class="feat__art" data-demo>
+                  <div class="win win--sm" data-reveal="rise" role="img" aria-label="에이전트가 보도자료의 표현 네 곳을 고치고, 바뀐 문장을 검토 카드로 보여 줘요. 변경 수락과 변경 거절 버튼이 있어요.">
+                    <div class="win__bar">
+                      <span class="win__dots"><i></i><i></i><i></i></span>
+                      <span class="win__title">보도자료_가을 독서축제.hwpx</span>
+                    </div>
+                    <div class="win__body">
+                      <div class="win__doc">
+                        <div class="page">
+                          <video data-autoplay muted loop playsinline preload="none" width="720" height="1018" poster="assets/demo/review-page.jpg">
+                            <source src="assets/demo/review-page.mp4" type="video/mp4">
+                          </video>
+                        </div>
+                      </div>
+                      <div class="win__side">
+                        <p class="tool" data-at="300">9개의 도구를 호출함</p>
+                        <p class="agent" data-at="800">피동·중복 표현 네 곳을 고쳤어요. 확인 후 반영해 주세요.</p>
+                        <div class="review" data-at="1400" data-fx="spring">
+                          <div class="review__head">편집 대기<span>04건</span></div>
+                          <p class="diff diff--del">개최되어질 예정이라고</p>
+                          <p class="diff diff--ins">개최한다고</p>
+                          <p class="diff diff--del">맞이하는 이번 축제는</p>
+                          <p class="diff diff--ins">맞는 올해 축제는</p>
+                          <div class="review__acts"><span>변경 수락</span><span>변경 거절</span></div>
+                        </div>
                       </div>
                     </div>
-                    <p class="ed-p">당일에는 급식이 없으며, 오후 2시 30분에 학교로 돌아옵니다.</p>
-                    <div class="ed-fill" style="width:100%"></div>
-                    <div class="ed-fill" style="width:72%"></div>
                   </div>
                 </div>
-                <aside class="win__side">
-                  <div class="side__head"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">Hama</div>
-                  <p class="bubble" data-at="300">준비물과 집합 시간을 써 주세요.</p>
-                  <p class="tool" data-at="900">문서 편집</p>
-                  <p class="agent" data-at="3400">두 번째 문단에 넣었어요.</p>
-                  <div class="side__composer"><span class="caret caret--blink"></span>메시지<span class="side__send">↑</span></div>
-                </aside>
+              </div>
+              <div class="feat__copy" data-scene-copy>
+                <h3 class="h3 feat__title" data-reveal="words">문서 완성!</h3>
+                <p class="text" data-reveal="chunk">에이전트 변경 최종 검토, 승인</p>
               </div>
             </div>
-          </div>
-          <div class="feat__copy" data-reveal="chunk">
-            <h3 class="h3 feat__title">편집</h3>
-            <p class="text">에이전트가 <em class="tone-accent">표와 수식</em> 을 자유롭게 다루면서 문서 편집</p>
-          </div>
-        </article>
-
-        <article class="feat feat--review" data-focus id="gongmun">
-          <div class="feat__art" data-demo>
-            <div class="win win--sm" data-reveal="rise" role="img" aria-label="에이전트가 보도자료의 표현 네 곳을 고치고, 바뀐 문장을 검토 카드로 보여 줘요. 변경 수락과 변경 거절 버튼이 있어요.">
-              <div class="win__bar">
-                <span class="win__dots"><i></i><i></i><i></i></span>
-                <span class="win__title">보도자료_가을 독서축제.hwpx</span>
-              </div>
-              <div class="win__body">
-                <div class="win__doc">
-                  <div class="page">
-                    <video data-autoplay muted loop playsinline preload="none" width="720" height="1018" poster="assets/demo/review-page.jpg">
-                      <source src="assets/demo/review-page.mp4" type="video/mp4">
-                    </video>
-                  </div>
-                </div>
-                <div class="win__side">
-                  <p class="tool" data-at="300">9개의 도구를 호출함</p>
-                  <p class="agent" data-at="800">피동·중복 표현 네 곳을 고쳤어요. 확인 후 반영해 주세요.</p>
-                  <div class="review" data-at="1400" data-fx="spring">
-                    <div class="review__head">편집 대기<span>04건</span></div>
-                    <p class="diff diff--del">개최되어질 예정이라고</p>
-                    <p class="diff diff--ins">개최한다고</p>
-                    <p class="diff diff--del">맞이하는 이번 축제는</p>
-                    <p class="diff diff--ins">맞는 올해 축제는</p>
-                    <div class="review__acts"><span>변경 수락</span><span>변경 거절</span></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="feat__copy" data-reveal="chunk">
-            <h3 class="h3 feat__title">문서 완성!</h3>
-            <p class="text">에이전트 변경 최종 검토, 승인</p>
           </div>
         </article>
       </div>
