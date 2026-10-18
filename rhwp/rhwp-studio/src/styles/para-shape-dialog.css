@@ -3,7 +3,7 @@
    ================================================================ */
 .modal-overlay:has(.ps-dialog) { padding: 16px; box-sizing: border-box; background: #0009; }
 .modal-overlay .ps-dialog {
-  width: min(720px, calc(100vw - 32px)) !important;
+  width: min(600px, calc(100vw - 32px)) !important;
   max-height: min(760px, calc(100dvh - 32px));
 }
 .ps-dialog .cs-main-row {
@@ -23,9 +23,9 @@
   display: flex;
   flex: 0 0 auto;
   width: fit-content;
-  max-width: calc(100% - 40px);
-  margin: 12px 20px 0;
-  padding: 3px;
+  max-width: calc(100% - 32px);
+  margin: 6px 16px 0;
+  padding: 2px;
   gap: 2px;
   overflow-x: auto;
   border: 0;
@@ -33,9 +33,9 @@
   background: var(--ui-surface-muted);
 }
 .ps-dialog .dialog-tab {
-  min-height: 32px;
+  min-height: 28px;
   margin: 0;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border: 0;
   border-radius: 6px;
   color: var(--ui-text-secondary);
@@ -51,7 +51,7 @@
 }
 .modal-overlay .ps-dialog .dialog-body {
   min-height: 0;
-  padding: 14px 20px 20px;
+  padding: 10px 16px 12px;
   overflow: auto;
 }
 .ps-dialog .cs-right-col {
@@ -63,15 +63,15 @@
   flex-direction: row-reverse;
   justify-content: flex-start;
   gap: 8px;
-  padding: 12px 20px 16px;
+  padding: 10px 16px 12px;
   border: 0;
   border-top: 1px solid var(--ui-border);
   background: var(--ui-surface);
 }
 .ps-dialog .cs-right-col .dialog-btn {
   width: auto;
-  min-width: 76px;
-  height: 34px;
+  min-width: 72px;
+  height: 32px;
   border: 1px solid var(--ui-border-strong);
   border-radius: 6px;
   background: var(--ui-surface);
@@ -85,11 +85,21 @@
 }
 .ps-dialog .cs-right-col .dialog-btn:hover { background: var(--ui-hover); }
 .ps-dialog .cs-right-col .dialog-btn-primary:hover { background: var(--ui-text); opacity: .82; }
-.ps-dialog .dialog-row { min-height: 34px; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.ps-dialog .dialog-row { min-height: 30px; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.ps-dialog .dialog-row:last-child { margin-bottom: 0; }
+/* 체크박스·라디오 한 개만 있는 줄은 입력칸 높이를 비워 두지 않는다. */
+.ps-dialog .dialog-row:has(> :is(.dialog-checkbox, .dialog-radio-group):only-child) { min-height: 24px; margin-bottom: 2px; }
+/* 체크박스가 여럿인 묶음은 두 줄로 나눠 세로 길이를 줄인다. */
+.ps-dialog .dialog-section:has(> .dialog-row > .dialog-checkbox:only-child) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+}
+.ps-dialog .dialog-section:has(> .dialog-row > .dialog-checkbox:only-child) > :not(.dialog-row:has(> .dialog-checkbox:only-child)) { grid-column: 1 / -1; }
 .ps-dialog .dialog-label { min-width: 0; text-align: left; font-size: 12px; font-weight: 550; }
 .ps-dialog :is(.dialog-input, .dialog-select, .dialog-text-input) {
-  height: 32px;
-  padding-inline: 9px;
+  height: 30px;
+  padding-inline: 6px;
   border-color: var(--ui-border);
   border-radius: 6px;
   background: var(--ui-surface);
@@ -97,12 +107,12 @@
 }
 .ps-align-row {
   display: flex;
-  gap: 5px;
-  margin-bottom: 12px;
+  gap: 4px;
+  margin-bottom: 0;
 }
 .ps-align-btn {
-  width: 38px;
-  height: 36px;
+  width: 34px;
+  height: 30px;
   border: 1px solid var(--ui-border);
   border-radius: 6px;
   background: var(--ui-surface);
@@ -126,10 +136,10 @@
 .ps-two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 12px;
 }
 .ps-preview {
-  margin-top: 12px;
+  margin-top: 10px;
   border: 1px solid var(--ui-border);
   border-radius: 7px;
   background: var(--doc-paper);
@@ -143,7 +153,7 @@
 .ps-tab-list-area {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
   align-items: flex-start;
 }
 .ps-tab-list-col { flex: 1; min-width: 0; }
@@ -151,14 +161,14 @@
   border: 1px solid var(--ui-border);
   border-radius: 6px;
   overflow-y: auto;
-  height: 140px;
+  height: 112px;
   background: var(--color-surface);
 }
 .ps-tab-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-base); }
 .ps-tab-table th {
   background: var(--ui-surface-muted);
   border-bottom: 1px solid var(--ui-border);
-  padding: 6px 8px;
+  padding: 4px 8px;
   text-align: left;
   font-weight: 500;
   position: sticky;
@@ -220,7 +230,7 @@
   .modal-overlay .ps-dialog { width: min(540px, calc(100vw - 24px)) !important; }
   .ps-dialog .dialog-tabs { max-width: calc(100% - 32px); margin-inline: 16px; }
   .ps-dialog .dialog-tab { padding-inline: 9px; }
-  .modal-overlay .ps-dialog .dialog-body { padding: 12px 16px 16px; }
+  .modal-overlay .ps-dialog .dialog-body { padding: 10px 16px 12px; }
   .ps-dialog .cs-right-col { padding-inline: 16px; }
   .ps-dialog .ps-two-col { grid-template-columns: minmax(0, 1fr); }
   .ps-dialog .ps-border-layout { flex-wrap: wrap; }

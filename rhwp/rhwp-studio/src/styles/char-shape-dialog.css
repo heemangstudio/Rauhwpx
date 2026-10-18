@@ -190,7 +190,7 @@
   background: #0009;
 }
 .modal-overlay .cs-dialog {
-  width: min(640px, 100%);
+  width: min(540px, 100%);
   max-height: min(760px, calc(100dvh - 32px));
   border: 1px solid var(--ui-border);
   border-radius: 12px;
@@ -199,8 +199,8 @@
   overflow: auto;
 }
 .cs-dialog .dialog-title {
-  min-height: 60px;
-  padding: 16px 22px;
+  min-height: 0;
+  padding: 10px 10px 2px 16px;
   border: 0;
   background: var(--ui-surface);
   font-size: 18px;
@@ -221,18 +221,18 @@
 .cs-dialog .cs-left-col { width: 100%; }
 .cs-dialog .dialog-tabs {
   width: fit-content;
-  max-width: calc(100% - 44px);
-  margin: 0 22px 4px;
-  padding: 3px;
+  max-width: calc(100% - 32px);
+  margin: 6px 16px 0;
+  padding: 2px;
   gap: 2px;
   border: 0;
   border-radius: 8px;
   background: var(--ui-surface-muted);
 }
 .cs-dialog .dialog-tab {
-  min-height: 30px;
+  min-height: 28px;
   margin: 0;
-  padding: 5px 14px;
+  padding: 4px 12px;
   border: 0;
   border-radius: 6px;
   color: var(--ui-text-secondary);
@@ -248,13 +248,14 @@
 }
 .cs-dialog .dialog-body {
   min-height: 0;
-  padding: 12px 22px 22px;
+  padding: 10px 16px 12px;
 }
-.cs-dialog .dialog-row { min-height: 36px; gap: 9px; margin-bottom: 8px; flex-wrap: wrap; }
+.cs-dialog .dialog-row { min-height: 30px; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.cs-dialog .dialog-row:last-child { margin-bottom: 0; }
 .cs-dialog .dialog-label { min-width: 0; text-align: left; font-size: 12px; font-weight: 550; }
 .cs-dialog :is(.dialog-input, .dialog-select) {
-  height: 32px;
-  padding: 0 10px;
+  height: 30px;
+  padding: 0 6px;
   border-color: var(--ui-border);
   border-radius: 6px;
   background: var(--ui-surface);
@@ -267,12 +268,13 @@
 }
 .cs-dialog .cs-fieldset {
   min-width: 0;
-  margin: 16px 0 0;
-  padding: 13px 14px 10px;
+  margin: 10px 0 0;
+  padding: 6px 12px 8px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
   background: var(--ui-surface-muted);
 }
+.cs-dialog .dialog-tab-panel > .cs-fieldset:first-child { margin-top: 0; }
 .cs-dialog .cs-fieldset legend {
   padding: 0 5px;
   color: var(--ui-text-secondary);
@@ -280,8 +282,8 @@
 }
 .cs-dialog .cs-icon-btn,
 .cs-dialog .cs-preset-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-color: var(--ui-border);
   border-radius: 6px;
   background: var(--ui-surface);
@@ -290,13 +292,13 @@
 .cs-dialog .cs-icon-btn:hover,
 .cs-dialog .cs-preset-btn:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
 .cs-dialog .cs-icon-btn.active { background: var(--ui-selected); border-color: var(--ui-text); box-shadow: none; }
-.cs-dialog .cs-color-btn { width: 34px; height: 30px; border-color: var(--ui-border); border-radius: 6px; }
+.cs-dialog .cs-color-btn { width: 32px; height: 28px; border-color: var(--ui-border); border-radius: 6px; }
 .cs-dialog .cs-preview {
   display: flex;
   align-items: center;
-  min-height: 64px;
-  margin: 16px 0 0;
-  padding: 14px 18px;
+  min-height: 48px;
+  margin: 10px 0 0;
+  padding: 8px 14px;
   border-color: var(--ui-border);
   border-radius: 8px;
   background: #fff;
@@ -309,7 +311,7 @@
   flex-direction: row-reverse;
   justify-content: flex-start;
   gap: 8px;
-  padding: 14px 22px 18px;
+  padding: 10px 16px 12px;
   border: 0;
   border-top: 1px solid var(--ui-border);
   background: var(--ui-surface);
@@ -317,7 +319,7 @@
 .cs-dialog .cs-right-col .dialog-btn {
   width: auto;
   min-width: 72px;
-  height: 34px;
+  height: 32px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
   background: var(--ui-surface);
@@ -332,7 +334,6 @@
 .cs-dialog .cs-right-col .dialog-btn:hover { background: var(--ui-hover); }
 .cs-dialog .cs-right-col .dialog-btn-primary:hover { opacity: .82; background: var(--ui-text); }
 @media (max-width: 600px) {
-  .cs-dialog .dialog-title { padding-inline: 16px; }
   .cs-dialog .dialog-tabs { margin-inline: 16px; max-width: calc(100% - 32px); }
   .cs-dialog .dialog-tab { padding-inline: 9px; }
   .cs-dialog .dialog-body { padding-inline: 16px; }
