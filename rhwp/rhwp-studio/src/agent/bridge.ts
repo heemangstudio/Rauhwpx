@@ -144,6 +144,8 @@ import type {
   DocumentTemplate,
   TemplateCatalog,
   AgentStreamEvent,
+  ChatCompactReason,
+  ChatDetachedFrom,
   CompactionSupport,
   SidebarEvent,
   UserQuestionAnswer,
@@ -285,6 +287,8 @@ export interface ChatStartContext {
   handoffHistory?: ChatHistoryEntry[];
   /** 허브가 넘겨줄 대화 예산을 정할 때 쓰는 콘텍스트 창 정보. */
   providerContextUsage?: ProviderContextUsage;
+  /** 이 채팅을 뗀 문서 — 문서 없이 시작할 때만 싣는다. 허브가 다음 사용자 턴에 한 번 알린다. */
+  detachedFrom?: ChatDetachedFrom;
 }
 
 export type ChatStartContextProvider = (request: { agent: AgentName; threadId: string }) => ChatStartContext | null;
@@ -444,8 +448,11 @@ export interface AgentBridge {
    * 모두 chat-start 를 보내는 순간 이 함수로 대화와 커서를 새로 만든다.
    */
   setChatStartContextProvider(provider: ChatStartContextProvider | null): void;
-  /** 현재 세션의 콘텍스트를 압축한다. 허브가 받으면 일반 턴처럼 turn-start … turn-end 로 감싼다. */
-  compactChat(): Promise<ChatCompactResult>;
+  /**
+   * 현재 세션의 콘텍스트를 압축한다. 허브가 받으면 일반 턴처럼 turn-start … turn-end 로 감싼다.
+   * reason 'document-detached' 는 문서를 뗀 직후의 압축이다 — 허브가 뗀 문서에 맞춘 지시를 붙인다.
+   */
+  compactChat(options?: { reason?: ChatCompactReason }): Promise<ChatCompactResult>;
   /** gpt-5.6-luna 로 스레드 제목 생성 요청. */
   requestTitle(threadId: string, preview: string): string;
   /** 커밋 메시지는 부수 정보다. 오프라인, 실패, 타임아웃이면 null. */
@@ -517,8 +524,11 @@ export interface AgentBridge {
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
   interrupt(): void;
   onEvent(cb: (e: SidebarEvent) => void): () => void;
-  /** 채팅을 멈추고 소켓을 닫고 리스너·구독을 모두 걷는다. 다시 쓸 수 없다. */
-  dispose(): void;
+  /**
+   * 채팅을 멈추고 소켓을 닫고 리스너·구독을 모두 걷는다. 다시 쓸 수 없다. keepHubChat 이면 허브의 채팅을
+   * 멈추지 않는다(chat-stop 없음) — 같은 허브 세션으로 새 브리지가 그 채팅을 잇는다(문서에서 떼기).
+   */
+  dispose(options?: { keepHubChat?: boolean }): void;
 }
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
@@ -1622,6 +1632,7 @@ export class AgentBridgeImpl implements AgentBridge {
     providerSessionId?: string;
     handoffHistory?: ChatHistoryEntry[];
     providerContextUsage?: ProviderContextUsage;
+    detachedFrom?: ChatDetachedFrom;
     force?: boolean;
   } | null = null;
   private chatStartContextProvider: ChatStartContextProvider | null = null;
@@ -4359,13 +4370,13 @@ export class AgentBridgeImpl implements AgentBridge {
     this.chatStartContextProvider = provider;
   }
 
-  async compactChat(): Promise<ChatCompactResult> {
+  async compactChat(options: { reason?: ChatCompactReason } = {}): Promise<ChatCompactResult> {
     // welcome 전에는 허브에 이 채팅의 세션이 아직 있는지 모른다 — 아무것도 보내지 않는다(S2).
     if (this.state !== 'connected' || this.awaitingWelcome || this.activeAgent === null || this.pendingChatStart) {
       return { ok: false, code: 'NO_SESSION', message: 'No active agent session.' };
     }
     const result = await this.request<ChatCompactResult>(
-      { type: 'chat-compact', threadId: this.threadId },
+      { type: 'chat-compact', threadId: this.threadId, ...(options.reason ? { reason: options.reason } : {}) },
       'chat-compact',
       30_000,
     );
@@ -4502,6 +4513,13 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       if (context.providerContextUsage) pending.providerContextUsage = { ...context.providerContextUsage };
       else delete pending.providerContextUsage;
+      // 뗀 문서는 문서 없이 여는 시작만 싣는다. 이름도 함께 비워 보낸다 — 허브는 같은 문서일 때만 이름을 잇는다.
+      if (context.detachedFrom && pending.documentId === null) {
+        pending.detachedFrom = { ...context.detachedFrom };
+        pending.documentName = null;
+      } else {
+        delete pending.detachedFrom;
+      }
     }
     this.chatStartSent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
@@ -5451,10 +5469,11 @@ export class AgentBridgeImpl implements AgentBridge {
     }
   }
 
-  dispose(): void {
+  dispose(options: { keepHubChat?: boolean } = {}): void {
     if (this.disposed) return;
-    // 이 세션의 프로바이더도 함께 내린다 — 소켓만 닫으면 허브가 재접속을 기다리며 붙들고 있다.
-    if (this.state === 'connected'
+    // 이 세션의 프로바이더도 함께 내린다 — 소켓만 닫으면 허브가 재접속을 기다리며 붙들고 있다. 그 채팅을 같은
+    // 허브 세션의 다음 브리지가 이을 때(keepHubChat)만 붙들어 둔다.
+    if (!options.keepHubChat && this.state === 'connected'
       && (this.activeAgent !== null || this.pendingChatStart !== null || this.turnRunning)) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
     }

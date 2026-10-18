@@ -212,6 +212,22 @@ async function linkPreviewDocument(target: ChatDocumentLinkTarget): Promise<Chat
   return { documentId: id, name };
 }
 
+/**
+ * 미리보기의 문서 떼기 — 편집기처럼 하마가 이름을 삼킨 뒤 문서를 내리고 같은 허브 세션에서 문서 없이 잇는다.
+ * 편집기는 채팅을 새 세션으로 옮기지만 미리보기는 사이드바가 하나라 그 자리에서 마친다. 호출은 detachCalls 에 남는다.
+ */
+const detachCalls: Array<{ threadId: string; documentId: string | null; draft: boolean }> = [];
+async function detachPreviewDocument(): Promise<boolean> {
+  const detach = await sidebar.beginDocumentDetach();
+  if (!detach) return false;
+  detachCalls.push({ threadId: detach.threadId, documentId: detach.documentId, draft: detach.draft });
+  const name = documentName;
+  showMockDocument(null, null);
+  const detached = sidebar.completeDocumentDetach();
+  if (detached) report(`Detached ${name ?? 'the document'}`);
+  return detached;
+}
+
 function showMockDocument(id: string | null, name: string | null): void {
   documentId = id;
   documentName = name;
@@ -460,6 +476,7 @@ const sidebar = initAgentSidebar({
   openDocumentFile: () => report('File picker placeholder'),
   // 문서 없는 채팅에 문서 잇기 — 편집기처럼 연결을 알리고, 표본 문서를 연 뒤 이 채팅에 잇는다.
   linkDocument: (target) => linkPreviewDocument(target),
+  detachDocument: () => detachPreviewDocument(),
   listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
   // @ 의 문서 묶음 — 표본 최근 문서 (지금 문서는 뺀다).
   listMentionDocuments: async () => recentDocuments
@@ -606,6 +623,10 @@ function previewUnlinkedChat(): boolean {
 document.querySelector('#link-document')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) void sidebar.linkCurrentChat({ kind: 'new' });
 });
+document.querySelector('#detach-document')!.addEventListener('click', () => {
+  if (sidebar.isUnlinkedChat()) report('The shown chat has no document');
+  else void detachPreviewDocument();
+});
 document.querySelector('#link-consent')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.requestDocumentLink();
 });
@@ -701,7 +722,7 @@ async function openLockedParallelScene(): Promise<void> {
 if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls,
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene,

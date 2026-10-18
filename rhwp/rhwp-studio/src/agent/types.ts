@@ -998,6 +998,13 @@ export type AgentStreamEvent =
 export type CompactionTrigger = 'auto' | 'manual';
 /** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
 export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+/** chat-compact 의 까닭. document-detached = 채팅을 문서에서 뗀 직후의 압축. */
+export type ChatCompactReason = 'document-detached';
+/** chat-start 의 detachedFrom — 이 채팅을 뗀 문서. */
+export interface ChatDetachedFrom {
+  documentId: string;
+  documentName: string | null;
+}
 
 /**
  * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
@@ -2083,7 +2090,8 @@ export interface ProjectLibrarianItemStatus {
 
 /** 허브 → 스튜디오 프로젝트 이벤트. 통합 단계에서 SidebarEvent 에 합친다. */
 export type ProjectSidebarEvent =
-  | { type: 'project-bound'; projectId: string; project: ProjectSnapshot }
+  /** projectId·project 가 null 이면 허브가 이 채팅을 프로젝트에서 풀었다(문서에서 뗀 채팅). */
+  | { type: 'project-bound'; projectId: string | null; project: ProjectSnapshot | null }
   | { type: 'project-changed'; projectId: string; revision: number; project: ProjectSnapshot }
   | {
       type: 'project-librarian-status';

@@ -843,7 +843,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'open_document',
-    description: 'Link an existing document to this chat and open it: documentId from list_documents or mentions, or path (absolute .hwp/.hwpx/.hml, desktop app). The user confirms; a chat links one document, permanently, and writes then target it.',
+    description: 'Link an existing document to this chat and open it: documentId from list_documents or mentions, or path (absolute .hwp/.hwpx/.hml, desktop app). The user confirms; a chat has one document at a time, and writes then target it.',
     shape: {
       documentId: z.string().min(1).max(256).optional(),
       path: z.string().min(1).max(4_096).optional(),
@@ -854,7 +854,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'create_document',
-    description: 'Create a blank .hwpx document named name and link it to this chat. The desktop app saves it in folder (absolute, inside home; default ~/Documents/HamaEditor). The user confirms; a chat links one document, permanently.',
+    description: 'Create a blank .hwpx document named name and link it to this chat. The desktop app saves it in folder (absolute, inside home; default ~/Documents/HamaEditor). The user confirms; a chat has one document at a time.',
     shape: {
       name: z.string().min(1).max(120).describe('File name without extension'),
       folder: z.string().min(1).max(4_096).optional(),

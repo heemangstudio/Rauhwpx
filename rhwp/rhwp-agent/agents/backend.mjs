@@ -221,7 +221,9 @@ export function redactableTail(value, limit) {
  *   text 는 기록을 인라인으로 붙인 전체 프롬프트다.
  * @property {'manual'|'auto-only'|'none'} compactionSupport
  * @property {(sessionId: string) => Promise<boolean>} canResume 네이티브 저장소에 세션이 남아 있는지 디스크로 확인한다.
- * @property {() => void} [compact] 수동 콘텍스트 압축을 한 턴으로 돌린다 (compactionSupport === 'manual' 일 때만).
+ * @property {(options?: { instructions?: string }) => void} [compact] 수동 콘텍스트 압축을 한 턴으로 돌린다
+ *   (compactionSupport === 'manual' 일 때만). instructions 는 요약 지시 — 받을 수 있는 공급자(Claude)만 쓰고
+ *   나머지는 무시한다.
  * @property {(profile: 'safe'|'unrestricted') => void|Promise<void>} setPermissionProfile
  * @property {(mode: {workflow: 'direct'|'plan'|'question'; phase: 'planning'|'questioning'|'awaiting-approval'|'switching'|'implementing'; capabilityEpoch: string|number; chatPermissionGrants?: string[]}) => Promise<void>} setExecutionMode
  * @property {() => void} interrupt

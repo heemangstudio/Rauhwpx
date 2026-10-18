@@ -35,15 +35,17 @@ export function resolveSessionIdentity({
   force = false,
   createThreadId = () => crypto.randomUUID(),
 } = {}) {
+  const resolvedDocumentId = documentId === undefined
+    ? (!force ? (existing?.documentId ?? null) : null)
+    : normalizeStableScopeId(documentId, 'documentId', { optional: true });
   return {
     threadId: threadId === undefined || threadId === null
       ? (!force && existing?.threadId ? existing.threadId : createThreadId())
       : normalizeStableScopeId(threadId, 'threadId'),
-    documentId: documentId === undefined
-      ? (!force ? (existing?.documentId ?? null) : null)
-      : normalizeStableScopeId(documentId, 'documentId', { optional: true }),
+    documentId: resolvedDocumentId,
+    // A name belongs to its document: switching documents (e.g. detaching to none) never inherits it.
     documentName: documentName === undefined
-      ? (!force ? (existing?.documentName ?? null) : null)
+      ? (!force && (existing?.documentId ?? null) === resolvedDocumentId ? (existing?.documentName ?? null) : null)
       : normalizeDocumentName(documentName),
   };
 }
@@ -98,8 +100,56 @@ export function attachActiveDocumentIdentity(result, identity) {
 /** A chat that started without a document until open_document/create_document links one. */
 const NO_DOCUMENT_LINES = Object.freeze([
   'No document is linked to this chat. Read tools still read other documents by documentId; list_documents finds them.',
-  'When the task needs a document to work in, open_document links an existing one and create_document (에이전트, 전체 or an approved plan) makes a new one. The user confirms the link, and the chat keeps that one document for good. Saving to the project (project_edit, project_import, project downloads) needs a linked document.',
+  'When the task needs a document to work in, open_document links an existing one and create_document (에이전트, 전체 or an approved plan) makes a new one. The user confirms the link. A chat has one document at a time, and the user can detach it later. Saving to the project (project_edit, project_import, project downloads) needs a linked document.',
 ]);
+
+/**
+ * chat-start 의 detachedFrom: 사용자가 이 채팅을 떼어 낸 문서. 모양이 어긋나면 버린다(null).
+ * 문서 이름은 표시용이라 이름만 잘못됐으면 이름 없이 남긴다.
+ */
+export function normalizeDetachedFrom(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  let documentId;
+  try {
+    documentId = normalizeStableScopeId(value.documentId, 'detachedFrom.documentId');
+  } catch {
+    return null;
+  }
+  let documentName = null;
+  try {
+    documentName = normalizeDocumentName(value.documentName);
+  } catch {}
+  return { documentId, documentName };
+}
+
+function documentLabel({ documentId, documentName }) {
+  return documentName ? `the document ${JSON.stringify(documentName)} (documentId ${documentId})` : `the document with documentId ${documentId}`;
+}
+
+/** 떼어 낸 직후의 네이티브 압축 지시 — 한 줄. */
+export function detachCompactionInstructions(detachedFrom) {
+  return `This chat was just detached from ${documentLabel(detachedFrom)}. Keep what the user and assistant discussed, decided and learned about it, since the user may need that context later; drop raw tool output. The chat can no longer edit that document or use its project files.`;
+}
+
+/**
+ * 문서 연결이 바뀐 것을 다음 사용자 턴에 한 번 알리는 블록. note: { detach?, attach? } —
+ * 둘 다 있으면 "A 에서 떼어 냈고 지금은 B 에 연결됐다" 한 덩이로 쓴다.
+ */
+export function documentChangeBlock(note) {
+  const attach = note?.attach ?? null;
+  // 떼어 낸 문서를 다시 붙였으면 연결만 알린다.
+  const detach = note?.detach && note.detach.documentId !== attach?.documentId ? note.detach : null;
+  const lines = [];
+  if (detach) {
+    lines.push(`The user detached this chat from ${documentLabel(detach)}. It can still read that document read-only by its documentId, but cannot edit it or use its project or reference files.`);
+    if (!attach) lines.push('No document is linked now. When the user wants to write or save, suggest attaching one with open_document or create_document.');
+  }
+  if (attach) {
+    lines.push(`This chat is now attached to ${documentLabel(attach)}. Document writes target it, and its project panel and reference files are available through project_read, search_reference_files and the other project tools.`);
+  }
+  if (lines.length === 0) return '';
+  return ['<document_change trust="application-state">', ...lines, '</document_change>'].join('\n');
+}
 
 /** Give every agent turn exact open-document identity without filename search. */
 export function addActiveDocumentContext(activeSession, prompt) {
@@ -108,7 +158,7 @@ export function addActiveDocumentContext(activeSession, prompt) {
     '<active_document_identity trust="application-state">',
     JSON.stringify(identity),
     ...(sessionHasNoDocument(activeSession) ? NO_DOCUMENT_LINES : [
-      'This is the exact Studio document bound to this chat. Writes and default reads target this documentId; read tools accept another documentId (read-only).',
+      'This is the exact Studio document bound to this chat; the user can detach it, and this block always names the current one. Writes and default reads target this documentId; read tools accept another documentId (read-only).',
       'Use documentId—not documentName, title matching, recent-file lists, or filesystem search—to decide which open document the user means. Call get_document_info for its digest, source format, dirty state, and exact sourcePath when the desktop app has one.',
     ]),
     '</active_document_identity>',

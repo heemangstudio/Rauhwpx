@@ -94,6 +94,9 @@ import {
   getThread,
   documentGroupKey,
   forgetDocumentThreads,
+  detachThreadDocument,
+  linkOf,
+  threadLinkSupersedes,
   listThreads,
   peekThreads,
   orderPinnedThreads,
@@ -194,6 +197,7 @@ import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
 import { createDocumentNameWriter } from './document-name-writer.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
+import { createDocumentLinkToggle } from './document-link-toggle.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
 import { browserPopupDestination } from './browser-controller.ts';
@@ -361,6 +365,11 @@ export interface AgentSidebarDeps {
    * 편집기가 이 채팅의 문서 세션에 문서를 열고 채팅을 잇는다. 잇지 못하면 편집기가 이유를 알리고 null.
    */
   linkDocument?: (target: ChatDocumentLinkTarget) => Promise<ChatDocumentLinked | null>;
+  /**
+   * 보이는 채팅을 문서에서 뗀다 — 입력기 아래 줄의 연결 단추가 부른다. 편집기가 beginDocumentDetach 부터
+   * 이 사이드바를 거쳐 채팅을 문서 없는 새 세션으로 옮긴다. 떼었으면 true.
+   */
+  detachDocument?: () => Promise<boolean>;
   /** 문서 홈(창 전체의 시작 화면)을 연다. */
   openDocumentHome?: (options?: { instant?: boolean }) => void;
   openDocumentFile?: () => void;
@@ -436,6 +445,14 @@ export interface AgentSidebarDeps {
 
 const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
 
+/** 떼기 시작한 채팅 — 저장소의 id 와 뗄 문서. draft 면 저장하지 않은 초안이다. */
+export interface DocumentDetachStart {
+  threadId: string;
+  documentId: string | null;
+  docKey: string | null;
+  draft: boolean;
+}
+
 export interface AgentSidebarHandle {
   root: HTMLElement;
   openVersions(): void;
@@ -497,6 +514,19 @@ export interface AgentSidebarHandle {
   }): Promise<ChatDocumentLinkReply | null>;
   /** 편집기 전용: 문서를 열지 못했다 — 기다리던 연결을 거둔다. */
   cancelDocumentLink(): void;
+  /**
+   * 편집기 전용: 보이는 채팅을 문서에서 떼기 시작한다. 뗄 수 있으면(일하지 않고 검토할 변경도 없다) 하마가
+   * 머리의 문서 이름을 삼킨 뒤 그 채팅을 돌려준다. 그동안의 문서 전환은 새 채팅을 열지 않고 기다린다.
+   * 뗄 수 없거나 삼키기를 거뒀으면 null. draft 면 저장하지 않은 초안이다.
+   */
+  beginDocumentDetach(): Promise<DocumentDetachStart | null>;
+  /**
+   * 떼기를 마친다 — 저장소의 채팅을 문서에서 떼고 이 사이드바에서 문서 없이 잇는다(문서 없는 자리일 때).
+   * 편집기는 대신 같은 허브 세션으로 새 세션에 채팅을 옮긴다. 떼었으면 true.
+   */
+  completeDocumentDetach(): boolean;
+  /** 편집기 전용: 떼지 못했다 — 머리의 문서 이름을 되돌린다. */
+  cancelDocumentDetach(): void;
   /**
    * 시작 채팅 고르기가 끝나면 풀린다 — 스레드 저장소와 허브의 첫 답을 기다린 뒤 살아 있는 채팅을
    * 잇거나 마지막 채팅을 복원한 다음이다. 그 뒤에 채팅을 다루는 스크립트·검사가 기다린다.
@@ -916,6 +946,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     moveToLibraryDocument,
     createDocument,
     linkDocument,
+    detachDocument,
     openDocumentFile,
     openDocumentHome,
     listRecentDocuments,
@@ -1115,6 +1146,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let pendingThreadSwitch: { threadId: string } | null = null;
   /** 이 채팅(문서 없음)에 이을 문서를 편집기가 여는 중이다 — 그 채팅 id. 아니면 null. */
   let documentLinkThreadId: string | null = null;
+  /**
+   * 이 채팅을 문서에서 떼는 중이다 — 그 채팅 id, 하마가 이름을 다 삼켰는지, 시작할 때의 문서. 아니면 null.
+   * 그사이 따라 둔 문서 상태는 거둘 때 시작할 때의 문서로 되돌려 보통의 전환 규칙으로 맞춘다.
+   */
+  let documentDetach: { threadId: string; inhaled: boolean; documentId: string | null; docKey: string | null } | null = null;
   /** 이 페이지에서 사용자가 메시지를 보낸 채팅 — 문서 없는 채팅이 지금 쓰이는지 가른다. */
   let engagedThreadId: string | null = null;
   /** 허브가 문서가 없어 저장을 막았을 때 띄운 줄 (새 문서·문서 연결). */
@@ -1318,8 +1354,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const undeliveredMessages = new Set<ThreadMessage>();
   /** 지금 세션의 압축 지원. chat-started 가 알린다. */
   let sessionCompaction: CompactionSupport = 'none';
-  /** 진행 중인 압축. 수동 압축은 허브가 받아들이기 전까지 id 를 모른다. */
-  let activeCompaction: { compactionId: string | null; trigger: CompactionTrigger } | null = null;
+  /**
+   * 진행 중인 압축. 수동 압축은 허브가 받아들이기 전까지 id 를 모른다. silent 는 문서를 뗀 뒤 스스로 청한
+   * 압축이다 — 사용자가 고른 것이 아니라 실패를 대화에 알리지 않는다.
+   */
+  let activeCompaction: { compactionId: string | null; trigger: CompactionTrigger; silent?: true } | null = null;
 
   function startCurrentBridgeChat(force = false): void {
     // 초안은 첫 메시지를 보낼 때 연다 — 그 전의 선택은 이 사이드바에만 남는다.
@@ -1338,7 +1377,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   bridge.setChatStartContextProvider(({ agent, threadId }) => {
     const thread = threadId === currentThread.id ? currentThread : getThread(threadId);
-    return thread ? providerStartContext(thread, agent, undeliveredMessages) : null;
+    if (!thread) return null;
+    const context = providerStartContext(thread, agent, undeliveredMessages);
+    // 문서에서 뗀 채팅은 뗀 문서를 싣는다 — 허브가 다음 사용자 턴에 한 번 알린다(같은 것은 다시 쌓지 않는다).
+    const detached = thread.documentId === null && thread.docKey === null ? thread.documentDetachedFrom : undefined;
+    return detached
+      ? { ...context, detachedFrom: { documentId: detached.documentId, documentName: detached.docKey } }
+      : context;
   });
 
   // ── DOM 구성 ──────────────────────────────────────────
@@ -2212,16 +2257,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 있는 채팅은 원래 문서에 남고, 빈 채팅은 저장되지 않은 채 사라진다.
    */
   function handleDocumentSwitch(nextKey: string | null, nextDocumentId: string | null): void {
-    if (documentLinkThreadId !== null) {
-      // 이 채팅에 이을 문서를 여는 중이다 — 새 채팅을 열거나 지금 턴을 멈추지 않는다. 열기가 끝나면
-      // completeDocumentLink 가 이 채팅에 잇고, 실패하면 cancelDocumentLink 가 거둔다.
+    const sameIdentity = Boolean(
+      nextDocumentId && currentDocumentId && nextDocumentId === currentDocumentId,
+    );
+    if (documentLinkThreadId !== null || (documentDetach !== null && !sameIdentity)) {
+      // 이 채팅에 이을 문서를 여는 중이거나 이 채팅을 문서에서 떼는 중이다 — 새 채팅을 열거나 지금 턴을
+      // 멈추지 않는다. 끝나면 completeDocumentLink·completeDocumentDetach 가 맞추고, 실패하면 cancel 이 거둔다.
       currentDocKey = nextKey;
       currentDocumentId = nextDocumentId;
       return;
     }
-    const sameIdentity = Boolean(
-      nextDocumentId && currentDocumentId && nextDocumentId === currentDocumentId,
-    );
     if (sameIdentity) {
       // 첫 저장으로 파일명만 바뀐 경우 — 현재 문서의 채팅만 새 이름을 따른다.
       const activeThreadMatchesDocument = readOnlyDocLabel === null
@@ -2284,24 +2329,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return documentLinkThreadId;
   }
 
-  /** 저장소의 이 채팅이 지금 사본과 다른 문서에 이어져 있다 — 다른 창이 먼저 이었다. */
-  function storedLinkDiffers(): boolean {
-    const stored = getThread(currentThread.id);
-    if (!stored || (stored.documentId === null && stored.docKey === null)) return false;
-    if (currentThread.documentId === null && currentThread.docKey === null) return true;
-    return stored.documentId !== null && currentThread.documentId !== null && stored.documentId !== currentThread.documentId;
+  /** 이 채팅의 사본에 저장본의 문서 연결(문서·이름·이은·바꾼 시각·뗀 문서)을 그대로 얹는다. */
+  function applyThreadLink(target: ChatThread, source: ChatThread): void {
+    delete target.documentLinkedAt;
+    delete target.documentLinkChangedAt;
+    delete target.documentDetachedFrom;
+    Object.assign(target, structuredClone(linkOf(source)));
   }
 
   /**
-   * 다른 창이 이 채팅을 먼저 다른 문서에 이었다 — 연결은 하나뿐이라 저장소의 연결을 따르고, 지금 문서와
-   * 맞지 않으면 다른 문서의 채팅처럼 읽기 전용으로 둔다. 따랐으면 true.
+   * 다른 창이 이 채팅의 문서 연결을 더 늦게 바꿨다(잇거나 뗐다) — 저장소의 연결을 따른다. 지금 문서와 맞지
+   * 않으면 다른 문서의 채팅처럼 읽기 전용으로 두고, 이 문서에서 뗀 채팅이면 이 문서의 새 채팅을 연다. 일하는
+   * 중이면 그 일이 끝난 뒤(턴 끝)에 다시 본다. 따랐으면 true.
    */
   function adoptStoredThreadLink(): boolean {
-    if (draftChat || !storedLinkDiffers()) return false;
-    const stored = getThread(currentThread.id)!;
-    currentThread.documentId = stored.documentId;
-    currentThread.docKey = stored.docKey;
-    if (stored.documentLinkedAt !== undefined) currentThread.documentLinkedAt = stored.documentLinkedAt;
+    if (draftChat) return false;
+    const stored = getThread(currentThread.id);
+    if (!stored || !threadLinkSupersedes(stored, currentThread)) return false;
+    const detachedHere = readOnlyDocLabel === null
+      && stored.documentId === null && stored.docKey === null
+      && (currentDocumentId !== null || currentDocKey !== null)
+      && threadMatchesDocument(currentThread, currentDocumentId, currentDocKey);
+    if (detachedHere && (agentWorking() || hasPendingDocumentEdits() || questionController.hasPending())) return false;
+    applyThreadLink(currentThread, stored);
+    if (detachedHere) {
+      // 문서 없는 채팅은 이 문서에 남지 않는다 — 떠난 채팅은 레일에 남고, 이 문서의 새 채팅을 연다.
+      startNewChat({ silent: true });
+      rebuildThreadsList();
+      return true;
+    }
     if (readOnlyDocLabel === null && !threadMatchesDocument(currentThread, currentDocumentId, currentDocKey)) {
       enterReadOnlyMode(docGroupLabel(stored.docKey));
     }
@@ -2316,7 +2372,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /**
    * 열린 문서를 연결을 시작한 채팅에 잇는다. 채팅을 멈추거나 새로 열지 않는다 — 도는 턴은 그대로
-   * 이 문서에 쓴다. 연결은 한 방향이라 저장소의 채팅이 이미 문서를 가졌으면 저장소는 그대로다.
+   * 이 문서에 쓴다. 저장소의 채팅이 이미 문서를 가졌으면 저장소는 그대로다(다른 문서는 먼저 뗀다).
    */
   async function completeDocumentLink(link: {
     documentId: string;
@@ -2338,9 +2394,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       syncDocumentHeader();
       return null;
     }
-    currentThread.documentId = link.documentId;
-    currentThread.docKey = link.docKey;
-    currentThread.documentLinkedAt = stored?.documentLinkedAt ?? Date.now();
+    if (stored) {
+      applyThreadLink(currentThread, stored);
+    } else {
+      // 초안은 저장소에 없다 — 이 사본만 잇는다. 첫 메시지의 저장이 이 연결을 싣는다.
+      const linkedAt = Date.now();
+      delete currentThread.documentDetachedFrom;
+      Object.assign(currentThread, {
+        documentId: link.documentId, docKey: link.docKey, documentLinkedAt: linkedAt, documentLinkChangedAt: linkedAt,
+      });
+    }
     currentDocumentId = link.documentId;
     currentDocKey = link.docKey;
     // 보이는 채팅에 이었으면 하마가 머리의 문서 이름을 쓴다. 뒤의 제목 갱신은 쓰는 중인 이름을 건드리지 않는다.
@@ -2367,6 +2430,125 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     documentLinkThreadId = null;
     // 기다리는 동안 따라 둔 문서 상태와 실제 상태가 다르면 보통의 전환 규칙으로 맞춘다.
     updateDocumentContext();
+  }
+
+  /** 연결 단추가 막힌 이유(툴팁). null 이면 누를 수 있다. 떼기는 채팅이 쉬고 검토할 변경이 없을 때만 한다. */
+  function documentLinkBlockedReason(linked: boolean): string | null {
+    if (documentDetach !== null) return '문서에서 분리하는 중이에요';
+    if (documentLinkThreadId !== null) return '문서를 연결하는 중이에요';
+    if (!linked) return null;
+    if (isControlLocked() || questionController.hasPending() || bridge.getPendingChatPermissionRequest() !== null
+      || (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval')) return '작업이 끝나면 분리할 수 있어요';
+    if (hasPendingDocumentEdits()) return '변경을 검토하면 분리할 수 있어요';
+    return null;
+  }
+
+  /** 두 이름 칸 옆의 '/' 를 다시 보인다 — 하마가 삼키며 숨긴 채로 둔다. */
+  function restoreTitleSeparators(): void {
+    chatTitleSeparator.style.visibility = '';
+    workspaceTitleSeparator.style.visibility = '';
+  }
+
+  /**
+   * 보이는 채팅을 문서에서 떼기 시작한다. 하마가 지금 보이는 머리의 문서 이름을 삼키는 동안 기다리고, 끝까지
+   * 삼켰으면 그 채팅을 돌려준다. 삼키는 사이 채팅을 옮기거나 이름을 고치면 거둔다(null).
+   */
+  async function beginDocumentDetach(): Promise<DocumentDetachStart | null> {
+    if (root.dataset.disposed === 'true' || chatIsUnlinked() || documentLinkBlockedReason(true) !== null) return null;
+    // 다른 창이 이 채팅의 연결을 먼저 바꿨으면 그 연결을 따른다.
+    if (adoptStoredThreadLink()) return null;
+    const threadId = currentThread.id;
+    const start: DocumentDetachStart = {
+      threadId,
+      documentId: currentThread.documentId,
+      docKey: currentThread.docKey,
+      draft: draftChat || currentThread.messages.length === 0,
+    };
+    documentDetach = { threadId, inhaled: false, documentId: currentDocumentId, docKey: currentDocKey };
+    updateComposer();
+    // 하마가 쓰던 이름은 거두고 다 보인 뒤에 삼킨다. 가운데 줄임은 그린 그대로 삼키고, 끝나면 다시 맡긴다.
+    if (documentNameWriter.target) documentNameWriter.cancel();
+    paintDocumentNames();
+    const target = fullscreen ? workspaceDocumentName : documentName;
+    if (target === documentName) releaseMiddleTruncatedWithin(documentName);
+    documentNameWriterThreadId = threadId;
+    let swallowed = true;
+    try {
+      if (active) {
+        swallowed = await documentNameWriter.inhale(target, {
+          host: fullscreen ? workspaceDocumentContext : documentContext,
+          separator: fullscreen ? workspaceTitleSeparator : chatTitleSeparator,
+        });
+      }
+    } catch (error) {
+      console.warn('[agent-sidebar] 문서 이름을 삼키지 못했습니다:', error);
+    }
+    if (documentNameWriterThreadId === threadId) documentNameWriterThreadId = null;
+    if (!swallowed || root.dataset.disposed === 'true' || documentDetach?.threadId !== threadId
+      || currentThread.id !== threadId || chatIsUnlinked()) {
+      if (documentDetach?.threadId === threadId) cancelDocumentDetach();
+      return null;
+    }
+    documentDetach.inhaled = true;
+    syncDocumentHeader();
+    return start;
+  }
+
+  /**
+   * 그 자리에서 떼기를 마친다 — 이 사이드바의 문서가 닫혀 문서 없는 자리가 된 뒤에 부른다. 저장소의 채팅을
+   * 문서에서 떼고(초안이면 이 사본만) 같은 허브 세션에서 문서 없이 다시 연다(chat-start 가 뗀 문서를 싣는다).
+   * 문서가 아직 있으면 거둔다. 편집기는 이 대신 같은 허브 세션을 넘겨 새 세션의 사이드바에서 잇는다.
+   */
+  function completeDocumentDetach(): boolean {
+    const detach = documentDetach;
+    if (!detach || root.dataset.disposed === 'true') return false;
+    if (currentDocumentId !== null || currentDocKey !== null) {
+      cancelDocumentDetach();
+      return false;
+    }
+    documentDetach = null;
+    restoreTitleSeparators();
+    const draft = draftChat || currentThread.messages.length === 0;
+    const stored = currentThread.id !== detach.threadId || draft ? null : detachThreadDocument(detach.threadId);
+    if (currentThread.id !== detach.threadId || (!draft && !stored)) {
+      updateWorkspaceChatTitle();
+      paintDocumentNames();
+      updateComposer();
+      return false;
+    }
+    if (stored) {
+      applyThreadLink(currentThread, stored);
+    } else {
+      delete currentThread.documentLinkedAt;
+      currentThread.documentId = null;
+      currentThread.docKey = null;
+    }
+    hideDocumentRequired();
+    referenceLibrary.contextChanged();
+    void captureInbox.contextChanged();
+    enforceChatModeLock();
+    updateWorkspaceChatTitle();
+    paintDocumentNames();
+    rebuildThreadsList();
+    // 허브 세션은 그대로 두고(chat-stop 없이) 문서 없이 다시 시작한다 — 프로바이더의 세션을 이어받아 압축한다.
+    if (!draft) startCurrentBridgeChat(true);
+    updateComposer();
+    return true;
+  }
+
+  function cancelDocumentDetach(): void {
+    const detach = documentDetach;
+    if (detach === null) return;
+    documentDetach = null;
+    if (documentNameWriter.target && documentNameWriterThreadId === detach.threadId) documentNameWriter.cancel();
+    if (documentNameWriterThreadId === detach.threadId) documentNameWriterThreadId = null;
+    restoreTitleSeparators();
+    // 기다리는 동안 따라 둔 문서 상태를 되돌려, 실제 문서가 바뀌었으면 보통의 전환 규칙으로 맞춘다.
+    currentDocumentId = detach.documentId;
+    currentDocKey = detach.docKey;
+    updateDocumentContext();
+    syncDocumentHeader();
+    updateComposer();
   }
 
   /** 사용자 진입점의 연결 — 이 채팅에 문서가 없을 때만 편집기에 맡긴다. */
@@ -2630,8 +2812,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 비치지 않게 그때부터 숨긴다. 잇기를 거두면 cancelDocumentLink 가 다시 맞춘다.
     const linking = documentLinkThreadId !== null && documentLinkThreadId === currentThread.id
       && Boolean(getDocumentContext?.()?.documentName);
-    documentContext.classList.toggle('ag-doc-name-pending', linking);
-    workspaceDocumentContext.classList.toggle('ag-doc-name-pending', linking);
+    // 떼는 중에 하마가 삼킨 이름도 떼기가 끝날 때까지 비워 둔다 — 그사이의 저장·이름 바꾸기가 다시 그려도 비치지 않는다.
+    const detaching = documentDetach?.inhaled === true && documentDetach.threadId === currentThread.id;
+    documentContext.classList.toggle('ag-doc-name-pending', linking || detaching);
+    workspaceDocumentContext.classList.toggle('ag-doc-name-pending', linking || detaching);
     if (documentNameWriter.target && documentNameWriterThreadId !== currentThread.id) {
       documentNameWriter.cancel();
       documentNameWriterThreadId = null;
@@ -3565,6 +3749,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const composerUtilityActions = el('div', 'ag-composer-utility-actions');
   composerUtilityActions.append(phaseBadge, modeMenu.root);
   composerUtilities.append(composerUtilityActions);
+  // 문서 연결 단추 — 문서에 붙은 채팅이면 떼고, 아니면 문서 선택을 연다(고른 문서를 이 채팅에 잇는다).
+  // 브라우저 단추 바로 뒤에 선다.
+  const documentLinkToggle = createDocumentLinkToggle((linked) => {
+    if (linked) void detachDocument?.();
+    else openDocumentPalette(documentLinkToggle.element, { link: true });
+  });
+
+  /** 연결 단추를 지금 채팅에 맞춘다. 다른 문서의 채팅을 열람할 때와, 편집기가 그 길을 주지 않으면 숨긴다. */
+  function syncDocumentLinkToggle(): void {
+    const linked = !chatIsUnlinked();
+    const hidden = readOnlyDocLabel !== null || (linked ? !detachDocument : !linkDocument);
+    documentLinkToggle.update({ linked, hidden, disabledReason: hidden ? null : documentLinkBlockedReason(linked) });
+  }
 
   /* 콘텍스트 창 사용량 — 사용량을 안 뒤에만 보이는 작은 고리. 올리거나 누르면 압축 팝오버가 열린다. */
   const contextMeter = el('div', 'ag-context');
@@ -4156,6 +4353,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const browserTrigger = el('button', 'ag-browser-trigger'); browserTrigger.type = 'button'; browserTrigger.setAttribute('aria-label', '브라우저 열기'); browserTrigger.title = '브라우저 열기'; browserTrigger.append(createIcon('browser'));
   browserTrigger.addEventListener('click', () => workbench?.select('browser'));
   composerUtilityActions.insertBefore(browserTrigger, modeMenu.root);
+  browserTrigger.after(documentLinkToggle.element);
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerUtilityActions.insertBefore(contextMeter, referenceLibrary.trigger);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
@@ -8827,8 +9025,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setTurnRunning(running: boolean): void {
+    const ended = turnRunning && !running;
     turnRunning = running;
     if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); }
+    // 일하는 동안 다른 창이 이 채팅을 이 문서에서 뗐으면 턴이 끝난 뒤 따른다(adoptStoredThreadLink).
+    if (ended) queueMicrotask(() => {
+      if (root.dataset.disposed !== 'true' && documentLinkThreadId === null && documentDetach === null) adoptStoredThreadLink();
+    });
     updateTurnPending();
     updateComposer();
     rebuildReview();
@@ -9063,6 +9266,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 누르기 전까지는 그대로 두고 이어서 고를 수 있게.
     if (selectionLocked && chatStartPendingThreadId === null) setConfigPanelOpen(false);
     updateWorkflowControl();
+    syncDocumentLinkToggle();
     scheduleChatModeLockCheck();
     syncFollowUpComposerCues();
     followUps.render();
@@ -10963,6 +11167,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         changed = rememberProviderSession(thread, event.agent, event.providerSessionId, Date.now(), seenThroughMessageId)
           || changed;
       }
+      // 문서에서 뗀 뒤 첫 사용자 턴이 끝났다 — 허브가 뗀 문서를 알렸으니 다음 시작에는 싣지 않는다.
+      if (seenThroughMessageId && outcome === null && thread.documentDetachedFrom) {
+        delete thread.documentDetachedFrom;
+        changed = true;
+      }
       return changed;
     });
   }
@@ -10995,8 +11204,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const matchesActive = activeCompaction !== null
       && (activeCompaction.compactionId === event.compactionId
         || (activeCompaction.compactionId === null && event.trigger === 'manual'));
+    const silent = matchesActive && activeCompaction?.silent === true ? { silent: true as const } : {};
     if (event.phase === 'started') {
-      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger };
+      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger, ...silent };
       updateTurnPending(event.agent);
       updateComposer();
       return;
@@ -11004,11 +11214,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (matchesActive) activeCompaction = null;
     // 수동 압축 턴은 끝날 때까지 "콘텍스트 압축 중…"으로 둔다 — 완료 뒤 turn-end 전에 편집 중으로 깜빡이지 않는다.
     if (matchesActive && event.trigger === 'manual' && event.phase === 'completed' && turnRunning) {
-      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger };
+      activeCompaction = { compactionId: event.compactionId, trigger: event.trigger, ...silent };
     }
     if (event.phase === 'failed') {
       const failureText = event.message ? `콘텍스트 압축 실패 · ${event.message}` : '콘텍스트 압축 실패';
-      if (turnRunning) pendingCompactionFailure = failureText;
+      if ('silent' in silent) console.warn('[agent-sidebar] 문서를 뗀 뒤의 압축 실패:', failureText);
+      else if (turnRunning) pendingCompactionFailure = failureText;
       else systemMessage(failureText);
       updateTurnPending(event.agent);
       updateComposer();
@@ -11076,6 +11287,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (activeCompaction?.compactionId === null) activeCompaction = null;
     systemMessage(COMPACT_REJECTION[result.code] ?? (result.message || '콘텍스트 압축 실패'));
+    updateTurnPending();
+    updateComposer();
+  }
+
+  /** 문서를 뗀 뒤의 압축에서 조용히 넘기는 거절 — 압축을 못 하거나 할 것이 없거나 그새 일이 시작됐다. */
+  const DETACH_COMPACTION_SKIPS = new Set(['COMPACTION_UNSUPPORTED', 'NOTHING_TO_COMPACT', 'AGENT_BUSY', 'NO_SESSION']);
+
+  /**
+   * 문서를 뗀 채팅이 문서 없이 다시 열렸다(chat-started) — 뗀 문서에 대해 나눈 대화를 한 번 압축한다. 압축을
+   * 청한 표(compact)는 먼저 지워 다시 열거나 새로고침해도 다시 청하지 않는다. 사용자가 이미 보냈거나 세션이
+   * 수동 압축을 모르면 넘긴다. 거절과 실패는 대화에 알리지 않는다.
+   */
+  async function compactAfterDetach(): Promise<void> {
+    const detached = currentThread.documentDetachedFrom;
+    if (!detached?.compact || draftChat || !chatIsUnlinked() || bridgeThreadId !== currentThread.id) return;
+    delete detached.compact;
+    persistCurrentThread();
+    if (sessionCompaction !== 'manual' || activeCompaction !== null || agentWorking() || connState !== 'connected') return;
+    activeCompaction = { compactionId: null, trigger: 'manual', silent: true };
+    updateTurnPending(selectedAgent);
+    updateComposer();
+    const result = await bridge.compactChat({ reason: 'document-detached' });
+    if (result.ok) {
+      if (activeCompaction?.compactionId === null) activeCompaction.compactionId = result.compactionId;
+      return;
+    }
+    if (activeCompaction?.compactionId === null) activeCompaction = null;
+    if (!DETACH_COMPACTION_SKIPS.has(result.code)) console.warn('[agent-sidebar] 문서를 뗀 뒤 압축하지 못했습니다:', result.code, result.message);
     updateTurnPending();
     updateComposer();
   }
@@ -11298,6 +11537,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           refocusInputOnChatStart = false;
           if (active && !input.disabled && !input.readOnly) input.focus({ preventScroll: true });
         }
+        void compactAfterDetach();
         break;
       }
       case 'permission-changed':
@@ -12303,6 +12543,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateAgentUndoButtons();
     applyPlanMinimizedState();
     updateReviewControl(changeSets);
+    // 검토할 변경이 생기거나 걷히면 떼기를 막거나 푼다.
+    syncDocumentLinkToggle();
   }
 
   // ── 구독 ──────────────────────────────────────────────
@@ -12310,9 +12552,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 저장소 준비가 허브의 welcome 보다 늦어도 시작 채팅 고르기(settleStartupChat)가 둘 다 기다린
   // 뒤에 살아 있는 채팅을 잇는다 — 여기서 질문을 따로 되살리지 않는다.
   const unsubThreads = subscribeThreadChanges(() => {
-    // 다른 창과 같은 채팅을 서로 다른 문서에 이었으면 저장소에 남은 연결을 따른다. 이 창이 잇는 중이거나
-    // 아직 잇지 않은 채팅은 completeDocumentLink·beginDocumentLink 가 맡는다.
-    if (documentLinkThreadId === null && currentThread.documentId !== null) adoptStoredThreadLink();
+    // 다른 창이 같은 채팅의 연결을 더 늦게 바꿨으면(잇거나 뗐으면) 저장소의 연결을 따른다. 이 창이 잇거나
+    // 떼는 중이면 complete·cancel 이 맡는다.
+    if (documentLinkThreadId === null && documentDetach === null) adoptStoredThreadLink();
     if (threadsListVisible()) rebuildThreadsList();
     if (restoringLiveQuestion) return;
     const livePermission = bridge.getPendingChatPermissionRequest();
@@ -12790,6 +13032,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginDocumentLink,
     completeDocumentLink,
     cancelDocumentLink,
+    beginDocumentDetach,
+    completeDocumentDetach,
+    cancelDocumentDetach,
     /** 사용자가 문서를 열면 집중 화면을 접고 문서 옆 사이드바로 돌아온다. */
     exitFullscreen(): void {
       if (root.dataset.disposed === 'true' || !fullscreen) return;

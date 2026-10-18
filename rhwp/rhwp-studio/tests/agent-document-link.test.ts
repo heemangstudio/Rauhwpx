@@ -1,11 +1,11 @@
-// 문서 없는 채팅에 문서 하나 잇기 — 저장소의 한 방향 연결, 도구 응답 순서, 만든 문서의 검토 규칙,
-// 일회성 문서 연결 동의, 홈·파일 메뉴 열기와 지난 채팅의 길 고르기.
+// 문서 없는 채팅에 문서 하나 잇기와 문서에서 떼기 — 저장소의 연결(더 늦게 바꾼 사본이 이긴다), 도구 응답 순서,
+// 만든 문서의 검토 규칙, 일회성 문서 연결 동의, 홈·파일 메뉴 열기와 지난 채팅의 길 고르기.
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
 import { readChatPermissionGrants, readChatPermissionRequest } from '../src/agent/chat-permissions.ts';
-import { createEmptyThread, getThread, linkThreadDocument, listThreads, upsertThread } from '../src/agent/threads.ts';
+import { createEmptyThread, detachThreadDocument, getThread, linkThreadDocument, listThreads, upsertThread } from '../src/agent/threads.ts';
 import type { ChatDocumentLinkRequest } from '../src/agent/document-link.ts';
 import type { ChatPermissionRequest, SidebarEvent } from '../src/agent/types.ts';
 import { opensInNewSession, opensNestedInNavigation, routeUnlinkedThread, settledLinkLoad, type RoutingChat } from '../src/document-session-routing.ts';
@@ -37,7 +37,7 @@ function storedThread(fields: { documentId?: string | null; docKey?: string | nu
   return getThread(thread.id)!;
 }
 
-test('linkThreadDocument links a document-less chat once and never relinks it', async () => {
+test('linkThreadDocument links a document-less chat and never replaces a linked document', async () => {
   const thread = storedThread();
   // 같은 밀리초에 만든 두 채팅은 목록 순서가 정해지지 않는다 — 대화 시각을 갈라 둔다.
   await new Promise((resolve) => setTimeout(resolve, 5));
@@ -69,15 +69,72 @@ test('linkThreadDocument links a document-less chat once and never relinks it', 
   assert.equal(getThread(other.id)?.documentId, null);
 });
 
-test('a second window saving the same chat with another document keeps the first link', () => {
+test('a stale copy from a second window cannot replace a newer link', () => {
   const thread = storedThread();
   linkThreadDocument(thread.id, { documentId: 'doc-a', docKey: '보고서.hwpx' });
-  // 다른 창은 연결 전 사본에 자기 문서를 이어 저장한다.
+  // 다른 창은 연결 전 사본에 자기 문서를 적어 저장한다 — 연결을 바꾼 시각이 없다.
   upsertThread({ ...thread, documentId: 'doc-b', docKey: '다른 문서.hwpx', messages: [...thread.messages, { role: 'assistant', text: '이어서' }] });
   assert.deepEqual(
     { documentId: getThread(thread.id)?.documentId, docKey: getThread(thread.id)?.docKey, messages: getThread(thread.id)?.messages.length },
     { documentId: 'doc-a', docKey: '보고서.hwpx', messages: 2 },
   );
+});
+
+const linkState = (id: string) => {
+  const thread = getThread(id)!;
+  return { documentId: thread.documentId, docKey: thread.docKey, detachedFrom: thread.documentDetachedFrom };
+};
+
+test('a chat detaches from its document and links another, and stale copies undo neither', () => {
+  const born = storedThread({ documentId: 'doc-a', docKey: '보고서.hwpx' });
+  const other = storedThread();
+  const detached = detachThreadDocument(born.id);
+  assert.deepEqual(linkState(born.id), {
+    documentId: null, docKey: null, detachedFrom: { documentId: 'doc-a', docKey: '보고서.hwpx', compact: true },
+  }, 'the detached document is remembered once, with its compaction still to ask for');
+  assert.equal(getThread(born.id)?.messages.length, 1, 'the conversation stays');
+  assert.equal(getThread(born.id)?.lastActivityAt, born.lastActivityAt, 'detaching is not chat activity');
+  assert.equal(detachThreadDocument(born.id), null, 'a chat without a document has nothing to detach');
+  assert.equal(detachThreadDocument(other.id), null);
+
+  // 문서에 붙어 있던 사본(다른 창)이 답을 저장해도 떼기는 남는다.
+  upsertThread({ ...born, messages: [...born.messages, { role: 'assistant', text: '정리했어요' }] });
+  assert.deepEqual([getThread(born.id)?.documentId, getThread(born.id)?.messages.length], [null, 2]);
+
+  const relinked = linkThreadDocument(born.id, { documentId: 'doc-b', docKey: '계획서.hwpx' });
+  assert.deepEqual(linkState(born.id), { documentId: 'doc-b', docKey: '계획서.hwpx', detachedFrom: undefined });
+  assert.ok(relinked!.documentLinkChangedAt! > detached!.documentLinkChangedAt!);
+  // 뗀 때의 사본도, 처음 문서의 사본도 다시 이은 문서를 되돌리지 못한다.
+  upsertThread({ ...detached!, messages: [...detached!.messages, { role: 'assistant', text: '뗀 뒤 사본' }] });
+  assert.equal(getThread(born.id)?.documentId, 'doc-b');
+  upsertThread({ ...born, messages: [...born.messages, { role: 'assistant', text: '처음 사본' }] });
+  assert.deepEqual(linkState(born.id), { documentId: 'doc-b', docKey: '계획서.hwpx', detachedFrom: undefined });
+  assert.equal(getThread(born.id)?.messages.length, 2, 'the newest content still saves');
+
+  // 대화 없이 뗀 채팅은 압축할 것이 없다.
+  const quiet = storedThread({ documentId: 'doc-c', docKey: 'c.hwpx' });
+  upsertThread({ ...quiet, messages: [{ role: 'assistant', text: '안녕하세요' }] });
+  assert.deepEqual(detachThreadDocument(quiet.id)?.documentDetachedFrom, { documentId: 'doc-c', docKey: 'c.hwpx' });
+});
+
+test('a detached chat\'s chat-start, resent after a reconnect too, carries the detached document only without one', () => {
+  const frames: Record<string, any>[] = [];
+  const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    state: 'connected', awaitingWelcome: false, chatStartSent: false, projectWorktreeBinding: null,
+    sendJson(frame: Record<string, any>) { frames.push(frame); return true; },
+    // 사이드바의 제공자는 보내는 순간의 스레드에서 뗀 문서를 읽는다.
+    chatStartContextProvider: () => ({ history: [], detachedFrom: { documentId: 'doc-a', documentName: '보고서.hwpx' } }),
+  }) as any;
+  const start = (documentId: string | null, documentName: string | null) => {
+    bridge.chatStartSent = false;
+    bridge.pendingChatStart = { requestId: `chat-start-${frames.length}`, agent: 'claude', workflow: 'direct', threadId: 'thread-1', documentId, documentName, history: [] };
+    bridge.sendPendingChatStart();
+    return frames.at(-1)!;
+  };
+  const detached = start(null, '보고서.hwpx');
+  assert.deepEqual([detached.documentId, detached.documentName, detached.detachedFrom],
+    [null, null, { documentId: 'doc-a', documentName: '보고서.hwpx' }]);
+  assert.equal('detachedFrom' in start('doc-b', '계획서.hwpx'), false, 'a start with a document never carries it');
 });
 
 /** 브리지의 도구 처리만 떼어 낸 모양 — 편집기의 연결 흐름은 linkDocument 로 흉내 낸다. */

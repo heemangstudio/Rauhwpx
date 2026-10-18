@@ -7,7 +7,10 @@ import test from 'node:test';
 import { ProjectStore } from '../project-store.mjs';
 import { createReferenceCatalog } from '../reference-catalog.mjs';
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { once } from 'node:events';
 import { HUB_TOKEN, connect, startLiveHub } from './live-hub-fixture.mjs';
+
+const PI_MODULE_URL = new URL('../agents/pi.mjs', import.meta.url).href;
 
 const NO_DOCUMENT = { documentName: null };
 const LAUNCH_ID = 'live-hub-launch';
@@ -65,6 +68,8 @@ test('a no-document chat has no project and links a document mid-turn without a 
   assert.ok((await piToolNames(hub)).includes('open_document'));
   const first = await hub.promptOf('안녕');
   assert.match(first, /No document is linked to this chat/);
+  assert.match(first, /one document at a time, and the user can detach it later/);
+  assert.doesNotMatch(first, /for good|permanent/);
 
   hub.message('HOLD');
   await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.text === 'HOLD_READY');
@@ -96,7 +101,7 @@ test('a no-document chat has no project and links a document mid-turn without a 
   assert.equal((await call('project_read', { view: 'summary' })).result.id, linked.projectId);
   assert.ok(!(await piToolNames(hub)).includes('open_document'), 'link tools are gone after a link');
 
-  // 연결은 영구적이다. 같은 문서를 다시 보내면 같은 답을 한다.
+  // 연결된 채팅은 다른 문서로 바꾸지 못한다(먼저 Studio 에서 떼어 낸다). 같은 문서를 다시 보내면 같은 답을 한다.
   hub.studio.send({ type: 'chat-link-document', requestId: 'again', documentId: 'doc-other', documentName: '다른.hwpx' });
   const refused = await hub.studio.next((frame) => frame.type === 'chat-error' && frame.requestId === 'again');
   assert.equal(refused.code, 'THREAD_ALREADY_LINKED');
@@ -110,6 +115,9 @@ test('a no-document chat has no project and links a document mid-turn without a 
   const next = await hub.promptOf('이어서', { documentId: 'doc-linked' });
   assert.match(next, /"documentId":"doc-linked","documentName":"연결.hwpx"/);
   assert.doesNotMatch(next, /No document is linked/);
+  // 연결은 다음 사용자 턴에 한 번 알린다 (다시 보낸 같은 문서 연결은 쌓지 않는다).
+  assert.equal(next.split('This chat is now attached to the document "연결.hwpx" (documentId doc-linked)').length, 2, next);
+  assert.doesNotMatch(await hub.promptOf('또', { documentId: 'doc-linked' }), /<document_change/);
 });
 
 test('each link asks once, is never kept as a chat grant, and expires', { timeout: 60_000 }, async (t) => {
@@ -286,4 +294,157 @@ test('an existing thread project stays bound and merges into the linked document
   assert.equal(summary.id, linked.projectId);
   assert.equal(summary.counts.notes, 1, 'the thread project merged into the document project');
   assert.deepEqual(summary.documents.map((entry) => entry.name), ['정리.hwpx']);
+});
+
+/** 수동 압축을 받는 Pi — 받은 compact() 인자를 글로 되돌려 주고 턴을 닫는다. 나머지는 실제 Pi 어댑터다. */
+function compactingPiArgs(t) {
+  const dir = tempDir(t, 'rhwp-compacting-pi-');
+  const realUrl = `${PI_MODULE_URL}?compacting-real`;
+  const source = `
+    export * from ${JSON.stringify(realUrl)};
+    import { createPiSession as createRealPiSession } from ${JSON.stringify(realUrl)};
+    export function createPiSession(opts, ...rest) {
+      const session = createRealPiSession(opts, ...rest);
+      session.compactionSupport = 'manual';
+      session.compact = (options) => setTimeout(() => {
+        opts.onEvent({ type: 'turn-start', agent: 'pi' });
+        opts.onEvent({ type: 'text-delta', agent: 'pi', text: JSON.stringify({ compact: options ?? null }) });
+        opts.onEvent({ type: 'turn-end', agent: 'pi', stopReason: 'completed' });
+      }, 0);
+      return session;
+    }
+  `;
+  writeFileSync(path.join(dir, 'loader.mjs'), `
+    export async function load(url, context, nextLoad) {
+      if (url === ${JSON.stringify(PI_MODULE_URL)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(source)} };
+      return nextLoad(url, context);
+    }
+  `);
+  const preload = path.join(dir, 'preload.mjs');
+  writeFileSync(preload, "import { register } from 'node:module'; register(new URL('./loader.mjs', import.meta.url));\n");
+  return ['--import', preload];
+}
+
+const DETACHED = { documentId: null, documentName: null, detachedFrom: { documentId: 'doc-old', documentName: '옛 문서.hwpx' } };
+const DETACH_LINE = 'The user detached this chat from the document "옛 문서.hwpx" (documentId doc-old).';
+const occurrences = (text, needle) => text.split(needle).length - 1;
+
+test('a detached chat hears about it once, compacts with detach instructions and gets the link tools back', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: 'doc-old', nodeArgs: compactingPiArgs(t) });
+  await hub.start({ documentName: '옛 문서.hwpx' });
+  assert.ok(!(await piToolNames(hub)).includes('open_document'));
+
+  // 떼어 낸 채팅은 문서 없이 다시 시작한다. 재연결로 같은 chat-start 가 다시 와도 알림은 하나다.
+  const detached = await hub.start(DETACHED);
+  assert.equal(detached.documentId, null);
+  assert.equal(detached.compaction, 'manual');
+  await hub.start(DETACHED);
+  assert.ok((await piToolNames(hub)).includes('open_document'), 'a detached chat can attach again');
+  const first = await hub.promptOf('계속', { documentId: null });
+  assert.equal(occurrences(first, '<document_change'), 1, first);
+  assert.equal(occurrences(first, DETACH_LINE), 1);
+  assert.match(first, /No document is linked now\. When the user wants to write or save, suggest attaching one with open_document or create_document\./);
+  assert.match(first, /No document is linked to this chat/);
+  // 이미 전한 떼어 냄은 다시 온 chat-start 로 되살아나지 않는다.
+  await hub.start(DETACHED);
+  assert.doesNotMatch(await hub.promptOf('다음', { documentId: null }), /<document_change/);
+
+  const compact = async (requestId, extra) => {
+    hub.studio.send({ type: 'chat-compact', requestId, threadId: hub.threadId, ...extra });
+    assert.equal((await hub.studio.next((frame) => frame.requestId === requestId)).type, 'chat-compact-accepted');
+    const delta = await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+    await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+    return JSON.parse(delta.event.text).compact;
+  };
+  assert.deepEqual(await compact('detach-compact', { reason: 'document-detached' }), {
+    instructions: 'This chat was just detached from the document "옛 문서.hwpx" (documentId doc-old). Keep what the user and assistant discussed, decided and learned about it, since the user may need that context later; drop raw tool output. The chat can no longer edit that document or use its project files.',
+  });
+  assert.equal(await compact('plain-compact', {}), null, 'a plain compaction carries no instructions');
+});
+
+test('a malformed or linked detachedFrom is ignored', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: null });
+  await hub.start({ ...NO_DOCUMENT, detachedFrom: { documentId: 42 } });
+  assert.doesNotMatch(await hub.promptOf('하나'), /<document_change/);
+  await hub.start({ documentId: 'doc-now', documentName: '지금.hwpx', detachedFrom: DETACHED.detachedFrom });
+  assert.doesNotMatch(await hub.promptOf('둘', { documentId: 'doc-now' }), /<document_change/);
+});
+
+test('attaching after a detach merges both into one note on the next user turn', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: null });
+  await hub.start(DETACHED);
+  hub.studio.send({ type: 'chat-link-document', documentId: 'doc-new', documentName: '새 문서.hwpx' });
+  assert.equal((await hub.studio.next((frame) => frame.type === 'chat-document-linked')).documentId, 'doc-new');
+  const prompt = await hub.promptOf('붙였어', { documentId: 'doc-new' });
+  assert.equal(occurrences(prompt, '<document_change'), 1, prompt);
+  const block = prompt.slice(prompt.indexOf('<document_change'), prompt.indexOf('</document_change>'));
+  assert.ok(block.indexOf(DETACH_LINE) >= 0 && block.indexOf(DETACH_LINE) < block.indexOf('This chat is now attached to the document "새 문서.hwpx" (documentId doc-new).'), block);
+  assert.doesNotMatch(block, /No document is linked now/);
+  assert.doesNotMatch(await hub.promptOf('그리고', { documentId: 'doc-new' }), /<document_change/);
+});
+
+// 실제 Pi 처럼 --session-dir 에 세션 파일을 남겨 같은 기록에서 이어 받을 수 있게 하고, 받은 프롬프트를 되돌려 준다.
+const PERSISTING_PI_SCRIPT = `
+  if (process.argv.includes('--version')) { console.log('0.0.0-test'); process.exit(0); }
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const args = process.argv;
+  const prompt = fs.readFileSync(0, 'utf8').trim();
+  const sessionDir = args[args.indexOf('--session-dir') + 1];
+  const session = args[args.indexOf('--session-id') + 1];
+  const header = JSON.stringify({ type: 'session', version: 3, id: session, cwd: process.cwd() });
+  fs.mkdirSync(sessionDir, { recursive: true });
+  if (!fs.readdirSync(sessionDir).some((name) => name.endsWith('_' + session + '.jsonl'))) {
+    fs.writeFileSync(path.join(sessionDir, Date.now() + '_' + session + '.jsonl'), header + '\\n');
+  }
+  console.log(header);
+  console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: JSON.stringify({ prompt }) } }));
+  console.log(JSON.stringify({ type: 'agent_settled' }));
+`;
+
+test('detaching on the same hub session resumes the provider, unbinds the document and attaches to another', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: 'doc-old', piScript: PERSISTING_PI_SCRIPT, nodeArgs: compactingPiArgs(t) });
+  const linked = await hub.start({ documentName: '옛 문서.hwpx' });
+  assert.match(linked.projectId, /^p/);
+  hub.message('첫 턴');
+  const firstEnd = await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+  const providerSessionId = firstEnd.event.providerSessionId;
+  assert.ok(providerSessionId);
+
+  // 옛 브리지가 닫히고 새 브리지가 같은 허브 세션에 붙는다 — 기록과 공급자 세션은 그대로다.
+  hub.studio.socket.close();
+  await once(hub.studio.socket, 'close');
+  const bridge = await connect(hub.studioUrl.replace('instance=live-hub-test', 'instance=detached-bridge'), { origin: 'http://127.0.0.1:7700' });
+  t.after(() => bridge.socket.close());
+  assert.equal((await bridge.next((frame) => frame.type === 'welcome')).hubSessionId, hub.sessionId);
+
+  const detached = await hub.start({ ...DETACHED, providerSessionId }, bridge);
+  assert.equal(detached.resumed, true, 'the native provider session resumes on the same record');
+  assert.equal(detached.documentId, null);
+  assert.equal(detached.documentName, null);
+  assert.equal(detached.projectId, null);
+  assert.deepEqual(
+    (({ projectId, project }) => ({ projectId, project }))(await bridge.next((frame) => frame.type === 'project-bound')),
+    { projectId: null, project: null },
+  );
+  assert.ok((await piToolNames(hub)).includes('open_document'));
+
+  bridge.send({ type: 'chat-compact', requestId: 'detach', threadId: hub.threadId, reason: 'document-detached' });
+  assert.equal((await bridge.next((frame) => frame.requestId === 'detach')).type, 'chat-compact-accepted');
+  const compactDelta = await bridge.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+  assert.match(JSON.parse(compactDelta.event.text).compact.instructions, /^This chat was just detached from the document "옛 문서.hwpx" \(documentId doc-old\)\./);
+  await bridge.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+
+  bridge.send({ type: 'chat-link-document', requestId: 'attach', documentId: 'doc-new', documentName: '새 문서.hwpx' });
+  const attached = await bridge.next((frame) => frame.requestId === 'attach');
+  assert.equal(attached.type, 'chat-document-linked', JSON.stringify(attached));
+  assert.match(attached.projectId, /^p/);
+  assert.notEqual(attached.projectId, linked.projectId);
+
+  hub.message('붙였어', { documentId: 'doc-new' }, bridge);
+  const delta = await bridge.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+  const prompt = JSON.parse(delta.event.text).prompt;
+  assert.equal(occurrences(prompt, '<document_change'), 1, prompt);
+  assert.match(prompt, /The user detached this chat from the document "옛 문서.hwpx" \(documentId doc-old\)\.[^<]*This chat is now attached to the document "새 문서.hwpx" \(documentId doc-new\)\./);
+  assert.match(prompt, /"documentId":"doc-new","documentName":"새 문서.hwpx"/);
 });

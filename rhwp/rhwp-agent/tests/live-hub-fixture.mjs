@@ -61,9 +61,10 @@ export function upgradeOutcome(url) {
  * 허브와 Studio 소켓을 띄우고 Pi 채팅을 시작하는 도우미를 돌려준다.
  * piScript 는 가짜 Pi 본문이다. 템플릿 문자열 안에서 root 경로를 쓸 수 있게 root 를 받는 함수도 된다.
  * env 는 허브 프로세스 환경을 덮어쓴다(예: NODE_ENV=production 으로 마스터 토큰 우회를 끈다).
+ * nodeArgs 는 server.mjs 앞에 붙는 node 인자다(예: --import 로 모듈 로더를 건다).
  */
 export async function startLiveHub(t, {
-  piScript = ECHO_PI_SCRIPT, threadId = 'thread-live', documentId = 'document-live', env = {},
+  piScript = ECHO_PI_SCRIPT, threadId = 'thread-live', documentId = 'document-live', env = {}, nodeArgs = [],
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-live-hub-'));
   const piRoot = path.join(root, 'pi');
@@ -84,7 +85,7 @@ export async function startLiveHub(t, {
     'pi',
     typeof piScript === 'function' ? piScript(root) : piScript,
   );
-  const child = spawn(process.execPath, ['server.mjs'], {
+  const child = spawn(process.execPath, [...nodeArgs, 'server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, NODE_ENV: 'test', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: HUB_TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID, RHWP_WORK_DIR: root, RHWP_PI_DIR: piRoot,

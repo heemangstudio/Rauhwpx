@@ -410,7 +410,10 @@ function createSearchList(config: {
 
 // ── 도구 줄 아래로 떨어지는 팝오버 ──────────────────────
 
-/** 도구 줄 왼쪽 끝에 맞춰 트리거 아래에 세운다. */
+/**
+ * 도구 줄 왼쪽 끝에 맞춰 트리거 아래에 세운다. 아래 자리가 모자라고 위가 더 넓으면(입력기 아래 줄의 단추)
+ * 트리거 위로 세운다 — 내용이 바뀌어 높이가 달라지면 다시 부른다.
+ */
 function placeUnderToolbar(
   surface: HTMLElement,
   host: HTMLElement,
@@ -423,11 +426,15 @@ function placeUnderToolbar(
   const anchor = trigger.getBoundingClientRect();
   const width = centered ? Math.min(320, window.innerWidth - 16) : Math.max(240, Math.min(320, align.width));
   const left = Math.max(8, Math.min(centered ? anchor.left + (anchor.width - width) / 2 : align.left, window.innerWidth - width - 8));
-  const top = anchor.bottom + 6;
+  const below = window.innerHeight - anchor.bottom - 18;
+  const above = anchor.top - 18;
+  const upward = below < 240 && above > below;
+  const maxHeight = Math.max(180, Math.min(420, upward ? above : below));
   surface.style.width = `${width}px`;
   surface.style.left = `${left - origin.x}px`;
+  surface.style.maxHeight = `${maxHeight}px`;
+  const top = upward ? anchor.top - 6 - Math.min(surface.offsetHeight, maxHeight) : anchor.bottom + 6;
   surface.style.top = `${top - origin.y}px`;
-  surface.style.maxHeight = `${Math.max(180, Math.min(420, window.innerHeight - top - 12))}px`;
 }
 
 // ── 문서 필터 ─────────────────────────────────────────
@@ -575,6 +582,7 @@ export function showDocumentPalette(config: {
     if (!surface.isConnected || list.length === 0) return;
     recents = list;
     searchList.setOptions(options());
+    placeUnderToolbar(surface, config.host, config.trigger, config.alignTo, config.centered);
   }).catch(() => { /* 최근 문서가 없으면 열기 줄만 남는다 */ });
 }
 

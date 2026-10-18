@@ -33,3 +33,13 @@
     color: rgb(98, 179, 226);
   }
 }
+
+/* 하마가 물 글자는 입을 벌린 한 틱 동안 하마 파랑으로 물든다. */
+.ag-doc-name-letter-out {
+  color: rgb(98, 179, 226);
+}
+
+/* 첫 입 뒤로는 말줄임표를 걷는다 — 숨은 글자가 자리를 차지해 '…' 만 남지 않게. */
+.ag-doc-name-inhaling {
+  text-overflow: clip;
+}

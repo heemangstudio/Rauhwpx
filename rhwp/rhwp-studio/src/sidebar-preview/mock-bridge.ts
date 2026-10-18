@@ -268,7 +268,12 @@ export function createMockBridge(
     permissionProfile: T.PermissionProfile;
     /** 그 시작이 실은 대화 기록의 본문(프로바이더가 이어 받는 콘텍스트). */
     history: string[];
+    documentId: string | null;
+    /** 문서를 뗀 채팅이 문서 없이 다시 열 때 실은 뗀 문서. */
+    detachedFrom: T.ChatDetachedFrom | null;
   }> = [];
+  /** 받은 chat-compact 의 까닭 — 문서를 뗀 뒤의 압축은 'document-detached'. */
+  const compactions: Array<{ reason: T.ChatCompactReason | null }> = [];
   /**
    * 마지막 chat-start 가 실은 대화 기록. 실제 브리지처럼 보내는 순간 사이드바의 콘텍스트 제공자로 다시
    * 만든다(제공자가 없으면 startChat 이 건넨 기록) — 세션을 잃은 뒤 메시지가 스스로 여는 시작도 같다.
@@ -367,7 +372,12 @@ export function createMockBridge(
       handoff: context?.handoffHistory?.length ?? 0,
       history: context?.history.length ?? 0,
     };
-    chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory] });
+    chatStarts.push({
+      threadId, workflow: workflow.workflow, permissionProfile: permission, history: [...startHistory],
+      documentId: chatDocumentId,
+      // 실제 브리지처럼 문서 없이 여는 시작만 뗀 문서를 싣는다.
+      detachedFrom: chatDocumentId === null && context?.detachedFrom ? { ...context.detachedFrom } : null,
+    });
     return context;
   };
   let activeTemplate: T.DocumentTemplate | null = null;
@@ -960,7 +970,8 @@ export function createMockBridge(
     setChatStartContextProvider: (provider) => {
       contextProvider = provider;
     },
-    compactChat: async () => {
+    compactChat: async (options) => {
+      compactions.push({ reason: options?.reason ?? null });
       if (running) return { ok: false, code: 'AGENT_BUSY', message: 'A turn is already in progress.' };
       if (sessionCompaction(agent) !== 'manual') return { ok: false, code: 'COMPACTION_UNSUPPORTED', message: '' };
       const turnGeneration = ++generation;
@@ -1961,6 +1972,7 @@ export function createMockBridge(
     deliverWelcome,
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
+      compactions: compactions.map((entry) => ({ ...entry })),
       messagesSent,
       sentMentions: sentMentions.map((ids) => [...ids]),
       sentDocumentMentions: sentDocumentMentions.map((rows) => rows.map((row) => ({ ...row }))),

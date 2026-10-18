@@ -1359,6 +1359,11 @@ export class CanvasView {
     // 머리말/꼬리말 preview 재사용 키를 문서 단위로도 끊는다.
     this.documentRenderGeneration += 1;
     this.scrollContent.replaceChildren();
+    // 옛 문서의 크기와 스크롤을 남기지 않는다 — 문서 없는 세션을 붙이면 빈 문서 화면이 그 스크롤만큼 밀려 보이지 않는다.
+    this.scrollContent.style.height = '';
+    this.scrollContent.style.width = '';
+    this.viewportManager.setScrollLeft(0);
+    this.viewportManager.setScrollTop(0);
   }
 
   private releaseAllRenderedPages(): void {

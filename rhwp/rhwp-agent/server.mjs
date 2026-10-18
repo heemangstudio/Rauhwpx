@@ -133,7 +133,10 @@ import {
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
+  detachCompactionInstructions,
+  documentChangeBlock,
   liveDocumentBlock,
+  normalizeDetachedFrom,
   normalizeDocumentName,
   normalizeDocumentSnapshot,
   normalizeStableScopeId,
@@ -248,7 +251,7 @@ const USER_QUESTION_SCOPE_WAIT_MS = 2_000;
 const DOCUMENT_LINK_CONSENT_TIMEOUT_MS = Number(process.env.RHWP_DOCUMENT_LINK_CONSENT_TIMEOUT_MS ?? 5 * 60_000);
 const DOCUMENT_LINK_STUDIO_TIMEOUT_MS = 120_000;
 const DOCUMENT_LINK_TOOLS = new Set(['open_document', 'create_document']);
-const DOCUMENT_REQUIRED_MESSAGE = 'Create a document with create_document or link one with open_document first; files are saved to that document\'s 자료함.';
+const DOCUMENT_REQUIRED_MESSAGE = 'This chat has no linked document. Create a document with create_document or link one with open_document first; files are saved to the linked document\'s 자료함.';
 const HARNESS_UPDATE_INITIAL_DELAY_MS = 8_000;
 const HARNESS_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const HARNESS_UPDATE_BUSY_RETRY_MS = 5 * 60 * 1000;
@@ -593,6 +596,12 @@ const sessions = new HubSessionRegistry({
       pendingTemplateCompletions: [],
       pendingDocumentSaved: null,
       pendingEditReport: null,
+      // 마지막으로 Studio 에 알린 묶인 프로젝트 — 묶임이 풀리면 project-bound(null) 을 한 번 보낸다.
+      announcedProjectId: null,
+      // 문서를 떼어 내거나 붙인 일 — 다음 사용자 턴에 한 번 알린다 ({ threadId, detach, attach }).
+      pendingDocumentNote: null,
+      // 이미 전한 떼어 냄 (`${threadId}\n${documentId}`) — 재연결로 다시 온 chat-start 가 또 쌓지 않는다.
+      deliveredDetachNote: null,
       downloadManager,
       documentSnapshotManager,
       artifactStore: new ArtifactStore({
@@ -3483,10 +3492,18 @@ function sendToProjectStudios(projectId, frame) {
 
 async function sendProjectBound(record) {
   const projectId = record.boundProjectId;
-  if (!projectId) return;
+  if (!projectId) {
+    // 묶였던 프로젝트가 풀렸다(문서를 떼어 낸 채팅, 지워진 프로젝트) — 한 번 알린다.
+    if (record.announcedProjectId) {
+      record.announcedProjectId = null;
+      sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId: null, project: null });
+    }
+    return;
+  }
   try {
     const project = await projectStore.get(projectId);
     if (record.boundProjectId !== projectId) return;
+    record.announcedProjectId = projectId;
     sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId, project });
   } catch (error) {
     log(`project-bound failed: ${error?.message ?? error}`);
@@ -3697,6 +3714,11 @@ async function bindRecordProject(record, { threadId, documentId, documentName, c
   } catch (error) {
     log(`project binding failed: ${error?.message ?? error}`);
   }
+  // 다른 프로젝트로 옮기면(문서를 떼어 냄 포함) 예전 프로젝트의 정리 도우미가 이 채팅의 공급자를 쓰지 않게 한다.
+  const previousProjectId = record.boundProjectId;
+  if (previousProjectId && previousProjectId !== projectId && projectRecords.get(previousProjectId) === record) {
+    projectRecords.delete(previousProjectId);
+  }
   record.boundProjectId = projectId;
   record.boundDocumentId = documentId ?? null;
   record.boundDocumentName = documentName ?? null;
@@ -3738,9 +3760,10 @@ function threadLinkedDocumentElsewhere(record, threadId) {
 
 /**
  * Studio 의 chat-link-document: 문서 없는 채팅에 문서를 하나 연결한다. 공급자를 다시 띄우지 않고 세션의
- * 문서·프로젝트·자료 범위만 바꾸므로 턴 중에도 된다. 한 번 연결한 채팅은 다른 문서로 바꾸지 못하고
- * (THREAD_ALREADY_LINKED), 같은 문서를 다시 보내면 같은 답을 한다. 예전 스레드 프로젝트와 채팅 범위
- * 첨부는 문서 프로젝트로 옮긴다. 답: chat-document-linked { threadId, documentId, documentName, projectId }.
+ * 문서·프로젝트·자료 범위만 바꾸므로 턴 중에도 된다. 채팅의 문서는 한 번에 하나다 — 연결된 채팅은 다른
+ * 문서로 바꾸지 못하고(THREAD_ALREADY_LINKED, 먼저 Studio 에서 떼어 낸다), 같은 문서를 다시 보내면 같은
+ * 답을 한다. 예전 스레드 프로젝트와 채팅 범위 첨부는 문서 프로젝트로 옮기고, 다음 사용자 턴에 새 문서를
+ * 알린다. 답: chat-document-linked { threadId, documentId, documentName, projectId }.
  */
 async function linkChatDocument(record, sock, msg) {
   const requestId = typeof msg.requestId === 'string' && msg.requestId.length <= 256 ? msg.requestId : null;
@@ -3790,6 +3813,8 @@ async function linkChatDocument(record, sock, msg) {
   activeSession.documentId = documentId;
   activeSession.documentName = documentName;
   activeSession.lastDocumentInfo = null;
+  activeSession.detachedFrom = null;
+  queueAttachNote(record, activeSession);
   settleChatPermissionRequest(record, { status: 'expired', reason: 'document-linked' });
   applyRecordRepository(record, documentId, msg);
   const threadId = activeSession.threadId;
@@ -3990,6 +4015,37 @@ function addEditReportContext(record, activeSession, prompt) {
   return `${block}\n\n${prompt}`;
 }
 
+/** chat-start 의 detachedFrom — 떼어 낸 채팅의 다음 사용자 턴에 한 번 알린다. 다시 온 chat-start 는 겹치지 않는다. */
+function queueDetachNote(record, activeSession, detachedFrom) {
+  const key = `${activeSession.threadId}\n${detachedFrom.documentId}`;
+  if (record.deliveredDetachNote === key) return;
+  const pending = record.pendingDocumentNote;
+  if (pending?.threadId === activeSession.threadId && pending.detach?.documentId === detachedFrom.documentId) return;
+  // 떼어 내기 전에 쌓인 연결 알림은 낡았다.
+  record.pendingDocumentNote = { threadId: activeSession.threadId, detach: detachedFrom, attach: null };
+}
+
+/** 살아 있는 세션에 문서를 붙였다. 아직 전하지 못한 떼어 냄이 있으면 한 덩이로 합친다. */
+function queueAttachNote(record, activeSession) {
+  const pending = record.pendingDocumentNote?.threadId === activeSession.threadId ? record.pendingDocumentNote : null;
+  // 붙인 뒤 다시 떼어 내면 새 일이다.
+  record.deliveredDetachNote = null;
+  record.pendingDocumentNote = {
+    threadId: activeSession.threadId,
+    detach: pending?.detach ?? null,
+    attach: { documentId: activeSession.documentId, documentName: activeSession.documentName ?? null },
+  };
+}
+
+function addDocumentNoteContext(record, activeSession, prompt) {
+  const note = record.pendingDocumentNote;
+  if (!note || note.threadId !== activeSession.threadId) return prompt;
+  record.pendingDocumentNote = null;
+  if (note.detach) record.deliveredDetachNote = `${note.threadId}\n${note.detach.documentId}`;
+  const block = documentChangeBlock(note);
+  return block ? `${block}\n\n${prompt}` : prompt;
+}
+
 function addTemplateContext(record, activeSession, prompt) {
   if (!activeSession?.activeTemplateId) return prompt;
   try {
@@ -4170,7 +4226,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         addTemplateContext(
           record,
           activeSession,
-          addEditReportContext(record, activeSession, referencedPrompt),
+          addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, referencedPrompt)),
         ),
       );
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
@@ -4359,8 +4415,12 @@ function startManualCompaction(record, sock, msg) {
     settled: false,
   };
   sendJson(sock, { v: 1, type: 'chat-compact-accepted', requestId, compactionId });
+  // 문서를 떼어 낸 직후의 압축은 그 문서에 대해 나눈 이야기를 남기라고 공급자에게 지시한다 (Codex·Pi 는 무시한다).
+  const compactOptions = msg.reason === 'document-detached' && activeSession.detachedFrom
+    ? { instructions: detachCompactionInstructions(activeSession.detachedFrom) }
+    : undefined;
   try {
-    activeSession.backend.compact();
+    activeSession.backend.compact(compactOptions);
   } catch (error) {
     // 수락한 뒤의 실패는 압축 failed + turn-end 로 닫는다 (보통 턴 경로와 같은 정리).
     activeSession.emitBackendEvent({
@@ -4579,6 +4639,8 @@ async function startSession(
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
     activeTemplateId: continuing ? currentSession.activeTemplateId : null,
+    // 사용자가 이 채팅을 떼어 낸 문서 { documentId, documentName } — 떼어 낸 직후의 압축 지시에 쓴다.
+    detachedFrom: continuing ? currentSession.detachedFrom ?? null : null,
     // list_documents({path}) 가 발급한 file: 핸들 → 경로. 이 채팅 세션에서만 유효하다.
     documentPaths: continuing && currentSession.documentPaths instanceof Map ? currentSession.documentPaths : new Map(),
     lastDocumentInfo: continuing ? currentSession.lastDocumentInfo : null,
@@ -4992,6 +5054,12 @@ async function handleStudioMessage(record, sock, msg) {
         );
         // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
         if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        // 떼어 낸 채팅: 문서 없이 다시 연 세션만 받는다. 모양이 어긋나면 버린다.
+        const detachedFrom = sessionHasNoDocument(s) ? normalizeDetachedFrom(msg.detachedFrom) : null;
+        if (detachedFrom) {
+          s.detachedFrom = detachedFrom;
+          queueDetachNote(record, s, detachedFrom);
+        }
         const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
           && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
@@ -7299,7 +7367,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         const alreadyLinked = () => workflowError(
           'THREAD_ALREADY_LINKED',
-          `This chat is already linked to ${session.documentName ?? session.documentId}; a chat keeps one document`,
+          `This chat is already linked to ${session.documentName ?? session.documentId}; a chat has one document at a time`,
         );
         void (async () => {
           if (!sessionHasNoDocument(session)) throw alreadyLinked();

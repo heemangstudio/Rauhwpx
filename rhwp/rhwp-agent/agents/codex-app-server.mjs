@@ -1430,7 +1430,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         resumeFallbackHandoff: resumeFallbackHandoff ?? null,
       });
     },
-    compact() {
+    /** thread/compact/start 는 threadId 만 받는다 — 요약 지시(instructions)는 버린다. */
+    compact(_options) {
       if (disposed) return;
       if (fallback) throw new Error('Codex legacy exec cannot compact on request');
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
