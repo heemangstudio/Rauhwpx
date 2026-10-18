@@ -2592,11 +2592,12 @@ export function linkThreadDocument(
 }
 
 /**
- * 채팅을 문서에서 뗀다. 문서 칸을 비우고 뗀 문서를 한 번 남긴다(documentDetachedFrom) — 뗄 때 대화가
- * 있었으면 다음 chat-started 가 한 번 압축한다. 문서가 없거나 저장하지 않은 채팅이면 null. 대화 활동이
- * 아니므로 목록 자리는 그대로다.
+ * 채팅을 문서에서 뗀다. 문서 칸을 비우고 뗀 문서를 한 번 남긴다(documentDetachedFrom) — 다음 chat-start 가
+ * 허브에 알리고, 뗄 때 대화가 있었으면 다음 chat-started 가 한 번 압축한다. 에이전트가 스스로 뗐으면(byAgent)
+ * 그 도구 결과가 알리므로 남기지 않는다. 문서가 없거나 저장하지 않은 채팅이면 null. 대화 활동이 아니므로
+ * 목록 자리는 그대로다.
  */
-export function detachThreadDocument(id: string): ChatThread | null {
+export function detachThreadDocument(id: string, options: { byAgent?: boolean } = {}): ChatThread | null {
   const current = getThread(id);
   if (!current || (current.documentId === null && current.docKey === null)) return null;
   const now = Date.now();
@@ -2606,7 +2607,7 @@ export function detachThreadDocument(id: string): ChatThread | null {
     documentId: null,
     docKey: null,
     documentLinkChangedAt: Math.max(now, linkChangedAt(current) + 1),
-    ...(current.documentId
+    ...(current.documentId && !options.byAgent
       ? {
         documentDetachedFrom: {
           documentId: current.documentId,

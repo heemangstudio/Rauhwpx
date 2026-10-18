@@ -614,7 +614,7 @@ documentSelect.addEventListener('change', () => {
     empty ? null : documentSelect.selectedOptions[0].text,
   );
 });
-// 문서 없는 채팅: 문서 잇기(칩과 하마), 에이전트의 연결 동의, 저장 안내 줄. 문서가 있으면 먼저 비운다.
+// 문서 없는 채팅: 문서 잇기(칩과 하마), 저장 안내 줄. 문서가 있으면 먼저 비운다.
 function previewUnlinkedChat(): boolean {
   if (sidebar.isUnlinkedChat()) return true;
   report('Choose Document → No document and start a new chat first');
@@ -626,9 +626,6 @@ document.querySelector('#link-document')!.addEventListener('click', () => {
 document.querySelector('#detach-document')!.addEventListener('click', () => {
   if (sidebar.isUnlinkedChat()) report('The shown chat has no document');
   else void detachPreviewDocument();
-});
-document.querySelector('#link-consent')!.addEventListener('click', () => {
-  if (previewUnlinkedChat()) mock.requestDocumentLink();
 });
 document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');

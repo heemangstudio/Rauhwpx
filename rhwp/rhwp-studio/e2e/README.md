@@ -14,6 +14,8 @@ These run outside the smoke suite and CI, for changes to the areas they cover.
 
 `npm run e2e:background-sessions` starts its own hub and Vite with a fake Pi and a mock MCP provider. It checks that an agent keeps working on a document you switch away from, that its writes land only in that document, that parallel chats on one document are locked to 채팅, and that New Document and opens work while an agent runs.
 
+`npm run e2e:agent-document-detach` starts its own hub and Vite with a fake Pi and a mock MCP provider. The agent detaches its chat mid-turn: the chat moves beside an empty paper and the same turn keeps running. It then creates a new document without being asked, writes to it and detaches again. Cancelling the save dialog keeps the chat attached; saving writes the document and closes it, so no unsaved tab is left.
+
 `npm run e2e:chat-permissions` starts its own hub and Vite with a fake Pi. It checks per-chat permission requests and the edit review boundary in each mode.
 
 `npm run e2e:chat-follows-document` needs `npm run dev` running. Clicking another document's chat saves and commits the current document once, then opens that document and continues its chat.

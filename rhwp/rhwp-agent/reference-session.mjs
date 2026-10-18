@@ -97,10 +97,10 @@ export function attachActiveDocumentIdentity(result, identity) {
   return { ...result, ...activeDocumentIdentity(identity) };
 }
 
-/** A chat that started without a document until open_document/create_document links one. */
+/** A chat without a document until open_document/create_document attaches one. */
 const NO_DOCUMENT_LINES = Object.freeze([
   'No document is linked to this chat. Read tools still read other documents by documentId; list_documents finds them.',
-  'When the task needs a document to work in, open_document links an existing one and create_document (에이전트, 전체 or an approved plan) makes a new one. The user confirms the link. A chat has one document at a time, and the user can detach it later. Saving to the project (project_edit, project_import, project downloads) needs a linked document.',
+  'When the task needs a document to work in, open_document attaches an existing one and create_document (에이전트, 전체 or an approved plan) makes a new one. A chat has one document at a time; detach_document or the user can detach it later. Saving to the project (project_edit, project_import, project downloads) needs a linked document.',
 ]);
 
 /**
@@ -158,7 +158,7 @@ export function addActiveDocumentContext(activeSession, prompt) {
     '<active_document_identity trust="application-state">',
     JSON.stringify(identity),
     ...(sessionHasNoDocument(activeSession) ? NO_DOCUMENT_LINES : [
-      'This is the exact Studio document bound to this chat; the user can detach it, and this block always names the current one. Writes and default reads target this documentId; read tools accept another documentId (read-only).',
+      'This is the exact Studio document bound to this chat; detach_document or the user can detach it, and this block always names the current one. Writes and default reads target this documentId; read tools accept another documentId (read-only). To work in another document, detach_document first, then open_document or create_document.',
       'Use documentId—not documentName, title matching, recent-file lists, or filesystem search—to decide which open document the user means. Call get_document_info for its digest, source format, dirty state, and exact sourcePath when the desktop app has one.',
     ]),
     '</active_document_identity>',

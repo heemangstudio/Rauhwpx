@@ -11,7 +11,6 @@ import {
   OPEN_DOCUMENT_MAX_BYTES,
   OPENABLE_DOCUMENT_EXTENSIONS,
   assertDocumentPathConsent,
-  defaultDocumentFolder,
   enrichDocumentList,
   normalizeNewDocumentName,
   readDocumentPathContent,
@@ -97,10 +96,6 @@ test('new document folders are real folders inside home; names are plain file na
   assert.equal(await codeOf(validateDocumentFolder(path.join(home, 'escape'), { home })), 'PATH_REJECTED');
   mkdirSync(path.join(outside, 'inner'));
   assert.equal(await codeOf(validateDocumentFolder(path.join(home, 'escape', 'inner'), { home })), 'PATH_REJECTED');
-
-  assert.equal(defaultDocumentFolder({ env: {}, home }), path.join(home, 'Documents', 'HamaEditor'));
-  assert.equal(defaultDocumentFolder({ env: { RHWP_DOCUMENTS_DIR: outside }, home }), path.join(outside, 'HamaEditor'));
-  assert.equal(defaultDocumentFolder({ env: { RHWP_DOCUMENTS_DIR: 'relative' }, home }), path.join(home, 'Documents', 'HamaEditor'));
 
   assert.equal(normalizeNewDocumentName('  사업 계획.hwpx '), '사업 계획');
   assert.equal(normalizeNewDocumentName('회의록'), '회의록');

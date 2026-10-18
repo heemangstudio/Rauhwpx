@@ -45,14 +45,16 @@ import {
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
-import { chatPermissionMatchesContext, isOneShotChatPermission, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
+import { chatPermissionMatchesContext, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest } from './chat-permissions.ts';
 import {
+  DOCUMENT_DETACH_TOOL,
   DOCUMENT_LINK_TOOLS,
   linkError,
   readDocumentLinkToolArgs,
   readDocumentRequiredFrame,
   readLinkFailure,
   type ChatDocumentLinkReply,
+  type ChatDocumentDetachRequest,
   type ChatDocumentLinked,
   type ChatDocumentLinkRequest,
 } from './document-link.ts';
@@ -353,6 +355,12 @@ export interface AgentBridge {
     documentName: string | null;
     createdByThread?: string | null;
   }): Promise<ChatDocumentLinkReply | null>;
+  /**
+   * 에이전트의 detach_document 로 이 채팅을 문서에서 뗀다고 허브에 알린다 (chat-detach-document). 허브는 세션의
+   * 문서를 비우고 callId 의 도구 호출을 맡았다가, 같은 허브 세션에 새 브리지가 붙으면 답한다. 편집기는 이 뒤에
+   * 이 브리지를 닫는다. 허브가 거절하면 ChatDocumentLinkError(DETACH_FAILED)를 던진다.
+   */
+  detachChatDocument(detach: { threadId: string; callId: number }): Promise<void>;
   /**
    * 이 페이지에서 허브의 첫 답(welcome)을 반영했거나, 첫 연결 시도가 답 없이 끝났거나(재시도 예약),
    * 다른 탭에 밀려났거나, 폐기되면 풀린다. 새로고침 뒤 사이드바는 이것을 기다렸다가 채팅을 고른다.
@@ -1456,10 +1464,14 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly versionCommit?: (message: string) => Promise<void>;
   /** 문서 없는 채팅에 문서를 잇는 편집기 흐름 (open_document·create_document). */
   private readonly linkDocument?: (request: ChatDocumentLinkRequest) => Promise<ChatDocumentLinked>;
+  /** 채팅을 문서에서 떼어 빈 문서 자리로 옮기는 편집기 흐름 (detach_document). */
+  private readonly detachDocument?: (request: ChatDocumentDetachRequest) => Promise<void>;
   /** 이 문서를 만든 채팅 — 그 채팅의 쓰기는 검토 없이 반영된다. */
   private readonly documentCreatedBy?: () => string | null;
   /** 허브의 답을 기다리는 chat-link-document 의 requestId. */
   private pendingDocumentLinkId: string | null = null;
+  /** 허브의 답을 기다리는 chat-detach-document 의 requestId. */
+  private pendingDocumentDetachId: string | null = null;
   readonly projects: ProjectClient;
   private readonly claimDocumentWrite?: () => boolean;
   /** 문서 세션의 턴 체크포인트 — 첫 쓰기 전 문서와 이 채팅의 승인·거절·턴 끝을 알린다. */
@@ -1670,6 +1682,7 @@ export class AgentBridgeImpl implements AgentBridge {
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
     this.linkDocument = deps.linkDocument;
+    this.detachDocument = deps.detachDocument;
     this.documentCreatedBy = deps.documentCreatedBy;
     const projectService = createProjectService({
       url: (pathname, query) => this.referenceUrl(pathname, query),
@@ -2375,6 +2388,49 @@ export class AgentBridgeImpl implements AgentBridge {
     return { documentId: linked.documentId, name: linked.name, revision: this.revision.revision, linked: true };
   }
 
+  /**
+   * detach_document — 허브가 루트 대화인지와 문서가 붙어 있는지를 이미 확인했다. 편집기가 이 채팅을 옮기면 이
+   * 브리지는 닫히고 허브가 그 호출에 답한다 — 여기서 돌려주는 값은 옮기지 않고 끝난 드문 경우에만 간다.
+   */
+  private async runDocumentDetachTool(callId: number): Promise<{ detached: true }> {
+    if (!this.detachDocument) throw linkError('DETACH_UNAVAILABLE', 'This editor cannot detach the chat from its document.');
+    await this.detachDocument({ threadId: this.threadId || null, callId });
+    return { detached: true };
+  }
+
+  async detachChatDocument(detach: { threadId: string; callId: number }): Promise<void> {
+    const documentId = this.documentId;
+    if (detach.threadId !== this.threadId || documentId === null) throw linkError('DETACH_UNAVAILABLE');
+    const requestId = `chat-detach-document-${++this.requestSeq}`;
+    this.pendingDocumentDetachId = requestId;
+    const reply = this.requests.create<Record<string, unknown>>(requestId, REQUEST_TIMEOUT_MS);
+    const sent = this.sendJson({
+      v: AGENT_PROTOCOL_VERSION,
+      type: 'chat-detach-document',
+      requestId,
+      threadId: detach.threadId,
+      documentId,
+      callId: detach.callId,
+    });
+    if (!sent) this.requests.settle(requestId, null);
+    const frame = await reply;
+    if (this.pendingDocumentDetachId === requestId) this.pendingDocumentDetachId = null;
+    if (!frame) throw linkError('DETACH_FAILED', 'The hub did not confirm the detach.');
+    if (frame['ok'] === false || frame['error']) {
+      const message = typeof frame['message'] === 'string' && frame['message'] ? frame['message'] : undefined;
+      throw linkError('DETACH_FAILED', message);
+    }
+    this.documentId = null;
+    this.documentName = null;
+  }
+
+  /** chat-document-detached·떼기 거절을 기다리는 요청에 넘긴다. */
+  private settleDocumentDetach(msg: Record<string, unknown>): void {
+    const requestId = typeof msg['requestId'] === 'string' ? msg['requestId'] : this.pendingDocumentDetachId;
+    if (!requestId || requestId !== this.pendingDocumentDetachId) return;
+    this.requests.settle(requestId, msg);
+  }
+
   async linkChatDocument(link: {
     threadId: string;
     documentId: string;
@@ -2986,9 +3042,7 @@ export class AgentBridgeImpl implements AgentBridge {
         if (!pending || pending.requestId !== msg.requestId || !outcome
           || msg.threadId !== pending.threadId || msg.documentId !== pending.documentId) break;
         const grants = readChatPermissionGrants(msg.grants);
-        // 일회성 동의(문서 연결)는 채팅 권한 목록에 오르지 않는다.
-        if (outcome.status === 'granted' && !isOneShotChatPermission(pending.capability)
-          && !grants.includes(pending.capability)) break;
+        if (outcome.status === 'granted' && !grants.includes(pending.capability)) break;
         this.chatPermissionGrants = grants;
         this.clearChatPermissionRequest(outcome);
         if (this.turnRunning) this.beginPendingTurn(this.editingAgent);
@@ -3566,10 +3620,15 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'chat-error': {
-        // 문서 연결 거절도 세션을 건드리지 않는다 — 연결을 기다리는 쪽에만 돌려준다.
+        // 문서 연결·떼기 거절도 세션을 건드리지 않는다 — 기다리는 쪽에만 돌려준다.
         if (this.pendingDocumentLinkId !== null && (msg.requestType === 'chat-link-document'
           || (typeof msg.requestId === 'string' && msg.requestId === this.pendingDocumentLinkId))) {
           this.settleDocumentLink({ ...msg, ok: false });
+          break;
+        }
+        if (this.pendingDocumentDetachId !== null && (msg.requestType === 'chat-detach-document'
+          || (typeof msg.requestId === 'string' && msg.requestId === this.pendingDocumentDetachId))) {
+          this.settleDocumentDetach({ ...msg, ok: false });
           break;
         }
         // 압축 거절은 세션을 건드리지 않는다 — 요청자에게만 돌려준다.
@@ -3710,6 +3769,10 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'chat-document-linked':
       case 'chat-link-document-result': {
         this.settleDocumentLink(msg);
+        break;
+      }
+      case 'chat-document-detached': {
+        this.settleDocumentDetach(msg);
         break;
       }
       case 'document-required': {
@@ -4000,7 +4063,8 @@ export class AgentBridgeImpl implements AgentBridge {
     // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
     if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
     const execute = () => (tool === 'commit_version' ? this.commitVersion(args)
-      : DOCUMENT_LINK_TOOLS.has(tool) ? this.runDocumentLinkTool(tool, args) : this.executor
+      : DOCUMENT_LINK_TOOLS.has(tool) ? this.runDocumentLinkTool(tool, args)
+        : tool === DOCUMENT_DETACH_TOOL ? this.runDocumentDetachTool(id) : this.executor
       .execute(tool, args, agent, {
         workflow: this.workflow,
         phase: msg.phase,

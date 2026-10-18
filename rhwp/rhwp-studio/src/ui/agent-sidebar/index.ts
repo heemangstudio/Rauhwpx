@@ -517,9 +517,10 @@ export interface AgentSidebarHandle {
   /**
    * 편집기 전용: 보이는 채팅을 문서에서 떼기 시작한다. 뗄 수 있으면(일하지 않고 검토할 변경도 없다) 하마가
    * 머리의 문서 이름을 삼킨 뒤 그 채팅을 돌려준다. 그동안의 문서 전환은 새 채팅을 열지 않고 기다린다.
-   * 뗄 수 없거나 삼키기를 거뒀으면 null. draft 면 저장하지 않은 초안이다.
+   * 뗄 수 없거나 삼키기를 거뒀으면 null. draft 면 저장하지 않은 초안이다. agent 는 에이전트의 detach_document
+   * 라 그 턴이 도는 중에 뗀다 — 검토할 변경이 있으면 뗄 수 없다.
    */
-  beginDocumentDetach(): Promise<DocumentDetachStart | null>;
+  beginDocumentDetach(options?: { agent?: boolean }): Promise<DocumentDetachStart | null>;
   /**
    * 떼기를 마친다 — 저장소의 채팅을 문서에서 떼고 이 사이드바에서 문서 없이 잇는다(문서 없는 자리일 때).
    * 편집기는 대신 같은 허브 세션으로 새 세션에 채팅을 옮긴다. 떼었으면 true.
@@ -2432,11 +2433,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateDocumentContext();
   }
 
-  /** 연결 단추가 막힌 이유(툴팁). null 이면 누를 수 있다. 떼기는 채팅이 쉬고 검토할 변경이 없을 때만 한다. */
-  function documentLinkBlockedReason(linked: boolean): string | null {
+  /**
+   * 연결 단추가 막힌 이유(툴팁). null 이면 누를 수 있다. 사용자의 떼기는 채팅이 쉬고 검토할 변경이 없을 때만 한다.
+   * 에이전트의 떼기(agent)는 자기 턴 중에 하므로 검토할 변경만 본다.
+   */
+  function documentLinkBlockedReason(linked: boolean, opts: { agent?: boolean } = {}): string | null {
     if (documentDetach !== null) return '문서에서 분리하는 중이에요';
     if (documentLinkThreadId !== null) return '문서를 연결하는 중이에요';
     if (!linked) return null;
+    if (opts.agent) {
+      return bridge.pendingEdits.getChangeSets().some((set) => set.ops.length > 0) ? '변경을 검토하면 분리할 수 있어요' : null;
+    }
     if (isControlLocked() || questionController.hasPending() || bridge.getPendingChatPermissionRequest() !== null
       || (chatWorkflow === 'plan' && planningPhase === 'awaiting-approval')) return '작업이 끝나면 분리할 수 있어요';
     if (hasPendingDocumentEdits()) return '변경을 검토하면 분리할 수 있어요';
@@ -2453,8 +2460,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 보이는 채팅을 문서에서 떼기 시작한다. 하마가 지금 보이는 머리의 문서 이름을 삼키는 동안 기다리고, 끝까지
    * 삼켰으면 그 채팅을 돌려준다. 삼키는 사이 채팅을 옮기거나 이름을 고치면 거둔다(null).
    */
-  async function beginDocumentDetach(): Promise<DocumentDetachStart | null> {
-    if (root.dataset.disposed === 'true' || chatIsUnlinked() || documentLinkBlockedReason(true) !== null) return null;
+  async function beginDocumentDetach(options: { agent?: boolean } = {}): Promise<DocumentDetachStart | null> {
+    if (root.dataset.disposed === 'true' || chatIsUnlinked() || documentLinkBlockedReason(true, options) !== null) return null;
     // 다른 창이 이 채팅의 연결을 먼저 바꿨으면 그 연결을 따른다.
     if (adoptStoredThreadLink()) return null;
     const threadId = currentThread.id;
@@ -3271,19 +3278,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 압축 중에 물려 둔 대화 줄과 콘텍스트 고리 (setConversationReceding). */
   let recededNodes: { node: Element; animation: Animation }[] = [];
   const turnPendingStatus = createDelayedStatus<AgentName | 'compacting'>((who) => {
+    const appearing = who !== null && turnPending.hidden;
     turnPending.hidden = who === null;
     if (who) {
       turnPendingLabel.textContent = who === 'compacting' ? '콘텍스트 압축 중…' : `${AGENT_LABEL[who]} 편집 중…`;
       messages.insertBefore(turnPending, messagesEnd);
     }
-    setConversationReceding(who === 'compacting');
-  });
-    const appearing = who !== null && turnPending.hidden;
-  /**
-   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 콘텍스트 고리가 천천히 숨 쉰다 — 그
-   * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
-   */
-  function setConversationReceding(on: boolean): void {
     // 대화가 그 줄만큼 올라가는 동안 같은 길이로 떠오른다 — 툭 나타나지 않는다.
     if (appearing) {
       const tokens = getComputedStyle(root);
@@ -3292,6 +3292,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         easing: tokens.getPropertyValue('--ag-ease-out').trim() || 'ease-out',
       });
     }
+    setConversationReceding(who === 'compacting');
+  });
+  /**
+   * 압축이 도는 동안 화면에 보이는 앞 대화를 한 단계 물리고 콘텍스트 고리가 천천히 숨 쉰다 — 그
+   * 대화가 줄어드는 중이라는 표시. 끝나면 지금 명암에서 이어 되돌아온다. 긴 대화에서도 보이는 줄만 만진다.
+   */
+  function setConversationReceding(on: boolean): void {
     if (on === (recededNodes.length > 0)) return;
     const tokens = getComputedStyle(root);
     const duration = parseCssTimeMs(tokens.getPropertyValue('--ag-dur-slow'), 320);
@@ -4032,8 +4039,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     respond: (requestId, decision) => bridge.respondChatPermission(requestId, decision),
     requestBrowser: (action, args) => bridge.requestBrowser(action, args),
     submitBrowserAccount: (args) => bridge.submitBrowserAccount(args),
-    documentName: async (documentId) => (await listRecentDocuments?.())
-      ?.find((doc) => doc.documentId === documentId)?.fileName ?? null,
   });
   questionTimelineAnchor.hidden = true;
   questionTimelineAnchor.setAttribute('aria-hidden', 'true');
@@ -9562,11 +9567,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /**
-   * 새 출력은 따라가되, 사용자가 위로 스크롤하면 현재 위치를 존중한다.
-   * 따라갈지는 바꾸기 전에 정하고, 재기는 대화 변경 처리 한 번에 맡긴다.
-   */
-  function withAutoScroll(mutate: () => void): void {
-  /**
    * 다시 그린 대화는 맨 위에서 시작한다 — 끝까지 스프링으로 내려오지 않고 그 자리에 바로 선다.
    * 다른 세션으로 옮겨 연 채팅(문서 떼기 등)이 위로 튀었다 내려오지 않는다.
    */
@@ -9586,6 +9586,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     composerRestLastScrollTop = messages.scrollTop;
   }
 
+  /**
+   * 새 출력은 따라가되, 사용자가 위로 스크롤하면 현재 위치를 존중한다.
+   * 따라갈지는 바꾸기 전에 정하고, 재기는 대화 변경 처리 한 번에 맡긴다.
+   */
+  function withAutoScroll(mutate: () => void): void {
     // 미뤄 둔 이벤트를 다시 흘려보내는 동안에는 줄마다 재지 않는다 — 대화 크기만큼 배치를 강제해 느려진다.
     const shouldFollow = followConversation
       || (!conversationScrollPaused && (replayingUnbound || isConversationFollowingTurn()));
@@ -11320,8 +11325,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateComposer();
   }
 
-  /** 문서를 뗀 뒤의 압축에서 조용히 넘기는 거절 — 압축을 못 하거나 할 것이 없거나 그새 일이 시작됐다. */
-  const DETACH_COMPACTION_SKIPS = new Set(['COMPACTION_UNSUPPORTED', 'NOTHING_TO_COMPACT', 'AGENT_BUSY', 'NO_SESSION']);
+  /**
+   * 문서를 뗀 뒤의 압축에서 조용히 넘기는 거절 — 압축을 못 하거나, 할 것이 없거나, 콘텍스트가 작아 필요 없거나
+   * (COMPACTION_NOT_NEEDED: 허브가 떼어 냄 알림만 다음 턴에 싣는다), 그새 일이 시작됐다.
+   */
+  const DETACH_COMPACTION_SKIPS = new Set(['COMPACTION_UNSUPPORTED', 'NOTHING_TO_COMPACT', 'COMPACTION_NOT_NEEDED', 'AGENT_BUSY', 'NO_SESSION']);
 
   /**
    * 문서를 뗀 채팅이 문서 없이 다시 열렸다(chat-started) — 뗀 문서에 대해 나눈 대화를 한 번 압축한다. 압축을

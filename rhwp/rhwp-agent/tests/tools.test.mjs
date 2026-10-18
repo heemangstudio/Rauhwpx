@@ -264,8 +264,8 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!question.has('insert_text'));
 
   const implementing = new Set(filterToolDefinitions('implementing').map((definition) => definition.name));
-  // 계획 제시·백그라운드 작업자 3개, 데스크톱 게이트가 없으면 숨는 find_home_files, 문서 없는 채팅에만 보이는 문서 연결 2개가 빠진다.
-  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 7);
+  // 계획 제시·백그라운드 작업자 3개, 데스크톱 게이트가 없으면 숨는 find_home_files, 루트 채팅에만 보이는 문서 붙이기·떼기 3개가 빠진다.
+  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 8);
   assert.ok(implementing.has('insert_text'));
   assert.ok(implementing.has('download_file'));
   assert.ok(implementing.has('browser_click'));
@@ -293,29 +293,29 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!worker.includes('list_harness_skills'));
 });
 
-test('document link tools exist only for chats that started without a document', () => {
+test('document attach and detach tools exist only for root chats', () => {
   const linkTools = (profile, gates) => filterToolDefinitions(profile, gates)
     .map((definition) => definition.name)
-    .filter((name) => name === 'open_document' || name === 'create_document');
+    .filter((name) => ['open_document', 'create_document', 'detach_document'].includes(name));
   for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing']) {
     assert.deepEqual(linkTools(profile), [], profile);
   }
-  // 새 문서는 문서를 쓸 수 있는 단계에만 보인다. 연결은 모든 채팅 단계에 있다.
-  assert.deepEqual(linkTools('direct', { documentLink: true }), ['open_document', 'create_document']);
-  assert.deepEqual(linkTools('implementing', { documentLink: true }), ['open_document', 'create_document']);
+  // 새 문서는 문서를 쓸 수 있는 단계에만 보인다. 붙이기와 떼기는 모든 채팅 단계에 있다.
+  assert.deepEqual(linkTools('direct', { documentLink: true }), ['open_document', 'create_document', 'detach_document']);
+  assert.deepEqual(linkTools('implementing', { documentLink: true }), ['open_document', 'create_document', 'detach_document']);
   for (const profile of ['planning', 'question', 'awaiting-approval']) {
-    assert.deepEqual(linkTools(profile, { documentLink: true }), ['open_document'], profile);
+    assert.deepEqual(linkTools(profile, { documentLink: true }), ['open_document', 'detach_document'], profile);
   }
   assert.deepEqual(linkTools('doc-researcher', { documentLink: true }), []);
   assert.deepEqual(linkTools('copy-layout-worker', { documentLink: true }), []);
-  // 허브는 문서 없는 세션의 MCP 프로세스 환경에만 게이트를 싣는다.
+  // 허브는 루트 채팅의 MCP 프로세스 환경에만 게이트를 싣는다.
   const env = mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: () => ({ documentLink: true }) });
   assert.equal(env.RHWP_DOCUMENT_LINK, '1');
-  assert.deepEqual(linkTools('direct', projectToolGatesFromEnv(env)), ['open_document', 'create_document']);
+  assert.deepEqual(linkTools('direct', projectToolGatesFromEnv(env)), ['open_document', 'create_document', 'detach_document']);
   assert.equal(mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: () => ({ documentLink: false }) }).RHWP_DOCUMENT_LINK, undefined);
   assert.throws(() => byName.get('open_document').validate({}), /exactly one/);
   assert.throws(() => byName.get('open_document').validate({ documentId: 'a', path: '/a.hwp' }), /exactly one/);
-  // 문서 연결은 연결마다 앱이 묻는다 — 에이전트가 청하는 채팅 권한이 아니다.
+  // 문서 연결은 채팅 권한이 아니다 — 에이전트가 청할 수 없고, 목록에 와도 버린다.
   assert.ok(!byName.get('request_permission').shape.capability.safeParse('document-link').success);
   assert.throws(() => normalizeChatPermissionRequest({ capability: 'nope', reason: 'x' }), { code: 'INVALID_CHAT_PERMISSION_REQUEST' });
   assert.deepEqual(normalizeChatPermissionGrants(['document-link', 'downloads']), ['downloads']);

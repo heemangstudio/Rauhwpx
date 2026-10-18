@@ -557,6 +557,7 @@ const SPECS: Record<string, ToolSpec> = {
     summary: (a) => clip(str(a['path']).split(/[\\/]/u).pop() ?? '', 32),
   },
   create_document: { category: 'other', label: '새 문서 만들기', summary: (a) => clip(str(a['name']), 32) },
+  detach_document: { category: 'other', label: '문서에서 분리' },
 
   // 대화·계획·파일
   request_permission: {
@@ -759,7 +760,7 @@ const ERROR_TEXT: Record<string, string> = {
   NO_ACTIVE_TURN: '턴이 끝난 뒤 도착',
   TOO_MANY_INFLIGHT_CALLS: '동시 호출 초과',
   PERMISSION_DENIED: '권한 거부',
-  // 문서 연결 (open_document·create_document)
+  // 문서 붙이기·떼기 (open_document·create_document·detach_document)
   THREAD_ALREADY_LINKED: '이미 문서가 있는 채팅',
   MODE_FORBIDS_CREATE: '이 모드에서는 만들 수 없음',
   DOC_OPEN_ELSEWHERE: '다른 곳에서 열려 있음',
@@ -769,11 +770,17 @@ const ERROR_TEXT: Record<string, string> = {
   INVALID_PATH: '열 수 없는 경로',
   INVALID_NAME: '쓸 수 없는 이름',
   INVALID_FOLDER: '쓸 수 없는 폴더',
-  ROOT_INTERACTION_REQUIRED: '주 에이전트만 연결',
-  DOCUMENT_LINK_PENDING: '연결 동의 대기',
+  ROOT_INTERACTION_REQUIRED: '주 에이전트만 가능',
+  DOCUMENT_LINK_PENDING: '다른 연결 진행 중',
   DOCUMENT_LINK_FAILED: '문서 연결 실패',
   LINK_FAILED: '문서 연결 실패',
   LINK_UNAVAILABLE: '지금은 연결할 수 없음',
+  NO_DOCUMENT: '연결된 문서 없음',
+  EDITS_PENDING_REVIEW: '검토할 변경이 남음',
+  DETACH_UNAVAILABLE: '지금은 분리할 수 없음',
+  DETACH_FAILED: '문서 분리 실패',
+  CANCELLED: '사용자가 취소함',
+  DOCUMENT_DETACH_FAILED: '문서 분리 실패',
   UNREADABLE: '읽을 수 없는 문서',
   TOO_LARGE: '문서가 너무 큼',
   WRITE_FAILED: '파일을 만들지 못함',
@@ -976,6 +983,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
     case 'open_document':
     case 'create_document':
       return clip(str(result['name']), 32);
+    case 'detach_document':
+      return clip(str(result['documentName']), 32);
     case 'list_numberings':
       return countText(count(result['numberings']), '번호', '번호 없음');
     case 'list_bookmarks':

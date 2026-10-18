@@ -1,4 +1,5 @@
-// 실제 허브로 문서 없는 채팅의 문서 연결(chat-link-document, open_document·create_document)과 자료함 저장 게이트를 확인한다.
+// 실제 허브로 채팅의 문서 붙이기·떼기(chat-link-document·chat-detach-document, open_document·create_document·detach_document)와
+// 자료함 저장 게이트를 확인한다.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -53,13 +54,6 @@ async function answerLink(hub, tool, { documentId, documentName, revision = 1, c
   return request;
 }
 
-function respondPermission(hub, request, decision, responseId) {
-  hub.studio.send({
-    type: 'chat-permission-response', requestId: request.requestId, responseId,
-    threadId: request.threadId, documentId: request.documentId, decision,
-  });
-}
-
 test('a no-document chat has no project and links a document mid-turn without a provider restart', { timeout: 60_000 }, async (t) => {
   const hub = await startLiveHub(t, { documentId: null });
   const started = await hub.start(NO_DOCUMENT);
@@ -68,7 +62,7 @@ test('a no-document chat has no project and links a document mid-turn without a 
   assert.ok((await piToolNames(hub)).includes('open_document'));
   const first = await hub.promptOf('안녕');
   assert.match(first, /No document is linked to this chat/);
-  assert.match(first, /one document at a time, and the user can detach it later/);
+  assert.match(first, /one document at a time; detach_document or the user can detach it later/);
   assert.doesNotMatch(first, /for good|permanent/);
 
   hub.message('HOLD');
@@ -99,16 +93,18 @@ test('a no-document chat has no project and links a document mid-turn without a 
   assert.equal(infoResult.ok, true, JSON.stringify(infoResult));
   assert.equal(infoResult.result.documentId, 'doc-linked');
   assert.equal((await call('project_read', { view: 'summary' })).result.id, linked.projectId);
-  assert.ok(!(await piToolNames(hub)).includes('open_document'), 'link tools are gone after a link');
+  assert.ok((await piToolNames(hub)).includes('detach_document'), 'an attached chat can detach itself');
 
-  // 연결된 채팅은 다른 문서로 바꾸지 못한다(먼저 Studio 에서 떼어 낸다). 같은 문서를 다시 보내면 같은 답을 한다.
+  // 연결된 채팅은 다른 문서로 바꾸지 못한다(먼저 뗀다). 같은 문서를 다시 보내면 같은 답을 한다.
   hub.studio.send({ type: 'chat-link-document', requestId: 'again', documentId: 'doc-other', documentName: '다른.hwpx' });
   const refused = await hub.studio.next((frame) => frame.type === 'chat-error' && frame.requestId === 'again');
   assert.equal(refused.code, 'THREAD_ALREADY_LINKED');
   assert.equal(refused.linkedDocumentId, 'doc-linked');
   hub.studio.send({ type: 'chat-link-document', documentId: 'doc-linked', documentName: '연결.hwpx' });
   assert.equal((await hub.studio.next((frame) => frame.type === 'chat-document-linked')).projectId, linked.projectId);
-  assert.equal((await call('open_document', { documentId: 'doc-other' })).error.code, 'THREAD_ALREADY_LINKED');
+  const switching = (await call('open_document', { documentId: 'doc-other' })).error;
+  assert.equal(switching.code, 'THREAD_ALREADY_LINKED');
+  assert.match(switching.message, /call detach_document first/);
 
   hub.studio.send({ type: 'chat-interrupt' });
   await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
@@ -120,71 +116,102 @@ test('a no-document chat has no project and links a document mid-turn without a 
   assert.doesNotMatch(await hub.promptOf('또', { documentId: 'doc-linked' }), /<document_change/);
 });
 
-test('each link asks once, is never kept as a chat grant, and expires', { timeout: 60_000 }, async (t) => {
+test('the agent detaches mid-turn; the hub answers once the moved chat\'s new bridge connects', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t, { documentId: 'doc-old' });
+  const started = await hub.start({ documentName: '옛 문서.hwpx' });
+  assert.match(started.projectId, /^p/);
+  hub.message('HOLD', { documentId: 'doc-old' });
+  await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.text === 'HOLD_READY');
+  const mcp = await connect(`ws://127.0.0.1:${hub.port}/mcp?token=${HUB_TOKEN}&sessionId=${hub.sessionId}&agent=pi`);
+  t.after(() => mcp.socket.close());
+  let id = 0;
+  const call = (tool, args) => {
+    const callId = ++id;
+    mcp.send({ type: 'tool-call', id: callId, tool, args, workflow: started.workflow, capabilityEpoch: started.capabilityEpoch });
+    return mcp.next((frame) => frame.type === 'tool-result' && frame.id === callId);
+  };
+
+  // Studio 가 채팅을 빈 문서 자리로 옮기기 직전에 떼기를 알린다. 허브는 세션의 문서를 비우고 호출을 맡는다.
+  const detaching = call('detach_document', {});
+  const request = await hub.studio.next((frame) => frame.type === 'tool-request' && frame.tool === 'detach_document');
+  hub.studio.send({ type: 'chat-detach-document', requestId: 'detach', threadId: hub.threadId, documentId: 'doc-old', callId: request.id });
+  assert.deepEqual(
+    (({ type, threadId, documentId }) => ({ type, threadId, documentId }))(await hub.studio.next((frame) => frame.requestId === 'detach')),
+    { type: 'chat-document-detached', threadId: hub.threadId, documentId: 'doc-old' },
+  );
+  await hub.studio.next((frame) => frame.type === 'project-bound' && frame.projectId === null);
+  let answered = false;
+  void detaching.then(() => { answered = true; });
+
+  // 옛 브리지가 닫히고 같은 페이지의 새 브리지가 같은 허브 세션에 붙는다 — 그 뒤에야 공급자가 결과를 받는다.
+  hub.studio.socket.close();
+  await once(hub.studio.socket, 'close');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(answered, false, 'the provider waits until the new bridge is attached');
+  const bridge = await connect(hub.studioUrl, { origin: 'http://127.0.0.1:7700' });
+  t.after(() => bridge.socket.close());
+  const welcome = await bridge.next((frame) => frame.type === 'welcome');
+  assert.deepEqual(
+    (({ status, documentId, documentName }) => ({ status, documentId, documentName }))(welcome.session),
+    { status: 'running', documentId: null, documentName: null },
+  );
+  const result = await detaching;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.result, { detached: true, documentId: 'doc-old', documentName: '옛 문서.hwpx' });
+
+  // 같은 턴에서 다른 문서를 붙인다. 문서 없는 채팅의 일이라 떼기를 다시 부르면 거절된다.
+  assert.equal((await call('detach_document', {})).error.code, 'NO_DOCUMENT');
+  const opened = call('open_document', { documentId: 'doc-next' });
+  const linkRequest = await bridge.next((frame) => frame.type === 'tool-request' && frame.tool === 'open_document');
+  bridge.send({ type: 'chat-link-document', documentId: 'doc-next', documentName: '다음.hwpx' });
+  bridge.send({ type: 'tool-response', id: linkRequest.id, ok: true, result: { documentId: 'doc-next', name: '다음.hwpx', revision: 2, linked: true } });
+  assert.equal((await opened).ok, true);
+  const attached = await bridge.next((frame) => frame.type === 'chat-document-linked');
+  assert.notEqual(attached.projectId, started.projectId);
+
+  bridge.send({ type: 'chat-interrupt' });
+  await bridge.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+  hub.message('이어서', { documentId: 'doc-next' }, bridge);
+  const delta = await bridge.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+  const prompt = JSON.parse(delta.event.text).prompt;
+  assert.doesNotMatch(prompt, /The user detached/, 'the agent detached by itself; only the attach is news');
+  assert.match(prompt, /This chat is now attached to the document "다음.hwpx" \(documentId doc-next\)\./);
+});
+
+test('the root conversation attaches without asking; unopenable paths are refused first', { timeout: 60_000 }, async (t) => {
   const home = tempDir(t, 'rhwp-link-home-');
   const folder = path.join(home, '보고서');
   mkdirSync(folder);
   writeFileSync(path.join(home, 'legacy.hwpml'), '<HWPML/>');
   const { hub, started, call } = await noDocumentTurn(t, {
-    hubOptions: { env: { RHWP_HOME_ACCESS: '1', HOME: home, RHWP_DOCUMENT_LINK_CONSENT_TIMEOUT_MS: '1500' } },
+    hubOptions: { env: { RHWP_HOME_ACCESS: '1', HOME: home } },
   });
 
-  // 하위 작업은 연결하지 못하고, 다시 저장할 수 없는 형식·홈 밖 폴더는 묻기 전에 거절된다.
+  // 하위 작업은 붙이거나 떼지 못하고, 다시 저장할 수 없는 형식·홈 밖 폴더는 Studio 에 가기 전에 거절된다.
   assert.equal((await call('open_document', { documentId: 'doc-a' }, { parentTaskId: 'task-1' })).error.code, 'ROOT_INTERACTION_REQUIRED');
+  assert.equal((await call('detach_document', {})).error.code, 'NO_DOCUMENT');
   assert.equal((await call('open_document', { path: path.join(home, 'legacy.hwpml') })).error.code, 'PATH_REJECTED');
   assert.equal((await call('create_document', { name: '보고서', folder: os.tmpdir() })).error.code, 'PATH_REJECTED');
   assert.equal((await call('create_document', { name: '../보고서' })).error.code, 'INVALID_ARGS');
-  assert.equal(hub.studio.frames.some((frame) => frame.type === 'chat-permission-requested'), false);
-
-  const denied = call('open_document', { documentId: 'doc-a' });
-  const deniedRequest = (await hub.studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  assert.equal(deniedRequest.capability, 'document-link');
-  assert.equal(deniedRequest.kind, 'open');
-  assert.equal(deniedRequest.linkDocumentId, 'doc-a');
-  assert.equal(deniedRequest.documentId, null);
-  respondPermission(hub, deniedRequest, 'deny', 'deny-a');
-  assert.equal((await hub.studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true);
-  assert.equal((await denied).error.code, 'PERMISSION_DENIED');
-
-  const expired = call('open_document', { documentId: 'doc-b' });
-  await hub.studio.next((frame) => frame.type === 'chat-permission-requested');
-  const resolved = await hub.studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.outcome.status === 'expired');
-  assert.equal(resolved.outcome.reason, 'timeout');
-  const expiredError = (await expired).error;
-  assert.equal(expiredError.code, 'PERMISSION_DENIED');
-  assert.match(expiredError.message, /expired/);
 
   const created = call('create_document', { name: '분기 보고서.hwpx', folder });
-  const createRequest = (await hub.studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  assert.equal(createRequest.kind, 'create');
-  assert.equal(createRequest.documentName, '분기 보고서.hwpx');
-  assert.equal(createRequest.path, folder);
-  respondPermission(hub, createRequest, 'grant', 'grant-create');
-  assert.equal((await hub.studio.next((frame) => frame.type === 'chat-permission-response-result')).ok, true);
-  const granted = await hub.studio.next((frame) => frame.type === 'chat-permission-resolved' && frame.requestId === createRequest.requestId);
-  assert.equal(granted.outcome.status, 'granted');
-  assert.deepEqual(granted.grants, [], 'a document link is never a chat-wide grant');
   const forwarded = await answerLink(hub, 'create_document', { documentId: 'doc-new', documentName: '분기 보고서.hwpx', revision: 9, createdByThread: true });
   assert.deepEqual(forwarded.args, { name: '분기 보고서', folder });
   const result = await created;
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.deepEqual(result.result, { documentId: 'doc-new', name: '분기 보고서.hwpx', revision: 9, linked: true });
   assert.equal((await hub.studio.next((frame) => frame.type === 'chat-document-linked')).documentId, 'doc-new');
+  assert.equal(hub.studio.frames.some((frame) => frame.type === 'chat-permission-requested'), false, 'linking never asks');
   assert.equal((await call('create_document', { name: '하나 더' })).error.code, 'THREAD_ALREADY_LINKED');
   assert.equal(started.documentId, null);
 });
 
-test('create_document without a folder shows the default folder but lets the desktop make it', { timeout: 60_000 }, async (t) => {
-  // 처음 쓰는 컴퓨터: 문서 폴더 아래 HamaEditor 가 아직 없다.
+test('create_document without a folder lets the desktop pick its default folder', { timeout: 60_000 }, async (t) => {
   const home = tempDir(t, 'rhwp-link-fresh-home-');
-  const documents = path.join(home, '문서');
   const { hub, call } = await noDocumentTurn(t, {
-    hubOptions: { env: { RHWP_HOME_ACCESS: '1', HOME: home, RHWP_DOCUMENTS_DIR: documents } },
+    hubOptions: { env: { RHWP_HOME_ACCESS: '1', HOME: home, RHWP_DOCUMENTS_DIR: path.join(home, '문서') } },
   });
   const created = call('create_document', { name: '회의록' });
-  const request = (await hub.studio.next((frame) => frame.type === 'chat-permission-requested')).request;
-  assert.equal(request.path, path.join(documents, 'HamaEditor'), 'the pill shows where the desktop writes');
-  respondPermission(hub, request, 'grant', 'grant-default');
   const forwarded = await answerLink(hub, 'create_document', { documentId: 'doc-minutes', documentName: '회의록.hwpx', createdByThread: true });
   assert.deepEqual(forwarded.args, { name: '회의록' }, 'no folder goes to the desktop, which creates its default folder');
   assert.equal((await created).ok, true);
@@ -234,7 +261,7 @@ test('a chat linked in one window cannot be linked to another document from a se
   assert.equal(refused.linkedDocumentId, 'doc-first');
 });
 
-test('the project save gate needs a document; 전체 links without asking and then saves', { timeout: 60_000 }, async (t) => {
+test('the project save gate needs a document; linking it then saves', { timeout: 60_000 }, async (t) => {
   const { hub, call } = await noDocumentTurn(t, { selection: { permissionProfile: 'unrestricted' } });
   const note = { ops: [{ op: 'note', name: '근거', body: '예산 근거 메모' }] };
 
@@ -252,7 +279,6 @@ test('the project save gate needs a document; 전체 links without asking and th
   const request = await answerLink(hub, 'open_document', { documentId: 'doc-full', documentName: '전체.hwpx', revision: 3 });
   assert.deepEqual(request.args, { documentId: 'doc-full' });
   assert.equal((await opened).ok, true);
-  assert.equal(hub.studio.frames.some((frame) => frame.type === 'chat-permission-requested'), false, '전체 skips the link question');
 
   const saved = await call('project_edit', note);
   assert.equal(saved.ok, true, JSON.stringify(saved));
@@ -332,7 +358,7 @@ const occurrences = (text, needle) => text.split(needle).length - 1;
 test('a detached chat hears about it once, compacts with detach instructions and gets the link tools back', { timeout: 60_000 }, async (t) => {
   const hub = await startLiveHub(t, { documentId: 'doc-old', nodeArgs: compactingPiArgs(t) });
   await hub.start({ documentName: '옛 문서.hwpx' });
-  assert.ok(!(await piToolNames(hub)).includes('open_document'));
+  assert.ok((await piToolNames(hub)).includes('detach_document'));
 
   // 떼어 낸 채팅은 문서 없이 다시 시작한다. 재연결로 같은 chat-start 가 다시 와도 알림은 하나다.
   const detached = await hub.start(DETACHED);
