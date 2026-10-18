@@ -3868,7 +3868,7 @@ button.ag-skill-copy {
 /* Review cards use the same neutral elevation as other contextual surfaces. */
 .ag-review-card {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -3881,9 +3881,12 @@ button.ag-skill-copy {
 
 /* Keep review decisions reachable when a diff contains a long text payload.
    The card header and diff scroll together while the action row stays outside
-   the scrollport at the bottom of the card. */
+   the scrollport at the bottom of the card. The card shrinks to the review dock
+   (40% of the sidebar, shorter than 26dvh in the desktop window), so the diff
+   gives up height first and the actions never fall below the dock. */
 .ag-review-summary {
-  min-height: 0;
+  flex: 0 1 auto;
+  min-height: 44px;
   max-height: 26dvh;
   overflow-y: auto;
   overscroll-behavior: contain;
