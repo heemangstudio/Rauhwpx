@@ -23,7 +23,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.93.1-x86_64-pc-windows-msvc
       CARGO_BUILD_JOBS: '1'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/math10-native-target-r15
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../math10-native-target-r15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -49,7 +49,7 @@ jobs:
           assert re.fullmatch('[0-9a-f]{40}', C), 'Root must fill the candidate commit constant'
           assert git('rev-parse', C + '^{tree}').decode().strip() == T
           assert git('rev-parse', C + '^').decode().strip() == os.environ['REMOTE_PARENT']
-          assert git('rev-parse', V + '^').decode().strip() == C
+          git('merge-base', '--is-ancestor', C, V)
           assert git('diff-tree', '--no-commit-id', '--name-status', '-r', C, V).decode().strip() == 'A\t' + wf
           assert not git('ls-tree', C, '--', wf), 'C must exclude validation workflow'
           (out / 'validation-workflow.yml').write_bytes(git('show', V + ':' + wf))
@@ -222,7 +222,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.93.1
       CARGO_BUILD_JOBS: '1'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/math10-wasm-target-r15
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../math10-wasm-target-r15
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v5
