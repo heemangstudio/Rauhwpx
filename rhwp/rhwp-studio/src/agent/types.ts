@@ -143,9 +143,16 @@ export interface UserQuestionInteraction {
 /** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
 export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution';
 export type ChatPermissionDecision = 'grant' | 'deny';
+/** 허락이 이 채팅에서만 살지(chat), 다음 채팅에도 남을지(always). */
+export type ChatPermissionScope = 'chat' | 'always';
 export type ChatPermissionOutcome =
   | { status: 'granted' }
   | { status: 'denied' | 'expired'; reason?: string };
+
+export type ChatPermissionRequestKind =
+  | 'browser-save-account' | 'browser-use-account' | 'browser-site-access' | 'browser-sign-in' | 'browser-code'
+  | 'secret-save' | 'secret-use';
+export type SecretKind = 'api-key' | 'token' | 'password' | 'other';
 
 export interface ChatPermissionRequest {
   requestId: string;
@@ -154,14 +161,41 @@ export interface ChatPermissionRequest {
   turnId: string;
   agent: AgentName;
   capability: ChatPermissionCapability;
-  kind?: 'browser-save-account' | 'browser-use-account' | 'browser-sign-in' | 'browser-code';
+  kind?: ChatPermissionRequestKind;
   origin?: string;
   tabId?: string;
   origins?: string[];
+  /** browser-site-access 가 덮는 등록 도메인(하위 도메인 포함). IP·localhost 는 없다. */
+  siteDomain?: string | null;
   accountId?: string;
   accountLabel?: string;
+  /** secret-use, 그리고 있는 값을 바꾸는 secret-save. */
+  secretId?: string;
+  secretLabel?: string;
+  secretKind?: SecretKind;
+  /** 카드가 보일 범위 선택지. 첫 값이 기본이다. 없으면 고르지 않는다. */
+  scopes?: ChatPermissionScope[];
   reason: string;
   createdAt: string;
+}
+
+/** 저장한 비밀 값의 메타데이터. 값 자체는 Studio 에 오지 않는다. */
+export interface SecretMeta {
+  id: string;
+  label: string;
+  kind: SecretKind;
+  origins: string[];
+  scope: ChatPermissionScope;
+  approved: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface SecretSubmitResult {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  secret?: SecretMeta;
 }
 
 /** 에이전트 참고자료의 수명 범위. 파일 본문은 허브가 보관하며 브라우저에는 메타데이터만 둔다. */
@@ -693,6 +727,10 @@ export interface BrowserTab {
   lastAction?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  /** 사람에게만 오는 사이트 아이콘(data: URI). */
+  faviconUrl?: string;
+  /** 비밀번호가 보호하는 탭 — 화면을 미리 보여 주지 않는다. */
+  passwordProtected?: boolean;
 }
 export interface BrowserFrame {
   frameId: string;
@@ -1048,7 +1086,7 @@ export type SidebarEvent =
   | { type: 'user-question-resolved'; interactionId: string; outcome: UserQuestionOutcome }
   | { type: 'user-question-answer-result'; interactionId: string; responseId: string; ok: boolean; code?: string; message?: string }
   | { type: 'chat-permission-requested'; request: ChatPermissionRequest; replayed?: boolean }
-  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[] }
+  | { type: 'chat-permission-resolved'; requestId: string; threadId: string; documentId: string | null; outcome: ChatPermissionOutcome; grants: ChatPermissionCapability[]; alwaysGrants?: ChatPermissionCapability[] }
   | { type: 'chat-permission-response-result'; responseId: string; requestId: string; ok: boolean; code?: string; message?: string }
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }

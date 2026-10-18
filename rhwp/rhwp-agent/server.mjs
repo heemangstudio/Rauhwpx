@@ -60,7 +60,7 @@ import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
-import { createBrowserPolicy } from './browser-policy.mjs';
+import { browserOrigin, createBrowserPolicy, sameSite } from './browser-policy.mjs';
 import { createBrowserCredentialBroker } from './browser-credentials.mjs';
 import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
 import { createBrowserDownloads } from './browser-downloads.mjs';
@@ -111,11 +111,23 @@ import {
   validateUserQuestionAnswers,
 } from './user-question.mjs';
 import {
+  CHAT_PERMISSION_CAPABILITIES,
+  createChatPermissionPolicy,
   createChatPermissionRequest,
   isRequestPermissionTool,
   normalizeChatPermissionGrants,
   normalizeChatPermissionRequest,
+  normalizeChatPermissionScope,
 } from './chat-permissions.mjs';
+import { ChatContinuationQueue, ChatRequestRegistry } from './chat-requests.mjs';
+import {
+  createUserSecretStore,
+  isUserSecretId,
+  normalizeSecretKind,
+  normalizeSecretLabel,
+  normalizeSecretOrigins,
+  normalizeSecretScope,
+} from './user-secrets.mjs';
 import {
   activeDocumentIdentity,
   addActiveDocumentContext,
@@ -174,6 +186,9 @@ import {
   boundTextFields,
   textFitsByteLimit,
 } from './input-bounds.mjs';
+import { installStaleFrameGuard } from './stale-frame-guard.mjs';
+
+installStaleFrameGuard();
 
 const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
@@ -190,6 +205,8 @@ const STARTED_AT = Date.now();
 // The bundle is discovery-only. Every per-window cwd, home, download, and
 // temporary work path lives below RHWP_WORK_DIR.
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+// 페이지에 입력한 사용자 비밀 값. 허브 로그·실패 문구·도구 결과에서 가린다(값은 이 프로세스 메모리에만 있다).
+const filledSecretValues = new Set();
 const MCP_SCRIPT = fileURLToPath(new URL('./mcp-stdio.mjs', import.meta.url));
 const BUNDLED_SKILLS = fileURLToPath(new URL('./skills', import.meta.url));
 if (PRODUCTION && !process.env.RHWP_WORK_DIR) {
@@ -523,7 +540,7 @@ const sessions = new HubSessionRegistry({
       documentSnapshotManager.baseDir,
       copyLayoutGeneratedRoot,
     ]);
-    return {
+    const record = {
       sessionId,
       disposed: false,
       createdAt: Date.now(),
@@ -549,12 +566,12 @@ const sessions = new HubSessionRegistry({
       suppressedUserQuestionCallIds: new Set(),
       pendingUserQuestionScopes: [],
       userQuestionResponseReceipts: new Map(),
-      pendingChatPermissionRequest: null,
+      // 일반 권한·브라우저 계정·비밀 요청을 한 곳에서 관리한다(createRecord 끝에서 만든다).
+      chatRequests: null,
       pendingChatPermissionScopes: [],
       pendingBrowserScopes: [],
-      pendingBrowserAccountRequests: new Map(),
-      // 사용자가 끝낸 브라우저 요청 — 턴이 비면 에이전트를 이어서 실행한다.
-      pendingBrowserContinuations: [],
+      // 사용자가 답한 요청 — 턴이 비면 에이전트를 이어서 실행한다.
+      chatContinuations: new ChatContinuationQueue(),
       suppressedChatPermissionCallIds: new Set(),
       chatPermissionResponseReceipts: new Map(),
       nextHubId: 1,
@@ -589,6 +606,8 @@ const sessions = new HubSessionRegistry({
       isolatedHome,
       codexHome,
     };
+    record.chatRequests = chatRequestRegistryFor(record);
+    return record;
   },
 });
 projectEventsLive = true;
@@ -607,6 +626,25 @@ const credentialBroker = createBrowserCredentialBroker({
   dataDir: OWNED_BROWSER_DATA_DIR, policy: browserPolicy, secretStore: browserSecretStore, onEvent: broadcastBrowserEvent,
 });
 await credentialBroker.ready();
+// 사용자가 에이전트에게 맡긴 비밀. 메타데이터는 브라우저 데이터 폴더에, 값은 금고에만 둔다.
+const userSecrets = createUserSecretStore({
+  dataDir: OWNED_BROWSER_DATA_DIR, secretStore: browserSecretStore,
+  onChange: () => broadcastBrowserEvent({ type: 'user-secrets-changed' }),
+});
+userSecrets.ready().catch((error) => log(`user secret metadata unavailable: ${error?.code ?? error?.message ?? error}`));
+credentialBroker.addResetParticipant(() => userSecrets.reset());
+// "항상" 허용한 채팅 권한. 새 채팅도 이 권한으로 시작한다.
+const chatPermissionPolicy = createChatPermissionPolicy({
+  filePath: path.join(path.dirname(PROJECTS_ROOT), 'chat-permission-policy.json'),
+});
+await chatPermissionPolicy.ready().catch((error) => log(`chat permission policy unavailable: ${error?.code ?? error?.message ?? error}`));
+function registerFilledSecret(record, value) {
+  if (typeof value !== 'string' || !value) return;
+  filledSecretValues.add(value);
+  if (filledSecretValues.size > 256) filledSecretValues.delete(filledSecretValues.values().next().value);
+  const failureSecrets = record.agentSession?.failureSecrets;
+  if (Array.isArray(failureSecrets) && !failureSecrets.includes(value)) failureSecrets.push(value);
+}
 const initialBrowserConfiguration = await credentialBroker.getConfiguration();
 const browserDownloads = createBrowserDownloads({
   exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc' ? path.join(os.homedir(), 'Downloads') : null,
@@ -633,7 +671,7 @@ await browserDownloads.ready;
 const ownedBrowser = createOwnedBrowserService({
   dataDir: OWNED_BROWSER_DATA_DIR, credentialBroker, policy: browserPolicy,
   idleMinutes: initialBrowserConfiguration.performance?.idleMinutes ?? 15,
-  downloads: browserDownloads, onEvent: broadcastBrowserEvent,
+  downloads: browserDownloads, onEvent: broadcastBrowserEvent, faviconOrigins: () => browserRequestOrigins(),
   nativeAdapter: process.env.RHWP_BROWSER_HOST === 'ipc' && typeof process.send === 'function'
     ? createIpcNativeBrowserAdapter() : undefined,
   workspaceTargets: process.env.RHWP_BROWSER_WORKSPACE_TARGETS
@@ -641,6 +679,16 @@ const ownedBrowser = createOwnedBrowserService({
 });
 await ownedBrowser.restore();
 await applyBrowserConfiguration(initialBrowserConfiguration);
+
+// 사이트 아이콘을 처음 받아 올 수 있는 출처: 사용자에게 보여 준 대기 중 요청과 저장한 비밀 값의 출처.
+async function browserRequestOrigins() {
+  const origins = [];
+  for (const record of sessions.values()) {
+    for (const request of record.chatRequests?.snapshot() ?? []) origins.push(request.origin, ...(request.origins ?? []));
+  }
+  for (const secret of await userSecrets.list().catch(() => [])) origins.push(...(secret.origins ?? []));
+  return origins.filter(Boolean);
+}
 
 function broadcastBrowserEvent(event) {
   // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
@@ -712,6 +760,149 @@ async function applyBrowserConfiguration(configuration) {
   return configuration;
 }
 
+// ─── 대기 중인 사용자 요청(일반 권한·브라우저 계정·비밀) ───────────────────────────────
+
+function chatRequestRegistryFor(record) {
+  return new ChatRequestRegistry({
+    publish: (request) => sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request }),
+    finish: (entry, outcome, options) => finishChatRequest(record, entry, outcome, options),
+  });
+}
+
+/** 요청 하나가 끝났다. Studio 에 한 번 알리고, 남은 자원을 풀고, 사용자가 답했으면 에이전트를 이어 간다. */
+function finishChatRequest(record, entry, outcome, { continuation = null } = {}) {
+  const { requestId } = entry.request;
+  sendJson(record.studioSocket, {
+    v: 1, type: 'chat-permission-resolved', requestId, threadId: entry.threadId, documentId: entry.documentId,
+    outcome,
+    grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants),
+    alwaysGrants: chatPermissionPolicy.list(),
+    capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
+  });
+  if (entry.kind === 'browser' && outcome.status !== 'granted') {
+    credentialBroker.discardAccountRequest(requestId);
+    // 사용자에게 넘긴 탭은 요청이 끝나면 에이전트와 다시 나눈다.
+    if (entry.request.tabId && ['browser-sign-in', 'browser-code'].includes(entry.request.kind)) {
+      void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true }), { tabId: entry.request.tabId }).catch(() => {});
+    }
+  }
+  const answered = outcome.status === 'granted' || (outcome.status === 'denied' && outcome.reason === 'user-denied');
+  if (continuation && answered && entry.agentInitiated) {
+    record.chatContinuations.push({ requestId, threadId: entry.threadId, turnId: entry.request.turnId ?? null, text: continuation });
+  }
+  // 같은 턴의 다른 요청이 끝나기를 기다리던 이어 가기도 이제 열릴 수 있다.
+  if (record.chatContinuations.has(entry.threadId)) queueMicrotask(() => drainIdleWork(record));
+}
+
+function settleChatRequest(record, requestId, outcome, options) {
+  return record.chatRequests.settle(requestId, outcome, options);
+}
+
+/** 브라우저 계정 요청은 허브 전체의 중개자가 만든다. 어느 창의 요청인지 찾아 끝낸다. */
+function settleChatRequestAnywhere(requestId, outcome, options) {
+  for (const record of sessions.values()) {
+    const entry = settleChatRequest(record, requestId, outcome, options);
+    if (entry) return entry;
+  }
+  return null;
+}
+
+function expireChatRequests(record, reason, predicate) {
+  return record.chatRequests.expire(reason, predicate);
+}
+
+/** 채팅이 끝나면 그 채팅에만 준 계정 승인·비밀 승인·"이 채팅" 비밀을 버린다. */
+function endChatScope(threadId) {
+  if (!threadId) return;
+  userSecrets.endChat(threadId);
+  browserPolicy.clearChatAccounts(threadId);
+}
+
+/** 사용자가 멈춘 채팅의 요청과 아직 열지 않은 이어 가기 턴을 모두 버린다. */
+function stopChatRequests(record, reason = 'user-stop') {
+  expireChatRequests(record, reason);
+  const threadId = record.agentSession?.threadId;
+  if (threadId) record.chatContinuations.drop(threadId);
+}
+
+function pendingChatRequestsSnapshot(record) {
+  return record.chatRequests.snapshot();
+}
+
+/** 예전 Studio 를 위한 한 칸 — 첫 번째 일반 권한 요청. */
+function pendingChatPermissionSnapshot(record) {
+  return pendingChatRequestsSnapshot(record).find((request) => !request.kind) ?? null;
+}
+
+function chatRequestResponseFrame(requestId, responseId, ok, error = null) {
+  return {
+    v: 1, type: 'chat-permission-response-result', requestId, responseId, ok,
+    ...(error ? { code: error.code ?? 'CHAT_PERMISSION_FAILED', message: String(error.message ?? error) } : {}),
+  };
+}
+
+function rememberChatRequestResponse(record, responseId, fingerprint, frame) {
+  // 성공한 응답만 중복 확인에 남긴다. 바쁜 공급자·실패한 전환은 같은 요청으로 다시 시도할 수 있다.
+  record.chatPermissionResponseReceipts.set(responseId, { fingerprint, frame });
+  if (record.chatPermissionResponseReceipts.size > 32) {
+    record.chatPermissionResponseReceipts.delete(record.chatPermissionResponseReceipts.keys().next().value);
+  }
+}
+
+const quotedLabel = (value) => `"${String(value ?? '').replace(/[\r\n"“”]+/g, ' ').trim().slice(0, 80)}"`;
+
+/** 사용자가 답한 요청 뒤에 에이전트에게 보내는 짧은 고정 문장. */
+function chatRequestContinuationText(request, outcome, detail = {}) {
+  const origin = request.origin ?? 'the website';
+  const secret = request.kind === 'secret-save' || request.kind === 'secret-use';
+  if (outcome.status === 'denied') {
+    const subject = !request.kind ? `the ${request.capability} permission`
+      : secret ? `the secret ${quotedLabel(request.secretLabel)}`
+        : request.kind === 'browser-sign-in' || request.kind === 'browser-code' ? `the browser handoff on ${origin}`
+          : request.kind === 'browser-site-access' ? `access to ${origin}`
+          : `website account access for ${origin}`;
+    return `The user declined ${subject}. Continue without it and do not ask for it again this turn.`;
+  }
+  if (!request.kind) return `The user granted ${request.capability} for this chat; continue.`;
+  if (request.kind === 'browser-code') return `The user entered the verification code on ${origin}; continue.`;
+  if (request.kind === 'browser-sign-in') return `The user finished signing in on ${origin}; continue.`;
+  if (request.kind === 'browser-site-access') {
+    const account = request.accountId ? ` Sign in with the saved account ${quotedLabel(request.accountLabel)} (accountId ${request.accountId}) through browser_fill_account, then submit the form.` : '';
+    const where = request.siteDomain ? `${request.siteDomain} and its subdomains` : origin;
+    return `The user allowed ${where} ${detail.scope === 'always' ? 'in every chat' : 'for this chat'}: browsing and website changes there.${account} Continue.`;
+  }
+  if (request.kind === 'browser-save-account') {
+    return detail.reuseApproved
+      ? `The user saved an account for ${origin} and approved its reuse; continue.`
+      : `The user saved an account for ${origin} without approving agent reuse; do not fill it. Continue without signing in.`;
+  }
+  if (secret) {
+    return `The user ${request.kind === 'secret-save' ? 'saved' : 'approved'} the secret ${quotedLabel(detail.label ?? request.secretLabel)} (secretId ${detail.secretId ?? request.secretId}). Type it with browser_fill_secret; you never see its value. Continue.`;
+  }
+  return `The user approved the saved account for ${origin}; continue.`;
+}
+
+/**
+ * 사이트에 쓸 저장된 계정 — 데스크톱 보관함과 허브 계정을 함께 본다. accountId 를 주면 그 계정이 이 사이트 것이어야 한다.
+ * 정확한 출처가 먼저이고, 없으면 같은 등록 도메인(HTTPS)의 계정을 쓴다.
+ */
+async function savedSiteAccount(origin, accountId) {
+  const requested = browserOrigin(origin);
+  const native = (await ownedBrowser.nativeAccounts().catch(() => [])).map((account) => ({ ...account, source: 'native' }));
+  const hub = ((await credentialBroker.listAccounts().catch(() => null))?.accounts ?? []).map((account) => ({ ...account, source: 'hub' }));
+  const originsOf = (account) => account.origins?.length ? account.origins : [account.origin];
+  const pick = (account) => ({ id: account.id, label: account.label || account.username || new URL(requested).hostname, source: account.source, origins: originsOf(account), profileId: account.profileId });
+  if (accountId) {
+    const account = native.concat(hub).find((entry) => entry.id === accountId);
+    if (!account) return null;
+    if (!originsOf(account).some((value) => sameSite(value, requested))) throw workflowError('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The saved account belongs to a different website.');
+    return pick(account);
+  }
+  const all = native.concat(hub);
+  const account = all.find((entry) => originsOf(entry).includes(requested)) ?? all.find((entry) => originsOf(entry).some((value) => sameSite(value, requested)));
+  return account ? pick(account) : null;
+}
+
 function assertBrowserAccountScope(pending, actor) {
   if (!pending || ['threadId', 'documentId', 'projectId'].some((key) => (pending.actor?.[key] ?? pending[key] ?? null) !== (actor[key] ?? null))) {
     throw workflowError('BROWSER_ACCOUNT_REQUEST_INVALIDATED', 'The website account request no longer belongs to this chat');
@@ -722,72 +913,49 @@ function publishBrowserAccountRequest(record, request) {
   const actor = request.actor;
   const wrapped = { ...request, threadId: actor.threadId, documentId: actor.documentId,
     turnId: record.agentSession?.turnId ?? null, agent: record.agentSession?.agent ?? 'claude',
-    capability: 'browser', createdAt: new Date().toISOString() };
-  record.pendingBrowserAccountRequests.set(request.requestId, wrapped);
-  sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: wrapped });
-}
-
-function settleBrowserAccountRequest(requestId, status = 'granted', continuation = null) {
-  for (const record of sessions.values()) {
-    const request = record.pendingBrowserAccountRequests.get(requestId);
-    if (!request) continue;
-    record.pendingBrowserAccountRequests.delete(requestId);
-    sendJson(record.studioSocket, { v: 1, type: 'chat-permission-resolved', requestId,
-      threadId: request.threadId, documentId: request.documentId,
-      outcome: { status, ...(status === 'denied' ? { reason: 'user-denied' } : {}) },
-      grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants) });
-    // 에이전트가 요청하고 사용자가 마친 요청만 턴을 이어 간다. 거절은 다른 권한 거절처럼 멈춘다.
-    if (status === 'granted' && continuation && request.actor && !request.actor.isHuman) {
-      record.pendingBrowserContinuations = record.pendingBrowserContinuations
-        .filter((entry) => entry.requestId !== requestId).concat({ requestId, threadId: request.threadId, text: continuation }).slice(-8);
-      drainBrowserContinuation(record);
-    }
+    capability: 'browser', createdAt: new Date().toISOString(),
+    ...(request.kind === 'browser-use-account' || request.kind === 'browser-site-access' ? { scopes: ['chat', 'always'] } : {}) };
+  try {
+    // 계정 요청은 예전처럼 Studio 가 다시 붙을 때까지 남겨 둔다.
+    record.chatRequests.add({ kind: 'browser', request: wrapped, threadId: actor.threadId, documentId: actor.documentId ?? null, agentInitiated: !actor.isHuman },
+      (request.expiresAt ?? Date.now()) - Date.now(), { requireDelivery: false });
+  } catch (error) {
+    credentialBroker.discardAccountRequest(request.requestId);
+    throw error;
   }
+  return wrapped;
 }
 
-function browserContinuationText(request) {
-  const origin = request?.origin ?? 'the website';
-  if (request?.kind === 'browser-code') return `The user entered the verification code on ${origin}; continue.`;
-  if (request?.kind === 'browser-sign-in') return `The user finished signing in on ${origin}; continue.`;
-  if (request?.kind === 'browser-save-account') return `The user saved an account for ${origin}; continue.`;
-  return `The user approved the saved account for ${origin}; continue.`;
+/** 턴이 비었을 때 미뤄 둔 일을 차례로 연다. 하나가 턴이나 전환을 시작하면 나머지는 다음 기회로 넘어간다. */
+function drainIdleWork(record) {
+  syncRevokedChatGrants(record);
+  drainTemplateCompletion(record);
+  drainPlanningDocumentSaved(record);
+  drainChatContinuation(record);
 }
 
-function drainBrowserContinuation(record) {
+function drainChatContinuation(record) {
   const activeSession = record.agentSession;
   if (!activeSession || activeSession.status !== 'idle'
     || activeSession.pendingTransitions > 0 || record.pendingReferenceMessage) return;
-  record.pendingBrowserContinuations = record.pendingBrowserContinuations.filter((entry) => entry.threadId === activeSession.threadId);
-  const entry = record.pendingBrowserContinuations.shift();
-  if (!entry) return;
-  // 사용자 메시지가 아니므로 사용자가 잡고 있는 다른 탭은 그대로 둔다.
+  // 다른 채팅의 항목은 그 채팅으로 돌아올 때까지 남긴다. 에이전트가 한 턴에 여러 가지를 물었으면
+  // 그 턴의 요청이 모두 끝난 뒤 한 번에 이어 간다(남은 일반 권한 허용이 AGENT_BUSY 에 막히지 않게).
+  const taken = record.chatContinuations.take(activeSession.threadId, {
+    held: (entry) => !!entry.turnId && !!record.chatRequests.find((pending) => pending.threadId === entry.threadId
+      && pending.agentInitiated && pending.request.turnId === entry.turnId),
+  });
+  if (!taken) return;
+  // 사용자 메시지가 아니므로 다른 요청과 사용자가 잡고 있는 탭은 그대로 둔다.
   beginAgentTurn(record, activeSession, { userTurn: false });
   try {
-    activeSession.backend.sendUserMessage(addAgentInstructionsContext(entry.text));
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
     activeSession.turnId = null;
     record.userQuestionResponseReceipts.clear();
-    log(`browser continuation dispatch failed: ${error?.message ?? error}`);
+    log(`chat continuation dispatch failed: ${error?.message ?? error}`);
   }
-}
-
-async function answerBrowserAccountPermission(record, sock, msg) {
-  const pending = await credentialBroker.getAccountRequest(msg.requestId);
-  if (!pending) return false;
-  try {
-    if (!msg.responseId || msg.decision !== 'deny') throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Use the account approval form for this request');
-    const actor = browserActorForRecord(record, { isHuman: true });
-    assertBrowserAccountScope(pending, actor);
-    if (msg.threadId !== actor.threadId || (msg.documentId ?? null) !== actor.documentId) throw workflowError('REQUEST_INVALIDATED', 'The account request changed scope');
-    await credentialBroker.cancelAccountRequest({ actor, requestId: msg.requestId });
-    settleBrowserAccountRequest(msg.requestId, 'denied');
-    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: true });
-  } catch (error) {
-    sendJson(sock, { v: 1, type: 'chat-permission-response-result', requestId: msg.requestId, responseId: msg.responseId, ok: false, ...browserError(error) });
-  }
-  return true;
 }
 
 function browserMcpResult(result) {
@@ -835,6 +1003,8 @@ async function handleBrowserRequest(record, sock, msg) {
       case 'accounts.list': result = await credentialBroker.listAccounts(); break;
       case 'accounts.request': result = await credentialBroker.requestAccount({ ...args, actor }); break;
       case 'accounts.approve': {
+        // scope: always 는 계정 기록에 남는 승인, chat 은 이 채팅에서만(허브 메모리). 생략하면 예전처럼 always.
+        const scope = args.scope === undefined ? 'always' : normalizeChatPermissionScope(args.scope);
         let approval; let pending;
         if (args.requestId) {
           pending = await credentialBroker.getAccountRequest(args.requestId);
@@ -842,12 +1012,36 @@ async function handleBrowserRequest(record, sock, msg) {
           approval = Object.freeze({ approved: true, requestId: args.requestId, use: true });
         }
         if (pending?.native) {
-          // 데스크톱 보관함 계정의 동의는 그 계정 기록에 저장한다.
-          const account = await ownedBrowser.approveNativeAccount(pending.accountId, true);
-          await credentialBroker.settleExternalRequest({ actor, requestId: args.requestId });
-          result = { account };
-        } else result = await credentialBroker.approveAccount({ ...args, actor, approval });
-        if (args.requestId) settleBrowserAccountRequest(args.requestId, 'granted', browserContinuationText(pending));
+          if (scope === 'chat') {
+            // 데스크톱 보관함 기록은 바꾸지 않는다. 입력할 때 허브가 이 채팅의 승인을 함께 보낸다.
+            await browserPolicy.grantChatAccount({ actor, threadId: actor.threadId, accountId: pending.accountId, origins: pending.origins ?? [pending.origin], profileId: 'native' });
+            await credentialBroker.settleExternalRequest({ actor, requestId: args.requestId });
+            result = { account: { id: pending.accountId, origin: pending.origin, origins: pending.origins ?? [pending.origin], label: pending.accountLabel, profileId: 'native', chatApproved: true } };
+          } else {
+            // 데스크톱 보관함 계정의 동의는 그 계정 기록에 저장한다.
+            const account = await ownedBrowser.approveNativeAccount(pending.accountId, true);
+            await credentialBroker.settleExternalRequest({ actor, requestId: args.requestId });
+            result = { account };
+          }
+        } else result = await credentialBroker.approveAccount({ ...args, scope, actor, approval });
+        if (args.requestId) settleChatRequestAnywhere(args.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }) });
+        break;
+      }
+      case 'sites.approve': {
+        // 사이트 사용 카드: 읽기·사이트 변경을 그 등록 도메인 전체(하위 도메인 포함)에, 저장된 계정 사용을 그 계정에 같은 범위로 허용한다.
+        const scope = normalizeChatPermissionScope(args.scope);
+        const pending = await credentialBroker.getAccountRequest(String(args.requestId ?? ''));
+        if (!pending) throw workflowError('BROWSER_ACCOUNT_REQUEST_EXPIRED', 'The site request expired. Ask the agent again.');
+        if (pending.kind !== 'browser-site-access') throw workflowError('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is not a site access request.');
+        assertBrowserAccountScope(pending, actor);
+        const site = await browserPolicy.grantSiteAccess({ actor, threadId: actor.threadId, origin: pending.origin, scope, label: new URL(pending.origin).hostname });
+        if (pending.accountId && pending.accountSource === 'native') {
+          if (scope === 'chat') await browserPolicy.grantChatAccount({ actor, threadId: actor.threadId, accountId: pending.accountId, origins: pending.accountOrigins.length ? pending.accountOrigins : [pending.origin], profileId: 'native' });
+          else await ownedBrowser.approveNativeAccount(pending.accountId, true);
+        } else if (pending.accountId) await credentialBroker.approveAccount({ actor, accountId: pending.accountId, scope });
+        await credentialBroker.settleExternalRequest({ actor, requestId: pending.requestId });
+        settleChatRequestAnywhere(pending.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }, { scope }) });
+        result = { approved: true, scope, origins: site.origins, domain: site.domain, accountId: pending.accountId ?? null };
         break;
       }
       case 'accounts.complete': {
@@ -857,17 +1051,35 @@ async function handleBrowserRequest(record, sock, msg) {
         await ownedBrowser.observeHumanSessions().catch(() => {});
         result = await credentialBroker.completeHandoff({ actor, requestId: pending.requestId, profileId: ownedBrowser.profileId() });
         if (pending.tabId) await ownedBrowser.releaseHolds(actor, { tabId: pending.tabId }).catch(() => {});
-        settleBrowserAccountRequest(pending.requestId, 'granted', browserContinuationText(pending));
+        settleChatRequestAnywhere(pending.requestId, { status: 'granted' }, { continuation: chatRequestContinuationText(pending, { status: 'granted' }) });
         result = { completed: true, origin: result.origin };
         break;
       }
+      case 'secrets.list': result = { secrets: await userSecrets.list({ threadId: actor.threadId }) }; break;
+      case 'secrets.approve': result = await approveUserSecret(record, actor, args); break;
+      case 'secrets.revoke': result = { secret: await userSecrets.revoke(String(args.secretId ?? '')) }; break;
+      case 'secrets.delete': {
+        const secretId = String(args.secretId ?? '');
+        result = await userSecrets.remove(secretId);
+        // 지운 비밀을 기다리던 요청은 더는 답할 수 없다.
+        for (const entry of sessions.values()) expireChatRequests(entry, 'secret-removed', (item) => item.kind === 'secret' && item.request.secretId === secretId);
+        break;
+      }
+      case 'permissions.list': result = { always: chatPermissionPolicy.list() }; break;
+      case 'permissions.revoke': result = { always: await revokeAlwaysChatPermission(args.capability) }; break;
       case 'sessions.imported': result = await ownedBrowser.acceptImportedSessions(Array.isArray(args.domains) ? args.domains.slice(0, 500) : []); break;
       case 'accounts.revoke': result = await credentialBroker.revokeAccount({ ...args, actor }); break;
       case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
       case 'accounts.forget': result = await credentialBroker.forgetAccount({ ...args, actor }); break;
       case 'configuration.get': result = await credentialBroker.getConfiguration(); break;
       case 'configuration.update': result = await applyBrowserConfiguration(await credentialBroker.updateConfiguration({ ...args, actor })); break;
-      default: result = await ownedBrowser.request(actor, String(msg.action ?? ''), args);
+      default: {
+        result = await ownedBrowser.request(actor, String(msg.action ?? ''), args);
+        // 초기화는 중개자의 계정 요청과 비밀을 모두 지웠다. 그 카드도 닫는다.
+        if (msg.action === 'reset-browser') {
+          for (const entry of sessions.values()) expireChatRequests(entry, 'browser-reset', (item) => item.kind !== 'generic');
+        }
+      }
     }
     replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
   } catch (error) {
@@ -892,7 +1104,9 @@ async function handleBrowserAccountSubmit(record, sock, msg) {
       username: msg.username, password: msg.password, remember: msg.remember === true,
       approval: Object.freeze({ approved: true, requestId: accountRequestId, save: true, use: msg.consent.use }),
     });
-    settleBrowserAccountRequest(accountRequestId, 'granted', browserContinuationText(pending));
+    settleChatRequestAnywhere(accountRequestId, { status: 'granted' }, {
+      continuation: chatRequestContinuationText(pending, { status: 'granted' }, { reuseApproved: msg.consent.use === true }),
+    });
     replyToStudio(record, sock, { v: 1, type: 'browser-response', requestId, result });
   } catch (error) {
     // 금고 오류에는 비밀 입력을 되비추지 않는다. 일반 도구 로그/채팅에 이 payload 를 넣지 않는다.
@@ -901,6 +1115,195 @@ async function handleBrowserAccountSubmit(record, sock, msg) {
     delete msg.password;
     delete msg.username;
   }
+}
+
+// ─── 사용자 비밀 ───────────────────────────────────────────
+
+const SAFE_SECRET_ERROR = /^(?:SECRET_|CHAT_PERMISSION_NOT_FOUND$|REQUEST_INVALIDATED$|INVALID_REQUEST_ID$)/;
+
+/** 값이 실린 메시지는 이 전용 채널로만 받는다. 값은 처리 뒤 메시지에서 지우고 어디에도 되비추지 않는다. */
+async function handleSecretSubmit(record, sock, msg) {
+  const responseId = typeof msg.responseId === 'string' && msg.responseId && msg.responseId.length <= 256 ? msg.responseId : null;
+  const reply = (frame) => replyToStudio(record, sock, { v: 1, type: 'secret-submit-result', responseId, ...frame });
+  let entry = null;
+  try {
+    if (record.studioSocket !== sock) throw workflowError('REQUEST_INVALIDATED', 'This secret form connection was replaced');
+    if (!responseId) throw workflowError('INVALID_REQUEST_ID', 'A secret responseId is required');
+    entry = record.chatRequests.get(msg.requestId);
+    if (!entry || entry.kind !== 'secret' || entry.request.kind !== 'secret-save' || entry.submitting) {
+      entry = null;
+      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This secret request is no longer pending');
+    }
+    if (msg.threadId !== entry.threadId || (msg.documentId ?? null) !== (entry.documentId ?? null)) {
+      throw workflowError('REQUEST_INVALIDATED', 'The secret request no longer belongs to this chat and document');
+    }
+    const scope = normalizeSecretScope(msg.scope, entry.request.scopes[0]);
+    if (!entry.request.scopes.includes(scope)) throw workflowError('SECRET_SCOPE_INVALID', 'This secret cannot be kept with that scope.');
+    // 같은 카드를 두 번 보내도 비밀은 하나만 생긴다.
+    entry.submitting = true;
+    const secret = await userSecrets.save({
+      id: entry.request.secretId, label: msg.label ?? entry.request.secretLabel, kind: entry.request.secretKind,
+      origins: entry.request.origins, value: msg.value, scope, threadId: entry.threadId,
+    });
+    // 저장 중에 요청이 끝났어도 사용자가 입력한 값은 남긴다. 이어 가기는 요청이 살아 있을 때만 연다.
+    settleChatRequest(record, entry.request.requestId, { status: 'granted' }, {
+      continuation: chatRequestContinuationText(entry.request, { status: 'granted' }, { label: secret.label, secretId: secret.id }),
+    });
+    reply({ ok: true, secret });
+  } catch (error) {
+    const code = error?.code ?? 'SECRET_SAVE_FAILED';
+    reply({ ok: false, code, message: SAFE_SECRET_ERROR.test(code) ? String(error.message) : 'The secret could not be saved.' });
+  } finally {
+    if (entry) entry.submitting = false;
+    delete msg.value;
+  }
+}
+
+async function approveUserSecret(record, actor, args) {
+  const scope = normalizeSecretScope(args.scope, 'chat');
+  let entry = null;
+  if (args.requestId !== undefined) {
+    entry = record.chatRequests.get(String(args.requestId));
+    if (!entry || entry.kind !== 'secret' || entry.request.kind !== 'secret-use'
+      || (args.secretId !== undefined && args.secretId !== entry.request.secretId)) {
+      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This secret request is no longer pending');
+    }
+    if (!entry.request.scopes.includes(scope)) throw workflowError('SECRET_SCOPE_INVALID', 'This secret cannot be approved with that scope.');
+  } else if (!isUserSecretId(args.secretId)) throw workflowError('SECRET_NOT_FOUND', 'Choose a saved secret to approve.');
+  const secret = await userSecrets.approve({ id: entry?.request.secretId ?? args.secretId, scope, threadId: entry?.threadId ?? actor.threadId });
+  if (entry) {
+    settleChatRequest(record, entry.request.requestId, { status: 'granted' }, {
+      continuation: chatRequestContinuationText(entry.request, { status: 'granted' }, { label: secret.label, secretId: secret.id }),
+    });
+  }
+  return { secret };
+}
+
+const sameOriginSet = (left, right) => left.length === right.length && left.every((origin) => right.includes(origin));
+
+/** request_secret: 기존 비밀을 다시 쓰거나(secret-use) 새 값을 받는다(secret-save). 값은 에이전트에게 가지 않는다. */
+async function requestUserSecret(record, args) {
+  const activeSession = record.agentSession;
+  if (!activeSession || activeSession.status !== 'running' || !activeSession.turnId || activeSession.providerTurnStarted !== true) {
+    throw workflowError('NO_ACTIVE_TURN', 'Secret requests require the active root turn');
+  }
+  const label = normalizeSecretLabel(args.label);
+  const kind = normalizeSecretKind(args.kind);
+  const origins = normalizeSecretOrigins(args.origins);
+  const reason = typeof args.reason === 'string' ? args.reason.trim().slice(0, 1_000) : '';
+  if (!reason) throw workflowError('INVALID_ARGS', 'Explain why the secret is needed');
+  const threadId = activeSession.threadId;
+  let existing;
+  if (args.secretId !== undefined) {
+    existing = await userSecrets.get(args.secretId, threadId);
+    if (!existing) throw workflowError('SECRET_NOT_FOUND', 'No saved secret has this secretId. Call request_secret without secretId.');
+  } else existing = await userSecrets.findMatch({ label, origins, threadId });
+  if (existing && !existing.valueMissing && await userSecrets.isApproved(existing.id, threadId)) {
+    return { status: 'granted', secretId: existing.id, label: existing.label, origins: existing.origins };
+  }
+  const requestKind = existing && !existing.valueMissing ? 'secret-use' : 'secret-save';
+  const duplicate = record.chatRequests.find((entry) => entry.kind === 'secret' && entry.request.kind === requestKind
+    && (existing ? entry.request.secretId === existing.id : entry.request.secretLabel === label && sameOriginSet(entry.request.origins, origins)));
+  if (duplicate) return { pending: true, requestId: duplicate.request.requestId, kind: requestKind, ...(existing ? { secretId: existing.id } : {}) };
+  if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
+    throw workflowError('NO_STUDIO', 'Studio must be connected to request a secret');
+  }
+  const scopes = requestKind === 'secret-save'
+    // 금고가 없으면 "항상"을 고를 수 없다. 평문으로 대신 저장하지 않는다.
+    ? (userSecrets.vaultAvailable() ? ['always', 'chat'] : ['chat'])
+    : (existing.scope === 'always' ? ['chat', 'always'] : ['chat']);
+  const request = {
+    requestId: crypto.randomUUID(), kind: requestKind, capability: 'browser', reason,
+    threadId, documentId: activeSession.documentId ?? null, turnId: activeSession.turnId, agent: activeSession.agent,
+    createdAt: new Date().toISOString(),
+    secretLabel: existing?.label ?? label, secretKind: existing?.kind ?? kind, origins: existing?.origins ?? origins,
+    ...(existing ? { secretId: existing.id } : {}),
+    scopes,
+  };
+  record.chatRequests.add({ kind: 'secret', request, threadId, documentId: request.documentId, agentInitiated: true });
+  return { pending: true, requestId: request.requestId, kind: requestKind, ...(existing ? { secretId: existing.id } : {}) };
+}
+
+/** 비밀 값이 글에 나타날 수 있는 모양: 그대로, URL·폼 인코딩, base64. */
+function secretVariants(secrets) {
+  return [...new Set(secrets.filter(Boolean).flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ v: secret }).toString().slice(2), Buffer.from(secret).toString('base64')]))];
+}
+
+/** 직렬화한 JSON 프레임에서 입력한 비밀 값을 가린다(JSON 이스케이프한 모양으로 찾는다). */
+function scrubFilledSecretsInJson(frame) {
+  if (!filledSecretValues.size) return frame;
+  for (const variant of secretVariants([...filledSecretValues])) frame = frame.split(JSON.stringify(variant).slice(1, -1)).join('[masked]');
+  return frame;
+}
+
+/** 문자열 안의 비밀 값(그대로·URL·폼 인코딩·base64)을 가린다. */
+function scrubSecretValues(value, secrets) {
+  const variants = secretVariants(secrets);
+  const scrub = (input) => {
+    if (typeof input === 'string') { for (const variant of variants) input = input.split(variant).join('[masked]'); return input; }
+    if (Array.isArray(input)) return input.map(scrub);
+    if (input && typeof input === 'object') return Object.fromEntries(Object.entries(input).map(([key, entry]) => [key, scrub(entry)]));
+    return input;
+  };
+  return variants.length ? scrub(value) : value;
+}
+
+/** browser_fill_secret: 승인을 확인하고, 브라우저가 칸을 검증한 뒤에야 값을 꺼내 입력한다. */
+async function fillUserSecret(record, actor, args) {
+  const threadId = actor.threadId;
+  const secret = await userSecrets.get(args.secretId, threadId);
+  if (!secret) throw workflowError('SECRET_NOT_FOUND', 'No secret has this secretId. Check browser_status or call request_secret.');
+  if (!await userSecrets.isApproved(secret.id, threadId)) {
+    throw workflowError('SECRET_APPROVAL_REQUIRED', `Call request_secret with secretId ${secret.id} and end your turn.`);
+  }
+  const { secretId: _secretId, ...browserArgs } = args;
+  let filled = null;
+  try {
+    const result = await ownedBrowser.fillSecret(actor, browserArgs, {
+      origins: secret.origins,
+      resolve: async () => {
+        filled = await userSecrets.resolveValue(secret.id, threadId);
+        registerFilledSecret(record, filled);
+        return filled;
+      },
+    });
+    void userSecrets.touch(secret.id);
+    return scrubSecretValues(browserMcpResult(result), filled ? [filled] : []);
+  } catch (error) {
+    if (filled && typeof error?.message === 'string') error.message = scrubSecretValues(error.message, [filled]);
+    throw error;
+  }
+}
+
+// ─── 항상 허용한 채팅 권한 ───────────────────────────────────
+
+async function revokeAlwaysChatPermission(capability) {
+  if (!CHAT_PERMISSION_CAPABILITIES.includes(capability)) throw workflowError('INVALID_CHAT_PERMISSION_REQUEST', 'Choose a supported chat permission');
+  const always = await chatPermissionPolicy.revoke(capability);
+  // 이 채팅에서 따로 허용하지 않은 열린 채팅은 바로 권한을 잃는다. 공급자 설정은 턴이 빌 때 맞춘다.
+  for (const record of sessions.values()) {
+    const activeSession = record.agentSession;
+    if (!activeSession || activeSession.chatScopedGrants?.includes(capability) || !activeSession.chatPermissionGrants.includes(capability)) continue;
+    activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length,
+      ...activeSession.chatPermissionGrants.filter((grant) => grant !== capability));
+    activeSession.providerGrantsStale = true;
+    drainIdleWork(record);
+  }
+  return always;
+}
+
+function syncRevokedChatGrants(record) {
+  const activeSession = record.agentSession;
+  if (!activeSession?.providerGrantsStale || activeSession.status !== 'idle' || activeSession.pendingTransitions > 0) return;
+  activeSession.providerGrantsStale = false;
+  void enqueueWorkflowTransition(record, activeSession, async () => {
+    try {
+      if (typeof activeSession.backend.setExecutionMode === 'function') await activeSession.backend.setExecutionMode(providerModeRequest(activeSession));
+    } catch (error) {
+      log(`chat permission revocation sync failed: ${error?.message ?? error}`);
+      if (record.agentSession === activeSession) await disposeSession(record);
+    }
+  });
 }
 
 function hasAgentSessions() {
@@ -1495,7 +1898,10 @@ function armStudioReattachGrace(record) {
 }
 
 function log(msg) {
-  process.stderr.write(`[rhwp-agent] ${msg}\n`);
+  let text = String(msg);
+  // 페이지에 입력한 사용자 비밀은 어떤 진단에도 남기지 않는다.
+  if (filledSecretValues.size) for (const variant of secretVariants([...filledSecretValues])) text = text.split(variant).join('[redacted]');
+  process.stderr.write(`[rhwp-agent] ${text}\n`);
 }
 
 function writeJson(sock, obj) {
@@ -1537,31 +1943,6 @@ function pendingUserQuestionSnapshot(record) {
     : null;
 }
 
-function pendingChatPermissionSnapshot(record) {
-  const request = record.pendingChatPermissionRequest?.request;
-  if (!request) return null;
-  try {
-    normalizeChatPermissionRequest(request);
-    return structuredClone(request);
-  } catch {
-    return null;
-  }
-}
-
-function settleChatPermissionRequest(record, outcome) {
-  const pending = record.pendingChatPermissionRequest;
-  if (!pending) return false;
-  record.pendingChatPermissionRequest = null;
-  const { requestId, threadId, documentId } = pending.request;
-  sendJson(record.studioSocket, {
-    v: 1, type: 'chat-permission-resolved', requestId, threadId, documentId,
-    outcome,
-    grants: normalizeChatPermissionGrants(record.agentSession?.chatPermissionGrants),
-    capabilityEpoch: record.agentSession?.planning.capabilityEpoch,
-  });
-  return true;
-}
-
 function requestChatPermission(record, args, generation) {
   const activeSession = record.agentSession;
   if (!activeSession || activeSession.generation !== generation || activeSession.status !== 'running'
@@ -1570,99 +1951,99 @@ function requestChatPermission(record, args, generation) {
   }
   const normalized = normalizeChatPermissionRequest(args);
   if (activeSession.chatPermissionGrants.includes(normalized.capability)) {
-    return { status: 'granted', capability: normalized.capability, scope: 'chat', grants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants) };
+    const scope = activeSession.chatScopedGrants?.includes(normalized.capability) || !chatPermissionPolicy.list().includes(normalized.capability) ? 'chat' : 'always';
+    return { status: 'granted', capability: normalized.capability, scope, grants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants) };
   }
-  const pending = record.pendingChatPermissionRequest;
-  if (pending) {
-    if (pending.request.capability !== normalized.capability || pending.request.reason !== normalized.reason) {
-      throw workflowError('INTERACTION_ALREADY_PENDING', 'Another permission request is waiting for the user');
-    }
-    return { status: 'pending', requestId: pending.request.requestId, capability: normalized.capability, scope: 'chat' };
-  }
+  // 같은 권한을 다시 물으면 기다리는 요청을 그대로 돌려준다. 다른 권한은 따로 카드가 된다.
+  const pending = record.chatRequests.find((entry) => entry.kind === 'generic' && entry.request.capability === normalized.capability);
+  if (pending) return { status: 'pending', requestId: pending.request.requestId, capability: normalized.capability, scope: 'chat' };
   if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
     throw workflowError('NO_STUDIO', 'Studio must be connected to request a chat permission');
   }
   const request = createChatPermissionRequest(normalized, activeSession);
-  record.pendingChatPermissionRequest = {
-    request, session: activeSession, generation,
+  record.chatRequests.add({
+    kind: 'generic', request, threadId: request.threadId, documentId: request.documentId ?? null, agentInitiated: true,
+    session: activeSession, generation,
     providerCapabilityResource: activeSession.providerCapabilityResource,
     capabilityEpoch: activeSession.planning.capabilityEpoch,
-  };
-  if (!sendJson(record.studioSocket, { v: 1, type: 'chat-permission-requested', request: structuredClone(request) })) {
-    settleChatPermissionRequest(record, { status: 'expired', reason: 'studio-disconnected' });
-    throw workflowError('NO_STUDIO', 'Studio disconnected before the permission could be presented');
-  }
+  });
   return { status: 'pending', requestId: request.requestId, capability: normalized.capability, scope: 'chat' };
 }
 
+/** chat-permission-response: 일반 권한의 허용·거절과, 모든 종류의 거절. */
 async function answerChatPermission(record, sock, msg) {
   const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
   const responseId = typeof msg.responseId === 'string' ? msg.responseId : '';
-  const result = (ok, error = null) => ({
-    v: 1, type: 'chat-permission-response-result', requestId, responseId, ok,
-    ...(error ? { code: error.code ?? 'CHAT_PERMISSION_FAILED', message: String(error.message ?? error) } : {}),
-  });
   try {
     if (!requestId || !responseId || requestId.length > 256 || responseId.length > 256
       || !['grant', 'deny'].includes(msg.decision)) {
       throw workflowError('INVALID_CHAT_PERMISSION_RESPONSE', 'Provide requestId, responseId and grant or deny');
     }
-    const fingerprint = JSON.stringify([requestId, msg.threadId, msg.documentId, msg.decision]);
+    const scope = normalizeChatPermissionScope(msg.scope);
+    const fingerprint = JSON.stringify([requestId, msg.threadId, msg.documentId, msg.decision, scope]);
     const receipt = record.chatPermissionResponseReceipts.get(responseId);
     if (receipt) {
       if (receipt.fingerprint !== fingerprint) throw workflowError('RESPONSE_ID_REUSED', 'responseId already belongs to another permission response');
       sendJson(sock, receipt.frame);
       return;
     }
-    const pending = record.pendingChatPermissionRequest;
-    const activeSession = record.agentSession;
-    if (!pending || pending.request.requestId !== requestId) {
-      throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
-    }
-    normalizeChatPermissionRequest(pending.request);
-    if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
-      || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
-      || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
-      || pending.request.threadId !== msg.threadId || pending.request.documentId !== msg.documentId
-      || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
+    const pending = record.chatRequests.get(requestId);
+    if (!pending) throw workflowError('CHAT_PERMISSION_NOT_FOUND', 'This permission request is no longer pending');
+    if (pending.request.threadId !== msg.threadId || (pending.request.documentId ?? null) !== (msg.documentId ?? null)) {
       throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
     }
+    const activeSession = record.agentSession;
+    if (pending.kind !== 'generic') {
+      // 계정·비밀은 각자의 안전한 양식으로만 허용한다. 거절은 어느 종류든 여기서 받는다.
+      if (msg.decision !== 'deny') throw workflowError('BROWSER_SECURE_CHANNEL_REQUIRED', 'Use the request card to approve this request');
+      if (pending.kind === 'browser') assertBrowserAccountScope(pending.request, browserActorForRecord(record, { isHuman: true }));
+    } else {
+      normalizeChatPermissionRequest(pending.request);
+      if (!activeSession || pending.session !== activeSession || pending.generation !== activeSession.generation
+        || pending.providerCapabilityResource !== activeSession.providerCapabilityResource
+        || pending.capabilityEpoch !== activeSession.planning.capabilityEpoch
+        || activeSession.threadId !== msg.threadId || activeSession.documentId !== msg.documentId) {
+        throw workflowError('REQUEST_INVALIDATED', 'The permission request no longer belongs to this chat and document');
+      }
+    }
     if (msg.decision === 'grant') {
-      const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, pending.request.capability]);
-      {
-        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
-        requireWorkflowSwitchBackend(activeSession);
-        const previousGrants = [...activeSession.chatPermissionGrants];
-        try {
-          await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
-          if (record.agentSession !== activeSession || record.pendingChatPermissionRequest !== pending) {
-            throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
-          }
-        } catch (error) {
-          // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
-          if (record.agentSession === activeSession) {
-            try {
-              await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
-            } catch (rollbackError) {
-              log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
-              await disposeSession(record);
-            }
-          }
-          throw error;
+      const capability = pending.request.capability;
+      const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, capability]);
+      if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
+      requireWorkflowSwitchBackend(activeSession);
+      const previousGrants = [...activeSession.chatPermissionGrants];
+      try {
+        await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: grants });
+        if (record.agentSession !== activeSession || record.chatRequests.get(requestId) !== pending) {
+          throw workflowError('REQUEST_INVALIDATED', 'The chat changed while the permission was being applied');
         }
+      } catch (error) {
+        // 중지는 전환 대기열을 건너뛴다. 취소된 전환이 같은 공급자에 권한을 남기지 않게 되돌린다.
+        if (record.agentSession === activeSession) {
+          try {
+            await activeSession.backend.setExecutionMode({ ...providerModeRequest(activeSession), chatPermissionGrants: previousGrants });
+          } catch (rollbackError) {
+            log(`chat permission rollback failed: ${rollbackError?.message ?? rollbackError}`);
+            await disposeSession(record);
+          }
+        }
+        throw error;
       }
       activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
+      if (scope === 'always') {
+        // 저장에 실패해도 이 채팅의 허용은 이미 적용됐다. 다음 채팅에서 다시 묻는다.
+        await chatPermissionPolicy.grant(capability).catch((error) => log(`chat permission policy write failed: ${error?.code ?? error?.message ?? error}`));
+      } else {
+        activeSession.chatScopedGrants = normalizeChatPermissionGrants([...(activeSession.chatScopedGrants ?? []), capability]);
+      }
     }
-    const frame = result(true);
-    record.chatPermissionResponseReceipts.set(responseId, { fingerprint, frame });
-    // 성공한 응답만 중복 확인에 남긴다. 바쁜 공급자·실패한 전환은 같은 요청으로 다시 시도할 수 있다.
-    if (record.chatPermissionResponseReceipts.size > 32) {
-      record.chatPermissionResponseReceipts.delete(record.chatPermissionResponseReceipts.keys().next().value);
-    }
+    const frame = chatRequestResponseFrame(requestId, responseId, true);
+    rememberChatRequestResponse(record, responseId, fingerprint, frame);
     sendJson(sock, frame);
-    settleChatPermissionRequest(record, { status: msg.decision === 'grant' ? 'granted' : 'denied', ...(msg.decision === 'deny' ? { reason: 'user-denied' } : {}) });
+    const outcome = msg.decision === 'grant' ? { status: 'granted' } : { status: 'denied', reason: 'user-denied' };
+    settleChatRequest(record, requestId, outcome, { continuation: chatRequestContinuationText(pending.request, outcome) });
   } catch (error) {
-    sendJson(sock, result(false, error));
+    sendJson(sock, chatRequestResponseFrame(requestId, responseId, false, error));
   }
 }
 
@@ -1691,10 +2072,15 @@ function settleUserQuestion(record, outcome) {
   return true;
 }
 
+/** 사용자가 새 메시지를 보냈다. 이 채팅의 요청과 아직 열지 않은 이어 가기 턴을 끝내고, 잡아 둔 탭을 돌려준다. */
+function supersedeChatRequests(record, activeSession) {
+  expireChatRequests(record, 'user-message');
+  record.chatContinuations.drop(activeSession.threadId);
+  void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true })).catch(() => {});
+}
+
 function beginAgentTurn(record, activeSession, { userTurn = true } = {}) {
-  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
-  // 사용자가 새 턴을 보내면 이 창이 잡아 둔 브라우저 탭을 에이전트와 다시 공유한다.
-  if (userTurn) void ownedBrowser.releaseHolds(browserActorForRecord(record, { isHuman: true })).catch(() => {});
+  if (userTurn) supersedeChatRequests(record, activeSession);
   if (record.pendingUserQuestion) {
     settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
   }
@@ -1848,7 +2234,11 @@ function settleAgentTurn(record, activeSession, event) {
     sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...activeSession.planning.snapshot() });
   }
   settleUserQuestion(record, userQuestionOutcomeForTurnEnd(event));
-  if (!succeeded) settleChatPermissionRequest(record, { status: 'expired', reason: event.stopReason === 'interrupted' ? 'user-stop' : 'provider-disconnected' });
+  if (!succeeded) {
+    // 실패하거나 중지된 턴의 요청은 답해도 이어 갈 곳이 없다.
+    if (event.stopReason === 'interrupted') stopChatRequests(record, 'user-stop');
+    else expireChatRequests(record, 'provider-disconnected');
+  }
   failPendingProviderCallsForTurn(record, activeSession, settledTurnId);
   retireProviderSockets(record, activeSession, { turnId: settledTurnId });
   retirePiSubagentsForTurn(record, activeSession);
@@ -2327,8 +2717,11 @@ function sessionInfo(record) {
       turnId: activeSession.turnId,
       activeTemplateId: activeSession.activeTemplateId,
       pendingUserQuestion: pendingUserQuestionSnapshot(record),
+      // 이 채팅의 모든 대기 요청(생성 순). 예전 한 칸 필드는 한 릴리스 동안 첫 일반 권한 요청을 싣는다.
+      pendingChatPermissionRequests: pendingChatRequestsSnapshot(record),
       pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
       chatPermissionGrants: normalizeChatPermissionGrants(activeSession.chatPermissionGrants),
+      alwaysChatPermissionGrants: chatPermissionPolicy.list(),
       resumed: activeSession.resumed === true,
       compaction: compactionSupportOf(activeSession),
       // 다시 붙은 Studio 가 "콘텍스트 압축 중…" 을 이어 보이거나 지운다.
@@ -3024,7 +3417,7 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
-    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$)/.test(evt.tool ?? '')) {
+    if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$|request_secret$)/.test(evt.tool ?? '')) {
       const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
       try {
         record.pendingBrowserScopes.push({
@@ -3175,9 +3568,7 @@ function makeBackendEventHandler(record, generation) {
       record.pendingChatPermissionScopes.length = 0;
       record.pendingBrowserScopes.length = 0;
     }
-    if (evt.type === 'turn-end') drainTemplateCompletion(record);
-    if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
-    if (evt.type === 'turn-end') drainBrowserContinuation(record);
+    if (evt.type === 'turn-end') drainIdleWork(record);
   };
 }
 
@@ -3205,7 +3596,7 @@ function disposeSession(record) {
   const disposedTurnId = activeSession.turnId;
   const agent = activeSession.agent;
   settleUserQuestion(record, { status: 'expired', reason: 'request-invalidated' });
-  settleChatPermissionRequest(record, { status: 'expired', reason: 'request-invalidated' });
+  expireChatRequests(record, 'request-invalidated');
   record.chatPermissionResponseReceipts.clear();
   record.suppressedChatPermissionCallIds.clear();
   record.pendingChatPermissionScopes.length = 0;
@@ -4033,6 +4424,8 @@ async function startSession(
   const continuing = !force && currentSession
     && currentSession.threadId === threadId && currentSession.documentId === documentId;
   if (!await disposeSession(record)) throw agentProcessCleanupUncertain();
+  // 다른 채팅으로 넘어가면 이전 채팅의 "이 채팅" 승인과 비밀이 끝난다.
+  if (currentSession && !continuing) endChatScope(currentSession.threadId);
   // 세션은 문서의 연구 프로젝트(문서가 없으면 스레드 프로젝트)에 묶인다. 이 스레드의 옛 chat 범위
   // 자료는 이제야 문서를 알 수 있어 여기서 프로젝트로 옮긴다.
   const projectId = await bindRecordProject(record, { threadId, documentId, documentName });
@@ -4074,7 +4467,8 @@ async function startSession(
     model,
     effort,
     permissionProfile,
-    chatPermissionGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatPermissionGrants) : [],
+    // "항상" 허용한 권한은 새 채팅에도 들어간다. "이 채팅" 허용은 같은 채팅을 이어 갈 때만 남는다.
+    chatPermissionGrants: normalizeChatPermissionGrants([...(continuing ? currentSession.chatPermissionGrants : []), ...chatPermissionPolicy.list()]),
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
@@ -4141,6 +4535,7 @@ async function startSession(
     effort,
     permissionProfile,
     chatPermissionGrants: opts.chatPermissionGrants,
+    chatScopedGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatScopedGrants ?? []) : [],
     serviceTier,
     backend,
     generation,
@@ -4195,9 +4590,7 @@ async function startSession(
     const cleaned = await disposeSession(record);
     throw cleaned ? error : agentProcessCleanupUncertain(error);
   }
-  queueMicrotask(() => drainTemplateCompletion(record));
-  queueMicrotask(() => drainPlanningDocumentSaved(record));
-  queueMicrotask(() => drainBrowserContinuation(record));
+  queueMicrotask(() => drainIdleWork(record));
   return record.agentSession;
 }
 
@@ -4276,11 +4669,7 @@ function enqueueWorkflowTransition(record, transitionOwner, transitionFn) {
   const trackedTransition = transition.finally(() => {
     transitionOwner.pendingTransitions = Math.max(0, transitionOwner.pendingTransitions - 1);
     if (transitionOwner.pendingTransitions === 0) {
-      queueMicrotask(() => {
-        drainTemplateCompletion(record);
-        drainPlanningDocumentSaved(record);
-        drainBrowserContinuation(record);
-      });
+      queueMicrotask(() => drainIdleWork(record));
     }
   });
   transitionOwner.workflowTransition = trackedTransition.catch(() => undefined);
@@ -4473,7 +4862,7 @@ async function setChatWorkflow(record, sock, msg) {
   // Codex setExecutionMode 는 자식 재시작을 기다리므로, 스냅샷·도구 게이트는
   // 재시작 전에 구상으로 바꿔 둔다. 실패하면 이전 상태로 되돌린다.
   activeSession.planning = nextPlanning;
-  settleChatPermissionRequest(record, { status: 'expired', reason: 'workflow-changed' });
+  expireChatRequests(record, 'workflow-changed');
   try {
     await activeSession.backend.setExecutionMode({
       workflow: msg.workflow,
@@ -4587,8 +4976,10 @@ async function handleStudioMessage(record, sock, msg) {
           documentId: s.documentId,
           documentName: s.documentName,
           projectId: s.projectId ?? null,
+          pendingChatPermissionRequests: pendingChatRequestsSnapshot(record),
           pendingChatPermissionRequest: pendingChatPermissionSnapshot(record),
           chatPermissionGrants: normalizeChatPermissionGrants(s.chatPermissionGrants),
+          alwaysChatPermissionGrants: chatPermissionPolicy.list(),
           ...s.planning.snapshot(),
         });
         await sendProjectBound(record);
@@ -4964,9 +5355,10 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-permission-response': {
-      if (await answerBrowserAccountPermission(record, sock, msg)) return;
       const activeSession = record.agentSession;
-      if (!activeSession) {
+      const pending = record.chatRequests.get(msg.requestId);
+      // 일반 권한 허용만 공급자 설정을 바꾼다. 다른 응답은 전환 대기열을 기다리지 않는다.
+      if (!activeSession || (pending && pending.kind !== 'generic')) {
         void answerChatPermission(record, sock, msg);
         return;
       }
@@ -5449,6 +5841,11 @@ async function handleStudioMessage(record, sock, msg) {
       void handleBrowserAccountSubmit(record, sock, msg);
       return;
     }
+    case 'secret-submit': {
+      // 비밀 값은 이 메시지로만 들어온다. browser-request 의 비밀 차단은 그대로 둔다.
+      void handleSecretSubmit(record, sock, msg);
+      return;
+    }
     case 'pi-status-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       void refreshPiStatus()
@@ -5667,7 +6064,7 @@ async function handleStudioMessage(record, sock, msg) {
         const interruptedSession = record.agentSession;
         const interruptedTurnId = interruptedSession.turnId;
         settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
-        settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
+        stopChatRequests(record, 'user-stop');
         failPendingProviderCallsForTurn(
           record,
           interruptedSession,
@@ -5703,9 +6100,11 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-stop': {
       settleUserQuestion(record, { status: 'cancelled', reason: 'user-stop' });
-      settleChatPermissionRequest(record, { status: 'expired', reason: 'user-stop' });
+      stopChatRequests(record, 'user-stop');
       cancelCheckpointTitleJobs(record);
       const stoppedAgent = record.agentSession?.agent;
+      // 멈춘 채팅의 "이 채팅" 승인과 비밀은 함께 끝난다.
+      endChatScope(record.agentSession?.threadId);
       if (!await disposeSession(record)) {
         sendChatError(sock, agentProcessCleanupUncertain(), 'AGENT_PROCESS_CLEANUP_UNCERTAIN', {
           failure: cleanupUncertainFailure(stoppedAgent),
@@ -5944,7 +6343,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           ok: false,
           error: {
             code: reported?.code ?? fallback,
-            message: String(reported?.message ?? reported),
+            message: scrubSecretValues(String(reported?.message ?? reported), [...filledSecretValues]),
           },
         });
       };
@@ -5957,7 +6356,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         const resultFrame = { v: PROTOCOL_VERSION, type: 'tool-result', id: clientId, ok: true, result };
         let frame;
         try {
-          frame = JSON.stringify(trace ? { ...resultFrame, trace: { seq: trace.seq } } : resultFrame);
+          // 페이지에 입력한 사용자 비밀은 어떤 도구 결과로도 에이전트에게 돌아가지 않는다.
+          frame = scrubFilledSecretsInJson(JSON.stringify(trace ? { ...resultFrame, trace: { seq: trace.seq } } : resultFrame));
         } catch (error) {
           return sendError(error, 'RPC_ERROR');
         }
@@ -6602,26 +7002,40 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           });
         return;
       }
-      if (definition.category === 'browser' || tool === 'browser_request_account') {
+      if (definition.category === 'browser' || tool === 'browser_request_account' || tool === 'request_secret') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          if (tool === 'request_secret') {
+            if (actor.agentId !== `${actor.threadId}:root`) {
+              throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may ask the user for a secret');
+            }
+            return requestUserSecret(record, args);
+          }
+          if (tool === 'browser_fill_secret') return fillUserSecret(record, actor, args);
           if (tool === 'browser_request_account') {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');
             }
-            const kind = args.kind ?? 'account';
-            if (kind !== 'account' && !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The browser tab is unavailable to this chat.');
-            const nativeAccount = kind === 'account' && args.accountId ? await ownedBrowser.nativeAccount(args.accountId) : null;
+            let kind = args.kind ?? 'account';
+            if (['sign-in', 'code'].includes(kind) && !ownedBrowser.ownsTarget(actor, { tabId: args.tabId })) throw workflowError('BROWSER_TAB_NOT_FOUND', 'The browser tab is unavailable to this chat.');
+            // 저장된 계정이 있으면 계정 저장 카드 대신 사이트 사용 카드 하나로 묻는다.
+            const siteAccount = kind === 'account' || kind === 'site' ? await savedSiteAccount(args.origin, args.accountId) : null;
+            if (siteAccount) kind = 'site';
             const request = await credentialBroker.requestAccount({ actor, ...args, kind,
-              ...(kind !== 'account' ? { profileId: ownedBrowser.profileId() } : {}), ...(nativeAccount ? { nativeAccount } : {}) });
+              ...(['sign-in', 'code'].includes(kind) ? { profileId: ownedBrowser.profileId() } : {}), ...(siteAccount ? { siteAccount } : {}) });
             publishBrowserAccountRequest(record, request);
             return { pending: true, requestId: request.requestId, origin: request.origin, kind };
           }
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
           if (tool === 'browser_status') {
-            const accounts = await credentialBroker.listAccounts();
-            const nativeAccounts = result.accounts ?? [];
-            result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts.accounts
-              : accounts.accounts.filter((account) => account.agentReuseApproved));
+            // "이 채팅"으로 승인한 계정은 이 채팅의 에이전트에게만 승인된 것으로 보인다.
+            const withChatApproval = (account) => !account.agentReuseApproved && browserPolicy.chatAccountApproved(actor, account.id)
+              ? { ...account, agentReuseApproved: true } : account;
+            const accounts = (await credentialBroker.listAccounts()).accounts.map(withChatApproval);
+            const nativeAccounts = (result.accounts ?? []).map(withChatApproval);
+            result.accounts = nativeAccounts.concat(actor.agentId === `${actor.threadId}:root` ? accounts
+              : accounts.filter((account) => account.agentReuseApproved));
+            // 값 없이 이름·사이트·이 채팅의 사용 승인 여부만 알린다.
+            result.secrets = await userSecrets.agentList(actor.threadId).catch(() => []);
           }
           return result;
         }).then(sendResult).catch((error) => sendError(error, 'BROWSER_TOOL_FAILED'));
@@ -7626,12 +8040,9 @@ httpServer.on('upgrade', (req, socket, head) => {
           replayed: true,
         });
       }
-      const pendingChatPermissionRequest = pendingChatPermissionSnapshot(record);
-      if (pendingChatPermissionRequest) sendJson(ws, {
-        v: 1, type: 'chat-permission-requested', request: pendingChatPermissionRequest, replayed: true,
-      });
-      for (const request of record.pendingBrowserAccountRequests.values()) {
-        if (request.expiresAt > Date.now()) sendJson(ws, { v: 1, type: 'chat-permission-requested', request, replayed: true });
+      // welcome.session 의 목록과 같은 순서로 모든 대기 요청을 다시 보낸다.
+      for (const request of pendingChatRequestsSnapshot(record)) {
+        sendJson(ws, { v: 1, type: 'chat-permission-requested', request, replayed: true });
       }
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
@@ -7786,6 +8197,9 @@ async function disposeRecord(record, reason) {
   clearStudioReattachGrace(record);
   clearStudioReattachFlush(record);
   settleUserQuestion(record, { status: 'expired', reason: 'hub-restarted' });
+  expireChatRequests(record, 'hub-restarted');
+  record.chatContinuations.clear();
+  endChatScope(record.agentSession?.threadId);
   failAllPendingCalls(record, 'Hub session is shutting down');
   const backendExit = disposeSession(record);
   const templateBackendExits = [];

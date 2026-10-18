@@ -60,7 +60,7 @@ export function createMemorySecretStore(initial = {}) {
     async set(key, value) { secrets.set(key, String(value)); return true; },
     async delete(key) { return secrets.delete(key); },
     async resetBrowser() {
-      for (const key of secrets.keys()) if (/^browser\.(?:password\.|wrapping-key\.)/.test(key)) secrets.delete(key);
+      for (const key of secrets.keys()) if (/^(?:browser\.(?:password\.|wrapping-key\.)|usersecret\.)/.test(key)) secrets.delete(key);
       return true;
     },
   };

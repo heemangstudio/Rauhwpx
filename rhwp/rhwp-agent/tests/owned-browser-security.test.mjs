@@ -464,6 +464,7 @@ test('unapproved origins cannot receive typed document data or disguised export 
   if (!await needsBrowser(t)) return;
   let writes = 0;
   const f = await fixture(t, (request, response) => {
+    if (request.url === '/favicon.ico') { response.writeHead(404); response.end(); return; }
     if (request.url !== '/') { writes++; response.end('changed'); return; }
     response.setHeader('Content-Type', 'text/html');
     response.end(`<input aria-label="Notes" oninput="fetch('/leak?d='+encodeURIComponent(this.value))"><form method="post" action="/export-destroy"><input type="hidden" name="mode" value="purge-all"><button>Export PDF</button></form><form action="/search"><input name="q" value="destroy"><button>Search</button></form>`);
@@ -507,4 +508,68 @@ test('saved-account fill bypasses page setters while delivering normal input eve
   assert.equal(await page.locator('input[type="password"]').inputValue(), 'fixture-broker-secret');
   assert.deepEqual(await page.evaluate(() => ({ setterCalls, inputs })), { setterCalls: 0, inputs: 2 });
   assert.equal(JSON.stringify(await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).includes('fixture-broker-secret'), false);
+});
+
+test('an approved account fill lets the agent submit that sign-in without a website-change grant', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const posts = [];
+  const f = await fixture(t, (request, response) => {
+    if (request.method === 'POST') { posts.push(request.url); response.writeHead(303, { Location: '/home' }); response.end(); return; }
+    response.setHeader('Content-Type', 'text/html');
+    if (request.url === '/home') { response.end('<form method="post" action="/posts"><input name="title" aria-label="Title"><button>Publish post</button></form>'); return; }
+    response.end('<form method="post" action="/login"><input name="id" aria-label="Identity"><input name="pw" type="password" aria-label="Password"><button>Sign in</button></form>');
+  });
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  const credentialBroker = { assertBrowserAccess: async () => {}, issueHandle: async () => ({ handle: 'fixture' }), fill: async ({ fill }) => fill({ username: 'fixture-user', password: 'fixture-broker-secret' }) };
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: f.origin });
+  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  // 계정을 채우기 전에는 로그인 제출도 다른 웹사이트 변경처럼 막힌다.
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  await browser.request(agent, 'fill-account', { ...refArgs(observation, named(observation, 'Password')), accountId: 'fixture', usernameRef: named(observation, 'Identity').ref, passwordRef: named(observation, 'Password').ref });
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  await browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in')));
+  await eventually(() => posts.includes('/login'));
+  observation = await eventually(async () => { const next = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return next.snapshot.outline.includes('Publish post') && next; });
+  // 로그인 뒤의 다른 변경은 여전히 따로 승인받아야 한다.
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Publish post'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  assert.deepEqual(posts, ['/login']);
+});
+
+test('a site access approval lets its chat sign in with the saved account and submit website changes there', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const posts = [];
+  const f = await fixture(t, (request, response) => {
+    if (request.method === 'POST') { posts.push(request.url); response.writeHead(303, { Location: '/home' }); response.end(); return; }
+    response.setHeader('Content-Type', 'text/html');
+    if (request.url === '/home') { response.end('<form method="post" action="/orders"><button>Place order</button></form>'); return; }
+    response.end('<form method="post" action="/login"><input name="id" aria-label="Identity"><input name="pw" type="password" aria-label="Password"><button>Sign in</button></form>');
+  });
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  const credentialBroker = { assertBrowserAccess: async () => {}, issueHandle: async () => ({ handle: 'fixture' }), fill: async ({ fill }) => fill({ username: 'fixture-user', password: 'fixture-broker-secret' }) };
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: `${f.origin}/home` });
+  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  // 승인 전(또는 거절 뒤)에는 사이트 변경이 막힌다.
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Place order'))), { code: 'BROWSER_PERMISSION_REQUIRED', message: /kind 'site'/ });
+
+  await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: f.origin, scope: 'chat' });
+  await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, url: f.origin, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch });
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  await browser.request(agent, 'fill-account', { ...refArgs(observation, named(observation, 'Password')), accountId: 'fixture', usernameRef: named(observation, 'Identity').ref, passwordRef: named(observation, 'Password').ref });
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  await browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in')));
+  observation = await eventually(async () => { const next = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return next.snapshot.outline.includes('Place order') && next; });
+  await browser.request(agent, 'click', refArgs(observation, named(observation, 'Place order')));
+  await eventually(() => posts.includes('/orders'));
+  assert.deepEqual(posts, ['/login', '/orders']);
+
+  // 다른 채팅의 에이전트는 이 승인을 쓰지 못한다.
+  const otherAgent = { ...agent, threadId: 'other-chat', agentId: 'other' };
+  const otherTab = await browser.request(otherAgent, 'open', { url: `${f.origin}/home` });
+  const otherObservation = await browser.request(otherAgent, 'snapshot', { tabId: otherTab.tab.tabId });
+  await assert.rejects(browser.request(otherAgent, 'click', refArgs(otherObservation, named(otherObservation, 'Place order'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  assert.deepEqual(posts, ['/login', '/orders']);
 });

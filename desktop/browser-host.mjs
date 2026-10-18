@@ -10,6 +10,9 @@ const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', imp
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
 const ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
+// 페이지가 선언한 아이콘 주소만 허브로 넘긴다. 허브가 다시 검사하고 쿠키 없이 받아 온다.
+const faviconList = (value) => (Array.isArray(value) ? value : []).filter((entry) => typeof entry === 'string'
+  && (/^https?:\/\//i.test(entry) ? entry.length <= 2048 : /^data:image\//i.test(entry) && entry.length <= 90_000)).slice(0, 8);
 // 작성 중인 입력이나 재생 중인 미디어가 있으면 true. 값은 밖으로 보내지 않는다.
 const PAGE_STATE_SCRIPT = `(() => {
   const protectedFrame = win => {
@@ -220,9 +223,11 @@ export class OwnedBrowserHost {
     const blockHumanInput = (event, input) => {
       if (tab.automationInputDepth) return;
       // 에이전트 작업이 실행 중이면 사용자 입력을 막는다. 사용자가 잡은 탭의 에이전트 입력은 허브와 CDP가 거부한다.
-      if (!tab.human || !tab.interactive || !tab.held && tab.agentActivity?.size) event.preventDefault();
+      const blocked = !tab.human || !tab.interactive || !tab.held && tab.agentActivity?.size;
+      if (blocked) event.preventDefault();
       // 잡지 않은 탭의 클릭·키 입력은 편집기가 제어권을 넘겨받을 수 있게 알린다.
-      if (!tab.held && ['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
+      // 전달된 입력은 허브에도 알려 이어지는 페이지 요청(로그인 제출 등)을 사용자의 것으로 본다.
+      if (!tab.held && ['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input', { delivered: !blocked });
     };
     contents.on('before-input-event', blockHumanInput);
     contents.on('before-mouse-event', blockHumanInput);
@@ -233,6 +238,8 @@ export class OwnedBrowserHost {
       this.emit(tab, 'debugger-conflict', { message: 'Close browser automation before opening developer tools.' });
     });
     for (const event of ['did-start-loading', 'did-stop-loading', 'page-title-updated']) contents.on(event, () => this.emit(tab, 'state'));
+    contents.on('did-navigate', () => { tab.faviconCandidates = null; });
+    contents.on('page-favicon-updated', (_event, favicons) => { tab.faviconCandidates = faviconList(favicons); this.forwardFavicons(tab); });
     contents.on('dom-ready', () => this.passwords?.restoreManualSave?.(tab));
     contents.on('did-navigate', () => { this.clearActivity(tab); tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
     contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) { this.clearActivity(tab); tab.navigationEpoch += 1; this.emit(tab, 'navigation'); this.passwords?.restoreManualSave?.(tab); } });
@@ -315,6 +322,7 @@ export class OwnedBrowserHost {
     Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id, global });
     this.aliases.set(tabId, targetId);
     this.emit(tab, 'bound');
+    this.forwardFavicons(tab);
     return this.state(tab);
   }
 
@@ -393,7 +401,7 @@ export class OwnedBrowserHost {
   state(tab) {
     const contents = tab.view.webContents;
     const alive = contents && !contents.isDestroyed();
-    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, native: true,
+    const state = { tabId: tab.tabId, nativeTargetId: tab.targetId, openerTargetId: tab.openerTargetId ?? null, native: true,
       generation: this.generation, navigationEpoch: tab.navigationEpoch, disposition: tab.disposition, passwordProtected: !!tab.passwordShield,
       url: alive ? contents.getURL() : '', title: alive ? contents.getTitle() : '',
       loading: !!alive && contents.isLoading(),
@@ -416,11 +424,22 @@ export class OwnedBrowserHost {
     return this.passwords ? this.passwords.redact(tab, state) : state;
   }
 
+  /** Site icon candidates go only to the hub owner. Password-shielded tabs never report them. */
+  forwardFavicons(tab) {
+    const contents = tab.view.webContents;
+    if (!tab.faviconCandidates?.length || !tab.tabId || tab.passwordShield || !contents || contents.isDestroyed()
+      || !this.owner?.connected || typeof this.owner.send !== 'function') return;
+    try {
+      this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId, generation: this.generation,
+        reason: 'favicon', pageUrl: contents.getURL(), favicons: tab.faviconCandidates } }, () => {});
+    } catch {}
+  }
+
   emit(tab, type, extra = {}) {
     if (!tab?.targetId) return;
     const payload = { type, ...this.state(tab), ...extra };
     this.onEvent(payload);
-    if (['zoom', 'download-progress'].includes(type) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
+    if ((['zoom', 'download-progress'].includes(type) || type === 'human-input' && extra.delivered) && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
         this.owner.send({ type: 'rhwp-browser-event', event: { tabId: tab.tabId, targetId: tab.targetId,
           generation: this.generation, reason: type, ...(type === 'zoom' ? { zoomFactor: payload.zoomFactor } : extra) } }, () => {});

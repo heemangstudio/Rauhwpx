@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { browserOrigin, readBrowserJson, writeBrowserJson } from './browser-policy.mjs';
+import { browserOrigin, readBrowserJson, sameSite, siteScope, writeBrowserJson } from './browser-policy.mjs';
 import { createEncryptedBrowserAuthStore } from './browser-auth-store.mjs';
 
 const REQUEST_TTL_MS = 10 * 60 * 1000;
@@ -38,7 +38,7 @@ function normalizedDomain(value) {
   return domain;
 }
 function approvalProof(approval, request, actor, needsSave) {
-  if (request.native || request.kind === 'browser-sign-in' || request.kind === 'browser-code') throw failure('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is settled by its own sidebar action.');
+  if (request.native || ['browser-sign-in', 'browser-code', 'browser-site-access'].includes(request.kind)) throw failure('BROWSER_ACCOUNT_REQUEST_INVALID', 'This request is settled by its own sidebar action.');
   if (!approval?.approved || approval.requestId !== request.requestId || (needsSave && approval.save !== true)
     || !sameScope(request.actor, actor) || (approval.actor && !sameScope(approval.actor, actor))) {
     throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'The website account request needs current owner approval.');
@@ -58,6 +58,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
   let checkpointEpoch = 0;
   let checkpointMutations = 0;
   const requests = new Map();
+  const resetParticipants = new Set();
   const handles = new Map();
   const activeUses = new Map();
   const readyPromise = (async () => {
@@ -137,12 +138,31 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     await readyPromise;
     return { accounts: await Promise.all(state.accounts.map(metadata)), secureStorageAvailable: !!(secretStore?.available || authStore.available) };
   }
-  async function requestAccount({ actor, tabId, origin, label, reason, accountId, origins, profileId = 'default', intent, kind = 'account', nativeAccount } = {}) {
+  async function requestAccount({ actor, tabId, origin, label, reason, accountId, origins, profileId = 'default', intent, kind = 'account', nativeAccount, siteAccount } = {}) {
     await readyPromise;
     assertNotResetting();
     sweep();
     if (!actor || (!actor.isHuman && !actor.threadId)) throw failure('BROWSER_ACTOR_REQUIRED', 'A browser account request needs an owning chat or human client.');
     if (requests.size >= MAX_PENDING) throw failure('BROWSER_ACCOUNT_REQUEST_LIMIT', 'Too many website account requests are pending.');
+    if (kind === 'site') {
+      // 사이트 사용 하나로 읽기·사이트 변경·저장된 계정 사용을 묻는다. 계정 값이나 비밀번호 입력은 없다.
+      const normalizedOrigin = browserOrigin(origin);
+      const account = siteAccount?.source === 'hub' ? findAccount(siteAccount.id) : null;
+      const request = {
+        requestId: crypto.randomUUID(), kind: 'browser-site-access',
+        origin: normalizedOrigin, origins: [siteScope(normalizedOrigin).key], siteDomain: siteScope(normalizedOrigin).domain,
+        accountId: siteAccount?.id ?? null, accountLabel: text(siteAccount?.label ?? account?.label ?? ''),
+        accountSource: siteAccount ? (siteAccount.source === 'native' ? 'native' : 'hub') : null,
+        accountOrigins: siteAccount ? clone(siteAccount.origins ?? account?.origins ?? [normalizedOrigin]) : [],
+        profileId: text(siteAccount?.source === 'native' ? 'native' : account?.profileId ?? profileId, 100),
+        tabId: tabId ?? null, reason: text(reason, 500), remember: true, expiresAt: now() + REQUEST_TTL_MS,
+        actor: clone(actor),
+      };
+      requests.set(request.requestId, request);
+      const publicRequest = clone(request);
+      emit({ type: 'browser-account-request', request: publicRequest });
+      return publicRequest;
+    }
     if (kind === 'sign-in' || kind === 'code' || nativeAccount) {
       // 사용자가 직접 로그인·코드 입력을 마치거나, 데스크톱 보관함 계정의 에이전트 사용을 허용하는 요청.
       const normalizedOrigin = browserOrigin(nativeAccount?.origin ?? origin);
@@ -179,6 +199,11 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     emit({ type: 'browser-account-request', request: publicRequest });
     return publicRequest;
   }
+  /** 허브가 만료·중지·거절로 닫은 요청을 버린다. 이미 없으면 false. */
+  function discardAccountRequest(id) {
+    sweep();
+    return requests.delete(id);
+  }
   async function getAccountRequest(id) {
     await readyPromise; sweep();
     const request = requests.get(id);
@@ -198,7 +223,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     human(actor);
     await readyPromise;
     const request = consumeRequest(requestId);
-    if (!request.native || !sameScope(request.actor, actor)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'This website account request belongs to a different chat.');
+    if (!(request.native || request.kind === 'browser-site-access') || !sameScope(request.actor, actor)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'This website account request belongs to a different chat.');
     requests.delete(requestId);
     return clone(request);
   }
@@ -301,8 +326,10 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       return { account: safeAccount };
     });
   }
-  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {} } = {}) {
+  async function approveAccount({ actor, requestId, accountId, approval, account: submitted = {}, scope = 'always' } = {}) {
     human(actor);
+    if (!['chat', 'always'].includes(scope)) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'Choose chat or always for this account approval.');
+    if (scope === 'chat' && !actor.threadId) throw failure('BROWSER_ACCOUNT_CONSENT_REQUIRED', 'A chat approval needs the chat that asked for it.');
     return serialized(async () => {
       let account;
       if (requestId) {
@@ -329,10 +356,12 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
       const next = { ...state, accounts: state.accounts.map((entry) => entry.id === account.id ? acknowledgedAccount : entry) };
       await writeBrowserJson(filePath, next); state = next;
       account = acknowledgedAccount;
-      await policy.update({ actor, operation: 'approve-account', accountId: account.id, origins: account.origins, profileId: account.profileId });
+      // "이 채팅" 승인은 허브 메모리에만 둔다. 영구 승인 기록은 바꾸지 않는다.
+      if (scope === 'chat') await policy.grantChatAccount({ actor, threadId: actor.threadId, accountId: account.id, origins: account.origins, profileId: account.profileId });
+      else await policy.update({ actor, operation: 'approve-account', accountId: account.id, origins: account.origins, profileId: account.profileId });
       const safeAccount = await metadata(account);
       emit({ type: 'browser-account-changed', account: safeAccount });
-      return { account: safeAccount };
+      return { account: { ...safeAccount, ...(scope === 'chat' ? { chatApproved: true } : {}) } };
     });
   }
   async function assertBrowserAccess({ actor, url, tab = {} } = {}) {
@@ -411,7 +440,8 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     const account = findAccount(accountId);
     await assertBrowserAccess({ actor, url: binding?.origin, tab: { profileId: account.profileId } });
     const target = boundValue({ ...binding, accountId });
-    if (!account.origins.includes(target.origin)) throw failure('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The credential target is outside the approved account origins.');
+    // 계정은 저장된 출처와 같은 등록 도메인(HTTPS)의 로그인 페이지에도 채울 수 있다.
+    if (!account.origins.some((value) => sameSite(value, target.origin))) throw failure('BROWSER_ACCOUNT_ORIGIN_MISMATCH', 'The credential target is outside the approved account origins.');
     const access = await policy.assertAllowed({ actor, action: 'account-use', url: target.origin, accountId, profileId: account.profileId });
     if (handles.size >= MAX_PENDING) throw failure('BROWSER_CREDENTIAL_HANDLE_LIMIT', 'Too many credential uses are pending.');
     const handle = crypto.randomBytes(32).toString('base64url');
@@ -616,6 +646,7 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
           }
         }
         await authStore.clearEncryptedData();
+        for (const participant of resetParticipants) await participant();
         for (const accountId of accountIds) await policy.update({ actor, operation: 'forget-account', accountId });
         const next = { ...state, accounts: [], sessions: [] };
         await writeBrowserJson(filePath, next); state = next;
@@ -671,12 +702,14 @@ export function createBrowserCredentialBroker({ dataDir, policy, secretStore, wr
     });
   }
   return {
-    ready: () => readyPromise, requestAccount, getAccountRequest, cancelAccountRequest, settleExternalRequest, completeHandoff, listAccounts, submit, approveAccount,
+    ready: () => readyPromise, requestAccount, getAccountRequest, discardAccountRequest, cancelAccountRequest, settleExternalRequest, completeHandoff, listAccounts, submit, approveAccount,
     assertBrowserAccess, registerSessionOrigins, confirmAccountSession, issueHandle, fill, revokeAccount, signOut, forgetAccount,
     getConfiguration, updateConfiguration, resetBrowserData, saveCheckpoint, restoreCheckpoint,
     deleteCheckpoint: ({ profileId = 'default' } = {}) => authStore.deleteCheckpoint(profileId),
     setSessionClearer: (callback) => { sessionClearer = callback; },
     setDataResetter: (callback) => { dataResetter = callback; },
+    /** 브라우저 데이터 초기화 안에서 함께 지울 저장소(사용자 비밀 등). */
+    addResetParticipant: (callback) => { resetParticipants.add(callback); return () => resetParticipants.delete(callback); },
     invalidateTab: (tabId) => {
       for (const [id, handle] of handles) if (handle.binding.tabId === tabId) handles.delete(id);
       for (const use of activeUses.values()) if (use.binding.tabId === tabId) use.invalidated = true;

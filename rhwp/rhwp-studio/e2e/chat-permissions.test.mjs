@@ -168,14 +168,14 @@ try {
     const request = async (capability, reason) => {
       const result = must(await provider.call('request_permission', { capability, reason }), 'request_permission');
       assert.equal(result.status, 'pending');
-      const selector = `.ag-permission-pill[data-request-id="${result.requestId}"]`;
-      await page.waitForSelector(`${selector} .ag-permission-grant`);
+      const selector = `.ag-request-card[data-request-id="${result.requestId}"]`;
+      await page.waitForSelector(`${selector} .ag-request-primary`);
       return { ...result, selector };
     };
     const grant = async (pending) => {
-      await page.click(`${pending.selector} .ag-permission-grant`);
+      await page.click(`${pending.selector} .ag-request-primary`);
       await waitForState(page, 'authenticated chat grant', (id) => document.querySelector(
-        `.ag-permission-pill[data-request-id="${id}"]`,
+        `.ag-request-card[data-request-id="${id}"]`,
       )?.dataset.status === 'granted', pending.requestId);
     };
     const selectMode = async (mode) => {
@@ -193,13 +193,13 @@ try {
     };
 
     const rejectDocumentPermission = async () => {
-      const pillsBefore = await page.$$eval('.ag-permission-pill', (pills) => pills.length);
+      const pillsBefore = await page.$$eval('.ag-request-card', (pills) => pills.length);
       const denied = await provider.call('request_permission', {
         capability: 'document-edit', reason: 'Attempt a document edit from Chat.',
       });
       assert.equal(denied.ok, false, 'document-edit is not a requestable Chat permission');
       assert.equal(denied.error?.code, 'INVALID_ARGS');
-      assert.equal(await page.$$eval('.ag-permission-pill', (pills) => pills.length), pillsBefore,
+      assert.equal(await page.$$eval('.ag-request-card', (pills) => pills.length), pillsBefore,
         'a rejected document-edit request creates no permission pill');
       assert.equal(await page.evaluate(() => window.__agentBridge.getPendingChatPermissionRequest()), null);
       assert.equal((await grants()).includes('document-edit'), false);
@@ -229,8 +229,8 @@ try {
     assert.equal(projectWrite.ok, false, 'the isolated project chat-write setting denies project edits before approval');
     assert.equal(projectWrite.error.code, 'PROJECT_CHAT_EDIT_DISABLED');
     const projectRequest = await request('project-edit', 'Add a note to this chat research project.');
-    await page.click(`${projectRequest.selector} .ag-permission-grant`);
-    await page.waitForSelector(`${projectRequest.selector} .ag-permission-error`);
+    await page.click(`${projectRequest.selector} .ag-request-primary`);
+    await page.waitForSelector(`${projectRequest.selector} .ag-request-error`);
     assert.deepEqual(await grants(), [], 'a busy turn cannot grant project editing');
     await takeScreenshot('permission-request');
     await finishTurn();
@@ -257,15 +257,15 @@ try {
     setTestCase('거절과 중지는 권한을 부여하지 않는다');
     await startTurn('Ask for a download permission that will be declined.');
     const downloadRequest = await request('downloads', 'Download the requested source.');
-    await page.click(`${downloadRequest.selector} .ag-permission-deny`);
+    await page.click(`${downloadRequest.selector} .ag-request-close`);
     await waitForState(page, 'denied permission', (id) => document.querySelector(
-      `.ag-permission-pill[data-request-id="${id}"]`,
+      `.ag-request-card[data-request-id="${id}"]`,
     )?.dataset.status === 'denied', downloadRequest.requestId);
     assert.equal((await grants()).includes('downloads'), false);
     const browserRequest = await request('browser', 'Open the requested source page.');
     await page.click('.ag-stop');
     await waitForState(page, 'cancelled permission', (id) => document.querySelector(
-      `.ag-permission-pill[data-request-id="${id}"]`,
+      `.ag-request-card[data-request-id="${id}"]`,
     )?.dataset.status === 'expired', browserRequest.requestId);
     assert.equal((await grants()).includes('browser'), false);
 
@@ -276,7 +276,7 @@ try {
     const previousThreadId = (await session()).threadId;
     const previousHubSessionId = await page.evaluate(() => window.__agentBridge.getHubFontAccess().sessionId);
     await page.evaluate((id) => {
-      window.__oldPermissionGrant = document.querySelector(`.ag-permission-pill[data-request-id="${id}"] .ag-permission-grant`);
+      window.__oldPermissionGrant = document.querySelector(`.ag-request-card[data-request-id="${id}"] .ag-request-primary`);
     }, staleRequest.requestId);
     await page.click('button[aria-label="채팅 목록"]');
     await page.click('.ag-threads-new');

@@ -122,6 +122,7 @@ export const TURN_SUMMARY_IGNORED_TOOLS: ReadonlySet<string> = new Set([
   'ask_user_question',
   'request_permission',
   'browser_request_account',
+  'request_secret',
   'present_implementation_plan',
   'update_todos',
   'get_selection',

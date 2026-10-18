@@ -9,6 +9,7 @@ import { createBrowserController } from './browser-controller.ts';
 import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMode } from './browser-presentation.ts';
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
+import { createSiteMark, siteOrigin } from './site-mark.ts';
 import type { WorkbenchResource } from './workbench.ts';
 
 /** 사이트 이름은 주소로 구분하고, 다른 사이트는 페이지 제목을 사용한다. */
@@ -669,13 +670,16 @@ export function createWorkbenchBrowser(options: {
     menuSleep.textContent = manualSleepingTab === tab?.tabId ? '탭 깨우기' : '탭 잠자기';
     status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : held ? '직접 제어' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
-    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status]), tab?.tabId]);
+    const nextTabsSignature = JSON.stringify([controller.state.tabs.map((row) => [row.tabId, row.title, row.url, row.status, row.faviconUrl ?? '']), tab?.tabId]);
     if (tabsSignature !== nextTabsSignature) {
     const focusedTab = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.tabId : null;
     tabsSignature = nextTabsSignature; tabs.replaceChildren();
     for (const row of controller.state.tabs) {
       const wrapper = document.createElement('div'); wrapper.className = 'ag-browser-tab';
       const select = button(row.title || row.url || '새 탭', browserTabTitle(row), () => { wakeCurrentTab(); controller.select(row.tabId); }, wrapper);
+      const origin = siteOrigin(row.url);
+      const mark = origin ? createSiteMark({ origin, faviconUrl: row.faviconUrl, request: options.bridge.requestBrowser.bind(options.bridge), className: 'ag-site-mark-small' }) : null;
+      if (mark) { const label = document.createElement('span'); label.className = 'ag-browser-tab-title'; label.textContent = select.textContent; select.replaceChildren(mark, label); }
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
       if (options.onFloatTab) installBrowserTabDrag(select, () => element.getBoundingClientRect(), point => options.onFloatTab?.(row.tabId, point));
       select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
@@ -790,7 +794,7 @@ export function createWorkbenchBrowser(options: {
   document.addEventListener('visibilitychange', scheduleFrame);
   paint();
   return { element, controller,
-    descriptors(): WorkbenchResource[] { return controller.state.tabs.map(tab => ({ id: `browser:${tab.tabId}`, title: browserTabTitle(tab), dirty: false, view: 'browser', kind: 'browser' })); },
+    descriptors(): WorkbenchResource[] { return controller.state.tabs.map(tab => ({ id: `browser:${tab.tabId}`, title: browserTabTitle(tab), dirty: false, view: 'browser', kind: 'browser', ...(tab.faviconUrl ? { faviconUrl: tab.faviconUrl } : {}) })); },
     activeTab(): string | null { return controller.tab() ? `browser:${controller.tab()!.tabId}` : null; },
     previewAgent(tab: BrowserTab) {
       if (disposed) return;

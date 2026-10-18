@@ -594,6 +594,11 @@ const SPECS: Record<string, ToolSpec> = {
   browser_downloads: { category: 'other', label: '브라우저 다운로드' },
   browser_fill_account: { category: 'other', label: '저장한 계정 입력' },
   browser_request_account: { category: 'other', label: '계정 사용 요청' },
+  browser_fill_secret: { category: 'other', label: '비밀 값 입력' },
+  request_secret: {
+    category: 'other', label: '비밀 값 요청',
+    summary: (a) => join([str(a['label']), Array.isArray(a['origins']) ? host(str(a['origins'][0])) : '']),
+  },
 };
 
 /** rhwp 밖의 흔한 CLI 도구 — 이름만 우리말로 바꾸고 대표 인자를 보인다. */
@@ -891,6 +896,7 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
   switch (name) {
     case 'request_permission': return result['status'] === 'granted' ? '이 채팅에 허용됨'
       : result['status'] === 'pending' ? '허용 대기' : '';
+    case 'request_secret': return result['pending'] === true ? '입력 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);
       return join([applied !== null ? `${applied}개 편집 적용` : '편집 적용', tail]);
