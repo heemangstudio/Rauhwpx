@@ -2028,9 +2028,9 @@ async function answerChatPermission(record, sock, msg) {
     if (msg.decision === 'grant') {
       const capability = pending.request.capability;
       const grants = normalizeChatPermissionGrants([...activeSession.chatPermissionGrants, capability]);
-      if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
-      // 허브만 확인하는 권한(다른 문서 읽기)은 공급자 실행 모드를 바꾸지 않는다.
+      // 허브만 확인하는 권한(다른 문서 읽기)은 공급자 실행 모드를 바꾸지 않으므로 턴 중에도 바로 부여한다.
       if (!HUB_ONLY_CHAT_PERMISSIONS.includes(capability)) {
+        if (activeSession.status !== 'idle') throw workflowError('AGENT_BUSY', 'Wait for the agent turn to finish before granting this chat permission');
         requireWorkflowSwitchBackend(activeSession);
         const previousGrants = [...activeSession.chatPermissionGrants];
         try {
