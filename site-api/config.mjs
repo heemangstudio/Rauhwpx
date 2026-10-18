@@ -73,3 +73,46 @@ export function resolveLicenseConfig(env = process.env) {
     downloadUrl: trimmed(env.LICENSE_DOWNLOAD_URL) || 'https://heemangstudios.com/',
   };
 }
+
+export function resolveGiftsDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'gifts.json');
+}
+
+export const DEFAULT_OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
+
+function positiveNumber(name, text, fallback) {
+  if (!text) return fallback;
+  const value = Number(text);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number: ${text}`);
+  return value;
+}
+
+function commaList(text, fallback) {
+  return (text || fallback).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Gift credit event from env. The event exists only when both the provisioning key and the
+ * event id are set; otherwise every gift route answers event_inactive.
+ */
+export function resolveGiftConfig(env = process.env) {
+  const endsText = trimmed(env.GIFT_ENDS_AT);
+  let endsAt;
+  if (endsText) {
+    endsAt = Date.parse(endsText);
+    if (!Number.isFinite(endsAt)) throw new Error(`GIFT_ENDS_AT is not an ISO-8601 time: ${endsText}`);
+  }
+  const maxOutputTokens = positiveNumber('GIFT_MAX_OUTPUT_TOKENS', trimmed(env.GIFT_MAX_OUTPUT_TOKENS), 32000);
+  if (!Number.isSafeInteger(maxOutputTokens)) throw new Error('GIFT_MAX_OUTPUT_TOKENS must be an integer');
+  return {
+    provisioningKey: trimmed(env.OPENROUTER_PROVISIONING_KEY),
+    eventId: trimmed(env.GIFT_EVENT_ID),
+    amountUsd: positiveNumber('GIFT_AMOUNT_USD', trimmed(env.GIFT_AMOUNT_USD), 20),
+    endsAt,
+    totalBudgetUsd: positiveNumber('GIFT_TOTAL_BUDGET_USD', trimmed(env.GIFT_TOTAL_BUDGET_USD), undefined),
+    modelPrefixes: commaList(trimmed(env.GIFT_MODEL_PREFIXES), 'anthropic/'),
+    platforms: commaList(trimmed(env.GIFT_PLATFORMS), 'darwin'),
+    maxOutputTokens,
+    apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
+  };
+}
