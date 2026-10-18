@@ -64,9 +64,12 @@
     summary.classList.toggle('bad', bad);
     const hasLicense = Boolean(status.license);
     const showLicensed = hasLicense && ['licensed', 'lease_expired'].includes(status.state);
+    // 기간이 끝난 연간 키: 새 키 넣기 아래에 갱신을 바로 확인하는 줄을 둔다.
+    const expired = hasLicense && status.state === 'expired';
     $('title').textContent = showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
     $('licensed-section').hidden = !showLicensed;
     $('activate-section').hidden = showLicensed;
+    $('renewal-check').hidden = !expired;
     if (hasLicense) {
       $('masked-key').textContent = status.license.maskedKey;
       $('last-check').textContent = when(status.license.lastCheckAt);
@@ -79,7 +82,7 @@
         $('license-term').textContent = date(expiresAt);
       }
       // 해지는 요약 줄이 이미 말한다.
-      if (status.license.lastError && !showLicensed && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
+      if (status.license.lastError && !showLicensed && !expired && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
     }
   }
 
@@ -107,6 +110,17 @@
     licensedNote.classList.remove('ok');
     const status = await busy(event.currentTarget, () => api.checkNow());
     licensedNote.textContent = status.offline ? '라이선스 서버에 연결하지 못했어요.' : '';
+    render(status);
+  });
+
+  $('check-renewal').addEventListener('click', async (event) => {
+    const status = await busy(event.currentTarget, () => api.checkNow());
+    activateNote.classList.remove('ok');
+    activateNote.textContent = status.offline ? '라이선스 서버에 연결하지 못했어요.' : status.state === 'expired' ? '아직 갱신되지 않았어요.' : '';
+    if (status.state === 'licensed') {
+      licensedNote.classList.add('ok');
+      licensedNote.textContent = '갱신을 확인했어요. 이제 저장할 수 있어요.';
+    }
     render(status);
   });
 
