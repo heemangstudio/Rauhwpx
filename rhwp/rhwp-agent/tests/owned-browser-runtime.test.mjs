@@ -494,3 +494,17 @@ test('human link popups retain global ownership and downloads are attributed to 
   assert.equal(captured?.isHuman, true);
   assert.equal((await service.inventory({ agentId: 'other', threadId: 'other' })).tabs.length, 2, 'user popups are shared with agents too');
 });
+
+test('idle desktop native browser is ready without installing or starting managed Chromium', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-readiness-'));
+  const service = createOwnedBrowserService({ dataDir, nativeAdapter: { passwordAccounts: async () => ({ accounts: [] }) },
+    runtimeFactory: async () => { throw new Error('Status must not launch a browser'); } });
+  t.after(async () => { await service.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const status = await service.request({ isHuman: true, clientId: 'editor' }, 'status');
+  assert.equal(status.runtime.kind, 'native');
+  assert.equal(status.runtime.state, 'idle');
+  assert.equal(status.runtime.profileId, 'native');
+  assert.equal(status.readiness.installed, true);
+  assert.equal(status.readiness.state, 'ready');
+  assert.equal(status.readiness.retryAction, undefined);
+});
