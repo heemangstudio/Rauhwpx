@@ -23,24 +23,10 @@ test('compact fullscreen sidebars remain temporary overlays', { timeout: 45_000 
         .ag-root { --ag-rail-w: 280px; position: relative !important; width: 900px; height: 700px; }
         .ag-stage { height: 100%; }
         .ag-composer { height: 120px; }
-        /* Linux CI Chrome reports hover:none / pointer:none, so the production
-           @media (hover: hover) and (pointer: fine) rule never shows the edge
-           target. Keep it hittable here; the stylesheet contract is tested
-           separately. */
-        .ag-fullscreen.ag-workspace-compact .ag-compact-rail-hover-target {
-          position: absolute;
-          top: 48px;
-          bottom: 0;
-          left: 0;
-          z-index: 13;
-          display: block;
-          width: 24px;
-        }
       </style>
       <main class="ag-root ag-fullscreen ag-workspace-compact ag-rail-collapsed">
         <div class="ag-stage">
           <header class="ag-workspace-bar"></header>
-          <div class="ag-compact-rail-hover-target" aria-hidden="true"></div>
           <section class="ag-chat-page"><div class="ag-composer">Composer</div></section>
           <nav class="ag-threads-page">Threads</nav>
           <aside class="ag-review-column">Review</aside>
@@ -130,59 +116,6 @@ test('compact fullscreen sidebars remain temporary overlays', { timeout: 45_000 
     assert.equal(reviewOpened.review.top, reviewOpened.workspaceBar.bottom);
     assert.deepEqual(reviewOpened.composer, closed.composer, 'opening review must not resize or move the composer');
     assert.equal(reviewOpened.chat.width, closed.chat.width);
-
-    await page.evaluate(() => {
-      const root = document.querySelector<HTMLElement>('.ag-root')!;
-      const target = document.querySelector<HTMLElement>('.ag-compact-rail-hover-target')!;
-      const rail = document.querySelector<HTMLElement>('.ag-threads-page')!;
-      (window as unknown as { __compactRailClosedAfterHoverOpen: boolean })
-        .__compactRailClosedAfterHoverOpen = false;
-      root.classList.remove('ag-review-drawer-open', 'ag-compact-rail-open', 'ag-compact-rail-hover-open');
-      root.classList.add('ag-review-collapsed', 'ag-rail-collapsed');
-
-      let openTimer: number | null = null;
-      let closeTimer: number | null = null;
-      const scheduleClose = () => {
-        if (!root.classList.contains('ag-compact-rail-hover-open')) return;
-        if (closeTimer !== null) window.clearTimeout(closeTimer);
-        closeTimer = window.setTimeout(() => {
-          (window as unknown as { __compactRailClosedAfterHoverOpen: boolean })
-            .__compactRailClosedAfterHoverOpen = true;
-          root.classList.remove('ag-compact-rail-open', 'ag-compact-rail-hover-open');
-          root.classList.add('ag-rail-collapsed');
-        }, 100);
-      };
-      target.addEventListener('pointerenter', () => {
-        if (openTimer !== null) window.clearTimeout(openTimer);
-        if (closeTimer !== null) window.clearTimeout(closeTimer);
-        openTimer = window.setTimeout(() => {
-          root.classList.remove('ag-rail-collapsed');
-          root.classList.add('ag-compact-rail-open', 'ag-compact-rail-hover-open');
-        }, 260);
-      });
-      target.addEventListener('pointerleave', (event) => {
-        if (openTimer !== null) window.clearTimeout(openTimer);
-        if (event.relatedTarget instanceof Node && rail.contains(event.relatedTarget)) return;
-        scheduleClose();
-      });
-      rail.addEventListener('pointerenter', () => {
-        if (closeTimer !== null) window.clearTimeout(closeTimer);
-      });
-      rail.addEventListener('pointerleave', scheduleClose);
-    });
-
-    await page.mouse.move(300, 300);
-    await page.mouse.move(20, 300, { steps: 8 });
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    const hoverOpened = await page.evaluate(() => ({
-      open: document.querySelector('.ag-root')!.classList.contains('ag-compact-rail-open'),
-      targetOwnsPointer: document.elementFromPoint(20, 300)?.classList.contains('ag-compact-rail-hover-target'),
-      closedAfterOpening: (window as unknown as { __compactRailClosedAfterHoverOpen: boolean })
-        .__compactRailClosedAfterHoverOpen,
-    }));
-    assert.equal(hoverOpened.open, true, 'the hover-opened drawer must stay open under a stationary edge pointer');
-    assert.equal(hoverOpened.closedAfterOpening, false, 'the drawer must not close and reopen under the edge pointer');
-    assert.equal(hoverOpened.targetOwnsPointer, true, 'the edge target should retain pointer ownership above the drawer');
   } finally {
     await browser.close();
   }

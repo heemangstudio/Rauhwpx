@@ -39,10 +39,11 @@ if (url.searchParams.get('reset') === '1') {
 // thread store's legacy localStorage import, the only path that keeps their
 // past timestamps, so they must be written before the store hydrates on import.
 // `chats=engine-trap` adds the shown document's chat stopped by an engine trap.
+// `chats=long` adds a long chat of the shown document for the focus-mode turn rail.
 const chatsParam = url.searchParams.get('chats');
-if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
+if (chatsParam === 'sample' || chatsParam === 'engine-trap' || chatsParam === 'long') {
   const {
-    engineTrapInterruptedChat, sampleChats, sampleLostTurnWork, sampleReloadQuestionDraft, sampleRunningTurnWork,
+    engineTrapInterruptedChat, longSampleChat, sampleChats, sampleLostTurnWork, sampleReloadQuestionDraft, sampleRunningTurnWork,
     SAMPLE_WORKING_CHAT_ID,
   } = await import('./fixtures.ts');
   const key = 'rhwp-agent-threads';
@@ -51,6 +52,7 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap') {
   const seeded = [
     ...sampleChats(now),
     ...(chatsParam === 'engine-trap' ? [engineTrapInterruptedChat(now)] : []),
+    ...(chatsParam === 'long' ? [longSampleChat(now)] : []),
   ].filter((thread, index, all) => all.findIndex((other) => other.id === thread.id) === index);
   // `chats=sample&reload=running|question` opens as if the page reloaded while the working
   // chat's turn kept running: its stored copy is the newest, and `question` adds the draft the

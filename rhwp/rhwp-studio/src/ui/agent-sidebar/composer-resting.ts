@@ -1,9 +1,8 @@
 /** 대화를 위로 읽는 동안 입력기를 한 줄로 접는 전환.
  *
  *  입력기의 아래 가장자리를 고정하고 높이를 바꾼다. 전체 화면처럼 쉬는 모양의
- *  폭이 다르면 가운데를 축으로 폭도 함께 옮긴다. 높이와 margin-top 을 같은
- *  곡선으로 반대 방향에 걸어 두 값의 합을 목적지 높이로 유지하므로, 대화 목록은
- *  첫 프레임에 한 번만 크기가 바뀌고 전환 내내 흔들리지 않는다. 안쪽 요소는
+ *  폭이 다르면 가운데를 축으로 폭도 함께 옮긴다. 대화 목록은 높이를 따라 프레임마다
+ *  함께 줄고 늘어 스크롤 막대도 끊기지 않고 이어진다. 안쪽 요소는
  *  이전 위치에서 새 위치로 translate 로 이어 붙여 튀지 않게 한다.
  *  전환 도중 방향이 바뀌면 현재 보이는 위치에서 새 목표로 곧바로 향한다. */
 
@@ -25,6 +24,8 @@ export function createComposerRestingMotion(opts: {
   /** 모양이 바뀌기 직전. 바뀐 뒤와 비교할 배치를 여기서 잰다. */
   beforeChange?: (resting: boolean) => void;
   onChange?: (resting: boolean) => void;
+  /** 전환이 끝났거나 움직임 없이 바로 바뀌었을 때. */
+  onSettled?: () => void;
 }): ComposerRestingMotion {
   const { composer } = opts;
   let resting = false;
@@ -76,17 +77,18 @@ export function createComposerRestingMotion(opts: {
     opts.onChange?.(next);
 
     const { duration, easing } = timing();
-    if (fromHeight === 0 || duration < 20) return;
     const target = composer.getBoundingClientRect();
     const toHeight = target.height;
-    const delta = toHeight - fromHeight;
     const widthChanges = Math.abs(target.width - fromWidth) >= 0.5;
-    if (Math.abs(delta) < 0.5 && !widthChanges) return;
+    if (fromHeight === 0 || duration < 20 || (Math.abs(toHeight - fromHeight) < 0.5 && !widthChanges)) {
+      opts.onSettled?.();
+      return;
+    }
 
     // 폭은 흐름 안에서 가운데 정렬되어 있어 폭만 옮겨도 양쪽이 함께 모인다.
     // 안쪽 행은 매 프레임 새 폭에 맞춰 다시 배치되므로 가로 보정은 필요 없다.
-    const from: Keyframe = { height: `${fromHeight}px`, marginTop: `${delta}px` };
-    const to: Keyframe = { height: `${toHeight}px`, marginTop: '0px' };
+    const from: Keyframe = { height: `${fromHeight}px` };
+    const to: Keyframe = { height: `${toHeight}px` };
     if (widthChanges) {
       from.width = `${fromWidth}px`;
       to.width = `${target.width}px`;
@@ -110,7 +112,9 @@ export function createComposerRestingMotion(opts: {
     tweens = running;
     const [heightTween] = running;
     const finish = (): void => {
-      if (tweens[0] === heightTween) stop();
+      if (tweens[0] !== heightTween) return;
+      stop();
+      opts.onSettled?.();
     };
     void heightTween.finished.catch(() => undefined).then(finish);
     // 멈춘 문서 타임라인에서도 자연 배치가 결국 기준이 되게 한다.

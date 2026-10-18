@@ -2409,6 +2409,39 @@ button.ag-skill-copy {
   mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
 }
 
+/* 입력기가 접혀 늘어난 아래쪽은 스크롤 홈에서 뺀다 (composerRest 가 값을 넣는다). */
+.ag-messages::-webkit-scrollbar-track {
+  margin-bottom: var(--ag-messages-track-inset, 0px);
+}
+
+/* 스트리밍 답을 따라가는 동안(.ag-messages-auto) 막대를 흐리게 감춘다. 스크롤 막대
+   의사 요소는 전환을 받지 않으므로, 등록한 속성을 전환해 물려준다. */
+@property --ag-messages-thumb {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 1;
+}
+
+.ag-messages {
+  transition: --ag-messages-thumb var(--ag-dur-base) var(--ag-ease-out);
+}
+
+.ag-messages.ag-messages-auto {
+  --ag-messages-thumb: 0;
+}
+
+.ag-messages::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ui-scrollbar-thumb) calc(var(--ag-messages-thumb) * 100%), transparent);
+}
+
+.ag-messages:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--ui-scrollbar-thumb-hover) calc(var(--ag-messages-thumb) * 100%), transparent);
+}
+
+.ag-messages::-webkit-scrollbar-thumb:active {
+  background-color: var(--ui-scrollbar-thumb-active);
+}
+
 /* 대화의 끝 표지. 높이가 없어 마지막 내용 아래로 스크롤할 자리가 생기지 않는다. */
 .ag-messages-end {
   flex: 0 0 auto;
@@ -7922,22 +7955,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
    retaining their desktop column state. */
 .ag-workspace-drawer-scrim {
   display: none;
-}
-
-.ag-compact-rail-hover-target {
-  display: none;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .ag-fullscreen.ag-workspace-compact .ag-compact-rail-hover-target {
-    position: absolute;
-    top: var(--ag-workspace-bar-h, 48px);
-    bottom: 0;
-    left: 0;
-    z-index: 13;
-    display: block;
-    width: 24px;
-  }
 }
 
 .ag-fullscreen.ag-workspace-compact .ag-workspace-drawer-scrim {
