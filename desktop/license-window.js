@@ -84,7 +84,7 @@
       $('license-term-label').hidden = !expiresAt;
       $('license-term').hidden = !expiresAt;
       if (expiresAt) {
-        $('license-term-label').textContent = status.license.autoRenew === false ? '사용 기한' : '다음 갱신';
+        $('license-term-label').textContent = status.license.paymentFailed ? '만료일' : status.license.autoRenew === false ? '사용 기한' : '다음 갱신';
         $('license-term').textContent = date(expiresAt);
       }
       // 해지는 요약 줄이 이미 말한다.

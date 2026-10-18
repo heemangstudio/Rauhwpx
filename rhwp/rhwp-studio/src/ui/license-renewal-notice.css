@@ -1,9 +1,9 @@
-/* 연장 안내 카드. 오른쪽 아래에 떠 있고 문서와 메뉴를 가리지 않는 크기다. 모달이 아니다. */
+/* 연장 안내 카드. 문서 영역 왼쪽 아래(상태 막대 위)에 떠 있어 오른쪽 대화 입력창을 가리지 않는다. 모달이 아니다. */
 .license-renewal-notice {
   position: fixed;
-  right: 20px;
+  left: 36px;
   bottom: 44px;
-  z-index: 12000;
+  z-index: 50; /* 대화창(.ag-root, 60)과 설정 화면 아래, 문서 위 */
   box-sizing: border-box;
   width: min(360px, calc(100vw - 40px));
   padding: 16px 18px 14px;
