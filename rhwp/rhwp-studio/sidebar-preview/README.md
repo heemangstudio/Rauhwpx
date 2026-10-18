@@ -123,6 +123,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
 | `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
+| `?event=special` | Draft post-update special event popup (hippo and Clawd, $20 Claude credit for Pi); 받기 runs a sample claim and shows the remaining balance. Add `&claim=fail` for the retry path |
 | `?initial-setup=deferred` | Setup postponed by a file launch: the `처음 설정` chip above the composer |
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |

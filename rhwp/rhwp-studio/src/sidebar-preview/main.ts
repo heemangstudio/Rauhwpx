@@ -274,6 +274,14 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
 }
 applyTheme();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
+if (params.get('event') === 'special') {
+  // Draft popup with a fixture claim; `claim=fail` rejects it to show the retry path.
+  void import('../ui/special-event/special-event-popup.ts').then(({ openSpecialEventPopup }) =>
+    openSpecialEventPopup({
+      claim: () => new Promise((resolve, reject) => setTimeout(() =>
+        params.get('claim') === 'fail' ? reject(new Error('sample failure')) : resolve({ balanceUsd: 20 }), 700)),
+    }).then((result) => report(`Special event closed: ${result} (sample)`)));
+}
 
 /** Swap the document of the primary session, as the editor's move does. */
 async function moveDocument(

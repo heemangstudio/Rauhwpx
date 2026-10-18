@@ -1,0 +1,254 @@
+/* ─── 특별 이벤트 창 (se-) ─────────────────────────────
+   가운데 확인 시트와 한 가족이다: 불투명한 면, 시트 모서리·높이, 공용 어둡힘,
+   잉크 기본 버튼. 이벤트다운 색은 그림과 픽셀 제목의 그림자에만 둔다.
+   픽셀은 모두 3px 한 칸 위에 놓여 흐려지지 않는다. */
+
+.se-layer {
+  /* Claude 색. .ag-root 밖이라 --ag-claude 와 같은 값을 여기서 다시 정한다. */
+  --se-accent: #c4785a; /* token-ok */
+  --se-px: 3px;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  font-family: var(--ag-font);
+  color: var(--n-ink);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:root[data-theme-effective='dark'] .se-layer {
+  --se-accent: #d49174; /* token-ok */
+}
+
+.se-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--overlay-bg);
+  opacity: 0;
+  transition: opacity var(--ag-dur-base) var(--ag-ease-out);
+}
+
+.se-card {
+  position: relative;
+  box-sizing: border-box;
+  width: min(352px, 100%);
+  padding: 12px 12px 20px;
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface-raised);
+  box-shadow: var(--ag-elev-sheet);
+  text-align: center;
+  outline: none;
+  opacity: 0;
+  transform: translateY(8px) scale(0.97);
+  transition:
+    transform var(--ag-dur-base) var(--ag-spring),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+:root[data-theme-effective='dark'] .se-card {
+  box-shadow: 0 0 0 1px var(--n-ink-hairline), var(--ag-elev-sheet);
+}
+
+.se-layer.se-open .se-backdrop,
+.se-layer.se-open .se-card {
+  opacity: 1;
+}
+
+.se-layer.se-open .se-card {
+  transform: none;
+}
+
+.se-layer.se-closing {
+  pointer-events: none;
+}
+
+.se-layer.se-closing .se-backdrop,
+.se-layer.se-closing .se-card {
+  transition-duration: var(--ag-dur-exit);
+}
+
+/* ── 그림 ── */
+
+.se-stage {
+  position: relative;
+  height: 108px;
+  overflow: hidden;
+  border-radius: var(--ag-r-inner);
+  background: var(--n-surface-sunken);
+}
+
+/* 39×23 칸 다섯 개(가만히·하마 깜빡임·Clawd 깜빡임·웅크림·환호)를 3배로 키운다. */
+.se-sprite {
+  position: absolute;
+  left: calc(50% - 57px);
+  bottom: 18px;
+  width: 117px;
+  height: 69px;
+  background: url('./hama-clawd-sprites.png') 0 0 / 585px 69px no-repeat;
+  image-rendering: pixelated;
+}
+
+/* 발밑 한 줄. 그림과 같은 3px 두께다. */
+.se-ground {
+  position: absolute;
+  left: calc(50% - 75px);
+  bottom: 15px;
+  width: 150px;
+  height: var(--se-px);
+  background: var(--n-ink-hairline-strong);
+}
+
+/* 네 갈래 반짝임 셋. 3px 칸으로 그리고 번갈아 깜빡인다. */
+.se-spark {
+  position: absolute;
+  width: var(--se-px);
+  height: var(--se-px);
+  color: #62b3e2; /* token-ok — 하마 몸 색 */
+  background: currentColor;
+  box-shadow:
+    0 calc(-1 * var(--se-px)) 0 currentColor,
+    0 var(--se-px) 0 currentColor,
+    calc(-1 * var(--se-px)) 0 0 currentColor,
+    var(--se-px) 0 0 currentColor;
+  animation: se-twinkle 1800ms steps(1, end) infinite;
+}
+
+.se-spark:nth-child(1) {
+  left: calc(50% - 99px);
+  top: 21px;
+}
+
+.se-spark:nth-child(2) {
+  left: calc(50% + 84px);
+  top: 15px;
+  color: #d97757; /* token-ok — Clawd 몸 색 */
+  animation-delay: -600ms;
+}
+
+.se-spark:nth-child(3) {
+  left: calc(50% + 48px);
+  top: 36px;
+  animation-delay: -1200ms;
+}
+
+@keyframes se-twinkle {
+  0% { opacity: 1; }
+  34% { opacity: 0; }
+  67% { opacity: 0.45; }
+}
+
+/* ── 글 ── */
+
+.se-title {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0 0;
+  line-height: 0;
+}
+
+.se-title-face {
+  fill: var(--n-ink);
+}
+
+.se-title-shadow {
+  fill: var(--se-accent);
+}
+
+.se-copy {
+  margin: 14px 12px 0;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-secondary);
+  letter-spacing: var(--ag-track-tight);
+  color: var(--n-ink);
+  word-break: keep-all;
+}
+
+.se-meta {
+  margin: 2px 12px 0;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.se-error {
+  margin: 8px 12px 0;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  color: var(--ag-err, var(--ui-danger));
+}
+
+.se-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 20px 12px 0;
+}
+
+.se-actions[data-single='true'] {
+  grid-template-columns: 1fr;
+}
+
+.se-actions .ag-sheet-btn:disabled {
+  opacity: 0.6;
+}
+
+/* ── 받은 뒤: 남은 양 ── */
+
+.se-wallet {
+  margin: 16px 12px 0;
+  text-align: left;
+}
+
+.se-wallet-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.se-wallet-value {
+  font-weight: var(--ag-fw-medium);
+  font-variant-numeric: var(--ag-numeric);
+  color: var(--n-ink);
+}
+
+.se-meter {
+  height: 6px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-pressed);
+}
+
+.se-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--se-accent);
+  transform-origin: left center;
+  transform: scaleX(var(--se-fill, 1));
+  animation: se-fill-in var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+@keyframes se-fill-in {
+  from { transform: scaleX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .se-layer,
+  .se-layer * {
+    animation: none !important;
+  }
+
+  .se-backdrop,
+  .se-card {
+    transition-duration: 1ms;
+  }
+}
