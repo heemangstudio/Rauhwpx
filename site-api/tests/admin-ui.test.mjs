@@ -106,3 +106,20 @@ test('admin page: without a token it asks once and keeps it in the Keychain, nev
   assert.equal((await request(port, { path: '/api/betas', headers })).status, 200);
   assert.equal(upstream.calls.at(-1).auth, 'Bearer from-ui');
 });
+
+test('admin page: ADMIN_UI_PUBLIC_ORIGIN admits exactly one https front door', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const front = 'https://mini.tailnet.ts.net:8447';
+  const port = await listen(t, createAdminUiServer({
+    port: 0, base: upstream.base, envToken: 'admin-secret', keychain: { read: async () => '' }, publicOrigin: front,
+  }));
+  const page = await request(port, { host: 'mini.tailnet.ts.net:8447' });
+  assert.equal(page.status, 200);
+  const session = page.text.match(/name="admin-session" content="([^"]+)"/)[1];
+  const call = (host, origin) => request(port, { path: '/api/betas', host, headers: { 'X-Admin-Session': session, Origin: origin } });
+  assert.equal((await call('mini.tailnet.ts.net:8447', front)).status, 200);
+  assert.equal((await call('mini.tailnet.ts.net:8447', 'http://mini.tailnet.ts.net:8447')).json.error, 'bad_origin');
+  assert.equal((await call('other.tailnet.ts.net:8447', 'https://other.tailnet.ts.net:8447')).status, 421);
+  assert.equal(upstream.calls.length, 1);
+  assert.throws(() => createAdminUiServer({ publicOrigin: 'http://mini.tailnet.ts.net:8447' }), /bare https origin/);
+});
