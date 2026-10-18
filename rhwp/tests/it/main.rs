@@ -335,6 +335,7 @@ mod issue_math10_authored_note_marker_style;
 mod issue_math10_equation_flow;
 mod issue_math10_relative_inline_shape_width;
 mod issue_math10_stored_frame_geometry;
+mod issue_math10_windows_equation_policy;
 mod issue_nested_table_border;
 mod issue_rowbreak_chart_overlap;
 mod issue_table_vpos_01_page5_cell_hit_test;

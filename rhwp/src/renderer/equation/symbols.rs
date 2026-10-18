@@ -512,8 +512,17 @@ pub static FONT_STYLES: LazyLock<HashMap<&'static str, FontStyleKind>> = LazyLoc
     ])
 });
 
+/// 원본 명령표 BOX(0x76, flags 0xC0)와 normalizer의 세 글자 ASCII 경로.
+/// 임의 mixed-case 식별자와 BOXER 같은 접두어는 명령으로 바꾸지 않는다.
+pub(crate) fn is_box_command(cmd: &str) -> bool {
+    matches!(cmd, "BOX" | "box" | "Box")
+}
+
 /// 구조 명령어 (파서에서 특별 처리)
 pub fn is_structure_command(cmd: &str) -> bool {
+    if is_box_command(cmd) {
+        return true;
+    }
     matches!(
         cmd,
         "OVER"
@@ -651,6 +660,7 @@ pub enum DecoKind {
     Underline,     // ___
     Overline,      // ‾‾‾
     StrikeThrough, // /
+    Box,           // BOX: 내용 전체를 둘러싸는 사각 테두리
 }
 
 /// 글꼴 스타일 종류

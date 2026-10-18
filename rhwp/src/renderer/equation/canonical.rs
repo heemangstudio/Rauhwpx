@@ -500,6 +500,7 @@ fn decoration_name(kind: DecoKind) -> &'static str {
         DecoKind::Underline => "UNDERLINE",
         DecoKind::Overline => "OVERLINE",
         DecoKind::StrikeThrough => "NOT",
+        DecoKind::Box => "BOX",
     }
 }
 

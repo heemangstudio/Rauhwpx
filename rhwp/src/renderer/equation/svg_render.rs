@@ -1025,6 +1025,17 @@ fn render_box(
                 }
             }
         }
+        LayoutKind::Decoration {
+            kind: DecoKind::Box,
+            body,
+        } => {
+            // 흰 바탕을 자식보다 먼저 칠한다. 원본 장치 primitive의 raster 등가는 미확정이다.
+            svg.push_str(&format!(
+                "<rect x=\"{:.4}\" y=\"{:.4}\" width=\"{:.4}\" height=\"{:.4}\" fill=\"white\" stroke=\"black\" stroke-width=\"1\"/>",
+                x, y, lb.width, lb.height,
+            ));
+            render_box(svg, body, x, y, color, fs, italic, bold, font);
+        }
         LayoutKind::Decoration { kind, body } => {
             render_box(svg, body, x, y, color, fs, italic, bold, font);
             let deco_y = y + fs * 0.05;
@@ -2007,5 +2018,44 @@ mod tests {
             svg
         );
         assert!(svg.contains("평점"));
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::super::{layout::EqLayout, parser::parse};
+    use super::*;
+
+    #[test]
+    fn box_frame_svg_keeps_child_content_and_paints_background_first() {
+        for (script, content) in [
+            ("BOX{~(가)~}", "가"),
+            ("box{A}", "A"),
+            ("BOX{{1} over {2}}", "1"),
+        ] {
+            let layout = EqLayout::new(20.0).layout(&parse(script));
+            let svg = render_equation_svg_with_font_and_version(
+                &layout,
+                "#b30000",
+                20.0,
+                None,
+                "Equation Version 60",
+            );
+            let frame = svg.find("<rect ").expect("frame geometry");
+            let child = svg.find("<text ").expect("visible child");
+            assert!(
+                frame < child,
+                "white background must precede content: {svg}"
+            );
+            assert!(svg.contains(content), "missing content: {svg}");
+            assert!(
+                !svg.contains("BOX") && !svg.contains(">box<"),
+                "leaked command: {svg}"
+            );
+            assert!(svg.contains(&format!(
+                "width=\"{:.4}\" height=\"{:.4}\"",
+                layout.width, layout.height
+            )));
+        }
     }
 }

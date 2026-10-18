@@ -3739,6 +3739,16 @@ export class CanvasKitLayerRenderer {
             : true);
       }
       case 'decoration':
+        if (layout.kind.decoration === 'box') {
+          // BOX의 흰 바탕/검은 테두리는 자식을 그리기 전에 기록한다.
+          // 장치 primitive의 정확한 pen/raster 등가는 별도 검증 대상이다.
+          const rect = this.rect({ x, y, width: layout.width, height: layout.height });
+          const fill = this.makeFillPaint('#ffffff');
+          try { canvas.drawRect(rect, fill); } finally { fill.delete?.(); }
+          const stroke = this.makeStrokePaint('#000000', 1);
+          try { canvas.drawRect(rect, stroke); } finally { stroke.delete?.(); }
+          return child(layout.kind.body);
+        }
         return child(layout.kind.body)
           && this.drawEquationDecoration(
             canvas,

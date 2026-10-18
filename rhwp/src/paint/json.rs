@@ -3119,6 +3119,7 @@ fn equation_decoration(kind: DecoKind) -> &'static str {
         DecoKind::Underline => "underline",
         DecoKind::Overline => "overline",
         DecoKind::StrikeThrough => "strikeThrough",
+        DecoKind::Box => "box",
     }
 }
 
@@ -5286,5 +5287,24 @@ mod tests {
             parsed["outputOptions"]["debugOverlay"].as_bool(),
             Some(true)
         );
+    }
+}
+
+#[cfg(test)]
+mod equation_box_frame_tests {
+    use super::*;
+    use crate::renderer::equation::{layout::EqLayout, parser::parse};
+
+    #[test]
+    fn box_frame_paint_json_carries_frame_and_fraction_child() {
+        let layout = EqLayout::new(20.0).layout(&parse("BOX{{1} over {2}}"));
+        let mut json = String::new();
+        write_equation_layout_box(&mut json, &layout);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["kind"]["type"], "decoration");
+        assert_eq!(value["kind"]["decoration"], "box");
+        assert_eq!(value["kind"]["body"]["kind"]["type"], "fraction");
+        assert!(value["kind"]["body"]["x"].as_f64().unwrap() > 0.0);
+        assert_eq!(value["resolvedFontSize"], 20.0);
     }
 }

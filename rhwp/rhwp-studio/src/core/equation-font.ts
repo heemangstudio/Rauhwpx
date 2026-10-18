@@ -65,6 +65,23 @@ export function modernEquationAdvance(rawAdvance: number, fontSize: number, synt
   return Math.round(rawAdvance / fontSize * gridSize) * (syntheticItalic ? 1 : 0.9);
 }
 
+/** 문서의 FontMetricsPolicy. 생략하면 기존 Mac 측정을 유지한다. */
+export type EquationMetricsPolicy = 'hcr-declared' | 'hancom-windows';
+
+/** 원본 face의 유효한 GID를 확인한 호출자만 sourceCovered를 허용한다. */
+function modernSourceEquationAdvance(
+  rawAdvance: number, size: number, character: string, italic: boolean, bold: boolean,
+  sourceCovered: boolean, policy: EquationMetricsPolicy, advanceScale: number,
+): number {
+  const [glyph, synthetic] = legacyEquationGlyph(character, italic, true);
+  if (policy === 'hancom-windows' && sourceCovered && glyph !== character
+      && /^[\ue000-\ue0ff]$/u.test(glyph) && !synthetic && !bold
+      && Number.isFinite(advanceScale) && advanceScale > 0) {
+    return modernEquationAdvance(rawAdvance / advanceScale, size / advanceScale, true) * advanceScale;
+  }
+  return modernEquationAdvance(rawAdvance, size, synthetic);
+}
+
 /** Short modern square fences use the loaded HY glyph cells and ink bearing. */
 export function modernShortSquarePaintMetrics(
   bytes: ArrayBuffer | null,
@@ -148,7 +165,7 @@ export function createEquationLiteralFontResolver(
 export function createEquationTextMeasurer(
   resolveFont: (name: string) => LocalFontRecord | null,
   readBytes: (name: string, bold?: boolean, italic?: boolean) => ArrayBuffer | null,
-): (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold?: boolean) => { advance: number; inkLeft: number; inkRight: number } | null {
+): (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold?: boolean, policy?: EquationMetricsPolicy, advanceScale?: number) => { advance: number; inkLeft: number; inkRight: number } | null {
   const exact = createEquationFontResolver(resolveFont, readBytes);
   const unicode = createEquationLiteralFontResolver(resolveFont, readBytes);
   let context: CanvasRenderingContext2D | null = null;
@@ -168,7 +185,7 @@ export function createEquationTextMeasurer(
     if (![metrics.width, metrics.actualBoundingBoxLeft, metrics.actualBoundingBoxRight].every(Number.isFinite)) return null;
     return { advance: metrics.width, inkLeft: -metrics.actualBoundingBoxLeft, inkRight: metrics.actualBoundingBoxRight };
   };
-  return (source, text, size, italic, hft, literal, bold = false) => {
+  return (source, text, size, italic, hft, literal, bold = false, policy = 'hcr-declared', advanceScale = 1) => {
     if (!Number.isFinite(size) || size <= 0 || !text) return null;
     if (isLegacyEquationFont(source) && !hft) {
       const mapped = [...text].map(character => ({ character, mapped: legacyEquationGlyph(character, italic, true) }));
@@ -176,7 +193,7 @@ export function createEquationTextMeasurer(
         const bytes = readBytes(source);
         if (bytes) {
           let advance = 0; let inkLeft = Number.NaN; let inkRight = 0; let complete = true;
-          for (const { character, mapped: [glyph, syntheticItalic] } of mapped) {
+          for (const { character, mapped: [glyph] } of mapped) {
             const sourceMetrics = sfntTrueTypeRunMetrics(bytes, glyph, size);
             const fallback = !sourceMetrics && isModernEquationFallbackSymbol(character) && !sfntCoversText(bytes, glyph)
               // 복합 text leaf는 positioned glyph의 paint 경로처럼 특수 fallback만 정체다.
@@ -194,7 +211,10 @@ export function createEquationTextMeasurer(
             }
             if (Number.isNaN(inkLeft)) inkLeft = metrics.inkLeft;
             inkRight = Math.max(inkRight, advance + metrics.inkRight);
-            advance += modernEquationAdvance(metrics.advance, size, fallback ? false : syntheticItalic);
+            advance += fallback
+              ? modernEquationAdvance(metrics.advance, size, false)
+              : modernSourceEquationAdvance(metrics.advance, size, character, italic, bold,
+                Boolean(sourceMetrics) && sfntCoversText(bytes, glyph), policy, advanceScale);
           }
           if (complete) return { advance, inkLeft, inkRight };
         }

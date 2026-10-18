@@ -17,6 +17,8 @@ extern "C" {
         hft: bool,
         literal: bool,
         bold: bool,
+        policy: &str,
+        advance_scale: f64,
     ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
 }
 
@@ -208,6 +210,7 @@ pub struct EqLayout {
     /// 기본 글꼴 크기 (px)
     pub font_size: f64,
     font_family: Option<String>,
+    metrics_policy: crate::model::provenance::FontMetricsPolicy,
     hft: bool,
     italic: bool,
     bold: bool,
@@ -387,6 +390,7 @@ impl EqLayout {
             operator_padding_scale: 1.0,
             eq_base_pt: None,
             draw_text_vector_occupancy: false,
+            metrics_policy: Default::default(),
         }
     }
 
@@ -400,6 +404,30 @@ impl EqLayout {
             operator_padding_scale: 1.0,
             eq_base_pt: None,
             draw_text_vector_occupancy: false,
+            metrics_policy: Default::default(),
+        }
+    }
+
+    /// 문서의 명시적 정책. OS 전역 설정을 사용하지 않으며 기존 호출은 mac 기본값이다.
+    pub fn with_metrics_policy(
+        mut self,
+        policy: crate::model::provenance::FontMetricsPolicy,
+    ) -> Self {
+        self.metrics_policy = policy;
+        self
+    }
+
+    fn advance_context(&self) -> super::font::AdvanceContext {
+        super::font::AdvanceContext {
+            policy: if self.is_modern_hy() {
+                self.metrics_policy
+            } else {
+                Default::default()
+            },
+            scale: self
+                .eq_base_pt
+                .map(|pt| self.font_size / (pt * 4.0 / 3.0))
+                .unwrap_or(1.0),
         }
     }
 
@@ -1089,14 +1117,21 @@ impl EqLayout {
             _ => return None,
         };
         if self.is_modern_hy() && matches!(node, EqNode::Text(_) | EqNode::Quoted(_)) {
-            super::measure::measure_modern_text_run_native(text, fs, italic, bold)
+            super::measure::measure_modern_text_run_native_with_policy(
+                text,
+                fs,
+                italic,
+                bold,
+                self.advance_context(),
+            )
         } else {
-            super::measure::measure_legacy_run_native(
+            super::measure::measure_legacy_run_native_with_policy(
                 text,
                 fs,
                 italic,
                 bold,
                 self.modern_run_metrics(),
+                self.advance_context(),
             )
         }
     }
@@ -1130,7 +1165,18 @@ impl EqLayout {
             _ => return None,
         };
         let family = self.font_family.as_deref()?;
-        let value = measure_equation_text(family, text, fs, italic, self.hft, true, bold).ok()?;
+        let value = measure_equation_text(
+            family,
+            text,
+            fs,
+            italic,
+            self.hft,
+            true,
+            bold,
+            self.metrics_policy.as_str(),
+            self.advance_context().scale,
+        )
+        .ok()?;
         let metrics = super::measure::RunMetrics::from_js(value.clone())?;
         let ink_left = super::measure::js_property(&value, "inkLeft")?.as_f64()?;
         ink_left
@@ -1179,7 +1225,14 @@ impl EqLayout {
                     EqNode::Color { body, .. } => return self.node_advance_right(body, fs),
                     _ => return None,
                 };
-                super::measure::measure_modern_run_advance_native(text, fs, italic, bold, literal)
+                super::measure::measure_modern_run_advance_native_with_policy(
+                    text,
+                    fs,
+                    italic,
+                    bold,
+                    literal,
+                    self.advance_context(),
+                )
             })
     }
 
@@ -1253,7 +1306,18 @@ impl EqLayout {
             .font_family
             .as_deref()
             .and_then(|family| {
-                measure_equation_text(family, text, font_size, italic, self.hft, literal, bold).ok()
+                measure_equation_text(
+                    family,
+                    text,
+                    font_size,
+                    italic,
+                    self.hft,
+                    literal,
+                    bold,
+                    self.metrics_policy.as_str(),
+                    self.advance_context().scale,
+                )
+                .ok()
             })
             .and_then(super::measure::RunMetrics::from_js)
         {
@@ -1289,14 +1353,21 @@ impl EqLayout {
             .is_some_and(super::font::is_legacy_equation_font)
         {
             let metrics = if self.modern_run_metrics() && literal {
-                super::measure::measure_modern_text_run_native(text, font_size, italic, bold)
+                super::measure::measure_modern_text_run_native_with_policy(
+                    text,
+                    font_size,
+                    italic,
+                    bold,
+                    self.advance_context(),
+                )
             } else {
-                super::measure::measure_legacy_run_native(
+                super::measure::measure_legacy_run_native_with_policy(
                     text,
                     font_size,
                     italic,
                     bold,
                     self.modern_run_metrics(),
+                    self.advance_context(),
                 )
             };
             if let Some(metrics) = metrics {
@@ -1311,8 +1382,13 @@ impl EqLayout {
                 );
             }
             if self.is_modern_hy() {
-                if let Some(advance) = super::measure::measure_modern_run_advance_native(
-                    text, font_size, italic, bold, literal,
+                if let Some(advance) = super::measure::measure_modern_run_advance_native_with_policy(
+                    text,
+                    font_size,
+                    italic,
+                    bold,
+                    literal,
+                    self.advance_context(),
                 ) {
                     return (advance, 0.0);
                 }
@@ -3579,6 +3655,9 @@ impl EqLayout {
         body: &EqNode,
         fs: f64,
     ) -> LayoutBox {
+        if kind == super::symbols::DecoKind::Box {
+            return self.layout_box_frame(body, fs);
+        }
         let b = self.layout_node(body, fs);
         let deco_h = if self.draw_text_vector_occupancy
             && self.is_modern_hy()
@@ -3619,6 +3698,39 @@ impl EqLayout {
             kind: LayoutKind::Decoration {
                 kind,
                 body: Box::new(body_box),
+            },
+        }
+    }
+
+    /// 현대 BOX(1009d230)의 gw/gh 비율을 기존 논리 좌표에 옮긴다.
+    /// E06D 폭은 현재 advance policy로 측정하고, gh는 기존 글립 상자의 em 높이다.
+    /// 원본 GetTextExtent의 장치별 세로 메트릭/사각 primitive raster까지 증명한 것은 아니다.
+    fn layout_box_frame(&self, body: &EqNode, fs: f64) -> LayoutBox {
+        let mut child = self.layout_node(body, fs);
+        let glyph = self.layout_symbol("\u{e06d}", fs);
+        // viewport px에서 정수화하면 DPI마다 비율이 달라진다. 기존 base-pt scale로
+        // HWPUNIT에 환산한 양수 길이에 Windows MulDiv의 nearest 반올림을 적용한다.
+        let units_per_px = 75.0 / self.advance_context().scale;
+        let percent = |length: f64, value: f64| {
+            ((length * units_per_px).round() * value / 100.0).round() / units_per_px
+        };
+        let gap = percent(glyph.height, 20.0);
+        let width = child.width.max(glyph.width) + percent(glyph.width, 20.0);
+        let height = child.height + gap;
+        // top = child_top - MulDiv(gw,15,100), gh가 아니라 폭을 사용한다.
+        child.x = (width - child.width) / 2.0;
+        child.y = percent(glyph.width, 15.0);
+        LayoutBox {
+            resolved_font_size: Some(fs),
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            baseline: child.y + child.baseline,
+            kind: LayoutKind::Decoration {
+                kind: super::symbols::DecoKind::Box,
+                body: Box::new(child),
             },
         }
     }
@@ -7357,5 +7469,58 @@ pub(crate) mod composite_paint_cases {
             altered.resolved_font_size = value;
             assert_eq!(altered.paint_font_size(14.0), 14.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::super::{parser::parse, symbols::DecoKind};
+    use super::*;
+
+    #[test]
+    fn box_frame_centers_children_and_keeps_their_baseline_and_subtree() {
+        for font in ["HYhwpEQ", "Times New Roman"] {
+            for version in ["", "Equation Version 60"] {
+                for dpi in [96.0, 144.0, 192.0] {
+                    let fs = 1100.0 * dpi / 7200.0;
+                    let engine = EqLayout::with_font(fs, font)
+                        .with_version(version)
+                        .with_base_pt(11.0);
+                    for content in ["~(가)~", "A+x_1", "{1} over {x^2}", "BOX{가}"] {
+                        let ast = parse(content);
+                        let ordinary = engine.layout_node(&ast, fs);
+                        let framed = engine.layout_box_frame(&ast, fs);
+                        let LayoutKind::Decoration {
+                            kind: DecoKind::Box,
+                            body,
+                        } = &framed.kind
+                        else {
+                            panic!("expected frame");
+                        };
+                        assert!((2.0 * body.x + body.width - framed.width).abs() < 1e-9);
+                        assert!((body.y + body.baseline - framed.baseline).abs() < 1e-9);
+                        assert!(body.y > 0.0 && framed.height > ordinary.height);
+                        let mut restored = body.as_ref().clone();
+                        restored.x = ordinary.x;
+                        restored.y = ordinary.y;
+                        assert_eq!(
+                            serde_json::to_value(restored).unwrap(),
+                            serde_json::to_value(&ordinary).unwrap()
+                        );
+                        let anchor = engine.layout_symbol("\u{e06d}", fs);
+                        let units = 75.0 / engine.advance_context().scale;
+                        let rounded_raise = ((anchor.width * units).round() * 0.15).round() / units;
+                        assert!((body.y - rounded_raise).abs() < 1e-9);
+                    }
+                }
+            }
+        }
+        // 원본 저장 W/H나 특정 답안 레이블에 관계없이 긴 분수도 테두리를 늘린다.
+        let engine = EqLayout::new(20.0);
+        let short = engine.layout(&parse("BOX{x}"));
+        let wide = engine.layout(&parse("BOX{abcdefghijk}"));
+        let tall = engine.layout(&parse("BOX{{1} over {{2} over {3}}}"));
+        assert!(wide.width > short.width);
+        assert!(tall.height > short.height);
     }
 }

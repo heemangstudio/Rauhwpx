@@ -4423,11 +4423,11 @@ impl DocumentCore {
                     && source.controls.iter().all(|ctrl| {
                         matches!(ctrl, Control::Equation(eq)
                         if eq.common.treat_as_char
-                            && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                            && crate::renderer::equation::natural_width_hwp_with_policy(eq, self.styles.font_metrics_policy).is_some())
                     })
                     && source.controls.iter().any(|ctrl| {
                         matches!(ctrl, Control::Equation(eq)
-                        if crate::renderer::equation::natural_width_hwp(eq)
+                        if crate::renderer::equation::natural_width_hwp_with_policy(eq, self.styles.font_metrics_policy)
                             .is_some_and(|width| width < eq.common.width as i32))
                     });
                 let mut candidate = source.clone();
@@ -5478,7 +5478,10 @@ impl DocumentCore {
             if can_project_native_equation_breaks {
                 for (index, paragraph) in np.iter_mut().enumerate() {
                     if let Some(tabs) =
-                        crate::renderer::layout::compensated_native_equation_tabs(paragraph)
+                        crate::renderer::layout::compensated_native_equation_tabs_with_policy(
+                            paragraph,
+                            self.styles.font_metrics_policy,
+                        )
                     {
                         paragraph.tab_extended = tabs;
                         native_tab_paragraphs.push(index);

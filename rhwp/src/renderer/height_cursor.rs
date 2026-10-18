@@ -234,14 +234,16 @@ impl HeightCursor {
         // with the ordinary text box, carry that contraction through the saved
         // vpos ladder; otherwise the next paragraph snaps back down.
         let contraction = if self.suppress_hwpx_stale_forward {
-            crate::renderer::equation::stored_unaffected_upper_compaction_hu(prev_para)
-                + if self.render_endnote_textheight_compaction {
-                    crate::renderer::equation::endnote_unaffected_equation_textheight_compaction_total_hu(
-                        prev_para,
+            crate::renderer::equation::stored_unaffected_upper_compaction_hu_with_policy(
+                prev_para,
+                styles.font_metrics_policy,
+            ) + if self.render_endnote_textheight_compaction {
+                crate::renderer::equation::endnote_unaffected_equation_textheight_compaction_total_hu_with_policy(
+                        prev_para, styles.font_metrics_policy,
                     )
-                } else {
-                    0
-                }
+            } else {
+                0
+            }
         } else {
             0
         };

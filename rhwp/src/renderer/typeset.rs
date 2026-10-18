@@ -2909,6 +2909,8 @@ struct FormattedParagraph {
     line_heights: Vec<f64>,
     /// 줄별 줄간격 (line_spacing)
     line_spacings: Vec<f64>,
+    /// 인증된 미주 진행량(px). line_heights는 full ink/object 경계를 유지한다.
+    certified_line_advances: Option<Vec<f64>>,
     /// spacing_before
     spacing_before: f64,
     /// spacing_after
@@ -2927,18 +2929,59 @@ impl FormattedParagraph {
     /// 특정 줄의 advance 높이 (콘텐츠 + 줄간격)
     #[inline]
     fn line_advance(&self, line_idx: usize) -> f64 {
-        self.line_heights[line_idx] + self.line_spacings[line_idx]
+        self.certified_line_advances
+            .as_ref()
+            .map(|advances| advances[line_idx])
+            .unwrap_or(self.line_heights[line_idx] + self.line_spacings[line_idx])
     }
 
     /// 줄 범위의 advance 합계
     fn line_advances_sum(&self, range: std::ops::Range<usize>) -> f64 {
-        range
-            .into_iter()
-            .map(|i| self.line_heights[i] + self.line_spacings[i])
-            .sum()
+        range.into_iter().map(|i| self.line_advance(i)).sum()
+    }
+
+    fn with_certified_endnote_advances(
+        mut self,
+        para: &Paragraph,
+        advances_hu: Option<&[i32]>,
+        dpi: f64,
+    ) -> Self {
+        if let Some(advances) = advances_hu.filter(|a| {
+            !self.fresh_recomposed
+                && a.len() == self.line_heights.len()
+                && a.len() == para.line_segs.len()
+        }) {
+            // 원본 full-H는 fit/경계 검사에 남긴다. 진행량에서 역산하지 않는다.
+            self.line_heights = para
+                .line_segs
+                .iter()
+                .map(|line| hwpunit_to_px(line.line_height, dpi))
+                .collect();
+            self.line_spacings = para
+                .line_segs
+                .iter()
+                .map(|line| hwpunit_to_px(line.line_spacing, dpi))
+                .collect();
+            let advances: Vec<_> = advances.iter().map(|&hu| hwpunit_to_px(hu, dpi)).collect();
+            let mut origin = 0.0f64;
+            let mut full_bottom = 0.0f64;
+            for (&height, &advance) in self.line_heights.iter().zip(&advances) {
+                full_bottom = full_bottom.max(origin + height);
+                origin += advance;
+            }
+            self.total_height = self.spacing_before + origin + self.spacing_after;
+            self.height_for_fit = self.spacing_before + full_bottom;
+            self.spacing_trimmed_advance =
+                (self.total_height - self.line_spacings.last().copied().unwrap_or(0.0)).max(0.0);
+            self.certified_line_advances = Some(advances);
+        }
+        self
     }
 
     fn natural_ink_height(&self) -> f64 {
+        if self.certified_line_advances.is_some() {
+            return self.height_for_fit;
+        }
         self.spacing_before + self.line_advances_sum(0..self.line_heights.len())
             - self.line_spacings.last().copied().unwrap_or(0.0)
     }
@@ -6922,17 +6965,78 @@ impl TypesetEngine {
         } = flow;
         // 구분선/미주 사이 설정은 저장 풀이 줄의 pitch를 대체하지 않는다.
         // 인증된 HWP5 줄 사다리는 fit 사본과 render 사본 모두 같은 spacing을 쓴다.
-        let preserve_authored_spacing = endnote_shape.is_some_and(|shape| {
-            authored_endnote_spacing_is_continuous(en_ctrl, shape, st.profile)
-        });
+        let certified_advances = endnote_shape
+            .and_then(|shape| certified_endnote_line_advances_hu(en_ctrl, shape, st.profile))
+            .filter(|_| {
+                let width = st
+                    .layout
+                    .column_areas
+                    .get(st.current_column as usize)
+                    .map(|area| area.width)
+                    .unwrap_or(st.layout.body_area.width);
+                en_ctrl.paragraphs.iter().all(|para| {
+                    let comp =
+                        crate::renderer::composer::compose_paragraph_with_styles(para, styles);
+                    let fmt = self.format_paragraph(para, Some(&comp), styles, Some(width));
+                    !fmt.fresh_recomposed
+                        && fmt.line_heights.len() == para.line_segs.len()
+                        && comp.lines.len() == para.line_segs.len()
+                        && comp
+                            .lines
+                            .iter()
+                            .zip(&para.line_segs)
+                            .all(|(line, source)| {
+                                crate::renderer::line_metric_pair_is_authored(Some(source), line)
+                            })
+                        && fmt
+                            .line_heights
+                            .iter()
+                            .zip(&para.line_segs)
+                            .all(|(height, source)| {
+                                *height <= hwpunit_to_px(source.line_height, self.dpi) + 1e-6
+                            })
+                })
+            });
+        let preserve_authored_spacing = certified_advances.is_some();
+        // 다음 문단 예측도 같은 진행 영역을 쓴다. 본문 등 소유 밖 문단에는 적용하지 않는다.
+        let format_note_paragraph = |para: &Paragraph,
+                                     composed: Option<&ComposedParagraph>,
+                                     styles: &ResolvedStyleSet,
+                                     width: Option<f64>| {
+            let advances = en_ctrl
+                .paragraphs
+                .iter()
+                .position(|source| std::ptr::eq(source, para))
+                .and_then(|index| certified_advances.as_ref()?.get(index));
+            self.format_paragraph(para, composed, styles, width)
+                .with_certified_endnote_advances(para, advances.map(Vec::as_slice), self.dpi)
+        };
+        // 원본의 마지막 빈 줄 높이는 남기고, 다음 미주 경계의 trailing spacing만
+        // "미주 사이 0"으로 투영한다. 내부 pitch와 원본 reset 좌표는 변경하지 않는다.
+        let has_authored_zero_boundary = preserve_authored_spacing
+            && endnote_refs.get(en_ref_idx + 1).is_some_and(|next| {
+                next.section_index == section_index
+                    && en_ref.section_index == section_index
+                    && matches!(
+                        paragraphs
+                            .get(next.para_index)
+                            .and_then(|para| para.controls.get(next.control_index)),
+                        Some(Control::Endnote(_))
+                    )
+            })
+            && en_ctrl.paragraphs.last().is_some_and(|para| {
+                para.char_count == 1
+                    && para.text.is_empty()
+                    && para.controls.is_empty()
+                    && para.line_segs.len() == 1
+            });
         let mut pre_emitted_endnote_para_indices = std::collections::HashSet::new();
         for (ep_idx, en_para) in en_ctrl.paragraphs.iter().enumerate() {
             if pre_emitted_endnote_para_indices.remove(&ep_idx) {
                 emitted_endnote_count += 1;
                 continue;
             }
-            let mut compact_no_separator_para;
-            let render_en_para = en_para;
+            let mut projected_para;
             let compact_no_separator_spacing = !preserve_authored_spacing
                 && endnote_shape
                     .map(|shape| {
@@ -6940,24 +7044,24 @@ impl TypesetEngine {
                             && endnote_between_notes_margin(shape) == 0
                     })
                     .unwrap_or(false);
-            let en_para = if compact_no_separator_spacing {
-                compact_no_separator_para = en_para.clone();
-                let divisor = 10;
-                for line_seg in &mut compact_no_separator_para.line_segs {
-                    line_seg.line_spacing = -(line_seg.line_height / divisor);
+            let zero_authored_tail =
+                has_authored_zero_boundary && ep_idx + 1 == en_ctrl.paragraphs.len();
+            let en_para = if compact_no_separator_spacing || zero_authored_tail {
+                projected_para = en_para.clone();
+                if compact_no_separator_spacing {
+                    for line in &mut projected_para.line_segs {
+                        line.line_spacing = -(line.line_height / 10);
+                    }
+                } else if let Some(last) = projected_para.line_segs.last_mut() {
+                    last.line_spacing = 0;
                 }
-                &compact_no_separator_para
+                &projected_para
             } else {
                 en_para
             };
             let en_para_idx = paragraphs.len() + st.endnote_paragraphs.len();
-            let mut en_para_copy = render_en_para.clone();
-            if compact_no_separator_spacing {
-                let divisor = 10;
-                for line_seg in &mut en_para_copy.line_segs {
-                    line_seg.line_spacing = -(line_seg.line_height / divisor);
-                }
-            }
+            // fit과 render가 같은 경계 투영을 쓴다. source note는 그대로 둔다.
+            let mut en_para_copy = en_para.clone();
             // line_segs vpos를 endnote 시작점 기준으로 오프셋
             for ls in &mut en_para_copy.line_segs {
                 ls.vertical_pos += endnote_start;
@@ -6978,6 +7082,17 @@ impl TypesetEngine {
                 para_index: en_ref.para_index,
                 control_index: en_ref.control_index,
                 note_para_index: ep_idx,
+                certified_line_advances_hu: certified_advances.as_ref().map(|rows| {
+                    let mut advances = rows[ep_idx].clone();
+                    if zero_authored_tail {
+                        *advances.last_mut().unwrap() -= en_ctrl.paragraphs[ep_idx]
+                            .line_segs
+                            .last()
+                            .unwrap()
+                            .line_spacing;
+                    }
+                    advances
+                }),
             });
             last_render_endnote_para_local_idx = Some(en_para_local_idx);
 
@@ -6989,7 +7104,13 @@ impl TypesetEngine {
                 .get(st.current_column as usize)
                 .map(|a| a.width)
                 .unwrap_or(st.layout.body_area.width);
-            let fmt = self.format_paragraph(en_para, Some(&composed), &styles, Some(en_col_w));
+            let para_advances = st
+                .endnote_para_sources
+                .last()
+                .and_then(|source| source.certified_line_advances_hu.clone());
+            let fmt = self
+                .format_paragraph(en_para, Some(&composed), &styles, Some(en_col_w))
+                .with_certified_endnote_advances(en_para, para_advances.as_deref(), self.dpi);
             if std::env::var("RHWP_ENDNOTE_LINE_DEBUG").is_ok() {
                 debug_print_endnote_line_segments(
                     en_ref.number,
@@ -7048,7 +7169,13 @@ impl TypesetEngine {
                         0
                     };
                     (
-                        s.vertical_pos + s.line_height + s.line_spacing + wrapped + endnote_start,
+                        s.vertical_pos
+                            + para_advances
+                                .as_ref()
+                                .map(|rows| rows[index])
+                                .unwrap_or(s.line_height + s.line_spacing)
+                            + wrapped
+                            + endnote_start,
                         s.line_spacing,
                     )
                 })
@@ -7204,7 +7331,7 @@ impl TypesetEngine {
                                     crate::renderer::composer::compose_paragraph_with_styles(
                                         tail_para, &styles,
                                     );
-                                self.format_paragraph(
+                                format_note_paragraph(
                                     tail_para,
                                     Some(&tail_comp),
                                     &styles,
@@ -7248,7 +7375,7 @@ impl TypesetEngine {
                                     crate::renderer::composer::compose_paragraph_with_styles(
                                         tail_para, &styles,
                                     );
-                                self.format_paragraph(
+                                format_note_paragraph(
                                     tail_para,
                                     Some(&tail_comp),
                                     &styles,
@@ -7609,7 +7736,7 @@ impl TypesetEngine {
                         body_para, &styles,
                     );
                     let body_fmt =
-                        self.format_paragraph(body_para, Some(&body_comp), &styles, Some(en_col_w));
+                        format_note_paragraph(body_para, Some(&body_comp), &styles, Some(en_col_w));
                     body_fmt.line_advance(0)
                 })
             } else {
@@ -7749,39 +7876,43 @@ impl TypesetEngine {
                     hwpunit_to_px((between_notes - saved_spacing).max(0), self.dpi)
                 })
                 .unwrap_or(0.0);
-            let (raw_en_fit, _) = self.compute_endnote_metrics(
-                prev_en_bottom_vpos,
-                false,
-                &mut current_endnote_had_inline_object_vpos_overestimate,
-                EnMetricsVars {
-                    available,
-                    cap_large_separator_stale_forward_vpos,
-                    col_count,
-                    compact_endnote_separator_profile,
-                    current_column_has_tac_picture_only,
-                    current_height_for_metrics,
-                    dpi,
-                    en_para_idx,
-                    h4f,
-                    has_treat_as_char_picture_shape,
-                    has_visible_endnote_separator,
-                    internal_vpos_rewind,
-                    large_separator_block,
-                    large_vpos_jump_at_column_top,
-                    line_advances_sum,
-                    local_vpos_rewind,
-                    local_vpos_rewind_crosses_prev_content,
-                    min_vpos_rewind_height,
-                    new_endnote_between_notes_px,
-                    no_separator_new_note_head_fits_current_column,
-                    ssot_debug,
-                    ssot_level,
-                    this_bottom_offset,
-                    this_first_offset,
-                    tot,
-                    trailing_ls_px,
-                },
-            );
+            let (raw_en_fit, _) = if fmt.certified_line_advances.is_some() {
+                (fmt.height_for_fit, fmt.total_height)
+            } else {
+                self.compute_endnote_metrics(
+                    prev_en_bottom_vpos,
+                    false,
+                    &mut current_endnote_had_inline_object_vpos_overestimate,
+                    EnMetricsVars {
+                        available,
+                        cap_large_separator_stale_forward_vpos,
+                        col_count,
+                        compact_endnote_separator_profile,
+                        current_column_has_tac_picture_only,
+                        current_height_for_metrics,
+                        dpi,
+                        en_para_idx,
+                        h4f,
+                        has_treat_as_char_picture_shape,
+                        has_visible_endnote_separator,
+                        internal_vpos_rewind,
+                        large_separator_block,
+                        large_vpos_jump_at_column_top,
+                        line_advances_sum,
+                        local_vpos_rewind,
+                        local_vpos_rewind_crosses_prev_content,
+                        min_vpos_rewind_height,
+                        new_endnote_between_notes_px,
+                        no_separator_new_note_head_fits_current_column,
+                        ssot_debug,
+                        ssot_level,
+                        this_bottom_offset,
+                        this_first_offset,
+                        tot,
+                        trailing_ls_px,
+                    },
+                )
+            };
             let en_fit = non_tac_object_height
                 .map(|height| raw_en_fit.max(height))
                 .unwrap_or(raw_en_fit);
@@ -7845,7 +7976,7 @@ impl TypesetEngine {
                     let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                         &next_para, &styles,
                     );
-                    let next_fmt = self.format_paragraph(
+                    let next_fmt = format_note_paragraph(
                         &next_para,
                         Some(&next_comp),
                         &styles,
@@ -7872,7 +8003,7 @@ impl TypesetEngine {
                     let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                         &next_para, &styles,
                     );
-                    let next_fmt = self.format_paragraph(
+                    let next_fmt = format_note_paragraph(
                         &next_para,
                         Some(&next_comp),
                         &styles,
@@ -7898,7 +8029,7 @@ impl TypesetEngine {
                     let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                         &next_para, &styles,
                     );
-                    let next_fmt = self.format_paragraph(
+                    let next_fmt = format_note_paragraph(
                         &next_para,
                         Some(&next_comp),
                         &styles,
@@ -7928,7 +8059,7 @@ impl TypesetEngine {
                                 crate::renderer::composer::compose_paragraph_with_styles(
                                     next_para, &styles,
                                 );
-                            let next_fmt = self.format_paragraph(
+                            let next_fmt = format_note_paragraph(
                                 next_para,
                                 Some(&next_comp),
                                 &styles,
@@ -8066,11 +8197,12 @@ impl TypesetEngine {
                 for line_idx in 0..fmt.line_heights.len() {
                     let line_h = fmt.line_advance(line_idx);
                     // 생성 줄의 마지막 간격은 다음 단으로 넘어가므로 fit에 넣지 않는다.
-                    let line_fit = if st.profile.own_line_layout() {
-                        fmt.line_heights[line_idx]
-                    } else {
-                        line_h
-                    };
+                    let line_fit =
+                        if st.profile.own_line_layout() || fmt.certified_line_advances.is_some() {
+                            fmt.line_heights[line_idx]
+                        } else {
+                            line_h
+                        };
                     if sum + line_fit > split_remaining_height {
                         break;
                     }
@@ -8096,7 +8228,7 @@ impl TypesetEngine {
                         next_para, &styles,
                     );
                     let next_fmt =
-                        self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                        format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     let next_first = next_fmt.line_advance(0);
                     st.current_height + en_fit + next_first
                         > available - ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
@@ -8564,7 +8696,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -8760,7 +8892,7 @@ impl TypesetEngine {
                     let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                         next_para, &styles,
                     );
-                    self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w))
+                    format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w))
                         .line_advance(0)
                 })
             } else {
@@ -8774,7 +8906,7 @@ impl TypesetEngine {
                         next_para, &styles,
                     );
                     let next_fmt =
-                        self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                        format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     total += next_fmt.line_advance(0);
                     count += 1;
                 }
@@ -9136,7 +9268,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -9387,7 +9519,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -9420,7 +9552,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -9450,7 +9582,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -9515,7 +9647,7 @@ impl TypesetEngine {
                         let next_comp = crate::renderer::composer::compose_paragraph_with_styles(
                             next_para, &styles,
                         );
-                        let next_fmt = self.format_paragraph(
+                        let next_fmt = format_note_paragraph(
                             next_para,
                             Some(&next_comp),
                             &styles,
@@ -9701,13 +9833,16 @@ impl TypesetEngine {
                 && !st.current_items.is_empty();
             // 생성 줄의 fit 높이는 실제 줄 상자에서 왔다. 저장 좌표의 여유/넘침
             // 보정으로 이를 덮어쓰면 경계 간격을 정확히 재도 단 경계가 달라진다.
-            let advance_for_fit = if st.profile.own_line_layout() {
-                st.current_height + en_fit > available
-                    && split_endnote_to_fit.is_none()
-                    && !st.current_items.is_empty()
-            } else {
-                saved_advance_for_fit
-            };
+            // 인증된 줄도 full-H가 frame을 넘으면 이월한다. 진행량이 작다는
+            // 이유로 legacy compact bleed 예외에 들어가면 fit/render 경계가 갈린다.
+            let advance_for_fit =
+                if st.profile.own_line_layout() || fmt.certified_line_advances.is_some() {
+                    st.current_height + en_fit > available
+                        && split_endnote_to_fit.is_none()
+                        && !st.current_items.is_empty()
+                } else {
+                    saved_advance_for_fit
+                };
             let pre_emit_tail_before_non_tac_object_advance = self
                 .judge_pre_emit_tail_before_non_tac_object_advance(
                     zero_between_large_separator_margin,
@@ -9738,6 +9873,9 @@ impl TypesetEngine {
                         para_index: en_ref.para_index,
                         control_index: en_ref.control_index,
                         note_para_index: ep_idx + 1,
+                        certified_line_advances_hu: certified_advances
+                            .as_ref()
+                            .map(|rows| rows[ep_idx + 1].clone()),
                     });
                     last_render_endnote_para_local_idx = Some(st.endnote_paragraphs.len() - 1);
 
@@ -9745,7 +9883,7 @@ impl TypesetEngine {
                         next_para, &styles,
                     );
                     let next_fmt =
-                        self.format_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
+                        format_note_paragraph(next_para, Some(&next_comp), &styles, Some(en_col_w));
                     st.current_items.push(PageItem::FullParagraph {
                         para_index: next_para_idx,
                     });
@@ -9996,7 +10134,7 @@ impl TypesetEngine {
                                 let comp = crate::renderer::composer::compose_paragraph_with_styles(
                                     p, &styles,
                                 );
-                                self.format_paragraph(p, Some(&comp), &styles, Some(en_col_w))
+                                format_note_paragraph(p, Some(&comp), &styles, Some(en_col_w))
                                     .total_height
                             })
                             .sum();
@@ -10315,39 +10453,43 @@ impl TypesetEngine {
                 page_def,
             );
             // advance 후 재평가 — 새 단 첫 미주는 prev=None → 자체 높이.
-            let (_, mut en_advance) = self.compute_endnote_metrics(
-                prev_en_bottom_vpos,
-                true,
-                &mut current_endnote_had_inline_object_vpos_overestimate,
-                EnMetricsVars {
-                    available,
-                    cap_large_separator_stale_forward_vpos,
-                    col_count,
-                    compact_endnote_separator_profile,
-                    current_column_has_tac_picture_only,
-                    current_height_for_metrics,
-                    dpi,
-                    en_para_idx,
-                    h4f,
-                    has_treat_as_char_picture_shape,
-                    has_visible_endnote_separator,
-                    internal_vpos_rewind,
-                    large_separator_block,
-                    large_vpos_jump_at_column_top,
-                    line_advances_sum,
-                    local_vpos_rewind,
-                    local_vpos_rewind_crosses_prev_content,
-                    min_vpos_rewind_height,
-                    new_endnote_between_notes_px,
-                    no_separator_new_note_head_fits_current_column,
-                    ssot_debug,
-                    ssot_level,
-                    this_bottom_offset,
-                    this_first_offset,
-                    tot,
-                    trailing_ls_px,
-                },
-            );
+            let (_, mut en_advance) = if fmt.certified_line_advances.is_some() {
+                (fmt.height_for_fit, fmt.total_height)
+            } else {
+                self.compute_endnote_metrics(
+                    prev_en_bottom_vpos,
+                    true,
+                    &mut current_endnote_had_inline_object_vpos_overestimate,
+                    EnMetricsVars {
+                        available,
+                        cap_large_separator_stale_forward_vpos,
+                        col_count,
+                        compact_endnote_separator_profile,
+                        current_column_has_tac_picture_only,
+                        current_height_for_metrics,
+                        dpi,
+                        en_para_idx,
+                        h4f,
+                        has_treat_as_char_picture_shape,
+                        has_visible_endnote_separator,
+                        internal_vpos_rewind,
+                        large_separator_block,
+                        large_vpos_jump_at_column_top,
+                        line_advances_sum,
+                        local_vpos_rewind,
+                        local_vpos_rewind_crosses_prev_content,
+                        min_vpos_rewind_height,
+                        new_endnote_between_notes_px,
+                        no_separator_new_note_head_fits_current_column,
+                        ssot_debug,
+                        ssot_level,
+                        this_bottom_offset,
+                        this_first_offset,
+                        tot,
+                        trailing_ls_px,
+                    },
+                )
+            };
             if large_between_last_column_question_title_tail_fits
                 || large_between_last_column_render_title_tail_fits
                 || large_between_last_column_rewind_title_tail_fits
@@ -10624,8 +10766,8 @@ impl TypesetEngine {
                 )
                 .map(|flow| {
                     let line_height =
-                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                            para, composed, line_index,
+                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                            para, composed, line_index, styles.font_metrics_policy,
                         )
                         .map(|(height, _)| height)
                         .unwrap_or(line.line_height);
@@ -10670,8 +10812,11 @@ impl TypesetEngine {
             let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
             let line_metrics: Vec<_> = (0..para.line_segs.len())
                 .map(|line_index| {
-                    crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                        para, &composed, line_index,
+                    crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                        para,
+                        &composed,
+                        line_index,
+                        styles.font_metrics_policy,
                     )
                 })
                 .collect();
@@ -10899,9 +11044,13 @@ impl TypesetEngine {
             let padding_height = i32::from(padding.top) + i32::from(padding.bottom);
             let composed =
                 crate::renderer::composer::compose_paragraph_with_styles(paragraph, &styles);
-            let metrics = crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                paragraph, &composed, 0,
-            );
+            let metrics =
+                crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                    paragraph,
+                    &composed,
+                    0,
+                    styles.font_metrics_policy,
+                );
             let projected_height = metrics
                 .map(|(height, _)| height)
                 .unwrap_or(line.line_height);
@@ -10944,6 +11093,7 @@ impl TypesetEngine {
         &self,
         para: &Paragraph,
         next_para: Option<&Paragraph>,
+        policy: crate::model::provenance::FontMetricsPolicy,
     ) -> Option<Paragraph> {
         let [Control::Equation(eq)] = para.controls.as_slice() else {
             return None;
@@ -10957,7 +11107,7 @@ impl TypesetEngine {
             || line.line_height != eq.common.height as i32
             || line.text_height != line.line_height
             || line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
-            || crate::renderer::equation::natural_width_hwp(eq).is_none()
+            || crate::renderer::equation::natural_width_hwp_with_policy(eq, policy).is_none()
         {
             return None;
         }
@@ -10965,23 +11115,25 @@ impl TypesetEngine {
         if next.vertical_pos != line.vertical_pos + line.line_height + line.line_spacing {
             return None;
         }
-        let height = crate::renderer::equation::generated_fraction_flow_height_px(
+        let height = crate::renderer::equation::generated_fraction_flow_height_px_with_policy(
             &eq.script,
             eq.font_size,
             self.dpi,
             &eq.font_name,
             &eq.version_info,
+            policy,
         )?;
         let height = crate::renderer::px_to_hwpunit_round(height, self.dpi);
         if height <= 0 || height >= line.line_height {
             return None;
         }
-        let metrics = crate::renderer::equation::intrinsic_metrics_px_with_version(
+        let metrics = crate::renderer::equation::intrinsic_metrics_px_with_version_with_policy(
             &eq.script,
             eq.font_size,
             self.dpi,
             &eq.font_name,
             &eq.version_info,
+            policy,
         );
         let baseline = crate::renderer::px_to_hwpunit_round(metrics.baseline, self.dpi);
         if baseline <= 0 || baseline > line.baseline_distance {
@@ -11205,11 +11357,11 @@ impl TypesetEngine {
                     )
                 })
                 || para.controls.iter().any(|control| {
-                    matches!(control, Control::Equation(eq) if crate::renderer::equation::natural_width_hwp(eq).is_none())
+                    matches!(control, Control::Equation(eq) if crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_none())
                 })
                 || !para.controls.iter().any(|control| {
                     matches!(control,
-                        Control::Equation(eq) if crate::renderer::equation::natural_width_hwp(eq)
+                        Control::Equation(eq) if crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy)
                             .is_some_and(|width| width < eq.common.width as i32)
                     )
                 })
@@ -11358,7 +11510,11 @@ impl TypesetEngine {
                             if eq.common.treat_as_char
                                 && eq.common.margin.top == 0
                                 && eq.common.margin.bottom == 0
-                                && crate::renderer::equation::natural_width_hwp(eq).is_some() =>
+                                && crate::renderer::equation::natural_width_hwp_with_policy(
+                                    eq,
+                                    styles.font_metrics_policy,
+                                )
+                                .is_some() =>
                         {
                             i32::try_from(eq.common.height).ok()?
                         }
@@ -11391,7 +11547,7 @@ impl TypesetEngine {
         let original = line_metrics(source)?;
         if original.iter().zip(&source.line_segs).any(|((font,object),line)|line.text_height!=(*font).max(*object))
             || (!allow_narrowed_geometry && !source.controls.iter().any(|c|matches!(c,Control::Equation(eq)
-                if crate::renderer::equation::natural_width_hwp(eq).is_some_and(|w|w<eq.common.width as i32))))
+                if crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some_and(|w|w<eq.common.width as i32))))
         { return None; }
         let next = line_metrics(fresh)?;
         if next
@@ -11522,7 +11678,7 @@ impl TypesetEngine {
             || following.line_segs.iter().any(|s|s.segment_width!=hu(next_width))
             || crate::renderer::composer::inline_table_host_line_index(source,*picture_index)!=Some(0)
             || !source.controls.iter().any(|c|matches!(c,Control::Equation(eq)
-                if crate::renderer::equation::natural_width_hwp(eq).is_some_and(|w|w<eq.common.width as i32)))
+                if crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some_and(|w|w<eq.common.width as i32)))
         { return None; }
         let mut fresh = source.clone();
         fresh.line_segs.clear();
@@ -11736,7 +11892,11 @@ impl TypesetEngine {
                     .any(|control| match control {
                         Control::Equation(eq) => {
                             !eq.common.treat_as_char
-                                || crate::renderer::equation::natural_width_hwp(eq).is_none()
+                                || crate::renderer::equation::natural_width_hwp_with_policy(
+                                    eq,
+                                    styles.font_metrics_policy,
+                                )
+                                .is_none()
                         }
                         Control::Table(child) => !child.common.treat_as_char,
                         // 단일 단 정의는 셀의 비페인트 컨테이너 메타데이터다.
@@ -11980,7 +12140,7 @@ impl TypesetEngine {
                         _ => false,
                     })
                     && para.controls.iter().any(|ctrl| matches!(ctrl, Control::Equation(eq)
-                        if crate::renderer::equation::natural_width_hwp(eq).is_some_and(|width| width < eq.common.width as i32)))
+                        if crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some_and(|width| width < eq.common.width as i32)))
             });
             let table_projection =
                 self.contract_cached_equation_table(para, paragraphs.get(index + 1), styles);
@@ -11990,7 +12150,13 @@ impl TypesetEngine {
                 .unwrap_or(0);
             let mut contracted = table_projection
                 .map(|(projected, _)| projected)
-                .or_else(|| self.contract_cached_equation_line(para, paragraphs.get(index + 1)));
+                .or_else(|| {
+                    self.contract_cached_equation_line(
+                        para,
+                        paragraphs.get(index + 1),
+                        styles.font_metrics_policy,
+                    )
+                });
             if let Some(metric) = cached_metrics {
                 let style = styles.para_styles.get(para.para_shape_id as usize);
                 let inner = width - style.map(|s| s.margin_left + s.margin_right).unwrap_or(0.0);
@@ -13087,7 +13253,7 @@ impl TypesetEngine {
                 .collect();
             let a3_composed: Vec<crate::renderer::composer::ComposedParagraph> = a3_paras
                 .iter()
-                .map(crate::renderer::composer::compose_paragraph)
+                .map(|para| crate::renderer::composer::compose_paragraph_with_styles(para, styles))
                 .collect();
             let remap = |item: &PageItem| -> Option<PageItem> {
                 match item {
@@ -15060,8 +15226,8 @@ impl TypesetEngine {
                 };
                 if self.profile.get().hwpx_stored_layout() {
                     if let Some((height, _)) =
-                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                            para, comp, line_idx,
+                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                            para, comp, line_idx, styles.font_metrics_policy,
                         )
                     {
                         lh = hwpunit_to_px(height, self.dpi);
@@ -15217,6 +15383,7 @@ impl TypesetEngine {
             total_height,
             line_heights,
             line_spacings,
+            certified_line_advances: None,
             spacing_before,
             spacing_after,
             height_for_fit,
@@ -22680,11 +22847,11 @@ fn endnote_separator_below_margin(shape: &FootnoteShape) -> i16 {
 /// 원본 HWP5 주석의 양수 spacing과 연속 vpos가 함께 증명하는 줄 진행만 보존한다.
 /// 0으로 돌아가는 저장 단/쪽 경계는 별도 조각으로 두며 좌표를 다시 쓰지 않는다.
 /// 합성·편집·불완전 캐시와 모든 여백이 0인 압축 호환 경로는 기존 정책을 유지한다.
-fn authored_endnote_spacing_is_continuous(
+fn certified_endnote_line_advances_hu(
     note: &crate::model::footnote::Endnote,
     shape: &FootnoteShape,
     profile: crate::model::provenance::LayoutCompatibilityProfile,
-) -> bool {
+) -> Option<Vec<Vec<i32>>> {
     if !(profile.native_hwp5_layout() || profile.hwp3_layout())
         || profile.hwp3_native_layout()
         || profile.hwpx_container()
@@ -22696,14 +22863,15 @@ fn authored_endnote_spacing_is_continuous(
         || endnote_between_notes_margin(shape) != 0
         || (shape.separator_above_margin_hu() == 0 && shape.separator_below_margin_hu() == 0)
     {
-        return false;
+        return None;
     }
     let mut previous: Option<&LineSeg> = None;
     let mut fragment_lines = 0usize;
+    let mut advances = Vec::new();
     for para in &note.paragraphs {
         // 파서가 보존한 원본 header의 줄 수와 실제 배열이 같은 캐시만 받는다.
         let Some(count) = para.raw_header_extra.get(4..6) else {
-            return false;
+            return None;
         };
         if usize::from(u16::from_le_bytes([count[0], count[1]])) != para.line_segs.len()
             || para.line_segs.is_empty()
@@ -22730,42 +22898,56 @@ fn authored_endnote_spacing_is_continuous(
                 .windows(2)
                 .any(|pair| pair[1].text_start <= pair[0].text_start)
         {
-            return false;
+            return None;
         }
+        let mut para_advances = Vec::new();
         for line in &para.line_segs {
             if line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
                 || line.tag & LineSeg::TAG_SINGLE_SEGMENT_LINE != LineSeg::TAG_SINGLE_SEGMENT_LINE
                 || line.text_start >= para.char_count
                 || line.vertical_pos < 0
                 || line.line_height <= 0
-                || line.text_height != line.line_height
+                || line.text_height <= 0
+                || line.text_height > line.line_height
                 || line.baseline_distance <= 0
                 || line.baseline_distance > line.text_height
                 || line.line_spacing <= 0
                 || line.segment_width <= 0
             {
-                return false;
+                return None;
             }
             if let Some(prev) = previous {
                 let end = prev
                     .vertical_pos
-                    .checked_add(prev.line_height)
+                    .checked_add(prev.text_height)
                     .and_then(|v| v.checked_add(prev.line_spacing));
                 if end != Some(line.vertical_pos) {
                     // 저장 단/쪽 reset만 허용한다. forward gap·부분 파손은 인증하지 않는다.
-                    if line.vertical_pos != 0 || prev.vertical_pos <= 0 || fragment_lines < 2 {
-                        return false;
+                    if line.vertical_pos != 0
+                        || prev.vertical_pos <= 0
+                        || fragment_lines < 2
+                        || prev.text_height != prev.line_height
+                    {
+                        return None;
                     }
                     fragment_lines = 0;
                 }
             } else if line.vertical_pos != 0 {
-                return false;
+                return None;
             }
+            line.vertical_pos
+                .checked_add(line.line_height)?
+                .checked_add(line.line_spacing)?;
+            // successor 없는 마지막 줄은 아래에서 full-H 영역을 요구한다. 정수 HU로만 인증한다.
+            para_advances.push(line.text_height.checked_add(line.line_spacing)?);
             fragment_lines += 1;
             previous = Some(line);
         }
+        advances.push(para_advances);
     }
-    fragment_lines >= 2
+    // 마지막 줄과 reset 직전에는 successor 증거가 없다. H=textH만 허용한다.
+    (fragment_lines >= 2 && previous.is_some_and(|line| line.text_height == line.line_height))
+        .then_some(advances)
 }
 
 fn endnote_between_notes_margin(shape: &FootnoteShape) -> u16 {
@@ -23115,6 +23297,7 @@ mod tests {
                 spacing_after: 0.0,
                 line_heights: vec![hwpunit_to_px(1_150, dpi); 2],
                 line_spacings: vec![hwpunit_to_px(-40, dpi); 2],
+                certified_line_advances: None,
             };
             state.record_natural_lines(0, &para, &fmt, 0..2, fmt.spacing_before);
             assert_eq!(
@@ -25416,12 +25599,20 @@ mod tests {
         };
         eq.common.height = occupied_height as u32;
         assert!(engine
-            .contract_cached_equation_line(&occupied, Some(&output[1]))
+            .contract_cached_equation_line(
+                &occupied,
+                Some(&output[1]),
+                crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            )
             .is_none());
         let mut discontinuous = next.clone();
         discontinuous.line_segs[0].vertical_pos += 450;
         assert!(engine
-            .contract_cached_equation_line(&source, Some(&discontinuous))
+            .contract_cached_equation_line(
+                &source,
+                Some(&discontinuous),
+                crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            )
             .is_none());
         let mut affect_spacing = source;
         let Control::Equation(eq) = &mut affect_spacing.controls[0] else {
@@ -25429,7 +25620,11 @@ mod tests {
         };
         eq.common.affect_line_spacing = true;
         assert!(engine
-            .contract_cached_equation_line(&affect_spacing, Some(&next))
+            .contract_cached_equation_line(
+                &affect_spacing,
+                Some(&next),
+                crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            )
             .is_none());
     }
 
@@ -28220,6 +28415,7 @@ mod tests {
             total_height: 0.0,
             line_heights: vec![1.0, 1.0],
             line_spacings: vec![0.0, 0.0],
+            certified_line_advances: None,
             spacing_before: 0.0,
             spacing_after: 0.0,
             height_for_fit: 0.0,

@@ -1031,7 +1031,10 @@ impl LayoutEngine {
                             hwpunit_to_px(shape.common().width as i32, self.dpi)
                         }
                         Control::Equation(eq) => hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         ),
                         _ => 0.0,
@@ -1538,11 +1541,17 @@ impl LayoutEngine {
                             Control::Equation(eq) => {
                                 // 분할 표 내 수식: 항상 글자처럼 인라인 배치
                                 let eq_w = hwpunit_to_px(
-                                    crate::renderer::equation::content_width_hwp(eq),
+                                    crate::renderer::equation::content_width_hwp_with_policy(
+                                        eq,
+                                        styles.font_metrics_policy,
+                                    ),
                                     self.dpi,
                                 );
                                 let eq_advance = hwpunit_to_px(
-                                    crate::renderer::equation::occupied_width_hwp(eq),
+                                    crate::renderer::equation::occupied_width_hwp_with_policy(
+                                        eq,
+                                        styles.font_metrics_policy,
+                                    ),
                                     self.dpi,
                                 );
                                 let eq_margin_x =
@@ -1585,13 +1594,13 @@ impl LayoutEngine {
                                     super::super::equation::layout::EqLayout::with_font(
                                         font_size_px,
                                         &eq.font_name,
-                                    )
+                                    ).with_metrics_policy(styles.font_metrics_policy)
                                     .with_version(&eq.version_info)
                                     .with_base_pt(eq.font_size as f64 / 100.0)
                                     .layout_in_control_width(
                                         &ast,
                                         hwpunit_to_px(
-                                            crate::renderer::equation::content_width_hwp(eq),
+                                            crate::renderer::equation::content_width_hwp_with_policy(eq, styles.font_metrics_policy),
                                             self.dpi,
                                         ),
                                     );

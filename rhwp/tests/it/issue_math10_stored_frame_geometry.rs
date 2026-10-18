@@ -6,17 +6,22 @@ use rhwp::model::document::{Document, Section};
 use rhwp::model::header_footer::{Footer, Header, MasterPage};
 use rhwp::model::page::{ColumnDef, PageDef};
 use rhwp::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
+use rhwp::model::provenance::SourceFormat;
 use rhwp::model::shape::{
     CommonObjAttr, HorzRelTo, RectangleShape, ShapeObject, TextBox, TextWrap,
 };
 use rhwp::model::style::{CharShape, ParaShape};
+use rhwp::parser::parse_hwp_strict;
 use rhwp::renderer::composer::compose_section_with_styles;
 use rhwp::renderer::layout::LayoutEngine;
 use rhwp::renderer::page_layout::PageLayoutInfo;
-use rhwp::renderer::pagination::{ColumnContent, HeaderFooterRef, PageContent, PageItem};
+use rhwp::renderer::pagination::{
+    ColumnContent, EndnoteDeferral, HeaderFooterRef, PageContent, PageItem,
+};
 use rhwp::renderer::render_tree::{PageRenderTree, RenderNode, RenderNodeType};
 use rhwp::renderer::style_resolver::resolve_styles;
 use rhwp::renderer::typeset::TypesetEngine;
+use rhwp::serializer::serialize_document;
 
 const DPI: f64 = 72.0;
 
@@ -268,6 +273,126 @@ fn typesetter_reuses_boundary_for_next_column_capacity_without_zone_translation(
     let tree = render(&LayoutEngine::new(DPI), &doc, &pagination.pages[0], None);
     close(line_y(&tree, "LEFT"), 160.0);
     close(line_y(&tree, "RIGHT"), 160.0);
+}
+
+/// 실제 CFB의 Summary UTF16 스캔 + 문단/스타일 비율로 importer가 계보를 정한다.
+/// 프로필 boolean을 직접 켜는 합성 fixture만으로는 이 입장 실패를 재현하지 못한다.
+fn hwp5_with_inherited_summary() -> (Document, PageDef, ColumnDef, PageContent) {
+    let (mut source, pd, cd) = fixture();
+    source.header.version.major = 5;
+    source.doc_properties.section_count = 1;
+    source.sections[0].section_def.page_def = pd.clone();
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::ColumnDef(cd.clone()));
+    source.sections[0]
+        .paragraphs
+        .extend((4..64).map(|_| paragraph("FILL", 0)));
+    // CfbReader의 판정은 속성 set 구조가 아닌 원본 UTF16 문자열을 스캔한다.
+    // 이 stream은 그 스캔에 필요한 최소한의 독립 작성 메타데이터다.
+    source.extra_streams.push((
+        "/\u{0005}HwpSummaryInformation".into(),
+        "2001년 2월 17일 보존된 서식 정보"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect(),
+    ));
+    let bytes = serialize_document(&source).expect("owned HWP5 CFB");
+    let loaded = parse_hwp_strict(&bytes).expect("actual strict HWP5 importer");
+    assert_eq!(loaded.provenance.format, SourceFormat::Hwp5);
+    assert!(loaded.provenance.hwp3_lineage && loaded.is_hwp3_variant);
+    let profile = loaded.layout_profile();
+    assert!(profile.hwp3_layout());
+    assert!(!profile.native_hwp5_layout() && !profile.hwp3_native_layout());
+    assert!(!profile.hwpx_container() && !profile.own_line_layout() && !profile.session_edited());
+    assert_eq!(loaded.sections[0].paragraphs.len(), 64);
+    assert_eq!(
+        loaded.sections[0].paragraphs[0].line_segs[0].vertical_pos,
+        6000
+    );
+    assert!(loaded.sections[0].raw_stream.is_some());
+    let ci = loaded.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .position(|control| {
+            matches!(control,
+            Control::Shape(s) if matches!(s.as_ref(), ShapeObject::Rectangle(r)
+                if r.common.width == 60000 && r.common.height == 8000))
+        })
+        .expect("title survives public save/load");
+    let mut selected_page = page(&pd, &cd);
+    selected_page.column_contents[0].items[1] = PageItem::Shape {
+        para_index: 0,
+        control_index: ci,
+    };
+    (loaded, pd, cd, selected_page)
+}
+
+#[test]
+fn strict_hwp5_import_with_legacy_summary_keeps_certified_body_boundary_in_both_paths() {
+    let (doc, pd, cd, selected_page) = hwp5_with_inherited_summary();
+    let before = format!("{:?}", doc.sections);
+    let tree = render(&LayoutEngine::new(DPI), &doc, &selected_page, None);
+    close(line_y(&tree, "LEFT"), 160.0);
+    close(line_y(&tree, "RIGHT"), 160.0);
+    close(line_y(&tree, "LEFT LATER"), 185.0);
+    close(line_y(&tree, "RIGHT LATER"), 185.0);
+
+    // 분류는64개 원본 문단에서 얻고, 기존4문단 시나리오를 같은 실제 프로필로 조판한다.
+    // 기본 프로필의 typeset_section 래퍼를 쓰면 바로 이 회귀를 놓친다.
+    let styles = resolve_styles(&doc.doc_info, DPI);
+    let composed = compose_section_with_styles(&doc.sections[0], &styles);
+    let pagination = TypesetEngine::new(DPI).typeset_section_with_variant(
+        &doc.sections[0].paragraphs[..4],
+        &composed[..4],
+        &styles,
+        &pd,
+        &cd,
+        0,
+        &[],
+        false,
+        doc.layout_profile(),
+        false,
+        false,
+        None,
+        None,
+        &Default::default(),
+        EndnoteDeferral::None,
+    );
+    let second = pagination.pages[0]
+        .column_contents
+        .iter()
+        .find(|column| column.column_index == 1)
+        .expect("second column");
+    close(second.start_height, 60.0);
+    close(second.zone_y_offset, 0.0);
+    assert_eq!(
+        format!("{:?}", doc.sections),
+        before,
+        "source storage is unchanged"
+    );
+}
+
+#[test]
+fn legacy_lineage_does_not_admit_native_hwp3_xml_own_or_edited_profiles() {
+    let (loaded, _, _, selected_page) = hwp5_with_inherited_summary();
+    for variant in 0..6 {
+        let mut doc = loaded.clone();
+        match variant {
+            0 => doc.provenance.format = SourceFormat::Hwp3,
+            1 => doc.provenance.format = SourceFormat::Hwpx,
+            2 => {
+                doc.provenance.format = SourceFormat::Hml;
+                doc.provenance.hwp3_lineage = false;
+            }
+            3 => doc.provenance.hwpx_lineage = true,
+            4 => doc.provenance.own_line_layout = true,
+            5 => doc.sections[0].raw_stream = None, // raw_provenance seal survives editing
+            _ => unreachable!(),
+        }
+        let tree = render(&LayoutEngine::new(DPI), &doc, &selected_page, None);
+        close(line_y(&tree, "RIGHT"), 140.0);
+    }
 }
 
 #[test]
