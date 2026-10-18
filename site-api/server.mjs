@@ -303,11 +303,16 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.orders(bearerToken(req), Object.fromEntries(searchParams)));
           return;
+        case 'GET /v1/admin/licenses/betas':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.betas(bearerToken(req)));
+          return;
         case 'GET /v1/admin/webhooks':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
           return;
         case 'POST /v1/admin/licenses/issue':
+        case 'POST /v1/admin/licenses/issue-beta':
         case 'POST /v1/admin/licenses/revoke':
         case 'POST /v1/admin/licenses/restore':
         case 'POST /v1/admin/licenses/reset-devices':
@@ -316,6 +321,7 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           const action = {
             '/v1/admin/licenses/issue': 'issue',
+            '/v1/admin/licenses/issue-beta': 'issueBeta',
             '/v1/admin/licenses/revoke': 'revoke',
             '/v1/admin/licenses/restore': 'restore',
             '/v1/admin/licenses/reset-devices': 'resetDevices',
@@ -374,7 +380,7 @@ export function siteRequestListener({
       }
       const status = errorStatus(error);
       if (error?.licenseError) {
-        send(status, { ok: false, error: error.code });
+        send(status, { ok: false, error: error.code, ...(error.tier ? { tier: error.tier } : {}) });
         return;
       }
       if (status >= 500) log(`[site-api] ${req.method} ${req.url}: ${error?.stack ?? error}`);

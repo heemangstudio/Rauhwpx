@@ -209,6 +209,9 @@ test('activation: 2 devices per key, re-activation is free, deactivate frees a s
   const a = await svc.activate({ key, deviceId: 'device-aaaa', appVersion: '3.1.0', platform: 'darwin' });
   assert.equal(a.ok, true);
   assert.equal(a.devicesUsed, 1);
+  // Groble keys carry no tier or deviceLimit, like every record written before beta keys existed.
+  assert.equal(a.tier, 'paid');
+  assert.equal(a.deviceLimit, 2);
   await svc.activate({ key: key.toLowerCase().replace(/-/g, ' '), deviceId: 'device-bbbb' });
   assert.equal((await svc.activate({ key, deviceId: 'device-aaaa' })).devicesUsed, 2, 're-activating an existing device does not use a slot');
   await assert.rejects(svc.activate({ key, deviceId: 'device-cccc' }), { code: 'device_limit', status: 409 });
@@ -320,6 +323,46 @@ test('admin: manual backfill issue, later webhook does not duplicate, lookup, re
   // A refund webhook for a manually backfilled order still revokes it.
   const r = await svc.handleGrobleEvent(refunded({ merchantUid: 'm_early' }), { idempotencyKey: 'rr' });
   assert.equal(r.action, 'revoked');
+});
+
+test('beta keys: per-key device limit, 3-day lease, revoke and restore, listed for the admin', async () => {
+  const { svc, sent, now, advance } = service();
+  await svc.admin.issue(ADMIN, { email: 'paid@example.com', sendEmail: true });
+  await assert.rejects(svc.admin.issueBeta('wrong', { name: '홍길동' }), { code: 'forbidden' });
+  await assert.rejects(svc.admin.betas('wrong'), { code: 'forbidden' });
+  await assert.rejects(svc.admin.issueBeta(ADMIN, {}), { code: 'name_required' });
+  await assert.rejects(svc.admin.issueBeta(ADMIN, { name: 'x', devices: 'many' }), { code: 'devices_invalid' });
+  assert.equal((await svc.admin.issueBeta(ADMIN, { name: 'x' })).license.deviceLimit, 5);
+  assert.equal((await svc.admin.issueBeta(ADMIN, { name: 'x', devices: 99 })).license.deviceLimit, 50);
+  assert.equal((await svc.admin.issueBeta(ADMIN, { name: 'x', devices: '0' })).license.deviceLimit, 1);
+
+  const issued = await svc.admin.issueBeta(ADMIN, { name: '홍길동', email: 'tester@example.com', devices: 3 });
+  const { key, keyId, tier, name } = issued.license;
+  assert.match(key, KEY_RE);
+  assert.deepEqual({ tier, name }, { tier: 'beta', name: '홍길동' });
+
+  for (const [i, platform] of ['darwin', 'win32', 'darwin'].entries()) {
+    const r = await svc.activate({ key, deviceId: `beta-device-${i}`, platform });
+    assert.deepEqual({ tier: r.tier, devicesUsed: r.devicesUsed, deviceLimit: r.deviceLimit }, { tier: 'beta', devicesUsed: i + 1, deviceLimit: 3 });
+    const lease = verifyLease(r.lease, KEYS, { deviceId: `beta-device-${i}`, key, now: now() });
+    assert.equal(lease.payload.expiresAt - lease.payload.issuedAt, 3 * 24 * 3600 * 1000);
+  }
+  await assert.rejects(svc.activate({ key, deviceId: 'beta-device-3' }), { code: 'device_limit', status: 409 });
+
+  const list = await svc.admin.betas(ADMIN);
+  const entry = list.betas.find((b) => b.keyId === keyId);
+  assert.equal(entry.devicesUsed, 3);
+  assert.deepEqual(entry.devices.map((d) => d.platform), ['darwin', 'win32', 'darwin']);
+  assert.equal(list.count, 4, 'the paid key is not listed');
+
+  await svc.deliverPendingEmails();
+  assert.deepEqual(sent.map((m) => m.to), ['paid@example.com'], 'beta keys are never emailed');
+
+  await svc.admin.revoke(ADMIN, { key, reason: 'beta over' });
+  await assert.rejects(svc.validate({ key, deviceId: 'beta-device-0' }), { code: 'revoked', status: 403, tier: 'beta' });
+  await svc.admin.restore(ADMIN, { key });
+  advance(1000);
+  assert.equal((await svc.validate({ key, deviceId: 'beta-device-0' })).ok, true);
 });
 
 test('normalizeLicenseKey tolerates case, spaces and O/I look-alikes', () => {
@@ -466,11 +509,25 @@ test('HTTP: webhook → by-ref → activate → validate, with CORS, persistence
   assert.equal(Object.values(saved.licenses)[0].status, 'revoked');
   const origin2 = await listen(t, env);
   const after = await fetch(`${origin2}/v1/license/validate`, { method: 'POST', body: JSON.stringify({ key: body.key, deviceId: 'mac-0001' }) });
-  assert.deepEqual(await after.json(), { ok: false, error: 'revoked' });
+  assert.deepEqual(await after.json(), { ok: false, error: 'revoked', tier: 'paid' });
 
   // Existing endpoints still work alongside.
   assert.equal((await fetch(`${origin}/healthz`)).status, 200);
   assert.equal((await fetch(`${origin}/v1/unique-installs`)).status, 200);
+});
+
+test('HTTP: beta keys are issued and listed only with the admin token', async (t) => {
+  const directory = await tempDir(t);
+  const origin = await listen(t, { RAU_SITE_DATA: directory, LICENSE_SIGNING_PRIVATE_KEY: PAIR.privateKeyDerBase64, ADMIN_TOKEN: ADMIN });
+  const post = (headers) => fetch(`${origin}/v1/admin/licenses/issue-beta`, { method: 'POST', headers, body: JSON.stringify({ name: '홍길동', devices: 3 }) });
+  assert.equal((await post({})).status, 403);
+  assert.equal((await fetch(`${origin}/v1/admin/licenses/betas`)).status, 403);
+  const issued = await (await post({ Authorization: `Bearer ${ADMIN}` })).json();
+  assert.equal(issued.license.deviceLimit, 3);
+  const listed = await (await fetch(`${origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } })).json();
+  assert.equal(listed.betas[0].key, issued.license.key);
+  const act = await (await fetch(`${origin}/v1/license/activate`, { method: 'POST', body: JSON.stringify({ key: issued.license.key, deviceId: 'win-0001', platform: 'win32' }) })).json();
+  assert.deepEqual({ tier: act.tier, deviceLimit: act.deviceLimit }, { tier: 'beta', deviceLimit: 3 });
 });
 
 test('HTTP: webhook without a configured secret answers 503 (Groble retries), never 3xx/410', async (t) => {

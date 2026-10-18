@@ -1,0 +1,76 @@
+:root {
+  color-scheme: dark;
+  --bg: #111112;
+  --panel: #19191b;
+  --raised: #222225;
+  --fg: #ececea;
+  --muted: #8f8f8b;
+  --line: #2c2c2f;
+  --bad: #f08a7a;
+  --ok: #9fd6a8;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 32px 28px 64px; }
+header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; }
+h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+h2 { margin: 32px 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.row { display: flex; gap: 8px; }
+input {
+  min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--fg); font: inherit;
+}
+input:focus { outline: none; border-color: #55555a; }
+input.grow { flex: 1 1 0; min-width: 0; }
+input.narrow { width: 72px; text-align: right; }
+button {
+  min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--raised); color: var(--fg); font: inherit; cursor: pointer; white-space: nowrap;
+}
+.row button { min-height: 32px; padding: 0 14px; }
+button:hover:not(:disabled) { border-color: #4a4a4f; }
+button:disabled { opacity: .4; cursor: default; }
+button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+button.danger { color: var(--bad); }
+button.armed { background: var(--bad); border-color: var(--bad); color: var(--bg); }
+#token-form { margin-bottom: 8px; }
+
+.created { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+button.key { border: 0; background: none; padding: 0; min-height: 0; color: var(--fg); }
+button.key:hover { text-decoration: underline; text-underline-offset: 3px; }
+button.key.copied { color: var(--ok); }
+button.key.copied::after { content: ' 복사했어요'; font-family: -apple-system, system-ui, sans-serif; }
+.created button.key { font-size: 13px; }
+
+.error { min-height: 18px; margin: 6px 0; color: var(--bad); }
+
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+th:nth-child(2) { width: 18%; }
+th:nth-child(3) { width: 17%; }
+th:nth-child(4) { width: 8%; }
+th:nth-child(5) { width: 6%; }
+th:nth-child(6) { width: 17%; }
+th:nth-child(7) { width: 11%; }
+td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr.detail td { white-space: normal; }
+th { padding: 6px 8px; text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th:first-child, td:first-child { width: 28px; padding-right: 0; }
+tr.revoked td:not(.actions) { color: var(--muted); }
+td.status.bad { color: var(--bad); }
+td.actions { text-align: right; }
+td.actions button + button { margin-left: 6px; }
+.tag { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; color: var(--muted); }
+
+button.chevron { width: 22px; min-height: 22px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 16px; line-height: 1; transition: transform .15s ease; }
+button.chevron[aria-expanded="true"] { transform: rotate(90deg); }
+tr.detail td { padding: 4px 8px 12px 36px; background: var(--panel); }
+ul.devices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: auto auto 1fr; gap: 4px 24px; }
+ul.devices li { display: contents; }
+
+[hidden] { display: none !important; }
+td:nth-child(3) { overflow: visible; }

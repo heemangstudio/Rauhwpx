@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="admin-session" content="__SESSION__">
+  <title>라이선스 관리</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>라이선스</h1>
+      <span id="upstream" class="muted mono"></span>
+    </header>
+
+    <form id="token-form" class="row" hidden>
+      <input id="token" type="password" autocomplete="off" placeholder="관리자 토큰" aria-label="관리자 토큰" required>
+      <button type="submit" class="primary">키체인에 저장</button>
+    </form>
+
+    <section aria-labelledby="beta-title">
+      <h2 id="beta-title">베타 키</h2>
+      <form id="create-form" class="row">
+        <input id="name" class="grow" placeholder="이름" aria-label="이름" required maxlength="100">
+        <input id="devices" class="narrow" type="number" min="1" max="50" value="5" aria-label="기기 수" title="기기 수">
+        <input id="note" class="grow" placeholder="메모" aria-label="메모" maxlength="500">
+        <button type="submit" class="primary">만들기</button>
+      </form>
+      <div id="created" class="created" hidden>
+        <span id="created-name"></span>
+        <button type="button" id="created-key" class="key mono" title="복사"></button>
+      </div>
+      <p id="beta-error" class="error" role="alert"></p>
+      <table id="beta-table">
+        <thead>
+          <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="beta-empty" class="muted" hidden>아직 베타 키가 없어요.</p>
+    </section>
+
+    <section aria-labelledby="lookup-title">
+      <h2 id="lookup-title">찾기</h2>
+      <form id="lookup-form" class="row">
+        <input id="lookup" class="grow mono" placeholder="키 또는 이메일" aria-label="키 또는 이메일" required>
+        <button type="submit">찾기</button>
+      </form>
+      <p id="lookup-error" class="error" role="alert"></p>
+      <table id="lookup-table" hidden>
+        <thead>
+          <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

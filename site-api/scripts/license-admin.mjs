@@ -3,6 +3,8 @@
 //   export SITE_API_BASE=https://rau-credits-production.up.railway.app
 //   export ADMIN_TOKEN=...            # same value as the Railway ADMIN_TOKEN variable
 //   node scripts/license-admin.mjs issue --email buyer@example.com --merchant-uid <groble merchantUid> [--ref r] [--note "..."] [--send-email]
+//   node scripts/license-admin.mjs beta --name "홍길동" [--devices 5] [--email tester@example.com] [--note "..."]   # beta-tester key, 1..50 devices, never emailed
+//   node scripts/license-admin.mjs betas                               # every beta key with its devices
 //   node scripts/license-admin.mjs lookup --email buyer@example.com | --key HAMA-... | --merchant-uid ... | --ref ...
 //   node scripts/license-admin.mjs orders [--status held|issued|refunded]
 //   node scripts/license-admin.mjs webhooks [--rejected | --held] [--limit 50]   # recorded webhook rejections and holds
@@ -11,6 +13,8 @@
 //   node scripts/license-admin.mjs restore --key HAMA-...
 //   node scripts/license-admin.mjs reset-devices --key HAMA-...
 //   node scripts/license-admin.mjs resend-email --key HAMA-... [--email new@example.com]
+import { adminRequest, siteApiBase } from './admin-request.mjs';
+
 const [command, ...rest] = process.argv.slice(2);
 const args = {};
 for (let i = 0; i < rest.length; i += 1) {
@@ -19,12 +23,13 @@ for (let i = 0; i < rest.length; i += 1) {
   if (next === undefined || next.startsWith('--')) args[name] = true;
   else { args[name] = next; i += 1; }
 }
-const base = (process.env.SITE_API_BASE || 'https://rau-credits-production.up.railway.app').replace(/\/+$/, '');
+const base = siteApiBase();
 const token = process.env.ADMIN_TOKEN;
 if (!token) { process.stderr.write('ADMIN_TOKEN is not set\n'); process.exit(2); }
 
 const posts = {
   issue: '/v1/admin/licenses/issue',
+  beta: '/v1/admin/licenses/issue-beta',
   revoke: '/v1/admin/licenses/revoke',
   restore: '/v1/admin/licenses/restore',
   'reset-devices': '/v1/admin/licenses/reset-devices',
@@ -33,6 +38,7 @@ const posts = {
 };
 const gets = {
   lookup: '/v1/admin/licenses',
+  betas: '/v1/admin/licenses/betas',
   orders: '/v1/admin/orders',
   webhooks: '/v1/admin/webhooks',
 };
@@ -44,24 +50,24 @@ if (command === 'webhooks') {
 }
 let res;
 if (gets[command]) {
-  const path = gets[command];
-  const qs = new URLSearchParams(Object.entries(args).map(([k, v]) => [k, String(v)]));
-  res = await fetch(`${base}${path}?${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+  res = await adminRequest({ base, token, path: gets[command], query: args });
 } else if (posts[command]) {
   const body = { ...args };
   if (command === 'issue') body.sendEmail = args.sendEmail === true;
   if (body.amount) body.amount = Number(body.amount);
-  res = await fetch(`${base}${posts[command]}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  if (command === 'beta') {
+    if (typeof args.name !== 'string') { process.stderr.write('beta needs --name "tester name"\n'); process.exit(2); }
+  }
+  res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email [--flags]\n');
   process.exit(2);
 }
-const text = await res.text();
-let pretty = text;
-try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+const parsed = res.json;
+const pretty = parsed ? JSON.stringify(parsed, null, 2) : res.text;
 process.stdout.write(`${res.status} ${pretty}\n`);
+// The key alone on the last line, so it can be copied without picking through the JSON.
+if (command === 'beta' && res.ok && parsed?.license?.key) {
+  process.stdout.write(`\n${parsed.license.name} (${parsed.license.deviceLimit} devices): ${parsed.license.key}\n`);
+}
 process.exit(res.ok ? 0 : 1);

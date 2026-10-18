@@ -1,12 +1,14 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
-import { DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
+import { BETA_LEASE_TTL_MS, DEFAULT_LEASE_KID, LEASE_TTL_MS, signLease } from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
 import { createWebhookLog } from './webhook-log.mjs';
 
 export const DEVICE_LIMIT = 2;
+export const BETA_DEVICE_LIMIT = 5;
+export const BETA_DEVICE_LIMIT_MAX = 50;
 const WEBHOOK_EVENT_RETENTION_MS = 8 * 24 * 60 * 60 * 1000; // Groble retries for ~44h
 const KEY_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32
 export const KEY_RE = /^HAMA(?:-[0-9A-HJKMNP-TV-Z]{5}){5}$/;
@@ -78,6 +80,15 @@ function normalizeState(state) {
   return next;
 }
 
+/** Records written before beta keys have no tier or deviceLimit: they are paid keys on two devices. */
+function tierOf(license) {
+  return license.tier === 'beta' ? 'beta' : 'paid';
+}
+
+function deviceLimitOf(license) {
+  return Number.isSafeInteger(license.deviceLimit) && license.deviceLimit > 0 ? license.deviceLimit : DEVICE_LIMIT;
+}
+
 /** Public, buyer-safe view used by admin responses. */
 function licenseView(license, { includeKey = true } = {}) {
   if (!license) return null;
@@ -85,6 +96,9 @@ function licenseView(license, { includeKey = true } = {}) {
     keyId: license.keyId,
     ...(includeKey ? { key: license.key } : {}),
     status: license.status,
+    tier: tierOf(license),
+    deviceLimit: deviceLimitOf(license),
+    name: license.name,
     source: license.source,
     merchantUid: license.merchantUid,
     ref: license.ref,
@@ -447,7 +461,7 @@ export function createLicensesService({
     const key = normalizeLicenseKey(rawKey);
     const license = key ? state.licenses[state.keyIndex[key]] : undefined;
     if (!license) throw licenseError('invalid_key', 404);
-    if (license.status === 'revoked') throw licenseError('revoked', 403);
+    if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
     return license;
   }
 
@@ -459,15 +473,16 @@ export function createLicensesService({
       key: submittedKey,
       deviceId,
       now: now(),
-      ttlMs: LEASE_TTL_MS,
+      ttlMs: tierOf(license) === 'beta' ? BETA_LEASE_TTL_MS : LEASE_TTL_MS,
     }, signingKey);
     return {
       ok: true,
       lease,
       keyId: license.keyId,
+      tier: tierOf(license),
       expiresAt: payload.expiresAt,
       devicesUsed: Object.keys(license.devices).length,
-      deviceLimit: DEVICE_LIMIT,
+      deviceLimit: deviceLimitOf(license),
     };
   }
 
@@ -479,7 +494,7 @@ export function createLicensesService({
       license.devices = license.devices ?? {};
       const stamp = new Date(now()).toISOString();
       const existing = license.devices[deviceId];
-      if (!existing && Object.keys(license.devices).length >= DEVICE_LIMIT) {
+      if (!existing && Object.keys(license.devices).length >= deviceLimitOf(license)) {
         throw licenseError('device_limit', 409);
       }
       license.devices[deviceId] = {
@@ -512,7 +527,7 @@ export function createLicensesService({
       if (!license) throw licenseError('invalid_key', 404);
       const removed = Boolean(license.devices?.[deviceId]);
       if (removed) delete license.devices[deviceId];
-      return { dirty: removed, value: { ok: true, removed, devicesUsed: Object.keys(license.devices ?? {}).length, deviceLimit: DEVICE_LIMIT } };
+      return { dirty: removed, value: { ok: true, removed, tier: tierOf(license), devicesUsed: Object.keys(license.devices ?? {}).length, deviceLimit: deviceLimitOf(license) } };
     });
   }
 
@@ -596,6 +611,52 @@ export function createLicensesService({
         }
         return { value: { ok: true, created: true, license: licenseView(license) } };
       });
+    },
+    /** Beta-tester key: same format and flow as a paid key, more devices, shorter lease, never emailed. */
+    async issueBeta(token, body) {
+      requireAdmin(token);
+      const name = str(body?.name, 100);
+      if (!name) throw licenseError('name_required', 400);
+      const email = str(body?.email, 254);
+      if (email && !EMAIL_RE.test(email)) throw licenseError('email_invalid', 400);
+      let deviceLimit = BETA_DEVICE_LIMIT;
+      if (body?.devices !== undefined) {
+        const devices = typeof body.devices === 'string' && body.devices.trim() ? Number(body.devices) : body.devices;
+        if (!Number.isInteger(devices)) throw licenseError('devices_invalid', 400);
+        deviceLimit = Math.min(BETA_DEVICE_LIMIT_MAX, Math.max(1, devices));
+      }
+      return mutate(async (state) => {
+        const license = createLicense(state, {
+          source: 'beta',
+          tier: 'beta',
+          name,
+          email,
+          deviceLimit,
+          amount: 0,
+          note: str(body?.note, 500),
+        });
+        license.emailDelivery = { status: 'manual' };
+        return { value: { ok: true, created: true, license: licenseView(license) } };
+      });
+    },
+    async betas(token) {
+      requireAdmin(token);
+      const state = await read();
+      const list = Object.values(state.licenses)
+        .filter((l) => tierOf(l) === 'beta')
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .map((l) => ({
+          keyId: l.keyId,
+          key: l.key,
+          name: l.name,
+          status: l.status,
+          deviceLimit: deviceLimitOf(l),
+          devicesUsed: Object.keys(l.devices ?? {}).length,
+          devices: Object.entries(l.devices ?? {}).map(([deviceId, d]) => ({ deviceId, platform: d.platform, lastSeenAt: d.lastSeenAt })),
+          createdAt: l.createdAt,
+          revokedAt: l.revokedAt,
+        }));
+      return { ok: true, count: list.length, betas: list };
     },
     async lookup(token, query) {
       requireAdmin(token);
