@@ -1,9 +1,9 @@
 /**
  * 문서 칩 — 문서 없이 시작해 문서를 이은 채팅의 머리에 그 문서를 보인다. 모양은 document-chip.css.
  *
- * 이을 때 채팅이 보이면 하마가 픽셀로 문서를 지어 칩을 세운다: 하마가 픽셀로 나타나 입을 벌리고,
- * 입에서 튄 픽셀이 포물선을 그리며 10×12 문서 그림을 아래부터 쌓는다. 하마는 폴짝 뛰고 흩어진 뒤
- * 칩 이름이 한 글자씩 찍힌다. 하마는 public/images/boot/hama-sprites.png 의 26×20 칸 여섯
+ * 이을 때 채팅이 보이면 하마가 칩 이름을 뱉어 쓴다: 칩 오른쪽에 하마가 픽셀로 나타나 왼쪽을 보고 입을 벌리면,
+ * 입에서 튄 픽셀이 포물선을 그리며 이름의 글자에 하나씩 앉아 그 글자를 드러낸다. 다 쓰면 하마는 폴짝 뛰고
+ * 흩어진다. 하마는 public/images/boot/hama-sprites.png 의 26×20 칸 여섯
  * (closed·talk·open·blink·step·crouch)을 정수배(2)로, 50ms 씩 끊어 그린다. 동작 줄이기면 칩만 바로 선다.
  */
 import { createIcon } from './icons.ts';
@@ -31,25 +31,14 @@ const CELL_H = 20;
 const POSE_COUNT = 6;
 const SCALE = 2;
 const FRAME_MS = 50;
-const CANVAS_W = 112;
 const CANVAS_H = 44;
-/** 하마 픽셀 파랑과 같은 색 — 문서의 줄과 날아가는 픽셀. */
+/** 하마와 칩 사이 틈. */
+const HAMA_GAP = 6;
+/** 하마 픽셀 파랑과 같은 색 — 날아가는 픽셀과 막 찍힌 글자. */
 const HAMA_BLUE = 'rgb(98, 179, 226)';
-/** 10×12 문서. # 는 테두리(글자색), l 은 줄(파랑). 접힌 귀퉁이가 오른쪽 위에 있다. */
-const DOCUMENT_GLYPH = [
-  '#######...',
-  '#.....##..',
-  '#.....#.#.',
-  '#.....####',
-  '#........#',
-  '#.lllll..#',
-  '#........#',
-  '#.llllll.#',
-  '#........#',
-  '#.llll...#',
-  '#........#',
-  '##########',
-];
+/** 입에서 글자까지 날아가는 틱 수와, 한 번에 뱉는 글자 수의 상한을 정하는 발사 횟수. */
+const FLIGHT = 4;
+const MAX_SHOTS = 18;
 /** 폴짝: [자세, 세로 이동(스프라이트 픽셀)] — crouch, step 으로 떴다가 내려앉는다. */
 const HOP: ReadonlyArray<readonly [number, number]> = [[5, 0], [4, -2], [4, -3], [4, -2], [5, 0], [0, 0]];
 
@@ -147,7 +136,6 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
   function clearCanvas(): void {
     canvas?.remove();
     canvas = null;
-    root.classList.remove('ag-doc-chip-building');
   }
 
   function settle(name: string): void {
@@ -157,87 +145,105 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
     root.hidden = false;
   }
 
-  /** 하마가 문서를 짓는다. 다른 짓기나 숨기기가 끼어들면 Cancelled. */
-  async function playBuild(poses: SpritePixel[][], token: number): Promise<void> {
+  /**
+   * 하마가 칩 오른쪽에 서서 왼쪽을 보고, 입에서 튄 픽셀이 포물선을 그리며 칩 이름의 글자에 앉는다 —
+   * 앉은 자리의 글자가 파랗게 찍혔다가 글자색이 된다. 칩은 처음부터 제 폭으로 서고 글자만 숨어 있어서
+   * 끝나도 자리가 움직이지 않는다. 다른 짓기나 숨기기가 끼어들면 Cancelled.
+   */
+  async function playBuild(name: string, poses: SpritePixel[][], token: number): Promise<void> {
+    const graphemes = typeof Intl.Segmenter === 'function'
+      ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(name)].map((part) => part.segment)
+      : Array.from(name);
+    const letters = graphemes.map((text) => {
+      const span = document.createElement('span');
+      span.className = 'ag-doc-chip-letter';
+      span.textContent = text;
+      return span;
+    });
+    label.replaceChildren(...letters);
+    chip.hidden = false;
     const dpr = window.devicePixelRatio || 1;
+    const chipBox = chip.getBoundingClientRect();
+    const P = SCALE;
+    const hamaX = Math.ceil(chipBox.width) + HAMA_GAP;
+    const hamaY = Math.round((CANVAS_H - CELL_H * P) / 2);
+    const width = hamaX + CELL_W * P;
     const fx = document.createElement('canvas');
     fx.className = 'ag-doc-chip-fx';
     fx.setAttribute('aria-hidden', 'true');
-    fx.width = CANVAS_W * dpr;
+    fx.width = width * dpr;
     fx.height = CANVAS_H * dpr;
-    fx.style.width = `${CANVAS_W}px`;
+    fx.style.width = `${width}px`;
     fx.style.height = `${CANVAS_H}px`;
     const context = fx.getContext('2d');
     if (!context) return;
     canvas = fx;
-    root.classList.add('ag-doc-chip-building');
     root.append(fx);
     context.scale(dpr, dpr);
-    const ink = getComputedStyle(root).color || 'rgb(23, 27, 34)';
-    const P = SCALE;
-    const hamaX = 0;
-    const hamaY = 2;
-    const glyphX = 80;
-    const glyphY = 10;
-    const mouth = { x: hamaX + 23 * P, y: hamaY + 8 * P };
-    const targets: Array<{ x: number; y: number; color: string }> = [];
-    DOCUMENT_GLYPH.forEach((row, y) => [...row].forEach((cell, x) => {
-      if (cell !== '.') targets.push({ x, y, color: cell === '#' ? ink : HAMA_BLUE });
-    }));
-    // 아래 줄부터 쌓는다.
-    targets.sort((a, b) => b.y - a.y || a.x - b.x);
-    const EMERGE = 8;
-    const PER_TICK = 3;
-    const FLIGHT = 5;
-    const particles = targets.map((target, index) => ({ target, start: EMERGE + Math.floor(index / PER_TICK) }));
-    const landed = EMERGE + Math.ceil(targets.length / PER_TICK) + FLIGHT;
-    const end = landed + HOP.length + 6;
+    // 하마는 왼쪽을 본다 — 스프라이트를 좌우로 뒤집어 그린다. 입은 뒤집은 그림의 왼쪽 위다.
+    const mouth = { x: hamaX + (CELL_W - 1 - 23) * P, y: hamaY + 8 * P };
+    const canvasBox = fx.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    const target = (span: HTMLElement): { x: number; y: number } => {
+      const box = span.getBoundingClientRect();
+      // 말줄임으로 가려진 글자는 보이는 끝으로 날아간다.
+      const x = Math.min(box.left + box.width / 2, labelBox.right - P) - canvasBox.left;
+      return { x: Math.round(x / P) * P, y: Math.round((box.top + box.height / 2 - canvasBox.top) / P) * P };
+    };
+    // 빈칸은 뱉지 않는다. 긴 이름은 한 번에 여러 글자를 뱉어 발사 횟수를 묶는다.
+    const visible = letters.filter((span) => span.textContent!.trim() !== '');
+    const perShot = Math.max(1, Math.ceil(visible.length / MAX_SHOTS));
+    const EMERGE = 6;
+    const shots: Array<{ start: number; spans: HTMLElement[]; to: { x: number; y: number } }> = [];
+    for (let index = 0; index < visible.length; index += perShot) {
+      const spans = visible.slice(index, index + perShot);
+      shots.push({ start: EMERGE + shots.length, spans, to: target(spans[spans.length - 1]!) });
+    }
+    const revealed = new Set<HTMLElement>();
+    const reveal = (span: HTMLElement): void => {
+      if (revealed.has(span)) return;
+      revealed.add(span);
+      span.classList.add('ag-doc-chip-letter-in');
+    };
+    const landed = EMERGE + shots.length + FLIGHT;
+    const end = landed + HOP.length + 5;
     for (let tick = 0; tick <= end; tick++) {
       if (token !== generation) throw new Cancelled();
       let pose = 0;
       let offsetY = 0;
       let shown = 1;
-      if (tick < 6) shown = (tick + 1) / 6;
+      if (tick < EMERGE - 1) shown = (tick + 1) / (EMERGE - 1);
       else if (tick < EMERGE) pose = 1;
-      else if (tick < landed) pose = (tick - EMERGE) % 4 < 3 ? 2 : 1;
+      else if (tick < landed - FLIGHT) pose = (tick - EMERGE) % 3 < 2 ? 2 : 1;
+      else if (tick < landed) pose = 0;
       else if (tick < landed + HOP.length) [pose, offsetY] = HOP[tick - landed]!;
-      else shown = 1 - (tick - landed - HOP.length + 1) / 6;
-      context.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      else shown = 1 - (tick - landed - HOP.length + 1) / 5;
+      context.clearRect(0, 0, width, CANVAS_H);
       for (const pixel of poses[pose] ?? []) {
         if (pixel.rank >= shown) continue;
         context.fillStyle = pixel.color;
-        context.fillRect(hamaX + pixel.x * P, hamaY + (pixel.y + offsetY) * P, P, P);
+        context.fillRect(hamaX + (CELL_W - 1 - pixel.x) * P, hamaY + (pixel.y + offsetY) * P, P, P);
       }
-      for (const { target, start } of particles) {
-        const progress = (tick - start) / FLIGHT;
-        const tx = glyphX + target.x * P;
-        const ty = glyphY + target.y * P;
+      context.fillStyle = HAMA_BLUE;
+      for (const shot of shots) {
+        const progress = (tick - shot.start) / FLIGHT;
         if (progress >= 1) {
-          context.fillStyle = target.color;
-          context.fillRect(tx, ty, P, P);
+          for (const span of shot.spans) reveal(span);
         } else if (progress >= 0) {
-          const x = mouth.x + (tx - mouth.x) * progress;
-          const y = mouth.y + (ty - mouth.y) * progress - Math.sin(Math.PI * progress) * 12;
-          context.fillStyle = HAMA_BLUE;
+          // 높이 떴다가 글자 위로 떨어진다. 짧게 나는 앞 글자일수록 낮게 뜬다.
+          const lift = 6 + Math.min(10, Math.abs(mouth.x - shot.to.x) / 12);
+          const x = mouth.x + (shot.to.x - mouth.x) * progress;
+          const y = mouth.y + (shot.to.y - mouth.y) * progress - Math.sin(Math.PI * progress) * lift;
           context.fillRect(Math.round(x / P) * P, Math.round(y / P) * P, P, P);
         }
       }
+      // 빈칸은 앞 글자와 함께 드러난다.
+      letters.forEach((span, index) => {
+        if (!revealed.has(span) && span.textContent!.trim() === '' && (index === 0 || revealed.has(letters[index - 1]!))) reveal(span);
+      });
       await wait(FRAME_MS, token);
     }
-    fx.classList.add('ag-doc-chip-fx-out');
-    await wait(160, token);
     clearCanvas();
-  }
-
-  async function typeName(name: string, token: number): Promise<void> {
-    chip.hidden = false;
-    // 긴 이름도 반 초 남짓에 다 찍힌다.
-    const step = Math.max(1, Math.ceil(name.length / 20));
-    for (let length = step; length < name.length; length += step) {
-      label.textContent = name.slice(0, length);
-      await wait(28, token);
-    }
-    setName(name);
   }
 
   return {
@@ -252,14 +258,15 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
         settle(name);
         return;
       }
+      // 칩은 하마가 서는 장면과 같은 프레임에 선다 — 스프라이트를 읽는 동안에는 칩도 이름도 보이지 않는다.
       clearCanvas();
       chip.hidden = true;
       root.hidden = false;
       try {
         const poses = await loadPoses();
         if (token !== generation) return;
-        if (poses) await playBuild(poses, token);
-        await typeName(name, token);
+        if (poses) await playBuild(name, poses, token);
+        if (token === generation) settle(name);
       } catch (error) {
         if (!(error instanceof Cancelled)) {
           if (token === generation) settle(name);

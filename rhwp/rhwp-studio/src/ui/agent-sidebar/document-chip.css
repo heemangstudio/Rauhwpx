@@ -1,4 +1,4 @@
-/* 문서 칩 — 이은 문서를 채팅 머리의 제목 옆에 알약 모양으로 둔다. 짓는 동안은 하마 캔버스가 이 자리에 선다. */
+/* 문서 칩 — 이은 문서를 채팅 머리의 제목 옆에 알약 모양으로 둔다. 하마가 이름을 쓰는 동안 칩 오른쪽에 하마 캔버스가 겹친다. */
 .ag-doc-chip-slot {
   position: relative;
   display: inline-flex;
@@ -6,20 +6,12 @@
   align-items: center;
   min-width: 0;
   max-width: 60%;
-  /* 캔버스의 문서 테두리가 이 색을 읽는다. */
   color: var(--ag-text);
 }
 
 .ag-doc-chip-slot[hidden],
 .ag-doc-chip[hidden] {
   display: none;
-}
-
-/* 칩 글자는 제목 글자와 기준선을 맞춘다. 하마가 짓는 동안에는 캔버스 폭만큼 자리를 잡고 줄 가운데에 선다. */
-.ag-doc-chip-slot.ag-doc-chip-building {
-  align-self: center;
-  min-width: 112px;
-  min-height: 22px;
 }
 
 .ag-doc-chip {
@@ -77,9 +69,20 @@ button.ag-doc-chip:focus-visible {
   pointer-events: none;
 }
 
-.ag-doc-chip-fx-out {
-  opacity: 0;
-  transition: opacity 150ms steps(3, end);
+/* 하마가 쓰는 동안 글자는 자리만 차지한다. 픽셀이 앉으면 파랗게 찍혔다가 글자색이 된다. */
+.ag-doc-chip-letter {
+  visibility: hidden;
+}
+
+.ag-doc-chip-letter.ag-doc-chip-letter-in {
+  visibility: visible;
+  animation: ag-doc-chip-ink 200ms steps(2, end);
+}
+
+@keyframes ag-doc-chip-ink {
+  from {
+    color: rgb(98, 179, 226);
+  }
 }
 
 /* 이은 채팅은 '/ 문서 이름' 대신 칩을 둔다. */

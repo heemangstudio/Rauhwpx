@@ -2310,11 +2310,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const linkedBefore = getThread(threadId);
     if (linkedBefore && (linkedBefore.documentId !== null || linkedBefore.docKey !== null)
       && linkedBefore.documentId !== link.documentId) {
-      if (currentThread.id === threadId) adoptStoredThreadLink();
+      if (currentThread.id !== threadId || !adoptStoredThreadLink()) syncDocumentChips();
       throw linkError('THREAD_ALREADY_LINKED');
     }
     const stored = linkThreadDocument(threadId, { documentId: link.documentId, docKey: link.docKey });
-    if (currentThread.id !== threadId) return null;
+    if (currentThread.id !== threadId) {
+      syncDocumentChips();
+      return null;
+    }
     currentThread.documentId = link.documentId;
     currentThread.docKey = link.docKey;
     currentThread.documentLinkedAt = stored?.documentLinkedAt ?? Date.now();
@@ -2612,8 +2615,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const name = getDocumentContext?.()?.documentName || currentThread.docKey;
     const linked = readOnlyDocLabel === null && currentThread.documentLinkedAt !== undefined
       && currentThread.documentId !== null && Boolean(name);
-    documentContext.classList.toggle('ag-doc-chip-on', linked);
-    workspaceDocumentContext.classList.toggle('ag-doc-chip-on', linked);
+    // 잇는 중에 문서가 먼저 열리면 '/ 문서 이름' 이 새 이름으로 바뀐다 — 하마가 칩을 짓기 전에 이름이
+    // 비치지 않게 그때부터 칩 자리로 둔다. 잇기를 거두면 cancelDocumentLink 가 다시 맞춘다.
+    const linking = documentLinkThreadId !== null && documentLinkThreadId === currentThread.id
+      && Boolean(getDocumentContext?.()?.documentName);
+    documentContext.classList.toggle('ag-doc-chip-on', linked || linking);
+    workspaceDocumentContext.classList.toggle('ag-doc-chip-on', linked || linking);
     if (!linked || !name) {
       focusDocumentChip.hide();
       dockDocumentChip.hide();
