@@ -1,0 +1,31 @@
+{
+  "round": "r1",
+  "images_unmodified": true,
+  "dpi": 200,
+  "reference_platform": "Windows Hancom 12.0.0.4426",
+  "numerical_acceptance": false,
+  "geometry_acceptance": true,
+  "matched_pages": 188,
+  "failing_bands": 921,
+  "total_bands": 1880,
+  "images": [
+    {
+      "label": "before",
+      "path": "docs/evidence/math10-r1/may-calculus-page5-before.png",
+      "bytes": 304814,
+      "sha256": "c03bd1a07a9436208f9111a27f53bf02372ffae527b15ecbfdbdb3fd1dc855bc"
+    },
+    {
+      "label": "reference",
+      "path": "docs/evidence/math10-r1/may-calculus-page5-reference.png",
+      "bytes": 182986,
+      "sha256": "3492db63a01941856e74fcf88074e614db1e5dbb39941300d4b3779d120b49fc"
+    },
+    {
+      "label": "candidate",
+      "path": "docs/evidence/math10-r1/may-calculus-page5-candidate.png",
+      "bytes": 304591,
+      "sha256": "04c8e91a5a025708979a64c5417079fbb5676dc1e3f8e30f3f50889140d4252b"
+    }
+  ]
+}
