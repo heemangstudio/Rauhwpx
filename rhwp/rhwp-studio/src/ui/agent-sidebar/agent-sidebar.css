@@ -2132,25 +2132,6 @@ button.ag-skill-copy {
   color: var(--ag-opencode);
 }
 
-/* 줄어들더라도 최소 몇 글자는 남겨 무엇을 고르는 칸인지 읽히게 한다. */
-.ag-model-name {
-  min-width: 3ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 프로바이더 색은 옆의 작은 아이콘만 쓴다. 이름은 잉크로 둔다. */
-.ag-provider .ag-model-name {
-  color: var(--ag-text);
-}
-
-
-
-
-
-
-
 .ag-llm-trigger {
   font-weight: var(--ag-fw-regular);
   color: var(--ag-text);
@@ -6196,6 +6177,11 @@ button.ag-skill-copy {
 .ag-composer-meta .ag-provider-icon {
   width: 14px;
   height: 14px;
+}
+
+/* 프로바이더는 로고만 둔다. 이름은 펼친 메뉴에서 읽힌다. */
+.ag-composer-meta .ag-provider .ag-model-trigger {
+  padding: 4px 7px;
 }
 
 .ag-composer > .ag-config-panel {

@@ -115,7 +115,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   if (params.get('handoff') === '1') {
     // 같은 채팅을 다른 프로바이더로 이어 간다 — 첫 메시지 앞에 전환 구분선이 남는다.
     await replyIdle();
-    await click('[aria-label="프로바이더 선택"]');
+    await click('[aria-label^="프로바이더 선택"]');
     await click('.ag-provider-item[data-agent="codex"]');
     await replyIdle();
     document.querySelector<HTMLButtonElement>('#play')!.click();
@@ -135,7 +135,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   const surface = params.get('surface');
   const surfaces: Record<string, string> = {
     skills: '.ag-settings-nav-button[data-destination="skills"]', references: '.ag-references-btn', threads: '.ag-header .ag-threads-btn',
-    'provider-picker': '[aria-label="프로바이더 선택"]', 'model-picker': '[aria-label="모델 선택"]',
+    'provider-picker': '[aria-label^="프로바이더 선택"]', 'model-picker': '[aria-label="모델 선택"]',
     'effort-picker': '[aria-label="추론 강도 선택"]', 'mode-menu': '.ag-mode-btn', context: '.ag-context-btn',
     'provider-setup': `.ag-settings-provider-row[data-agent="${['claude', 'codex', 'pi'].includes(params.get('provider') ?? '') ? params.get('provider') : 'codex'}"] button`,
   };

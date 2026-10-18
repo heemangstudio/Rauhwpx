@@ -211,7 +211,7 @@ export async function checkFailureNotices(page, origin, artifacts) {
   // Pi setup that is not finished (PI_NOT_CONFIGURED) is a settings problem: 설정 열기 on the notice,
   // and no "Pi 로그인 필요" chip, which Pi's status could never clear.
   await openFailure(page, origin, 'pi-setup');
-  await page.click('[aria-label="프로바이더 선택"]');
+  await page.click('[aria-label^="프로바이더 선택"]');
   await page.waitForSelector('.ag-config-panel.ag-open');
   await page.click('.ag-provider-item[data-agent="pi"]');
   await page.keyboard.press('Escape');
