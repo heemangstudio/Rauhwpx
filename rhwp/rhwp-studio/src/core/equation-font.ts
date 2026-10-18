@@ -172,7 +172,9 @@ export function createEquationTextMeasurer(
   const fallbackMetrics = (character: string, size: number, italic: boolean, bold: boolean) => {
     if (!isModernEquationFallbackSymbol(character)) return null;
     const record = resolveFont('Haansoft Batang');
-    if (!record?.runtimeFamily || record.family.toLowerCase() !== 'haansoft batang') return null;
+    // 현지화된 canonical family도 등록된 영문 별칭으로 같은 fallback face를 확인한다.
+    if (!record?.runtimeFamily || ![record.family, ...record.aliases]
+      .some(name => name.toLowerCase() === 'haansoft batang')) return null;
     const bytes = readBytes('Haansoft Batang', bold, italic);
     if (!bytes || !sfntCoversText(bytes, character)) return null;
     const exactMetrics = sfntTrueTypeRunMetrics(bytes, character, size);

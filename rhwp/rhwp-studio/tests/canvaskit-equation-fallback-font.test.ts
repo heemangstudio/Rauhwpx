@@ -40,8 +40,8 @@ test('modern special symbols bind registered metrics and CanvasKit glyphs across
       skew: font.getSkewX(), bold: font.isEmbolden() });
   } };
   const names = (family: string, style: string) => ({ family, fullName: `${family} ${style}`, postscriptName: `${family.replaceAll(' ', '')}-${style}`, style, aliases: [] });
-  const register = async (family: string, bytes: ArrayBuffer, source = 'imported', style = 'Regular') => {
-    const result = await local.registerLocalFontFace(bytes, { source, fileName: 'owned-synthetic.ttf', names: names(family, style) });
+  const register = async (family: string, bytes: ArrayBuffer, source = 'imported', style = 'Regular', aliases: string[] = []) => {
+    const result = await local.registerLocalFontFace(bytes, { source, fileName: 'owned-synthetic.ttf', names: { ...names(family, style), aliases } });
     assert.equal(result.ok, true); return result;
   };
   const measure = createEquationTextMeasurer(local.resolveLocalFont, local.getImportedLocalFontBytes);
@@ -172,6 +172,23 @@ test('modern special symbols bind registered metrics and CanvasKit glyphs across
     await renderer.prepareLocalFonts(['HYhwpEQ']);
     assert.equal(drawLeaf().glyph, 3, 'upright selection survives reversed face registration order');
     assert.equal(painted[0].skew, 0); outlineLeaf();
+
+    local.resetLocalFontsForTests(); renderer.resetDocumentResources();
+    await register('HYhwpEQ', syntheticFont('A', 1, 600));
+    const localized = await register('한컴바탕', syntheticFont('′', 3, 800), 'imported', 'Regular',
+      ['Haansoft Batang', 'Haansoft Batang Regular']);
+    assert.equal(local.resolveLocalFont('Haansoft Batang'), localized.record);
+    assert.equal(localized.record.family, '한컴바탕', 'English alias keeps the actual canonical family');
+    await renderer.prepareLocalFonts(['HYhwpEQ']);
+    const selectedPrime = draw('′');
+    assert.equal(selectedPrime.face, renderer.localTypefaces.get(local.localFontFaceKey(localized.record)).typeface,
+      'CanvasKit PRIME and callback bytes belong to the same registered localized face');
+    assert.equal(selectedPrime.glyph, 3); assert.equal(selectedPrime.width, 8);
+    assert.equal(selectedPrime.skew, 0); assert.equal(selectedPrime.bold, false);
+    for (const literal of [false, true]) {
+      assert.deepEqual(measure('HYhwpEQ', '′', 10, false, false, literal),
+        { advance: 7.2, inkLeft: 0.5, inkRight: 5 }, 'localized PRIME keeps natural fallback ink');
+    }
   } finally {
     renderer.dispose(); setSfntGlyphPathApi(null); local.resetLocalFontsForTests(); Object.assign(globals, previous); await vite.close();
   }
