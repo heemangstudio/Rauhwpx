@@ -43,7 +43,8 @@ test(
             if (value === undefined) delete process.env[key];
             else process.env[key] = value;
           }
-          await rm(cache, { recursive: true, force: true });
+          // Vite starts owned-hub shutdown asynchronously; its browser may still flush the profile.
+          await rm(cache, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
         }
       }
     });
