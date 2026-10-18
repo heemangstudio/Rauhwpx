@@ -565,6 +565,11 @@ export interface AgentSidebarHandle {
 
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
+/**
+ * 말투 맞추기가 켜져 있는지 — 허브 하나의 상태라 사이드바들이 함께 쓴다. 모르면 null 이고 그동안 권유 칩을 띄우지
+ * 않는다 — 새로 선 사이드바가 허브의 답을 기다리는 동안 칩이 떴다 사라지며 대화가 밀리지 않는다.
+ */
+let sharedWritingStyleActive: boolean | null = null;
 let sharedHumanBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 let sharedFloatingBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 /** 사이드바마다 다른 확인 필요 설명 id. */
@@ -3629,7 +3634,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   calibrationChipClose.setAttribute('aria-label', '닫기');
   calibrationChipClose.appendChild(createIcon('close'));
   calibrationChip.append(calibrationChipOpen, calibrationChipClose);
-  let writingStyleActive = false;
   calibrationChipOpen.addEventListener('click', () => writingStyleCalibration.open());
   calibrationChipClose.addEventListener('click', () => settleCalibrationChip('skipped'));
 
@@ -3642,7 +3646,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const setup = loadInitialSetup();
     const eligible = setup.completed
       && setup.calibrationStep === 'pending'
-      && !writingStyleActive
+      && sharedWritingStyleActive === false
       && !turnRunning
       && currentThread.messages.some((message) => message.role === 'assistant');
     calibrationChip.hidden = !eligible || !reconnectChip.hidden;
@@ -11719,8 +11723,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'writing-style-status':
       case 'writing-style-result':
-        writingStyleActive = e.status.active === true;
-        if (writingStyleActive) calibrationChip.hidden = true;
+        sharedWritingStyleActive = e.status.active === true;
+        if (sharedWritingStyleActive) calibrationChip.hidden = true;
         break;
       case 'writing-style-progress':
       case 'writing-style-error':
