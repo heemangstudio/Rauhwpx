@@ -6,7 +6,8 @@ import { readFile, rm } from 'node:fs/promises';
 // paths in a manifest that the next launch consumes once.
 export const UPDATE_RESTART_FILE_NAME = 'update-restart.json';
 export const UPDATE_RESTART_MAX_AGE_MS = 30 * 60 * 1000;
-export const UPDATE_PREPARE_TIMEOUT_MS = 20_000;
+// A window may wait on the user (a draft it could not keep) while preparing.
+export const UPDATE_PREPARE_TIMEOUT_MS = 60_000;
 const MAX_WINDOWS = 64;
 const MAX_DOCUMENTS = 200;
 const MAX_THREADS = 200;
@@ -15,7 +16,7 @@ function text(value, max = 1024) {
   return typeof value === 'string' && value.length > 0 && value.length <= max ? value : null;
 }
 
-/** A window's answer to the prepare request, or null when it is malformed. */
+/** A window's answer to a prepare or commit request, or null when it is malformed. */
 export function normalizeRestartSlice(slice) {
   if (!slice || typeof slice !== 'object' || slice.ok !== true) return null;
   if (!Array.isArray(slice.documents) || !Array.isArray(slice.continueThreadIds)) return null;
@@ -36,8 +37,9 @@ export function normalizeRestartSlice(slice) {
 }
 
 /**
- * Sends one prepare request per window and pairs the answers by request id.
- * Any refusal, malformed answer or timeout aborts the whole restart.
+ * Hands the restart over to every window in two phases and pairs the answers
+ * by request id. Any refusal, malformed answer or timeout aborts the whole
+ * restart, and nothing further is sent.
  */
 export function createRestartPrepareBroker({
   timeoutMs = UPDATE_PREPARE_TIMEOUT_MS,
@@ -56,14 +58,13 @@ export function createRestartPrepareBroker({
     return true;
   }
 
-  /** targets: [{ windowId, send(requestId) }]. Resolves { ok, slices: Map<windowId, slice> }. */
-  async function prepareAll(targets) {
+  async function requestAll(targets, phase) {
     const answers = await Promise.all(targets.map((target) => new Promise((resolve) => {
       const requestId = createId();
       const timer = setTimeoutImpl(() => settle(requestId, { refused: 'timeout' }), timeoutMs);
       pending.set(requestId, { windowId: target.windowId, resolve, timer });
       try {
-        target.send(requestId);
+        target.send(phase, requestId);
       } catch {
         settle(requestId, { refused: 'send' });
       }
@@ -71,10 +72,24 @@ export function createRestartPrepareBroker({
     const slices = new Map();
     for (const { windowId, answer } of answers) {
       if (answer?.closed) continue;
-      if (answer?.refused) return { ok: false, reason: answer.refused };
+      if (answer?.refused) return { ok: false, reason: `${phase} ${answer.refused}` };
       slices.set(windowId, answer.slice);
     }
     return { ok: true, slices };
+  }
+
+  /**
+   * targets: [{ windowId, send(phase, requestId), isOpen() }]. Every window
+   * first prepares (flushes and may ask the user) without disarming its close
+   * prompt. Only when all of them agreed does each prepared window commit: a
+   * last flush of edits made since, close prompt disarmed, and the slice to
+   * restore. Resolves { ok, slices: Map<windowId, commit slice> }.
+   */
+  async function handOff(targets) {
+    const prepared = await requestAll(targets, 'prepare');
+    if (!prepared.ok) return prepared;
+    const committing = targets.filter((target) => prepared.slices.has(target.windowId) && target.isOpen?.() !== false);
+    return requestAll(committing, 'commit');
   }
 
   /** The answer must come from the window the request went to. */
@@ -92,7 +107,7 @@ export function createRestartPrepareBroker({
     }
   }
 
-  return { prepareAll, respond, drop };
+  return { handOff, respond, drop };
 }
 
 /**
@@ -123,10 +138,6 @@ export function buildRestartManifest({ fromVersion, targetVersion, createdAt, fa
       continueThreadIds: slice.continueThreadIds,
     })),
   };
-}
-
-export async function writeRestartManifest(filePath, manifest, { writeAtomically }) {
-  await writeAtomically(filePath, Buffer.from(JSON.stringify(manifest), 'utf8'));
 }
 
 function normalizeBounds(raw) {
@@ -204,8 +215,10 @@ export function updateWasApplied(manifest, currentVersion) {
  * The slice served to a relaunched window. `register(path)` creates a handle
  * for the new window session and returns its descriptor, or null when the file
  * is gone or owned elsewhere; the document then restores detached from a file.
+ * `restoredDocumentIds` lists the documents of every relaunched window, so the
+ * window offering autosave recovery leaves the other windows' drafts alone.
  */
-export async function restoreSliceFor(entry, { register, logger = console }) {
+export async function restoreSliceFor(entry, { register, restoredDocumentIds = [], logger = console }) {
   const documents = [];
   for (const document of entry.documents) {
     let file = null;
@@ -218,5 +231,5 @@ export async function restoreSliceFor(entry, { register, logger = console }) {
     }
     documents.push({ documentId: document.documentId, file: file ?? null, fileName: document.fileName, active: document.active });
   }
-  return { documents, continueThreadIds: [...entry.continueThreadIds] };
+  return { documents, continueThreadIds: [...entry.continueThreadIds], restoredDocumentIds: [...restoredDocumentIds] };
 }

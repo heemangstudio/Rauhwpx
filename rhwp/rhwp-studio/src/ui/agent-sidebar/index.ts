@@ -1018,9 +1018,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let continuationMessage: { threadId: string; markerId: string; messageId: string } | null = null;
   /**
    * 앱 업데이트로 다시 켠 뒤 한 번 누를 이어서 진행(resumeAfterRestart). 누르거나 거두면 null 이고,
-   * settle 은 눌렀으면 true, 거뒀으면 false 를 받는다.
+   * settle 은 눌렀으면 true, 거뒀으면 false 를 받는다. 1분 안에 누르지 못했거나 사용자가 그 채팅에 메시지를
+   * 보내면 거둔다.
    */
   let restartResume: { threadId: string; settle: (resumed: boolean) => void } | null = null;
+  const RESTART_RESUME_TIMEOUT_MS = 60_000;
   /* 연결 점과 입력기 잠금은 400ms 를 넘긴 상태만 보인다 — 짧은 재연결이나 채팅 시작이
      점·잠긴 입력기로 깜빡이지 않는다. 다른 탭 사용(replaced)은 바로 보인다. 판단은
      언제나 실제 상태(connState 등)로 한다. */
@@ -6756,6 +6758,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     spec: ComposedMessageSpec<StagedReference, NonNullable<ThreadMessage['selection']>>,
   ): ComposedMessageResult<ThreadMessage, HTMLElement> {
     const userAction = spec.origin === 'composer' || spec.origin === 'inline' || spec.origin === 'retry';
+    // 사용자가 직접 보냈으면 앱 재시작 뒤 미뤄 둔 이어서 진행은 누르지 않는다.
+    if (userAction && restartResume?.threadId === currentThread.id) dropRestartResume();
     prepareComposedMessage(spec.origin);
     const { skillName } = spec;
     let messageText: string;
@@ -10363,14 +10367,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ? null
       : unresolvedInterruption(currentThread);
     if (!interruption || segmentHasExpiredQuestion(currentThread.messages, interruption.marker.messageId)) {
-      restartResume = null;
-      pending.settle(false);
+      dropRestartResume();
       return;
     }
     if (mergeResolverLocked || resumeBlockedReason(false) !== null) return;
     restartResume = null;
     // 입력기·연결 표시를 그리는 도중에 불릴 수 있다 — 보내기는 그 뒤에 한다.
     queueMicrotask(() => pending.settle(resumeInterruptedTurn()));
+  }
+
+  function dropRestartResume(): void {
+    const pending = restartResume;
+    restartResume = null;
+    pending?.settle(false);
   }
 
   /**
@@ -13240,9 +13249,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     resumeAfterRestart(threadId: string): Promise<boolean> {
       if (root.dataset.disposed === 'true') return Promise.resolve(false);
-      restartResume?.settle(false);
-      return new Promise<boolean>((settle) => {
-        restartResume = { threadId, settle };
+      dropRestartResume();
+      return new Promise<boolean>((resolve) => {
+        const pending = {
+          threadId,
+          settle: (resumed: boolean) => {
+            window.clearTimeout(timer);
+            resolve(resumed);
+          },
+        };
+        const timer = window.setTimeout(() => {
+          if (restartResume === pending) dropRestartResume();
+        }, RESTART_RESUME_TIMEOUT_MS);
+        restartResume = pending;
         tryRestartResume();
       });
     },
@@ -13251,8 +13270,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;
-      restartResume?.settle(false);
-      restartResume = null;
+      dropRestartResume();
       browserActivation++;
       if (active) { sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null; sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null; }
       finishReplayNow();

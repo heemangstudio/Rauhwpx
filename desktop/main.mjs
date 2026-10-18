@@ -88,7 +88,6 @@ import {
   createRestartPrepareBroker,
   restoreSliceFor,
   updateWasApplied,
-  writeRestartManifest,
 } from './update-restart.mjs';
 import { installAppMenu } from './app-menu.mjs';
 import {
@@ -793,37 +792,29 @@ function updateMode() {
 }
 
 function liveWindowSessions() {
-  return sessions.windows().flatMap((window) => {
-    try {
-      return [sessions.sessionForSender(window.webContents)];
-    } catch {
-      return [];
-    }
-  });
+  return sessions.windows().map((window) => sessions.sessionForSender(window.webContents));
 }
 
-/** 모든 창이 문서를 넘겨준 뒤 창 목록을 남기고, 확인 없이 창을 닫고 설치로 넘긴다. */
+/**
+ * 모든 창이 준비하고(문서 정리·확인), 모두 응하면 확정한다(마지막 저장·닫기 확인 해제). 그 뒤에만 창 목록을
+ * 남기고, 확인 없이 창을 닫고 설치로 넘긴다. 어느 단계에서 멈추면 그 뒤로는 아무것도 보내지 않는다.
+ */
 async function restartForUpdate(state) {
-  const targets = [];
-  for (const session of liveWindowSessions()) {
-    const { window } = session;
+  const targets = liveWindowSessions()
     // 문서를 띄우지 못한 창은 넘길 것이 없다.
-    if (!session.rendererLoaded || session.rendererLoadFailed || window.webContents.isCrashed()) continue;
-    targets.push({
+    .filter((session) => session.rendererLoaded && !session.rendererLoadFailed && !session.window.webContents.isCrashed())
+    .map((session) => ({
       session,
       windowId: session.sessionId,
-      send: (requestId) => window.webContents.send('desktop:update-prepare-restart', { requestId }),
-    });
-  }
-  const prepared = await updatePrepareBroker.prepareAll(targets);
-  if (!prepared.ok) {
-    console.warn('[hamaeditor] update restart was not prepared:', prepared.reason);
-    return false;
-  }
+      isOpen: () => !session.window.isDestroyed(),
+      send: (phase, requestId) => session.window.webContents.send(`desktop:update-${phase}-restart`, { requestId }),
+    }));
+  const handedOff = await updatePrepareBroker.handOff(targets);
+  if (!handedOff.ok) throw new Error(`The windows did not hand over (${handedOff.reason}).`);
   const focused = BrowserWindow.getFocusedWindow();
   // 초점이 있던 창을 마지막에 다시 열어 맨 앞에 둔다.
   const restored = targets
-    .filter(({ session }) => prepared.slices.has(session.sessionId) && !session.window.isDestroyed())
+    .filter(({ session }) => handedOff.slices.has(session.sessionId) && !session.window.isDestroyed())
     .sort((a, b) => Number(a.session.window === focused) - Number(b.session.window === focused));
   const manifest = buildRestartManifest({
     fromVersion: app.getVersion(),
@@ -833,26 +824,33 @@ async function restartForUpdate(state) {
     windows: restored.map(({ session }) => ({
       bounds: session.window.getNormalBounds(),
       maximized: session.window.isMaximized(),
-      slice: prepared.slices.get(session.sessionId),
+      slice: handedOff.slices.get(session.sessionId),
       pathForHandle: (handleId) => nativeFiles.sourcePathForSender(session.sessionId, handleId),
     })),
   });
   try {
     await persistNativeBookmarks({ rejectOnError: true });
-    await writeRestartManifest(updateRestartFile, manifest, { writeAtomically: writeNativeFileAtomically });
+    await writeNativeFileAtomically(updateRestartFile, Buffer.from(JSON.stringify(manifest), 'utf8'));
     // 렌더러가 남긴 복구 기록(localStorage)을 설치가 프로세스를 끝내기 전에 디스크에 쓴다.
     electronSession.defaultSession.flushStorageData();
   } catch (error) {
-    console.warn('[hamaeditor] update restart state could not be saved:', error);
-    return false;
+    // 멈춘 재시작의 창 목록이 다음 실행에서 창을 다시 열지 않게 한다.
+    await rm(updateRestartFile, { force: true }).catch(() => {});
+    throw error;
   }
   updateRestartClosing = true;
-  for (const session of liveWindowSessions()) {
+  // 열린 닫기 확인의 답이 설치를 멈추지 않게 한다. 설치로 넘기지 못하면 되돌린다.
+  const closeStates = liveWindowSessions().map((session) => [session, session.allowCloseOnce, session.pendingCloseRequestId]);
+  for (const [session] of closeStates) {
     session.allowCloseOnce = true;
     session.pendingCloseRequestId = null;
   }
   if (updateLifecycle.requestInstall({ relaunchOnly: Boolean(fakeUpdateVersion) })) return true;
   updateRestartClosing = false;
+  for (const [session, allowCloseOnce, pendingCloseRequestId] of closeStates) {
+    session.allowCloseOnce = allowCloseOnce;
+    session.pendingCloseRequestId = pendingCloseRequestId;
+  }
   await rm(updateRestartFile, { force: true }).catch(() => {});
   return false;
 }
@@ -917,7 +915,11 @@ function cascadedWindowPosition() {
 // 앱 테마(프리셋·밝게·어둡게)의 바탕색. 창이 내용보다 먼저 그리는 배경과 다음 새 창의 배경에 쓴다.
 let lastWindowBackground = null;
 
-async function createWindow(launch = launchRequest(), { generatedDocument = null, updateRestore = null } = {}) {
+async function createWindow(launch = launchRequest(), {
+  generatedDocument = null,
+  updateRestore = null,
+  restoredDocumentIds = [],
+} = {}) {
   // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
   // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
   void hubOwner.ensure().catch(() => {});
@@ -1027,6 +1029,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     }
     if (updateRestore) {
       session.updateRestore = await restoreSliceFor(updateRestore, {
+        restoredDocumentIds,
         register: async (filePath) => {
           const result = await nativeFiles.create(session.sessionId, filePath);
           return result.ok ? { ...result.descriptor, saveTargetCreated: result.created } : null;
@@ -1378,9 +1381,11 @@ ipcMain.on('desktop:update-running-chats', (event, count) => {
     console.warn('[hamaeditor] running chat count update failed:', error);
   }
 });
-ipcMain.handle('desktop:update-prepare-response', (event, requestId, slice) => (
-  updatePrepareBroker.respond(sessionForEvent(event).sessionId, requestId, slice)
-));
+for (const phase of ['prepare', 'commit']) {
+  ipcMain.handle(`desktop:update-${phase}-response`, (event, requestId, slice) => (
+    updatePrepareBroker.respond(sessionForEvent(event).sessionId, requestId, slice)
+  ));
+}
 // 재시작 전 이 창의 문서와 이어 갈 채팅. 창마다 한 번만 준다.
 ipcMain.handle('desktop:get-update-restore', (event) => {
   const session = sessionForEvent(event);
@@ -2006,8 +2011,13 @@ if (!hasSingleInstanceLock) {
     licenseManager.start();
     desktopReady = true;
     let failedLaunches = 0;
+    const restoredDocumentIds = (restartManifest?.windows ?? [])
+      .flatMap((entry) => entry.documents.map((document) => document.documentId));
     for (const entry of restartManifest?.windows ?? []) {
-      await createWindow(launchRequest({ source: 'update-restart' }), { updateRestore: entry }).catch((error) => {
+      await createWindow(launchRequest({ source: 'update-restart' }), {
+        updateRestore: entry,
+        restoredDocumentIds,
+      }).catch((error) => {
         failedLaunches += 1;
         console.warn('[hamaeditor] update restart window failed to open:', error);
       });

@@ -71,6 +71,8 @@ export interface UpdateRestoreSlice {
     active: boolean;
   }>;
   continueThreadIds: string[];
+  /** 다시 켠 모든 창의 문서 ID. 다른 창이 다시 여는 문서의 복구본은 복구 제안에 넣지 않는다. */
+  restoredDocumentIds: string[];
 }
 
 export interface DesktopUpdatesApi {
@@ -85,10 +87,15 @@ export interface DesktopUpdatesApi {
   /** 창마다 보낸다. 응답을 기다리지 않는다. */
   setRunningChatCount(count: number): void;
   /**
-   * 업데이트 재시작 전에 메인이 모든 창에 준비를 부탁한다. 처리기는 저장할 것을 정리해 이 창의 몫을
-   * 돌려준다. ok:false 면 재시작을 멈추고 상태는 downloaded 로 돌아간다.
+   * 업데이트 재시작 전에 메인이 모든 창에 준비를 부탁한다. 처리기는 저장할 것을 정리하고 필요하면 묻되,
+   * 닫기 확인은 아직 풀지 않는다. ok:false 면 재시작을 멈추고 상태는 downloaded 로 돌아간다.
    */
   onPrepareRestart(handler: () => Promise<UpdateRestartSlice>): () => void;
+  /**
+   * 모든 창이 준비에 응한 뒤 메인이 확정을 부탁한다. 처리기는 그 사이의 편집까지 남기고 닫기 확인을 푼 뒤
+   * 이 창의 몫을 돌려준다. 메인은 이 몫으로 다시 열 창을 기록한다.
+   */
+  onCommitRestart(handler: () => Promise<UpdateRestartSlice>): () => void;
   /** 다시 켠 창마다 한 번만 준다. 그 밖에는 null. */
   getRestore(): Promise<UpdateRestoreSlice | null>;
 }

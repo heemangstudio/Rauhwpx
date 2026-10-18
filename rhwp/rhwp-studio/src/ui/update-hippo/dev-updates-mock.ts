@@ -100,6 +100,7 @@ export function createDevUpdatesApi(scenario: string, search = location.search):
       set({ runningChats: count });
     },
     onPrepareRestart: () => () => {},
+    onCommitRestart: () => () => {},
     getRestore: async () => null,
   };
 }

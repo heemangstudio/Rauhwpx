@@ -167,7 +167,6 @@ import type {
   AutosaveStatus,
 } from '@/recovery/autosave-manager';
 import {
-  clearRecoverableAutosaveDrafts,
   defaultAutosaveLocks,
   deleteAutosaveDraft,
   getAutosaveDraft,
@@ -304,6 +303,7 @@ import {
   restoredNativeFileHandle,
   type UpdateRestartSlice,
   type UpdateRestoreSlice,
+  type DesktopUpdateState,
 } from '@/desktop-integration';
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
@@ -916,13 +916,17 @@ installDesktopCloseHandling(async () => {
 });
 // 업데이트 재시작은 창마다 문서를 넘겨받은 뒤 저장을 묻지 않고 닫는다.
 desktopUpdatesApi()?.onPrepareRestart(prepareUpdateRestart);
+desktopUpdatesApi()?.onCommitRestart(commitUpdateRestart);
 // 메뉴의 업데이트 확인은 답을 홈의 하마가 한다. 그 메뉴를 고른 창(초점 창)만 홈을 연다.
-let manualUpdateCheck = false;
+let lastUpdateState: DesktopUpdateState | null = null;
 desktopUpdatesApi()?.onState((state) => {
-  // 확인 중(checking)은 수동 확인에만 알린다. 이미 받아 둔 업데이트면 manual 만 켜진다.
-  if (state.manual && (state.status === 'checking' || !manualUpdateCheck) && document.hasFocus()) openDocumentHome();
-  manualUpdateCheck = state.manual;
+  const previous = lastUpdateState;
+  lastUpdateState = state;
+  // 수동 확인이 막 시작했을 때만 연다. 이미 받아 둔 업데이트면 확인 없이 manual 만 켜진다.
+  const startedChecking = state.status === 'checking' && previous?.status !== 'checking';
+  if (state.manual && (startedChecking || !previous?.manual) && document.hasFocus()) openDocumentHome();
 });
+void desktopUpdatesApi()?.getState().then((state) => { lastUpdateState ??= state; }).catch(() => {});
 
 const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
 
@@ -5071,15 +5075,18 @@ async function loadPinnedDocument(): Promise<void> {
   }
 }
 
-async function offerAutosaveRecoveryAtStartup(): Promise<void> {
+/** skipDocumentIds: 업데이트로 다시 켠 다른 창이 다시 여는 문서. 그 복구본은 묻지도 지우지도 않는다. */
+async function offerAutosaveRecoveryAtStartup(skipDocumentIds: ReadonlySet<string> = new Set()): Promise<void> {
   if (shouldSkipInitialAutosaveRecovery()) return;
+  const listRecoverable = async () => (await listRecoverableAutosaveDrafts())
+    .filter((draft) => !draft.documentId || !skipDocumentIds.has(draft.documentId));
 
   try {
     // 다른 창에서 띄운 창은 묻지 않는다. 복구본은 남아 앱의 첫 창이 다음에 묻는다.
     if (!await offersAutosaveRecovery()) return;
     await rendererSessionContextPromise;
     await offerAutosaveRecovery({
-      listRecoverable: () => listRecoverableAutosaveDrafts(),
+      listRecoverable,
       hasOpenDocument: () => wasm.pageCount > 0 || documentState.isDirty(),
       notifyAvailable: (open) => showToast({
         message: '복구할 수 있는 자동 저장본이 있습니다.',
@@ -5088,7 +5095,9 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
       }),
       markOffered: (ids) => markAutosaveDraftsOffered(ids),
       showDialog: (drafts) => showAutosaveRecoveryDialog(drafts),
-      clearRecoverable: () => clearRecoverableAutosaveDrafts(),
+      clearRecoverable: async () => {
+        await Promise.all((await listRecoverable()).map((draft) => deleteAutosaveDraft(draft.id)));
+      },
       canReplaceCurrentDocument: () => canReplaceCurrentDocument(),
       restore: (draft) => restoreAutosaveDraftIntoEditor(draft),
       toast: (message, durationMs) => showToast({ message, durationMs }),
@@ -5333,17 +5342,23 @@ async function keepUpdateRestartDraft(session: DocumentSession): Promise<boolean
   return session.autosave.flushAndWait('update-restart').catch(() => false);
 }
 
+interface UpdateRestartEntry {
+  session: DocumentSession;
+  kind: UpdateRestartRecord['kind'];
+  kept: boolean;
+  pendingAgentOps: number;
+}
+
 /**
- * 업데이트 재시작 준비 — 메인이 창을 닫기 전에 부른다. 저장을 묻지 않고 닫히므로 문서마다 다시 여는 법을 남긴다:
- * 바뀐 문서(검토 대기 편집 포함)와 파일 없는 문서는 복구본으로(복구용 자동 저장을 꺼 두었어도 이번에는 남긴다),
- * 깨끗한 파일 문서는 그 파일로, 버전 기록의 작업 공간 문서는 작업 공간으로. 복구본을 남기지 못한 문서가 있으면
- * 한 번 묻고, 거절하면 재시작하지 않는다. 돌던 채팅은 다시 켠 뒤 이어서 진행한다(질문·권한을 기다리면 뺀다).
+ * 저장을 묻지 않고 닫히므로 문서마다 다시 여는 법을 남긴다: 바뀐 문서(검토 대기 편집 포함)와 파일 없는 문서는
+ * 복구본으로(복구용 자동 저장을 꺼 두었어도 이번에는 남긴다), 깨끗한 파일 문서는 그 파일로, 버전 기록의 작업
+ * 공간 문서는 작업 공간으로. kept 가 false 면 그 문서의 복구본을 남기지 못했다.
  */
-async function prepareUpdateRestart(): Promise<UpdateRestartSlice> {
+async function keepUpdateRestartDocuments(): Promise<UpdateRestartEntry[]> {
   // 진행 중인 저장이 끝나야 문서가 깨끗한지 안다.
   await whenSavesIdle().catch(() => {});
   try { inputHandler?.flushDeferredPaginationIfNeeded('update-restart'); } catch { /* 복구본은 그대로 남긴다 */ }
-  const prepared = await Promise.all(liveSessions
+  return Promise.all(liveSessions
     .filter((session) => session.documentId !== null && session.wasm.hasLoadedDocument())
     .map(async (session) => {
       const pendingAgentOps = session.chats.reduce((sum, chat) => sum + chat.bridge.pendingEdits.getChangeSets()
@@ -5361,17 +5376,16 @@ async function prepareUpdateRestart(): Promise<UpdateRestartSlice> {
           : await keepUpdateRestartDraft(session);
       return { session, kind, kept, pendingAgentOps };
     }));
-  const lost = prepared.filter((entry) => !entry.kept);
-  if (lost.length > 0) {
-    const names = lost.map(({ session }) => `"${session.wasm.fileName}"`).join(', ');
-    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n재시작하면 저장하지 않은 변경이 사라져요.`)) {
-      return { ok: false, documents: [], continueThreadIds: [] };
-    }
-  }
-  const now = Date.now();
+}
+
+/** 메인에 넘길 이 창의 문서와, 다시 켠 창이 문서마다 읽을 기록. */
+function describeUpdateRestart(entries: readonly UpdateRestartEntry[], now: number): {
+  documents: UpdateRestartSlice['documents'];
+  records: Map<string, UpdateRestartRecord>;
+} {
   const records = new Map<string, UpdateRestartRecord>();
   const documents: UpdateRestartSlice['documents'] = [];
-  for (const { session, kind, kept, pendingAgentOps } of prepared) {
+  for (const { session, kind, kept, pendingAgentOps } of entries) {
     const documentId = session.documentId!;
     const hasFile = Boolean(session.wasm.currentFileHandle);
     // 복구본을 남기지 못했으면 그 전 자동 저장본을, 그것도 없으면 파일을 연다. 둘 다 없으면 다시 열 수 없다.
@@ -5395,13 +5409,57 @@ async function prepareUpdateRestart(): Promise<UpdateRestartSlice> {
       active: session === attachedSession,
     });
   }
+  return { documents, records };
+}
+
+/** 돌던 채팅은 다시 켠 뒤 이어서 진행한다(질문·권한을 기다리면 뺀다). */
+function updateRestartThreadIds(): string[] {
+  return allChats().filter(chatContinuesAfterRestart)
+    .map((chat) => chat.sidebar.currentThreadId())
+    .filter((threadId): threadId is string => threadId !== null);
+}
+
+const REFUSED_UPDATE_RESTART: UpdateRestartSlice = { ok: false, documents: [], continueThreadIds: [] };
+/** 준비에 응한 결과. 확정이 이어받는다. 멈춘 재시작이 남긴 것은 다음 준비가 덮는다. */
+let preparedUpdateRestart: UpdateRestartEntry[] | null = null;
+
+/**
+ * 업데이트 재시작 준비 — 메인이 모든 창에 먼저 부른다. 문서마다 복구본을 남기고, 남기지 못한 문서가 있으면 한
+ * 번 묻고, 거절하면 재시작하지 않는다. 다른 창이 거절할 수 있으니 닫기 확인은 아직 풀지 않는다.
+ */
+async function prepareUpdateRestart(): Promise<UpdateRestartSlice> {
+  preparedUpdateRestart = null;
+  const entries = await keepUpdateRestartDocuments();
+  const lost = entries.filter((entry) => !entry.kept);
+  if (lost.length > 0) {
+    const names = lost.map(({ session }) => `"${session.wasm.fileName}"`).join(', ');
+    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n재시작하면 저장하지 않은 변경이 사라져요.`)) {
+      return REFUSED_UPDATE_RESTART;
+    }
+  }
+  preparedUpdateRestart = entries;
+  return { ok: true, documents: describeUpdateRestart(entries, Date.now()).documents, continueThreadIds: updateRestartThreadIds() };
+}
+
+/**
+ * 업데이트 재시작 확정 — 모든 창이 준비에 응한 뒤 메인이 부른다. 준비 뒤의 편집까지 같은 복구본에 남기고, 기록과
+ * 채팅을 넘긴 뒤 닫기 확인을 푼다. 준비 때 사용자가 받아들이지 않은 문서의 복구본을 남기지 못하면 묻지 않고 멈춘다.
+ */
+async function commitUpdateRestart(): Promise<UpdateRestartSlice> {
+  const prepared = preparedUpdateRestart;
+  preparedUpdateRestart = null;
+  if (!prepared) return REFUSED_UPDATE_RESTART;
+  // 멈춘 엔진은 그 뒤로 편집을 받지 않고 복구본도 한 번만 남긴다.
+  const entries = engineTrap() ? prepared : await keepUpdateRestartDocuments();
+  const acceptedLoss = new Set(prepared.filter((entry) => !entry.kept).map((entry) => entry.session));
+  if (entries.some((entry) => !entry.kept && !acceptedLoss.has(entry.session))) return REFUSED_UPDATE_RESTART;
+  const now = Date.now();
+  const { documents, records } = describeUpdateRestart(entries, now);
   // 기록을 남기지 못해도 재시작한다. 다시 켠 창은 파일 문서만 열고, 남은 복구본은 복구 제안에 나온다.
   if (!writeUpdateRestartRecords(localStorageOrNull(), records, now)) {
     console.warn('[update] 다시 켠 뒤 열 문서 기록을 남기지 못했습니다.');
   }
-  const continueThreadIds = allChats().filter(chatContinuesAfterRestart)
-    .map((chat) => chat.sidebar.currentThreadId())
-    .filter((threadId): threadId is string => threadId !== null);
+  const continueThreadIds = updateRestartThreadIds();
   // 닫힐 때처럼 채팅 기록을 넘기고, 창이 닫히기 전에 저장소에 닿게 기다린다.
   for (const chat of allChats()) chat.sidebar.persistThread();
   await waitForThreadsPersistence().catch(() => {});
@@ -5476,7 +5534,9 @@ async function restoreWindowAfterUpdate(restore: UpdateRestoreSlice): Promise<vo
   } catch (error) {
     console.error('[update] 업데이트 전 문서를 다시 열지 못했습니다:', error);
   } finally {
-    void offerAutosaveRecoveryAtStartup();
+    // 다른 창이 다시 여는 문서의 복구본은 그 창이 이어받는다. 이 창이 열지 못한 문서의 복구본은 제안에 남는다.
+    const own = new Set(restore.documents.map((document) => document.documentId));
+    void offerAutosaveRecoveryAtStartup(new Set(restore.restoredDocumentIds.filter((id) => !own.has(id))));
   }
   await continueChatsAfterUpdate(restore.continueThreadIds);
 }

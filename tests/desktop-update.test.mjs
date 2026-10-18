@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -14,7 +14,6 @@ import {
   createRestartPrepareBroker,
   restoreSliceFor,
   updateWasApplied,
-  writeRestartManifest,
 } from '../desktop/update-restart.mjs';
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -285,9 +284,11 @@ test('restart is single-flight and an aborted restart returns to downloaded', as
   await f.controller.download();
   assert.deepEqual(await f.controller.restart(), { ok: false });
   assert.equal(f.controller.state().status, 'downloaded');
+  assert.equal(f.controller.state().error?.context, 'install');
   assert.deepEqual(await f.controller.restart(), { ok: false });
-  assert.equal(f.controller.state().status, 'downloaded');
+  assert.deepEqual(f.controller.state().error, { context: 'install', message: 'disk full' });
   const first = f.controller.restart();
+  assert.equal(f.controller.state().error, null, 'retrying clears the error');
   const second = f.controller.restart();
   assert.equal(first, second);
   assert.deepEqual(await first, { ok: true });
@@ -386,35 +387,95 @@ function brokerFixture() {
     clearTimeoutImpl: () => {},
   });
   const sent = [];
-  const target = (windowId) => ({ windowId, send: (requestId) => sent.push([windowId, requestId]) });
-  return { broker, sent, target, fireTimeouts: () => timers.forEach((fn) => fn()) };
+  const closed = new Set();
+  const target = (windowId) => ({
+    windowId,
+    isOpen: () => !closed.has(windowId),
+    send: (phase, requestId) => sent.push([phase, windowId, requestId]),
+  });
+  const requestsFor = (phase) => sent.filter((entry) => entry[0] === phase);
+  return { broker, sent, closed, target, requestsFor, fireTimeouts: () => timers.splice(0).forEach((fn) => fn()) };
 }
 
-test('every window must answer the prepare request before the restart proceeds', async () => {
+test('windows commit only after every window prepared, and the commit answers are what restores', async () => {
   const f = brokerFixture();
-  const result = f.broker.prepareAll([f.target('a'), f.target('b'), f.target('c')]);
+  const result = f.broker.handOff([f.target('a'), f.target('b'), f.target('c')]);
   assert.equal(f.broker.respond('b', 'request-1', slice()), false, 'another window cannot answer');
-  f.broker.respond('a', 'request-1', slice([{ documentId: 'doc-1', handleId: 'h1', fileName: '보고서.hwp', active: true }], ['thread-1']));
+  f.broker.respond('a', 'request-1', slice());
+  await tick();
+  assert.deepEqual(f.requestsFor('commit'), [], 'no commit while a window is still preparing');
   f.broker.respond('b', 'request-2', slice());
   f.broker.drop('c');
-  const prepared = await result;
-  assert.equal(prepared.ok, true);
-  assert.deepEqual([...prepared.slices.keys()], ['a', 'b']);
-  assert.deepEqual(prepared.slices.get('a').continueThreadIds, ['thread-1']);
+  await tick();
+  assert.deepEqual(f.requestsFor('commit').map(([, windowId]) => windowId), ['a', 'b']);
+  f.broker.respond('a', 'request-4', slice([{ documentId: 'doc-1', handleId: 'h1', fileName: '보고서.hwp', active: true }], ['thread-1']));
+  f.broker.respond('b', 'request-5', slice());
+  const handedOff = await result;
+  assert.equal(handedOff.ok, true);
+  assert.deepEqual([...handedOff.slices.keys()], ['a', 'b']);
+  assert.deepEqual(handedOff.slices.get('a').continueThreadIds, ['thread-1']);
+});
+
+test('a window that closed after preparing is not asked to commit', async () => {
+  const f = brokerFixture();
+  const result = f.broker.handOff([f.target('a'), f.target('b')]);
+  f.broker.respond('a', 'request-1', slice());
+  f.broker.respond('b', 'request-2', slice());
+  f.closed.add('b');
+  await tick();
+  assert.deepEqual(f.requestsFor('commit').map(([, windowId]) => windowId), ['a']);
+  f.broker.respond('a', 'request-3', slice());
+  assert.deepEqual([...(await result).slices.keys()], ['a']);
 });
 
 for (const failure of ['ok:false', 'malformed', 'timeout']) {
-  test(`a prepare ${failure} aborts the restart`, async () => {
+  test(`a prepare ${failure} aborts the restart before any window commits`, async () => {
     const f = brokerFixture();
-    const result = f.broker.prepareAll([f.target('a'), f.target('b')]);
+    const result = f.broker.handOff([f.target('a'), f.target('b')]);
     f.broker.respond('a', 'request-1', slice());
     if (failure === 'ok:false') f.broker.respond('b', 'request-2', { ok: false });
     if (failure === 'malformed') f.broker.respond('b', 'request-2', { ok: true, documents: [{ handleId: 'h' }], continueThreadIds: [] });
     if (failure === 'timeout') f.fireTimeouts();
-    const prepared = await result;
-    assert.equal(prepared.ok, false);
+    assert.equal((await result).ok, false);
+    assert.deepEqual(f.requestsFor('commit'), []);
   });
 }
+
+test('a refused commit aborts the restart', async () => {
+  const f = brokerFixture();
+  const result = f.broker.handOff([f.target('a'), f.target('b')]);
+  f.broker.respond('a', 'request-1', slice());
+  f.broker.respond('b', 'request-2', slice());
+  await tick();
+  f.broker.respond('a', 'request-3', slice());
+  f.broker.respond('b', 'request-4', { ok: false });
+  assert.deepEqual(await result, { ok: false, reason: 'commit refused' });
+});
+
+test('a window refusing the hand-off leaves the update downloaded with an install error and no manifest', async () => {
+  const f = brokerFixture();
+  const manifests = [];
+  // main.mjs restartForUpdate: hand off, and only then write the manifest and install.
+  const c = controllerFixture({
+    restartApp: async () => {
+      const handedOff = await f.broker.handOff([f.target('a'), f.target('b')]);
+      if (!handedOff.ok) throw new Error(`The windows did not hand over (${handedOff.reason}).`);
+      manifests.push([...handedOff.slices.keys()]);
+      return true;
+    },
+  });
+  await c.controller.check();
+  await c.controller.download();
+  const restart = c.controller.restart();
+  await tick();
+  f.broker.respond('a', 'request-1', slice());
+  f.broker.respond('b', 'request-2', { ok: false });
+  assert.deepEqual(await restart, { ok: false });
+  assert.deepEqual(manifests, []);
+  assert.deepEqual(f.requestsFor('commit'), []);
+  assert.equal(c.controller.state().status, 'downloaded');
+  assert.equal(c.controller.state().error?.context, 'install');
+});
 
 test('the manifest maps handles to paths and survives a stale handle', () => {
   const manifest = buildRestartManifest({
@@ -442,7 +503,7 @@ test('the manifest is consumed once and only while it is recent', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hama-update-restart-'));
   try {
     const file = join(dir, 'update-restart.json');
-    const writeAtomically = (path, bytes) => writeFile(path, bytes);
+    const writeManifest = () => writeFile(file, JSON.stringify(manifest));
     const manifest = {
       fromVersion: '3.0.2', targetVersion: '3.0.3', createdAt: 10_000,
       windows: [{
@@ -452,14 +513,13 @@ test('the manifest is consumed once and only while it is recent', async () => {
         continueThreadIds: ['thread-1'],
       }],
     };
-    await writeRestartManifest(file, manifest, { writeAtomically });
-    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), manifest);
+    await writeManifest();
     const consumed = await consumeRestartManifest(file, { now: 10_000 + 60_000, logger: quiet });
     assert.deepEqual(consumed, { ...manifest, fake: false });
     await assert.rejects(stat(file), { code: 'ENOENT' });
     assert.equal(await consumeRestartManifest(file, { now: 10_000, logger: quiet }), null);
 
-    await writeRestartManifest(file, manifest, { writeAtomically });
+    await writeManifest();
     assert.equal(await consumeRestartManifest(file, { now: 10_000 + UPDATE_RESTART_MAX_AGE_MS + 1, logger: quiet }), null);
     await assert.rejects(stat(file), { code: 'ENOENT' }, 'an expired manifest is removed too');
 
@@ -487,6 +547,7 @@ test('a restored window keeps documents whose file is gone, detached from the fi
     continueThreadIds: ['thread-1'],
   }, {
     logger: quiet,
+    restoredDocumentIds: ['doc-1', 'doc-2', 'doc-3', 'doc-other-window'],
     register: async (path) => {
       if (path.endsWith('gone.hwp')) throw new Error('missing');
       return { kind: 'file', handleId: 'new-handle', name: 'a.hwp' };
@@ -495,4 +556,5 @@ test('a restored window keeps documents whose file is gone, detached from the fi
   assert.deepEqual(restored.documents.map((document) => document.file?.handleId ?? null), ['new-handle', null, null]);
   assert.deepEqual(restored.documents.map((document) => document.documentId), ['doc-1', 'doc-2', 'doc-3']);
   assert.deepEqual(restored.continueThreadIds, ['thread-1']);
+  assert.deepEqual(restored.restoredDocumentIds, ['doc-1', 'doc-2', 'doc-3', 'doc-other-window']);
 });

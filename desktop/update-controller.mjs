@@ -46,7 +46,6 @@ export function createUpdateController({
   let externalUrl = null;
   let notAppliedVersion = null;
   let restartPromise = null;
-  let timers = [];
 
   function set(patch) {
     state = Object.freeze({ ...state, ...patch });
@@ -178,13 +177,16 @@ export function createUpdateController({
     set({ status: 'restarting', error: null });
     restartPromise = (async () => {
       let handedOff = false;
+      let message = 'The restart did not start.';
       try {
         handedOff = await restartApp(state);
       } catch (error) {
-        logger.warn('[hamaeditor] update restart failed:', errorMessage(error));
+        message = errorMessage(error);
+        logger.warn('[hamaeditor] update restart failed:', message);
       }
       if (!handedOff) {
-        set({ status: 'downloaded' });
+        // The downloaded update stays; the sign offers the restart again.
+        set({ status: 'downloaded', error: { context: 'install', message } });
         restartPromise = null;
       }
       return { ok: handedOff };
@@ -218,18 +220,8 @@ export function createUpdateController({
       void check({ manual: false });
       const periodic = setIntervalImpl(() => { void check({ manual: false }); }, intervalMs);
       periodic?.unref?.();
-      timers.push(periodic);
     }, initialDelayMs);
     launch?.unref?.();
-    timers.push(launch);
-  }
-
-  function stop() {
-    for (const timer of timers) {
-      clearTimeout(timer);
-      clearInterval(timer);
-    }
-    timers = [];
   }
 
   return {
@@ -241,7 +233,6 @@ export function createUpdateController({
     forgetRunningChats: (windowId) => setRunningChats(windowId, 0),
     markNotApplied,
     start,
-    stop,
   };
 }
 

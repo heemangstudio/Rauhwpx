@@ -87,6 +87,17 @@ export function updateSign(state: DesktopUpdateState | null, view: UpdateSignVie
           spoken: line,
         };
       }
+      // 재시작을 멈췄으면 그렇다고 알리고, 같은 단추로 경고 팻말부터 다시 간다.
+      if (state.error?.context === 'install') {
+        return {
+          key: 'restart-failed',
+          tone: 'plain',
+          lines: ['재시작하지 못했어요'],
+          progress: null,
+          actions: [{ id: 'restart', label: '앱 재시작', icon: 'reload' }],
+          spoken: '재시작하지 못했어요',
+        };
+      }
       return {
         key: 'downloaded',
         tone: 'plain',
