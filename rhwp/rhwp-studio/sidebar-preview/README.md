@@ -69,14 +69,15 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=question` | A question with selectable and free-text answers |
 | `?scenario=permission` (`&permissionCapability=downloads`) | A permission card with the small 항상 switch next to ×, 거절 and 허용 |
 | `?scenario=sign-in` (`&handoff=code`) | The agent hands a sign-in (or verification code) to the user: the card shows the workbench's frame of the tab with 에이전트 대기 중; 직접 하기 (직접 입력) takes control of the tab (직접 제어 중, 탭 보기), 완료 returns it and resumes the chat |
-| `?scenario=use-account` | A saved-account card (Google 연구) with the scope choice |
-| `?scenario=site-access` | A site access card (www.coupang.com) with the saved account on one line, the 항상 switch, 거부 / 허용 |
-| `?scenario=save-account` | The account form inside a card: name, login, password, 저장 안 함 / 저장 |
+| `?scenario=use-account` | A replayed legacy account-use request (Google 연구), read as the site card with that login |
+| `?scenario=site-access` | A site access card (coupang.com) with the saved login on one line, the 항상 switch, 거절 / 허용 |
+| `?scenario=site-access-blocked` | The site card that lifts an owner block: the blocked banner, a login turned off, 항상 locked on, 차단 해제 |
+| `?scenario=save-account` | The account form inside a card: name, login, password, 저장 안 함 / 저장; its 항상 switch is the scope of the site access granted with the login |
 | `?scenario=secret` | The agent asks for an API key: editable name, read-only sites, masked value with show/hide, 항상 / 이 채팅, 거절 / 저장. The value goes only to `bridge.submitSecret`; the mock keeps its length |
-| `?scenario=secret-use` | The agent asks to type a saved secret (Notion API 키) into its sites: 허용 / 거절 with the scope choice |
+| `?scenario=secret-use` | The agent asks to type a saved secret (Notion API 키): the site card with the secret on one line |
 | `?scenario=requests` | Three requests in one turn (download permission, secret use, code handoff); each card resolves on its own |
 | `&requestFail=1` (any request scenario) | The first answer fails: the card shows the error row with 다시 시도 (a failed secret save clears the value instead) |
-| `?page=settings&destination=browser&always=downloads,browser` | Browser settings: accounts, saved passwords and secrets in one logo list with the icon kind filter (전체 · 계정 · 비밀번호 · 비밀 값), and the always-allowed list under 승인된 권한 |
+| `?page=settings&destination=browser&always=downloads,browser` | Browser settings: saved logins and secrets in one logo list with the icon kind filter (전체 · 비밀번호 · 비밀 값) and one 에이전트 사용 switch each; under 권한, the 사이트 list (항상 허용 · 이 채팅 · 로그인됨 · 차단, expand for 허용 · 해제 · 로그인 표시 지우기 and block edit) and the always-allowed list |
 | `&browserAccounts=many` / `&browserAccounts=empty` | Accounts in every state (signed in, needs a check, signed out, password only) / no accounts or secrets (empty state) |
 | `&secureStorage=0` | The hub reports no secure storage: 비밀번호 추가 and 비밀번호 변경 are disabled with a one-line notice |
 | `&vault=1` (`empty`, `unsupported`, `fail`) | The desktop app's local password vault: imported Chrome passwords with the agent-use switch, and **+ → Chrome에서 가져오기** with profile choice, password import and sign-in (cookie) import with per-site checkboxes. `empty` has no Chrome profile, `unsupported` is a non-Mac machine, `fail` denies the first import (retry). `sidebarPreview.localPasswords.snapshot()` lists imports, approvals and removals |

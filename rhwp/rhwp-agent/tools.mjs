@@ -1816,17 +1816,17 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs, saved accounts and secrets (no values). activeTabId is the current sidebar tab; reuse it for the current-page task. Accounts with agentReuseApproved=true fill via browser_fill_account.',
+    description: 'List shared user tabs, your assigned tabs, sites this chat can act on, and the active browser\'s saved logins and secrets (no values). usable=true fills now. activeTabId is the current sidebar tab; reuse it for the current-page task.',
     shape: {},
   },
   {
     name: 'browser_open',
-    description: 'Open a separate research tab. Public browsing/downloads are available; account reuse needs approval. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
+    description: 'Open a separate research tab. Public pages and downloads open freely; a site the owner is signed in to needs site access. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
     shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. Private services and website changes need their own permissions.',
+    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. A refused navigation leaves the tab on its page.',
     shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
   },
   {
@@ -1841,12 +1841,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_click',
-    description: 'Click a ref from the current snapshot. Declare search, login or export intent for those research flows. Website-changing submissions need browser_request_account kind site.',
+    description: 'Click a ref from the current snapshot. Ordinary buttons and links are free; submitting a non-GET form or a same-site write during the click needs site access.',
     shape: browserRefShape(),
   },
   {
     name: 'browser_type',
-    description: 'Fill a current snapshot element with ordinary research text. submit:true then presses trusted Enter on that element; declare the same search, login or website-change intent as a separate submission. Never pass passwords or account secrets here; request an account through browser_request_account.',
+    description: 'Fill a current snapshot element with ordinary text. submit:true then presses trusted Enter on that element; submitting a non-GET form needs site access. Never pass passwords or secrets here; use browser_fill_account or browser_fill_secret.',
     shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
   },
   {
@@ -1886,17 +1886,17 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_fill_account',
-    description: 'Autofill a sign-in form with an account ID from browser_status, including logins the user saved. With agentReuseApproved=true on its site, proceed without approval; otherwise browser_request_account kind site. Pass current username/password refs. Credentials never enter arguments or results.',
+    description: 'Fill a saved login from browser_status into a sign-in form on its own site (same registrable domain). Needs site access; on a refusal make the call it names. Pass current username/password refs. Credentials never enter arguments or results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_fill_secret',
-    description: 'Type an approved secret (browser_status secrets) into one text or password field on its origin. Returns the settled change, never the value.',
+    description: 'Type a saved secret (browser_status secrets) into one text or password field on its site. Needs site access. Returns the settled change, never the value.',
     shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160), ref: z.string().min(1).max(160), secretId: z.string().uuid(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), submit: z.boolean().default(false) },
   },
   {
     name: 'request_secret',
-    description: 'Root conversation only. Ask the user for an API key, token or password used on exact HTTPS origins; secretId reuses a saved one. Returns pending: end the turn. You never see the value.',
+    description: 'Root conversation only. Ask the user for an API key, token or password used on HTTPS origins; secretId reuses a saved one. Returns granted, or pending: end the turn. You never see the value.',
     shape: {
       label: z.string().trim().min(1).max(80),
       origins: z.array(z.string().max(2_000)).min(1).max(20),
@@ -1907,8 +1907,9 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. Ask for access to a site. kind site: one card allows browsing, website changes and its saved account on the whole domain. kind account (default): the same card when the site has a saved account, else a save form. kind sign-in or code: the user acts in tabId. Returns pending: end the turn; the chat resumes on answer. No credentials in chat.',
-    shape: { tabId: browserTab(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120), reason: z.string().min(1).max(1_000), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'site', 'sign-in', 'code']).optional() },
+    description: 'Root conversation only. kind site: one card for site access on the whole domain (signed-in reads, changes, saved logins and secrets). kind account: save a login when the site has none. kind sign-in or code: the user acts in tabId. Returns granted, or pending: end the turn.',
+    shape: { tabId: browserTab().optional(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120).optional(), reason: z.string().min(1).max(1_000).optional(), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'site', 'sign-in', 'code']).optional(),
+      blocked: z.array(z.enum(['browse', 'read', 'download', 'research-import', 'website-change', 'account-use'])).max(6).optional() },
   },
 ];
 

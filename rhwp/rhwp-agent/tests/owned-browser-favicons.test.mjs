@@ -148,9 +148,9 @@ test('real browser shows a page icon to the user only, never to the agent, and b
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-favicon-runtime-'));
   const sitePolicy = createBrowserPolicy({ dataDir });
   // 에이전트는 unrelated 출처를 열 수 없다. 페이지가 그 출처의 아이콘을 선언해도 허브가 대신 받으면 안 된다.
-  const policy = { ...sitePolicy, async assertAllowed(input) {
-    if (!input.actor.isHuman && new URL(input.url).origin === unrelated.origin) throw Object.assign(new Error('blocked'), { code: 'BROWSER_PERMISSION_REQUIRED' });
-    return sitePolicy.assertAllowed(input);
+  const policy = { ...sitePolicy, async check(input) {
+    if (!input.actor.isHuman && new URL(input.url).origin === unrelated.origin) return { allowed: false, code: 'BROWSER_SITE_BLOCKED', reason: 'blocked', blocked: ['browse'], origin: unrelated.origin, site: new URL(unrelated.origin).host };
+    return sitePolicy.check(input);
   } };
   const credentialBroker = createBrowserCredentialBroker({ dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 9) });
   const events = [];

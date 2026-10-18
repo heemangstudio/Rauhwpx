@@ -8,7 +8,7 @@ import { removeOwnedBrowserState } from '../browser-cleanup.mjs';
 test('owner cleanup removes its profile while retaining research bytes and unrelated credentials', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'browser-cleanup-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  await fs.writeFile(path.join(root, 'browser-policy.json'), JSON.stringify({ schema: 1, ownerId: 'local-owner', accounts: [] }));
+  await fs.writeFile(path.join(root, 'browser-policy.json'), JSON.stringify({ schema: 2, ownerId: 'local-owner', sites: [] }));
   for (const directory of ['browser/profile', 'browser/native-profile', 'browser/transfers', 'browser/favicons', 'browser/binaries', 'downloads/job', 'projects/project']) await fs.mkdir(path.join(root, directory), { recursive: true });
   await fs.writeFile(path.join(root, 'browser/profile/Cookies'), 'temporary fixture auth');
   await fs.writeFile(path.join(root, 'browser/binaries/chromium'), 'installed fixture browser');
@@ -37,7 +37,7 @@ test('cleanup rejects missing ownership and a redirected profile without touchin
   await fs.mkdir(outside); await fs.mkdir(owned);
   await fs.writeFile(path.join(outside, 'keep'), 'preserve');
   await assert.rejects(removeOwnedBrowserState({ dataDir: owned }), { code: 'ENOENT' });
-  await fs.writeFile(path.join(owned, 'browser-policy.json'), JSON.stringify({ schema: 1, ownerId: 'local-owner', accounts: [] }));
+  await fs.writeFile(path.join(owned, 'browser-policy.json'), JSON.stringify({ schema: 2, ownerId: 'local-owner', sites: [] }));
   await fs.symlink(outside, path.join(owned, 'browser'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(removeOwnedBrowserState({ dataDir: owned }), { code: 'BROWSER_CLEANUP_FAILED' });
   assert.equal(await fs.readFile(path.join(outside, 'keep'), 'utf8'), 'preserve');

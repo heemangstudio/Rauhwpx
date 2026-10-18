@@ -47,13 +47,19 @@ async function testRuntime(options) {
   };
   return runtime;
 }
-async function approveSession(broker, origin) {
-  const account = { origin, origins: [origin], label: 'Fixture account' };
-  const request = await broker.requestAccount({ actor: human, ...account, intent: 'use' });
-  return (await broker.approveAccount({ actor: human, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, use: true }, account })).account;
+async function saveLogin(broker, origin, { username = 'PRIVATE_USERNAME', password = 'PRIVATE_PASSWORD' } = {}) {
+  const request = await broker.requestAccount({ actor: agent, origin, label: 'Fixture saved account' });
+  return (await broker.saveLogin({ actor: human, requestId: request.requestId, account: { origin, label: 'Fixture saved account' }, username, password })).account;
+}
+// 여러 사이트를 한 서버로 띄운다. 호스트 이름은 모두 127.0.0.1 로 풀고 Host 머리글로 사이트를 고른다.
+async function sites(t, hosts, handler) {
+  const f = await fixture(t, handler, true);
+  const port = new URL(f.origin).port;
+  const origins = Object.fromEntries(hosts.map((host) => [host, `https://${host}:${port}`]));
+  return { ...f, origins, lookup: async () => [{ address: '127.0.0.1', family: 4 }] };
 }
 
-test('revocation during credential readiness prevents each subsequent secret field write', async (t) => {
+test('turning a login off during credential readiness prevents each subsequent field write', async (t) => {
   if (!await needsBrowser(t)) return;
   for (const hidden of ['username', 'password']) await t.test(hidden, async (subtest) => {
     let waiting = false;
@@ -65,9 +71,8 @@ test('revocation during credential readiness prevents each subsequent secret fie
     const policy = createBrowserPolicy({ dataDir: f.dataDir });
     const secretStore = createMemorySecretStore();
     const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, secretStore, wrappingKeyProvider: async () => Buffer.alloc(32, 7) });
-    const accountData = { origin: f.origin, origins: [f.origin], label: 'Fixture saved account' };
-    const request = await credentialBroker.requestAccount({ actor: agent, ...accountData });
-    const account = (await credentialBroker.submit({ actor: human, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, save: true, use: true }, account: accountData, username: 'PRIVATE_USERNAME', password: 'PRIVATE_PASSWORD', remember: true })).account;
+    const account = await saveLogin(credentialBroker, f.origin);
+    await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: f.origin, scope: 'chat' });
     let context;
     const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: async (options) => { const runtime = await testRuntime(options); context = runtime.context; return runtime; } });
     f.cleanup(() => browser.close());
@@ -77,7 +82,7 @@ test('revocation during credential readiness prevents each subsequent secret fie
     const filling = browser.request(agent, 'fill-account', { ...refArgs(observation, password), accountId: account.id, usernameRef: username.ref, passwordRef: password.ref });
     const rejected = assert.rejects(filling, (failure) => failure.code?.startsWith('BROWSER_'));
     await eventually(() => waiting);
-    await credentialBroker.revokeAccount({ actor: human, accountId: account.id });
+    await credentialBroker.setLoginBlocked({ actor: human, accountId: account.id, blocked: true });
     const page = context.pages().find((entry) => entry.url().startsWith(f.origin));
     await page.evaluate(() => { document.getElementById('identity').style.display = ''; document.getElementById('secret').style.display = ''; });
     await rejected;
@@ -86,166 +91,13 @@ test('revocation during credential readiness prevents each subsequent secret fie
   });
 });
 
-test('approved agent cookie rotation keeps exact nested-path provenance through restart', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let rotation = 0;
-  const f = await fixture(t, (request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/nested/login' || request.url === '/nested/research') response.setHeader('Set-Cookie', `identity=rotation-${rotation++}; HttpOnly; Max-Age=3600; Secure`);
-    response.end('<h1>Approved private research</h1>');
-  }, true);
-  const wrappingKey = Buffer.alloc(32, 9);
-  const build = () => { const policy = createBrowserPolicy({ dataDir: f.dataDir }); const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => wrappingKey }); return { credentialBroker, browser: createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: testRuntime }) }; };
-  const first = build(); f.cleanup(() => first.browser.close());
-  await first.browser.request(human, 'open', { url: `${f.origin}/nested/login` });
-  const account = await approveSession(first.credentialBroker, f.origin);
-  const opened = await first.browser.request(agent, 'open', { url: `${f.origin}/nested/research` });
-  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved private research'));
-  await first.browser.close();
-  const second = build(); f.cleanup(() => second.browser.close());
-  const reopened = await second.browser.request(agent, 'open', { url: `${f.origin}/nested/research` });
-  assert.ok((await second.browser.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Approved private research'));
-  assert.equal((await second.credentialBroker.listAccounts()).accounts.find((entry) => entry.id === account.id).agentReuseApproved, true);
-});
-
-test('private agent requests cannot replace an unapproved human session cookie', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let loginResponse, context; let replacements = 0;
-  const f = await fixture(t, (request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/human-login') { loginResponse = response; response.setHeader('Set-Cookie', 'identity=unapproved-private; Path=/; HttpOnly; Max-Age=3600'); response.write('<h1>Signing in'); return; }
-    if (request.url === '/agent-refresh') { replacements++; response.setHeader('Set-Cookie', 'identity=agent-replacement; Path=/; HttpOnly; Max-Age=3600'); }
-    response.end('<h1>Research</h1>');
-  }, true);
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 8) });
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: async options => { const runtime = await testRuntime(options); context = runtime.context; return runtime; } });
-  f.cleanup(() => browser.close());
-  const original = await browser.request(agent, 'open', { url: f.origin });
-  const humanLogin = browser.request(human, 'open', { url: `${f.origin}/human-login` });
-  await eventually(() => loginResponse);
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/agent-refresh` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  loginResponse.end('</h1>'); await humanLogin;
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/agent-refresh` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  assert.equal(replacements, 0);
-  assert.equal((await context.cookies(f.origin)).find(cookie => cookie.name === 'identity').value, 'unapproved-private');
-  assert.equal((await browser.request(agent, 'snapshot', { tabId: original.tab.tabId })).ok, true);
-  await approveSession(credentialBroker, f.origin);
-  assert.equal((await browser.request(agent, 'open', { url: `${f.origin}/agent-refresh` })).ok, true);
-  assert.equal(replacements, 1);
-});
-
-test('host-only and domain cookies with the same name retain separate approved provenance', async (t) => {
-  if (!await needsBrowser(t)) return;
-  const f = await fixture(t, (request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/login') response.setHeader('Set-Cookie', ['identity=host; Path=/; HttpOnly; Max-Age=3600', 'identity=domain; Domain=review.example.test; Path=/; HttpOnly; Max-Age=3600']);
-    if (request.url === '/refresh') response.setHeader('Set-Cookie', 'identity=host-refresh; Path=/; HttpOnly; Max-Age=3600');
-    response.end('<h1>Approved research</h1>');
-  }, true);
-  const origin = f.origin.replace('127.0.0.1', 'review.example.test');
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 5) });
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [origin], lookup: async () => [{ address: '127.0.0.1', family: 4 }], autoInstall: false, runtimeFactory: testRuntime });
-  f.cleanup(() => browser.close());
-  await browser.request(human, 'open', { url: `${origin}/login` }); await approveSession(credentialBroker, origin);
-  const opened = await browser.request(agent, 'open', { url: `${origin}/refresh` });
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved research'));
-});
-
-test('human event streams release their header fence so public research can continue', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let streaming = false;
-  const f = await fixture(t, (request, response) => {
-    if (request.url === '/events') { response.writeHead(200, { 'Content-Type': 'text/event-stream' }); response.write('data: ready\n\n'); streaming = true; return; }
-    response.setHeader('Content-Type', 'text/html'); response.end(request.url === '/human' ? '<script>new EventSource("/events")</script><h1>Human page</h1>' : '<h1>Public research</h1>');
-  });
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 4) });
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
-  f.cleanup(() => browser.close());
-  await browser.request(human, 'open', { url: `${f.origin}/human` }); await eventually(() => streaming);
-  const opened = await eventually(async () => { try { return await browser.request(agent, 'open', { url: f.origin }); } catch (failure) { if (failure.code === 'BROWSER_HUMAN_SESSION_PENDING') return false; throw failure; } });
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Public research'));
-});
-
-test('a delayed human storage change is not attributed to an agent response', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let delayedResponse;
-  const f = await fixture(t, (request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/human') { response.end('<h1>Human page</h1><script>window.storePrivateSession=()=>{localStorage.setItem("auth","DUMMY_HUMAN_IDENTITY");document.body.dataset.stored="yes"}</script>'); return; }
-    if (request.url === '/agent-delayed') { delayedResponse = response; return; }
-    response.end('<h1>Research</h1>');
-  });
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 3) });
-  let context;
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: async (options) => { const runtime = await startOwnedBrowserRuntime(options); context = runtime.context; return runtime; } });
-  f.cleanup(() => browser.close());
-  const humanTab = (await browser.request(human, 'open', {})).tab;
-  await browser.request(human, 'navigate', { tabId: humanTab.tabId, navigationEpoch: humanTab.navigationEpoch, controllerEpoch: humanTab.controllerEpoch, url: `${f.origin}/human` });
-  const opening = browser.request(agent, 'open', { url: `${f.origin}/agent-delayed` });
-  const completed = assert.rejects(opening, { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await eventually(() => delayedResponse);
-  const humanPage = context.pages().find((page) => page.url().endsWith('/human'));
-  await humanPage.evaluate(() => window.storePrivateSession());
-  delayedResponse.end('<h1>Agent response</h1>'); await completed;
-  await assert.rejects(browser.request(agent, 'open', { url: `${f.origin}/private` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-  assert.equal((await credentialBroker.listAccounts()).accounts.length, 0);
-});
-
-test('human interaction keeps the owned page readable without approving external credential reuse', async (t) => {
-  if (!await needsBrowser(t)) return;
-  const f = await fixture(t, (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<h1>Human page</h1><script>window.storePrivateSession=()=>{localStorage.setItem("auth","DUMMY_HUMAN_IDENTITY");document.body.innerHTML="Private identity"}</script>'); });
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => Buffer.alloc(32, 2) });
-  let context, releaseFrame, frameStarted;
-  const ready = new Promise((resolve) => { frameStarted = resolve; });
-  const held = new Promise((resolve) => { releaseFrame = resolve; });
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: async (options) => { const runtime = await startOwnedBrowserRuntime(options); context = runtime.context; return runtime; } });
-  f.cleanup(() => browser.close());
-  const opened = await browser.request(agent, 'open', { url: f.origin });
-  await browser.request(human, 'input', { tabId: opened.tab.tabId, navigationEpoch: opened.tab.navigationEpoch, controllerEpoch: opened.tab.controllerEpoch, type: 'release' });
-  const page = context.pages().find((entry) => entry.url().startsWith(f.origin));
-  const screenshot = page.screenshot.bind(page);
-  page.screenshot = async (options) => { const bytes = await screenshot(options); frameStarted(); await held; return bytes; };
-  const pendingFrame = browser.request(agent, 'frame', { tabId: opened.tab.tabId });
-  const completed = pendingFrame;
-  await ready; await page.evaluate(() => window.storePrivateSession()); releaseFrame(); assert.equal((await completed).ok, true);
-  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Private identity'));
-  await assert.rejects(credentialBroker.assertBrowserAccess({ actor: agent, url: f.origin }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
-});
-
-test('explicit account confirmation permits normal agent storage refresh and encrypted reuse', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let refresh = 0;
-  const f = await fixture(t, (request, response) => { response.setHeader('Content-Type', 'text/html'); response.end(`<h1>Approved research</h1><script>localStorage.setItem('auth','APPROVED_REFRESH_${request.url === '/login' ? 'human' : refresh++}')</script>`); }, true);
-  const wrappingKey = Buffer.alloc(32, 1);
-  const build = async () => { const policy = createBrowserPolicy({ dataDir: f.dataDir }); const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => wrappingKey }); const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, runtimeFactory: testRuntime }); await browser.restore(); return { credentialBroker, browser }; };
-  const first = await build(); f.cleanup(() => first.browser.close());
-  await first.browser.request(human, 'open', { url: `${f.origin}/login` });
-  const account = await approveSession(first.credentialBroker, f.origin);
-  await first.browser.request(human, 'confirm-sign-in', { accountId: account.id });
-  const opened = await first.browser.request(agent, 'open', { url: `${f.origin}/refresh` });
-  assert.ok((await first.browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Approved research'));
-  await first.browser.close();
-  const second = await build(); f.cleanup(() => second.browser.close());
-  const reopened = await second.browser.request({ ...agent, threadId: 'another-chat', projectId: 'another-project' }, 'open', { url: `${f.origin}/refresh` });
-  assert.ok((await second.browser.request({ ...agent, threadId: 'another-chat', projectId: 'another-project' }, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Approved research'));
-  assert.equal((await second.credentialBroker.listAccounts()).accounts[0].agentReuseApproved, true);
-});
-
 test('browser reset drains its owner and removes only browser profile and account data', async (t) => {
   if (!await needsBrowser(t)) return;
   const f = await fixture(t, (_request, response) => { response.setHeader('Set-Cookie', 'reader=retained; Path=/; Max-Age=3600'); response.end('Research'); });
   const policy = createBrowserPolicy({ dataDir: f.dataDir });
   const secretStore = createMemorySecretStore(); await secretStore.set('provider.secret', 'RETAINED_PROVIDER');
   const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, secretStore, wrappingKeyProvider: async () => Buffer.alloc(32, 6) });
-  const accountData = { origin: 'https://account.example.test', origins: ['https://account.example.test'], label: 'Saved account' };
-  const request = await credentialBroker.requestAccount({ actor: agent, ...accountData });
-  const account = (await credentialBroker.submit({ actor: human, requestId: request.requestId, approval: { approved: true, requestId: request.requestId, save: true, use: true }, account: accountData, username: 'PRIVATE_USERNAME', password: 'PRIVATE_PASSWORD', remember: true })).account;
+  const account = await saveLogin(credentialBroker, 'https://account.example.com');
   await fs.mkdir(path.join(f.dataDir, 'downloads'), { recursive: true }); await fs.writeFile(path.join(f.dataDir, 'downloads', 'original.pdf'), '%PDF-original');
   const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
   f.cleanup(() => browser.close());
@@ -332,35 +184,11 @@ test('owned browser website websocket messages work without a separate website-c
   const opened = await browser.request(agent, 'open', { url: f.origin });
   await eventually(() => sockets.clients.size > 0);
   const observation = await eventually(async () => { const result = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return result.snapshot.outline.includes('Ready') && result; });
-  await assert.rejects(browser.request(agent, 'type', { ...refArgs(observation, textboxes(observation)[0]), text: 'private document data' }), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  // 입력은 자유롭다. 페이지가 보내는 웹소켓 메시지는 사이트 변경 승인 없이 오간다.
+  assert.equal((await browser.request(agent, 'type', { ...refArgs(observation, textboxes(observation)[0]), text: 'query' })).ok, true);
   await context.pages().find(page => page.url().startsWith(f.origin)).evaluate(() => socket.send('read-query'));
-  await eventually(() => mutations === 1);
+  await eventually(() => mutations === 2);
   assert.equal(sockets.clients.size, 1);
-});
-
-test('owned-browser retained sessions remain usable across encrypted restarts after human login', async (t) => {
-  if (!await needsBrowser(t)) return;
-  const f = await fixture(t, (request, response) => {
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/public') response.setHeader('Set-Cookie', 'reader=ordinary; Path=/; Max-Age=3600; HttpOnly');
-    if (request.url === '/human-login') response.setHeader('Set-Cookie', 'identity=human-private; Path=/; Max-Age=3600; HttpOnly');
-    response.end('<h1>Public research</h1>');
-  });
-  const key = crypto.randomBytes(32);
-  const build = () => { const policy = createBrowserPolicy({ dataDir: f.dataDir }); const credentialBroker = createBrowserCredentialBroker({ dataDir: f.dataDir, policy, wrappingKeyProvider: async () => key }); return createOwnedBrowserService({ dataDir: f.dataDir, workspaceTargets: [f.origin], policy, credentialBroker, autoInstall: false }); };
-  const first = build();
-  f.cleanup(() => first.close());
-  await first.request(agent, 'open', { url: `${f.origin}/public` }); await first.close();
-  const second = build();
-  f.cleanup(() => second.close());
-  const reopened = await second.request(agent, 'open', { url: `${f.origin}/research` });
-  assert.ok((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).snapshot.outline.includes('Public research'));
-  const humanTab = (await second.request(human, 'open', { url: `${f.origin}/human-login` })).tab;
-  assert.equal((await second.request(agent, 'snapshot', { tabId: reopened.tab.tabId })).ok, true);
-  await second.request(human, 'close', { tabId: humanTab.tabId, navigationEpoch: humanTab.navigationEpoch, controllerEpoch: humanTab.controllerEpoch });
-  await second.close();
-  const third = build(); f.cleanup(() => third.close());
-  await assert.rejects(third.request(agent, 'open', { url: `${f.origin}/research` }), { code: 'BROWSER_ACCOUNT_APPROVAL_REQUIRED' });
 });
 
 test('owned-browser PDF exports require a website grant and stop when their logical tab closes', async (t) => {
@@ -460,30 +288,6 @@ test('hostile page prototypes and mirrored credentials cannot leak through brows
   await assert.rejects(browser.request(agent, 'frame', { tabId: opened.tab.tabId }), { code: 'BROWSER_PASSWORD_CAPTURE_PROTECTED' });
 });
 
-test('unapproved origins cannot receive typed document data or disguised export and search submissions', async (t) => {
-  if (!await needsBrowser(t)) return;
-  let writes = 0;
-  const f = await fixture(t, (request, response) => {
-    if (request.url === '/favicon.ico') { response.writeHead(404); response.end(); return; }
-    if (request.url !== '/') { writes++; response.end('changed'); return; }
-    response.setHeader('Content-Type', 'text/html');
-    response.end(`<input aria-label="Notes" oninput="fetch('/leak?d='+encodeURIComponent(this.value))"><form method="post" action="/export-destroy"><input type="hidden" name="mode" value="purge-all"><button>Export PDF</button></form><form action="/search"><input name="q" value="destroy"><button>Search</button></form>`);
-  });
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, workspaceTargets: [f.origin], autoInstall: false });
-  f.cleanup(() => browser.close());
-  const opened = await browser.request(agent, 'open', { url: f.origin });
-  for (const [action, name, args] of [['type', 'Notes', { text: 'private-document' }], ['click', 'Export PDF', {}], ['click', 'Search', {}]]) {
-    const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-    await assert.rejects(browser.request(agent, action, { ...refArgs(observation, named(observation, name)), ...args }), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  }
-  assert.equal(writes, 0);
-  await policy.update({ actor: human, operation: 'set-site', origin: f.origin, allowedActions: ['browse', 'read', 'website-change'] });
-  const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await browser.request(agent, 'type', { ...refArgs(observation, named(observation, 'Notes')), text: 'approved input' });
-  await eventually(() => writes === 1);
-});
-
 test('saved-account fill bypasses page setters while delivering normal input events', async (t) => {
   if (!await needsBrowser(t)) return;
   const f = await fixture(t, (_request, response) => {
@@ -510,33 +314,6 @@ test('saved-account fill bypasses page setters while delivering normal input eve
   assert.equal(JSON.stringify(await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).includes('fixture-broker-secret'), false);
 });
 
-test('an approved account fill lets the agent submit that sign-in without a website-change grant', async (t) => {
-  if (!await needsBrowser(t)) return;
-  const posts = [];
-  const f = await fixture(t, (request, response) => {
-    if (request.method === 'POST') { posts.push(request.url); response.writeHead(303, { Location: '/home' }); response.end(); return; }
-    response.setHeader('Content-Type', 'text/html');
-    if (request.url === '/home') { response.end('<form method="post" action="/posts"><input name="title" aria-label="Title"><button>Publish post</button></form>'); return; }
-    response.end('<form method="post" action="/login"><input name="id" aria-label="Identity"><input name="pw" type="password" aria-label="Password"><button>Sign in</button></form>');
-  });
-  const policy = createBrowserPolicy({ dataDir: f.dataDir });
-  const credentialBroker = { assertBrowserAccess: async () => {}, issueHandle: async () => ({ handle: 'fixture' }), fill: async ({ fill }) => fill({ username: 'fixture-user', password: 'fixture-broker-secret' }) };
-  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, credentialBroker, workspaceTargets: [f.origin], autoInstall: false });
-  f.cleanup(() => browser.close());
-  const opened = await browser.request(agent, 'open', { url: f.origin });
-  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  // 계정을 채우기 전에는 로그인 제출도 다른 웹사이트 변경처럼 막힌다.
-  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  await browser.request(agent, 'fill-account', { ...refArgs(observation, named(observation, 'Password')), accountId: 'fixture', usernameRef: named(observation, 'Identity').ref, passwordRef: named(observation, 'Password').ref });
-  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
-  await browser.request(agent, 'click', refArgs(observation, named(observation, 'Sign in')));
-  await eventually(() => posts.includes('/login'));
-  observation = await eventually(async () => { const next = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return next.snapshot.outline.includes('Publish post') && next; });
-  // 로그인 뒤의 다른 변경은 여전히 따로 승인받아야 한다.
-  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Publish post'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
-  assert.deepEqual(posts, ['/login']);
-});
-
 test('a site access approval lets its chat sign in with the saved account and submit website changes there', async (t) => {
   if (!await needsBrowser(t)) return;
   const posts = [];
@@ -553,7 +330,8 @@ test('a site access approval lets its chat sign in with the saved account and su
   const opened = await browser.request(agent, 'open', { url: `${f.origin}/home` });
   let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
   // 승인 전(또는 거절 뒤)에는 사이트 변경이 막힌다.
-  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Place order'))), { code: 'BROWSER_PERMISSION_REQUIRED', message: /kind 'site'/ });
+  await assert.rejects(browser.request(agent, 'click', refArgs(observation, named(observation, 'Place order'))), { code: 'BROWSER_PERMISSION_REQUIRED', reason: 'website-change', request: { tool: 'browser_request_account', args: { kind: 'site', origin: f.origin } } });
+  assert.deepEqual(posts, [], 'a POST form click is refused before any request');
 
   await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: f.origin, scope: 'chat' });
   await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, url: f.origin, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch });
@@ -572,4 +350,166 @@ test('a site access approval lets its chat sign in with the saved account and su
   const otherObservation = await browser.request(otherAgent, 'snapshot', { tabId: otherTab.tab.tabId });
   await assert.rejects(browser.request(otherAgent, 'click', refArgs(otherObservation, named(otherObservation, 'Place order'))), { code: 'BROWSER_PERMISSION_REQUIRED' });
   assert.deepEqual(posts, ['/login', '/orders']);
+});
+
+test('a refused navigation leaves the tab on its page and names the site to ask for', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const f = await sites(t, ['www.shopfixture.com', 'mail.privatefixture.com'], (request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    if (request.headers.host.startsWith('mail.')) { response.end('<title>Inbox</title><h1>Private inbox</h1>'); return; }
+    if (request.url === '/go') { response.writeHead(302, { Location: `https://mail.privatefixture.com:${request.headers.host.split(':')[1]}/inbox` }); response.end(); return; }
+    response.end(`<title>Shop</title><h1>Shop home</h1><a href="https://mail.privatefixture.com:${request.headers.host.split(':')[1]}/inbox">Inbox</a>`);
+  });
+  const shop = f.origins['www.shopfixture.com'], mail = f.origins['mail.privatefixture.com'];
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  let context;
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, workspaceTargets: [shop, mail], lookup: f.lookup, autoInstall: false, runtimeFactory: async (options) => { const runtime = await testRuntime(options); context = runtime.context; return runtime; } });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: `${shop}/` });
+  await context.addCookies([{ name: 'session', value: 'owner', domain: 'mail.privatefixture.com', path: '/', secure: true }]);
+  await policy.markSignedIn({ profileId: 'default', origin: mail, source: 'owner-form' });
+  await browser.refreshSites();
+  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  const refused = await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, url: `${mail}/inbox`, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch }).catch((error) => error);
+  assert.deepEqual([refused.code, refused.reason, refused.site, refused.request], ['BROWSER_PERMISSION_REQUIRED', 'signed-in', 'privatefixture.com', { tool: 'browser_request_account', args: { kind: 'site', origin: mail } }]);
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  assert.ok(observation.snapshot.outline.includes('Shop home'), 'no chrome-error page');
+  assert.equal(new URL(observation.tab.url).host, new URL(shop).host);
+  const link = await browser.request(agent, 'click', refArgs(observation, named(observation, 'Inbox'))).catch((error) => error);
+  assert.equal(link.reason, 'signed-in', 'a link click to the signed-in site is refused the same way');
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  assert.ok(observation.snapshot.outline.includes('Shop home'));
+  // 리디렉트로 도착한 로그인 사이트도 같은 판정을 받는다. 요청은 이미 나갔으므로 performed 다.
+  const redirected = await browser.request(agent, 'open', { url: `${shop}/go` }).catch((error) => error);
+  assert.deepEqual([redirected.reason, redirected.site, redirected.performed], ['signed-in', 'privatefixture.com', true]);
+  await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: mail, scope: 'chat' });
+  await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, url: `${mail}/inbox`, navigationEpoch: observation.tab.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch });
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Private inbox'));
+});
+
+test('redirects after a permitted change inherit it, while a block on the landing site still wins and reports the change as performed', async (t) => {
+  if (!await needsBrowser(t)) return;
+  let orders = 0;
+  const f = await sites(t, ['www.shopfixture.com', 'pg.payfixture.com'], (request, response) => {
+    const port = request.headers.host.split(':')[1];
+    if (request.method === 'POST') { orders++; response.writeHead(303, { Location: `https://pg.payfixture.com:${port}/receipt` }); response.end(); return; }
+    response.setHeader('Content-Type', 'text/html');
+    if (request.headers.host.startsWith('pg.')) { response.end('<title>Receipt</title><h1>Payment receipt</h1>'); return; }
+    response.end('<title>Checkout</title><form method="post" action="/order"><button>Pay</button></form>');
+  });
+  const shop = f.origins['www.shopfixture.com'], pg = f.origins['pg.payfixture.com'];
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  let context;
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, workspaceTargets: [shop, pg], lookup: f.lookup, autoInstall: false, runtimeFactory: async (options) => { const runtime = await testRuntime(options); context = runtime.context; return runtime; } });
+  f.cleanup(() => browser.close());
+  await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: shop, scope: 'chat' });
+  const opened = await browser.request(agent, 'open', { url: `${shop}/checkout` });
+  // 결제 사이트는 로그인한 사이트라서 바로 열면 거절된다. 허용된 주문 POST 의 303 홉으로는 이어받는다.
+  await context.addCookies([{ name: 'pg', value: 'owner', domain: 'pg.payfixture.com', path: '/', secure: true }]);
+  await policy.markSignedIn({ profileId: 'default', origin: pg, source: 'owner-form' });
+  await browser.refreshSites();
+  let observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  const paid = await browser.request(agent, 'click', refArgs(observation, named(observation, 'Pay')));
+  assert.equal(paid.ok, true);
+  assert.equal(new URL(paid.url).host, new URL(pg).host);
+  assert.equal(orders, 1);
+  await browser.request(agent, 'navigate', { tabId: opened.tab.tabId, url: `${shop}/checkout`, navigationEpoch: paid.navigationEpoch, controllerEpoch: observation.tab.controllerEpoch });
+  await policy.update({ actor: human, operation: 'set-site', origin: pg, blockedActions: ['browse', 'read'] });
+  observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  const blocked = await browser.request(agent, 'click', refArgs(observation, named(observation, 'Pay'))).catch((error) => error);
+  assert.deepEqual([blocked.code, blocked.site, blocked.performed], ['BROWSER_SITE_BLOCKED', 'payfixture.com', true], 'the order already reached the shop; do not resubmit blindly');
+  assert.equal(orders, 2);
+  // 3xx 홉은 이미 열렸다. 막힌 페이지는 읽을 수 없고, 같은 탭으로 다시 돌아갈 수 있다.
+  await assert.rejects(browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }), { code: 'BROWSER_SITE_BLOCKED' });
+  const tab = (await browser.inventory(agent)).tabs.find((entry) => entry.tabId === opened.tab.tabId);
+  await browser.request(agent, 'navigate', { tabId: tab.tabId, url: `${shop}/checkout`, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
+  assert.ok((await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId })).snapshot.outline.includes('Pay'));
+});
+
+test('only same-site writes during an agent action need site access; page loads, GraphQL reads and cross-site telemetry do not', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const hits = { cart: 0, telemetry: 0, graphql: 0, collect: 0 };
+  const f = await sites(t, ['www.shopfixture.com', 'stats.trackerfixture.com'], (request, response) => {
+    const port = request.headers.host.split(':')[1];
+    const pathName = new URL(request.url, 'https://fixture').pathname.slice(1);
+    if (pathName in hits) { hits[pathName]++; response.setHeader('Access-Control-Allow-Origin', '*'); response.end('{}'); return; }
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<title>Shop</title><h1>Kettles</h1>
+      <button onclick="fetch('/cart',{method:'POST',body:'kettle'})">Add to cart</button>
+      <button onclick="fetch('/graphql',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:'query { items }'})})">Load more</button>
+      <button onclick="fetch('https://stats.trackerfixture.com:${port}/collect',{method:'POST',mode:'no-cors',body:'x'})">Track</button>
+      <script>fetch('/telemetry',{method:'POST',body:'load'})</script>`);
+  });
+  const shop = f.origins['www.shopfixture.com'], stats = f.origins['stats.trackerfixture.com'];
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, workspaceTargets: [shop, stats], lookup: f.lookup, autoInstall: false, runtimeFactory: testRuntime });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: `${shop}/` });
+  await eventually(() => hits.telemetry === 1);
+  const click = async (name) => { const observation = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId }); return browser.request(agent, 'click', refArgs(observation, named(observation, name))).catch((error) => error); };
+  const refused = await click('Add to cart');
+  assert.deepEqual([refused.code, refused.reason, refused.performed], ['BROWSER_PERMISSION_REQUIRED', 'website-change', false]);
+  assert.equal(hits.cart, 0);
+  assert.equal((await click('Load more')).ok, true);
+  assert.equal(hits.graphql, 1);
+  const tracked = await click('Track');
+  assert.equal(tracked.ok, true);
+  assert.deepEqual(tracked.dropped?.map((entry) => entry.origin), [stats], 'cross-site writes without the page site\'s access are dropped and listed');
+  assert.equal(hits.collect, 0);
+  await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: shop, scope: 'chat' });
+  assert.equal((await click('Add to cart')).ok, true);
+  await eventually(() => hits.cart === 1);
+  assert.equal((await click('Track')).dropped, undefined);
+  await eventually(() => hits.collect === 1);
+});
+
+test('a filled password stays masked in every tab, not just the one it was typed into', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const password = `fixture-global-${crypto.randomUUID()}`;
+  const f = await fixture(t, (request, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    if (request.url === '/echo') { response.end(`<title>Profile</title><p>Saved password: ${password}</p>`); return; }
+    response.end('<form method="post" action="/login"><input aria-label="Identity"><input type="password" aria-label="Password"></form>');
+  });
+  const reported = [];
+  const credentialBroker = { issueHandle: async () => ({ handle: 'fixture' }), fill: async ({ fill }) => fill({ username: 'fixture-user', password }) };
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, credentialBroker, workspaceTargets: [f.origin], autoInstall: false, onFilledValue: (value) => reported.push(value) });
+  f.cleanup(() => browser.close());
+  const opened = await browser.request(agent, 'open', { url: f.origin });
+  const observed = await browser.request(agent, 'snapshot', { tabId: opened.tab.tabId });
+  await browser.request(agent, 'fill-account', { ...refArgs(observed, named(observed, 'Password')), accountId: 'fixture', usernameRef: named(observed, 'Identity').ref, passwordRef: named(observed, 'Password').ref });
+  assert.deepEqual(reported, [password], 'the hub learns the value so it can scrub tool results');
+  const other = await browser.request(agent, 'open', { url: `${f.origin}/echo` });
+  const view = await browser.request(agent, 'snapshot', { tabId: other.tab.tabId, text: true });
+  assert.equal(JSON.stringify(view).includes(password), false);
+  assert.match(view.snapshot.text, /Saved password: \[masked\]/);
+});
+
+test('an owner form sign-in marks the site, an owner GET visit or the agent\'s own cookies never do', async (t) => {
+  if (!await needsBrowser(t)) return;
+  const f = await sites(t, ['www.memberfixture.com'], (request, response) => {
+    if (request.method === 'POST') { response.writeHead(303, { Location: '/home', 'Set-Cookie': 'session=owner; Path=/; Secure; HttpOnly' }); response.end(); return; }
+    response.setHeader('Content-Type', 'text/html');
+    response.setHeader('Set-Cookie', 'pref=dark; Path=/; Secure');
+    if (request.url === '/home') { response.end('<title>Home</title><h1>Member home</h1>'); return; }
+    response.end('<title>Login</title><form method="post" action="/login"><input name="id" aria-label="Identity"><button>Sign in</button></form>');
+  });
+  const site = f.origins['www.memberfixture.com'];
+  const policy = createBrowserPolicy({ dataDir: f.dataDir });
+  const browser = createOwnedBrowserService({ dataDir: f.dataDir, policy, workspaceTargets: [site], lookup: f.lookup, autoInstall: false, runtimeFactory: testRuntime });
+  f.cleanup(() => browser.close());
+  await browser.request(agent, 'open', { url: `${site}/` });
+  const ownerTab = (await browser.request(human, 'open', { url: `${site}/` })).tab;
+  await browser.refreshSites();
+  assert.equal((await browser.request(agent, 'open', { url: `${site}/home` })).ok, true, 'cookies from GET visits never gate');
+  assert.deepEqual((await policy.list()).signedIn, []);
+  const observation = await browser.request(human, 'snapshot', { tabId: ownerTab.tabId });
+  await browser.request(human, 'click', refArgs(observation, named(observation, 'Sign in')));
+  await eventually(async () => (await policy.list()).signedIn.some((marker) => marker.key === 'https://memberfixture.com' && marker.source === 'owner-form'));
+  await browser.refreshSites();
+  const refused = await browser.request(agent, 'open', { url: `${site}/home` }).catch((error) => error);
+  assert.equal(refused.reason, 'signed-in');
+  assert.equal((await browser.request(agent, 'snapshot', { tabId: ownerTab.tabId })).ok, true, 'the owner\'s shared tab stays readable');
+  await policy.grantSiteAccess({ actor: human, threadId: agent.threadId, origin: site, scope: 'chat' });
+  assert.equal((await browser.request(agent, 'open', { url: `${site}/home` })).ok, true);
 });

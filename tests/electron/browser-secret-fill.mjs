@@ -11,6 +11,7 @@ import { OwnedBrowserHost } from '../../desktop/browser-host.mjs';
 import { NativeBrowserPasswords } from '../../desktop/browser-passwords.mjs';
 import { LocalBrowserPasswordVault } from '../../desktop/browser-local-password-vault.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from '../../rhwp/rhwp-agent/owned-browser-service.mjs';
+import { createBrowserPolicy } from '../../rhwp/rhwp-agent/browser-policy.mjs';
 import { startOwnedBrowserRuntime } from '../../rhwp/rhwp-agent/owned-browser-runtime.mjs';
 import { key, cert } from '../../rhwp/rhwp-agent/tests/fixtures/owned-browser-tls.mjs';
 
@@ -59,8 +60,11 @@ async function main() {
     const wire = [];
     const messages = new EventEmitter();
     const adapter = createIpcNativeBrowserAdapter({ events: messages, send: (message) => { wire.push(message); void host.handleRequest(message, owner).then((response) => { wire.push(response); messages.emit('message', response); }); } });
-    service = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
+    const policy = createBrowserPolicy({ dataDir });
+    service = createOwnedBrowserService({ dataDir, policy, nativeAdapter: adapter, workspaceTargets: [origin], autoInstall: false, runtimeFactory: startOwnedBrowserRuntime });
     const actor = { threadId: 'chat-one', agentId: 'chat-one:root', sessionId: 'editor', projectId: 'project-one' };
+    // 사용자가 이 채팅에 사이트 사용을 승인했다. 비밀 입력과 제출이 그 승인을 따른다.
+    await policy.grantSiteAccess({ actor: { isHuman: true, clientId: 'editor' }, threadId: actor.threadId, origin, scope: 'chat' });
     report.stage = 'opening';
     const opened = await service.request(actor, 'open', { url: origin });
     const tabId = opened.tab.tabId;
