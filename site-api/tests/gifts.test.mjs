@@ -44,8 +44,18 @@ async function setup(t, env = {}) {
     body: JSON.stringify(body),
   });
   const admin = (route, body) => post(route, body, { Authorization: `Bearer ${ADMIN}` }).then((r) => r.json());
-  async function license() {
+  const licensesFile = path.join(directory, 'licenses.json');
+  async function setTier(keyId, tier) {
+    const state = JSON.parse(await fs.readFile(licensesFile, 'utf8'));
+    const record = state.licenses[keyId];
+    if (tier === 'beta') Object.assign(record, { tier: 'beta', source: 'beta', deviceLimit: 2, name: 'Beta tester' });
+    else delete record.tier;
+    await fs.writeFile(licensesFile, `${JSON.stringify(state, null, 2)}\n`);
+  }
+  // Beta keys are seeded straight into the license state; `tier: 'paid'` leaves the issued record as is.
+  async function license({ tier = 'beta' } = {}) {
     const { license: issued } = await admin('/v1/admin/licenses/issue', { note: 'gift test' });
+    if (tier === 'beta') await setTier(issued.keyId, 'beta');
     const activate = async (deviceId, platform = 'darwin') => {
       const res = await post('/v1/license/activate', { key: issued.key, deviceId, appVersion: '2.1.0', platform });
       return (await res.json()).lease;
@@ -56,7 +66,7 @@ async function setup(t, env = {}) {
   const status = (lease) => fetch(`${origin}/v1/gift/status`, { headers: auth(lease) });
   const claim = (lease) => post('/v1/gift/claim', {}, auth(lease));
   const chat = (lease, body, init = {}) => post('/v1/gift/openrouter/chat/completions', body, { ...auth(lease), ...init.headers });
-  return { origin, upstream, logs, directory, admin, license, auth, status, claim, chat };
+  return { origin, upstream, logs, directory, admin, license, setTier, auth, status, claim, chat };
 }
 
 const creates = (upstream) => upstream.calls.filter((c) => c.method === 'POST' && c.path === '/api/v1/keys');
@@ -108,7 +118,7 @@ test('claim is idempotent across parallel calls and both devices, and the key st
   assert.equal(JSON.parse(listed).committedUsd, 20);
 });
 
-test('only an active license on an activated macOS device is eligible', async (t) => {
+test('only an active beta key on an activated macOS device is eligible', async (t) => {
   const s = await setup(t);
   const lic = await s.license();
   const mac = await lic.activate(MAC_A);
@@ -124,7 +134,7 @@ test('only an active license on an activated macOS device is eligible', async (t
   const expired = signLease({ keyId: lic.keyId, key: lic.key, deviceId: MAC_A, now: Date.now() - 8 * 86400000 }, PAIR.privateKeyPem).lease;
   assert.equal((await s.status(expired)).status, 401);
 
-  // Windows: authenticated, never eligible, even on a license that claimed from its Mac.
+  // Windows: authenticated, never eligible, even on a beta key that claimed from its Mac.
   const winStatus = await (await s.status(win)).json();
   assert.equal(winStatus.eligible, false);
   const winClaim = await s.claim(win);
@@ -144,6 +154,35 @@ test('only an active license on an activated macOS device is eligible', async (t
   await s.admin('/v1/admin/licenses/revoke', { keyId: lic.keyId, reason: 'test' });
   assert.equal((await s.status(mac)).status, 401);
   assert.equal((await s.chat(mac, { model: SONNET, messages: [] })).status, 401);
+});
+
+test('paid keys are not eligible, and a claimed gift stops working once the key is no longer beta', async (t) => {
+  const s = await setup(t);
+  const paid = await (await s.license({ tier: 'paid' })).activate(MAC_A);
+  assert.equal((await (await s.status(paid)).json()).eligible, false);
+  const refused = await s.claim(paid);
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json()).error, 'not_eligible');
+  const paidChat = await s.chat(paid, { model: SONNET, messages: [] });
+  assert.equal(paidChat.status, 403);
+  assert.deepEqual(await paidChat.json(), { error: { code: 403, message: 'not_eligible' } });
+  assert.equal(creates(s.upstream).length, 0);
+
+  const lic = await s.license();
+  const lease = await lic.activate(MAC_A);
+  assert.equal((await (await s.status(lease)).json()).eligible, true);
+  assert.equal((await s.claim(lease)).status, 200);
+  assert.equal((await s.chat(lease, { model: SONNET, messages: [] })).status, 200);
+
+  await s.setTier(lic.keyId, 'paid');
+  assert.equal((await (await s.status(lease)).json()).eligible, false);
+  assert.equal((await s.claim(lease)).status, 403);
+  const chat = await s.chat(lease, { model: SONNET, messages: [] });
+  assert.equal(chat.status, 403);
+  assert.deepEqual(await chat.json(), { error: { code: 403, message: 'not_eligible' } });
+  const models = await fetch(`${s.origin}/v1/gift/openrouter/models`, { headers: s.auth(lease) });
+  assert.equal(models.status, 403);
+  assert.equal(s.upstream.chats.length, 1);
 });
 
 test('the global budget stops new gifts and an inactive event refuses claims', async (t) => {

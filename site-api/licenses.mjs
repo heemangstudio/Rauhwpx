@@ -544,7 +544,7 @@ export function createLicensesService({
   /**
    * Check a lease the app presents as a bearer token: our own signature, not expired, the
    * license still active, the device still activated and the key unchanged. Read-only.
-   * Returns `{ keyId, deviceId, platform, source }`; anything else is `unauthorized` (401).
+   * Returns `{ keyId, deviceId, platform, source, tier }`; anything else is `unauthorized` (401).
    */
   async function authenticateLease(lease) {
     if (!signingKey) throw licenseError('unauthorized', 401);
@@ -558,7 +558,13 @@ export function createLicensesService({
     if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash) {
       throw licenseError('unauthorized', 401);
     }
-    return { keyId, deviceId, platform: device.platform, source: license.source };
+    return {
+      keyId,
+      deviceId,
+      platform: device.platform,
+      source: license.source,
+      tier: tierOf(license),
+    };
   }
 
   // -------------------------------------------------------- grandfather

@@ -3,7 +3,7 @@ import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Gift credits: one OpenRouter key per license (keyId) per event, created through the
+ * Gift credits for beta keys: one OpenRouter key per license (keyId) per event, created through the
  * provisioning API with `limit = amountUsd`. The key never leaves the server; the app calls
  * the OpenAI-compatible proxy under GIFT_PROXY_PREFIX with its license lease as the bearer.
  *
@@ -147,11 +147,15 @@ export function createGiftsService({
     };
   }
 
-  /** Lease → license principal. Eligible = an active license on an allowed platform (macOS by default). */
+  /**
+   * Lease → license principal. Eligible = an active beta key on an allowed platform (macOS by
+   * default). Checked on every status, claim and proxy call, so a key that stops qualifying
+   * loses an already claimed gift too.
+   */
   async function principal(lease) {
     if (typeof authenticate !== 'function') throw giftError('unauthorized', 401);
     const who = await authenticate(lease);
-    return { ...who, eligible: platforms.includes(who.platform) };
+    return { ...who, eligible: who.tier === 'beta' && platforms.includes(who.platform) };
   }
 
   // ------------------------------------------------------------ OpenRouter
