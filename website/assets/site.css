@@ -140,6 +140,9 @@ ul[role="list"], ol[role="list"] { list-style: none; padding: 0; }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 .nb { white-space: nowrap; }
+/* 상품별 문구. assets/purchase.js 의 CONFIG.PLAN 이 <html data-plan> 을 정해요. 정하기 전에는 한 번 결제 문구예요. */
+html:not([data-plan="annual"]) [data-plan-show="annual"],
+html[data-plan="annual"] [data-plan-show="onetime"] { display: none !important; }
 @media (max-width: 760px) { .wide-only { display: none !important; } }
 
 /* 본문은 밤하늘 그라데이션 한 장. 바닥글이 그 아래에서 드러나요. */

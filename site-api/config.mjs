@@ -38,8 +38,16 @@ export const DEFAULT_LICENSE_ALLOWED_ORIGINS = [
   'https://heemangstudio.github.io',
 ];
 
+/** Groble products: the one-time lifetime license and the 12-month auto-renewing subscription. */
+export const DEFAULT_ONETIME_PRODUCT_IDS = 'uRshdR';
+export const DEFAULT_SUBSCRIPTION_PRODUCT_IDS = 'GLJFC9';
+
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function commaList(text, fallback) {
+  return (text || fallback).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 /** License settings from env. Parsing errors throw at startup so a typo never ships silently. */
@@ -58,10 +66,16 @@ export function resolveLicenseConfig(env = process.env) {
   if (!Number.isSafeInteger(price) || !Number.isSafeInteger(minAmount)) {
     throw new Error('GROBLE_EXPECTED_PRICE and GROBLE_MIN_AMOUNT must be integers (KRW)');
   }
+  // GROBLE_CONTENT_ID is the older single-product variable; GROBLE_ONETIME_PRODUCT_IDS wins when both are set.
+  const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
+  const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
+  const overlap = onetimeProductIds.filter((id) => subscriptionProductIds.includes(id));
+  if (overlap.length) throw new Error(`Groble product ${overlap.join(', ')} is both one-time and subscription`);
   return {
     webhookSecret: trimmed(env.GROBLE_WEBHOOK_SECRET),
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
-    grobleContentId: trimmed(env.GROBLE_CONTENT_ID) || 'uRshdR',
+    onetimeProductIds,
+    subscriptionProductIds,
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),
@@ -85,10 +99,6 @@ function positiveNumber(name, text, fallback) {
   const value = Number(text);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number: ${text}`);
   return value;
-}
-
-function commaList(text, fallback) {
-  return (text || fallback).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 /**

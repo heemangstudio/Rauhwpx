@@ -29,9 +29,9 @@ const buyButtons = new Set<HTMLButtonElement>();
 let openPricing: (() => void) | null = null;
 let lastStatus: LicenseStatus | null = null;
 
-/** 체험 중·체험 끝·해지된 키일 때만 보인다. 라이선스가 있으면 숨는다. */
+/** 체험 중·체험 끝·해지된 키·기간이 끝난 연간 키일 때만 보인다. 라이선스가 있으면 숨는다. */
 function showsBuyButton(status: LicenseStatus): boolean {
-  return status.state === 'trial' || status.state === 'trial_expired' || status.state === 'revoked';
+  return status.state === 'trial' || status.state === 'trial_expired' || status.state === 'revoked' || status.state === 'expired';
 }
 
 /** 라이선스 구매 단추를 slot 에 둔다. 누르면 구매 페이지를 연다. */
@@ -95,7 +95,7 @@ export async function installLicenseGate(
     trialEndedBanner?.dismiss();
     const expired = current?.state === 'trial_expired' || (trialFinished && current?.state === 'trial');
     const prompt = showTrialEndedBanner({
-      title: expired ? '체험이 끝났어요' : '라이선스를 확인해 주세요',
+      title: expired ? '체험이 끝났어요' : current?.state === 'expired' ? '라이선스 기간이 끝났어요' : '라이선스를 확인해 주세요',
       detail,
       onActivate: () => { void api.openActivation(); },
       onPurchase: () => { void api.openPricing(); },

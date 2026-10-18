@@ -260,7 +260,8 @@ export function siteRequestListener({
           }
           log(`[site-api] groble ${event?.type} ${result.duplicate ? 'duplicate' : result.action}`);
           send(200, { ok: true, duplicate: result.duplicate, action: result.action });
-          if (result.action === 'held' && !result.duplicate) {
+          // Held orders and events we could not use (unknown type, unmatched subscription) stay visible in `webhooks --held`.
+          if (result.needsReview && !result.duplicate) {
             const entry = webhookLogEntry({ kind: 'held', reason: result.reason, status: 200, verified: true, headers: req.headers, rawBody });
             later(() => webhookLog.record(entry));
           }
@@ -352,6 +353,7 @@ export function siteRequestListener({
         case 'POST /v1/admin/licenses/restore':
         case 'POST /v1/admin/licenses/reset-devices':
         case 'POST /v1/admin/licenses/resend-email':
+        case 'POST /v1/admin/licenses/extend':
         case 'POST /v1/admin/orders/release': {
           allow('admin', 120, TEN_MINUTES);
           const action = {
@@ -361,6 +363,7 @@ export function siteRequestListener({
             '/v1/admin/licenses/restore': 'restore',
             '/v1/admin/licenses/reset-devices': 'resetDevices',
             '/v1/admin/licenses/resend-email': 'resendEmail',
+            '/v1/admin/licenses/extend': 'extend',
             '/v1/admin/orders/release': 'release',
           }[pathname];
           const token = bearerToken(req);
@@ -415,7 +418,12 @@ export function siteRequestListener({
       }
       const status = errorStatus(error);
       if (error?.licenseError) {
-        send(status, { ok: false, error: error.code, ...(error.tier ? { tier: error.tier } : {}) });
+        send(status, {
+          ok: false,
+          error: error.code,
+          ...(error.tier ? { tier: error.tier } : {}),
+          ...(error.licenseExpiresAt ? { licenseExpiresAt: error.licenseExpiresAt } : {}),
+        });
         return;
       }
       if (status >= 500) log(`[site-api] ${req.method} ${req.url}: ${error?.stack ?? error}`);
@@ -466,7 +474,8 @@ export function createSiteServer(env = process.env, options = {}) {
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
     emailProvider: options.emailProvider ?? createEmailProvider(env),
-    grobleContentId: licenseConfig.grobleContentId,
+    onetimeProductIds: licenseConfig.onetimeProductIds,
+    subscriptionProductIds: licenseConfig.subscriptionProductIds,
     expectedPrice: licenseConfig.expectedPrice,
     minAmount: licenseConfig.minAmount,
     grandfatherCutoff: licenseConfig.grandfatherCutoff,

@@ -1,9 +1,10 @@
 // HamaEditor 라이선스 lease: 키 서버가 Ed25519 로 서명하고, 앱이 내장 공개키로 오프라인 검증한다.
 //
 // 형식: <payload>.<signature>
-//   payload   = base64url(JSON.stringify({ v, kid, keyId, keyHash, deviceId, issuedAt, expiresAt }))
+//   payload   = base64url(JSON.stringify({ v, kid, keyId, keyHash, deviceId, issuedAt, expiresAt[, licenseExpiresAt] }))
 //   signature = base64url(Ed25519(payload 문자열의 ASCII 바이트))
 // issuedAt, expiresAt 는 epoch 밀리초. expiresAt = issuedAt + 7일 (오프라인 유예).
+// licenseExpiresAt 은 연간 구독 키가 끝나는 시각(epoch 밀리초). 평생 키의 lease 에는 없다.
 // keyHash = sha256(정규화한 라이선스 키) 의 hex. 다른 키에 lease 를 옮겨 붙이지 못하게 한다.
 // 계약 전체는 docs/license-api.md 에 있다.
 import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';

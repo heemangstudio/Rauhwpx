@@ -2,7 +2,8 @@
 // routes (/v1/gift/*). The desktop tests use .fetch; `node tests/fixtures/license-mock-server.mjs
 // [--port N]` (or MOCK_PORT) serves it on http://127.0.0.1:8787 for manual runs
 // (HAMA_LICENSE_API_BASE + HAMA_LICENSE_DEV_PUBLIC_KEY). The CLI streams real SSE for
-// `stream:true` chat completions and adds admin routes under /__mock/.
+// `stream:true` chat completions and adds admin routes under /__mock/. It prints a lifetime key and an
+// annual key; `POST /__mock/license/expiry {key, licenseExpiresAt, autoRenew}` renews, cancels or ends one.
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -88,10 +89,11 @@ export function createMockLicenseServer({
   const gifts = new Map();
   let giftCreatedUsd = 0;
 
-  function issueKey({ tier = 'paid' } = {}) {
+  /** licenseExpiresAt (epoch ms) makes an annual subscription key; without it the key is lifetime. */
+  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true } = {}) {
     const raw = Array.from(randomBytes(25), n => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
     const key = `HAMA-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}-${raw.slice(20, 25)}`;
-    licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false });
+    licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false, licenseExpiresAt, autoRenew });
     return key;
   }
 
@@ -102,7 +104,16 @@ export function createMockLicenseServer({
     const license = licenses.get(key);
     return signLease({
       v: 1, kid: keypair.kid, keyId: license.id, keyHash: licenseKeyHash(key), deviceId, issuedAt, expiresAt: issuedAt + ttl(license),
+      ...(license.licenseExpiresAt !== null ? { licenseExpiresAt: license.licenseExpiresAt } : {}),
     }, keypair);
+  }
+
+  function leaseBody(key, deviceId, license) {
+    return {
+      ok: true, lease: lease(key, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license),
+      licenseExpiresAt: license.licenseExpiresAt, autoRenew: license.licenseExpiresAt === null ? null : license.autoRenew,
+      devicesUsed: license.devices.size, deviceLimit,
+    };
   }
 
   function licenseByRef(ref) {
@@ -276,15 +287,18 @@ export function createMockLicenseServer({
       return [200, { ok: true, removed, tier: license.tier, devicesUsed: license.devices.size, deviceLimit }];
     }
     if (license.revoked) return [403, { ok: false, error: 'revoked', tier: license.tier }];
+    if (license.licenseExpiresAt !== null && now() >= license.licenseExpiresAt) {
+      return [403, { ok: false, error: 'expired', tier: license.tier, licenseExpiresAt: license.licenseExpiresAt }];
+    }
     if (path === '/v1/license/activate') {
       if (!license.devices.has(deviceId) && license.devices.size >= deviceLimit) return [409, { ok: false, error: 'device_limit' }];
       license.devices.add(deviceId);
       license.platforms.set(deviceId, typeof body.platform === 'string' ? body.platform : null);
-      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license), devicesUsed: license.devices.size, deviceLimit }];
+      return [200, leaseBody(normalizedKey, deviceId, license)];
     }
     if (path === '/v1/license/validate') {
       if (!license.devices.has(deviceId)) return [404, { ok: false, error: 'not_activated' }];
-      return [200, { ok: true, lease: lease(normalizedKey, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license), devicesUsed: license.devices.size, deviceLimit }];
+      return [200, leaseBody(normalizedKey, deviceId, license)];
     }
     return [404, { ok: false, error: 'not_found' }];
   }
@@ -343,6 +357,8 @@ export function createMockLicenseServer({
     issueKey,
     calls,
     revoke(key) { licenses.get(key).revoked = true; },
+    /** A renewal (later time), a cancel (autoRenew false) or an admin extend on the server. */
+    setLicenseExpiry(key, licenseExpiresAt, { autoRenew = true } = {}) { Object.assign(licenses.get(key), { licenseExpiresAt, autoRenew }); },
     devices(key) { return [...licenses.get(key).devices]; },
     setOffline(value) { offline = value; },
     giftState,
@@ -373,6 +389,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = cliPort(process.argv.slice(2), process.env);
   const server = createMockLicenseServer({ log: (line) => console.log(line) });
   const key = server.issueKey();
+  const annualKey = server.issueKey({ licenseExpiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 });
   createServer(async (req, res) => {
     const raw = await readBody(req);
     let body = {};
@@ -385,6 +402,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (path.startsWith('/__mock/')) {
       if (req.method === 'POST' && path === '/__mock/gift/usage') server.setAllGiftUsage(body?.usd);
       else if (req.method === 'POST' && path === '/__mock/gift/active') server.setGiftActive(body?.active);
+      else if (req.method === 'POST' && path === '/__mock/license/expiry') {
+        const target = normalizeLicenseKey(body?.key);
+        if (!target || !server.snapshot().licenses.some((l) => l.key === target)) return json(404, { ok: false, error: 'invalid_key' });
+        server.setLicenseExpiry(target, Number.isSafeInteger(body?.licenseExpiresAt) ? body.licenseExpiresAt : null, { autoRenew: body?.autoRenew !== false });
+      }
       else if (!(req.method === 'GET' && path === '/__mock/state')) return json(404, { ok: false, error: 'not_found' });
       console.log(`[mock] ${req.method} ${path}${raw ? ` ${raw}` : ''}`);
       return json(200, { ok: true, state: server.snapshot() });
@@ -403,6 +425,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     res.end();
   }).listen(port, '127.0.0.1', () => {
     console.log(`mock key server on http://127.0.0.1:${port}, test key ${key}`);
+    console.log(`annual test key ${annualKey} (renews in 365 days)`);
     console.log(`HAMA_LICENSE_DEV_PUBLIC_KEY=${DEV_KEYPAIR.kid}:${DEV_KEYPAIR.publicKeyBase64}`);
     console.log(`gift proxy base http://127.0.0.1:${port}${GIFT_PROXY_PREFIX}`);
   });

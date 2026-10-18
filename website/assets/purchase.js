@@ -4,8 +4,14 @@
   'use strict';
 
   var CONFIG = {
+    // 파는 상품. 'onetime' = uRshdR (9,900원 한 번 결제, 평생 키), 'annual' = GLJFC9 (연 9,900원, 12개월마다 자동 갱신).
+    // 연간 구독으로 넘어갈 때 이 한 줄만 'annual' 로 바꿔요. 결제 링크와 pricing.html 의 가격 문구가 함께 바뀌어요.
+    PLAN: 'onetime',
     // Groble 상품 결제 링크. 구매 버튼이 여기에 ?ref=<무작위 값> 을 붙여 보내요.
-    GROBLE_CHECKOUT_URL: 'https://groble.im/payment/uRshdR',
+    CHECKOUT_URLS: {
+      onetime: 'https://groble.im/payment/uRshdR',
+      annual: 'https://groble.im/payment/GLJFC9'
+    },
     // 라이선스 서버. success.html 이 GET {API_BASE}/v1/license/by-ref?ref= 를 물어봐요.
     API_BASE: 'https://rau-credits-production.up.railway.app',
     // 맥 설치 파일. 공개 배포 저장소의 최신 릴리스를 가리키므로 버전마다 바꿀 필요가 없어요.
@@ -15,6 +21,12 @@
     POLL_TIMEOUT_MS: 180000,
     MAX_CONSECUTIVE_ERRORS: 5
   };
+
+  CONFIG.GROBLE_CHECKOUT_URL = CONFIG.CHECKOUT_URLS[CONFIG.PLAN] || CONFIG.CHECKOUT_URLS.onetime;
+  // CSS 가 <html data-plan> 으로 상품별 문구를 골라요. 이 파일은 <head> 에서 읽어 첫 화면부터 맞는 문구가 보여요.
+  if (root && root.document && root.document.documentElement) {
+    root.document.documentElement.setAttribute('data-plan', CONFIG.PLAN);
+  }
 
   var REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/;
   var STORAGE_KEY = 'hamaeditor.purchase.ref';
@@ -79,8 +91,15 @@
     return storage ? loadRef(storage) : null;
   }
 
+  // 연간 키의 갱신 안내. 서버가 한국 시간 하루 끝까지로 정한 만료(epoch ms)를 받아요. 평생 키(null)는 빈 문자열.
+  function renewalText(licenseExpiresAt) {
+    if (typeof licenseExpiresAt !== 'number' || !isFinite(licenseExpiresAt)) return '';
+    var date = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' }).format(new Date(licenseExpiresAt));
+    return '매년 자동으로 갱신돼요. 다음 갱신일은 ' + date + '이에요. 언제든 Groble에서 해지할 수 있어요.';
+  }
+
   /* 키가 나올 때까지 물어봐요.
-     onUpdate({state:'pending'|'issued'|'error'|'timeout', key?, attempts})
+     onUpdate({state:'pending'|'issued'|'error'|'timeout', key?, licenseExpiresAt?, attempts})
      반환한 함수를 부르면 멈춰요. */
   function pollLicense(opts) {
     var fetchImpl = opts.fetch;
@@ -117,7 +136,7 @@
           if (stopped) return;
           errors = 0;
           if (body && body.status === 'issued' && typeof body.key === 'string' && body.key) {
-            done({ state: 'issued', key: body.key, attempts: attempts });
+            done({ state: 'issued', key: body.key, licenseExpiresAt: typeof body.licenseExpiresAt === 'number' ? body.licenseExpiresAt : null, attempts: attempts });
             return;
           }
           if (body && body.status === 'pending') {
@@ -150,6 +169,7 @@
     saveRef: saveRef,
     loadRef: loadRef,
     resolveRef: resolveRef,
+    renewalText: renewalText,
     pollLicense: pollLicense
   };
 

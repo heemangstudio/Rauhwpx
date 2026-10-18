@@ -5,6 +5,10 @@
 // - 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다. 실행할 때와 24시간마다 다시 확인해 lease 를 늘린다.
 // - 인터넷이 없으면 가진 lease 가 끝날 때까지(최대 7일) 그대로 쓴다.
 // - 환불이나 베타 종료로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
+// - 연간 구독 키는 서명한 lease 에 키의 만료 시각(licenseExpiresAt)이 들어 있다. 평생 키는 없다.
+//   만료가 지나면 체험이 끝난 것과 같은 읽기 전용(expired)이 된다. 서버가 만료라고 답하면 바로,
+//   서버에 닿지 못하면 만료 뒤 최대 7일(SUBSCRIPTION_OFFLINE_GRACE_MS, 가진 lease 가 끝나면 그 전)까지 쓴다.
+//   서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 편집할 수 있다. 만료 뒤에는 1시간마다 다시 확인한다.
 // - 키 종류(tier: paid | beta)는 서버 응답에서 받아 표시에만 쓴다. 예전 상태 파일에 없으면 paid 다.
 // - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
 // - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
@@ -30,6 +34,10 @@ export const LICENSE_STATE_FILE = 'license.json';
 export const TRIAL_DURATION_MS = 72 * 60 * 60 * 1000;
 export const EXPIRY_SAVE_GRACE_MS = 60 * 1000;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** 연간 키의 만료가 지났는데 서버에 닿지 못할 때 더 쓸 수 있는 기간. */
+export const SUBSCRIPTION_OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+/** 만료가 지난 연간 키를 서버에 다시 확인하는 간격. 갱신 결제가 늦게 들어와도 이 안에 풀린다. */
+export const EXPIRED_RECHECK_MS = 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
 export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
@@ -41,6 +49,8 @@ export class LicenseReadOnlyError extends Error {
       ? `LICENSE_READ_ONLY: ${BETA_REVOKED_MESSAGE}`
       : state === 'revoked'
       ? 'LICENSE_READ_ONLY: 라이선스가 해지되어 읽기 전용이에요. 새 라이선스 키를 넣으면 다시 저장할 수 있어요.'
+      : state === 'expired'
+      ? `LICENSE_READ_ONLY: ${EXPIRED_MESSAGE}`
       : state === 'lease_expired' || state === 'needs_activation'
         ? 'LICENSE_READ_ONLY: 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결하거나 키를 다시 활성화해 주세요.'
         : 'LICENSE_READ_ONLY: 체험이 끝나 읽기 전용이에요. 라이선스 키를 넣으면 다시 저장할 수 있어요.');
@@ -51,10 +61,12 @@ export class LicenseReadOnlyError extends Error {
 }
 
 const BETA_REVOKED_MESSAGE = '베타 테스트 기간이 끝나 키가 해지되었어요.';
+const EXPIRED_MESSAGE = '라이선스 기간이 끝나 읽기 전용이에요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.';
 
 const ERROR_MESSAGES = {
   invalid_key: '라이선스 키를 찾을 수 없어요. 키를 다시 확인해 주세요.',
   revoked: '해지된 라이선스 키예요. 환불된 주문의 키는 쓸 수 없어요.',
+  expired: '기간이 끝난 라이선스 키예요. 구독을 갱신하면 다시 쓸 수 있어요.',
   device_limit: '이 키를 쓸 수 있는 기기 수를 모두 채웠어요. 다른 기기의 설정에서 ‘이 기기 비활성화’를 누른 뒤 다시 시도해 주세요.',
   not_activated: '이 기기에서는 아직 활성화되지 않은 키예요. 키를 다시 넣어 주세요.',
   network: '라이선스 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.',
@@ -94,6 +106,9 @@ function sanitizeState(raw) {
       lastCheckAt: Number.isSafeInteger(raw.license.lastCheckAt) ? raw.license.lastCheckAt : 0,
       revokedAt: Number.isSafeInteger(raw.license.revokedAt) ? raw.license.revokedAt : null,
       lastErrorCode: typeof raw.license.lastErrorCode === 'string' ? raw.license.lastErrorCode : null,
+      licenseExpiresAt: Number.isSafeInteger(raw.license.licenseExpiresAt) ? raw.license.licenseExpiresAt : null,
+      autoRenew: typeof raw.license.autoRenew === 'boolean' ? raw.license.autoRenew : null,
+      expiredAt: Number.isSafeInteger(raw.license.expiredAt) ? raw.license.expiredAt : null,
     };
   }
   return state;
@@ -115,6 +130,8 @@ export function createLicenseManager({
   trialDurationMs = TRIAL_DURATION_MS,
   expirySaveGraceMs = EXPIRY_SAVE_GRACE_MS,
   checkIntervalMs = LICENSE_CHECK_INTERVAL_MS,
+  offlineGraceMs = SUBSCRIPTION_OFFLINE_GRACE_MS,
+  expiredRecheckMs = EXPIRED_RECHECK_MS,
   fs = { mkdir, readFile, rename, rm, writeFile },
   onChange = () => {},
   log = console,
@@ -175,6 +192,12 @@ export function createLicenseManager({
     return verifyLease(license.lease, { publicKeys, deviceId: state.deviceId, key: license.key, keyId: license.keyId, now: t });
   }
 
+  /** 키의 만료 시각. lease 가 맞으면 서명한 값을, 아니면 마지막으로 받은 값을 쓴다. 평생 키는 null. */
+  function licenseExpiry(lease) {
+    if (lease.ok) return Number.isSafeInteger(lease.payload.licenseExpiresAt) ? lease.payload.licenseExpiresAt : null;
+    return state.license?.licenseExpiresAt ?? null;
+  }
+
   function trialInfo(t) {
     const startedAt = state.trial.startedAt;
     const endsAt = startedAt + trialDurationMs;
@@ -187,10 +210,16 @@ export function createLicenseManager({
     const trial = trialInfo(t);
     const license = state.license;
     const lease = leaseCheck(t);
+    const expiresAt = license ? licenseExpiry(lease) : null;
+    const pastExpiry = expiresAt !== null && t >= expiresAt;
+    // 만료 뒤 서버에 닿지 못하는 동안: 7일과 가진 lease 중 먼저 끝나는 때까지.
+    const graceEndsAt = pastExpiry && lease.ok ? Math.min(expiresAt + offlineGraceMs, lease.payload.expiresAt) : null;
     let value;
     if (!enforce) value = 'unenforced';
     else if (license?.revokedAt) value = 'revoked';
-    else if (lease.ok) value = 'licensed';
+    else if (license?.expiredAt) value = 'expired';
+    else if (lease.ok) value = graceEndsAt !== null && t >= graceEndsAt ? 'expired' : 'licensed';
+    else if (license && pastExpiry) value = 'expired';
     else if (license && lease.reason === 'expired') value = 'lease_expired';
     else if (license) value = 'needs_activation';
     else if (trial.active) value = 'trial';
@@ -213,6 +242,9 @@ export function createLicenseManager({
         nextCheckAt: license.lastCheckAt ? license.lastCheckAt + checkIntervalMs : null,
         revokedAt: license.revokedAt,
         lastError: license.lastErrorCode ? licenseErrorMessage(license.lastErrorCode, license.tier) : null,
+        licenseExpiresAt: expiresAt,
+        autoRenew: expiresAt === null ? null : license.autoRenew !== false,
+        graceEndsAt: value === 'licensed' ? graceEndsAt : null,
       } : null,
       offline: lastNetworkError !== null,
       pricingUrl: PRICING_URL,
@@ -224,13 +256,25 @@ export function createLicenseManager({
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
-  function acceptLease(key, { lease, keyId, tier }, t) {
+  function acceptLease(key, { lease, keyId, tier, autoRenew }, t) {
     const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, keyId, now: t });
     if (!result.ok) {
       log.warn?.('[license] server lease rejected:', result.reason);
       throw new LicenseServerError('bad_lease');
     }
-    state.license = { key, keyId, tier: tier === 'beta' ? 'beta' : 'paid', lease, lastCheckAt: t, revokedAt: null, lastErrorCode: null };
+    const licenseExpiresAt = Number.isSafeInteger(result.payload.licenseExpiresAt) ? result.payload.licenseExpiresAt : null;
+    state.license = {
+      key,
+      keyId,
+      tier: tier === 'beta' ? 'beta' : 'paid',
+      lease,
+      lastCheckAt: t,
+      revokedAt: null,
+      lastErrorCode: null,
+      licenseExpiresAt,
+      autoRenew: licenseExpiresAt === null ? null : autoRenew !== false,
+      expiredAt: null,
+    };
   }
 
   async function check({ force = false } = {}) {
@@ -259,7 +303,12 @@ export function createLicenseManager({
         return computeStatus();
       }
       const t = clock();
-      if (!force && license.lastCheckAt && t - license.lastCheckAt < checkIntervalMs && leaseCheck(t).ok) {
+      const lease = leaseCheck(t);
+      const expiresAt = licenseExpiry(lease);
+      // 만료가 지난 연간 키는 갱신을 놓치지 않게 더 자주 묻는다.
+      const lapsed = Boolean(license.expiredAt) || (expiresAt !== null && t >= expiresAt);
+      const interval = lapsed ? Math.min(checkIntervalMs, expiredRecheckMs) : checkIntervalMs;
+      if (!force && license.lastCheckAt && t - license.lastCheckAt < interval && (lease.ok || license.expiredAt)) {
         return computeStatus();
       }
       try {
@@ -273,6 +322,14 @@ export function createLicenseManager({
           license.revokedAt = clock();
           license.lease = null;
           license.lastErrorCode = 'revoked';
+        } else if (code === 'expired') {
+          // 서버가 만료라고 하면 유예 없이 끝난다. 키는 남겨 두어 갱신 뒤 다음 확인에서 다시 받는다.
+          license.expiredAt = clock();
+          license.lease = null;
+          if (Number.isSafeInteger(error.licenseExpiresAt)) license.licenseExpiresAt = error.licenseExpiresAt;
+          license.lastErrorCode = 'expired';
+          license.lastCheckAt = clock();
+          lastNetworkError = null;
         } else if (code === 'invalid_key' || code === 'not_activated' || code === 'device_limit') {
           // 서버가 이 기기의 활성화를 모른다. lease 를 버리고 키는 남겨 다시 활성화하게 한다.
           license.lease = null;
@@ -416,7 +473,7 @@ export function createLicenseManager({
      */
     async currentLease() {
       if (!state) await serialize(load);
-      if (!state.license?.lease || state.license.revokedAt) return null;
+      if (!state.license?.lease || state.license.revokedAt || state.license.expiredAt) return null;
       return leaseCheck(clock()).ok ? state.license.lease : null;
     },
     activate,

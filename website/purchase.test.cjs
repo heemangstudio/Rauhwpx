@@ -10,7 +10,9 @@ function memoryStorage() {
 }
 
 test('config points at the live Groble product and the default API base', () => {
+  assert.equal(P.CONFIG.PLAN, 'onetime', 'the one-time product stays on sale until the cutover');
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/uRshdR');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.annual, 'https://groble.im/payment/GLJFC9');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
 });
@@ -84,6 +86,9 @@ async function poll(responses, extra = {}) {
 test('pending then issued shows the key', async () => {
   const u = await poll([json(200, { status: 'pending' }), json(404, {}), json(200, { status: 'issued', key: 'HAMA-1234' })]);
   assert.deepEqual(u.map((x) => x.state), ['pending', 'pending', 'issued']);
+  assert.equal(u.at(-1).licenseExpiresAt, null);
+  const annual = await poll([json(200, { status: 'issued', key: 'HAMA-1234', licenseExpiresAt: 1823957999999 })]);
+  assert.equal(annual.at(-1).licenseExpiresAt, 1823957999999);
   assert.equal(u.at(-1).key, 'HAMA-1234');
 });
 
@@ -98,4 +103,10 @@ test('repeated errors end in error; a single blip does not', async () => {
   assert.equal(u.at(-1).state, 'error');
   const v = await poll([fail, json(500, {}), json(200, { status: 'issued', key: 'K' })]);
   assert.equal(v.at(-1).state, 'issued');
+});
+
+test('annual keys get the renewal line on the success page; lifetime keys get none', () => {
+  assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
+  assert.equal(P.renewalText(null), '');
+  assert.equal(P.renewalText(undefined), '');
 });
