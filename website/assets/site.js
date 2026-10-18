@@ -18,7 +18,7 @@
   /* ── 바닥글: 운영자 전화번호 ──
      TODO(하태욱): 운영자 전화번호를 이 한 곳에 넣으면 모든 페이지 바닥글에 '전화' 줄이 보여요.
      비어 있는 동안에는 그 줄을 숨겨요. */
-  var OPERATOR_PHONE = '';
+  var OPERATOR_PHONE = '010-8512-1201';
   if (OPERATOR_PHONE) {
     Array.prototype.forEach.call(document.querySelectorAll('[data-operator-phone]'), function (line) {
       var link = line.querySelector('[data-operator-phone-link]');
