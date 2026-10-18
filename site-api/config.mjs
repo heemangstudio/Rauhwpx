@@ -41,6 +41,14 @@ export const DEFAULT_LICENSE_ALLOWED_ORIGINS = [
 /** Groble products: the one-time lifetime license and the 12-month auto-renewing subscription. */
 export const DEFAULT_ONETIME_PRODUCT_IDS = 'uRshdR';
 export const DEFAULT_SUBSCRIPTION_PRODUCT_IDS = 'GLJFC9';
+/**
+ * After a failed renewal Groble retries once a day for 3 days, then keeps the subscription for a 7-day
+ * grace period (groble.im/legal/refund 제6조 제13항). Keys stay usable this long past their expiry
+ * when the failure event carries no grace end of its own.
+ */
+export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+/** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
+export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -71,11 +79,16 @@ export function resolveLicenseConfig(env = process.env) {
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
   const overlap = onetimeProductIds.filter((id) => subscriptionProductIds.includes(id));
   if (overlap.length) throw new Error(`Groble product ${overlap.join(', ')} is both one-time and subscription`);
+  const paymentGraceDays = positiveNumber('GROBLE_PAYMENT_GRACE_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_DAYS), DEFAULT_PAYMENT_GRACE_DAYS);
+  const paymentFixUrl = trimmed(env.GROBLE_PAYMENT_FIX_URL) || DEFAULT_PAYMENT_FIX_URL;
+  if (!/^https:\/\/(?:www\.)?groble\.im\//.test(paymentFixUrl)) throw new Error(`GROBLE_PAYMENT_FIX_URL must be an https://groble.im/ page: ${paymentFixUrl}`);
   return {
     webhookSecret: trimmed(env.GROBLE_WEBHOOK_SECRET),
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
     onetimeProductIds,
     subscriptionProductIds,
+    paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
+    paymentFixUrl,
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),

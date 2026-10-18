@@ -193,24 +193,26 @@ test('a renewal extends the same key from its expiry; a replayed renewal never e
   assert.ok(sent[1].html.includes('2028년 10월 20일'));
 });
 
-test('a renewal after the key lapsed extends from now and restores validate', async () => {
+test('a late renewal (after the key lapsed) starts the new year on the day it was paid and restores validate', async () => {
   const { svc, at } = service();
   await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
   const key = await keyFor(svc);
   await svc.activate({ key, deviceId: 'mac-sub-0001' });
 
   at(FIRST_END + 2 * DAY);
-  await assert.rejects(svc.validate({ key, deviceId: 'mac-sub-0001' }), (error) => error.code === 'expired' && error.status === 403 && error.licenseExpiresAt === FIRST_END);
+  await assert.rejects(svc.validate({ key, deviceId: 'mac-sub-0001' }), (error) => error.code === 'expired' && error.status === 403
+    && error.licenseExpiresAt === FIRST_END && error.paymentFixUrl === 'https://groble.im/manage/purchase');
 
-  // Groble's retry succeeds two days late.
+  // Paid on 2027-10-23 KST; the webhook arrives a day later. The year counts from the payment day.
+  at(FIRST_END + 3 * DAY);
   const late = paid({ merchantUid: 'sub_m2', round: 2, paidAt: '2027-10-23T10:00:00+09:00' });
   const renewed = await svc.handleGrobleEvent(late, { idempotencyKey: 'late' });
-  assert.equal(renewed.expiresAt, new Date(subscriptionEnd(FIRST_END + 2 * DAY, 12)).toISOString());
+  const newEnd = Date.parse('2028-10-23T23:59:59.999+09:00');
+  assert.equal(renewed.expiresAt, new Date(newEnd).toISOString());
   const lease = await svc.validate({ key, deviceId: 'mac-sub-0001' });
   assert.equal(lease.ok, true);
-  assert.equal(lease.licenseExpiresAt, Date.parse('2028-10-22T23:59:59.999+09:00'));
+  assert.equal(lease.licenseExpiresAt, newEnd);
 });
-
 test('cancel requested: no renewal, the key runs to its expiry and then reports expired', async () => {
   const { svc, at } = service();
   await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
@@ -233,25 +235,86 @@ test('cancel requested: no renewal, the key runs to its expiry and then reports 
   assert.equal(view.subscription.terminationReason, 'PERIOD_END');
 });
 
-test('failed renewal payments change nothing until the expiry; no early revoke', async () => {
+test('a failed renewal keeps the key fully usable through the grace window from the event, then it lapses', async () => {
   const { svc, at } = service();
   await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
   const key = await keyFor(svc);
   await svc.activate({ key, deviceId: 'mac-sub-0001' });
 
   at(Date.parse('2027-10-20T14:30:00+09:00'));
-  assert.equal((await svc.handleGrobleEvent(failed(), { idempotencyKey: 'f1' })).action, 'payment_failure_recorded');
-  await svc.handleGrobleEvent(failed({ merchantUid: 'sub_fail_3', attemptNumber: 3, isFinal: true, failedAt: '2027-10-20T20:00:00+09:00' }), { idempotencyKey: 'f3' });
-  const lease = await svc.validate({ key, deviceId: 'mac-sub-0001' });
-  assert.equal(lease.licenseExpiresAt, FIRST_END, 'still valid on the last paid day');
+  const first = await svc.handleGrobleEvent(failed(), { idempotencyKey: 'f1' });
+  assert.equal(first.action, 'payment_failure_recorded');
+  // Attempt 1 has no grace date: expiry + 10 days (GROBLE_PAYMENT_GRACE_DAYS).
+  assert.equal(first.paymentGraceEndsAt, new Date(FIRST_END + 10 * DAY).toISOString());
+  let lease = await svc.validate({ key, deviceId: 'mac-sub-0001' });
+  assert.deepEqual([lease.licenseState, lease.paymentGraceEndsAt, lease.licenseExpiresAt, lease.paymentFixUrl], ['payment_failed', FIRST_END + 10 * DAY, FIRST_END, 'https://groble.im/manage/purchase']);
+  assert.equal(verifyLease(lease.lease, KEYS, { now: Date.parse('2027-10-20T14:30:00+09:00') }).payload.paymentGraceEndsAt, FIRST_END + 10 * DAY);
+
+  // The final attempt carries Groble's own grace end, which wins.
+  const graceEnd = Date.parse('2027-10-30T14:22:11+09:00');
+  await svc.handleGrobleEvent(failed({ merchantUid: 'sub_fail_3', attemptNumber: 3, isFinal: true, failedAt: '2027-10-22T14:22:11+09:00' }), { idempotencyKey: 'f3' });
+  at(FIRST_END + 5 * DAY);
+  lease = await svc.validate({ key, deviceId: 'mac-sub-0001' });
+  assert.deepEqual([lease.ok, lease.licenseState, lease.paymentGraceEndsAt], [true, 'payment_failed', graceEnd], 'past the expiry and still usable');
   const view = await licenseOf(svc, key);
   assert.equal(view.subscription.status, 'past_due');
   assert.equal(view.subscription.lastFailure.isFinal, true);
 
-  at(FIRST_END + 1);
+  at(graceEnd);
   await assert.rejects(svc.validate({ key, deviceId: 'mac-sub-0001' }), { code: 'expired' });
 });
 
+test('payment grace: GROBLE_PAYMENT_GRACE_DAYS sets the derived window; terminated ends it; a paid retry clears it', async () => {
+  assert.equal(resolveLicenseConfig({ GROBLE_PAYMENT_GRACE_DAYS: '14' }).paymentGraceMs, 14 * DAY);
+  assert.equal(resolveLicenseConfig({}).paymentFixUrl, 'https://groble.im/manage/purchase');
+  assert.equal(resolveLicenseConfig({ GROBLE_PAYMENT_FIX_URL: 'https://www.groble.im/users/profile/payment-methods' }).paymentFixUrl, 'https://www.groble.im/users/profile/payment-methods');
+  assert.throws(() => resolveLicenseConfig({ GROBLE_PAYMENT_FIX_URL: 'https://evil.example/' }), /groble\.im/);
+  assert.throws(() => resolveLicenseConfig({ GROBLE_PAYMENT_GRACE_DAYS: '0' }), /positive/);
+
+  const { svc, at } = service({ paymentGraceMs: 3 * DAY });
+  await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
+  const key = await keyFor(svc);
+  await svc.activate({ key, deviceId: 'mac-sub-0001' });
+  at(Date.parse('2027-10-20T14:30:00+09:00'));
+  await svc.handleGrobleEvent(failed(), { idempotencyKey: 'f1' });
+  at(FIRST_END + DAY);
+  assert.equal((await svc.validate({ key, deviceId: 'mac-sub-0001' })).paymentGraceEndsAt, FIRST_END + 3 * DAY);
+
+  // Grace expired on Groble's side: access stops even though our window is still open.
+  await svc.handleGrobleEvent(terminated({ reason: 'PAYMENT_FAILURE_GRACE_EXPIRED', terminatedAt: '2027-10-22T00:00:00+09:00' }), { idempotencyKey: 't1' });
+  await assert.rejects(svc.validate({ key, deviceId: 'mac-sub-0001' }), { code: 'expired' });
+
+  // Another subscriber: the re-payment during the grace renews from the payment day and clears the state.
+  const other = service();
+  await other.svc.handleGrobleEvent(paid({ merchantUid: 'o1', ref: 'hama-sub-2', email: 'two@example.com' }), { idempotencyKey: 'o1' });
+  const otherKey = await keyFor(other.svc, 'hama-sub-2');
+  await other.svc.activate({ key: otherKey, deviceId: 'mac-sub-0002' });
+  other.at(Date.parse('2027-10-20T14:30:00+09:00'));
+  await other.svc.handleGrobleEvent(failed({ ref: 'hama-sub-2', email: 'two@example.com' }), { idempotencyKey: 'of' });
+  other.at(Date.parse('2027-10-25T09:00:00+09:00'));
+  await other.svc.handleGrobleEvent(paid({ merchantUid: 'o2', round: 2, ref: 'hama-sub-2', email: 'two@example.com', paidAt: '2027-10-25T09:00:00+09:00' }), { idempotencyKey: 'o2' });
+  const lease = await other.svc.validate({ key: otherKey, deviceId: 'mac-sub-0002' });
+  assert.deepEqual([lease.licenseState, lease.paymentGraceEndsAt, lease.licenseExpiresAt], ['active', null, Date.parse('2028-10-25T23:59:59.999+09:00')]);
+  const view = await licenseOf(other.svc, otherKey);
+  assert.equal(view.subscription.status, 'active');
+  assert.equal(view.subscription.paymentGraceEndsAt, undefined);
+});
+
+for (const reason of ['SELLER_CANCELLED', 'CONTENT_DELETED']) {
+  test(`an immediate termination (${reason}) keeps the year the buyer paid for`, async () => {
+    const { svc, at } = service();
+    await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
+    const key = await keyFor(svc);
+    await svc.activate({ key, deviceId: 'mac-sub-0001' });
+    at(Date.parse('2027-03-01T10:00:00+09:00'));
+    await svc.handleGrobleEvent(cancelRequested({ requestedAt: '2027-03-01T10:00:00+09:00' }), { idempotencyKey: 'c' });
+    await svc.handleGrobleEvent(terminated({ reason, terminatedAt: '2027-03-01T10:00:05+09:00' }), { idempotencyKey: 't' });
+    const lease = await svc.validate({ key, deviceId: 'mac-sub-0001' });
+    assert.deepEqual([lease.ok, lease.licenseExpiresAt, lease.autoRenew], [true, FIRST_END, false]);
+    at(FIRST_END);
+    await assert.rejects(svc.validate({ key, deviceId: 'mac-sub-0001' }), { code: 'expired' });
+  });
+}
 test('renewal without our ref matches the one live subscription with the buyer email; otherwise it is held for extend', async () => {
   const { svc, at } = service();
   await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
@@ -333,6 +396,7 @@ test('migration: existing records without expiresAt stay lifetime, and one-time 
     const lease = await svc.activate({ key, deviceId: 'mac-legacy-01' });
     assert.equal(lease.licenseExpiresAt, null, `${key} is lifetime`);
     assert.equal(lease.autoRenew, null);
+    assert.deepEqual([lease.licenseState, lease.paymentGraceEndsAt, 'paymentFixUrl' in lease], ['active', null, false]);
     const { payload } = verifyLease(lease.lease, KEYS, { now: Date.parse('2040-01-01T00:00:00Z') });
     assert.equal('licenseExpiresAt' in payload, false, 'lifetime leases keep the old payload');
     assert.equal((await licenseOf(svc, key)).plan, 'lifetime');
@@ -405,7 +469,7 @@ test('HTTP: subscription webhooks, expired validate, unknown events held in the 
   clock = FIRST_END + DAY;
   const expired = await post('/v1/license/validate', { key, deviceId: 'mac-http-01' });
   assert.equal(expired.status, 403);
-  assert.deepEqual(await expired.json(), { ok: false, error: 'expired', tier: 'paid', licenseExpiresAt: FIRST_END });
+  assert.deepEqual(await expired.json(), { ok: false, error: 'expired', tier: 'paid', licenseExpiresAt: FIRST_END, paymentFixUrl: 'https://groble.im/manage/purchase' });
 
   // Groble's planned 해지 철회 event (or any new type) answers 200 so it is not retried, and lands in `webhooks --held`.
   const unknown = await signedPost(origin, { id: 'evt_new', type: 'subscription.cancel_withdrawn', occurredAt: PAID_AT, data: { object: { merchantUid: 'sub_m1', sellerReference: 'hama-sub-1' } } }, 'idem-unknown');

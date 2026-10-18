@@ -86,7 +86,9 @@ const kstDate = (iso) => new Date(Date.parse(iso) + 9 * 60 * 60 * 1000).toISOStr
 function expiryLine(license) {
   if (!license.expiresAt) return `${license.key} ${license.plan ?? 'lifetime'} · ${license.status} · 평생`;
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
-  return `${license.key} annual · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}`;
+  const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
+    ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
+  return `${license.key} annual · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 const listed = parsed?.licenses ?? (parsed?.license ? [parsed.license] : []);
 if (res.ok && listed.length && listed.every((l) => l.key)) {

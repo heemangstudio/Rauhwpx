@@ -423,6 +423,7 @@ export function siteRequestListener({
           error: error.code,
           ...(error.tier ? { tier: error.tier } : {}),
           ...(error.licenseExpiresAt ? { licenseExpiresAt: error.licenseExpiresAt } : {}),
+          ...(error.paymentFixUrl ? { paymentFixUrl: error.paymentFixUrl } : {}),
         });
         return;
       }
@@ -476,6 +477,8 @@ export function createSiteServer(env = process.env, options = {}) {
     emailProvider: options.emailProvider ?? createEmailProvider(env),
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
+    paymentGraceMs: licenseConfig.paymentGraceMs,
+    paymentFixUrl: licenseConfig.paymentFixUrl,
     expectedPrice: licenseConfig.expectedPrice,
     minAmount: licenseConfig.minAmount,
     grandfatherCutoff: licenseConfig.grandfatherCutoff,

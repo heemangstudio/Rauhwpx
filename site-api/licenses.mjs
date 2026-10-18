@@ -118,6 +118,18 @@ function expiryOf(license) {
   return parseTime(license?.expiresAt) ?? null;
 }
 
+/** End of Groble's retry and grace window after a failed renewal, while the subscription is past due. */
+function paymentGraceEndOf(license) {
+  return license?.subscription?.status === 'past_due' ? parseTime(license.subscription.paymentGraceEndsAt) ?? null : null;
+}
+
+/** When the key stops working: its paid end, or the end of the payment grace window when that is later. */
+function accessEndOf(license) {
+  const expiry = expiryOf(license);
+  if (expiry === null) return null;
+  return Math.max(expiry, paymentGraceEndOf(license) ?? 0);
+}
+
 function cycleMonths(object) {
   const months = object?.subscription?.billingCycleMonths;
   return Number.isInteger(months) && months >= 1 && months <= 12 ? months : SUBSCRIPTION_CYCLE_MONTHS;
@@ -185,6 +197,8 @@ export function createLicensesService({
   emailProvider,
   onetimeProductIds = ['uRshdR'],
   subscriptionProductIds = ['GLJFC9'],
+  paymentGraceMs = 10 * 24 * 60 * 60 * 1000,
+  paymentFixUrl = 'https://groble.im/manage/purchase',
   expectedPrice = 9900,
   minAmount = expectedPrice,
   grandfatherCutoff = undefined,
@@ -420,8 +434,8 @@ export function createLicensesService({
   }
 
   /**
-   * A RENEWAL round extends the same key by one billing cycle from its current expiry, or from now
-   * when it already lapsed. The round's merchantUid is recorded, so a replay never extends twice.
+   * A RENEWAL round extends the same key by one billing cycle from its current expiry, or from the
+   * payment when it already lapsed. The round's merchantUid is recorded, so a replay never extends twice.
    */
   function onRenewal(state, event, object) {
     const order = recordOrder(state, event, object, 'renewal');
@@ -432,7 +446,9 @@ export function createLicensesService({
     const license = findSubscriptionLicense(state, object);
     if (!license) return hold(order, 'renewal_unmatched');
     if (license.status === 'revoked') return hold(order, 'renewal_for_revoked_key');
-    const from = Math.max(expiryOf(license) ?? now(), now());
+    // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
+    const paidMs = paidAtOf(order);
+    const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
     const to = subscriptionEnd(from, order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS);
     license.expiresAt = iso(to);
     order.status = 'renewed';
@@ -441,7 +457,6 @@ export function createLicensesService({
     order.grantTo = iso(to);
     delete order.holdReason;
     const sub = license.subscription;
-    const paidMs = paidAtOf(order);
     // A renewal paid after a cancel request means the subscription is running again.
     if (!sub.cancelRequestedAt || paidMs > (parseTime(sub.cancelRequestedAt) ?? 0)) {
       sub.status = 'active';
@@ -452,6 +467,7 @@ export function createLicensesService({
     const nextBillingDate = str(object?.subscription?.nextBillingDate, 16);
     if (nextBillingDate) sub.nextBillingDate = nextBillingDate;
     delete sub.lastFailure;
+    delete sub.paymentGraceEndsAt;
     if (license.email) license.emailDelivery = { status: 'pending', queuedAt: new Date(now()).toISOString(), renewal: true };
     return { action: 'renewed', keyId: license.keyId, expiresAt: license.expiresAt };
   }
@@ -460,7 +476,12 @@ export function createLicensesService({
     return { action: 'subscription_unmatched', reason: `subscription_unmatched:${type}`, needsReview: true };
   }
 
-  /** A failed renewal changes nothing about access: the key lapses at its expiry unless a retry pays. */
+  /**
+   * A failed renewal keeps the key fully usable through Groble's retry and grace window: until
+   * `failure.gracePeriodEndsAt` when the event carries it (the final attempt does), else the key's
+   * expiry plus `paymentGraceMs`. `subscription.terminated` or the window's end stops it; a paid retry
+   * renews as usual.
+   */
   function onPaymentFailed(state, event, object) {
     const license = findSubscriptionLicense(state, object);
     if (!license) return unmatched('subscription_payment.failed');
@@ -479,8 +500,11 @@ export function createLicensesService({
         gracePeriodEndsAt: str(failure.gracePeriodEndsAt, 64),
       };
       for (const k of Object.keys(sub.lastFailure)) if (sub.lastFailure[k] === undefined) delete sub.lastFailure[k];
+      const fromEvent = parseTime(failure.gracePeriodEndsAt);
+      const derived = Math.max(parseTime(sub.paymentGraceEndsAt) ?? 0, (expiryOf(license) ?? now()) + paymentGraceMs);
+      sub.paymentGraceEndsAt = iso(fromEvent ?? derived);
     }
-    return { action: 'payment_failure_recorded', keyId: license.keyId };
+    return { action: 'payment_failure_recorded', keyId: license.keyId, paymentGraceEndsAt: sub.paymentGraceEndsAt };
   }
 
   /** Auto-renewal is off; the key still runs to its expiry. */
@@ -490,7 +514,8 @@ export function createLicensesService({
     const sub = license.subscription;
     const request = object?.cancelRequest ?? {};
     sub.autoRenew = false;
-    if (sub.status !== 'terminated') sub.status = 'cancel_requested';
+    // A past-due subscription keeps its payment grace until Groble terminates it.
+    if (sub.status !== 'terminated' && sub.status !== 'past_due') sub.status = 'cancel_requested';
     sub.cancelRequestedAt = str(request.requestedAt, 64) ?? str(object?.subscription?.cancelledAt, 64) ?? event.occurredAt;
     sub.cancelRequestedBy = str(request.requestedBy, 16);
     sub.serviceEndsAt = str(object.serviceEndsAt, 64);
@@ -727,9 +752,9 @@ export function createLicensesService({
     const license = key ? state.licenses[state.keyIndex[key]] : undefined;
     if (!license) throw licenseError('invalid_key', 404);
     if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
-    const expiry = expiryOf(license);
-    if (expiry !== null && now() >= expiry) {
-      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiry });
+    const end = accessEndOf(license);
+    if (end !== null && now() >= end) {
+      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl });
     }
     return license;
   }
@@ -737,6 +762,7 @@ export function createLicensesService({
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
   function leaseResponse(license, deviceId, submittedKey) {
     const licenseExpiresAt = expiryOf(license);
+    const paymentGraceEndsAt = paymentGraceEndOf(license);
     const { lease, payload } = signLease({
       kid: leaseKid,
       keyId: license.keyId,
@@ -745,6 +771,7 @@ export function createLicensesService({
       now: now(),
       ttlMs: tierOf(license) === 'beta' ? BETA_LEASE_TTL_MS : LEASE_TTL_MS,
       licenseExpiresAt,
+      paymentGraceEndsAt,
     }, signingKey);
     return {
       ok: true,
@@ -755,6 +782,11 @@ export function createLicensesService({
       // The key's own end (null = lifetime). The lease's `expiresAt` above is only the offline window.
       licenseExpiresAt,
       autoRenew: licenseExpiresAt === null ? null : license.subscription?.autoRenew !== false,
+      // `payment_failed`: Groble could not charge the renewal. The key works until `paymentGraceEndsAt`;
+      // the buyer fixes the payment on `paymentFixUrl`.
+      licenseState: paymentGraceEndsAt === null ? 'active' : 'payment_failed',
+      paymentGraceEndsAt,
+      ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
     };
@@ -821,9 +853,9 @@ export function createLicensesService({
     const state = await read();
     const license = Object.hasOwn(state.licenses, keyId) ? state.licenses[keyId] : undefined;
     const device = license?.devices && Object.hasOwn(license.devices, deviceId) ? license.devices[deviceId] : undefined;
-    const expiry = expiryOf(license);
+    const end = accessEndOf(license);
     if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash
-      || (expiry !== null && now() >= expiry)) {
+      || (end !== null && now() >= end)) {
       throw licenseError('unauthorized', 401);
     }
     return {

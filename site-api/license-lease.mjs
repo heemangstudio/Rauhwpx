@@ -18,7 +18,8 @@ import {
  *
  * issuedAt and expiresAt are epoch milliseconds. licenseExpiresAt (epoch ms) is the end of a
  * subscription key, signed so the app can enforce it offline; lifetime keys omit it, so their
- * leases are unchanged and older apps ignore the field. keyHash is the hex SHA-256 of the
+ * leases are unchanged and older apps ignore the field. paymentGraceEndsAt (epoch ms) appears while
+ * Groble is retrying a failed renewal: the key works until then. keyHash is the hex SHA-256 of the
  * license key as the app normalizes it (trim, uppercase, no whitespace), so a lease
  * cannot be moved onto another key.
  */
@@ -102,6 +103,7 @@ export function signLease({
   now = Date.now(),
   ttlMs = LEASE_TTL_MS,
   licenseExpiresAt = null,
+  paymentGraceEndsAt = null,
 }, privateKey) {
   const payload = {
     v: LEASE_VERSION,
@@ -112,6 +114,7 @@ export function signLease({
     issuedAt: now,
     expiresAt: now + ttlMs,
     ...(Number.isSafeInteger(licenseExpiresAt) ? { licenseExpiresAt } : {}),
+    ...(Number.isSafeInteger(paymentGraceEndsAt) ? { paymentGraceEndsAt } : {}),
   };
   const encoded = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   const signature = sign(null, Buffer.from(encoded, 'ascii'), privateKey);
