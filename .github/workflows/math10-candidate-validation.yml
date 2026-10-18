@@ -24,7 +24,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.93.1-x86_64-pc-windows-msvc
       CARGO_BUILD_JOBS: '1'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/math10-native-o3-cache
+      CARGO_TARGET_DIR: ${{ github.workspace }}/rhwp/target/math10-native-o3-cache
     steps:
     - uses: actions/checkout@v5
       with:
@@ -33,28 +33,49 @@ jobs:
     - name: Reconstruct exact dirty source in disposable checkout
       id: source
       shell: python -u {0}
-      run: "import hashlib, json, os, re, subprocess\nfrom pathlib import Path\n\nout = Path(os.environ['RUNNER_TEMP']) /\
-        \ 'math10-native-r18'\nout.mkdir(parents=True, exist_ok=True)\ndef git(*args):\n    return subprocess.check_output(['git',\
-        \ *args], creationflags=0x08000000)\ndef save(name, value):\n    (out / name).write_text(json.dumps(value, indent=2)\
-        \ + '\\n', encoding='utf-8')\nC, H, T, D = (os.environ[k] for k in ('CANDIDATE', 'LOCAL_HEAD', 'SOURCE_TREE', 'LOCAL_DIFF_SHA256'))\n\
-        V = os.environ['GITHUB_SHA']\nassert not Path(os.environ['CARGO_TARGET_DIR']).exists(), 'Require a fresh compilation\
-        \ directory'\nwf = '.github/workflows/math10-candidate-validation.yml'\nassert re.fullmatch('[0-9a-f]{40}', C), 'Root\
-        \ must fill the candidate commit constant'\nassert git('rev-parse', C + '^{tree}').decode().strip() == T\nassert git('rev-parse',\
-        \ C + '^').decode().strip() == os.environ['REMOTE_PARENT']\ngit('merge-base', '--is-ancestor', C, V)\nassert git('diff-tree',\
-        \ '--no-commit-id', '--name-status', '-r', C, V).decode().strip() == 'A\\t' + wf\nassert not git('ls-tree', C, '--',\
-        \ wf), 'C must exclude validation workflow'\n(out / 'validation-workflow.yml').write_bytes(git('show', V + ':' + wf))\n\
-        save('publication.json', dict(candidate_commit=C, candidate_tree=T, validation_commit=V,\n     remote_parent=os.environ['REMOTE_PARENT'],\
-        \ run_url=os.environ['RUN_URL']))\ngit('config', '--local', 'core.autocrlf', 'input')\ngit('config', '--local', 'core.eol',\
-        \ 'lf')\ngit('config', '--local', 'core.filemode', 'false')\ngit('reset', '--hard', H)\ngit('read-tree', C)\ngit('checkout-index',\
-        \ '-a', '-f')\nassert not Path(wf).exists() and not git('ls-files', '--', wf)\ndiff = git('diff', '--binary', 'HEAD',\
-        \ '--')\nstatus = git('status', '--porcelain', '--untracked-files=normal')\nfiles = git('diff', '--cached', '--name-status',\
-        \ 'HEAD', '--')\nfor name, data in [('source-before.diff', diff), ('source-before.status', status), ('source-before.files',\
-        \ files)]:\n    (out / name).write_bytes(data)\nrecord = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),\n\
-        \    diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),\n    status_rows=len(status.splitlines()),\
-        \ staged_files=len(files.splitlines()), diff_bytes=len(diff))\nsave('source-before.json', record)\nassert record['head']\
-        \ == H and record['staged_tree'] == T and record['diff_sha256'] == D, record\nassert record['status_rows'] == record['staged_files']\
-        \ == 65\nassert not git('diff', '--name-only'), 'All source changes must be staged'\nassert not git('ls-files', '--others',\
-        \ '--exclude-standard'), 'Unexpected untracked source'\n"
+      run: |
+        import hashlib, json, os, re, subprocess
+        from pathlib import Path
+
+        out = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r18'
+        out.mkdir(parents=True, exist_ok=True)
+        def git(*args):
+            return subprocess.check_output(['git', *args], creationflags=0x08000000)
+        def save(name, value):
+            (out / name).write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+        C, H, T, D = (os.environ[k] for k in ('CANDIDATE', 'LOCAL_HEAD', 'SOURCE_TREE', 'LOCAL_DIFF_SHA256'))
+        V = os.environ['GITHUB_SHA']
+        assert not Path(os.environ['CARGO_TARGET_DIR']).exists(), 'Require a fresh compilation directory'
+        wf = '.github/workflows/math10-candidate-validation.yml'
+        assert re.fullmatch('[0-9a-f]{40}', C), 'Root must fill the candidate commit constant'
+        assert git('rev-parse', C + '^{tree}').decode().strip() == T
+        assert git('rev-parse', C + '^').decode().strip() == os.environ['REMOTE_PARENT']
+        git('merge-base', '--is-ancestor', C, V)
+        assert git('diff-tree', '--no-commit-id', '--name-status', '-r', C, V).decode().strip() == 'A\t' + wf
+        assert not git('ls-tree', C, '--', wf), 'C must exclude validation workflow'
+        (out / 'validation-workflow.yml').write_bytes(git('show', V + ':' + wf))
+        save('publication.json', dict(candidate_commit=C, candidate_tree=T, validation_commit=V,
+             remote_parent=os.environ['REMOTE_PARENT'], run_url=os.environ['RUN_URL']))
+        git('config', '--local', 'core.autocrlf', 'input')
+        git('config', '--local', 'core.eol', 'lf')
+        git('config', '--local', 'core.filemode', 'false')
+        git('reset', '--hard', H)
+        git('read-tree', C)
+        git('checkout-index', '-a', '-f')
+        assert not Path(wf).exists() and not git('ls-files', '--', wf)
+        diff = git('diff', '--binary', 'HEAD', '--')
+        status = git('status', '--porcelain', '--untracked-files=normal')
+        files = git('diff', '--cached', '--name-status', 'HEAD', '--')
+        for name, data in [('source-before.diff', diff), ('source-before.status', status), ('source-before.files', files)]:
+            (out / name).write_bytes(data)
+        record = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),
+            diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),
+            status_rows=len(status.splitlines()), staged_files=len(files.splitlines()), diff_bytes=len(diff))
+        save('source-before.json', record)
+        assert record['head'] == H and record['staged_tree'] == T and record['diff_sha256'] == D, record
+        assert record['status_rows'] == record['staged_files'] == 65
+        assert not git('diff', '--name-only'), 'All source changes must be staged'
+        assert not git('ls-files', '--others', '--exclude-standard'), 'Unexpected untracked source'
     - uses: ./.github/actions/setup-rust
       id: rust
       with:
@@ -66,9 +87,8 @@ jobs:
         path: ${{ env.CARGO_TARGET_DIR }}
         key: math10-native-o3-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('rhwp/Cargo.lock') }}-${{ env.CANDIDATE
           }}
-        restore-keys: 'math10-native-o3-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles(''rhwp/Cargo.lock'') }}-
-
-          '
+        restore-keys: |
+          math10-native-o3-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('rhwp/Cargo.lock') }}-
     - name: Optimized native unit, integration and CLI validation
       id: validation
       if: ${{ always() && !cancelled() && steps.source.outcome == 'success' }}
@@ -77,90 +97,135 @@ jobs:
         NATIVE_CACHE_HIT: ${{ steps.native_objects.outputs.cache-hit }}
         NATIVE_CACHE_KEY: ${{ steps.native_objects.outputs.cache-matched-key }}
       shell: python -u {0}
-      run: "import hashlib, json, os, platform, re, shutil, subprocess, tomllib, traceback\nfrom datetime import datetime,\
-        \ timezone\nfrom pathlib import Path\n\nout = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r18'\nout.mkdir(parents=True,\
-        \ exist_ok=True)\ndef now(): return datetime.now(timezone.utc).isoformat()\ndef sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()\n\
-        def save(name, value): (out / name).write_text(json.dumps(value, indent=2) + '\\n', encoding='utf-8')\ndef git(*args):\
-        \ return subprocess.check_output(['git', *args], creationflags=0x08000000)\ndef validate_test_log(text, filters, expected_passed):\n\
-        \    # --nocapture can insert diagnostics between \"...\" and \"ok\".\n    # Nested isolated tests can repeat a name,\
-        \ so count unique selected names.\n    summaries = re.findall(r'test result: ok\\. (\\d+) passed; (\\d+) failed; (\\\
-        d+) ignored;', text)\n    assert summaries, 'No successful test summary'\n    counts = [tuple(map(int, row)) for row\
-        \ in summaries]\n    assert all(failed == ignored == 0 for _, failed, ignored in counts), 'Failed or ignored tests'\n\
-        \    passed, failed, ignored = counts[-1]\n    assert passed == expected_passed > 0, f'Unexpected executed count:\
-        \ {passed}'\n    names = sorted(set(re.findall(r'^test\\s+(\\S+)\\s+\\.\\.\\.', text, re.M)))\n    assert len(names)\
-        \ == passed, f'Selected names {len(names)} != passed {passed}'\n    for term in filters:\n        assert any(term\
-        \ in name for name in names), 'Empty filter: ' + term\n    return dict(actual_passed=passed, actual_failed=failed,\
-        \ actual_ignored=ignored,\n        selected_test_names=names, summary_counts=counts)\nunit = ['windows_advance_policy',\
-        \ 'fallback_ink_tests', 'font_cache_tests', 'native_inline_placeholder', 'math10_', 'modern_cases_', 'primary_metric_admission',\
-        \ 'box_frame', 'wrapped_native_tab_cache_uses_body_edge_and_declared_left_stop']\nintegration = ['document_dpi', 'issue_math10',\
-        \ 'issue_footer_source_geometry', 'page_count_pins::issue_554', 'issue_1035_alignment', 'page_count_pins::issue_2151_hwp3_sample11',\
-        \ 'issue_1608_hwpx_native_no_hwp3_tolerance', 'issue_1915_hwp3_pagedef', 'issue_1880::issue_1880_convert_hwp_roundtrip_render_is_self_consistent',\
-        \ 'page_count_pins::issue_2559_footnote_footer_band', 'page_count_pins::issue_1937_rowbreak_footnote', 'issue_1073_nested_table_split',\
-        \ 'issue_1070_tac_table_post_text_overflow', 'issue_6186_footer_vertalign_bottom', 'issue_1302_2022_nov_page18_multiline_endnote_continuation_keeps_line_spacing',\
-        \ 'issue_1293_2024_zero_endnote_spacing']\ncommon = ['--locked', '--profile', 'release-test', '--features', 'native-skia']\n\
-        tail = ['--nocapture', '--test-threads=1']\ncommands = [('unit', ['cargo', 'test', *common, '--lib', '-j1', '--',\
-        \ *unit, *tail]),\n    ('integration', ['cargo', 'test', *common, '--test', 'it', '-j1', '--', *integration, *tail]),\n\
-        \    ('build', ['cargo', 'build', *common, '--bin', 'rhwp', '-j1'])]\nstages = [dict(name=name, argv=argv, status='not_run',\
-        \ timeout_seconds=1500) for name, argv in commands]\nreceipt = dict(schema='math10-ci-native-r17', status='failed',\
-        \ exit_code=1, start_utc=now(), stages=stages,\n    source_commit=os.environ['LOCAL_HEAD'], compiled_commit=os.environ['LOCAL_HEAD'],\n\
-        \    source_diff_sha256=os.environ['LOCAL_DIFF_SHA256'], candidate_commit=os.environ['CANDIDATE'],\n    source_tree=os.environ['SOURCE_TREE'],\
-        \ validation_commit=os.environ['GITHUB_SHA'],\n    compiled_checkout=str(Path.cwd()), run_url=os.environ['RUN_URL'],\
-        \ run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],\n    integration_filter_origin={'path': 'C:\\\\Users\\\\manag\\\\\
-        parity-runs\\\\math10-20261018\\\\tools\\\\jobs\\\\native-integration-r6\\\\ledger.json', 'sha256': 'ce44581f56547c4d9124fa9791dcdc33e65dcd91faf7ca967e11690af9775085'},\
-        \ unit_filter_origin={'path': 'C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\tools\\\\run-batch-r10.py',\
-        \ 'sha256': '73d3c84f48f578122d91b513c4f45fc5fe5707c6158c103bdde4eb4c75639450'},\n    build_cache=dict(hit=os.environ.get('NATIVE_CACHE_HIT'),\
-        \ key=os.environ.get('NATIVE_CACHE_KEY')),\n    compiler={}, limitations=['No proprietary HY font is installed or\
-        \ uploaded; older font-gated tests may return early.',\n    'Owned synthetic fixtures exercise policy and rendering;\
-        \ this is not real HY/corpus or live Studio validation.'])\ntry:\n    assert os.environ['RUST_SETUP_OUTCOME'] == 'success',\
-        \ 'Rust setup did not succeed'\n    assert not any(k.startswith('CARGO_PROFILE_') for k in os.environ), 'Unexpected\
-        \ profile override'\n    for k in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RHWP_FONT_PATH', 'RHWP_HANCOM_TEST_FONT',\n\
-        \              'RHWP_TABLE_DRIFT', 'RHWP_VPOS_DEBUG', 'RHWP_ENDNOTE_LINE_DEBUG'):\n        os.environ.pop(k, None)\n\
-        \    before = json.loads((out / 'source-before.json').read_text())\n    receipt['source_before'] = before\n    profile\
-        \ = tomllib.loads(Path('rhwp/Cargo.toml').read_text(encoding='utf-8'))['profile']\n    assert profile['release-test']['inherits']\
-        \ == 'release' and profile['release-test'].get('opt-level', 3) == 3\n    receipt['profile'] = dict(name='release-test',\
-        \ opt_level=3, incremental=False, jobs=1, test_threads=1,\n        overrides=False, definition=profile['release-test'])\n\
-        \    for name, argv in [('rustc', ['rustc', '-vV']), ('cargo', ['cargo', '-V']), ('git', ['git', '--version'])]:\n\
-        \        receipt['compiler'][name] = subprocess.check_output(argv, cwd='rhwp', timeout=60, creationflags=0x08000000).decode()\n\
-        \    assert 'release: 1.93.1' in receipt['compiler']['rustc'] and 'x86_64-pc-windows-msvc' in receipt['compiler']['rustc']\n\
-        \    llvm = Path(os.environ['ProgramFiles']) / 'LLVM/bin'\n    if (llvm / 'libclang.dll').is_file(): os.environ['LIBCLANG_PATH']\
-        \ = str(llvm)\n    receipt['compiler'].update(python=platform.python_version(), platform=platform.platform(),\n  \
-        \      runner_image=os.environ.get('ImageVersion'), libclang_path=os.environ.get('LIBCLANG_PATH'))\n    vswhere =\
-        \ Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'\n    receipt['compiler']['visual_studio']\
-        \ = subprocess.check_output([str(vswhere), '-latest', '-products', '*',\n        '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',\
-        \ '-format', 'json'], timeout=60, creationflags=0x08000000).decode()\n    assert json.loads(receipt['compiler']['visual_studio']),\
-        \ 'MSVC C++ tools are required'\n    for stage in stages:\n        stage.update(status='running', start_utc=now(),\
-        \ cwd=str(Path('rhwp').resolve()))\n        save('execution.json', receipt)\n        log = out / (stage['name'] +\
-        \ '.log')\n        with log.open('wb') as stream:\n            process = subprocess.Popen(stage['argv'], cwd='rhwp',\
-        \ stdout=stream, stderr=subprocess.STDOUT, creationflags=0x08000000)\n            try:\n                process.wait(timeout=stage['timeout_seconds'])\n\
-        \            except subprocess.TimeoutExpired:\n                subprocess.run(['taskkill', '/PID', str(process.pid),\
-        \ '/T', '/F'], stdout=stream, stderr=subprocess.STDOUT,\n                    timeout=30, creationflags=0x08000000,\
-        \ check=False)\n                raise\n        result = process\n        stage.update(exit_code=result.returncode,\
-        \ end_utc=now(), log=str(log), log_sha256=sha(log), status='failed')\n        assert result.returncode == 0, f\"{stage['name']}\
-        \ failed; inspect {log}\"\n        if stage['name'] != 'build':\n            text = log.read_text(encoding='utf-8',\
-        \ errors='replace')\n            stage.update(validate_test_log(text,\n                unit if stage['name'] == 'unit'\
-        \ else integration,\n                40 if stage['name'] == 'unit' else 88))\n            if stage['name'] == 'integration':\n\
-        \                required = 'issue_math10_windows_equation_policy::windows_equation_policy_reaches_document_composition_paint_and_edit'\n\
-        \                assert required in stage['selected_test_names'], 'Owned Windows policy test must execute'\n     \
-        \   stage['status'] = 'succeeded'\n        if stage['name'] != 'build': save(stage['name'] + '-result.json', stage)\n\
-        \    receipt.update(status='succeeded', exit_code=0, argv=stages[-1]['argv'],\n        start_utc=stages[-1]['start_utc'],\
-        \ integration_results=str(out / 'integration-result.json'))\nexcept Exception:\n    receipt['error'] = traceback.format_exc()\n\
-        \    print(receipt['error'])\nfinally:\n    for stage in stages:\n        if stage['status'] == 'running': stage.update(status='failed',\
-        \ end_utc=now())\n    try:\n        diff = git('diff', '--binary', 'HEAD', '--')\n        status = git('status', '--porcelain',\
-        \ '--untracked-files=normal')\n        files = git('diff', '--cached', '--name-status', 'HEAD', '--')\n        for\
-        \ name, data in [('source-after.diff', diff), ('source-after.status', status), ('source-after.files', files)]:\n \
-        \           (out / name).write_bytes(data)\n        after = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),\n\
-        \            diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),\n   \
-        \         status_rows=len(status.splitlines()), staged_files=len(files.splitlines()), diff_bytes=len(diff))\n    \
-        \    save('source-after.json', after)\n        receipt['source_after'] = after\n        assert after == receipt['source_before']\
-        \ and not Path('.github/workflows/math10-candidate-validation.yml').exists()\n        receipt['source_identity_unchanged_before_after_test_and_build']\
-        \ = True\n    except Exception:\n        receipt.update(status='failed', exit_code=1, source_check_error=traceback.format_exc())\n\
-        \    receipt['end_utc'] = now()\n    save('execution.json', receipt)\nif receipt['status'] == 'succeeded':\n    binary\
-        \ = Path(os.environ['CARGO_TARGET_DIR']) / 'release-test/rhwp.exe'\n    passed = Path(os.environ['RUNNER_TEMP']) /\
-        \ 'math10-native-r18-pass'\n    passed.mkdir()\n    receipt.update(binary_sha256=sha(binary), build_artifact=str(binary),\
-        \ binary=str(passed / 'candidate-r18.exe'),\n        build_ledger=dict(path=str(out / 'execution.json'), sha256=sha(out\
-        \ / 'execution.json')))\n    shutil.copyfile(binary, passed / 'candidate-r18.exe')\n    assert sha(passed / 'candidate-r18.exe')\
-        \ == receipt['binary_sha256']\n    save('candidate-r18.build.json', receipt)\n    shutil.copyfile(out / 'candidate-r18.build.json',\
-        \ passed / 'candidate-r18.build.json')\nelse:\n    save('candidate-r18.build.json', receipt)\nraise SystemExit(receipt['exit_code'])\n"
+      run: |
+        import hashlib, json, os, platform, re, shutil, subprocess, tomllib, traceback
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        out = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r18'
+        out.mkdir(parents=True, exist_ok=True)
+        def now(): return datetime.now(timezone.utc).isoformat()
+        def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        def save(name, value): (out / name).write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+        def git(*args): return subprocess.check_output(['git', *args], creationflags=0x08000000)
+        def validate_test_log(text, filters, expected_passed):
+            # --nocapture can insert diagnostics between "..." and "ok".
+            # Nested isolated tests can repeat a name, so count unique selected names.
+            summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;', text)
+            assert summaries, 'No successful test summary'
+            counts = [tuple(map(int, row)) for row in summaries]
+            assert all(failed == ignored == 0 for _, failed, ignored in counts), 'Failed or ignored tests'
+            passed, failed, ignored = counts[-1]
+            assert passed == expected_passed > 0, f'Unexpected executed count: {passed}'
+            names = sorted(set(re.findall(r'^test\s+(\S+)\s+\.\.\.', text, re.M)))
+            assert len(names) == passed, f'Selected names {len(names)} != passed {passed}'
+            for term in filters:
+                assert any(term in name for name in names), 'Empty filter: ' + term
+            return dict(actual_passed=passed, actual_failed=failed, actual_ignored=ignored,
+                selected_test_names=names, summary_counts=counts)
+        unit = ['windows_advance_policy', 'fallback_ink_tests', 'font_cache_tests', 'native_inline_placeholder', 'math10_', 'modern_cases_', 'primary_metric_admission', 'box_frame', 'wrapped_native_tab_cache_uses_body_edge_and_declared_left_stop']
+        integration = ['document_dpi', 'issue_math10', 'issue_footer_source_geometry', 'page_count_pins::issue_554', 'issue_1035_alignment', 'page_count_pins::issue_2151_hwp3_sample11', 'issue_1608_hwpx_native_no_hwp3_tolerance', 'issue_1915_hwp3_pagedef', 'issue_1880::issue_1880_convert_hwp_roundtrip_render_is_self_consistent', 'page_count_pins::issue_2559_footnote_footer_band', 'page_count_pins::issue_1937_rowbreak_footnote', 'issue_1073_nested_table_split', 'issue_1070_tac_table_post_text_overflow', 'issue_6186_footer_vertalign_bottom', 'issue_1302_2022_nov_page18_multiline_endnote_continuation_keeps_line_spacing', 'issue_1293_2024_zero_endnote_spacing']
+        common = ['--locked', '--profile', 'release-test', '--features', 'native-skia']
+        tail = ['--nocapture', '--test-threads=1']
+        commands = [('unit', ['cargo', 'test', *common, '--lib', '-j1', '--', *unit, *tail]),
+            ('integration', ['cargo', 'test', *common, '--test', 'it', '-j1', '--', *integration, *tail]),
+            ('build', ['cargo', 'build', *common, '--bin', 'rhwp', '-j1'])]
+        stages = [dict(name=name, argv=argv, status='not_run', timeout_seconds=1500) for name, argv in commands]
+        receipt = dict(schema='math10-ci-native-r17', status='failed', exit_code=1, start_utc=now(), stages=stages,
+            source_commit=os.environ['LOCAL_HEAD'], compiled_commit=os.environ['LOCAL_HEAD'],
+            source_diff_sha256=os.environ['LOCAL_DIFF_SHA256'], candidate_commit=os.environ['CANDIDATE'],
+            source_tree=os.environ['SOURCE_TREE'], validation_commit=os.environ['GITHUB_SHA'],
+            compiled_checkout=str(Path.cwd()), run_url=os.environ['RUN_URL'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+            integration_filter_origin={'path': 'C:\\Users\\manag\\parity-runs\\math10-20261018\\tools\\jobs\\native-integration-r6\\ledger.json', 'sha256': 'ce44581f56547c4d9124fa9791dcdc33e65dcd91faf7ca967e11690af9775085'}, unit_filter_origin={'path': 'C:\\Users\\manag\\parity-runs\\math10-20261018\\tools\\run-batch-r10.py', 'sha256': '73d3c84f48f578122d91b513c4f45fc5fe5707c6158c103bdde4eb4c75639450'},
+            build_cache=dict(hit=os.environ.get('NATIVE_CACHE_HIT'), key=os.environ.get('NATIVE_CACHE_KEY')),
+            compiler={}, limitations=['No proprietary HY font is installed or uploaded; older font-gated tests may return early.',
+            'Owned synthetic fixtures exercise policy and rendering; this is not real HY/corpus or live Studio validation.'])
+        try:
+            assert os.environ['RUST_SETUP_OUTCOME'] == 'success', 'Rust setup did not succeed'
+            assert not any(k.startswith('CARGO_PROFILE_') for k in os.environ), 'Unexpected profile override'
+            for k in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RHWP_FONT_PATH', 'RHWP_HANCOM_TEST_FONT',
+                      'RHWP_TABLE_DRIFT', 'RHWP_VPOS_DEBUG', 'RHWP_ENDNOTE_LINE_DEBUG'):
+                os.environ.pop(k, None)
+            before = json.loads((out / 'source-before.json').read_text())
+            receipt['source_before'] = before
+            profile = tomllib.loads(Path('rhwp/Cargo.toml').read_text(encoding='utf-8'))['profile']
+            assert profile['release-test']['inherits'] == 'release' and profile['release-test'].get('opt-level', 3) == 3
+            receipt['profile'] = dict(name='release-test', opt_level=3, incremental=False, jobs=1, test_threads=1,
+                overrides=False, definition=profile['release-test'])
+            for name, argv in [('rustc', ['rustc', '-vV']), ('cargo', ['cargo', '-V']), ('git', ['git', '--version'])]:
+                receipt['compiler'][name] = subprocess.check_output(argv, cwd='rhwp', timeout=60, creationflags=0x08000000).decode()
+            assert 'release: 1.93.1' in receipt['compiler']['rustc'] and 'x86_64-pc-windows-msvc' in receipt['compiler']['rustc']
+            llvm = Path(os.environ['ProgramFiles']) / 'LLVM/bin'
+            if (llvm / 'libclang.dll').is_file(): os.environ['LIBCLANG_PATH'] = str(llvm)
+            receipt['compiler'].update(python=platform.python_version(), platform=platform.platform(),
+                runner_image=os.environ.get('ImageVersion'), libclang_path=os.environ.get('LIBCLANG_PATH'))
+            vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
+            receipt['compiler']['visual_studio'] = subprocess.check_output([str(vswhere), '-latest', '-products', '*',
+                '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'], timeout=60, creationflags=0x08000000).decode()
+            assert json.loads(receipt['compiler']['visual_studio']), 'MSVC C++ tools are required'
+            for stage in stages:
+                stage.update(status='running', start_utc=now(), cwd=str(Path('rhwp').resolve()))
+                save('execution.json', receipt)
+                log = out / (stage['name'] + '.log')
+                with log.open('wb') as stream:
+                    process = subprocess.Popen(stage['argv'], cwd='rhwp', stdout=stream, stderr=subprocess.STDOUT, creationflags=0x08000000)
+                    try:
+                        process.wait(timeout=stage['timeout_seconds'])
+                    except subprocess.TimeoutExpired:
+                        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=stream, stderr=subprocess.STDOUT,
+                            timeout=30, creationflags=0x08000000, check=False)
+                        raise
+                result = process
+                stage.update(exit_code=result.returncode, end_utc=now(), log=str(log), log_sha256=sha(log), status='failed')
+                assert result.returncode == 0, f"{stage['name']} failed; inspect {log}"
+                if stage['name'] != 'build':
+                    text = log.read_text(encoding='utf-8', errors='replace')
+                    stage.update(validate_test_log(text,
+                        unit if stage['name'] == 'unit' else integration,
+                        40 if stage['name'] == 'unit' else 88))
+                    if stage['name'] == 'integration':
+                        required = 'issue_math10_windows_equation_policy::windows_equation_policy_reaches_document_composition_paint_and_edit'
+                        assert required in stage['selected_test_names'], 'Owned Windows policy test must execute'
+                stage['status'] = 'succeeded'
+                if stage['name'] != 'build': save(stage['name'] + '-result.json', stage)
+            receipt.update(status='succeeded', exit_code=0, argv=stages[-1]['argv'],
+                start_utc=stages[-1]['start_utc'], integration_results=str(out / 'integration-result.json'))
+        except Exception:
+            receipt['error'] = traceback.format_exc()
+            print(receipt['error'])
+        finally:
+            for stage in stages:
+                if stage['status'] == 'running': stage.update(status='failed', end_utc=now())
+            try:
+                diff = git('diff', '--binary', 'HEAD', '--')
+                status = git('status', '--porcelain', '--untracked-files=normal')
+                files = git('diff', '--cached', '--name-status', 'HEAD', '--')
+                for name, data in [('source-after.diff', diff), ('source-after.status', status), ('source-after.files', files)]:
+                    (out / name).write_bytes(data)
+                after = dict(head=git('rev-parse', 'HEAD').decode().strip(), staged_tree=git('write-tree').decode().strip(),
+                    diff_sha256=hashlib.sha256(diff).hexdigest(), status_sha256=hashlib.sha256(status).hexdigest(),
+                    status_rows=len(status.splitlines()), staged_files=len(files.splitlines()), diff_bytes=len(diff))
+                save('source-after.json', after)
+                receipt['source_after'] = after
+                assert after == receipt['source_before'] and not Path('.github/workflows/math10-candidate-validation.yml').exists()
+                receipt['source_identity_unchanged_before_after_test_and_build'] = True
+            except Exception:
+                receipt.update(status='failed', exit_code=1, source_check_error=traceback.format_exc())
+            receipt['end_utc'] = now()
+            save('execution.json', receipt)
+        if receipt['status'] == 'succeeded':
+            binary = Path(os.environ['CARGO_TARGET_DIR']) / 'release-test/rhwp.exe'
+            passed = Path(os.environ['RUNNER_TEMP']) / 'math10-native-r18-pass'
+            passed.mkdir()
+            receipt.update(binary_sha256=sha(binary), build_artifact=str(binary), binary=str(passed / 'candidate-r18.exe'),
+                build_ledger=dict(path=str(out / 'execution.json'), sha256=sha(out / 'execution.json')))
+            shutil.copyfile(binary, passed / 'candidate-r18.exe')
+            assert sha(passed / 'candidate-r18.exe') == receipt['binary_sha256']
+            save('candidate-r18.build.json', receipt)
+            shutil.copyfile(out / 'candidate-r18.build.json', passed / 'candidate-r18.build.json')
+        else:
+            save('candidate-r18.build.json', receipt)
+        raise SystemExit(receipt['exit_code'])
     - name: Save optimized objects after success or a test assertion failure
       if: ${{ always() && !cancelled() && steps.source.outcome == 'success' && steps.rust.outcome == 'success' && steps.native_objects.outputs.cache-hit
         != 'true' }}
