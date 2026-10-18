@@ -7,6 +7,7 @@
 //
 // Every request must name this server in Host (blocks DNS rebinding). API calls also need the
 // per-process session token that is embedded in the served page, and a same-origin Origin if any.
+// ADMIN_UI_PUBLIC_ORIGIN=https://<host>:<port> also accepts one HTTPS front door such as `tailscale serve`.
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -76,7 +77,9 @@ export function createAdminUiServer({
   keychain = createKeychain({ service: process.env.ADMIN_UI_KEYCHAIN_SERVICE || DEFAULT_KEYCHAIN_SERVICE }),
   fetchImpl = fetch,
   session = randomBytes(32).toString('base64url'),
+  publicOrigin = process.env.ADMIN_UI_PUBLIC_ORIGIN ?? '',
 } = {}) {
+  const extra = parsePublicOrigin(publicOrigin);
   let token = envToken.trim();
   let tokenSource = token ? 'env' : null;
   let keychainChecked = false;
@@ -92,7 +95,9 @@ export function createAdminUiServer({
 
   // `port` may be 0 in tests; the real port is known once listening.
   const listeningPort = () => server.address()?.port ?? port;
-  const hosts = () => new Set([`127.0.0.1:${listeningPort()}`, `localhost:${listeningPort()}`]);
+  const loopbackHosts = () => [`127.0.0.1:${listeningPort()}`, `localhost:${listeningPort()}`];
+  const hosts = () => new Set([...loopbackHosts(), ...(extra ? [extra.host] : [])]);
+  const origins = () => new Set([...loopbackHosts().map((h) => `http://${h}`), ...(extra ? [extra.origin] : [])]);
 
   function send(res, status, body, headers = {}) {
     const json = typeof body === 'string' ? body : JSON.stringify(body);
@@ -147,7 +152,7 @@ export function createAdminUiServer({
     if (!url.pathname.startsWith('/api/')) return send(res, 404, { ok: false, error: 'not_found' });
 
     const origin = req.headers.origin;
-    if (origin !== undefined && ![...hosts()].some((h) => origin === `http://${h}`)) {
+    if (origin !== undefined && !origins().has(origin)) {
       return send(res, 403, { ok: false, error: 'bad_origin' });
     }
     if (!sameSecret(req.headers['x-admin-session'], session)) return send(res, 403, { ok: false, error: 'bad_session' });
@@ -189,6 +194,16 @@ export function createAdminUiServer({
     });
   });
   return server;
+}
+
+/** One extra HTTPS origin, e.g. a `tailscale serve` front door. Anything else is refused at startup. */
+function parsePublicOrigin(value) {
+  if (!value) return null;
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.origin !== value.replace(/\/$/, '')) {
+    throw new Error(`ADMIN_UI_PUBLIC_ORIGIN must be a bare https origin: ${value}`);
+  }
+  return { host: url.host, origin: url.origin };
 }
 
 function portFromArgs(argv, env) {
