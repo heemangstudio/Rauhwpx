@@ -708,6 +708,7 @@ html.menu-open { overflow: hidden; }
   font-size: var(--fs-meta); color: var(--meta);
 }
 .footer__base a { color: var(--muted); }
+.footer__base [hidden] { display: none; }
 .footer__base a:hover { color: var(--text); }
 .footer__mark {
   margin: 8px 0 0;

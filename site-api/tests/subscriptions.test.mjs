@@ -491,3 +491,22 @@ test('HTTP: subscription webhooks, expired validate, unknown events held in the 
   assert.equal((await post('/v1/license/validate', { key, deviceId: 'mac-http-01' })).status, 200, 'extension restores access on the next check');
   await assert.rejects(run('extend'), (error) => error.code === 2 && /extend <key\|ref>/.test(error.stderr));
 });
+
+test('old app builds: annual and payment-failed leases still verify with the shipped app verifier and keep every old field', async () => {
+  // desktop/license-lease.mjs on this branch is the released app's verifier, unchanged by this PR.
+  const { verifyLease: appVerify } = await import('../../desktop/license-lease.mjs');
+  const { svc, at } = service();
+  await svc.handleGrobleEvent(paid(), { idempotencyKey: 'i1' });
+  const key = await keyFor(svc);
+  const deviceId = '0b9c6f7e-3f7a-4d8e-9a51-2f1c3d4e5f60';
+  let lease = await svc.activate({ key, deviceId, appVersion: '3.1.0', platform: 'darwin' });
+  for (const field of ['ok', 'lease', 'keyId', 'tier', 'expiresAt', 'devicesUsed', 'deviceLimit']) assert.ok(field in lease, field);
+  assert.equal(appVerify(lease.lease, { publicKeys: KEYS, deviceId, key, keyId: lease.keyId, now: T0 }).ok, true);
+
+  at(Date.parse('2027-10-20T14:30:00+09:00'));
+  await svc.handleGrobleEvent(failed(), { idempotencyKey: 'f1' });
+  at(FIRST_END + 2 * DAY);
+  lease = await svc.validate({ key, deviceId });
+  assert.equal(lease.licenseState, 'payment_failed');
+  assert.equal(appVerify(lease.lease, { publicKeys: KEYS, deviceId, key, keyId: lease.keyId, now: FIRST_END + 2 * DAY }).ok, true);
+});

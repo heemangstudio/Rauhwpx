@@ -10,9 +10,9 @@ function memoryStorage() {
 }
 
 test('config points at the live Groble product and the default API base', () => {
-  assert.equal(P.CONFIG.PLAN, 'onetime', 'the one-time product stays on sale until the cutover');
-  assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/uRshdR');
-  assert.equal(P.CONFIG.CHECKOUT_URLS.annual, 'https://groble.im/payment/GLJFC9');
+  assert.equal(P.CONFIG.PLAN, 'annual', 'the yearly subscription is on sale');
+  assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
 });
@@ -31,7 +31,7 @@ test('refs match the Groble sellerReference rule and are unique', () => {
 });
 
 test('checkout URL appends ?ref=', () => {
-  assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/uRshdR?ref=hama-abc');
+  assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/GLJFC9?ref=hama-abc');
   assert.equal(P.checkoutUrl('x', 'https://e.test/p?a=1'), 'https://e.test/p?a=1&ref=x');
   assert.throws(() => P.checkoutUrl('bad ref'));
 });
@@ -109,4 +109,18 @@ test('annual keys get the renewal line on the success page; lifetime keys get no
   assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
   assert.equal(P.renewalText(null), '');
   assert.equal(P.renewalText(undefined), '');
+});
+
+test('download tracking sends platform and version by sendBeacon, falls back to keepalive fetch, never throws', () => {
+  const beacons = [];
+  const nav = { sendBeacon: (url, blob) => { beacons.push({ url, type: blob.type }); return true; } };
+  assert.equal(P.trackDownload('mac-arm64', 'latest', nav), true);
+  assert.deepEqual(beacons, [{ url: 'https://rau-credits-production.up.railway.app/v1/downloads', type: 'text/plain;charset=utf-8' }]);
+  const fetches = [];
+  const fetchImpl = (url, init) => { fetches.push({ url, init }); return Promise.resolve(); };
+  assert.equal(P.trackDownload('mac-arm64', 'latest', { sendBeacon: () => false }, fetchImpl), true);
+  assert.equal(fetches[0].init.keepalive, true);
+  assert.equal(fetches[0].init.credentials, 'omit');
+  assert.deepEqual(JSON.parse(fetches[0].init.body), { platform: 'mac-arm64', version: 'latest' });
+  assert.equal(P.trackDownload('mac-arm64', 'latest', { sendBeacon() { throw new Error('blocked'); } }, () => { throw new Error('x'); }), false);
 });

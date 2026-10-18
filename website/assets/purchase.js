@@ -4,9 +4,9 @@
   'use strict';
 
   var CONFIG = {
-    // 파는 상품. 'onetime' = uRshdR (9,900원 한 번 결제, 평생 키), 'annual' = GLJFC9 (연 9,900원, 12개월마다 자동 갱신).
-    // 연간 구독으로 넘어갈 때 이 한 줄만 'annual' 로 바꿔요. 결제 링크와 pricing.html 의 가격 문구가 함께 바뀌어요.
-    PLAN: 'onetime',
+    // 파는 상품. 'annual' = GLJFC9 (연 ₩9,900, 12개월마다 자동 갱신), 'onetime' = uRshdR (예전 한 번 결제, 평생 키).
+    // 이 한 줄이 결제 링크와 pricing.html 의 가격 문구를 함께 정해요. 되돌릴 때만 'onetime' 으로 바꿔요.
+    PLAN: 'annual',
     // Groble 상품 결제 링크. 구매 버튼이 여기에 ?ref=<무작위 값> 을 붙여 보내요.
     CHECKOUT_URLS: {
       onetime: 'https://groble.im/payment/uRshdR',
@@ -91,6 +91,24 @@
     return storage ? loadRef(storage) : null;
   }
 
+  // 내려받기를 셉니다. 플랫폼과 버전만 보내고 쿠키·식별값은 없어요. 내려받기를 막거나 늦추지 않아요.
+  function trackDownload(platform, version, nav, fetchImpl) {
+    var n = nav || (root && root.navigator);
+    var f = fetchImpl || (root && root.fetch);
+    var url = CONFIG.API_BASE.replace(/\/+$/, '') + '/v1/downloads';
+    var body = JSON.stringify({ platform: platform, version: version || 'latest' });
+    try {
+      // text/plain 이라 다른 origin 이어도 preflight 가 없어요.
+      if (n && typeof n.sendBeacon === 'function' && n.sendBeacon(url, new Blob([body], { type: 'text/plain;charset=UTF-8' }))) return true;
+      if (typeof f === 'function') {
+        f(url, { method: 'POST', body: body, keepalive: true, mode: 'no-cors', credentials: 'omit', headers: { 'Content-Type': 'text/plain;charset=UTF-8' } })
+          .catch(function () {});
+        return true;
+      }
+    } catch (_) { /* 세지 못해도 내려받기는 그대로 가요 */ }
+    return false;
+  }
+
   // 연간 키의 갱신 안내. 서버가 한국 시간 하루 끝까지로 정한 만료(epoch ms)를 받아요. 평생 키(null)는 빈 문자열.
   function renewalText(licenseExpiresAt) {
     if (typeof licenseExpiresAt !== 'number' || !isFinite(licenseExpiresAt)) return '';
@@ -170,6 +188,7 @@
     loadRef: loadRef,
     resolveRef: resolveRef,
     renewalText: renewalText,
+    trackDownload: trackDownload,
     pollLicense: pollLicense
   };
 
