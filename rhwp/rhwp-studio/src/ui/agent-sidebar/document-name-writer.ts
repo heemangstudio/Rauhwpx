@@ -1,29 +1,24 @@
 /**
- * 문서 칩 — 문서 없이 시작해 문서를 이은 채팅의 머리에 그 문서를 보인다. 모양은 document-chip.css.
+ * 문서 이름 쓰기 — 문서 없이 시작한 채팅에 문서를 이으면 하마가 머리의 '/ 문서 이름' 을 뱉어 쓴다. 모양은
+ * document-name-writer.css.
  *
- * 이을 때 채팅이 보이면 하마가 칩 이름을 뱉어 쓴다: 칩 오른쪽에 하마가 픽셀로 나타나 왼쪽을 보고 입을 벌리면,
- * 입에서 튄 픽셀이 포물선을 그리며 이름의 글자에 하나씩 앉아 그 글자를 드러낸다. 다 쓰면 하마는 폴짝 뛰고
- * 흩어진다. 하마는 public/images/boot/hama-sprites.png 의 26×20 칸 여섯
- * (closed·talk·open·blink·step·crouch)을 정수배(2)로, 50ms 씩 끊어 그린다. 동작 줄이기면 칩만 바로 선다.
+ * 이름 오른쪽에 하마가 픽셀로 나타나 왼쪽을 보고 입을 벌리면, 입에서 튄 픽셀이 포물선을 그리며 이름의 글자에
+ * 하나씩 앉아 그 글자를 드러낸다. 다 쓰면 하마는 폴짝 뛰고 흩어지고, 이름 칸은 보통 글자로 돌아간다.
+ * 하마는 public/images/boot/hama-sprites.png 의 26×20 칸 여섯 (closed·talk·open·blink·step·crouch)을
+ * 정수배(2)로, 50ms 씩 끊어 그린다. 동작 줄이기면 쓰지 않는다 — 이름은 그대로 보인다.
  */
-import { createIcon } from './icons.ts';
-import './document-chip.css';
+import './document-name-writer.css';
 
-export interface DocumentChip {
-  /** 머리 줄에 넣는 자리. 칩과, 짓는 동안의 캔버스가 이 안에 선다. */
-  readonly root: HTMLElement;
-  /** 지금 보이는 (또는 짓고 있는) 문서 이름. 숨었으면 null. */
-  readonly name: string | null;
-  /** 칩을 보인다. build 면 하마가 짓는다 — 끝나면 풀린다. 같은 이름이면 다시 짓지 않는다. */
-  show(name: string, options?: { build?: boolean }): Promise<void>;
-  hide(): void;
-}
-
-export interface DocumentChipOptions {
-  /** 누르면 부른다. 없으면 칩은 누를 수 없는 표시다. */
-  onActivate?: () => void;
-  /** 누를 수 있는 칩의 설명 (aria-label 앞부분). */
-  actionLabel?: string;
+export interface DocumentNameWriter {
+  /** 지금 하마가 쓰고 있는 이름 칸. 쓰지 않으면 null. */
+  readonly target: HTMLElement | null;
+  /**
+   * target 에 지금 적힌 글자를 하마가 쓴다. host 는 하마 캔버스가 서는 머리 줄(위치 기준), separator 는
+   * 하마가 서기 전까지 함께 숨길 '/'. 끝나거나 거두면 target 은 처음의 보통 글자로 돌아간다.
+   */
+  write(target: HTMLElement, place: { host: HTMLElement; separator?: HTMLElement }): Promise<void>;
+  /** 쓰던 것을 바로 거둔다. */
+  cancel(): void;
 }
 
 const CELL_W = 26;
@@ -32,7 +27,7 @@ const POSE_COUNT = 6;
 const SCALE = 2;
 const FRAME_MS = 50;
 const CANVAS_H = 44;
-/** 하마와 칩 사이 틈. */
+/** 이름 끝과 하마 사이 틈. */
 const HAMA_GAP = 6;
 /** 하마 픽셀 파랑과 같은 색 — 날아가는 픽셀과 막 찍힌 글자. */
 const HAMA_BLUE = 'rgb(98, 179, 226)';
@@ -58,7 +53,7 @@ function spriteUrl(): string {
   return `${base.endsWith('/') ? base : `${base}/`}images/boot/hama-sprites.png`;
 }
 
-/** 스프라이트를 한 번 읽어 자세별 픽셀로 나눈다. 읽지 못하면 null — 칩은 짓지 않고 바로 선다. */
+/** 스프라이트를 한 번 읽어 자세별 픽셀로 나눈다. 읽지 못하면 null — 이름은 쓰지 않고 바로 보인다. */
 function loadPoses(): Promise<SpritePixel[][] | null> {
   posesPromise ??= new Promise((resolve) => {
     const image = new Image();
@@ -100,94 +95,67 @@ function reducedMotion(): boolean {
 
 class Cancelled extends Error {}
 
-export function createDocumentChip(options: DocumentChipOptions = {}): DocumentChip {
-  const root = document.createElement('span');
-  root.className = 'ag-doc-chip-slot';
-  root.hidden = true;
-  const chip = document.createElement(options.onActivate ? 'button' : 'span');
-  chip.className = 'ag-doc-chip';
-  if (chip instanceof HTMLButtonElement) {
-    chip.type = 'button';
-    chip.addEventListener('click', (event) => {
-      event.stopPropagation();
-      options.onActivate?.();
-    });
-  }
-  const label = document.createElement('span');
-  label.className = 'ag-doc-chip-name';
-  chip.append(createIcon('document'), label);
-  root.append(chip);
-
-  let shownName: string | null = null;
-  /** 앞선 짓기를 거두는 표. 늘 때마다 돌던 짓기는 다음 장면에서 멈춘다. */
+export function createDocumentNameWriter(): DocumentNameWriter {
+  /** 앞선 쓰기를 거두는 표. 늘 때마다 돌던 쓰기는 다음 장면에서 멈춘다. */
   let generation = 0;
-  let canvas: HTMLCanvasElement | null = null;
+  let current: { target: HTMLElement; text: string; separator?: HTMLElement; canvas?: HTMLCanvasElement } | null = null;
 
   const wait = (ms: number, token: number): Promise<void> => new Promise((resolve, reject) => {
     window.setTimeout(() => (token === generation ? resolve() : reject(new Cancelled())), ms);
   });
 
-  function setName(name: string): void {
-    label.textContent = name;
-    chip.title = name;
-    if (options.onActivate) chip.setAttribute('aria-label', `${options.actionLabel ?? '문서'} · ${name}`);
-  }
-
-  function clearCanvas(): void {
+  /** 캔버스를 걷고 이름 칸을 보통 글자로 되돌린다. */
+  function settle(): void {
+    if (!current) return;
+    const { target, text, separator, canvas } = current;
+    current = null;
     canvas?.remove();
-    canvas = null;
-  }
-
-  function settle(name: string): void {
-    clearCanvas();
-    setName(name);
-    chip.hidden = false;
-    root.hidden = false;
+    if (separator) separator.style.visibility = '';
+    target.textContent = text;
   }
 
   /**
-   * 하마가 칩 오른쪽에 서서 왼쪽을 보고, 입에서 튄 픽셀이 포물선을 그리며 칩 이름의 글자에 앉는다 —
-   * 앉은 자리의 글자가 파랗게 찍혔다가 글자색이 된다. 칩은 처음부터 제 폭으로 서고 글자만 숨어 있어서
-   * 끝나도 자리가 움직이지 않는다. 다른 짓기나 숨기기가 끼어들면 Cancelled.
+   * 하마가 이름 오른쪽에 서서 왼쪽을 보고, 입에서 튄 픽셀이 포물선을 그리며 이름의 글자에 앉는다 —
+   * 앉은 자리의 글자가 파랗게 찍혔다가 글자색이 된다. 글자는 처음부터 제자리를 차지하고 숨어 있어서
+   * 끝나도 자리가 움직이지 않는다. 다른 쓰기나 거두기가 끼어들면 Cancelled.
    */
-  async function playBuild(name: string, poses: SpritePixel[][], token: number): Promise<void> {
-    const graphemes = typeof Intl.Segmenter === 'function'
-      ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(name)].map((part) => part.segment)
-      : Array.from(name);
-    const letters = graphemes.map((text) => {
-      const span = document.createElement('span');
-      span.className = 'ag-doc-chip-letter';
-      span.textContent = text;
-      return span;
-    });
-    label.replaceChildren(...letters);
-    chip.hidden = false;
+  async function play(
+    letters: HTMLElement[],
+    poses: SpritePixel[][],
+    token: number,
+    place: { host: HTMLElement; separator?: HTMLElement },
+  ): Promise<void> {
+    const target = current!.target;
     const dpr = window.devicePixelRatio || 1;
-    const chipBox = chip.getBoundingClientRect();
     const P = SCALE;
-    const hamaX = Math.ceil(chipBox.width) + HAMA_GAP;
+    const hostBox = place.host.getBoundingClientRect();
+    const nameBox = target.getBoundingClientRect();
+    const last = letters[letters.length - 1]?.getBoundingClientRect();
+    const textRight = Math.min(last ? last.right : nameBox.left, nameBox.right) - hostBox.left;
+    const hamaX = Math.ceil(textRight) + HAMA_GAP;
     const hamaY = Math.round((CANVAS_H - CELL_H * P) / 2);
     const width = hamaX + CELL_W * P;
+    const top = Math.round(nameBox.top + nameBox.height / 2 - hostBox.top - CANVAS_H / 2);
     const fx = document.createElement('canvas');
-    fx.className = 'ag-doc-chip-fx';
+    fx.className = 'ag-doc-name-fx';
     fx.setAttribute('aria-hidden', 'true');
     fx.width = width * dpr;
     fx.height = CANVAS_H * dpr;
     fx.style.width = `${width}px`;
     fx.style.height = `${CANVAS_H}px`;
+    fx.style.top = `${top}px`;
     const context = fx.getContext('2d');
     if (!context) return;
-    canvas = fx;
-    root.append(fx);
+    current!.canvas = fx;
+    place.host.append(fx);
     context.scale(dpr, dpr);
     // 하마는 왼쪽을 본다 — 스프라이트를 좌우로 뒤집어 그린다. 입은 뒤집은 그림의 왼쪽 위다.
     const mouth = { x: hamaX + (CELL_W - 1 - 23) * P, y: hamaY + 8 * P };
     const canvasBox = fx.getBoundingClientRect();
-    const labelBox = label.getBoundingClientRect();
-    const target = (span: HTMLElement): { x: number; y: number } => {
+    const spot = (span: HTMLElement): { x: number; y: number } => {
       const box = span.getBoundingClientRect();
       // 말줄임으로 가려진 글자는 보이는 끝으로 날아간다.
-      const x = Math.min(box.left + box.width / 2, labelBox.right - P) - canvasBox.left;
+      const x = Math.min(box.left + box.width / 2, nameBox.right - P) - canvasBox.left;
       return { x: Math.round(x / P) * P, y: Math.round((box.top + box.height / 2 - canvasBox.top) / P) * P };
     };
     // 빈칸은 뱉지 않는다. 긴 이름은 한 번에 여러 글자를 뱉어 발사 횟수를 묶는다.
@@ -197,13 +165,13 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
     const shots: Array<{ start: number; spans: HTMLElement[]; to: { x: number; y: number } }> = [];
     for (let index = 0; index < visible.length; index += perShot) {
       const spans = visible.slice(index, index + perShot);
-      shots.push({ start: EMERGE + shots.length, spans, to: target(spans[spans.length - 1]!) });
+      shots.push({ start: EMERGE + shots.length, spans, to: spot(spans[spans.length - 1]!) });
     }
     const revealed = new Set<HTMLElement>();
     const reveal = (span: HTMLElement): void => {
       if (revealed.has(span)) return;
       revealed.add(span);
-      span.classList.add('ag-doc-chip-letter-in');
+      span.classList.add('ag-doc-name-letter-in');
     };
     const landed = EMERGE + shots.length + FLIGHT;
     const end = landed + HOP.length + 5;
@@ -224,6 +192,8 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
         context.fillStyle = pixel.color;
         context.fillRect(hamaX + (CELL_W - 1 - pixel.x) * P, hamaY + (pixel.y + offsetY) * P, P, P);
       }
+      // '/' 는 하마가 처음 비치는 장면과 함께 선다.
+      if (tick === 0 && place.separator) place.separator.style.visibility = '';
       context.fillStyle = HAMA_BLUE;
       for (const shot of shots) {
         const progress = (tick - shot.start) / FLIGHT;
@@ -243,42 +213,44 @@ export function createDocumentChip(options: DocumentChipOptions = {}): DocumentC
       });
       await wait(FRAME_MS, token);
     }
-    clearCanvas();
   }
 
   return {
-    root,
-    get name() { return shownName; },
-    async show(name, showOptions = {}) {
-      if (shownName === name) return;
+    get target() { return current?.target ?? null; },
+    async write(target, place) {
       const token = ++generation;
-      shownName = name;
-      const animate = showOptions.build === true && !reducedMotion();
-      if (!animate) {
-        settle(name);
-        return;
-      }
-      // 칩은 하마가 서는 장면과 같은 프레임에 선다 — 스프라이트를 읽는 동안에는 칩도 이름도 보이지 않는다.
-      clearCanvas();
-      chip.hidden = true;
-      root.hidden = false;
+      settle();
+      const text = target.textContent ?? '';
+      if (!text || reducedMotion()) return;
+      // 글자를 숨긴 채 제자리에 세운다 — 스프라이트를 읽는 동안에도 이름과 '/' 는 비치지 않는다.
+      const graphemes = typeof Intl.Segmenter === 'function'
+        ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map((part) => part.segment)
+        : Array.from(text);
+      const letters = graphemes.map((letter) => {
+        const span = document.createElement('span');
+        span.className = 'ag-doc-name-letter';
+        span.textContent = letter;
+        return span;
+      });
+      current = { target, text, ...(place.separator ? { separator: place.separator } : {}) };
+      target.replaceChildren(...letters);
+      if (place.separator) place.separator.style.visibility = 'hidden';
       try {
         const poses = await loadPoses();
         if (token !== generation) return;
-        if (poses) await playBuild(name, poses, token);
-        if (token === generation) settle(name);
+        if (poses) await play(letters, poses, token, place);
       } catch (error) {
         if (!(error instanceof Cancelled)) {
-          if (token === generation) settle(name);
+          if (token === generation) settle();
           throw error;
         }
+        return;
       }
+      if (token === generation) settle();
     },
-    hide() {
+    cancel() {
       generation++;
-      shownName = null;
-      clearCanvas();
-      root.hidden = true;
+      settle();
     },
   };
 }

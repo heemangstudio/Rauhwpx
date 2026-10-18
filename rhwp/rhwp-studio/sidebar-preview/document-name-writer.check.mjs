@@ -1,24 +1,27 @@
-// 문서를 이은 채팅의 문서 칩: 집중 화면에서 이으면 하마가 칩을 짓고 두 머리에 같은 칩이 선다. 칩을 누르면
-// 문서 화면으로 간다. 동작 줄이기면 칩이 바로 선다. 집중 화면 상태와 페이지 표시, 보내지 않은 초안,
-// 홈에서 연 설정을 닫을 때의 집중 화면도 함께 본다. 실제 사이드바와 미리보기의 모의 편집기로 돈다.
+// 문서를 이은 채팅의 머리: 집중 화면에서 이으면 하마가 '/ 문서 이름' 을 글자마다 쓰고, 끝나면 두 머리 모두
+// 보통 문서 채팅과 같은 '/ 문서 이름' 이 된다. 동작 줄이기면 이름이 바로 보인다. 집중 화면 상태와 페이지 표시,
+// 보내지 않은 초안, 홈에서 연 설정을 닫을 때의 집중 화면도 함께 본다. 실제 사이드바와 미리보기의 모의 편집기로 돈다.
 import assert from 'node:assert/strict';
 
-const chips = (page) => page.evaluate(() => {
-  const read = (selector) => {
-    const slot = document.querySelector(selector);
-    const chip = slot?.querySelector('.ag-doc-chip');
-    return slot ? {
-      shown: !slot.hidden && !chip.hidden && chip.getClientRects().length > 0,
-      present: !slot.hidden && !chip.hidden,
-      name: slot.querySelector('.ag-doc-chip-name')?.textContent ?? '',
-      building: Boolean(slot.querySelector('.ag-doc-chip-fx')),
-    } : null;
+const headers = (page) => page.evaluate(() => {
+  const read = (selector, nameSelector) => {
+    const context = document.querySelector(selector);
+    const name = context.querySelector(nameSelector);
+    const separator = context.querySelector('.ag-workspace-title-sep');
+    return {
+      name: name.textContent,
+      plain: name.children.length === 0,
+      visible: getComputedStyle(name).visibility === 'visible' && getComputedStyle(separator).visibility === 'visible',
+      writing: Boolean(context.querySelector('.ag-doc-name-fx')),
+    };
   };
   return {
-    focus: read('.ag-workspace-document-context .ag-doc-chip-slot'),
-    dock: read('.ag-document-context .ag-doc-chip-slot'),
+    focus: read('.ag-workspace-document-context', '.ag-workspace-document-name'),
+    dock: read('.ag-document-context', '.ag-document-name'),
   };
 });
+
+const settled = (name) => ({ name, plain: true, visible: true, writing: false });
 
 async function startUnlinkedChatInFocus(page, open) {
   await open('reset=1&scenario=chat&document=empty');
@@ -30,37 +33,35 @@ async function startUnlinkedChatInFocus(page, open) {
   assert.equal(await page.evaluate(() => window.sidebarPreview.sidebar.isUnlinkedChat()), true);
 }
 
-export async function checkDocumentChip({ page, open, screenshot }) {
-  // 검사 브라우저는 동작 줄이기로 뜬다 — 짓는 모습은 움직임을 켠 채로 본다.
+export async function checkDocumentNameWriter({ page, open, screenshot }) {
+  // 검사 브라우저는 동작 줄이기로 뜬다 — 쓰는 모습은 움직임을 켠 채로 본다.
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
   try {
-    await checkChipFlow(page, open, screenshot);
+    await checkWriteFlow(page, open, screenshot);
   } finally {
     await page.emulateMediaFeatures();
   }
   await checkFullscreenState(page, open);
 }
 
-async function checkChipFlow(page, open, screenshot) {
-  // 1. 집중 화면에서 이으면 하마가 짓고, 끝나면 두 머리에 같은 칩이 선다.
+async function checkWriteFlow(page, open, screenshot) {
+  // 1. 집중 화면에서 이으면 하마가 이름을 쓰고, 끝나면 두 머리 모두 보통의 '/ 문서 이름' 이 된다.
   await startUnlinkedChatInFocus(page, open);
-  assert.deepEqual(await chips(page).then(({ focus, dock }) => [focus.present, dock.present]), [false, false]);
   await page.evaluate(() => { void window.sidebarPreview.sidebar.linkCurrentChat({ kind: 'new' }); });
-  await page.waitForSelector('.ag-workspace-document-context .ag-doc-chip-fx');
+  await page.waitForSelector('.ag-workspace-document-context .ag-doc-name-fx');
+  const writing = await headers(page);
+  assert.equal(writing.focus.plain, false, 'the focus header name is being written letter by letter');
   await new Promise((resolve) => setTimeout(resolve, 900));
-  if (screenshot) await screenshot('document-chip-build');
-  await page.waitForFunction(() => {
-    const slot = document.querySelector('.ag-workspace-document-context .ag-doc-chip-slot');
-    return slot && !slot.querySelector('.ag-doc-chip-fx') && slot.querySelector('.ag-doc-chip-name').textContent === '새 문서 1.hwpx';
-  }, { timeout: 10_000 });
-  const linked = await chips(page);
-  assert.deepEqual(linked.focus, { shown: true, present: true, name: '새 문서 1.hwpx', building: false });
-  assert.deepEqual([linked.dock.present, linked.dock.name], [true, '새 문서 1.hwpx'], 'the docked header shows the same chip');
-  if (screenshot) await screenshot('document-chip-focus');
+  if (screenshot) await screenshot('document-name-writing');
+  await page.waitForFunction(() => !document.querySelector('.ag-doc-name-fx'), { timeout: 10_000 });
+  const linked = await headers(page);
+  assert.deepEqual(linked.focus, settled('새 문서 1.hwpx'));
+  assert.deepEqual(linked.dock, settled('새 문서 1.hwpx'), 'the docked header shows the same name');
+  if (screenshot) await screenshot('document-name-focus');
 
-  // 2. 칩을 누르면 문서 화면으로 간다. 페이지 표시는 화면 전환을 기다리지 않고 상태를 따른다.
+  // 2. 문서 화면으로 돌아가도 다시 쓰지 않는다. 페이지 표시는 화면 전환을 기다리지 않고 상태를 따른다.
   const exiting = await page.evaluate(() => {
-    document.querySelector('.ag-workspace-document-context button.ag-doc-chip').click();
+    window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } }));
     return {
       pageClass: document.body.classList.contains('ag-fullscreen-open'),
       state: window.sidebarPreview.sidebar.isFullscreen(),
@@ -68,23 +69,21 @@ async function checkChipFlow(page, open, screenshot) {
   });
   assert.deepEqual(exiting, { pageClass: false, state: false });
   await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-fullscreen'));
-  const docked = await chips(page);
-  assert.deepEqual([docked.dock.shown, docked.dock.name, docked.dock.building], [true, '새 문서 1.hwpx', false]);
-  if (screenshot) await screenshot('document-chip-dock');
+  assert.deepEqual((await headers(page)).dock, settled('새 문서 1.hwpx'));
+  if (screenshot) await screenshot('document-name-dock');
   const entering = await page.evaluate(() => {
     window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } }));
     return document.body.classList.contains('ag-fullscreen-open');
   });
   assert.equal(entering, true, 'the page class turns on with the state, before the layout swaps');
   await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen'));
-  assert.equal((await chips(page)).focus.building, false, 'a chip already shown is not rebuilt');
+  assert.equal((await headers(page)).focus.writing, false, 'a name already written is not written again');
 
-  // 3. 동작 줄이기면 칩이 바로 선다.
+  // 3. 동작 줄이기면 이름이 바로 보인다.
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   await startUnlinkedChatInFocus(page, open);
   await page.evaluate(() => window.sidebarPreview.sidebar.linkCurrentChat({ kind: 'new' }));
-  const instant = await chips(page);
-  assert.deepEqual(instant.focus, { shown: true, present: true, name: '새 문서 1.hwpx', building: false });
+  assert.deepEqual((await headers(page)).focus, settled('새 문서 1.hwpx'));
 }
 
 async function checkFullscreenState(page, open) {

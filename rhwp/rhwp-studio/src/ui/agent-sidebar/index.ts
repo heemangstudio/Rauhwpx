@@ -192,7 +192,7 @@ import { createArrivalGuard, typingActivity as windowTypingActivity, type Typing
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
 import { createFocusGreeting } from './focus-greeting.ts';
-import { createDocumentChip } from './document-chip.ts';
+import { createDocumentNameWriter } from './document-name-writer.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
@@ -2048,6 +2048,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const documentWorktree = createWorktreeChip();
   documentContext.append(chatTitle, chatTitleSeparator, documentName, documentWorktree);
 
+  // 문서 없이 시작해 문서를 이은 채팅도 머리는 보통의 '/ 문서 이름' 이다. 이을 때만 하마가 그 이름을 쓴다.
+  const documentNameWriter = createDocumentNameWriter();
+  /** 하마가 이름을 쓰고 있는 채팅. */
+  let documentNameWriterThreadId: string | null = null;
+
   function isRenaming(target: HTMLElement): boolean {
     return target.querySelector('.inline-rename-input') !== null;
   }
@@ -2061,6 +2066,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const name = getDocumentContext?.()?.documentName;
       if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
+      // 하마가 쓰는 중이면 쓰기를 거두고 이름부터 보인다 — 쓰기가 끝나며 입력 칸을 덮지 않는다.
+      if (documentNameWriter.target) {
+        documentNameWriter.cancel();
+        documentNameWriterThreadId = null;
+        paintDocumentNames();
+      }
       beginInlineRename(target, {
         value: name,
         label: '문서 이름',
@@ -2160,18 +2171,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     paintWorktreeChip(workspaceDocumentWorktree, identity);
   }
 
-  function updateDocumentContext(): void {
+  /** 두 머리의 '/ 문서 이름' 을 지금 문서로 그린다. */
+  function paintDocumentNames(): string {
     const context = getDocumentContext?.();
     const currentDocumentName = context?.documentName || '문서 없음';
-    // 이름을 고치는 중인 칸은 다시 그리지 않는다 (입력 중인 글자가 사라진다).
-    if (!isRenaming(documentName)) {
+    // 이름을 고치는 중이거나 하마가 쓰는 중인 칸은 다시 그리지 않는다 (입력 중인 글자, 쓰던 글자가 사라진다).
+    if (!isRenaming(documentName) && documentNameWriter.target !== documentName) {
       setMiddleTruncatedText(documentName, currentDocumentName, context?.documentName || '');
     }
-    if (!isRenaming(workspaceDocumentName)) workspaceDocumentName.textContent = currentDocumentName;
+    if (!isRenaming(workspaceDocumentName) && documentNameWriter.target !== workspaceDocumentName) {
+      workspaceDocumentName.textContent = currentDocumentName;
+    }
     workspaceDocumentName.title = context?.documentName || '';
+    return currentDocumentName;
+  }
+
+  function updateDocumentContext(): void {
+    const context = getDocumentContext?.();
+    const currentDocumentName = paintDocumentNames();
     focusGreeting.setDocumentName(context?.documentName || null);
     updateDocumentWorktreeChips();
-    syncDocumentChips();
+    syncDocumentHeader();
     updateEnvironmentFilename(currentDocumentName);
     const nextKey = context?.documentName ?? null;
     const nextDocumentId = context?.documentId ?? null;
@@ -2285,7 +2305,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (readOnlyDocLabel === null && !threadMatchesDocument(currentThread, currentDocumentId, currentDocKey)) {
       enterReadOnlyMode(docGroupLabel(stored.docKey));
     }
-    syncDocumentChips();
+    syncDocumentHeader();
     hideDocumentRequired();
     enforceChatModeLock();
     updateWorkspaceChatTitle();
@@ -2310,12 +2330,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const linkedBefore = getThread(threadId);
     if (linkedBefore && (linkedBefore.documentId !== null || linkedBefore.docKey !== null)
       && linkedBefore.documentId !== link.documentId) {
-      if (currentThread.id !== threadId || !adoptStoredThreadLink()) syncDocumentChips();
+      if (currentThread.id !== threadId || !adoptStoredThreadLink()) syncDocumentHeader();
       throw linkError('THREAD_ALREADY_LINKED');
     }
     const stored = linkThreadDocument(threadId, { documentId: link.documentId, docKey: link.docKey });
     if (currentThread.id !== threadId) {
-      syncDocumentChips();
+      syncDocumentHeader();
       return null;
     }
     currentThread.documentId = link.documentId;
@@ -2323,8 +2343,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThread.documentLinkedAt = stored?.documentLinkedAt ?? Date.now();
     currentDocumentId = link.documentId;
     currentDocKey = link.docKey;
-    // 보이는 채팅에 이었으면 하마가 칩을 짓는다. 뒤의 제목 갱신은 같은 이름이라 다시 짓지 않는다.
-    syncDocumentChips({ build: true });
+    // 보이는 채팅에 이었으면 하마가 머리의 문서 이름을 쓴다. 뒤의 제목 갱신은 쓰는 중인 이름을 건드리지 않는다.
+    syncDocumentHeader({ build: true });
     hideDocumentRequired();
     referenceLibrary.contextChanged();
     void captureInbox.contextChanged();
@@ -2601,36 +2621,41 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
   const workspaceDocumentWorktree = createWorktreeChip();
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName, workspaceDocumentWorktree);
-  // 문서 없이 시작해 문서를 이은 채팅은 '/ 문서 이름' 대신 문서 칩을 둔다. 집중 화면의 칩은 문서 화면으로 간다.
-  const focusDocumentChip = createDocumentChip({ onActivate: () => setFullscreen(false), actionLabel: '문서 보기' });
-  const dockDocumentChip = createDocumentChip();
-  workspaceChatTitle.after(focusDocumentChip.root);
-  chatTitle.after(dockDocumentChip.root);
-
   /**
-   * 이은 채팅이면 두 머리에 문서 칩을 둔다. build 면 지금 보이는 머리의 칩을 하마가 짓는다 — 다른 머리는
-   * 바로 선다. 나중에 다시 연 이은 채팅은 짓지 않고 바로 보인다.
+   * 잇는 중에 먼저 열린 문서의 이름은 숨겨 둔다. build 면 이은 채팅의 지금 보이는 머리에 하마가 이름을
+   * 쓴다 — 다른 머리는 보통대로 바로 보인다. 다른 채팅으로 옮기면 쓰던 것을 거둔다.
    */
-  function syncDocumentChips(options: { build?: boolean } = {}): void {
-    const name = getDocumentContext?.()?.documentName || currentThread.docKey;
-    const linked = readOnlyDocLabel === null && currentThread.documentLinkedAt !== undefined
-      && currentThread.documentId !== null && Boolean(name);
-    // 잇는 중에 문서가 먼저 열리면 '/ 문서 이름' 이 새 이름으로 바뀐다 — 하마가 칩을 짓기 전에 이름이
-    // 비치지 않게 그때부터 칩 자리로 둔다. 잇기를 거두면 cancelDocumentLink 가 다시 맞춘다.
+  function syncDocumentHeader(options: { build?: boolean } = {}): void {
+    // 잇는 중에 문서가 먼저 열리면 '/ 문서 이름' 이 새 이름으로 바뀐다 — 하마가 쓰기 전에 이름이
+    // 비치지 않게 그때부터 숨긴다. 잇기를 거두면 cancelDocumentLink 가 다시 맞춘다.
     const linking = documentLinkThreadId !== null && documentLinkThreadId === currentThread.id
       && Boolean(getDocumentContext?.()?.documentName);
-    documentContext.classList.toggle('ag-doc-chip-on', linked || linking);
-    workspaceDocumentContext.classList.toggle('ag-doc-chip-on', linked || linking);
-    if (!linked || !name) {
-      focusDocumentChip.hide();
-      dockDocumentChip.hide();
-      return;
+    documentContext.classList.toggle('ag-doc-name-pending', linking);
+    workspaceDocumentContext.classList.toggle('ag-doc-name-pending', linking);
+    if (documentNameWriter.target && documentNameWriterThreadId !== currentThread.id) {
+      documentNameWriter.cancel();
+      documentNameWriterThreadId = null;
+      paintDocumentNames();
     }
-    const visible = fullscreen ? focusDocumentChip : dockDocumentChip;
-    for (const chip of [focusDocumentChip, dockDocumentChip]) {
-      void chip.show(name, { build: options.build === true && active && chip === visible })
-        .catch((error) => console.warn('[agent-sidebar] 문서 칩을 그리지 못했습니다:', error));
-    }
+    const linked = readOnlyDocLabel === null && currentThread.documentLinkedAt !== undefined
+      && currentThread.documentId !== null && Boolean(getDocumentContext?.()?.documentName);
+    if (!options.build || !linked || !active || documentNameWriter.target) return;
+    paintDocumentNames();
+    const target = fullscreen ? workspaceDocumentName : documentName;
+    // 가운데 줄임은 그린 그대로 쓰고, 쓰는 동안에는 다시 재지 않는다. 끝나면 다시 맡긴다.
+    if (target === documentName) releaseMiddleTruncatedWithin(documentName);
+    const threadId = currentThread.id;
+    documentNameWriterThreadId = threadId;
+    void documentNameWriter.write(target, {
+      host: fullscreen ? workspaceDocumentContext : documentContext,
+      separator: fullscreen ? workspaceTitleSeparator : chatTitleSeparator,
+    }).catch((error) => console.warn('[agent-sidebar] 문서 이름을 쓰지 못했습니다:', error))
+      .finally(() => {
+        if (documentNameWriter.target || documentNameWriterThreadId !== threadId) return;
+        documentNameWriterThreadId = null;
+        // 놓았던 가운데 줄임도 여기서 다시 맡는다.
+        paintDocumentNames();
+      });
   }
   const workspaceHomeBtn = el('button', 'ag-workspace-icon-btn ag-workspace-home-btn');
   workspaceHomeBtn.type = 'button';
@@ -2667,7 +2692,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       target.textContent = title;
       target.title = title;
     }
-    syncDocumentChips();
+    syncDocumentHeader();
   }
   updateWorkspaceChatTitle();
 
@@ -8315,7 +8340,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     appendConversation(note);
     scrollConversationToEnd();
     updateComposer();
-    syncDocumentChips();
+    syncDocumentHeader();
   }
 
   function exitReadOnlyMode(): void {
@@ -8324,7 +8349,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     composer.classList.remove('ag-readonly');
     messages.querySelectorAll('.ag-readonly-note').forEach((n) => n.remove());
     updateComposer();
-    syncDocumentChips();
+    syncDocumentHeader();
   }
 
   /**
@@ -11140,10 +11165,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'chat-document-linked':
         if (e.threadId === currentThread.id) {
           hideDocumentRequired();
-          // 편집기를 거치지 않고 이어진 채팅(다른 창의 연결 등)도 칩을 세운다.
+          // 편집기를 거치지 않고 이어진 채팅(다른 창의 연결 등)도 하마가 이름을 쓴다.
           if (currentThread.documentLinkedAt === undefined && currentThread.documentId === e.documentId) {
             currentThread.documentLinkedAt = Date.now();
-            syncDocumentChips({ build: true });
+            syncDocumentHeader({ build: true });
           }
         }
         break;
