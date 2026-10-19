@@ -132,7 +132,7 @@ export async function resolveOpenRouterTitleModel(loadCatalog) {
 /** Codex keeps the title job while every known, unexpired quota window has more than 5% left. */
 export function codexQuotaAllowsTitle(quota, now = Date.now()) {
   if (quota?.status !== 'ok') return true;
-  return ['session', 'week'].every((key) => {
+  return ['session', 'week', 'month'].every((key) => {
     const window = quota[key];
     if (!Number.isFinite(window?.percent)) return true;
     if (Number.isFinite(window.resetsAt) && window.resetsAt <= now) return true;

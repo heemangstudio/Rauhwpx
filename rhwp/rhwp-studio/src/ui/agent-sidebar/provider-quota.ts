@@ -93,8 +93,12 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
           ? `한도 불러오기 실패 ${quota.error ?? ''}`.trim()
           : stale ? '이전 조회 결과 · 새로고침' : '한도 정보 없음'));
       }
-      for (const [key, label] of [['session', '5시간'], ['week', '주간 한도']] as const) {
-        if (agent === 'codex' && key === 'session' && quota?.planType?.trim().toLowerCase() === 'pro') continue;
+      const hideSession = agent === 'codex' && quota?.planType?.trim().toLowerCase() === 'pro';
+      const rows = ([['session', '5시간'], ['week', '주간 한도'], ['month', '월간 한도']] as const)
+        .filter(([key]) => !(hideSession && key === 'session'));
+      // Codex CLI 처럼 계정이 보고한 창만 보여 준다. 아무것도 없으면 기본 두 창을 비워 둔다.
+      const reported = rows.filter(([key]) => typeof quota?.[key].percent === 'number');
+      for (const [key, label] of reported.length ? reported : rows.filter(([key]) => key !== 'month')) {
         const window = quota?.[key];
         const percent = window?.percent;
         const remaining = typeof percent === 'number' && Number.isFinite(percent)

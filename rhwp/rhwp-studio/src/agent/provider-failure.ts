@@ -283,7 +283,7 @@ export function resetAtFromLimits(
   const quota = limits?.[agent];
   if (!quota) return null;
   let latest: number | null = null;
-  for (const window of [quota.session, quota.week]) {
+  for (const window of [quota.session, quota.week, quota.month]) {
     if (!window || typeof window.percent !== 'number' || window.percent < 100) continue;
     const resetAt = window.resetsAt;
     if (typeof resetAt !== 'number' || !Number.isFinite(resetAt) || resetAt <= now) continue;

@@ -121,6 +121,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?services=setup&page=settings` | Uninstalled/unconfigured service fixtures |
 | `?page=settings&quota=error` | Provider quota errors and unknown health bars in AI |
 | `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
+| `?page=settings&quota=free` | Free Codex account with only the monthly window |
 | `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
 | `?initial-setup=1` | Production first-run setup (theme, models, fonts) with the talking hippo |
 | `?event=special` | Special event popup (hippo and Clawd, $20 Claude credit for Pi) through the app's show-once trigger with a mock gift API (`gift` defaults to `unclaimed` here). The preview Pi has its own OpenRouter key, so the popup also offers the order (`먼저 사용` / `내 키 다음에`); 받기 runs a sample claim, saves the order and shows the remaining balance. `&gift=claimed` opens the order-only version. `&pikey=none` shows the plain popup for users without a key (`gift=claimed` or `exhausted` then opens nothing). Add `&claim=fail` for the server's rejection message and `&order=fail` for a failed order save |

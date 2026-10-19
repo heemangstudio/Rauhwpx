@@ -133,6 +133,7 @@ test('Codex keeps titles only while every live quota window has more than 5% lef
   assert.equal(codexQuotaAllowsTitle(quota(10, 95), now), false);
   assert.equal(codexQuotaAllowsTitle(quota(99, 10, now - 1), now), true);
   assert.equal(codexQuotaAllowsTitle({ status: 'unavailable' }, now), true);
+  assert.equal(codexQuotaAllowsTitle({ status: 'ok', session: { percent: null }, week: { percent: null }, month: { percent: 97, resetsAt: null } }, now), false);
 });
 
 test('generated titles must be one plain line of at most 72 characters', () => {

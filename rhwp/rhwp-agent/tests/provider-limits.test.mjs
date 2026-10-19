@@ -184,6 +184,19 @@ test('supplements a weekly-only RPC result with HTTP session usage and detailed 
   assert.equal(codex.resetCredits.nextExpiresAt, Date.parse('2027-01-25T00:00:00Z'));
 });
 
+test('reads a free account monthly window as monthly, not as the 5-hour session', async () => {
+  const { client, calls } = fixture({
+    codexRpc: async () => ({ rateLimits: { primary: { usedPercent: 5, windowDurationMins: 43200, resetsAt: 1802500000 }, secondary: null, planType: 'free' },
+      rateLimitResetCredits: { availableCount: 0, credits: [] } }),
+  });
+  const { codex } = await client.refresh();
+  assert.equal(codex.status, 'ok');
+  assert.deepEqual(codex.month, { percent: 5, resetsAt: 1802500000000 });
+  assert.equal(codex.session.percent, null);
+  assert.equal(codex.week.percent, null);
+  assert.equal(calls.some(({ url }) => url.endsWith('/wham/usage')), false);
+});
+
 test('falls back to HTTP if Codex CLI is absent and rejects malformed quota responses', async () => {
   let malformed = false;
   const { client } = fixture({ codexRpc: async () => { throw new Error('ENOENT'); },
