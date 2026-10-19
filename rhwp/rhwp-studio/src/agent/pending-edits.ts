@@ -387,6 +387,8 @@ export class PendingEditManager {
   private nextSetBaseline: SetBaseline | null = null;
   /** set 의 첫 변이 직전 문서 스냅샷 — 승인 때 op 을 되돌리지 않고 before 로 공유한다 */
   private setBaselines = new Map<PendingChangeSet, SetBaseline & { firstOpSeq: number }>();
+  /** 가장 바깥 원자 배치가 기준점으로 넘긴 롤백 스냅샷 — 배치가 끝날 때까지 배치가 소유한다 */
+  private atomicBaseline: SetBaseline | null = null;
   // 파라미터 프로퍼티 대신 명시적 할당 (node --test strip-only 모드 호환).
   private deps: PendingEditDeps;
 
@@ -1046,6 +1048,7 @@ export class PendingEditManager {
     if (!wasAtomic && !(this.open && this.open.ops.length > 0)) {
       batchBaseline = { snapshotId: snapId, userEditSeq: this.userEditSeq, settledSetSeq: this.settledSetSeq };
       this.nextSetBaseline = batchBaseline;
+      this.atomicBaseline = batchBaseline;
     }
     const textInsertedBefore = this.bulkTextInserted.length;
     this.inAtomicBatch = true;
@@ -1067,9 +1070,12 @@ export class PendingEditManager {
       }
       // 배치가 만든 set 은 통째로 제거하고, 기존 set 들의 op 은 배치 이전 좌표로 복원한다.
       this.sets = this.sets.filter((s) => setIdsBefore.has(s.id));
-      this.releaseSetBaselines();
       this.open = openBefore && setIdsBefore.has(openBefore.id) ? openBefore : null;
       this.restorePendingState(pendingState);
+      // 롤백으로 사라진 첫 op 이 받은 바깥 배치 스냅샷은 다시 배치 몫으로 돌린다 — 중첩 배치의
+      // 롤백이 그것을 해제하면 바깥 배치가 실패할 때 문서를 되돌릴 스냅샷이 없다.
+      this.reclaimAtomicBaseline();
+      this.releaseSetBaselines();
       this.emitDocEvents('agent-pending-edit');
       this.syncOverlay();
       this.emitChange({ type: 'ops-changed' });
@@ -1083,6 +1089,7 @@ export class PendingEditManager {
         wasm.discardSnapshot(snapId);
         this.deps.editor.releaseExternalSnapshot?.();
       }
+      if (batchBaseline !== null) this.atomicBaseline = null;
       this.inAtomicBatch = wasAtomic;
       this.endBulk();
     }
@@ -1464,6 +1471,22 @@ export class PendingEditManager {
     if (!baseline) return;
     this.nextSetBaseline = null;
     this.releaseBaselineSnapshot(baseline.snapshotId, discard);
+  }
+
+  /**
+   * 원자 배치 롤백 뒤, 바깥 배치의 롤백 스냅샷을 넘겨받았던 set 이 목록에서 빠졌거나 op 이
+   * 비었으면 그 기준점을 떼어 다시 붙지 않은 기준점으로 돌린다. 문서는 배치 시작(또는 그와
+   * 같은 중첩 배치 시작)으로 돌아갔으므로 다음 첫 op 이 다시 넘겨받거나 바깥 배치가 정리한다.
+   */
+  private reclaimAtomicBaseline(): void {
+    const batch = this.atomicBaseline;
+    if (!batch) return;
+    for (const [set, baseline] of this.setBaselines) {
+      if (baseline.snapshotId !== batch.snapshotId) continue;
+      if (this.sets.includes(set) && set.ops.length > 0) continue;
+      this.setBaselines.delete(set);
+      this.nextSetBaseline = batch;
+    }
   }
 
   /** 목록에서 빠진 set 의 기준점을 해제한다 (all 이면 전부). */

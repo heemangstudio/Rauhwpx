@@ -199,4 +199,25 @@ function approveMixedSet(env) {
   assert.deepEqual(env.state(), preview);
 }
 
+// 6) 열린 set 이 없을 때(전체 모드의 확정 직후) 바깥 배치 안의 중첩 배치가 실패해도 바깥 배치의
+//    롤백 스냅샷은 살아 있어야 한다 — 바깥 배치가 실패하면 문서가 배치 이전으로 돌아간다.
+{
+  const env = setup();
+  env.manager.setDirectApply(true);
+  env.manager.beginTurn('claude');
+  env.manager.insertText('claude', { sectionIdx: 0, paraIdx: 1, charOffset: 0 }, 'Z');
+  assert.equal(env.manager.commitOpen(), true);
+  const beforeBatch = env.state();
+  assert.throws(() => env.manager.runAtomicBatch(() => {
+    assert.throws(() => env.manager.replaceTextBatch([
+      { range: range(0, 0, 2), text: 'XY' },
+      { range: range(99, 0, 2), text: 'bad' },
+    ], 'claude'));
+    env.manager.insertText('claude', { sectionIdx: 0, paraIdx: 2, charOffset: 0 }, 'K');
+    throw new Error('batch item failed');
+  }), /batch item failed/);
+  assert.deepEqual(env.state().paras, beforeBatch.paras, '바깥 배치 롤백이 문서를 배치 이전으로 되돌린다');
+  assert.equal(env.manager.hasPending(), false);
+}
+
 console.log('PENDING_APPROVE_FAST_PATH_OK');
