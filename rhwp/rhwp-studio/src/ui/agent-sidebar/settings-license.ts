@@ -48,7 +48,7 @@ export interface DesktopLicenseApi {
   activate: (key: string) => Promise<{ ok: boolean; code?: string; message?: string; status: LicenseStatus }>;
   openActivation: () => Promise<boolean>;
   openPricing: () => Promise<void>;
-  /** 결제 수단을 바꾸는 Groble 페이지를 연다. 예전 메인 프로세스에는 없다. */
+  /** Groble 주문 페이지를 연다. 결제 수단 바꾸기와 구독 관리(해지)가 쓴다. 예전 메인 프로세스에는 없다. */
   openPaymentFix?: () => Promise<void>;
   /** 문의 메일을 쓴다. 예전 메인 프로세스에는 없다. */
   openSupport?: () => Promise<void>;
@@ -293,7 +293,9 @@ export function createLicenseSettingsSection(
   const check = button('지금 확인');
   const deactivate = button('이 기기 비활성화');
   const fixPayment = button('결제 수단 바꾸기');
-  actions.append(fixPayment, activate, buy, check, deactivate);
+  // 연간 구독 키: 해지·결제 수단은 Groble 주문 페이지에서 관리한다.
+  const manage = button('구독 관리');
+  actions.append(fixPayment, manage, activate, buy, check, deactivate);
   row.append(copy);
   body.append(row);
   root.append(head, body, actions);
@@ -321,6 +323,8 @@ export function createLicenseSettingsSection(
     const prompt = renewalPrompt(status);
     fixPayment.hidden = !prompt || !api.openPaymentFix;
     if (prompt) fixPayment.textContent = prompt.action;
+    // 결제 안내가 같은 페이지를 열고 있으면 겹쳐 두지 않는다.
+    manage.hidden = !status.license?.licenseExpiresAt || !api.openPaymentFix || !fixPayment.hidden;
     const available = status.state !== 'unenforced';
     root.hidden = !available;
     onAvailableChange?.(available);
@@ -340,6 +344,7 @@ export function createLicenseSettingsSection(
   activate.addEventListener('click', () => { void api.openActivation(); });
   buy.addEventListener('click', () => { void api.openPricing(); });
   fixPayment.addEventListener('click', () => { void api.openPaymentFix?.(); });
+  manage.addEventListener('click', () => { void api.openPaymentFix?.(); });
   check.addEventListener('click', () => {
     check.disabled = true;
     void api.checkNow().then(render).finally(() => { check.disabled = false; });
