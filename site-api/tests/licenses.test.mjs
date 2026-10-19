@@ -126,7 +126,8 @@ test('payment.completed issues exactly one key per merchantUid, idempotent acros
   const status = await svc.statusByRef('hama-ref-1');
   assert.equal(status.status, 'issued');
   assert.match(status.key, KEY_RE);
-  assert.deepEqual(Object.keys(status).sort(), ['key', 'status']);
+  assert.deepEqual(Object.keys(status).sort(), ['key', 'licenseExpiresAt', 'status']);
+  assert.equal(status.licenseExpiresAt, null, 'a one-time order is a lifetime key');
   assert.deepEqual(await svc.statusByRef('unknown-ref'), { status: 'pending' });
   await assert.rejects(svc.statusByRef('bad ref!'), { code: 'ref_invalid' });
 
@@ -193,10 +194,14 @@ test('out-of-order: a refund that arrives before its completion means no key is 
   assert.equal(order.lastEventAt, new Date('2026-10-16T02:00:00+09:00').toISOString(), 'lastEventAt follows occurredAt, not arrival');
 });
 
-test('unknown event types are acknowledged and ignored', async () => {
+test('unknown event types are acknowledged, ignored and flagged for review', async () => {
   const { svc } = service();
-  const r = await svc.handleGrobleEvent({ id: 'e', type: 'subscription.terminated', data: { object: { merchantUid: 'x' } } }, { idempotencyKey: 'k' });
+  const r = await svc.handleGrobleEvent({ id: 'e', type: 'subscription.cancel_withdrawn', data: { object: { merchantUid: 'x' } } }, { idempotencyKey: 'k' });
   assert.equal(r.action, 'ignored_event_type');
+  assert.equal(r.reason, 'unknown_event_type:subscription.cancel_withdrawn');
+  assert.equal(r.needsReview, true);
+  const replay = await svc.handleGrobleEvent({ id: 'e', type: 'subscription.cancel_withdrawn', data: { object: { merchantUid: 'x' } } }, { idempotencyKey: 'k' });
+  assert.equal(replay.duplicate, true);
 });
 
 // ---------------------------------------------------------------- devices

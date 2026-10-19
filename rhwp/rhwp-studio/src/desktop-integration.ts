@@ -22,6 +22,84 @@ import {
   readBlobBytesWithLimit,
 } from './core/document-input-limits.ts';
 
+/* ── 앱 업데이트 (rhwpDesktop.updates) ─────────────────────────
+   메인이 확인·다운로드·재시작을 맡고, 문서 홈의 하마가 상태를 팻말로 보인다. */
+
+export type DesktopUpdateStatus = 'disabled' | 'idle' | 'checking' | 'up-to-date' | 'available'
+  | 'downloading' | 'downloaded' | 'restarting' | 'error';
+
+export interface DesktopUpdateState {
+  status: DesktopUpdateStatus;
+  currentVersion: string;
+  /** available·downloading·downloaded·restarting·error 의 대상 버전. */
+  version: string | null;
+  /** downloading 동안 0..100. */
+  percent: number | null;
+  /** external 이면(리눅스 deb) download() 가 릴리스 페이지를 연다. */
+  install: 'in-app' | 'external';
+  /**
+   * error 상태는 버전이 있는 다운로드·설치 실패에만 쓴다. 백그라운드 확인 실패는 idle 로 남고,
+   * 직접 누른 확인이 실패하면 idle + { context: 'check' } 이다.
+   */
+  error: { context: 'check' | 'download' | 'install'; message: string } | null;
+  /** 마지막 확인을 사용자가 메뉴에서 눌렀다. */
+  manual: boolean;
+  /** 모든 창이 알린 실행 중인 채팅 수의 합. */
+  runningChats: number;
+}
+
+export interface UpdateRestartSlice {
+  ok: boolean;
+  documents: Array<{
+    documentId: string;
+    /** 이 창의 네이티브 파일 핸들 id. 한 번도 저장하지 않은 새 문서면 null. */
+    handleId: string | null;
+    fileName: string;
+    /** 창에 붙어 보이는 문서. */
+    active: boolean;
+  }>;
+  /** 다시 켠 뒤 이어서 진행할, 실행 중이던 채팅. */
+  continueThreadIds: string[];
+}
+
+export interface UpdateRestoreSlice {
+  documents: Array<{
+    documentId: string;
+    /** 새 창 세션에 메인이 다시 만든 핸들. */
+    file: NativeFileHandleDescriptor | null;
+    fileName: string;
+    active: boolean;
+  }>;
+  continueThreadIds: string[];
+  /** 다시 켠 모든 창의 문서 ID. 다른 창이 다시 여는 문서의 복구본은 복구 제안에 넣지 않는다. */
+  restoredDocumentIds: string[];
+}
+
+export interface DesktopUpdatesApi {
+  getState(): Promise<DesktopUpdateState>;
+  /** 채널 'desktop:update-state'. 해제 함수를 돌려준다. */
+  onState(callback: (state: DesktopUpdateState) => void): () => void;
+  /** 직접 누른 확인. */
+  check(): Promise<void>;
+  download(): Promise<void>;
+  /** 사용자가 경고 팻말에서 재시작을 눌렀다. */
+  restart(): Promise<{ ok: boolean }>;
+  /** 창마다 보낸다. 응답을 기다리지 않는다. */
+  setRunningChatCount(count: number): void;
+  /**
+   * 업데이트 재시작 전에 메인이 모든 창에 준비를 부탁한다. 처리기는 저장할 것을 정리하고 필요하면 묻되,
+   * 닫기 확인은 아직 풀지 않는다. ok:false 면 재시작을 멈추고 상태는 downloaded 로 돌아간다.
+   */
+  onPrepareRestart(handler: () => Promise<UpdateRestartSlice>): () => void;
+  /**
+   * 모든 창이 준비에 응한 뒤 메인이 확정을 부탁한다. 처리기는 그 사이의 편집까지 남기고 닫기 확인을 푼 뒤
+   * 이 창의 몫을 돌려준다. 메인은 이 몫으로 다시 열 창을 기록한다.
+   */
+  onCommitRestart(handler: () => Promise<UpdateRestartSlice>): () => void;
+  /** 다시 켠 창마다 한 번만 준다. 그 밖에는 null. */
+  getRestore(): Promise<UpdateRestoreSlice | null>;
+}
+
 export const DEV_AGENT_HUB_ENSURE_PATH = '/__rhwp/ensure-agent-hub';
 export const DEV_AGENT_HUB_RELEASE_PATH = '/__rhwp/release-agent-hub-session';
 
@@ -95,6 +173,8 @@ export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
   /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
   gift?: import('./ui/special-event/gift.ts').DesktopGiftApi;
+  /** 앱 업데이트 확인·다운로드·재시작. */
+  updates?: DesktopUpdatesApi;
   ensureAgentHub?: () => Promise<{ started?: boolean; ready?: boolean } | boolean>;
   getSessionContext?: () => Promise<RendererSessionContext>;
   createAgentSession?: () => Promise<{ sessionId: string }>;
@@ -1148,6 +1228,26 @@ export async function rememberNativeDocument(
   const metadata = handle ? nativeHandleMetadata.get(handle) : null;
   if (!documentId || !metadata?.api.rememberNativeDocument) return;
   await metadata.api.rememberNativeDocument(documentId, metadata.handleId, digest);
+}
+
+/** 앱 업데이트 API. 데스크톱이 아니거나 이를 모르는 preload 면 null. */
+export function desktopUpdatesApi(win?: DesktopHost): DesktopUpdatesApi | null {
+  return desktopHost(win)?.rhwpDesktop?.updates ?? null;
+}
+
+/** 이 창 세션에서 핸들의 메인 쪽 id. 업데이트 재시작이 경로로 바꿔 남긴다. 네이티브 핸들이 아니면 null. */
+export function nativeFileHandleId(handle: FileSystemFileHandleLike | null | undefined): string | null {
+  return handle ? nativeHandleMetadata.get(handle)?.handleId ?? null : null;
+}
+
+/** 업데이트로 다시 켠 창에 메인이 다시 만든 파일 핸들. 쓰지 않으면 releaseUnusedSaveTarget 으로 놓는다. */
+export function restoredNativeFileHandle(
+  descriptor: NativeFileHandleDescriptor,
+  win?: DesktopHost,
+): FileSystemFileHandleLike | null {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.readNativeFile || !api.writeNativeFile || !validNativeDescriptor(descriptor)) return null;
+  return createNativeFileHandle(descriptor, api, { saveTarget: descriptor.saveTargetCreated !== false });
 }
 
 export async function restoreNativeDocument(
