@@ -13,7 +13,7 @@ import {
 import type { RenderBackend } from './render-backend';
 import { removeAndReleaseCanvases } from './canvas-pool';
 // 브라우저 테스트가 이 모듈을 alias 없는 Vite 로 읽으므로 상대 경로로 가져온다.
-import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
+import { engineMutationEpoch, engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 
 interface LayerPlaneSummary {
   hasBehind: boolean;
@@ -54,6 +54,8 @@ interface LayerSummaryCacheEntry {
   key: string;
   /** 요약을 엔진에서 읽었을 때의 문서 내용 세대. */
   contentEpoch: number;
+  /** 같은 때의 엔진 변이 순번. 이벤트 없이 지나간 엔진 쓰기도 잡는다. */
+  engineEpoch: number;
   summary: LayerPlaneSummary;
 }
 
@@ -827,15 +829,16 @@ export class PageRenderer {
    * 쪽의 앞/뒤 층 요약. 요약은 배율과 무관하므로 문서 내용이 그대로면 배율 변경·스크롤 복귀·
    * 선렌더에서 다시 읽지 않는다 (getPageOverlayImages 는 앞/뒤 그림을 모두 base64 로 만든다).
    * 쪽을 해제해도 남기고, 내용이 바뀌면(noteDocumentContentChanged, 스냅샷 복원의
-   * documentGeneration) 다시 읽는다. 글자 편집 렌더는 내용이 바뀌어도 남긴 요약을 쓴다 —
-   * 정적 층이 있으면 입력이 멈춘 뒤 검증 렌더가 다시 읽는다.
+   * documentGeneration, 이벤트 없이 지나간 엔진 쓰기) 다시 읽는다. 글자 편집 렌더는 내용이 바뀌어도
+   * 남긴 요약을 쓴다 — 정적 층이 있으면 입력이 멈춘 뒤 검증 렌더가 다시 읽는다.
    */
   private getLayerPlaneSummary(pageIdx: number, context: PageRenderContext): LayerPlaneSummary {
     const cacheKey = `profile=${this.renderProfile}|backend=${this.backend}|doc=${this.wasm.documentGeneration}`;
     const cached = this.layerSummaryCache.get(pageIdx);
     if (cached?.key === cacheKey) {
       const textEditReuse = context.reason === 'text-edit' && context.allowStaticOverlayReuse === true;
-      if (textEditReuse || cached.contentEpoch === this.contentEpoch) return { ...cached.summary };
+      const unchanged = cached.contentEpoch === this.contentEpoch && cached.engineEpoch === engineMutationEpoch();
+      if (textEditReuse || unchanged) return { ...cached.summary };
     }
 
     const summary = this.getLayerPlaneSummaryFromOverlayImages(pageIdx)
@@ -843,6 +846,7 @@ export class PageRenderer {
     this.layerSummaryCache.set(pageIdx, {
       key: cacheKey,
       contentEpoch: this.contentEpoch,
+      engineEpoch: engineMutationEpoch(),
       summary: { ...summary },
     });
     return summary;
