@@ -115,6 +115,16 @@ interface MeasuredRange {
   enters: EnterMark[];
 }
 
+/** op 하나를 잰 결과. 범례(legacy) rect 는 exact 글자 rect 를 빼기 전 그대로다. */
+interface OpProbe {
+  exact: ExactVisual[];
+  legacy: { op: LegacyOverlayOp; rects: SelectionRect[] } | null;
+  enters: EnterMark[];
+}
+
+/** op 이 걸친 전역 쪽 구간(양끝 포함). null 이면 어느 쪽인지 모른다 — 늘 잰다. */
+type PageSpan = readonly [number, number] | null;
+
 /** key 하나가 소유하는 DOM 표시. 렌더 간에 재사용해 애니메이션/스타일 상태를 보존한다. */
 interface PooledNode {
   marker: HTMLDivElement | null;
@@ -225,6 +235,13 @@ export class PendingOverlayRenderer {
   private cachedExact: ExactVisual[] | null = null;
   private cachedLegacy: Array<{ op: LegacyOverlayOp; rects: SelectionRect[] }> | null = null;
   private cachedEnters: EnterMark[] = [];
+  /**
+   * this.ops 와 같은 순서의 쪽 구간과 잰 결과. 문서가 바뀌면 쪽 구간만 다시 구하고, rect 는 그려질 쪽
+   * (보이는 쪽과 미리 준비하는 줄)에 걸친 op 만 잰다 — 화면 밖 쪽의 렌더 트리를 만들었다 버리지 않는다.
+   * 스크롤로 새 쪽이 들어오면 그 쪽의 op 를 그리기 전에 바로 잰다.
+   */
+  private opSpans: PageSpan[] = [];
+  private opProbes: Array<OpProbe | null> = [];
   private geometryDirty = true;
   private hitRegions: HitRegion[] = [];
   private interactionRoot: HTMLElement | null = null;
@@ -638,51 +655,139 @@ export class PendingOverlayRenderer {
     return visuals;
   }
 
-  /** 문서 기준 기하(페이지 좌표 rect 목록)를 다시 프로브한다. */
-  private recomputeGeometry(): void {
-    const exactVisuals: ExactVisual[] = [];
-    const legacyOps: LegacyOverlayOp[] = [];
+  /** op 하나의 rect 를 잰다. 실패한 범례 op 은 legacy 가 null 이다(그리지 않는다). */
+  private probeOp(op: OverlayOp): OpProbe {
     const enters: EnterMark[] = [];
-    for (const op of this.ops) {
-      if (op.kind === 'replace') exactVisuals.push(...this.collectExactVisuals(op, enters));
-      else legacyOps.push(op);
+    if (op.kind === 'replace') {
+      const exact = this.collectExactVisuals(op, enters);
+      // 같은 hunk 가 여러 줄 rect 를 갖는다 — DOM key 는 등장 순번으로 안정화한다.
+      const seen = new Map<string, number>();
+      for (const visual of exact) {
+        const n = seen.get(visual.key) ?? 0;
+        seen.set(visual.key, n + 1);
+        visual.nodeKey = `${visual.key}#${n}`;
+      }
+      return { exact, legacy: null, enters };
+    }
+    let rects: SelectionRect[];
+    try {
+      if (op.objRef) {
+        rects = this.resolveObjectRects(op.objRef);
+      } else if (op.range) {
+        const measured = this.measureRange(op.range, op.agent, op.opId);
+        rects = measured.rects;
+        // 삭제 마크는 원문을 그대로 두므로 개행 표시를 붙이지 않는다.
+        if (op.kind !== 'remove') enters.push(...measured.enters);
+      } else {
+        return { exact: [], legacy: null, enters };
+      }
+    } catch {
+      return { exact: [], legacy: null, enters: [] };
+    }
+    return { exact: [], legacy: { op, rects }, enters };
+  }
+
+  /**
+   * op 이 걸친 전역 쪽 구간 — 조판 결과만 읽는다(렌더 트리를 만들지 않는다). 머리말·꼬리말·구역 전체처럼
+   * 쪽을 정할 수 없거나 조회가 없는 엔진이면 null.
+   */
+  private opSpan(op: OverlayOp, pagesOf: (sec: number, para: number) => number[] | null): PageSpan {
+    let sec: number;
+    let first: number;
+    let last: number;
+    const ref = op.kind === 'replace' ? undefined : op.objRef;
+    if (ref) {
+      if (ref.sort === 'hf' || ref.sort === 'page') return null;
+      sec = ref.sectionIdx;
+      first = ref.paraIdx;
+      last = ref.sort === 'para' && !ref.cell && ref.endParaIdx !== undefined ? ref.endParaIdx : ref.paraIdx;
+      if (ref.sort === 'para' && ref.cell) first = last = ref.cell.paraIdx;
+    } else if (op.range) {
+      sec = op.range.sectionIdx;
+      // 표 안이면 표를 품은 본문 문단의 쪽이다.
+      first = op.range.cell ? op.range.cell.paraIdx : op.range.startParaIdx;
+      last = op.range.cell ? op.range.cell.paraIdx : op.range.endParaIdx;
+    } else {
+      return null;
+    }
+    const head = pagesOf(sec, Math.min(first, last));
+    const tail = first === last ? head : pagesOf(sec, Math.max(first, last));
+    if (!head?.length || !tail?.length) return null;
+    return [Math.min(...head, ...tail), Math.max(...head, ...tail)];
+  }
+
+  /** 문서가 바뀌었다 — 쪽 구간을 다시 구하고 잰 결과는 버린다. */
+  private resetGeometry(): void {
+    const wasm = this.deps.wasm;
+    const memo = new Map<string, number[] | null>();
+    const pagesOf = (sec: number, para: number): number[] | null => {
+      const key = `${sec}:${para}`;
+      if (memo.has(key)) return memo.get(key)!;
+      let pages: number[] | null = null;
+      try {
+        pages = typeof wasm.getParagraphPages === 'function' ? wasm.getParagraphPages(sec, para) : null;
+      } catch {
+        pages = null;
+      }
+      memo.set(key, pages);
+      return pages;
+    };
+    this.opSpans = this.ops.map((op) => this.opSpan(op, pagesOf));
+    this.opProbes = this.ops.map(() => null);
+    this.geometryDirty = false;
+  }
+
+  /**
+   * 그려질 쪽에 걸친 op 의 rect 가 준비되게 한다. 새로 잰 op 이 있으면(또는 문서가 바뀌었으면)
+   * 문서 기준 기하(페이지 좌표 rect 목록)를 다시 모은다.
+   */
+  private ensureGeometry(renderablePages: ReadonlySet<number>): void {
+    const reset = this.geometryDirty || !this.cachedExact || !this.cachedLegacy;
+    if (reset) this.resetGeometry();
+    let probed = false;
+    this.ops.forEach((op, index) => {
+      if (this.opProbes[index]) return;
+      const span = this.opSpans[index];
+      if (span) {
+        let visible = false;
+        for (const page of renderablePages) {
+          if (page >= span[0] && page <= span[1]) {
+            visible = true;
+            break;
+          }
+        }
+        if (!visible) return;
+      }
+      this.opProbes[index] = this.probeOp(op);
+      probed = true;
+    });
+    if (reset || probed) this.assembleGeometry();
+  }
+
+  /** 잰 op 들의 rect 를 op 순서대로 모으고, 범례 rect 에서 exact 글자 rect 를 뺀다. */
+  private assembleGeometry(): void {
+    const exactVisuals: ExactVisual[] = [];
+    const legacyRaw: Array<{ op: LegacyOverlayOp; rects: SelectionRect[] }> = [];
+    const exactEnters: EnterMark[] = [];
+    const legacyEnters: EnterMark[] = [];
+    for (const probe of this.opProbes) {
+      if (!probe) continue;
+      exactVisuals.push(...probe.exact);
+      if (probe.legacy) {
+        legacyRaw.push(probe.legacy);
+        legacyEnters.push(...probe.enters);
+      } else {
+        exactEnters.push(...probe.enters);
+      }
     }
     const exactTextRects = exactVisuals.filter((visual) => !visual.anchor).map((visual) => visual.rect);
     const exactTextIndex = exactTextRects.length > 0 ? indexExactTextRects(exactTextRects) : null;
-
-    const legacy: Array<{ op: LegacyOverlayOp; rects: SelectionRect[] }> = [];
-    for (const op of legacyOps) {
-      let rects: SelectionRect[];
-      try {
-        if (op.objRef) {
-          rects = this.resolveObjectRects(op.objRef);
-        } else if (op.range) {
-          const measured = this.measureRange(op.range, op.agent, op.opId);
-          rects = measured.rects;
-          // 삭제 마크는 원문을 그대로 두므로 개행 표시를 붙이지 않는다.
-          if (op.kind !== 'remove') enters.push(...measured.enters);
-        } else continue;
-      } catch {
-        continue;
-      }
-      if (op.range && exactTextIndex) {
-        rects = subtractExactTextRects(rects, exactTextRects, exactTextIndex);
-      }
-      legacy.push({ op, rects });
-    }
-
-    // 같은 hunk 가 여러 줄 rect 를 갖는다 — DOM key 는 등장 순번으로 안정화한다.
-    const seen = new Map<string, number>();
-    for (const visual of exactVisuals) {
-      const n = seen.get(visual.key) ?? 0;
-      seen.set(visual.key, n + 1);
-      visual.nodeKey = `${visual.key}#${n}`;
-    }
-
+    this.cachedLegacy = legacyRaw.map(({ op, rects }) => ({
+      op,
+      rects: op.range && exactTextIndex ? subtractExactTextRects(rects, exactTextRects, exactTextIndex) : rects,
+    }));
     this.cachedExact = exactVisuals;
-    this.cachedLegacy = legacy;
-    this.cachedEnters = enters;
-    this.geometryDirty = false;
+    this.cachedEnters = [...exactEnters, ...legacyEnters];
   }
 
   private legacyNodeKey(op: LegacyOverlayOp, rectIdx: number): string {
@@ -754,13 +859,11 @@ export class PendingOverlayRenderer {
     if (!scrollContent) return;
     this.ensureAttached(scrollContent);
 
-    if (this.geometryDirty || !this.cachedExact || !this.cachedLegacy) {
-      this.recomputeGeometry();
-    }
+    const renderablePages = this.renderablePages(canvasView);
+    this.ensureGeometry(renderablePages);
 
     const zoom = canvasView.getViewportManager().getZoom();
     const contentWidth = scrollContent.clientWidth;
-    const renderablePages = this.renderablePages(canvasView);
     this.hitRegions = [];
     const desired = new Set<string>();
 
@@ -858,7 +961,11 @@ export class PendingOverlayRenderer {
       }
     }
 
-    this.cachedEnters.forEach((mark, index) => {
+    // 개행 표시 key 는 쪽 안의 순번이다 — 다른 쪽의 op 를 나중에 재도 이 쪽의 표시는 그대로 남는다.
+    const entersOnPage = new Map<number, number>();
+    this.cachedEnters.forEach((mark) => {
+      const index = entersOnPage.get(mark.pageIndex) ?? 0;
+      entersOnPage.set(mark.pageIndex, index + 1);
       if (!renderablePages.has(mark.pageIndex)) return;
       const pos = this.pagePosition(
         canvasView,
