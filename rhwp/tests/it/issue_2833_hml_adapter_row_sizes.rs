@@ -4,7 +4,7 @@
 //! 문서)이 파싱 자체를 느리게 만들지 않아야 한다.
 
 use rhwp::parser::hml::parse_hml;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// `RowCount` 를 크게, `CELL` 은 `cell_count`개(모두 `RowAddr="0"`)로 구성한
 /// 최소 HML 표 문서.
@@ -27,25 +27,48 @@ fn hml_with_inflated_row_count(row_count: u32, cell_count: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+fn parse_elapsed(bytes: &[u8]) -> Duration {
+    let started = Instant::now();
+    let parsed = parse_hml(bytes).expect("RowCount 부풀림이 있어도 파싱은 성공해야 함");
+    let elapsed = started.elapsed();
+    drop(parsed);
+    elapsed
+}
+
 #[test]
 fn inflated_row_count_does_not_slow_down_parsing() {
-    // 실측(이슈 본문): RowCount=60000, CELL=3000 이 수정 전 코드에서 O(row_count ×
-    // cells.len()) = 1.8억 회 비교를 강제해 120~180ms/call 대였다. 수정 후에는
-    // O(row_count + cells.len()) 이라 같은 입력이 훨씬 빨라야 한다. 느슨한 상한
-    // (수 초)으로 회귀만 잡는다 — CI 환경 편차를 고려해 타이트하게 걸지 않는다.
+    // 행과 셀을 각각 10배 늘렸을 때 선형 구현은 대략 10배, O(row_count ×
+    // cells.len()) 구현은 최대 100배로 느려진다. 비율로 복잡도 회귀를 잡고, 넉넉한
+    // 절대 상한으로 극단적인 지연도 확인한다. 절대 시간만 비교하면 CI 병렬 부하에 흔들린다.
+    let small_bytes = hml_with_inflated_row_count(6_000, 300);
     let bytes = hml_with_inflated_row_count(60_000, 3_000);
 
-    let started = Instant::now();
-    let parsed = parse_hml(&bytes).expect("RowCount 부풀림이 있어도 파싱은 성공해야 함");
-    let elapsed = started.elapsed();
+    let mut small_elapsed = Vec::with_capacity(3);
+    let mut large_elapsed = Vec::with_capacity(3);
+    let mut parsed = None;
+    for _ in 0..3 {
+        small_elapsed.push(parse_elapsed(&small_bytes));
 
+        let started = Instant::now();
+        parsed = Some(parse_hml(&bytes).expect("RowCount 부풀림이 있어도 파싱은 성공해야 함"));
+        large_elapsed.push(started.elapsed());
+    }
+    small_elapsed.sort_unstable();
+    large_elapsed.sort_unstable();
+    let small_median = small_elapsed[1];
+    let large_median = large_elapsed[1];
     assert!(
-        elapsed.as_millis() < 500,
-        "row_sizes 계산이 O(row_count × cells.len()) 로 되돌아가면 이 상한을 넘음 (실제 {elapsed:?})"
+        large_median < small_median * 25,
+        "입력 크기를 10배씩 늘린 파싱 시간이 비선형으로 증가함 (작은 입력 {small_median:?}, 큰 입력 {large_median:?})"
+    );
+    assert!(
+        large_median < Duration::from_secs(3),
+        "큰 입력 파싱이 수 초를 넘음 (실제 {large_median:?})"
     );
 
     // row_sizes 값 자체도 정확해야 한다: row=0 에 cells.len() 개, 나머지는 0.
     use rhwp::model::control::Control;
+    let parsed = parsed.expect("큰 입력 결과가 있어야 함");
     let table = parsed
         .document
         .sections
