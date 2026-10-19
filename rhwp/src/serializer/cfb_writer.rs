@@ -647,19 +647,36 @@ fn append_bin_data<'a>(
         let storage_name = format!("BIN{:04X}.{}", storage_id, ext);
         let path = format!("/BinData/{storage_name}");
         let expanded_remaining = expanded.remaining_member(crate::parser::limits::MAX_BINARY_BYTES);
+        let encoding = BinDataStreamEncoding {
+            compressed: should_compress,
+            ole_storage,
+        };
+        // 원본 컨테이너에서 그대로인 항목은 같은 인코딩이면 저장된 스트림을 옮긴다.
+        // 압축을 풀었다가 다시 압축하면 내보내기마다 모든 이미지를 deflate 한다.
+        let mut original = content
+            .data
+            .load_original_stream_limited(encoding, streams.remaining());
+        if let Some(bytes) = original.take_if(|bytes| !bytes.is_empty()) {
+            match measure_preserved_bin_data_expanded_len(
+                &bytes,
+                encoding,
+                expanded_remaining,
+                &path,
+            ) {
+                Ok(expanded_len) => {
+                    expanded.reserve(&path, expanded_len)?;
+                    streams.push(path, mini_cfb::CfbStreamData::Owned(bytes))?;
+                    continue;
+                }
+                Err(_) => original = Some(bytes),
+            }
+        }
         let decoded = content.data.load_limited_payload(expanded_remaining);
         if decoded
             .as_ref()
             .is_none_or(|payload| payload.as_ref().is_empty())
         {
-            let encoding = BinDataStreamEncoding {
-                compressed: should_compress,
-                ole_storage,
-            };
-            if let Some(original) = content
-                .data
-                .load_original_stream_limited(encoding, streams.remaining())
-            {
+            if let Some(original) = original {
                 if decoded.is_none() || !original.is_empty() {
                     let expanded_len = measure_preserved_bin_data_expanded_len(
                         &original,

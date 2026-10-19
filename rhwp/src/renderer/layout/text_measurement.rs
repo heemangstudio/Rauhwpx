@@ -1083,9 +1083,8 @@ thread_local! {
     /// 글자 한 번의 폭 결정이 이름 정규화·메트릭 테이블·대체 체인 수십 단계를 걸으므로
     /// 같은 입력의 반복 계산을 생략한다. 폰트 환경이 바뀌는 지점(런타임 폰트 등록/
     /// 해제, shaping·font-path scope 전환, HFT·커스텀 face 등록)에서 비운다.
-    static MEASURE_WIDTH_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(String, u8, char, u64), Option<f64>>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    static MEASURE_WIDTH_CACHE: std::cell::RefCell<MeasureWidthCache> =
+        std::cell::RefCell::new(MeasureWidthCache::default());
     /// enter/drop 으로 드러나는 shaping fonts 집합의 identity 스택 — 활성 집합이
     /// 바뀌면 측정 캐시를 비운다.
     static SHAPING_FONT_ID_STACK: std::cell::RefCell<Vec<u64>> =
@@ -1094,6 +1093,37 @@ thread_local! {
 
 /// 캐시 상한 — 넘으면 통째로 비운다 (문서의 (font,char,size) 조합 수준에 한정됨).
 const MEASURE_WIDTH_CACHE_MAX: usize = 65_536;
+
+/// 글자마다 조회하므로 family 를 `&str` 로 찾아 적중 시 할당하지 않는다.
+#[derive(Default)]
+struct MeasureWidthCache {
+    families: rustc_hash::FxHashMap<String, rustc_hash::FxHashMap<(u8, char, u64), Option<f64>>>,
+    len: usize,
+}
+
+impl MeasureWidthCache {
+    fn get(&self, family: &str, key: (u8, char, u64)) -> Option<Option<f64>> {
+        self.families.get(family)?.get(&key).copied()
+    }
+
+    fn insert(&mut self, family: &str, key: (u8, char, u64), width: Option<f64>) {
+        if self.len >= MEASURE_WIDTH_CACHE_MAX {
+            self.clear();
+        }
+        let widths = match self.families.get_mut(family) {
+            Some(widths) => widths,
+            None => self.families.entry(family.to_string()).or_default(),
+        };
+        if widths.insert(key, width).is_none() {
+            self.len += 1;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.families.clear();
+        self.len = 0;
+    }
+}
 
 /// shaping fonts 집합의 identity — bytes 는 Arc 포인터로 비교해 같은 face 집합을
 /// 충돌 없이 판별한다 (재진입 시 같은 Vec 이면 캐시를 유지한다).
@@ -4893,23 +4923,16 @@ fn measure_char_width_tracked(
     raw: bool,
 ) -> Option<f64> {
     let key = (
-        font_family.to_string(),
         measure_width_flags(bold, italic, policy, raw),
         c,
         font_size.to_bits(),
     );
-    if let Some(hit) = MEASURE_WIDTH_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+    if let Some(hit) = MEASURE_WIDTH_CACHE.with(|cache| cache.borrow().get(font_family, key)) {
         return hit;
     }
     let computed =
         measure_char_width_tracked_uncached(font_family, bold, italic, c, font_size, policy, raw);
-    MEASURE_WIDTH_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= MEASURE_WIDTH_CACHE_MAX {
-            cache.clear();
-        }
-        cache.insert(key, computed);
-    });
+    MEASURE_WIDTH_CACHE.with(|cache| cache.borrow_mut().insert(font_family, key, computed));
     computed
 }
 

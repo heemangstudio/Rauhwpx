@@ -929,6 +929,7 @@ dependencies = [
  "pdf-writer",
  "quick-xml",
  "resvg 0.47.0",
+ "rustc-hash",
  "rustybuzz",
  "serde",
  "serde_json",

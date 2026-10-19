@@ -2242,7 +2242,30 @@ pub(crate) const HANCOM_DEFAULT_FACES: &[&str] = &["함초롬돋움", "HCR Dotum
 
 /// 사용 가능 여부를 조회하지 않는 선언 글꼴 판정. 메트릭이 있어도 FontMap의
 /// 그리기 대체 후보를 숨기지 않도록 후보 수집과 별도로 사용한다.
+///
+/// 정적 표만 보는 순수 함수라 이름별로 기억한다. 측정되는 런마다 불리므로
+/// 적중 시에는 소문자 변환이나 부분 문자열 검색을 하지 않는다.
 fn hancom_known_face(name: &str) -> bool {
+    const MAX_FACES: usize = 4096;
+    thread_local! {
+        static KNOWN_FACES: std::cell::RefCell<rustc_hash::FxHashMap<String, bool>> =
+            std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+    }
+    if let Some(known) = KNOWN_FACES.with(|faces| faces.borrow().get(name).copied()) {
+        return known;
+    }
+    let known = hancom_known_face_uncached(name);
+    KNOWN_FACES.with(|faces| {
+        let mut faces = faces.borrow_mut();
+        if faces.len() >= MAX_FACES {
+            faces.clear();
+        }
+        faces.insert(name.to_string(), known);
+    });
+    known
+}
+
+fn hancom_known_face_uncached(name: &str) -> bool {
     if name.is_empty() || name.contains(',') || HANCOM_DEFAULT_FACES.contains(&name) {
         return true;
     }

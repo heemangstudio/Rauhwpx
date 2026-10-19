@@ -495,7 +495,7 @@ pub(crate) mod hwpx_raw_fields {
 }
 
 /// 파서가 모델링하지 않는 원시 레코드 (라운드트립 보존용)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RawRecord {
     /// 태그 ID
     pub tag_id: u16,
@@ -629,7 +629,7 @@ pub struct DocProperties {
 }
 
 /// 문서 정보 (DocInfo 스트림의 ID 매핑 데이터)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocInfo {
     /// Runtime style-resolution input, never written to HWP/HWPX. Kept with
     /// font tables so all edit-time style rebuilds use the same metrics.

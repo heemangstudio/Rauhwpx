@@ -9,7 +9,7 @@ use crate::document_core::{
 };
 use crate::error::HwpError;
 use crate::model::control::Control;
-use crate::model::document::{Document, Section};
+use crate::model::document::{DocInfo, Document, Section};
 use crate::model::paragraph::{
     LineSeg, Paragraph, TacControlSource, TacLineOrigin, TacParagraphSource, TacTableLineOrigin,
 };
@@ -6070,7 +6070,7 @@ impl DocumentCore {
         let Document {
             header,
             doc_properties,
-            doc_info,
+            doc_info: _,
             sections: _,
             preview,
             bin_data_content,
@@ -6083,7 +6083,7 @@ impl DocumentCore {
         Document {
             header: header.clone(),
             doc_properties: doc_properties.clone(),
-            doc_info: doc_info.clone(),
+            doc_info: DocInfo::default(),
             sections: Vec::new(),
             preview: preview
                 .as_ref()
@@ -6128,7 +6128,24 @@ impl DocumentCore {
         }
     }
 
-    fn capture_snapshot(&self) -> DocumentSnapshot {
+    /// 원본 스트림을 뺀 DocInfo 표를 직전 스냅샷과 비교해 같으면 공유한다.
+    fn share_doc_info_tables(
+        doc_info: &mut DocInfo,
+        baseline: Option<&Arc<DocInfo>>,
+    ) -> Arc<DocInfo> {
+        let raw_stream = doc_info.raw_stream.take();
+        let shared = Self::share_snapshot_payload(doc_info, baseline);
+        doc_info.raw_stream = raw_stream;
+        shared
+    }
+
+    fn capture_snapshot(&mut self) -> DocumentSnapshot {
+        let doc_info = Self::share_doc_info_tables(
+            &mut self.document.doc_info,
+            self.snapshot_store
+                .last()
+                .map(|(_, snapshot)| &snapshot.doc_info),
+        );
         let section_revisions = self
             .event_log
             .section_revisions(self.document.sections.len());
@@ -6203,6 +6220,13 @@ impl DocumentCore {
             .collect();
         DocumentSnapshot {
             document_shell: Self::clone_document_shell(&self.document),
+            doc_info,
+            doc_info_raw_stream: self.document.doc_info.raw_stream.as_ref().map(|bytes| {
+                Self::share_snapshot_payload(
+                    bytes,
+                    baseline.and_then(|snapshot| snapshot.doc_info_raw_stream.as_ref()),
+                )
+            }),
             extra_streams: Self::share_snapshot_payload(
                 &self.document.extra_streams,
                 baseline.map(|snapshot| &snapshot.extra_streams),
@@ -6245,7 +6269,8 @@ impl DocumentCore {
     /// 현재 Document의 전역 상태와 변경 구역을 캡처하여 스냅샷 저장소에 보관한다.
     /// 반환값: 스냅샷 ID (u32)
     pub fn save_snapshot_native(&mut self) -> u32 {
-        self.store_snapshot(Arc::new(self.capture_snapshot()))
+        let snapshot = Arc::new(self.capture_snapshot());
+        self.store_snapshot(snapshot)
     }
 
     /// 기존 스냅샷의 불변 Document 상태를 공유하는 새 ID를 만든다.
@@ -6474,6 +6499,17 @@ impl DocumentCore {
             .collect();
         let mut current_sections = std::mem::take(&mut self.document.sections);
         let mut restored = snapshot.document_shell.clone();
+        // 모양 표가 같으면 현재 값을 그대로 쓰고, 다를 때만 스냅샷에서 복제한다.
+        let font_metrics_policy = self.document.doc_info.font_metrics_policy;
+        restored.doc_info = std::mem::take(&mut self.document.doc_info);
+        let current_raw_stream = restored.doc_info.raw_stream.take();
+        if restored.doc_info != *snapshot.doc_info {
+            restored.doc_info = snapshot.doc_info.as_ref().clone();
+        }
+        restored.doc_info.raw_stream = match (current_raw_stream, &snapshot.doc_info_raw_stream) {
+            (Some(current), Some(target)) if current == **target => Some(current),
+            (_, target) => target.as_deref().cloned(),
+        };
         restored.extra_streams = snapshot.extra_streams.as_ref().clone();
         restored.hwpx_aux_entries = snapshot.hwpx_aux_entries.as_ref().clone();
         if let Some(image) = restored
@@ -6488,7 +6524,7 @@ impl DocumentCore {
                 .as_ref()
                 .clone();
         }
-        restored.doc_info.font_metrics_policy = self.document.doc_info.font_metrics_policy;
+        restored.doc_info.font_metrics_policy = font_metrics_policy;
         restored.sections.reserve(snapshot.sections.len());
         for (section_idx, snapshot_section) in snapshot.sections.iter().enumerate() {
             // 위 changed_sections 판정과 같은 조건이다. 구역 비교를 다시 하지 않는다.
