@@ -3289,7 +3289,7 @@ impl DocumentCore {
             None
         }
 
-        let tree = self.build_page_tree_cached(page_idx as u32)?;
+        let tree = self.build_page_tree_shared(page_idx as u32)?;
         Ok(find_table_bbox(
             &tree.root,
             section_idx,
@@ -3538,7 +3538,7 @@ impl DocumentCore {
 
         let total_pages = self.page_count() as usize;
         for page_num in 0..total_pages {
-            let tree = self.build_page_tree_cached(page_num as u32)?;
+            let tree = self.build_page_tree_shared(page_num as u32)?;
             if let Some(result) = find_shape_bbox(
                 &tree.root,
                 section_idx,
@@ -3649,7 +3649,7 @@ impl DocumentCore {
             )));
         }
         for page in 0..self.page_count() as usize {
-            let tree = self.build_page_tree_cached(page as u32)?;
+            let tree = self.build_page_tree_shared(page as u32)?;
             if let Some(bbox) = find(
                 &tree.root,
                 kind,

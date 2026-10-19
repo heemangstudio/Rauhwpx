@@ -146,6 +146,9 @@ pub(crate) struct RenderNormalizationState {
     pub(crate) document_epoch: u64,
     pub(crate) section_revisions: Vec<u64>,
     pub(crate) sections: Vec<Option<RenderNormalizedSection>>,
+    /// `sections[idx]`가 "투영 불필요(None)"로 계산된 section revision.
+    /// 해당 구역이 dirty가 아니고 revision이 같으면 다음 paginate에서 재계산하지 않는다.
+    pub(crate) unprojected_revisions: Vec<Option<u64>>,
     pub(crate) path_revisions: HashMap<RenderPath, u64>,
     pub(crate) overlay: Arc<RenderNormalizationOverlay>,
 }
@@ -648,6 +651,8 @@ impl DocumentCore {
     pub fn set_dpi(&mut self, dpi: f64) {
         self.dpi = dpi;
         self.styles = self.resolve_document_styles();
+        // DPI는 구역 dirty 없이 바뀌므로 "투영 불필요" 판정을 모두 다시 한다.
+        self.render_normalization.unprojected_revisions.clear();
         self.paginate();
     }
 

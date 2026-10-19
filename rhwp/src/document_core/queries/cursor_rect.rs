@@ -881,7 +881,7 @@ impl DocumentCore {
         // 후보 페이지를 순회하며 커서 위치 탐색
         // 1차: 정확한 앵커(zero-width 노드) 우선 검색, 2차: 일반 검색
         for &page_num in &pages {
-            let tree = self.build_page_tree_cached(page_num)?;
+            let tree = self.build_page_tree_shared(page_num)?;
             if !self.show_control_codes {
                 if let Ok(para) = self.get_render_paragraph_ref(section_idx, para_idx) {
                     if let Some(hit) = find_inline_flow_cursor_hit(
@@ -1363,7 +1363,7 @@ impl DocumentCore {
         use crate::renderer::layout::{compute_char_positions, CellContext, CellPathEntry};
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
-        let tree = self.build_page_tree_cached(page_num)?;
+        let tree = self.build_page_tree_shared(page_num)?;
 
         // 문자 위치를 미리 계산한 TextRun 정보
         struct RunInfo {
@@ -3291,7 +3291,7 @@ impl DocumentCore {
         }
 
         for &page_num in &pages {
-            let tree = self.build_page_tree_cached(page_num)?;
+            let tree = self.build_page_tree_shared(page_num)?;
             if let Some((pi, x, y, h, cell_bounds)) = find_cursor_by_path(
                 self,
                 &tree.root,
@@ -3310,7 +3310,7 @@ impl DocumentCore {
 
         // fallback: 아무 TextRun이라도 찾기
         for &page_num in &pages {
-            let tree = self.build_page_tree_cached(page_num)?;
+            let tree = self.build_page_tree_shared(page_num)?;
             fn find_any_run(
                 core: &DocumentCore,
                 node: &RenderNode,
@@ -4030,14 +4030,14 @@ impl DocumentCore {
                 continue;
             }
             let tree = if actual_target == (section_idx, apply_to) {
-                self.build_page_tree_cached(page_num)?
+                self.build_page_tree_shared(page_num)?
             } else {
-                self.build_header_footer_edit_preview_tree(
+                std::sync::Arc::new(self.build_header_footer_edit_preview_tree(
                     page_num,
                     section_idx,
                     is_header,
                     apply_to,
-                )?
+                )?)
             };
             // 루트의 자식에서 Header/Footer 노드 찾기
             for child in &tree.root.children {
@@ -4265,9 +4265,14 @@ impl DocumentCore {
             return Ok("{\"hit\":false}".to_string());
         }
         let tree = if actual_target == (section_idx, apply_to) {
-            self.build_page_tree_cached(page_num)?
+            self.build_page_tree_shared(page_num)?
         } else {
-            self.build_header_footer_edit_preview_tree(page_num, section_idx, is_header, apply_to)?
+            std::sync::Arc::new(self.build_header_footer_edit_preview_tree(
+                page_num,
+                section_idx,
+                is_header,
+                apply_to,
+            )?)
         };
         let resolved_section_idx = section_idx;
         let resolved_apply_to = apply_to;
@@ -4569,9 +4574,14 @@ impl DocumentCore {
         }
 
         let tree = if actual_target == (section_idx, apply_to) {
-            self.build_page_tree_cached(page_num)?
+            self.build_page_tree_shared(page_num)?
         } else {
-            self.build_header_footer_edit_preview_tree(page_num, section_idx, is_header, apply_to)?
+            std::sync::Arc::new(self.build_header_footer_edit_preview_tree(
+                page_num,
+                section_idx,
+                is_header,
+                apply_to,
+            )?)
         };
         let Some(hf_node) = tree.root.children.iter().find(|child| {
             if is_header {
@@ -5658,7 +5668,7 @@ impl DocumentCore {
             None
         }
 
-        let tree = self.build_page_tree_cached(page_num)?;
+        let tree = self.build_page_tree_shared(page_num)?;
         let hit = match find_marker(&tree.root, x, y) {
             Some(hit) => hit,
             None => return Ok("{\"hit\":false}".to_string()),

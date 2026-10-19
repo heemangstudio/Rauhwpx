@@ -1021,7 +1021,7 @@ impl HwpDocument {
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
         let tree = self
-            .build_page_tree_cached(page_num)
+            .build_page_tree_shared(page_num)
             .map_err(|e| JsValue::from(e))?;
 
         let scale = normalize_canvas_scale(tree.root.bbox.width, tree.root.bbox.height, scale)
@@ -1043,7 +1043,7 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = getPageRenderTree)]
     pub fn get_page_render_tree(&self, page_num: u32) -> Result<String, JsValue> {
         let tree = self
-            .build_page_tree_cached(page_num)
+            .build_page_tree_shared(page_num)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(tree.root.to_json())
     }

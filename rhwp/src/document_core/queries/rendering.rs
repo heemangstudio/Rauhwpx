@@ -2857,7 +2857,7 @@ impl DocumentCore {
     pub fn get_page_line_layout_native(&self, page_num: u32) -> Result<String, HwpError> {
         use crate::renderer::render_tree::{RenderNode, RenderNodeType, TextRunNode};
 
-        let tree = self.build_page_tree_cached(page_num)?;
+        let tree = self.build_page_tree_shared(page_num)?;
 
         // 줄 안의 TextRun — 안쪽 줄·표·글상자는 그쪽 TextLine 이 따로 수집한다.
         fn collect_runs<'a>(
@@ -3001,7 +3001,7 @@ impl DocumentCore {
     pub fn get_page_control_layout_native(&self, page_num: u32) -> Result<String, HwpError> {
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
-        let tree = self.build_page_tree_cached(page_num)?;
+        let tree = self.build_page_tree_shared(page_num)?;
 
         // 렌더 트리에서 Table, Image 노드를 재귀적으로 수집
         fn collect_controls(
@@ -3642,6 +3642,14 @@ impl DocumentCore {
                 &mut section.paragraphs,
                 &origins,
             );
+        }
+        // 원본 줄 원점이 바뀌었으므로 "투영 불필요" 판정은 다음 paginate에서 다시 한다.
+        if let Some(entry) = self
+            .render_normalization
+            .unprojected_revisions
+            .get_mut(section_index)
+        {
+            *entry = None;
         }
         if let Some(Some(normalized)) = self.render_normalization.sections.get_mut(section_index) {
             crate::renderer::pagination::publish_committed_line_origins(
@@ -5319,6 +5327,8 @@ impl DocumentCore {
             .resize(sec_count, 0);
         let mut previous = std::mem::take(&mut self.render_normalization.sections);
         previous.resize_with(sec_count, || None);
+        let mut unprojected = std::mem::take(&mut self.render_normalization.unprojected_revisions);
+        unprojected.resize(sec_count, None);
         let mut out = Vec::with_capacity(sec_count);
         for idx in 0..sec_count {
             let source_revision = self.render_normalization.section_revisions[idx];
@@ -5329,6 +5339,14 @@ impl DocumentCore {
                 out.push(previous[idx].take());
                 continue;
             }
+            // 투영이 필요 없던 구역도 입력이 그대로면 결과(None)를 재사용한다.
+            // dirty 구역은 revision과 무관하게 항상 다시 판정한다.
+            let section_dirty = self.dirty_sections.get(idx).copied().unwrap_or(true);
+            if !section_dirty && unprojected[idx] == Some(source_revision) {
+                out.push(None);
+                continue;
+            }
+            unprojected[idx] = None;
             let section = &self.document.sections[idx];
             let pd = &section.section_def.page_def;
             let body_h_hu = pd.height as i32
@@ -5457,6 +5475,7 @@ impl DocumentCore {
                 && !can_project_live_inline_textbox
                 && wrap_reflowed.is_empty()
             {
+                unprojected[idx] = Some(source_revision);
                 out.push(None);
                 continue;
             }
@@ -5553,6 +5572,7 @@ impl DocumentCore {
                 && !native_tabs_projected
                 && wrap_reflowed.is_empty()
             {
+                unprojected[idx] = Some(source_revision);
                 out.push(None);
                 continue;
             }
@@ -5652,6 +5672,7 @@ impl DocumentCore {
             }));
         }
         self.render_normalization.sections = out;
+        self.render_normalization.unprojected_revisions = unprojected;
         let overlay = std::sync::Arc::new(
             crate::renderer::render_normalization::RenderNormalizationOverlay::from_document_reusing(
                 &self.document,
@@ -9026,6 +9047,66 @@ mod tests {
             .with_page_tree_cached(invalid_page, |_| Ok(()))
             .is_err());
         assert!(core.page_tree_cache.borrow().len() <= core.page_count() as usize);
+    }
+
+    /// "투영 불필요" 캐시를 쓰는 증분 타이핑과, 매 편집마다 모든 구역을 다시 판정하는
+    /// 타이핑이 같은 페이지를 그려야 한다.
+    #[test]
+    fn unprojected_normalization_cache_keeps_render_output_identical() {
+        for bytes in [
+            include_bytes!("../../../samples/hwp-multi-001.hwp").as_slice(),
+            include_bytes!("../../../samples/hcar-001.hwp").as_slice(),
+        ] {
+            let mut cached = DocumentCore::from_bytes(bytes).expect("fixture parses");
+            let mut recomputed = DocumentCore::from_bytes(bytes).expect("fixture parses");
+            assert!(cached.document.sections.len() > 1);
+            let (sec_idx, para_idx) = cached
+                .document
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(s, section)| {
+                    section
+                        .paragraphs
+                        .iter()
+                        .position(|p| !p.text.is_empty())
+                        .map(|p| (s, p))
+                })
+                .expect("fixture has a body text paragraph");
+            for step in 0..3 {
+                cached
+                    .insert_text_native(sec_idx, para_idx, step, "가")
+                    .expect("cached insert");
+                recomputed
+                    .render_normalization
+                    .unprojected_revisions
+                    .clear();
+                recomputed
+                    .insert_text_native(sec_idx, para_idx, step, "가")
+                    .expect("recomputed insert");
+            }
+            assert!(
+                cached
+                    .render_normalization
+                    .unprojected_revisions
+                    .iter()
+                    .enumerate()
+                    .any(|(s, entry)| s != sec_idx && entry.is_some()),
+                "untouched sections must keep their cached no-projection result"
+            );
+            assert_eq!(cached.page_count(), recomputed.page_count());
+            for page in 0..cached.page_count() {
+                assert_eq!(
+                    cached.build_page_tree_shared(page).unwrap().root.to_json(),
+                    recomputed
+                        .build_page_tree_shared(page)
+                        .unwrap()
+                        .root
+                        .to_json(),
+                    "page {page} render tree"
+                );
+            }
+        }
     }
 
     #[test]

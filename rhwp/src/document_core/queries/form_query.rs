@@ -19,7 +19,7 @@ impl DocumentCore {
         x: f64,
         y: f64,
     ) -> Result<String, crate::error::HwpError> {
-        let tree = self.build_page_tree_cached(page_num)?;
+        let tree = self.build_page_tree_shared(page_num)?;
 
         if let Some((form, bbox)) = find_form_node_at(&tree.root, x, y) {
             let form_type_str = form_type_to_str(form.form_type);
