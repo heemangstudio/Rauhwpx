@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRouter 연결 튜토리얼 | HamaEditor</title>
 <meta name="description" content="OpenRouter 계정에 크레딧을 충전하고 HamaEditor의 Pi를 OAuth로 연결하는 8단계 튜토리얼입니다.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -32,7 +32,7 @@
 .route > .cell { padding-block: 28px; }
 .route__link { display: flex; align-items: flex-start; gap: 20px; }
 .route__no { flex: none; min-width: 52px; padding-top: 3px; font-family: var(--mono); font-size: 13px; color: var(--accent); }
-.route__name { display: block; font-size: var(--fs-h3); line-height: 1.4; font-weight: 620; letter-spacing: -0.02em; }
+.route__name { display: block; font-size: var(--fs-h3); line-height: 1.4; font-weight: 750; letter-spacing: -0.02em; }
 .route__desc { display: block; margin-top: 2px; font-size: var(--fs-small); color: var(--muted); }
 .route__link::after { content: "↓"; margin-left: auto; color: var(--meta); transition: transform 0.2s var(--ease-out), color 0.15s ease; }
 .route__link:hover::after { transform: translateY(3px); color: var(--text); }
@@ -51,7 +51,7 @@
 .phase .ledger__key, .phase .ledger__body { padding-top: clamp(64px, 7vw, 104px); padding-bottom: clamp(32px, 4vw, 48px); }
 .phase__no {
   display: block;
-  font-size: clamp(44px, 2.4vw + 26px, 64px); line-height: 1; font-weight: 650; letter-spacing: -0.04em;
+  font-size: clamp(56px, 3.4vw + 32px, 96px); line-height: 1; font-weight: 800; letter-spacing: -0.05em;
   color: var(--accent); font-variant-numeric: tabular-nums;
 }
 .phase__where { display: flex; align-items: center; gap: 10px; margin-top: 20px; font-size: var(--fs-small); font-weight: 600; }
@@ -65,11 +65,11 @@
   width: 40px; height: 28px; display: grid; place-items: center;
   border-radius: 999px;
   font-family: var(--mono); font-size: 12.5px; font-weight: 600;
-  color: var(--accent); background: rgba(98, 179, 226, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(98, 179, 226, 0.22);
+  color: var(--accent); background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
 }
 .guide .ledger__body { padding-bottom: 32px; }
-.step-title { font-size: clamp(20px, 0.5vw + 17px, 24px); line-height: 1.4; font-weight: 620; letter-spacing: -0.02em; text-wrap: balance; }
+.step-title { font-size: clamp(20px, 0.5vw + 17px, 24px); line-height: 1.4; font-weight: 750; letter-spacing: -0.02em; text-wrap: balance; }
 .step-title + .text { margin-top: 10px; max-width: 38em; }
 .text b { color: var(--text); font-weight: 600; }
 
@@ -116,13 +116,13 @@
   position: absolute; top: calc(100% + 8px); left: -1.5px;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 8px 4px 5px; border-radius: 5px;
-  background: var(--accent); color: var(--navy);
+  background: var(--accent); color: #fff;
   font-size: 12px; line-height: 1.25; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap;
-  box-shadow: 0 6px 14px -6px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 6px 14px -6px rgba(20, 50, 130, 0.6);
 }
 .hit__tag b {
   min-width: 18px; padding: 1px 4px; border-radius: 3px;
-  background: rgba(12, 37, 54, 0.16);
+  background: rgba(255, 255, 255, 0.2);
   font-family: var(--mono); font-size: 11px; font-weight: 700; text-align: center;
 }
 .hit--end .hit__tag { left: auto; right: -1.5px; }
@@ -189,7 +189,7 @@
       <a href="pricing.html">가격</a>
     </nav>
     <div class="nav__end">
-      <a class="btn btn--primary btn--white btn--sm" href="install.html"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>MacOS 용 다운로드</a>
+      <a class="btn btn--primary btn--white btn--sm" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
       <button class="nav__toggle" type="button" data-menu-toggle aria-controls="menu" aria-expanded="false" aria-label="메뉴 열기"><span></span><span></span></button>
     </div>
   </div>
@@ -201,8 +201,8 @@
       <a href="pricing.html">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="pricing.html">9,900원에 구매하기</a>
-      <a class="btn btn--secondary" href="install.html">Mac용 체험판 내려받기</a>
+      <a class="btn btn--primary" href="pricing.html">연 ₩9,900에 구매하기</a>
+      <a class="btn btn--secondary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
     </div>
   </div>
 </header>
@@ -214,7 +214,7 @@
     <div class="frame frame--top">
       <header class="cell cell--open page-head">
         <a class="back-link" href="index.html#connect">연결로 돌아가기</a>
-        <h1 id="tut-title" class="h1">Pi를 OpenRouter에 연결하세요</h1>
+        <h1 id="tut-title" class="h1" data-reveal="words">Pi를 OpenRouter에 연결하세요</h1>
         <p class="lead">구독권이 없어도 프로그램을 이용할 수 있습니다.</p>
         <div class="btn-row">
           <a class="btn btn--primary" href="#step-1">첫 단계로 이동</a>
@@ -247,7 +247,7 @@
           <span class="phase__where"><img src="assets/icon-openrouter.png" width="640" height="640" alt="">OpenRouter</span>
         </div>
         <div class="ledger__body">
-          <h2 id="openrouter-phase" class="h2">계정을 만들고 크레딧을 충전합니다</h2>
+          <h2 id="openrouter-phase" class="h2" data-reveal="words">계정을 만들고 크레딧을 충전합니다</h2>
           <p class="lead">브라우저에서 OpenRouter 가입부터 결제까지 마친 뒤 HamaEditor로 돌아오세요.</p>
         </div>
       </header>
@@ -332,7 +332,7 @@
     <div class="frame">
       <div class="cell handoff__cell">
         <div>
-          <h2 id="handoff-title" class="h2">충전이 끝났다면 HamaEditor로 돌아오세요</h2>
+          <h2 id="handoff-title" class="h2" data-reveal="words">충전이 끝났다면 HamaEditor로 돌아오세요</h2>
           <p class="lead">이제 앱의 에이전트 연결 설정에서 Pi를 OpenRouter 계정에 연결합니다.</p>
         </div>
         <a class="btn btn--primary" href="#step-7">Pi 연결로 이동</a>
@@ -349,7 +349,7 @@
           <span class="phase__where"><img class="px" src="assets/hama.svg" width="22" height="20" alt="">HamaEditor</span>
         </div>
         <div class="ledger__body">
-          <h2 id="hamaeditor-phase" class="h2">Pi에서 OpenRouter OAuth로 로그인합니다</h2>
+          <h2 id="hamaeditor-phase" class="h2" data-reveal="words">Pi에서 OpenRouter OAuth로 로그인합니다</h2>
           <p class="lead">HamaEditor 설정의 에이전트 연결 목록에서 Pi를 열면 브라우저 로그인 버튼이 나타납니다.</p>
         </div>
       </header>
@@ -381,7 +381,7 @@
         <div class="finish__wrap">
           <div class="perch" data-reveal style="--i:4"><img class="px" src="assets/hama.svg" width="132" height="120" alt=""></div>
           <div class="card card--navy finish__card" data-reveal="rise">
-            <h2 id="finish-title" class="h2">연결이 끝났습니다</h2>
+            <h2 id="finish-title" class="h2" data-reveal="words">연결이 끝났습니다</h2>
             <p class="text">OAuth 승인을 마치고 HamaEditor로 돌아오면 Pi에서 OpenRouter 모델을 사용할 수 있습니다.</p>
             <div class="btn-row">
               <a class="btn btn--primary" href="trial.html">체험 신청하기</a>
@@ -415,7 +415,7 @@
         <h2 id="foot-buy">구매</h2>
         <ul>
           <li><a href="pricing.html">가격</a></li>
-          <li><a href="install.html">내려받기</a></li>
+          <li><a href="download.html">내려받기</a></li>
           <li><a href="trial.html">체험판</a></li>
         </ul>
       </nav>
@@ -430,6 +430,8 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
+      <span>운영자 하태욱</span>
+      <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>

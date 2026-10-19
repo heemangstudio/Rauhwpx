@@ -6,7 +6,7 @@
 <title>라이선스 키 | HamaEditor</title>
 <meta name="description" content="HamaEditor 결제를 마친 뒤 라이선스 키를 받는 페이지예요.">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/success">
@@ -31,25 +31,26 @@
 }
 .spin {
   flex: none; width: 16px; height: 16px; margin-top: 0.3em;
-  border: 2px solid rgba(178, 226, 251, 0.22); border-top-color: var(--accent); border-radius: 50%;
+  border: 2px solid var(--accent-line); border-top-color: var(--accent); border-radius: 50%;
 }
 @media (prefers-reduced-motion: no-preference) { .spin { animation: spin 0.9s linear infinite; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e9c08a; }
-.key:has(.status.is-bad) { box-shadow: inset 0 0 0 1px rgba(233, 192, 138, 0.26), 0 24px 48px -28px rgba(0, 0, 0, 0.6); }
+.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e0901f; }
+.key:has(.status.is-bad) { box-shadow: 0 0 0 1.5px #f0c27a, 0 24px 48px -28px rgba(11, 13, 18, 0.18); }
 
 /* 키 받음 */
 .key__issued { margin-top: 18px; }
 .key__issued .code-box { flex-wrap: wrap; padding: 10px 10px 10px 18px; }
-.key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--mist); user-select: all; }
+.key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--text); user-select: all; }
 .key__issued .code-box .btn { font-family: var(--font); letter-spacing: -0.01em; }
 .key__issued .meta { margin-top: 12px; }
+.key__issued .term { margin-top: 14px; color: var(--text); }
 
 /* 오류와 시간 초과 */
 .key [data-retry-wrap] { margin-top: 20px; }
 .key__help {
   margin-top: 20px; padding: 16px 18px;
-  border-radius: 12px; background: #0a0d12; box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 12px; background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line);
   font-size: var(--fs-small); line-height: 1.7; color: var(--muted);
 }
 .ref { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
@@ -76,10 +77,10 @@
 
 /* 키 넣는 법 */
 .activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 40px; padding-bottom: clamp(36px, 5vw, 64px); }
-.activate > .h2 { font-size: clamp(24px, 0.8vw + 18px, 30px); }
+.activate > .h2 { font-size: clamp(28px, 1.4vw + 20px, 44px); }
 .activate .step .btn { margin-top: 14px; }
 .foot-note { padding-top: 20px; padding-bottom: 20px; }
-.foot-note a { color: var(--soft); text-decoration: underline; text-decoration-color: rgba(178, 226, 251, 0.35); text-underline-offset: 3px; }
+.foot-note a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(31, 94, 255, 0.35); text-underline-offset: 3px; }
 
 @media (max-width: 900px) {
   .activate { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -106,7 +107,7 @@
       <a href="pricing.html">가격</a>
     </nav>
     <div class="nav__end">
-      <a class="btn btn--primary btn--white btn--sm" href="install.html"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>MacOS 용 다운로드</a>
+      <a class="btn btn--primary btn--white btn--sm" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
       <button class="nav__toggle" type="button" data-menu-toggle aria-controls="menu" aria-expanded="false" aria-label="메뉴 열기"><span></span><span></span></button>
     </div>
   </div>
@@ -141,7 +142,7 @@
     <div class="frame frame--top">
       <header class="cell cell--open page-head cell--center">
         <p class="eyebrow">라이선스 키</p>
-        <h1 id="ok-title" class="h1">결제해 주셔서 고마워요</h1>
+        <h1 id="ok-title" class="h1" data-reveal="words">결제해 주셔서 고마워요</h1>
       </header>
 
       <div class="cell cell--open key-cell">
@@ -162,6 +163,7 @@
                 <code data-key></code>
                 <button class="btn btn--primary btn--sm" type="button" data-copy>키 복사</button>
               </div>
+              <p class="term" data-term hidden></p>
               <p class="meta">이 키는 다시 보여 드리기 어려울 수 있어요. 복사해서 안전한 곳에 보관해 주세요.</p>
             </div>
 
@@ -186,19 +188,19 @@
         <li class="step">
           <h3 class="h3">HamaEditor를 열어요</h3>
           <p class="text">아직 없다면 먼저 내려받아요.</p>
-          <a class="btn btn--secondary btn--sm" href="install.html">Mac용 내려받기 (.dmg, Apple Silicon)</a>
+          <a class="btn btn--secondary btn--sm" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
         </li>
         <li class="step">
           <h3 class="h3">키를 붙여 넣어요</h3>
           <p class="text">체험 중이면 설정 → 라이선스에서, 체험이 끝났다면 바로 뜨는 활성화 화면에서 넣어요.</p>
         </li>
         <li class="step">
-          <h3 class="h3">Mac 두 대까지 쓸 수 있어요</h3>
-          <p class="text">다른 Mac으로 옮기려면 설정 → 라이선스 → ‘이 기기 비활성화’를 눌러요.</p>
+          <h3 class="h3">기기 두 대까지 쓸 수 있어요</h3>
+          <p class="text">다른 기기로 옮기려면 설정 → 라이선스 → ‘이 기기 비활성화’를 눌러요.</p>
         </li>
       </ol>
     </section>
-    <p class="cell meta foot-note">macOS 전용이에요. Windows 버전은 아직 없어요. 환불과 청약철회는 <a href="tos.html#a9">이용약관 제9조</a>를 따라요.</p>
+    <p class="cell meta foot-note">macOS(Apple Silicon)와 Windows(x64)에서 쓸 수 있어요. 환불과 청약철회는 <a href="tos.html#a9">이용약관 제9조</a>를 따라요.</p>
     <div class="rule"></div>
   </div>
 </main>
@@ -222,7 +224,7 @@
         <h2 id="foot-buy">구매</h2>
         <ul>
           <li><a href="pricing.html">가격</a></li>
-          <li><a href="install.html">내려받기</a></li>
+          <li><a href="download.html">내려받기</a></li>
           <li><a href="trial.html">체험판</a></li>
         </ul>
       </nav>
@@ -237,6 +239,8 @@
     <div class="footer__base">
       <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
+      <span>운영자 하태욱</span>
+      <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
     </div>
     <p class="footer__mark" aria-hidden="true">HamaEditor</p>
   </div>
@@ -249,6 +253,7 @@
   var status=document.querySelector('[data-status]');
   var issued=document.querySelector('[data-issued]');
   var keyEl=document.querySelector('[data-key]');
+  var term=document.querySelector('[data-term]');
   var copy=document.querySelector('[data-copy]');
   var retryWrap=document.querySelector('[data-retry-wrap]');
   var retry=document.querySelector('[data-retry]');
@@ -281,6 +286,8 @@
           say(u.attempts>3?'결제 확인을 기다리는 중이에요. 보통 1분 안에 끝나요…':'결제를 확인하고 있어요…',false,true);
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
+          // 연간 구독 키는 갱신일을 보여요. 기간 없는 키는 이 줄을 숨겨요.
+          term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
         }else if(u.state==='timeout'){
           say('아직 결제 확인이 오지 않았어요. 잠시 뒤 다시 확인해 주세요.',true,false);
