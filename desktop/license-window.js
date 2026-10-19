@@ -51,7 +51,7 @@
     switch (status.state) {
       case 'licensed':
         if (status.license?.paymentFailed && status.license.paymentGraceEndsAt) {
-          return [`갱신 결제가 되지 않았어요. ${date(status.license.paymentGraceEndsAt)}까지는 그대로 쓸 수 있고, Groble에서 결제 수단을 바꾸면 같은 키로 이어서 써요.`, true];
+          return [`갱신 결제가 되지 않았어요. ${date(status.license.paymentGraceEndsAt)}까지 결제 수단을 바꿔주세요.`, true];
         }
         if (status.license?.graceEndsAt && status.license.licenseExpiresAt) {
           return [`${date(status.license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${date(status.license.graceEndsAt)}까지 쓸 수 있어요.`, true];

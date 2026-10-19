@@ -111,7 +111,7 @@ test('a failed renewal and a lapsed key get the "키 만료, 연장할까요?" p
   const failed = status({ state: 'licensed', license: { ...license, paymentFailed: true, paymentGraceEndsAt: endedAt + 10 * DAY, paymentFixUrl: 'https://groble.im/manage/purchase' } });
   const prompt = renewalPrompt(failed);
   assert.equal(prompt?.kind, 'payment_failed');
-  assert.match(prompt?.detail ?? '', /2027년 10월 30일까지는 그대로 쓸 수 있고/);
+  assert.match(prompt?.detail ?? '', /2027년 10월 30일까지 결제 수단을 바꿔주세요/);
   assert.equal(prompt?.action, '결제 수단 바꾸기');
   const summary = licenseSummary(failed, NOW);
   assert.deepEqual([summary.title, summary.readOnly], ['키 만료, 연장할까요?', false], 'non-blocking: still editable');
