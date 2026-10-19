@@ -4,7 +4,11 @@ import type { PageInfo } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
 import { CanvasPool, removeAndReleaseCanvases } from './canvas-pool';
 import { MutationRefreshQueue, type MutationRefreshBatch } from './mutation-refresh-queue';
-import { PageRenderer, type PageRenderContext, type PageRenderResult } from './page-renderer';
+import {
+  PageRenderer,
+  type PageRenderContext,
+  type PageRenderResult,
+} from './page-renderer';
 import { MAX_ZOOM, MIN_ZOOM, ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitRenderDiagnostics } from './canvaskit-renderer';
@@ -35,10 +39,11 @@ import {
   type HeaderFooterModeState,
 } from '@/engine/header-footer-mode.ts';
 import {
-  drawHeaderFooterGuideCorners,
+  createHeaderFooterGuideCanvas,
   headerFooterClipPath,
   resolveHeaderFooterBadgeMetrics,
   resolveHeaderFooterBandBox,
+  type HeaderFooterBandBox,
 } from './header-footer-edit-overlay.ts';
 
 const TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS = 800;
@@ -150,7 +155,9 @@ export class CanvasView {
       eventBus.on('headerFooterModeChanged', (payload) => {
         this.handleHeaderFooterModeChanged(payload);
       }),
+      eventBus.on('document-mutated', () => this.pageRenderer.noteDocumentContentChanged()),
       eventBus.on('document-page-invalidated', (payload) => {
+        this.pageRenderer.noteDocumentContentChanged();
         this.lastMutationTime = performance.now();
         const pageIndex = this.pageIndexFromPayload(payload);
         if (pageIndex === null) {
@@ -161,8 +168,12 @@ export class CanvasView {
           && 'reason' in payload && payload.reason === 'text-edit';
         this.mutationRefreshQueue.invalidatePage(pageIndex, textOnly);
       }),
-      eventBus.on('document-changed', () => this.scheduleMutationRefresh()),
+      eventBus.on('document-changed', () => {
+        this.pageRenderer.noteDocumentContentChanged();
+        this.scheduleMutationRefresh();
+      }),
       eventBus.on('document-view-changed', (source) => {
+        this.pageRenderer.noteDocumentContentChanged();
         if (source === 'subsecond-renderer') {
           this.refreshPages();
           return;
@@ -564,7 +575,7 @@ export class CanvasView {
     this.renderHeaderFooterEditOverlays();
   }
 
-  private renderHeaderFooterEditOverlays(force = false): void {
+  private renderHeaderFooterEditOverlays(repaintPreview = false): void {
     const state = this.headerFooterEditState;
     if (!state || this.pages.length === 0) {
       this.removeHeaderFooterEditOverlays();
@@ -587,19 +598,40 @@ export class CanvasView {
       desiredPages.add(pageIdx);
 
       const zoom = this.viewportManager.getZoom();
-      // 문서 세대를 넣어 전체 갱신마다 대표 preview 를 한 번 다시 그린다 (스크롤은 재사용).
+      const band = resolveHeaderFooterBandBox(page, state.mode === 'header');
+      const rawDpr = window.devicePixelRatio || 1;
+      const renderScale = clampRenderScale(page, zoom * rawDpr);
+      const dpr = renderScale / (zoom > 0 ? zoom : 1);
+      // 층 구성(밴드·배율)이 같으면 층을 그대로 둔다. 문서가 바뀌었으면(전체 갱신·편집)
+      // 대표 preview 만 다시 그린다 — 안내 꺾쇠·영역·라벨은 이 key 로 정해진다.
       const overlayKey = [
         state.mode,
         state.sectionIdx,
         state.applyTo,
         isPreview ? 'representative' : 'related',
         zoom,
-        this.documentRenderGeneration,
+        renderScale,
+        page.width,
+        page.height,
+        band.x,
+        band.y,
+        band.width,
+        band.height,
       ].join(':');
+      const renderGeneration = String(this.documentRenderGeneration);
       const selector = `[data-rhwp-hf-edit-page="${pageIdx}"]`;
       const existing = this.scrollContent.querySelector<HTMLElement>(selector);
-      if (!force && existing?.dataset.hfOverlayKey === overlayKey) {
+      if (existing?.dataset.hfOverlayKey === overlayKey) {
         this.applyPageBox(existing, pageIdx);
+        if (isPreview && (repaintPreview || existing.dataset.hfRenderGeneration !== renderGeneration)) {
+          // 화면에 붙은 canvas 에 다시 그리면 main thread 가 더 오래 걸린다. 새 canvas 에 그려
+          // 바꾸고 이전 것의 backing store 는 바로 돌려준다. 실패하면 preview 없이 둔다.
+          const previous = existing.querySelector<HTMLCanvasElement>('canvas.hf-edit-preview-canvas');
+          const next = this.createHeaderFooterPreview(pageIdx, state, renderScale, dpr, page, band, zoom);
+          if (next) existing.prepend(next);
+          if (previous) removeAndReleaseCanvases(previous);
+        }
+        existing.dataset.hfRenderGeneration = renderGeneration;
         continue;
       }
       if (existing) removeAndReleaseCanvases(existing);
@@ -610,44 +642,18 @@ export class CanvasView {
       layer.dataset.hfApplyTo = String(state.applyTo);
       layer.dataset.hfMode = state.mode;
       layer.dataset.hfOverlayKey = overlayKey;
+      layer.dataset.hfRenderGeneration = renderGeneration;
       layer.setAttribute('aria-hidden', 'true');
       layer.style.width = `${page.width * zoom}px`;
       layer.style.height = `${page.height * zoom}px`;
       this.applyPageBox(layer, pageIdx);
 
-      const band = resolveHeaderFooterBandBox(page, state.mode === 'header');
-      const rawDpr = window.devicePixelRatio || 1;
-      const renderScale = clampRenderScale(page, zoom * rawDpr);
-      const dpr = renderScale / (zoom > 0 ? zoom : 1);
       if (isPreview) {
-        const previewCanvas = document.createElement('canvas');
-        previewCanvas.className = 'hf-edit-preview-canvas';
-        try {
-          this.wasm.renderHeaderFooterEditPreviewToCanvas(
-            pageIdx,
-            state.sectionIdx,
-            state.mode === 'header',
-            state.applyTo,
-            previewCanvas,
-            renderScale,
-          );
-          previewCanvas.style.width = `${previewCanvas.width / dpr}px`;
-          previewCanvas.style.height = `${previewCanvas.height / dpr}px`;
-          previewCanvas.style.clipPath = headerFooterClipPath(page, band, zoom);
-          layer.appendChild(previewCanvas);
-        } catch (error) {
-          console.error('[CanvasView] HF 대표 편집 preview 렌더링 실패:', error);
-        }
+        const previewCanvas = this.createHeaderFooterPreview(pageIdx, state, renderScale, dpr, page, band, zoom);
+        if (previewCanvas) layer.appendChild(previewCanvas);
       }
 
-      const guideCanvas = document.createElement('canvas');
-      guideCanvas.className = 'hf-edit-guide-canvas';
-      guideCanvas.width = Math.max(1, Math.round(page.width * renderScale));
-      guideCanvas.height = Math.max(1, Math.round(page.height * renderScale));
-      guideCanvas.style.width = `${guideCanvas.width / dpr}px`;
-      guideCanvas.style.height = `${guideCanvas.height / dpr}px`;
-      drawHeaderFooterGuideCorners(band, guideCanvas, renderScale, zoom);
-      layer.appendChild(guideCanvas);
+      layer.appendChild(createHeaderFooterGuideCanvas(page, band, renderScale, dpr, zoom));
 
       const region = document.createElement('div');
       region.className = `hf-edit-region ${isPreview ? 'is-representative' : 'is-related'}`;
@@ -677,6 +683,38 @@ export class CanvasView {
         const pageIdx = Number(element.dataset.rhwpHfEditPage);
         if (!desiredPages.has(pageIdx)) removeAndReleaseCanvases(element);
       });
+  }
+
+  private createHeaderFooterPreview(
+    pageIdx: number,
+    state: HeaderFooterModeState,
+    renderScale: number,
+    dpr: number,
+    page: PageInfo,
+    band: HeaderFooterBandBox,
+    zoom: number,
+  ): HTMLCanvasElement | null {
+    const previewCanvas = document.createElement('canvas');
+    previewCanvas.className = 'hf-edit-preview-canvas';
+    try {
+      this.wasm.renderHeaderFooterEditPreviewToCanvas(
+        pageIdx,
+        state.sectionIdx,
+        state.mode === 'header',
+        state.applyTo,
+        previewCanvas,
+        renderScale,
+      );
+    } catch (error) {
+      console.error('[CanvasView] HF 대표 편집 preview 렌더링 실패:', error);
+      previewCanvas.width = 0;
+      previewCanvas.height = 0;
+      return null;
+    }
+    previewCanvas.style.width = `${previewCanvas.width / dpr}px`;
+    previewCanvas.style.height = `${previewCanvas.height / dpr}px`;
+    previewCanvas.style.clipPath = headerFooterClipPath(page, band, zoom);
+    return previewCanvas;
   }
 
   private removeHeaderFooterEditOverlays(): void {
@@ -940,8 +978,9 @@ export class CanvasView {
         if (!this.canvasPool.has(pageIdx)) continue;
         this.refreshInvalidatedPageNow(pageIdx, { reason: 'unknown', allowStaticOverlayReuse: false });
       }
-      // 머리말/꼬리말 편집 미리보기 캔버스도 같은 순간에 비워진다.
-      this.renderHeaderFooterEditOverlays(true);
+      // 머리말/꼬리말 편집 미리보기·안내 캔버스도 같은 순간에 비워진다. 층을 새로 짠다.
+      this.removeHeaderFooterEditOverlays();
+      this.renderHeaderFooterEditOverlays();
     };
     const onRestored = (event: Event): void => {
       const canvas = event.target;
@@ -1223,6 +1262,7 @@ export class CanvasView {
     if (!pages) return;
     this.pages = pages;
     this.documentRenderGeneration += 1;
+    this.pageRenderer.noteDocumentContentChanged();
 
     // 용지 폭이 바뀌어 좌우 여백(pan 공간)이 생기거나 사라지면 전체 폭과 쪽 left 가 함께
     // 움직인다. 가운데 보던 화면은 새 폭에서도 가운데로 옮긴다 — 그대로 두면 뷰포트보다
@@ -1349,6 +1389,8 @@ export class CanvasView {
     this.cancelPendingPrefetch();
     this.pageRenderer.cancelAll();
     this.releaseAllRenderedPages();
+    // 다른 문서의 쪽 요약을 같은 쪽 번호에 쓰지 않는다.
+    this.pageRenderer.invalidateDocumentRevision();
     this.currentVisiblePages = [];
     this.editingPageIndex = null;
     this.activePageSnapshot = null;

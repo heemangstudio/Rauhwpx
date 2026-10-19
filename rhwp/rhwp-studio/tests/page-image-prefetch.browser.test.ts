@@ -347,3 +347,94 @@ test('after an engine trap, deferred image repaints keep the last painted layers
   assert.equal(result.uncaught, 0);
   assert.equal(result.stillRed, true);
 });
+
+test('page re-renders release old layer canvases and reuse pictures and plane summaries until the document changes', { timeout: 30_000 }, async () => {
+  const result = await withStudioPage((page) => page.evaluate(async () => {
+    const rendererModule = '/src/view/page-renderer.ts';
+    const { PageRenderer } = await import(rendererModule);
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0WQAAAAASUVORK5CYII=';
+    const gif = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const pageInfo = {
+      width: 100, height: 100, marginLeft: 10, marginRight: 10, marginTop: 10, marginBottom: 10,
+      marginHeader: 5, marginFooter: 5,
+    };
+    const calls = { overlay: 0, tree: 0 };
+    const doc = { planes: 'behind-front', picture: png };
+    const renderer = new PageRenderer({
+      documentGeneration: 1,
+      getPageInfo: () => pageInfo,
+      getPageOverlayImages: () => {
+        calls.overlay += 1;
+        const split = doc.planes === 'flow-image';
+        return JSON.stringify({
+          hasBehind: !split, hasFront: !split, behind: [], front: [], imageCount: split ? 1 : 0, rawSvgCount: 0,
+          flowImageCount: split ? 1 : 0, flowRawSvgCount: 0, flowStaticSplitSafe: true,
+        });
+      },
+      getPageLayerTree: () => {
+        calls.tree += 1;
+        return JSON.stringify({ root: { kind: 'leaf', ops: [
+          { type: 'image', bbox: { x: 10, y: 10, width: 50, height: 50 }, mime: 'image/png', base64: doc.picture },
+        ] } });
+      },
+      renderPageToCanvasFiltered(_page: number, canvas: HTMLCanvasElement, scale: number) {
+        canvas.width = 100 * scale;
+        canvas.height = 100 * scale;
+      },
+    });
+    const parent = document.createElement('div');
+    document.body.append(parent);
+    const canvas = document.createElement('canvas');
+    parent.append(canvas);
+    const render = (scale: number, reason: 'unknown' | 'text-edit' = 'unknown') =>
+      renderer.renderPage(0, canvas, scale, scale, 1, { reason, allowStaticOverlayReuse: reason === 'text-edit' }, pageInfo);
+    const layerCanvases = () => [...parent.querySelectorAll<HTMLCanvasElement>('canvas[data-rhwp-layer-kind]')];
+
+    // 앞/뒤 층: 배율이 바뀐 전체 렌더는 요약을 다시 읽지 않고, 바꾼 층의 비트맵은 바로 돌려준다.
+    render(1);
+    const firstLayers = layerCanvases();
+    render(2);
+    const zoomed = {
+      widths: layerCanvases().map((layer) => layer.width),
+      overlayReads: calls.overlay,
+      replaced: firstLayers.map((layer) => [layer.isConnected, layer.width, layer.height]),
+    };
+    renderer.noteDocumentContentChanged();
+    render(2);
+    const afterChange = calls.overlay;
+    const lastLayers = layerCanvases();
+    renderer.removePageLayers(parent, 0);
+    const released = lastLayers.map((layer) => [layer.isConnected, layer.width, layer.height]);
+
+    // 본문 그림 층: 그림 데이터가 같으면 `<img>` 를 옮겨 쓰고, 바뀌면 새로 만든다.
+    doc.planes = 'flow-image';
+    renderer.noteDocumentContentChanged();
+    render(1);
+    const firstImage = parent.querySelector('img');
+    renderer.noteDocumentContentChanged();
+    render(1);
+    const keptImage = parent.querySelector('img') === firstImage;
+    const treeReadsBeforeTyping = calls.tree;
+    render(1, 'text-edit');
+    const typingTreeReads = calls.tree - treeReadsBeforeTyping;
+    doc.picture = gif;
+    renderer.noteDocumentContentChanged();
+    render(1);
+    const replacedImage = parent.querySelector('img') !== firstImage && parent.querySelectorAll('img').length === 1;
+
+    renderer.dispose();
+    parent.remove();
+    return { zoomed, afterChange, released, keptImage, typingTreeReads, replacedImage };
+  }));
+  assert.deepEqual(result.zoomed, {
+    widths: [200, 200, 200],
+    overlayReads: 1,
+    replaced: [[false, 0, 0], [false, 0, 0], [false, 0, 0]],
+  });
+  assert.equal(result.afterChange, 2);
+  assert.deepEqual(result.released, [[false, 0, 0], [false, 0, 0], [false, 0, 0]]);
+  assert.equal(result.keptImage, true);
+  // 같은 key 의 그림 층을 그대로 쓰는 글자 편집은 base64 트리를 읽지 않는다.
+  assert.equal(result.typingTreeReads, 0);
+  assert.equal(result.replacedImage, true);
+});

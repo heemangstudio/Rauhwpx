@@ -52,6 +52,8 @@ interface ReRenderPolicy {
 
 interface LayerSummaryCacheEntry {
   key: string;
+  /** 요약을 엔진에서 읽었을 때의 문서 내용 세대. */
+  contentEpoch: number;
   summary: LayerPlaneSummary;
 }
 
@@ -102,6 +104,8 @@ export class PageRenderer {
   private reRenderJobs = new Map<number, ReRenderJob>();
   private imageRetryStates = new Map<number, ImageRetryState>();
   private layerSummaryCache = new Map<number, LayerSummaryCacheEntry>();
+  /** 문서 내용이 바뀔 때마다 오른다. 쪽 요약은 이 세대 안에서만 배율·스크롤과 무관하게 재사용한다. */
+  private contentEpoch = 0;
   private canvaskitDiagnosticsByPage = new Map<number, CanvasKitRenderDiagnostics>();
   private pageInfoByPage = new Map<number, PageInfo>();
   private flowSplitSupported: boolean | null = null;
@@ -135,6 +139,14 @@ export class PageRenderer {
     return true;
   }
 
+  /**
+   * 문서 내용이 바뀌었다. 쪽마다 남긴 앞/뒤 층 요약은 이후 다시 읽는다. 변경 이벤트에서 바로
+   * 불러, 비동기 갱신(invalidateDocumentRevision)이 오기 전에 스크롤로 들어온 쪽도 새로 읽는다.
+   */
+  noteDocumentContentChanged(): void {
+    this.contentEpoch += 1;
+  }
+
   invalidateDocumentRevision(): void {
     this.cancelAll();
     this.releaseAllPageDiagnostics();
@@ -164,7 +176,7 @@ export class PageRenderer {
       return { needsTextEditStaticLayerVerification: false, renderedCanvas };
     }
 
-    const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
+    const layers = this.getLayerPlaneSummary(pageIdx, context);
     const preferStaticFlow = this.shouldSplitStaticFlow(layers);
     let reuseStaticFlow = this.renderFlowCanvas(pageIdx, canvas, renderScale, preferStaticFlow);
     // 이번 렌더가 읽은 트리. 첫 렌더의 그림 prefetch 가 같은 트리를 다시 읽고 parse 하지 않게 넘긴다.
@@ -216,7 +228,6 @@ export class PageRenderer {
         NO_FLOW_IMAGE_LAYER,
       );
     }
-    this.rememberLayerPlaneSummary(pageIdx, canvas, renderScale, layers);
     const summary = overlays.layers;
     // rawSvg(차트/OLE)도 web_canvas draw_image 비동기 디코드 경로를 타므로
     // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456). DOM `<img>` 가 맡은 본문
@@ -358,7 +369,7 @@ export class PageRenderer {
     if (!allowReuse) {
       // 페이지 단위 overlay 컨테이너를 Canvas 의 sibling 으로 관리.
       // data-rhwp-overlay-page 속성으로 식별, 페이지 재렌더링 시 갱신.
-      this.removePageLayers(parent, pageIdx);
+      this.removePageLayers(parent, pageIdx, { keepFlowImages: true });
     }
 
     const safeDpr = dpr > 0 && Number.isFinite(dpr) ? dpr : 1;
@@ -491,7 +502,16 @@ export class PageRenderer {
     const existing = this.findFlowImageLayer(sourceCanvas.parentElement, pageIdx);
     if (allowReuse && existing?.dataset.rhwpStaticOverlayKey === key) return existing;
 
-    existing?.remove();
+    // 층은 새로 짜되, 같은 그림 데이터를 가진 기존 `<img>` 는 옮겨 쓴다. 새 data URL 로 만들면
+    // 그림마다 다시 디코드하고, 이전 비트맵이 GC 까지 함께 남는다.
+    const reusableImages = new Map<string, HTMLImageElement[]>();
+    if (existing) {
+      for (const element of existing.querySelectorAll('img')) {
+        const src = element.getAttribute('src');
+        if (src) reusableImages.set(src, [...(reusableImages.get(src) ?? []), element]);
+      }
+      existing.remove();
+    }
     // reuse 로 왔는데 맞는 층이 없으면 그릴 그림 op 가 없다. 호출자가 엔진 flow-static canvas 로 그린다.
     if (input.kind !== 'build') return null;
     const images = input.images;
@@ -540,16 +560,14 @@ export class PageRenderer {
       frame.style.transform = `rotate(${image.rotation}deg) scale(${scaleX}, ${scaleY})`;
       frame.style.transformOrigin = 'center';
 
-      const element = new Image();
-      element.alt = '';
-      element.src = `data:${image.mime};base64,${image.base64}`;
-      element.style.position = 'absolute';
-      element.style.pointerEvents = 'none';
+      const src = `data:${image.mime};base64,${image.base64}`;
+      const element = reusableImages.get(src)?.shift() ?? createFlowImageElement(src);
       // 그림 효과(회색조/흑백/밝기/명암) — WASM canvas 경로(render_image)와 달리
       // DOM flow-image 경로는 필터가 누락돼 원본 컬러로 렌더되던 문제를 고친다.
-      if (image.filter) element.style.filter = image.filter;
+      element.style.filter = image.filter ?? '';
       const applyCrop = () => applyFlowImageCrop(element, image, displayScale);
-      element.addEventListener('load', applyCrop, { once: true });
+      // 아직 로드 중인 `<img>` 를 옮겨 쓰면 load 때 이번 배치의 자르기를 적용한다.
+      flowImageCropAppliers.set(element, applyCrop);
       applyCrop();
       frame.appendChild(element);
       clipHost.appendChild(frame);
@@ -638,14 +656,21 @@ export class PageRenderer {
     layer.style.pointerEvents = 'none';
   }
 
-  removePageLayers(parent: HTMLElement, pageIdx: number): void {
-    this.layerSummaryCache.delete(pageIdx);
-    parent.querySelectorAll(
+  removePageLayers(
+    parent: HTMLElement,
+    pageIdx: number,
+    options: { keepFlowImages?: boolean } = {},
+  ): void {
+    parent.querySelectorAll<HTMLElement>(
       `[data-rhwp-overlay-page="${pageIdx}"],` +
       `[data-rhwp-overlay="background-${pageIdx}"],` +
       `[data-rhwp-overlay="behind-${pageIdx}"],` +
       `[data-rhwp-overlay="front-${pageIdx}"]`,
-    ).forEach(removeAndReleaseCanvases);
+    ).forEach((element) => {
+      // 다시 그리는 쪽의 본문 그림 층은 createOrReuseFlowImageLayer 가 `<img>` 를 옮겨 쓴 뒤 정리한다.
+      if (options.keepFlowImages && element.dataset.rhwpFlowImagePage !== undefined) return;
+      removeAndReleaseCanvases(element);
+    });
   }
 
   private findOverlayLayer(
@@ -688,7 +713,8 @@ export class PageRenderer {
   }
 
   private removeFlowImageLayer(parent: HTMLElement, pageIdx: number): void {
-    this.findFlowImageLayer(parent, pageIdx)?.remove();
+    const layer = this.findFlowImageLayer(parent, pageIdx);
+    if (layer) removeAndReleaseCanvases(layer);
   }
 
   private buildStaticOverlayKey(
@@ -711,8 +737,7 @@ export class PageRenderer {
   }
 
   removeAllPageLayers(parent: HTMLElement): void {
-    this.layerSummaryCache.clear();
-    parent.querySelectorAll(
+    parent.querySelectorAll<HTMLElement>(
       '[data-rhwp-overlay-page],' +
       '[data-rhwp-overlay^="background-"],' +
       '[data-rhwp-overlay^="behind-"],' +
@@ -798,53 +823,29 @@ export class PageRenderer {
     }
   }
 
-  private getLayerPlaneSummary(
-    pageIdx: number,
-    canvas: HTMLCanvasElement,
-    renderScale: number,
-    context: PageRenderContext,
-  ): LayerPlaneSummary {
-    const cacheKey = this.buildLayerSummaryCacheKey(pageIdx, canvas, renderScale);
-    if (context.reason === 'text-edit' && context.allowStaticOverlayReuse === true) {
-      const cached = this.layerSummaryCache.get(pageIdx);
-      if (cached?.key === cacheKey) return { ...cached.summary };
+  /**
+   * 쪽의 앞/뒤 층 요약. 요약은 배율과 무관하므로 문서 내용이 그대로면 배율 변경·스크롤 복귀·
+   * 선렌더에서 다시 읽지 않는다 (getPageOverlayImages 는 앞/뒤 그림을 모두 base64 로 만든다).
+   * 쪽을 해제해도 남기고, 내용이 바뀌면(noteDocumentContentChanged, 스냅샷 복원의
+   * documentGeneration) 다시 읽는다. 글자 편집 렌더는 내용이 바뀌어도 남긴 요약을 쓴다 —
+   * 정적 층이 있으면 입력이 멈춘 뒤 검증 렌더가 다시 읽는다.
+   */
+  private getLayerPlaneSummary(pageIdx: number, context: PageRenderContext): LayerPlaneSummary {
+    const cacheKey = `profile=${this.renderProfile}|backend=${this.backend}|doc=${this.wasm.documentGeneration}`;
+    const cached = this.layerSummaryCache.get(pageIdx);
+    if (cached?.key === cacheKey) {
+      const textEditReuse = context.reason === 'text-edit' && context.allowStaticOverlayReuse === true;
+      if (textEditReuse || cached.contentEpoch === this.contentEpoch) return { ...cached.summary };
     }
 
-    const overlaySummary = this.getLayerPlaneSummaryFromOverlayImages(pageIdx);
-    if (overlaySummary) {
-      this.layerSummaryCache.set(pageIdx, { key: cacheKey, summary: overlaySummary });
-      return overlaySummary;
-    }
-    const treeSummary = this.getLayerPlaneSummaryFromTree(pageIdx);
-    this.layerSummaryCache.set(pageIdx, { key: cacheKey, summary: treeSummary });
-    return treeSummary;
-  }
-
-  private rememberLayerPlaneSummary(
-    pageIdx: number,
-    canvas: HTMLCanvasElement,
-    renderScale: number,
-    summary: LayerPlaneSummary,
-  ): void {
+    const summary = this.getLayerPlaneSummaryFromOverlayImages(pageIdx)
+      ?? this.getLayerPlaneSummaryFromTree(pageIdx);
     this.layerSummaryCache.set(pageIdx, {
-      key: this.buildLayerSummaryCacheKey(pageIdx, canvas, renderScale),
+      key: cacheKey,
+      contentEpoch: this.contentEpoch,
       summary: { ...summary },
     });
-  }
-
-  private buildLayerSummaryCacheKey(
-    pageIdx: number,
-    canvas: HTMLCanvasElement,
-    renderScale: number,
-  ): string {
-    return [
-      `page=${pageIdx}`,
-      `scale=${renderScale}`,
-      `width=${canvas.width}`,
-      `height=${canvas.height}`,
-      `profile=${this.renderProfile}`,
-      `backend=${this.backend}`,
-    ].join('|');
+    return summary;
   }
 
   private getLayerPlaneSummaryFromOverlayImages(pageIdx: number): LayerPlaneSummary | null {
@@ -1197,7 +1198,6 @@ export class PageRenderer {
 
   resetImageRetryState(): void {
     this.imageRetryStates.clear();
-    this.layerSummaryCache.clear();
     this.canvaskitDiagnosticsByPage.clear();
     this.pageInfoByPage.clear();
   }
@@ -1276,6 +1276,19 @@ function collectLayerPlaneSummary(
 // masterPage provenance cap 을 포함한 단일 진실 원천.
 function layerReplayPlane(op: any, layer: any): 'background' | 'behindText' | 'flow' | 'inFrontOfText' {
   return layerPaintOpReplayPlane(op, layer);
+}
+
+/** 본문 그림 `<img>` 의 load 때 적용할 최신 자르기. 층을 다시 짜도 element 를 옮겨 쓴다. */
+const flowImageCropAppliers = new WeakMap<HTMLImageElement, () => void>();
+
+function createFlowImageElement(src: string): HTMLImageElement {
+  const element = new Image();
+  element.alt = '';
+  element.style.position = 'absolute';
+  element.style.pointerEvents = 'none';
+  element.addEventListener('load', () => flowImageCropAppliers.get(element)?.(), { once: true });
+  element.src = src;
+  return element;
 }
 
 function applyFlowImageCrop(

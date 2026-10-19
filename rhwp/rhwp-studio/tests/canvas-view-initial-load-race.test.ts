@@ -84,7 +84,7 @@ function fixture() {
     pageRenderer: {
       backend: 'canvas2d',
       configure(backend: string) { const changed = this.backend !== backend; this.backend = backend; return changed; },
-      invalidateDocumentRevision() {}, cancelAll() {}, dispose() {},
+      invalidateDocumentRevision() {}, noteDocumentContentChanged() {}, cancelAll() {}, dispose() {},
     },
     cancelAutoRendererReselection() {}, cancelScheduledMutationRefresh() {},
     cancelTextEditStaticLayerVerification() {}, cancelPendingPrefetch() {},

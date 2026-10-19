@@ -32,7 +32,7 @@ test('page renderer decodes DOM flow images only after every image passes the si
     '  private createOrReuseFlowImageLayer',
     '  private createOrReuseFilteredCanvasLayer',
   );
-  assertBefore(flowImages, 'images.every(isDomDisplayableFlowImage)', 'new Image()');
+  assertBefore(flowImages, 'images.every(isDomDisplayableFlowImage)', 'createFlowImageElement(');
 });
 
 test('dialog uploads read through their size limit', () => {
