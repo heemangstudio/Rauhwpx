@@ -713,6 +713,15 @@ export class DocumentVersionController implements VersionManagerController {
     await this.#enqueue(() => this.#persistWorktree());
   }
 
+  /**
+   * 미뤄 둔 작업 공간 기록이 있으면 바로 적고, 진행 중인 작업까지 기다린다. 창을 닫을 때 쓴다 — pagehide 의
+   * 기록은 창이 사라지기 전에 끝난다는 보장이 없다.
+   */
+  async flushScheduledPersist(): Promise<void> {
+    if (this.#hasScheduledPersist()) await this.persistWorktree();
+    await this.whenIdle();
+  }
+
   #hasScheduledPersist(): boolean {
     return this.#persistTimer !== null || this.#persistIdle !== null;
   }
@@ -759,11 +768,15 @@ export class DocumentVersionController implements VersionManagerController {
 
   /**
    * 편집 뒤 작업 공간 기록을 미룬다. 버전 창이 보이거나 관리되는 워크트리면 0.5초, 아니면 쉴 때(최대
-   * WORKTREE_PERSIST_MAX_WAIT_MS) 적는다. 문서 닫기·전환·창 닫기·업데이트 재시작은 persistWorktree 로 바로 적는다.
+   * WORKTREE_PERSIST_MAX_WAIT_MS) 적는다. 문서 닫기·전환·업데이트 재시작은 persistWorktree, 창 닫기는
+   * flushScheduledPersist 로 바로 적는다.
    */
   #scheduleWorktreePersistence(): void {
     if (!this.#worktree || this.#worktreeHost?.canMutate() === false) return;
     const eager = this.#pageViews > 0 || !this.#worktree.primary;
+    // 최대 대기를 넘겨 쉴 때 기록이 이미 줄을 섰으면 그대로 둔다. 끊임없는 입력이 기록을 계속 미루지 않게 한다.
+    if (!eager && this.#persistIdle !== null && this.#persistDeadline !== null
+      && Date.now() >= this.#persistDeadline) return;
     let delay = WORKTREE_PERSIST_EAGER_MS;
     if (!eager) {
       const now = Date.now();
