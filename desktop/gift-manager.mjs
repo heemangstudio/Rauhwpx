@@ -1,13 +1,14 @@
 // 선물 크레딧 상태. 메인 프로세스가 하나 만들어 Studio(IPC)와 허브(자식 IPC)에 준다.
 //
 // 규칙
-// - macOS 에서만 쓴다. 다른 OS 에서는 서버에 묻지 않고 늘 available:false 다.
+// - macOS·Windows 에서만 쓴다(GIFT_PLATFORMS). 다른 OS 에서는 서버에 묻지 않고 늘 available:false 다.
 // - 지금 유효한 라이선스 lease 가 있어야 묻는다. 없으면(체험만 쓰는 중, 해지, 만료) available:false.
 // - 서버 답은 cacheMs 동안 재사용한다. 네트워크·서버 오류면 같은 라이선스의 마지막 답을 지키고 error 만 남긴다.
 // - 서버가 lease 를 거절하면(unauthorized) 답을 버린다.
 // - 허브에 주는 자격 증명의 lease 는 선물을 쓸 수 있을 때(active)만 넣는다.
 import { decodeLeaseUnverified } from './license-lease.mjs';
 import { GiftServerError } from './gift-client.mjs';
+import { isGiftPlatform } from '../rhwp/rhwp-agent/gift-platforms.mjs';
 
 export const GIFT_CACHE_MS = 60_000;
 
@@ -44,7 +45,7 @@ export function createGiftManager({
   onChange = () => {},
   log = console,
 } = {}) {
-  const supported = platform === 'darwin';
+  const supported = isGiftPlatform(platform);
   /** 마지막으로 받은 서버 답과 그때의 lease. */
   let answer = null;
   let answerLease = null;

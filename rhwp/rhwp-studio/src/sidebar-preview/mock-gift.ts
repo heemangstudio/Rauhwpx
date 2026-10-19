@@ -40,7 +40,7 @@ export interface MockGift {
   claims(): number;
 }
 
-/** `off` 면 null — 웹이나 macOS 가 아닌 데스크톱처럼 선물 API 가 없다. */
+/** `off` 면 null — 웹처럼 선물 API 가 없다. */
 export function createMockGift(mode: MockGiftMode, options: { failClaim?: boolean } = {}): MockGift | null {
   if (mode === 'off') return null;
   let status = statusFor(mode);

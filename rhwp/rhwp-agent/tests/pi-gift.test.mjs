@@ -12,7 +12,7 @@ import {
   GIFT_EXHAUSTED_OWN_KEY_MESSAGE,
   GIFT_RETRY_MESSAGE,
 } from '../agents/pi.mjs';
-import { createStaticGiftSource } from '../gift-source.mjs';
+import { createIpcGiftSource, createStaticGiftSource } from '../gift-source.mjs';
 import { createPiManager, GIFT_MAX_OUTPUT_TOKENS, pickDefaultGiftModels } from '../pi-manager.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
 
@@ -385,15 +385,56 @@ test('the router sends the lease only to the gift proxy and the own key only to 
   }
 });
 
-test('gift credits never apply outside macOS', async (t) => {
-  for (const platform of ['win32', 'linux']) {
-    const { manager, source, network } = await setUpManager(t, { platform, initial: giftCredentials() });
-    const status = await manager.refreshGift({ refresh: true });
-    assert.equal(status.credential, 'own');
-    assert.equal(manager.resolveSpawn(null).key, OWN_KEY);
-    assert.equal(source.calls.length, 0, 'the desktop is never asked');
-    assert.equal(network.calls.some((call) => call.url.startsWith(GIFT_BASE)), false);
+test('gift credits apply on Windows as on macOS and share the downloaded rg/fd', async (t) => {
+  // Windows 호스트에서는 상대 심볼릭 링크를 만들 권한이 없으니 실제 junction 경로만 본다.
+  const platforms = process.platform === 'win32' ? ['win32'] : ['darwin', 'win32'];
+  for (const platform of platforms) {
+    const { manager, source } = await setUpManager(t, { platform });
+    await fs.mkdir(path.join(manager.agentDir, 'bin'), { recursive: true });
+    await fs.writeFile(path.join(manager.agentDir, 'bin', 'rg'), 'rg');
+    const status = await activateGift(source, manager);
+    assert.equal(status.credential, 'gift', platform);
+    const spawn = manager.resolveSpawn(null);
+    assert.deepEqual([spawn.mode, spawn.key, spawn.agentDir], ['gift', LEASE, manager.giftAgentDir]);
+    assert.equal(await fs.readFile(path.join(manager.giftAgentDir, 'bin', 'rg'), 'utf8'), 'rg', platform);
   }
+});
+
+test('gift credits never apply outside macOS and Windows', async (t) => {
+  const { manager, source, network } = await setUpManager(t, { platform: 'linux', initial: giftCredentials() });
+  const status = await manager.refreshGift({ refresh: true });
+  assert.equal(status.credential, 'own');
+  assert.equal(manager.resolveSpawn(null).key, OWN_KEY);
+  assert.equal(source.calls.length, 0, 'the desktop is never asked');
+  assert.equal(network.calls.some((call) => call.url.startsWith(GIFT_BASE)), false);
+});
+
+test('the hub asks the desktop for gift credentials over IPC on macOS and Windows only', async () => {
+  function child(platform) {
+    const processRef = new EventEmitter();
+    processRef.env = { RHWP_GIFT_BROKER: 'ipc' };
+    processRef.sent = [];
+    processRef.send = (message) => {
+      processRef.sent.push(message);
+      queueMicrotask(() => processRef.emit('message', {
+        type: 'rhwp-gift-response', id: message.id, ok: true, value: giftCredentials(),
+      }));
+    };
+    return { processRef, source: createIpcGiftSource({ processRef, platform }) };
+  }
+  for (const platform of ['darwin', 'win32']) {
+    const { processRef, source } = child(platform);
+    assert.equal(source.available, true, platform);
+    assert.equal((await source.credentials({ refresh: true })).lease, LEASE);
+    assert.deepEqual(
+      processRef.sent.map(({ type, operation, refresh }) => ({ type, operation, refresh })),
+      [{ type: 'rhwp-gift-request', operation: 'credentials', refresh: true }],
+    );
+  }
+  const { processRef, source } = child('linux');
+  assert.equal(source.available, false);
+  await assert.rejects(source.credentials(), { code: 'GIFT_SOURCE_UNAVAILABLE' });
+  assert.equal(processRef.sent.length, 0);
 });
 
 test('an untrusted gift base URL never receives the lease', async (t) => {

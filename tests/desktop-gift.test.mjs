@@ -65,17 +65,17 @@ test('gift client maps server errors, bad bodies, network failures and timeouts'
   assert.equal(server.calls.length, before, 'no request without a lease');
 
   const mac = await leaseFor(server, server.issueKey({ tier: 'beta' }));
-  const windows = await leaseFor(server, server.issueKey({ tier: 'beta' }), { platform: 'win32', deviceId: 'device-win-1' });
+  const linux = await leaseFor(server, server.issueKey({ tier: 'beta' }), { platform: 'linux', deviceId: 'device-linux-1' });
   const status = await client.status(mac);
   assert.deepEqual(status, {
     event: { id: 'special-2026-10', amountUsd: 20, endsAt: null, active: true },
     eligible: true, claimed: false, remainingUsd: null, usedUsd: null, claimedAt: null,
   });
-  assert.equal((await client.status(windows)).eligible, false);
+  assert.equal((await client.status(linux)).eligible, false);
   const paid = await leaseFor(server, server.issueKey(), { deviceId: 'device-mac-paid' });
   assert.equal((await client.status(paid)).eligible, false, 'paid keys get no gift');
   await rejectsWith(client.claim(paid), 'not_eligible', 403);
-  await rejectsWith(client.claim(windows), 'not_eligible', 403);
+  await rejectsWith(client.claim(linux), 'not_eligible', 403);
   assert.equal((await client.claim(mac)).created, true);
   assert.equal((await client.claim(mac)).created, false, 'claiming twice is idempotent');
   await rejectsWith(client.claim(await leaseFor(server, server.issueKey({ tier: 'beta' }), { deviceId: 'device-mac-2' })), 'budget_exhausted', 409);
@@ -107,15 +107,15 @@ test('gift client maps server errors, bad bodies, network failures and timeouts'
   await rejectsWith(hanging.status('lease'), 'network');
 });
 
-test('non-macOS apps and licenses without a lease never ask the gift server', async (t) => {
-  const windows = await setup(t, { appPlatform: 'win32' });
+test('apps outside macOS and Windows and licenses without a lease never ask the gift server', async (t) => {
+  const linux = await setup(t, { appPlatform: 'linux' });
   let leaseReads = 0;
   const spy = createGiftManager({
-    client: createGiftClient({ baseUrl: BASE, fetchImpl: windows.server.fetch }),
-    currentLease: () => { leaseReads += 1; return windows.license.currentLease(); },
-    platform: 'win32',
+    client: createGiftClient({ baseUrl: BASE, fetchImpl: linux.server.fetch }),
+    currentLease: () => { leaseReads += 1; return linux.license.currentLease(); },
+    platform: 'linux',
   });
-  for (const manager of [windows.manager, spy]) {
+  for (const manager of [linux.manager, spy]) {
     assert.equal((await manager.status({ refresh: true })).available, false);
     assert.equal((await manager.claim()).ok, false);
     assert.deepEqual(await manager.credentials({ refresh: true }), {
@@ -123,7 +123,7 @@ test('non-macOS apps and licenses without a lease never ask the gift server', as
     });
     await manager.licenseChanged();
   }
-  assert.equal(windows.giftCalls(), 0);
+  assert.equal(linux.giftCalls(), 0);
   assert.equal(leaseReads, 0);
 
   const trial = await setup(t, { activate: false });
@@ -224,8 +224,31 @@ test('claim failures come back as short Korean messages', async (t) => {
   assert.equal(failed.status.claimed, false);
 });
 
-test('a Windows device is not eligible even if the app asks as macOS', async (t) => {
-  const { manager, server, license, key } = await setup(t, { devicePlatform: 'win32' });
+test('the Windows app claims the gift and hands the lease to the hub', async (t) => {
+  const { manager, server, license, key } = await setup(t, { devicePlatform: 'win32', appPlatform: 'win32' });
+  assert.equal(manager.supported, true);
+  const status = await manager.status();
+  assert.deepEqual([status.available, status.eligible, status.claimed], [true, true, false]);
+  assert.equal((await manager.claim()).ok, true);
+  assert.equal(server.giftState(key).claimed, true);
+
+  const response = await handleGiftRequest(manager, { type: 'rhwp-gift-request', id: 'win-1', operation: 'credentials' });
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.value, {
+    available: true, active: true, lease: await license.currentLease(), baseUrl: `${BASE}/v1/gift/openrouter`,
+    eventId: 'special-2026-10', amountUsd: 20, remainingUsd: 20, claimed: true,
+  });
+  const chat = await server.fetch(`${BASE}/v1/gift/openrouter/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${response.value.lease}` },
+    body: JSON.stringify({ model: 'anthropic/claude-sonnet-5.5', messages: [{ role: 'user', content: '안녕' }] }),
+  });
+  assert.equal(chat.status, 200);
+  await chat.body?.cancel();
+});
+
+test('a Linux device is not eligible even if the app asks as macOS', async (t) => {
+  const { manager, server, license, key } = await setup(t, { devicePlatform: 'linux' });
   const status = await manager.status();
   assert.equal(status.available, true);
   assert.equal(status.eligible, false);
@@ -233,7 +256,7 @@ test('a Windows device is not eligible even if the app asks as macOS', async (t)
   assert.deepEqual([claim.ok, claim.code, claim.message], [false, 'not_eligible', '이 라이선스로는 받을 수 없습니다.']);
   assert.equal(server.giftState(key).claimed, false);
 
-  // 다른 기기에서 받은 선물도 Windows 기기의 프록시 요청에는 쓰지 못한다.
+  // 다른 기기에서 받은 선물도 Linux 기기의 프록시 요청에는 쓰지 못한다.
   await createGiftClient({ baseUrl: BASE, fetchImpl: server.fetch }).claim(await leaseFor(server, key));
   const response = await server.fetch(`${BASE}/v1/gift/openrouter/chat/completions`, {
     method: 'POST',

@@ -1,6 +1,6 @@
 /**
  * 선물 크레딧(특별 이벤트)의 데스크톱 API 와 화면에 보일 상태.
- * 상태는 데스크톱 메인(desktop/gift-manager.mjs)이 서버에서 받아 가진다. macOS 에서만 쓴다.
+ * 상태는 데스크톱 메인(desktop/gift-manager.mjs)이 서버에서 받아 가진다. 쓸 수 있는 플랫폼도 메인이 정한다.
  * DOM 을 쓰지 않아 노드 시험에서 바로 부를 수 있다.
  */
 
@@ -12,7 +12,7 @@ export interface DesktopGiftEvent {
 }
 
 export interface DesktopGiftStatus {
-  /** darwin 이고 라이선스가 유효하며 서버 답을 한 번이라도 받았다. */
+  /** 선물 플랫폼(macOS·Windows)이고 라이선스가 유효하며 서버 답을 한 번이라도 받았다. */
   available: boolean;
   event: DesktopGiftEvent | null;
   eligible: boolean;
@@ -45,13 +45,14 @@ export class GiftClaimError extends Error {
   }
 }
 
-/** macOS 데스크톱에서만 선물 API 를 돌려준다. 다른 플랫폼과 웹에서는 null. */
+/**
+ * 데스크톱의 선물 API. 웹에서는 null. 선물을 주지 않는 플랫폼이면 메인이 늘 available:false 로 답해
+ * 팝업과 설정 줄이 보이지 않는다.
+ */
 export function desktopGiftApi(
-  host: { rhwpDesktop?: { platform?: string; gift?: DesktopGiftApi } } | undefined = globalThis as never,
+  host: { rhwpDesktop?: { gift?: DesktopGiftApi } } | undefined = globalThis as never,
 ): DesktopGiftApi | null {
-  const desktop = host?.rhwpDesktop;
-  if (desktop?.platform !== 'darwin' || !desktop.gift) return null;
-  return desktop.gift;
+  return host?.rhwpDesktop?.gift ?? null;
 }
 
 /** 이벤트 금액. 정수면 소수점을 빼고('$20'), 아니면 센트까지 쓴다. */

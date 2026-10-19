@@ -82,7 +82,7 @@ export function createMockLicenseServer({
     amountUsd: 20,
     endsAt: null,
     active: true,
-    platforms: ['darwin'],
+    platforms: ['darwin', 'win32'],
     totalBudgetUsd: Infinity,
     costPerRequestUsd: 0.05,
     modelPrefixes: ['anthropic/'],

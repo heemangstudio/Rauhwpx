@@ -6249,7 +6249,7 @@ function showLoadError(error: unknown): void {
 const initPromise = initialize();
 // 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
 void initPromise.then(markStudioReady, markStudioReady);
-// 특별 이벤트(macOS 데스크톱만). 라이선스 확인과 편집기 준비가 끝나고 부트 화면이 걷힌 뒤 본다.
+// 특별 이벤트(macOS·Windows 데스크톱). 라이선스 확인과 편집기 준비가 끝나고 부트 화면이 걷힌 뒤 본다.
 void initPromise.then(() => {
   const gift = desktopGiftApi();
   if (!gift) return;
