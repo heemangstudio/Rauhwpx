@@ -91,6 +91,8 @@ export async function installLicenseGate(
   const renewalNotice = createRenewalNotice();
   /** 이 페이지가 체험 끝 처리를 시작했는지. 메인이 아직 'trial' 이라고 해도 잠근 채로 둔다. */
   let trialFinished = false;
+  /** 기한 5초 전에 시작한 자동 저장. 끝나는 순간에 기다린다. */
+  let expirySave: Promise<number> | null = null;
   let savingAtLock: 'trial' | 'license' | null = null;
   let trialEndedBanner: TrialEndedBanner | null = null;
 
@@ -171,14 +173,16 @@ export async function installLicenseGate(
     }
     if (status.state === 'trial' && !trialFinished) {
       const now = Date.now();
-      if (status.trial.endsAt - now <= EXPIRY_SAVE_LEAD_MS) {
-        void saveAndLock('trial');
+      const remaining = status.trial.endsAt - now;
+      if (remaining <= 0) {
+        void lockTrialEnded();
         return;
       }
+      // 기한 5초 전부터 자동 저장만 시작한다. 저장 요청이 기한 전에 메인에 닿아야 한다.
+      // 잠금과 체험 끝 카드는 실제로 끝나는 순간까지 미룬다.
+      if (remaining <= EXPIRY_SAVE_LEAD_MS) startExpirySave();
       show(`체험 ${trialTimeLeft(status.trial.endsAt, now)} 남음`, '활성화', false, licenseSummary(status, now).detail);
-      // 자동 저장 시작 시각을 넘기지 않게 깬다.
-      const untilSave = status.trial.endsAt - EXPIRY_SAVE_LEAD_MS - now;
-      tick = window.setTimeout(paint, Math.min(msUntilNextTrialTick(status.trial.endsAt, now), untilSave) + 20);
+      tick = window.setTimeout(paint, Math.min(msUntilNextTrialTick(status.trial.endsAt, now), remaining) + 20);
       return;
     }
     if (trialFinished && status.state === 'trial') {
@@ -194,29 +198,78 @@ export async function installLicenseGate(
   }
 
   /**
-   * 편집할 수 있다가 잠기는 순간 한 번 돈다. 새 편집을 먼저 막고, 바뀐 문서를 저장한 뒤 읽기 전용으로 둔다.
-   * - trial: 체험이 끝나는 순간(또는 잠자기에서 깨어 이미 끝난 것을 안 순간).
-   * - license: 이 창이 켜져 있는 동안 해지·lease 만료·재활성화 필요로 잠긴 순간.
+   * 기한 5초 전에 자동 저장만 시작한다. 잠그거나 카드를 띄우지 않는다.
+   * 저장 요청이 기한 전에 메인에 닿아야 끝난 뒤에도 쓰기를 받아 준다.
    */
-  async function saveAndLock(kind: 'trial' | 'license'): Promise<void> {
-    if (savingAtLock) return;
-    if (kind === 'trial') {
-      if (trialFinished) return;
-      trialFinished = true;
-    }
+  function startExpirySave(): void {
+    if (expirySave) return;
+    if (!options.saveBeforeLock || !options.hasUnsavedWork?.()) return;
+    const endsAt = current?.trial.endsAt ?? 0;
+    expirySave = options.saveBeforeLock(async () => {
+      // 기한에 붙어 시작하면 메인의 자동 저장 유예를 받는다. 그 전이면 요청 시각으로 받는다.
+      if (Date.now() >= endsAt - 500) await api.beginExpirySave?.().catch(() => null);
+    }).then(
+      ({ failed }) => failed,
+      (error) => {
+        console.warn('[license] 체험 끝 전 자동 저장 실패:', error);
+        return 1;
+      },
+    );
+  }
+
+  /**
+   * 체험이 실제로 끝난 순간 한 번 돈다. 새 편집을 막고, 5초 전에 시작한 저장을 기다린 뒤
+   * 마지막 순간에 바뀐 문서까지 남기고 읽기 전용으로 둔다. 그다음에 체험 끝 카드를 띄운다.
+   */
+  async function lockTrialEnded(): Promise<void> {
+    if (trialFinished) return;
+    trialFinished = true;
     setReadOnly(true);
     setLicenseViewerMode(true);
-    const endsAt = current?.trial.endsAt ?? 0;
+    const pending = expirySave;
+    let failed = 0;
+    if (pending || (options.saveBeforeLock && options.hasUnsavedWork?.())) {
+      savingAtLock = 'trial';
+      paint();
+      failed = pending ? await pending : 0;
+      if (options.saveBeforeLock && options.hasUnsavedWork?.()) {
+        try {
+          failed = (await options.saveBeforeLock(async () => {
+            await api.beginExpirySave?.().catch(() => null);
+          })).failed;
+        } catch (error) {
+          console.warn('[license] 체험 끝 자동 저장 실패:', error);
+          failed = 1;
+        }
+      }
+      savingAtLock = null;
+    }
+    paint();
+    trialEndedBanner = showTrialEndedBanner({
+      onActivate: () => { void api.openActivation(); },
+      onPurchase: () => { void api.openPricing(); },
+    });
+    if (failed > 0) {
+      showToast({ message: `체험이 끝나 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
+    }
+  }
+
+  /**
+   * 이 창이 켜져 있는 동안 해지·lease 만료·재활성화 필요로 잠기는 순간 한 번 돈다.
+   * 새 편집을 먼저 막고, 바뀐 문서를 저장한 뒤 읽기 전용으로 둔다.
+   */
+  async function lockForLicense(): Promise<void> {
+    if (savingAtLock) return;
+    setReadOnly(true);
+    setLicenseViewerMode(true);
     let failed = 0;
     if (options.saveBeforeLock && options.hasUnsavedWork?.()) {
-      savingAtLock = kind;
+      savingAtLock = 'license';
       paint();
-      // 잠긴 뒤에 쓰는 저장은 메인에서 한 번만 받는 유예가 있어야 한다. 체험은 기한 전에 시작하면 필요 없다.
-      const prepareWrite = async () => {
-        if (kind === 'license' || Date.now() >= endsAt - 500) await api.beginExpirySave?.().catch(() => null);
-      };
       try {
-        failed = (await options.saveBeforeLock(prepareWrite)).failed;
+        failed = (await options.saveBeforeLock(async () => {
+          await api.beginExpirySave?.().catch(() => null);
+        })).failed;
       } catch (error) {
         console.warn('[license] 잠기기 전 자동 저장 실패:', error);
         failed = 1;
@@ -224,16 +277,8 @@ export async function installLicenseGate(
       savingAtLock = null;
     }
     paint();
-    // 체험이 끝나는 순간에만 배너를 띄운다. 이미 끝난 채로 켜면 메인이 활성화 창을 연다.
-    if (kind === 'trial') {
-      trialEndedBanner = showTrialEndedBanner({
-        onActivate: () => { void api.openActivation(); },
-        onPurchase: () => { void api.openPricing(); },
-      });
-    }
     if (failed > 0) {
-      const reason = kind === 'trial' ? '체험이 끝나' : '읽기 전용이 되어';
-      showToast({ message: `${reason} 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
+      showToast({ message: `읽기 전용이 되어 저장하지 못한 문서가 ${failed}개 있어요.`, durationMs: 6000 });
     }
   }
 
@@ -259,17 +304,18 @@ export async function installLicenseGate(
     paintRenewalNotice(status);
     // 잠자기에서 깨어 메인이 먼저 기한을 알려 온 경우에도 저장부터 한다.
     if (status.state === 'trial_expired' && previous?.state === 'trial' && !trialFinished) {
-      void saveAndLock('trial');
+      void lockTrialEnded();
       return;
     }
     // 해지 등으로 편집하던 창이 잠기면 같은 방법으로 먼저 남긴다.
     if (!status.canEdit && previous?.canEdit && status.state !== 'trial_expired') {
-      void saveAndLock('license');
+      void lockForLicense();
       return;
     }
     // 활성화하면 다시 편집할 수 있다.
     if (status.canEdit && status.state !== 'trial') {
       trialFinished = false;
+      expirySave = null;
       trialEndedBanner?.dismiss();
       trialEndedBanner = null;
     }
