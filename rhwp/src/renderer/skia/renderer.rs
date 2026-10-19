@@ -1401,6 +1401,9 @@ impl SkiaLayerRenderer {
                             // 한컴은 저장 폭보다 좁은 수식을 늘리지 않고 상자 왼쪽에 둔다
                             // (math-001 실측: 525HU 상자의 `1`, 1050HU 상자의 `10` 모두
                             // 자연 pitch 4.725pt 그대로).
+                            crate::renderer::equation::trace_selected_native_equation_entry(
+                                equation, bbox.x, bbox.y,
+                            );
                             render_equation(
                                 canvas,
                                 &self.font_mgr,

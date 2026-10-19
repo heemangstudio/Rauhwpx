@@ -3803,6 +3803,7 @@ impl TypesetEngine {
             &page_hides,
             section_index,
         );
+        trace_final_note_items(&state, paragraphs.len());
         Some(PaginationResult {
             committed_line_origins: state.committed_line_origins,
             pages: state.pages,
@@ -6075,6 +6076,7 @@ impl TypesetEngine {
             &page_hides,
             section_index,
         );
+        trace_final_note_items(&st, paragraphs.len());
 
         PaginationResult {
             committed_line_origins: st.committed_line_origins,
@@ -6965,38 +6967,69 @@ impl TypesetEngine {
         } = flow;
         // 구분선/미주 사이 설정은 저장 풀이 줄의 pitch를 대체하지 않는다.
         // 인증된 HWP5 줄 사다리는 fit 사본과 render 사본 모두 같은 spacing을 쓴다.
-        let certified_advances = endnote_shape
-            .and_then(|shape| certified_endnote_line_advances_hu(en_ctrl, shape, st.profile))
-            .filter(|_| {
-                let width = st
-                    .layout
-                    .column_areas
-                    .get(st.current_column as usize)
-                    .map(|area| area.width)
-                    .unwrap_or(st.layout.body_area.width);
-                en_ctrl.paragraphs.iter().all(|para| {
-                    let comp =
-                        crate::renderer::composer::compose_paragraph_with_styles(para, styles);
-                    let fmt = self.format_paragraph(para, Some(&comp), styles, Some(width));
-                    !fmt.fresh_recomposed
-                        && fmt.line_heights.len() == para.line_segs.len()
-                        && comp.lines.len() == para.line_segs.len()
-                        && comp
-                            .lines
-                            .iter()
-                            .zip(&para.line_segs)
-                            .all(|(line, source)| {
-                                crate::renderer::line_metric_pair_is_authored(Some(source), line)
-                            })
-                        && fmt
-                            .line_heights
-                            .iter()
-                            .zip(&para.line_segs)
-                            .all(|(height, source)| {
-                                *height <= hwpunit_to_px(source.line_height, self.dpi) + 1e-6
-                            })
-                })
-            });
+        let note_trace = NoteBoundaryTrace::read().filter(|t| {
+            t.matches(en_ref.section_index, en_ref.para_index, en_ref.control_index)
+        });
+        let source_advances = endnote_shape.and_then(|shape| {
+            certified_endnote_line_advances_hu(en_ctrl, shape, st.profile, note_trace.as_ref())
+        });
+        let source_admitted = source_advances.is_some();
+        if let Some(t) = &note_trace {
+            t.emit("source_result", None, serde_json::json!({
+                "shape_present": endnote_shape.is_some(), "admitted": source_admitted,
+                "note_number": en_ref.number, "note_paragraphs": en_ctrl.paragraphs.len(),
+                "dpi": self.dpi, "render_section": section_index,
+            }));
+        }
+        let certified_advances = source_advances.filter(|_| {
+            let width = st.layout.column_areas.get(st.current_column as usize)
+                .map(|area| area.width).unwrap_or(st.layout.body_area.width);
+            en_ctrl.paragraphs.iter().enumerate().all(|(p, para)| {
+                let comp = crate::renderer::composer::compose_paragraph_with_styles(para, styles);
+                let fmt = self.format_paragraph(para, Some(&comp), styles, Some(width));
+                macro_rules! admit {
+                    ($passed:expr, $guard:literal, $row:expr, $detail:expr) => {{
+                        let passed = $passed;
+                        if let Some(t) = &note_trace {
+                            if !passed || t.includes(p) {
+                                t.emit("compose_guard", Some(p), serde_json::json!({
+                                    "guard": $guard, "passed": passed,
+                                    "first_failed_guard": if passed { None } else { Some($guard) },
+                                    "line": $row, "fresh_recomposed": fmt.fresh_recomposed,
+                                    "source_lines": para.line_segs.len(),
+                                    "composed_lines": comp.lines.len(), "formatted_lines": fmt.line_heights.len(),
+                                    "width_px": width, "detail": $detail,
+                                }));
+                            }
+                        }
+                        passed
+                    }};
+                }
+                admit!(!fmt.fresh_recomposed, "fresh_recomposed", None::<usize>, ())
+                    && admit!(fmt.line_heights.len() == para.line_segs.len(), "formatted_line_count", None::<usize>, ())
+                    && admit!(comp.lines.len() == para.line_segs.len(), "composed_line_count", None::<usize>, ())
+                    && comp.lines.iter().zip(&para.line_segs).enumerate().all(|(l, (line, source))| {
+                        admit!(crate::renderer::line_metric_pair_is_authored(Some(source), line),
+                            "authored_metric_pair", Some(l), serde_json::json!({
+                                "source": note_boundary_source_row(en_ctrl, Some(p), Some(l)),
+                                "composed_hu": [line.line_height, line.line_spacing,
+                                    line.baseline_distance, line.column_start, line.segment_width],
+                            }))
+                    })
+                    && fmt.line_heights.iter().zip(&para.line_segs).enumerate().all(|(l, (height, source))| {
+                        admit!(*height <= hwpunit_to_px(source.line_height, self.dpi) + 1e-6,
+                            "formatted_full_height", Some(l), serde_json::json!({
+                                "formatted_full_height_px": height, "source_full_height_hu": source.line_height,
+                            }))
+                    })
+            })
+        });
+        if let Some(t) = &note_trace {
+            t.emit("compose_result", None, serde_json::json!({
+                "evaluated": source_admitted, "admitted": certified_advances.is_some(),
+                "skipped_reason": if source_admitted { None } else { Some("source_not_admitted") },
+            }));
+        }
         let preserve_authored_spacing = certified_advances.is_some();
         // 다음 문단 예측도 같은 진행 영역을 쓴다. 본문 등 소유 밖 문단에는 적용하지 않는다.
         let format_note_paragraph = |para: &Paragraph,
@@ -7111,6 +7144,20 @@ impl TypesetEngine {
             let fmt = self
                 .format_paragraph(en_para, Some(&composed), &styles, Some(en_col_w))
                 .with_certified_endnote_advances(en_para, para_advances.as_deref(), self.dpi);
+            if let Some(t) = note_trace.as_ref().filter(|t| t.includes(ep_idx)) {
+                t.emit("formatted", Some(ep_idx), serde_json::json!({
+                    "virtual_para": en_para_idx, "source_lines": en_ctrl.paragraphs[ep_idx].line_segs.len(),
+                    "composed_lines": composed.lines.len(), "formatted_lines": fmt.line_heights.len(),
+                    "fresh_recomposed": fmt.fresh_recomposed, "compact_projection": compact_no_separator_spacing,
+                    "zero_authored_tail": zero_authored_tail,
+                    "rows": fmt.line_heights.iter().enumerate().take(32).map(|(l, h)| serde_json::json!({
+                        "line": l, "formatted_full_height_px": h,
+                        "source": note_boundary_source_row(en_ctrl, Some(ep_idx), Some(l)),
+                        "certified_advance_hu": para_advances.as_ref().and_then(|a| a.get(l)),
+                        "certified_advance_px": fmt.certified_line_advances.as_ref().and_then(|a| a.get(l)),
+                    })).collect::<Vec<_>>(), "rows_truncated": fmt.line_heights.len() > 32,
+                }));
+            }
             if std::env::var("RHWP_ENDNOTE_LINE_DEBUG").is_ok() {
                 debug_print_endnote_line_segments(
                     en_ref.number,
@@ -7917,6 +7964,19 @@ impl TypesetEngine {
                 .map(|height| raw_en_fit.max(height))
                 .unwrap_or(raw_en_fit);
             let total_advance_fit = line_advances_sum.max(non_tac_object_height.unwrap_or(0.0));
+            if let Some(t) = note_trace.as_ref().filter(|t| t.includes(ep_idx)) {
+                t.emit("fit", Some(ep_idx), serde_json::json!({
+                    "virtual_para": en_para_idx, "current_height_px": st.current_height,
+                    "available_bottom_px": available, "remaining_px": available - st.current_height,
+                    "column": st.current_column, "formatted_full_fit_px": fmt.height_for_fit,
+                    "certified_total_advance_px": if fmt.certified_line_advances.is_some() { Some(fmt.total_height) } else { None },
+                    "line_advances_sum_px": line_advances_sum, "raw_en_fit_px": raw_en_fit, "en_fit_px": en_fit,
+                    "local_rewind": local_vpos_rewind, "internal_rewind": internal_vpos_rewind,
+                    "rewind_crosses_previous_content": local_vpos_rewind_crosses_prev_content,
+                    "previous_bottom_hu": prev_en_bottom_vpos, "first_offset_hu": this_first_offset,
+                    "tolerance_px": ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX,
+                }));
+            }
             let remaining_height = (available - st.current_height).max(0.0);
             // [Task #1363 v2 Stage 3] A2: 새 para 를 이어붙인 렌더-정합 시뮬
             // bottom 으로 fit 판정 (saved line_segs 기반 → 렌더와 일치).
@@ -9843,6 +9903,17 @@ impl TypesetEngine {
                 } else {
                     saved_advance_for_fit
                 };
+            if let Some(t) = note_trace.as_ref().filter(|t| t.includes(ep_idx)) {
+                t.emit("overflow_decision", Some(ep_idx), serde_json::json!({
+                    "current_height_px": st.current_height, "available_bottom_px": available,
+                    "en_fit_px": en_fit, "column": st.current_column,
+                    "direct_branch": st.profile.own_line_layout() || fmt.certified_line_advances.is_some(),
+                    "certified": fmt.certified_line_advances.is_some(),
+                    "legacy_overflow": saved_advance_for_fit, "selected_overflow": advance_for_fit,
+                    "fit_split": split_endnote_to_fit, "internal_split": internal_rewind_split,
+                    "items_empty": st.current_items.is_empty(),
+                }));
+            }
             let pre_emit_tail_before_non_tac_object_advance = self
                 .judge_pre_emit_tail_before_non_tac_object_advance(
                     zero_between_large_separator_margin,
@@ -10611,6 +10682,17 @@ impl TypesetEngine {
                     .or(large_between_last_column_flow_tail_split)
                     .or(split_endnote_to_fit)
             };
+            if let Some(t) = note_trace.as_ref().filter(|t| t.includes(ep_idx)) {
+                t.emit("emit_decision", Some(ep_idx), serde_json::json!({
+                    "virtual_para": en_para_idx, "current_height_px": st.current_height,
+                    "available_bottom_at_fit_px": available, "column": st.current_column,
+                    "en_advance_px": en_advance, "split_candidate": split_candidate,
+                    "advance_for_fit": advance_for_fit, "advance_for_new_note": advance_for_new_endnote,
+                    "advance_for_internal_rewind": advance_for_internal_rewind,
+                    "internal_rewind_target_reset": internal_rewind_target_is_reset,
+                    "pre_emit_tail": pre_emit_tail_before_non_tac_object_advance,
+                }));
+            }
             if self.emit_endnote_split(
                 st,
                 &fmt,
@@ -22844,6 +22926,100 @@ fn endnote_separator_below_margin(shape: &FootnoteShape) -> i16 {
     shape.separator_below_margin_hu()
 }
 
+// 임시 진단 전용. section:host-para:control:local-first:local-last, 전부 0-based.
+// 단일 소유 미주와 최대 16문단만 선택하며 프로세스당 출력은 512개로 제한한다.
+struct NoteBoundaryTrace([usize; 5]);
+
+impl NoteBoundaryTrace {
+    fn read() -> Option<Self> {
+        let raw = std::env::var("RHWP_NOTE_BOUNDARY_TRACE").ok()?;
+        if raw.len() > 96 { return None; }
+        let mut parts = raw.split(':');
+        let mut key = [0; 5];
+        for v in &mut key { *v = parts.next()?.parse().ok()?; }
+        if parts.next().is_some() || key[4] < key[3] || key[4] - key[3] >= 16 {
+            return None;
+        }
+        Some(Self(key))
+    }
+
+    fn matches(&self, section: usize, host: usize, control: usize) -> bool {
+        self.0[..3] == [section, host, control]
+    }
+
+    fn includes(&self, para: usize) -> bool { self.0[3] <= para && para <= self.0[4] }
+
+    fn emit(&self, stage: &str, para: Option<usize>, detail: serde_json::Value) {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RECORDS: AtomicUsize = AtomicUsize::new(0);
+        let Ok(seq) = RECORDS.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |n| if n < 512 { Some(n + 1) } else { None }) else { return; };
+        let record = serde_json::json!({
+            "diagnostic": "rhwp_note_boundary_v1", "seq": seq, "last_slot": seq == 511,
+            "section": self.0[0], "host_para": self.0[1], "control": self.0[2],
+            "note_para": para, "stage": stage, "detail": detail,
+        });
+        let mut stderr = std::io::stderr().lock();
+        let _ = serde_json::to_writer(&mut stderr, &record);
+        let _ = writeln!(stderr);
+    }
+}
+
+fn note_boundary_source_row(
+    note: &crate::model::footnote::Endnote,
+    p: Option<usize>,
+    l: Option<usize>,
+) -> Option<serde_json::Value> {
+    let para = note.paragraphs.get(p?)?;
+    let line = l.and_then(|l| para.line_segs.get(l));
+    Some(serde_json::json!({
+        "char_count": para.char_count, "source_lines": para.line_segs.len(),
+        "raw_header_lines": para.raw_header_extra.get(4..6).map(|n| u16::from_le_bytes([n[0], n[1]])),
+        "has_para_text": para.has_para_text, "terminal": para.para_text_terminal,
+        "line_hu": line.map(|s| [s.vertical_pos, s.line_height, s.text_height,
+            s.line_spacing, s.baseline_distance, s.column_start, s.segment_width]),
+        "text_start_utf16": line.map(|s| s.text_start), "tag": line.map(|s| s.tag),
+    }))
+}
+
+// 완성된 PageItem만 읽는다. 출력 PageIndex는 구역 내부이며 표시 쪽번호와 구분한다.
+fn trace_final_note_items(st: &TypesetState, body_count: usize) {
+    let Some(t) = NoteBoundaryTrace::read() else { return; };
+    for (physical, page) in st.pages.iter().enumerate() {
+        for column in &page.column_contents {
+            for item in &column.items {
+                let (pi, range) = match item {
+                    PageItem::FullParagraph { para_index } => (*para_index, None),
+                    PageItem::PartialParagraph { para_index, start_line, end_line } =>
+                        (*para_index, Some((*start_line, *end_line))),
+                    _ => continue,
+                };
+                let Some(local) = pi.checked_sub(body_count) else { continue; };
+                let Some(source) = st.endnote_para_sources.get(local) else { continue; };
+                if !t.matches(source.section_index, source.para_index, source.control_index)
+                    || !t.includes(source.note_para_index) { continue; }
+                let Some(para) = st.endnote_paragraphs.get(local) else { continue; };
+                let certified = source.certified_line_advances_hu.is_some();
+                let (start, end) = range.unwrap_or((0, para.line_segs.len()));
+                let utf16 = if certified {
+                    para.line_segs.get(start).map(|s| [s.text_start,
+                        para.line_segs.get(end).map(|s| s.text_start).unwrap_or(para.char_count)])
+                } else { None };
+                t.emit("emitted_item", Some(source.note_para_index), serde_json::json!({
+                    "virtual_para": pi, "render_section": page.section_index,
+                    "physical_page_in_section_1based": physical + 1,
+                    "physical_page_global_1based": if page.section_index == 0 { Some(physical + 1) } else { None },
+                    "page_index": page.page_index, "display_page_number": page.page_number,
+                    "column": column.column_index, "partial": range.is_some(),
+                    "item_line_range": range, "certified_one_to_one": certified,
+                    "source_line_range": if certified { Some((start, end)) } else { None },
+                    "source_utf16_range": utf16, "source_cache_lines": para.line_segs.len(),
+                }));
+            }
+        }
+    }
+}
 /// 원본 HWP5 주석의 양수 spacing과 연속 vpos가 함께 증명하는 줄 진행만 보존한다.
 /// 0으로 돌아가는 저장 단/쪽 경계는 별도 조각으로 두며 좌표를 다시 쓰지 않는다.
 /// 합성·편집·불완전 캐시와 모든 여백이 0인 압축 호환 경로는 기존 정책을 유지한다.
@@ -22851,102 +23027,123 @@ fn certified_endnote_line_advances_hu(
     note: &crate::model::footnote::Endnote,
     shape: &FootnoteShape,
     profile: crate::model::provenance::LayoutCompatibilityProfile,
+    trace: Option<&NoteBoundaryTrace>,
 ) -> Option<Vec<Vec<i32>>> {
-    if !(profile.native_hwp5_layout() || profile.hwp3_layout())
-        || profile.hwp3_native_layout()
-        || profile.hwpx_container()
-        || profile.hwpx_stored_layout()
-        || profile.hwp5_origin_hwpx()
-        || profile.own_line_layout()
-        || profile.session_edited()
-        || endnote_has_visible_separator(shape)
-        || endnote_between_notes_margin(shape) != 0
-        || (shape.separator_above_margin_hu() == 0 && shape.separator_below_margin_hu() == 0)
+    let mut trace_para = None;
+    let mut trace_line = None;
+    let mut trace_previous = None;
+    // 원래 OR/iterator/?의 평가 순서와 조기 반환을 그대로 관찰한다.
+    macro_rules! bad {
+        ($failed:expr, $guard:literal) => {{
+            let failed = $failed;
+            if failed {
+                if let Some(t) = trace {
+                    t.emit("source_reject", trace_para, serde_json::json!({
+                        "first_failed_guard": $guard, "line": trace_line,
+                        "source": note_boundary_source_row(note, trace_para, trace_line),
+                        "previous": trace_previous.map(|(p, l)|
+                            note_boundary_source_row(note, Some(p), Some(l))),
+                    }));
+                }
+            }
+            failed
+        }};
+    }
+    macro_rules! some {
+        ($value:expr, $guard:literal) => {{
+            let value = $value;
+            if bad!(value.is_none(), $guard) { return None; }
+            value?
+        }};
+    }
+    if bad!(!(profile.native_hwp5_layout() || profile.hwp3_layout()), "source_lineage")
+        || bad!(profile.hwp3_native_layout(), "hwp3_native_layout")
+        || bad!(profile.hwpx_container(), "hwpx_container")
+        || bad!(profile.hwpx_stored_layout(), "hwpx_stored_layout")
+        || bad!(profile.hwp5_origin_hwpx(), "hwp5_origin_hwpx")
+        || bad!(profile.own_line_layout(), "own_line_layout")
+        || bad!(profile.session_edited(), "session_edited")
+        || bad!(endnote_has_visible_separator(shape), "visible_separator")
+        || bad!(endnote_between_notes_margin(shape) != 0, "between_notes_margin")
+        || bad!(shape.separator_above_margin_hu() == 0
+            && shape.separator_below_margin_hu() == 0, "zero_separator_margins")
     {
         return None;
     }
     let mut previous: Option<&LineSeg> = None;
     let mut fragment_lines = 0usize;
     let mut advances = Vec::new();
-    for para in &note.paragraphs {
-        // 파서가 보존한 원본 header의 줄 수와 실제 배열이 같은 캐시만 받는다.
-        let Some(count) = para.raw_header_extra.get(4..6) else {
-            return None;
-        };
-        if usize::from(u16::from_le_bytes([count[0], count[1]])) != para.line_segs.len()
-            || para.line_segs.is_empty()
-            || para.char_count == 0
-            || !para.field_ranges.is_empty()
-            || !para.orphan_field_ends.is_empty()
+    for (p, para) in note.paragraphs.iter().enumerate() {
+        trace_para = Some(p);
+        trace_line = None;
+        let count = some!(para.raw_header_extra.get(4..6), "raw_header_line_count_missing");
+        if bad!(usize::from(u16::from_le_bytes([count[0], count[1]])) != para.line_segs.len(), "raw_header_line_count")
+            || bad!(para.line_segs.is_empty(), "empty_line_segs")
+            || bad!(para.char_count == 0, "zero_char_count")
+            || bad!(!para.field_ranges.is_empty(), "field_ranges")
+            || bad!(!para.orphan_field_ends.is_empty(), "orphan_field_ends")
             || para.controls.iter().any(|control| match control {
                 Control::AutoNumber(_) => false,
-                Control::Equation(eq) => !eq.common.treat_as_char,
-                Control::Picture(pic) => {
-                    !pic.common.treat_as_char || pic.common.vertical_offset != 0
-                }
-                _ => true,
+                Control::Equation(eq) => bad!(!eq.common.treat_as_char, "equation_not_tac"),
+                Control::Picture(pic) => bad!(!pic.common.treat_as_char
+                    || pic.common.vertical_offset != 0, "picture_placement"),
+                _ => bad!(true, "unsupported_control"),
             })
-            || (para.has_para_text && para.para_text_terminal != para.char_count.checked_sub(1))
-            || (!para.has_para_text
-                && !(para.char_count == 1 && para.text.is_empty() && para.controls.is_empty()))
-            || para
-                .line_segs
-                .first()
-                .is_none_or(|line| line.text_start != 0)
-            || para
-                .line_segs
-                .windows(2)
-                .any(|pair| pair[1].text_start <= pair[0].text_start)
+            || bad!(para.has_para_text && para.para_text_terminal != para.char_count.checked_sub(1), "para_text_terminal")
+            || bad!(!para.has_para_text
+                && !(para.char_count == 1 && para.text.is_empty() && para.controls.is_empty()), "missing_para_text")
+            || bad!(para.line_segs.first().is_none_or(|line| line.text_start != 0), "first_text_start")
+            || para.line_segs.windows(2).enumerate().any(|(l, pair)| {
+                trace_line = Some(l + 1);
+                bad!(pair[1].text_start <= pair[0].text_start, "nonincreasing_text_start")
+            })
         {
             return None;
         }
         let mut para_advances = Vec::new();
-        for line in &para.line_segs {
-            if line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
-                || line.tag & LineSeg::TAG_SINGLE_SEGMENT_LINE != LineSeg::TAG_SINGLE_SEGMENT_LINE
-                || line.text_start >= para.char_count
-                || line.vertical_pos < 0
-                || line.line_height <= 0
-                || line.text_height <= 0
-                || line.text_height > line.line_height
-                || line.baseline_distance <= 0
-                || line.baseline_distance > line.text_height
-                || line.line_spacing <= 0
-                || line.segment_width <= 0
+        for (l, line) in para.line_segs.iter().enumerate() {
+            trace_line = Some(l);
+            if bad!(line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0, "implementation_property")
+                || bad!(line.tag & LineSeg::TAG_SINGLE_SEGMENT_LINE != LineSeg::TAG_SINGLE_SEGMENT_LINE, "not_single_segment_line")
+                || bad!(line.text_start >= para.char_count, "text_start_outside_para")
+                || bad!(line.vertical_pos < 0, "negative_vpos")
+                || bad!(line.line_height <= 0, "nonpositive_full_height")
+                || bad!(line.text_height <= 0, "nonpositive_text_height")
+                || bad!(line.text_height > line.line_height, "text_exceeds_full_height")
+                || bad!(line.baseline_distance <= 0, "nonpositive_baseline")
+                || bad!(line.baseline_distance > line.text_height, "baseline_exceeds_text_height")
+                || bad!(line.line_spacing <= 0, "nonpositive_spacing")
+                || bad!(line.segment_width <= 0, "nonpositive_width")
             {
                 return None;
             }
             if let Some(prev) = previous {
-                let end = prev
-                    .vertical_pos
-                    .checked_add(prev.text_height)
+                let end = prev.vertical_pos.checked_add(prev.text_height)
                     .and_then(|v| v.checked_add(prev.line_spacing));
                 if end != Some(line.vertical_pos) {
-                    // 저장 단/쪽 reset만 허용한다. forward gap·부분 파손은 인증하지 않는다.
-                    if line.vertical_pos != 0
-                        || prev.vertical_pos <= 0
-                        || fragment_lines < 2
-                        || prev.text_height != prev.line_height
+                    if bad!(line.vertical_pos != 0, "discontinuity_not_reset")
+                        || bad!(prev.vertical_pos <= 0, "reset_previous_vpos")
+                        || bad!(fragment_lines < 2, "reset_fragment_lines")
+                        || bad!(prev.text_height != prev.line_height, "reset_previous_metric_pair")
                     {
                         return None;
                     }
                     fragment_lines = 0;
                 }
-            } else if line.vertical_pos != 0 {
+            } else if bad!(line.vertical_pos != 0, "initial_vpos") {
                 return None;
             }
-            line.vertical_pos
-                .checked_add(line.line_height)?
-                .checked_add(line.line_spacing)?;
-            // successor 없는 마지막 줄은 아래에서 full-H 영역을 요구한다. 정수 HU로만 인증한다.
-            para_advances.push(line.text_height.checked_add(line.line_spacing)?);
+            let end = some!(line.vertical_pos.checked_add(line.line_height), "full_height_overflow");
+            some!(end.checked_add(line.line_spacing), "extent_spacing_overflow");
+            para_advances.push(some!(line.text_height.checked_add(line.line_spacing), "advance_overflow"));
             fragment_lines += 1;
             previous = Some(line);
+            trace_previous = Some((p, l));
         }
         advances.push(para_advances);
     }
-    // 마지막 줄과 reset 직전에는 successor 증거가 없다. H=textH만 허용한다.
-    (fragment_lines >= 2 && previous.is_some_and(|line| line.text_height == line.line_height))
+    (!bad!(fragment_lines < 2, "terminal_fragment_lines")
+        && !bad!(!previous.is_some_and(|line| line.text_height == line.line_height), "terminal_metric_pair"))
         .then_some(advances)
 }
 

@@ -29,6 +29,107 @@ thread_local! {
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+
+// 임시 선택 수식 진단. 계산/페인트 분기를 바꾸지 않고 완료된 값만 기록한다.
+#[cfg(not(target_arch = "wasm32"))]
+fn selected_control_trace_instance() -> Option<u32> {
+    if std::env::var("RHWP_EQ_SELECTED_TRACE").as_deref() != Ok("r2-operators-v1") {
+        return None;
+    }
+    let instance = std::env::var("RHWP_EQ_SELECTED_TRACE_INSTANCE").ok()?.parse().ok()?;
+    Some(instance)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_selected_control_trace(record: serde_json::Value) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RECORDS: AtomicUsize = AtomicUsize::new(0);
+    if RECORDS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        (n < 32).then_some(n + 1)
+    }).is_err() {
+        return;
+    }
+    if let Ok(line) = serde_json::to_string(&record) {
+        if line.len() <= 65536 {
+            eprintln!("RHWP_EQ_SELECTED_TRACE {}", line);
+        } else {
+            eprintln!("RHWP_EQ_SELECTED_TRACE {{\"stage\":\"record_too_large\",\"bytes\":{}}}", line.len());
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn trace_selected_control_layout(
+    eq: &crate::model::control::Equation,
+    policy: FontMetricsPolicy,
+    dpi: f64,
+    section_index: usize,
+    para_index: usize,
+    control_index: usize,
+    ast: &ast::EqNode,
+    layout: &layout::LayoutBox,
+    origin_x: f64,
+    origin_y: f64,
+) {
+    let Some(instance) = selected_control_trace_instance() else { return; };
+    if eq.common.instance_id != instance || eq.script.len() > 4096 {
+        return;
+    }
+    // Debug는 보조값이다. instance/script UTF16과 실행 index로 동일성을 결합한다.
+    let ast_debug = format!("{ast:?}");
+    if ast_debug.len() > 16384 { return; }
+    emit_selected_control_trace(serde_json::json!({
+        "schema": "r2-operators-v1", "stage": "control_layout",
+        "instanceId": instance, "sectionIndex": section_index,
+        "runtimeParaIndex": para_index, "runtimeControlIndex": control_index,
+        "script": eq.script, "scriptUtf16": eq.script.encode_utf16().collect::<Vec<_>>(),
+        "declaredFont": eq.font_name, "version": eq.version_info,
+        "baseSizeHwpunit": eq.font_size, "savedBaselinePercent": eq.baseline,
+        "savedFrameHwpunit": [eq.common.width, eq.common.height],
+        "policy": policy.as_str(), "layoutDpi": dpi,
+        "measurementGeneration": measurement_generation(),
+        "units": "layout coordinates at layoutDpi; not PDF pt or glyph ink bounds",
+        "astDebug": ast_debug, "layout": layout,
+        "equationNodeOrigin": [origin_x, origin_y],
+        "originStage": "paragraph layout before EquationNode insertion; not glyph paint",
+        "actualFaceHash": null, "windowsAdmission": null
+    }));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn trace_selected_native_equation_entry(
+    equation: &crate::renderer::render_tree::EquationNode,
+    origin_x: f64,
+    origin_y: f64,
+) {
+    let Some(instance) = selected_control_trace_instance() else { return; };
+    let source_para = match instance {
+        1706039923 => 3,
+        1706040525 => 581,
+        1706068308 => 210,
+        _ => return,
+    };
+    // 이 단계는 instance를 보존하지 않는다. 원본 body index의 후보임을 명시한다.
+    if equation.section_index != Some(0) || equation.para_index != Some(source_para)
+        || equation.cell_context.is_some() || equation.note_ref.is_some()
+    {
+        return;
+    }
+    emit_selected_control_trace(serde_json::json!({
+        "schema": "r2-operators-v1", "stage": "native_equation_entry",
+        "requestedInstanceId": instance,
+        "selectionBasis": "source body paragraph candidate; confirm exact runtime indices AND layout equality against control_layout",
+        "sectionIndex": equation.section_index, "runtimeParaIndex": equation.para_index,
+        "runtimeControlIndex": equation.control_index,
+        "declaredFont": equation.font_name, "version": equation.version_info,
+        "baseFontSize": equation.font_size, "layout": equation.layout_box,
+        "equationEntryOrigin": [origin_x, origin_y],
+        "units": "render-tree coordinates before render_equation; current canvas transform is external",
+        "originStage": "actual native equation entry request; not integral/radical glyph origin",
+        "actualFaceHash": null, "windowsAdmission": null
+    }));
+}
+
 /// 원본 서체 등록/명시적 새로고침 이후의 측정 세대. 준비한 조판의 설치 전에도 확인한다.
 pub(crate) fn measurement_generation() -> usize {
     MEASUREMENT_GENERATION.load(std::sync::atomic::Ordering::Acquire)

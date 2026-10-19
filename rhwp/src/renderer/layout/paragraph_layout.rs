@@ -3800,7 +3800,46 @@ fn collect_shape_marker_labels(show_ctrl: bool, para: Option<&Paragraph>) -> Vec
     }
 }
 
+
+// 임시 진단 전용. 기존 미주 선택자만 공유하며 조판/방출 판단에는 관여하지 않는다.
+struct ParagraphTacTrace { source: [usize; 4], virtual_para: usize }
+impl ParagraphTacTrace {
+    fn selected(source: [usize; 4], virtual_para: usize) -> Option<Self> {
+        let raw = std::env::var("RHWP_NOTE_BOUNDARY_TRACE").ok()?;
+        if raw.len() > 96 { return None; }
+        let mut parts = raw.split(':');
+        let mut key = [0usize; 5];
+        for v in &mut key { *v = parts.next()?.parse().ok()?; }
+        if parts.next().is_some() || key[4] < key[3] || key[4] - key[3] >= 16
+            || key[..3] != source[..3] || source[3] < key[3] || source[3] > key[4] {
+            return None;
+        }
+        Some(Self { source, virtual_para })
+    }
+    fn emit(&self, stage: &str, detail: serde_json::Value) {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RECORDS: AtomicUsize = AtomicUsize::new(0);
+        let Ok(seq) = RECORDS.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |n| if n < 256 { Some(n + 1) } else { None }) else { return; };
+        let record = serde_json::json!({"diagnostic":"rhwp_paragraph_tac_v1",
+            "seq":seq, "last_slot":seq == 255, "source":self.source,
+            "virtual_para":self.virtual_para, "stage":stage, "detail":detail});
+        let Ok(bytes) = serde_json::to_vec(&record) else { return; };
+        if bytes.len() > 32768 { return; }
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr.write_all(&bytes); let _ = writeln!(stderr);
+    }
+}
+
 impl LayoutEngine {
+    fn paragraph_tac_trace(&self, virtual_para: usize) -> Option<ParagraphTacTrace> {
+        if std::env::var_os("RHWP_NOTE_BOUNDARY_TRACE").is_none() { return None; }
+        let source = self.endnote_para_source_for(virtual_para)?;
+        ParagraphTacTrace::selected([source.section_index, source.para_index,
+            source.control_index, source.note_para_index], virtual_para)
+    }
+
     /// 조판기가 성공적으로 검증한 렌더 문단에서만 호출한다.
     pub(crate) fn certify_projected_tac_line_owners(
         para: &Paragraph,
@@ -5152,8 +5191,9 @@ impl LayoutEngine {
                 .any(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
                 && stored_tac_line_assignment(p, composed).is_some()
         });
+        let empty_trace = self.paragraph_tac_trace(para_index);
         let tac_on_line = |k: usize, pos: usize| -> bool {
-            if exact_tac_ownership {
+            let admitted = if exact_tac_ownership {
                 let ci = tac_offsets_px[k].2;
                 line_tac_offsets
                     .iter()
@@ -5162,7 +5202,21 @@ impl LayoutEngine {
                 flow.row_for_tac(k).is_some()
             } else {
                 pos >= line_start_char && pos < line_end_char
+            };
+            if let Some(t) = &empty_trace {
+                let branch = if exact_tac_ownership { "exact_assignment" }
+                    else if equation_tac_line_flow.is_some() { "equation_flow" } else { "visible_interval" };
+                let first_false = if admitted { None } else if exact_tac_ownership { Some("ci_not_in_line_tacs") }
+                    else if equation_tac_line_flow.is_some() { Some("no_flow_row") }
+                    else if pos < line_start_char { Some("pos_before_start") } else { Some("pos_at_or_after_end") };
+                t.emit("empty_predicate", serde_json::json!({"line":line_idx,"ci":tac_offsets_px[k].2,
+                    "position":pos,"range":[line_start_char,line_end_char],"branch":branch,
+                    "admitted":admitted,"first_false":first_false,
+                    "line_tacs":line_tac_offsets.iter().take(64).collect::<Vec<_>>(),
+                    "flow_row":equation_tac_line_flow.as_ref().and_then(|flow| flow.row_for_tac(k)),
+                    "invocation":"existing predicate invocation; width scan and emission loop both call it"}));
             }
+            admitted
         };
         let tac_row_for = |k: usize| -> usize {
             equation_tac_line_flow
@@ -5325,6 +5379,11 @@ impl LayoutEngine {
                     // 쓰면 내용이 ~6pt 위로 치솟는다).
                     let eq_y = row_y + baseline - layout_box.baseline;
                     let eq_x = inline_x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    crate::renderer::equation::trace_selected_control_layout(
+                        eq, styles.font_metrics_policy, self.dpi, section_index, para_index,
+                        tac_ci, &ast, &layout_box, eq_x, eq_y,
+                    );
                     let eq_w = inline_equation_box_width_px(
                         eq,
                         tac_w,
@@ -5377,6 +5436,11 @@ impl LayoutEngine {
                         BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                     );
                     line_node.children.push(eq_node);
+                    if let (Some(t), Some(node)) = (&empty_trace, line_node.children.last()) {
+                        t.emit("node_push", serde_json::json!({"line":line_idx,"ci":tac_ci,
+                            "node_id":node.id,"visible":node.visible,"bbox":node.bbox,
+                            "children_after":line_node.children.len(),"push_count":1}));
+                    }
                     tree.set_inline_shape_position(
                         section_index,
                         para_index,
@@ -5946,6 +6010,27 @@ impl LayoutEngine {
             }
         });
         let exact_tac_ownership = exact_tac_assign.is_some();
+        let paragraph_tac_trace = self.paragraph_tac_trace(para_index);
+        if let Some(t) = &paragraph_tac_trace {
+            t.emit("assignment", serde_json::json!({
+                "cell_context":cell_ctx.is_some(), "body_flow":self.is_body_flow_col_area(col_area),
+                "endnote_base":self.endnote_para_base.get(), "native_authored_tac":native_authored_tac,
+                "own_line_layout":self.profile.get().own_line_layout(),
+                "native_hwp5":self.profile.get().native_hwp5_layout(),
+                "hwp5_origin_hwpx":self.profile.get().hwp5_origin_hwpx(),
+                "font_metrics":format!("{:?}", styles.font_metrics_policy),
+                "exact_ownership":exact_tac_ownership, "actual_assignment":exact_tac_assign,
+                "raw_positions":para.map(|p| control_utf16_positions(p).into_iter().take(64).collect::<Vec<_>>()),
+                "stored_assignment_probe":para.and_then(|p| stored_tac_line_assignment(p, composed)),
+                "composed_tacs":composed.tac_controls.iter().take(64).collect::<Vec<_>>(),
+                "offset_tacs":tac_offsets_px.iter().take(64).collect::<Vec<_>>(),
+                "range":[start_line,end],
+                "source_rows":para.map(|p| p.line_segs.iter().take(64).map(|row|
+                    [row.text_start as i64,row.line_height as i64,row.line_spacing as i64,row.tag as i64]).collect::<Vec<_>>()),
+                "composed_rows":composed.lines.iter().take(64).map(|row|
+                    serde_json::json!({"start":row.char_start,"runs":row.runs.len()})).collect::<Vec<_>>()
+            }));
+        }
         for line_idx in start_line..end {
             let comp_line = &composed.lines[line_idx];
             let mut current_line_reserved_tac_picture_height: Option<f64> = None;
@@ -8409,18 +8494,36 @@ impl LayoutEngine {
                 (is_last_run || (comp_line.has_line_break && is_last_run_of_line(run_idx)))
                     && !next_line_starts_at_run_end
             };
+            let run_trace = self.paragraph_tac_trace(para_index);
             let run_tacs: Vec<(usize, f64, usize)> = run_tac_offsets
                 .iter()
-                .filter(|(pos, _, _)| {
-                    (exact_tac_ownership
+                .filter(|(pos, _, ci)| {
+                    let admitted = (exact_tac_ownership
                         || empty_tac_host_before_text(composed, *pos)
                             .is_none_or(|host| host == line_idx))
                         && *pos >= run_char_pos
-                        && (*pos < run_char_end || (allow_end_tac && *pos == run_char_end))
+                        && (*pos < run_char_end || (allow_end_tac && *pos == run_char_end));
+                    if let Some(t) = &run_trace {
+                        // 원래 단락 평가 뒤에 같은 입력으로 거부 이유만 기록한다.
+                        let host = empty_tac_host_before_text(composed, *pos);
+                        let first_false = if admitted { None }
+                            else if !exact_tac_ownership && host.is_some_and(|h| h != line_idx) { Some("empty_host_other_row") }
+                            else if *pos < run_char_pos { Some("pos_before_run") }
+                            else { Some("pos_outside_run_end") };
+                        t.emit("run_predicate", serde_json::json!({"line":line_idx,"run":run_idx,
+                            "ci":ci,"position":pos,"range":[run_char_pos,run_char_end],
+                            "exact_ownership":exact_tac_ownership,"empty_host":host,
+                            "allow_end":allow_end_tac,"admitted":admitted,"first_false":first_false}));
+                    }
+                    admitted
                 })
                 .map(|(pos, w, ci)| (pos - run_char_pos, *w, *ci))
                 .collect();
 
+            if let Some(t) = &run_trace {
+                t.emit("run_selection", serde_json::json!({"line":line_idx,"run":run_idx,
+                    "selected":run_tacs.iter().take(64).collect::<Vec<_>>() }));
+            }
             // [Task #960] env-gated TAC line-mapping 추적
             if std::env::var("RHWP_DEBUG_PARA_TAC").is_ok() && !tac_offsets_px.is_empty() {
                 eprintln!("  TAC_LINE pi={} line_idx={} run_idx={} run_char_pos={} run_char_end={} y={:.1} lh={:.1} ls={:.1} raw_lh={:.1} baseline={:.1} run_tacs={:?}",
@@ -9052,6 +9155,11 @@ impl LayoutEngine {
                             // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다 (위와 동일).
                             let eq_y = y + baseline - layout_box.baseline;
                             let eq_x = x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            crate::renderer::equation::trace_selected_control_layout(
+                                eq, styles.font_metrics_policy, self.dpi, section_index, para_index,
+                                tac_ci, &ast, &layout_box, eq_x, eq_y,
+                            );
                             let eq_w = inline_equation_box_width_px(
                                 eq,
                                 tac_w,
@@ -9106,6 +9214,11 @@ impl LayoutEngine {
                                 BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                             );
                             line_node.children.push(eq_node);
+                            if let (Some(t), Some(node)) = (&run_trace, line_node.children.last()) {
+                                t.emit("node_push", serde_json::json!({"line":line_idx,"ci":tac_ci,
+                                    "node_id":node.id,"visible":node.visible,"bbox":node.bbox,
+                                    "children_after":line_node.children.len(),"push_count":1}));
+                            }
                             // 인라인 좌표 등록 → shape_layout에서 이 수식을 스킵
                             tree.set_inline_shape_position(
                                 section_index,
