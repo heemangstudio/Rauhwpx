@@ -543,9 +543,11 @@ async function parseFontFile(file) {
  *   roots?: Array<{path: string, kind: 'system'|'user'|'hancom'|'app', label?: string, sniff?: boolean,
  *     maxDepth?: number}>, hancomInstalls?: string[],
  *   addedFolders?: () => string[] | Promise<string[]>,
- *   revalidateAfterMs?: number, onIndexChanged?: () => void }} options
+ *   revalidateAfterMs?: number, onIndexChanged?: () => void, savedIndexKey?: string }} options
  * revalidateAfterMs: 주면 첫 list() 가 지난 실행이 저장한 색인을 바로 돌려주고 그만큼 뒤에
  * 백그라운드에서 다시 훑는다. 결과가 달라졌으면 onIndexChanged 를 부른다.
+ * savedIndexKey: 저장한 색인은 같은 키(앱 버전)로 저장된 것만 되살린다. 업데이트 뒤 첫 실행은
+ * 예전 버전이 조립한 색인을 쓰지 않고 다시 훑는다.
  */
 export function createSystemFontService(options = {}) {
   const platform = options.platform ?? process.platform;
@@ -563,6 +565,7 @@ export function createSystemFontService(options = {}) {
   /** face id → 컬렉션 face 머리말·테이블 계획. id 가 (경로, 크기, mtime) 를 담으므로 바뀌지 않는다. */
   const collectionPlans = new Map();
   const revalidateAfterMs = Number.isFinite(options.revalidateAfterMs) ? Math.max(0, options.revalidateAfterMs) : null;
+  const savedIndexKey = typeof options.savedIndexKey === 'string' ? options.savedIndexKey : null;
   let restoring = null;
   /** 되살린 색인을 아직 다시 훑지 않았으면 그 검사를 바로 시작하는 함수 */
   let revalidateRestored = null;
@@ -609,8 +612,8 @@ export function createSystemFontService(options = {}) {
     const started = performance.now();
     const saved = (await loadPersisted())?.index;
     if (index || pending) return;
-    if (saved?.version !== SYSTEM_FONT_INDEX_VERSION || !Array.isArray(saved.index?.faces)
-      || !saved.mtimes || typeof saved.mtimes !== 'object') return;
+    if (saved?.version !== SYSTEM_FONT_INDEX_VERSION || (saved.key ?? null) !== savedIndexKey
+      || !Array.isArray(saved.index?.faces) || !saved.mtimes || typeof saved.mtimes !== 'object') return;
     const byId = new Map();
     for (const face of saved.index.faces) {
       const mtimeMs = saved.mtimes[face?.id];
@@ -760,14 +763,22 @@ export function createSystemFontService(options = {}) {
     };
     indexFingerprint = revalidateAfterMs === null ? null : fingerprintOf(next);
     const filesChanged = parsed > 0 || Object.keys(cache).length !== collected.files.length;
-    if (filesChanged || indexFingerprint !== ((await loadPersisted())?.index?.fingerprint ?? null)) {
+    const previous = await loadPersisted();
+    const savedIndex = previous?.index;
+    if (filesChanged || indexFingerprint !== (savedIndex?.fingerprint ?? null)
+      || (indexFingerprint && (savedIndex?.key ?? null) !== savedIndexKey)) {
       // 다음 실행이 루트를 다시 훑지 않고 바로 쓰도록 조립한 색인도 같이 둔다.
       await savePersisted(nextCache, indexFingerprint && {
         version: SYSTEM_FONT_INDEX_VERSION,
+        ...(savedIndexKey !== null ? { key: savedIndexKey } : {}),
         fingerprint: indexFingerprint,
         index: next,
         mtimes: Object.fromEntries([...byId].map(([id, entry]) => [id, entry.file.mtimeMs])),
       });
+    } else if (savedIndex?.index) {
+      // 저장본과 같으면 쓰지 않는다. 되살린 face 목록은 새 색인이 대신하니 비교에 쓸 지문만 남겨
+      // 같은 목록을 두 벌 들고 있지 않는다.
+      persisted = Promise.resolve({ ...previous, index: { fingerprint: savedIndex.fingerprint, key: savedIndex.key } });
     }
     index = next;
     facesById = byId;

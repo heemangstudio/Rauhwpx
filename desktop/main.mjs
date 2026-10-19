@@ -637,6 +637,8 @@ const systemFonts = createSystemFontService({
   // 실행마다 Program Files 를 훑고 reg.exe 를 부르지 않도록 지난 색인으로 먼저 열고,
   // 첫 문서를 여는 동안은 비켜 있다가 다시 훑는다. 달라졌으면 열린 창이 글꼴을 다시 잇는다.
   revalidateAfterMs: SYSTEM_FONT_REVALIDATE_DELAY_MS,
+  // 업데이트 뒤 첫 실행은 예전 버전이 조립한 색인 대신 새로 훑는다.
+  savedIndexKey: app.getVersion(),
   onIndexChanged: () => broadcastFontsChanged(),
 });
 const systemFontKey = randomBytes(32).toString('hex');

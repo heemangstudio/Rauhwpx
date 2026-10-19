@@ -420,6 +420,27 @@ test('a later launch opens with the saved index and rescans in the background', 
   assert.ok((await drain(late, fresh.id)).length > 0);
 });
 
+test('an index saved by another app version is rescanned, not restored', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-saved-index-key-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fonts = path.join(dir, 'fonts');
+  await mkdir(fonts);
+  const { collection } = await koreanCollection();
+  await writeFile(path.join(fonts, 'Rau.ttc'), collection);
+  const options = { cacheDir: path.join(dir, 'cache'), roots: [{ path: fonts, kind: 'user' }], revalidateAfterMs: 60_000 };
+  const launch = async (savedIndexKey) => {
+    const logs = [];
+    await createSystemFontService({ ...options, savedIndexKey, log: (line) => logs.push(line) }).list();
+    return logs.find((line) => line.startsWith('restored ') || line.startsWith('scan '))?.split(' ')[0];
+  };
+
+  assert.equal(await launch('1.0.0'), 'scan');
+  assert.equal(await launch('1.0.0'), 'restored');
+  // 업데이트 뒤 첫 실행은 글꼴이 그대로여도 새로 훑고, 그 색인을 다음 실행이 되살린다.
+  assert.equal(await launch('1.1.0'), 'scan');
+  assert.equal(await launch('1.1.0'), 'restored');
+});
+
 test('expands catalog roots with home, Windows variables and wildcard folders', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-font-roots-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
