@@ -1259,11 +1259,22 @@ export function rhwpMcpServerFor(opts, agentName) {
   return { type: 'http', url: url.toString(), headers: { Authorization: `Bearer ${opts.token}` } };
 }
 
+/**
+ * Claude aborts an MCP tool call that sends no result or progress for its idle
+ * timeout: 30 minutes for stdio servers but only 5 minutes for http servers.
+ * rhwp tools send no progress, so a user who takes more than 5 minutes to
+ * answer ask_user_question (or a detach waiting on the save dialog) would get
+ * a tool error over http. The per-server `timeout` raises the http idle limit
+ * to the stdio value; it also caps the whole call at the same 30 minutes, which
+ * a silent call could never exceed under stdio either.
+ */
+export const CLAUDE_HTTP_MCP_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
+
 /** Claude `mcpServers.rhwp` entry (CLI `--mcp-config` and Agent SDK options). */
 export function claudeRhwpMcpServer(opts) {
   const server = rhwpMcpServerFor(opts, 'claude');
   return server.type === 'http'
-    ? { type: 'http', url: server.url, headers: server.headers }
+    ? { type: 'http', url: server.url, headers: server.headers, timeout: CLAUDE_HTTP_MCP_TOOL_TIMEOUT_MS }
     : { command: server.command, args: server.args, env: server.env };
 }
 

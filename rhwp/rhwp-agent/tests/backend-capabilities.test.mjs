@@ -405,6 +405,9 @@ for (const entry of matrix) {
     const claudeUrl = new URL(claudeMcp.url);
     assert.equal(`${claudeUrl.origin}${claudeUrl.pathname}`, 'http://127.0.0.1:6199/mcp-http');
     assert.deepEqual(claudeMcp.headers, { Authorization: 'Bearer secret-token' });
+    // Claude cuts a silent http MCP call after 5 minutes but a stdio one after 30. Questions wait on the
+    // user, so the http entry must keep at least the stdio idle limit.
+    assert.ok(claudeMcp.timeout >= 30 * 60 * 1000, `Claude http MCP timeout ${claudeMcp.timeout}`);
     assert.equal(claudeUrl.searchParams.has('RHWP_AGENT_TOKEN'), false, 'the token travels only in the header');
     const claudeMcpEnv = claudeMcpSettings(claudeMcp);
     assert.equal(claudeMcpEnv.RHWP_AGENT_NAME, 'claude');
@@ -546,6 +549,7 @@ test('Windows restricted Claude uses only owned MCP tools without native executi
     assert.deepEqual(sdk.settingSources, []);
     assert.equal(claudeMcpSettings(sdk.mcpServers.rhwp).RHWP_AGENT_WORKFLOW, entry.workflow);
     assert.equal(claudeMcpSettings(sdk.mcpServers.rhwp).RHWP_AGENT_PHASE, entry.phase);
+    assert.ok(sdk.mcpServers.rhwp.timeout >= 30 * 60 * 1000, `Claude SDK http MCP timeout ${sdk.mcpServers.rhwp.timeout}`);
     for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent', 'Workflow', 'Task', 'NotebookEdit']) {
       assert.ok(sdk.disallowedTools.includes(tool));
       assert.ok(sdk.settings.permissions.deny.includes(tool));
