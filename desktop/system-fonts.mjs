@@ -180,7 +180,8 @@ async function planCollectionFace(file, faceIndex) {
 }
 
 async function* collectionFaceChunks(handle, plan) {
-  yield plan.header;
+  // 머리말은 같은 face 의 다음 읽기도 쓰므로 사본을 내보낸다.
+  yield Buffer.from(plan.header);
   for (const table of plan.tables) {
     let first = true;
     for await (const chunk of readChunks(handle, table.offset, table.length, pad4(table.length))) {
@@ -541,7 +542,10 @@ async function parseFontFile(file) {
  *   env?: Record<string, string|undefined>, home?: string,
  *   roots?: Array<{path: string, kind: 'system'|'user'|'hancom'|'app', label?: string, sniff?: boolean,
  *     maxDepth?: number}>, hancomInstalls?: string[],
- *   addedFolders?: () => string[] | Promise<string[]> }} options
+ *   addedFolders?: () => string[] | Promise<string[]>,
+ *   revalidateAfterMs?: number, onIndexChanged?: () => void }} options
+ * revalidateAfterMs: 주면 첫 list() 가 지난 실행이 저장한 색인을 바로 돌려주고 그만큼 뒤에
+ * 백그라운드에서 다시 훑는다. 결과가 달라졌으면 onIndexChanged 를 부른다.
  */
 export function createSystemFontService(options = {}) {
   const platform = options.platform ?? process.platform;
@@ -552,29 +556,40 @@ export function createSystemFontService(options = {}) {
   let facesById = new Map();
   let pending = null;
   let queued = null;
-  let persisted = undefined;
+  /** @type {Promise<object|null> | null} 저장된 캐시 파일. 처음 한 번만 읽는다. */
+  let persisted = null;
+  /** 지금 색인(또는 되살린 색인)의 내용 지문. 다시 훑은 결과가 다를 때만 저장하고 알린다. */
+  let indexFingerprint = null;
+  /** face id → 컬렉션 face 머리말·테이블 계획. id 가 (경로, 크기, mtime) 를 담으므로 바뀌지 않는다. */
+  const collectionPlans = new Map();
+  const revalidateAfterMs = Number.isFinite(options.revalidateAfterMs) ? Math.max(0, options.revalidateAfterMs) : null;
+  let restoring = null;
+  /** 되살린 색인을 아직 다시 훑지 않았으면 그 검사를 바로 시작하는 함수 */
+  let revalidateRestored = null;
 
-  async function loadPersisted() {
-    if (persisted !== undefined) return persisted;
-    persisted = null;
-    if (!cachePath) return persisted;
-    try {
-      const data = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-      if (data?.format === CACHE_FORMAT && data.platform === platform && data.files && typeof data.files === 'object') {
-        persisted = data;
-      } else {
-        log(`cache ignored (format ${data?.format ?? 'unknown'})`);
-      }
-    } catch (error) {
-      if (error?.code !== 'ENOENT') log(`cache unreadable, rescanning: ${error.message}`);
-    }
+  function loadPersisted() {
+    persisted ??= readPersisted();
     return persisted;
   }
 
-  async function savePersisted(files) {
+  async function readPersisted() {
+    if (!cachePath) return null;
+    try {
+      const data = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+      if (data?.format === CACHE_FORMAT && data.platform === platform && data.files && typeof data.files === 'object') {
+        return data;
+      }
+      log(`cache ignored (format ${data?.format ?? 'unknown'})`);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') log(`cache unreadable, rescanning: ${error.message}`);
+    }
+    return null;
+  }
+
+  async function savePersisted(files, saved) {
     if (!cachePath) return;
-    const data = { format: CACHE_FORMAT, platform, savedAt: new Date().toISOString(), files };
-    persisted = data;
+    const data = { format: CACHE_FORMAT, platform, savedAt: new Date().toISOString(), files, ...(saved ? { index: saved } : {}) };
+    persisted = Promise.resolve(data);
     try {
       await fs.mkdir(path.dirname(cachePath), { recursive: true });
       const temp = `${cachePath}.${process.pid}.tmp`;
@@ -583,6 +598,68 @@ export function createSystemFontService(options = {}) {
     } catch (error) {
       log(`cache write failed: ${error.message}`);
     }
+  }
+
+  /**
+   * 지난 실행이 저장한 색인을 되살린다. 루트 탐색·파일 stat·레지스트리 조회 없이 첫 목록을 바로
+   * 돌려주고, revalidateAfterMs 뒤 백그라운드에서 다시 훑어 달라졌으면 onIndexChanged 로 알린다.
+   * 그사이 바뀐 파일의 face 는 openFace 가 stale 로 거절해 Studio 가 색인을 새로 받는다.
+   */
+  async function restoreSavedIndex() {
+    const started = performance.now();
+    const saved = (await loadPersisted())?.index;
+    if (index || pending) return;
+    if (saved?.version !== SYSTEM_FONT_INDEX_VERSION || !Array.isArray(saved.index?.faces)
+      || !saved.mtimes || typeof saved.mtimes !== 'object') return;
+    const byId = new Map();
+    for (const face of saved.index.faces) {
+      const mtimeMs = saved.mtimes[face?.id];
+      if (typeof mtimeMs !== 'number' || typeof face.path !== 'string' || typeof face.size !== 'number') return;
+      byId.set(face.id, { face, file: { path: face.path, size: face.size, mtimeMs } });
+    }
+    index = { ...saved.index, fromCache: true, durationMs: Math.round(performance.now() - started) };
+    facesById = byId;
+    indexFingerprint = saved.fingerprint ?? null;
+    log(`restored ${index.faces.length} faces from the saved index in ${index.durationMs}ms; `
+      + `rescanning in the background in ${revalidateAfterMs}ms`);
+    const rescan = () => {
+      clearTimeout(timer);
+      revalidateRestored = null;
+      const before = indexFingerprint;
+      list({ refresh: true }).then(() => {
+        if (indexFingerprint !== before) {
+          log('background rescan found font changes');
+          options.onIndexChanged?.();
+        }
+      }, (error) => log(`background rescan failed: ${error.message}`));
+    };
+    const timer = setTimeout(rescan, revalidateAfterMs);
+    timer.unref?.();
+    revalidateRestored = rescan;
+  }
+
+  /** 되살린 색인의 파일이 바뀌었으면 기다리지 않고 바로 다시 훑어 열린 창이 새 색인을 받게 한다. */
+  function stale(id, detail) {
+    revalidateRestored?.();
+    return staleError(id, detail);
+  }
+
+  function fingerprintOf(result) {
+    return createHash('sha256')
+      .update(JSON.stringify([result.faces, result.hancomFaceMap, result.roots]))
+      .digest('hex');
+  }
+
+  function collectionPlan(id, file, faceIndex) {
+    let plan = collectionPlans.get(id);
+    if (!plan) {
+      plan = planCollectionFace(file, faceIndex);
+      collectionPlans.set(id, plan);
+      plan.catch(() => {
+        if (collectionPlans.get(id) === plan) collectionPlans.delete(id);
+      });
+    }
+    return plan;
   }
 
   async function resolveAddedFolders() {
@@ -681,9 +758,20 @@ export function createSystemFontService(options = {}) {
         undecodableNames: undecodable,
       },
     };
-    if (parsed > 0 || Object.keys(cache).length !== collected.files.length) await savePersisted(nextCache);
+    indexFingerprint = revalidateAfterMs === null ? null : fingerprintOf(next);
+    const filesChanged = parsed > 0 || Object.keys(cache).length !== collected.files.length;
+    if (filesChanged || indexFingerprint !== ((await loadPersisted())?.index?.fingerprint ?? null)) {
+      // 다음 실행이 루트를 다시 훑지 않고 바로 쓰도록 조립한 색인도 같이 둔다.
+      await savePersisted(nextCache, indexFingerprint && {
+        version: SYSTEM_FONT_INDEX_VERSION,
+        fingerprint: indexFingerprint,
+        index: next,
+        mtimes: Object.fromEntries([...byId].map(([id, entry]) => [id, entry.file.mtimeMs])),
+      });
+    }
     index = next;
     facesById = byId;
+    for (const id of collectionPlans.keys()) if (!byId.has(id)) collectionPlans.delete(id);
     logSummary(next, mapStats);
     return next;
   }
@@ -717,6 +805,11 @@ export function createSystemFontService(options = {}) {
   async function list(listOptions = {}) {
     const refresh = listOptions?.refresh === true;
     if (index && !refresh) return index;
+    if (!refresh && revalidateAfterMs !== null && !pending) {
+      restoring ??= restoreSavedIndex().catch((error) => log(`saved index unusable, rescanning: ${error.message}`));
+      await restoring;
+      if (index) return index;
+    }
     if (pending) {
       if (!refresh) return pending;
       // 이미 도는 검색은 바뀌기 전 루트를 보고 있을 수 있어 끝난 뒤 한 번 더 훑는다.
@@ -748,23 +841,23 @@ export function createSystemFontService(options = {}) {
     try {
       info = await fs.stat(file.path);
     } catch (error) {
-      throw staleError(id, `font file is gone (${error.code ?? error.message})`);
+      throw stale(id, `font file is gone (${error.code ?? error.message})`);
     }
     if (info.size !== file.size || info.mtimeMs !== file.mtimeMs) {
-      throw staleError(id, 'font file changed since the index was built');
+      throw stale(id, 'font file changed since the index was built');
     }
     const collection = face.format === 'ttc' || face.format === 'otc';
     if (!collection && file.size > MAX_FACE_BYTES) {
       throw new Error(`too-large: ${file.size} bytes (cap ${MAX_FACE_BYTES})`);
     }
     if (face.format === 'woff' || face.format === 'woff2') return openWebFace(id, face, file, started);
-    const plan = collection ? await planCollectionFace(file, face.faceIndex) : null;
+    const plan = collection ? await collectionPlan(id, file, face.faceIndex) : null;
     async function* chunks() {
       const handle = await fs.open(file.path, 'r');
       try {
         const now = await handle.stat();
         if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) {
-          throw staleError(id, 'font file changed since the index was built');
+          throw stale(id, 'font file changed since the index was built');
         }
         yield* plan ? collectionFaceChunks(handle, plan) : readChunks(handle, 0, file.size);
         log(`read ${id} ${face.families[0] ?? '?'} ${file.path}#${face.faceIndex} `
@@ -786,7 +879,7 @@ export function createSystemFontService(options = {}) {
     try {
       const now = await handle.stat();
       if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) {
-        throw staleError(id, 'font file changed since the index was built');
+        throw stale(id, 'font file changed since the index was built');
       }
       sfnt = asBuffer(await standaloneFaceBytes(fileSource(handle, file.size), face, { decompress: NODE_WEB_FONT_DECODERS }));
     } finally {
