@@ -237,7 +237,14 @@ function button(label: string): HTMLButtonElement {
   return node;
 }
 
-export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HTMLElement; dispose: () => void } {
+/**
+ * 라이선스 탭의 내용. 상태 카드 아래에 버튼을 둔다.
+ * 라이선스를 보지 않는 빌드(unenforced)면 숨기고 onAvailableChange 로 알린다.
+ */
+export function createLicenseSettingsSection(
+  api: DesktopLicenseApi,
+  { onAvailableChange }: { onAvailableChange?: (available: boolean) => void } = {},
+): { root: HTMLElement; dispose: () => void } {
   const root = document.createElement('section');
   root.className = 'ag-settings-section ag-settings-license-section';
   const head = document.createElement('div');
@@ -277,9 +284,9 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const deactivate = button('이 기기 비활성화');
   const fixPayment = button('결제 수단 바꾸기');
   actions.append(fixPayment, activate, buy, check, deactivate);
-  row.append(copy, actions);
+  row.append(copy);
   body.append(row);
-  root.append(head, body);
+  root.append(head, body, actions);
 
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
@@ -296,7 +303,9 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
     const prompt = renewalPrompt(status);
     fixPayment.hidden = !prompt || !api.openPaymentFix;
     if (prompt) fixPayment.textContent = prompt.action;
-    root.hidden = status.state === 'unenforced';
+    const available = status.state !== 'unenforced';
+    root.hidden = !available;
+    onAvailableChange?.(available);
   }
 
   activate.addEventListener('click', () => { void api.openActivation(); });
@@ -316,6 +325,9 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   });
 
   const unsubscribe = api.onChange(render);
-  void api.getStatus().then(render).catch(() => { root.hidden = true; });
+  void api.getStatus().then(render).catch(() => {
+    root.hidden = true;
+    onAvailableChange?.(false);
+  });
   return { root, dispose: unsubscribe };
 }

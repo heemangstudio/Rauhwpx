@@ -3447,12 +3447,11 @@
   outline-offset: -2px;
 }
 
-/* 라이선스: 상태 한 줄 오른쪽에 버튼들. */
+/* 라이선스: 상태 카드 아래, 카드 밖에 버튼들. */
 .ag-settings-page .ag-settings-license-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  justify-content: flex-end;
 }
 .ag-settings-page .ag-settings-license-contact {
   padding: 0;

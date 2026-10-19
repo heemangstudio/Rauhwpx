@@ -494,6 +494,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const body = el('div', 'ag-settings-body');
   const panes = new Map<SettingsDestination, HTMLElement>();
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
+  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
+  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
+    .rhwpDesktop?.license;
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string }> = [
     { id: 'editing', label: '편집' },
     { id: 'theme', label: '테마' },
@@ -502,6 +505,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'skills', label: '스킬' },
     { id: 'project', label: '프로젝트' },
     { id: 'archive', label: '보관함' },
+    ...(desktopLicense ? [{ id: 'license' as const, label: '라이선스' }] : []),
   ];
   for (const destination of destinations) {
     const button = el('button', 'ag-settings-nav-button', destination.label);
@@ -544,12 +548,21 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('theme')?.appendChild(themeSettings.element);
-  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'.
-  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
-    .rhwpDesktop?.license;
-  const licenseSection = desktopLicense ? createLicenseSettingsSection(desktopLicense) : null;
-  // 편집 설정과 같은 가운데 열, 취소·적용 줄 위에 둔다. 다른 설정 카드와 같은 모양이 된다.
-  if (licenseSection) editingSettings.element.querySelector('.ag-settings-apply-footer')?.before(licenseSection.root);
+  // 라이선스를 보지 않는 빌드면 탭을 숨기고, 그 탭에 있었다면 편집으로 돌린다.
+  const licenseSection = desktopLicense
+    ? createLicenseSettingsSection(desktopLicense, {
+      onAvailableChange: (available) => {
+        const tab = navButtons.get('license');
+        if (tab) tab.hidden = !available;
+        if (!available && currentDestination === 'license') selectDestination('editing');
+      },
+    })
+    : null;
+  if (licenseSection) {
+    const licenseContent = el('div', 'ag-settings-destination-content');
+    licenseContent.append(licenseSection.root);
+    panes.get('license')?.append(licenseContent);
+  }
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
     isConnected: () => connectionState === 'connected',
@@ -1462,9 +1475,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight'
         && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
       event.preventDefault();
-      const index = destinations.findIndex((item) => item.id === destination);
+      const shown = destinations.filter((item) => !navButtons.get(item.id)?.hidden);
+      const index = shown.findIndex((item) => item.id === destination);
       const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
-      const next = destinations[(index + delta + destinations.length) % destinations.length];
+      const next = shown[(index + delta + shown.length) % shown.length];
       if (next) void requestDestination(next.id);
     });
   }
@@ -1508,6 +1522,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
+      case 'license':
         return false;
       case 'project':
         return projectPane.isDirty();
@@ -1721,6 +1736,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'browser':
       case 'skills':
         case 'archive':
+        case 'license':
           return true;
         case 'project':
           projectPane.cancel();
@@ -1741,6 +1757,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
+      case 'license':
         return true;
       case 'project':
         return projectPane.apply();
