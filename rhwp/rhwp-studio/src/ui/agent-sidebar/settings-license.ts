@@ -44,6 +44,8 @@ export interface DesktopLicenseApi {
   getStatus: () => Promise<LicenseStatus>;
   checkNow: () => Promise<LicenseStatus>;
   deactivate: () => Promise<{ ok: boolean; message?: string; status: LicenseStatus }>;
+  /** 키를 이 창에서 바로 활성화한다. 처음 설정의 라이선스 단계가 쓴다. */
+  activate: (key: string) => Promise<{ ok: boolean; code?: string; message?: string; status: LicenseStatus }>;
   openActivation: () => Promise<boolean>;
   openPricing: () => Promise<void>;
   /** 결제 수단을 바꾸는 Groble 페이지를 연다. 예전 메인 프로세스에는 없다. */

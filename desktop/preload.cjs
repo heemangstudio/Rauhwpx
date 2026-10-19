@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   license: {
     getStatus: () => ipcRenderer.invoke('license:status'),
     checkNow: () => ipcRenderer.invoke('license:check'),
+    activate: (key) => ipcRenderer.invoke('license:activate', String(key ?? '')),
     deactivate: () => ipcRenderer.invoke('license:deactivate'),
     openActivation: () => ipcRenderer.invoke('license:open-window'),
     openPricing: () => ipcRenderer.invoke('license:open-pricing'),

@@ -167,13 +167,6 @@
   word-break: keep-all;
 }
 
-.se-meta {
-  margin: 2px 12px 0;
-  font-size: var(--ag-fs-meta);
-  line-height: var(--ag-lh-secondary);
-  color: var(--n-ink-secondary);
-}
-
 .se-error {
   margin: 8px 12px 0;
   font-size: var(--ag-fs-meta);

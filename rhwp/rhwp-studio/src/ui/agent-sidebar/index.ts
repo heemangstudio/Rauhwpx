@@ -336,6 +336,7 @@ import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
+import type { DesktopLicenseApi } from './settings-license.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import { formatThreadTranscript } from '../issue-report/transcript.ts';
 import {
@@ -357,6 +358,8 @@ export interface AgentSidebarDeps {
   editorSettingsRuntime?: EditorSettingsRuntime;
   /** 설정 → Pi 의 선물 크레딧. 생략하면 macOS 데스크톱의 rhwpDesktop.gift 를 쓰고, null 이면 없다. */
   gift?: DesktopGiftApi | null;
+  /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
+  license?: DesktopLicenseApi | null;
   /** 헤더에 표시할 현재 문서와 선택 상태. */
   getDocumentContext?: () => {
     documentId?: string | null;
@@ -4823,6 +4826,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
+    ...(deps.license !== undefined ? { license: deps.license } : {}),
     onFinished: () => {
       updateReconnectChip();
       updateCalibrationChip();

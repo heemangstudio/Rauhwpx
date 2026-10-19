@@ -48,7 +48,11 @@ export interface SpecialEventOptions {
    * 받은 뒤에는 고를 때마다 저장한다. 저장에 실패하면 거부한다.
    */
   order?: { initial: GiftOrder; choose(order: GiftOrder): Promise<void> };
+  /** 왜 주는지. license 면 처음 설정에서 키를 막 활성화한 사람에게 환영 인사로 띄운다. 기본 update. */
+  occasion?: SpecialEventOccasion;
 }
+
+export type SpecialEventOccasion = 'update' | 'license';
 
 export type SpecialEventResult = 'claimed' | 'dismissed';
 
@@ -64,6 +68,9 @@ const GLYPHS: Readonly<Record<string, readonly string[]>> = {
   L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
   V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
   N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
   T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
   ' ': ['..', '..', '..', '..', '..', '..', '..'],
 };
@@ -314,17 +321,15 @@ export function openSpecialEventPopup(options: SpecialEventOptions): Promise<Spe
   title.id = `${id}-title`;
   const titleText = document.createElement('span');
   titleText.className = 'visually-hidden';
-  titleText.textContent = 'Special event';
-  title.append(pixelTitle('SPECIAL EVENT'), titleText);
+  const welcome = options.occasion === 'license';
+  titleText.textContent = welcome ? 'Welcome' : 'Special event';
+  title.append(pixelTitle(welcome ? 'WELCOME' : 'SPECIAL EVENT'), titleText);
 
   const copy = document.createElement('p');
   copy.className = 'se-copy';
   copy.id = `${id}-copy`;
-  copy.textContent = `업데이트 기념으로 Claude 크레딧 ${formatGiftAmount(amount)}를 드립니다.`;
+  copy.textContent = `${welcome ? '라이선스 등록' : '업데이트'} 기념으로 Claude 크레딧 ${formatGiftAmount(amount)}를 드립니다.`;
 
-  const meta = document.createElement('p');
-  meta.className = 'se-meta';
-  meta.textContent = 'Pi에서 사용 · 크레딧 소진 시 종료';
 
   const error = document.createElement('p');
   error.className = 'se-error';
@@ -363,7 +368,7 @@ export function openSpecialEventPopup(options: SpecialEventOptions): Promise<Spe
     }
   }
 
-  card.append(pair.element, title, copy, meta, ...(order ? [order.element] : []), error, actions);
+  card.append(pair.element, title, copy, ...(order ? [order.element] : []), error, actions);
   layer.append(backdrop, card);
   document.body.append(layer);
 
@@ -417,7 +422,7 @@ export function openSpecialEventPopup(options: SpecialEventOptions): Promise<Spe
       actions.replaceChildren(done);
       actions.dataset.single = 'true';
       copy.textContent = claimedCopy(order?.value() ?? null);
-      meta.replaceWith(wallet);
+      copy.after(wallet);
       order?.setDisabled(false);
       afterClaim = true;
       return done;

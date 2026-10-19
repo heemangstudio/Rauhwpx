@@ -59,9 +59,10 @@ import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
+import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
-import { isInitialSetupActive, onInitialSetupInactive } from '../ui/initial-setup/active.ts';
+import { isInitialSetupActive, onInitialSetupInactive, wasLicensedInSetup } from '../ui/initial-setup/active.ts';
 
 const params = new URLSearchParams(location.search);
 /** `vault=1|empty|unsupported|fail`: 데스크톱 앱의 Chrome 비밀번호 보관함을 흉내 낸다. */
@@ -196,7 +197,16 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 받은 선물이 남아 있으면 Pi 상태의 credential 이 'gift' 다(순서가 '내 키 다음에'면 내 키가 먼저).
  * Pi 는 내 OpenRouter 키가 있는 상태로 시작한다. `pikey=none` 이면 키 없이 시작해 예전 창(받기만)이 뜬다.
  */
-const mockGift = createMockGift(mockGiftMode(params), { failClaim: params.get('claim') === 'fail' });
+/*
+ * 라이선스. `license=trial|expired|licensed` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
+ * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
+ */
+const mockLicense = createMockLicense(mockLicenseMode(params), report);
+const mockGift = createMockGift(mockGiftMode(params), {
+  failClaim: params.get('claim') === 'fail',
+  locked: mockLicense !== null && mockLicenseMode(params) !== 'licensed',
+});
+mockLicense?.onLicensed(() => mockGift?.unlock());
 const mock = createMockBridge(report, () => {
   undoState.entry = {};
   if (restoreState.turnKey) {
@@ -321,7 +331,7 @@ initThemeSync();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
 // 앱과 같은 트리거로 자동 버그 수정 소개를 띄운다. `autofix=undecided` 일 때만 뜬다.
 if (mockAutofix) startAutofixIntro({ whenReady: async () => {} });
-if (params.get('event') === 'special' && mockGift) {
+if ((params.get('event') === 'special' || mockLicense) && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
   const records = new Map<string, string>();
   startSpecialEvent({
@@ -330,6 +340,7 @@ if (params.get('event') === 'special' && mockGift) {
     whenReady: async () => {},
     isSetupActive: isInitialSetupActive,
     onSetupInactive: onInitialSetupInactive,
+    occasion: () => (wasLicensedInSetup() ? 'license' : 'update'),
     pi: {
       status: () => mock.bridge.requestPiStatus(),
       setGiftOrder: async (order) => {
@@ -576,6 +587,7 @@ const sidebar = initAgentSidebar({
   },
   turnRestore,
   gift: mockGift?.api ?? null,
+  license: mockLicense?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
