@@ -238,7 +238,7 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const body = document.createElement('div');
   body.className = 'ag-settings-section-body';
   const row = document.createElement('div');
-  row.className = 'ag-settings-control';
+  row.className = 'ag-settings-control-row';
   const copy = document.createElement('span');
   copy.className = 'ag-settings-control-copy';
   const title = document.createElement('span');
