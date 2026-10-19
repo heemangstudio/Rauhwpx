@@ -30,7 +30,10 @@ const STATIC = {
   '/fonts/galmuri11-bold.woff2': ['fonts/galmuri11-bold.woff2', 'font/woff2'],
 };
 
-/** The only upstream calls the page can make. Bodies and queries are cut down to these fields. */
+/**
+ * The only upstream calls the page can make. Bodies and queries are cut down to `fields`;
+ * `fixed` values are set here and always win, so the page can only issue or extend by one year.
+ */
 const ROUTES = {
   'GET /api/betas': { path: '/v1/admin/licenses/betas', fields: [] },
   'GET /api/licenses': { path: '/v1/admin/licenses', fields: ['key', 'keyId', 'email'] },
@@ -39,6 +42,15 @@ const ROUTES = {
   'POST /api/revoke': { path: '/v1/admin/licenses/revoke', fields: ['key', 'keyId', 'reason'] },
   'POST /api/restore': { path: '/v1/admin/licenses/restore', fields: ['key', 'keyId'] },
   'POST /api/reset-devices': { path: '/v1/admin/licenses/reset-devices', fields: ['key', 'keyId'] },
+  'GET /api/customers': { path: '/v1/admin/licenses/customers', fields: [] },
+  'POST /api/issue': { path: '/v1/admin/licenses/issue', fields: ['email'], fixed: { sendEmail: true, years: 1 } },
+  'POST /api/extend': { path: '/v1/admin/licenses/extend', fields: ['keyId'], fixed: { years: 1 } },
+  'POST /api/resend-email': { path: '/v1/admin/licenses/resend-email', fields: ['keyId', 'email'] },
+  'POST /api/remove-device': { path: '/v1/admin/licenses/remove-device', fields: ['keyId', 'deviceId'] },
+  'GET /api/attention': { path: '/v1/admin/attention', fields: [] },
+  'POST /api/release': { path: '/v1/admin/orders/release', fields: ['merchantUid'] },
+  'POST /api/apply-renewal': { path: '/v1/admin/orders/apply-renewal', fields: ['merchantUid', 'key', 'keyId'] },
+  'POST /api/ack': { path: '/v1/admin/attention/ack', fields: ['id', 'merchantUid'] },
 };
 
 function pick(source, fields) {
@@ -178,7 +190,7 @@ export function createAdminUiServer({
     if (!target) return send(res, 404, { ok: false, error: 'not_found' });
     if (!(await currentToken())) return send(res, 401, { ok: false, error: 'token_missing' });
     const input = req.method === 'GET' ? Object.fromEntries(url.searchParams) : await readJson(req);
-    const fields = pick(input, target.fields);
+    const fields = { ...pick(input, target.fields), ...target.fixed };
     const upstream = await adminRequest({
       base,
       token,

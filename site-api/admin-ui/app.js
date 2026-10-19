@@ -19,6 +19,16 @@
     upstream_unavailable: 'OpenRouter에 연결하지 못했어요.',
     gift_provisioning: '크레딧 키를 만드는 중이에요. 잠시 뒤 다시 해 주세요.',
     event_inactive: '크레딧 이벤트가 꺼져 있어요.',
+    email_invalid: '이메일 주소가 올바르지 않아요.',
+    email_missing: '이메일 주소를 넣어 주세요.',
+    device_not_found: '이미 빠진 기기예요.',
+    lifetime_key: '평생 키는 연장할 수 없어요.',
+    license_revoked: '해지된 키예요. 먼저 복구해 주세요.',
+    order_not_found: '주문을 찾을 수 없어요.',
+    order_refunded: '환불된 주문이에요.',
+    renewal_use_extend: '갱신 결제는 쓰던 키를 연장해서 처리해요.',
+    not_a_renewal: '갱신 결제가 아니에요.',
+    event_not_found: '이미 처리한 항목이에요.',
   };
 
   async function api(method, path, body) {
@@ -50,6 +60,7 @@
 
   const mask = (key) => `${key.slice(0, 10)}…${key.slice(-5)}`;
   const dollars = (n, cents = false) => `$${cents || n % 1 ? n.toFixed(2) : n}`;
+  const won = (n) => (typeof n === 'number' ? `${n.toLocaleString('ko-KR')}원` : '');
 
   async function copy(button, text) {
     await navigator.clipboard.writeText(text);
@@ -144,32 +155,67 @@
     return cell;
   }
 
+  /** 펼친 줄을 여닫는 단추. */
+  function chevron(detail, label = '기기 보기') {
+    const toggle = el('button', 'chevron', '›');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', () => {
+      detail.hidden = !detail.hidden;
+      toggle.setAttribute('aria-expanded', String(!detail.hidden));
+    });
+    return toggle;
+  }
+
+  function keyCell(key) {
+    const cell = el('td');
+    const button = el('button', 'key mono', mask(key));
+    button.type = 'button';
+    button.title = '복사';
+    button.addEventListener('click', () => { void copy(button, key); });
+    cell.append(button);
+    return cell;
+  }
+
+  /** 펼친 줄의 기기 목록. 기기마다 그 기기만 빼는 단추가 있어요. */
+  function deviceList(license, { errorTarget, refresh }) {
+    const devices = license.devices ?? [];
+    if (devices.length === 0) return el('span', 'muted', '활성화된 기기가 없어요.');
+    const list = el('ul', 'devices');
+    for (const d of devices) {
+      const item = el('li');
+      const remove = confirmButton('빼기', '뺄까요?', async () => {
+        try {
+          await api('POST', '/api/remove-device', { keyId: license.keyId, deviceId: d.deviceId });
+        } catch (error) {
+          showError(errorTarget, error);
+        }
+        await refresh();
+      }, 'small');
+      item.append(
+        el('span', '', PLATFORMS[d.platform] ?? d.platform ?? '—'),
+        el('span', 'muted num', fmt(d.lastSeenAt)),
+        el('span', 'muted mono', d.deviceId),
+        remove,
+      );
+      list.append(item);
+    }
+    return list;
+  }
+
   /** license: { keyId, key, name?, email?, tier?, status, deviceLimit, devices[], createdAt, gift? } */
   function rows(license, { errorTarget, refresh, showTier, showGift = false }) {
     const revoked = license.status === 'revoked';
     const row = el('tr', revoked ? 'revoked' : '');
     const detail = el('tr', 'detail');
     detail.hidden = true;
-
-    const toggle = el('button', 'chevron', '›');
-    toggle.type = 'button';
-    toggle.setAttribute('aria-label', '기기 보기');
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', () => {
-      detail.hidden = !detail.hidden;
-      toggle.setAttribute('aria-expanded', String(!detail.hidden));
-    });
+    const toggle = chevron(detail);
 
     const devices = license.devices ?? [];
     const name = el('td');
     name.append(lamp(!revoked && recent(lastSeen(devices))), document.createTextNode(license.name || license.email || '—'));
     if (showTier && license.tier === 'beta') name.append(el('span', 'tag', '베타'));
-    const keyCell = el('td');
-    const keyButton = el('button', 'key mono', mask(license.key));
-    keyButton.type = 'button';
-    keyButton.title = '복사';
-    keyButton.addEventListener('click', () => { void copy(keyButton, license.key); });
-    keyCell.append(keyButton);
 
     const act = (path) => async () => {
       try {
@@ -197,7 +243,7 @@
     row.append(
       toggleCell,
       name,
-      keyCell,
+      keyCell(license.key),
       el('td', revoked ? 'status bad' : 'status', revoked ? '해지됨' : '사용 중'),
       el('td', 'num', `${devices.length}/${license.deviceLimit ?? 2}`),
       ...(showGift ? [giftCell(license, { errorTarget, refresh })] : []),
@@ -208,31 +254,108 @@
 
     const cell = el('td');
     cell.colSpan = showGift ? 9 : 8;
-    if (devices.length === 0) {
-      cell.append(el('span', 'muted', '활성화된 기기가 없어요.'));
-    } else {
-      const list = el('ul', 'devices');
-      for (const d of devices) {
-        const item = el('li');
-        item.append(
-          el('span', '', PLATFORMS[d.platform] ?? d.platform ?? '—'),
-          el('span', 'muted num', fmt(d.lastSeenAt)),
-          el('span', 'muted mono', d.deviceId),
-        );
-        list.append(item);
+    cell.append(deviceList(license, { errorTarget, refresh }));
+    detail.append(cell);
+    return [row, detail];
+  }
+
+  const DELIVERY = { pending: '보내는 중', sent: '보냄', failed: '실패', skipped: '건너뜀', no_address: '주소 없음', manual: '안 보냄' };
+  const TERM = { past_due: '결제 실패', lapsed: '만료됨' };
+
+  /** customer: GET /api/customers 의 한 줄. 펼치면 기기와 키 다시 보내기가 나와요. */
+  function customerRows(customer, { refresh }) {
+    const errorTarget = 'customer-error';
+    const revoked = customer.status === 'revoked';
+    const row = el('tr', revoked ? 'revoked' : '');
+    const detail = el('tr', 'detail');
+    detail.hidden = true;
+    const toggle = chevron(detail, '자세히 보기');
+    const devices = customer.devices ?? [];
+
+    const email = el('td');
+    email.append(lamp(!revoked && recent(lastSeen(devices))), document.createTextNode(customer.email || '—'));
+    const term = TERM[customer.subscriptionStatus];
+    const status = el('td', revoked || term ? 'status bad' : 'status', revoked ? '해지됨' : term ?? '사용 중');
+    const expiry = el('td', 'num');
+    if (customer.subscriptionStatus === 'lifetime') expiry.textContent = '평생';
+    else {
+      expiry.textContent = fmt(customer.expiresAt, dateOnly);
+      if (customer.autoRenew === false) expiry.append(el('span', 'muted', ' · 갱신 끔'));
+    }
+    const delivery = customer.emailDelivery ?? {};
+    const mail = el('td', delivery.status === 'failed' ? 'status bad' : '', DELIVERY[delivery.status] ?? '—');
+    mail.title = [delivery.lastAttemptAt ? fmt(delivery.lastAttemptAt) : '', delivery.error ?? ''].filter(Boolean).join(' · ');
+
+    const act = (path, body = {}) => async () => {
+      try {
+        await api('POST', path, { keyId: customer.keyId, ...body });
+      } catch (error) {
+        showError(errorTarget, error);
       }
-      cell.append(list);
+      await refresh();
+    };
+    const resendOpen = el('button', '', '다시 보내기');
+    resendOpen.type = 'button';
+    resendOpen.addEventListener('click', () => {
+      detail.hidden = false;
+      toggle.setAttribute('aria-expanded', 'true');
+      detail.querySelector('input')?.focus();
+    });
+    const extend = confirmButton('1년 연장', '연장할까요?', act('/api/extend'));
+    extend.disabled = revoked || customer.subscriptionStatus === 'lifetime';
+    let primary;
+    if (revoked) {
+      primary = el('button', '', '복구');
+      primary.type = 'button';
+      primary.addEventListener('click', () => { primary.disabled = true; void act('/api/restore')(); });
+    } else {
+      primary = confirmButton('해지', '해지할까요?', act('/api/revoke'), 'danger');
+    }
+    const actions = el('td', 'actions');
+    actions.append(resendOpen, extend, primary);
+
+    const toggleCell = el('td');
+    toggleCell.append(toggle);
+    row.append(
+      toggleCell,
+      email,
+      keyCell(customer.key),
+      status,
+      expiry,
+      el('td', 'num', `${devices.length}/${customer.deviceLimit ?? 2}`),
+      mail,
+      el('td', 'num', fmt(customer.createdAt, dateOnly)),
+      actions,
+    );
+
+    const cell = el('td');
+    cell.colSpan = 9;
+    const resend = el('form', 'resend');
+    const to = el('input', 'grow');
+    Object.assign(to, { type: 'email', value: customer.email ?? '', placeholder: '이메일', required: true, maxLength: 254 });
+    to.setAttribute('aria-label', '받을 이메일');
+    const send = el('button', 'primary', '키 다시 보내기');
+    send.type = 'submit';
+    resend.append(to, send);
+    resend.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      send.disabled = true;
+      await act('/api/resend-email', { email: to.value.trim() })();
+    });
+    cell.append(deviceList(customer, { errorTarget, refresh }), resend);
+    if (customer.merchantUid) {
+      cell.append(el('p', 'muted order', [`주문번호 ${customer.merchantUid}`, won(customer.amount)].filter(Boolean).join(' · ')));
     }
     detail.append(cell);
     return [row, detail];
   }
 
-  function render(tableId, licenses, options) {
+  function render(tableId, items, build) {
     const body = $(tableId).querySelector('tbody');
     const open = new Set([...body.querySelectorAll('tr.detail:not([hidden])')].map((tr) => tr.dataset.keyId));
     body.replaceChildren();
-    for (const license of licenses) {
-      const [row, detail] = rows(license, options);
+    for (const license of items) {
+      const [row, detail] = build(license);
       detail.dataset.keyId = license.keyId;
       if (open.has(license.keyId)) {
         detail.hidden = false;
@@ -293,11 +416,106 @@
       if (giftEvent) $('gift').placeholder = dollars(giftEvent.amountUsd);
       // 확인을 묻는 단추나 고치는 중인 크레딧이 있으면 자동 새로고침이 그 상태를 지우지 않게 표만 그대로 둬요.
       if (background && document.querySelector('#beta-table .armed, #beta-table .editing')) return;
-      render('beta-table', betas, { errorTarget: 'beta-error', refresh: loadBetas, showTier: false, showGift: true });
+      render('beta-table', betas, (b) => rows(b, { errorTarget: 'beta-error', refresh: loadBetas, showTier: false, showGift: true }));
       $('beta-table').hidden = betas.length === 0;
       $('beta-empty').hidden = betas.length > 0;
     } catch (error) {
       if (!background) showError('beta-error', error);
+    }
+  }
+
+  // 확인을 묻는 단추가 켜져 있거나 입력 중이면 자동 새로고침이 그 상태를 지우지 않게 해요.
+  const busy = (scope) => Boolean(document.querySelector(`${scope} .armed, ${scope} .editing, ${scope} input:focus, ${scope} select:focus`));
+
+  let customers = [];
+  function showCustomers() {
+    const needle = $('customer-filter').value.trim().toLowerCase();
+    const list = needle
+      ? customers.filter((c) => (c.email ?? '').toLowerCase().includes(needle) || c.key.toLowerCase().includes(needle))
+      : customers;
+    render('customer-table', list, (c) => customerRows(c, { refresh: refreshAll }));
+    $('customer-table').hidden = customers.length === 0;
+    $('customer-empty').hidden = customers.length > 0;
+  }
+
+  async function loadCustomers({ background = false } = {}) {
+    try {
+      ({ customers } = await api('GET', '/api/customers'));
+      if (background && busy('#customer-table')) return;
+      showCustomers();
+    } catch (error) {
+      if (!background) showError('customer-error', error);
+    }
+  }
+
+  /** 보류한 주문이나 확인할 이벤트 하나. 주문은 키 발급이나 연장, 이벤트는 확인으로 끝나요. */
+  function attentionItem(item) {
+    const li = el('li');
+    const what = el('div', 'what');
+    what.append(
+      el('strong', '', item.reasonText),
+      el('span', 'muted', [item.email, won(item.amount), fmt(item.at), item.merchantUid].filter(Boolean).join(' · ')),
+    );
+    const actions = el('div', 'actions');
+    const run = (path, body) => async () => {
+      try {
+        await api('POST', path, body);
+        if (path !== '/api/ack') window.hamaScene?.celebrate();
+      } catch (error) {
+        showError('attention-error', error);
+      }
+      await refreshAll();
+    };
+    if (item.type === 'order' && item.orderKind === 'renewal') {
+      const candidates = item.candidates ?? [];
+      const pickKey = el('select', 'mono');
+      pickKey.setAttribute('aria-label', '연장할 키');
+      for (const c of candidates) pickKey.append(new Option(`${mask(c.key)} · ${fmt(c.expiresAt, dateOnly)}`, c.keyId));
+      pickKey.append(new Option('직접 입력', ''));
+      pickKey.hidden = candidates.length === 0;
+      const typed = el('input', 'mono');
+      Object.assign(typed, { placeholder: 'HAMA-…', hidden: candidates.length > 0 });
+      typed.setAttribute('aria-label', '연장할 키');
+      pickKey.addEventListener('change', () => {
+        typed.hidden = pickKey.value !== '';
+        if (!typed.hidden) typed.focus();
+      });
+      const extend = el('button', 'primary', '연장');
+      extend.type = 'button';
+      extend.addEventListener('click', () => {
+        const picked = !pickKey.hidden && pickKey.value;
+        const key = typed.value.trim();
+        if (!picked && !key) return typed.focus();
+        extend.disabled = true;
+        void run('/api/apply-renewal', { merchantUid: item.merchantUid, ...(picked ? { keyId: picked } : { key }) })();
+      });
+      actions.append(pickKey, typed, extend);
+    } else if (item.type === 'order') {
+      actions.append(confirmButton('키 발급', '발급할까요?', run('/api/release', { merchantUid: item.merchantUid }), 'primary'));
+    }
+    if (item.type === 'order') {
+      actions.append(confirmButton('확인', '숨길까요?', run('/api/ack', { merchantUid: item.merchantUid })));
+    } else {
+      const ack = el('button', '', '확인');
+      ack.type = 'button';
+      ack.addEventListener('click', () => { ack.disabled = true; void run('/api/ack', { id: item.id })(); });
+      actions.append(ack);
+    }
+    li.append(what, actions);
+    return li;
+  }
+
+  /** 하나라도 있으면 관리 화면 위쪽 띠와 벽 화면의 숫자가 켜져요. */
+  async function loadAttention({ background = false } = {}) {
+    try {
+      const { items } = await api('GET', '/api/attention');
+      $('stat-attention').hidden = items.length === 0;
+      $('stat-attention-count').textContent = items.length;
+      if (background && busy('#attention')) return;
+      $('attention').hidden = items.length === 0;
+      $('attention-list').replaceChildren(...items.map(attentionItem));
+    } catch (error) {
+      if (!background) showError('attention-error', error);
     }
   }
 
@@ -307,7 +525,7 @@
     try {
       const { licenses } = await api('GET', `/api/licenses?${new URLSearchParams(lastLookup)}`);
       if (licenses.length === 0) throw new Error('invalid_key');
-      render('lookup-table', licenses, { errorTarget: 'lookup-error', refresh: refreshAll, showTier: true });
+      render('lookup-table', licenses, (l) => rows(l, { errorTarget: 'lookup-error', refresh: refreshAll, showTier: true }));
       $('lookup-table').hidden = false;
     } catch (error) {
       $('lookup-table').hidden = true;
@@ -316,8 +534,31 @@
   }
 
   async function refreshAll() {
-    await Promise.all([loadBetas(), runLookup()]);
+    await Promise.all([loadAttention(), loadCustomers(), loadBetas(), runLookup()]);
   }
+
+  $('issue-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const submit = event.submitter;
+    submit.disabled = true;
+    try {
+      const { license } = await api('POST', '/api/issue', { email: $('issue-email').value.trim() });
+      $('issued-email').textContent = `${license.email} · ${fmt(license.expiresAt, dateOnly)}까지`;
+      $('issued-key').textContent = license.key;
+      $('issued').hidden = false;
+      $('issue-email').value = '';
+      window.hamaScene?.celebrate();
+      await loadCustomers();
+    } catch (error) {
+      showError('customer-error', error);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  $('issued-key').addEventListener('click', (event) => {
+    void copy(event.currentTarget, event.currentTarget.textContent);
+  });
+  $('customer-filter').addEventListener('input', showCustomers);
 
   $('create-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -376,8 +617,12 @@
         $('token-form').hidden = false;
         return;
       }
-      await loadBetas();
-      setInterval(() => { void loadBetas({ background: true }); }, 60_000);
+      await Promise.all([loadAttention(), loadCustomers(), loadBetas()]);
+      setInterval(() => {
+        void loadAttention({ background: true });
+        void loadCustomers({ background: true });
+        void loadBetas({ background: true });
+      }, 60_000);
     } catch (error) {
       showError('beta-error', error);
     }

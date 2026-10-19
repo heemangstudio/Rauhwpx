@@ -65,8 +65,25 @@ export function webhookBodySummary(rawBody) {
   };
 }
 
-/** One log entry from the raw request. `verified` says whether the signature matched. */
-export function webhookLogEntry({ kind, reason, status, verified, headers, rawBody }) {
+/**
+ * What the dashboard and the held alert show for a verified event the server held: the outcome
+ * (`held` = an order now waiting in `orders`), the buyer email and the paid amount.
+ */
+export function heldEventDetails(event, result) {
+  const object = event?.data?.object;
+  const amount = object?.pricing?.finalAmount;
+  return {
+    action: clip(result?.action, 64),
+    buyerEmail: clip(object?.buyer?.email, 254),
+    amount: typeof amount === 'number' && Number.isFinite(amount) ? amount : undefined,
+  };
+}
+
+/**
+ * One log entry from the raw request. `verified` says whether the signature matched.
+ * `details` (verified held events only) comes from heldEventDetails.
+ */
+export function webhookLogEntry({ kind, reason, status, verified, headers, rawBody, details = {} }) {
   const entry = {
     kind,
     reason,
@@ -75,6 +92,7 @@ export function webhookLogEntry({ kind, reason, status, verified, headers, rawBo
     timestamp: clip(headerValue(headers, 'x-groble-timestamp'), 32),
     idempotencyKey: clip(headerValue(headers, 'x-groble-idempotency-key'), 200),
     ...webhookBodySummary(rawBody),
+    ...details,
     headers: redactWebhookHeaders(headers),
   };
   for (const k of Object.keys(entry)) if (entry[k] === undefined) delete entry[k];
@@ -102,6 +120,21 @@ export function createWebhookLog({
         entries.push(saved);
         await store.save({ entries: entries.slice(-maxEntries) });
         return saved;
+      });
+      chain = run.catch(() => {});
+      return run;
+    },
+    /** Mark one entry as reviewed so the dashboard stops showing it. Resolves to the entry, or null. */
+    ack(id) {
+      const run = chain.then(async () => {
+        const entries = await load();
+        const entry = typeof id === 'string' ? entries.find((e) => e.id === id) : undefined;
+        if (!entry) return null;
+        if (!entry.ackedAt) {
+          entry.ackedAt = new Date(now()).toISOString();
+          await store.save({ entries });
+        }
+        return entry;
       });
       chain = run.catch(() => {});
       return run;

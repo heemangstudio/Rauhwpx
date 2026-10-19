@@ -17,6 +17,7 @@ import {
 } from './config.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
+import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
@@ -31,7 +32,7 @@ import {
 import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
 import { createDownloadsService, emptyDownloadsState } from './downloads.mjs';
 import { createWebhookAlerter } from './webhook-alert.mjs';
-import { createWebhookLog, emptyWebhookLogState, webhookLogEntry } from './webhook-log.mjs';
+import { createWebhookLog, emptyWebhookLogState, heldEventDetails, webhookLogEntry } from './webhook-log.mjs';
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
@@ -144,6 +145,7 @@ export function siteRequestListener({
   licenseConfig = {},
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
+  heldAlerts = createHeldAlerter({ log: () => {} }),
   log = () => {},
 }) {
   const limiter = createRateLimiter();
@@ -263,10 +265,20 @@ export function siteRequestListener({
           }
           log(`[site-api] groble ${event?.type} ${result.duplicate ? 'duplicate' : result.action}`);
           send(200, { ok: true, duplicate: result.duplicate, action: result.action });
-          // Held orders and events we could not use (unknown type, unmatched subscription) stay visible in `webhooks --held`.
+          // Held orders and events we could not use (unknown type, unmatched subscription) stay visible in
+          // `webhooks --held` and on the dashboard, and each one is emailed to management.
           if (result.needsReview && !result.duplicate) {
-            const entry = webhookLogEntry({ kind: 'held', reason: result.reason, status: 200, verified: true, headers: req.headers, rawBody });
-            later(() => webhookLog.record(entry));
+            const entry = webhookLogEntry({
+              kind: 'held', reason: result.reason, status: 200, verified: true, headers: req.headers, rawBody,
+              details: heldEventDetails(event, result),
+            });
+            later(async () => {
+              const saved = await webhookLog.record(entry).catch((error) => {
+                log(`[site-api] webhook log write failed: ${error?.message ?? error}`);
+                return { ...entry, at: new Date().toISOString() };
+              });
+              await heldAlerts.notify(saved);
+            });
           }
           setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
           return;
@@ -361,6 +373,14 @@ export function siteRequestListener({
           send(200, gifts ? await gifts.admin.withGifts(token, result) : result);
           return;
         }
+        case 'GET /v1/admin/licenses/customers':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.customers(bearerToken(req)));
+          return;
+        case 'GET /v1/admin/attention':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.attention(bearerToken(req)));
+          return;
         case 'GET /v1/admin/webhooks':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
@@ -372,7 +392,10 @@ export function siteRequestListener({
         case 'POST /v1/admin/licenses/reset-devices':
         case 'POST /v1/admin/licenses/resend-email':
         case 'POST /v1/admin/licenses/extend':
-        case 'POST /v1/admin/orders/release': {
+        case 'POST /v1/admin/licenses/remove-device':
+        case 'POST /v1/admin/orders/release':
+        case 'POST /v1/admin/orders/apply-renewal':
+        case 'POST /v1/admin/attention/ack': {
           allow('admin', 120, TEN_MINUTES);
           const action = {
             '/v1/admin/licenses/issue': 'issue',
@@ -382,7 +405,10 @@ export function siteRequestListener({
             '/v1/admin/licenses/reset-devices': 'resetDevices',
             '/v1/admin/licenses/resend-email': 'resendEmail',
             '/v1/admin/licenses/extend': 'extend',
+            '/v1/admin/licenses/remove-device': 'removeDevice',
             '/v1/admin/orders/release': 'release',
+            '/v1/admin/orders/apply-renewal': 'applyRenewal',
+            '/v1/admin/attention/ack': 'ack',
           }[pathname];
           const token = bearerToken(req);
           const body = await readJson(req);
@@ -395,7 +421,7 @@ export function siteRequestListener({
             result.gift = (await gifts.admin.setAmount(token, { keyId: result.license.keyId, amountUsd: giftUsd })).gift;
           }
           send(200, result);
-          if (action === 'issue' || action === 'release') {
+          if (action === 'issue' || action === 'release' || action === 'applyRenewal') {
             setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
           }
           return;
@@ -507,11 +533,9 @@ export function createSiteServer(env = process.env, options = {}) {
     store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
     now: options.now,
   });
-  const webhookAlerts = createWebhookAlerter({
-    provider: options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env),
-    now: options.now,
-    log,
-  });
+  const alertProvider = options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env);
+  const webhookAlerts = createWebhookAlerter({ provider: alertProvider, now: options.now, log });
+  const heldAlerts = createHeldAlerter({ provider: alertProvider, log });
   const licenses = createLicensesService({
     store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
     uniqueInstallsStore: uniqueInstallsStore,
@@ -541,7 +565,7 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
   const server = http.createServer((req, res) => {

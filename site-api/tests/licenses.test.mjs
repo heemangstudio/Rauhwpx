@@ -370,6 +370,35 @@ test('beta keys: per-key device limit, 3-day lease, revoke and restore, listed f
   assert.equal((await svc.validate({ key, deviceId: 'beta-device-0' })).ok, true);
 });
 
+test('admin customers: paid keys only, newest first, with term state; remove-device frees one slot and keeps the rest', async () => {
+  const { svc, advance } = service();
+  await assert.rejects(svc.admin.customers('wrong'), { code: 'forbidden' });
+  await assert.rejects(svc.admin.removeDevice('wrong', {}), { code: 'forbidden' });
+  await svc.handleGrobleEvent(completed({ merchantUid: 'm_c1', ref: 'r-c1' }), { idempotencyKey: 'c1' });
+  advance(1000);
+  await svc.admin.issueBeta(ADMIN, { name: '테스터' });
+  advance(1000);
+  const annual = (await svc.admin.issue(ADMIN, { email: 'annual@example.com', years: 1, sendEmail: true })).license;
+
+  const { customers } = await svc.admin.customers(ADMIN);
+  assert.deepEqual(customers.map((c) => [c.email, c.subscriptionStatus]), [['annual@example.com', 'active'], ['buyer@example.com', 'lifetime']]);
+  const paid = customers[1];
+  assert.deepEqual([paid.merchantUid, paid.amount, paid.deviceLimit, paid.emailDelivery.status], ['m_c1', 9900, 2, 'pending']);
+
+  await svc.activate({ key: paid.key, deviceId: 'device-dead-one', platform: 'darwin' });
+  await svc.activate({ key: paid.key, deviceId: 'device-still-used', platform: 'win32' });
+  await assert.rejects(svc.activate({ key: paid.key, deviceId: 'device-new-mac' }), { code: 'device_limit' });
+  const removed = await svc.admin.removeDevice(ADMIN, { keyId: paid.keyId, deviceId: 'device-dead-one' });
+  assert.deepEqual(removed.license.devices.map((d) => d.deviceId), ['device-still-used']);
+  await assert.rejects(svc.admin.removeDevice(ADMIN, { keyId: paid.keyId, deviceId: 'device-dead-one' }), { code: 'device_not_found', status: 404 });
+  assert.equal((await svc.activate({ key: paid.key, deviceId: 'device-new-mac' })).devicesUsed, 2);
+  assert.equal((await svc.validate({ key: paid.key, deviceId: 'device-still-used' })).ok, true);
+
+  advance(400 * 24 * 60 * 60 * 1000);
+  const later = (await svc.admin.customers(ADMIN)).customers.find((c) => c.keyId === annual.keyId);
+  assert.equal(later.subscriptionStatus, 'lapsed');
+});
+
 test('normalizeLicenseKey tolerates case, spaces and O/I look-alikes', () => {
   assert.equal(normalizeLicenseKey('hama abcde fghjk mnpqr stvwx yz012'), 'HAMA-ABCDE-FGHJK-MNPQR-STVWX-YZ012');
   assert.equal(normalizeLicenseKey('HAMA-OOOOO-IIIII-LLLLL-00000-11111'), 'HAMA-00000-11111-11111-00000-11111');

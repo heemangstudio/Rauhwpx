@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
+import { heldReasonText } from './held-alert.mjs';
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import {
   BETA_LEASE_TTL_MS,
@@ -12,7 +13,7 @@ import {
 } from './license-lease.mjs';
 import { createMemoryStore } from './store.mjs';
 import { uniqueInstallDigest } from './unique-installs.mjs';
-import { createWebhookLog } from './webhook-log.mjs';
+import { createWebhookLog, WEBHOOK_LOG_MAX_ENTRIES } from './webhook-log.mjs';
 
 export const DEVICE_LIMIT = 2;
 export const BETA_DEVICE_LIMIT = 5;
@@ -182,6 +183,42 @@ function licenseView(license, { includeKey = true } = {}) {
   };
 }
 
+/** `lifetime`, or for an annual key `active`, `past_due` (renewal failed, still in grace) or `lapsed`. */
+function subscriptionStatusOf(license, nowMs) {
+  if (expiryOf(license) === null) return 'lifetime';
+  if (nowMs >= accessEndOf(license)) return 'lapsed';
+  return paymentGraceEndOf(license) === null ? 'active' : 'past_due';
+}
+
+/** One paid key for the admin customer list. */
+function customerView(license, nowMs) {
+  const delivery = license.emailDelivery ?? {};
+  const expiry = expiryOf(license);
+  return {
+    keyId: license.keyId,
+    key: license.key,
+    email: license.email,
+    status: license.status,
+    source: license.source,
+    subscriptionStatus: subscriptionStatusOf(license, nowMs),
+    expiresAt: license.expiresAt ?? null,
+    autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+    paymentGraceEndsAt: paymentGraceEndOf(license) === null ? null : iso(paymentGraceEndOf(license)),
+    deviceLimit: deviceLimitOf(license),
+    devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, platform: d.platform, lastSeenAt: d.lastSeenAt })),
+    emailDelivery: license.emailDelivery ? {
+      status: delivery.status,
+      attempts: delivery.attempts,
+      lastAttemptAt: delivery.lastAttemptAt,
+      error: delivery.error,
+    } : null,
+    merchantUid: license.merchantUid,
+    amount: license.amount,
+    createdAt: license.createdAt,
+    revokedAt: license.revokedAt,
+  };
+}
+
 /**
  * License key service. Every mutation runs under one in-process lock and saves
  * the whole state through the atomic file store, so concurrent requests never
@@ -347,6 +384,7 @@ export function createLicensesService({
   function hold(order, reason) {
     order.status = 'held';
     order.holdReason = reason;
+    delete order.ackedAt; // a newly held round shows on the dashboard again
     log(`[site-api] groble order ${order.merchantUid} held: ${reason}`);
     return { action: 'held', reason, needsReview: true };
   }
@@ -446,6 +484,11 @@ export function createLicensesService({
     const license = findSubscriptionLicense(state, object);
     if (!license) return hold(order, 'renewal_unmatched');
     if (license.status === 'revoked') return hold(order, 'renewal_for_revoked_key');
+    return applyRenewal(license, order, object);
+  }
+
+  /** Extend `license` by the paid renewal round `order`, as a matched webhook or an admin does. */
+  function applyRenewal(license, order, object = {}) {
     // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
     const paidMs = paidAtOf(order);
     const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
@@ -919,6 +962,17 @@ export function createLicensesService({
     return allowNone ? null : { years: 1 };
   }
 
+  /** Live annual keys with the held renewal's buyer email, for the dashboard's key picker. */
+  function renewalCandidates(state, order) {
+    const email = order.email?.toLowerCase();
+    if (!email) return [];
+    return Object.values(state.licenses)
+      .filter((l) => tierOf(l) === 'paid' && l.status !== 'revoked' && expiryOf(l) !== null && l.email?.toLowerCase() === email)
+      .sort((a, b) => String(b.expiresAt).localeCompare(String(a.expiresAt)))
+      .slice(0, 5)
+      .map((l) => ({ keyId: l.keyId, key: l.key, expiresAt: l.expiresAt }));
+  }
+
   function requireAdmin(token) {
     if (!tokenEquals(token, adminToken)) throw licenseError('forbidden', 403);
   }
@@ -1132,6 +1186,114 @@ export function createLicensesService({
           note: str(body?.note, 200),
         });
         return { value: { ok: true, previousExpiresAt: iso(before), license: licenseView(license) } };
+      });
+    },
+    /** Free one device slot without touching the key's other devices. */
+    async removeDevice(token, body) {
+      requireAdmin(token);
+      const deviceId = str(body?.deviceId, 128);
+      return mutate(async (state) => {
+        const license = findLicense(state, { key: body?.key, keyId: str(body?.keyId, 64) });
+        if (!license) throw licenseError('invalid_key', 404);
+        if (!deviceId || !license.devices || !Object.hasOwn(license.devices, deviceId)) throw licenseError('device_not_found', 404);
+        delete license.devices[deviceId];
+        return { value: { ok: true, license: licenseView(license) } };
+      });
+    },
+    /** Paid (non-beta) keys, newest first, with their devices, term and email delivery. */
+    async customers(token) {
+      requireAdmin(token);
+      const state = await read();
+      const nowMs = now();
+      const list = Object.values(state.licenses)
+        .filter((l) => tierOf(l) === 'paid')
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .map((l) => customerView(l, nowMs));
+      return { ok: true, count: list.length, customers: list };
+    },
+    /**
+     * What needs the owner: held orders (release, or extend the buyer's key for a held renewal) and
+     * held webhook events that hold no order (unmatched subscription events, unknown types).
+     * Both stay until handled or acknowledged with `ack`.
+     */
+    async attention(token) {
+      requireAdmin(token);
+      const state = await read();
+      const time = (value) => iso(parseTime(value) ?? 0);
+      const items = [];
+      for (const order of Object.values(state.orders)) {
+        if (order.status !== 'held' || order.ackedAt) continue;
+        const renewal = order.kind === 'renewal';
+        items.push({
+          type: 'order',
+          merchantUid: order.merchantUid,
+          orderKind: renewal ? 'renewal' : order.kind === 'subscription' ? 'subscription' : 'purchase',
+          reason: order.holdReason,
+          reasonText: heldReasonText(order.holdReason),
+          email: order.email,
+          amount: order.amount,
+          at: time(order.lastEventAt ?? order.completedAt ?? order.createdAt),
+          ...(renewal ? { candidates: renewalCandidates(state, order) } : {}),
+        });
+      }
+      const { entries } = await webhookLog.list({ kind: 'held', limit: WEBHOOK_LOG_MAX_ENTRIES });
+      for (const entry of entries) {
+        if (entry.ackedAt) continue;
+        // A held order is shown once, as the order. Entries from before `action` was logged fall back to the order lookup.
+        if (entry.action === 'held' || (entry.action === undefined && entry.merchantUid && state.orders[entry.merchantUid])) continue;
+        items.push({
+          type: 'event',
+          id: entry.id,
+          eventType: entry.eventType,
+          merchantUid: entry.merchantUid,
+          reason: entry.reason,
+          reasonText: heldReasonText(entry.reason),
+          email: entry.buyerEmail,
+          amount: entry.amount,
+          at: time(entry.at),
+        });
+      }
+      items.sort((a, b) => b.at.localeCompare(a.at));
+      return { ok: true, count: items.length, items };
+    },
+    /** `{id}` acknowledges a held webhook event, `{merchantUid}` a held order the owner will not release. */
+    async ack(token, body) {
+      requireAdmin(token);
+      const id = str(body?.id, 64);
+      if (id) {
+        if (!(await webhookLog.ack(id))) throw licenseError('event_not_found', 404);
+        return { ok: true };
+      }
+      const merchantUid = str(body?.merchantUid, 128);
+      return mutate(async (state) => {
+        const order = merchantUid ? state.orders[merchantUid] : undefined;
+        if (order?.status !== 'held') throw licenseError('event_not_found', 404);
+        order.ackedAt = new Date(now()).toISOString();
+        return { value: { ok: true } };
+      });
+    },
+    /** Apply a held renewal round to the buyer's existing annual key, exactly as a matched webhook would. */
+    async applyRenewal(token, body) {
+      requireAdmin(token);
+      const merchantUid = str(body?.merchantUid, 128);
+      return mutate(async (state) => {
+        const order = merchantUid ? state.orders[merchantUid] : undefined;
+        if (!order) throw licenseError('order_not_found', 404);
+        if (order.kind !== 'renewal') throw licenseError('not_a_renewal', 409);
+        if (order.keyId) return { dirty: false, value: { ok: true, changed: false, license: licenseView(state.licenses[order.keyId]) } };
+        if (order.status === 'refunded') throw licenseError('order_refunded', 409);
+        const license = findLicense(state, { key: body?.key, keyId: str(body?.keyId, 64) });
+        if (!license || tierOf(license) !== 'paid') throw licenseError('invalid_key', 404);
+        if (license.status === 'revoked') throw licenseError('license_revoked', 409);
+        const before = expiryOf(license);
+        if (before === null) throw licenseError('lifetime_key', 409);
+        license.subscription ??= { productId: order.contentId, status: 'active', autoRenew: true };
+        order.releasedHoldReason = order.holdReason;
+        delete order.ackedAt;
+        applyRenewal(license, order);
+        // Later rounds with the same ref now find this key on their own.
+        linkRef(state, order.ref, order.merchantUid);
+        return { value: { ok: true, changed: true, previousExpiresAt: iso(before), license: licenseView(license) } };
       });
     },
     async resendEmail(token, body) {
