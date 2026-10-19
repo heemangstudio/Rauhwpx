@@ -127,6 +127,11 @@ jobs:
       - name: Install managed Chromium for hub behavioral tests
         if: contains(needs.changes.outputs.app, 'hub')
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+      # prevents the sandboxed managed Chromium from starting.
+      - name: Allow the Chromium sandbox
+        if: contains(needs.changes.outputs.app, 'hub')
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       - name: Test agent hub
         if: contains(needs.changes.outputs.app, 'hub')
         run: |

@@ -142,6 +142,11 @@ jobs:
       - name: Install managed Chromium for hub behavioral tests
         if: ${{ !cancelled() }}
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+      # prevents the sandboxed managed Chromium from starting.
+      - name: Allow the Chromium sandbox
+        if: ${{ !cancelled() }}
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       - name: Test agent hub
         if: ${{ !cancelled() }}
         run: |
@@ -267,6 +272,10 @@ jobs:
           key: owned-chromium-${{ runner.os }}-${{ hashFiles('rhwp/rhwp-agent/package-lock.json') }}
       - name: Install managed Chromium for owned browser flows
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+      # prevents the sandboxed managed Chromium from starting.
+      - name: Allow the Chromium sandbox
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       - name: Run owned browser research flows
         run: node rhwp/rhwp-studio/e2e/owned-browser-live.mjs
       - uses: actions/upload-artifact@v4
