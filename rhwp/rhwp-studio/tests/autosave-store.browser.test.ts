@@ -275,3 +275,74 @@ test('upgrading a v3 database keeps old drafts and stores browser file handles w
     await page.close();
   }
 });
+
+test('a discarded draft keeps its base for the next draft, and closing the document or a dead page removes it', { timeout: 30_000 }, async () => {
+  const page = await freshPage();
+  try {
+    const result = await page.evaluate(async () => {
+      const store = await import('/src/recovery/autosave-store.ts');
+      const { AutosaveManager } = await import('/src/recovery/autosave-manager.ts');
+      let content = 1;
+      const manager = new AutosaveManager({
+        exportDraft: () => ({ bytes: new Uint8Array([content]), format: 'hwp' }),
+        schedule: { recoveryEnabled: false, idleEnabled: false },
+        idFactory: () => 'kept-base',
+        owner: { launchId: 'launch', sessionId: 'window' },
+        heartbeatIntervalMs: 0,
+        locks: navigator.locks,
+        logger: { debug() {}, warn() {} },
+      });
+      await manager.beginDocument(
+        { fileName: '보고서.hwp', sourceFormat: 'hwp', documentId: 'doc' },
+        { base: { bytes: new Uint8Array([7, 7]), digest: 'blake3:disk', mergeable: true } },
+      );
+      await manager.flushNow('typing');
+      // 저장해서 깨끗해진 뒤 다시 편집한다. 기준 바이트는 메모리에 없어도 복구 기준은 그대로다.
+      await manager.discardCurrentDraft('document-clean');
+      content = 2;
+      await manager.flushNow('typing');
+      const recoverable = await store.listRecoverableAutosaveDrafts();
+      const draft = await store.getAutosaveDraft('kept-base');
+      const base = await store.getAutosaveDraftBase('kept-base');
+
+      // 죽은 페이지가 draft 없이 남긴 기준 행은 복구 목록을 읽을 때 지운다.
+      await new Promise<void>((resolveOpen, reject) => {
+        const request = indexedDB.open('rhwpStudioAutosave');
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('draftBases', 'readwrite');
+          tx.objectStore('draftBases').put({ id: 'orphan', digest: 'blake3:x', byteLength: 1, data: new Uint8Array([1]).buffer, ownerInstanceId: 'gone' });
+          tx.oncomplete = () => { db.close(); resolveOpen(); };
+          tx.onerror = () => reject(tx.error);
+        };
+        request.onerror = () => reject(request.error);
+      });
+      await store.listRecoverableAutosaveDrafts();
+      const orphan = await store.getAutosaveDraftBase('orphan');
+
+      await manager.discardCurrentDraft('document-clean');
+      const liveBaseAfterDiscard = await store.getAutosaveDraftBase('kept-base');
+      await manager.endDocument();
+      const afterClose = await store.getAutosaveDraftBase('kept-base');
+      manager.dispose();
+      return {
+        recoverable: recoverable.map((row) => row.id),
+        data: draft ? [...draft.data] : null,
+        summary: draft?.base ?? null,
+        base: base ? [...base.data] : null,
+        orphan,
+        liveBaseAfterDiscard: liveBaseAfterDiscard ? [...liveBaseAfterDiscard.data] : null,
+        afterClose,
+      };
+    });
+    assert.deepEqual(result.recoverable, [], 'the live page still owns its draft');
+    assert.deepEqual(result.data, [2]);
+    assert.deepEqual(result.summary, { digest: 'blake3:disk', byteLength: 2, mergeable: true });
+    assert.deepEqual(result.base, [7, 7]);
+    assert.equal(result.orphan, null);
+    assert.deepEqual(result.liveBaseAfterDiscard, [7, 7]);
+    assert.equal(result.afterClose, null);
+  } finally {
+    await page.close();
+  }
+});

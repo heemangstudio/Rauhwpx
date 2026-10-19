@@ -5,6 +5,7 @@ import {
   autosaveInstanceLockName,
   createAutosaveDraftId,
   deleteAutosaveDraft,
+  deleteAutosaveDraftBase,
   releaseAutosaveSession,
   saveAutosaveDraft,
   touchAutosaveSession,
@@ -38,7 +39,9 @@ export interface AutosaveBaseInput {
 
 export interface AutosaveStoreLike {
   saveDraft(draft: AutosaveDraft, base?: AutosaveDraftBase): Promise<void>;
-  deleteDraft(id: string): Promise<void>;
+  /** keepBase: draft 만 지우고 기준 바이트 행은 남긴다(이 창이 아직 그 기준으로 편집한다). */
+  deleteDraft(id: string, options?: { keepBase?: boolean }): Promise<void>;
+  deleteDraftBase?(id: string): Promise<void>;
   touchSession?(owner: AutosaveOwner, heartbeatAt: number): Promise<void>;
   releaseSession?(sessionId: string): Promise<void>;
 }
@@ -91,14 +94,30 @@ export interface AutosaveManagerOptions {
   onStatus?: (status: AutosaveStatus) => void;
 }
 
+/** 기준 바이트는 draftBases 에 기록하고 이 창이 lock 을 쥐고 있으면 놓는다(bytes: null). 요약은 남는다. */
+interface CurrentBase {
+  digest: string;
+  byteLength: number;
+  mergeable: boolean;
+  bytes: Uint8Array | null;
+}
+
 interface CurrentDocument {
   draftId: string;
   fileName: string;
   sourceFormat: string;
   documentId: string | null;
-  base: AutosaveBaseInput | null;
+  base: CurrentBase | null;
   /** base 를 draftBases 에 기록했으면 true. 다음 저장부터는 base 를 다시 쓰지 않는다. */
   basePersisted: boolean;
+  /** 이 draftId 의 draftBases 행이 저장소에 있다(draft 를 지운 뒤에도 남길 수 있다). */
+  baseRowStored: boolean;
+  /** 이 draftId 의 draft 행이 저장소에 있다. */
+  draftStored: boolean;
+}
+
+function currentBase(base: AutosaveBaseInput | null | undefined): CurrentBase | null {
+  return base ? { digest: base.digest, byteLength: base.bytes.byteLength, mergeable: base.mergeable, bytes: base.bytes } : null;
 }
 
 const DEFAULT_IDLE_DELAY_MS = 10_000;
@@ -131,6 +150,8 @@ export class AutosaveManager {
   private owner: AutosaveOwner | null = null;
   private ownerHeartbeatAt = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** lock 없이 남긴 draft 가 저장소에 있다. 그 draft 는 heartbeat 로만 살아 있음을 알린다. */
+  private draftWithoutInstanceLock = false;
   private readonly heartbeatIntervalMs: number;
   private disposed = false;
   /** discard 세대 — 진행 중이던 saveDraft가 discard 이후 완료되며 draft를 부활시키는 경합 감지용 */
@@ -168,6 +189,7 @@ export class AutosaveManager {
     this.store = options.store ?? {
       saveDraft: (draft, base) => saveAutosaveDraft(draft, base ? { base } : {}),
       deleteDraft: deleteAutosaveDraft,
+      deleteDraftBase: deleteAutosaveDraftBase,
       touchSession: touchAutosaveSession,
       releaseSession: releaseAutosaveSession,
     };
@@ -196,11 +218,24 @@ export class AutosaveManager {
     this.owner = { launchId: owner.launchId, sessionId: owner.sessionId, instanceId: this.instanceId };
     if (previousSessionId) void this.releaseOwner(previousSessionId);
     void this.heartbeat();
-    if (this.heartbeatIntervalMs > 0) {
-      this.heartbeatTimer = setInterval(() => {
-        void this.heartbeat();
-      }, this.heartbeatIntervalMs);
+    this.syncHeartbeatTimer();
+  }
+
+  /**
+   * 주기 heartbeat 는 lock 으로 살아 있음을 알릴 수 없을 때만 돈다. lock 을 쥔 페이지의 draft 는
+   * ownerInstanceId 로 판단하므로 5초마다 IndexedDB 를 열 까닭이 없다. 저장 직전 heartbeat 는 그대로 쓴다.
+   */
+  private syncHeartbeatTimer(): void {
+    const needed = !this.disposed && this.owner !== null && this.heartbeatIntervalMs > 0
+      && (!this.instanceLockHeld || this.draftWithoutInstanceLock);
+    if (!needed) {
+      this.stopHeartbeat();
+      return;
     }
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => {
+      void this.heartbeat();
+    }, this.heartbeatIntervalMs);
   }
 
   connect(eventBus: EventBus): () => void {
@@ -231,7 +266,8 @@ export class AutosaveManager {
     meta: AutosaveDocumentMeta,
     options: { discardPreviousDraft?: boolean; base?: AutosaveBaseInput | null } = {},
   ): Promise<string> {
-    const previousDraftId = this.current?.draftId ?? null;
+    const previous = this.current;
+    const previousDraftId = previous?.draftId ?? null;
     this.cancelTimers();
     this.pendingReason = null;
     this.lastSavedAt = 0;
@@ -241,12 +277,16 @@ export class AutosaveManager {
       fileName: meta.fileName,
       sourceFormat: meta.sourceFormat,
       documentId: meta.documentId ?? null,
-      base: options.base ?? null,
+      base: currentBase(options.base),
       basePersisted: false,
+      baseRowStored: false,
+      draftStored: false,
     };
 
     if (options.discardPreviousDraft && previousDraftId && previousDraftId !== this.current.draftId) {
       await this.deleteDraft(previousDraftId, 'document-replaced');
+    } else if (previous && previous.draftId !== this.current.draftId) {
+      await this.releaseOrphanBase(previous);
     }
     return this.current.draftId;
   }
@@ -271,7 +311,7 @@ export class AutosaveManager {
     const current = this.current;
     if (!current) return;
     if (options.draftId !== undefined && options.draftId !== current.draftId) return;
-    current.base = base;
+    current.base = currentBase(base);
     current.basePersisted = false;
     if (options.dirty) await this.flushNow('rebased');
   }
@@ -379,8 +419,9 @@ export class AutosaveManager {
       const documentId = live ? live.documentId : current.documentId;
       const fileHandle = live?.fileHandle ?? null;
       const base = current.base;
-      const writeBase = base && !current.basePersisted ? base : null;
+      const writeBase = base?.bytes && !current.basePersisted ? base.bytes : null;
       const savedAt = this.now();
+      const lockedOwner = Boolean(this.owner && this.instanceLockHeld);
       if (this.owner) await this.heartbeat(savedAt);
       await this.store.saveDraft({
         id: current.draftId,
@@ -392,7 +433,7 @@ export class AutosaveManager {
         dataFormat: format,
         ...(documentId ? { documentId } : {}),
         ...(base ? {
-          base: { digest: base.digest, byteLength: base.bytes.byteLength, mergeable: base.mergeable },
+          base: { digest: base.digest, byteLength: base.byteLength, mergeable: base.mergeable },
         } : {}),
         ...(fileHandle ? {
           fileHandle,
@@ -404,16 +445,24 @@ export class AutosaveManager {
           ownerSessionId: this.owner.sessionId,
           ownerHeartbeatAt: this.ownerHeartbeatAt,
           // lock 을 실제로 잡았을 때만 기록한다. 잡지 못한 페이지의 draft 는 heartbeat 규칙을 따른다.
-          ...(this.instanceLockHeld ? { ownerInstanceId: this.instanceId } : {}),
+          ...(lockedOwner ? { ownerInstanceId: this.instanceId } : {}),
         } : {}),
-      }, writeBase ? { digest: writeBase.digest, byteLength: writeBase.bytes.byteLength, data: writeBase.bytes } : undefined);
+      }, writeBase && base ? { digest: base.digest, byteLength: base.byteLength, data: writeBase } : undefined);
+      current.draftStored = true;
+      if (writeBase) current.baseRowStored = true;
       if (this.discardGeneration !== generationAtStart) {
         // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
-        await this.deleteDraft(current.draftId, 'discarded-during-save');
+        await this.deleteCurrentDraft(current, 'discarded-during-save');
         return { ok: false, error: new Error('저장하는 동안 문서가 깨끗해졌습니다.') };
       }
       // 저장 중 rebase 로 기준이 바뀌었으면 다음 저장에서 새 기준을 기록한다.
-      if (writeBase && current.base === writeBase) current.basePersisted = true;
+      if (writeBase && current.base === base) {
+        current.basePersisted = true;
+        // lock 을 쥔 창의 기준 행은 draft 를 지워도 남겨 두므로(discardCurrentDraft) 바이트를 놓는다.
+        if (lockedOwner && this.store.deleteDraftBase) base!.bytes = null;
+      }
+      this.draftWithoutInstanceLock = Boolean(this.owner) && !lockedOwner;
+      this.syncHeartbeatTimer();
       this.lastSavedAt = savedAt;
       this.retryAttempt = 0;
       this.logger.debug?.(`[autosave] draft saved: ${fileName} (${bytes.byteLength} bytes)`);
@@ -444,15 +493,29 @@ export class AutosaveManager {
     this.pendingReason = null;
     this.lastSavedAt = 0;
     this.retryAttempt = 0;
+    const current = this.current;
+    if (!current) return;
+    await this.deleteCurrentDraft(current, reason);
+  }
+
+  private async deleteCurrentDraft(current: CurrentDocument, reason: string): Promise<void> {
+    current.draftStored = false;
+    this.draftWithoutInstanceLock = false;
+    this.syncHeartbeatTimer();
+    if (current.baseRowStored && current.base && current.base.bytes === null) {
+      // 기준 바이트를 이미 놓았다. 행을 남겨 두고 다음 draft 가 그 기준을 그대로 가리킨다.
+      await this.deleteDraft(current.draftId, reason, { keepBase: true });
+      return;
+    }
     // draft 와 함께 기준 바이트도 지워진다. 다음 draft 는 기준을 다시 기록해야 한다.
-    if (this.current) this.current.basePersisted = false;
-    const draftId = this.current?.draftId;
-    if (!draftId) return;
-    await this.deleteDraft(draftId, reason);
+    current.basePersisted = false;
+    current.baseRowStored = false;
+    await this.deleteDraft(current.draftId, reason);
   }
 
   async endDocument({ discardDraft = false, reason = 'document-ended' } = {}) {
     if (discardDraft) await this.discardCurrentDraft(reason);
+    if (this.current) await this.releaseOrphanBase(this.current);
     this.cancelTimers();
     this.pendingReason = null;
     this.lastSavedAt = 0;
@@ -487,6 +550,7 @@ export class AutosaveManager {
           return undefined;
         }
         this.instanceLockHeld = true;
+        this.syncHeartbeatTimer();
         resolve();
         // 페이지가 사라질 때까지 풀지 않는다. 크래시·새로고침이면 브라우저가 대신 푼다.
         return new Promise<void>((release) => {
@@ -578,9 +642,21 @@ export class AutosaveManager {
     this.cancelRetryTimer();
   }
 
-  private async deleteDraft(id: string, reason: string): Promise<void> {
+  /** draft 없이 남은 기준 행(문서를 닫거나 바꿀 때)을 지운다. */
+  private async releaseOrphanBase(document: CurrentDocument): Promise<void> {
+    if (document.draftStored || !document.baseRowStored) return;
+    document.baseRowStored = false;
+    document.basePersisted = false;
     try {
-      await this.store.deleteDraft(id);
+      await this.store.deleteDraftBase?.(document.draftId);
+    } catch (error) {
+      this.logger.warn('[autosave] draft base delete failed:', error);
+    }
+  }
+
+  private async deleteDraft(id: string, reason: string, options?: { keepBase?: boolean }): Promise<void> {
+    try {
+      await (options ? this.store.deleteDraft(id, options) : this.store.deleteDraft(id));
       this.logger.debug?.(`[autosave] draft deleted: ${id} (${reason})`);
     } catch (error) {
       this.logger.warn('[autosave] draft delete failed:', error);

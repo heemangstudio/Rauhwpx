@@ -132,6 +132,8 @@ export interface VersionManagerController {
   deleteShelf(id: string): Promise<void>;
   compareLegacy(id: string): Promise<void>;
   setAiTitlesEnabled(enabled: boolean): void;
+  /** 버전 창이 열리고 닫힐 때. 열려 있는 동안 컨트롤러는 편집 직후 상태를 바로 맞춘다. */
+  setPageVisible?(visible: boolean): void;
   dispose?(): void;
 }
 
@@ -1431,6 +1433,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       renderTabs();
     },
     open(options?: { focus?: boolean }): void {
+      if (!active) controller.setPageVisible?.(true);
       active = true;
       void controller.refresh();
       render(controller.getState());
@@ -1438,6 +1441,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     },
     close(): void {
       hideDateTooltip();
+      if (active) controller.setPageVisible?.(false);
       active = false;
       activeTextPrompt?.cancel();
     },
@@ -1445,6 +1449,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       hideDateTooltip();
       dateTooltip.remove();
       window.removeEventListener('resize', hideDateTooltip);
+      if (active) controller.setPageVisible?.(false);
       active = false;
       activeTextPrompt?.cancel();
       unsubscribe();

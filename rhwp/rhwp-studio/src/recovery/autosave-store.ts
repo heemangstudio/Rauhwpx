@@ -115,7 +115,8 @@ export interface SaveAutosaveDraftOptions {
 }
 
 type DraftRow = Omit<AutosaveDraft, 'data'> & { data?: ArrayBuffer };
-type DraftBaseRow = Omit<AutosaveDraftBase, 'data'> & { id: string; data: ArrayBuffer };
+/** ownerInstanceId: 기준 행을 남긴 페이지. draft 를 지운 뒤에도 그 페이지가 살아 있는 동안 행을 둔다. */
+type DraftBaseRow = Omit<AutosaveDraftBase, 'data'> & { id: string; data: ArrayBuffer; ownerInstanceId?: string };
 
 interface OwnerLiveness {
   now: number;
@@ -406,6 +407,7 @@ export async function saveAutosaveDraft(
             digest: base.digest,
             byteLength: base.byteLength,
             data: bytesToArrayBuffer(base.data),
+            ...(normalized.ownerInstanceId ? { ownerInstanceId: normalized.ownerInstanceId } : {}),
           } satisfies DraftBaseRow);
         }
         // 메타만 읽어 정리 대상을 고른다. 바이트는 트랜잭션 안에서 복제하지 않는다.
@@ -537,8 +539,36 @@ export async function listRecoverableAutosaveDrafts(
   const staleAfterMs = options.staleAfterMs ?? AUTOSAVE_SESSION_STALE_MS;
   const heldLocks = await heldOwnerLocks(resolveLocks(options.locks));
   const [drafts, sessions] = await Promise.all([listAutosaveDrafts(), listAutosaveSessions()]);
+  if (heldLocks) await sweepOrphanBases(heldLocks);
   const liveness: OwnerLiveness = { now, staleAfterMs, sessions: sessionMap(sessions), heldLocks };
   return drafts.filter((draft) => !draftIsActive(draft, liveness));
+}
+
+/**
+ * draft 없이 남은 기준 행을 지운다. 살아 있는 페이지는 draft 를 지운 뒤에도 자기 기준 행을 둔다
+ * (문서를 닫으면 스스로 지운다). 그 페이지가 사라져 lock 이 풀린 행만 정리한다.
+ */
+async function sweepOrphanBases(heldLocks: ReadonlySet<string>): Promise<void> {
+  await withDb(
+    async (db) => {
+      const tx = db.transaction([DRAFT_META, DRAFT_BASES], 'readwrite');
+      const done = transactionDone(tx);
+      const basesStore = tx.objectStore(DRAFT_BASES);
+      const [metaKeys, baseKeys] = await Promise.all([
+        requestResult(tx.objectStore(DRAFT_META).getAllKeys()),
+        requestResult(basesStore.getAllKeys()),
+      ]);
+      const drafts = new Set(metaKeys.map(String));
+      for (const key of baseKeys) {
+        if (drafts.has(String(key))) continue;
+        const row = await requestResult(basesStore.get(key) as IDBRequest<DraftBaseRow | undefined>);
+        if (row?.ownerInstanceId && heldLocks.has(autosaveInstanceLockName(row.ownerInstanceId))) continue;
+        basesStore.delete(key);
+      }
+      await done;
+    },
+    async () => {},
+  );
 }
 
 /** 복구 대화상자·안내로 보여 준 draft 를 기록한다. 보여 준 draft 만 개수 제한 정리 대상이 된다. */
@@ -595,14 +625,28 @@ export async function releaseAutosaveSession(sessionId: string) {
   );
 }
 
-export async function deleteAutosaveDraft(id: string): Promise<void> {
+/** keepBase 면 draft 만 지우고 기준 행은 남긴다. 그 창이 같은 기준으로 계속 편집할 때 쓴다. */
+export async function deleteAutosaveDraft(id: string, options: { keepBase?: boolean } = {}): Promise<void> {
   memory.delete(id);
-  memoryBases.delete(id);
+  if (!options.keepBase) memoryBases.delete(id);
   await withDb(
     async (db) => {
       const tx = db.transaction([DRAFTS, DRAFT_META, DRAFT_BASES], 'readwrite');
       tx.objectStore(DRAFTS).delete(id);
       tx.objectStore(DRAFT_META).delete(id);
+      if (!options.keepBase) tx.objectStore(DRAFT_BASES).delete(id);
+      await transactionDone(tx);
+    },
+    async () => {},
+  );
+}
+
+/** draft 없이 남긴 기준 행을 지운다. */
+export async function deleteAutosaveDraftBase(id: string): Promise<void> {
+  memoryBases.delete(id);
+  await withDb(
+    async (db) => {
+      const tx = db.transaction(DRAFT_BASES, 'readwrite');
       tx.objectStore(DRAFT_BASES).delete(id);
       await transactionDone(tx);
     },
