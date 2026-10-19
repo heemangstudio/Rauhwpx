@@ -329,7 +329,7 @@ export function createLicenseSettingsSection(
   keyButton.addEventListener('click', () => {
     void api.copyKey?.().then((copied) => {
       if (!copied) return;
-      keyButton.textContent = '복사했어요';
+      keyButton.textContent = '복사됨';
       window.clearTimeout(copiedTimer);
       copiedTimer = window.setTimeout(() => {
         copiedTimer = undefined;
