@@ -5,6 +5,7 @@
   cursor: crosshair;
   background: color-mix(in srgb, var(--accent-primary) 5%, transparent);
   touch-action: none;
+  outline: none;
 }
 .ag-region-capture[hidden], .ag-region-selection[hidden], .ag-region-comment[hidden] { display: none; }
 .ag-region-hint {
