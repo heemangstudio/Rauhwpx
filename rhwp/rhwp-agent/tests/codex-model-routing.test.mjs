@@ -66,7 +66,10 @@ test('chats on one login share a catalog with alias routing, and a refresh updat
   }));
   let current = 'gpt-10-sol';
   let calls = 0;
-  const store = createCodexModelStore({ discover: async () => { calls++; return [{ model: current }]; } });
+  let failing = false;
+  const store = createCodexModelStore({
+    discover: async () => { calls++; if (failing) throw new Error('offline'); return [{ model: current }]; },
+  });
   const catalog = createCodexModelCatalog({ store });
   const resolve = createCodexModelResolver({ store });
   assert.equal(await resolve('sol', { bin: 'codex', codexHome: homes[0] }), 'gpt-10-sol');
@@ -76,6 +79,9 @@ test('chats on one login share a catalog with alias routing, and a refresh updat
   await catalog({ bin: 'codex', codexHome: homes[1] }, { refresh: true });
   assert.equal(await resolve('sol', { bin: 'codex', codexHome: homes[0] }), 'gpt-11-sol');
   assert.equal(calls, 2);
+  failing = true;
+  await assert.rejects(catalog({ bin: 'codex', codexHome: homes[1] }, { refresh: true }), /offline/);
+  assert.equal(await resolve('sol', { bin: 'codex', codexHome: homes[0] }), 'gpt-11-sol', 'a failed refresh keeps the good list');
 });
 
 test('an empty Codex response is a catalog error', async () => {

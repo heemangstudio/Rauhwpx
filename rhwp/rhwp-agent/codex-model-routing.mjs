@@ -173,12 +173,17 @@ export function createCodexModelStore({ discover = discoverCodexModels, now = Da
         if (!catalog.length) throw new Error('Codex returned an empty model catalog');
         return catalog;
       });
+      // 강제 새로고침이 실패해도 아직 유효한 목록은 별칭 해석에 계속 쓴다.
+      const previous = entry?.models && entry.expiresAt > now() ? entry : null;
       const next = { pending, expiresAt: Number.POSITIVE_INFINITY };
       entry = next;
       cache.set(key, next);
       pending.then(
         (models) => { if (cache.get(key) === next) cache.set(key, { models, expiresAt: now() + CACHE_MS }); },
-        (error) => { if (cache.get(key) === next) cache.set(key, { error, expiresAt: now() + FAILURE_CACHE_MS }); },
+        (error) => {
+          if (cache.get(key) !== next) return;
+          cache.set(key, previous ?? { error, expiresAt: now() + FAILURE_CACHE_MS });
+        },
       );
     }
     if (entry.pending) return entry.pending;
