@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     openActivation: () => ipcRenderer.invoke('license:open-window'),
     openPricing: () => ipcRenderer.invoke('license:open-pricing'),
     openPaymentFix: () => ipcRenderer.invoke('license:open-payment-fix'),
+    openSupport: () => ipcRenderer.invoke('license:open-support'),
     // 체험이 끝날 때 열린 문서를 자동 저장하려고 한 번 유예를 받는다.
     beginExpirySave: () => ipcRenderer.invoke('license:begin-expiry-save'),
     onChange: (callback) => {

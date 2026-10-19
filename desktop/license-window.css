@@ -20,5 +20,6 @@ button.link { min-height: 0; padding: 0; border: 0; background: none; color: inh
 dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0 0 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; font-variant-numeric: tabular-nums; }
-footer { display: flex; justify-content: flex-end; margin-top: 22px; }
+footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; }
+.contact { margin: 0; color: var(--muted); font-size: 13px; }
 [hidden] { display: none !important; }

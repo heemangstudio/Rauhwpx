@@ -13,6 +13,21 @@
   // 연간 키의 날짜. 서버가 한국 시간 하루 끝까지로 정한다.
   const day = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' });
   const date = (ms) => day.format(new Date(ms));
+  const SUPPORT_EMAIL = 'management@heemangstudios.com';
+
+  /** 알림 줄에 글을 넣는다. 글 속 문의 주소는 메일 앱을 여는 링크로 바꾼다. */
+  function setNote(note, text) {
+    const parts = String(text ?? '').split(SUPPORT_EMAIL);
+    note.replaceChildren(parts[0]);
+    for (const part of parts.slice(1)) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'link';
+      link.textContent = SUPPORT_EMAIL;
+      link.addEventListener('click', () => { void api.openSupport?.(); });
+      note.append(link, part);
+    }
+  }
 
   /** 체험 남은 시간. Studio 의 trialTimeLeft 와 같은 규칙이다. */
   function timeLeft(endsAt) {
@@ -88,7 +103,7 @@
         $('license-term').textContent = date(expiresAt);
       }
       // 해지는 요약 줄이 이미 말한다.
-      if (status.license.lastError && !showLicensed && !expired && status.state !== 'revoked') activateNote.textContent = status.license.lastError;
+      if (status.license.lastError && !showLicensed && !expired && status.state !== 'revoked') setNote(activateNote, status.license.lastError);
     }
   }
 
@@ -107,7 +122,7 @@
       licensedNote.classList.add('ok');
       licensedNote.textContent = '활성화했어요. 이제 저장할 수 있어요.';
     } else {
-      activateNote.textContent = result.message;
+      setNote(activateNote, result.message);
     }
     render(result.status);
   });
@@ -134,12 +149,13 @@
     if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기는 읽기 전용이 돼요.')) return;
     const result = await busy(event.currentTarget, () => api.deactivate());
     licensedNote.classList.remove('ok');
-    licensedNote.textContent = result.ok ? '' : result.message;
+    setNote(licensedNote, result.ok ? '' : result.message);
     render(result.status);
   });
 
   $('pricing').addEventListener('click', () => { void api.openPricing(); });
   for (const id of ['fix-payment', 'fix-lapsed']) $(id).addEventListener('click', () => { void api.openPaymentFix?.(); });
+  $('support').addEventListener('click', () => { void api.openSupport?.(); });
   $('close').addEventListener('click', () => { void api.close(); });
   api.onChange(render);
   api.getStatus().then(render);

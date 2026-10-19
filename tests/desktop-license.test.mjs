@@ -537,17 +537,30 @@ class FakeLicenseWindow {
   loadURL() { return Promise.resolve(); }
 }
 
-async function hostFor(manager) {
+async function hostFor(manager, { shell = {}, trusted = true } = {}) {
   const { installLicenseHost } = await import('../desktop/license-host.mjs');
   const handlers = new Map();
   FakeLicenseWindow.opened = 0;
   const host = installLicenseHost({
     ipcMain: { handle(channel, fn) { handlers.set(channel, fn); } },
-    BrowserWindow: FakeLicenseWindow, shell: {}, manager,
-    isTrustedStudioEvent: () => true, log: quiet,
+    BrowserWindow: FakeLicenseWindow, shell, manager,
+    isTrustedStudioEvent: () => trusted, log: quiet,
   });
-  return { host, invoke: (channel, sender) => handlers.get(channel)({ sender }) };
+  return { host, invoke: (channel, sender, ...args) => handlers.get(channel)({ sender }, ...args) };
 }
+
+test('the support link opens only the fixed license mailto, and only for trusted senders', async (t) => {
+  const { manager } = await setup(t);
+  const opened = [];
+  const shell = { openExternal: async (url) => { opened.push(url); } };
+  const { invoke } = await hostFor(manager, { shell });
+  await invoke('license:open-support', {}, 'https://evil.example/');
+  assert.deepEqual(opened.map((url) => new URL(url).protocol + new URL(url).pathname), ['mailto:management@heemangstudios.com']);
+  assert.equal(new URL(opened[0]).searchParams.get('subject'), 'HamaEditor 라이선스 문의');
+  const untrusted = await hostFor(manager, { shell, trusted: false });
+  assert.throws(() => untrusted.invoke('license:open-support', {}), /Untrusted license IPC sender/);
+  assert.equal(opened.length, 1);
+});
 
 test('native saves never use up the trial; only the 72-hour deadline ends it', async (t) => {
   const { manager, clock } = await setup(t);
