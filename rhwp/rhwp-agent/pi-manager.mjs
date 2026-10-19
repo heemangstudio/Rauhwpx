@@ -1049,7 +1049,6 @@ export function createPiManager({
     let timer = null;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(resolve, timeoutMs);
-      timer.unref?.();
     });
     try {
       await Promise.race([refreshGift().catch(() => {}), timeout]);
