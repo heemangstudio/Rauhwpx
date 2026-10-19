@@ -4754,10 +4754,19 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         ...(replaceSession ? { replaceSession: true } : {}),
       };
       // 기록을 실은 턴은 성공으로 끝날 때까지 전달 대기다 (turn-end 에서 판정한다).
+      // 첨부만 있는 턴은 사용자 문장이 없으므로, 실패 기록에는 첨부 이름만 사실대로 남긴다.
+      const attachmentNames = messageAttachments
+        .map((attachment) => attachment?.name)
+        .filter((name) => typeof name === 'string' && name);
+      const userText = typeof msg.text === 'string' && msg.text.length > 0
+        ? msg.text
+        : attachmentNames.length > 0
+          ? `[첨부] ${attachmentNames.join(', ')}`
+          : '';
       activeSession.handoffDelivery = {
         primary: Boolean(primary) || replaceSession,
         fallback: withResumeFallback && Boolean(full),
-        userText: typeof msg.text === 'string' ? msg.text : '',
+        userText,
       };
       const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
       // Current providers accept synchronously; a future asynchronous backend
@@ -5789,7 +5798,8 @@ async function handleStudioMessage(record, sock, msg) {
         rejectUserMessage(record, sock, msg, workflowError('AGENT_BUSY', 'A turn is already in progress.'));
         return;
       }
-      if (typeof msg.text !== 'string' || msg.text.length === 0) {
+      // 첨부만 있는 메시지는 본문을 staged reference·mention과 활성 문서에 싣는다 — 빈 text 를 허용한다.
+      if (typeof msg.text !== 'string') {
         rejectUserMessage(record, sock, msg, workflowError('INVALID_REQUEST', 'chat-user-message requires text'));
         return;
       }

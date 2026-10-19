@@ -46,6 +46,22 @@ export async function checkCaptureSend({ page, origin, screenshot }) {
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().messagesSent), 2);
   if (screenshot) await screenshot('capture-send-no-unsafe-retry');
 
+  // 첨부만 보낸 요청: 본문을 지어내지 않고 빈 말풍선 없이 알약만 남긴다.
+  await open(page, origin);
+  await attachCapture(page);
+  await page.click('.ag-send');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().messagesSent === 1);
+  await page.waitForSelector('.ag-msg-user.ag-attachment-only .ag-msg-attachment');
+  const attachmentOnly = await currentThread(page);
+  const attachmentMessage = attachmentOnly.messages.filter((message) => message.role === 'user').at(-1);
+  assert.equal(attachmentMessage.text, '');
+  assert.ok(attachmentMessage.attachments.length >= 2, 'capture keeps its attachments');
+  assert.equal(await page.$$eval('.ag-msg-user.ag-attachment-only .ag-msg-user-text', (nodes) => nodes.length), 0,
+    'attachment-only message renders no text block');
+  assert.ok(await page.$$eval('.ag-msg-user.ag-attachment-only .ag-msg-attachment', (nodes) => nodes.length) >= 2,
+    'attachment pills stay visible');
+  if (screenshot) await screenshot('capture-send-attachment-only');
+
   // 캡처도 최신 대화로 세션을 다시 열고 끊긴 턴 블록을 실으며 붙잡힌 대기열을 푼다.
   await open(page, origin);
   await sendText(page, '캡처 전에 끊긴 요청입니다.');

@@ -434,6 +434,23 @@ test('user-question provider history is deterministic and follows question optio
   assert.match(first[3]?.text ?? '', /Keep captions\./);
 });
 
+test('attachment-only user messages survive provider history with a factual marker', () => {
+  const history = serializeThreadMessagesForProviderHistory([{
+    role: 'user',
+    text: '',
+    attachments: [
+      { stageId: 'a', name: 'a.png', mimeType: 'image/png', size: 10, status: 'ready' },
+      { stageId: 'b', name: 'b.pdf', mimeType: 'application/pdf', size: 20, status: 'ready' },
+      { stageId: 'c', name: 'c.hwp', mimeType: 'application/x-hwp', size: 30, status: 'ready' },
+      { stageId: 'd', name: 'd.txt', mimeType: 'text/plain', size: 40, status: 'ready' },
+    ],
+  }]);
+
+  assert.deepEqual(history.map((entry) => [entry.role, entry.kind, entry.text]), [
+    ['user', 'message', '[첨부] a.png, b.pdf, c.hwp 외 1개'],
+  ]);
+});
+
 test('user-question history counts toward the existing 200-message persistence cap', () => {
   mem.clear();
   const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' });

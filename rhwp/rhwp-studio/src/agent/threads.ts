@@ -1724,6 +1724,19 @@ export function settleStoredTurnMarker(
   return thread;
 }
 
+/**
+ * 첨부만 보낸 요청을 제목·프로바이더 기록에 남기는 사실 줄. 파일 이름은 세 개까지 적고
+ * 나머지는 개수로 줄인다. 이름이 없으면 개수만 적는다.
+ */
+export function attachmentOnlyMarker(attachments: readonly ThreadAttachment[]): string {
+  const names = attachments
+    .map((attachment) => attachment.name.trim())
+    .filter(Boolean);
+  if (!names.length) return `첨부 파일 ${attachments.length}개`;
+  const shown = names.slice(0, 3).join(', ');
+  return `[첨부] ${names.length > 3 ? `${shown} 외 ${names.length - 3}개` : shown}`;
+}
+
 export function fallbackTitle(messages: ThreadMessage[]): string {
   const first = messages.find((m) => m.role === 'user' && (m.text.trim() || m.skillName));
   if (!first) return '새 채팅';
@@ -1987,13 +2000,19 @@ function serializeThreadMessage(
       ? [{ role: 'assistant', kind: 'progress', text: message.text, ...meta, ...id }]
       : [];
   }
-  if (!message.text.trim() && !(message.role === 'user' && message.skillName)) return [];
+  const attachmentOnly = message.role === 'user'
+    && !message.text.trim()
+    && !message.skillName
+    && (message.attachments?.length ?? 0) > 0;
+  if (!message.text.trim() && !(message.role === 'user' && message.skillName) && !attachmentOnly) return [];
   return [{
     role: message.role,
     kind: 'message',
     text: message.role === 'user' && message.skillName
       ? `/${message.skillName}${message.text.trim() ? ` ${message.text}` : ''}`
-      : message.text,
+      : attachmentOnly
+        ? attachmentOnlyMarker(message.attachments ?? [])
+        : message.text,
     ...meta,
     ...id,
   }];
