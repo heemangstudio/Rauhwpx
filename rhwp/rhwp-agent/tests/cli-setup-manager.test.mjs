@@ -498,6 +498,45 @@ test('an installer timeout quarantines the prefix when its process tree cannot b
   await assert.rejects(() => manager.prepareLaunch('claude'), { code: 'AGENT_INSTALL_CLEANUP_UNCERTAIN' });
 });
 
+test('on Windows an app-installed Codex is checked and signed in as a hidden codex.exe, never through its Node wrapper', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const modules = path.join(rootDir, 'prefix', 'node_modules');
+  const codexPackage = path.join(modules, '@openai', 'codex');
+  await fs.mkdir(path.join(codexPackage, 'bin'), { recursive: true });
+  await fs.writeFile(path.join(codexPackage, 'package.json'), JSON.stringify({ name: '@openai/codex' }));
+  await fs.writeFile(path.join(codexPackage, 'bin', 'codex.js'), '');
+  const [platformPackage, triple] = process.arch === 'arm64'
+    ? ['codex-win32-arm64', 'aarch64-pc-windows-msvc']
+    : ['codex-win32-x64', 'x86_64-pc-windows-msvc'];
+  const exePath = path.join(modules, '@openai', platformPackage, 'vendor', triple, 'bin', 'codex.exe');
+  await fs.mkdir(path.dirname(exePath), { recursive: true });
+  await fs.writeFile(exePath, '');
+  await fs.mkdir(path.join(modules, '.bin'), { recursive: true });
+  await fs.writeFile(path.join(modules, '.bin', 'codex.cmd'),
+    '@ECHO off\r\nSET "_prog=node"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\..\\@openai\\codex\\bin\\codex.js" %*\r\n');
+  const calls = [];
+  const spawnProcess = (command, argv, options) => {
+    const proc = new FakeProcess();
+    calls.push({ command, argv, options, proc });
+    if (argv.includes('--version')) queueMicrotask(() => { proc.stdout.emit('data', 'codex-cli 0.163.0\n'); proc.emit('close', 0, null); });
+    return proc;
+  };
+  const manager = await createCliSetupManager({ rootDir, spawnProcess, platform: 'win32', fetchImpl: async () => new Response('{}') }).init();
+
+  assert.equal((await manager.status('codex')).version, '0.163.0');
+  const login = manager.authenticate('codex', 'oauth');
+  await new Promise((resolve) => setImmediate(resolve));
+  calls.at(-1).proc.emit('close', 1, null);
+  await assert.rejects(login, (error) => error.code === 'AGENT_AUTH_FAILED');
+
+  assert.deepEqual(calls.map((call) => call.argv), [['--version'], ['login', '--device-auth']]);
+  for (const call of calls) {
+    assert.equal(call.command, path.resolve(exePath));
+    assert.equal(call.options.windowsHide, true);
+    assert.equal(call.options.env.CODEX_MANAGED_BY_NPM, '1');
+  }
+});
+
 test('Codex version output is parsed to its semantic version', async (t) => {
   const rootDir = await tmpRoot(t);
   const binDir = path.join(rootDir, 'prefix', 'node_modules', '.bin');

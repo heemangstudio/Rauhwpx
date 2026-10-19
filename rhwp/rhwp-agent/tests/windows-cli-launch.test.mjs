@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -163,6 +163,77 @@ test('parser does not unwrap a node shim whose JS entry is missing', (t) => {
   const launch = resolveNpmCliLaunch(cmdPath, { platform: 'win32', nodeCommand: process.execPath });
   assert.equal(launch.command, cmdPath);
   assert.deepEqual(launch.leadingArgs, []);
+});
+
+const CODEX_TARGET = { x64: ['codex-win32-x64', 'x86_64-pc-windows-msvc'], arm64: ['codex-win32-arm64', 'aarch64-pc-windows-msvc'] }[process.arch]
+  ?? ['codex-win32-x64', 'x86_64-pc-windows-msvc'];
+
+/** `npm install @openai/codex` on Windows: a Node shim to bin/codex.js plus the hoisted platform package. */
+function writeNpmCodexInstall(root, { platformPackage = true } = {}) {
+  const modules = path.join(root, 'node_modules');
+  const packageRoot = path.join(modules, '@openai', 'codex');
+  mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
+  writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@openai/codex', version: '0.163.0' }));
+  writeFileSync(path.join(packageRoot, 'bin', 'codex.js'), '// spawns the platform codex.exe with stdio: "inherit"\n');
+  let exePath = null;
+  if (platformPackage) {
+    const [pkg, triple] = CODEX_TARGET;
+    exePath = path.join(modules, '@openai', pkg, 'vendor', triple, 'bin', 'codex.exe');
+    mkdirSync(path.dirname(exePath), { recursive: true });
+    writeFileSync(exePath, '');
+  }
+  const cmdPath = path.join(modules, '.bin', 'codex.cmd');
+  mkdirSync(path.dirname(cmdPath), { recursive: true });
+  writeFileSync(cmdPath, [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '',
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ') ELSE (',
+    '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+    ')',
+    '',
+    `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\..\\@openai\\codex\\bin\\codex.js" %*`,
+    '',
+  ].join('\r\n'));
+  return { cmdPath, exePath, packageRoot, scriptPath: path.join(packageRoot, 'bin', 'codex.js') };
+}
+
+test('npm Codex shim launches the platform codex.exe, not the Node wrapper that re-spawns it', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-npm-codex-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, exePath, packageRoot } = writeNpmCodexInstall(root);
+  const launched = applyManagedCliLaunch(cmdPath, ['app-server', '--stdio'], {
+    platform: 'win32',
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
+    env: { PATH: '' },
+  });
+  assert.equal(launched.command, exePath);
+  assert.deepEqual(launched.argv, ['app-server', '--stdio']);
+  // The env codex.js gives the binary, so it still finds its bundled tools and reports npm ownership.
+  assert.equal(launched.env.CODEX_MANAGED_PACKAGE_ROOT, realpathSync(packageRoot));
+  assert.equal(launched.env.CODEX_MANAGED_BY_NPM, '1');
+});
+
+test('an npm Codex install without its platform binary, or another codex.js, keeps the Node launch', (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-npm-codex-fallback-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, scriptPath, packageRoot } = writeNpmCodexInstall(root, { platformPackage: false });
+  const nodeCommand = process.execPath;
+  assert.deepEqual(resolveNpmCliLaunch(cmdPath, { platform: 'win32', nodeCommand }).leadingArgs, [scriptPath]);
+  const [, triple] = CODEX_TARGET;
+  mkdirSync(path.join(packageRoot, 'vendor', triple, 'bin'), { recursive: true });
+  writeFileSync(path.join(packageRoot, 'vendor', triple, 'bin', 'codex.exe'), '');
+  writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'not-codex' }));
+  assert.deepEqual(resolveNpmCliLaunch(cmdPath, { platform: 'win32', nodeCommand }).leadingArgs, [scriptPath]);
 });
 
 test('Windows PATH lookup uses the provided env, not process.env', (t) => {
@@ -519,6 +590,40 @@ test('createCodexSession unwraps a Windows .cmd bin before spawn', async (t) => 
   assert.equal(spawns[0].argv.includes('exec'), true);
   assert.equal(/\.(?:cmd|bat)$/i.test(spawns[0].command), false);
   assert.equal(events.some((event) => event.type === 'turn-start'), true);
+});
+
+test('createCodexSession runs an app-installed Codex as codex.exe, hidden', async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-session-native-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, exePath } = writeNpmCodexInstall(root);
+  const spawns = [];
+  const session = createCodexSession({
+    ...claudeOpts,
+    codexBin: cmdPath,
+    codexHome: path.join(root, '.codex'),
+  }, {
+    platform: 'win32',
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
+    spawnProcess(command, argv, options) {
+      const proc = new FakeProcess();
+      spawns.push({ command, argv, options, proc });
+      return proc;
+    },
+    terminateProcess() { return true; },
+    waitForExit: async () => true,
+    closeGraceMs: 1,
+    createRolloutWatcher() {
+      return { drain() {}, stop() {} };
+    },
+  });
+  t.after(() => session.dispose());
+  session.sendUserMessage('review');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].command, exePath);
+  assert.equal(spawns[0].argv.includes('exec'), true);
+  assert.equal(spawns[0].options.windowsHide, true);
+  assert.equal(spawns[0].options.env.CODEX_MANAGED_BY_NPM, '1');
 });
 
 test('createPiSession unwraps a Windows .cmd bin before spawn', async (t) => {

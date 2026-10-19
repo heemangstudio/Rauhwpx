@@ -1,4 +1,4 @@
-import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, promises as fsPromises } from 'node:fs';
+import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, realpathSync, promises as fsPromises } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -15,6 +15,11 @@ const NODE_SHIM_INVOCATION = /(?:^|[\s&])(?:node(?:\.exe)?|"(?:[^"\r\n]*[/\\])?n
 /** npm cmd-shim for a package `bin` that is itself a native .exe (Claude Code 2.1.30x+). */
 const NATIVE_SHIM_INVOCATION = /(?:^|[\s&])"([^"\r\n]+\.exe)"[ \t]+%\*/gi;
 const NODE_BIN = /^(?:node|node\.exe)$/i;
+/** `@openai/codex` 플랫폼 패키지와 vendor 아래 대상 폴더. bin/codex.js 의 표와 같다. */
+const CODEX_WIN32_TARGETS = Object.freeze({
+  x64: { package: 'codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
+  arm64: { package: 'codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' },
+});
 
 /**
  * cross-spawn 이 `.cmd` 를 `cmd.exe /c` 로 돌릴 때 실제로 붙는 명령 문자열 길이.
@@ -165,6 +170,48 @@ export function parseNativeCmdShimExecutable(cmdPath, contents, deps = {}) {
   return null;
 }
 
+/**
+ * npm `@openai/codex` 의 bin/codex.js 는 플랫폼 패키지의 codex.exe 를 stdio inherit 로 다시 띄우는
+ * 래퍼다. 호스트가 Electron(GUI 서브시스템)이면 물려줄 콘솔이 없어 그 codex.exe 가 보이는 새 콘솔
+ * 창을 연다. 래퍼가 하는 일(실행 파일 탐색과 패키지 env)을 여기서 하고 codex.exe 를 바로 띄운다.
+ * 래퍼가 아니거나 실행 파일이 없으면 null — 호출자가 node + 스크립트로 띄운다.
+ *
+ * @param {string} script
+ * @param {{ arch?: string, existsSync?: typeof fsExistsSync, readFileSync?: typeof fsReadFileSync }} [deps]
+ * @returns {{ command: string, leadingArgs: string[], env: Record<string, string> } | null}
+ */
+function resolveCodexWrapperLaunch(script, deps = {}) {
+  const existsSync = deps.existsSync ?? fsExistsSync;
+  const readFileSync = deps.readFileSync ?? fsReadFileSync;
+  if (path.basename(script) !== 'codex.js' || path.basename(path.dirname(script)) !== 'bin') return null;
+  const packageRoot = path.dirname(path.dirname(script));
+  try {
+    if (JSON.parse(String(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))).name !== '@openai/codex') return null;
+  } catch {
+    return null;
+  }
+  const target = CODEX_WIN32_TARGETS[deps.arch ?? process.arch];
+  if (!target) return null;
+  // codex.js 는 require.resolve 로 플랫폼 패키지를 찾고(중첩, 그다음 호이스팅), 없으면 자기 vendor 를 쓴다.
+  const vendorRoots = [
+    path.join(packageRoot, 'node_modules', '@openai', target.package, 'vendor'),
+    path.join(packageRoot, '..', target.package, 'vendor'),
+    path.join(packageRoot, 'vendor'),
+  ];
+  for (const vendorRoot of vendorRoots) {
+    const executable = path.resolve(vendorRoot, target.triple, 'bin', 'codex.exe');
+    if (!existsSync(executable)) continue;
+    let managedRoot = packageRoot;
+    try { managedRoot = realpathSync(packageRoot); } catch { /* codex.js 와 같은 값을 못 얻으면 경로 그대로 */ }
+    return {
+      command: executable,
+      leadingArgs: [],
+      env: { CODEX_MANAGED_PACKAGE_ROOT: managedRoot, CODEX_MANAGED_BY_NPM: '1' },
+    };
+  }
+  return null;
+}
+
 function resolveWindowsCommand(command, deps = {}) {
   const existsSync = deps.existsSync ?? fsExistsSync;
   const whichSync = deps.whichSync ?? ((cmd, opt) => which.sync(cmd, { ...opt, nothrow: true }));
@@ -183,6 +230,7 @@ function resolveWindowsCommand(command, deps = {}) {
 
 /**
  * Windows 에서 npm `.cmd` 심을 node + JS 엔트리로 풀어 cmd.exe 8191 상한을 피한다.
+ * Codex 래퍼(bin/codex.js)면 그 래퍼가 띄울 플랫폼 codex.exe 로 바로 풀어 콘솔 창을 막는다.
  * 그 외 플랫폼/네이티브 바이너리는 그대로 둔다.
  *
  * @param {string} command
@@ -193,6 +241,7 @@ function resolveWindowsCommand(command, deps = {}) {
  *   existsSync?: typeof fsExistsSync,
  *   readFileSync?: typeof fsReadFileSync,
  *   whichSync?: Function,
+ *   arch?: string,
  * }} [deps]
  * @returns {{ command: string, leadingArgs: string[], env: Record<string, string> }}
  */
@@ -220,6 +269,8 @@ export function resolveNpmCliLaunch(command, deps = {}) {
     const native = parseNativeCmdShimExecutable(resolved, contents, deps);
     return { command: native ?? resolved, leadingArgs: [], env: {} };
   }
+  const codex = resolveCodexWrapperLaunch(script, deps);
+  if (codex) return codex;
 
   return {
     command: nodeCommand,
