@@ -6246,6 +6246,11 @@ function showLoadError(error: unknown): void {
   });
 }
 
+/** 지금 문서의 채팅 브리지. 사이드바가 아직 없으면 null. */
+function currentAgentBridge(): AgentBridge | null {
+  return attachedSession.bridge ?? allChats()[0]?.bridge ?? null;
+}
+
 const initPromise = initialize();
 // 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
 void initPromise.then(markStudioReady, markStudioReady);
@@ -6259,6 +6264,13 @@ void initPromise.then(() => {
     whenReady: afterBootScreen,
     isSetupActive: isInitialSetupActive,
     onSetupInactive: onInitialSetupInactive,
+    // 내 키가 있으면 쓰는 순서도 고른다. 순서는 허브(Pi)가 저장한다.
+    pi: {
+      status: async () => (await currentAgentBridge()?.requestPiStatus()) ?? null,
+      setGiftOrder: async (order) => {
+        if (!(await currentAgentBridge()?.setPiGiftOrder(order))) throw new Error('Pi gift order was not saved.');
+      },
+    },
     open: async (options) => (await import('./ui/special-event/special-event-popup.ts')).openSpecialEventPopup(options),
   });
 }, () => {});

@@ -15,11 +15,11 @@ import {
   resolveWebhookLogDbPath,
   resolveDownloadsDbPath,
 } from './config.mjs';
-import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState } from './gifts.mjs';
+import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
-import { createLicensesService, emptyLicensesState } from './licenses.mjs';
+import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
 import { renderUniqueInstallsPage } from './pages.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
@@ -334,6 +334,18 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           send(200, await gifts.admin.disable(bearerToken(req), await readJson(req)));
           return;
+        case 'POST /v1/admin/gifts/amount': {
+          allow('admin', 120, TEN_MINUTES);
+          const token = bearerToken(req);
+          const body = await readJson(req);
+          if (!gifts) throw siteError('NOT_FOUND', 'not found');
+          // Only beta keys get gifts, so an allocation for anything else is a typo.
+          const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
+          const found = (await licenses.admin.lookup(token, { keyId })).licenses; // also checks the token
+          if (found[0]?.tier !== 'beta') throw licenseError('invalid_key', 404);
+          send(200, await gifts.admin.setAmount(token, { keyId, amountUsd: body.amountUsd }));
+          return;
+        }
         case 'GET /v1/admin/licenses':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.lookup(bearerToken(req), Object.fromEntries(searchParams)));
@@ -342,10 +354,13 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.orders(bearerToken(req), Object.fromEntries(searchParams)));
           return;
-        case 'GET /v1/admin/licenses/betas':
+        case 'GET /v1/admin/licenses/betas': {
           allow('admin', 120, TEN_MINUTES);
-          send(200, await licenses.admin.betas(bearerToken(req)));
+          const token = bearerToken(req);
+          const result = await licenses.admin.betas(token);
+          send(200, gifts ? await gifts.admin.withGifts(token, result) : result);
           return;
+        }
         case 'GET /v1/admin/webhooks':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
@@ -371,7 +386,14 @@ export function siteRequestListener({
           }[pathname];
           const token = bearerToken(req);
           const body = await readJson(req);
+          // issue-beta {giftUsd}: the new key's gift amount, checked before the key exists.
+          const giftUsd = action === 'issueBeta' && body?.giftUsd !== undefined && body.giftUsd !== '' && gifts
+            ? parseGiftAmount(body.giftUsd) : undefined;
+          if (giftUsd !== undefined && !gifts.configured) throw licenseError('event_inactive', 410);
           const result = await licenses.admin[action](token, body);
+          if (giftUsd !== undefined && result.license?.keyId) {
+            result.gift = (await gifts.admin.setAmount(token, { keyId: result.license.keyId, amountUsd: giftUsd })).gift;
+          }
           send(200, result);
           if (action === 'issue' || action === 'release') {
             setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });

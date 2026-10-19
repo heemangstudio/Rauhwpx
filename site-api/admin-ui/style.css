@@ -120,6 +120,20 @@ td.status.bad { color: var(--bad); }
 td.actions { text-align: right; }
 td.actions button + button { margin-left: 6px; }
 td:nth-child(3) { overflow: visible; }
+#beta-table { min-width: 1020px; }
+#beta-table th:nth-child(2) { width: 15%; }
+#beta-table th:nth-child(3) { width: 15%; }
+#beta-table th:nth-child(6) { width: 12%; }
+#beta-table th:nth-child(7) { width: 16%; }
+#beta-table th:nth-child(8) { width: 10%; }
+
+/* 크레딧: 누르면 그 자리에서 금액을 고쳐요 */
+td.credit.editing { overflow: visible; }
+button.amount { clip-path: none; box-shadow: none; background: none; padding: 0; min-height: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+button.amount:hover:not(:disabled) { box-shadow: none; color: var(--accent-hover); text-decoration: underline dotted; text-underline-offset: 3px; }
+td.credit .edit { display: inline-flex; gap: 4px; }
+input.amount { width: 68px; min-height: 26px; padding: 0 6px; text-align: right; font-variant-numeric: tabular-nums; }
+td.credit .edit button { min-height: 26px; padding: 0 8px; }
 .tag { margin-left: 6px; padding: 1px 6px; box-shadow: inset 0 0 0 1px var(--deep); font-size: 11px; color: var(--meta); }
 
 /* 24시간 안에 본 기기가 있으면 켜지는 한 칸짜리 불 */

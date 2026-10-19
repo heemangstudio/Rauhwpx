@@ -722,6 +722,11 @@ export interface PiStatus {
    * keyConfigured·keyTail 은 내 OpenRouter 키만 뜻한다. 옛 허브는 보내지 않는다.
    */
   credential?: 'gift' | 'own' | 'none';
+  /**
+   * 내 키가 있을 때 선물 크레딧을 쓰는 순서. first 는 선물 먼저, after 는 내 키 먼저(그 크레딧이 떨어지면 선물).
+   * 옛 허브는 보내지 않는다.
+   */
+  giftOrder?: 'first' | 'after';
 }
 
 /** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */

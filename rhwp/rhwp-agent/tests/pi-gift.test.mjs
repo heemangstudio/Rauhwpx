@@ -11,6 +11,7 @@ import {
   GIFT_EXHAUSTED_NO_KEY_MESSAGE,
   GIFT_EXHAUSTED_OWN_KEY_MESSAGE,
   GIFT_RETRY_MESSAGE,
+  OWN_KEY_EXHAUSTED_GIFT_MESSAGE,
 } from '../agents/pi.mjs';
 import { createStaticGiftSource } from '../gift-source.mjs';
 import { createPiManager, GIFT_MAX_OUTPUT_TOKENS, pickDefaultGiftModels } from '../pi-manager.mjs';
@@ -54,7 +55,7 @@ const OWN_CATALOG = [
  */
 function fakeNetwork() {
   const calls = [];
-  const state = { giftCredits: 1 };
+  const state = { giftCredits: 1, ownBalance: 8 };
   const json = (status, body) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json' },
   });
@@ -83,8 +84,9 @@ function fakeNetwork() {
       const route = href.slice(OPENROUTER.length);
       if (route === '/models') return json(200, { data: OWN_CATALOG });
       if (route === '/key') return json(200, { data: { label: 'own', limit: null, usage: 2 } });
-      if (route === '/credits') return json(200, { data: { total_credits: 10, total_usage: 2 } });
+      if (route === '/credits') return json(200, { data: { total_credits: 2 + state.ownBalance, total_usage: 2 } });
       if (route === '/chat/completions') {
+        if (state.ownBalance <= 0) return json(402, { error: { code: 402, message: 'Insufficient credits. Add more using https://openrouter.ai/credits' } });
         const body = JSON.parse(init.body);
         return json(200, { choices: [{ message: { content: `own:${body.model}` } }] });
       }
@@ -112,10 +114,10 @@ const INACTIVE = giftCredentials({ active: false, lease: null, claimed: false, r
 
 
 /** 내 키와 내 모델(DeepSeek)이 설정된 Pi. 선물 자격은 처음엔 꺼져 있다. */
-async function setUpManager(t, { ownKey = true, platform = 'darwin', initial = INACTIVE } = {}) {
+async function setUpManager(t, { ownKey = true, platform = 'darwin', initial = INACTIVE, source: givenSource = null } = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-pi-gift-'));
   const network = fakeNetwork();
-  const source = createStaticGiftSource(initial);
+  const source = givenSource ?? createStaticGiftSource(initial);
   const manager = createPiManager({
     rootDir,
     platform,
@@ -385,15 +387,128 @@ test('the router sends the lease only to the gift proxy and the own key only to 
   }
 });
 
-test('gift credits never apply outside macOS', async (t) => {
-  for (const platform of ['win32', 'linux']) {
-    const { manager, source, network } = await setUpManager(t, { platform, initial: giftCredentials() });
-    const status = await manager.refreshGift({ refresh: true });
-    assert.equal(status.credential, 'own');
-    assert.equal(manager.resolveSpawn(null).key, OWN_KEY);
-    assert.equal(source.calls.length, 0, 'the desktop is never asked');
-    assert.equal(network.calls.some((call) => call.url.startsWith(GIFT_BASE)), false);
-  }
+test('gift credits apply on macOS and Windows, never on Linux', async (t) => {
+  const windows = await setUpManager(t, { platform: 'win32', initial: giftCredentials() });
+  assert.equal((await windows.manager.refreshGift({ refresh: true })).credential, 'gift');
+  assert.equal(windows.manager.resolveSpawn(null).key, LEASE);
+
+  const { manager, source, network } = await setUpManager(t, { platform: 'linux', initial: giftCredentials() });
+  const status = await manager.refreshGift({ refresh: true });
+  assert.equal(status.credential, 'own');
+  assert.equal(manager.resolveSpawn(null).key, OWN_KEY);
+  assert.equal(source.calls.length, 0, 'the desktop is never asked');
+  assert.equal(network.calls.some((call) => call.url.startsWith(GIFT_BASE)), false);
+});
+
+test('an own-key Pi waits for the first gift answer so the first turn after boot uses the gift', async (t) => {
+  let release = () => {};
+  const answered = new Promise((resolve) => { release = () => resolve(giftCredentials()); });
+  const slow = createStaticGiftSource(() => answered);
+  const { manager } = await setUpManager(t, { source: slow });
+  // 기동 직후: 데스크톱이 아직 답하지 않았다. 기다리지 않으면 내 키로 간다.
+  assert.equal(manager.resolveSpawn(null).mode, 'own');
+  const waiting = manager.ensureGiftFresh({ timeoutMs: 5_000 });
+  setImmediate(() => release());
+  assert.equal((await waiting).credential, 'gift');
+  assert.equal(manager.resolveSpawn('deepseek/deepseek-chat-v3.1').key, LEASE);
+
+  // 이미 받은 자격이 있으면 다시 기다리지 않는다.
+  const calls = slow.calls.length;
+  assert.equal((await manager.ensureGiftFresh({ timeoutMs: 5_000 })).credential, 'gift');
+  assert.equal(slow.calls.length, calls);
+});
+
+test('a desktop that never answers only delays the session start by the timeout', async (t) => {
+  const stuck = createStaticGiftSource(() => new Promise(() => {}));
+  const { manager } = await setUpManager(t, { source: stuck });
+  const started = Date.now();
+  assert.equal((await manager.ensureGiftFresh({ timeoutMs: 50 })).credential, 'own');
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test('a desktop hiccup keeps the claimed gift instead of dropping to the own key', async (t) => {
+  let fail = false;
+  const flaky = createStaticGiftSource(() => {
+    if (fail) throw Object.assign(new Error('timeout'), { code: 'GIFT_SOURCE_TIMEOUT' });
+    return giftCredentials();
+  });
+  const { manager } = await setUpManager(t, { source: flaky });
+  assert.equal((await manager.refreshGift()).credential, 'gift');
+  fail = true;
+  assert.equal((await manager.refreshGift({ refresh: true })).credential, 'gift');
+  assert.equal(manager.resolveSpawn(null).key, LEASE);
+});
+
+test('order "after" uses the own key first and moves to the gift once the own key runs out', async (t) => {
+  const { manager, source, network, rootDir } = await setUpManager(t);
+  await activateGift(source, manager);
+  assert.equal((await manager.status()).giftOrder, 'first');
+
+  const after = await manager.setGiftOrder('after');
+  assert.equal(after.giftOrder, 'after');
+  assert.equal(after.credential, 'own');
+  assert.deepEqual(after.models.map((model) => model.id), ['deepseek/deepseek-chat-v3.1']);
+  const ownSpawn = manager.resolveSpawn('deepseek/deepseek-chat-v3.1');
+  assert.deepEqual([ownSpawn.mode, ownSpawn.key, ownSpawn.fallback], ['own', OWN_KEY, 'gift']);
+
+  // 내 키가 402 로 끝난 턴: 알맞은 안내를 보이고, 다음 스폰은 선물이다.
+  network.state.ownBalance = 0;
+  const { session, events, spawns } = giftSession(manager, {
+    onCreditExhausted: (info) => {
+      void (info.mode === 'own' ? manager.markOwnKeyExhausted() : manager.markGiftExhausted(info));
+    },
+  });
+  session.sendUserMessage('hi');
+  assert.equal(spawns[0].options.env.OPENROUTER_API_KEY, OWN_KEY);
+  spawns[0].proc.stderr.emit('data', 'Error: 402 Insufficient credits. Add more using https://openrouter.ai/credits\n');
+  spawns[0].proc.exit(1);
+  await settle();
+  await manager.flush();
+  const error = events.find((event) => event.type === 'error');
+  assert.ok(error.message.startsWith(OWN_KEY_EXHAUSTED_GIFT_MESSAGE), error.message);
+  assert.equal(error.failure.code, 'own_credits');
+  assert.equal(manager.access().mode, 'gift');
+  session.sendUserMessage('again');
+  await settle();
+  assert.equal(spawns[1].options.env.OPENROUTER_API_KEY, LEASE);
+  await session.dispose();
+
+  // 순서와 내 키 소진은 다시 열어도 남는다.
+  const reopened = createPiManager({
+    rootDir, platform: 'darwin', baseEnv: {}, fetchImpl: network.fetchImpl, giftSource: source,
+    secretStore: createMemorySecretStore({ 'rhwp.pi.openrouter-api-key': OWN_KEY }),
+  });
+  t.after(() => reopened.close());
+  await reopened.init();
+  const restored = await reopened.refreshGift();
+  assert.deepEqual([restored.giftOrder, restored.credential], ['after', 'gift']);
+
+  // 내 키를 충전하면 다시 내 키가 먼저다.
+  network.state.ownBalance = 5;
+  assert.equal((await reopened.refreshGift({ refresh: true })).credential, 'own');
+
+  // 선물도 다 쓰고 내 키도 비었으면 내 키를 다시 써 본다.
+  await reopened.markOwnKeyExhausted();
+  assert.equal(reopened.access().mode, 'gift');
+  await reopened.markGiftExhausted();
+  assert.equal(reopened.access().mode, 'own');
+});
+
+test('order "first" still falls back to the own key, and switching order clears own-key exhaustion', async (t) => {
+  const { manager, source, network } = await setUpManager(t);
+  await activateGift(source, manager);
+  await manager.setGiftOrder('after');
+  network.state.ownBalance = 0;
+  await manager.markOwnKeyExhausted();
+  assert.equal(manager.access().mode, 'gift');
+  // first 로 바꾸면 선물이 먼저고, 선물이 떨어지면 내 키로 간다.
+  assert.equal((await manager.setGiftOrder('first')).credential, 'gift');
+  assert.equal(manager.resolveSpawn(null).fallback, 'own');
+  await manager.markGiftExhausted();
+  assert.equal(manager.access().mode, 'own');
+  // 내 키 402 는 first 순서에서 아무것도 바꾸지 않는다.
+  assert.equal((await manager.markOwnKeyExhausted()).credential, 'own');
+  await assert.rejects(manager.setGiftOrder('later'), { code: 'PI_GIFT_ORDER_INVALID' });
 });
 
 test('an untrusted gift base URL never receives the lease', async (t) => {

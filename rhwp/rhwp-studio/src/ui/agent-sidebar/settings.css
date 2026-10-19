@@ -1321,6 +1321,13 @@
   color: var(--ag-text-muted);
 }
 
+/* 내 키가 있을 때 쓰는 순서. 막대 아래 한 줄을 꽉 채운다. */
+.ag-pi-gift .ag-pi-gift-order:not([hidden]) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 8px;
+}
+
 .ag-pi-gift-claim {
   flex: 0 0 auto;
   height: 24px;

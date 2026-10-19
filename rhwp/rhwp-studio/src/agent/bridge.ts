@@ -459,6 +459,8 @@ export interface AgentBridge {
   setPiModels(
     models: Array<{ id: string; name: string; defaultEffort?: string }>,
   ): Promise<PiStatus | null>;
+  /** 내 키가 있을 때 선물 크레딧을 쓰는 순서를 저장한다. */
+  setPiGiftOrder(order: 'first' | 'after'): Promise<PiStatus | null>;
   /** 소유 브라우저 요청. 실패한 입력은 자동으로 다시 보내지 않는다. */
   requestBrowser<T = BrowserResult>(action: string, args?: Record<string, unknown>): Promise<T>;
   onBrowserEvent(handler: (event: BrowserEvent) => void): () => void;
@@ -1347,6 +1349,7 @@ function readPiStatus(value: unknown): PiStatus {
     ...(src['credential'] === 'gift' || src['credential'] === 'own' || src['credential'] === 'none'
       ? { credential: src['credential'] }
       : {}),
+    ...(src['giftOrder'] === 'first' || src['giftOrder'] === 'after' ? { giftOrder: src['giftOrder'] } : {}),
   };
 }
 
@@ -5646,6 +5649,10 @@ export class AgentBridgeImpl implements AgentBridge {
       'pi-set-models',
       30_000,
     );
+  }
+
+  setPiGiftOrder(order: 'first' | 'after'): Promise<PiStatus | null> {
+    return this.request<PiStatus>({ type: 'pi-set-gift-order', order }, 'pi-set-gift-order', 15_000);
   }
 
   onEvent(cb: (e: SidebarEvent) => void): () => void {

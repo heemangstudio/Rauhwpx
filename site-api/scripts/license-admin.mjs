@@ -4,7 +4,7 @@
 //   export ADMIN_TOKEN=...            # same value as the Railway ADMIN_TOKEN variable
 //   node scripts/license-admin.mjs issue --email buyer@example.com --merchant-uid <groble merchantUid> [--ref r] [--note "..."] [--send-email] [--years 1 | --until 2027-10-20]   # --years/--until = subscription key
 //   node scripts/license-admin.mjs extend <key|ref> [--years N | --until YYYY-MM-DD] [--note "..."]   # subscription keys only; default 1 year from expiry (or now if lapsed)
-//   node scripts/license-admin.mjs beta --name "홍길동" [--devices 5] [--email tester@example.com] [--note "..."]   # beta-tester key, 1..50 devices, never emailed
+//   node scripts/license-admin.mjs beta --name "홍길동" [--devices 5] [--email tester@example.com] [--note "..."] [--gift-usd 20]   # beta-tester key, 1..50 devices, never emailed
 //   node scripts/license-admin.mjs betas                               # every beta key with its devices
 //   node scripts/license-admin.mjs lookup --email buyer@example.com | --key HAMA-... | --merchant-uid ... | --ref ...
 //   node scripts/license-admin.mjs orders [--status held|issued|refunded]
@@ -17,6 +17,7 @@
 //   node scripts/license-admin.mjs downloads [--days 30]             # website download starts by day, platform and version
 //   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
+//   node scripts/license-admin.mjs gift-amount --key-id lic_... --usd 30   # this beta key's gift; 0 = none, a claimed key's limit changes on OpenRouter
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...argv] = process.argv.slice(2);
@@ -50,6 +51,7 @@ const posts = {
   extend: '/v1/admin/licenses/extend',
   release: '/v1/admin/orders/release',
   'gift-disable': '/v1/admin/gifts/disable',
+  'gift-amount': '/v1/admin/gifts/amount',
 };
 const gets = {
   lookup: '/v1/admin/licenses',
@@ -75,9 +77,14 @@ if (gets[command]) {
   if (command === 'beta') {
     if (typeof args.name !== 'string') { process.stderr.write('beta needs --name "tester name"\n'); process.exit(2); }
   }
+  if (command === 'gift-amount') {
+    if (typeof args.keyId !== 'string' || typeof args.usd !== 'string') { process.stderr.write('gift-amount needs --key-id lic_... --usd N\n'); process.exit(2); }
+    body.amountUsd = args.usd;
+    delete body.usd;
+  }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|extend|downloads|gifts|gift-disable [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;

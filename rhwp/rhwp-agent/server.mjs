@@ -345,7 +345,7 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-// 선물 크레딧 리스는 데스크톱(macOS)이 준다. 그 밖에서는 언제나 꺼져 있다.
+// 선물 크레딧 리스는 데스크톱(macOS·Windows)이 준다. 그 밖에서는 언제나 꺼져 있다.
 const giftSource = createIpcGiftSource();
 const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, giftSource, routingSort: process.env.RHWP_PI_ROUTING_SORT,
@@ -1553,10 +1553,12 @@ giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
 function piSpawnHooks() {
   return {
     resolvePiAccess: (model) => piManager.resolveSpawn(model),
-    onCreditExhausted: ({ confirmed = true } = {}) => {
-      void piManager.markGiftExhausted({ confirmed })
+    onCreditExhausted: ({ mode = 'gift', confirmed = true } = {}) => {
+      // 내 키를 먼저 쓰다(after) 그 크레딧이 떨어지면 다음 스폰부터 선물로 넘어간다.
+      const update = mode === 'own' ? piManager.markOwnKeyExhausted() : piManager.markGiftExhausted({ confirmed });
+      void update
         .then(() => broadcastPiStatus())
-        .catch((error) => log(`gift exhaustion update failed: ${error?.message ?? error}`));
+        .catch((error) => log(`credit exhaustion update failed: ${error?.message ?? error}`));
     },
     onAccessRejected: () => { void refreshGiftAndBroadcast(true); },
   };
@@ -5520,9 +5522,13 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       await ensureBootWork();
-      // 기동 직후라면 선물 자격을 아직 받는 중일 수 있다. 한 번 기다려 본다.
-      if (agent === 'pi' && !piStatus.setupComplete && giftSource.available) {
-        await piManager.refreshGift().then(() => refreshPiStatus()).catch(() => {});
+      // 기동 직후라면 선물 자격을 아직 받는 중일 수 있다. 내 키가 있어도 기다린다 — 기다리지 않으면
+      // 선물을 받은 사용자의 첫 요청이 내 키로 간다. 설정이 끝난 Pi 는 오래 붙잡지 않는다.
+      if (agent === 'pi' && giftSource.available) {
+        const wait = piStatus.setupComplete
+          ? piManager.ensureGiftFresh({ timeoutMs: 3_000 })
+          : piManager.refreshGift();
+        await wait.then(() => refreshPiStatus()).catch(() => {});
       }
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
@@ -6527,6 +6533,18 @@ async function handleStudioMessage(record, sock, msg) {
           v: 1, type: 'model-catalog-error', requestId, agent,
           code: error?.code ?? 'MODEL_CATALOG_FAILED', message: String(error?.message ?? error),
         }));
+      return;
+    }
+    case 'pi-set-gift-order': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      void piManager.setGiftOrder(msg.order)
+        .then(async (status) => {
+          piStatus = status;
+          replyToStudio(record, sock, { v: 1, type: 'pi-status', requestId, status });
+          // 다른 탭의 설정과 모델 목록도 바뀐 자격을 따라간다.
+          await broadcastPiStatus();
+        })
+        .catch((e) => sendPiError(record, sock, requestId, e, 'PI_GIFT_ORDER_INVALID'));
       return;
     }
     case 'pi-set-models': {

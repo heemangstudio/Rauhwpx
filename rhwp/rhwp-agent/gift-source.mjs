@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 /**
  * 선물 크레딧 자격(GiftCredentials)을 데스크톱 main 프로세스에서 받아 온다.
  * 리스(서명된 라이선스 임대)는 데스크톱이 들고 있고, 허브는 Pi 를 띄울 때마다 여기서 새로 받는다.
- * 선물은 macOS 전용이라 다른 플랫폼에서는 언제나 unavailable 이다.
+ * 선물은 macOS·Windows 데스크톱에서만 쓴다. 다른 플랫폼에서는 언제나 unavailable 이다.
  *
  * @typedef {Object} GiftCredentials
  * @property {boolean} available
@@ -23,7 +23,7 @@ export function createIpcGiftSource({
 } = {}) {
   const pending = new Map();
   const listeners = new Set();
-  const available = platform === 'darwin'
+  const available = (platform === 'darwin' || platform === 'win32')
     && processRef.env?.RHWP_GIFT_BROKER === 'ipc'
     && typeof processRef.send === 'function';
 
@@ -49,7 +49,7 @@ export function createIpcGiftSource({
 
   function credentials({ refresh = false } = {}) {
     if (!available) {
-      return Promise.reject(Object.assign(new Error('Gift credits require the macOS desktop app.'), {
+      return Promise.reject(Object.assign(new Error('Gift credits require the macOS or Windows desktop app.'), {
         code: 'GIFT_SOURCE_UNAVAILABLE',
       }));
     }

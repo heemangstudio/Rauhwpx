@@ -193,6 +193,8 @@ const SHARED_CODES = Object.freeze({
   // Pi 선물 크레딧: 다 썼거나(gift_credits) 잔액이 있는데 잠깐 거절됐다(gift_retry).
   gift_credits: 'usage_limit',
   gift_retry: 'provider_error',
+  // 내 키를 먼저 쓰다 크레딧이 떨어졌고 다음 요청은 선물 크레딧으로 간다.
+  own_credits: 'usage_limit',
   PI_MODEL_MISSING: 'invalid_request',
   // Pi 어댑터도 쓴다: 선물 크레딧이 떨어졌는데 내 키가 없을 때.
   PI_NOT_CONFIGURED: 'auth_required',

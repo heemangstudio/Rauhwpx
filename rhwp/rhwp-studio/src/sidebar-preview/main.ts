@@ -187,7 +187,8 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
   : undefined;
 /*
  * 선물 크레딧. `gift=unclaimed|claimed|exhausted|off` 가 Pi 설정의 선물 줄과 `event=special` 창을 함께 정한다.
- * 받은 선물이 남아 있으면 Pi 상태의 credential 이 'gift' 다.
+ * 받은 선물이 남아 있으면 Pi 상태의 credential 이 'gift' 다(순서가 '내 키 다음에'면 내 키가 먼저).
+ * Pi 는 내 OpenRouter 키가 있는 상태로 시작한다. `pikey=none` 이면 키 없이 시작해 예전 창(받기만)이 뜬다.
  */
 const mockGift = createMockGift(mockGiftMode(params), { failClaim: params.get('claim') === 'fail' });
 const mock = createMockBridge(report, () => {
@@ -198,6 +199,7 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
+if (params.get('pikey') === 'none') mock.setPiOwnKey(false);
 const previewProjects = mock.projects;
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
@@ -312,6 +314,14 @@ if (params.get('event') === 'special' && mockGift) {
     whenReady: async () => {},
     isSetupActive: isInitialSetupActive,
     onSetupInactive: onInitialSetupInactive,
+    pi: {
+      status: () => mock.bridge.requestPiStatus(),
+      setGiftOrder: async (order) => {
+        if (params.get('order') === 'fail') throw new Error('sample save failure');
+        await mock.bridge.setPiGiftOrder(order);
+        report(`Gift order: ${order} (sample)`);
+      },
+    },
     open: async (options) => {
       const { openSpecialEventPopup } = await import('../ui/special-event/special-event-popup.ts');
       const result = await openSpecialEventPopup(options);

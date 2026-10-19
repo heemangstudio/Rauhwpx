@@ -48,7 +48,7 @@ async function setup(t, env = {}) {
   async function setTier(keyId, tier) {
     const state = JSON.parse(await fs.readFile(licensesFile, 'utf8'));
     const record = state.licenses[keyId];
-    if (tier === 'beta') Object.assign(record, { tier: 'beta', source: 'beta', deviceLimit: 2, name: 'Beta tester' });
+    if (tier === 'beta') Object.assign(record, { tier: 'beta', source: 'beta', deviceLimit: 3, name: 'Beta tester' });
     else delete record.tier;
     await fs.writeFile(licensesFile, `${JSON.stringify(state, null, 2)}\n`);
   }
@@ -118,11 +118,12 @@ test('claim is idempotent across parallel calls and both devices, and the key st
   assert.equal(JSON.parse(listed).committedUsd, 20);
 });
 
-test('only an active beta key on an activated macOS device is eligible', async (t) => {
+test('only an active beta key on an activated macOS or Windows device is eligible', async (t) => {
   const s = await setup(t);
   const lic = await s.license();
   const mac = await lic.activate(MAC_A);
   const win = await lic.activate(WIN, 'win32');
+  const linux = await lic.activate('device-lin-dddddddd', 'linux');
 
   for (const lease of ['', 'not-a-lease', `${mac.split('.')[0]}.${'A'.repeat(86)}`]) {
     const res = await s.claim(lease);
@@ -134,16 +135,18 @@ test('only an active beta key on an activated macOS device is eligible', async (
   const expired = signLease({ keyId: lic.keyId, key: lic.key, deviceId: MAC_A, now: Date.now() - 8 * 86400000 }, PAIR.privateKeyPem).lease;
   assert.equal((await s.status(expired)).status, 401);
 
-  // Windows: authenticated, never eligible, even on a beta key that claimed from its Mac.
-  const winStatus = await (await s.status(win)).json();
-  assert.equal(winStatus.eligible, false);
-  const winClaim = await s.claim(win);
-  assert.equal(winClaim.status, 403);
-  assert.equal((await winClaim.json()).error, 'not_eligible');
+  // Windows shares the key's gift; Linux is authenticated but never eligible.
+  assert.equal((await (await s.status(win)).json()).eligible, true);
+  const linuxStatus = await (await s.status(linux)).json();
+  assert.equal(linuxStatus.eligible, false);
+  const linuxClaim = await s.claim(linux);
+  assert.equal(linuxClaim.status, 403);
+  assert.equal((await linuxClaim.json()).error, 'not_eligible');
   assert.equal((await s.claim(mac)).status, 200);
-  const winChat = await s.chat(win, { model: SONNET, messages: [] });
-  assert.equal(winChat.status, 403);
-  assert.deepEqual(await winChat.json(), { error: { code: 403, message: 'not_eligible' } });
+  const linuxChat = await s.chat(linux, { model: SONNET, messages: [] });
+  assert.equal(linuxChat.status, 403);
+  assert.deepEqual(await linuxChat.json(), { error: { code: 403, message: 'not_eligible' } });
+  assert.equal((await (await s.status(win)).json()).claimed, true);
 
   // Deactivated device, then a revoked license.
   const deactivate = await fetch(`${s.origin}/v1/license/deactivate`, {
@@ -348,4 +351,152 @@ test('BYOK spend counts toward the gift, and an exhausted or disabled gift answe
   const after = await (await s.status(lease)).json();
   assert.equal(after.claimed, true);
   assert.equal(after.remainingUsd, 0);
+});
+
+test('per-license amounts: an allocation sets the claimed limit, 0 blocks the claim, and status reports the license amount', async (t) => {
+  const s = await setup(t);
+  const amount = (keyId, amountUsd, token = ADMIN) => fetch(`${s.origin}/v1/admin/gifts/amount`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ keyId, amountUsd }),
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const small = await s.license();
+  const plain = await s.license();
+  const none = await s.license();
+
+  for (const token of ['', 'wrong']) {
+    assert.deepEqual(await amount(small.keyId, 5, token), { status: 403, body: { ok: false, error: 'forbidden' } });
+  }
+  for (const bad of [-1, 1000.01, 'abc', null, '']) {
+    assert.deepEqual(await amount(small.keyId, bad), { status: 400, body: { ok: false, error: 'amount_invalid' } }, String(bad));
+  }
+  const paid = await s.license({ tier: 'paid' });
+  assert.equal((await amount(paid.keyId, 5)).body.error, 'invalid_key');
+  assert.equal((await amount('lic_nope', 5)).status, 404);
+
+  const set = await amount(small.keyId, '4.999');
+  assert.equal(set.status, 200);
+  assert.deepEqual(set.body.gift, { amountUsd: 5, status: 'unclaimed', limitUsd: null, usedUsd: null, remainingUsd: null, claimedAt: null });
+  assert.equal((await amount(none.keyId, 0)).status, 200);
+
+  const smallLease = await small.activate(MAC_A);
+  const before = await (await s.status(smallLease)).json();
+  assert.equal(before.event.amountUsd, 5);
+  assert.equal(before.eligible, true);
+  const claimed = await (await s.claim(smallLease)).json();
+  assert.equal(claimed.remainingUsd, 5);
+  assert.equal(creates(s.upstream)[0].body.limit, 5);
+  assert.equal((await (await s.status(smallLease)).json()).remainingUsd, 5);
+
+  const plainLease = await plain.activate(MAC_A);
+  assert.equal((await (await s.status(plainLease)).json()).event.amountUsd, 20);
+
+  const noneLease = await none.activate(MAC_A);
+  const noGift = await (await s.status(noneLease)).json();
+  assert.equal(noGift.event.amountUsd, 0);
+  assert.equal(noGift.eligible, false);
+  const refused = await s.claim(noneLease);
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json()).error, 'not_eligible');
+  assert.equal(creates(s.upstream).length, 1);
+
+  const betas = await fetch(`${s.origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  const byId = Object.fromEntries(betas.betas.map((b) => [b.keyId, b.gift]));
+  assert.equal(betas.giftEvent.amountUsd, 20);
+  assert.deepEqual({ ...byId[small.keyId], claimedAt: null }, { amountUsd: 5, status: 'active', limitUsd: 5, usedUsd: 0, remainingUsd: 5, claimedAt: null });
+  assert.equal(byId[plain.keyId].status, 'unclaimed');
+  assert.equal(byId[plain.keyId].amountUsd, 20);
+  assert.equal(byId[none.keyId].amountUsd, 0);
+});
+
+test('changing an active gift PATCHes the OpenRouter limit within the budget, and a failed PATCH changes nothing', async (t) => {
+  const s = await setup(t, { GIFT_TOTAL_BUDGET_USD: '30' });
+  const amount = (keyId, amountUsd) => fetch(`${s.origin}/v1/admin/gifts/amount`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN}` },
+    body: JSON.stringify({ keyId, amountUsd }),
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const patches = () => s.upstream.calls.filter((c) => c.method === 'PATCH');
+  const a = await s.license();
+  const b = await s.license();
+  const leaseA = await a.activate(MAC_A);
+  const leaseB = await b.activate(MAC_A);
+  await amount(b.keyId, 5);
+  await s.claim(leaseA);
+  await s.claim(leaseB);
+  const [[hashA, keyA]] = [...s.upstream.keys.entries()];
+  assert.equal((await (await s.status(leaseA)).json()).remainingUsd, 20); // fills the balance cache
+
+  const over = await amount(a.keyId, 26); // 5 + 26 > 30
+  assert.deepEqual(over, { status: 409, body: { ok: false, error: 'budget_exhausted' } });
+  assert.equal(patches().length, 0);
+
+  const raised = await amount(a.keyId, 25);
+  assert.equal(raised.status, 200);
+  assert.equal(raised.body.gift.limitUsd, 25);
+  assert.deepEqual(patches().map((c) => [c.path, c.body]), [[`/api/v1/keys/${hashA}`, { limit: 25 }]]);
+  assert.equal(keyA.limit, 25);
+  const after = await (await s.status(leaseA)).json();
+  assert.equal(after.event.amountUsd, 25);
+  assert.equal(after.remainingUsd, 25);
+
+  // Lowering below what is already spent leaves the gift used up.
+  assert.equal((await s.chat(leaseA, { model: SONNET, messages: [] })).status, 200);
+  assert.equal((await amount(a.keyId, 0.25)).status, 200);
+  assert.equal((await (await s.status(leaseA)).json()).remainingUsd, 0);
+  assert.equal((await s.chat(leaseA, { model: SONNET, messages: [] })).status, 402);
+
+  // $0 is refused by the proxy itself, whatever OpenRouter makes of a zero limit.
+  assert.equal((await amount(a.keyId, 0)).status, 200);
+  const chats = s.upstream.chats.length;
+  assert.equal((await s.chat(leaseA, { model: SONNET, messages: [] })).status, 402);
+  assert.equal(s.upstream.chats.length, chats);
+  const zero = await (await s.status(leaseA)).json();
+  assert.deepEqual([zero.claimed, zero.eligible, zero.event.amountUsd, zero.remainingUsd], [true, true, 0, 0]);
+
+  for (const failure of [400, 500]) {
+    s.upstream.failNextPatch(failure);
+    assert.deepEqual(await amount(a.keyId, 10), { status: 502, body: { ok: false, error: 'upstream_unavailable' } });
+    const file = JSON.parse(await fs.readFile(path.join(s.directory, 'gifts.json'), 'utf8'));
+    const grant = file.events['special-test'].grants[a.keyId];
+    assert.equal(grant.limitUsd, 0);
+    // After a 5xx the new limit may be live on OpenRouter, so it stays counted against the budget.
+    assert.equal(grant.pendingLimitUsd, failure === 500 ? 10 : undefined);
+  }
+  const listed = await fetch(`${s.origin}/v1/admin/gifts`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  assert.equal(listed.committedUsd, 15);
+  assert.equal((await amount(a.keyId, 10)).status, 200);
+  assert.equal(JSON.parse(await fs.readFile(path.join(s.directory, 'gifts.json'), 'utf8')).events['special-test'].grants[a.keyId].pendingLimitUsd, undefined);
+
+  // A revoked gift only stores the amount.
+  await s.admin('/v1/admin/gifts/disable', { keyId: b.keyId });
+  const count = patches().length;
+  const revoked = await amount(b.keyId, 8);
+  assert.equal(revoked.status, 200);
+  assert.equal(revoked.body.gift.status, 'revoked');
+  assert.equal(patches().length, count);
+});
+
+test('issue-beta takes giftUsd, checked before the key is created', async (t) => {
+  const s = await setup(t);
+  const listBetas = () => fetch(`${s.origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  const bad = await fetch(`${s.origin}/v1/admin/licenses/issue-beta`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN}` },
+    body: JSON.stringify({ name: 'Tester', giftUsd: 5000 }),
+  });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error, 'amount_invalid');
+  assert.equal((await listBetas()).count, 0);
+
+  const issued = await s.admin('/v1/admin/licenses/issue-beta', { name: 'Tester', giftUsd: 7.5 });
+  assert.equal(issued.gift.amountUsd, 7.5);
+  const [beta] = (await listBetas()).betas;
+  assert.equal(beta.gift.amountUsd, 7.5);
+
+  const off = await setup(t, { OPENROUTER_PROVISIONING_KEY: '' });
+  const refused = await off.admin('/v1/admin/licenses/issue-beta', { name: 'Tester', giftUsd: 7.5 });
+  assert.equal(refused.error, 'event_inactive');
+  const offBetas = await fetch(`${off.origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  assert.deepEqual([offBetas.count, offBetas.giftEvent], [0, null]);
 });
