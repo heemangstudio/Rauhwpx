@@ -1,5 +1,6 @@
 import type { DesktopHost } from '../desktop-integration';
-import { licenseSummary, msUntilNextTrialTick, trialTimeLeft, type LicenseStatus } from './agent-sidebar/settings-license';
+import { licenseSummary, msUntilNextTrialTick, renewalPrompt, trialTimeLeft, type LicenseStatus } from './agent-sidebar/settings-license';
+import { createRenewalNotice } from './license-renewal-notice';
 import { showToast } from './toast';
 import { setLicenseViewerMode } from './license-viewer-mode';
 import { showTrialEndedBanner, type TrialEndedBanner } from './trial-ended-banner';
@@ -29,9 +30,9 @@ const buyButtons = new Set<HTMLButtonElement>();
 let openPricing: (() => void) | null = null;
 let lastStatus: LicenseStatus | null = null;
 
-/** 체험 중·체험 끝·해지된 키일 때만 보인다. 라이선스가 있으면 숨는다. */
+/** 체험 중·체험 끝·해지된 키·기간이 끝난 연간 키일 때만 보인다. 라이선스가 있으면 숨는다. */
 function showsBuyButton(status: LicenseStatus): boolean {
-  return status.state === 'trial' || status.state === 'trial_expired' || status.state === 'revoked';
+  return status.state === 'trial' || status.state === 'trial_expired' || status.state === 'revoked' || status.state === 'expired';
 }
 
 /** 라이선스 구매 단추를 slot 에 둔다. 누르면 구매 페이지를 연다. */
@@ -86,6 +87,7 @@ export async function installLicenseGate(
 
   let current: LicenseStatus | null = null;
   let tick: number | undefined;
+  const renewalNotice = createRenewalNotice();
   /** 이 페이지가 체험 끝 처리를 시작했는지. 메인이 아직 'trial' 이라고 해도 잠근 채로 둔다. */
   let trialFinished = false;
   let savingAtLock: 'trial' | 'license' | null = null;
@@ -95,7 +97,7 @@ export async function installLicenseGate(
     trialEndedBanner?.dismiss();
     const expired = current?.state === 'trial_expired' || (trialFinished && current?.state === 'trial');
     const prompt = showTrialEndedBanner({
-      title: expired ? '체험이 끝났어요' : '라이선스를 확인해 주세요',
+      title: expired ? '체험이 끝났어요' : current?.state === 'expired' ? '라이선스 기간이 끝났어요' : '라이선스를 확인해 주세요',
       detail,
       onActivate: () => { void api.openActivation(); },
       onPurchase: () => { void api.openPricing(); },
@@ -203,11 +205,26 @@ export async function installLicenseGate(
     }
   }
 
+  /** 결제가 실패한 동안(편집됨)과 기간이 끝난 뒤(읽기 전용) 오른쪽 아래에 연장 안내를 띄운다. */
+  function paintRenewalNotice(status: LicenseStatus): void {
+    const prompt = renewalPrompt(status);
+    renewalNotice.show(prompt ? {
+      id: `${prompt.kind}:${status.license?.paymentGraceEndsAt ?? status.license?.licenseExpiresAt ?? ''}`,
+      title: prompt.title,
+      detail: prompt.detail,
+      action: prompt.action,
+      onAction: () => { void (api.openPaymentFix ? api.openPaymentFix() : api.openPricing()); },
+      // 끝난 구독은 Groble에서 다시 살릴 수 없을 때가 있어 새로 구매하는 길도 둔다.
+      secondary: prompt.kind === 'lapsed' ? { label: '새로 구매하기', onClick: () => { void api.openPricing(); } } : undefined,
+    } : null);
+  }
+
   function render(status: LicenseStatus): void {
     const previous = current;
     current = status;
     lastStatus = status;
     for (const buy of buyButtons) buy.hidden = !showsBuyButton(status);
+    paintRenewalNotice(status);
     // 잠자기에서 깨어 메인이 먼저 기한을 알려 온 경우에도 저장부터 한다.
     if (status.state === 'trial_expired' && previous?.state === 'trial' && !trialFinished) {
       void saveAndLock('trial');

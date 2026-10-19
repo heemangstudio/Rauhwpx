@@ -1,0 +1,63 @@
+/* 연장 안내 카드. 문서 영역 왼쪽 아래(상태 막대 위)에 떠 있어 오른쪽 대화 입력창을 가리지 않는다. 모달이 아니다. */
+.license-renewal-notice {
+  position: fixed;
+  left: 36px;
+  bottom: 44px;
+  z-index: 50; /* 대화창(.ag-root, 60)과 설정 화면 아래, 문서 위 */
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 40px));
+  padding: 16px 18px 14px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface);
+  box-shadow: var(--ag-elev-sheet);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
+  word-break: keep-all;
+}
+.license-renewal-notice-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.license-renewal-notice-detail {
+  margin: 0 0 14px;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.license-renewal-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.license-renewal-notice :where(button) {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  cursor: default;
+}
+.license-renewal-notice-primary {
+  border: 1px solid var(--n-ink);
+  background: var(--n-ink);
+  color: var(--n-surface);
+  font-weight: 600;
+}
+.license-renewal-notice-secondary {
+  border: 1px solid var(--ui-border);
+  background: transparent;
+  color: var(--ui-text);
+}
+.license-renewal-notice-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--ui-text-secondary);
+}
+.license-renewal-notice-secondary:hover,
+.license-renewal-notice-close:hover { background: var(--ui-hover); }
+.license-renewal-notice :where(button):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

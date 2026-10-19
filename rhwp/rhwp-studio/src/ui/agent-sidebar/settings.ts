@@ -547,7 +547,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
     .rhwpDesktop?.license;
   const licenseSection = desktopLicense ? createLicenseSettingsSection(desktopLicense) : null;
-  if (licenseSection) panes.get('editing')?.appendChild(licenseSection.root);
+  // 편집 설정과 같은 가운데 열, 취소·적용 줄 위에 둔다. 다른 설정 카드와 같은 모양이 된다.
+  if (licenseSection) editingSettings.element.querySelector('.ag-settings-apply-footer')?.before(licenseSection.root);
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
     isConnected: () => connectionState === 'connected',

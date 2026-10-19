@@ -10,7 +10,8 @@ import {
   PRODUCTION_LICENSE_PUBLIC_KEYS, verifyLease,
 } from '../desktop/license-lease.mjs';
 import {
-  createLicenseManager, EXPIRY_SAVE_GRACE_MS, LicenseReadOnlyError, PRICING_URL, TRIAL_DURATION_MS,
+  createLicenseManager, EXPIRED_RECHECK_MS, EXPIRY_SAVE_GRACE_MS, LicenseReadOnlyError, PRICING_URL,
+  DEFAULT_PAYMENT_FIX_URL, paymentFixUrlFrom, SUBSCRIPTION_OFFLINE_GRACE_MS, TRIAL_DURATION_MS,
 } from '../desktop/license-manager.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS, signLease } from './fixtures/license-mock-server.mjs';
 
@@ -208,6 +209,163 @@ test('checks every 24 hours renew the lease; offline grace lasts 7 days', async 
   status = await manager.check();
   assert.equal(status.state, 'licensed');
   assert.equal(status.offline, false);
+});
+
+test('an annual key shows its renewal date; a lifetime key shows none', async (t) => {
+  const { manager, server } = await setup(t);
+  const renewsAt = T0 + 365 * DAY;
+  let status = (await manager.activate(server.issueKey({ licenseExpiresAt: renewsAt }))).status;
+  assert.equal(status.state, 'licensed');
+  assert.equal(status.license.licenseExpiresAt, renewsAt);
+  assert.equal(status.license.autoRenew, true);
+  assert.equal(status.license.graceEndsAt, null);
+  status = (await manager.activate(server.issueKey())).status;
+  assert.equal(status.license.licenseExpiresAt, null);
+  assert.equal(status.license.autoRenew, null);
+});
+
+test('lifetime and beta keys never expire, renew or ask for payment, however long they run', async (t) => {
+  for (const tier of ['paid', 'beta']) {
+    const { manager, server, clock } = await setup(t);
+    await manager.activate(server.issueKey({ tier }));
+    clock.t = T0 + 3 * 365 * DAY;
+    const before = server.calls.length;
+    let status = await manager.check();
+    assert.equal(status.state, 'licensed', tier);
+    assert.equal(server.calls.length, before + 1, `${tier}: one daily check, no hourly expiry recheck`);
+    clock.t += 2 * HOUR;
+    status = await manager.check();
+    assert.equal(server.calls.length, before + 1, `${tier}: no recheck within the day`);
+    assert.deepEqual(
+      [status.license.licenseExpiresAt, status.license.autoRenew, status.license.graceEndsAt, status.license.paymentFailed, status.license.paymentGraceEndsAt, status.license.paymentFixUrl],
+      [null, null, null, false, null, null],
+      tier,
+    );
+    await manager.assertCanSave();
+  }
+});
+
+test('an annual key: the server saying expired locks at once, and a renewal unlocks on the next check', async (t) => {
+  const { manager, make, server, clock } = await setup(t);
+  const expiresAt = T0 + 30 * DAY;
+  const key = server.issueKey({ licenseExpiresAt: expiresAt });
+  await manager.activate(key);
+  clock.t = expiresAt - HOUR;
+  assert.equal((await manager.check({ force: true })).state, 'licensed');
+
+  clock.t = expiresAt + 2 * HOUR;
+  let status = await manager.check();
+  assert.equal(status.state, 'expired', 'online past the expiry: no offline grace');
+  assert.equal(status.readOnly, true);
+  assert.equal(status.license.licenseExpiresAt, expiresAt);
+  await assert.rejects(manager.assertCanSave(), /기간이 끝나 읽기 전용/);
+  assert.equal(await manager.currentLease(), null);
+  // The state survives a restart, even offline.
+  server.setOffline(true);
+  assert.equal((await make().status()).state, 'expired');
+  server.setOffline(false);
+
+  // Renewed on the server: the hourly recheck picks it up without the user doing anything.
+  server.setLicenseExpiry(key, expiresAt + 365 * DAY);
+  const calls = server.calls.length;
+  clock.t += EXPIRED_RECHECK_MS / 2;
+  assert.equal((await manager.check()).state, 'expired');
+  assert.equal(server.calls.length, calls, 'no recheck within the hour');
+  clock.t += EXPIRED_RECHECK_MS / 2;
+  status = await manager.check();
+  assert.equal(status.state, 'licensed');
+  assert.equal(status.license.licenseExpiresAt, expiresAt + 365 * DAY);
+  await manager.assertCanSave();
+});
+
+test('an annual key offline past its expiry keeps working for the 7-day grace, then expires', async (t) => {
+  const { manager, server, clock } = await setup(t);
+  const expiresAt = T0 + 30 * DAY;
+  const key = server.issueKey({ licenseExpiresAt: expiresAt, autoRenew: false });
+  await manager.activate(key);
+  // Last successful check right before the expiry: the lease runs 7 days from here.
+  clock.t = expiresAt - 1;
+  await manager.check({ force: true });
+  server.setOffline(true);
+
+  clock.t = expiresAt + 3 * DAY;
+  let status = await manager.check();
+  assert.equal(status.state, 'licensed');
+  assert.equal(status.offline, true);
+  assert.equal(status.license.autoRenew, false);
+  assert.equal(status.license.graceEndsAt, expiresAt - 1 + 7 * DAY);
+  assert.ok(status.license.graceEndsAt <= expiresAt + SUBSCRIPTION_OFFLINE_GRACE_MS);
+  await manager.assertCanSave();
+
+  clock.t = expiresAt + 7 * DAY;
+  status = await manager.check();
+  assert.equal(status.state, 'expired');
+  await assert.rejects(manager.assertCanSave(), LicenseReadOnlyError);
+});
+
+test('the grace never passes 7 days after the expiry, even with a lease signed later', async (t) => {
+  const { dir, make, server, clock } = await setup(t);
+  const expiresAt = T0 + 30 * DAY;
+  const key = server.issueKey();
+  const deviceId = '0b9c6f7e-3f7a-4d8e-9a51-2f1c3d4e5f60';
+  const issuedAt = expiresAt + 5 * DAY;
+  const lease = signLease({ v: 1, kid: 'hama-prod-1', keyId: 'lic_1', keyHash: licenseKeyHash(key), deviceId, issuedAt, expiresAt: issuedAt + 7 * DAY, licenseExpiresAt: expiresAt });
+  await writeFile(join(dir, 'license.json'), JSON.stringify({ v: 1, deviceId, maxSeenAt: issuedAt, trial: { startedAt: T0 }, license: { key, keyId: 'lic_1', tier: 'paid', lease, lastCheckAt: issuedAt } }));
+  server.setOffline(true);
+  clock.t = expiresAt + 6 * DAY;
+  assert.equal((await make().status()).state, 'licensed');
+  clock.t = expiresAt + SUBSCRIPTION_OFFLINE_GRACE_MS;
+  assert.equal((await make().status()).state, 'expired', 'the lease is still valid, the 7-day grace is not');
+});
+
+test('a failed renewal keeps the key editable through the payment grace with a fix link, then it expires', async (t) => {
+  const { manager, server, clock } = await setup(t);
+  const expiresAt = T0 + 30 * DAY;
+  const graceEndsAt = expiresAt + 10 * DAY;
+  const key = server.issueKey({ licenseExpiresAt: expiresAt });
+  await manager.activate(key);
+  assert.equal((await manager.status()).license.paymentFailed, false);
+
+  // Groble could not charge the renewal on the anniversary.
+  server.setLicenseExpiry(key, expiresAt, { paymentGraceEndsAt: graceEndsAt });
+  clock.t = expiresAt - HOUR;
+  let status = await manager.check({ force: true });
+  assert.deepEqual([status.state, status.canEdit, status.license.paymentFailed, status.license.paymentGraceEndsAt, status.license.paymentFixUrl],
+    ['licensed', true, true, graceEndsAt, DEFAULT_PAYMENT_FIX_URL]);
+
+  clock.t = expiresAt + 5 * DAY;
+  status = await manager.check();
+  assert.deepEqual([status.state, status.canEdit, status.license.paymentFailed], ['licensed', true, true], 'past the expiry and still editable');
+  await manager.assertCanSave();
+
+  clock.t = graceEndsAt + HOUR;
+  status = await manager.check();
+  assert.equal(status.state, 'expired');
+  assert.equal(status.license.paymentFailed, false);
+  assert.equal(status.license.paymentFixUrl, DEFAULT_PAYMENT_FIX_URL, 'the lapsed screen still knows where to renew');
+  await assert.rejects(manager.assertCanSave(), LicenseReadOnlyError);
+
+  // A late re-payment on Groble renews the key: editable again, no failure state.
+  server.setLicenseExpiry(key, clock.t + 365 * DAY);
+  status = await manager.check({ force: true });
+  assert.deepEqual([status.state, status.license.paymentFailed], ['licensed', false]);
+});
+
+test('the payment fix link only ever points at groble.im', () => {
+  assert.equal(paymentFixUrlFrom('https://groble.im/manage/purchase'), 'https://groble.im/manage/purchase');
+  assert.equal(paymentFixUrlFrom('https://www.groble.im/users/profile/payment-methods'), 'https://www.groble.im/users/profile/payment-methods');
+  for (const bad of ['http://groble.im/manage/purchase', 'https://groble.im.evil.example/', 'javascript:alert(1)', null, 42]) {
+    assert.equal(paymentFixUrlFrom(bad), DEFAULT_PAYMENT_FIX_URL, String(bad));
+  }
+});
+
+test('activating an expired annual key says so', async (t) => {
+  const { manager, server } = await setup(t);
+  const key = server.issueKey({ licenseExpiresAt: T0 - DAY });
+  const result = await manager.activate(key);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'expired');
+  assert.match(result.message, /기간이 끝난 라이선스 키/);
 });
 
 test('a refunded (revoked) key turns the app read-only at the next check', async (t) => {

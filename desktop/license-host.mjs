@@ -1,6 +1,6 @@
 // 라이선스 관리자를 Electron 에 연결한다: IPC, 활성화 창, 상태 방송, 저장 차단.
 import { fileURLToPath } from 'node:url';
-import { PRICING_URL } from './license-manager.mjs';
+import { paymentFixUrlFrom, PRICING_URL } from './license-manager.mjs';
 
 const LICENSE_PRELOAD = fileURLToPath(new URL('./license-preload.cjs', import.meta.url));
 const LICENSE_URL = new URL('./license-window.html', import.meta.url).href;
@@ -78,6 +78,8 @@ export function installLicenseHost({
     'license:deactivate': () => manager.deactivate(),
     'license:check': () => manager.check({ force: true }),
     'license:open-pricing': () => shell.openExternal(PRICING_URL),
+    // 결제가 실패했거나 끝난 연간 키: 구매자가 결제 수단을 바꾸는 Groble 페이지를 연다.
+    'license:open-payment-fix': async () => shell.openExternal(paymentFixUrlFrom((await manager.status()).license?.paymentFixUrl)),
     'license:open-window': () => { openWindow(); return true; },
     'license:close-window': () => { licenseWindow?.close(); return true; },
     'license:begin-expiry-save': async (event) => {
