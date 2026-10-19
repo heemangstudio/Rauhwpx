@@ -45,6 +45,9 @@ const SCHEDULE_TICK_MS = 60 * 1000;
 export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
 /** 결제가 실패한 구매자가 결제 수단을 바꾸는 Groble 주문조회. 서버가 paymentFixUrl 로 다른 주소를 주면 그것을 쓴다. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
+/** 사용자가 스스로 풀 수 없는 라이선스 문제의 문의처. 활성화 창과 설정이 메일 앱으로 연다. */
+export const SUPPORT_EMAIL = 'management@heemangstudios.com';
+export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('HamaEditor 라이선스 문의')}`;
 
 /** 서버가 준 주소는 groble.im 의 https 페이지일 때만 쓴다. */
 export function paymentFixUrlFrom(value) {
@@ -73,10 +76,10 @@ const BETA_REVOKED_MESSAGE = '베타 테스트 기간이 끝나 키가 해지되
 const EXPIRED_MESSAGE = '라이선스 기간이 끝나 읽기 전용이에요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.';
 
 const ERROR_MESSAGES = {
-  invalid_key: '라이선스 키를 찾을 수 없어요. 키를 다시 확인해 주세요.',
-  revoked: '해지된 라이선스 키예요. 환불된 주문의 키는 쓸 수 없어요.',
+  invalid_key: `라이선스 키를 찾을 수 없어요. 키를 다시 확인하고, 결제한 키가 맞다면 ${SUPPORT_EMAIL}으로 문의해 주세요.`,
+  revoked: `해지된 라이선스 키예요. 환불된 주문의 키는 쓸 수 없어요. 환불하지 않았다면 ${SUPPORT_EMAIL}으로 문의해 주세요.`,
   expired: '기간이 끝난 라이선스 키예요. 구독을 갱신하면 다시 쓸 수 있어요.',
-  device_limit: '이 키를 쓸 수 있는 기기 수를 모두 채웠어요. 다른 기기의 설정에서 ‘이 기기 비활성화’를 누른 뒤 다시 시도해 주세요.',
+  device_limit: `이 키를 쓸 수 있는 기기 수를 모두 채웠어요. 다른 기기의 설정에서 ‘이 기기 비활성화’를 누른 뒤 다시 시도해 주세요. 그 기기를 쓸 수 없다면 ${SUPPORT_EMAIL}으로 문의해 주세요.`,
   not_activated: '이 기기에서는 아직 활성화되지 않은 키예요. 키를 다시 넣어 주세요.',
   network: '라이선스 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.',
   server: '라이선스 서버가 잠시 응답하지 않아요. 조금 뒤 다시 시도해 주세요.',

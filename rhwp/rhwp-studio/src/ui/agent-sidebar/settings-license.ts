@@ -48,6 +48,8 @@ export interface DesktopLicenseApi {
   openPricing: () => Promise<void>;
   /** 결제 수단을 바꾸는 Groble 페이지를 연다. 예전 메인 프로세스에는 없다. */
   openPaymentFix?: () => Promise<void>;
+  /** 문의 메일을 쓴다. 예전 메인 프로세스에는 없다. */
+  openSupport?: () => Promise<void>;
   /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
   beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
@@ -105,6 +107,8 @@ export function licenseTermText(license: LicenseStatus['license']): string {
   if (!expiresAt) return '';
   return license?.autoRenew === false ? `${formatLicenseDate(expiresAt)}까지` : `다음 갱신 ${formatLicenseDate(expiresAt)}`;
 }
+
+const SUPPORT_EMAIL = 'management@heemangstudios.com';
 
 export const RENEWAL_PROMPT_TITLE = '키 만료, 연장할까요?';
 
@@ -247,6 +251,17 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   detail.className = 'ag-settings-control-description';
   detail.setAttribute('role', 'status');
   copy.append(title, detail);
+  if (api.openSupport) {
+    const contact = document.createElement('span');
+    contact.className = 'ag-settings-control-description';
+    const mail = document.createElement('button');
+    mail.type = 'button';
+    mail.className = 'ag-settings-license-contact';
+    mail.textContent = SUPPORT_EMAIL;
+    mail.addEventListener('click', () => { void api.openSupport?.(); });
+    contact.append('문의 ', mail);
+    copy.append(contact);
+  }
   const actions = document.createElement('span');
   actions.className = 'ag-settings-license-actions';
   const activate = button('키 넣기');
