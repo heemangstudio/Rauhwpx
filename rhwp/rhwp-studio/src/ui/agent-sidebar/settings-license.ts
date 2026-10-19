@@ -127,7 +127,7 @@ export function renewalPrompt(status: LicenseStatus): {
     return {
       kind: 'payment_failed',
       title: RENEWAL_PROMPT_TITLE,
-      detail: `갱신 결제가 되지 않았어요. ${formatLicenseDate(license.paymentGraceEndsAt)}까지는 그대로 쓸 수 있고, Groble에서 결제 수단을 바꾸면 같은 키로 이어서 써요.`,
+      detail: `갱신 결제가 되지 않았어요. ${formatLicenseDate(license.paymentGraceEndsAt)}까지 결제 수단을 바꿔주세요.`,
       action: '결제 수단 바꾸기',
     };
   }
@@ -276,8 +276,11 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
 
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
-    // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다.
-    title.textContent = renewalPrompt(status)?.title ?? summary.title;
+    // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다. 무료 체험이 끝난 기기는 설정에서만 그렇게 부른다.
+    // 메뉴 막대 알약은 자리가 좁아 '읽기 전용'을 그대로 쓴다.
+    title.textContent = status.state === 'trial_expired'
+      ? '무료 체험 만료'
+      : renewalPrompt(status)?.title ?? summary.title;
     detail.textContent = summary.detail;
     activate.hidden = !summary.showActivate;
     buy.hidden = !summary.showActivate;

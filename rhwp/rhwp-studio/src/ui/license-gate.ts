@@ -194,7 +194,9 @@ export async function installLicenseGate(
       return;
     }
     const summary = licenseSummary(status);
-    show(summary.title, status.state === 'lease_expired' ? '확인' : '활성화', true, summary.detail);
+    // 연간 키 만료는 알약에서 '기간 끝 ·'을 빼고 짧게 둔다. 설정에는 '기간 끝 · 읽기 전용'이 남는다.
+    const title = status.state === 'expired' ? '읽기 전용' : summary.title;
+    show(title, status.state === 'lease_expired' ? '확인' : '활성화', true, summary.detail);
   }
 
   /**
