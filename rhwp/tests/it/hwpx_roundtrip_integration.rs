@@ -551,7 +551,10 @@ fn explicitly_unique_body_and_table_ids_survive_by_structural_route() {
     let mut section_xml = String::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).expect("zip entry");
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .expect("serialized ZIP entry names are valid UTF-8")
+            .into_owned();
         if name.contains("section") && name.ends_with(".xml") {
             entry
                 .read_to_string(&mut section_xml)

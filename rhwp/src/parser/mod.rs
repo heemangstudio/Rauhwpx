@@ -1444,6 +1444,7 @@ fn extract_thumbnail_from_hwpx(data: std::sync::Arc<[u8]>) -> Option<Vec<u8>> {
     // Preview/PrvImage.png 또는 Preview/PrvImage.* 탐색
     let entry_name = archive
         .file_names()
+        .ok()?
         .into_iter()
         .find(|name| name.starts_with("Preview/PrvImage"))?;
     let buf = archive

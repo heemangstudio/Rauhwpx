@@ -32,6 +32,10 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache: verification
+      - name: Install Skia system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev libfreetype-dev
       - name: Install pinned nextest
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:

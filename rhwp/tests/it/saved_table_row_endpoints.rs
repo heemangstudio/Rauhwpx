@@ -112,7 +112,11 @@ fn own_layout_marker_count(bytes: &[u8]) -> usize {
     let mut count = 0;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        if entry.name() == OWN_LINE_LAYOUT_HWPX_MARKER_PATH {
+        if entry
+            .name()
+            .expect("serialized ZIP entry names are valid UTF-8")
+            == OWN_LINE_LAYOUT_HWPX_MARKER_PATH
+        {
             let mut payload = Vec::new();
             entry.read_to_end(&mut payload).unwrap();
             assert_eq!(payload, b"1");

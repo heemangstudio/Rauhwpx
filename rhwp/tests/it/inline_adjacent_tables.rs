@@ -425,9 +425,13 @@ fn loaded_zero_width_control_after_overwide_table_keeps_its_font_line() {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
+            let name = file
+                .name()
+                .expect("serialized ZIP entry names are valid UTF-8")
+                .into_owned();
             let mut data = Vec::new();
             file.read_to_end(&mut data).unwrap();
-            if file.name() == "Contents/section0.xml" {
+            if name == "Contents/section0.xml" {
                 let xml = String::from_utf8(data).unwrap();
                 assert!(xml.contains("<hp:ctrl><hp:pageNum "));
                 data = xml
@@ -440,7 +444,7 @@ fn loaded_zero_width_control_after_overwide_table_keeps_its_font_line() {
             }
             let options =
                 zip::write::SimpleFileOptions::default().compression_method(file.compression());
-            writer.start_file(file.name(), options).unwrap();
+            writer.start_file(name, options).unwrap();
             writer.write_all(&data).unwrap();
         }
         let bytes = writer.finish().unwrap().into_inner();

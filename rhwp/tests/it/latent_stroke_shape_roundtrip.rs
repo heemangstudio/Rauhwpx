@@ -53,7 +53,10 @@ fn entries(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     (0..zip.len())
         .map(|index| {
             let mut entry = zip.by_index(index).unwrap();
-            let name = entry.name().to_owned();
+            let name = entry
+                .name()
+                .expect("serialized ZIP entry names are valid UTF-8")
+                .into_owned();
             let mut payload = Vec::new();
             entry.read_to_end(&mut payload).unwrap();
             (name, payload)

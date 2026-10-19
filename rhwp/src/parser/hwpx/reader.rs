@@ -306,8 +306,12 @@ impl HwpxReader {
     }
 
     /// 아카이브 내 파일 목록을 반환한다.
-    pub fn file_names(&self) -> Vec<String> {
-        self.archive.file_names().map(|s| s.to_string()).collect()
+    pub fn file_names(&self) -> Result<Vec<String>, HwpxError> {
+        self.archive
+            .file_names()
+            .map(|name| name.map(|name| name.into_owned()))
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
     }
 }
 

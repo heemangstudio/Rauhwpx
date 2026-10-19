@@ -337,6 +337,7 @@ fn restore_tac_wire_origins(data: &[u8], document: &mut Document) {
         .ok()
         .is_some_and(|z| {
             z.file_names()
+                .filter_map(Result::ok)
                 .filter(|n| *n == TAC_LINE_ORIGIN_PATH)
                 .count()
                 == 1

@@ -531,7 +531,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
     // Hancom stores document scripts and editable OOXML charts outside Contents/
     // and BinData/.  Dropping those ZIP entries on save can disable scripts or
     // turn a chart into an unusable fallback object.
-    let package_file_names = reader.file_names();
+    let package_file_names = reader.file_names()?;
     let bin_data_ids = build_hwpx_bin_data_ids(
         &package_info.bin_data_items,
         package_file_names

@@ -17,7 +17,9 @@ if (!browser) {
     .filter((name) => name.endsWith('.test.mjs')).sort().map((name) => `../npm/editor/tests/${name}`));
 }
 if (!files.length) throw new Error(`No ${suite} tests found`);
-const result = spawnSync(process.execPath, ['--test', ...options, ...files], {
+// Browser test servers otherwise invalidate the shared Vite cache while another page imports a module.
+const browserOptions = browser ? ['--test-concurrency=1'] : [];
+const result = spawnSync(process.execPath, ['--test', ...options, ...browserOptions, ...files], {
   cwd: root,
   stdio: 'inherit',
 });

@@ -647,7 +647,10 @@ mod tests {
             .compression_method(zip::CompressionMethod::Deflated);
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).expect("entry");
-            let name = entry.name().to_string();
+            let name = entry
+                .name()
+                .expect("serialized ZIP entry names are valid UTF-8")
+                .into_owned();
             let mut data = Vec::new();
             entry.read_to_end(&mut data).expect("read entry");
             if name == "Contents/section0.xml" {
@@ -1656,7 +1659,13 @@ mod tests {
         // ZIP 파일 목록에 한컴 필수 11개가 모두 있는지 확인
         let cursor = std::io::Cursor::new(&bytes);
         let archive = zip::ZipArchive::new(cursor).expect("valid zip");
-        let names: Vec<String> = archive.file_names().map(String::from).collect();
+        let names: Vec<String> = archive
+            .file_names()
+            .map(|name| {
+                name.expect("serialized ZIP entry names are valid UTF-8")
+                    .into_owned()
+            })
+            .collect();
         let required = [
             "mimetype",
             "version.xml",
@@ -1717,7 +1726,13 @@ mod tests {
         // ZIP에 BinData 엔트리 존재 확인
         let cursor = std::io::Cursor::new(&bytes);
         let archive = zip::ZipArchive::new(cursor).expect("zip");
-        let names: Vec<String> = archive.file_names().map(String::from).collect();
+        let names: Vec<String> = archive
+            .file_names()
+            .map(|name| {
+                name.expect("serialized ZIP entry names are valid UTF-8")
+                    .into_owned()
+            })
+            .collect();
         assert!(
             names.iter().any(|n| n.starts_with("BinData/")),
             "BinData/ ZIP entry missing: {:?}",
@@ -1823,7 +1838,10 @@ mod tests {
                 .compression_method(zip::CompressionMethod::Deflated);
             for i in 0..archive.len() {
                 let mut f = archive.by_index(i).expect("entry");
-                let name = f.name().to_string();
+                let name = f
+                    .name()
+                    .expect("serialized ZIP entry names are valid UTF-8")
+                    .into_owned();
                 if name.starts_with("BinData/") {
                     continue;
                 }
@@ -1907,8 +1925,11 @@ mod tests {
         let mut archive = zip::ZipArchive::new(cursor).expect("zip");
         let bin_name = archive
             .file_names()
+            .map(|name| {
+                name.expect("serialized ZIP entry names are valid UTF-8")
+                    .into_owned()
+            })
             .find(|name| name.starts_with("BinData/") && name.ends_with(".png"))
-            .map(String::from)
             .expect("png BinData entry");
         let mut bin = archive.by_name(&bin_name).expect("read png BinData");
         let mut actual = Vec::new();
@@ -1964,8 +1985,11 @@ mod tests {
             zip::ZipArchive::new(std::io::Cursor::new(serialized)).expect("roundtrip zip");
         let section_names: Vec<String> = archive
             .file_names()
+            .map(|name| {
+                name.expect("serialized ZIP entry names are valid UTF-8")
+                    .into_owned()
+            })
             .filter(|name| name.starts_with("Contents/section") && name.ends_with(".xml"))
-            .map(String::from)
             .collect();
         let mut section_xml = String::new();
         for name in section_names {

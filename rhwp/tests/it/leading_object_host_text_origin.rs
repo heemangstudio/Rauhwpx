@@ -168,7 +168,10 @@ fn make_source_zero_record(bytes: &[u8]) -> Vec<u8> {
     let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for i in 0..source.len() {
         let mut entry = source.by_index(i).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .expect("serialized ZIP entry names are valid UTF-8")
+            .into_owned();
         let options =
             zip::write::SimpleFileOptions::default().compression_method(entry.compression());
         let mut body = Vec::new();

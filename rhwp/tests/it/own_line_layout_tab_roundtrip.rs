@@ -254,13 +254,17 @@ fn markers(bytes: &[u8], own: Option<&[u8]>, hwp5: bool) -> Vec<u8> {
     let options = zip::write::SimpleFileOptions::default();
     for index in 0..input.len() {
         let mut entry = input.by_index(index).unwrap();
-        if entry.name() == OWN_LINE_LAYOUT_HWPX_MARKER_PATH
-            || entry.name() == HWP5_ORIGIN_HWPX_MARKER_PATH
-            || entry.name() == RAW_FIELDS_HWPX_PATH
+        let name = entry
+            .name()
+            .expect("serialized ZIP entry names are valid UTF-8")
+            .into_owned();
+        if name == OWN_LINE_LAYOUT_HWPX_MARKER_PATH
+            || name == HWP5_ORIGIN_HWPX_MARKER_PATH
+            || name == RAW_FIELDS_HWPX_PATH
         {
             continue;
         }
-        output.start_file(entry.name(), options).unwrap();
+        output.start_file(name, options).unwrap();
         let mut payload = Vec::new();
         entry.read_to_end(&mut payload).unwrap();
         output.write_all(&payload).unwrap();

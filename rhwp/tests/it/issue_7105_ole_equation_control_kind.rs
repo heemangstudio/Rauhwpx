@@ -36,7 +36,13 @@ fn hwpx_with_body_level_ole_equation() -> Vec<u8> {
     let deflated = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let names: Vec<String> = src.file_names().map(str::to_string).collect();
+    let names: Vec<String> = src
+        .file_names()
+        .map(|name| {
+            name.expect("serialized ZIP entry names are valid UTF-8")
+                .into_owned()
+        })
+        .collect();
     let mut spliced = false;
     for name in names {
         let mut data = Vec::new();
