@@ -1590,7 +1590,7 @@ export class PendingEditManager {
               sort: 'para' as const, sectionIdx: span.sectionIdx, paraIdx: span.paraStart, endParaIdx: span.paraEnd,
             }))
             : [{ sort: 'page', sectionIdx: op.obj.sectionIdx }];
-          for (const objRef of refs) ops.push({ kind: 'modify', agent: op.agent, objRef });
+          for (const objRef of refs) ops.push({ kind: 'modify', agent: op.agent, opId: op.id, objRef });
           continue;
         }
         if (op.kind === 'object') {
@@ -1601,6 +1601,7 @@ export class PendingEditManager {
             ops.push({
               kind: objectOverlayKind(op.obj),
               agent: op.agent,
+              opId: op.id,
               objRef: ref,
               removedText: 'removedText' in op.obj ? op.obj.removedText : undefined,
             });
@@ -1618,7 +1619,7 @@ export class PendingEditManager {
             newText: op.text,
           });
         } else {
-          ops.push({ kind: op.kind, agent: op.agent, range: op.range });
+          ops.push({ kind: op.kind, agent: op.agent, opId: op.id, range: op.range });
         }
       }
     }

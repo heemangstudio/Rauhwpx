@@ -9,7 +9,7 @@ import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocu
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
-import type { DocumentInfo } from '@/core/types';
+import type { DocumentInfo, DocumentPosition, SelectionRect } from '@/core/types';
 import { AttachableEventBus } from '@/core/event-bus';
 import { createAttachableFacade } from '@/core/attachable-facade';
 import { assertRemoteDocumentBytes } from '@/core/document-signature';
@@ -693,6 +693,24 @@ let extensionViewerSettings: ExtensionViewerSettings = {
 /** 제한 시간을 넘겨 늦게 도착한 웹폰트로 이미 그린 페이지를 다시 그린다. */
 function repaintAfterLateWebFonts(): void {
   if (wasm.hasLoadedDocument()) eventBus.emit('document-view-changed');
+}
+
+/** 본문 문단의 글자 범위들을 줄별 rect 로 잰다. 빈 범위(지운 자리)는 그 자리의 캐럿 rect 다. */
+function changeRangeRects(
+  wasm: WasmBridge,
+  position: DocumentPosition,
+  ranges: readonly { start: number; end: number }[],
+): SelectionRect[] {
+  const { sectionIndex: sec, paragraphIndex: para } = position;
+  return ranges.flatMap((range) => {
+    try {
+      if (range.end > range.start) return wasm.getSelectionRects(sec, para, range.start, para, range.end, false);
+      const caret = wasm.getCursorRect(sec, para, range.start);
+      return caret ? [{ pageIndex: caret.pageIndex, x: caret.x, y: caret.y, width: 0, height: caret.height }] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 function createActiveDocumentId(): string {
@@ -2254,12 +2272,18 @@ function installChatAgent(
       },
       subscribe: (listener) => session.turnCheckpoints.subscribe(listener),
     },
-    navigateToChange: (position, anchor) => {
+    navigateToChange: (position, target) => {
       if (!shown()) return;
-      if (anchor && position.cellIndex === undefined) {
-        position = { ...position, cursorRect: { ...anchor } };
-      }
-      editor.moveCursorTo(position);
+      const inBody = position.cellIndex === undefined;
+      const ranges = inBody ? target?.ranges : undefined;
+      // anchor 는 문단 첫 자리의 rect 라 바뀐 글자 범위가 있으면 쓰지 않는다.
+      const anchor = inBody && !ranges ? target?.anchor : undefined;
+      if (anchor) position = { ...position, cursorRect: { ...anchor } };
+      if (!editor.moveCursorTo(position, { center: true })) return;
+      bridge.flashJumpTarget({
+        opId: target?.opId,
+        rects: ranges ? changeRangeRects(session.wasm, position, ranges) : anchor && [anchor],
+      });
     },
     openClassicVersionControl: () => openClassicDocumentHistory(commandServices),
     getDocumentContext: () => {

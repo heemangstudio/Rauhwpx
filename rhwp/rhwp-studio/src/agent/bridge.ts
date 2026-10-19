@@ -29,7 +29,7 @@ import {
 } from './tool-executor.ts';
 import { readFileSourceResponse, type FileDocumentSource, type ForeignDocumentBytes } from './foreign-documents.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
-import { PendingOverlayRenderer } from './pending-overlay.ts';
+import { PendingOverlayRenderer, type JumpFlashTarget } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
@@ -303,7 +303,7 @@ export type ChatCompactResult =
   | { ok: false; code: string; message: string };
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
 type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
-  | 'holdsDocumentWrites' | 'noteDocumentRestored';
+  | 'holdsDocumentWrites' | 'noteDocumentRestored' | 'flashJumpTarget';
 
 /** Frontend consumers only need the pending-edit review surface. */
 export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
@@ -404,6 +404,8 @@ export interface AgentBridge {
    */
   detachView(editor: AgentEditorHost): void;
   isViewAttached(): boolean;
+  /** 사이드바에서 이동한 자리를 한 번 짚는다 (대기 편집이면 그 op 의 표시, 아니면 임시 윤곽). */
+  flashJumpTarget(target: JumpFlashTarget): void;
   /** 턴 진행, 사용자 메시지 대기, 질문 대기, 계획 승인 대기, 검토 대기 편집 중 하나라도 있으면 true. */
   isBusy(): boolean;
   /** isBusy 가 바뀌면 부른다. 알림은 마이크로태스크로 모아 한 번만 보낸다. */
@@ -1857,6 +1859,10 @@ export class AgentBridgeImpl implements AgentBridge {
 
   isViewAttached(): boolean {
     return this.view !== null;
+  }
+
+  flashJumpTarget(target: JumpFlashTarget): void {
+    this.overlay.flashJumpTarget(target);
   }
 
   // ─── busy ─────────────────────────────────────────────────

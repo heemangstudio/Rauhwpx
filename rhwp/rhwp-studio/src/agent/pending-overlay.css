@@ -15,6 +15,8 @@
   position: absolute;
   pointer-events: none;
   border-radius: 1px;
+  /* 색이 정해지지 않은 에이전트(pi, grok, opencode)도 표시가 보이게 하는 기본 잉크. */
+  --ag-pending-ink: 127, 124, 164;
 }
 
 .ag-pending-rect.ag-claude {
@@ -243,7 +245,114 @@
   }
 }
 
+/* 사이드바에서 이동한 자리를 한 번 짚는다 — 표시가 진한 색·굵은 선까지 올랐다가 원래대로 돌아간다.
+   키프레임은 정점만 정의해 앞뒤는 각 표시의 원래 스타일로 보간된다. */
+.ag-jump-flash {
+  animation: ag-jump-line 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ag-replace.ag-jump-flash {
+  animation-name: ag-jump-replace;
+}
+
+.ag-exact-change.ag-jump-flash {
+  animation-name: ag-jump-exact;
+}
+
+.ag-pending-structure.ag-jump-flash,
+.ag-pending-band.ag-jump-flash,
+.ag-pending-page.ag-jump-flash {
+  animation-name: ag-jump-frame;
+}
+
+.ag-pending-object.ag-jump-flash {
+  animation-name: ag-jump-object;
+}
+
+.ag-exact-anchor.ag-jump-flash {
+  animation-name: ag-jump-anchor;
+}
+
+.ag-pending-enter.ag-jump-flash {
+  animation-name: ag-jump-enter;
+}
+
+/* 표시가 없는 커밋된 변경 — 이동한 자리에 잠깐 윤곽을 그린다. */
+.ag-jump-outline {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 3px;
+  outline: 2px solid transparent;
+}
+
+.ag-jump-outline.ag-jump-flash {
+  animation-name: ag-jump-outline;
+}
+
+@keyframes ag-jump-line {
+  20%, 45% {
+    background-color: rgba(var(--ag-pending-ink), 0.14);
+    box-shadow: inset 0 -2px 0 rgb(var(--ag-pending-ink));
+  }
+}
+
+@keyframes ag-jump-replace {
+  20%, 45% {
+    background-color: rgba(var(--ag-pending-ink), 0.14);
+    box-shadow:
+      inset 0 -2px 0 rgb(var(--ag-pending-ink)),
+      inset 0 2px 0 rgb(var(--ag-pending-ink));
+  }
+}
+
+@keyframes ag-jump-exact {
+  20%, 45% {
+    background-color: rgba(35, 122, 75, 0.14);
+    box-shadow: inset 0 -3px 0 rgb(35, 122, 75);
+  }
+}
+
+@keyframes ag-jump-frame {
+  20%, 45% {
+    background-color: rgba(var(--ag-pending-ink), 0.1);
+    outline-color: rgb(var(--ag-pending-ink));
+    outline-width: 3px;
+  }
+}
+
+@keyframes ag-jump-object {
+  20%, 45% {
+    outline-width: 3px;
+    box-shadow: 0 0 0 6px rgba(var(--ag-pending-ink), 0.22);
+  }
+}
+
+@keyframes ag-jump-anchor {
+  20%, 45% {
+    transform: scaleX(1.5);
+  }
+}
+
+@keyframes ag-jump-enter {
+  20%, 45% {
+    color: rgb(var(--ag-pending-ink, 168, 79, 49));
+  }
+}
+
+@keyframes ag-jump-outline {
+  20%, 45% {
+    outline-color: var(--accent-primary, #6182d6);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary, #6182d6) 18%, transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  /* 펄스 대신 정점 스타일을 잠깐 그대로 보인다. */
+  .ag-jump-flash {
+    animation-duration: 1000ms;
+    animation-timing-function: step-start;
+  }
+
   .ag-liquid-anchor-in {
     animation: none;
     filter: none;

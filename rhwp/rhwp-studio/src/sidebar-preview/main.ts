@@ -111,7 +111,10 @@ attention.subscribe({
   },
 });
 const undoState = { entry: null as object | null, calls: 0 };
-const navigation = { calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }> };
+const navigation = {
+  calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }>,
+  targets: [] as Array<{ anchor?: unknown; opId?: string } | undefined>,
+};
 /*
  * "이 작업 전으로 되돌리기" fixture. The request whose turn produced an approved change becomes
  * restorable. `restore=later` reports edits after it (the confirm sheet), `restore=evicted` a
@@ -561,7 +564,10 @@ const sidebar = initAgentSidebar({
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
-  navigateToChange: (position) => { navigation.calls.push(position); },
+  navigateToChange: (position, target) => {
+    navigation.calls.push(position);
+    navigation.targets.push(target);
+  },
   openClassicVersionControl: () =>
     report('Classic document history placeholder'),
   // 문서 보기 설정은 편집기 엔진이 없어 반영할 곳이 없다. 테마는 core/theme.ts 가 직접 건다.

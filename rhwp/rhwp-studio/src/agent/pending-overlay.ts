@@ -52,6 +52,8 @@ export type ObjectOverlayRef =
 interface LegacyOverlayOp {
   kind: 'insert' | 'modify' | 'remove' | 'format';
   agent: AgentName;
+  /** 이 표시를 만든 대기 편집 op — 검토 카드에서 이동할 때 그 op 의 표시만 짚는다. */
+  opId?: string;
   range?: DocRange;
   objRef?: ObjectOverlayRef;
   /** remove op: 삭제된 내용 — 앵커의 호버 팝오버에 표시한다 */
@@ -104,6 +106,7 @@ interface EnterMark {
   height: number;
   /** 잉크 색 소유자. exact diff 는 provenance 와 분리된 의미 색(초록)을 쓴다. */
   tone: AgentName | 'exact';
+  opId?: string;
 }
 
 /** 한 범위의 화면 기하 — 텍스트 끝까지 잘린 rect 와 개행 표시. */
@@ -124,6 +127,10 @@ const POPOVER_MAX_SCALARS = 320;
 const ENTER_GAP_FACTOR = 0.18;
 /** 개행 표시의 크기(줄 높이 배수). */
 const ENTER_SIZE_FACTOR = 0.62;
+/** 이동 짚기 — 스크롤이 멎기를 기다리는 최대 프레임 수와, 짚은 표시를 걷는 시각. */
+const FLASH_SETTLE_MAX_FRAMES = 30;
+const FLASH_CLEAR_MS = 1100;
+const FLASH_CLASS = 'ag-jump-flash';
 
 function truncateScalars(text: string, max: number): string {
   const values = [...text];
@@ -174,6 +181,19 @@ function cellAxisPathAt(cell: CellAddr, paraIdx: number): string {
   return JSON.stringify([{ controlIndex: cell.controlIdx, cellIndex: cell.cellIdx, cellParaIndex: paraIdx }]);
 }
 
+/** 사이드바에서 이동한 자리. opId 의 표시가 있으면 그것을, 없으면 rect(없으면 캐럿 줄)에 윤곽을 짚는다. */
+export interface JumpFlashTarget {
+  opId?: string;
+  /** 짚을 자리. 여러 줄에 걸친 변경은 줄마다 rect 하나다. */
+  rects?: readonly SelectionRect[];
+}
+
+interface ActiveFlash {
+  opId: string | null;
+  rects: readonly SelectionRect[];
+  outlines: HTMLDivElement[];
+}
+
 export interface PendingOverlayDeps {
   /** 그릴 캔버스. null 이면 문서가 화면 밖이다 — setCanvasView 로 바꾼다. */
   canvasView: CanvasView | null;
@@ -214,6 +234,9 @@ export class PendingOverlayRenderer {
   /** Avoid four CSS declarations per node when a projection event leaves a rect unchanged. */
   private positionedNodes = new Map<HTMLDivElement, string>();
   private keyListening = false;
+  private flash: ActiveFlash | null = null;
+  private flashWaitRaf: number | null = null;
+  private flashTimer: ReturnType<typeof setTimeout> | null = null;
   // 파라미터 프로퍼티 대신 명시적 할당 (node --test strip-only 모드 호환).
   private deps: PendingOverlayDeps;
 
@@ -280,6 +303,7 @@ export class PendingOverlayRenderer {
       return;
     }
     this.listenKeys(false);
+    this.stopFlash();
     if (this.renderRafId !== null) {
       cancelAnimationFrame(this.renderRafId);
       this.renderRafId = null;
@@ -371,6 +395,7 @@ export class PendingOverlayRenderer {
   dispose(): void {
     for (const un of this.unsubs) un();
     this.unsubs = [];
+    this.stopFlash();
     if (this.renderRafId !== null) {
       cancelAnimationFrame(this.renderRafId);
       this.renderRafId = null;
@@ -542,7 +567,7 @@ export class PendingOverlayRenderer {
    * 그대로 밑줄을 그으면 글자가 없는 곳까지 큰 공백이 튀어 나온다. 줄 끝 캐럿
    * x 로 잘라 내고, 문단이 바뀌는 자리에 개행 표시를 놓는다.
    */
-  private measureRange(range: DocRange, tone: AgentName | 'exact'): MeasuredRange {
+  private measureRange(range: DocRange, tone: AgentName | 'exact', opId?: string): MeasuredRange {
     const measured = measureInkRange(range, {
       rects: () => this.rangeRects(range),
       paragraphLength: (paraIdx) => this.paragraphLength(range, paraIdx),
@@ -555,6 +580,7 @@ export class PendingOverlayRenderer {
       y: end.rect.y,
       height: end.rect.height,
       tone,
+      opId,
     }));
     return { rects: measured.rects, enters };
   }
@@ -597,7 +623,7 @@ export class PendingOverlayRenderer {
       const range = rangeForNewScalarOffsets(op.range, op.newText, hunk.newStart, hunk.newEnd);
       try {
         if (hunk.newEnd > hunk.newStart) {
-          const measured = this.measureRange(range, 'exact');
+          const measured = this.measureRange(range, 'exact', op.id);
           enters.push(...measured.enters);
           for (const rect of measured.rects) {
             visuals.push({ key, nodeKey: '', op, hunk, range, rect, anchor: false });
@@ -631,7 +657,7 @@ export class PendingOverlayRenderer {
         if (op.objRef) {
           rects = this.resolveObjectRects(op.objRef);
         } else if (op.range) {
-          const measured = this.measureRange(op.range, op.agent);
+          const measured = this.measureRange(op.range, op.agent, op.opId);
           rects = measured.rects;
           // 삭제 마크는 원문을 그대로 두므로 개행 표시를 붙이지 않는다.
           if (op.kind !== 'remove') enters.push(...measured.enters);
@@ -759,6 +785,7 @@ export class PendingOverlayRenderer {
         if (node.marker) {
           this.positionRect(node.marker, markerPos);
           node.marker.dataset.diffHunk = key;
+          this.keepFlash(node.marker, op.opId);
         }
         this.hitRegions.push({ ...markerPos, key, oldText: this.removedText(op) });
         continue;
@@ -784,6 +811,7 @@ export class PendingOverlayRenderer {
         if (node.marker) {
           this.positionRect(node.marker, pos);
           if (objectKind) node.marker.dataset.objectLabel = objectKind === 'image' ? '그림 추가' : '수식 추가';
+          this.keepFlash(node.marker, op.opId);
         }
       });
     }
@@ -808,6 +836,7 @@ export class PendingOverlayRenderer {
         if (node.marker) {
           this.positionRect(node.marker, markerPos);
           node.marker.dataset.diffHunk = visual.key;
+          this.keepFlash(node.marker, visual.op.id);
         }
         if (visual.hunk.oldText) {
           this.hitRegions.push({ ...markerPos, key: visual.key, oldText: visual.hunk.oldText, range: visual.range });
@@ -822,6 +851,7 @@ export class PendingOverlayRenderer {
       if (node.marker) {
         this.positionRect(node.marker, pos);
         node.marker.dataset.diffHunk = visual.key;
+        this.keepFlash(node.marker, visual.op.id);
       }
       if (visual.hunk.oldText) {
         this.hitRegions.push({ ...pos, key: visual.key, oldText: visual.hunk.oldText, range: visual.range });
@@ -852,6 +882,7 @@ export class PendingOverlayRenderer {
           width: size,
           height: size,
         });
+        this.keepFlash(node.marker, mark.opId);
       }
     });
 
@@ -863,7 +894,129 @@ export class PendingOverlayRenderer {
       this.nodePool.delete(key);
     }
 
+    this.placeFlashOutline(canvasView, contentWidth, zoom);
     this.restorePopoverAfterRender();
+  }
+
+  /**
+   * 사이드바에서 이동한 자리를 한 번 짚는다. 스크롤(전체 화면 해제 포함)이 멎고 대상이
+   * 화면에 들어온 뒤 시작한다 — 프레임마다 화면 위치를 재서 두 번 같으면 멎은 것이다.
+   * 다시 부르면 진행 중인 짚기를 걷고 처음부터 다시 한다.
+   */
+  flashJumpTarget(target: JumpFlashTarget): void {
+    this.stopFlash();
+    if (!this.deps.canvasView) return;
+    const caretLine = target.rects?.length ? null : this.caretLineRect();
+    const rects = target.rects?.length ? target.rects : caretLine ? [caretLine] : [];
+    let last: string | null = null;
+    let frames = 0;
+    const tick = (): void => {
+      this.flashWaitRaf = null;
+      const at = rects.length ? this.screenKey(rects[0]) : '';
+      if ((at !== null && at === last) || ++frames >= FLASH_SETTLE_MAX_FRAMES) {
+        this.startFlash(target.opId ?? null, rects);
+        return;
+      }
+      last = at;
+      this.flashWaitRaf = requestAnimationFrame(tick);
+    };
+    this.flashWaitRaf = requestAnimationFrame(tick);
+  }
+
+  private startFlash(opId: string | null, rects: readonly SelectionRect[]): void {
+    // 앞 짚기의 클래스는 기다리는 프레임 동안 이미 걷혔다 — 다시 붙이면 펄스가 처음부터 돈다.
+    this.flash = { opId, rects, outlines: [] };
+    this.render();
+    if (!this.markerLayer.querySelector(`.${FLASH_CLASS}`) && rects.length) {
+      this.flash.outlines = rects.map(() => {
+        const outline = document.createElement('div');
+        outline.className = `ag-jump-outline ${FLASH_CLASS}`;
+        return outline;
+      });
+      this.render();
+    }
+    this.flashTimer = setTimeout(() => this.stopFlash(), FLASH_CLEAR_MS);
+  }
+
+  private stopFlash(): void {
+    if (this.flashWaitRaf !== null) cancelAnimationFrame(this.flashWaitRaf);
+    if (this.flashTimer !== null) clearTimeout(this.flashTimer);
+    this.flashWaitRaf = null;
+    this.flashTimer = null;
+    if (!this.flash) return;
+    for (const outline of this.flash.outlines) {
+      this.positionedNodes.delete(outline);
+      outline.remove();
+    }
+    this.flash = null;
+    for (const node of this.nodePool.values()) node.marker?.classList.remove(FLASH_CLASS);
+  }
+
+  /** ensureNode 가 클래스를 갈아도 같은 렌더 안에서 다시 붙여, 진행 중인 펄스가 이어진다. */
+  private keepFlash(marker: HTMLDivElement, opId: string | undefined): void {
+    if (opId !== undefined && this.flash?.opId === opId) marker.classList.add(FLASH_CLASS);
+  }
+
+  private placeFlashOutline(canvasView: CanvasView, contentWidth: number, zoom: number): void {
+    if (!this.flash) return;
+    const { outlines, rects } = this.flash;
+    outlines.forEach((outline, index) => {
+      const pos = this.pagePosition(canvasView, rects[index], contentWidth, zoom);
+      if (!pos) {
+        outline.remove();
+        return;
+      }
+      if (outline.parentElement !== this.markerLayer) this.markerLayer.appendChild(outline);
+      this.positionRect(outline, {
+        left: pos.left - 3,
+        top: pos.top - 2,
+        width: Math.max(pos.width, 2) + 6,
+        height: pos.height + 4,
+      });
+    });
+  }
+
+  /** rect 의 화면 위치 키. 스크롤 창 밖이면 null. */
+  private screenKey(rect: SelectionRect): string | null {
+    const canvasView = this.deps.canvasView;
+    const scrollContent = document.getElementById('scroll-content');
+    if (!canvasView || !scrollContent) return null;
+    const viewport = canvasView.getViewportManager();
+    const pos = this.pagePosition(canvasView, rect, scrollContent.clientWidth, viewport.getZoom());
+    if (!pos) return null;
+    const scrollY = viewport.getScrollY();
+    const { height } = viewport.getViewportSize();
+    if (pos.top + pos.height < scrollY || pos.top > scrollY + height) return null;
+    const bounds = scrollContent.getBoundingClientRect();
+    return `${Math.round(bounds.left + pos.left)}|${Math.round(bounds.top + pos.top)}`;
+  }
+
+  /** 캐럿이 놓인 본문 줄의 rect. 셀 안이거나 잴 수 없으면 캐럿 rect 다. */
+  private caretLineRect(): SelectionRect | null {
+    const pos = this.deps.getCaretPosition();
+    if (!pos) return null;
+    const wasm = this.deps.wasm;
+    try {
+      const inCell = pos.parentParaIndex !== undefined;
+      if (!inCell) {
+        const line = wasm.getLineInfo(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+        const rect = wasm.getSelectionRects(
+          pos.sectionIndex, pos.paragraphIndex, line.charStart, pos.paragraphIndex, line.charEnd, false,
+        )[0];
+        if (rect && rect.width > 0) return rect;
+      }
+      const caret = pos.cellPath?.length && inCell
+        ? wasm.getCursorRectByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(pos.cellPath), pos.charOffset)
+        : inCell && pos.controlIndex !== undefined && pos.cellIndex !== undefined
+        ? wasm.getCursorRectInCell(
+          pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex, pos.cellIndex,
+          pos.cellParaIndex ?? pos.paragraphIndex, pos.charOffset,
+        )
+        : wasm.getCursorRect(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+      return { pageIndex: caret.pageIndex, x: caret.x, y: caret.y, width: 0, height: caret.height };
+    } catch {
+      return null;
+    }
   }
 
   private onPointerMove = (event: PointerEvent): void => {

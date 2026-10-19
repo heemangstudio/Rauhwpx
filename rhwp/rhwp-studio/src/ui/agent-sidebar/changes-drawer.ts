@@ -4,6 +4,7 @@ import { createIcon } from './icons.ts';
 import { appendSvgMarkup } from '../dom-utils.ts';
 import type { PendingOp } from '../../agent/types.ts';
 import type { DiffItem } from '../../compare/types.ts';
+import { inlineParts, type DiffPiece } from './inline-diff.ts';
 import { versionErrorCode } from '../../versioning/types.ts';
 import type { VersionCommitView, VersionManagerController, VersionManagerState } from './version-manager.ts';
 
@@ -31,8 +32,6 @@ export interface DiffItemSummary {
   itemCount: number;
 }
 
-type DiffPiece = { text: string; changed: boolean };
-type DiffParts = { before: DiffPiece[]; after: DiffPiece[] };
 const expandedLines = new Set<string>();
 /** 입력이 멎은 뒤 '커밋 전' 목록을 다시 맞추는 늦은 갱신. 다른 갱신이 먼저 돌면 취소된다. */
 const QUIET_REFRESH_MS = 3_000;
@@ -42,72 +41,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, co
   node.className = className;
   if (content !== undefined) node.textContent = content;
   return node;
-}
-
-// Keep the full text in the DOM. The six-line preview is only a CSS clamp.
-function splitWords(text: string): string[] {
-  return text.match(/\s+|[^\s]+/gu) ?? [];
-}
-
-function coalesce(tokens: string[], changed: boolean): DiffPiece[] {
-  return tokens.length ? [{ text: tokens.join(''), changed }] : [];
-}
-
-function inlineParts(before: string, after: string): DiffParts {
-  if (before === after) return { before: coalesce([before], false), after: coalesce([after], false) };
-  const left = splitWords(before);
-  const right = splitWords(after);
-  let prefix = 0;
-  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) prefix += 1;
-  let suffix = 0;
-  while (suffix < left.length - prefix && suffix < right.length - prefix
-    && left[left.length - suffix - 1] === right[right.length - suffix - 1]) suffix += 1;
-
-  const leftMiddle = left.slice(prefix, left.length - suffix);
-  const rightMiddle = right.slice(prefix, right.length - suffix);
-  const beforePieces: DiffPiece[] = coalesce(left.slice(0, prefix), false);
-  const afterPieces: DiffPiece[] = coalesce(right.slice(0, prefix), false);
-
-  // Large paragraphs stay responsive. Prefix/suffix still mark the exact changed span.
-  if (leftMiddle.length * rightMiddle.length > 40_000) {
-    beforePieces.push(...coalesce(leftMiddle, true));
-    afterPieces.push(...coalesce(rightMiddle, true));
-  } else {
-    const rows = leftMiddle.length + 1;
-    const cols = rightMiddle.length + 1;
-    const table = new Uint16Array(rows * cols);
-    for (let i = leftMiddle.length - 1; i >= 0; i -= 1) {
-      for (let j = rightMiddle.length - 1; j >= 0; j -= 1) {
-        table[i * cols + j] = leftMiddle[i] === rightMiddle[j]
-          ? table[(i + 1) * cols + j + 1] + 1
-          : Math.max(table[(i + 1) * cols + j], table[i * cols + j + 1]);
-      }
-    }
-    let i = 0;
-    let j = 0;
-    const append = (list: DiffPiece[], token: string, changed: boolean): void => {
-      const last = list[list.length - 1];
-      if (last?.changed === changed) last.text += token;
-      else list.push({ text: token, changed });
-    };
-    while (i < leftMiddle.length || j < rightMiddle.length) {
-      if (i < leftMiddle.length && j < rightMiddle.length && leftMiddle[i] === rightMiddle[j]) {
-        append(beforePieces, leftMiddle[i], false);
-        append(afterPieces, rightMiddle[j], false);
-        i += 1;
-        j += 1;
-      } else if (i < leftMiddle.length && (j === rightMiddle.length || table[(i + 1) * cols + j] >= table[i * cols + j + 1])) {
-        append(beforePieces, leftMiddle[i], true);
-        i += 1;
-      } else {
-        append(afterPieces, rightMiddle[j], true);
-        j += 1;
-      }
-    }
-  }
-  beforePieces.push(...coalesce(left.slice(left.length - suffix), false));
-  afterPieces.push(...coalesce(right.slice(right.length - suffix), false));
-  return { before: beforePieces, after: afterPieces };
 }
 
 export function summarizeDiffItems(items: readonly DiffItem[]): DiffItemSummary {
@@ -128,6 +61,7 @@ function isLong(text: string): boolean {
   return text.length > 100 || text.split('\n').length > 5;
 }
 
+// Keep the full text in the DOM. The six-line preview is only a CSS clamp.
 function diffLine(sign: '+' | '−' | '·', pieces: DiffPiece[], key?: string): HTMLElement {
   const row = el('div', `ag-changes-line ag-changes-line-${sign === '+' ? 'add' : sign === '−' ? 'del' : 'neutral'}`);
   row.append(el('span', 'ag-changes-sign', sign));

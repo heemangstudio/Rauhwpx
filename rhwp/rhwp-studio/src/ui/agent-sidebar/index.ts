@@ -15,6 +15,7 @@ import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
 import { installSelectMenus } from './select-menu.ts';
 import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
+import { changedTextRanges, type DiffTextRange } from './inline-diff.ts';
 import { TurnChanges, invalidatedMessage } from './turn-changes.ts';
 import type { DiffItem } from '../../compare/types.ts';
 import type { DocumentPosition } from '../../core/types.ts';
@@ -396,7 +397,11 @@ export interface AgentSidebarDeps {
    * 알리고, 사용자 말풍선의 되돌리기 버튼이 상태를 읽고 되돌린다. 없으면 버튼이 없다.
    */
   turnRestore?: TurnRestoreControl;
-  navigateToChange?: (position: DocumentPosition, anchor?: DiffItem['rightAnchor']) => void;
+  /**
+   * 변경 위치로 캐럿을 옮기고 그 자리를 짚는다. ranges 는 커밋 전 텍스트 변경의 바뀐 글자 범위,
+   * anchor 는 그 밖의 커밋된 변경의 rect, opId 는 대기 편집 op.
+   */
+  navigateToChange?: (position: DocumentPosition, target?: { anchor?: DiffItem['rightAnchor']; opId?: string; ranges?: readonly DiffTextRange[] }) => void;
   /** 기존 RHWP 문서 이력 대화상자를 연다. */
   openClassicVersionControl?: () => void;
   /**
@@ -4654,7 +4659,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onNavigate: (item) => {
       const location = item.contextOnRight ?? item.path;
       if (location.paragraph === undefined) return;
-      navigateToChange({ sectionIndex: location.section, paragraphIndex: location.paragraph, charOffset: 0 }, item.rightAnchor);
+      const ranges = changedTextRanges(item);
+      // 캐럿은 첫 바뀐 글자 바로 뒤에 둔다.
+      navigateToChange(
+        { sectionIndex: location.section, paragraphIndex: location.paragraph, charOffset: ranges?.[0]?.end ?? 0 },
+        ranges ? { ranges } : { anchor: item.rightAnchor },
+      );
     },
     onWorkingDiff: (items) => {
       workingDiff = items;
@@ -4676,10 +4686,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     changesRefreshTimer = setTimeout(() => { void changesDrawer.refresh(); }, delay);
   }
 
-  function navigateToChange(position: DocumentPosition, anchor?: DiffItem['rightAnchor']): void {
+  function navigateToChange(
+    position: DocumentPosition,
+    target: { anchor?: DiffItem['rightAnchor']; opId?: string; ranges?: readonly DiffTextRange[] } = {},
+  ): void {
     if (!deps.navigateToChange) return;
     const navigate = () => {
-      window.requestAnimationFrame(() => deps.navigateToChange?.(position, anchor));
+      window.requestAnimationFrame(() => deps.navigateToChange?.(position, target));
     };
     if (fullscreen) setFullscreen(false, { then: navigate });
     else navigate();
@@ -11933,12 +11946,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const range = 'range' in op ? op.range : null;
     const obj = op.kind === 'object' ? op.obj : null;
     const cell = range?.cell ?? (obj && 'cell' in obj ? obj.cell : undefined);
-    const paragraph = range?.startParaIdx ?? (obj && 'paraIdx' in obj ? obj.paraIdx : undefined);
+    // range 는 새 글자가 차지한 범위다 — 캐럿은 그 끝, 바뀐 글자 바로 뒤에 둔다.
+    const paragraph = range?.endParaIdx ?? (obj && 'paraIdx' in obj ? obj.paraIdx : undefined);
     const section = range?.sectionIdx ?? (obj && 'sectionIdx' in obj ? obj.sectionIdx : undefined);
     const position: DocumentPosition | null = paragraph !== undefined && section !== undefined ? {
       sectionIndex: section,
       paragraphIndex: paragraph,
-      charOffset: range?.startCharOffset ?? 0,
+      charOffset: range?.endCharOffset ?? 0,
       ...(cell ? { parentParaIndex: cell.paraIdx, controlIndex: cell.controlIdx,
         cellIndex: cell.cellIdx, cellParaIndex: paragraph,
         cellPath: cell.path?.map((part, index) => index === cell.path!.length - 1
@@ -11946,7 +11960,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     } : null;
     if (position && canNavigate && deps.navigateToChange) {
       const jump = createJumpButton(`${entry.dataset.location ?? '문단'}으로 이동`, 'ag-changes-jump');
-      jump.addEventListener('click', () => navigateToChange(position));
+      jump.addEventListener('click', () => navigateToChange(position, { opId: op.id }));
       entry.append(jump);
     }
     return entry;
