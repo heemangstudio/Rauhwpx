@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDocumentRegion, createAgentContextStore, installAgentContextStore } from '../desktop/agent-context-store.mjs';
@@ -61,6 +61,20 @@ test('captures finished by an older version move out of the root on the next lis
   assert.ok(!(await readdir(root)).includes(old.id));
   assert.equal(JSON.parse(await readFile(join(root, 'archive', old.id, 'record.json'), 'utf8')).state, 'consumed');
   assert.deepEqual(Buffer.from((await reopened.readFiles(old.id))[0].bytes), png);
+});
+test('an older capture that cannot move out of the root does not hold up later saves', async (t) => {
+  const root = await temporary(t); const seed = createAgentContextStore({ rootDir: root, platform: 'win32' });
+  const old = await seed.save(payload()); await seed.setState([old.id], 'consumed');
+  await rename(join(root, 'archive', old.id), join(root, old.id));
+  // 같은 이름의 보관 폴더가 있으면 옮기기가 계속 실패한다(잠긴 폴더와 같은 경우).
+  await mkdir(join(root, 'archive', old.id)); await writeFile(join(root, 'archive', old.id, 'keep'), 'x');
+  const store = createAgentContextStore({ rootDir: root, platform: 'win32' });
+  for (let index = 0; index < 4; index += 1) assert.deepEqual(await store.list('document-a'), []);
+  const started = performance.now();
+  const saved = await store.save(payload());
+  assert.ok(performance.now() - started < 1000, 'saves do not wait on lock retries for older captures');
+  assert.deepEqual((await store.list('document-a')).map((record) => record.id), [saved.id]);
+  assert.deepEqual(Buffer.from((await store.readFiles(old.id))[0].bytes), png);
 });
 test('capture storage rejects paths, invalid geometry and oversized PNGs without saving', async (t) => {
   const root = await temporary(t); const store = createAgentContextStore({ rootDir: root });

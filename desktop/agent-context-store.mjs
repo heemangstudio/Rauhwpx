@@ -67,11 +67,16 @@ export function createAgentContextStore({ rootDir, now = () => new Date(), platf
     mutations = result.catch(() => undefined);
     return result;
   }
-  /** 대기 목록에서 빠진 기록을 archive/ 로 옮긴다. 실패해도 상태는 이미 저장되어 있어 다음 목록 읽기에서 다시 옮긴다. */
-  async function archive(id) {
+  // 이번 실행에서 옮기기를 시도한 기록. 잠긴 폴더를 목록 읽기마다 다시 기다리며 저장을 막지 않게 한 번만 시도한다.
+  const archiveAttempted = new Set();
+  /** 대기 목록에서 빠진 기록을 archive/ 로 옮긴다. 실패해도 상태는 이미 저장되어 있어 다음 실행의 목록 읽기에서 다시 옮긴다. */
+  async function archive(id, { retry = true } = {}) {
+    archiveAttempted.add(id);
     try {
       await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-      await retryWindows(() => rename(contextDir(id), archivedDir(id)), platform);
+      const move = () => rename(contextDir(id), archivedDir(id));
+      // 이전 버전 기록 정리는 잠겨 있으면 기다리지 않고 다음 실행으로 미룬다.
+      await (retry ? retryWindows(move, platform) : move());
     } catch { /* 같은 기록이 이미 옮겨졌거나 잠겨 있으면 그대로 둔다. */ }
   }
   /** 대기 중이면 rootDir, 끝난 기록이면 archive/ 에서 읽는다. 읽는 사이에 옮겨진 경우도 따라간다. */
@@ -138,12 +143,13 @@ export function createAgentContextStore({ rootDir, now = () => new Date(), platf
     for (const id of names.filter((name) => UUID.test(name))) {
       try {
         const record = await readRecordAt(contextDir(id), id);
-        if (record.state !== 'queued') finished.push(id);
+        if (record.state !== 'queued') { if (!archiveAttempted.has(id)) finished.push(id); }
         else if (record.document.id === documentId) records.push(record);
       } catch { /* 손상된 한 건 때문에 다른 메모 복원을 막지 않는다. */ }
     }
     // 이전 버전이 rootDir 에 남긴 지난 기록은 한 번만 옮긴다. save() 안에서도 불리므로 기다리지 않는다.
-    if (finished.length) void mutate(async () => { for (const id of finished) await archive(id); });
+    for (const id of finished) archiveAttempted.add(id);
+    if (finished.length) void mutate(async () => { for (const id of finished) await archive(id, { retry: false }); });
     return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   return {
