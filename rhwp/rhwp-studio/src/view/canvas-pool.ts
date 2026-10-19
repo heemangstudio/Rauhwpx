@@ -4,6 +4,25 @@ const DEFAULT_MAX_RETAINED_BACKING_PIXELS = 8_388_608;
 // without letting page count become the pool's memory limit.
 const MAX_RETAINED_CANVASES = 8;
 
+/**
+ * 쪽 위 층(개체 canvas, 머리말/꼬리말 편집 canvas 등)을 DOM 에서 떼고 그 안 canvas 의 backing
+ * store 를 바로 돌려준다. 떼어 낸 canvas 는 GC 가 element 를 거둘 때까지 RGBA 버퍼(A4·DPR 1.5
+ * 한 장 약 8 MB)를 쥐고 있어, 재렌더마다 층을 새로 만들면 수백 MB 가 쌓인다.
+ */
+export function removeAndReleaseCanvases(element: Element): void {
+  element.remove();
+  if (element instanceof HTMLCanvasElement) {
+    releaseCanvasBackingStore(element);
+    return;
+  }
+  element.querySelectorAll('canvas').forEach(releaseCanvasBackingStore);
+}
+
+function releaseCanvasBackingStore(canvas: HTMLCanvasElement): void {
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
 export class CanvasPool {
   private available: HTMLCanvasElement[] = [];
   private inUse = new Map<number, HTMLCanvasElement>();
