@@ -23,7 +23,8 @@ import {
   shouldSuppressInitialSetup,
 } from '../src/ui/initial-setup/state.ts';
 import { indexHasHancomFonts, planFontStep, planSteps } from '../src/ui/initial-setup/steps.ts';
-import { looksLikeFullKey, needsLicenseStep } from '../src/ui/initial-setup/license-step.ts';
+import { needsLicenseStep } from '../src/ui/initial-setup/license-step.ts';
+import { looksLikeFullKey } from '../src/ui/agent-sidebar/settings-license.ts';
 import type { LicenseStatus } from '../src/ui/agent-sidebar/settings-license.ts';
 import { BOOT_FINAL_HOLD_MS, remainingBootMs } from '../src/ui/boot-screen.ts';
 

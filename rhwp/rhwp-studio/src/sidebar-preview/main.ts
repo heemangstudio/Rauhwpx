@@ -62,7 +62,7 @@ import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
-import { isInitialSetupActive, onInitialSetupInactive, wasLicensedInSetup } from '../ui/initial-setup/active.ts';
+import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from '../ui/initial-setup/active.ts';
 
 const params = new URLSearchParams(location.search);
 /** `vault=1|empty|unsupported|fail`: 데스크톱 앱의 Chrome 비밀번호 보관함을 흉내 낸다. */
@@ -340,7 +340,7 @@ if ((params.get('event') === 'special' || mockLicense) && mockGift) {
     whenReady: async () => {},
     isSetupActive: isInitialSetupActive,
     onSetupInactive: onInitialSetupInactive,
-    occasion: () => (wasLicensedInSetup() ? 'license' : 'update'),
+    occasion: () => (wasLicensedHere() ? 'license' : 'update'),
     pi: {
       status: () => mock.bridge.requestPiStatus(),
       setGiftOrder: async (order) => {

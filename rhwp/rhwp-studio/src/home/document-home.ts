@@ -72,7 +72,7 @@ export interface DocumentHomeDeps {
   openSettings?(): void;
   /** 위 막대 오른쪽 끝의 새 채팅 단추. 홈을 닫고 문서 없는 새 채팅을 집중 화면에 연다. */
   newChat?(): void;
-  /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 구매 단추 등). */
+  /** 위 막대 오른쪽 끝 자리를 채운다(라이선스 등록 단추 등). */
   mountTopbarTrailing?(slot: HTMLElement): void;
   /** 오른쪽 아래 가장자리를 채운다(업데이트 하마). slot 은 홈 전체이고, 붙는 쪽이 자리를 잡는다. */
   mountCorner?(slot: HTMLElement): void;

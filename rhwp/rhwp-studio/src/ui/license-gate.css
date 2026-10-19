@@ -49,8 +49,11 @@ html:is(.desktop-native-menu, .desktop-windows) #menu-bar.has-license-pill #edit
   #menu-bar .license-pill { margin-left: auto; padding-inline: 6px; font-size: 11px; }
 }
 
-/* 문서 홈 위 막대 오른쪽 끝의 구매 단추. 테두리 없는 회색 글자 단추이고, 올리면 면이 깔린다. */
-.license-buy {
+/* 문서 홈 위 막대 오른쪽 끝의 라이선스 등록 단추. 테두리 없는 회색 글자 단추이고, 올리면 면이 깔린다.
+   누르면 바로 아래 오른쪽 끝에 맞춰 키 칸이 열린다. */
+.license-register { position: relative; display: inline-flex; }
+.license-register[hidden] { display: none; }
+.license-register-toggle {
   display: inline-flex;
   align-items: center;
   min-height: 26px;
@@ -66,8 +69,76 @@ html:is(.desktop-native-menu, .desktop-windows) #menu-bar.has-license-pill #edit
   cursor: default;
   -webkit-app-region: no-drag;
 }
-.license-buy:hover { background: var(--ui-hover); color: var(--ui-text); }
-.license-buy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.license-buy[hidden] { display: none; }
+.license-register-toggle:hover,
+.license-register-toggle[aria-expanded='true'] { background: var(--ui-hover); color: var(--ui-text); }
+.license-register-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 /* 홈의 `.document-home button { font: inherit }` 이 크기·굵기를 덮지 않게 한 단계 높인다. */
-.document-home .license-buy { font-size: 12px; font-weight: 500; }
+.document-home .license-register-toggle { font-size: 12px; font-weight: 500; }
+
+.license-register-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 380px;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface-raised);
+  box-shadow: var(--n-elev-popover);
+  color: var(--ui-text);
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+.license-register-pop[hidden] { display: none; }
+.license-register-form { display: flex; gap: 6px; }
+.license-register-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: 12px;
+}
+/* 넣은 키만 고정폭 대문자로 보인다. 자리 글은 앱 글꼴 그대로다. */
+.license-register-input:not(:placeholder-shown) { font-family: var(--font-family-mono, monospace); text-transform: uppercase; }
+.license-register-input::placeholder { color: var(--ui-text-placeholder); }
+.license-register-input:focus { border-color: var(--ui-text-secondary); outline: none; }
+.license-register-submit {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+.document-home .license-register-submit { font-size: 12px; font-weight: 500; }
+.license-register-submit:hover:not(:disabled) { background: var(--ui-hover); }
+.license-register-submit:disabled { color: var(--ui-text-disabled); }
+.license-register-submit[aria-busy='true'] { animation: license-register-wait 900ms steps(2, end) infinite; }
+@keyframes license-register-wait { 50% { opacity: 0.5; } }
+.license-register-note { margin: 0; color: var(--ui-danger); line-height: 1.45; }
+.license-register-note[hidden] { display: none; }
+.license-register-buy { margin: 0; color: var(--ui-text-secondary); }
+.license-register-buy-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ui-text);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.document-home .license-register-buy-link { font-weight: 500; }

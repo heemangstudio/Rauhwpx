@@ -31,7 +31,7 @@ import { createHippo } from './hippo.ts';
 import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
 import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
 import { createLicenseStep, licenseLine, needsLicenseStep } from './license-step.ts';
-import { holdInitialSetup, markLicensedInSetup, releaseInitialSetup } from './active.ts';
+import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
   loadInitialSetup,
@@ -347,7 +347,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       say: (line) => hippo.say(line),
       cheer: (line) => hippo.cheer(line),
       onLicensed: () => {
-        markLicensedInSetup();
+        markLicensedHere();
         window.clearTimeout(licensedTimer);
         licensedTimer = window.setTimeout(() => {
           if (overlay.isConnected && !celebrating && currentStep() === 'license') showDone();

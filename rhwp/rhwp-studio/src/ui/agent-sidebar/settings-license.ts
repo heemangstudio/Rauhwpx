@@ -61,6 +61,11 @@ const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_SECONDS = 3600;
 
+/** HAMA- 로 시작하고 다섯 묶음이 다 찼는지. 붙여 넣은 키를 바로 확인할지 정한다. */
+export function looksLikeFullKey(raw: string): boolean {
+  return /^HAMA(-?[0-9A-Z]{5}){5}$/.test(raw.trim().toUpperCase().replace(/\s+/g, ''));
+}
+
 /**
  * 체험 남은 시간. '2일 13시간' → '13시간 42분' → 마지막 한 시간은 '42분 15초' → '9초'.
  * 0 이 된 단위는 뺀다.

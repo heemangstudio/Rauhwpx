@@ -6,7 +6,7 @@
  * 설명은 하마가 하고, 화면에는 구매 칸과 키 칸만 둔다.
  */
 import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { licenseTermText, trialTimeLeft } from '../agent-sidebar/settings-license.ts';
+import { licenseTermText, looksLikeFullKey, trialTimeLeft } from '../agent-sidebar/settings-license.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 
 /** 키를 넣지 않은 새 사용자만. 이미 키가 있거나 라이선스를 보지 않는 빌드면 장을 넣지 않는다. */
@@ -20,11 +20,6 @@ export function licenseLine(status: LicenseStatus | null, now = Date.now()): str
     return `체험이 ${trialTimeLeft(status.trial.endsAt, now)} 남았어요. 키를 넣으면 계속 쓸 수 있어요.`;
   }
   return '라이선스 키를 넣으면 바로 편집할 수 있어요.';
-}
-
-/** HAMA- 로 시작하고 다섯 묶음이 다 찼는지. 붙여 넣은 키를 바로 확인할지 정한다. */
-export function looksLikeFullKey(raw: string): boolean {
-  return /^HAMA(-?[0-9A-Z]{5}){5}$/.test(raw.trim().toUpperCase().replace(/\s+/g, ''));
 }
 
 /* ── 픽셀 열쇠 ─────────────────────────────────────────
