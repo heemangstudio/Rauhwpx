@@ -31,6 +31,7 @@ import {
   withoutHubPrivateEnv,
 } from './process-tree.mjs';
 import { setupFailureMessage, shouldUseNpmNetworkPath } from './setup-errors.mjs';
+import { isGiftPlatform } from './gift-platforms.mjs';
 
 const require = createRequire(import.meta.url);
 let crossSpawn = null;
@@ -397,7 +398,7 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  *           routingSort?: string, giftSource?: { available: boolean, credentials: Function } | null,
  *           giftClientFactory?: (options: { baseUrl: string }) => ReturnType<typeof createOpenRouter> }} [deps]
  *   routingSort: OpenRouter 제공자 정렬 (latency|throughput|price|off). 기본 throughput
- *   giftSource: 선물 크레딧 자격 (gift-source.mjs). macOS 에서만 쓴다
+ *   giftSource: 선물 크레딧 자격 (gift-source.mjs). macOS·Windows 에서만 쓴다(GIFT_PLATFORMS)
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
@@ -452,7 +453,7 @@ export function createPiManager({
   const makeGiftClient = giftClientFactory ?? (({ baseUrl }) => createOpenRouter({
     fetchImpl, now, baseUrl, keyInfoPath: '/auth/key', cacheDir: null, platform,
   }));
-  const giftEnabled = platform === 'darwin' && giftSource?.available === true;
+  const giftEnabled = isGiftPlatform(platform) && giftSource?.available === true;
   const npmLaunch = bundledNpmLaunch({ nodeCommand, npmCommand });
   const ensureNodeHost = createNodeHost({
     rootDir, nodeCommand, platform, writeFile: writeNodeHostFile,
@@ -766,10 +767,14 @@ export function createPiManager({
     await writeAtomic(giftSettingsPath, settingsText());
     await writeAtomic(giftModelsPath, text);
     // Pi 가 내려받은 rg/fd 는 agent/bin 에 있다. 선물 홈에서도 같은 것을 쓴다.
+    // Windows 심볼릭 링크는 관리자 권한이 필요해서 절대 경로 junction 으로 잇는다.
     const binLink = path.join(giftAgentDir, 'bin');
-    if (platform === 'darwin' && !(await fs.lstat(binLink).catch(() => null))
+    if (!(await fs.lstat(binLink).catch(() => null))
       && (await fs.stat(path.join(agentDir, 'bin')).catch(() => null))?.isDirectory()) {
-      await fs.symlink(path.join('..', 'agent', 'bin'), binLink).catch(() => {});
+      const linked = platform === 'win32'
+        ? fs.symlink(path.join(agentDir, 'bin'), binLink, 'junction')
+        : fs.symlink(path.join('..', 'agent', 'bin'), binLink);
+      await linked.catch(() => {});
     }
     giftWrittenText = text;
     giftWrittenBase = baseUrl;

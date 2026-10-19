@@ -171,7 +171,7 @@ interface NativeFileReadResult {
 
 export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
-  /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
+  /** 특별 이벤트 선물 크레딧. macOS·Windows 에서만 쓴다(desktop/gift-manager.mjs). */
   gift?: import('./ui/special-event/gift.ts').DesktopGiftApi;
   /** 앱 업데이트 확인·다운로드·재시작. */
   updates?: DesktopUpdatesApi;

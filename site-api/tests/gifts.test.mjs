@@ -15,6 +15,7 @@ const OTHER_PAIR = generateLeaseKeyPair();
 const MAC_A = 'device-mac-aaaaaaaa';
 const MAC_B = 'device-mac-bbbbbbbb';
 const WIN = 'device-win-cccccccc';
+const LINUX = 'device-linux-dddddddd';
 const SONNET = 'anthropic/claude-sonnet-5.5';
 
 async function setup(t, env = {}) {
@@ -118,7 +119,7 @@ test('claim is idempotent across parallel calls and both devices, and the key st
   assert.equal(JSON.parse(listed).committedUsd, 20);
 });
 
-test('only an active beta key on an activated macOS device is eligible', async (t) => {
+test('only an active beta key on an activated macOS or Windows device is eligible', async (t) => {
   const s = await setup(t);
   const lic = await s.license();
   const mac = await lic.activate(MAC_A);
@@ -134,16 +135,25 @@ test('only an active beta key on an activated macOS device is eligible', async (
   const expired = signLease({ keyId: lic.keyId, key: lic.key, deviceId: MAC_A, now: Date.now() - 8 * 86400000 }, PAIR.privateKeyPem).lease;
   assert.equal((await s.status(expired)).status, 401);
 
-  // Windows: authenticated, never eligible, even on a beta key that claimed from its Mac.
-  const winStatus = await (await s.status(win)).json();
-  assert.equal(winStatus.eligible, false);
-  const winClaim = await s.claim(win);
-  assert.equal(winClaim.status, 403);
-  assert.equal((await winClaim.json()).error, 'not_eligible');
+  // Windows counts like macOS: the Mac's claim is the key's gift, so the Windows device uses it too.
+  assert.equal((await (await s.status(win)).json()).eligible, true);
   assert.equal((await s.claim(mac)).status, 200);
-  const winChat = await s.chat(win, { model: SONNET, messages: [] });
-  assert.equal(winChat.status, 403);
-  assert.deepEqual(await winChat.json(), { error: { code: 403, message: 'not_eligible' } });
+  const winClaim = await (await s.claim(win)).json();
+  assert.deepEqual([winClaim.claimed, winClaim.created], [true, false]);
+  assert.equal((await s.chat(win, { model: SONNET, messages: [] })).status, 200);
+
+  // Any other platform: authenticated, never eligible, even on a beta key that already claimed.
+  const other = await s.license();
+  const linux = await other.activate(LINUX, 'linux');
+  assert.equal((await (await s.status(linux)).json()).eligible, false);
+  const linuxClaim = await s.claim(linux);
+  assert.equal(linuxClaim.status, 403);
+  assert.equal((await linuxClaim.json()).error, 'not_eligible');
+  assert.equal((await s.claim(await other.activate(MAC_A))).status, 200);
+  const linuxChat = await s.chat(linux, { model: SONNET, messages: [] });
+  assert.equal(linuxChat.status, 403);
+  assert.deepEqual(await linuxChat.json(), { error: { code: 403, message: 'not_eligible' } });
+  assert.equal(creates(s.upstream).length, 2);
 
   // Deactivated device, then a revoked license.
   const deactivate = await fetch(`${s.origin}/v1/license/deactivate`, {
@@ -154,6 +164,15 @@ test('only an active beta key on an activated macOS device is eligible', async (
   await s.admin('/v1/admin/licenses/revoke', { keyId: lic.keyId, reason: 'test' });
   assert.equal((await s.status(mac)).status, 401);
   assert.equal((await s.chat(mac, { model: SONNET, messages: [] })).status, 401);
+});
+
+test('GIFT_PLATFORMS overrides the macOS and Windows default', async (t) => {
+  const s = await setup(t, { GIFT_PLATFORMS: 'darwin' });
+  const lic = await s.license();
+  const win = await lic.activate(WIN, 'win32');
+  assert.equal((await (await s.status(win)).json()).eligible, false);
+  assert.equal((await s.claim(win)).status, 403);
+  assert.equal((await (await s.status(await lic.activate(MAC_A))).json()).eligible, true);
 });
 
 test('paid keys are not eligible, and a claimed gift stops working once the key is no longer beta', async (t) => {

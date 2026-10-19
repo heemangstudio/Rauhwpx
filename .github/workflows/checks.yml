@@ -275,6 +275,8 @@ jobs:
           node --test --test-concurrency=1
           rhwp/rhwp-agent/tests/windows-cli-launch.test.mjs
           rhwp/rhwp-agent/tests/windows-setup-hardening.test.mjs
+          rhwp/rhwp-agent/tests/pi-gift.test.mjs
+          tests/desktop-gift.test.mjs
           rhwp/rhwp-studio/tests/desktop-agent-hub.test.ts
           rhwp/rhwp-studio/tests/desktop-shell.test.ts
           tests/desktop-system-fonts.test.mjs
