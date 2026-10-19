@@ -167,7 +167,7 @@ test('an oversized body answers 503 and is recorded', async (t) => {
   assert.equal(entry.reason, 'body_too_large');
 });
 
-test('a held order is recorded as held and not alerted; a valid sale still issues a key with nothing recorded', async (t) => {
+test('every held order is recorded and emailed once; replays and re-deliveries are not emailed again', async (t) => {
   const alerts = alertSink();
   const { origin } = await listen(t, {}, { alertProvider: alerts.provider });
   const ok = await post(origin, completed({ merchantUid: 'm_ok' }));
@@ -183,8 +183,87 @@ test('a held order is recorded as held and not alerted; a valid sale still issue
   assert.equal(entry.reason, 'wrong_price:1000');
   assert.equal(entry.merchantUid, 'm_held');
   assert.equal(entry.idempotencyKey, 'idem-held');
+  assert.deepEqual([entry.action, entry.buyerEmail, entry.amount], ['held', 'buyer@example.com', 9900]);
   assert.deepEqual(await webhooks(origin, '?kind=rejected'), []);
-  assert.equal(alerts.sent.length, 0);
+
+  await waitFor(() => alerts.sent.length === 1, 'held alert');
+  const [mail] = alerts.sent;
+  assert.equal(mail.to, 'management@heemangstudios.com');
+  assert.equal(mail.subject, '[HamaEditor] 주문 보류: m_held');
+  for (const part of [mail.html, mail.text]) {
+    for (const fact of ['buyer@example.com', 'm_held', '9,900원', 'KST', '1,000원']) assert.ok(part.includes(fact), fact);
+    assert.ok(!part.includes(SECRET) && !part.includes('idem-held') && !part.includes('sellerReference'));
+  }
+
+  // The same delivery again (deduped) and the same order under a new delivery key: no new email.
+  assert.equal((await (await post(origin, completed({ merchantUid: 'm_held', originalAmount: 1000 }), { idem: 'idem-held' })).json()).duplicate, true);
+  await post(origin, completed({ merchantUid: 'm_held', originalAmount: 1000 }), { idem: 'idem-held-again' });
+  await waitFor(() => webhooks(origin, '?kind=held').then((e) => e.length === 2), 'second held record');
+  // A different held order right after still gets its own email.
+  await post(origin, completed({ merchantUid: 'm_held_2', originalAmount: 1000 }));
+  await waitFor(() => alerts.sent.length === 2, 'second order alert');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(alerts.sent.map((m) => m.subject), ['[HamaEditor] 주문 보류: m_held', '[HamaEditor] 주문 보류: m_held_2']);
+  assert.notEqual(alerts.sent[0].idempotencyKey, alerts.sent[1].idempotencyKey);
+});
+
+function renewal({ merchantUid, ref = 'hama-unknown', email = 'annual@example.com' }) {
+  return {
+    id: `evt_${merchantUid}`,
+    type: 'subscription_payment.completed',
+    occurredAt: '2027-10-20T10:00:00+09:00',
+    data: { object: {
+      merchantUid,
+      sellerReference: ref,
+      buyer: { email },
+      content: { id: 'GLJFC9', paymentType: 'SUBSCRIPTION' },
+      pricing: { currency: 'KRW', originalAmount: 9900, finalAmount: 9900 },
+      payment: { purchasedAt: '2027-10-20T10:00:00+09:00' },
+      subscription: { billingReason: 'RENEWAL', currentRound: 2 },
+    } },
+  };
+}
+
+test('dashboard attention: held orders until released or applied, other held events until acknowledged, across a restart', async (t) => {
+  const first = await listen(t);
+  const admin = (path, body) => fetch(`${first.origin}${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { Authorization: `Bearer ${ADMIN}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  }).then(async (res) => ({ status: res.status, json: await res.json() }));
+  assert.equal((await fetch(`${first.origin}/v1/admin/attention`, { headers: { Authorization: 'Bearer nope' } })).status, 403);
+  assert.equal((await fetch(`${first.origin}/v1/admin/licenses/customers`)).status, 403);
+
+  const annual = (await admin('/v1/admin/licenses/issue', { email: 'annual@example.com', years: 1 })).json.license;
+  await post(first.origin, completed({ merchantUid: 'm_price', originalAmount: 1000 }));
+  await post(first.origin, renewal({ merchantUid: 'sub_r2' }));
+  await post(first.origin, { id: 'evt_odd', type: 'payment.mystery', occurredAt: '2026-10-16T01:00:00+09:00', data: { object: { merchantUid: 'm_odd' } } });
+  await waitFor(() => webhooks(first.origin, '?kind=held').then((e) => e.length === 3), 'held records');
+
+  const items = (await admin('/v1/admin/attention')).json.items;
+  const byKind = Object.fromEntries(items.map((i) => [i.orderKind ?? i.type, i]));
+  assert.equal(items.length, 3, 'a held order is listed once, as the order');
+  assert.deepEqual([byKind.purchase.merchantUid, byKind.purchase.email, byKind.purchase.amount], ['m_price', 'buyer@example.com', 9900]);
+  assert.match(byKind.purchase.reasonText, /1,000원/);
+  assert.deepEqual(byKind.renewal.candidates.map((c) => c.keyId), [annual.keyId]);
+  assert.equal(byKind.event.reason, 'unknown_event_type:payment.mystery');
+
+  assert.equal((await admin('/v1/admin/orders/release', { merchantUid: 'm_price' })).json.created, true);
+  const applied = (await admin('/v1/admin/orders/apply-renewal', { merchantUid: 'sub_r2', keyId: annual.keyId })).json;
+  assert.ok(applied.license.expiresAt > annual.expiresAt, 'the renewal round extended the existing key');
+  assert.equal((await admin('/v1/admin/orders/apply-renewal', { merchantUid: 'sub_r2', keyId: annual.keyId })).json.changed, false);
+  assert.deepEqual((await admin('/v1/admin/attention')).json.items.map((i) => i.type), ['event']);
+  assert.equal((await admin('/v1/admin/attention/ack', { id: byKind.event.id })).status, 200);
+  assert.equal((await admin('/v1/admin/attention/ack', { id: 'wh_missing' })).json.error, 'event_not_found');
+  assert.equal((await admin('/v1/admin/attention')).json.count, 0);
+
+  // A held order the owner will not release can be acknowledged too; a restart keeps every dismissal.
+  await post(first.origin, completed({ merchantUid: 'm_skip', originalAmount: 1 }));
+  await waitFor(() => admin('/v1/admin/attention').then((r) => r.json.count === 1), 'second held order');
+  assert.equal((await admin('/v1/admin/attention/ack', { merchantUid: 'm_skip' })).status, 200);
+  const second = await listen(t, { RAU_SITE_DATA: first.directory });
+  const res = await fetch(`${second.origin}/v1/admin/attention`, { headers: { Authorization: `Bearer ${ADMIN}` } });
+  assert.equal((await res.json()).count, 0);
 });
 
 test('a hanging or failing alert never delays or breaks the webhook response', async (t) => {
