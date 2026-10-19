@@ -138,6 +138,8 @@ const PROBE_TEXTS = [
   '한글과 English 12345',
 ];
 const LOCAL_FONT_NAME_READ_CONCURRENCY = 4;
+/** 미리 읽은 테이블 해석은 동기라, 이만큼마다 메인 스레드를 양보해 긴 작업 하나가 되지 않게 한다. */
+const LOCAL_FONT_NAME_PARSE_YIELD_EVERY = 32;
 let importedFontGeneration = 0;
 /** resolveLocalFont·repairedLocalFontFamily 결과가 바뀔 수 있을 때마다 증가한다 (글꼴 체인 캐시 무효화 기준). */
 let localFontLookupGeneration = 0;
@@ -1276,18 +1278,29 @@ async function loadLocalFontNameTables(fontDataList: readonly FontData[]): Promi
   }
 }
 
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (typeof scheduler?.yield === 'function') return scheduler.yield();
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
 async function collectLocalFontRecords(
   fontDataList: readonly FontData[],
   nameTables: ReadonlyMap<string, SfntNameTables> | null = null,
 ): Promise<LocalFontRecord[]> {
   const records: Array<LocalFontRecord | null> = new Array(fontDataList.length).fill(null);
   let nextIndex = 0;
+  let parsedSinceYield = 0;
   const worker = async (): Promise<void> => {
     while (nextIndex < fontDataList.length) {
       const index = nextIndex;
       nextIndex += 1;
       const fontData = fontDataList[index];
       const tables = nameTables?.get(fontData.postscriptName);
+      if (tables && ++parsedSinceYield >= LOCAL_FONT_NAME_PARSE_YIELD_EVERY) {
+        parsedSinceYield = 0;
+        await yieldToMain();
+      }
       const names = tables ? sfntFontNamesFromTables(tables) : await readSfntFontNames(fontData);
       records[index] = makeLocalFontRecord(fontData, names);
     }

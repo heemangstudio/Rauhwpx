@@ -629,6 +629,8 @@ let hubHost: SystemFontHost | null = null;
 let indexPromise: Promise<SystemFontIndex> | null = null;
 let currentIndex: SystemFontIndex | null = null;
 let currentLookup: DesktopFontLookup | null = null;
+/** 설치 글꼴 감지용 PostScript → face id. 색인이 바뀌면 지운다. */
+let installedFaceIds: { index: SystemFontIndex; byPostscript: Map<string, string> } | null = null;
 let lastReport: DesktopFontReport | null = null;
 let lastLocalFontAccessReport: DesktopFontReport | null = null;
 let lastRequested: string[] = [];
@@ -676,6 +678,7 @@ function resetHostState(): void {
   indexPromise = null;
   currentIndex = null;
   currentLookup = null;
+  installedFaceIds = null;
   desktopMenuNames = null;
   indexStale = false;
   attemptedFonts.clear();
@@ -784,6 +787,24 @@ function isDesktopFontApi(api: DesktopFontHostApi): boolean {
   return typeof api.listSystemFonts === 'function' && typeof api.systemFontBaseUrl === 'function';
 }
 
+/** main 의 desktop:font-name-tables 가 한 번에 받는 face 수(16384)보다 작게 나눠 묻는다. */
+const NAME_TABLE_CHUNK = 4096;
+
+function chunkedNameTables(
+  read: (ids: readonly string[]) => Promise<Array<SfntNameTables | null>>,
+): (ids: readonly string[]) => Promise<Array<SfntNameTables | null>> {
+  return async (ids) => {
+    const result: Array<SfntNameTables | null> = [];
+    for (let start = 0; start < ids.length; start += NAME_TABLE_CHUNK) {
+      const chunk = ids.slice(start, start + NAME_TABLE_CHUNK);
+      // 실패한 조각만 null 로 두어 그 face 들만 blob 으로 읽게 한다.
+      const tables = await read(chunk).catch(() => []);
+      for (let at = 0; at < chunk.length; at += 1) result.push(tables[at] ?? null);
+    }
+    return result;
+  };
+}
+
 function desktopHostAdapter(api: DesktopFontHostApi): SystemFontHost {
   let adapter = desktopAdapters.get(api);
   if (!adapter) {
@@ -792,7 +813,7 @@ function desktopHostAdapter(api: DesktopFontHostApi): SystemFontHost {
       coversSystem: true,
       list: (options) => api.listSystemFonts!(options?.refresh ? { refresh: true } : undefined),
       read: streamedFaceReader(api.systemFontBaseUrl!),
-      ...(api.systemFontNameTables ? { nameTables: (ids: readonly string[]) => api.systemFontNameTables!(ids) } : {}),
+      ...(api.systemFontNameTables ? { nameTables: chunkedNameTables(api.systemFontNameTables) } : {}),
     };
     desktopAdapters.set(api, adapter);
   }
@@ -894,6 +915,7 @@ export function loadDesktopFontIndex(options: { refresh?: boolean; refetch?: boo
     if (getSystemFontHost() !== host) throw new Error('system font host changed');
     currentIndex = index;
     currentLookup = buildDesktopFontLookup(index);
+    installedFaceIds = null;
     if (refresh) hftOutlineFaceReads.clear();
     desktopMenuNames = null;
     const byRoot = (index.roots ?? []).map(root => `${root.kind}:${root.fileCount}${root.exists ? '' : '(없음)'}`).join(' ');
@@ -932,8 +954,6 @@ export function getDesktopFontMenuNames(): string[] {
 
 /** 설치 글꼴로 등록된 사본(시스템·사용자)을 앱 번들 사본보다 먼저 고른다. */
 const NAME_SOURCE_RANK: Record<SystemFontSource, number> = { system: 0, user: 1, hancom: 2, app: 3 };
-
-let installedFaceIds: { index: SystemFontIndex; byPostscript: Map<string, string> } | null = null;
 
 function installedFaceIdsByPostscript(index: SystemFontIndex): Map<string, string> {
   if (installedFaceIds?.index === index) return installedFaceIds.byPostscript;
@@ -2068,6 +2088,7 @@ export function resetDesktopFontsForTests(): void {
   indexPromise = null;
   currentIndex = null;
   currentLookup = null;
+  installedFaceIds = null;
   lastReport = null;
   lastRequested = [];
   desktopMenuNames = null;
