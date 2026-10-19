@@ -62,7 +62,7 @@
       case 'trial':
         return [`체험 중이에요. ${timeLeft(status.trial.endsAt)} 남았어요.`, false];
       case 'trial_expired':
-        return ['체험이 끝나 읽기 전용이에요. 문서는 열어 볼 수 있지만 저장하려면 라이선스 키가 필요해요.', true];
+        return ['편집하려면 라이선스가 필요합니다.', true];
       case 'revoked':
         return [beta
           ? '베타 테스트 기간이 끝나 키가 해지되었어요. 읽기 전용이에요.'
