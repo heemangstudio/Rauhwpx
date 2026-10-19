@@ -141,7 +141,9 @@ export class PageRenderer {
     // layer 요약 캐시는 남긴다. 편집마다 문서 revision 이 올라가므로 여기서 비우면 텍스트 편집
     // 렌더가 캐시를 한 번도 못 쓰고 키 입력마다 getPageOverlayImages(그림 base64 포함)를 다시
     // 부른다. 캐시는 text-edit + allowStaticOverlayReuse 렌더만 읽고, 다른 렌더는 매번 새로
-    // 읽어 덮어쓰며, 입력이 멈추면 검증 렌더가 다시 확인한다.
+    // 읽어 덮어쓴다. engine 이 그리는 정적 층이 있으면 입력이 멈춘 뒤 검증 렌더가 다시 읽고,
+    // 본문 그림만 `<img>` 로 띄운 쪽은 다음 전체 렌더가 다시 읽는다 (auto renderer 를 고정한
+    // 편집 경로가 이미 이렇게 캐시를 이어 쓴다).
     this.pageInfoByPage.clear();
   }
 

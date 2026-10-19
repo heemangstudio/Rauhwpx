@@ -88,7 +88,7 @@ test('typing on a page with body images keeps its image layer without re-reading
       }
       const typed = { treeReads, overlayReads, sameLayer: imageLayer() === first.layer, images: shownImages() };
 
-      // 입력이 멈춘 뒤의 검증 렌더는 요약과 그림을 새로 읽어 층을 다시 만든다.
+      // 텍스트 편집이 아닌 다음 렌더는 요약과 그림을 새로 읽어 층을 다시 만든다.
       renderer.renderPage(0, canvas, 1, 1, 1, { reason: 'unknown' }, pageInfo);
       const verified = { treeReads, overlayReads, newLayer: imageLayer() !== first.layer, images: shownImages() };
       return {
