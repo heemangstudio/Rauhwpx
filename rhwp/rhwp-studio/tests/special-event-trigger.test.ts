@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { GiftClaimError, type DesktopGiftApi, type DesktopGiftStatus, type GiftClaimResult } from '../src/ui/special-event/gift.ts';
+import { desktopGiftApi, GiftClaimError, giftMeter, type DesktopGiftApi, type DesktopGiftStatus, type GiftClaimResult } from '../src/ui/special-event/gift.ts';
 import {
+  planSpecialEvent,
   shouldShowSpecialEvent,
+  specialEventOrderStorageKey,
   specialEventStorageKey,
   startSpecialEvent,
 } from '../src/ui/special-event/special-event-trigger.ts';
@@ -135,4 +137,106 @@ test('a gift that becomes claimable later opens the popup, and a rejected claim 
   assert.equal(opened.length, 1);
   await assert.rejects(opened[0]!.claim(), (error: unknown) =>
     error instanceof GiftClaimError && error.message === '준비한 크레딧이 모두 소진되었습니다.');
+});
+
+test('an own-key user gets the order popup once, even after the old popup was seen or claimed', () => {
+  const ownKey = { keyConfigured: true };
+  const oldRecord = (record: string) => memoryStorage({ [specialEventStorageKey(EVENT_ID)]: record });
+  // 예전 창을 닫았거나 본 사람도 받기와 순서를 함께 고른다.
+  for (const record of ['shown', 'dismissed']) {
+    assert.deepEqual(planSpecialEvent(giftStatus(), oldRecord(record), ownKey), { kind: 'order', claimed: false });
+  }
+  // 예전 창에서 이미 받았으면 순서만 고른다. 서버가 한도를 늘려 남은 양이 처음보다 많아도 그대로 쓴다.
+  assert.deepEqual(
+    planSpecialEvent(giftStatus({ claimed: true, remainingUsd: 26 }), oldRecord('claimed'), ownKey),
+    { kind: 'order', claimed: true, balanceUsd: 26 },
+  );
+  assert.equal(planSpecialEvent(giftStatus({ claimed: true, remainingUsd: 0 }), memoryStorage(), ownKey), null);
+  assert.equal(planSpecialEvent(giftStatus({ eligible: false }), memoryStorage(), ownKey), null);
+  // 순서 창을 한 번 띄웠으면 다시 띄우지 않는다.
+  const seen = memoryStorage({ [specialEventOrderStorageKey(EVENT_ID)]: 'dismissed' });
+  assert.equal(planSpecialEvent(giftStatus(), seen, ownKey), null);
+  // 내 키가 없거나 모르면 예전 창 그대로다.
+  assert.deepEqual(planSpecialEvent(giftStatus(), memoryStorage(), { keyConfigured: false }), { kind: 'offer' });
+  assert.deepEqual(planSpecialEvent(giftStatus(), memoryStorage(), null), { kind: 'offer' });
+  assert.equal(planSpecialEvent(giftStatus(), oldRecord('dismissed'), null), null);
+});
+
+test('the order popup saves the chosen order through the hub and records its own outcome', async () => {
+  const storage = memoryStorage({ [specialEventStorageKey(EVENT_ID)]: 'dismissed' });
+  const amount = { id: EVENT_ID, amountUsd: 35, endsAt: null, active: true };
+  const gift = fakeGift(giftStatus({ event: amount }), async () => ({
+    ok: true, status: giftStatus({ event: amount, claimed: true, remainingUsd: 35 }),
+  }));
+  const saved: string[] = [];
+  const opened: SpecialEventOptions[] = [];
+  let close: (result: SpecialEventResult) => void = () => {};
+  const deps = {
+    gift: gift.api,
+    storage,
+    whenReady: async () => {},
+    isSetupActive: () => false,
+    onSetupInactive: () => () => {},
+    pi: {
+      status: async () => ({ keyConfigured: true, giftOrder: 'after' as const }),
+      setGiftOrder: async (order: 'first' | 'after') => { saved.push(order); },
+    },
+    open: (options: SpecialEventOptions) => {
+      opened.push(options);
+      return new Promise<SpecialEventResult>((resolve) => { close = resolve; });
+    },
+  };
+  startSpecialEvent(deps);
+  await settle();
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]!.amountUsd, 35, 'the per-key amount from the server');
+  assert.equal(opened[0]!.order?.initial, 'after');
+  assert.equal(opened[0]!.claimedBalanceUsd, undefined);
+  assert.deepEqual(await opened[0]!.claim(), { balanceUsd: 35 });
+  await opened[0]!.order!.choose('first');
+  assert.deepEqual(saved, ['first']);
+  close('claimed');
+  await settle();
+  assert.equal(storage.values.get(specialEventOrderStorageKey(EVENT_ID)), 'claimed');
+  assert.equal(storage.values.get(specialEventStorageKey(EVENT_ID)), 'claimed');
+
+  // 다음 실행에서는 뜨지 않는다.
+  startSpecialEvent({ ...deps, open: (options: SpecialEventOptions) => { opened.push(options); return new Promise(() => {}); } });
+  await settle();
+  assert.equal(opened.length, 1);
+});
+
+test('without a hub answer the runner falls back to the plain popup', async () => {
+  const storage = memoryStorage();
+  const gift = fakeGift(giftStatus(), async () => ({ ok: true, status: giftStatus({ claimed: true, remainingUsd: 20 }) }));
+  const opened: SpecialEventOptions[] = [];
+  startSpecialEvent({
+    gift: gift.api,
+    storage,
+    whenReady: async () => {},
+    isSetupActive: () => false,
+    onSetupInactive: () => () => {},
+    pi: { status: async () => null, setGiftOrder: async () => {} },
+    piStatusWaitMs: 0,
+    open: (options) => {
+      opened.push(options);
+      return new Promise(() => {});
+    },
+  });
+  await settle();
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]!.order, undefined);
+  assert.equal(storage.values.get(specialEventStorageKey(EVENT_ID)), 'shown');
+  assert.equal(storage.values.has(specialEventOrderStorageKey(EVENT_ID)), false);
+});
+
+test('the gift API exists on macOS and Windows desktops only, and the meter never overflows', () => {
+  const gift = fakeGift(giftStatus(), async () => ({ ok: true, status: giftStatus() })).api;
+  for (const platform of ['darwin', 'win32']) assert.equal(desktopGiftApi({ rhwpDesktop: { platform, gift } }), gift);
+  assert.equal(desktopGiftApi({ rhwpDesktop: { platform: 'linux', gift } }), null);
+  assert.equal(desktopGiftApi({}), null);
+  assert.deepEqual(giftMeter(20, 10), { ratio: 0.5, max: 20 });
+  // 서버가 한도를 늘려 남은 양이 처음 금액보다 많다.
+  assert.deepEqual(giftMeter(20, 30), { ratio: 1, max: 30 });
+  assert.deepEqual(giftMeter(20, -1), { ratio: 0, max: 20 });
 });

@@ -84,6 +84,10 @@ export const GIFT_MAX_OUTPUT_TOKENS = 32_000;
 const GIFT_DEFAULT_FAMILIES = ['sonnet', 'haiku', 'opus'];
 /** 이보다 오래된 선물 자격은 스폰할 때 뒤에서 다시 받는다 (리스가 갱신됐을 수 있다). */
 const GIFT_CREDENTIALS_STALE_MS = 60_000;
+/** 내 키를 먼저 쓰다 크레딧이 떨어졌을 때, 내 키 잔액이 이만큼 다시 생기면 내 키로 돌아간다. */
+const OWN_RESUME_BALANCE_USD = 1;
+/** 선물 크레딧을 쓰는 데스크톱 플랫폼. */
+const GIFT_PLATFORMS = new Set(['darwin', 'win32']);
 const GIFT_LEASE_MAX_BYTES = 16 * 1024;
 const GIFT_RECENT_LEASES = 8;
 /** 이보다 적게 남은 선물은 402 를 받으면 다 쓴 것으로 본다 (요청 하나도 치르기 어렵다). */
@@ -137,7 +141,20 @@ const STALE_TEMP_MS = 60_000;
  * @property {boolean} updateRequired 설치본이 고정 버전과 다르다
  * @property {string|null} error
  * @property {'gift'|'own'|'none'} credential Pi 가 지금 쓰는 자격. gift 면 models/defaultModelId 는 선물 모델이다
+ * @property {GiftOrder} giftOrder 내 키가 있을 때 선물을 쓰는 순서
  */
+
+/**
+ * 내 OpenRouter 키가 있을 때 선물 크레딧을 쓰는 순서.
+ * first: 선물을 먼저 쓰고 다 쓰면 내 키. after: 내 키를 먼저 쓰고 그 크레딧이 떨어지면 선물.
+ * @typedef {'first'|'after'} GiftOrder
+ */
+export const GIFT_ORDERS = /** @type {const} */ (['first', 'after']);
+const DEFAULT_GIFT_ORDER = 'first';
+
+function normalizeGiftOrder(value) {
+  return GIFT_ORDERS.includes(value) ? value : DEFAULT_GIFT_ORDER;
+}
 
 function piError(code, message) {
   const error = new Error(message);
@@ -216,8 +233,12 @@ function needsCatalogFields(model) {
   return model.maxOutputTokens === undefined || model.pricing.cacheRead === undefined;
 }
 
-function emptyGiftConfig(eventId = null) {
-  return { eventId, models: [], defaultModelId: null, exhaustedAt: null, exhaustedRemainingUsd: null };
+/** 이벤트마다 새로 시작하는 선물 설정. order 는 사용자의 고른 순서라 이벤트가 바뀌어도 남긴다. */
+function emptyGiftConfig(eventId = null, order = DEFAULT_GIFT_ORDER) {
+  return {
+    eventId, models: [], defaultModelId: null, exhaustedAt: null, exhaustedRemainingUsd: null,
+    order, ownExhaustedAt: null,
+  };
 }
 
 function isGiftModelId(id) {
@@ -397,7 +418,7 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  *           routingSort?: string, giftSource?: { available: boolean, credentials: Function } | null,
  *           giftClientFactory?: (options: { baseUrl: string }) => ReturnType<typeof createOpenRouter> }} [deps]
  *   routingSort: OpenRouter 제공자 정렬 (latency|throughput|price|off). 기본 throughput
- *   giftSource: 선물 크레딧 자격 (gift-source.mjs). macOS 에서만 쓴다
+ *   giftSource: 선물 크레딧 자격 (gift-source.mjs). macOS·Windows 에서만 쓴다
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
@@ -452,7 +473,7 @@ export function createPiManager({
   const makeGiftClient = giftClientFactory ?? (({ baseUrl }) => createOpenRouter({
     fetchImpl, now, baseUrl, keyInfoPath: '/auth/key', cacheDir: null, platform,
   }));
-  const giftEnabled = platform === 'darwin' && giftSource?.available === true;
+  const giftEnabled = GIFT_PLATFORMS.has(platform) && giftSource?.available === true;
   const npmLaunch = bundledNpmLaunch({ nodeCommand, npmCommand });
   const ensureNodeHost = createNodeHost({
     rootDir, nodeCommand, platform, writeFile: writeNodeHostFile,
@@ -636,6 +657,10 @@ export function createPiManager({
           exhaustedRemainingUsd: Number.isFinite(raw?.gift?.exhaustedRemainingUsd) && raw.gift.exhaustedRemainingUsd >= 0
             ? raw.gift.exhaustedRemainingUsd
             : null,
+          order: normalizeGiftOrder(raw?.gift?.order),
+          ownExhaustedAt: Number.isFinite(raw?.gift?.ownExhaustedAt) && raw.gift.ownExhaustedAt > 0
+            ? raw.gift.ownExhaustedAt
+            : null,
         },
       };
     } catch {
@@ -766,10 +791,14 @@ export function createPiManager({
     await writeAtomic(giftSettingsPath, settingsText());
     await writeAtomic(giftModelsPath, text);
     // Pi 가 내려받은 rg/fd 는 agent/bin 에 있다. 선물 홈에서도 같은 것을 쓴다.
+    // Windows 는 개발자 모드가 아니면 심볼릭 링크를 못 만든다. 디렉터리 정션은 권한 없이 된다(절대 경로만).
     const binLink = path.join(giftAgentDir, 'bin');
-    if (platform === 'darwin' && !(await fs.lstat(binLink).catch(() => null))
-      && (await fs.stat(path.join(agentDir, 'bin')).catch(() => null))?.isDirectory()) {
-      await fs.symlink(path.join('..', 'agent', 'bin'), binLink).catch(() => {});
+    const ownBin = path.join(agentDir, 'bin');
+    if (platform !== 'linux' && !(await fs.lstat(binLink).catch(() => null))
+      && (await fs.stat(ownBin).catch(() => null))?.isDirectory()) {
+      await (platform === 'win32'
+        ? fs.symlink(ownBin, binLink, 'junction')
+        : fs.symlink(path.join('..', 'agent', 'bin'), binLink)).catch(() => {});
     }
     giftWrittenText = text;
     giftWrittenBase = baseUrl;
@@ -789,19 +818,36 @@ export function createPiManager({
       && giftWrittenBase === giftCredentials.baseUrl;
   }
 
-  /** 우선순위: 선물 > 내 키 > 없음. */
+  function giftAccess() {
+    return { mode: 'gift', key: giftCredentials.lease, agentDir: giftAgentDir, baseUrl: giftCredentials.baseUrl };
+  }
+
+  function ownAccess() {
+    return { mode: 'own', key: apiKey, agentDir, baseUrl: OPENROUTER_BASE_URL };
+  }
+
+  /** 내 키를 먼저 쓰다(after) 크레딧이 떨어진 상태. 선물로 넘어간다. */
+  function ownKeyExhausted() {
+    return config.gift.order === 'after' && Boolean(config.gift.ownExhaustedAt);
+  }
+
+  /**
+   * 우선순위. first(기본): 선물 > 내 키 > 없음.
+   * after: 내 키 > 선물 > 없음. 내 키 크레딧이 떨어지면(ownExhaustedAt) 선물이 먼저다.
+   * 둘 다 쓸 수 없으면 내 키를 다시 써 본다 — 그 사이 충전했을 수 있다.
+   */
   function currentAccess() {
-    if (giftMode()) {
-      return { mode: 'gift', key: giftCredentials.lease, agentDir: giftAgentDir, baseUrl: giftCredentials.baseUrl };
-    }
-    if (apiKey) return { mode: 'own', key: apiKey, agentDir, baseUrl: OPENROUTER_BASE_URL };
+    const gift = giftMode();
+    if (apiKey && config.gift.order === 'after' && !(gift && ownKeyExhausted())) return ownAccess();
+    if (gift) return giftAccess();
+    if (apiKey) return ownAccess();
     const giftUsedUp = giftEnabled && (giftExhaustedForEvent()
       || (giftCredentials?.claimed === true && giftCredentials.remainingUsd !== null && giftCredentials.remainingUsd <= 0));
     return { mode: 'none', key: null, agentDir, baseUrl: null, ...(giftUsedUp ? { reason: 'gift-exhausted' } : {}) };
   }
 
   function modeModels() {
-    return giftMode()
+    return currentAccess().mode === 'gift'
       ? { models: config.gift.models, defaultModelId: config.gift.defaultModelId }
       : { models: config.models, defaultModelId: config.defaultModelId };
   }
@@ -867,16 +913,19 @@ export function createPiManager({
     try {
       next = normalizeGiftCredentials(await giftSource.credentials({ refresh }));
     } catch {
-      next = null;
+      // 데스크톱이 늦거나 잠깐 실패했다. 선물이 끝났다는 뜻이 아니니 마지막 자격을 지킨다.
+      // 리스가 정말 거절되면 onAccessRejected 가 다시 받게 한다.
+      next = giftCredentials;
     }
     giftCredentials = next;
     giftCheckedAt = now();
+    await resumeOwnKeyIfFunded();
     if (!next?.active) return currentStatus();
     rememberLease(next.lease);
     try {
       let changed = false;
       if (config.gift.eventId !== next.eventId) {
-        config.gift = emptyGiftConfig(next.eventId);
+        config.gift = emptyGiftConfig(next.eventId, config.gift.order);
         changed = true;
       } else if (config.gift.exhaustedAt && next.remainingUsd !== null) {
         // 402 직후의 잔액은 늦게 줄 수 있다. 그 뒤로 본 가장 낮은 잔액을 기준으로 삼는다.
@@ -941,6 +990,74 @@ export function createPiManager({
     return refreshGift({ refresh: true });
   }
 
+  /**
+   * 내 키를 먼저 쓰는 중(after)에 그 키가 402 를 받았을 때 부른다. 다음 스폰부터 선물을 쓴다.
+   * first 순서이거나 선물을 쓸 수 없으면 아무것도 바꾸지 않는다.
+   */
+  async function markOwnKeyExhausted() {
+    await load();
+    if (config.gift.order !== 'after' || config.gift.ownExhaustedAt || !giftMode()) return currentStatus();
+    config.gift.ownExhaustedAt = now();
+    if (!closed) await serialized(() => persistConfig()).catch(() => {});
+    return currentStatus();
+  }
+
+  /** 내 키 크레딧이 떨어져 선물로 넘어간 뒤, 내 키 잔액이 다시 생겼으면 내 키로 돌아간다. 실패는 무시한다. */
+  async function resumeOwnKeyIfFunded() {
+    if (!config.gift.ownExhaustedAt || !apiKey) return;
+    try {
+      const credits = await client.credits(apiKey, true);
+      const balance = Number(credits?.balanceUsd);
+      if (!(Number.isFinite(balance) && balance >= OWN_RESUME_BALANCE_USD)) return;
+    } catch {
+      return;
+    }
+    config.gift.ownExhaustedAt = null;
+    if (!closed) await serialized(() => persistConfig()).catch(() => {});
+  }
+
+  /** 선물을 쓰는 순서를 바꾼다. 바꾸면 내 키 소진 표시는 지운다. */
+  async function setGiftOrder(order) {
+    await load();
+    if (!GIFT_ORDERS.includes(order)) throw piError('PI_GIFT_ORDER_INVALID', '알 수 없는 순서입니다.');
+    if (config.gift.order === order) return currentStatus();
+    return serialized(async () => {
+      const previous = { order: config.gift.order, ownExhaustedAt: config.gift.ownExhaustedAt };
+      config.gift.order = order;
+      config.gift.ownExhaustedAt = null;
+      try {
+        await persistConfig();
+      } catch (error) {
+        Object.assign(config.gift, previous);
+        throw error;
+      }
+      return currentStatus();
+    });
+  }
+
+  /**
+   * 선물 자격을 한 번도 받지 못했으면 받아 올 때까지 기다린다(오래 걸리면 timeoutMs 뒤에 돌아간다).
+   * 세션을 열 때 불러 기동 직후 첫 요청이 선물 대신 내 키로 가지 않게 한다. 오래된 자격은 뒤에서 새로 받는다.
+   */
+  async function ensureGiftFresh({ timeoutMs = 3_000 } = {}) {
+    await load();
+    if (!giftEnabled || closed) return currentStatus();
+    if (giftCheckedAt) {
+      if (now() - giftCheckedAt > GIFT_CREDENTIALS_STALE_MS) void refreshGift().catch(() => {});
+      return currentStatus();
+    }
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    try {
+      await Promise.race([refreshGift().catch(() => {}), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return currentStatus();
+  }
+
   /** 선물 프록시로 보낼 모델. 고른 선물 모델이 아니면 가장 싼 선물 모델로 바꾼다. */
   function giftChatModel(requested) {
     const models = config.gift.models;
@@ -960,7 +1077,17 @@ export function createPiManager({
    */
   const router = {
     async chat(options = {}) {
-      if (!isGiftLease(options.key)) return client.chat(options);
+      if (!isGiftLease(options.key)) {
+        try {
+          return await client.chat(options);
+        } catch (error) {
+          // 내 키를 먼저 쓰는 중이면 크레딧이 떨어진 내 키 대신 선물로 넘긴다.
+          if (error?.status === 402 && apiKey && String(options.key ?? '').trim() === apiKey) {
+            void markOwnKeyExhausted();
+          }
+          throw error;
+        }
+      }
       const model = giftChatModel(options.model);
       const effort = typeof options.reasoningEffort === 'string' && options.reasoningEffort
         ? (EFFORTS.includes(options.reasoningEffort) ? options.reasoningEffort : 'high')
@@ -1312,6 +1439,7 @@ export function createPiManager({
       updateRequired,
       error: lastError ?? secretStoreError,
       credential: access.mode,
+      giftOrder: config.gift.order,
     };
   }
 
@@ -1613,6 +1741,8 @@ export function createPiManager({
           apiKey = trimmed;
           secretStoreError = null;
           config.keyTail = keyTailOf(trimmed);
+          // 새 키는 새 잔액이다. 내 키 소진 표시를 지운다.
+          config.gift.ownExhaustedAt = null;
           config.setupComplete = config.models.length > 0;
           throwIfAuthCancelled(signal);
           await writeModelsJson();
@@ -1762,7 +1892,7 @@ export function createPiManager({
      */
     async setModels(models) {
       await load();
-      const gift = giftMode();
+      const gift = currentAccess().mode === 'gift';
       const requested = Array.isArray(models) ? models : [];
       if (requested.length === 0) throw piError('PI_MODELS_EMPTY', '모델을 하나 이상 고르세요');
       if (requested.length > MAX_MODELS) {
@@ -1884,17 +2014,25 @@ export function createPiManager({
         ...access,
         model: model?.id ?? (typeof requestedModel === 'string' && requestedModel ? requestedModel : null),
         reasoning: Boolean(model?.reasoning),
-        fallback: apiKey ? 'own' : 'none',
+        // 이 자격의 크레딧이 떨어지면 다음 스폰이 갈 곳.
+        fallback: access.mode === 'own'
+          ? (config.gift.order === 'after' && giftMode() ? 'gift' : 'none')
+          : (apiKey ? 'own' : 'none'),
       };
     },
 
     refreshGift,
+    ensureGiftFresh,
     markGiftExhausted,
+    markOwnKeyExhausted,
+    setGiftOrder,
     router,
 
     /** 카탈로그. 선물 모드면 선물 프록시의 Claude 모델만 보인다. */
     catalog(refresh = false) {
-      return giftMode() ? giftCatalog(refresh, giftCredentials.lease) : client.catalog(refresh, apiKey);
+      return currentAccess().mode === 'gift'
+        ? giftCatalog(refresh, giftCredentials.lease)
+        : client.catalog(refresh, apiKey);
     },
 
     /** 잔액. 키가 없으면 null 을 돌려준다. */

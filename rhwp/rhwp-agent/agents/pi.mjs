@@ -76,6 +76,8 @@ export function isGiftExhaustedError(text) {
   return GIFT_EXHAUSTED_ERROR.test(String(text ?? ''));
 }
 const PI_KEY_MISSING_MESSAGE = 'Pi 설정에서 OpenRouter 키를 연결해 주세요.';
+/** 내 키를 먼저 쓰다 그 크레딧이 떨어졌을 때. 다음 요청부터 선물 크레딧으로 넘어간다. */
+export const OWN_KEY_EXHAUSTED_GIFT_MESSAGE = 'OpenRouter 크레딧이 부족합니다. 다음 요청부터 Claude 크레딧을 씁니다.';
 
 /**
  * @param {unknown} text
@@ -87,6 +89,7 @@ export function formatOpenRouterCreditError(text, access = null) {
     if (!isGiftExhaustedError(text)) return GIFT_RETRY_MESSAGE;
     return access.fallback === 'own' ? GIFT_EXHAUSTED_OWN_KEY_MESSAGE : GIFT_EXHAUSTED_NO_KEY_MESSAGE;
   }
+  if (access?.mode === 'own' && access.fallback === 'gift') return OWN_KEY_EXHAUSTED_GIFT_MESSAGE;
   return 'OpenRouter 크레딧이 부족합니다.';
 }
 
@@ -103,7 +106,7 @@ export function formatOpenRouterCreditError(text, access = null) {
  * }} PiBackendOptions
  *
  * @typedef {{ mode: 'gift'|'own'|'none', key: string|null, agentDir: string, model: string|null,
- *   reasoning: boolean, fallback?: 'own'|'none', reason?: string }} PiSpawnAccess
+ *   reasoning: boolean, fallback?: 'own'|'gift'|'none', reason?: string }} PiSpawnAccess
  *
  * piBin  — pi 실행 파일 경로(`<piRoot>/prefix/node_modules/.bin/pi`).
  * piRoot — 영속 pi 루트. 에이전트 디렉터리는 `<piRoot>/agent`, 세션은 `<piRoot>/sessions`.
@@ -112,7 +115,8 @@ export function formatOpenRouterCreditError(text, access = null) {
  * reasoning — 선택한 모델이 thinking 을 지원하는지 여부.
  * piAgentDir — Pi 에이전트 홈. 없으면 `<piRoot>/agent`. 선물 크레딧은 `<piRoot>/agent-gift` 를 쓴다.
  * resolvePiAccess — 스폰마다 부른다. 그때의 자격(키·홈·모델)이 위 값들을 덮는다.
- * onCreditExhausted — 선물 크레딧 스폰이 402 로 끝났을 때 부른다.
+ * onCreditExhausted — 선물 크레딧 스폰이 402 로 끝났을 때, 또는 선물로 넘어갈 수 있는 내 키 스폰이
+ *   크레딧 오류로 끝났을 때(mode: 'own') 부른다.
  */
 
 function piAgentDirOf(opts) {
@@ -536,12 +540,15 @@ export function createPiSession(opts, {
     const message = formatOpenRouterCreditError(text, turnAccess);
     if (message && turnAccess?.mode === 'gift') {
       try { opts.onCreditExhausted?.({ mode: 'gift', confirmed: isGiftExhaustedError(text) }); } catch {}
+    } else if (message && turnAccess?.mode === 'own' && turnAccess.fallback === 'gift') {
+      try { opts.onCreditExhausted?.({ mode: 'own', confirmed: true }); } catch {}
     }
     return message;
   }
 
   /** 크레딧 실패 코드. 선물이면 다 쓴 것(gift_credits)과 잠깐 거절된 것(gift_retry)을 가른다. */
   function creditFailureCode(text) {
+    if (turnAccess?.mode === 'own' && turnAccess.fallback === 'gift') return 'own_credits';
     if (turnAccess?.mode !== 'gift') return 'openrouter_credits';
     return isGiftExhaustedError(text) ? 'gift_credits' : 'gift_retry';
   }

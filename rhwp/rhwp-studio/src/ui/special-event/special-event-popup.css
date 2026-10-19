@@ -196,6 +196,49 @@
   opacity: 0.6;
 }
 
+/* ── 내 키가 있을 때: 쓰는 순서 ── */
+
+.se-order {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin: 16px 12px 0;
+  padding: 2px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-surface-sunken);
+}
+
+.se-order-option {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  transition:
+    background-color var(--ag-dur-fast) var(--ag-ease-out),
+    color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.se-order-option[aria-checked='true'] {
+  background: var(--n-surface-raised);
+  box-shadow: var(--n-elev-1);
+  color: var(--n-ink);
+  font-weight: var(--ag-fw-medium);
+}
+
+.se-order-option:disabled {
+  opacity: 0.6;
+}
+
+.se-order-option:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
 /* ── 받은 뒤: 남은 양 ── */
 
 .se-wallet {

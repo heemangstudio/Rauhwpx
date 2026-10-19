@@ -14,6 +14,11 @@
     upstream_unreachable: '라이선스 서버에 연결하지 못했어요.',
     keychain_unavailable: '키체인을 쓸 수 없어요.',
     rate_limited: '요청이 많아요. 잠시 뒤 다시 해 주세요.',
+    amount_invalid: '크레딧은 0에서 1000달러 사이예요.',
+    budget_exhausted: '전체 크레딧 예산을 넘어요.',
+    upstream_unavailable: 'OpenRouter에 연결하지 못했어요.',
+    gift_provisioning: '크레딧 키를 만드는 중이에요. 잠시 뒤 다시 해 주세요.',
+    event_inactive: '크레딧 이벤트가 꺼져 있어요.',
   };
 
   async function api(method, path, body) {
@@ -44,6 +49,7 @@
   }
 
   const mask = (key) => `${key.slice(0, 10)}…${key.slice(-5)}`;
+  const dollars = (n, cents = false) => `$${cents || n % 1 ? n.toFixed(2) : n}`;
 
   async function copy(button, text) {
     await navigator.clipboard.writeText(text);
@@ -86,8 +92,60 @@
     return button;
   }
 
-  /** license: { keyId, key, name?, email?, tier?, status, deviceLimit, devices[], createdAt } */
-  function rows(license, { errorTarget, refresh, showTier }) {
+  /**
+   * 크레딧 칸. 받은 키는 쓴 만큼/한도, 아직 안 받은 키는 정해 둔 금액을 보여 줘요.
+   * 금액을 누르면 그 자리에서 고칠 수 있어요.
+   */
+  function giftCell(license, { errorTarget, refresh }) {
+    const cell = el('td', 'num credit');
+    const gift = license.gift;
+    if (!gift) { cell.textContent = '—'; return cell; }
+    if (gift.status === 'revoked') { cell.append(el('span', 'muted', '중지됨')); return cell; }
+    const label = gift.status === 'active' && gift.usedUsd !== null
+      ? `${dollars(gift.usedUsd, true)} / ${dollars(gift.amountUsd)}`
+      : dollars(gift.amountUsd);
+    const show = el('button', 'amount', label);
+    show.type = 'button';
+    show.title = '크레딧 바꾸기';
+    show.addEventListener('click', () => {
+      const input = el('input', 'amount');
+      Object.assign(input, { type: 'number', min: '0', max: '1000', step: '0.01', value: String(gift.amountUsd) });
+      input.setAttribute('aria-label', '크레딧 (달러)');
+      const save = el('button', 'primary', '저장');
+      save.type = 'button';
+      const form = el('span', 'edit');
+      form.append(input, save);
+      cell.classList.add('editing');
+      cell.replaceChildren(form);
+      input.focus();
+      input.select();
+      const cancel = () => { cell.classList.remove('editing'); cell.replaceChildren(show); };
+      const submit = async () => {
+        if (input.value.trim() === '') return cancel();
+        input.disabled = save.disabled = true;
+        try {
+          await api('POST', '/api/gift-amount', { keyId: license.keyId, amountUsd: Number(input.value) });
+        } catch (error) {
+          showError(errorTarget, error);
+        }
+        cell.classList.remove('editing');
+        await refresh();
+      };
+      save.addEventListener('click', () => { void submit(); });
+      form.addEventListener('focusout', (event) => {
+        if (!input.disabled && !form.contains(event.relatedTarget)) cancel();
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); void submit(); }
+        else if (event.key === 'Escape') cancel();
+      });
+    });
+    cell.append(show);
+    return cell;
+  }
+
+  /** license: { keyId, key, name?, email?, tier?, status, deviceLimit, devices[], createdAt, gift? } */
+  function rows(license, { errorTarget, refresh, showTier, showGift = false }) {
     const revoked = license.status === 'revoked';
     const row = el('tr', revoked ? 'revoked' : '');
     const detail = el('tr', 'detail');
@@ -142,13 +200,14 @@
       keyCell,
       el('td', revoked ? 'status bad' : 'status', revoked ? '해지됨' : '사용 중'),
       el('td', 'num', `${devices.length}/${license.deviceLimit ?? 2}`),
+      ...(showGift ? [giftCell(license, { errorTarget, refresh })] : []),
       el('td', 'num', fmt(lastSeen(devices))),
       el('td', 'num', fmt(license.createdAt, dateOnly)),
       actions,
     );
 
     const cell = el('td');
-    cell.colSpan = 8;
+    cell.colSpan = showGift ? 9 : 8;
     if (devices.length === 0) {
       cell.append(el('span', 'muted', '활성화된 기기가 없어요.'));
     } else {
@@ -227,12 +286,14 @@
 
   async function loadBetas({ background = false } = {}) {
     try {
-      const { betas } = await api('GET', '/api/betas');
+      const { betas, giftEvent } = await api('GET', '/api/betas');
       showOverview(betas);
       noticeNewDevices(betas);
-      // 확인을 묻는 단추가 있으면 자동 새로고침이 그 상태를 지우지 않게 표만 그대로 둬요.
-      if (background && document.querySelector('#beta-table .armed')) return;
-      render('beta-table', betas, { errorTarget: 'beta-error', refresh: loadBetas, showTier: false });
+      $('gift').hidden = !giftEvent;
+      if (giftEvent) $('gift').placeholder = dollars(giftEvent.amountUsd);
+      // 확인을 묻는 단추나 고치는 중인 크레딧이 있으면 자동 새로고침이 그 상태를 지우지 않게 표만 그대로 둬요.
+      if (background && document.querySelector('#beta-table .armed, #beta-table .editing')) return;
+      render('beta-table', betas, { errorTarget: 'beta-error', refresh: loadBetas, showTier: false, showGift: true });
       $('beta-table').hidden = betas.length === 0;
       $('beta-empty').hidden = betas.length > 0;
     } catch (error) {
@@ -263,16 +324,19 @@
     const submit = event.submitter;
     submit.disabled = true;
     try {
-      const { license } = await api('POST', '/api/issue-beta', {
+      const giftUsd = $('gift').hidden ? '' : $('gift').value.trim();
+      const { license, gift } = await api('POST', '/api/issue-beta', {
         name: $('name').value.trim(),
         devices: Number($('devices').value || 5),
         note: $('note').value.trim(),
+        ...(giftUsd ? { giftUsd: Number(giftUsd) } : {}),
       });
-      $('created-name').textContent = `${license.name} · 기기 ${license.deviceLimit}대`;
+      $('created-name').textContent = `${license.name} · 기기 ${license.deviceLimit}대${gift ? ` · 크레딧 ${dollars(gift.amountUsd)}` : ''}`;
       $('created-key').textContent = license.key;
       $('created').hidden = false;
       $('name').value = '';
       $('note').value = '';
+      $('gift').value = '';
       window.hamaScene?.celebrate();
       await loadBetas();
     } catch (error) {

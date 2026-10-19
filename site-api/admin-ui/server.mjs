@@ -34,7 +34,8 @@ const STATIC = {
 const ROUTES = {
   'GET /api/betas': { path: '/v1/admin/licenses/betas', fields: [] },
   'GET /api/licenses': { path: '/v1/admin/licenses', fields: ['key', 'keyId', 'email'] },
-  'POST /api/issue-beta': { path: '/v1/admin/licenses/issue-beta', fields: ['name', 'devices', 'email', 'note'] },
+  'POST /api/issue-beta': { path: '/v1/admin/licenses/issue-beta', fields: ['name', 'devices', 'email', 'note', 'giftUsd'] },
+  'POST /api/gift-amount': { path: '/v1/admin/gifts/amount', fields: ['keyId', 'amountUsd'] },
   'POST /api/revoke': { path: '/v1/admin/licenses/revoke', fields: ['key', 'keyId', 'reason'] },
   'POST /api/restore': { path: '/v1/admin/licenses/restore', fields: ['key', 'keyId'] },
   'POST /api/reset-devices': { path: '/v1/admin/licenses/reset-devices', fields: ['key', 'keyId'] },

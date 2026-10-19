@@ -7,8 +7,11 @@ import { createMemoryStore } from './store.mjs';
  * provisioning API with `limit = amountUsd`. The key never leaves the server; the app calls
  * the OpenAI-compatible proxy under GIFT_PROXY_PREFIX with its license lease as the bearer.
  *
- * gifts.json = { events: { [eventId]: { grants: { [keyId]: grant } } } }
+ * gifts.json = { events: { [eventId]: { grants: { [keyId]: grant }, allocations: { [keyId]: usd } } } }
  * grant.status: provisioning (key being created, or a crashed attempt to reconcile) | active | revoked.
+ * allocations: the admin-set gift amount per license; licenses without one get `amountUsd`, and 0 means
+ * no gift. grant.limitUsd is the limit on the OpenRouter key; pendingLimitUsd is a limit change on
+ * its way to OpenRouter, counted against the budget until it lands.
  * Assumes ONE replica, like licenses.mjs: all writes go through one in-process lock.
  */
 
@@ -22,6 +25,7 @@ const CATALOG_CACHE_MS = 10 * MINUTE;
 const UPSTREAM_TIMEOUT_MS = 15 * 1000;
 const MAX_UPSTREAM_JSON_BYTES = 16 * 1024 * 1024;
 const MAX_KEY_LIST_PAGES = 50;
+export const MAX_GIFT_AMOUNT_USD = 1000;
 const INSUFFICIENT_CREDITS = 'Insufficient credits: the HamaEditor gift credit for this license is used up.';
 
 export function emptyGiftsState() {
@@ -30,6 +34,17 @@ export function emptyGiftsState() {
 
 function giftError(code, status) {
   return licenseError(code, status);
+}
+
+/** Admin-set gift amount: 0–MAX_GIFT_AMOUNT_USD dollars, number or numeric string, rounded to cents. */
+export function parseGiftAmount(value) {
+  const n = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > MAX_GIFT_AMOUNT_USD) throw giftError('amount_invalid', 400);
+  return Math.round(n * 100) / 100;
+}
+
+function own(map, key) {
+  return map && typeof map === 'object' && Object.hasOwn(map, key) ? map[key] : undefined;
 }
 
 function upstreamFailure(code, { definite = false, status } = {}) {
@@ -95,7 +110,7 @@ export function createGiftsService({
     endsAt,
     totalBudgetUsd,
     modelPrefixes = ['anthropic/'],
-    platforms = ['darwin'],
+    platforms = ['darwin', 'win32'],
     maxOutputTokens = 32000,
     apiBase = 'https://openrouter.ai/api/v1',
   } = config;
@@ -115,8 +130,19 @@ export function createGiftsService({
   function eventState(state) {
     const ev = state.events[eventId] ?? { grants: {} };
     if (!ev.grants || typeof ev.grants !== 'object') ev.grants = {};
+    if (!ev.allocations || typeof ev.allocations !== 'object' || Array.isArray(ev.allocations)) ev.allocations = {};
     state.events[eventId] = ev;
     return ev;
+  }
+  /** The license's gift: the limit of its claimed key, else its allocation, else the event default. */
+  function amountOf(ev, keyId) {
+    const grant = own(ev?.grants, keyId);
+    if (grant?.status === 'active' || grant?.status === 'revoked') return finite(grant.limitUsd) ?? amountUsd;
+    return finite(own(ev?.allocations, keyId)) ?? amountUsd;
+  }
+  const committedOf = (grant) => Math.max(finite(grant.limitUsd) ?? 0, finite(grant.pendingLimitUsd) ?? 0);
+  function committedExcept(ev, keyId) {
+    return Object.values(ev?.grants ?? {}).filter((g) => g.keyId !== keyId).reduce((sum, g) => sum + committedOf(g), 0);
   }
   async function mutate(fn) {
     return withLock(async () => {
@@ -131,8 +157,7 @@ export function createGiftsService({
     return normalize(await store.load());
   }
   async function currentGrant(keyId) {
-    const grants = (await read()).events[eventId]?.grants;
-    return grants && Object.hasOwn(grants, keyId) ? grants[keyId] : undefined;
+    return own((await read()).events[eventId]?.grants, keyId);
   }
 
   function eventActive() {
@@ -148,8 +173,8 @@ export function createGiftsService({
   }
 
   /**
-   * Lease → license principal. Eligible = an active beta key on an allowed platform (macOS by
-   * default). Checked on every status, claim and proxy call, so a key that stops qualifying
+   * Lease → license principal. Eligible = an active beta key on an allowed platform (macOS and
+   * Windows by default). Checked on every status, claim and proxy call, so a key that stops qualifying
    * loses an already claimed gift too.
    */
   async function principal(lease) {
@@ -186,10 +211,10 @@ export function createGiftsService({
    * POST /keys → 201 {key, data:{hash,...}}. include_byok_in_limit makes Claude calls billed to the
    * owner's Anthropic key (BYOK) count toward the gift limit, so OpenRouter enforces the cap.
    */
-  async function createKey(name) {
+  async function createKey(name, limit) {
     const { status, ok, body } = await upstreamJson(`${apiBase}/keys`, {
       method: 'POST',
-      body: { name, limit: amountUsd, limit_reset: null, include_byok_in_limit: true },
+      body: { name, limit, limit_reset: null, include_byok_in_limit: true },
     });
     const key = body?.key;
     const hash = body?.data?.hash;
@@ -240,7 +265,9 @@ export function createGiftsService({
 
   async function status(lease) {
     const who = await principal(lease);
-    const grant = configured ? await currentGrant(who.keyId) : undefined;
+    const ev = configured ? (await read()).events[eventId] : undefined;
+    const grant = own(ev?.grants, who.keyId);
+    const amount = amountOf(ev, who.keyId);
     const claimed = grant?.status === 'active' || grant?.status === 'revoked';
     let remainingUsd = null;
     let usedUsd = null;
@@ -251,8 +278,9 @@ export function createGiftsService({
     }
     return {
       ok: true,
-      event: eventInfo(),
-      eligible: who.eligible,
+      event: { ...eventInfo(), amountUsd: amount },
+      // An allocation of 0 keeps a license from claiming; a claimed gift set to 0 just reads as used up.
+      eligible: who.eligible && (claimed || amount > 0),
       claimed,
       remainingUsd,
       usedUsd,
@@ -285,25 +313,24 @@ export function createGiftsService({
     const name = `hama-gift-${eventId}-${who.keyId}`;
     const reserved = await mutate((state) => {
       const ev = eventState(state);
-      const existing = Object.hasOwn(ev.grants, who.keyId) ? ev.grants[who.keyId] : undefined;
+      const existing = own(ev.grants, who.keyId);
       if (existing && existing.status !== 'provisioning') return { dirty: false, value: { existing } };
       if (!eventActive()) throw giftError('event_inactive', 410);
-      if (totalBudgetUsd !== undefined) {
-        const committed = Object.values(ev.grants)
-          .filter((g) => g.keyId !== who.keyId)
-          .reduce((sum, g) => sum + (finite(g.limitUsd) ?? 0), 0);
-        if (usd(committed + amountUsd) > usd(totalBudgetUsd)) throw giftError('budget_exhausted', 409);
+      const limit = finite(own(ev.allocations, who.keyId)) ?? amountUsd;
+      if (!(limit > 0)) throw giftError('not_eligible', 403);
+      if (totalBudgetUsd !== undefined && usd(committedExcept(ev, who.keyId) + limit) > usd(totalBudgetUsd)) {
+        throw giftError('budget_exhausted', 409);
       }
       ev.grants[who.keyId] = {
         keyId: who.keyId,
         status: 'provisioning',
         name,
-        limitUsd: amountUsd,
+        limitUsd: limit,
         source: who.source,
         deviceId: who.deviceId,
         startedAt: new Date(now()).toISOString(),
       };
-      return { value: { stale: existing?.status === 'provisioning' } };
+      return { value: { stale: existing?.status === 'provisioning', limit } };
     });
     if (reserved.existing) return claimedResult(reserved.existing, false);
 
@@ -311,7 +338,7 @@ export function createGiftsService({
     try {
       // A provisioning record without a live attempt is a crash between create and save.
       if (reserved.stale) await removeOrphans(name);
-      created = await createKey(name);
+      created = await createKey(name, reserved.limit);
     } catch (error) {
       log(`[site-api] gift key for ${who.keyId} not created: ${error?.code ?? 'error'}${error?.status ? ` (${error.status})` : ''}`);
       if (error?.definite) {
@@ -410,7 +437,8 @@ export function createGiftsService({
     if (!who.eligible) return fail(403, 'not_eligible');
     const grant = await currentGrant(who.keyId);
     if (!grant || grant.status === 'provisioning') return fail(403, 'gift_not_claimed');
-    const revoked = grant.status !== 'active';
+    // A gift set to $0 never reaches OpenRouter: its key is only ever used through this proxy.
+    const revoked = grant.status !== 'active' || !(finite(grant.limitUsd) > 0);
 
     if (req.method === 'GET') {
       req.resume?.();
@@ -541,18 +569,117 @@ export function createGiftsService({
     const { openrouterKey: _secret, ...rest } = grant;
     return rest;
   }
+  /** Dashboard view of one license's gift. `live` is the cached OpenRouter balance of an active key. */
+  function licenseGift(ev, keyId, live = null) {
+    const grant = own(ev?.grants, keyId);
+    const status = grant?.status ?? 'unclaimed';
+    return {
+      amountUsd: amountOf(ev, keyId),
+      status,
+      limitUsd: grant ? finite(grant.limitUsd) : null,
+      usedUsd: status === 'active' ? live?.usage ?? null : null,
+      remainingUsd: status === 'revoked' ? 0 : status === 'active' ? live?.remaining ?? null : null,
+      claimedAt: grant?.claimedAt ?? null,
+    };
+  }
 
   const admin = {
     async list(token, { eventId: wanted, status: wantedStatus } = {}) {
       requireAdmin(token);
       const id = wanted || eventId;
-      const grants = Object.values((await read()).events[id]?.grants ?? {});
-      const committedUsd = usd(grants.reduce((sum, g) => sum + (finite(g.limitUsd) ?? 0), 0));
+      const ev = (await read()).events[id];
+      const grants = Object.values(ev?.grants ?? {});
+      const committedUsd = usd(grants.reduce((sum, g) => sum + committedOf(g), 0));
       const list = grants
         .filter((g) => !wantedStatus || g.status === wantedStatus)
         .sort((a, b) => String(b.claimedAt ?? b.startedAt).localeCompare(String(a.claimedAt ?? a.startedAt)))
         .map(grantView);
-      return { ok: true, eventId: id || null, committedUsd, budgetUsd: totalBudgetUsd ?? null, count: list.length, grants: list };
+      return {
+        ok: true,
+        eventId: id || null,
+        defaultAmountUsd: amountUsd,
+        committedUsd,
+        budgetUsd: totalBudgetUsd ?? null,
+        count: list.length,
+        grants: list,
+        allocations: { ...(ev?.allocations ?? {}) },
+      };
+    },
+    /** Adds `gift` (null while no event is configured) to each beta from licenses.admin.betas, and `giftEvent`. */
+    async withGifts(token, result) {
+      requireAdmin(token);
+      if (!configured) return { ...result, giftEvent: null, betas: result.betas.map((b) => ({ ...b, gift: null })) };
+      const ev = (await read()).events[eventId];
+      const betas = await Promise.all(result.betas.map(async (b) => {
+        const grant = own(ev?.grants, b.keyId);
+        const live = grant?.status === 'active' ? await balance(grant).catch(() => null) : null;
+        return { ...b, gift: licenseGift(ev, b.keyId, live) };
+      }));
+      const committedUsd = usd(Object.values(ev?.grants ?? {}).reduce((sum, g) => sum + committedOf(g), 0));
+      return { ...result, giftEvent: { ...eventInfo(), committedUsd, budgetUsd: totalBudgetUsd ?? null }, betas };
+    },
+    /**
+     * Sets one license's gift amount for the current event. Unclaimed: stored for its claim. Active: the
+     * OpenRouter key's limit is PATCHed first (lowering below what is spent is allowed), and raising it
+     * must fit the budget. Revoked: stored only.
+     */
+    async setAmount(token, body) {
+      requireAdmin(token);
+      if (!configured) throw giftError('event_inactive', 410);
+      const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
+      if (!keyId) throw giftError('key_id_required', 400);
+      const amount = parseGiftAmount(body?.amountUsd);
+      const plan = await mutate((state) => {
+        const ev = eventState(state);
+        const grant = own(ev.grants, keyId);
+        if (grant?.status === 'provisioning' && claiming.has(keyId)) throw giftError('gift_provisioning', 409);
+        if (grant?.status !== 'active' || (grant.limitUsd === amount && grant.pendingLimitUsd === undefined)) {
+          ev.allocations[keyId] = amount;
+          return { value: { gift: licenseGift(ev, keyId) } };
+        }
+        const raising = amount > (finite(grant.limitUsd) ?? 0);
+        if (raising && totalBudgetUsd !== undefined && usd(committedExcept(ev, keyId) + amount) > usd(totalBudgetUsd)) {
+          throw giftError('budget_exhausted', 409);
+        }
+        grant.pendingLimitUsd = amount;
+        return { value: { hash: grant.openrouterHash } };
+      });
+      if (plan.gift) {
+        log(`[site-api] gift amount for ${keyId} set to $${amount}`);
+        return { ok: true, gift: plan.gift };
+      }
+
+      const { ok, status: code } = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(plan.hash)}`, {
+        method: 'PATCH',
+        body: { limit: amount },
+      }).catch(() => ({ ok: false }));
+      if (!ok) {
+        log(`[site-api] gift limit for ${keyId} not changed: ${code ?? 'network'}`);
+        // A refusal frees the reservation. After a network failure the new limit may be live, so it stays counted.
+        if (code >= 400 && code < 500) {
+          await mutate((state) => {
+            const g = own(state.events[eventId]?.grants, keyId);
+            if (g?.pendingLimitUsd !== amount) return { dirty: false };
+            delete g.pendingLimitUsd;
+            return {};
+          }).catch(() => {});
+        }
+        throw giftError('upstream_unavailable', 502);
+      }
+      const gift = await mutate((state) => {
+        const ev = eventState(state);
+        const g = own(ev.grants, keyId);
+        ev.allocations[keyId] = amount;
+        if (g) {
+          g.limitUsd = amount;
+          g.limitChangedAt = new Date(now()).toISOString();
+          if (g.pendingLimitUsd === amount) delete g.pendingLimitUsd;
+        }
+        return { value: licenseGift(ev, keyId) };
+      });
+      balances.delete(keyId);
+      log(`[site-api] gift limit for ${keyId} changed to $${amount}`);
+      return { ok: true, gift };
     },
     /** PATCH the OpenRouter key to disabled, then mark the grant revoked. */
     async disable(token, body) {
@@ -584,5 +711,5 @@ export function createGiftsService({
     },
   };
 
-  return { status, claim, handleProxy, admin, eventInfo };
+  return { configured, status, claim, handleProxy, admin, eventInfo };
 }

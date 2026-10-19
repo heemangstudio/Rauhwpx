@@ -40,6 +40,7 @@
       <form id="create-form" class="row">
         <input id="name" class="grow" placeholder="이름" aria-label="이름" required maxlength="100">
         <input id="devices" class="narrow" type="number" min="1" max="50" value="5" aria-label="기기 수" title="기기 수">
+        <input id="gift" class="narrow" type="number" min="0" max="1000" step="0.01" aria-label="크레딧 (달러)" title="크레딧 (달러)" hidden>
         <input id="note" class="grow" placeholder="메모" aria-label="메모" maxlength="500">
         <button type="submit" class="primary">만들기</button>
       </form>
@@ -51,7 +52,7 @@
       <div class="scroll">
         <table id="beta-table">
           <thead>
-            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>크레딧</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>

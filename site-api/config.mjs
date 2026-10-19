@@ -138,7 +138,7 @@ export function resolveGiftConfig(env = process.env) {
     endsAt,
     totalBudgetUsd: positiveNumber('GIFT_TOTAL_BUDGET_USD', trimmed(env.GIFT_TOTAL_BUDGET_USD), undefined),
     modelPrefixes: commaList(trimmed(env.GIFT_MODEL_PREFIXES), 'anthropic/'),
-    platforms: commaList(trimmed(env.GIFT_PLATFORMS), 'darwin'),
+    platforms: commaList(trimmed(env.GIFT_PLATFORMS), 'darwin,win32'),
     maxOutputTokens,
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
   };

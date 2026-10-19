@@ -643,7 +643,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const piMessageLine = el('p', 'ag-settings-cliproxy-error');
   piMessageLine.hidden = true;
   // 선물 크레딧 — 어느 단계에서든 카드 맨 위에 보인다.
-  const piGift = deps.gift ? createPiGiftLine(deps.gift) : null;
+  const piGift = deps.gift
+    ? createPiGiftLine(deps.gift, async (order) => {
+      const status = await bridge.setPiGiftOrder(order);
+      if (!status) throw new Error('Pi gift order was not saved.');
+      piStatus = status;
+      renderPi();
+    })
+    : null;
 
   // 1단계 — 설치
   const piInstallStep = el('div', 'ag-pi-step');
@@ -2883,6 +2890,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
+    piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
     const online = connectionState === 'connected';

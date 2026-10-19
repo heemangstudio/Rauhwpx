@@ -453,9 +453,15 @@ export function createMockBridge(
   let giftModels = giftCatalog.map((model) => giftModelConfig(model.id, model.name));
   let giftDefaultModelId: string | null = giftModels[0].id;
   const giftActive = () => options.piGift?.() === true;
-  /** 허브의 자격 우선순위: 선물 → 내 키 → 없음. 선물이면 내 키 없이도 설정이 끝나고 선물 모델이 보인다. */
+  let giftOrder: 'first' | 'after' = 'first';
+  /**
+   * 허브의 자격 우선순위: 선물 → 내 키 → 없음. 내 키가 있고 순서가 after 면 내 키가 먼저다.
+   * 선물이면 내 키 없이도 설정이 끝나고 선물 모델이 보인다.
+   */
   const syncPi = (): T.PiStatus => {
-    data.pi.credential = giftActive() ? 'gift' : data.pi.keyConfigured ? 'own' : 'none';
+    const ownFirst = data.pi.keyConfigured && giftOrder === 'after';
+    data.pi.credential = giftActive() && !ownFirst ? 'gift' : data.pi.keyConfigured ? 'own' : 'none';
+    data.pi.giftOrder = giftOrder;
     if (data.pi.credential !== 'gift') return data.pi;
     return {
       ...data.pi,
@@ -1135,8 +1141,13 @@ export function createMockBridge(
       reasoning: true,
       supportsImages: true,
     })),
+    setPiGiftOrder: async (order) => {
+      giftOrder = order;
+      emitPi();
+      return syncPi();
+    },
     setPiModels: async (models) => {
-      if (giftActive()) {
+      if (syncPi().credential === 'gift') {
         giftModels = models.map((model) => giftModelConfig(model.id, model.name ?? model.id, model.defaultEffort ?? 'medium'));
         giftDefaultModelId = giftModels[0]?.id ?? null;
         emitPi();
@@ -2140,6 +2151,15 @@ export function createMockBridge(
     emit({ type: 'provider-status', providers: data.providers });
     setupChanged();
   }
+  /** 내 OpenRouter 키가 있는(없는) Pi. 선물 창과 Pi 설정의 순서 고르기가 이 값을 본다. */
+  function setPiOwnKey(configured: boolean) {
+    Object.assign(data.pi, {
+      keyConfigured: configured,
+      keyTail: configured ? 'demo' : null,
+      setupComplete: configured && data.pi.installed,
+    });
+    emitPi();
+  }
   /** 설치된 프로바이더에 새 버전이 나온 것처럼 상태를 알린다. */
   function setUpdateAvailable(provider: T.AgentName, latestVersion: string) {
     Object.assign(data.setups[provider], { latestVersion, updateRequired: true });
@@ -2149,6 +2169,7 @@ export function createMockBridge(
     bridge,
     setConnection,
     setServices,
+    setPiOwnKey,
     setUpdateAvailable,
     /** 에이전트가 브라우저 도구를 부른 것처럼 요청한다. 미리보기 탭과 조작권 흐름을 확인할 때 쓴다. */
     browserAsAgent: previewBrowser.requestAsAgent,

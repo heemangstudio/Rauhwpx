@@ -123,3 +123,16 @@ test('admin page: ADMIN_UI_PUBLIC_ORIGIN admits exactly one https front door', a
   assert.equal(upstream.calls.length, 1);
   assert.throws(() => createAdminUiServer({ publicOrigin: 'http://mini.tailnet.ts.net:8447' }), /bare https origin/);
 });
+
+test('admin page: gift amounts reach the admin API with only keyId and amountUsd', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const port = await listen(t, createAdminUiServer({ port: 0, base: upstream.base, envToken: 'admin-secret', keychain: { read: async () => '' } }));
+  const session = (await request(port)).text.match(/name="admin-session" content="([^"]+)"/)[1];
+  const headers = { 'X-Admin-Session': session, 'Content-Type': 'application/json' };
+  await request(port, { method: 'POST', path: '/api/gift-amount', headers, body: { keyId: 'lic_1', amountUsd: 12.5, eventId: 'other' } });
+  await request(port, { method: 'POST', path: '/api/issue-beta', headers, body: { name: 'T', giftUsd: 3 } });
+  assert.deepEqual(upstream.calls.map((c) => [c.url, c.auth, c.body]), [
+    ['/v1/admin/gifts/amount', 'Bearer admin-secret', { keyId: 'lic_1', amountUsd: 12.5 }],
+    ['/v1/admin/licenses/issue-beta', 'Bearer admin-secret', { name: 'T', giftUsd: 3 }],
+  ]);
+});

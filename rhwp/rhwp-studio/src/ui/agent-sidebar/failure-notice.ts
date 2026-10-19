@@ -78,6 +78,11 @@ export function formatResetAt(at: number, now: number, timeZone?: string): strin
   }).format(at);
 }
 
+/** 내 OpenRouter 키의 크레딧 부족. own_credits 는 다음 요청이 선물 크레딧으로 간다. */
+function isOpenRouterCredits(failure: ProviderFailure): boolean {
+  return failure.code === 'openrouter_credits' || failure.code === 'own_credits';
+}
+
 function isPiSetupFailure(failure: ProviderFailure): boolean {
   return failure.code === 'PI_NOT_CONFIGURED' || failure.agent === 'pi';
 }
@@ -88,7 +93,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
       if (failure.code === 'gift_credits') return '선물 크레딧을 모두 사용했어요';
-      return failure.code === 'openrouter_credits' ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
+      return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
       return `${label} 서버가 요청을 처리하지 못했어요`;
     case 'network':
@@ -143,6 +148,12 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       }
       break;
     case 'usage_limit': {
+      if (failure.code === 'own_credits') {
+        // 내 키 크레딧이 떨어졌고 허브가 다음 요청부터 선물 크레딧으로 넘어간다. 다시 보내면 된다.
+        line = '다음 요청부터 Claude 크레딧을 써요';
+        retryAllowed = true;
+        break;
+      }
       if (failure.code === 'gift_credits') {
         // 내 키가 있으면 허브가 다음 요청부터 그 키로 넘어가므로 다시 보내면 된다. 없으면 설정에서 키를 잇는다.
         actions.push({ id: 'settings', label: '설정 열기' });
@@ -211,7 +222,7 @@ export function failureQueueHold(
     case 'auth_required':
       return { reason: 'failed', detail: isPiSetupFailure(failure) ? 'Pi 설정 필요' : `${label} 로그인 필요` };
     case 'usage_limit': {
-      if (failure.code === 'openrouter_credits') return { reason: 'failed', detail: 'OpenRouter 크레딧 부족' };
+      if (isOpenRouterCredits(failure)) return { reason: 'failed', detail: 'OpenRouter 크레딧 부족' };
       const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
       return {
         reason: 'failed',
@@ -242,7 +253,7 @@ export function failureRailLabel(failure: ProviderFailure): string {
     case 'auth_required':
       return isPiSetupFailure(failure) ? '설정 필요' : '로그인 필요';
     case 'usage_limit':
-      return failure.code === 'openrouter_credits' ? '크레딧 부족' : '사용 한도';
+      return isOpenRouterCredits(failure) ? '크레딧 부족' : '사용 한도';
     case 'provider_error':
       return '서버 오류';
     case 'network':

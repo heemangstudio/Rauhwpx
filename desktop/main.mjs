@@ -427,8 +427,8 @@ class AgentHubOwner {
         RHWP_SECRET_BROKER: 'ipc',
         RHWP_BROWSER_HOST: 'ipc',
         RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
-        // 선물 크레딧은 macOS 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
-        ...(process.platform === 'darwin' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
+        // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
+        ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
       },
     });
@@ -1246,7 +1246,7 @@ const isTrustedStudioEvent = (event) => {
   }
 };
 const studioWebContents = () => sessions.windows().map((window) => window.webContents);
-// 선물 크레딧(macOS 전용): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
+// 선물 크레딧(macOS·Windows): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
 const giftManager = createGiftManager({
   client: createGiftClient({ baseUrl: licenseApiBase }),
   currentLease: () => licenseManager.currentLease(),
