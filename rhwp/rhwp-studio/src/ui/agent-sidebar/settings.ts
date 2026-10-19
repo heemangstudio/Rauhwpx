@@ -47,7 +47,7 @@ import {
   formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import type { ChatThread } from '../../agent/threads.ts';
+import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
@@ -345,7 +345,7 @@ export interface SettingsPanelDeps {
   /** 설정 → 프로젝트가 쓰는 허브 서비스. 없으면 bridge.projects 를 찾는다. */
   projectSettings?: ProjectService | null;
   /** 보관함에서 채팅을 영구히 지운다. 사이드바의 삭제 확인 경로를 쓴다. */
-  deleteArchivedThread?: (thread: ChatThread) => Promise<boolean>;
+  deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
 }
@@ -559,6 +559,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   panes.get('project')?.appendChild(projectPane.element);
   const archivePane = createArchiveSettingsPane({
     deleteThread: (thread) => deps.deleteArchivedThread?.(thread) ?? Promise.resolve(false),
+    isShown: () => settingsOpen && currentDestination === 'archive',
   });
   panes.get('archive')?.appendChild(archivePane.element);
 

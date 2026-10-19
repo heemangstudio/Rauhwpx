@@ -1,18 +1,23 @@
 /**
  * 설정 → 보관함. 보관한 채팅을 복원하거나 영구히 지운다.
- * 목록은 채팅 저장소의 변경을 따라 다시 그린다.
+ * 보이는 동안에는 목록이 채팅 저장소의 변경을 따라 다시 그려지고, 숨어 있으면 열 때 그린다.
  */
 import {
-  listArchivedThreads,
+  listArchivedThreadSummaries,
   restoreThread,
   subscribeThreadChanges,
-  type ChatThread,
+  type ThreadSummary,
 } from '../../agent/threads.ts';
 import { setArchiveConfirmEnabled, shouldConfirmArchive } from './archive-confirm.ts';
 
 export interface ArchiveSettingsPaneDeps {
   /** 채팅 하나를 확인 후 지운다. 사이드바의 삭제 경로를 그대로 쓴다. */
-  deleteThread(thread: ChatThread): Promise<boolean>;
+  deleteThread(thread: ThreadSummary): Promise<boolean>;
+  /**
+   * 보관함이 지금 화면에 있는가. 채팅은 턴마다 여러 번 저장되므로 숨은 보관함은 저장마다 다시 그리지 않고,
+   * 열 때(open) 그린다.
+   */
+  isShown(): boolean;
 }
 
 export interface ArchiveSettingsPane {
@@ -74,7 +79,7 @@ export function createArchiveSettingsPane(deps: ArchiveSettingsPaneDeps): Archiv
 
   function render(): void {
     askInput.checked = shouldConfirmArchive();
-    const archived = listArchivedThreads();
+    const archived = listArchivedThreadSummaries();
     list.replaceChildren();
     if (archived.length === 0) {
       const empty = el('div', 'ag-pset-row ag-archive-empty');
@@ -108,9 +113,8 @@ export function createArchiveSettingsPane(deps: ArchiveSettingsPaneDeps): Archiv
   }
 
   const unsubscribe = subscribeThreadChanges(() => {
-    if (element.isConnected) render();
+    if (element.isConnected && deps.isShown()) render();
   });
-  render();
 
   return {
     element,

@@ -1330,7 +1330,8 @@ function applyRemoteMessage(message: ThreadPersistenceMessage) {
     const current = cache.get(message.thread.id);
     if (!current || current.updatedAt <= message.thread.updatedAt) {
       // 문서 연결은 이 창이 더 늦게 바꿨으면 이 창의 것을 남긴다 — 그 창의 저장이 저장소를 맞추고 다시 알린다.
-      cache.set(message.thread.id, cloneThread(current ? mergeThreadLink(message.thread, current) : message.thread));
+      // 알림의 사본은 받을 때 새로 읽어 정리한 것이라 이 창만 쥔다 — 다시 복제하지 않는다.
+      cache.set(message.thread.id, current ? mergeThreadLink(message.thread, current) : message.thread);
       deletedBeforeHydration.delete(message.thread.id);
     } else if (threadLinkSupersedes(message.thread, current)) {
       cache.set(current.id, mergeThreadLink(current, message.thread));
@@ -1356,6 +1357,10 @@ function parsePersistenceMessage(value: unknown): ThreadPersistenceMessage | nul
   return null;
 }
 
+/**
+ * 다른 창에 알리고 이 창의 구독자를 깨운다. postMessage·JSON 이 그 자리에서 사본을 만들므로 채팅을
+ * 미리 복제해 넘기지 않아도 된다.
+ */
 function publish(message: ThreadPersistenceChange) {
   const payload = {
     ...message,
@@ -1447,7 +1452,7 @@ function trimCache() {
   for (const thread of sorted.slice(MAX_THREADS)) cache.delete(thread.id);
 }
 
-type ThreadLink = Pick<ChatThread, 'documentId' | 'docKey' | 'documentLinkedAt' | 'documentLinkChangedAt' | 'documentDetachedFrom'>;
+export type ThreadLink = Pick<ChatThread, 'documentId' | 'docKey' | 'documentLinkedAt' | 'documentLinkChangedAt' | 'documentDetachedFrom'>;
 
 /** 연결이 마지막으로 바뀐 시각. 이 필드 전에 이은 채팅은 이은 시각이고, 문서와 함께 태어난 채팅은 0 이다. */
 function linkChangedAt(thread: ThreadLink): number {
@@ -1501,18 +1506,77 @@ export function linkOf(thread: ThreadLink): ThreadLink {
   };
 }
 
+/** 저장소의 문서 연결 칸만 normalizeStoredThread 와 같은 규칙으로 읽는다 — 대화는 건드리지 않는다. */
+function storedLinkOf(row: StoredChatThread): ThreadLink {
+  const documentId = typeof row.documentId === 'string' && row.documentId ? row.documentId : null;
+  const detachedFrom = documentId ? undefined : normalizeDetachedFrom(row.documentDetachedFrom);
+  return {
+    documentId,
+    docKey: typeof row.docKey === 'string' && row.docKey ? row.docKey : null,
+    ...(typeof row.documentLinkedAt === 'number' && Number.isFinite(row.documentLinkedAt) && documentId
+      ? { documentLinkedAt: row.documentLinkedAt }
+      : {}),
+    ...(typeof row.documentLinkChangedAt === 'number' && Number.isFinite(row.documentLinkChangedAt)
+      ? { documentLinkChangedAt: row.documentLinkChangedAt }
+      : {}),
+    ...(detachedFrom ? { documentDetachedFrom: detachedFrom } : {}),
+  };
+}
+
+/**
+ * 아직 저장소에 쓰지 않은 채팅의 가장 새 사본. 한 턴 안의 저장(메시지·도구·턴 끝)이 대기열에 몰리면
+ * 같은 채팅을 여러 번 읽고 쓰지 않고, 차례가 왔을 때 가장 새 사본 하나만 쓴다. 캐시와 다른 창의 알림은
+ * 저장할 때마다 곧바로 바뀐다.
+ */
+const pendingUpserts = new Map<string, { thread: ChatThread | null }>();
+
 function persistUpsert(thread: ChatThread) {
-  queueMutation(() => runWithDb(async (db) => {
+  const queued = pendingUpserts.get(thread.id);
+  if (queued) {
+    queued.thread = thread;
+    return;
+  }
+  const pending: { thread: ChatThread | null } = { thread };
+  pendingUpserts.set(thread.id, pending);
+  // 차례가 오면 그때의 가장 새 사본을 꺼낸다. 꺼낸 뒤의 저장은 다시 줄을 선다.
+  // 그사이 지웠으면 null — 지운 뒤의 저장은 지우기 뒤에 따로 줄을 섰다.
+  let taken = false;
+  let written: ChatThread | null = null;
+  const take = () => {
+    if (!taken) {
+      taken = true;
+      if (pendingUpserts.get(thread.id) === pending) pendingUpserts.delete(thread.id);
+      written = pending.thread;
+    }
+    return written;
+  };
+  queueMutation(() => {
+    const latest = take();
+    return latest ? writeThread(latest) : Promise.resolve([]);
+  }, () => {
+    const latest = take();
+    if (!latest) return;
+    const all = readLegacyThreads().filter((item) => item.id !== latest.id);
+    all.unshift(latest);
+    saveLegacyThreads(all);
+  });
+}
+
+function writeThread(thread: ChatThread) {
+  return runWithDb(async (db) => {
     const tx = db.transaction(THREADS_STORE, 'readwrite');
     const store = tx.objectStore(THREADS_STORE);
     const existing = await requestResult(store.get(thread.id) as IDBRequest<StoredChatThread | undefined>);
     // 다른 창이 그사이 같은 채팅을 저장했다. 내용은 더 새로 저장한 쪽, 문서 연결은 더 늦게 바꾼 쪽이 남는다.
-    const stored = existing && isStoredChatThread(existing) ? normalizeStoredThread(existing) : null;
-    const next = stored && stored.updatedAt > thread.updatedAt
+    // 이 창의 사본이 더 새로우면 저장본에서는 문서 연결만 읽는다 — 대화 전체를 다시 정리하지 않는다.
+    const row = existing && isStoredChatThread(existing) ? existing : null;
+    const stored = row && row.updatedAt > thread.updatedAt ? normalizeStoredThread(row) : null;
+    const next = stored
       ? mergeThreadLink(stored, thread)
-      : stored ? mergeThreadLink(thread, stored) : thread;
+      : row ? mergeThreadLink(thread, storedLinkOf(row)) : thread;
     const corrected = next !== thread && next !== stored;
-    if (!stored || next !== stored) store.put(cloneThread(next));
+    // put 이 그 자리에서 사본을 만든다 — 미리 복제하지 않는다.
+    if (!stored || next !== stored) store.put(next);
     // 한도를 넘는 건 새 스레드가 한도에서 추가된 직후뿐이다 — 메시지마다 전체 스레드를
     // 역직렬화하지 않도록 개수부터 본다.
     const total = await requestResult(store.count());
@@ -1523,7 +1587,7 @@ function persistUpsert(thread: ChatThread) {
         .filter(isStoredChatThread)
         .sort(retentionOrder)
         .slice(MAX_THREADS)
-        .map((row) => row.id);
+        .map((item) => item.id);
       for (const id of removed) store.delete(id);
     }
     await transactionDone(tx);
@@ -1531,18 +1595,18 @@ function persistUpsert(thread: ChatThread) {
     if (corrected && cached && cached.updatedAt <= next.updatedAt) {
       // 이 창과 다른 창의 사본도 맞춘다. 사이드바는 바뀐 알림으로 지금 채팅을 다시 읽는다.
       cache.set(next.id, cloneThread(next));
-      publish({ type: 'upsert', thread: cloneThread(next) });
+      publish({ type: 'upsert', thread: next });
       emitChanged();
     }
     return removed;
-  }), () => {
-    const all = readLegacyThreads().filter((item) => item.id !== thread.id);
-    all.unshift(thread);
-    saveLegacyThreads(all);
   });
 }
 
 function persistRemove(id: string) {
+  // 아직 쓰지 않은 저장은 버린다 — 지운 뒤에 다시 저장하면 그 저장은 지우기 뒤에 따로 줄을 선다.
+  const pending = pendingUpserts.get(id);
+  if (pending) pending.thread = null;
+  pendingUpserts.delete(id);
   queueMutation(() => runWithDb(async (db) => {
     const tx = db.transaction(THREADS_STORE, 'readwrite');
     tx.objectStore(THREADS_STORE).delete(id);
@@ -1557,6 +1621,27 @@ function loadAll() {
   if (!idbAvailable()) return readLegacyThreads();
   if (!hydrated) void hydrateFromIndexedDb();
   return [...cache.values()].map(cloneThread);
+}
+
+/** 저장된 채팅 — 캐시의 것을 복제하지 않고 돌려주므로 고치거나 밖으로 내보내지 않는다. */
+function storedThreads(): ChatThread[] {
+  if (!idbAvailable()) return readLegacyThreads();
+  if (!hydrated) void hydrateFromIndexedDb();
+  return [...cache.values()];
+}
+
+/** 목록의 채팅(메시지가 있고 보관하지 않은 것)을 마지막 대화 활동 순으로 — 복제하지 않는다. */
+function listedThreads(): ChatThread[] {
+  return storedThreads()
+    .filter((t) => t.messages.length > 0 && t.archivedAt === undefined)
+    .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
+}
+
+/** 보관한 채팅을 최근에 보관한 것부터 — 복제하지 않는다. */
+function archivedThreads(): ChatThread[] {
+  return storedThreads()
+    .filter((t) => t.messages.length > 0 && t.archivedAt !== undefined)
+    .sort((a, b) => b.archivedAt! - a.archivedAt!);
 }
 
 function saveFallbackMutation(threads: ChatThread[]) {
@@ -2277,18 +2362,51 @@ function activityStamp(thread: ChatThread): string {
   return `${thread.messages.length}|${last.role}|${last.kind ?? ''}|${last.text.length}|${status}|${items}`;
 }
 
-/** 메시지가 있고 보관하지 않은 스레드만 마지막 대화 활동 순으로. */
+/** 메시지가 있고 보관하지 않은 스레드만 마지막 대화 활동 순으로. 고른 것만 복제한다. */
 export function listThreads(): ChatThread[] {
-  return loadAll()
-    .filter((t) => t.messages.length > 0 && t.archivedAt === undefined)
-    .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
+  return listedThreads().map(cloneThread);
 }
 
-/** 보관한 스레드 — 최근에 보관한 것이 먼저. */
+/** 보관한 스레드 — 최근에 보관한 것이 먼저. 고른 것만 복제한다. */
 export function listArchivedThreads(): ChatThread[] {
-  return loadAll()
-    .filter((t) => t.messages.length > 0 && t.archivedAt !== undefined)
-    .sort((a, b) => b.archivedAt! - a.archivedAt!);
+  return archivedThreads().map(cloneThread);
+}
+
+/** 목록 행이 쓰는 칸 — 제목·문서·에이전트·자리·시각. 대화(messages)는 싣지 않는다. */
+export type ThreadSummary = Pick<
+  ChatThread,
+  'id' | 'title' | 'createdAt' | 'updatedAt' | 'lastActivityAt' | 'pinOrder' | 'listOrder' | 'archivedAt'
+  | 'agent' | 'model' | 'docKey' | 'documentId'
+>;
+
+function summaryOf(thread: ChatThread): ThreadSummary {
+  return {
+    id: thread.id,
+    title: thread.title,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    ...(thread.lastActivityAt !== undefined ? { lastActivityAt: thread.lastActivityAt } : {}),
+    ...(thread.pinOrder !== undefined ? { pinOrder: thread.pinOrder } : {}),
+    ...(thread.listOrder !== undefined ? { listOrder: thread.listOrder } : {}),
+    ...(thread.archivedAt !== undefined ? { archivedAt: thread.archivedAt } : {}),
+    agent: thread.agent,
+    model: thread.model,
+    docKey: thread.docKey ?? null,
+    documentId: thread.documentId ?? null,
+  };
+}
+
+/**
+ * listThreads() 와 같은 채팅·순서의 이름표. 채팅 목록은 저장할 때마다 다시 그리므로 대화를 복제하지
+ * 않는다 — 저장된 대화 전체(도구 기록·그림 포함)를 복제하면 저장 한 번에 수십 MB 를 복사한다.
+ */
+export function listThreadSummaries(): ThreadSummary[] {
+  return listedThreads().map(summaryOf);
+}
+
+/** listArchivedThreads() 와 같은 채팅·순서의 이름표. */
+export function listArchivedThreadSummaries(): ThreadSummary[] {
+  return archivedThreads().map(summaryOf);
 }
 
 /** 채팅을 보관한다. 기록과 목록 자리는 그대로 두어 복원하면 원래 자리로 돌아온다. */
@@ -2352,6 +2470,24 @@ export function peekThreads(): ThreadPeek[] {
 /** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
 export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey'>): string {
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;
+}
+
+/** 채팅이 저장돼 있는가 — 복제하지 않는다. */
+export function hasThread(id: string): boolean {
+  return storedThread(id) !== undefined;
+}
+
+/** 저장된 채팅의 문서 연결만 — 저장할 때마다 연결을 비교하는 쪽이 대화를 복제하지 않게 한다. */
+export function getThreadLink(id: string): ThreadLink | null {
+  const thread = storedThread(id);
+  return thread ? structuredClone(linkOf(thread)) : null;
+}
+
+/** 저장된 채팅 하나 — 복제하지 않는다. */
+function storedThread(id: string): ChatThread | undefined {
+  if (!idbAvailable()) return readLegacyThreads().find((t) => t.id === id);
+  if (!hydrated) void hydrateFromIndexedDb();
+  return cache.get(id);
 }
 
 /** 채팅 하나의 복사본. 그 채팅만 복제한다 — 다른 채팅까지 깊이 복제하지 않는다. */
@@ -2486,11 +2622,14 @@ export function upsertThread(thread: ChatThread): void {
     return;
   }
 
-  cache.set(capped.id, cloneThread(capped));
+  // 캐시는 제 사본을 쥔다 — capped 는 부른 쪽의 메시지를 그대로 담고 있다. 저장소에는 나중에(대기열 차례에)
+  // 쓰므로 그사이 부른 쪽이 메시지를 고쳐도 섞이지 않게 캐시의 사본(고치지 않는다)을 쓴다.
+  const stored = cloneThread(capped);
+  cache.set(capped.id, stored);
   deletedBeforeHydration.delete(capped.id);
   trimCache();
-  publish({ type: 'upsert', thread: cloneThread(capped) });
-  persistUpsert(capped);
+  publish({ type: 'upsert', thread: capped });
+  persistUpsert(stored);
 }
 
 export function removeThread(id: string): void {
@@ -2706,9 +2845,10 @@ export function placeThread(id: string, place: { before?: string | null; after?:
 /** 대화 내용이 아닌 속성(이름·고정)만 바뀐 채팅을 그대로 저장한다. */
 function replaceStoredThread(next: ChatThread): void {
   if (idbAvailable()) {
-    cache.set(next.id, cloneThread(next));
-    publish({ type: 'upsert', thread: cloneThread(next) });
-    persistUpsert(next);
+    const stored = cloneThread(next);
+    cache.set(next.id, stored);
+    publish({ type: 'upsert', thread: next });
+    persistUpsert(stored);
     return;
   }
   const all = readLegacyThreads();
