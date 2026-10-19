@@ -73,7 +73,7 @@ function regionTexts(wasm: WasmBridge, plan: RegionPlan) {
 
 export function createDocumentRegionCapture(options: CaptureOptions) {
   const layer = document.createElement('div');
-  layer.className = 'ag-region-capture'; layer.hidden = true;
+  layer.className = 'ag-region-capture'; layer.hidden = true; layer.tabIndex = -1;
   const hint = document.createElement('div'); hint.className = 'ag-region-hint'; hint.textContent = '문서에서 영역을 드래그하세요 · Esc 취소';
   const selection = document.createElement('div'); selection.className = 'ag-region-selection'; selection.hidden = true;
   const box = document.createElement('div'); box.className = 'ag-region-comment'; box.hidden = true;
@@ -126,6 +126,10 @@ export function createDocumentRegionCapture(options: CaptureOptions) {
     Object.assign(layer.style, { left: `${viewport.x}px`, top: `${viewport.y}px`, width: `${viewport.width}px`, height: `${viewport.height}px` });
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     layer.hidden = false; hint.textContent = '문서에서 영역을 드래그하세요 · Esc 취소';
+    // 편집 입력에 포커스나 선택이 남으면 IME 조합과 반복 키가 문서를 바꿔 캡처가 바로 취소된다.
+    // Windows 한글 IME는 S 키다운 직후 조합을 선택 위치로 보내므로 선택까지 걷는다.
+    layer.focus({ preventScroll: true });
+    window.getSelection()?.removeAllRanges();
   }
   function updateSelection(end: { x: number; y: number }) {
     if (!start || !viewport) return;

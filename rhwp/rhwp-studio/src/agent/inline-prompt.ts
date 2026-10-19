@@ -52,6 +52,13 @@ export function isAgentSidebarVisible(
   return body.classList.contains('ag-sidebar-open');
 }
 
+/** 준비 상태의 S. 한글 IME는 S를 'Process'(keyCode 229)나 'ㄴ'으로 보내므로 그때는 물리 키로 판별한다. */
+function isScreenshotKey(event: Pick<KeyboardEvent, 'key' | 'code' | 'keyCode'>): boolean {
+  const key = event.key.toLowerCase();
+  if (key === 's') return true;
+  return event.code === 'KeyS' && (key === 'process' || key === 'ㄴ' || event.keyCode === 229);
+}
+
 /** 12 그리드, currentColor, 1.25 스트로크 — 프로젝트 아이콘 규약의 스파크. */
 function createSparkGlyph(): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -323,7 +330,7 @@ class InlinePromptController {
   }
 
   private readonly onGlobalKeyDown = (event: KeyboardEvent): void => {
-    if (this.armed && event.key.toLowerCase() === 's' && !event.repeat
+    if (this.armed && isScreenshotKey(event) && !event.repeat
       && !event.metaKey && !event.altKey && !event.shiftKey && this.canArm(event.target)) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -349,9 +356,9 @@ class InlinePromptController {
     }
     this.lastControlTap = null;
     if (this.state === 'open' || this.layer.contains(event.target as Node)) return;
-    // Shift + 방향키 선택은 준비 상태를 유지한다. 편집·다른 단축키는 해제한다.
-    const selectionKey = ['Shift', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key);
-    if (!selectionKey || event.metaKey || event.ctrlKey || event.altKey) this.hideAll();
+    // Shift + 방향키 선택과 한/영·한자 전환은 준비 상태를 유지한다. 편집·다른 단축키는 해제한다.
+    const keepsArmed = ['Shift', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'HangulMode', 'HanjaMode'].includes(event.key);
+    if (!keepsArmed || event.metaKey || event.ctrlKey || event.altKey) this.hideAll();
   };
 
   private readonly onGlobalKeyUp = (event: KeyboardEvent): void => {
