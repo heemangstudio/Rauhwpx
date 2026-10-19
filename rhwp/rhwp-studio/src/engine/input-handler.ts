@@ -4471,8 +4471,8 @@ export class InputHandler {
   }
   */
 
-  /** 캐럿이 화면 밖이면 스크롤을 조정한다 */
-  private scrollCaretIntoView(rect: import('@/core/types').CursorRect): void {
+  /** 캐럿이 화면 밖이면 스크롤을 조정한다. center 면 화면 안에 있어도 세로 가운데로 옮긴다. */
+  private scrollCaretIntoView(rect: import('@/core/types').CursorRect, center = false): void {
     const zoom = this.viewportManager.getZoom();
     const pageOffset = this.virtualScroll.getPageOffset(rect.pageIndex);
     const caretDocY = pageOffset + rect.y * zoom;
@@ -4481,6 +4481,11 @@ export class InputHandler {
     const scrollTop = this.container.scrollTop;
     const viewHeight = this.container.clientHeight;
     const margin = 20; // 여백 px
+
+    if (center) {
+      this.container.scrollTop = Math.max(0, caretDocY + caretHeight / 2 - viewHeight / 2);
+      return;
+    }
 
     if (caretDocY < scrollTop + margin) {
       // 캐럿이 화면 위쪽 밖
@@ -5233,8 +5238,11 @@ export class InputHandler {
       && !this.cursor.isInTableObjectSelection();
   }
 
-  /** 커서를 지정 위치로 이동하고 캐럿을 표시한다. 성공하면 true 반환. */
-  moveCursorTo(pos: DocumentPosition): boolean {
+  /**
+   * 커서를 지정 위치로 이동하고 캐럿을 표시한다. 성공하면 true 반환.
+   * center 면 캐럿 줄을 화면 세로 가운데로 스크롤한다(변경 위치로 이동 등).
+   */
+  moveCursorTo(pos: DocumentPosition, { center = false }: { center?: boolean } = {}): boolean {
     // 이동 전 위치가 유효한지 사전 검증 (경고 로그 방지)
     try {
       const testRect = pos.cellPath?.length && pos.parentParaIndex !== undefined
@@ -5254,7 +5262,8 @@ export class InputHandler {
     const rect = this.cursor.getRect();
     if (rect) {
       this.caret.show(rect, this.viewportManager.getZoom());
-      this.updateCaret();
+      this.updateCaret(center);
+      if (center) this.scrollCaretIntoView(rect, true);
       this.focusTextarea();
       return true;
     }

@@ -184,13 +184,14 @@ function cellAxisPathAt(cell: CellAddr, paraIdx: number): string {
 /** 사이드바에서 이동한 자리. opId 의 표시가 있으면 그것을, 없으면 rect(없으면 캐럿 줄)에 윤곽을 짚는다. */
 export interface JumpFlashTarget {
   opId?: string;
-  rect?: SelectionRect;
+  /** 짚을 자리. 여러 줄에 걸친 변경은 줄마다 rect 하나다. */
+  rects?: readonly SelectionRect[];
 }
 
 interface ActiveFlash {
   opId: string | null;
-  rect: SelectionRect | null;
-  outline: HTMLDivElement | null;
+  rects: readonly SelectionRect[];
+  outlines: HTMLDivElement[];
 }
 
 export interface PendingOverlayDeps {
@@ -905,14 +906,15 @@ export class PendingOverlayRenderer {
   flashJumpTarget(target: JumpFlashTarget): void {
     this.stopFlash();
     if (!this.deps.canvasView) return;
-    const rect = target.rect ?? this.caretLineRect();
+    const caretLine = target.rects?.length ? null : this.caretLineRect();
+    const rects = target.rects?.length ? target.rects : caretLine ? [caretLine] : [];
     let last: string | null = null;
     let frames = 0;
     const tick = (): void => {
       this.flashWaitRaf = null;
-      const at = rect ? this.screenKey(rect) : '';
+      const at = rects.length ? this.screenKey(rects[0]) : '';
       if ((at !== null && at === last) || ++frames >= FLASH_SETTLE_MAX_FRAMES) {
-        this.startFlash(target.opId ?? null, rect);
+        this.startFlash(target.opId ?? null, rects);
         return;
       }
       last = at;
@@ -921,14 +923,16 @@ export class PendingOverlayRenderer {
     this.flashWaitRaf = requestAnimationFrame(tick);
   }
 
-  private startFlash(opId: string | null, rect: SelectionRect | null): void {
+  private startFlash(opId: string | null, rects: readonly SelectionRect[]): void {
     // 앞 짚기의 클래스는 기다리는 프레임 동안 이미 걷혔다 — 다시 붙이면 펄스가 처음부터 돈다.
-    this.flash = { opId, rect, outline: null };
+    this.flash = { opId, rects, outlines: [] };
     this.render();
-    if (!this.markerLayer.querySelector(`.${FLASH_CLASS}`) && rect) {
-      const outline = document.createElement('div');
-      outline.className = `ag-jump-outline ${FLASH_CLASS}`;
-      this.flash.outline = outline;
+    if (!this.markerLayer.querySelector(`.${FLASH_CLASS}`) && rects.length) {
+      this.flash.outlines = rects.map(() => {
+        const outline = document.createElement('div');
+        outline.className = `ag-jump-outline ${FLASH_CLASS}`;
+        return outline;
+      });
       this.render();
     }
     this.flashTimer = setTimeout(() => this.stopFlash(), FLASH_CLEAR_MS);
@@ -940,9 +944,9 @@ export class PendingOverlayRenderer {
     this.flashWaitRaf = null;
     this.flashTimer = null;
     if (!this.flash) return;
-    if (this.flash.outline) {
-      this.positionedNodes.delete(this.flash.outline);
-      this.flash.outline.remove();
+    for (const outline of this.flash.outlines) {
+      this.positionedNodes.delete(outline);
+      outline.remove();
     }
     this.flash = null;
     for (const node of this.nodePool.values()) node.marker?.classList.remove(FLASH_CLASS);
@@ -954,20 +958,21 @@ export class PendingOverlayRenderer {
   }
 
   private placeFlashOutline(canvasView: CanvasView, contentWidth: number, zoom: number): void {
-    const outline = this.flash?.outline;
-    const rect = this.flash?.rect;
-    if (!outline || !rect) return;
-    const pos = this.pagePosition(canvasView, rect, contentWidth, zoom);
-    if (!pos) {
-      outline.remove();
-      return;
-    }
-    if (outline.parentElement !== this.markerLayer) this.markerLayer.appendChild(outline);
-    this.positionRect(outline, {
-      left: pos.left - 3,
-      top: pos.top - 2,
-      width: Math.max(pos.width, 2) + 6,
-      height: pos.height + 4,
+    if (!this.flash) return;
+    const { outlines, rects } = this.flash;
+    outlines.forEach((outline, index) => {
+      const pos = this.pagePosition(canvasView, rects[index], contentWidth, zoom);
+      if (!pos) {
+        outline.remove();
+        return;
+      }
+      if (outline.parentElement !== this.markerLayer) this.markerLayer.appendChild(outline);
+      this.positionRect(outline, {
+        left: pos.left - 3,
+        top: pos.top - 2,
+        width: Math.max(pos.width, 2) + 6,
+        height: pos.height + 4,
+      });
     });
   }
 
