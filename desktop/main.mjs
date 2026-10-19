@@ -145,6 +145,10 @@ const devOrigin = devUrl ? new URL(devUrl).origin : null;
 // A hub that dies at every boot stops respawning here; the next window or
 // sidebar request tries again.
 const MAX_HUB_AUTO_RESTARTS = 5;
+// macOS 에서 창을 모두 닫고 이만큼 지나면 허브를 내린다. 다음 창이 다시 띄운다.
+// 개발 실행에서만 RHWP_HUB_IDLE_SUSPEND_MS 로 바꿔 시험한다.
+const HUB_IDLE_SUSPEND_MS = (!app.isPackaged && Number(process.env.RHWP_HUB_IDLE_SUSPEND_MS)) || 10 * 60 * 1000;
+const HUB_ACTIVITY_QUERY_TIMEOUT_MS = 5_000;
 // A live hub that misses the short health probe gets one longer probe first.
 const HUB_BUSY_HEALTH_TIMEOUT_MS = 2500;
 // Vite gives every hot update a new timestamped URL. Reusing Electron's
@@ -227,6 +231,9 @@ class AgentHubOwner {
   #restartAttempt = 0;
   #restartTimer = null;
   #stoppingChild = null;
+  #suspendPromise = null;
+  #startRequests = 0;
+  #activityQueries = new Map();
   // Windows-only: the hub leader exited without the shutdown handshake, so its
   // descendants may be orphaned. The owner stays usable — the next start runs
   // on a fresh per-epoch workspace the orphans cannot reach.
@@ -350,6 +357,9 @@ class AgentHubOwner {
 
   async start() {
     if (this.#disposed) throw new Error('Agent hub owner has been disposed');
+    this.#startRequests += 1;
+    // 창 없이 내리던 허브가 다 내려간 뒤에 새로 띄운다.
+    if (this.#suspendPromise) await this.#suspendPromise;
     if (this.#quarantined) {
       // An unprovable tree was quarantined. It keeps its old workspace (marked
       // for reboot-level cleanup) while the next hub starts on a fresh epoch
@@ -450,6 +460,10 @@ class AgentHubOwner {
           });
           return;
         }
+        if (message?.type === 'rhwp-activity-response') {
+          if (source === this.#child && typeof message.id === 'string') this.#activityQueries.get(message.id)?.(message.busy !== false);
+          return;
+        }
         if (message?.type === 'rhwp-gift-request') {
           if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
             if (source.connected) source.send(staleGiftResponse(message));
@@ -515,6 +529,52 @@ class AgentHubOwner {
     return this.start();
   }
 
+  /** 허브에 도는 일(에이전트 턴, 레이아웃 작업, 다운로드, 설치)이 남았는지 묻는다. 답이 없으면 바쁘다고 본다. */
+  #queryActivity(child) {
+    return new Promise((resolve) => {
+      const id = randomUUID();
+      const finish = (busy) => {
+        clearTimeout(timer);
+        this.#activityQueries.delete(id);
+        resolve(busy);
+      };
+      const timer = setTimeout(() => finish(true), HUB_ACTIVITY_QUERY_TIMEOUT_MS);
+      this.#activityQueries.set(id, finish);
+      try {
+        child.send({ type: 'rhwp-activity-query', id }, (error) => { if (error) finish(true); });
+      } catch {
+        finish(true);
+      }
+    });
+  }
+
+  /**
+   * 창이 모두 닫혀 쓰지 않는 허브를 내린다. 종료 경로는 앱을 끝낼 때와 같고, 다음 ensure() 가 다시 띄운다.
+   * 그 사이에 허브를 찾은 요청이 있거나 할 일이 남았으면 그대로 둔다.
+   * @returns {Promise<'suspended'|'busy'|'skipped'>}
+   */
+  async suspend({ stillIdle = () => true } = {}) {
+    if (this.#disposed || quitting || this.#suspendPromise || this.#startPromise) return 'skipped';
+    const child = this.#child;
+    if (!child || !this.#context || !child.connected || this.#stoppingChild === child) return 'skipped';
+    const requests = this.#startRequests;
+    const busy = await this.#queryActivity(child);
+    if (this.#disposed || quitting || child !== this.#child || this.#startPromise || requests !== this.#startRequests || !stillIdle()) {
+      return 'skipped';
+    }
+    if (busy) return 'busy';
+    this.clearRestart();
+    console.log('[hamaeditor] no windows are open; stopping the idle agent hub');
+    this.#suspendPromise = this.stopCurrent().then(
+      () => 'suspended',
+      (error) => {
+        console.warn('[hamaeditor] idle agent hub stop failed:', error);
+        return 'skipped';
+      },
+    ).finally(() => { this.#suspendPromise = null; });
+    return this.#suspendPromise;
+  }
+
   /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
   notifyGiftChanged() {
     const child = this.#child;
@@ -527,6 +587,7 @@ class AgentHubOwner {
     this.#disposed = true;
     this.clearRestart();
     this.#stopPromise = (async () => {
+      await this.#suspendPromise;
       await this.#startPromise?.catch(() => {});
       await this.stopCurrent();
       for (const dir of this.#ownedRuntimeDirs) {
@@ -565,6 +626,26 @@ const {
   legacyWorkRoot,
 } = launchStorage;
 const hubOwner = new AgentHubOwner({ runtimeDir, workDir });
+
+let hubSuspendTimer = null;
+function cancelHubSuspend() {
+  if (hubSuspendTimer) clearTimeout(hubSuspendTimer);
+  hubSuspendTimer = null;
+}
+/** macOS 는 창을 모두 닫아도 앱이 남는다. 그동안 쓰지 않는 허브(와 앱 안 브라우저)를 내린다. */
+function scheduleHubSuspend() {
+  cancelHubSuspend();
+  if (process.platform !== 'darwin' || quitting) return;
+  hubSuspendTimer = setTimeout(() => {
+    hubSuspendTimer = null;
+    const stillIdle = () => !quitting && BrowserWindow.getAllWindows().length === 0;
+    if (!stillIdle()) return;
+    void hubOwner.suspend({ stillIdle }).then((result) => {
+      if (result === 'busy' && stillIdle()) scheduleHubSuspend();
+    });
+  }, HUB_IDLE_SUSPEND_MS);
+  hubSuspendTimer.unref?.();
+}
 
 // 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
 async function closeOwnedHubSession(sessionId) {
@@ -928,7 +1009,8 @@ async function createWindow(launch = launchRequest(), {
   restoredDocumentIds = [],
 } = {}) {
   // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
-  // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
+  // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다. 창 없이 내렸던 허브도 여기서 다시 뜬다.
+  cancelHubSuspend();
   void hubOwner.ensure().catch(() => {});
   // 렌더러가 테마의 바탕색을 알려 주면 새 창도 그 색으로 연다(앱을 다시 켜면 시스템 색으로 시작한다).
   const backgroundColor = lastWindowBackground ?? (nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7');
@@ -1996,9 +2078,13 @@ if (!hasSingleInstanceLock) {
       'retired Cloud data',
       removeRetiredCloudData({ userDataDir: app.getPath('userData'), vault: secretVault }),
     );
+    // 패스키 설정(서명 확인)은 허브·첫 창과 나란히 돈다. Chromium 은 WebAuthn 요청 때마다 설정을 읽으므로
+    // 창이 먼저 떠도 되고, 앱 안 브라우저는 세션을 만들기 전에 이 설정을 기다린다.
+    void browserWebAuthn.configure().catch((error) => {
+      console.warn('[hamaeditor] passkey configuration failed:', error);
+    });
     // 허브는 비밀 저장소가 생긴 직후 띄워 첫 창과 나란히 준비한다(허브의 비밀 요청은 이 저장소로 간다).
     // 실패는 아래에서 기다려 알린다.
-    await browserWebAuthn.configure();
     const hubStartup = hubOwner.ensure();
     hubStartup.catch(() => {});
     // 업데이트로 재시작했으면 그 전의 창을 다시 연다. 30분이 지난 기록은 버린다.
@@ -2081,5 +2167,6 @@ if (!hasSingleInstanceLock) {
     // 2.0.11 저장소를 읽는 숨은 창이 첫 Studio 창보다 먼저 닫혀도 앱을 끝내지 않는다.
     if (!initialLaunchesOpened) return;
     if (process.platform !== 'darwin') app.quit();
+    else scheduleHubSuspend();
   });
 }

@@ -623,5 +623,10 @@ export function createProjectLibrarian({
     status(projectId) {
       return snapshotStatus(projectId);
     },
+
+    /** 어느 프로젝트에서든 정리 작업이 돌거나 기다리는지. */
+    busy() {
+      return [...projects.values()].some((state) => state.running.size > 0 || state.pending.length > 0);
+    },
   };
 }

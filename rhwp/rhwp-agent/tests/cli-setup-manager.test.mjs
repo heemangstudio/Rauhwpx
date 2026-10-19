@@ -376,16 +376,19 @@ test('an expired terminal Claude login is not reported as usable, even with a re
   // Sessions receive the access token directly, and refreshing it would write
   // to the user's own Claude profile. The app asks for its own login instead.
   const homeDir = await tmpRoot(t);
-  const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {} }).init();
+  let clock = Date.now();
+  const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {}, now: () => clock }).init();
   const credentialFile = path.join(homeDir, '.claude', '.credentials.json');
   await fs.mkdir(path.dirname(credentialFile), { recursive: true });
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 } }));
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: clock + 3_600_000 } }));
   const live = await manager.status('claude');
   assert.equal(live.authenticated, true);
   assert.equal(live.authSource, 'local');
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() - 60_000 } }));
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: clock - 60_000 } }));
+  // A recent terminal login is reused for a while; the next re-read sees the expiry.
+  clock += 16 * 60_000;
   const expired = await manager.status('claude');
   assert.equal(expired.authenticated, false);
   assert.equal(expired.authMethod, null);

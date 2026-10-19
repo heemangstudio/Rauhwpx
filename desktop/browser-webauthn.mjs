@@ -4,10 +4,17 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 export const WEB_AUTHN_KEYCHAIN_GROUP = 'C8M34MMT8W.com.hataewook.rauhwpx.webauthn';
 
-export async function hasWebAuthnEntitlement(executable = process.execPath) {
+const SIGNING_REQUIREMENT = '=identifier "com.hataewook.rauhwpx" and anchor apple generic and certificate leaf[subject.OU] = "C8M34MMT8W"';
+
+// 실행 중인 프로세스(pid)의 서명을 본다. 실행 파일 경로를 주면 codesign 이 번들의 파일 1만여 개를
+// 다시 해시해 실행마다 0.7초, CPU 4초가량 쓴다. keychain-access-groups 는 제한된 권한이라 커널(AMFI)이
+// 실행할 때 이미 서명과 함께 확인했고, 키체인도 실행 중인 코드의 권한으로 허락한다. 그래서 리소스는
+// 다시 해시하지 않고(--ignore-resources) 같은 요구 사항을 실행 중인 코드에 대어 본다.
+export async function hasWebAuthnEntitlement(pid = process.pid) {
+  const target = String(pid);
   try {
-    await execFileAsync('/usr/bin/codesign', ['--verify', '--strict', '-R', '=identifier "com.hataewook.rauhwpx" and anchor apple generic and certificate leaf[subject.OU] = "C8M34MMT8W"', executable], { timeout: 5000, maxBuffer: 1024 * 1024 });
-    const { stdout } = await execFileAsync('/usr/bin/codesign', ['-d', '--entitlements', ':-', executable], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    await execFileAsync('/usr/bin/codesign', ['--verify', '--ignore-resources', '-R', SIGNING_REQUIREMENT, target], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    const { stdout } = await execFileAsync('/usr/bin/codesign', ['-d', '--entitlements', ':-', target], { timeout: 5000, maxBuffer: 1024 * 1024 });
     const groups = stdout.match(/<key>keychain-access-groups<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
     return !!groups?.match(/<string>([^<]+)<\/string>/g)?.some((entry) => entry === `<string>${WEB_AUTHN_KEYCHAIN_GROUP}</string>`);
   } catch { return false; }

@@ -92,8 +92,9 @@ import {
 } from './pi-manager.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
+import { createCliVersionCache } from './cli-version-cache.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
-import { createCodexModelCatalog, createCodexModelResolver } from './codex-model-routing.mjs';
+import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStore } from './codex-model-routing.mjs';
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { createIpcGiftSource } from './gift-source.mjs';
@@ -361,6 +362,8 @@ function mutateSharedNpmPrefix(operation) {
   npmPrefixMutationQueue = running.catch(() => {});
   return running;
 }
+// 설정 상태와 제공자 상태가 같은 `--version` 출력을 나눠 쓴다. 실행 파일이 바뀌면 다시 묻는다.
+const cliVersionCache = createCliVersionCache();
 const cliSetup = createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem });
 /**
  * Claude children get their login from CLAUDE_CODE_OAUTH_TOKEN (see
@@ -445,6 +448,7 @@ function ensureBootWork() {
   return bootWorkPromise;
 }
 const providerHealth = createProviderHealth({
+  versionCache: cliVersionCache,
   piBin: () => (piStatus.installed ? piManager.piBin : null),
   cliBin: (agent) => (cliSetupStatus[agent]?.installed ? cliSetup.binPath(agent) : null),
   probeEnv: (agent) => {
@@ -1491,9 +1495,11 @@ const DEFAULT_MODEL = {
   claude: 'sonnet',
   codex: 'sol',
 };
-const resolveCodexModel = createCodexModelResolver();
+// 별칭 해석과 모델 선택기가 같은 목록을 쓴다. 새로고침한 목록이 곧바로 별칭에도 쓰인다.
+const codexModelStore = createCodexModelStore();
+const resolveCodexModel = createCodexModelResolver({ store: codexModelStore });
 const claudeModelCatalog = createClaudeModelCatalog();
-const codexModelCatalog = createCodexModelCatalog();
+const codexModelCatalog = createCodexModelCatalog({ store: codexModelStore });
 const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CLAUDE_EFFORTS_HAIKU = new Set(['low', 'medium', 'high']);
 const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -1799,8 +1805,6 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
       cwd: record.workDir ?? ROOT,
     };
     models = await codexModelCatalog(options, { refresh });
-    // 새로고침한 목록과 sol/luna 같은 별칭이 같은 모델을 가리키게 한다.
-    if (refresh) resolveCodexModel.remember(options, models);
   } else throw unknownAgentError(agent);
   record.modelCatalogs ??= {};
   record.modelCatalogs[agent] = models;
@@ -4794,8 +4798,9 @@ async function requireAgentAuthenticated(agent) {
   // An unauthenticated CLI turn used to fail inside the provider with a bare
   // turn-end that rendered as a literal "undefined" in chat — surface the real
   // cause before the provider ever spawns. Status is re-read per message so a
-  // login completed mid-session takes effect without a restart.
-  const setup = await cliSetup.status(agent).catch(() => null);
+  // login completed mid-session takes effect without a restart. Only the login
+  // is read here; the CLI version does not decide whether a turn may start.
+  const setup = await cliSetup.authStatus(agent).catch(() => null);
   if (setup && setup.authenticated !== true) {
     throw Object.assign(
       new Error(`${agent === 'claude' ? 'Claude' : 'Codex'} 로그인이 필요합니다. 설정 탭에서 로그인한 뒤 다시 시도해 주세요.`),
@@ -9274,50 +9279,73 @@ function shutdown(signal) {
 }
 
 const ownerPid = Number(process.env.RHWP_OWNER_PID);
+const ownerIpc = process.env.RHWP_OWNER_IPC === '1';
 let ownerMissing = false;
 let ownerMissingSince = null;
 let orphanIdleSince = null;
+let ownerWatchdog = null;
+function watchOwner() {
+  if (!ownerMissing) {
+    let alive = true;
+    try {
+      process.kill(ownerPid, 0);
+    } catch (error) {
+      if (error?.code !== 'EPERM') alive = false;
+    }
+    if (alive) return;
+    noteMissingOwner();
+  }
+  if (Date.now() - ownerMissingSince >= ORPHAN_HARD_SHUTDOWN_MS) {
+    void shutdown('owner exited and orphan deadline elapsed').finally(() => process.exit(0));
+    return;
+  }
+  if (hasConnectedSessionSockets() || hasOrphanActiveWork()) {
+    orphanIdleSince = null;
+    return;
+  }
+  orphanIdleSince ??= Date.now();
+  if (Date.now() - orphanIdleSince >= ORPHAN_IDLE_SHUTDOWN_MS) {
+    void shutdown('owner exited and hub stayed idle').finally(() => process.exit(0));
+  }
+}
+function startOwnerWatchdog() {
+  if (ownerWatchdog || shutdownPreparationPromise) return;
+  ownerWatchdog = setInterval(watchOwner, 1_000);
+  ownerWatchdog.unref?.();
+}
 function noteMissingOwner(reason = `owner process ${ownerPid} exited`) {
   if (!ownerMissing) {
     log(`${reason}; waiting for orphaned work to become idle`);
     ownerMissingSince = Date.now();
   }
   ownerMissing = true;
+  startOwnerWatchdog();
 }
-if (process.env.RHWP_OWNER_IPC === '1') {
+if (ownerIpc) {
   if (process.connected) {
     process.once('disconnect', () => noteMissingOwner('owner IPC channel closed'));
   } else {
     noteMissingOwner('required owner IPC channel was unavailable');
   }
 }
-const ownerWatchdog = Number.isSafeInteger(ownerPid) && ownerPid > 0
-  ? setInterval(() => {
-    if (!ownerMissing) {
-      let alive = true;
-      try {
-        process.kill(ownerPid, 0);
-      } catch (error) {
-        if (error?.code !== 'EPERM') alive = false;
-      }
-      if (alive) return;
-      noteMissingOwner();
-    }
-    if (Date.now() - ownerMissingSince >= ORPHAN_HARD_SHUTDOWN_MS) {
-      void shutdown('owner exited and orphan deadline elapsed').finally(() => process.exit(0));
-      return;
-    }
-    if (hasConnectedSessionSockets() || hasOrphanActiveWork()) {
-      orphanIdleSince = null;
-      return;
-    }
-    orphanIdleSince ??= Date.now();
-    if (Date.now() - orphanIdleSince >= ORPHAN_IDLE_SHUTDOWN_MS) {
-      void shutdown('owner exited and hub stayed idle').finally(() => process.exit(0));
-    }
-  }, 1_000)
-  : null;
-ownerWatchdog?.unref?.();
+// IPC 로 붙은 소유자는 'disconnect' 로 끝을 안다. 매초 pid 를 물어보는 감시는 IPC 없이 뜬 허브에만 둔다.
+// 소유자가 사라진 뒤의 고아 정리는 noteMissingOwner 가 같은 1초 감시를 시작해 맡는다.
+if (!ownerIpc && Number.isSafeInteger(ownerPid) && ownerPid > 0) startOwnerWatchdog();
+
+// 데스크톱이 창 없이 오래 머물면 허브를 내리기 전에 남은 일이 있는지 묻는다.
+function hasBackgroundWork() {
+  return hasConnectedSessionSockets() || hasOrphanActiveWork()
+    || browserDownloads.active.size > 0 || browserDownloads.pending.size > 0
+    || projectLibrarian.busy() || cliSetup.busy() || piManager.isInstalling();
+}
+if (ownerIpc) {
+  process.on('message', (message) => {
+    if (message?.type !== 'rhwp-activity-query' || typeof message.id !== 'string' || !process.connected) return;
+    try {
+      process.send({ type: 'rhwp-activity-response', id: message.id, busy: hasBackgroundWork() });
+    } catch {}
+  });
+}
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => { void shutdown(signal).finally(() => process.exit(0)); });

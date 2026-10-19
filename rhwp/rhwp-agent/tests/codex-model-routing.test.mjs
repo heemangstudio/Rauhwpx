@@ -8,6 +8,7 @@ import {
   codexLineup,
   createCodexModelCatalog,
   createCodexModelResolver,
+  createCodexModelStore,
   discoverCodexModels,
   latestCodexModel,
   normalizeCodexModels,
@@ -54,16 +55,27 @@ test('a different Codex account in the same profile gets its own catalog and ali
   assert.equal(await resolve('sol', options), 'gpt-11-sol');
 });
 
-test('a refreshed catalog updates alias routing through remember()', async () => {
+test('chats on one login share a catalog with alias routing, and a refresh updates both', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-codex-chats-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const homes = await Promise.all(['chat-a', 'chat-b'].map(async (name) => {
+    const codexHome = path.join(root, name, '.codex');
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.writeFile(path.join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'account-a' } }));
+    return codexHome;
+  }));
   let current = 'gpt-10-sol';
-  const discover = async () => [{ model: current }];
-  const catalog = createCodexModelCatalog({ discover });
-  const resolve = createCodexModelResolver({ discover });
-  const options = { bin: 'codex', codexHome: '/test' };
-  assert.equal(await resolve('sol', options), 'gpt-10-sol');
+  let calls = 0;
+  const store = createCodexModelStore({ discover: async () => { calls++; return [{ model: current }]; } });
+  const catalog = createCodexModelCatalog({ store });
+  const resolve = createCodexModelResolver({ store });
+  assert.equal(await resolve('sol', { bin: 'codex', codexHome: homes[0] }), 'gpt-10-sol');
+  assert.deepEqual((await catalog({ bin: 'codex', codexHome: homes[1] })).map((entry) => entry.id), ['gpt-10-sol']);
+  assert.equal(calls, 1);
   current = 'gpt-11-sol';
-  resolve.remember(options, await catalog(options, { refresh: true }));
-  assert.equal(await resolve('sol', options), 'gpt-11-sol');
+  await catalog({ bin: 'codex', codexHome: homes[1] }, { refresh: true });
+  assert.equal(await resolve('sol', { bin: 'codex', codexHome: homes[0] }), 'gpt-11-sol');
+  assert.equal(calls, 2);
 });
 
 test('an empty Codex response is a catalog error', async () => {
@@ -103,7 +115,7 @@ test('resolver caches discovery and falls back within the requested lineup only 
   assert.equal(await resolve('astra'), 'gpt-6-astra');
   assert.equal(calls, 1);
   await assert.rejects(resolve('terra'), { code: 'MODEL_UNAVAILABLE' });
-  time = 5 * 60 * 1000;
+  time = 60 * 60 * 1000;
   assert.equal(await resolve('terra'), 'gpt-5.6-terra');
   assert.equal(await resolve('sol'), 'gpt-6-sol');
   assert.equal(calls, 2);

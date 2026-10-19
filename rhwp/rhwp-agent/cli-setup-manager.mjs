@@ -37,6 +37,10 @@ const CLAUDE_TOKEN_LIFETIME_MS = 364 * 24 * 60 * 60 * 1000;
 const CLAUDE_VERIFY_TTL_MS = 10 * 60 * 1000;
 // A reused terminal login is only handed out while it has this much life left.
 const CLAUDE_LOCAL_LOGIN_MIN_REMAINING_MS = 5 * 60 * 1000;
+// A reused terminal login is re-read (Keychain on macOS) only when it is missing,
+// close to expiry, or this old. Explicit refreshes and verification always re-read.
+const CLAUDE_LOCAL_LOGIN_REREAD_MS = 15 * 60 * 1000;
+const CLAUDE_LOCAL_LOGIN_RENEW_MARGIN_MS = 30 * 60 * 1000;
 /**
  * Inherited variables that would override or hijack the app's Claude login:
  * other credentials, gateways, and cloud-provider switches.
@@ -165,6 +169,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     local: null,
     rejected: new Set(),
     verified: null,
+    localReadAt: 0,
   };
   const npmLaunch = bundledNpmLaunch({ nodeCommand, npmCommand });
   const ensureNodeHost = createNodeHost({ rootDir, nodeCommand, platform });
@@ -267,11 +272,28 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   async function refreshLocalClaudeLogin() {
     const current = claudeCredential();
     if (!claudeAuth.useLocalLogin || current?.source === 'app' || current?.source === 'api-key') return;
+    claudeAuth.localReadAt = now();
     const found = await readClaudeLogin({ homeDir: hostProfileHome, env: baseEnv, platform }).catch(() => null);
     const parsed = found ? parseClaudeOAuthCredential(found.text) : null;
     claudeAuth.local = parsed
       ? { token: parsed.claudeAiOauth.accessToken, expiresAt: claudeCredentialExpiry(parsed) || null }
       : null;
+  }
+  /**
+   * Status reads reuse a recent terminal login instead of asking the Keychain
+   * every time. A missing login is always re-read, so a login completed in a
+   * terminal is picked up by the next message.
+   */
+  async function refreshStaleLocalClaudeLogin() {
+    const current = claudeCredential();
+    if (current && current.source !== 'local') return;
+    if (current) {
+      const at = now();
+      const expiresAt = claudeAuth.local?.expiresAt;
+      const recent = at - claudeAuth.localReadAt < CLAUDE_LOCAL_LOGIN_REREAD_MS;
+      if (recent && !(expiresAt && expiresAt - at < CLAUDE_LOCAL_LOGIN_RENEW_MARGIN_MS)) return;
+    }
+    await refreshLocalClaudeLogin();
   }
   /**
    * Check the active Claude credential against Anthropic. A rejected app token
@@ -433,9 +455,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     if (!version && versionProbes.get(agent) === probe) versionProbes.delete(agent);
     return version;
   }
-  async function status(agent) {
-    assertAgent(agent); await load(); const bin = binPath(agent);
-    const version = await managedVersion(agent);
+  async function authState(agent) {
     let authenticated = Boolean(apiKeys[agent]);
     let authMethod = authenticated ? 'api-key' : null;
     if (agent === 'codex' && !authenticated && await readCodexLogin()) {
@@ -445,7 +465,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     let authSource = null;
     let authVerifiedAt = null;
     if (agent === 'claude') {
-      await refreshLocalClaudeLogin();
+      await refreshStaleLocalClaudeLogin();
       const credential = claudeCredential();
       const secret = credential?.token ?? credential?.apiKey ?? null;
       authenticated = Boolean(credential);
@@ -454,11 +474,22 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       const verified = claudeAuth.verified;
       if (authenticated && verified?.secret === secret && verified.result === 'valid') authVerifiedAt = verified.at;
     }
+    return { authenticated, authMethod, authSource, authVerifiedAt };
+  }
+  async function status(agent) {
+    assertAgent(agent); await load(); const bin = binPath(agent);
+    const version = await managedVersion(agent);
+    const { authenticated, authMethod, authSource, authVerifiedAt } = await authState(agent);
     // 관리형 CLI 가 없으면 Claude 는 SDK 번들 런타임으로 실행되므로 그 버전을 기준으로 삼는다.
     const runtimeVersion = version ?? (agent === 'claude' ? bundledClaudeVersion : null);
     const latestVersion = latestVersions[agent];
     const updateRequired = Boolean(runtimeVersion && latestVersion && isNewerVersion(latestVersion, runtimeVersion));
     return { installed: Boolean(version || existsSync(bin)), installing: installs.has(agent), version: runtimeVersion, authenticated, authMethod, ...(agent === 'claude' ? { authSource, authVerifiedAt } : {}), keyTail: keyTail(apiKeys[agent]), latestVersion, updateRequired, error: null };
+  }
+  /** Login state only: no `--version` run. Used before every chat message. */
+  async function authStatus(agent) {
+    assertAgent(agent); await load();
+    return authState(agent);
   }
   /** 같은 에이전트 설치가 이미 돌고 있으면 그 결과를 함께 기다린다. */
   async function install(agent, onProgress) {
@@ -716,7 +747,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       await fs.rm(claudeLoginDir, { recursive: true, force: true }).catch(() => {});
       await fs.rm(legacyClaudeSeedDir, { recursive: true, force: true }).catch(() => {});
       await pruneNpmCaches(); nodeHostShimDir = await ensureNodeHost().catch(() => null); await load(); return this; },
-    status, install, prepareLaunch, authenticate,
+    status, authStatus, install, prepareLaunch, authenticate,
+    /** 설치나 로그인이 도는 중인지. 데스크톱이 창 없이 허브를 내리기 전에 묻는다. */
+    busy: () => installs.size > 0 || authProcesses.size > 0 || authTerminals.size > 0,
     async submitAuthCode(agent, code) { assertAgent(agent); if (typeof code !== 'string' || Buffer.byteLength(code) > AUTH_CODE_MAX_BYTES) throw setupError('AGENT_AUTH_CODE_INVALID', '인증 코드가 올바르지 않아요.'); if (authTerminals.has(agent)) authTerminals.get(agent).write(`${code.trim()}\n`); else authProcesses.get(agent)?.stdin?.write?.(`${code.trim()}\n`); },
     terminalSnapshot(agent) { return authTerminals.get(agent)?.snapshot() ?? null; }, terminalInput(agent, data) { authTerminals.get(agent)?.write(String(data ?? '')); }, terminalResize(agent, cols, rows) { authTerminals.get(agent)?.resize(cols, rows); loginScreens.get(agent)?.resize(cols, rows); },
     async cancel(agent) { return cancelLogin(agent); },

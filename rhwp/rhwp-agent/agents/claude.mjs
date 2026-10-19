@@ -1,7 +1,7 @@
 // cross-spawn: Windows에서 npm .cmd 심을 인자 이스케이프 손상 없이 실행한다.
 import spawn from 'cross-spawn';
 import crypto from 'node:crypto';
-import { query as queryClaude } from '@anthropic-ai/claude-agent-sdk';
+import { queryClaudeSdk as queryClaude } from '../claude-sdk.mjs';
 import {
   mkdirSync,
   writeFileSync,

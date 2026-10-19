@@ -13,7 +13,8 @@ const FALLBACK_MODELS = {
   luna: 'gpt-6-luna',
   terra: 'gpt-5.6-terra',
 };
-const CACHE_MS = 5 * 60 * 1000;
+// 모델 목록은 계정마다 하나를 한 시간 쓴다. 설정의 새로고침은 바로 다시 읽는다.
+const CACHE_MS = 60 * 60 * 1000;
 const FAILURE_CACHE_MS = 30 * 1000;
 const PROBE_TIMEOUT_MS = 12_000;
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -142,8 +143,8 @@ export function normalizeCodexModels(models) {
 }
 
 /**
- * 캐시 키. 같은 프로필이라도 로그인한 계정이나 API 키가 바뀌면 이전 계정의
- * 모델 목록을 쓰지 않도록 자격 증명 지문을 붙인다.
+ * 캐시 키: 실행 파일과 자격 증명 지문. 채팅마다 CODEX_HOME 이 따로 있지만 같은 로그인을
+ * 비추므로 경로는 넣지 않는다. 로그인한 계정이나 API 키가 바뀌면 이전 계정의 목록을 쓰지 않는다.
  */
 function catalogKey(options) {
   let identity = options.env?.OPENAI_API_KEY ?? '';
@@ -154,59 +155,60 @@ function catalogKey(options) {
     } catch {}
   }
   const fingerprint = identity ? createHash('sha256').update(identity).digest('hex').slice(0, 16) : '';
-  return `${options.bin ?? 'codex'}\0${options.codexHome ?? ''}\0${fingerprint}`;
+  return `${options.bin ?? 'codex'}\0${fingerprint}`;
 }
 
-export function createCodexModelCatalog({ discover = discoverCodexModels, now = Date.now } = {}) {
+/**
+ * 모델 선택기와 별칭(sol 등) 해석이 함께 쓰는 목록 저장소. 같은 계정의 목록 요청은 하나로 합친다.
+ * 성공한 목록은 한 시간, 실패는 30초 둔다.
+ */
+export function createCodexModelStore({ discover = discoverCodexModels, now = Date.now } = {}) {
   const cache = new Map();
-  return async function codexModelCatalog(options = {}, { refresh = false } = {}) {
+  function load(options = {}, { refresh = false, retryFailure = false } = {}) {
     const key = catalogKey(options);
     let entry = cache.get(key);
-    if (refresh || !entry || entry.expiresAt <= now()) {
+    if (refresh || !entry || entry.expiresAt <= now() || (retryFailure && entry.error)) {
       const pending = Promise.resolve().then(() => discover(options)).then((models) => {
         const catalog = normalizeCodexModels(models);
         if (!catalog.length) throw new Error('Codex returned an empty model catalog');
         return catalog;
       });
-      entry = { pending, expiresAt: Number.POSITIVE_INFINITY };
-      cache.set(key, entry);
+      const next = { pending, expiresAt: Number.POSITIVE_INFINITY };
+      entry = next;
+      cache.set(key, next);
       pending.then(
-        (models) => { if (cache.get(key) === entry) cache.set(key, { models, expiresAt: now() + CACHE_MS }); },
-        () => { if (cache.get(key) === entry) cache.delete(key); },
+        (models) => { if (cache.get(key) === next) cache.set(key, { models, expiresAt: now() + CACHE_MS }); },
+        (error) => { if (cache.get(key) === next) cache.set(key, { error, expiresAt: now() + FAILURE_CACHE_MS }); },
       );
     }
-    return entry.pending ?? entry.models;
+    if (entry.pending) return entry.pending;
+    return entry.error ? Promise.reject(entry.error) : Promise.resolve(entry.models);
+  }
+  return { load };
+}
+
+/** 설정의 모델 선택기 목록. 실패는 기억하지 않고 다음 요청에서 다시 읽는다. */
+export function createCodexModelCatalog({
+  discover = discoverCodexModels, now = Date.now, store = createCodexModelStore({ discover, now }),
+} = {}) {
+  return async function codexModelCatalog(options = {}, { refresh = false } = {}) {
+    return store.load(options, { refresh, retryFailure: true });
   };
 }
 
-export function createCodexModelResolver({ discover = discoverCodexModels, now = Date.now } = {}) {
-  const cache = new Map();
-  async function resolveCodexModel(lineup, options = {}) {
+export function createCodexModelResolver({
+  discover = discoverCodexModels, now = Date.now, store = createCodexModelStore({ discover, now }),
+} = {}) {
+  return async function resolveCodexModel(lineup, options = {}) {
     if (!LINEUPS.has(lineup)) throw new Error(`Unknown Codex lineup: ${String(lineup)}`);
-    const key = catalogKey(options);
-    let cached = cache.get(key);
-    if (!cached || cached.expiresAt <= now()) {
-      const pending = Promise.resolve().then(() => discover(options)).then(
-        (models) => ({ models, failed: false, expiresAt: now() + CACHE_MS }),
-        () => ({ models: null, failed: true, expiresAt: now() + FAILURE_CACHE_MS }),
-      );
-      cached = { pending, expiresAt: Number.POSITIVE_INFINITY };
-      cache.set(key, cached);
-      pending.then((result) => { if (cache.get(key) === cached) cache.set(key, result); });
-    }
-    const result = cached.pending ? await cached.pending : cached;
-    if (result.failed) return FALLBACK_MODELS[lineup];
-    const model = latestCodexModel(result.models, lineup);
+    const models = await store.load(options).catch(() => null);
+    if (!models) return FALLBACK_MODELS[lineup];
+    const model = latestCodexModel(models, lineup);
     if (!model) {
       throw Object.assign(new Error(`No available Codex model for the ${lineup} lineup`), {
         code: 'MODEL_UNAVAILABLE',
       });
     }
     return model;
-  }
-  /** 새로 받은 모델 목록으로 별칭 해석을 맞춘다. 강제 새로고침한 목록과 별칭이 어긋나지 않게 한다. */
-  resolveCodexModel.remember = (options, models) => {
-    cache.set(catalogKey(options), { models, failed: false, expiresAt: now() + CACHE_MS });
   };
-  return resolveCodexModel;
 }
