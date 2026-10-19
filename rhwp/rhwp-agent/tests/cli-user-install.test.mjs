@@ -97,7 +97,7 @@ test('a failed install keeps the npm log its error message points to, while its 
   }).init();
   const error = await manager.install('codex').then(() => null, (failure) => failure);
   assert.equal(error?.code, 'AGENT_INSTALL_FAILED');
-  const logFile = String(error.message).match(/complete log of this run can be found in:\s*(\S+\.log)/)?.[1];
+  const logFile = String(error.message).match(/complete log of this run can be found in:\s*(.+?\.log)\s*$/m)?.[1];
   assert.ok(logFile, `npm names its debug log: ${error.message}`);
   assert.ok((await fs.stat(logFile)).isFile(), 'the log the user is pointed to still exists');
   const install = launches.find((argv) => argv.includes('install'));

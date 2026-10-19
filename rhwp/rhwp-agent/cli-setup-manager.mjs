@@ -479,7 +479,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       try {
         result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', npmCacheDir, '--logs-dir', npmLogsDir, '--update-notifier=false', `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
       } finally {
-        await fs.rm(npmCacheDir, { recursive: true, force: true }).catch(() => {});
+        // Windows 에서는 백신 검사가 방금 받은 tarball 을 잠깐 잡고 있어 EBUSY/EPERM 이 날 수 있으므로 몇 번 다시 시도한다.
+        // 그래도 남으면 다음 시작 때 pruneNpmCaches 가 지운다.
+        await fs.rm(npmCacheDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
       }
       assertPrefixAvailable();
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
