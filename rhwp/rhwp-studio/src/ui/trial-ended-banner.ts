@@ -138,9 +138,9 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
 
   const actions = document.createElement('div');
   actions.className = 'trial-ended-actions';
-  const activate = button('trial-ended-primary', '라이선스 키 입력하기');
-  const purchase = button('trial-ended-secondary', '연 ₩9,900에 구매하기');
-  actions.append(activate, purchase);
+  const purchase = button('trial-ended-primary', '연 ₩9,900에 구매하기');
+  const activate = button('trial-ended-secondary', '라이선스 키 입력하기');
+  actions.append(purchase, activate);
 
   const later = button('trial-ended-later', options.leave?.label ?? '나중에');
 
@@ -155,7 +155,7 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
     if (previousFocus?.isConnected) previousFocus.focus();
   }
   // 모달이라 Tab 은 세 버튼 안에서만 돈다.
-  const focusables = [activate, purchase, later];
+  const focusables = [purchase, activate, later];
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape' && !locked) {
       event.preventDefault();
@@ -183,6 +183,6 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
   overlay.addEventListener('keydown', onKeydown);
 
   document.body.append(overlay);
-  activate.focus({ preventScroll: true });
+  purchase.focus({ preventScroll: true });
   return { dismiss };
 }
