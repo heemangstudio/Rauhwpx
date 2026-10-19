@@ -1,0 +1,347 @@
+# Temporary diagnostic caller repair. Never merge, ship, or claim parity.
+"name": "Temporary math10 diagnostic caller repair after CI39146689830"
+"on":
+  "push":
+    "branches":
+      - "ci/math10-note-boundary-r2"
+"permissions":
+  "contents": "read"
+"concurrency":
+  "group": "math10-note-boundary-r2-repair-${{ github.ref }}"
+  "cancel-in-progress": false
+"env":
+  "C17_PARENT": "8d8f59ebf3db9812e2ec7364f5891a0ecf464127"
+  "C17_TREE": "b2663dcb3215b634690e98503d6b7a661cdbf423"
+  "ORIGINAL_C17_HEAD": "cbe9181c64d0e7f1f9b91522aaf189ee067cee36"
+  "DIAGNOSTIC_COMMIT": "f0d56e398c66bef04e1cd680c98736229dd78cdd"
+  "DIAGNOSTIC_TREE": "cf949324120763855a503c6fb1a109f4a15b2fb6"
+  "DIAGNOSTIC_TYPESET_BLOB": "9c737cddd719a8e906e08dc4917933b966e4a91d"
+  "ORIGINAL_TYPESET_SHA256": "997e154c6c17657e6892c80a9c667067b58229db71f0a846bdb91e2abe8159e3"
+  "MODIFIED_TYPESET_SHA256": "0f960de39eeaeea86c873552f79dd8aec5a25954f12b964d7dfdd94b7cf09244"
+  "DIAGNOSTIC_PATCH_SHA256": "50f85d7fb8cfa43661c1eaaf777113bbd78ec5c03e9d2664b317f75f81c253ef"
+  "DIAGNOSTIC_SOURCES_JSON": "[{\"path\":\"rhwp/src/renderer/equation/mod.rs\",\"original_blob\":\"c115ced4fedf4608a6f6c23cde7e099f4f8c7610\",\"modified_blob\":\"f0fdd86cee930fb27fa4273d20d5c55b12340c52\",\"original_sha256\":\"b5af5a9121d74fc91df900928f12c858c494abe0cb9f9927e2f0ad395779fd04\",\"modified_sha256\":\"27bb3ee8dd0ac11f175d674328174458e6d597fdec8acc447b7596e37fb0f44b\",\"prior_failed_blob\":\"1ebe127087f9727dc694327acc1a5d59c1d2b04c\",\"prior_failed_sha256\":\"d5d5864a1ab50af0682de33296b885e874c74cbb8a679a2274025aa3b3dade4f\"},{\"path\":\"rhwp/src/renderer/layout/paragraph_layout.rs\",\"original_blob\":\"7c13e3486f692454c4eb87b5107cdb18ba0b47ba\",\"modified_blob\":\"fb46304791ed9bbb4c84ed1526f2746d8cd47375\",\"original_sha256\":\"2712191f949eeb4996a782db96cf8136e1f70a6650df4292e4f6f0e657de3453\",\"modified_sha256\":\"f8fbb2db1ebd70ca4bb3ab2e2b6a4a4a63b4d396511697bb82c9dc1a428dfa60\",\"prior_failed_blob\":\"fb46304791ed9bbb4c84ed1526f2746d8cd47375\",\"prior_failed_sha256\":\"f8fbb2db1ebd70ca4bb3ab2e2b6a4a4a63b4d396511697bb82c9dc1a428dfa60\"},{\"path\":\"rhwp/src/renderer/skia/renderer.rs\",\"original_blob\":\"c94b37b43120c9828895a41947353abe05932ec0\",\"modified_blob\":\"5a6344dc2ec1a3294bd435690fcf769112304233\",\"original_sha256\":\"f788c052fdf52d07e15adbe7df607d5284a9e641f925f8b08999051091c6a297\",\"modified_sha256\":\"5159915d13b9eea0c6e65ada3eea9cf0229b606cf0775b408136c91154e3acf8\",\"prior_failed_blob\":\"5a6344dc2ec1a3294bd435690fcf769112304233\",\"prior_failed_sha256\":\"5159915d13b9eea0c6e65ada3eea9cf0229b606cf0775b408136c91154e3acf8\"},{\"path\":\"rhwp/src/renderer/typeset.rs\",\"original_blob\":\"c3ee4c13c29c4c283058f9d7e2de11cbafaec18f\",\"modified_blob\":\"9c737cddd719a8e906e08dc4917933b966e4a91d\",\"original_sha256\":\"997e154c6c17657e6892c80a9c667067b58229db71f0a846bdb91e2abe8159e3\",\"modified_sha256\":\"0f960de39eeaeea86c873552f79dd8aec5a25954f12b964d7dfdd94b7cf09244\",\"prior_failed_blob\":\"9c737cddd719a8e906e08dc4917933b966e4a91d\",\"prior_failed_sha256\":\"0f960de39eeaeea86c873552f79dd8aec5a25954f12b964d7dfdd94b7cf09244\"}]"
+  "DIAGNOSTIC_PATCHES_JSON": "[{\"name\":\"note-boundary-v1\",\"path\":\"C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\patches\\\\r2-note-boundary-diagnostic.patch\",\"sha256\":\"50f85d7fb8cfa43661c1eaaf777113bbd78ec5c03e9d2664b317f75f81c253ef\"},{\"name\":\"selected-equation-telemetry\",\"path\":\"C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\review\\\\r2-equation-team\\\\operators\\\\round2\\\\selected-equation-telemetry.patch\",\"sha256\":\"db60757f040d90976bdad7c3a54e58b3492931ccccb5e7b29054c6a8e62e7ced\"},{\"name\":\"paragraph-tac-diagnostic\",\"path\":\"C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\review\\\\r2-content-survival\\\\round2\\\\paragraph-tac-diagnostic.patch\",\"sha256\":\"72411ca8b473bd049948b975907a32e71232f6edc03bf85707008ac20927d2cd\"}]"
+  "DIAGNOSTIC_CORRECTIONS_JSON": "[{\"name\":\"explicit-u32-equation-selector\",\"path\":\"C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\review\\\\r2-note-trace-ci\\\\selected-equation-selector-correction.patch\",\"sha256\":\"3d52761324b7521b8658062813b448755c33eb20db26cc9353a7d3d8be530621\",\"applies_after\":\"selected-equation-telemetry\",\"source_path\":\"rhwp/src/renderer/equation/mod.rs\",\"before_sha256\":\"634b60b5d50d8f24ec9e4a2754b3d4b8c12d8f490589da90cb2010212db634f5\",\"after_sha256\":\"d5d5864a1ab50af0682de33296b885e874c74cbb8a679a2274025aa3b3dade4f\",\"scope\":\"Replace only the control-layout selector allowlist with Some(parsed_u32). Exact control match, flag, script/record bounds and native three-ID mapping unchanged.\",\"native_entry_for_new_instances\":\"UNKNOWN / unavailable; native hook returns for IDs outside its three preserved mappings.\"},{\"name\":\"executed-caller-u32-comparison\",\"path\":\"C:\\\\Users\\\\manag\\\\parity-runs\\\\math10-20261018\\\\review\\\\r2-note-trace-ci-repair\\\\executed-caller-u32-correction.patch\",\"sha256\":\"9576c7942e62221addf642faf944e7618ff4ba1edf69c9294e02f7eddf23f057\",\"applies_after\":\"explicit-u32-equation-selector\",\"source_path\":\"rhwp/src/renderer/equation/mod.rs\",\"before_sha256\":\"d5d5864a1ab50af0682de33296b885e874c74cbb8a679a2274025aa3b3dade4f\",\"after_sha256\":\"27bb3ee8dd0ac11f175d674328174458e6d597fdec8acc447b7596e37fb0f44b\",\"scope\":\"One caller line only: eq.common.instance_id != Some(instance) becomes eq.common.instance_id != instance. Equation.common is CommonObjAttr; instance_id is u32. Preserve selector Option<u32> and let-Some extraction.\",\"evidence_run\":39146689830,\"evidence_error\":\"E0277 at equation/mod.rs:75\",\"native_entry_for_new_instances\":\"UNKNOWN / unavailable; original three native mappings retained.\"}]"
+  "GIT_LFS_SKIP_SMUDGE": "1"
+  "GIT_TERMINAL_PROMPT": "0"
+  "GIT_OPTIONAL_LOCKS": "0"
+  "GIT_CONFIG_COUNT": "2"
+  "GIT_CONFIG_KEY_0": "core.autocrlf"
+  "GIT_CONFIG_VALUE_0": "false"
+  "GIT_CONFIG_KEY_1": "core.eol"
+  "GIT_CONFIG_VALUE_1": "lf"
+  "PYTHONDONTWRITEBYTECODE": "1"
+  "RUN_URL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+"jobs":
+  "native":
+    "runs-on": "windows-latest"
+    "timeout-minutes": 90
+    "env":
+      "RUSTUP_TOOLCHAIN": "1.93.1-x86_64-pc-windows-msvc"
+      "CARGO_BUILD_JOBS": "1"
+      "CARGO_TARGET_DIR": "${{ github.workspace }}/rhwp/target/math10-native-o3-cache"
+      "CARGO_INCREMENTAL": "0"
+    "steps":
+      -
+        "name": "Checkout the exact diagnostic source commit, excluding workflow"
+        "id": "checkout"
+        "uses": "actions/checkout@v5"
+        "with":
+          "ref": "${{ env.DIAGNOSTIC_COMMIT }}"
+          "fetch-depth": 0
+          "persist-credentials": false
+          "clean": true
+      -
+        "name": "Verify C17, three patches, helper correction, executed caller fix and four exact files"
+        "id": "source"
+        "shell": "python -u {0}"
+        "run": |
+          import base64, hashlib, json, os, runpy, traceback
+          from pathlib import Path
+          
+          out = Path(os.environ['RUNNER_TEMP']) / 'r2-note-boundary-diagnostic-repair-evidence'
+          out.mkdir(parents=True, exist_ok=True)
+          (out / 'supervisor.py').write_bytes(base64.b64decode('IiIiV2luZG93cyBDSSBvbmx5LiBOZXZlciBleGVjdXRlZCBieSB0aGUgcHJlcGFyYXRpb24gd29ya2VyLiIiIgppbXBvcnQgY3R5cGVzCmZyb20gY3R5cGVzIGltcG9ydCB3aW50eXBlcyBhcyB3CmltcG9ydCBzdWJwcm9jZXNzCmltcG9ydCB0aW1lCgpjbGFzcyBCYXNpY0xpbWl0cyhjdHlwZXMuU3RydWN0dXJlKToKICAgIF9maWVsZHNfID0gWygnUGVyUHJvY2Vzc1VzZXJUaW1lTGltaXQnLCBjdHlwZXMuY19sb25nbG9uZyksICgnUGVySm9iVXNlclRpbWVMaW1pdCcsIGN0eXBlcy5jX2xvbmdsb25nKSwKICAgICAgICAgICAgICAgICgnTGltaXRGbGFncycsIHcuRFdPUkQpLCAoJ01pbmltdW1Xb3JraW5nU2V0U2l6ZScsIGN0eXBlcy5jX3NpemVfdCksCiAgICAgICAgICAgICAgICAoJ01heGltdW1Xb3JraW5nU2V0U2l6ZScsIGN0eXBlcy5jX3NpemVfdCksICgnQWN0aXZlUHJvY2Vzc0xpbWl0Jywgdy5EV09SRCksCiAgICAgICAgICAgICAgICAoJ0FmZmluaXR5JywgY3R5cGVzLmNfc2l6ZV90KSwgKCdQcmlvcml0eUNsYXNzJywgdy5EV09SRCksICgnU2NoZWR1bGluZ0NsYXNzJywgdy5EV09SRCldCmNsYXNzIElvQ291bnRlcnMoY3R5cGVzLlN0cnVjdHVyZSk6CiAgICBfZmllbGRzXyA9IFsobiwgY3R5cGVzLmNfdWxvbmdsb25nKSBmb3IgbiBpbiAoJ1JlYWRPcGVyYXRpb25Db3VudCcsICdXcml0ZU9wZXJhdGlvbkNvdW50JywKICAgICAgICAgICAgICAgICdPdGhlck9wZXJhdGlvbkNvdW50JywgJ1JlYWRUcmFuc2ZlckNvdW50JywgJ1dyaXRlVHJhbnNmZXJDb3VudCcsICdPdGhlclRyYW5zZmVyQ291bnQnKV0KY2xhc3MgRXh0ZW5kZWRMaW1pdHMoY3R5cGVzLlN0cnVjdHVyZSk6CiAgICBfZmllbGRzXyA9IFsoJ0Jhc2ljTGltaXRJbmZvcm1hdGlvbicsIEJhc2ljTGltaXRzKSwgKCdJb0luZm8nLCBJb0NvdW50ZXJzKV0gKyBbCiAgICAgICAgKG4sIGN0eXBlcy5jX3NpemVfdCkgZm9yIG4gaW4gKCdQcm9jZXNzTWVtb3J5TGltaXQnLCAnSm9iTWVtb3J5TGltaXQnLCAnUGVha1Byb2Nlc3NNZW1vcnlVc2VkJywgJ1BlYWtKb2JNZW1vcnlVc2VkJyldCmNsYXNzIE1lbW9yeVN0YXR1cyhjdHlwZXMuU3RydWN0dXJlKToKICAgIF9maWVsZHNfID0gWygnZHdMZW5ndGgnLCB3LkRXT1JEKSwgKCdkd01lbW9yeUxvYWQnLCB3LkRXT1JEKV0gKyBbCiAgICAgICAgKG4sIGN0eXBlcy5jX3Vsb25nbG9uZykgZm9yIG4gaW4gKCd1bGxUb3RhbFBoeXMnLCAndWxsQXZhaWxQaHlzJywgJ3VsbFRvdGFsUGFnZUZpbGUnLAogICAgICAgICAgICAgICAgJ3VsbEF2YWlsUGFnZUZpbGUnLCAndWxsVG90YWxWaXJ0dWFsJywgJ3VsbEF2YWlsVmlydHVhbCcsICd1bGxBdmFpbEV4dGVuZGVkVmlydHVhbCcpXQoKZGVmIG93bmVkKGFyZ3YsIGN3ZCwgdGltZW91dCwgbG9nKToKICAgIGFzc2VydCAwIDwgdGltZW91dCA8PSAxNTAwCiAgICBrZXJuZWwgPSBjdHlwZXMuV2luRExMKCdrZXJuZWwzMicsIHVzZV9sYXN0X2Vycm9yPVRydWUpCiAgICBrZXJuZWwuQ3JlYXRlSm9iT2JqZWN0Vy5hcmd0eXBlcyA9IFt3LkxQVk9JRCwgdy5MUENXU1RSXQogICAga2VybmVsLkNyZWF0ZUpvYk9iamVjdFcucmVzdHlwZSA9IHcuSEFORExFCiAgICBrZXJuZWwuU2V0SW5mb3JtYXRpb25Kb2JPYmplY3QuYXJndHlwZXMgPSBbdy5IQU5ETEUsIGN0eXBlcy5jX2ludCwgdy5MUFZPSUQsIHcuRFdPUkRdCiAgICBrZXJuZWwuQXNzaWduUHJvY2Vzc1RvSm9iT2JqZWN0LmFyZ3R5cGVzID0gW3cuSEFORExFLCB3LkhBTkRMRV0KICAgIGtlcm5lbC5DbG9zZUhhbmRsZS5hcmd0eXBlcyA9IFt3LkhBTkRMRV0KICAgIGtlcm5lbC5HbG9iYWxNZW1vcnlTdGF0dXNFeC5hcmd0eXBlcyA9IFtjdHlwZXMuUE9JTlRFUihNZW1vcnlTdGF0dXMpXQogICAgbnQgPSBjdHlwZXMuV2luRExMKCdudGRsbCcpCiAgICBudC5OdFJlc3VtZVByb2Nlc3MuYXJndHlwZXMgPSBbdy5IQU5ETEVdCiAgICBudC5OdFJlc3VtZVByb2Nlc3MucmVzdHlwZSA9IGN0eXBlcy5jX2xvbmcKICAgIGRlZiByZXF1aXJlKHZhbHVlKToKICAgICAgICBpZiBub3QgdmFsdWU6IHJhaXNlIGN0eXBlcy5XaW5FcnJvcihjdHlwZXMuZ2V0X2xhc3RfZXJyb3IoKSkKICAgIGRlZiBmcmVlX3BlcmNlbnQoKToKICAgICAgICBzdGF0ZSA9IE1lbW9yeVN0YXR1cygpOyBzdGF0ZS5kd0xlbmd0aCA9IGN0eXBlcy5zaXplb2Yoc3RhdGUpCiAgICAgICAgcmVxdWlyZShrZXJuZWwuR2xvYmFsTWVtb3J5U3RhdHVzRXgoY3R5cGVzLmJ5cmVmKHN0YXRlKSkpCiAgICAgICAgdmFsdWUgPSAxMDAgKiBzdGF0ZS51bGxBdmFpbFBoeXMgLyBzdGF0ZS51bGxUb3RhbFBoeXMKICAgICAgICBpZiB2YWx1ZSA8IDE1OiByYWlzZSBSdW50aW1lRXJyb3IoZidGcmVlIHBoeXNpY2FsIFJBTSB7dmFsdWU6LjJmfSUgYmVsb3cgMTUlIGZsb29yJykKICAgICAgICByZXR1cm4gdmFsdWUKICAgIG1pbmltdW0gPSBmcmVlX3BlcmNlbnQoKQogICAgam9iID0ga2VybmVsLkNyZWF0ZUpvYk9iamVjdFcoTm9uZSwgTm9uZSkKICAgIHJlcXVpcmUoam9iKQogICAgcHJvY2VzcyA9IE5vbmUKICAgIHRyeToKICAgICAgICBsaW1pdHMgPSBFeHRlbmRlZExpbWl0cygpCiAgICAgICAgbGltaXRzLkJhc2ljTGltaXRJbmZvcm1hdGlvbi5MaW1pdEZsYWdzID0gMHgyMDAwICAjIEtJTExfT05fSk9CX0NMT1NFCiAgICAgICAgcmVxdWlyZShrZXJuZWwuU2V0SW5mb3JtYXRpb25Kb2JPYmplY3Qoam9iLCA5LCBjdHlwZXMuYnlyZWYobGltaXRzKSwgY3R5cGVzLnNpemVvZihsaW1pdHMpKSkKICAgICAgICB3aXRoIGxvZy5vcGVuKCd3YicpIGFzIHN0cmVhbToKICAgICAgICAgICAgIyBTdXNwZW5kZWQgY3JlYXRpb24gcHJldmVudHMgZGVzY2VuZGFudHMgZXNjYXBpbmcgYmVmb3JlIGpvYiBhc3NpZ25tZW50LgogICAgICAgICAgICBwcm9jZXNzID0gc3VicHJvY2Vzcy5Qb3Blbihhcmd2LCBjd2Q9Y3dkLCBzdGRpbj1zdWJwcm9jZXNzLkRFVk5VTEwsIHN0ZG91dD1zdHJlYW0sCiAgICAgICAgICAgICAgICAgICAgc3RkZXJyPXN1YnByb2Nlc3MuU1RET1VULCBjcmVhdGlvbmZsYWdzPTB4MDgwMDAwMDAgfCAweDAwMDAwMDA0KQogICAgICAgICAgICByZXF1aXJlKGtlcm5lbC5Bc3NpZ25Qcm9jZXNzVG9Kb2JPYmplY3Qoam9iLCB3LkhBTkRMRShpbnQocHJvY2Vzcy5faGFuZGxlKSkpKQogICAgICAgICAgICBzdGF0dXMgPSBudC5OdFJlc3VtZVByb2Nlc3Mody5IQU5ETEUoaW50KHByb2Nlc3MuX2hhbmRsZSkpKQogICAgICAgICAgICBpZiBzdGF0dXMgPCAwOiByYWlzZSBSdW50aW1lRXJyb3IoZidOdFJlc3VtZVByb2Nlc3Mgc3RhdHVzIHtzdGF0dXN9JykKICAgICAgICAgICAgZGVhZGxpbmUgPSB0aW1lLm1vbm90b25pYygpICsgdGltZW91dAogICAgICAgICAgICB3aGlsZSBwcm9jZXNzLnBvbGwoKSBpcyBOb25lOgogICAgICAgICAgICAgICAgbWluaW11bSA9IG1pbihtaW5pbXVtLCBmcmVlX3BlcmNlbnQoKSkKICAgICAgICAgICAgICAgIHJlbWFpbmluZyA9IGRlYWRsaW5lIC0gdGltZS5tb25vdG9uaWMoKQogICAgICAgICAgICAgICAgaWYgcmVtYWluaW5nIDw9IDA6IHJhaXNlIFRpbWVvdXRFcnJvcihmJ3thcmd2WzBdfSBleGNlZWRlZCB7dGltZW91dH1zJykKICAgICAgICAgICAgICAgIHRyeTogcHJvY2Vzcy53YWl0KHRpbWVvdXQ9bWluKDEsIHJlbWFpbmluZykpCiAgICAgICAgICAgICAgICBleGNlcHQgc3VicHJvY2Vzcy5UaW1lb3V0RXhwaXJlZDogcGFzcwogICAgICAgICAgICByZXR1cm4gZGljdChleGl0X2NvZGU9cHJvY2Vzcy5yZXR1cm5jb2RlLCBtaW5fZnJlZV9yYW1fcGVyY2VudD1taW5pbXVtKQogICAgZmluYWxseToKICAgICAgICBrZXJuZWwuQ2xvc2VIYW5kbGUoam9iKSAgIyBraWxscyBhbGwgc3Vydml2aW5nIG93bmVkIGRlc2NlbmRhbnRzLCBpbmNsdWRpbmcgb24gc3VjY2VzcwogICAgICAgIGlmIHByb2Nlc3MgaXMgbm90IE5vbmU6CiAgICAgICAgICAgIGlmIHByb2Nlc3MucG9sbCgpIGlzIE5vbmU6IHByb2Nlc3Mua2lsbCgpICAjIGFsc28gY292ZXJzIGZhaWxlZCBqb2IgYXNzaWdubWVudAogICAgICAgICAgICBwcm9jZXNzLndhaXQodGltZW91dD0zMCkK'))
+          owned = runpy.run_path(str(out / 'supervisor.py'))['owned']
+          def sha(data): return hashlib.sha256(data).hexdigest()
+          def save(name, value): (out / name).write_bytes((json.dumps(value, indent=2) + '\n').encode())
+          commands = []
+          def git(*args):
+              log = out / f'source-git-{len(commands):02d}.log'
+              argv = ['git', *args]
+              entry = dict(argv=argv, timeout_seconds=60, log=log.name)
+              commands.append(entry)
+              try:
+                  entry.update(owned(argv, '.', 60, log))
+                  assert entry['exit_code'] == 0, entry
+                  return log.read_bytes()
+              finally:
+                  if log.exists(): entry['log_sha256'] = sha(log.read_bytes())
+                  save('source-commands.json', commands)
+          def text(*args): return git(*args).decode().strip()
+          
+          try:
+              C, P, T, V = (os.environ[k] for k in ('DIAGNOSTIC_COMMIT', 'C17_PARENT', 'DIAGNOSTIC_TREE', 'GITHUB_SHA'))
+              source = 'rhwp/src/renderer/typeset.rs'
+              workflow = '.github/workflows/math10-note-boundary-diagnostic-repair.yml'
+              assert text('rev-parse', 'HEAD') == C
+              assert text('rev-parse', C + '^{tree}') == T
+              assert text('rev-parse', C + '^') == P
+              assert text('rev-parse', P + '^{tree}') == os.environ['C17_TREE']
+              assert text('rev-parse', V + '^') == C
+              inputs = json.loads(os.environ['DIAGNOSTIC_SOURCES_JSON'])
+              patches = json.loads(os.environ['DIAGNOSTIC_PATCHES_JSON'])
+              corrections = json.loads(os.environ['DIAGNOSTIC_CORRECTIONS_JSON'])
+              assert len(inputs) == 4 and len(patches) == 3
+              assert [r['name'] for r in corrections] == ['explicit-u32-equation-selector', 'executed-caller-u32-comparison']
+              assert corrections[0]['after_sha256'] == corrections[1]['before_sha256']
+              assert corrections[1]['after_sha256'] == next(r['modified_sha256'] for r in inputs if r['path'] == 'rhwp/src/renderer/equation/mod.rs')
+              assert [p['name'] for p in patches] == ['note-boundary-v1', 'selected-equation-telemetry', 'paragraph-tac-diagnostic']
+              assert {r['path'] for r in inputs} == {
+                  'rhwp/src/renderer/typeset.rs', 'rhwp/src/renderer/equation/mod.rs',
+                  'rhwp/src/renderer/layout/paragraph_layout.rs', 'rhwp/src/renderer/skia/renderer.rs'}
+              assert text('diff-tree', '--no-commit-id', '--name-status', '-r', P, C) == '\n'.join(
+                  'M\t' + r['path'] for r in inputs)
+              assert text('diff-tree', '--no-commit-id', '--name-status', '-r', C, V) == 'A\t' + workflow
+              assert not git('ls-tree', C, '--', workflow) and not Path(workflow).exists()
+              workflow_bytes = git('show', V + ':' + workflow)
+              (out / 'validation-workflow.yml').write_bytes(workflow_bytes)
+              original = git('show', P + ':' + source)
+              modified = git('show', C + ':' + source)
+              assert sha(original) == os.environ['ORIGINAL_TYPESET_SHA256']
+              assert sha(modified) == os.environ['MODIFIED_TYPESET_SHA256']
+              assert text('rev-parse', C + ':' + source) == os.environ['DIAGNOSTIC_TYPESET_BLOB']
+              assert Path(source).read_bytes() == modified
+              verified = []
+              for row in inputs:
+                  assert text('rev-parse', P + ':' + row['path']) == row['original_blob']
+                  assert text('rev-parse', C + ':' + row['path']) == row['modified_blob']
+                  assert sha(git('show', P + ':' + row['path'])) == row['original_sha256']
+                  data = git('show', C + ':' + row['path'])
+                  assert sha(data) == row['modified_sha256']
+                  assert Path(row['path']).read_bytes() == data
+                  if row['path'] == 'rhwp/src/renderer/equation/mod.rs':
+                      fixed_line = b'    if eq.common.instance_id != instance || eq.script.len() > 4096 {'
+                      failed_line = b'    if eq.common.instance_id != Some(instance) || eq.script.len() > 4096 {'
+                      assert data.count(fixed_line) == 1 and failed_line not in data
+                      assert sha(data.replace(fixed_line, failed_line)) == row['prior_failed_sha256']
+                  else:
+                      assert row['modified_sha256'] == row['prior_failed_sha256']
+                      assert row['modified_blob'] == row['prior_failed_blob']
+                  verified.append(dict(path=row['path'], blob=row['modified_blob'], sha256=sha(data)))
+              clean = git('status', '--porcelain=v1', '--untracked-files=normal')
+              assert not clean, clean.decode(errors='replace')
+              before = dict(head=C, tree=T, status_sha256=sha(clean), source_files=verified, workflow_present=False)
+              save('source-before.json', before)
+              save('publication.json', dict(original_c17_head=os.environ['ORIGINAL_C17_HEAD'],
+                  original_c17_tree=os.environ['C17_TREE'], published_c17_parent=P,
+                  diagnostic_commit=C, diagnostic_tree=T, workflow_commit=V,
+                  workflow_tree=text('rev-parse', V + '^{tree}'), workflow_blob=text('rev-parse', V + ':' + workflow),
+                  workflow_sha256=sha(workflow_bytes), diagnostic_patch_sha256=os.environ['DIAGNOSTIC_PATCH_SHA256'],
+                  diagnostic_patches=patches, diagnostic_corrections=corrections, diagnostic_source_files=inputs,
+                  patch_hash_authority='Three retained diagnostic patches plus two separately hashed corrections: first helper allowlist to Some(parsed u32), then executed E0277 caller comparison u32 fix. Local preparation reconstructed all five in order. CI verifies all four exact original/final source byte/blob pairs and reverses the one caller line to the failed-source hash; other three final sources equal the failed packet. Patch-file hashes are local preparation metadata, not files re-read in CI.',
+                  original_typeset_sha256=sha(original), modified_typeset_sha256=sha(modified),
+                  run_url=os.environ['RUN_URL']))
+          except BaseException:
+              (out / 'source-error.log').write_bytes(traceback.format_exc().encode())
+              raise
+      -
+        "name": "Install pinned Rust and restore R18 dependency cache"
+        "id": "rust"
+        "uses": "./.github/actions/setup-rust"
+        "with":
+          "cache": "math10-native-r18"
+      -
+        "name": "Restore the retained R18 optimized native objects"
+        "id": "native_objects"
+        "uses": "actions/cache/restore@v4"
+        "with":
+          "path": "${{ env.CARGO_TARGET_DIR }}"
+          "key": "math10-native-o3-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('rhwp/Cargo.lock') }}-${{ env.DIAGNOSTIC_COMMIT }}"
+          "restore-keys": |
+            math10-native-o3-v2-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('rhwp/Cargo.lock') }}-
+      -
+        "name": "Check and build the temporary native CLI with owned deadlines"
+        "id": "validation"
+        "if": "${{ always() && !cancelled() && steps.source.outcome == 'success' }}"
+        "env":
+          "RUST_SETUP_OUTCOME": "${{ steps.rust.outcome }}"
+          "NATIVE_CACHE_OUTCOME": "${{ steps.native_objects.outcome }}"
+          "NATIVE_CACHE_HIT": "${{ steps.native_objects.outputs.cache-hit }}"
+          "NATIVE_CACHE_KEY": "${{ steps.native_objects.outputs.cache-matched-key }}"
+          "NATIVE_CACHE_PRIMARY_KEY": "${{ steps.native_objects.outputs.cache-primary-key }}"
+        "shell": "python -u {0}"
+        "run": |
+          import hashlib, json, os, platform, runpy, shutil, tomllib, traceback
+          from datetime import datetime, timezone
+          from pathlib import Path
+          
+          out = Path(os.environ['RUNNER_TEMP']) / 'r2-note-boundary-diagnostic-repair-evidence'
+          out.mkdir(parents=True, exist_ok=True)
+          owned = runpy.run_path(str(out / 'supervisor.py'))['owned']
+          def now(): return datetime.now(timezone.utc).isoformat()
+          def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          def save(name, value): (out / name).write_bytes((json.dumps(value, indent=2) + '\n').encode())
+          common = ['--locked', '--profile', 'release-test', '--features', 'native-skia', '--bin', 'rhwp', '-j1']
+          stages = [dict(name=name, argv=['cargo', name, *common], cwd=str(Path('rhwp').resolve()),
+                         timeout_seconds=1500, status='not_run') for name in ('check', 'build')]
+          receipt = dict(schema='r2-note-boundary-diagnostic-repair-build-v1', status='failed', exit_code=1,
+              start_utc=now(), stages=stages, compiler={}, profile={},
+              build_cache=dict(exact_hit=os.environ.get('NATIVE_CACHE_HIT'), matched_key=os.environ.get('NATIVE_CACHE_KEY'),
+                               primary_key=os.environ.get('NATIVE_CACHE_PRIMARY_KEY')),
+              run_url=os.environ['RUN_URL'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              compiled_checkout=str(Path.cwd()), diagnostic_enabled_during_build=False,
+              limitations=['Temporary note boundary, paragraph TAC and selected equation instrumentation only; never merge or ship this branch.',
+                  'Check and CLI build only. No unit/integration tests, runtime activation, document/font upload, glyph-paint validation or parity result.',
+                  'R18 test/binary receipts are independent and unchanged. This binary is not candidate-r18.exe.',
+                  'Equation telemetry observes AST/layout/available glyph advances, policy, node origin and native entry origin only; no actual face hash/GID, Windows admission or final glyph origin.',
+                  'One explicit u32 control selector is supported. Native entry remains unavailable for IDs outside the three original body-paragraph mappings.',
+                  'Paragraph TAC trace observes actual selection predicates and separate read-only probes; missing/capped records do not establish a passing predicate or paint success.',
+                  'Prepared after CI39146689830 E0277: helper selector correction and one caller u32 comparison correction are separately recorded. Compilation remained unverified until this CI attempt.',
+                  'A later supervised March selected-page off/on raw PNG comparison is required. Reject truncated trace records.'])
+          def capture(name, argv, cwd='rhwp', timeout=60):
+              log = out / (name + '.log')
+              result = owned(argv, cwd, timeout, log)
+              assert result['exit_code'] == 0, dict(argv=argv, **result)
+              return log.read_text(encoding='utf-8', errors='replace')
+          try:
+              receipt.update(json.loads((out / 'publication.json').read_text(encoding='utf-8')))
+              receipt['source_before'] = json.loads((out / 'source-before.json').read_text(encoding='utf-8'))
+              assert os.environ['RUST_SETUP_OUTCOME'] == 'success', 'Rust setup failed'
+              assert os.environ['NATIVE_CACHE_OUTCOME'] == 'success', 'Native cache restore failed'
+              assert os.environ.get('CARGO_INCREMENTAL') == '0'
+              assert not any(k.startswith('CARGO_PROFILE_') for k in os.environ), 'Unexpected profile override'
+              for key in list(os.environ):
+                  if key.startswith('RHWP_') or key in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS'):
+                      os.environ.pop(key, None)
+              profile = tomllib.loads(Path('rhwp/Cargo.toml').read_text(encoding='utf-8'))['profile']
+              assert profile['release-test']['inherits'] == 'release'
+              assert profile['release-test'].get('opt-level', profile['release'].get('opt-level', 3)) == 3
+              assert profile['release-test']['lto'] is False and profile['release-test']['codegen-units'] == 16
+              receipt['profile'] = dict(name='release-test', opt_level=3, lto=False, codegen_units=16,
+                                        incremental=False, jobs=1, overrides=False, definition=profile['release-test'])
+              for name, argv in [('rustc', ['rustc', '-vV']), ('cargo', ['cargo', '-V']), ('git', ['git', '--version'])]:
+                  receipt['compiler'][name] = capture('compiler-' + name, argv)
+              assert 'release: 1.93.1' in receipt['compiler']['rustc']
+              assert 'host: x86_64-pc-windows-msvc' in receipt['compiler']['rustc']
+              llvm = Path(os.environ['ProgramFiles']) / 'LLVM/bin'
+              if (llvm / 'libclang.dll').is_file(): os.environ['LIBCLANG_PATH'] = str(llvm)
+              vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
+              receipt['compiler']['visual_studio'] = capture('compiler-msvc', [str(vswhere), '-latest', '-products', '*',
+                  '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'])
+              assert json.loads(receipt['compiler']['visual_studio']), 'MSVC C++ tools required'
+              receipt['compiler'].update(python=platform.python_version(), platform=platform.platform(),
+                                        runner_image=os.environ.get('ImageVersion'), libclang_path=os.environ.get('LIBCLANG_PATH'))
+              for stage in stages:
+                  stage.update(status='running', start_utc=now())
+                  save('execution.json', receipt)
+                  log = out / (stage['name'] + '.log')
+                  try:
+                      stage.update(owned(stage['argv'], 'rhwp', stage['timeout_seconds'], log))
+                      assert stage['exit_code'] == 0, stage
+                      stage['status'] = 'succeeded'
+                  finally:
+                      stage['end_utc'] = now()
+                      if log.exists(): stage['log_sha256'] = sha(log)
+                      if stage['status'] == 'running': stage['status'] = 'failed'
+                      save('execution.json', receipt)
+              receipt.update(status='succeeded', exit_code=0)
+          except BaseException:
+              receipt['error'] = traceback.format_exc()
+              (out / 'build-error.log').write_bytes(receipt['error'].encode())
+              print(receipt['error'])
+          finally:
+              try:
+                  verified_after = []
+                  for number, row in enumerate(json.loads(os.environ['DIAGNOSTIC_SOURCES_JSON'])):
+                      verified_after.append(dict(path=row['path'], sha256=sha(row['path']),
+                          blob=capture('source-after-blob-' + str(number), ['git', 'rev-parse', 'HEAD:' + row['path']], '.').strip()))
+                  after = dict(head=capture('source-after-head', ['git', 'rev-parse', 'HEAD'], '.').strip(),
+                      tree=capture('source-after-tree', ['git', 'rev-parse', 'HEAD^{tree}'], '.').strip(),
+                      status_sha256=hashlib.sha256(capture('source-after-status', ['git', 'status', '--porcelain=v1',
+                                                         '--untracked-files=normal'], '.').encode()).hexdigest(),
+                      source_files=verified_after,
+                      workflow_present=Path('.github/workflows/math10-note-boundary-diagnostic-repair.yml').exists())
+                  receipt['source_after'] = after
+                  save('source-after.json', after)
+                  assert after == receipt['source_before'], 'Compiled source changed'
+                  receipt['source_before_after_equal'] = True
+              except BaseException:
+                  receipt.update(status='failed', exit_code=1, source_check_error=traceback.format_exc())
+              receipt['end_utc'] = now()
+              receipt['log_hashes'] = {p.name: sha(p) for p in sorted(out.glob('*.log'))}
+              save('execution.json', receipt)
+          
+          if receipt['status'] == 'succeeded':
+              passed = Path(os.environ['RUNNER_TEMP']) / 'r2-note-boundary-diagnostic-repair-pass'
+              try:
+                  assert all(s['status'] == 'succeeded' for s in stages)
+                  assert not passed.exists(), 'Never overwrite a diagnostic pair'
+                  passed.mkdir()
+                  binary = Path(os.environ['CARGO_TARGET_DIR']) / 'release-test/rhwp.exe'
+                  receipt.update(binary_sha256=sha(binary), build_artifact=str(binary), binary_name='note-boundary-r2-repair.exe',
+                      execution_ledger_sha256=sha(out / 'execution.json'))
+                  shutil.copyfile(binary, passed / 'note-boundary-r2-repair.exe')
+                  assert sha(passed / 'note-boundary-r2-repair.exe') == receipt['binary_sha256']
+                  save('note-boundary-r2-repair.build.json', receipt)
+                  shutil.copyfile(out / 'note-boundary-r2-repair.build.json', passed / 'note-boundary-r2-repair.build.json')
+              except BaseException:
+                  receipt.update(status='failed', exit_code=1, publication_error=traceback.format_exc())
+                  save('note-boundary-r2-repair.build.json', receipt)
+                  print(receipt['publication_error'])
+          else:
+              save('note-boundary-r2-repair.build.json', receipt)
+          raise SystemExit(receipt['exit_code'])
+      -
+        "name": "Record outcomes even after earlier failure"
+        "if": "${{ always() }}"
+        "env":
+          "CHECKOUT_OUTCOME": "${{ steps.checkout.outcome }}"
+          "SOURCE_OUTCOME": "${{ steps.source.outcome }}"
+          "RUST_OUTCOME": "${{ steps.rust.outcome }}"
+          "CACHE_OUTCOME": "${{ steps.native_objects.outcome }}"
+          "VALIDATION_OUTCOME": "${{ steps.validation.outcome }}"
+        "shell": "python -u {0}"
+        "run": |
+          import json, os
+          from pathlib import Path
+          out = Path(os.environ['RUNNER_TEMP']) / 'r2-note-boundary-diagnostic-repair-evidence'
+          out.mkdir(parents=True, exist_ok=True)
+          (out / 'step-outcomes.json').write_bytes((json.dumps(dict(
+              checkout=os.environ['CHECKOUT_OUTCOME'], source=os.environ['SOURCE_OUTCOME'],
+              rust=os.environ['RUST_OUTCOME'], cache=os.environ['CACHE_OUTCOME'],
+              validation=os.environ['VALIDATION_OUTCOME']), indent=2) + '\n').encode())
+          receipt_path = out / 'note-boundary-r2-repair.build.json'
+          if not receipt_path.exists():
+              failure = dict(schema='r2-note-boundary-diagnostic-repair-build-v1', status='failed', exit_code=1,
+                  diagnostic_patch_sha256=os.environ['DIAGNOSTIC_PATCH_SHA256'],
+                  diagnostic_patches=json.loads(os.environ['DIAGNOSTIC_PATCHES_JSON']),
+                  diagnostic_corrections=json.loads(os.environ['DIAGNOSTIC_CORRECTIONS_JSON']),
+                  diagnostic_source_files=json.loads(os.environ['DIAGNOSTIC_SOURCES_JSON']),
+                  original_c17_head=os.environ['ORIGINAL_C17_HEAD'], original_c17_tree=os.environ['C17_TREE'],
+                  published_c17_parent=os.environ['C17_PARENT'], diagnostic_commit=os.environ['DIAGNOSTIC_COMMIT'],
+                  diagnostic_tree=os.environ['DIAGNOSTIC_TREE'], workflow_commit=os.environ['GITHUB_SHA'],
+                  workflow_blob=None, compiler=None, profile=None, build_cache=None, stages=[],
+                  source_before=None, source_after=None, binary_sha256=None,
+                  run_url=os.environ['RUN_URL'],
+                  limitations=['Validation did not produce a receipt. Inspect source-error.log and step-outcomes.json.',
+                               'Identities above are expected targets after CI39146689830 caller repair; compilation unverified until this attempt. No runtime claim.'])
+              receipt_path.write_bytes((json.dumps(failure, indent=2) + '\n').encode())
+      -
+        "name": "Always preserve failure logs and source receipts"
+        "if": "${{ always() }}"
+        "uses": "actions/upload-artifact@v4"
+        "with":
+          "name": "r2-note-boundary-diagnostic-repair-evidence"
+          "path": "${{ runner.temp }}/r2-note-boundary-diagnostic-repair-evidence"
+          "if-no-files-found": "error"
+          "retention-days": 14
+      -
+        "name": "Publish diagnostic pair only after check and build success"
+        "if": "${{ success() && steps.validation.outcome == 'success' }}"
+        "uses": "actions/upload-artifact@v4"
+        "with":
+          "name": "r2-note-boundary-diagnostic-repair"
+          "path": "${{ runner.temp }}/r2-note-boundary-diagnostic-repair-pass"
+          "if-no-files-found": "error"
+          "retention-days": 14
