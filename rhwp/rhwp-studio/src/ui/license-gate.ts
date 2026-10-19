@@ -186,7 +186,7 @@ export async function installLicenseGate(
       return;
     }
     if (trialFinished && status.state === 'trial') {
-      show('체험 끝 · 읽기 전용', '활성화', true);
+      show('읽기 전용', '활성화', true);
       return;
     }
     if (status.canEdit) {

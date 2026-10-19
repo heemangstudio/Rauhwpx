@@ -192,7 +192,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
         showActivate: true,
       };
     case 'trial_expired':
-      return { title: '체험 끝 · 읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
+      return { title: '읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
     case 'revoked':
       return {
         title: '해지된 라이선스 · 읽기 전용',

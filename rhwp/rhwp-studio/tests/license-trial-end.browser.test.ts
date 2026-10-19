@@ -83,7 +83,8 @@ test('the trial card waits for the real end while the final save starts early', 
     const after = await page.evaluate(() => ({
       pill: document.querySelector('#menu-bar .license-pill')?.textContent ?? '',
     }));
-    assert.match(after.pill, /체험 끝/);
+    assert.match(after.pill, /읽기 전용/);
+    assert.doesNotMatch(after.pill, /체험 끝/);
   } finally {
     await browser?.close();
     await server.close();
