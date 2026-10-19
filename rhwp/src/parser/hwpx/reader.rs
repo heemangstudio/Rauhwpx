@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn observed_aggregate_rejects_a_central_directory_size_underreport() {
+    fn underreported_entry_size_cannot_bypass_shared_expanded_budget() {
         use std::io::Write;
         use zip::write::SimpleFileOptions;
         use zip::ZipWriter;
@@ -1205,7 +1205,13 @@ mod tests {
             .read_file_bytes("second.bin")
             .expect_err("observed bytes across readers must replace the forged declaration");
 
-        assert!(error.to_string().contains("4 byte limit"), "{error}");
+        // zip 9 rejects reads beyond the declared size before our aggregate guard sees them.
+        let message = error.to_string();
+        assert!(
+            message.contains("4 byte limit")
+                || message.contains("File is larger than its declared uncompressed size"),
+            "underreported payload must be rejected by the shared budget or ZIP reader: {error}"
+        );
     }
 
     #[test]
