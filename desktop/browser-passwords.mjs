@@ -493,14 +493,43 @@ export class NativeBrowserPasswords {
     }
     return { completed: true };
   }
-  /** tab 이 없으면 모든 탭의 보호 값까지 함께 가린다. */
+  /**
+   * tab 이 없으면 모든 탭의 보호 값까지 함께 가린다.
+   * 가릴 값이 없는 부분은 원래 객체를 그대로 돌려준다. 메인 스레드에서 CDP 메시지마다 전체를 복사하지 않기 위해서다.
+   * 바뀌는 부분의 결과는 예전처럼 모든 표기를 차례로 바꾼 값과 같다.
+   */
   redact(tab, value) {
     const tabValues = tab ? [...tab.protectedPasswords ?? []] : [...this.host.tabs?.values() ?? []].flatMap((entry) => [...entry.protectedPasswords ?? []]);
     const secrets = [...new Set([...this.protectedValues, ...tabValues])].flatMap((secret) => [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64')]).filter(Boolean);
+    // CDP·Electron 이 넘기는 값은 JSON 모양의 평범한 객체라, 가릴 값이 없으면 그대로 보내도 같은 JSON 이 된다.
+    if (!secrets.length) return value;
     const scrub = (input) => {
-      if (typeof input === 'string') { for (const secret of secrets) input = input.replaceAll(secret, '[masked]'); return input; }
-      if (Array.isArray(input)) return input.map(scrub);
-      if (input && typeof input === 'object') return Object.fromEntries(Object.entries(input).map(([key, item]) => [scrub(key), scrub(item)]));
+      if (typeof input === 'string') {
+        if (!secrets.some((secret) => input.includes(secret))) return input;
+        for (const secret of secrets) input = input.replaceAll(secret, '[masked]');
+        return input;
+      }
+      if (Array.isArray(input)) {
+        for (let index = 0; index < input.length; index += 1) {
+          if (!(index in input)) continue;
+          const item = scrub(input[index]);
+          if (item !== input[index]) return input.map((entry, position) => position < index ? entry : position === index ? item : scrub(entry));
+        }
+        return input;
+      }
+      if (input && typeof input === 'object') {
+        const prototype = Object.getPrototypeOf(input);
+        // Date·Buffer 같은 특수 객체는 예전과 같은 평범한 객체 사본을 만든다.
+        if (prototype !== Object.prototype && prototype !== null) return Object.fromEntries(Object.entries(input).map(([key, item]) => [scrub(key), scrub(item)]));
+        const keys = Object.keys(input);
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = scrub(keys[index]); const item = scrub(input[keys[index]]);
+          if (key !== keys[index] || item !== input[keys[index]]) {
+            return Object.fromEntries(keys.map((name, position) => position < index ? [name, input[name]] : position === index ? [key, item] : [scrub(name), scrub(input[name])]));
+          }
+        }
+        return input;
+      }
       return input;
     };
     return scrub(value);

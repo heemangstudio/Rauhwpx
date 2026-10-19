@@ -347,6 +347,43 @@ test('filled passwords stay masked in every tab and again after a restart', asyn
   assert.equal(shown.text, 'Welcome [masked]');
 });
 
+test('redaction masks every encoding of protected values without copying unmatched CDP payloads', () => {
+  const secret = 'fixture pass/+&=';
+  const owner = { protectedPasswords: new Set() }; const other = { protectedPasswords: new Set() };
+  const passwords = new NativeBrowserPasswords({ host: { tabs: new Map([['owner', owner], ['other', other]]) }, vault: {}, importer: {} });
+  const frames = Array.from({ length: 200 }, (_, index) => ({ functionName: `f${index}`, url: 'https://fixture.invalid/app.js', lineNumber: index }));
+  const message = () => ({ method: 'Network.requestWillBeSent', sessionId: 'S', params: {
+    initiator: { type: 'script', stack: { callFrames: frames } },
+    request: { url: `https://fixture.invalid/?p=${encodeURIComponent(secret)}`, postData: `user=andy&${new URLSearchParams({ p: secret })}`,
+      headers: { Authorization: `Basic ${Buffer.from(secret).toString('base64')}`, [`x-${secret}`]: 'key' } },
+    echoes: ['plain', 'tab-only-secret', 7, null],
+  } });
+
+  // 가릴 값이 없으면 메시지를 복사하지 않는다.
+  const quiet = message();
+  assert.equal(passwords.redact(null, quiet), quiet);
+
+  passwords.protect(secret); owner.protectedPasswords.add('tab-only-secret');
+  const input = message(); const before = JSON.stringify(input);
+  const masked = passwords.redact(null, input);
+  const json = JSON.stringify(masked);
+  for (const form of [secret, encodeURIComponent(secret), new URLSearchParams({ value: secret }).toString().slice(6), Buffer.from(secret).toString('base64'), 'tab-only-secret']) assert.equal(json.includes(form), false, form);
+  assert.equal(masked.params.request.url, 'https://fixture.invalid/?p=[masked]');
+  assert.equal(masked.params.request.headers.Authorization, 'Basic [masked]');
+  assert.equal(masked.params.request.headers['x-[masked]'], 'key');
+  assert.deepEqual(masked.params.echoes, ['plain', '[masked]', 7, null]);
+  assert.equal(JSON.stringify(input), before, 'the source message is never changed');
+  // 비밀이 없는 부분은 그대로 공유해 큰 스택·트리를 메시지마다 다시 만들지 않는다.
+  assert.equal(masked.params.initiator, input.params.initiator);
+  // 다른 탭의 비밀번호는 그 탭 범위 밖에서 보이지 않는다.
+  assert.deepEqual(passwords.redact(other, input).params.echoes, ['plain', 'tab-only-secret', 7, null]);
+
+  passwords.clearProtectedValues();
+  const cleared = message(); owner.protectedPasswords.clear();
+  assert.equal(passwords.redact(null, cleared), cleared);
+  assert.equal(JSON.stringify(passwords.redact(null, cleared)).includes(encodeURIComponent(secret)), true);
+});
+
 test('protected CDP denies arbitrary/encoded reads, child sessions, nested commands and pre-fill pending reads', async () => {
   const events = new EventEmitter(); let resolveRead;
   const tab = { passwordShield: true, targetId: 'target', view: { webContents: { getURL: () => 'https://fixture.invalid', getTitle: () => 'Login', debugger: { sendCommand: async (method) => method === 'Runtime.evaluate' ? new Promise((resolve) => { resolveRead = resolve; }) : {} } } } };

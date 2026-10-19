@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { recoverReplacedFile, replaceFile } from './fs-replace.mjs';
+import { recoverReplacedFile, replaceFile, retryWindows } from './fs-replace.mjs';
 
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_SELECTION_BYTES = 1024 * 1024;
@@ -49,17 +49,37 @@ function validateSelection(selection) {
   }
 }
 
-/** 로컬 문맥의 JSON과 이미지를 고정 디렉터리에 저장한다. renderer는 경로를 넘기지 않는다. */
-export function createAgentContextStore({ rootDir, now = () => new Date() }) {
+/**
+ * 로컬 문맥의 JSON과 이미지를 고정 디렉터리에 저장한다. renderer는 경로를 넘기지 않는다.
+ * 대기 중인 기록만 rootDir 바로 아래에 두고, 소비·취소한 기록은 archive/ 로 옮겨 원본을 남긴다.
+ * 목록과 저장은 rootDir 만 읽으므로 지난 기록이 쌓여도 느려지지 않는다.
+ */
+export function createAgentContextStore({ rootDir, now = () => new Date(), platform = process.platform }) {
+  const archiveRoot = join(rootDir, 'archive');
   const contextDir = (id) => {
     if (!UUID.test(String(id))) throw new Error('Invalid capture id');
     return join(rootDir, id);
   };
+  const archivedDir = (id) => { contextDir(id); return join(archiveRoot, id); };
   let mutations = Promise.resolve();
   function mutate(run) {
     const result = mutations.then(run);
     mutations = result.catch(() => undefined);
     return result;
+  }
+  /** 대기 목록에서 빠진 기록을 archive/ 로 옮긴다. 실패해도 상태는 이미 저장되어 있어 다음 목록 읽기에서 다시 옮긴다. */
+  async function archive(id) {
+    try {
+      await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
+      await retryWindows(() => rename(contextDir(id), archivedDir(id)), platform);
+    } catch { /* 같은 기록이 이미 옮겨졌거나 잠겨 있으면 그대로 둔다. */ }
+  }
+  /** 대기 중이면 rootDir, 끝난 기록이면 archive/ 에서 읽는다. 읽는 사이에 옮겨진 경우도 따라간다. */
+  async function inPlace(id, read) {
+    try { return await read(contextDir(id)); } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      return await read(archivedDir(id));
+    }
   }
   async function readBounded(directory, name, limit) {
     const directoryInfo = await lstat(directory);
@@ -81,11 +101,11 @@ export function createAgentContextStore({ rootDir, now = () => new Date() }) {
       return bytes.subarray(0, count);
     } finally { await file.close(); }
   }
-  async function readRecord(id) {
-    const directoryInfo = await lstat(contextDir(id));
+  async function readRecordAt(directory, id) {
+    const directoryInfo = await lstat(directory);
     if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error('Invalid capture directory');
-    await recoverReplacedFile(join(contextDir(id), 'record.json'));
-    const record = JSON.parse((await readBounded(contextDir(id), 'record.json', MAX_SELECTION_BYTES + 64 * 1024)).toString('utf8'));
+    await recoverReplacedFile(join(directory, 'record.json'));
+    const record = JSON.parse((await readBounded(directory, 'record.json', MAX_SELECTION_BYTES + 64 * 1024)).toString('utf8'));
     if (record.id !== id || record.schemaVersion !== 1 || !['queued', 'consumed', 'discarded'].includes(record.state)) throw new Error('Invalid capture record');
     boundedString(record.createdAt, 100, 'date');
     boundedString(record.document?.id, 500, 'document id');
@@ -106,6 +126,7 @@ export function createAgentContextStore({ rootDir, now = () => new Date() }) {
     if (total > MAX_IMAGE_BYTES) throw new Error('Capture files exceed size limit');
     return record;
   }
+  const readRecord = (id) => inPlace(id, (directory) => readRecordAt(directory, id));
   async function list(documentId) {
     boundedString(documentId, 500, 'document id');
     const names = await readdir(rootDir).catch((error) => {
@@ -113,12 +134,16 @@ export function createAgentContextStore({ rootDir, now = () => new Date() }) {
       throw error;
     });
     const records = [];
+    const finished = [];
     for (const id of names.filter((name) => UUID.test(name))) {
       try {
-        const record = await readRecord(id);
-        if (record.document.id === documentId && record.state === 'queued') records.push(record);
+        const record = await readRecordAt(contextDir(id), id);
+        if (record.state !== 'queued') finished.push(id);
+        else if (record.document.id === documentId) records.push(record);
       } catch { /* 손상된 한 건 때문에 다른 메모 복원을 막지 않는다. */ }
     }
+    // 이전 버전이 rootDir 에 남긴 지난 기록은 한 번만 옮긴다. save() 안에서도 불리므로 기다리지 않는다.
+    if (finished.length) void mutate(async () => { for (const id of finished) await archive(id); });
     return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   return {
@@ -167,14 +192,16 @@ export function createAgentContextStore({ rootDir, now = () => new Date() }) {
       }
       return record;
     }); },
-    async readFiles(id) {
-      const record = await readRecord(id);
-      return await Promise.all(record.files.map(async (file) => {
-        const bytes = await readBounded(contextDir(id), imageFileName(file.name), file.byteLength);
-        if (bytes.length !== file.byteLength) throw new Error('Capture image size changed');
-        imageFile({ name: file.name, bytes });
-        return { name: file.name, mimeType: file.mimeType, bytes: new Uint8Array(bytes) };
-      }));
+    readFiles(id) {
+      return inPlace(id, async (directory) => {
+        const record = await readRecordAt(directory, id);
+        return await Promise.all(record.files.map(async (file) => {
+          const bytes = await readBounded(directory, imageFileName(file.name), file.byteLength);
+          if (bytes.length !== file.byteLength) throw new Error('Capture image size changed');
+          imageFile({ name: file.name, bytes });
+          return { name: file.name, mimeType: file.mimeType, bytes: new Uint8Array(bytes) };
+        }));
+      });
     },
     setState(ids, state) { return mutate(async () => {
       if (!['consumed', 'discarded'].includes(state) || !Array.isArray(ids) || ids.length > MAX_PENDING_CONTEXTS) throw new Error('Invalid capture state');
@@ -188,6 +215,7 @@ export function createAgentContextStore({ rootDir, now = () => new Date() }) {
           await writeFile(temporary, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
           await replaceFile(temporary, join(directory, 'record.json'));
         } finally { await rm(temporary, { force: true }); }
+        await archive(id);
       }
     }); },
   };
