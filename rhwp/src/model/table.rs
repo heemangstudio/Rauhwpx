@@ -78,6 +78,12 @@ pub struct Table {
     pub local_resize_cell_heights: Vec<(usize, u32)>,
 }
 
+pub(crate) struct LocalRowBoundaryPlan {
+    row_count: u16,
+    cells: Vec<(u16, u16, Option<HwpUnit>)>,
+    zones: Vec<TableZone>,
+}
+
 /// 표 쪽 나눔 종류
 /// bit 0-1: 0=나누지 않음, 1=셀 단위로 나눔, 2=나눔(행 단위)
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -987,6 +993,337 @@ impl Table {
             }
         }
         heights
+    }
+
+    pub(crate) fn logical_row_heights_for_spaced_resize(&self) -> Result<Vec<HwpUnit>, String> {
+        let rows = usize::from(self.row_count);
+        let cols = usize::from(self.col_count);
+        let grid_cells = rows.saturating_mul(cols);
+        let spacing = u64::try_from(self.cell_spacing).unwrap_or(0);
+        if spacing == 0
+            || rows == 0
+            || cols == 0
+            || grid_cells > MAX_TABLE_GRID_CELLS
+            || self.cells.len() > grid_cells
+            || self.common.width > i32::MAX as u32
+            || self.common.height > i32::MAX as u32
+        {
+            return Err("셀 간격이 있는 표의 격자를 확인할 수 없습니다".to_string());
+        }
+
+        let mut columns = vec![Vec::<&Cell>::new(); cols];
+        let mut widths = vec![None::<u32>; cols];
+        let mut row_links = vec![Vec::<(usize, HwpUnit)>::new(); rows];
+        for cell in &self.cells {
+            let row = usize::from(cell.row);
+            let col = usize::from(cell.col);
+            let end = row.saturating_add(usize::from(cell.row_span));
+            if row >= rows
+                || col >= cols
+                || end > rows
+                || cell.col_span != 1
+                || cell.row_span == 0
+                || cell.width == 0
+                || cell.width > i32::MAX as u32
+                || cell.height == 0
+                || cell.height > i32::MAX as u32
+                || widths[col].is_some_and(|width| width != cell.width)
+            {
+                return Err("셀 간격이 있는 표의 물리적 셀 크기가 맞지 않습니다".to_string());
+            }
+            widths[col] = Some(cell.width);
+            columns[col].push(cell);
+            row_links[row].push((end, cell.height));
+        }
+
+        let mut width = spacing;
+        for (col, cells) in columns.iter_mut().enumerate() {
+            let col_width = widths[col].ok_or("셀 열이 비어 있습니다")?;
+            cells.sort_by_key(|cell| cell.row);
+            let mut row = 0;
+            let mut height = spacing;
+            for cell in cells.iter() {
+                if usize::from(cell.row) != row {
+                    return Err("셀 열이 겹치거나 비어 있습니다".to_string());
+                }
+                row += usize::from(cell.row_span);
+                height = height
+                    .checked_add(u64::from(cell.height))
+                    .and_then(|sum| sum.checked_add(spacing))
+                    .ok_or("셀 높이가 너무 큽니다")?;
+            }
+            if row != rows || height != u64::from(self.common.height) {
+                return Err("셀 높이와 표 높이가 다릅니다".to_string());
+            }
+            width = width
+                .checked_add(u64::from(col_width))
+                .and_then(|sum| sum.checked_add(spacing))
+                .ok_or("셀 너비가 너무 큽니다")?;
+        }
+        if width != u64::from(self.common.width) {
+            return Err("셀 너비와 표 너비가 다릅니다".to_string());
+        }
+
+        // 셀 간격을 제외한 저장 높이의 합으로 논리 행 경계를 복원한다.
+        let mut boundaries = vec![None::<u64>; rows + 1];
+        boundaries[0] = Some(0);
+        for (row, links) in row_links.iter().enumerate() {
+            let start = boundaries[row].ok_or("논리 행 경계를 확인할 수 없습니다")?;
+            for &(end, cell_height) in links {
+                let end_pos = start
+                    .checked_add(u64::from(cell_height))
+                    .ok_or("논리 행 높이가 너무 큽니다")?;
+                if boundaries[end].is_some_and(|known| known != end_pos) {
+                    return Err("논리 행의 물리적 높이가 일치하지 않습니다".to_string());
+                }
+                boundaries[end] = Some(end_pos);
+            }
+        }
+        boundaries
+            .windows(2)
+            .map(|pair| {
+                let height = pair[1]?
+                    .checked_sub(pair[0]?)
+                    .filter(|&height| height > 0)?;
+                u32::try_from(height).ok()
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or("논리 행 높이가 유효하지 않습니다".to_string())
+    }
+
+    /// 열별 가로 경계 이동을 한컴처럼 논리 행 분할 + 행 병합으로 영속화한다.
+    ///
+    /// `shifts` 항목 `(col, boundary_row, delta)` 는 `col` 열에서 `boundary_row` 행 위쪽
+    /// 경계를 `delta` HWPUNIT 만큼 옮긴다. 한컴 HWP130 Shift+마우스 실측: 3×2 표의 왼쪽
+    /// 1/2행 경계만 +566 이동하면 물리 셀 6개는 유지되고 rowCnt 4, 좌상단 rowSpan 2,
+    /// 오른쪽 2행 rowSpan 2 로 저장된다. 모든 열 경계의 합집합이 새 논리 행 경계가 된다.
+    ///
+    /// 병합 영역·셀 간격·기존 로컬 힌트처럼 이 변환이 정의되지 않은 표는 변경 없이
+    /// `Err` 를 돌려준다.
+    pub(crate) fn plan_local_row_boundaries(
+        &self,
+        row_heights: &[HwpUnit],
+        shifts: &[(u16, u16, i32)],
+    ) -> Result<LocalRowBoundaryPlan, String> {
+        const MIN_CELL_HEIGHT: i64 = 200;
+        let rows = self.row_count as usize;
+        let cols = self.col_count as usize;
+        if shifts.is_empty() && self.cell_spacing <= 0 {
+            return Err("이동할 경계가 없습니다".to_string());
+        }
+        if rows == 0
+            || cols == 0
+            || row_heights.len() != rows
+            || row_heights.contains(&0)
+            || rows.saturating_mul(cols) > MAX_TABLE_GRID_CELLS
+        {
+            return Err("표 격자 크기가 올바르지 않습니다".to_string());
+        }
+        if self.cell_spacing < 0
+            || (self.cell_spacing > 0 && !self.zones.is_empty())
+            || !self.local_resize_rows.is_empty()
+            || !self.local_resize_cols.is_empty()
+            || !self.local_resize_cell_widths.is_empty()
+            || !self.local_resize_cell_heights.is_empty()
+        {
+            return Err("논리 행 분할을 적용할 수 없는 표 상태입니다".to_string());
+        }
+
+        if self.cell_spacing > 0
+            && self.logical_row_heights_for_spaced_resize()?.as_slice() != row_heights
+        {
+            return Err("저장된 셀 높이와 논리 행 높이가 다릅니다".to_string());
+        }
+
+        let mut coverage = vec![None; rows * cols];
+        for (index, cell) in self.cells.iter().enumerate() {
+            let row_end = cell.row as usize + cell.row_span as usize;
+            let col_end = cell.col as usize + cell.col_span as usize;
+            if cell.row_span == 0 || cell.col_span == 0 || row_end > rows || col_end > cols {
+                return Err("셀 범위가 표 격자를 벗어납니다".to_string());
+            }
+            for r in cell.row as usize..row_end {
+                for c in cell.col as usize..col_end {
+                    let slot = &mut coverage[r * cols + c];
+                    if slot.is_some() {
+                        return Err("셀 격자가 겹칩니다".to_string());
+                    }
+                    *slot = Some(index);
+                }
+            }
+        }
+        if coverage.iter().any(Option::is_none) {
+            return Err("셀 격자가 정확히 한 번씩 덮이지 않습니다".to_string());
+        }
+
+        let mut row_tops = Vec::with_capacity(rows + 1);
+        row_tops.push(0i64);
+        for &height in row_heights {
+            let next = row_tops[row_tops.len() - 1] + i64::from(height);
+            row_tops.push(next);
+        }
+        let mut intervals: Vec<(i64, i64)> = self
+            .cells
+            .iter()
+            .map(|cell| {
+                (
+                    row_tops[cell.row as usize],
+                    row_tops[(cell.row + cell.row_span) as usize],
+                )
+            })
+            .collect();
+        let original_intervals = intervals.clone();
+
+        let mut seen = std::collections::BTreeSet::new();
+        for &(col, boundary, delta) in shifts {
+            if !seen.insert((col, boundary)) {
+                return Err("같은 경계가 중복 지정되었습니다".to_string());
+            }
+            if col as usize >= cols || boundary == 0 || boundary as usize >= rows {
+                return Err("이동할 경계가 표 내부가 아닙니다".to_string());
+            }
+            let covers = |cell: &Cell| cell.col <= col && col < cell.col + cell.col_span;
+            let above = self
+                .cells
+                .iter()
+                .position(|cell| covers(cell) && cell.row + cell.row_span == boundary);
+            let below = self
+                .cells
+                .iter()
+                .position(|cell| covers(cell) && cell.row == boundary);
+            let (Some(above), Some(below)) = (above, below) else {
+                return Err("이동할 경계가 셀 병합 내부에 있습니다".to_string());
+            };
+            if self.cells[above].col_span != 1 || self.cells[below].col_span != 1 {
+                return Err("여러 열에 걸친 셀 경계는 열별로 이동할 수 없습니다".to_string());
+            }
+            intervals[above].1 += i64::from(delta);
+            intervals[below].0 += i64::from(delta);
+        }
+        if intervals
+            .iter()
+            .any(|&(top, bottom)| bottom - top < MIN_CELL_HEIGHT)
+        {
+            return Err("셀 높이가 최소값보다 작아집니다".to_string());
+        }
+
+        let mut existing = vec![false; rows + 1];
+        let mut boundaries = Vec::with_capacity(rows + 1 + 2 * shifts.len());
+        for &(top, bottom) in &intervals {
+            for endpoint in [top, bottom] {
+                if let Ok(row) = row_tops.binary_search(&endpoint) {
+                    existing[row] = true;
+                } else {
+                    boundaries.push(endpoint);
+                }
+            }
+        }
+        boundaries.extend(
+            row_tops
+                .into_iter()
+                .zip(existing)
+                .filter_map(|(position, present)| present.then_some(position)),
+        );
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let new_rows = boundaries.len() - 1;
+        if new_rows > u16::MAX as usize || new_rows.saturating_mul(cols) > MAX_TABLE_GRID_CELLS {
+            return Err("논리 행 수가 상한을 넘습니다".to_string());
+        }
+        let row_of = |position: i64| {
+            boundaries
+                .binary_search(&position)
+                .expect("interval endpoint is a boundary") as u16
+        };
+        let mut cells = Vec::with_capacity(self.cells.len());
+        for (&(top, bottom), &(old_top, old_bottom)) in intervals.iter().zip(&original_intervals) {
+            let height = if (top, bottom) == (old_top, old_bottom) {
+                None
+            } else {
+                Some(u32::try_from(bottom - top).map_err(|_| "셀 높이 범위 초과")?)
+            };
+            let row = row_of(top);
+            cells.push((row, row_of(bottom) - row, height));
+        }
+        let zones = self.remap_single_row_zones(&cells, &coverage)?;
+        Ok(LocalRowBoundaryPlan {
+            row_count: new_rows as u16,
+            cells,
+            zones,
+        })
+    }
+
+    /// Hancom keeps a one-row cell zone on the moved row of the cell that starts there.
+    fn remap_single_row_zones(
+        &self,
+        planned: &[(u16, u16, Option<HwpUnit>)],
+        coverage: &[Option<usize>],
+    ) -> Result<Vec<TableZone>, String> {
+        if self.zones.len() > MAX_TABLE_GRID_CELLS {
+            return Err("셀 영역 수가 상한을 넘습니다".to_string());
+        }
+        let mut zones = Vec::with_capacity(self.zones.len());
+        let mut covered_columns = 0usize;
+        for zone in &self.zones {
+            if zone.start_row != zone.end_row
+                || zone.start_col > zone.end_col
+                || zone.end_row >= self.row_count
+                || zone.end_col >= self.col_count
+            {
+                return Err("행 분할로 옮길 수 없는 셀 영역입니다".to_string());
+            }
+            covered_columns += usize::from(zone.end_col - zone.start_col) + 1;
+            if covered_columns > MAX_TABLE_GRID_CELLS {
+                return Err("셀 영역 범위 합이 상한을 넘습니다".to_string());
+            }
+            let mut new_row = None;
+            for col in zone.start_col..=zone.end_col {
+                let index = coverage
+                    [usize::from(zone.start_row) * usize::from(self.col_count) + usize::from(col)]
+                .expect("validated coverage");
+                if self.cells[index].row != zone.start_row {
+                    return Err("셀 영역이 셀 시작 행과 맞지 않습니다".to_string());
+                }
+                let row = planned[index].0;
+                if new_row.is_some_and(|previous| previous != row) {
+                    return Err("셀 영역이 서로 다른 행으로 나뉩니다".to_string());
+                }
+                new_row = Some(row);
+            }
+            let row = new_row.expect("zone covers at least one column");
+            zones.push(TableZone {
+                start_row: row,
+                end_row: row,
+                ..zone.clone()
+            });
+        }
+        Ok(zones)
+    }
+
+    pub(crate) fn apply_local_row_boundary_plan(&mut self, plan: LocalRowBoundaryPlan) {
+        for (cell, (row, span, height)) in self.cells.iter_mut().zip(plan.cells) {
+            cell.row = row;
+            cell.row_span = span;
+            if let Some(height) = height {
+                cell.height = height;
+            }
+        }
+        self.row_count = plan.row_count;
+        self.zones = plan.zones;
+        self.rebuild_row_sizes();
+        self.rebuild_grid();
+        self.dirty = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shift_local_row_boundaries(
+        &mut self,
+        row_heights: &[HwpUnit],
+        shifts: &[(u16, u16, i32)],
+    ) -> Result<(), String> {
+        let plan = self.plan_local_row_boundaries(row_heights, shifts)?;
+        self.apply_local_row_boundary_plan(plan);
+        Ok(())
     }
 
     /// row_sizes를 행별 실제 셀 개수로 재계산한다.

@@ -484,6 +484,148 @@ fn has_independent_col_row_y(col_row_y: &[Vec<f64>], row_y: &[f64]) -> bool {
     })
 }
 
+fn saved_spaced_cell_boxes(table: &Table, dpi: f64) -> Option<Vec<BoundingBox>> {
+    let spacing = u64::try_from(table.cell_spacing).ok().filter(|&s| s > 0)?;
+    let col_count = usize::from(table.col_count);
+    let row_count = usize::from(table.row_count);
+    let grid_cells = row_count.checked_mul(col_count)?;
+    if col_count == 0
+        || row_count == 0
+        || col_count > table.cells.len()
+        || grid_cells > crate::model::table::MAX_TABLE_GRID_CELLS
+        || table.cells.len() > grid_cells
+        || !table.zones.is_empty()
+        || !table.local_resize_rows.is_empty()
+        || !table.local_resize_cols.is_empty()
+        || !table.local_resize_cell_widths.is_empty()
+        || !table.local_resize_cell_heights.is_empty()
+        || table.common.width > i32::MAX as u32
+        || table.common.height > i32::MAX as u32
+    {
+        return None;
+    }
+
+    let mut by_column = vec![Vec::<usize>::new(); col_count];
+    let mut widths = vec![None::<u32>; col_count];
+    for (index, cell) in table.cells.iter().enumerate() {
+        let col = usize::from(cell.col);
+        if col >= col_count
+            || cell.col_span != 1
+            || cell.row_span == 0
+            || cell.width == 0
+            || cell.width > i32::MAX as u32
+            || cell.height == 0
+            || cell.height > i32::MAX as u32
+        {
+            return None;
+        }
+        if widths[col].is_some_and(|width| width != cell.width) {
+            return None;
+        }
+        widths[col] = Some(cell.width);
+        by_column[col].push(index);
+    }
+
+    let mut x = spacing;
+    let mut boxes = vec![BoundingBox::new(0.0, 0.0, 0.0, 0.0); table.cells.len()];
+    for (col, column) in by_column.iter_mut().enumerate() {
+        let width = widths[col]?;
+        column.sort_by_key(|&index| table.cells[index].row);
+        let mut row = 0;
+        let mut y = spacing;
+        for &index in column.iter() {
+            let cell = &table.cells[index];
+            if usize::from(cell.row) != row {
+                return None;
+            }
+            row = row.checked_add(usize::from(cell.row_span))?;
+            if row > row_count {
+                return None;
+            }
+            boxes[index] = BoundingBox::new(
+                hwpunit_to_px(i32::try_from(x).ok()?, dpi),
+                hwpunit_to_px(i32::try_from(y).ok()?, dpi),
+                hwpunit_to_px(cell.width as i32, dpi),
+                hwpunit_to_px(cell.height as i32, dpi),
+            );
+            y = y
+                .checked_add(u64::from(cell.height))?
+                .checked_add(spacing)?;
+        }
+        if row != row_count || y != u64::from(table.common.height) {
+            return None;
+        }
+        x = x.checked_add(u64::from(width))?.checked_add(spacing)?;
+    }
+    (x == u64::from(table.common.width)).then_some(boxes)
+}
+
+#[cfg(test)]
+mod saved_spaced_geometry_tests {
+    use super::*;
+    use crate::model::table::Cell;
+
+    fn table() -> Table {
+        let mut table = Table {
+            row_count: 2,
+            col_count: 1,
+            cell_spacing: 100,
+            cells: (0..2)
+                .map(|row| Cell {
+                    row,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 1000,
+                    height: 200,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        table.common.width = 1200;
+        table.common.height = 700;
+        table
+    }
+
+    #[test]
+    fn saved_spaced_boxes_keep_cell_vector_indices() {
+        let mut table = table();
+        table.cells.reverse();
+        let boxes = saved_spaced_cell_boxes(&table, 96.0).unwrap();
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0].y, hwpunit_to_px(400, 96.0));
+        assert_eq!(boxes[1].y, hwpunit_to_px(100, 96.0));
+        assert_eq!(table.cells[0].row, 1);
+    }
+
+    #[test]
+    fn saved_spaced_boxes_reject_unverified_geometry_and_live_hints() {
+        let base = table();
+        let mut invalid = base.clone();
+        invalid.common.height += 1;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base.clone();
+        invalid.common.width += 1;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base.clone();
+        invalid.cells[1].row = 0;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base.clone();
+        invalid.cells[1].row = 2;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base.clone();
+        invalid.cells[1].row_span = 2;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base.clone();
+        invalid.cell_spacing = 0;
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+        invalid = base;
+        invalid.local_resize_cell_heights.push((0, 300));
+        assert!(saved_spaced_cell_boxes(&invalid, 96.0).is_none());
+    }
+}
+
 fn render_cell_box_borders(
     tree: &mut PageRenderTree,
     bs: &ResolvedBorderStyle,
@@ -2050,10 +2192,19 @@ impl LayoutEngine {
             None
         };
 
+        let saved_spaced_boxes = (nested_split.is_none()
+            && (self.render_table_width_scale(table) - 1.0).abs() < f64::EPSILON)
+            .then(|| saved_spaced_cell_boxes(table, self.dpi))
+            .flatten();
         let table_width = row_col_x
             .iter()
             .map(|rx| rx.last().copied().unwrap_or(0.0))
             .fold(col_x.last().copied().unwrap_or(0.0), f64::max);
+        let table_width = if saved_spaced_boxes.is_some() {
+            hwpunit_to_px(table.common.width as i32, self.dpi)
+        } else {
+            table_width
+        };
         let mut table_height = if let Some(col_row_y) = independent_col_row_y.as_ref() {
             col_row_y
                 .iter()
@@ -2064,6 +2215,9 @@ impl LayoutEngine {
         } else {
             row_y.last().copied().unwrap_or(0.0)
         };
+        if saved_spaced_boxes.is_some() {
+            table_height = hwpunit_to_px(table.common.height as i32, self.dpi);
+        }
 
         // ── 3. 위치 결정 ──
         let pw = self.current_paper_width.get();
@@ -2184,6 +2338,7 @@ impl LayoutEngine {
         if depth == 0
             && nested_split.is_none()
             && independent_col_row_y.is_none()
+            && saved_spaced_boxes.is_none()
             && inline_x_override.is_none()
             // 1행 표는 typeset 의 1행 개체 경로(선언 밴드를 다음 쪽으로 잇는 분할)가 맡는다.
             && row_count > 1
@@ -2392,6 +2547,7 @@ impl LayoutEngine {
             header_footer_padding_compat,
             &cellzone_diagonal_origin_covered,
             native_saved_text_frame_outer_box,
+            saved_spaced_boxes.as_deref(),
         );
 
         collect_zone_borders(
@@ -2486,7 +2642,22 @@ impl LayoutEngine {
         }
 
         // ── 6. 테두리 렌더링 ──
-        if independent_col_row_y.is_none() {
+        if saved_spaced_boxes.is_some() {
+            if let Some(style) = table
+                .border_fill_id
+                .checked_sub(1)
+                .and_then(|id| styles.border_styles.get(id as usize))
+            {
+                table_node.children.extend(render_cell_box_borders(
+                    tree,
+                    style,
+                    table_x,
+                    table_y,
+                    table_width,
+                    table_height,
+                ));
+            }
+        } else if independent_col_row_y.is_none() {
             table_node
                 .children
                 .extend(super::border_rendering::render_edge_borders_with_policy(
@@ -6281,6 +6452,7 @@ impl LayoutEngine {
         header_footer_padding_compat: bool,
         cellzone_diagonal_origin_covered: &[Vec<bool>],
         native_saved_text_frame_outer_box: bool,
+        saved_spaced_boxes: Option<&[BoundingBox]>,
     ) {
         let mut independent_border_nodes: Vec<RenderNode> = Vec::new();
         for (cell_idx, cell) in table.cells.iter().enumerate() {
@@ -6298,14 +6470,20 @@ impl LayoutEngine {
                 }
             }
 
-            let cell_x = table_x + row_col_x[r][c];
+            let saved_box = saved_spaced_boxes.and_then(|boxes| boxes.get(cell_idx));
+            let cell_x = table_x + saved_box.map_or(row_col_x[r][c], |bbox| bbox.x);
             let cell_col_y = independent_col_row_y.and_then(|col_y| col_y.get(c));
             // row_y는 이미 시프트된 상태이므로 음수일 수 있음 (start_row 이전 행).
             // 독립 셀 높이가 있는 표는 해당 열의 누적 y를 사용한다.
             let raw_cell_y = table_y
-                + cell_col_y
-                    .and_then(|cy| cy.get(r).copied())
-                    .unwrap_or(row_y[r]);
+                + saved_box.map_or_else(
+                    || {
+                        cell_col_y
+                            .and_then(|cy| cy.get(r).copied())
+                            .unwrap_or(row_y[r])
+                    },
+                    |bbox| bbox.y,
+                );
             let cell_y = if row_filter.is_some() {
                 raw_cell_y.max(table_y)
             } else {
@@ -6313,14 +6491,20 @@ impl LayoutEngine {
             };
             let end_col = (c + cell.col_span as usize).min(col_count);
             let end_row = (r + cell.row_span as usize).min(row_count);
-            let cell_w = row_col_x[r][end_col] - row_col_x[r][c];
-            let raw_cell_h = cell_col_y
-                .and_then(|cy| {
-                    let start = cy.get(r).copied()?;
-                    let end = cy.get(end_row).copied()?;
-                    Some(end - start)
-                })
-                .unwrap_or_else(|| row_y[end_row] - row_y[r]);
+            let cell_w =
+                saved_box.map_or(row_col_x[r][end_col] - row_col_x[r][c], |bbox| bbox.width);
+            let raw_cell_h = saved_box.map_or_else(
+                || {
+                    cell_col_y
+                        .and_then(|cy| {
+                            let start = cy.get(r).copied()?;
+                            let end = cy.get(end_row).copied()?;
+                            Some(end - start)
+                        })
+                        .unwrap_or_else(|| row_y[end_row] - row_y[r])
+                },
+                |bbox| bbox.height,
+            );
             let cell_h = if row_filter.is_some() {
                 // 클램프된 y에 맞게 높이도 조정
                 (raw_cell_h - (cell_y - raw_cell_y)).max(0.0)
@@ -6787,7 +6971,7 @@ impl LayoutEngine {
             // (b) 셀 테두리를 수집한다. 열별 높이가 다른 표는 row_y 격자로
             // 테두리를 그릴 수 없으므로 셀 bbox 기준 라인을 별도로 생성한다.
             if let Some(bs) = border_style {
-                if independent_col_row_y.is_some() {
+                if independent_col_row_y.is_some() || saved_box.is_some() {
                     independent_border_nodes.extend(render_cell_box_borders(
                         tree, bs, cell_x, cell_y, cell_w, cell_h,
                     ));

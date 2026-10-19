@@ -913,7 +913,7 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
       }
     } else {
       for (const box of state.bboxes) {
-        if (box.col !== targetBox.col) continue;
+        if (box.col !== targetBox.col || box.colSpan !== 1) continue;
         if (box.cellIdx === state.singleCellTarget.cellIdx) continue;
         if (neighborIdx !== null && box.cellIdx === neighborIdx) continue;
         pushLocalResizeHeightHint(updates, box.cellIdx, getCellDisplaySize(box, state.edge));
