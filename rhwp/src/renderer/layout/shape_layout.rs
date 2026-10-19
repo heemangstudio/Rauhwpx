@@ -30,6 +30,118 @@ fn rectangle_corner_radius_px(round_rate: u8, width: f64, height: f64) -> f64 {
     (short_side * f64::from(round_rate) / 100.0).min(short_side / 2.0)
 }
 
+/// 저장 본문 줄과 현재 글상자 프레임이 같은 경계를 가리킬 때만 그 경계를 예약한다.
+/// 선언 크기나 원본 LINE_SEG는 바꾸지 않는다. 조판과 모든 단의 anchor가 공유한다.
+pub(crate) fn stored_body_wide_textbox_bottom(
+    para: &Paragraph,
+    ctrl: &Control,
+    body: &LayoutRect,
+    dpi: f64,
+    profile: crate::model::provenance::LayoutCompatibilityProfile,
+) -> Option<f64> {
+    use crate::model::paragraph::LineSeg;
+    use crate::model::shape::{SizeCriterion, TextWrap};
+
+    // HWP3 변환 계보와 원본 HWP3 컨테이너는 다르다. HWP5의 저장 줄/현재
+    // 프레임이 아래에서 같은 경계를 증명하면 변환 계보가 있어도 그 경계를 쓴다.
+    if !(profile.native_hwp5_layout() || profile.hwp3_layout())
+        || profile.hwp3_native_layout()
+        || profile.hwpx_container()
+        || profile.hwpx_stored_layout()
+        || profile.hwp5_origin_hwpx()
+        || profile.session_edited()
+        || profile.own_line_layout()
+    {
+        return None;
+    }
+    let Control::Shape(shape) = ctrl else {
+        return None;
+    };
+    let ShapeObject::Rectangle(rect) = shape.as_ref() else {
+        return None;
+    };
+    let common = &rect.common;
+    let attr = &rect.drawing.shape_attr;
+    if rect.drawing.text_box.is_none()
+        || rect.drawing.caption.is_some()
+        || common.treat_as_char
+        || common.text_wrap != TextWrap::TopAndBottom
+        || common.vert_rel_to != VertRelTo::Paper
+        || common.vert_align != VertAlign::Top
+        || common.horz_align != HorzAlign::Left
+        || !matches!(common.horz_rel_to, HorzRelTo::Paper | HorzRelTo::Page)
+        || common.width_criterion != SizeCriterion::Absolute
+        || common.height_criterion != SizeCriterion::Absolute
+        || [
+            common.margin.left,
+            common.margin.right,
+            common.margin.top,
+            common.margin.bottom,
+        ]
+        .iter()
+        .any(|&margin| margin != 0)
+        || attr.group_level != 0
+        || attr.offset_x != 0
+        || attr.offset_y != 0
+        || extract_shape_transform(attr).has_transform()
+        || attr.render_b != 0.0
+        || attr.render_c != 0.0
+        || attr.render_tx != 0.0
+        || attr.render_ty != 0.0
+        || attr.current_width_was_zero
+        || attr.current_height_was_zero
+        || attr.current_width != common.width
+        || attr.current_height <= common.height
+        || common.height == 0
+    {
+        return None;
+    }
+    // 원본→현재 크기 정규화만 허용한다. 추가 배율·전단·이동은 기존 경로로 보낸다.
+    let normalized_scale = |scale: f64, original: u32, current: u32| {
+        scale.is_finite()
+            && scale > 0.0
+            && (scale == 1.0
+                || (original > 0
+                    && (scale * f64::from(original) - f64::from(current)).abs() <= 1.0))
+    };
+    if !normalized_scale(attr.render_sx, attr.original_width, attr.current_width)
+        || !normalized_scale(attr.render_sy, attr.original_height, attr.current_height)
+    {
+        return None;
+    }
+    let first = para.line_segs.first()?;
+    if first.text_start != 0
+        || first.vertical_pos <= 0
+        || para.line_segs.iter().any(|line| {
+            line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                || line.line_height <= 0
+                || line.vertical_pos < first.vertical_pos
+        })
+    {
+        return None;
+    }
+    // u32 크기를 i32로 잘라 음수가 되는 손상값도 제외한다.
+    let px = |hu: u32| f64::from(hu) * dpi / 7200.0;
+    let left = match common.horz_rel_to {
+        HorzRelTo::Paper => px(common.horizontal_offset),
+        _ => body.x + px(common.horizontal_offset),
+    };
+    let width = px(common.width);
+    let overlap = (left + width).min(body.x + body.width) - left.max(body.x);
+    let top = px(common.vertical_offset);
+    let bottom = top + px(attr.current_height);
+    let authored_top = body.y + hwpunit_to_px(first.vertical_pos, dpi);
+    let unit = dpi / 7200.0;
+    (body.width > 0.0
+        && body.height > 0.0
+        && overlap >= body.width * 0.8
+        && top <= body.y + body.height / 3.0
+        && bottom > body.y
+        && bottom <= body.y + body.height / 3.0
+        && (bottom - authored_top).abs() <= unit)
+        .then_some(bottom)
+}
+
 fn compound_rectangle_strokes(line_type: u32, width: f64) -> Option<[(f64, f64); 2]> {
     if width <= 0.0 {
         return None;
@@ -630,6 +742,92 @@ fn reflow_matrix_textbox_para(
 }
 
 impl LayoutEngine {
+    /// 상대 폭의 기준과 글상자의 기존 current-size 보정을 그리기/인라인 배치가 공유한다.
+    fn resolve_shape_frame_width(
+        &self,
+        shape: &ShapeObject,
+        col_area: &LayoutRect,
+        body_area: &LayoutRect,
+        paper_area: &LayoutRect,
+        paragraph_width: f64,
+    ) -> f64 {
+        let common = shape.common();
+        let (mut width, _) = self.resolve_object_size(common, col_area, body_area, paper_area);
+        if shape
+            .drawing()
+            .and_then(|drawing| drawing.text_box.as_ref())
+            .is_some_and(textbox_contains_non_tac_picture)
+        {
+            let current = hwpunit_to_px(shape.shape_attr().current_width as i32, self.dpi);
+            if current > width && current > 0.0 {
+                width = current;
+            }
+        }
+        if common.width_criterion == crate::model::shape::SizeCriterion::Para {
+            width = paragraph_width * common.width as f64 / 10_000.0;
+        }
+        width
+    }
+
+    /// common.width의 퍼센트 값을 HU로 변환하지 않는다. 실제 단/쪽 문맥에서
+    /// 프레임을 먼저 결정한 뒤 바깥 여백을 한 번만 더해 정렬·줄 전진에 쓴다.
+    pub(super) fn relative_inline_shape_occupied_width(
+        &self,
+        shape: &ShapeObject,
+        col_area: &LayoutRect,
+        paragraph_width: f64,
+    ) -> Option<f64> {
+        use crate::model::shape::SizeCriterion;
+        let common = shape.common();
+        if !common.treat_as_char || common.width_criterion == SizeCriterion::Absolute {
+            return None;
+        }
+        let (x, y, width, height) = self.current_body_area.get();
+        let body_area = LayoutRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let paper_area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: self.current_paper_width.get(),
+            height: 0.0, // 이 경로는 너비만 사용한다.
+        };
+        let basis = match common.width_criterion {
+            SizeCriterion::Paper => paper_area.width,
+            SizeCriterion::Page => body_area.width,
+            SizeCriterion::Column => col_area.width,
+            SizeCriterion::Para => paragraph_width,
+            SizeCriterion::Absolute => unreachable!(),
+        };
+        if !basis.is_finite() || basis <= 0.0 {
+            return None;
+        }
+        let mut width = self.resolve_shape_frame_width(
+            shape,
+            col_area,
+            &body_area,
+            &paper_area,
+            paragraph_width,
+        );
+        if let Some(caption) = shape_caption_for_layout(shape).filter(|caption| {
+            matches!(
+                caption.direction,
+                CaptionDirection::Left | CaptionDirection::Right
+            )
+        }) {
+            width += hwpunit_to_px(caption.width as i32, self.dpi)
+                + hwpunit_to_px(caption.spacing as i32, self.dpi);
+        }
+        width += hwpunit_to_px(
+            i32::from(common.margin.left) + i32::from(common.margin.right),
+            self.dpi,
+        );
+        width.is_finite().then_some(width.max(0.0))
+    }
+
     fn push_hwpx_hmapsi_preview_clip_node(
         &self,
         tree: &mut PageRenderTree,
@@ -835,10 +1033,21 @@ impl LayoutEngine {
             }
 
             // 인라인 좌표 없으면 기존 방식 (정렬 기반 단독 배치)
-            let eq_w = hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi);
+            let eq_w = hwpunit_to_px(
+                crate::renderer::equation::content_width_hwp_with_policy(
+                    eq,
+                    styles.font_metrics_policy,
+                ),
+                self.dpi,
+            );
             let eq_h = hwpunit_to_px(eq.common.height as i32, self.dpi);
-            let eq_advance =
-                hwpunit_to_px(crate::renderer::equation::occupied_width_hwp(eq), self.dpi);
+            let eq_advance = hwpunit_to_px(
+                crate::renderer::equation::occupied_width_hwp_with_policy(
+                    eq,
+                    styles.font_metrics_policy,
+                ),
+                self.dpi,
+            );
             let eq_x = match alignment {
                 Alignment::Center | Alignment::Distribute => {
                     col_area.x + (col_area.width - eq_advance).max(0.0) / 2.0
@@ -854,11 +1063,18 @@ impl LayoutEngine {
             let font_size_px = hwpunit_to_px(eq.font_size as i32, self.dpi);
             let layout_box =
                 super::super::equation::layout::EqLayout::with_font(font_size_px, &eq.font_name)
+                    .with_metrics_policy(styles.font_metrics_policy)
                     .with_version(&eq.version_info)
                     .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(
                         &ast,
-                        hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi),
+                        hwpunit_to_px(
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
+                            self.dpi,
+                        ),
                     );
             let color_str = super::super::equation::svg_render::eq_color_to_svg(eq.color);
             let svg_content =
@@ -901,8 +1117,18 @@ impl LayoutEngine {
         };
 
         let common = shape.common();
-        let (mut shape_w, mut shape_h) =
-            self.resolve_object_size(common, col_area, body_area, paper_area);
+        // 배치 때 사용한 문단 폭과 같은 기준으로 물리 프레임 폭을 결정한다.
+        let composed_para = styles.para_styles.get(para.para_shape_id as usize);
+        let para_margin_left = composed_para.map(|ps| ps.margin_left).unwrap_or(0.0);
+        let para_margin_right = composed_para.map(|ps| ps.margin_right).unwrap_or(0.0);
+        let shape_w = self.resolve_shape_frame_width(
+            shape,
+            col_area,
+            body_area,
+            paper_area,
+            (col_area.width - para_margin_left - para_margin_right).max(0.0),
+        );
+        let (_, mut shape_h) = self.resolve_object_size(common, col_area, body_area, paper_area);
 
         if shape
             .drawing()
@@ -910,30 +1136,10 @@ impl LayoutEngine {
             .is_some_and(textbox_contains_non_tac_picture)
         {
             let sa = shape.shape_attr();
-            let cur_w = hwpunit_to_px(sa.current_width as i32, self.dpi);
             let cur_h = hwpunit_to_px(sa.current_height as i32, self.dpi);
-            if cur_w > shape_w && cur_w > 0.0 {
-                shape_w = cur_w;
-            }
             if cur_h > shape_h && cur_h > 0.0 {
                 shape_h = cur_h;
             }
-        }
-
-        // 문단 여백 반영: Para 기준 위치 지정 시 문단의 왼쪽/오른쪽 여백 고려
-        let composed_para = paragraphs.get(para_index).and_then(|_| {
-            // composed 데이터가 없으므로 paragraphs에서 직접 para_shape_id 사용
-            let pid = para.para_shape_id as usize;
-            styles.para_styles.get(pid)
-        });
-        let para_margin_left = composed_para.map(|ps| ps.margin_left).unwrap_or(0.0);
-        let para_margin_right = composed_para.map(|ps| ps.margin_right).unwrap_or(0.0);
-        if matches!(
-            common.width_criterion,
-            crate::model::shape::SizeCriterion::Para
-        ) {
-            let para_width = (col_area.width - para_margin_left - para_margin_right).max(0.0);
-            shape_w = para_width * common.width as f64 / 10_000.0;
         }
 
         // Position and exclude the complete visual frame, including captions. This keeps
@@ -3298,7 +3504,12 @@ impl LayoutEngine {
                         let child_common = shape.as_ref().common();
                         if child_common.treat_as_char {
                             total_inline_width +=
-                                hwpunit_to_px(child_common.width as i32, self.dpi);
+                                hwpunit_to_px(child_common.width as i32, self.dpi)
+                                    + hwpunit_to_px(
+                                        i32::from(child_common.margin.left)
+                                            + i32::from(child_common.margin.right),
+                                        self.dpi,
+                                    );
                             max_inline_height = max_inline_height
                                 .max(hwpunit_to_px(child_common.height as i32, self.dpi));
                         }
@@ -3317,7 +3528,10 @@ impl LayoutEngine {
                     }
                     Control::Equation(eq) => {
                         total_inline_width += hwpunit_to_px(
-                            crate::renderer::equation::occupied_width_hwp(eq),
+                            crate::renderer::equation::occupied_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         max_inline_height =
@@ -3477,16 +3691,48 @@ impl LayoutEngine {
                         let (child_x, child_y) = if child_common.treat_as_char {
                             // 인라인 도형: 텍스트 내 삽입 위치까지의 advance + 줄 인식
                             // 배치(필요 시 다음 행으로 접기)를 반영하여 배치
+                            let margin_left =
+                                hwpunit_to_px(i32::from(child_common.margin.left), self.dpi);
+                            let margin_right =
+                                hwpunit_to_px(i32::from(child_common.margin.right), self.dpi);
+                            let margin_top =
+                                hwpunit_to_px(i32::from(child_common.margin.top), self.dpi);
+                            let box_h = child_h
+                                + hwpunit_to_px(
+                                    i32::from(child_common.margin.top)
+                                        + i32::from(child_common.margin.bottom),
+                                    self.dpi,
+                                );
                             let row_dy = place_inline_slot(
                                 &mut inline_x,
                                 &mut text_cursor,
                                 ctrl_text_pos,
-                                child_w,
-                                child_h,
+                                child_w + margin_left + margin_right,
+                                box_h,
                             );
-                            let x = inline_x;
-                            inline_x += child_w;
-                            (x, para_start_y + row_dy)
+                            let x = inline_x + margin_left;
+                            inline_x += child_w + margin_left + margin_right;
+                            let line_baseline = composed_para
+                                .and_then(|c| {
+                                    c.lines.get(composed_line_index_for_char(c, ctrl_text_pos))
+                                })
+                                .map(|line| hwpunit_to_px(line.baseline_distance, self.dpi));
+                            // 중첩 일반 글상자도 Picture처럼 바깥 상자의 85%를
+                            // 호스트 baseline에 맞춘다. 회전/그룹/캡션은 기존 배치를 유지한다.
+                            let baseline_shift = line_baseline
+                                .filter(|baseline| {
+                                    *baseline > 0.0
+                                        && matches!(shape.as_ref(), ShapeObject::Rectangle(_))
+                                        && !extract_shape_transform(shape.shape_attr())
+                                            .has_transform()
+                                        && shape.shape_attr().group_level == 0
+                                        && shape.shape_attr().render_b == 0.0
+                                        && shape.shape_attr().render_c == 0.0
+                                        && shape_caption_for_layout(shape).is_none()
+                                })
+                                .map(|baseline| baseline - box_h * 0.85 + margin_top)
+                                .unwrap_or(0.0);
+                            (x, para_start_y + row_dy + baseline_shift)
                         } else {
                             // 절대 위치 도형
                             (
@@ -3634,11 +3880,17 @@ impl LayoutEngine {
                     Control::Equation(eq) => {
                         // 글상자 내 수식: 항상 글자처럼 인라인 배치
                         let eq_w = hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_advance = hwpunit_to_px(
-                            crate::renderer::equation::occupied_width_hwp(eq),
+                            crate::renderer::equation::occupied_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         let eq_margin_x = hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
@@ -3694,12 +3946,16 @@ impl LayoutEngine {
                                 font_size_px,
                                 &eq.font_name,
                             )
+                            .with_metrics_policy(styles.font_metrics_policy)
                             .with_version(&eq.version_info)
                             .with_base_pt(eq.font_size as f64 / 100.0)
                             .layout_in_control_width(
                                 &ast,
                                 hwpunit_to_px(
-                                    crate::renderer::equation::content_width_hwp(eq),
+                                    crate::renderer::equation::content_width_hwp_with_policy(
+                                        eq,
+                                        styles.font_metrics_policy,
+                                    ),
                                     self.dpi,
                                 ),
                             );
@@ -4296,8 +4552,16 @@ impl LayoutEngine {
                     None
                 };
                 let effective_ref = effective_common.as_ref().unwrap_or(common);
-                let (bottom_y, shape_y) =
+                let (declared_bottom_y, shape_y) =
                     self.calc_shape_bottom_y(effective_ref, col_area, body_area);
+                let bottom_y = stored_body_wide_textbox_bottom(
+                    para,
+                    ctrl,
+                    body_area,
+                    self.dpi,
+                    self.profile.get(),
+                )
+                .unwrap_or(declared_bottom_y);
 
                 // 용지/쪽 기준 그림의 저장 줄 사다리가 이미 위·아래 공간을 피하면
                 // 별도 post-jump는 그림 높이를 이중 계상한다. 같은 쪽의 모든 중간
@@ -4420,7 +4684,16 @@ impl LayoutEngine {
                 // Task #321 v3 정밀화 (#326): Paper(용지) 기준 도형 중 본문과 겹치지 않는
                 // (= 머리말 영역에만 위치하는) 도형만 col 1+ reserve 에서 제외.
                 // 본문과 겹치는 Paper 도형은 col 1 시작에 영향 → 제외 안 함.
-                if matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+                let stored_bottom = stored_body_wide_textbox_bottom(
+                    para,
+                    ctrl,
+                    body_area,
+                    self.dpi,
+                    self.profile.get(),
+                );
+                if stored_bottom.is_none()
+                    && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Paper)
+                {
                     let shape_top = hwpunit_to_px(common.vertical_offset as i32, self.dpi);
                     let shape_bottom = shape_top + hwpunit_to_px(common.height as i32, self.dpi);
                     if shape_bottom <= body_area.y {
@@ -4439,7 +4712,9 @@ impl LayoutEngine {
                 if shape_w < body_area.width * 0.8 {
                     continue;
                 }
-                let (bottom_y, shape_y) = self.calc_shape_bottom_y(common, body_area, body_area);
+                let (declared_bottom_y, shape_y) =
+                    self.calc_shape_bottom_y(common, body_area, body_area);
+                let bottom_y = stored_bottom.unwrap_or(declared_bottom_y);
                 let threshold_y = body_area.y + body_area.height / 3.0;
                 if shape_y > threshold_y {
                     continue;

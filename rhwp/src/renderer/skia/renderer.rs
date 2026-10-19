@@ -1028,8 +1028,8 @@ impl SkiaLayerRenderer {
                         PaintOp::FootnoteMarker { bbox, marker } => {
                             let style = crate::renderer::TextStyle {
                                 font_family: marker.font_family.clone(),
-                                // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-                                font_size: (marker.base_font_size * 0.75).max(7.0),
+                                // 레이아웃에서 확정한 참조 번호 크기를 그대로 사용한다.
+                                font_size: marker.font_size,
                                 color: marker.color,
                                 bold: marker.bold,
                                 ..Default::default()
@@ -3571,6 +3571,7 @@ mod tests {
             number: 1,
             text: "1)".to_string(),
             base_font_size: 18.0,
+            font_size: (18.0_f64 * 0.75).max(7.0),
             baseline: 20.0,
             font_family: String::new(),
             bold: false,

@@ -2021,8 +2021,8 @@ impl HeightMeasurer {
                                             )
                                         };
                                         let live_flow_height =
-                                            crate::renderer::equation::composed_line_flow_height_px(
-                                                p, &comp, i, self.dpi,
+                                            crate::renderer::equation::composed_line_flow_height_px_with_policy(
+                                                p, &comp, i, self.dpi, styles.font_metrics_policy,
                                             );
                                         let h = h.max(live_flow_height.unwrap_or(0.0));
                                         // Generated HWPX RowBreak cells also retain the final
@@ -2693,8 +2693,8 @@ impl HeightMeasurer {
                                             )
                                         };
                                         let live_flow_height =
-                                            crate::renderer::equation::composed_line_flow_height_px(
-                                                p, &comp, i, self.dpi,
+                                            crate::renderer::equation::composed_line_flow_height_px_with_policy(
+                                                p, &comp, i, self.dpi, styles.font_metrics_policy,
                                             );
                                         let h = h.max(live_flow_height.unwrap_or(0.0));
                                         let include_trailing_ls = include_table_cell_line_spacing(
@@ -3157,8 +3157,8 @@ impl HeightMeasurer {
                                     )
                                 };
                                 let h = h.max(
-                                    crate::renderer::equation::composed_line_flow_height_px(
-                                        p, &comp, li, self.dpi,
+                                    crate::renderer::equation::composed_line_flow_height_px_with_policy(
+                                        p, &comp, li, self.dpi, styles.font_metrics_policy,
                                     )
                                     .unwrap_or(0.0),
                                 );

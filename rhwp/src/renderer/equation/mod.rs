@@ -16,6 +16,8 @@ pub mod svg_render;
 pub mod symbols;
 pub mod tokenizer;
 
+use crate::model::provenance::FontMetricsPolicy;
+
 static MEASUREMENT_GENERATION: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -23,7 +25,7 @@ thread_local! {
     static OBSERVED_MEASUREMENT_GENERATION: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     // 서체 미해소(None)는 저장하지 않는다 — 원본 서체는 렌더 진입 때 등록될 수 있다.
     static NATURAL_WIDTH_CACHE: std::cell::RefCell<
-        std::collections::HashMap<(String, u32, String, String), i32>
+        std::collections::HashMap<(String, u32, String, String, &'static str), i32>
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
@@ -54,7 +56,14 @@ pub(crate) fn sync_measurement_caches() -> usize {
 
 /// 개체 공통 너비는 바깥 여백을 제외한 값이다. 인라인 슬롯에 양쪽 여백을 예약한다.
 pub(crate) fn occupied_width_hwp(eq: &crate::model::control::Equation) -> i32 {
-    (i64::from(content_width_hwp(eq))
+    occupied_width_hwp_with_policy(eq, FontMetricsPolicy::default())
+}
+
+pub(crate) fn occupied_width_hwp_with_policy(
+    eq: &crate::model::control::Equation,
+    policy: FontMetricsPolicy,
+) -> i32 {
+    (i64::from(content_width_hwp_with_policy(eq, policy))
         + i64::from(eq.common.margin.left)
         + i64::from(eq.common.margin.right))
     .clamp(0, i64::from(i32::MAX)) as i32
@@ -67,11 +76,25 @@ pub(crate) fn occupied_width_hwp(eq: &crate::model::control::Equation) -> i32 {
 /// math-001 `…+7` 뒤 본문이 저장 폭이 아니라 내용 끝에 붙음). 원본 수식 서체
 /// 메트릭으로 배치할 때만 자연 폭이 그 재계산과 같으므로, 서체가 없으면 저장 폭을 쓴다.
 pub(crate) fn content_width_hwp(eq: &crate::model::control::Equation) -> i32 {
-    natural_width_hwp(eq).unwrap_or(eq.common.width as i32)
+    content_width_hwp_with_policy(eq, FontMetricsPolicy::default())
+}
+
+pub(crate) fn content_width_hwp_with_policy(
+    eq: &crate::model::control::Equation,
+    policy: FontMetricsPolicy,
+) -> i32 {
+    natural_width_hwp_with_policy(eq, policy).unwrap_or(eq.common.width as i32)
 }
 
 /// 원본 수식 서체로 잰 자연 폭(HWPUNIT). 서체 메트릭이 없으면 None.
 pub(crate) fn natural_width_hwp(eq: &crate::model::control::Equation) -> Option<i32> {
+    natural_width_hwp_with_policy(eq, FontMetricsPolicy::default())
+}
+
+pub(crate) fn natural_width_hwp_with_policy(
+    eq: &crate::model::control::Equation,
+    policy: FontMetricsPolicy,
+) -> Option<i32> {
     // An empty EQEDIT can be an authored inline spacer. Hancom keeps its saved
     // width; measuring an empty AST would collapse it to zero.
     if eq.script.is_empty() {
@@ -86,12 +109,14 @@ pub(crate) fn natural_width_hwp(eq: &crate::model::control::Equation) -> Option<
         eq.font_size,
         eq.font_name.clone(),
         eq.version_info.clone(),
+        policy.as_str(),
     );
     if let Some(hit) = NATURAL_WIDTH_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
         return Some(hit);
     }
     let font_size_px = super::hwpunit_to_px(eq.font_size.max(1) as i32, super::DEFAULT_DPI);
     let engine = layout::EqLayout::with_font(font_size_px, &eq.font_name)
+        .with_metrics_policy(policy)
         .with_version(&eq.version_info)
         .with_base_pt(eq.font_size as f64 / 100.0);
     if !engine.has_source_face_metrics() {
@@ -119,6 +144,72 @@ pub(crate) fn control_baseline_hwp(eq: &crate::model::control::Equation, natural
     } else {
         natural
     }
+}
+
+/// Windows Version 60 수식의 줄 메트릭. 점유 높이 H와 비율 간격 기준 B는 별개다.
+/// 잉크 배치 기준선(control_baseline_hwp)은 이 줄 기준선으로 대체하지 않는다.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ControlLineFlowHwp {
+    pub height: i32,
+    pub baseline: i32,
+    pub percent_spacing_basis: i32,
+}
+
+/// Windows 수식의 비율 간격: 4 * M(trunc0(B / 4), percent - 100, 100).
+/// 일반 텍스트/다른 플랫폼의 간격 산식은 바꾸지 않는다.
+pub(crate) fn windows_percent_line_spacing_hwp(basis: i32, percent: f64) -> i32 {
+    if percent < 0.0 || !percent.is_finite() {
+        return 0;
+    }
+    let product = i64::from(basis / 4) * (i64::from(percent as i32) - 100);
+    let rounded = (product.abs() + 50) / 100 * product.signum();
+    (rounded * 4).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+pub(crate) fn windows_control_line_flow_hwp(
+    eq: &crate::model::control::Equation,
+    text_height: i32,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<ControlLineFlowHwp> {
+    if policy != crate::model::provenance::FontMetricsPolicy::HancomWindows
+        || eq.version_info != "Equation Version 60"
+        || !font::is_legacy_equation_font(&eq.font_name)
+    {
+        return None;
+    }
+    let (_, natural_height, natural_baseline) = intrinsic_metrics_hwp_with_version_with_policy(
+        &eq.script,
+        eq.font_size,
+        &eq.font_name,
+        &eq.version_info,
+        policy,
+    );
+    let content_height = if eq.common.height > 0 {
+        eq.common.height.min(i32::MAX as u32) as i32
+    } else {
+        natural_height.min(i32::MAX as u32) as i32
+    };
+    let height = content_height
+        .saturating_add(i32::from(eq.common.margin.top))
+        .saturating_add(i32::from(eq.common.margin.bottom))
+        .max(0);
+    let baseline = if eq.common.height > 0 && (1..=100).contains(&eq.baseline) {
+        // Foundation M(H, baseline%, 100): 전체 점유 H에서 정수 반올림한다.
+        ((i64::from(height) * i64::from(eq.baseline) + 50) / 100) as i32
+    } else {
+        (natural_baseline.min(i32::MAX as u32) as i32)
+            .saturating_add(i32::from(eq.common.margin.top))
+    };
+    Some(ControlLineFlowHwp {
+        height,
+        baseline: baseline.clamp(0, height),
+        // AffectLSpacing=false는 B만 style text height로 바꾼다. H는 유지한다.
+        percent_spacing_basis: if eq.common.affect_line_spacing {
+            height
+        } else {
+            text_height
+        },
+    })
 }
 
 /// The equation's ink box may extend below its line box. When `affectLSpacing` is
@@ -183,12 +274,21 @@ pub(crate) fn control_flow_ascent_descent_px(
     eq: &crate::model::control::Equation,
     dpi: f64,
 ) -> (f64, f64) {
-    let metrics = intrinsic_metrics_px_with_version(
+    control_flow_ascent_descent_px_with_policy(eq, dpi, FontMetricsPolicy::default())
+}
+
+pub(crate) fn control_flow_ascent_descent_px_with_policy(
+    eq: &crate::model::control::Equation,
+    dpi: f64,
+    policy: FontMetricsPolicy,
+) -> (f64, f64) {
+    let metrics = intrinsic_metrics_px_with_version_with_policy(
         &eq.script,
         eq.font_size,
         dpi,
         &eq.font_name,
         &eq.version_info,
+        policy,
     );
     let stored_height = crate::renderer::hwpunit_to_px(eq.common.height as i32, dpi);
     let flow_height = control_line_flow_height(
@@ -254,6 +354,20 @@ pub(crate) fn stored_unaffected_upper_line_metrics_hu(
     composed: &crate::renderer::composer::ComposedParagraph,
     line_index: usize,
 ) -> Option<(i32, i32)> {
+    stored_unaffected_upper_line_metrics_hu_with_policy(
+        para,
+        composed,
+        line_index,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub(crate) fn stored_unaffected_upper_line_metrics_hu_with_policy(
+    para: &crate::model::paragraph::Paragraph,
+    composed: &crate::renderer::composer::ComposedParagraph,
+    line_index: usize,
+    policy: FontMetricsPolicy,
+) -> Option<(i32, i32)> {
     use crate::model::control::Control;
     use crate::model::paragraph::LineSeg;
 
@@ -316,6 +430,7 @@ pub(crate) fn stored_unaffected_upper_line_metrics_hu(
         if eq.script.contains('_') && !eq.script.contains('^') {
             let em_px = super::hwpunit_to_px(em, super::DEFAULT_DPI);
             let engine = layout::EqLayout::with_font(em_px, &eq.font_name)
+                .with_metrics_policy(policy)
                 .with_version(&eq.version_info)
                 .with_base_pt(f64::from(eq.font_size) / 100.0);
             if engine.has_source_face_metrics() {
@@ -347,6 +462,7 @@ pub(crate) fn stored_unaffected_upper_line_metrics_hu(
             }
             let em_px = super::hwpunit_to_px(em, super::DEFAULT_DPI);
             let engine = layout::EqLayout::with_font(em_px, &eq.font_name)
+                .with_metrics_policy(policy)
                 .with_version(&eq.version_info)
                 .with_base_pt(f64::from(eq.font_size) / 100.0);
             if !engine.has_source_face_metrics() {
@@ -388,6 +504,13 @@ pub(crate) fn stored_unaffected_upper_line_metrics_hu(
 pub(crate) fn stored_unaffected_upper_compaction_hu(
     para: &crate::model::paragraph::Paragraph,
 ) -> i32 {
+    stored_unaffected_upper_compaction_hu_with_policy(para, FontMetricsPolicy::default())
+}
+
+pub(crate) fn stored_unaffected_upper_compaction_hu_with_policy(
+    para: &crate::model::paragraph::Paragraph,
+    policy: FontMetricsPolicy,
+) -> i32 {
     if !para
         .controls
         .iter()
@@ -395,12 +518,12 @@ pub(crate) fn stored_unaffected_upper_compaction_hu(
     {
         return 0;
     }
-    let composed = crate::renderer::composer::compose_paragraph(para);
+    let composed = crate::renderer::composer::compose_paragraph_with_policy(para, policy);
     para.line_segs
         .iter()
         .enumerate()
         .filter_map(|(i, seg)| {
-            stored_unaffected_upper_line_metrics_hu(para, &composed, i)
+            stored_unaffected_upper_line_metrics_hu_with_policy(para, &composed, i, policy)
                 .map(|(height, _)| (seg.line_height - height).max(0))
         })
         .sum()
@@ -466,7 +589,17 @@ pub(crate) fn endnote_unaffected_equation_textheight_compaction_hu(
 pub(crate) fn endnote_unaffected_equation_textheight_compaction_total_hu(
     para: &crate::model::paragraph::Paragraph,
 ) -> i32 {
-    let composed = crate::renderer::composer::compose_paragraph(para);
+    endnote_unaffected_equation_textheight_compaction_total_hu_with_policy(
+        para,
+        FontMetricsPolicy::HcrDeclared,
+    )
+}
+
+pub(crate) fn endnote_unaffected_equation_textheight_compaction_total_hu_with_policy(
+    para: &crate::model::paragraph::Paragraph,
+    policy: FontMetricsPolicy,
+) -> i32 {
+    let composed = crate::renderer::composer::compose_paragraph_with_policy(para, policy);
     (0..para.line_segs.len())
         .map(|line| endnote_unaffected_equation_textheight_compaction_hu(para, &composed, line))
         .sum()
@@ -492,6 +625,13 @@ pub(crate) fn saved_endnote_vpos_continuous(
 pub(crate) fn endnote_trailing_flat_script_flow_delta_hu(
     para: &crate::model::paragraph::Paragraph,
 ) -> i32 {
+    endnote_trailing_flat_script_flow_delta_hu_with_policy(para, FontMetricsPolicy::default())
+}
+
+pub(crate) fn endnote_trailing_flat_script_flow_delta_hu_with_policy(
+    para: &crate::model::paragraph::Paragraph,
+    policy: FontMetricsPolicy,
+) -> i32 {
     use crate::model::control::Control;
     use crate::model::paragraph::LineSeg;
 
@@ -501,7 +641,7 @@ pub(crate) fn endnote_trailing_flat_script_flow_delta_hu(
     if seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0 || seg.line_height != seg.text_height {
         return 0;
     }
-    let composed = crate::renderer::composer::compose_paragraph(para);
+    let composed = crate::renderer::composer::compose_paragraph_with_policy(para, policy);
     if composed.lines.len() != para.line_segs.len() {
         return 0;
     }
@@ -513,7 +653,8 @@ pub(crate) fn endnote_trailing_flat_script_flow_delta_hu(
     {
         return 0;
     }
-    let source_upper_metrics = stored_unaffected_upper_line_metrics_hu(para, &composed, last);
+    let source_upper_metrics =
+        stored_unaffected_upper_line_metrics_hu_with_policy(para, &composed, last, policy);
     let mut measured = 0;
     let mut found = false;
     for (position, _, control_index) in &composed.tac_controls {
@@ -551,6 +692,7 @@ pub(crate) fn endnote_trailing_flat_script_flow_delta_hu(
         }
         let em_px = super::hwpunit_to_px(em, super::DEFAULT_DPI);
         let engine = layout::EqLayout::with_font(em_px, &eq.font_name)
+            .with_metrics_policy(policy)
             .with_version(&eq.version_info)
             .with_base_pt(f64::from(eq.font_size) / 100.0);
         if !engine.has_source_face_metrics() {
@@ -604,6 +746,22 @@ pub(crate) fn composed_line_flow_height_px(
     line_index: usize,
     dpi: f64,
 ) -> Option<f64> {
+    composed_line_flow_height_px_with_policy(
+        para,
+        composed,
+        line_index,
+        dpi,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub(crate) fn composed_line_flow_height_px_with_policy(
+    para: &crate::model::paragraph::Paragraph,
+    composed: &crate::renderer::composer::ComposedParagraph,
+    line_index: usize,
+    dpi: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
     use crate::model::control::Control;
     use crate::model::paragraph::LineSeg;
     // Authored line boxes already incorporate their equation occupancy. Paint
@@ -633,7 +791,7 @@ pub(crate) fn composed_line_flow_height_px(
         if !eq.common.treat_as_char {
             continue;
         }
-        let (ascent, descent) = control_flow_ascent_descent_px(eq, dpi);
+        let (ascent, descent) = control_flow_ascent_descent_px_with_policy(eq, dpi, policy);
         max_ascent = max_ascent.max(ascent);
         max_descent = max_descent.max(descent);
         found = true;
@@ -674,10 +832,29 @@ pub fn intrinsic_metrics_px_with_version(
     font_name: &str,
     version_info: &str,
 ) -> IntrinsicMetrics {
+    intrinsic_metrics_px_with_version_with_policy(
+        script,
+        font_size,
+        dpi,
+        font_name,
+        version_info,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub fn intrinsic_metrics_px_with_version_with_policy(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+    policy: FontMetricsPolicy,
+) -> IntrinsicMetrics {
     let font_size_px = super::hwpunit_to_px(font_size.max(1) as i32, dpi);
     let tokens = tokenizer::tokenize(script);
     let ast = parser::EqParser::new(tokens).parse();
     let layout = layout::EqLayout::with_font(font_size_px, font_name)
+        .with_metrics_policy(policy)
         .with_version(version_info)
         .with_base_pt(font_size as f64 / 100.0)
         .layout(&ast);
@@ -725,7 +902,25 @@ pub(crate) fn generated_fraction_flow_height_px(
     font_name: &str,
     version_info: &str,
 ) -> Option<f64> {
-    generated_fraction_flow_height_with_clearance_px(
+    generated_fraction_flow_height_px_with_policy(
+        script,
+        font_size,
+        dpi,
+        font_name,
+        version_info,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub(crate) fn generated_fraction_flow_height_px_with_policy(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
+    generated_fraction_flow_height_with_clearance_px_with_policy(
         script,
         font_size,
         dpi,
@@ -733,6 +928,7 @@ pub(crate) fn generated_fraction_flow_height_px(
         version_info,
         layout::FRAC_LINE_PAD,
         false,
+        policy,
     )
 }
 
@@ -746,7 +942,25 @@ pub(crate) fn generated_draw_text_fraction_flow_height_px(
     font_name: &str,
     version_info: &str,
 ) -> Option<f64> {
-    generated_fraction_flow_height_with_clearance_px(
+    generated_draw_text_fraction_flow_height_px_with_policy(
+        script,
+        font_size,
+        dpi,
+        font_name,
+        version_info,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub(crate) fn generated_draw_text_fraction_flow_height_px_with_policy(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
+    generated_fraction_flow_height_with_clearance_px_with_policy(
         script,
         font_size,
         dpi,
@@ -754,6 +968,7 @@ pub(crate) fn generated_draw_text_fraction_flow_height_px(
         version_info,
         0.14,
         true,
+        policy,
     )
 }
 
@@ -766,9 +981,28 @@ pub(crate) fn generated_draw_text_vector_flow_metrics_px(
     font_name: &str,
     version_info: &str,
 ) -> Option<IntrinsicMetrics> {
+    generated_draw_text_vector_flow_metrics_px_with_policy(
+        script,
+        font_size,
+        dpi,
+        font_name,
+        version_info,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub(crate) fn generated_draw_text_vector_flow_metrics_px_with_policy(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+    policy: FontMetricsPolicy,
+) -> Option<IntrinsicMetrics> {
     let em = super::hwpunit_to_px(font_size.max(1) as i32, dpi);
     let ast = parser::EqParser::new(tokenizer::tokenize(script)).parse();
     let layout = layout::EqLayout::with_font(em, font_name)
+        .with_metrics_policy(policy)
         .with_version(version_info)
         .with_base_pt(font_size as f64 / 100.0);
     let painted = layout.layout(&ast);
@@ -789,9 +1023,32 @@ fn generated_fraction_flow_height_with_clearance_px(
     clearance_em: f64,
     draw_text_vector_occupancy: bool,
 ) -> Option<f64> {
+    generated_fraction_flow_height_with_clearance_px_with_policy(
+        script,
+        font_size,
+        dpi,
+        font_name,
+        version_info,
+        clearance_em,
+        draw_text_vector_occupancy,
+        FontMetricsPolicy::default(),
+    )
+}
+
+fn generated_fraction_flow_height_with_clearance_px_with_policy(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+    clearance_em: f64,
+    draw_text_vector_occupancy: bool,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
     let em = super::hwpunit_to_px(font_size.max(1) as i32, dpi);
     let ast = parser::EqParser::new(tokenizer::tokenize(script)).parse();
     let layout = layout::EqLayout::with_font(em, font_name)
+        .with_metrics_policy(policy)
         .with_version(version_info)
         .with_base_pt(font_size as f64 / 100.0);
     let layout = if draw_text_vector_occupancy {
@@ -808,10 +1065,21 @@ fn generated_fraction_flow_height_with_clearance_px(
 /// painter는 `layout_in_control_width`로 원자 간격을 줄여 저장 폭에 맞춘다. 최소 간격으로도
 /// 넘칠 때만 자연 폭이 저장 폭보다 커지며, 줄 advance는 그 초과분만 더해야 한다.
 pub fn fitted_width_hwp(eq: &crate::model::control::Equation) -> u32 {
+    fitted_width_hwp_with_policy(eq, FontMetricsPolicy::default())
+}
+
+pub fn fitted_width_hwp_with_policy(
+    eq: &crate::model::control::Equation,
+    policy: FontMetricsPolicy,
+) -> u32 {
     let font_size_px = super::hwpunit_to_px(eq.font_size.max(1) as i32, super::DEFAULT_DPI);
     let ast = parser::EqParser::new(tokenizer::tokenize(&eq.script)).parse();
-    let stored = super::hwpunit_to_px(content_width_hwp(eq), super::DEFAULT_DPI);
+    let stored = super::hwpunit_to_px(
+        content_width_hwp_with_policy(eq, policy),
+        super::DEFAULT_DPI,
+    );
     let layout = layout::EqLayout::with_font(font_size_px, &eq.font_name)
+        .with_metrics_policy(policy)
         .with_version(&eq.version_info)
         .with_base_pt(eq.font_size as f64 / 100.0)
         .layout_in_control_width(&ast, stored);
@@ -837,12 +1105,29 @@ pub fn intrinsic_metrics_hwp_with_version(
     font_name: &str,
     version_info: &str,
 ) -> (u32, u32, u32) {
-    let metrics = intrinsic_metrics_px_with_version(
+    intrinsic_metrics_hwp_with_version_with_policy(
+        script,
+        font_size,
+        font_name,
+        version_info,
+        FontMetricsPolicy::default(),
+    )
+}
+
+pub fn intrinsic_metrics_hwp_with_version_with_policy(
+    script: &str,
+    font_size: u32,
+    font_name: &str,
+    version_info: &str,
+    policy: FontMetricsPolicy,
+) -> (u32, u32, u32) {
+    let metrics = intrinsic_metrics_px_with_version_with_policy(
         script,
         font_size,
         super::DEFAULT_DPI,
         font_name,
         version_info,
+        policy,
     );
     let height = super::px_to_hwpunit(metrics.height, super::DEFAULT_DPI).max(1) as u32;
     let baseline =
@@ -1369,6 +1654,7 @@ mod metric_tests {
         use layout::{LayoutBox, LayoutKind};
 
         let leaf = |height| LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,
@@ -1378,6 +1664,7 @@ mod metric_tests {
             kind: LayoutKind::Text("x".to_string()),
         };
         let fraction = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,
@@ -1391,6 +1678,7 @@ mod metric_tests {
             },
         };
         let row = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: None,
             x: 0.0,
             y: 0.0,

@@ -449,6 +449,7 @@ fn render_box(
     bold: bool,
     font: &EquationSvgFont<'_>,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {
@@ -1023,6 +1024,17 @@ fn render_box(
                     );
                 }
             }
+        }
+        LayoutKind::Decoration {
+            kind: DecoKind::Box,
+            body,
+        } => {
+            // 흰 바탕을 자식보다 먼저 칠한다. 원본 장치 primitive의 raster 등가는 미확정이다.
+            svg.push_str(&format!(
+                "<rect x=\"{:.4}\" y=\"{:.4}\" width=\"{:.4}\" height=\"{:.4}\" fill=\"white\" stroke=\"black\" stroke-width=\"1\"/>",
+                x, y, lb.width, lb.height,
+            ));
+            render_box(svg, body, x, y, color, fs, italic, bold, font);
         }
         LayoutKind::Decoration { kind, body } => {
             render_box(svg, body, x, y, color, fs, italic, bold, font);
@@ -1664,6 +1676,62 @@ mod tests {
         assert!(!svg.contains("<path"));
     }
 
+    fn assert_composite_paint_sizes(font: &super::EquationSvgFont<'_>) {
+        use super::super::{layout::composite_paint_cases, parser::parse};
+        // base_unit=1100 at 96/144/192 DPI, including non-terminating pixel sizes.
+        for fs in [1100.0 / 75.0, 22.0, 1100.0 / 37.5] {
+            for &(script, path, ratio) in composite_paint_cases::CASES {
+                let layout = EqLayout::with_font(fs, "HYhwpEQ")
+                    .with_version("Equation Version 60")
+                    .layout(&parse(script));
+                let (child, x, y, italic) = composite_paint_cases::child(&layout, path);
+                let mut independent = child.clone();
+                independent.resolved_font_size = None;
+                let mut expected = String::new();
+                super::render_box(
+                    &mut expected,
+                    &independent,
+                    x,
+                    y,
+                    "black",
+                    fs * ratio,
+                    italic,
+                    false,
+                    font,
+                );
+                let mut actual = String::new();
+                super::render_box(
+                    &mut actual,
+                    &layout,
+                    17.25,
+                    29.5,
+                    "black",
+                    fs,
+                    true,
+                    false,
+                    font,
+                );
+                assert!(!expected.is_empty(), "{script}");
+                assert!(
+                    actual.contains(&expected),
+                    "{script}, {path:?}, {fs}: child paint origins/sizes differ\nexpected: {expected}\nactual: {actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn composite_paint_size_svg_fallback_matches_independent_child_requests() {
+        assert_composite_paint_sizes(&super::EquationSvgFont {
+            pua_font: None,
+            modern: true,
+            modern_hy: true,
+            stix_integral: false,
+            integral_pua_font: None,
+            css_family: String::new(),
+        });
+    }
+
     #[test]
     fn leaf_font_size_matches_measured_scripts_without_scaling_limit_name() {
         use super::super::{layout::EqLayout, parser::parse};
@@ -1691,6 +1759,7 @@ mod tests {
     #[test]
     fn measured_glyph_positions_preserve_unicode_text_and_spaces() {
         let layout = LayoutBox {
+            resolved_font_size: None,
             glyph_advances: Some(vec![6.3, 2.0, 7.0]),
             x: 0.0,
             y: 0.0,
@@ -1737,6 +1806,14 @@ mod tests {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/fonts/HYhwpEQSourceFixture.ttf");
         crate::renderer::font_paths::register_font_face_availability(&[fixture]);
+        assert_composite_paint_sizes(&super::EquationSvgFont {
+            pua_font: Some("HyhwpEQ"),
+            modern: true,
+            modern_hy: true,
+            stix_integral: false,
+            integral_pua_font: None,
+            css_family: String::new(),
+        });
         let version = "Equation Version 60";
         let render = |script: &str| {
             let layout = EqLayout::with_font(12.0, "HYhwpEQ")
@@ -1941,5 +2018,44 @@ mod tests {
             svg
         );
         assert!(svg.contains("평점"));
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::super::{layout::EqLayout, parser::parse};
+    use super::*;
+
+    #[test]
+    fn box_frame_svg_keeps_child_content_and_paints_background_first() {
+        for (script, content) in [
+            ("BOX{~(가)~}", "가"),
+            ("box{A}", "A"),
+            ("BOX{{1} over {2}}", "1"),
+        ] {
+            let layout = EqLayout::new(20.0).layout(&parse(script));
+            let svg = render_equation_svg_with_font_and_version(
+                &layout,
+                "#b30000",
+                20.0,
+                None,
+                "Equation Version 60",
+            );
+            let frame = svg.find("<rect ").expect("frame geometry");
+            let child = svg.find("<text ").expect("visible child");
+            assert!(
+                frame < child,
+                "white background must precede content: {svg}"
+            );
+            assert!(svg.contains(content), "missing content: {svg}");
+            assert!(
+                !svg.contains("BOX") && !svg.contains(">box<"),
+                "leaked command: {svg}"
+            );
+            assert!(svg.contains(&format!(
+                "width=\"{:.4}\" height=\"{:.4}\"",
+                layout.width, layout.height
+            )));
+        }
     }
 }

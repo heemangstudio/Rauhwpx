@@ -94,6 +94,8 @@ pub struct EndnoteParaSource {
     pub control_index: usize,
     /// Endnote 내부 문단 인덱스
     pub note_para_index: usize,
+    /// 원본 successor가 증명한 줄별 진행량(HU). full line_height와 별도다.
+    pub certified_line_advances_hu: Option<Vec<i32>>,
 }
 
 /// 조판에서 실제 수락한 줄의 현재 프레임 기준 원점.

@@ -84,13 +84,14 @@ import {
   glyphOutlinePayloadStatus,
 } from './glyph-outline-payload-status';
 import { parseStaticSvgPathLayers, type StaticSvgPathLayer } from './static-svg-path-layers';
-import { getImportedLocalFontBytes, getLocalFontRecords, loadLocalFontBytesFor, localFontFaceKey, resolveLocalFont, type LocalFontRecord } from '@/core/local-fonts';
+import { getImportedLocalFontBytes, getLocalFontRecords, importedFontPhysicalStyle, loadLocalFontBytesFor, localFontFaceKey, resolveLocalFont, type LocalFontRecord } from '@/core/local-fonts';
 import type { CanvasKitBundledFontSource } from '@/core/font-loader';
 import { createOutlineSkiaFont } from '@/core/skia-font';
 import { getSfntGlyphPathApi, type SfntGlyphPathApi } from '@/core/sfnt-glyphs';
 import { hftGlyphPath } from '@/core/hft-glyphs';
 import { preferredFamilyStyleFaces, selectPreparedFontFace } from './canvaskit-font-style';
-import { createEquationLiteralFontResolver, equationHftBanks, equationFontFamilies, equationLocalFontFace, isLegacyEquationFont, legacyEquationRuns, modernShortSquarePaintMetrics } from '@/core/equation-font';
+import { createEquationLiteralFontResolver, equationHftBanks, equationFontFamilies, equationLocalFontFace, isLegacyEquationFont, isModernEquationFallbackSymbol, legacyEquationGlyph, legacyEquationRuns, modernShortSquarePaintMetrics } from '@/core/equation-font';
+import { sfntCoversText } from '@/core/sfnt-cmap';
 import { cancelResponseBody } from '@/core/document-input-limits';
 import { readBoundedResponseArrayBuffer } from './canvaskit/bounded-response';
 
@@ -535,7 +536,7 @@ export class CanvasKitLayerRenderer {
     if (this.disposed || !fontNames?.length) return 0;
     const generation = this.documentGeneration;
     const pendingRecords = new Map<string, LocalFontRecord>();
-    const auxiliaryFamilies = new Set([...equationFontFamilies('HYhwpEQ'), 'STIXGeneral', 'Cambria Math', 'HSUSR', 'HSUSRI', 'HSUSFL', 'HSUSSP', 'Batang', ...HANCOM_PUA_FALLBACK_FAMILIES]
+    const auxiliaryFamilies = new Set([...equationFontFamilies('HYhwpEQ'), 'STIXGeneral', 'Cambria Math', 'HSUSR', 'HSUSRI', 'HSUSFL', 'HSUSSP', 'Haansoft Batang', 'Batang', ...HANCOM_PUA_FALLBACK_FAMILIES]
       .map(name => name.toLowerCase()));
     const knownFaces = getLocalFontRecords({ includeRegistered: true });
     const auxiliaryFaces = knownFaces
@@ -3320,15 +3321,17 @@ export class CanvasKitLayerRenderer {
     return { prepared: null, syntheticBold: bold, syntheticItalic: italic };
   }
 
-  private findEquationTypefaces(fontName: string | undefined, italic: boolean, bold: boolean, modernCjk = false): EquationTypeface[] {
-    const key = `${fontName ?? ''}:${italic}:${bold}:${modernCjk}`;
+  private findEquationTypefaces(fontName: string | undefined, italic: boolean, bold: boolean, modernCjk = false, modernSymbol = false): EquationTypeface[] {
+    const key = `${fontName ?? ''}:${italic}:${bold}:${modernCjk}:${modernSymbol}`;
     const cached = this.equationTypefaces.get(key);
     if (cached) return cached;
-    const records = getLocalFontRecords({ includeRegistered: true });
+    const records = getLocalFontRecords({ includeRegistered: true })
+      .filter(record => this.localTypefaces.get(localFontFaceKey(record))?.typeface);
     const faces: EquationTypeface[] = [];
     // 수식 서체가 지원하지 않는 한글·동그라미 숫자는 native와 같이
     // 준비된 본문 서체에서 찾는다. 수식 서체의 우선순위는 유지한다.
-    const families = [...equationFontFamilies(fontName), ...(modernCjk ? ['Haansoft Batang'] : []), 'Noto Serif KR', 'Batang',
+    const equationFamilies = equationFontFamilies(fontName);
+    const families = [...(modernSymbol ? [equationFamilies[0], 'Haansoft Batang', ...equationFamilies.slice(1)] : equationFamilies), ...(modernCjk ? ['Haansoft Batang'] : []), 'Noto Serif KR', 'Batang',
       'AppleMyungjo', 'Haansoft Batang', 'HCR Batang', 'Noto Sans KR', 'HCR Dotum'];
     for (const family of families) {
       if (/^HSUS(R|RI|FL|SP)$/.test(family)) {
@@ -3344,7 +3347,9 @@ export class CanvasKitLayerRenderer {
       const styled = equationLocalFontFace(records, family, italic, bold);
       const exact = styled ? this.localTypefaces.get(localFontFaceKey(styled))?.typeface : null;
       if (exact) {
-        faces.push({ typeface: exact, syntheticItalic: false, syntheticBold: false });
+        const physical = importedFontPhysicalStyle(styled!);
+        faces.push({ typeface: exact, syntheticItalic: italic && !physical.italic,
+          syntheticBold: bold && !physical.bold });
         continue;
       }
       const prepared = this.findPreparedTypeface(family)?.typeface;
@@ -3435,6 +3440,10 @@ export class CanvasKitLayerRenderer {
       return false;
     }
     budget.remainingNodes -= 1;
+    const resolved = layout.resolvedFontSize;
+    if (typeof resolved === 'number' && Number.isFinite(resolved) && resolved > 0) {
+      fontSize = resolved;
+    }
     const x = parentX + layout.x;
     const y = parentY + layout.y;
     const child = (box: LayerEquationLayoutBox, size = fontSize, childItalic = italic, childBold = bold) => (
@@ -3471,6 +3480,16 @@ export class CanvasKitLayerRenderer {
           const integralDrawn = this.drawModernHyIntegral(canvas, x, y, fontSize, color);
           if (integralDrawn !== null) return integralDrawn;
         }
+        let textItalic = (layout.kind.type === 'text' || (layout.kind.type === 'mathSymbol' && /[\u0391-\u03c9]/u.test(layout.kind.text)))
+          && italic && !/[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(layout.kind.text);
+        if (textItalic && budget.modernHy && !budget.hft && isLegacyEquationFont(fontName)
+          && isModernEquationFallbackSymbol(layout.kind.text)) {
+          const source = getImportedLocalFontBytes(fontName!);
+          const fallback = getImportedLocalFontBytes('Haansoft Batang', bold, false);
+          // source coverage와 준비된 정체 fallback이 확인될 때만 math italic 상속을 끈다.
+          if (source && !sfntCoversText(source, legacyEquationGlyph(layout.kind.text, true, true)[0])
+            && fallback && sfntCoversText(fallback, layout.kind.text)) textItalic = false;
+        }
         return this.drawEquationText(
           canvas,
           layout.kind.text,
@@ -3479,7 +3498,7 @@ export class CanvasKitLayerRenderer {
           // 잎의 높이는 측정된 em이며 첨자·행별 크기도 이미 반영되어 있다.
           layout.height > 0 ? layout.height : fontSize,
           color,
-          (layout.kind.type === 'text' || (layout.kind.type === 'mathSymbol' && /[\u0391-\u03c9]/u.test(layout.kind.text))) && italic && !/[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(layout.kind.text),
+          textItalic,
           (layout.kind.type === 'text' || layout.kind.type === 'number') && bold,
           layout.width,
           layout.kind.type === 'symbol',
@@ -3720,6 +3739,16 @@ export class CanvasKitLayerRenderer {
             : true);
       }
       case 'decoration':
+        if (layout.kind.decoration === 'box') {
+          // BOX의 흰 바탕/검은 테두리는 자식을 그리기 전에 기록한다.
+          // 장치 primitive의 정확한 pen/raster 등가는 별도 검증 대상이다.
+          const rect = this.rect({ x, y, width: layout.width, height: layout.height });
+          const fill = this.makeFillPaint('#ffffff');
+          try { canvas.drawRect(rect, fill); } finally { fill.delete?.(); }
+          const stroke = this.makeStrokePaint('#000000', 1);
+          try { canvas.drawRect(rect, stroke); } finally { stroke.delete?.(); }
+          return child(layout.kind.body);
+        }
         return child(layout.kind.body)
           && this.drawEquationDecoration(
             canvas,
@@ -3793,7 +3822,10 @@ export class CanvasKitLayerRenderer {
         canvas.translate(x + inset, baseline);
         // native는 자연 advance와 2% 이내면 원본 가로 배율을 유지한다.
         if (Math.abs(width - natural) / natural > 0.02) canvas.scale(width / natural, 1);
-        canvas.drawText('\ue06d', 0, 0, paint, font);
+        if (!this.drawEquationOutlineRuns(canvas, [{ text: '\ue06d', italic: false }],
+          0, 0, fontSize * (modernHy ? 1 : 1.256), font, paint, face)) {
+          canvas.drawText('\ue06d', 0, 0, paint, font);
+        }
       } finally { canvas.restore(); }
       return true;
     } finally {
@@ -3940,7 +3972,8 @@ export class CanvasKitLayerRenderer {
       // 현대 HY 수식의 한글은 준비된 한컴 원본 서체를 우선한다.
       const modernCjk = modernHy && isLegacyEquationFont(fontName)
         && /[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(text);
-      for (const candidate of this.findEquationTypefaces(fontName, italic, bold, modernCjk)) {
+      const modernSymbol = modernHy && isLegacyEquationFont(fontName) && isModernEquationFallbackSymbol(text);
+      for (const candidate of this.findEquationTypefaces(fontName, italic, bold, modernCjk, modernSymbol)) {
         font = createOutlineSkiaFont(this.canvasKit, candidate.typeface, fontSize);
         const candidateRuns = candidate.legacy ? legacyEquationRuns(text, italic, !hft) : [{ text, italic: candidate.syntheticItalic }];
         const candidateText = candidateRuns.map(run => run.text).join('');
@@ -4060,7 +4093,7 @@ export class CanvasKitLayerRenderer {
     return true;
   }
 
-  /** 현대 HY 적분은 기존 논리 박스 안에서 STIX 원본 윤곽으로 그린다. */
+  /** native와 같은 HY 적분을 우선하고, 미커버일 때 STIX를 쓴다. 원점·진행폭은 유지한다. */
   private drawModernHyIntegral(
     canvas: SkCanvas,
     x: number,
@@ -4068,19 +4101,28 @@ export class CanvasKitLayerRenderer {
     fontSize: number,
     color: string,
   ): boolean | null {
-    const face = this.findPreparedTypeface('STIXGeneral')?.typeface;
-    if (!face) return null;
-    const font = createOutlineSkiaFont(this.canvasKit, face, fontSize * 1.748);
-    let paint: SkPaint | null = null;
-    try {
-      if (!font.getGlyphIDs('∫', 1)?.[0]) return null;
-      paint = this.makeFillPaint(color);
-      canvas.drawText('∫', x + fontSize * 0.042, y + fontSize * 1.94, paint, font);
-      return true;
-    } finally {
-      font.delete();
-      paint?.delete?.();
+    for (const [family, glyph, scale] of [['HYhwpEQ', '\ue05b', 2], ['STIXGeneral', '∫', 1.748]] as const) {
+      const face = this.findPreparedTypeface(family)?.typeface;
+      if (!face) continue;
+      const size = fontSize * scale;
+      const font = createOutlineSkiaFont(this.canvasKit, face, size);
+      let paint: SkPaint | null = null;
+      try {
+        if (!font.getGlyphIDs(glyph, 1)?.[0]) continue;
+        paint = this.makeFillPaint(color);
+        const left = x + fontSize * 0.042;
+        const baseline = y + fontSize * 1.94;
+        if (!this.drawEquationOutlineRuns(canvas, [{ text: glyph, italic: false }],
+          left, baseline, size, font, paint, face)) {
+          canvas.drawText(glyph, left, baseline, paint, font);
+        }
+        return true;
+      } finally {
+        font.delete();
+        paint?.delete?.();
+      }
     }
+    return null;
   }
 
   private drawEquationLine(

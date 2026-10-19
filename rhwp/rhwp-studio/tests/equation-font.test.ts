@@ -28,6 +28,26 @@ test('equation variables and numbers choose distinct real italic and upright fac
   assert.equal(equationLocalFontFace(records, 'Cambria Math', false, false), undefined);
 });
 
+test('equation face selection ranks physical weights within slant and preserves registration ties', () => {
+  const face = (name: string, weight: number, italic = false): LocalFontRecord => ({
+    family: 'Haansoft Batang', fullName: `Haansoft Batang ${name}`, postscriptName: `Batang-${name}`,
+    style: name, displayName: 'Haansoft Batang', aliases: [], sfntStyle: { weight, italic },
+  });
+  const regular = face('Regular', 400), semibold = face('Semibold', 600), bold = face('Bold', 700);
+  const italic = face('Italic', 400, true), italicBold = face('BoldItalic', 700, true);
+  for (const records of [[regular, semibold, bold, italic, italicBold], [italicBold, italic, bold, semibold, regular]]) {
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', false, true), bold);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', false, false), regular);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', true, true), italicBold);
+    assert.equal(equationLocalFontFace(records, 'Haansoft Batang', true, false), italic);
+  }
+  assert.equal(equationLocalFontFace([italicBold, regular], 'Haansoft Batang', false, true), regular,
+    'missing physical bold keeps the requested slant and permits synthetic bold');
+  const alternate = face('OtherBold', 700);
+  assert.equal(equationLocalFontFace([bold, alternate], 'Haansoft Batang', false, true), bold);
+  assert.equal(equationLocalFontFace([alternate, bold], 'Haansoft Batang', false, true), alternate);
+});
+
 test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct', async () => {
   const { legacyEquationGlyph, legacyEquationRuns } = await import('../src/core/equation-font.ts');
   assert.deepEqual(legacyEquationGlyph('°', false, true), ['\ue0c8', false]);
@@ -99,6 +119,21 @@ test('cmap validation rejects malformed data and out-of-range glyph IDs', async 
   assert.equal(sfntCoversText(fontWithGlyph(0xe0f4, 0), '\ue0f4'), false);
   assert.equal(sfntCoversText(fontWithGlyph(0xe0f4, 0xffff), '\ue0f4'), false);
   assert.equal(sfntCoversText(new ArrayBuffer(2), '\ue0f4'), false);
+});
+
+test('exact equation coverage follows late bytes and replacement on the same registered record', async () => {
+  const { createEquationFontResolver } = await import('../src/core/equation-font.ts');
+  const record: LocalFontRecord = { family: 'HYhwpEQ', fullName: 'HYhwpEQ', postscriptName: 'HYhwpEQ', style: 'Regular', displayName: 'HYhwpEQ', aliases: [], runtimeFamily: '__hy' };
+  let bytes: ArrayBuffer | null = null;
+  const resolve = createEquationFontResolver(() => record, () => bytes);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), null);
+  bytes = fontWithGlyph(0xe034);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), '__hy');
+  bytes = fontWithGlyph(0xe035);
+  assert.equal(resolve('HYhwpEQ', '\ue034'), null);
+  assert.equal(resolve('HYhwpEQ', '\ue035'), '__hy');
+  bytes = null;
+  assert.equal(resolve('HYhwpEQ', '\ue035'), null);
 });
 
 test('HFT bank lookup requires an imported exact face and leaves uncovered glyphs to fallback', async () => {
@@ -224,5 +259,161 @@ test('CJK pitch requires a loaded exact source with valid font data', () => {
 test('SFNT metadata selects localized equation italic and retains name fallback', () => {
   const italic: LocalFontRecord = { family: 'Times', fullName: 'Times Corsivo', postscriptName: 'Times-I', style: 'Corsivo', displayName: 'Times', aliases: ['Times'], sfntStyle: {weight: 400, italic: true} };
   assert.equal(equationLocalFontFace([italic], 'Times', true, false), italic);
-  assert.equal(equationLocalFontFace([italic], 'Times', false, false), undefined);
+  assert.equal(equationLocalFontFace([italic], 'Times', false, false), italic,
+    'a sole physical face remains the same fallback chosen by styled byte lookup');
+  const regular: LocalFontRecord = { ...italic, fullName: 'Times Tondo', postscriptName: 'Times-R', style: 'Tondo', sfntStyle: { weight: 400, italic: false } };
+  assert.equal(equationLocalFontFace([italic, regular], 'Times', false, false), regular);
+  assert.equal(equationLocalFontFace([regular, italic], 'Times', true, false), italic);
+});
+
+
+test('Windows equation policy alternates source PUA advances without changing glyph ink or fallback routes', async () => {
+  const { syntheticEquationFont } = await import('./support/equation-font-fixture.ts');
+  const chars = '\ue034\ue035\ue036\ue037\ue038\ue03d\ue0fc\ue000xA';
+  let bytes: ArrayBuffer | null = syntheticEquationFont(chars, 1, 500);
+  let record: LocalFontRecord | null = modernHyRecord;
+  const measure = createEquationTextMeasurer(() => record, () => bytes);
+  const size = 11 * 4 / 3;
+  const oldLeaf = measure('HYhwpEQ', '4', size, false, false, false)!;
+  for (const policy of ['hancom-windows', 'hcr-declared', 'hancom-windows', 'hcr-declared'] as const) {
+    const step = policy === 'hancom-windows' ? 7 : 6.3;
+    for (const text of ['4x', '5x']) {
+      const run = measure('HYhwpEQ', text, size, true, false, true, false, policy)!;
+      const leaf = measure('HYhwpEQ', text[0], size, false, false, false, false, policy)!;
+      assert.ok(Math.abs(leaf.advance - step) < 1e-9);
+      assert.ok(Math.abs(run.advance - 2 * step) < 1e-9);
+      assert.equal(leaf.inkLeft, oldLeaf.inkLeft);
+      assert.equal(leaf.inkRight, oldLeaf.inkRight);
+    }
+    const script = measure('HYhwpEQ', '23', size * .68, false, false, false, false, policy)!;
+    assert.ok(Math.abs(script.advance - (policy === 'hancom-windows' ? 10 : 9)) < 1e-9);
+    for (const [text, italic, bold] of [['x', false, false], ['A', true, false], ['4', false, true], ['한', false, false], ['\ue0fc', false, false]] as const) {
+      assert.deepEqual(measure('HYhwpEQ', text, size, italic, false, true, bold, policy),
+        measure('HYhwpEQ', text, size, italic, false, true, bold));
+    }
+  }
+  const scaled = measure('HYhwpEQ', '4', size * 200 / 96, false, false, false, false, 'hancom-windows', 200 / 96)!;
+  assert.ok(Math.abs(scaled.advance / (200 / 96) - 7) < 1e-9);
+  const before = measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows')!;
+  bytes = syntheticEquationFont(chars, 1, 800);
+  assert.ok(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows')!.advance > before.advance);
+  bytes = syntheticEquationFont(chars, 0, 500);
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+  bytes = null;
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+  bytes = syntheticEquationFont(chars, 1, 500); record = null;
+  assert.equal(measure('HYhwpEQ', '4', size, false, false, false, false, 'hancom-windows'), null);
+});
+
+
+test('localized fallback alias admits loaded PRIME metrics and keeps unavailable or ambiguous faces closed', async () => {
+  const { createTestModuleServer } = await import('./support/module-server.ts');
+  const { syntheticEquationFont } = await import('./support/equation-font-fixture.ts');
+  const modules = await createTestModuleServer();
+  const local = await modules.ssrLoadModule('/src/core/local-fonts.ts');
+  const keys = ['document', 'window', 'FontFace'] as const;
+  const previous = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let finishLoad: (() => void) | undefined;
+  let delayLoad = false;
+  Object.defineProperty(globalThis, 'FontFace', { configurable: true, value: class {
+    async load() { if (delayLoad) await new Promise<void>(resolve => { finishLoad = resolve; }); return this; }
+  } });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    fonts: { add() {}, delete() { return true; } },
+    createElement: () => ({ getContext: () => ({ font: '', measureText() {
+      assert.fail('owned full SFNT metrics must preserve natural ink without Canvas substitution');
+    } }) }),
+  } });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { setTimeout } });
+  local.resetLocalFontsForTests();
+  const reads: Array<{ name: string; bold: boolean; italic: boolean; bytes: ArrayBuffer | null }> = [];
+  const measure = createEquationTextMeasurer(local.resolveLocalFont, (name, bold = false, italic = false) => {
+    const bytes = local.getImportedLocalFontBytes(name, bold, italic);
+    reads.push({ name, bold, italic, bytes }); return bytes;
+  });
+  const register = async (family: string, characters: string, advance: number,
+    aliases: string[] = [], italic = false, weight = 400) => {
+    const style = italic ? 'Italic' : weight === 700 ? 'Bold' : 'Regular';
+    const result = await local.registerLocalFontFace(syntheticEquationFont(characters, 3, advance, italic, weight), {
+      source: 'imported', fileName: 'owned-localized-equation.ttf', names: {
+        family, fullName: style === 'Regular' ? family : `${family} ${style}`,
+        postscriptName: style === 'Regular' ? family : `${family}-${style}`, style, aliases,
+      },
+    });
+    assert.equal(result.ok, true); return result;
+  };
+  const prime = () => measure('HYhwpEQ', '′', 11 * 4 / 3, false, false, true);
+  try {
+    await register('HYhwpEQ', 'A', 600);
+    assert.equal(prime(), null, 'absent fallback stays unavailable');
+    await register('Other Serif', '′', 800);
+    assert.equal(prime(), null, 'an unrelated covering serif cannot replace the intended fallback');
+    const unrelated = local.resolveLocalFont('Other Serif');
+    assert.equal(createEquationTextMeasurer(name => name === 'Haansoft Batang' ? unrelated : local.resolveLocalFont(name),
+      local.getImportedLocalFontBytes)('HYhwpEQ', '′', 14, false, false, true), null,
+    'a substituted record without the requested alias is rejected');
+    delayLoad = true;
+    const pending = register('한컴바탕', '′', 800, ['Haansoft Batang', 'Haansoft Batang Regular']);
+    assert.ok(finishLoad);
+    assert.equal(prime(), null, 'metadata before FontFace.load completes is unavailable');
+    delayLoad = false; finishLoad!();
+    const regular = await pending;
+    assert.equal(regular.record.family, '한컴바탕');
+    assert.equal(regular.record.fullName, '한컴바탕');
+    assert.equal(regular.record.postscriptName, '한컴바탕');
+    assert.equal(local.resolveLocalFont('Haansoft Batang'), regular.record,
+      'the actual registry resolves the English alias without renaming the Korean canonical face');
+    const regularBytes = local.getImportedLocalFontBytes('Haansoft Batang');
+    for (const [size, scale, expectedAdvance] of [
+      [14.666666666666666, 1, 9.9], [30.555555555555557, 200 / 96, 21.6],
+    ]) {
+      for (const literal of [false, true]) {
+        for (const policy of ['hcr-declared', 'hancom-windows'] as const) {
+          reads.length = 0;
+          const metrics = measure('HYhwpEQ', '′', size, false, false, literal, false, policy, scale);
+          assert.ok(metrics && Object.values(metrics).every(Number.isFinite), `${policy}/${literal}/${scale}`);
+          assert.ok(Math.abs(metrics.advance - expectedAdvance) < 1e-9, 'fallback uses its own modern advance');
+          assert.ok(Math.abs(metrics.inkLeft - size * 0.05) < 1e-9);
+          assert.ok(Math.abs(metrics.inkRight - size * 0.5) < 1e-9, 'fallback ink keeps the natural size');
+          assert.ok(reads.some(read => read.name === 'Haansoft Batang' && !read.bold && !read.italic
+            && read.bytes === regularBytes), 'callback reads the actual registered alias buffer');
+        }
+      }
+    }
+    await register('한컴바탕', '′', 1000, ['Haansoft Batang'], true);
+    await register('한컴바탕', '′', 1200, ['Haansoft Batang'], false, 700);
+    for (const [italic, bold, expected] of [[false, false, 9.9], [true, false, 12.6], [false, true, 15.3]] as const) {
+      reads.length = 0;
+      const metrics = measure('HYhwpEQ', '′', 11 * 4 / 3, italic, false, true, bold);
+      assert.ok(metrics && Math.abs(metrics.advance - expected) < 1e-9);
+      assert.ok(Math.abs(metrics.inkLeft - (11 * 4 / 3) * 0.05) < 1e-9);
+      assert.ok(Math.abs(metrics.inkRight - (11 * 4 / 3) * 0.5) < 1e-9);
+      assert.ok(reads.some(read => read.name === 'Haansoft Batang' && read.bold === bold && read.italic === italic
+        && read.bytes === local.getImportedLocalFontBytes('Haansoft Batang', bold, italic)),
+      'alias lookup preserves physical style byte selection');
+    }
+    await register('HYhwpEQ', 'A′', 600);
+    reads.length = 0;
+    const source = prime();
+    assert.ok(source && Math.abs(source.advance - 7.2) < 1e-9, 'covered source wins over the fallback');
+    assert.equal(reads.some(read => read.name === 'Haansoft Batang'), false);
+    await register('HYhwpEQ', 'A', 600);
+    await register('한컴바탕', 'V', 800, ['Haansoft Batang', 'Haansoft Batang Regular']);
+    assert.equal(prime(), null, 'uncovered requested regular face stays unavailable despite covering siblings');
+    local.resetLocalFontsForTests();
+    await register('HYhwpEQ', 'A', 600);
+    await register('한컴바탕', '′', 800, ['Haansoft Batang']);
+    await register('Unrelated Serif', '′', 900, ['Haansoft Batang']);
+    assert.equal(local.resolveLocalFont('Haansoft Batang'), null, 'two unrelated regular alias matches remain ambiguous');
+    assert.equal(prime(), null, 'ambiguity never enables fallback metrics');
+    local.resetLocalFontsForTests();
+    assert.equal(prime(), null, 'unloading clears prior positive alias and byte caches');
+  } finally {
+    if (finishLoad) finishLoad();
+    local.resetLocalFontsForTests();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
+    }
+    await modules.close();
+  }
 });

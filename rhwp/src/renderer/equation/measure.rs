@@ -67,15 +67,12 @@ thread_local! {
     // 해석 성공분만 캐시 — 미해소(None)는 저장하지 않아 재시도한다.
     static LEGACY_FACE: std::cell::RefCell<Option<std::rc::Rc<LegacyTables>>> =
         const { std::cell::RefCell::new(None) };
-    static RUN_CACHE: std::cell::RefCell<std::collections::HashMap<
-        (String, u64, bool, bool, bool), Option<LegacyRunMetrics>
+    static FALLBACK_FACES: std::cell::RefCell<std::collections::HashMap<
+        (bool, bool), std::rc::Rc<LegacyTables>
     >> = std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
-thread_local! {
-    static SYSTEM_FONT_SOURCE: std::cell::RefCell<Option<(skia_safe::FontMgr, bool)>> =
-        const { std::cell::RefCell::new(None) };
+    static RUN_CACHE: std::cell::RefCell<std::collections::HashMap<
+        (String, u64, bool, bool, bool, (&'static str, u64)), Option<LegacyRunMetrics>
+    >> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// 새 측정 세대에서 현재 스레드의 서체/실측 캐시를 비운다.
@@ -85,9 +82,8 @@ pub(crate) fn clear_measurement_caches() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         LEGACY_FACE.with(|slot| *slot.borrow_mut() = None);
+        FALLBACK_FACES.with(|cache| cache.borrow_mut().clear());
         RUN_CACHE.with(|cache| cache.borrow_mut().clear());
-        #[cfg(feature = "native-skia")]
-        SYSTEM_FONT_SOURCE.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -285,41 +281,168 @@ impl LegacyTables {
 /// 등록 face 를 먼저, 없으면 (skia 빌드에서) 시스템 설치 face 를 읽는다.
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_legacy_tables() -> Option<LegacyTables> {
-    if let Some(tables) =
-        crate::renderer::font_paths::custom_face_source("HYhwpEQ").and_then(|(file, index)| {
-            std::fs::read(file)
-                .ok()
-                .and_then(|bytes| LegacyTables::from_font_data(&bytes, index))
-        })
+    let (bytes, index) = crate::renderer::font_paths::equation_face_data("HYhwpEQ", false, false)?;
+    LegacyTables::from_font_data(&bytes, index)
+}
+
+/// coverage 허용과 원표 실측은 별개다. regular hmtx만으로 실제 잉크를 만들지 않는다.
+#[cfg(not(target_arch = "wasm32"))]
+fn modern_fallback_metrics(
+    ch: char,
+    italic: bool,
+    bold: bool,
+) -> Option<(f64, (f64, f64, f64, f64))> {
+    super::sync_measurement_caches();
+    super::font::modern_hancom_fallback_advance_em(ch)?;
+    let cached = FALLBACK_FACES.with(|cache| cache.borrow().get(&(italic, bold)).cloned());
+    let tables = match cached {
+        Some(tables) => tables,
+        None => {
+            let generation = super::measurement_generation();
+            let (bytes, index) =
+                crate::renderer::font_paths::equation_face_data("Haansoft Batang", bold, italic)?;
+            let tables = std::rc::Rc::new(LegacyTables::from_font_data(&bytes, index)?);
+            if super::measurement_generation() != generation {
+                return None;
+            }
+            FALLBACK_FACES.with(|cache| cache.borrow_mut().insert((italic, bold), tables.clone()));
+            tables
+        }
+    };
+    let gid = tables.glyph(ch);
+    (gid > 0)
+        .then(|| (tables.advance(gid), tables.ink(gid)))
+        .and_then(|(advance, ink)| Some((advance, ink?)))
+}
+
+/// production 혼합 text leaf는 각 positioned glyph와 같은 style로 잰다.
+/// 단일 글립을 직접 재는 저수준 API의 명시적 italic 요청은 유지한다.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_text_run_native(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+) -> Option<LegacyRunMetrics> {
+    measure_modern_text_run_native_with_policy(text, font_size, italic, bold, Default::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_text_run_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    context: super::font::AdvanceContext,
+) -> Option<LegacyRunMetrics> {
+    if !text
+        .chars()
+        .any(|ch| super::font::modern_hancom_fallback_advance_em(ch).is_some())
     {
-        return Some(tables);
+        return measure_legacy_run_native_with_policy(text, font_size, italic, bold, true, context);
     }
-    #[cfg(feature = "native-skia")]
+    let generation = super::sync_measurement_caches();
+    let mut result = LegacyRunMetrics {
+        advance: 0.0,
+        ink_left: 0.0,
+        ink_right: 0.0,
+    };
+    for (index, ch) in text.chars().enumerate() {
+        let effective_italic =
+            italic && super::font::modern_hancom_fallback_advance_em(ch).is_none();
+        let measured = measure_legacy_run_native_with_policy(
+            &ch.to_string(),
+            font_size,
+            effective_italic,
+            bold,
+            true,
+            context,
+        )?;
+        if index == 0 {
+            result.ink_left = measured.ink_left;
+        }
+        result.ink_right = result.ink_right.max(result.advance + measured.ink_right);
+        result.advance += measured.advance;
+    }
+    (super::measurement_generation() == generation).then_some(result)
+}
+
+/// 잉크 원표가 없는 admitted fallback도 알고 있는 진행폭은 유지한다.
+/// 실제 잉크를 반환하는 API와 분리하며 production literal의 upright 선택도 따른다.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_run_advance_native(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    literal: bool,
+) -> Option<f64> {
+    measure_modern_run_advance_native_with_policy(
+        text,
+        font_size,
+        italic,
+        bold,
+        literal,
+        Default::default(),
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_modern_run_advance_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    literal: bool,
+    context: super::font::AdvanceContext,
+) -> Option<f64> {
+    let generation = super::sync_measurement_caches();
+    if !text
+        .chars()
+        .any(|ch| super::font::modern_hancom_fallback_advance_em(ch).is_some())
     {
-        use skia_safe::{FontMgr, FontStyle};
-        // skia::font_lookup 의 system_families 필터와 같은 이유 — 없는 family 를
-        // CoreText 에 넘기면 downloadable font 조회가 대기할 수 있어 선차단한다.
-        SYSTEM_FONT_SOURCE.with(|slot| {
-            // 미해소 run마다 CoreText IPC를 반복하지 않고 명시적 새로고침 때 재해석한다.
-            let mut slot = slot.borrow_mut();
-            let (font_mgr, has_legacy_face) = slot.get_or_insert_with(|| {
-                let font_mgr = FontMgr::default();
-                let has_legacy_face = font_mgr
-                    .family_names()
-                    .any(|name| name.eq_ignore_ascii_case("HYhwpEQ"));
-                (font_mgr, has_legacy_face)
-            });
-            let face = has_legacy_face
-                .then(|| font_mgr.match_family_style("HYhwpEQ", FontStyle::normal()))
-                .flatten()?;
-            let (bytes, index) = face.to_font_data()?;
-            LegacyTables::from_font_data(&bytes, index as u32)
-        })
+        return None;
     }
-    #[cfg(not(feature = "native-skia"))]
-    {
-        None
-    }
+    let advance = text.chars().try_fold(0.0, |advance, ch| {
+        let admitted = super::font::modern_hancom_fallback_advance_em(ch);
+        let effective_italic = italic && !(literal && admitted.is_some());
+        if let Some(metrics) = measure_legacy_run_native_with_policy(
+            &ch.to_string(),
+            font_size,
+            effective_italic,
+            bold,
+            true,
+            context,
+        ) {
+            return Some(advance + metrics.advance);
+        }
+        let admitted = admitted?;
+        // CFF/불완전 glyf도 선택된 face의 hmtx는 읽을 수 있다. 바이트가 없으면
+        // 등록된 style 메트릭, 마지막으로 기존 admission 폭을 쓰되 잉크는 만들지 않는다.
+        let selected = crate::renderer::font_paths::equation_face_data(
+            "Haansoft Batang",
+            bold,
+            effective_italic,
+        )
+        .and_then(|(bytes, index)| {
+            let face = ttf_parser::Face::parse(&bytes, index).ok()?;
+            let gid = face.glyph_index(ch)?;
+            Some(f64::from(face.glyph_hor_advance(gid)?) / f64::from(face.units_per_em()))
+        });
+        let raw = selected
+            .or_else(|| {
+                crate::renderer::runtime_font_metrics::char_em_advance(
+                    "Haansoft Batang",
+                    bold,
+                    effective_italic,
+                    ch,
+                )
+            })
+            .unwrap_or(admitted);
+        Some(advance + super::font::modern_glyph_advance(raw * font_size, font_size, false))
+    })?;
+    (advance.is_finite() && advance >= 0.0 && super::measurement_generation() == generation)
+        .then_some(advance)
 }
 
 /// 네이티브 painter(skia draw_text·SVG HY 경로)의 legacy 서체 경로로 run을 실측한다.
@@ -337,8 +460,27 @@ pub(crate) fn measure_legacy_run_native(
     bold: bool,
     modern: bool,
 ) -> Option<LegacyRunMetrics> {
+    measure_legacy_run_native_with_policy(text, font_size, italic, bold, modern, Default::default())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn measure_legacy_run_native_with_policy(
+    text: &str,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    modern: bool,
+    context: super::font::AdvanceContext,
+) -> Option<LegacyRunMetrics> {
     let generation = super::sync_measurement_caches();
-    let key = (text.to_string(), font_size.to_bits(), italic, bold, modern);
+    let key = (
+        text.to_string(),
+        font_size.to_bits(),
+        italic,
+        bold,
+        modern,
+        context.cache_key(),
+    );
     // The Haansoft fallback may be registered after the HY face. Keep its
     // metrics live so an earlier generic fallback cannot stay cached.
     let cacheable = !modern
@@ -379,26 +521,34 @@ pub(crate) fn measure_legacy_run_native(
             let raw = tables.advance(gid as u16);
             // 현대 HY 글립은 힌팅된 advance로 연결한다.
             let adv = if modern {
-                super::font::modern_glyph_advance(
+                super::font::modern_source_glyph_advance(
                     raw * font_size,
                     font_size,
-                    super::font::legacy_equation_glyph(ch, italic, true).1,
+                    ch,
+                    italic,
+                    bold,
+                    gid,
+                    context,
                 ) / font_size
             } else {
                 raw
             };
             (adv, tables.ink(gid as u16))
-        } else if let Some(advance) = modern
-            .then(|| super::font::modern_hancom_fallback_run_advance_em(text))
+        } else if let Some((advance, ink)) = modern
+            .then(|| modern_fallback_metrics(ch, italic, bold))
             .flatten()
         {
-            // The actual Haansoft Batang face is registered and covers this
-            // character. It has a full-em advance, which Hancom tracks at 0.9.
+            // 같은 selected face의 원래 advance와 자연 잉크. 진행폭에만
+            // 현대 격자/0.9 추적을 한 번 적용하고 잉크는 축소하지 않는다.
             (
                 super::font::modern_glyph_advance(advance * font_size, font_size, false)
                     / font_size,
-                Some((0.0, 0.0, advance, 0.0)),
+                Some(ink),
             )
+        } else if modern && super::font::modern_hancom_fallback_advance_em(ch).is_some() {
+            // admission/hmtx는 잉크를 증명하지 않는다. 호출자가 width-only 경로를
+            // 쓰도록 거절한다. 추정 잉크/폭으로 알려진 fallback advance를 덮지 않는다.
+            return None;
         } else if super::layout::is_cjk_char(ch) {
             // 현대 HY 식의 한글은 fallback face로 칠하더라도 0.9em pitch에 놓인다.
             // 글립 윤곽은 전각 그대로이고, 바로 아래 modern 경로가 advance를
@@ -518,4 +668,811 @@ pub(crate) fn italic_overhang_em(ch: char) -> f64 {
         _ => 0,
     };
     f64::from(per_mille) / 1000.0
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod fallback_ink_tests {
+    use super::*;
+    use crate::renderer::equation::{
+        ast::EqNode,
+        layout::{sqrt_pua_geometry, EqLayout, LayoutKind},
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    fn isolated(name: &str) -> bool {
+        const CHILD: &str = "RHWP_FALLBACK_INK_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return false;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .arg(format!(
+                "renderer::equation::measure::fallback_ink_tests::{name}"
+            ))
+            .args(["--exact", "--nocapture"])
+            .env(CHILD, "1")
+            .env_remove(crate::renderer::font_paths::FONT_PATH_ENV);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    fn checksum(bytes: &[u8]) -> u32 {
+        bytes.chunks(4).fold(0u32, |sum, chunk| {
+            let mut word = [0; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            sum.wrapping_add(u32::from_be_bytes(word))
+        })
+    }
+
+    // Studio의 syntheticEquationFont와 같은 MIT fixture/GID/cmap/advance.
+    // 이름과 체크섬도 재작성해 실제 네이티브 등록/Skia 선택을 통과한다.
+    fn font(
+        family: &str,
+        chars: &str,
+        gid: u16,
+        advance: u16,
+        italic: bool,
+        bold: bool,
+        ink: Option<(i16, i16)>,
+    ) -> Vec<u8> {
+        let original = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
+        let face = ttf_parser::Face::parse(original, 0).unwrap();
+        let mut tables = BTreeMap::<[u8; 4], Vec<u8>>::new();
+        for record in face.raw_face().table_records {
+            let tag = record.tag.to_bytes();
+            tables.insert(tag, face.raw_face().table(record.tag).unwrap().to_vec());
+        }
+        let mut codes = chars.chars().map(|ch| ch as u32).collect::<Vec<_>>();
+        codes.sort_unstable();
+        codes.dedup();
+        let mut cmap = vec![0; 28 + 12 * codes.len()];
+        cmap[2..4].copy_from_slice(&1u16.to_be_bytes());
+        cmap[4..6].copy_from_slice(&3u16.to_be_bytes());
+        cmap[6..8].copy_from_slice(&10u16.to_be_bytes());
+        cmap[8..12].copy_from_slice(&12u32.to_be_bytes());
+        cmap[12..14].copy_from_slice(&12u16.to_be_bytes());
+        let length = cmap.len() as u32 - 12;
+        cmap[16..20].copy_from_slice(&length.to_be_bytes());
+        cmap[24..28].copy_from_slice(&(codes.len() as u32).to_be_bytes());
+        for (index, code) in codes.into_iter().enumerate() {
+            let start = 28 + 12 * index;
+            cmap[start..start + 4].copy_from_slice(&code.to_be_bytes());
+            cmap[start + 4..start + 8].copy_from_slice(&code.to_be_bytes());
+            cmap[start + 8..start + 12].copy_from_slice(&(gid as u32).to_be_bytes());
+        }
+        tables.insert(*b"cmap", cmap);
+        let encoded = family
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>();
+        let mut name = vec![0; 6 + 4 * 12];
+        name[2..4].copy_from_slice(&4u16.to_be_bytes());
+        name[4..6].copy_from_slice(&(54u16).to_be_bytes());
+        for (index, id) in [1u16, 4, 6, 16].into_iter().enumerate() {
+            let start = 6 + 12 * index;
+            for (field, value) in [3, 1, 0x409, id, encoded.len() as u16, 0]
+                .into_iter()
+                .enumerate()
+            {
+                name[start + field * 2..start + field * 2 + 2]
+                    .copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        name.extend(encoded);
+        tables.insert(*b"name", name);
+        let hmtx = tables.get_mut(b"hmtx").unwrap();
+        hmtx[gid as usize * 4..gid as usize * 4 + 2].copy_from_slice(&advance.to_be_bytes());
+        let os2 = tables.get_mut(b"OS/2").unwrap();
+        os2[4..6].copy_from_slice(&(if bold { 700u16 } else { 400 }).to_be_bytes());
+        os2[62..64].copy_from_slice(
+            &(if italic {
+                1u16
+            } else if bold {
+                32
+            } else {
+                64
+            })
+            .to_be_bytes(),
+        );
+        let head = tables.get_mut(b"head").unwrap();
+        head[8..12].fill(0);
+        head[44..46].copy_from_slice(&(u16::from(bold) + 2 * u16::from(italic)).to_be_bytes());
+        if let Some((left, right)) = ink {
+            // 새 사각 윤곽 자체를 만든다. bbox 헤더만 바꾼 가짜 잉크가 아니다.
+            let mut rectangle = Vec::new();
+            for value in [1i16, left, 0, right, 700, 3, 0] {
+                rectangle.extend(value.to_be_bytes());
+            }
+            rectangle.extend([1u8; 4]);
+            for value in [left, right - left, 0, left - right, 0, 0, 700, 0] {
+                rectangle.extend(value.to_be_bytes());
+            }
+            let mut glyf = Vec::new();
+            let mut loca = Vec::new();
+            let source = &tables[b"glyf"];
+            let offsets = &tables[b"loca"];
+            let long = i16::from_be_bytes(tables[b"head"][50..52].try_into().unwrap()) != 0;
+            let offset = |g: usize| {
+                if long {
+                    u32::from_be_bytes(offsets[g * 4..g * 4 + 4].try_into().unwrap()) as usize
+                } else {
+                    u16::from_be_bytes(offsets[g * 2..g * 2 + 2].try_into().unwrap()) as usize * 2
+                }
+            };
+            for glyph in 0..face.number_of_glyphs() as usize {
+                loca.extend((glyf.len() as u32).to_be_bytes());
+                if glyph == gid as usize {
+                    glyf.extend(&rectangle);
+                } else {
+                    glyf.extend(&source[offset(glyph)..offset(glyph + 1)]);
+                }
+            }
+            loca.extend((glyf.len() as u32).to_be_bytes());
+            tables.insert(*b"glyf", glyf);
+            tables.insert(*b"loca", loca);
+            tables.get_mut(b"head").unwrap()[50..52].copy_from_slice(&1u16.to_be_bytes());
+        }
+        encode_font(original, tables)
+    }
+
+    fn encode_font(original: &[u8], tables: BTreeMap<[u8; 4], Vec<u8>>) -> Vec<u8> {
+        let count = tables.len();
+        let mut bytes = vec![0; 12 + 16 * count];
+        bytes[..12].copy_from_slice(&original[..12]);
+        bytes[4..6].copy_from_slice(&(count as u16).to_be_bytes());
+        let selector = (count as u16).ilog2() as u16;
+        let search_range = 16 * (1u16 << selector);
+        bytes[6..8].copy_from_slice(&search_range.to_be_bytes());
+        bytes[8..10].copy_from_slice(&selector.to_be_bytes());
+        bytes[10..12].copy_from_slice(&(count as u16 * 16 - search_range).to_be_bytes());
+        let mut adjustment = 0;
+        for (index, (tag, table)) in tables.into_iter().enumerate() {
+            while bytes.len() % 4 != 0 {
+                bytes.push(0);
+            }
+            let start = bytes.len();
+            let record = 12 + 16 * index;
+            bytes[record..record + 4].copy_from_slice(&tag);
+            bytes[record + 4..record + 8].copy_from_slice(&checksum(&table).to_be_bytes());
+            bytes[record + 8..record + 12].copy_from_slice(&(start as u32).to_be_bytes());
+            bytes[record + 12..record + 16].copy_from_slice(&(table.len() as u32).to_be_bytes());
+            if tag == *b"head" {
+                adjustment = start + 8;
+            }
+            bytes.extend(table);
+        }
+        let value = 0xb1b0afbau32.wrapping_sub(checksum(&bytes));
+        bytes[adjustment..adjustment + 4].copy_from_slice(&value.to_be_bytes());
+        assert_eq!(checksum(&bytes), 0xb1b0afba);
+        bytes
+    }
+
+    // None은 outline 없는 metrics-only SFNT, Some은 해당 GID만 빈 윤곽인 face.
+    // 원본 fixture 파일은 수정하지 않는다.
+    fn without_ink(bytes: &[u8], gid: Option<u16>) -> Vec<u8> {
+        let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+        let mut tables = BTreeMap::<[u8; 4], Vec<u8>>::new();
+        for record in face.raw_face().table_records {
+            tables.insert(
+                record.tag.to_bytes(),
+                face.raw_face().table(record.tag).unwrap().to_vec(),
+            );
+        }
+        if let Some(gid) = gid {
+            let long = i16::from_be_bytes(tables[b"head"][50..52].try_into().unwrap()) != 0;
+            let stride = if long { 4 } else { 2 };
+            let start = gid as usize * stride;
+            let loca = tables.get_mut(b"loca").unwrap();
+            loca.copy_within(start + stride..start + 2 * stride, start);
+        } else {
+            tables.remove(b"glyf");
+            tables.remove(b"loca");
+        }
+        tables.get_mut(b"head").unwrap()[8..12].fill(0);
+        encode_font(bytes, tables)
+    }
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("rhwp-fallback-ink-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+        fn install(&self, filename: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(filename);
+            std::fs::write(&path, bytes).unwrap();
+            crate::renderer::font_paths::register_font_face_availability(&[path.clone()]);
+            path
+        }
+        fn hy(&self, chars: &str) {
+            self.install(
+                "hy.ttf",
+                &font("HYhwpEQ", chars, 1, 600, false, false, None),
+            );
+        }
+        fn fallback(
+            &self,
+            name: &str,
+            gid: u16,
+            advance: u16,
+            italic: bool,
+            bold: bool,
+            ink: Option<(i16, i16)>,
+        ) -> PathBuf {
+            self.install(
+                name,
+                &font("Haansoft Batang", "□∆′″", gid, advance, italic, bold, ink),
+            )
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn near(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual {actual}, expected {expected}"
+        );
+    }
+    fn engine() -> EqLayout {
+        EqLayout::with_font(10.0, "HYhwpEQ").with_version("Equation Version 60")
+    }
+
+    // 500/1000 em reproduces the retained source digit's 512/1024 em advance.
+    // All outlines here belong to the existing MIT shaping fixture.
+    const POLICY_GLYPHS: &str =
+        "\u{e03d}\u{e034}\u{e035}\u{e036}\u{e037}\u{e038}\u{e0fc}\u{e000}xA";
+
+    fn policy_engine(policy: crate::model::provenance::FontMetricsPolicy, scale: f64) -> EqLayout {
+        EqLayout::with_font(11.0 * 4.0 / 3.0 * scale, "HYhwpEQ")
+            .with_version("Equation Version 60")
+            .with_base_pt(11.0)
+            .with_metrics_policy(policy)
+    }
+
+    #[test]
+    fn windows_advance_policy_preserves_ink_paint_size_scripts_and_cache_identity() {
+        if isolated("windows_advance_policy_preserves_ink_paint_size_scripts_and_cache_identity") {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        use crate::renderer::equation::symbols::FontStyleKind;
+        use crate::renderer::equation::{font::AdvanceContext, natural_width_hwp_with_policy};
+        let fixture = Fixture::new();
+        fixture.install(
+            "hy.ttf",
+            &font(
+                "HYhwpEQ",
+                POLICY_GLYPHS,
+                1,
+                500,
+                false,
+                false,
+                Some((50, 550)),
+            ),
+        );
+        let generation = super::super::measurement_generation();
+        let fs = 11.0 * 4.0 / 3.0;
+        let mut equation = crate::model::control::Equation::default();
+        equation.script = "45".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.version_info = "Equation Version 60".into();
+        equation.font_size = 1100;
+        let mac = policy_engine(HcrDeclared, 1.0);
+        for policy in [HancomWindows, HcrDeclared, HancomWindows, HcrDeclared] {
+            let engine = policy_engine(policy, 1.0);
+            let windows = policy == HancomWindows;
+            let step = if windows { 7.0 } else { 6.3 };
+            let script_step = if windows { 5.0 } else { 4.5 };
+            for digit in ["4", "5"] {
+                let row = engine.layout(&EqNode::Row(vec![
+                    EqNode::Number(digit.into()),
+                    EqNode::Text("x".into()),
+                ]));
+                let LayoutKind::Row(children) = &row.kind else {
+                    panic!("pair row");
+                };
+                near(children[1].x - children[0].x, step);
+                near(
+                    (children[1].x - children[0].x) * 0.75,
+                    if windows { 5.25 } else { 4.725 },
+                );
+            }
+            let number = engine.layout(&EqNode::Number("45".into()));
+            let positioned = number.positioned_glyphs().unwrap();
+            near(positioned[1].x, step);
+            near(number.width, 2.0 * step);
+            near(positioned[1].paint_font_size(fs), fs);
+            let context = AdvanceContext { policy, scale: 1.0 };
+            let leaf = measure_legacy_run_native_with_policy("4", fs, false, false, true, context)
+                .unwrap();
+            let old_leaf = measure_legacy_run_native("4", fs, false, false, true).unwrap();
+            near(leaf.ink_left, old_leaf.ink_left);
+            near(leaf.ink_right, old_leaf.ink_right);
+            let script_node = EqNode::Superscript {
+                base: Box::new(EqNode::Text("x".into())),
+                sup: Box::new(EqNode::Number("23".into())),
+            };
+            let scripted = engine.layout(&script_node);
+            let LayoutKind::Superscript { sup, .. } = &scripted.kind else {
+                panic!("superscript");
+            };
+            near(sup.positioned_glyphs().unwrap()[1].x, script_step);
+            near(sup.paint_font_size(fs), fs * 0.68);
+            let old_scripted = mac.layout(&script_node);
+            near(scripted.height, old_scripted.height);
+            near(scripted.baseline, old_scripted.baseline);
+            for node in [
+                EqNode::Text("한".into()),
+                EqNode::Text("A".into()),
+                EqNode::FontStyle {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(EqNode::Text("x".into())),
+                },
+                EqNode::FontStyle {
+                    style: FontStyleKind::Bold,
+                    body: Box::new(EqNode::Number("45".into())),
+                },
+            ] {
+                near(engine.layout(&node).width, mac.layout(&node).width);
+            }
+            let legacy = engine
+                .clone()
+                .with_version("")
+                .layout(&EqNode::Number("45".into()));
+            near(
+                legacy.width,
+                mac.clone()
+                    .with_version("")
+                    .layout(&EqNode::Number("45".into()))
+                    .width,
+            );
+            assert_eq!(
+                natural_width_hwp_with_policy(&equation, policy),
+                Some(if windows { 1050 } else { 945 })
+            );
+            let scaled =
+                policy_engine(HancomWindows, 200.0 / 96.0).layout(&EqNode::Number("45".into()));
+            near(
+                scaled.positioned_glyphs().unwrap()[1].x / (200.0 / 96.0),
+                7.0,
+            );
+        }
+        assert_eq!(super::super::measurement_generation(), generation);
+        // Legacy callers remain Mac even after a Windows run warms the same generation.
+        near(
+            EqLayout::with_font(fs, "HYhwpEQ")
+                .layout(&EqNode::Number("45".into()))
+                .width,
+            12.6,
+        );
+    }
+
+    #[test]
+    fn windows_advance_policy_refreshes_both_policies_after_source_generation_change() {
+        if isolated("windows_advance_policy_refreshes_both_policies_after_source_generation_change")
+        {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        use crate::renderer::equation::{
+            content_width_hwp_with_policy, natural_width_hwp_with_policy,
+        };
+        let fixture = Fixture::new();
+        let bytes = font(
+            "HYhwpEQ",
+            POLICY_GLYPHS,
+            1,
+            500,
+            false,
+            false,
+            Some((50, 550)),
+        );
+        let path = fixture.install("hy.ttf", &bytes);
+        let mut equation = crate::model::control::Equation::default();
+        equation.script = "45".into();
+        equation.font_name = "HYhwpEQ".into();
+        equation.version_info = "Equation Version 60".into();
+        equation.font_size = 1100;
+        equation.common.width = 1234;
+        let before = [HcrDeclared, HancomWindows]
+            .map(|p| natural_width_hwp_with_policy(&equation, p).unwrap());
+        let generation = super::super::measurement_generation();
+        fixture.install(
+            "hy.ttf",
+            &font(
+                "HYhwpEQ",
+                POLICY_GLYPHS,
+                1,
+                800,
+                false,
+                false,
+                Some((50, 550)),
+            ),
+        );
+        crate::renderer::layout::clear_measure_caches();
+        assert!(super::super::measurement_generation() > generation);
+        for (index, policy) in [HcrDeclared, HancomWindows].into_iter().enumerate() {
+            assert!(natural_width_hwp_with_policy(&equation, policy).unwrap() > before[index]);
+        }
+        #[cfg(not(feature = "native-skia"))]
+        {
+            std::fs::remove_file(&path).unwrap();
+            crate::renderer::font_paths::register_font_face_availability(&[path]);
+            crate::renderer::layout::clear_measure_caches();
+            for policy in [HancomWindows, HcrDeclared] {
+                assert_eq!(natural_width_hwp_with_policy(&equation, policy), None);
+                assert_eq!(content_width_hwp_with_policy(&equation, policy), 1234);
+            }
+            fixture.install("hy.ttf", &bytes);
+            crate::renderer::layout::clear_measure_caches();
+            assert_eq!(
+                [HcrDeclared, HancomWindows]
+                    .map(|p| natural_width_hwp_with_policy(&equation, p).unwrap()),
+                before
+            );
+        }
+        #[cfg(feature = "native-skia")]
+        let _ = (path, content_width_hwp_with_policy(&equation, HcrDeclared));
+    }
+
+    #[test]
+    fn windows_advance_policy_keeps_fallback_width_without_inventing_ink() {
+        if isolated("windows_advance_policy_keeps_fallback_width_without_inventing_ink") {
+            return;
+        }
+        use crate::model::provenance::FontMetricsPolicy::{HancomWindows, HcrDeclared};
+        let fixture = Fixture::new();
+        fixture.hy(POLICY_GLYPHS);
+        let fallback = without_ink(
+            &font("Haansoft Batang", "□∆′″", 3, 800, false, false, None),
+            None,
+        );
+        fixture.install("fallback.ttf", &fallback);
+        crate::renderer::layout::clear_measure_caches();
+        for policy in [HancomWindows, HcrDeclared, HancomWindows] {
+            let context = super::super::font::AdvanceContext { policy, scale: 1.0 };
+            assert!(
+                measure_legacy_run_native_with_policy("□", 10.0, false, false, true, context)
+                    .is_none()
+            );
+            near(
+                engine()
+                    .with_metrics_policy(policy)
+                    .layout(&EqNode::Text("□".into()))
+                    .width,
+                7.2,
+            );
+        }
+    }
+
+    fn assert_width_without_fallback_ink() {
+        near(
+            super::super::font::modern_hancom_fallback_advance_em('□').unwrap(),
+            0.8,
+        );
+        assert!(modern_fallback_metrics('□', false, false).is_none());
+        assert!(measure_legacy_run_native("□", 10.0, false, false, true).is_none());
+        assert!(measure_modern_text_run_native("A□A", 10.0, true, false).is_none());
+        for text in ["□", "A□", "A□A", "□A"] {
+            for node in [EqNode::Text(text.into()), EqNode::Quoted(text.into())] {
+                let layout = engine().layout(&node);
+                let expected = match text {
+                    "□" => 7.2,
+                    "A□A" => 19.2,
+                    _ => 13.2,
+                };
+                near(layout.width, expected);
+                let advances = layout.glyph_advances.as_ref().unwrap();
+                let glyphs = layout.positioned_glyphs().unwrap();
+                let square = if text.starts_with('A') { 1 } else { 0 };
+                near(advances[square], 7.2);
+                near(glyphs[square].x, if square == 1 { 6.0 } else { 0.0 });
+                if text.ends_with('A') {
+                    near(
+                        glyphs.last().unwrap().x,
+                        if square == 1 { 13.2 } else { 7.2 },
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_without_glyf_keeps_registered_advance_without_claiming_ink() {
+        if isolated("fallback_without_glyf_keeps_registered_advance_without_claiming_ink") {
+            return;
+        }
+        let fixture = Fixture::new();
+        let regular = without_ink(
+            &font("Haansoft Batang", "□∆′″", 3, 800, false, false, None),
+            None,
+        );
+        let face = ttf_parser::Face::parse(&regular, 0).unwrap();
+        assert!(face
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"glyf"))
+            .is_none());
+        let path = fixture.install("metrics-only.ttf", &regular);
+        // 진행폭만 등록한다. 선택된 custom source에는 outline 표가 없다.
+        crate::renderer::runtime_font_metrics::register(
+            &regular,
+            &["Haansoft Batang".into()],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(measure_legacy_run_native("□", 10.0, false, false, true).is_none());
+        near(engine().layout(&EqNode::Text("□".into())).width, 7.2);
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        assert_width_without_fallback_ink();
+        // 파일 source까지 없어져도 이미 등록한 hmtx 폭은 여전히 쓸 수 있다.
+        std::fs::remove_file(path).unwrap();
+        crate::renderer::layout::clear_measure_caches();
+        assert_width_without_fallback_ink();
+    }
+
+    #[test]
+    fn fallback_without_one_glyph_ink_keeps_selected_style_advance_and_origins() {
+        if isolated("fallback_without_one_glyph_ink_keeps_selected_style_advance_and_origins") {
+            return;
+        }
+        let fixture = Fixture::new();
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        let complete = font("Haansoft Batang", "□∆′″", 3, 800, false, false, None);
+        fixture.install("regular-empty-square.ttf", &complete);
+        let row = EqNode::Row(vec![EqNode::Text("□".into()), EqNode::Text("A".into())]);
+        let complete_row = engine().layout(&row);
+        let regular = without_ink(&complete, Some(3));
+        let tables = LegacyTables::from_font_data(&regular, 0).unwrap();
+        assert!(tables.ink(3).is_none());
+        assert!(tables.ink(1).is_some());
+        fixture.install("regular-empty-square.ttf", &regular);
+        crate::renderer::layout::clear_measure_caches();
+        let before_hft = measure_legacy_run_native("□한", 10.0, false, false, false).unwrap();
+        assert_width_without_fallback_ink();
+        let missing_ink_row = engine().layout(&row);
+        let (LayoutKind::Row(complete_atoms), LayoutKind::Row(missing_ink_atoms)) =
+            (&complete_row.kind, &missing_ink_row.kind)
+        else {
+            panic!("expected row");
+        };
+        near(missing_ink_atoms[1].x, complete_atoms[1].x);
+        near(missing_ink_row.width, complete_row.width);
+        fixture.install(
+            "italic-empty-square.ttf",
+            &without_ink(
+                &font("Haansoft Batang", "□∆′″", 4, 1000, true, false, None),
+                Some(4),
+            ),
+        );
+        fixture.install(
+            "bold-empty-square.ttf",
+            &without_ink(
+                &font("Haansoft Batang", "□∆′″", 4, 1200, false, true, None),
+                Some(4),
+            ),
+        );
+        assert!(modern_fallback_metrics('□', true, false).is_none());
+        near(
+            measure_modern_run_advance_native("□", 10.0, true, false, false).unwrap(),
+            9.0,
+        );
+        near(
+            measure_modern_run_advance_native("□", 10.0, true, false, true).unwrap(),
+            7.2,
+        );
+        let bold = engine().layout(&EqNode::FontStyle {
+            style: super::super::symbols::FontStyleKind::Bold,
+            body: Box::new(EqNode::Text("A□A".into())),
+        });
+        near(bold.width, 22.8);
+        let LayoutKind::FontStyle { body, .. } = &bold.kind else {
+            panic!("expected bold leaf");
+        };
+        near(body.positioned_glyphs().unwrap()[2].x, 16.8);
+        assert_width_without_fallback_ink();
+        assert_eq!(
+            before_hft,
+            measure_legacy_run_native("□한", 10.0, false, false, false).unwrap()
+        );
+        fixture.hy("A□\u{e000}\u{e034}\u{e03d}");
+        crate::renderer::layout::clear_measure_caches();
+        assert!(super::super::font::modern_hancom_fallback_advance_em('□').is_none());
+        near(engine().layout(&EqNode::Text("□".into())).width, 6.0);
+        assert!(measure_modern_run_advance_native("□", 10.0, false, false, true).is_none());
+    }
+
+    #[test]
+    fn fallback_natural_ink_controls_radical_geometry() {
+        if isolated("fallback_natural_ink_controls_radical_geometry") {
+            return;
+        }
+        let fixture = Fixture::new();
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        fixture.fallback("regular.ttf", 3, 800, false, false, None);
+        let metrics = measure_legacy_run_native("□", 10.0, false, false, true).unwrap();
+        near(metrics.advance, 7.2);
+        near(metrics.ink_left, 0.5);
+        near(metrics.ink_right, 5.0);
+        let mixed = measure_legacy_run_native("A□A", 10.0, false, false, true).unwrap();
+        near(mixed.advance, 18.0);
+        near(mixed.ink_right, 17.6);
+        let ast = crate::renderer::equation::parser::EqParser::new(
+            crate::renderer::equation::tokenizer::tokenize("sqrt {□}"),
+        )
+        .parse();
+        let layout = engine().layout(&ast);
+        fn root(lb: &super::super::layout::LayoutBox) -> &super::super::layout::LayoutBox {
+            match &lb.kind {
+                LayoutKind::Sqrt { .. } => lb,
+                LayoutKind::Row(children) => root(&children[0]),
+                _ => panic!("expected radical"),
+            }
+        }
+        let radical = root(&layout);
+        let LayoutKind::Sqrt { body, .. } = &radical.kind else {
+            unreachable!()
+        };
+        near(radical.width, 18.2);
+        near(body.width, 7.2);
+        near(body.x, 10.5);
+        let geometry = sqrt_pua_geometry(body, radical.baseline, radical.width, 10.0, true);
+        near(geometry.bar_advance, 8.2);
+        near(body.x - 0.3 + geometry.bar_advance, 18.4);
+    }
+
+    #[test]
+    fn fallback_style_selection_matches_production_and_explicit_requests() {
+        if isolated("fallback_style_selection_matches_production_and_explicit_requests") {
+            return;
+        }
+        let fixture = Fixture::new();
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        fixture.fallback("italic-first.ttf", 4, 1000, true, false, None);
+        let regular = font("Haansoft Batang", "□∆′″", 3, 800, false, false, None);
+        fixture.install("regular-second.ttf", &regular);
+        fixture.fallback("bold.ttf", 4, 1200, false, true, None);
+        let (selected, index) =
+            crate::renderer::font_paths::equation_face_data("Haansoft Batang", false, false)
+                .unwrap();
+        assert_eq!(selected, regular);
+        assert_eq!(index, 0);
+        near(
+            measure_legacy_run_native("□", 10.0, true, false, true)
+                .unwrap()
+                .advance,
+            9.0,
+        );
+        near(engine().layout(&EqNode::Text("□".into())).width, 7.2);
+        let bold = engine().layout(&EqNode::FontStyle {
+            style: super::super::symbols::FontStyleKind::Bold,
+            body: Box::new(EqNode::Text("□".into())),
+        });
+        near(bold.width, 10.8);
+        for text in ["A□A", "A□"] {
+            let metrics = measure_modern_text_run_native(text, 10.0, true, false).unwrap();
+            let expected = if text == "A□A" { 19.2 } else { 13.2 };
+            near(metrics.advance, expected);
+            let layout = engine().layout(&EqNode::Text(text.into()));
+            near(layout.width, expected);
+            let advances = layout.glyph_advances.as_ref().unwrap();
+            near(advances[0], 6.0);
+            near(advances[1], 7.2);
+            let glyphs = layout.positioned_glyphs().unwrap();
+            near(glyphs[1].x, 6.0);
+            if text == "A□A" {
+                near(glyphs[2].x, 13.2);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_negative_bearing_overhang_and_mixed_terminal_ink_are_natural() {
+        if isolated("fallback_negative_bearing_overhang_and_mixed_terminal_ink_are_natural") {
+            return;
+        }
+        let fixture = Fixture::new();
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        fixture.fallback("regular.ttf", 3, 800, false, false, Some((-150, 1200)));
+        let metrics = measure_legacy_run_native("□", 10.0, false, false, true).unwrap();
+        near(metrics.advance, 7.2);
+        near(metrics.ink_left, -1.5);
+        near(metrics.ink_right, 12.0);
+        let terminal = measure_modern_text_run_native("A□", 10.0, true, false).unwrap();
+        near(terminal.advance, 13.2);
+        near(terminal.ink_right, 18.0);
+        let leading = measure_modern_text_run_native("□A", 10.0, true, false).unwrap();
+        near(leading.ink_left, -1.5);
+        near(leading.ink_right, 12.2);
+        let root = engine().layout(&EqNode::Sqrt {
+            index: None,
+            body: Box::new(EqNode::Text("A□".into())),
+        });
+        near(root.width, 24.9);
+    }
+
+    #[test]
+    fn fallback_registration_refresh_unload_and_coverage_keep_metric_identity() {
+        if isolated("fallback_registration_refresh_unload_and_coverage_keep_metric_identity") {
+            return;
+        }
+        let fixture = Fixture::new();
+        fixture.hy("A\u{e000}\u{e034}\u{e03d}");
+        assert!(modern_fallback_metrics('□', false, false).is_none());
+        let before_hft = measure_legacy_run_native("□한", 10.0, false, false, false).unwrap();
+        let before_cjk = measure_legacy_run_native("한", 10.0, false, false, true).unwrap();
+        let path = fixture.fallback("regular.ttf", 3, 800, false, false, None);
+        near(
+            measure_legacy_run_native("□", 10.0, false, false, true)
+                .unwrap()
+                .ink_right,
+            5.0,
+        );
+        near(
+            measure_legacy_run_native("□", 10.0, true, false, true)
+                .unwrap()
+                .advance,
+            7.2,
+        );
+        fixture.fallback("italic-late.ttf", 4, 1000, true, false, None);
+        near(
+            measure_legacy_run_native("□", 10.0, true, false, true)
+                .unwrap()
+                .advance,
+            9.0,
+        );
+        near(engine().layout(&EqNode::Text("□".into())).width, 7.2);
+        assert_eq!(
+            before_hft,
+            measure_legacy_run_native("□한", 10.0, false, false, false).unwrap()
+        );
+        assert_eq!(
+            before_cjk,
+            measure_legacy_run_native("한", 10.0, false, false, true).unwrap()
+        );
+        fixture.fallback("regular.ttf", 3, 1100, false, false, Some((-100, 1300)));
+        // 같은 경로 교체는 기존 세대 동안 유지하고 명시적 refresh 후 다시 읽는다.
+        near(
+            measure_legacy_run_native("□", 10.0, false, false, true)
+                .unwrap()
+                .advance,
+            7.2,
+        );
+        crate::renderer::layout::clear_measure_caches();
+        let refreshed = measure_legacy_run_native("□", 10.0, false, false, true).unwrap();
+        near(refreshed.advance, 9.9);
+        near(refreshed.ink_left, -1.0);
+        near(refreshed.ink_right, 13.0);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(fixture.0.join("italic-late.ttf")).unwrap();
+        crate::renderer::layout::clear_measure_caches();
+        assert!(modern_fallback_metrics('□', false, false).is_none());
+        // 실제 source glyph가 생기면 fallback을 활성화하거나 upright으로 바꾸지 않는다.
+        fixture.hy("A□\u{e000}\u{e034}\u{e03d}");
+        crate::renderer::layout::clear_measure_caches();
+        fixture.fallback("again.ttf", 3, 800, false, false, None);
+        assert!(modern_fallback_metrics('□', false, false).is_none());
+        near(
+            measure_legacy_run_native("□", 10.0, true, false, true)
+                .unwrap()
+                .advance,
+            6.0,
+        );
+    }
 }

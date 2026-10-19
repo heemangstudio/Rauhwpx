@@ -935,11 +935,11 @@ export async function registerLocalFontFace(
 }
 
 /**
- * 수식 literal 측정(createEquationLiteralFontResolver)은 cmap·maxp·head·hhea만 동기로 읽으므로
- * 이 서체들은 메트릭 표만 남긴 사본을 둔다.
+ * 수식 literal과 현대 HY 기호 fallback의 coverage는 cmap·maxp·head·hhea로 확인한다.
+ * 이 서체들은 메트릭 표만 남기고, 잉크는 등록된 runtime family의 Canvas 측정으로 읽는다.
  */
 function equationLiteralBytes(family: string, bytes: ArrayBuffer): ArrayBuffer | null {
-  if (!['hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(family))) return null;
+  if (!['hcr batang', 'batang', 'haansoft batang', 'times new roman'].includes(normalizeFontAlias(family))) return null;
   return sfntMetricsSubset(bytes).slice().buffer;
 }
 

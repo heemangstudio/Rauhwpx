@@ -84,6 +84,7 @@ fn render_box(
     italic: bool,
     bold: bool,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {
@@ -923,6 +924,33 @@ fn render_box(
                 }
             }
         }
+        LayoutKind::Decoration {
+            kind: DecoKind::Box,
+            body,
+        } => {
+            let rect =
+                skia_safe::Rect::from_xywh(x as f32, y as f32, lb.width as f32, lb.height as f32);
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_color(Color::WHITE);
+            canvas.draw_rect(rect, &paint);
+            paint.set_style(paint::Style::Stroke);
+            paint.set_color(Color::BLACK);
+            paint.set_stroke_width(1.0);
+            canvas.draw_rect(rect, &paint);
+            render_box(
+                canvas,
+                fonts,
+                font_families,
+                body,
+                x,
+                y,
+                color,
+                fs,
+                italic,
+                bold,
+            );
+        }
         LayoutKind::Decoration { kind, body } => {
             render_box(
                 canvas,
@@ -1011,6 +1039,8 @@ fn draw_text_tracked(
     centered: bool,
     legacy_tracking: f64,
 ) {
+    #[cfg(test)]
+    tests::record_paint_request(text, x, baseline_y, font_size, None);
     if text.is_empty() {
         return;
     }
@@ -1137,6 +1167,8 @@ fn draw_legacy_pua_glyph(
     advance_w: Option<f64>,
     color: Color,
 ) -> bool {
+    #[cfg(test)]
+    tests::record_paint_request(&glyph.to_string(), x, baseline_y, font_size, advance_w);
     let Some(family) = font_families
         .iter()
         .copied()
@@ -1713,6 +1745,131 @@ mod tests {
     use super::*;
     use crate::renderer::skia::font_lookup::collect_system_families;
 
+    #[derive(Debug, Clone, PartialEq)]
+    struct PaintRequest {
+        text: String,
+        x: f64,
+        y: f64,
+        size: f64,
+        advance: Option<f64>,
+    }
+
+    thread_local! {
+        static PAINT_REQUESTS: std::cell::RefCell<Option<Vec<PaintRequest>>> = const {
+            std::cell::RefCell::new(None)
+        };
+    }
+
+    pub(super) fn record_paint_request(
+        text: &str,
+        x: f64,
+        y: f64,
+        size: f64,
+        advance: Option<f64>,
+    ) {
+        PAINT_REQUESTS.with_borrow_mut(|requests| {
+            if let Some(requests) = requests {
+                requests.push(PaintRequest {
+                    text: text.into(),
+                    x,
+                    y,
+                    size,
+                    advance,
+                });
+            }
+        });
+    }
+
+    fn same_request(a: &PaintRequest, b: &PaintRequest) -> bool {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        a.text == b.text
+            && close(a.x, b.x)
+            && close(a.y, b.y)
+            && close(a.size, b.size)
+            && match (a.advance, b.advance) {
+                (Some(a), Some(b)) => close(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    fn capture_paint_requests(paint: impl FnOnce()) -> Vec<PaintRequest> {
+        PAINT_REQUESTS.with_borrow_mut(|requests| *requests = Some(Vec::new()));
+        paint();
+        PAINT_REQUESTS.with_borrow_mut(|requests| requests.take().unwrap())
+    }
+
+    #[test]
+    fn composite_paint_size_native_matches_independent_child_requests() {
+        use crate::renderer::equation::{
+            layout::{composite_paint_cases, EqLayout},
+            parser::parse,
+        };
+        let font_mgr = FontMgr::default();
+        let face = font_mgr
+            .new_from_data(
+                include_bytes!("../../../tests/fixtures/fonts/HYhwpEQSourceFixture.ttf"),
+                None,
+            )
+            .expect("HY source fixture");
+        let mut custom = TypefaceCatalog::new();
+        custom.insert("hyhwpeq".into(), vec![face]);
+        let bundled = TypefaceCatalog::new();
+        let system = collect_system_families(&font_mgr);
+        let fonts = EqFonts {
+            mgr: &font_mgr,
+            custom: &custom,
+            bundled: &bundled,
+            system: &system,
+            modern: true,
+        };
+        // 등록된 원본 글립과 글립 없는 fallback을 모두 실제 painter에 보낸다.
+        for families in [["HYhwpEQ"], ["RHWP missing composite font"]] {
+            for fs in [1100.0 / 75.0, 22.0, 1100.0 / 37.5] {
+                for &(script, path, ratio) in composite_paint_cases::CASES {
+                    let layout = EqLayout::with_font(fs, "HYhwpEQ")
+                        .with_version("Equation Version 60")
+                        .layout(&parse(script));
+                    let (child, x, y, italic) = composite_paint_cases::child(&layout, path);
+                    let mut independent = child.clone();
+                    independent.resolved_font_size = None;
+                    let mut surface = skia_safe::surfaces::raster_n32_premul((256, 256)).unwrap();
+                    let expected = capture_paint_requests(|| {
+                        render_box(
+                            surface.canvas(),
+                            &fonts,
+                            &families,
+                            &independent,
+                            x,
+                            y,
+                            Color::BLACK,
+                            fs * ratio,
+                            italic,
+                            false,
+                        )
+                    });
+                    let actual = capture_paint_requests(|| {
+                        render_box(
+                            surface.canvas(),
+                            &fonts,
+                            &families,
+                            &layout,
+                            17.25,
+                            29.5,
+                            Color::BLACK,
+                            fs,
+                            true,
+                            false,
+                        )
+                    });
+                    assert!(!expected.is_empty(), "{script}");
+                    assert!(actual.windows(expected.len()).any(|window| window.iter().zip(&expected).all(|(a, b)| same_request(a, b))),
+                        "{script}, {path:?}, {fs}, {families:?}: child glyph origins/em/widths differ\nexpected: {expected:?}\nactual: {actual:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn installed_stix_text_italic_precedes_regular_only_math_face() {
         let font_mgr = FontMgr::default();
@@ -1789,5 +1946,81 @@ mod tests {
 
         assert_eq!(selected.family_name(), "STIX Two Math");
         assert!(typeface_covers_text(&selected, "→"));
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::*;
+    use crate::renderer::equation::{layout::EqLayout, parser::parse};
+    use crate::renderer::skia::font_lookup::collect_system_families;
+
+    #[test]
+    fn box_frame_native_paints_white_background_black_frame_and_colored_child() {
+        let mgr = FontMgr::default();
+        let face = mgr
+            .new_from_data(
+                include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+                None,
+            )
+            .unwrap();
+        let mut custom = TypefaceCatalog::new();
+        custom.insert("rhwpboxfixture".into(), vec![face]);
+        let bundled = TypefaceCatalog::new();
+        let system = collect_system_families(&mgr);
+        let fonts = EqFonts {
+            mgr: &mgr,
+            custom: &custom,
+            bundled: &bundled,
+            system: &system,
+            modern: true,
+        };
+        let mut body = EqLayout::new(24.0).layout(&parse("A"));
+        body.x = 20.0;
+        body.y = 12.0;
+        let frame = LayoutBox {
+            resolved_font_size: Some(24.0),
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 48.0,
+            baseline: body.y + body.baseline,
+            kind: LayoutKind::Decoration {
+                kind: DecoKind::Box,
+                body: Box::new(body),
+            },
+        };
+        let mut surface = skia_safe::surfaces::raster_n32_premul((128, 96)).unwrap();
+        surface.canvas().clear(Color::BLUE);
+        render_box(
+            surface.canvas(),
+            &fonts,
+            &["RHWPBoxFixture"],
+            &frame,
+            16.0,
+            16.0,
+            Color::RED,
+            24.0,
+            false,
+            false,
+        );
+        let info = surface.image_info();
+        let mut pixels = vec![0_u8; 128 * 96 * 4];
+        assert!(surface.read_pixels(&info, &mut pixels, 128 * 4, (0, 0)));
+        let rgb = |x: usize, y: usize| &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3];
+        assert!(
+            rgb(24, 24).iter().all(|v| *v == 255),
+            "white frame interior"
+        );
+        assert!(rgb(40, 16).iter().all(|v| *v < 200), "black upper frame");
+        assert!(
+            (28..60).any(|y| (36..60).any(|x| {
+                let px = rgb(x, y);
+                px.iter().filter(|v| **v > 200).count() == 1
+                    && px.iter().filter(|v| **v < 80).count() == 2
+            })),
+            "colored child remains inside frame"
+        );
     }
 }

@@ -97,15 +97,26 @@ impl DocumentCore {
             legacy_script
         };
 
-        let (_, base_height) = crate::renderer::equation::intrinsic_size_hwp(&script, 1000);
+        let (_, base_height, _) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
+                &script,
+                1000,
+                "",
+                "Equation Version 60",
+                self.document.doc_info.font_metrics_policy,
+            );
         let font_size = if base_height > 0 && common.height > 0 {
             ((u64::from(common.height) * 1000) / u64::from(base_height)).clamp(200, 40_000) as u32
         } else {
             1000
         };
         let (_, natural_height, natural_baseline) =
-            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
-                &script, font_size, "HYhwpEQ",
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
+                &script,
+                font_size,
+                "HYhwpEQ",
+                "Equation Version 60",
+                self.document.doc_info.font_metrics_policy,
             );
         let baseline = ((natural_baseline as f64 / natural_height.max(1) as f64) * 100.0)
             .round()
@@ -253,10 +264,12 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let path = Self::parse_cell_path_json(cell_path_json)?;
         let dpi = self.dpi;
-        Self::apply_equation_properties(
+        let policy = self.document.doc_info.font_metrics_policy;
+        Self::apply_equation_properties_with_policy(
             self.equation_mut_by_path(section_idx, parent_para_idx, &path, inner_control_idx)?,
             dpi,
             props_json,
+            policy,
         );
         self.finish_equation_edit_by_path(section_idx, parent_para_idx, &path);
         Ok(crate::document_core::helpers::json_ok())
@@ -404,8 +417,22 @@ impl DocumentCore {
     }
     pub(crate) fn apply_equation_properties(
         eq: &mut crate::model::control::Equation,
+        dpi: f64,
+        props_json: &str,
+    ) {
+        Self::apply_equation_properties_with_policy(
+            eq,
+            dpi,
+            props_json,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        );
+    }
+
+    pub(crate) fn apply_equation_properties_with_policy(
+        eq: &mut crate::model::control::Equation,
         _dpi: f64,
         props_json: &str,
+        policy: crate::model::provenance::FontMetricsPolicy,
     ) {
         use crate::document_core::helpers::{json_i32, json_str, json_u32};
 
@@ -427,11 +454,12 @@ impl DocumentCore {
         Self::apply_common_obj_attr_from_json(&mut eq.common, props_json);
 
         let (width, height, baseline) =
-            crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
                 &eq.script,
                 eq.font_size,
                 &eq.font_name,
                 &eq.version_info,
+                policy,
             );
         eq.common.width = width;
         eq.common.height = height;
@@ -517,6 +545,7 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let dpi = self.dpi;
+        let policy = self.document.doc_info.font_metrics_policy;
         let eq = self.find_equation_mut(
             section_idx,
             parent_para_idx,
@@ -525,7 +554,7 @@ impl DocumentCore {
             cell_para_idx,
             inner_control_idx,
         )?;
-        Self::apply_equation_properties(eq, dpi, props_json);
+        Self::apply_equation_properties_with_policy(eq, dpi, props_json, policy);
 
         // 표 셀 내 수식인 경우 표 dirty 플래그 설정
         if cell_idx.is_some() {
@@ -598,7 +627,10 @@ impl DocumentCore {
                     ),
                 ),
             };
-        let layout_box = EqLayout::with_font(font_size_px, font_name.unwrap_or("")).layout(&ast);
+        let layout_box = EqLayout::with_font(font_size_px, font_name.unwrap_or(""))
+            .with_metrics_policy(self.document.doc_info.font_metrics_policy)
+            .with_base_pt(font_size_hwpunit as f64 / 100.0)
+            .layout(&ast);
         let color_str = eq_color_to_svg(color);
         let svg_fragment =
             render_equation_svg_with_font(&layout_box, &color_str, font_size_px, font_name);
@@ -929,8 +961,12 @@ impl DocumentCore {
         }
 
         let (width, height, baseline_hwp) =
-            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
-                script, font_size, "HYhwpEQ",
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
+                script,
+                font_size,
+                "HYhwpEQ",
+                "Equation Version 60",
+                self.document.doc_info.font_metrics_policy,
             );
         // HWPX baseLine 은 높이 대비 백분율(스키마 기본값 85) — 레이아웃 기준선 비율로 채운다.
         // 기존엔 ..Default::default() 로 0 이 남아 직렬화 시 baseLine="0" 이 방출됐다.
@@ -1135,8 +1171,12 @@ impl DocumentCore {
         use crate::parser::tags::CTRL_EQUATION;
 
         let (width, height, baseline_hwp) =
-            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
-                script, font_size, "HYhwpEQ",
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
+                script,
+                font_size,
+                "HYhwpEQ",
+                "Equation Version 60",
+                self.document.doc_info.font_metrics_policy,
             );
         // HWPX baseLine 은 높이 대비 백분율(스키마 기본값 85) — 본문 삽입 경로와 동일하게
         // 레이아웃 기준선 비율로 채운다 (기존엔 Default 0 방출).
@@ -1253,8 +1293,12 @@ impl DocumentCore {
         }
 
         let (width, height, baseline_hwp) =
-            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
-                script, font_size, "HYhwpEQ",
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
+                script,
+                font_size,
+                "HYhwpEQ",
+                "Equation Version 60",
+                self.document.doc_info.font_metrics_policy,
             );
         let baseline = if height > 0 {
             ((baseline_hwp as f64 / height as f64) * 100.0)

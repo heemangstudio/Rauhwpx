@@ -11,22 +11,31 @@ export function equationFontFamilies(fontName?: string): string[] {
   return [...new Set([...(requested ? [requested] : []), ...fallbacks])];
 }
 
-/** 합성 기울임/굵기보다 감지된 해당 style의 실제 face를 우선한다. */
+/** 동기 바이트 조회와 같은 slant·400/700 거리로 실제 face를 고른다. 동률은 등록 순서다. */
 export function equationLocalFontFace(
   records: readonly LocalFontRecord[],
   family: string,
   italic: boolean,
   bold: boolean,
 ): LocalFontRecord | undefined {
-  return records.find(record => (
-    record.family.toLowerCase() === family.toLowerCase()
-    && importedFontPhysicalStyle(record).italic === italic
-    && importedFontPhysicalStyle(record).bold === bold
-  ));
+  const distance = (record: LocalFontRecord): number => {
+    const physical = importedFontPhysicalStyle(record);
+    return (physical.italic === italic ? 0 : 1000)
+      + Math.abs(physical.weight - (bold ? 700 : 400));
+  };
+  return records.filter(record => record.family.toLowerCase() === family.toLowerCase())
+    .reduce<LocalFontRecord | undefined>((best, record) => (
+      !best || distance(record) < distance(best) ? record : best
+    ), undefined);
 }
 
 export function isLegacyEquationFont(name?: string): boolean {
   return name?.trim().toLowerCase() === 'hyhwpeq';
+}
+
+/** 원본 HY가 빠뜨린 현대식 기호만 한컴 본문 서체에서 찾는다. */
+export function isModernEquationFallbackSymbol(text: string): boolean {
+  return /^[□∆′″]$/u.test(text);
 }
 
 /** renderer/equation/font.rs의 HYhwpEQ cmap. 로드된 해당 서체에만 사용한다. */
@@ -54,6 +63,23 @@ export function legacyEquationGlyph(character: string, italic: boolean, modern: 
 export function modernEquationAdvance(rawAdvance: number, fontSize: number, syntheticItalic = false): number {
   const gridSize = Math.max(1, Math.round(fontSize / 2)) * 2;
   return Math.round(rawAdvance / fontSize * gridSize) * (syntheticItalic ? 1 : 0.9);
+}
+
+/** 문서의 FontMetricsPolicy. 생략하면 기존 Mac 측정을 유지한다. */
+export type EquationMetricsPolicy = 'hcr-declared' | 'hancom-windows';
+
+/** 원본 face의 유효한 GID를 확인한 호출자만 sourceCovered를 허용한다. */
+function modernSourceEquationAdvance(
+  rawAdvance: number, size: number, character: string, italic: boolean, bold: boolean,
+  sourceCovered: boolean, policy: EquationMetricsPolicy, advanceScale: number,
+): number {
+  const [glyph, synthetic] = legacyEquationGlyph(character, italic, true);
+  if (policy === 'hancom-windows' && sourceCovered && glyph !== character
+      && /^[\ue000-\ue0ff]$/u.test(glyph) && !synthetic && !bold
+      && Number.isFinite(advanceScale) && advanceScale > 0) {
+    return modernEquationAdvance(rawAdvance / advanceScale, size / advanceScale, true) * advanceScale;
+  }
+  return modernEquationAdvance(rawAdvance, size, synthetic);
 }
 
 /** Short modern square fences use the loaded HY glyph cells and ink bearing. */
@@ -95,14 +121,13 @@ export function createEquationFontResolver(
   resolveFont: (name: string) => LocalFontRecord | null,
   readBytes: (name: string) => ArrayBuffer | null,
 ): (source: string, glyphs: string) => string | null {
-  const bytesByRecord = new WeakMap<LocalFontRecord, ArrayBuffer | null>();
   return (source, glyphs) => {
     const hft = /^(HSUSR|HSUSRI|HSUSFL|HSUSSP)$/i.test(source);
     if (!isLegacyEquationFont(source) && !hft) return null;
     const record = resolveFont(source);
     if (!record?.runtimeFamily || record.family.toLowerCase() !== source.toLowerCase()) return null;
-    if (!bytesByRecord.has(record)) bytesByRecord.set(record, readBytes(source));
-    const bytes = bytesByRecord.get(record);
+    // 늦은 바이트 준비와 같은 face 교체를 이전의 null/coverage로 막지 않는다.
+    const bytes = readBytes(source);
     return bytes && sfntCoversText(bytes, glyphs) ? record.runtimeFamily : null;
   };
 }
@@ -139,12 +164,30 @@ export function createEquationLiteralFontResolver(
 /** 수식 배치와 paint가 같은 run의 advance와 잉크 경계를 사용한다. */
 export function createEquationTextMeasurer(
   resolveFont: (name: string) => LocalFontRecord | null,
-  readBytes: (name: string) => ArrayBuffer | null,
-): (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold?: boolean) => { advance: number; inkLeft: number; inkRight: number } | null {
+  readBytes: (name: string, bold?: boolean, italic?: boolean) => ArrayBuffer | null,
+): (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold?: boolean, policy?: EquationMetricsPolicy, advanceScale?: number) => { advance: number; inkLeft: number; inkRight: number } | null {
   const exact = createEquationFontResolver(resolveFont, readBytes);
   const unicode = createEquationLiteralFontResolver(resolveFont, readBytes);
   let context: CanvasRenderingContext2D | null = null;
-  return (source, text, size, italic, hft, literal, bold = false) => {
+  const fallbackMetrics = (character: string, size: number, italic: boolean, bold: boolean) => {
+    if (!isModernEquationFallbackSymbol(character)) return null;
+    const record = resolveFont('Haansoft Batang');
+    // 현지화된 canonical family도 등록된 영문 별칭으로 같은 fallback face를 확인한다.
+    if (!record?.runtimeFamily || ![record.family, ...record.aliases]
+      .some(name => name.toLowerCase() === 'haansoft batang')) return null;
+    const bytes = readBytes('Haansoft Batang', bold, italic);
+    if (!bytes || !sfntCoversText(bytes, character)) return null;
+    const exactMetrics = sfntTrueTypeRunMetrics(bytes, character, size);
+    if (exactMetrics) return exactMetrics;
+    // 데스크톱 서체는 coverage 메타데이터만 보관한다. 등록된 같은 CSS face를 측정한다.
+    context ??= globalThis.document?.createElement('canvas').getContext('2d') ?? null;
+    if (!context) return null;
+    context.font = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${size.toFixed(3)}px ${JSON.stringify(record.runtimeFamily)}`;
+    const metrics = context.measureText(character);
+    if (![metrics.width, metrics.actualBoundingBoxLeft, metrics.actualBoundingBoxRight].every(Number.isFinite)) return null;
+    return { advance: metrics.width, inkLeft: -metrics.actualBoundingBoxLeft, inkRight: metrics.actualBoundingBoxRight };
+  };
+  return (source, text, size, italic, hft, literal, bold = false, policy = 'hcr-declared', advanceScale = 1) => {
     if (!Number.isFinite(size) || size <= 0 || !text) return null;
     if (isLegacyEquationFont(source) && !hft) {
       const mapped = [...text].map(character => ({ character, mapped: legacyEquationGlyph(character, italic, true) }));
@@ -152,8 +195,13 @@ export function createEquationTextMeasurer(
         const bytes = readBytes(source);
         if (bytes) {
           let advance = 0; let inkLeft = Number.NaN; let inkRight = 0; let complete = true;
-          for (const { character, mapped: [glyph, syntheticItalic] } of mapped) {
-            const metrics = sfntTrueTypeRunMetrics(bytes, glyph, size);
+          for (const { character, mapped: [glyph] } of mapped) {
+            const sourceMetrics = sfntTrueTypeRunMetrics(bytes, glyph, size);
+            const fallback = !sourceMetrics && isModernEquationFallbackSymbol(character) && !sfntCoversText(bytes, glyph)
+              // 복합 text leaf는 positioned glyph의 paint 경로처럼 특수 fallback만 정체다.
+              // 단일 문자의 명시적 low-level italic 측정 요청은 그대로 둔다.
+              ? fallbackMetrics(character, size, mapped.length === 1 && italic, bold) : null;
+            const metrics = sourceMetrics ?? fallback;
             if (!metrics) {
               // HY가 지원하지 않는 한글도 native와 같은 현대식 진행폭에 둔다.
               if (!/[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character)
@@ -165,7 +213,10 @@ export function createEquationTextMeasurer(
             }
             if (Number.isNaN(inkLeft)) inkLeft = metrics.inkLeft;
             inkRight = Math.max(inkRight, advance + metrics.inkRight);
-            advance += modernEquationAdvance(metrics.advance, size, syntheticItalic);
+            advance += fallback
+              ? modernEquationAdvance(metrics.advance, size, false)
+              : modernSourceEquationAdvance(metrics.advance, size, character, italic, bold,
+                Boolean(sourceMetrics) && sfntCoversText(bytes, glyph), policy, advanceScale);
           }
           if (complete) return { advance, inkLeft, inkRight };
         }

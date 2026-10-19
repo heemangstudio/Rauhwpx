@@ -67,6 +67,7 @@ fn render_box(
     bold: bool,
     font_family: &EquationFont,
 ) {
+    let fs = lb.paint_font_size(fs);
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
     if let Some(glyphs) = lb.positioned_glyphs() {
@@ -621,6 +622,19 @@ fn render_box(
                     }
                 }
             }
+        }
+        LayoutKind::Decoration {
+            kind: DecoKind::Box,
+            body,
+        } => {
+            ctx.save();
+            ctx.set_fill_style_str("white");
+            ctx.fill_rect(x, y, lb.width, lb.height);
+            ctx.set_stroke_style_str("black");
+            ctx.set_line_width(1.0);
+            ctx.stroke_rect(x, y, lb.width, lb.height);
+            ctx.restore();
+            render_box(ctx, body, x, y, color, fs, italic, bold, font_family);
         }
         LayoutKind::Decoration { kind, body } => {
             render_box(ctx, body, x, y, color, fs, italic, bold, font_family);

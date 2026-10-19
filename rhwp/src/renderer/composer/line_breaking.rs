@@ -3111,6 +3111,8 @@ struct InlineControlMetricsHwp {
     width: i32,
     height: i32,
     baseline: i32,
+    /// Windows 수식의 비율 간격 기여. None은 기존 개체 경로를 유지한다.
+    equation_percent_basis: Option<i32>,
 }
 
 /// 위·아래 캡션은 개체의 세로 점유 상자에 들어간다. 마지막 줄 뒤 간격은 제외한다.
@@ -3133,7 +3135,30 @@ fn inline_caption_height_hwp(caption: &Option<crate::model::shape::Caption>) -> 
     }
 }
 
+#[cfg(test)]
 fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp> {
+    inline_control_metrics_hwp_with_policy(ctrl, Default::default())
+}
+
+fn inline_control_metrics_hwp_with_policy(
+    ctrl: &Control,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<InlineControlMetricsHwp> {
+    if let Control::Equation(eq) = ctrl {
+        if eq.common.treat_as_char {
+            if let Some(flow) =
+                crate::renderer::equation::windows_control_line_flow_hwp(eq, 0, policy)
+            {
+                let width = crate::renderer::equation::occupied_width_hwp_with_policy(eq, policy);
+                return (width > 0 && flow.height > 0).then_some(InlineControlMetricsHwp {
+                    width,
+                    height: flow.height,
+                    baseline: flow.baseline,
+                    equation_percent_basis: Some(flow.percent_spacing_basis),
+                });
+            }
+        }
+    }
     let (width, height, baseline) = match ctrl {
         Control::Picture(pic) if pic.common.treat_as_char => {
             let image_height = pic.common.height as i32;
@@ -3191,18 +3216,19 @@ fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp>
         }
         Control::Equation(eq) if eq.common.treat_as_char => {
             let (_, natural_height, natural_baseline) =
-                crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+                crate::renderer::equation::intrinsic_metrics_hwp_with_version_with_policy(
                     &eq.script,
                     eq.font_size,
                     &eq.font_name,
                     &eq.version_info,
+                    policy,
                 );
             let margin = &eq.common.margin;
             // 인라인 수식의 줄 전진 = 선언(개체 상자) 폭 + 양쪽 outMargin — 개체 상자는
             // 내용이 작아도 그대로 점유하고, 넘치는 잉크도 상자 밖으로 전진을 넓히지
             // 않는다 (eq-002 실측: `=8` 전진 13.13pt = 선언 12.01+여백, `f(n)` 1788HWU =
             // 선언 1677+112 — paint 1651 이 아니라 선언 폭을 쓴다).
-            let width = crate::renderer::equation::occupied_width_hwp(eq);
+            let width = crate::renderer::equation::occupied_width_hwp_with_policy(eq, policy);
             // 한컴 저장 줄 높이는 수식 개체의 선언 높이 + 바깥 여백 그대로다 (HWPX 표본 수식
             // 줄 3,700여 건: vertsize = 높이 + 위/아래 여백, baseline = 위 여백 + 높이 ×
             // baseLine%). 잉크 기반 흐름 높이는 선언 높이가 없을 때만 쓴다.
@@ -3241,6 +3267,7 @@ fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp>
             width,
             height,
             baseline: baseline.clamp(0, height),
+            equation_percent_basis: None,
         })
     } else {
         None
@@ -3326,7 +3353,7 @@ fn line_index_for_token(line_breaks: &[LineBreakResult], token: usize) -> usize 
 
 /// 가시 위치로 접힌 제어 슬롯의 시작을 실제 UTF-16 갭에서 복원한다.
 /// 탭·필드 끝 등 컨트롤 배열과 대응하지 않는 갭은 추측하지 않는다.
-fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u32>> {
+pub(super) fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u32>> {
     const EXTENDED_UNITS: u32 = 8;
     let mut anchors = vec![None; para.controls.len()];
     // FIELD_END와 미지원 inline 마커는 controls 배열에 없고, 번호·덧말은
@@ -3348,6 +3375,8 @@ fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u3
                     | Control::Footer(_)
                     | Control::PageNumberPos(_)
                     | Control::PageHide(_)
+                    | Control::Footnote(_)
+                    | Control::Endnote(_)
             )
         })
     {
@@ -3378,7 +3407,14 @@ fn control_stream_starts(para: &Paragraph, positions: &[usize]) -> Vec<Option<u3
                     anchors[control] = Some(previous_end + ordinal as u32 * EXTENDED_UNITS);
                 }
             }
-            if gap < EXTENDED_UNITS && count == 1 && chars.get(position) == Some(&'\u{FFFC}') {
+            if gap < EXTENDED_UNITS
+                && count == 1
+                && chars.get(position) == Some(&'\u{FFFC}')
+                && !matches!(
+                    para.controls[begin],
+                    Control::Footnote(_) | Control::Endnote(_)
+                )
+            {
                 anchors[begin] = Some(following);
             }
         }
@@ -3422,13 +3458,17 @@ fn apply_inline_control_metrics_to_text_lines(
 
     let mut positions = para.control_text_positions();
     crate::renderer::ruby::project_control_positions(para, &mut positions);
+    // 개체를 합친 뒤의 text_height를 B로 재사용하면 false 수식도 간격을 키운다.
+    let anchors = control_stream_starts(para, &positions);
+    let mut percent_bases: Vec<_> = line_segs.iter().map(|line| line.text_height).collect();
+    let mut equation_lines = vec![false; line_segs.len()];
     for (control_index, control) in para.controls.iter().enumerate() {
         if matches!(control, Control::Form(_)) {
             continue;
         }
-        let Some(metrics) = ruby_control_metrics(para, control_index, styles, dpi)
-            .or_else(|| inline_control_metrics_hwp(control))
-        else {
+        let Some(metrics) = ruby_control_metrics(para, control_index, styles, dpi).or_else(|| {
+            inline_control_metrics_hwp_with_policy(control, styles.font_metrics_policy)
+        }) else {
             continue;
         };
         let line_index = control_tokens
@@ -3447,7 +3487,36 @@ fn apply_inline_control_metrics_to_text_lines(
                 )
             });
         if let Some(line_seg) = line_segs.get_mut(line_index) {
+            if let Some(basis) = metrics.equation_percent_basis {
+                percent_bases[line_index] = percent_bases[line_index].max(basis);
+                if matches!(control, Control::Equation(eq) if !eq.common.affect_line_spacing) {
+                    // 접힌 토큰은 다음 가시 문자의 스타일을 가질 수 있다. 수식 슬롯의
+                    // 실제 UTF-16 앵커에서 B를 읽어 큰 개체 글자 모양도 보존한다.
+                    if let Some(anchor) = anchors.get(control_index).copied().flatten() {
+                        let style_id = find_active_char_shape(&para.char_shapes, anchor);
+                        let height =
+                            font_size_to_line_height(style_font_size(styles, style_id), dpi);
+                        percent_bases[line_index] = percent_bases[line_index].max(height);
+                    }
+                }
+                equation_lines[line_index] = true;
+            }
             apply_inline_control_line_metrics(line_seg, metrics);
+        }
+    }
+    let para_style = styles.para_styles.get(para.para_shape_id as usize);
+    let spacing_type = para_style
+        .map(|s| s.line_spacing_type)
+        .unwrap_or(LineSpacingType::Percent);
+    if spacing_type == LineSpacingType::Percent {
+        let spacing = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
+        for (index, seg) in line_segs.iter_mut().enumerate() {
+            if equation_lines[index] {
+                seg.line_spacing = crate::renderer::equation::windows_percent_line_spacing_hwp(
+                    percent_bases[index],
+                    spacing,
+                );
+            }
         }
     }
 }
@@ -3581,7 +3650,7 @@ pub(crate) fn refresh_inline_table_host_metrics(
             continue;
         }
         if let Some(metrics) = ruby_control_metrics(para, index, styles, dpi)
-            .or_else(|| inline_control_metrics_hwp(control))
+            .or_else(|| inline_control_metrics_hwp_with_policy(control, styles.font_metrics_policy))
         {
             apply_inline_control_line_metrics(&mut segment, metrics);
         }
@@ -6074,8 +6143,9 @@ fn reflow_line_segs_with_wrap_exclusions(
             .iter()
             .enumerate()
             .map(|(ci, control)| {
-                ruby_control_metrics(para, ci, styles, dpi)
-                    .or_else(|| inline_control_metrics_hwp(control))
+                ruby_control_metrics(para, ci, styles, dpi).or_else(|| {
+                    inline_control_metrics_hwp_with_policy(control, styles.font_metrics_policy)
+                })
             })
             .collect::<Vec<_>>();
         // HWPX 책갈피·숨은 설명은 확장 레코드를 소비하지 않는 메타데이터다.
@@ -6297,8 +6367,24 @@ fn reflow_line_segs_with_wrap_exclusions(
                         width: 0,
                         height: height_hwp,
                         baseline: baseline_hwp,
+                        equation_percent_basis: None,
                     },
                 );
+                if ls_type == LineSpacingType::Percent {
+                    let mut equation_basis = None;
+                    for metrics in inline_sizes[first_ctrl..=last_ctrl].iter().flatten() {
+                        if let Some(basis) = metrics.equation_percent_basis {
+                            equation_basis = Some(equation_basis.unwrap_or(0).max(basis));
+                        }
+                    }
+                    if let Some(basis) = equation_basis {
+                        seg.line_spacing =
+                            crate::renderer::equation::windows_percent_line_spacing_hwp(
+                                font_size_to_line_height(font_size, dpi).max(basis),
+                                ls_value,
+                            );
+                    }
+                }
                 new_line_segs.push(seg);
             }
             // 개체 줄 앞의 컨트롤 전용 줄: 한컴은 줄 높이를 뒤 개체 줄 높이로 두고 글자
@@ -6378,7 +6464,9 @@ fn reflow_line_segs_with_wrap_exclusions(
         .filter(|(_, ctrl)| !matches!(ctrl, Control::Form(_)))
         .filter_map(|(ci, ctrl)| {
             ruby_control_metrics(para, ci, styles, dpi)
-                .or_else(|| inline_control_metrics_hwp(ctrl))
+                .or_else(|| {
+                    inline_control_metrics_hwp_with_policy(ctrl, styles.font_metrics_policy)
+                })
                 .map(|m| {
                     (
                         ci,
@@ -6551,7 +6639,9 @@ fn reflow_line_segs_with_wrap_exclusions(
             };
             if matches!(control, Control::Form(_))
                 || ruby_control_metrics(para, ci, styles, dpi)
-                    .or_else(|| inline_control_metrics_hwp(control))
+                    .or_else(|| {
+                        inline_control_metrics_hwp_with_policy(control, styles.font_metrics_policy)
+                    })
                     .is_none()
             {
                 continue;
@@ -7139,6 +7229,7 @@ fn ruby_control_metrics(
         width: super::super::px_to_hwpunit_round(r.main_width, dpi),
         height: r.height_hu,
         baseline: r.baseline_hu,
+        equation_percent_basis: None,
     })
 }
 
@@ -8767,6 +8858,7 @@ mod lineseg_oracle_rule_tests {
                 width: 450,
                 height: 900,
                 baseline: 774,
+                equation_percent_basis: None,
             },
         );
         assert_eq!((seg.line_height, seg.baseline_distance), (900, 774));

@@ -860,8 +860,16 @@ fn is_treat_as_char_equation_control(ctrl: Option<&Control>) -> bool {
 /// #374 이후 줄 전진은 min(선언 폭, paint 폭+여백)이라 선언 폭보다 좁을 수 있는데,
 /// bbox 를 선언 폭 그대로 두면 이웃 수식 bbox 와 겹쳐 커서·hit-test 가 되감긴다.
 /// 렌더러는 bbox 의 x/y 만 쓰므로 그림에는 영향이 없다.
-fn inline_equation_box_width_px(eq: &crate::model::control::Equation, tac_w: f64, dpi: f64) -> f64 {
-    let declared = hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), dpi);
+fn inline_equation_box_width_px(
+    eq: &crate::model::control::Equation,
+    tac_w: f64,
+    dpi: f64,
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> f64 {
+    let declared = hwpunit_to_px(
+        crate::renderer::equation::content_width_hwp_with_policy(eq, policy),
+        dpi,
+    );
     let margins = hwpunit_to_px(
         i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
         dpi,
@@ -913,6 +921,7 @@ fn line_equation_metrics_px(
     para: Option<&Paragraph>,
     line_tac_offsets: &[(usize, f64, usize)],
     dpi: f64,
+    policy: crate::model::provenance::FontMetricsPolicy,
 ) -> Option<(f64, f64)> {
     let para = para?;
     let mut max_ascent = 0.0f64;
@@ -927,13 +936,41 @@ fn line_equation_metrics_px(
             continue;
         }
 
-        let (ascent, descent) = crate::renderer::equation::control_flow_ascent_descent_px(eq, dpi);
+        let (ascent, descent) =
+            crate::renderer::equation::control_flow_ascent_descent_px_with_policy(eq, dpi, policy);
         max_ascent = max_ascent.max(ascent);
         max_descent = max_descent.max(descent);
         found = true;
     }
 
     found.then_some((max_ascent, max_descent))
+}
+
+/// Windows의 새 Version 60 줄에서 H/기준선만 재결합한다. B는 조판 간격에 보존한다.
+fn line_windows_equation_metrics_hwp(
+    para: Option<&Paragraph>,
+    line_tac_offsets: &[(usize, f64, usize)],
+    policy: crate::model::provenance::FontMetricsPolicy,
+) -> Option<(i32, i32)> {
+    let para = para?;
+    let mut combined: Option<(i32, i32)> = None;
+    for (_, _, index) in line_tac_offsets {
+        let Some(Control::Equation(eq)) = para.controls.get(*index) else {
+            continue;
+        };
+        if !eq.common.treat_as_char {
+            continue;
+        }
+        // 레거시 수식이 섞인 줄은 종전 조합 경로를 유지한다.
+        let flow = crate::renderer::equation::windows_control_line_flow_hwp(eq, 0, policy)?;
+        if let Some((height, baseline)) = &mut combined {
+            *height = (*height).max(flow.height);
+            *baseline = (*baseline).max(flow.baseline);
+        } else {
+            combined = Some((flow.height, flow.baseline));
+        }
+    }
+    combined
 }
 
 fn align_line_metrics_to_equation(
@@ -1182,11 +1219,23 @@ mod inline_equation_alignment_tests {
             controls: vec![Control::Equation(Box::new(eq))],
             ..Paragraph::default()
         };
-        let false_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        let false_metrics = line_equation_metrics_px(
+            Some(&para),
+            &[(0, 0.0, 0)],
+            96.0,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
         if let Control::Equation(eq) = &mut para.controls[0] {
             eq.common.affect_line_spacing = true;
         }
-        let true_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        let true_metrics = line_equation_metrics_px(
+            Some(&para),
+            &[(0, 0.0, 0)],
+            96.0,
+            crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+        )
+        .unwrap();
         assert_eq!(false_metrics.0, true_metrics.0);
         assert!(true_metrics.1 > false_metrics.1);
     }
@@ -2398,22 +2447,48 @@ pub(crate) fn leading_note_marker_width_px(
     let composed = crate::renderer::composer::compose_paragraph_with_styles(para, &styles);
     let run = composed.lines.first()?.runs.first()?;
     let base = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
-    let marker_style = TextStyle {
-        font_size: (base.font_size * 0.75).max(7.0),
-        font_family: base.font_family,
-        bold: base.bold,
-        ..Default::default()
-    };
     Some(
         notes
             .iter()
-            .map(|(_, control, number)| {
+            .map(|(ci, control, number)| {
+                let (_, marker_style) = note_marker_style(Some(para), styles, *ci, &base);
                 estimate_text_width(
                     &note_marker_text_from_control(Some(control), *number),
                     &marker_style,
                 )
             })
             .sum(),
+    )
+}
+
+/// 원본 제어 슬롯을 해소한 경우에만 작은 저작 크기를 그대로 유지한다.
+/// 미지원/모호한 갭은 인접 본문의 기존 크기 하한을 보존한다.
+pub(super) fn note_marker_style(
+    para: Option<&Paragraph>,
+    styles: &ResolvedStyleSet,
+    control_index: usize,
+    fallback: &TextStyle,
+) -> (f64, TextStyle) {
+    let authored = para
+        .and_then(|p| crate::renderer::composer::note_marker_char_style_id(p, control_index))
+        .filter(|id| styles.char_styles.get(*id as usize).is_some())
+        .map(|id| resolved_to_text_style(styles, id, 0))
+        .filter(|style| style.font_size.is_finite() && style.font_size > 0.0);
+    let base = authored.as_ref().unwrap_or(fallback);
+    let scaled = base.font_size * 0.75;
+    (
+        base.font_size,
+        TextStyle {
+            font_size: if authored.is_some() {
+                scaled
+            } else {
+                scaled.max(7.0)
+            },
+            font_family: base.font_family.clone(),
+            bold: base.bold,
+            color: base.color,
+            ..Default::default()
+        },
     )
 }
 
@@ -2424,7 +2499,8 @@ pub(crate) fn leading_note_marker_width_px(
 fn push_note_marker_node(
     tree: &mut PageRenderTree,
     line_node: &mut RenderNode,
-    ctrl: Option<&Control>,
+    para: Option<&Paragraph>,
+    styles: &ResolvedStyleSet,
     number: u16,
     control_index: usize,
     base_ts: &TextStyle,
@@ -2433,14 +2509,9 @@ fn push_note_marker_node(
     section_index: usize,
     para_index: usize,
 ) -> f64 {
-    let text = note_marker_text_from_control(ctrl, number);
-    let sup_ts = TextStyle {
-        font_size: (base_ts.font_size * 0.75).max(7.0),
-        font_family: base_ts.font_family.clone(),
-        bold: base_ts.bold,
-        color: base_ts.color,
-        ..Default::default()
-    };
+    let text =
+        note_marker_text_from_control(para.and_then(|p| p.controls.get(control_index)), number);
+    let (base_font_size, sup_ts) = note_marker_style(para, styles, control_index, base_ts);
     let sup_w = estimate_text_width(&text, &sup_ts);
     let id = tree.next_id();
     line_node.children.push(RenderNode::new(
@@ -2448,11 +2519,12 @@ fn push_note_marker_node(
         RenderNodeType::FootnoteMarker(FootnoteMarkerNode {
             number,
             text,
-            base_font_size: base_ts.font_size,
+            base_font_size,
+            font_size: sup_ts.font_size,
             baseline,
-            font_family: base_ts.font_family.clone(),
-            bold: base_ts.bold,
-            color: base_ts.color,
+            font_family: sup_ts.font_family.clone(),
+            bold: sup_ts.bold,
+            color: sup_ts.color,
             section_index,
             para_index,
             control_index,
@@ -3202,7 +3274,7 @@ fn cached_prefix_tabs_allow_word_compression(
         || para.controls.iter().skip(leading_headers).any(|control| {
             !matches!(control,
             Control::Equation(eq) if eq.common.treat_as_char
-                && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                && crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some())
         })
     {
         return false;
@@ -4237,11 +4309,11 @@ impl LayoutEngine {
 
                     for ch_idx in *s..*e {
                         // 각주 마커 삽입: 현재 문자 위치에 각주가 있으면 먼저 run flush + FootnoteMarker 노드 삽입
-                        if let Some(&(_, fn_num, fn_ctrl_idx)) = composed.and_then(|c| {
-                            c.footnote_positions
-                                .iter()
-                                .find(|&&(pos, _, _)| pos == ch_idx)
-                        }) {
+                        for &(_, fn_num, fn_ctrl_idx) in composed
+                            .into_iter()
+                            .flat_map(|c| &c.footnote_positions)
+                            .filter(|&&(pos, _, _)| pos == ch_idx)
+                        {
                             // 현재까지 누적된 run 출력
                             if ch_idx > line_run_start {
                                 let run_text: String =
@@ -4296,46 +4368,26 @@ impl LayoutEngine {
                                 line_run_x = inline_x;
                                 line_run_start = ch_idx;
                             }
-                            // FootnoteMarker 노드 삽입 (위첨자로 렌더링됨)
-                            let fn_text = note_marker_text_from_control(
-                                para.controls.get(fn_ctrl_idx),
-                                fn_num,
-                            );
                             let base_ts = resolved_to_text_style(styles, current_cs_id, 0);
-                            // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
-                            let sup_font_size = (base_ts.font_size * 0.75).max(7.0);
-                            let sup_ts = TextStyle {
-                                font_size: sup_font_size,
-                                font_family: base_ts.font_family.clone(),
-                                bold: base_ts.bold,
-                                ..Default::default()
-                            };
-                            let sup_w = estimate_text_width(&fn_text, &sup_ts);
                             let run_bbox_h =
                                 stored_line_baseline_at(ch_idx).unwrap_or(if wrapped_below_table {
                                     text_line_baseline
                                 } else {
                                     baseline_dist
                                 });
-                            let marker_id = tree.next_id();
-                            let marker_node = RenderNode::new(
-                                marker_id,
-                                RenderNodeType::FootnoteMarker(FootnoteMarkerNode {
-                                    number: fn_num,
-                                    text: fn_text,
-                                    base_font_size: base_ts.font_size,
-                                    baseline: run_bbox_h,
-                                    font_family: base_ts.font_family.clone(),
-                                    bold: base_ts.bold,
-                                    color: base_ts.color,
-                                    section_index,
-                                    para_index,
-                                    control_index: fn_ctrl_idx,
-                                }),
-                                BoundingBox::new(inline_x, current_y, sup_w, run_bbox_h),
+                            inline_x += push_note_marker_node(
+                                tree,
+                                col_node,
+                                Some(para),
+                                styles,
+                                fn_num,
+                                fn_ctrl_idx,
+                                &base_ts,
+                                BoundingBox::new(inline_x, current_y, 0.0, run_bbox_h),
+                                run_bbox_h,
+                                section_index,
+                                para_index,
                             );
-                            col_node.children.push(marker_node);
-                            inline_x += sup_w;
                             line_run_x = inline_x;
                         }
 
@@ -5239,11 +5291,18 @@ impl LayoutEngine {
                         font_size_px,
                         &eq.font_name,
                     )
+                    .with_metrics_policy(styles.font_metrics_policy)
                     .with_version(&eq.version_info)
                     .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(
                         &ast,
-                        hwpunit_to_px(crate::renderer::equation::content_width_hwp(eq), self.dpi),
+                        hwpunit_to_px(
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
+                            self.dpi,
+                        ),
                     );
                     let color_str =
                         crate::renderer::equation::svg_render::eq_color_to_svg(eq.color);
@@ -5266,7 +5325,12 @@ impl LayoutEngine {
                     // 쓰면 내용이 ~6pt 위로 치솟는다).
                     let eq_y = row_y + baseline - layout_box.baseline;
                     let eq_x = inline_x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                    let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
+                    let eq_w = inline_equation_box_width_px(
+                        eq,
+                        tac_w,
+                        self.dpi,
+                        styles.font_metrics_policy,
+                    );
                     let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                         (
                             Some(ctx.path[0].cell_index),
@@ -5512,8 +5576,19 @@ impl LayoutEngine {
                 .iter()
                 .map(|(pos, w_hu, ci)| {
                     let w = para
-                        .and_then(|p| super::super::ruby::prepare(p, *ci, styles, self.dpi))
-                        .map(|r| r.main_width)
+                        .and_then(|p| p.controls.get(*ci))
+                        .and_then(|control| match control {
+                            Control::Shape(shape) => self.relative_inline_shape_occupied_width(
+                                shape,
+                                col_area,
+                                (col_area.width - box_margin_left - box_margin_right).max(0.0),
+                            ),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            para.and_then(|p| super::super::ruby::prepare(p, *ci, styles, self.dpi))
+                                .map(|r| r.main_width)
+                        })
                         .unwrap_or_else(|| hwpunit_to_px(*w_hu, self.dpi));
                     (*pos, w, *ci)
                 })
@@ -5540,18 +5615,29 @@ impl LayoutEngine {
                         // 원본 서체로 다시 잰 자연 폭은 한컴이 문서를 열 때 재계산한 개체
                         // 폭이다 — 전진은 개체 폭 + 바깥 여백 그대로다(mock-exam 미주 `a_2+a_4`
                         // `=a_1r+…` 연속 수식). 저장 폭 상한은 자연 폭이 없을 때만 쓴다.
-                        if crate::renderer::equation::natural_width_hwp(eq).is_some() {
+                        if crate::renderer::equation::natural_width_hwp_with_policy(
+                            eq,
+                            styles.font_metrics_policy,
+                        )
+                        .is_some()
+                        {
                             continue;
                         }
                         let painted_px = hwpunit_to_px(
-                            super::super::equation::fitted_width_hwp(eq) as i32,
+                            super::super::equation::fitted_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ) as i32,
                             self.dpi,
                         ) + hwpunit_to_px(
                             i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
                             self.dpi,
                         );
                         let declared_px = hwpunit_to_px(
-                            crate::renderer::equation::content_width_hwp(eq),
+                            crate::renderer::equation::content_width_hwp_with_policy(
+                                eq,
+                                styles.font_metrics_policy,
+                            ),
                             self.dpi,
                         );
                         *w = painted_px.min(declared_px);
@@ -5825,7 +5911,14 @@ impl LayoutEngine {
         } else {
             None
         };
+        // 인증된 HU 진행은 full-H/음수 spacing clamp와 별도로 받는다.
+        let certified_endnote_advances = (cell_ctx.is_none())
+            .then(|| self.endnote_para_source_for(para_index))
+            .flatten()
+            .and_then(|source| source.certified_line_advances_hu)
+            .filter(|rows| rows.len() == composed.lines.len());
         let mut endnote_upper_compaction_hu = 0;
+        let mut certified_content_bottom: Option<f64> = None;
         let mut endnote_line_vpos_y_end: Option<f64> = None;
         let mut endnote_auto_wrap_y_end: Option<f64> = None;
         let mut prev_line_reserved_tac_picture_height: Option<f64> = None;
@@ -5996,7 +6089,7 @@ impl LayoutEngine {
                 ls_val,
                 source_metrics_reflow_eligible,
             );
-            let (mut line_height, line_spacing_px) =
+            let (mut line_height, mut line_spacing_px) =
                 crate::renderer::corrected_line_metrics_for_authored_source(
                     raw_lh,
                     raw_text_height,
@@ -6014,13 +6107,14 @@ impl LayoutEngine {
                 .hwpx_stored_layout()
                 .then(|| {
                     para.and_then(|p| {
-                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
-                            p, composed, line_idx,
+                        crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
+                            p, composed, line_idx, styles.font_metrics_policy,
                         )
                     })
                 })
                 .flatten();
-            if endnote_line_vpos_base.is_some() {
+            // 인증된 successor 진행은 legacy 수식 textH 압축을 다시 빼지 않는다.
+            if endnote_line_vpos_base.is_some() && certified_endnote_advances.is_none() {
                 if let (Some((height, _)), Some(seg)) = (
                     source_upper_equation_metrics,
                     para.and_then(|p| p.line_segs.get(line_idx)),
@@ -6052,6 +6146,11 @@ impl LayoutEngine {
             });
             if let Some((height, _)) = source_upper_equation_metrics {
                 line_height = hwpunit_to_px(height, self.dpi);
+            }
+            if certified_endnote_advances.is_some() {
+                if let Some(seg) = para.and_then(|p| p.line_segs.get(line_idx)) {
+                    line_height = hwpunit_to_px(seg.line_height, self.dpi);
+                }
             }
             // [#2279 진단] 줄별 pitch 분해 — 동작 불변.
             if let Ok(pat) = std::env::var("RHWP_DIAG_PITCH") {
@@ -6270,7 +6369,7 @@ impl LayoutEngine {
                 && line_tac_offsets_for_width.iter().all(|(_, _, ci)| {
                     matches!(para.and_then(|p| p.controls.get(*ci)),
                         Some(Control::Equation(eq)) if eq.common.treat_as_char
-                            && crate::renderer::equation::natural_width_hwp(eq).is_some())
+                            && crate::renderer::equation::natural_width_hwp_with_policy(eq, styles.font_metrics_policy).is_some())
                 });
             let has_stored_equation_line_metrics = authored_center_equation_metrics
                 || source_upper_equation_metrics.is_some()
@@ -6291,9 +6390,25 @@ impl LayoutEngine {
             // 다음 쪽으로 밀린다. 합성 줄이나 재조판/인라인 도형으로 저장 메트릭을
             // 바꾼 줄에만 자체 수식 메트릭을 적용한다.
             if !has_stored_equation_line_metrics {
-                if let Some((equation_ascent, equation_descent)) =
-                    line_equation_metrics_px(para, &line_tac_offsets_for_width, self.dpi)
-                {
+                if let Some((height, line_baseline)) = line_windows_equation_metrics_hwp(
+                    para,
+                    &line_tac_offsets_for_width,
+                    styles.font_metrics_policy,
+                ) {
+                    line_height = line_height.max(hwpunit_to_px(height, self.dpi));
+                    baseline = baseline.max(hwpunit_to_px(line_baseline, self.dpi));
+                    if ls_type == LineSpacingType::Percent {
+                        // 조판은 가시 글자와 수식 제어 슬롯의 스타일에서 B를 따로
+                        // 계산했다. 빈 runs의 max_fs=0이나 개체가 키운 text_height로
+                        // 다시 계산하면 그 간격을 잃는다.
+                        line_spacing_px = hwpunit_to_px(comp_line.line_spacing, self.dpi);
+                    }
+                } else if let Some((equation_ascent, equation_descent)) = line_equation_metrics_px(
+                    para,
+                    &line_tac_offsets_for_width,
+                    self.dpi,
+                    styles.font_metrics_policy,
+                ) {
                     (line_height, baseline) = align_line_metrics_to_equation(
                         line_height,
                         baseline,
@@ -7633,12 +7748,26 @@ impl LayoutEngine {
                 } else {
                     y + render_line_flow_height
                 };
+                let content_bottom = if certified_endnote_advances.is_some() {
+                    let bottom = certified_content_bottom
+                        .map(|prior| prior.max(content_bottom))
+                        .unwrap_or(content_bottom);
+                    certified_content_bottom = Some(bottom);
+                    bottom
+                } else {
+                    content_bottom
+                };
                 self.last_item_content_bottom.set(content_bottom);
                 if equation_only_endnote_tail_line && content_bottom > col_bottom {
                     self.last_item_endnote_equation_tail_line_box.set(true);
                 }
             }
-            if endnote_line_vpos_base.is_some() {
+            if let Some(advances) = &certified_endnote_advances {
+                // bbox/content-bottom은 위의 full-H를 유지하고 다음 원점만 이동한다.
+                last_line_trailing_ls = render_line_spacing_px;
+                y += hwpunit_to_px(advances[line_idx], self.dpi);
+                endnote_line_vpos_y_end = Some(y);
+            } else if endnote_line_vpos_base.is_some() {
                 let line_bottom = if skip_advance_empty_line {
                     y
                 } else {
@@ -8478,7 +8607,8 @@ impl LayoutEngine {
                             let sup_w = push_note_marker_node(
                                 tree,
                                 line_node,
-                                para.and_then(|p| p.controls.get(ctrl_idx)),
+                                para,
+                                styles,
                                 fnum,
                                 ctrl_idx,
                                 &text_style,
@@ -8628,7 +8758,8 @@ impl LayoutEngine {
                             x += push_note_marker_node(
                                 tree,
                                 line_node,
-                                para.and_then(|p| p.controls.get(ctrl_idx)),
+                                para,
+                                styles,
                                 fnum,
                                 ctrl_idx,
                                 &text_style,
@@ -8889,12 +9020,16 @@ impl LayoutEngine {
                                     font_size_px,
                                     &eq.font_name,
                                 )
+                                .with_metrics_policy(styles.font_metrics_policy)
                                 .with_version(&eq.version_info)
                                 .with_base_pt(eq.font_size as f64 / 100.0)
                                 .layout_in_control_width(
                                     &ast,
                                     hwpunit_to_px(
-                                        crate::renderer::equation::content_width_hwp(eq),
+                                        crate::renderer::equation::content_width_hwp_with_policy(
+                                            eq,
+                                            styles.font_metrics_policy,
+                                        ),
                                         self.dpi,
                                     ),
                                 );
@@ -8917,7 +9052,12 @@ impl LayoutEngine {
                             // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다 (위와 동일).
                             let eq_y = y + baseline - layout_box.baseline;
                             let eq_x = x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                            let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
+                            let eq_w = inline_equation_box_width_px(
+                                eq,
+                                tac_w,
+                                self.dpi,
+                                styles.font_metrics_policy,
+                            );
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                                 (
                                     Some(ctx.path[0].cell_index),
@@ -9871,12 +10011,7 @@ impl LayoutEngine {
                         para.and_then(|p| p.controls.get(ctrl_idx)),
                         fnum,
                     );
-                    let sup_size = (ts.font_size * 0.75).max(7.0);
-                    let sup_ts = TextStyle {
-                        font_size: sup_size,
-                        font_family: ts.font_family.clone(),
-                        ..Default::default()
-                    };
+                    let (_, sup_ts) = note_marker_style(para, styles, ctrl_idx, &ts);
                     est_x += estimate_text_width(&fn_text, &sup_ts);
                 }
             }

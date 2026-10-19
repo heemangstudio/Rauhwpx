@@ -2774,6 +2774,7 @@ mod border_rendering;
 mod paragraph_layout;
 mod picture_footnote;
 mod shape_layout;
+pub(crate) use shape_layout::stored_body_wide_textbox_bottom;
 mod table_cell_content;
 mod table_layout;
 mod table_partial;
@@ -2799,14 +2800,14 @@ pub(crate) use table_layout::border_style_has_diagonal;
 pub(crate) use table_partial::NATIVE_HWPX_CONTINUED_BORDER_INSET_HU;
 pub(crate) use text_measurement::{
     active_shaping_face_available, clear_measure_caches, clear_measure_width_cache,
-    compensated_native_equation_tabs, compute_char_positions, compute_glyph_positions,
-    enter_resolved_shaping_fonts, estimate_text_width, estimate_text_width_unrounded,
-    extract_tab_leaders_with_extended, find_next_tab_stop, hancom_pua_face_has_glyph, is_cjk_char,
-    is_halfwidth_cjk_quote, is_halfwidth_forced_punct, is_hancom_blank_pua_marker,
-    is_hft_missing_pua, registered_glyph_advance, reproject_native_wrapped_tab_pair,
-    resolved_to_text_style, source_font_space_advance_px, split_into_clusters,
-    with_resolved_shaping_fonts, ResolvedShapingFont, ResolvedShapingFontScope,
-    HFT_MISSING_PUA_FAMILIES,
+    compensated_native_equation_tabs, compensated_native_equation_tabs_with_policy,
+    compute_char_positions, compute_glyph_positions, enter_resolved_shaping_fonts,
+    estimate_text_width, estimate_text_width_unrounded, extract_tab_leaders_with_extended,
+    find_next_tab_stop, hancom_pua_face_has_glyph, is_cjk_char, is_halfwidth_cjk_quote,
+    is_halfwidth_forced_punct, is_hancom_blank_pua_marker, is_hft_missing_pua,
+    registered_glyph_advance, reproject_native_wrapped_tab_pair, resolved_to_text_style,
+    source_font_space_advance_px, split_into_clusters, with_resolved_shaping_fonts,
+    ResolvedShapingFont, ResolvedShapingFontScope, HFT_MISSING_PUA_FAMILIES,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use text_measurement::{enter_measure_font_paths, MeasureFontPathsScope};
@@ -2875,6 +2876,12 @@ impl LayoutEngine {
             #[cfg(test)]
             table_nested_text_flag_scan_count: std::cell::Cell::new(0),
         }
+    }
+
+    /// 설정과 자동 번호 상태를 보존하고 출력 DPI만 바꾼다.
+    pub(crate) fn set_dpi(&mut self, dpi: f64) {
+        self.dpi = dpi;
+        self.clear_layout_caches();
     }
 
     /// [Task #1949] 셀 단위 레이아웃 캐시를 비운다. 문서 재조판 등 IR 이 바뀌는
@@ -3394,6 +3401,8 @@ impl LayoutEngine {
         wrap_around_paras: &[super::pagination::WrapAroundPara],
     ) -> PageRenderTree {
         let layout = &page_content.layout;
+        // 머리말/꼬리말 감추기와 무관하게 본문·바탕쪽의 Page AutoNumber도 현재 쪽을 쓴다.
+        self.current_page_number.set(page_content.page_number);
         self.set_page_layout_context(layout.page_width, layout.body_area);
         let mut tree = PageRenderTree::new(
             page_content.page_index,
@@ -6926,6 +6935,48 @@ impl LayoutEngine {
                     if self.hidden_empty_paras.borrow().contains(para_index)
             );
             let y_before_vpos = y_offset;
+            // 인증된 원본의 실제 successor만 순차 진행을 유지한다. full-H로
+            // prev_vpos_end를 역산하면 text-H 진행/이미 소비한 TAC 간격을 되돌린다.
+            let certified_note_successor = (|| {
+                let current_source = current_endnote_source.as_ref()?;
+                current_source.certified_line_advances_hu.as_ref()?;
+                let start_line = match item {
+                    PageItem::FullParagraph { .. } => 0,
+                    PageItem::PartialParagraph { start_line, .. } => *start_line,
+                    _ => return None,
+                };
+                let previous_ordinal = col_content.items[..item_ordinal].iter()
+                    .rposition(|previous| matches!(previous,
+                        PageItem::FullParagraph { .. } | PageItem::PartialParagraph { .. }))?;
+                let previous_item = &col_content.items[previous_ordinal];
+                let previous_pi = previous_item.para_index();
+                if col_content.items[previous_ordinal + 1..item_ordinal].iter().any(|between| {
+                    !matches!(between, PageItem::Shape { para_index, .. } if *para_index == previous_pi)
+                }) {
+                    return None;
+                }
+                let previous = paragraphs.get(previous_pi)?;
+                let previous_source = self.endnote_para_source_for(previous_pi)?;
+                let advances = previous_source.certified_line_advances_hu.as_ref()?;
+                let end_line = match previous_item {
+                    PageItem::FullParagraph { .. } => previous.line_segs.len(),
+                    PageItem::PartialParagraph { end_line, .. } => *end_line,
+                    _ => return None,
+                };
+                let last = end_line.checked_sub(1)?;
+                let real_note_boundary = !same_endnote_control(&previous_source, current_source)
+                    && current_source.note_para_index == 0 && start_line == 0
+                    && previous.char_count == 1 && previous.text.is_empty()
+                    && previous.controls.is_empty() && previous.line_segs.len() == 1
+                    && previous.line_segs[0].line_spacing == 0;
+                if !same_endnote_control(&previous_source, current_source) && !real_note_boundary {
+                    return None;
+                }
+                let next = paragraphs.get(item_para)?.line_segs.get(start_line)?;
+                let expected = previous.line_segs.get(last)?.vertical_pos
+                    .checked_add(*advances.get(last)?)?;
+                (expected == next.vertical_pos).then_some(())
+            })().is_some();
             // Saved positions become stale when preceding table content grows,
             // not merely because an edit happened elsewhere in the document.
             let preceding_table_growth = self.profile.get().session_edited()
@@ -7052,16 +7103,16 @@ impl LayoutEngine {
                             previous, current,
                         );
                         if continuous && same_endnote_control(&previous_source, current_source) {
-                            let delta = crate::renderer::equation::endnote_trailing_flat_script_flow_delta_hu(previous);
+                            let delta = crate::renderer::equation::endnote_trailing_flat_script_flow_delta_hu_with_policy(previous, styles.font_metrics_policy);
                             // Generated flow already advances with the resolved
                             // line box shared by fit and paint. A lower script's
                             // smaller ink height is not another contraction.
                             let generated_line_box_resolved = hcursor.own_line_layout
                                 && delta != 0
-                                && crate::renderer::equation::stored_unaffected_upper_line_metrics_hu(
+                                && crate::renderer::equation::stored_unaffected_upper_line_metrics_hu_with_policy(
                                     previous,
                                     &crate::renderer::composer::compose_paragraph_with_styles(previous, &styles),
-                                    previous.line_segs.len() - 1,
+                                    previous.line_segs.len() - 1, styles.font_metrics_policy,
                                 )
                                 .is_some();
                             if !generated_line_box_resolved {
@@ -7564,6 +7615,25 @@ impl LayoutEngine {
                 }
             }
 
+            if certified_note_successor && !shape_jumped {
+                // 원본 좌표를 고치지 않고 이 단의 live 원점을 이어 간다.
+                y_offset = y_before_vpos;
+                let start_line = match item {
+                    PageItem::PartialParagraph { start_line, .. } => *start_line,
+                    _ => 0,
+                };
+                hcursor.vpos_page_base = paragraphs
+                    .get(item_para)
+                    .and_then(|para| para.line_segs.get(start_line))
+                    .map(|line| {
+                        line.vertical_pos
+                            .saturating_sub(crate::renderer::px_to_hwpunit_round(
+                                y_offset - col_area.y,
+                                self.dpi,
+                            ))
+                    });
+                hcursor.vpos_lazy_base = None;
+            }
             let _dbg_tac = std::env::var("RHWP_DEBUG_TAC_CURSOR").is_ok();
             let _y_in = y_offset;
             let _item_desc = if _dbg_tac {
@@ -12168,9 +12238,23 @@ impl LayoutEngine {
                                 } else {
                                     para_margin_left
                                 };
-                                let occupied_width = shape_w
-                                    + hwpunit_to_px(i32::from(common.margin.left), self.dpi)
-                                    + hwpunit_to_px(i32::from(common.margin.right), self.dpi);
+                                // 저장 줄이 없는 빈 TAC host도 실제 프레임과 같은 폭으로
+                                // 정렬한다. 퍼센트 common.width는 HU 폭으로 해석하지 않는다.
+                                let occupied_width = self
+                                    .relative_inline_shape_occupied_width(
+                                        shape,
+                                        col_area,
+                                        (col_area.width - para_margin_left - para_margin_right)
+                                            .max(0.0),
+                                    )
+                                    .unwrap_or_else(|| {
+                                        shape_w
+                                            + hwpunit_to_px(i32::from(common.margin.left), self.dpi)
+                                            + hwpunit_to_px(
+                                                i32::from(common.margin.right),
+                                                self.dpi,
+                                            )
+                                    });
                                 let avail_w =
                                     (col_area.width - effective_margin_left - para_margin_right)
                                         .max(occupied_width);

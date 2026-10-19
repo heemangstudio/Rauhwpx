@@ -742,6 +742,25 @@ impl EqParser {
             return self.try_parse_scripts(body);
         }
 
+        // BOX는 기존 장식의 전역 case-folding과 분리한다. 피연산자가 없으면
+        // 아래의 일반 식별자 fallback으로 남기고, 닫는 경계는 소비하지 않는다.
+        if symbols::is_box_command(cmd)
+            && matches!(
+                self.current_type(),
+                TokenType::LBrace
+                    | TokenType::Command
+                    | TokenType::Number
+                    | TokenType::Text
+                    | TokenType::Quoted
+            )
+        {
+            let body = self.parse_single_or_group();
+            return EqNode::Decoration {
+                kind: symbols::DecoKind::Box,
+                body: Box::new(body),
+            };
+        }
+
         // 글자 장식
         if let Some(&deco) = DECORATIONS
             .get(cmd)
@@ -2733,6 +2752,104 @@ mod tests {
     }
 
     #[test]
+    fn math10_september_original_cases_parse_relations_without_leaked_letters() {
+        use super::super::layout::{EqLayout, LayoutKind};
+
+        // Saved source ends at the closing parenthesis, without a cases brace.
+        let original = "=cases{``-left(x+1right)^2 +7&&left(x<0right)#``-left(x-1right)^2 +7&&left(x ge0right)";
+        let engine = EqLayout::with_font(16.0, "HYhwpEQ").with_version("Equation Version 60");
+        for (relation, command, glyph) in [
+            ("ge", "GEQ", "≥"),
+            ("GE", "GEQ", "≥"),
+            ("gE", "GEQ", "≥"),
+            ("geq", "GEQ", "≥"),
+            ("GEQ", "GEQ", "≥"),
+            ("gEq", "GEQ", "≥"),
+            ("le", "LEQ", "≤"),
+            ("LE", "LEQ", "≤"),
+            ("lE", "LEQ", "≤"),
+            ("leq", "LEQ", "≤"),
+            ("LEQ", "LEQ", "≤"),
+            ("lEq", "LEQ", "≤"),
+        ] {
+            let expected = parse(&original.replace("ge0right", &format!("{command} 0 RIGHT")));
+            for right in ["right", "RIGHT", "rIgHt"] {
+                for spelling in [
+                    format!("{relation}0{right}"),
+                    format!("{relation} 0 {right}"),
+                ] {
+                    let script = original.replace("ge0right", &spelling);
+                    let actual = parse(&script);
+                    assert_eq!(actual, expected, "{script}");
+                    assert_eq!(
+                        actual,
+                        parse(&format!("{script}}}")),
+                        "missing-brace tolerance"
+                    );
+                    let EqNode::Row(parts) = &actual else {
+                        panic!("expected equation row")
+                    };
+                    let rows = parts
+                        .iter()
+                        .find_map(|node| match node {
+                            EqNode::Cases { rows } => Some(rows),
+                            _ => None,
+                        })
+                        .expect("saved equation retains cases");
+                    assert_eq!(rows.len(), 2);
+                    let EqNode::Row(second) = &rows[1] else {
+                        panic!("expected second cases row")
+                    };
+                    let condition = second.last().expect("second condition");
+                    let EqNode::Paren { left, right, body } = condition else {
+                        panic!("expected condition delimiter: {condition:?}")
+                    };
+                    assert_eq!((left.as_str(), right.as_str()), ("(", ")"));
+                    assert_eq!(body.as_ref(), &parse(&format!("x {command} 0")));
+
+                    let layout = engine.layout(condition);
+                    let LayoutKind::Paren {
+                        left, right, body, ..
+                    } = &layout.kind
+                    else {
+                        panic!("expected condition layout")
+                    };
+                    assert_eq!((left.as_str(), right.as_str()), ("(", ")"));
+                    let LayoutKind::Row(leaves) = &body.kind else {
+                        panic!("expected condition glyphs")
+                    };
+                    let glyphs: Vec<_> = leaves
+                        .iter()
+                        .map(|leaf| match &leaf.kind {
+                            LayoutKind::Text(text)
+                            | LayoutKind::Number(text)
+                            | LayoutKind::Symbol(text)
+                            | LayoutKind::MathSymbol(text) => text.as_str(),
+                            other => panic!("unexpected condition leaf: {other:?}"),
+                        })
+                        .collect();
+                    assert_eq!(glyphs, vec!["x", glyph, "0"], "{script}");
+                    let canonical = engine.layout(&parse(&format!("LEFT(x {command} 0 RIGHT)")));
+                    assert_eq!(
+                        (layout.width, layout.height, layout.baseline),
+                        (canonical.width, canonical.height, canonical.baseline)
+                    );
+                }
+            }
+        }
+        for identifier in [
+            "geometry",
+            "GEOMETRY",
+            "bright",
+            "sigmaRIGHTMOST",
+            "gevalue",
+            "legendre",
+        ] {
+            assert_eq!(parse(identifier), EqNode::Text(identifier.into()));
+        }
+    }
+
+    #[test]
     fn test_cases() {
         let ast = parse("CASES{ 1 & x>0 # -1 & x<0 }");
         match &ast {
@@ -3835,5 +3952,111 @@ mod latex_compat_tests {
             relation,
             EqNode::Row(parts) if parts.iter().any(|part| matches!(part, EqNode::Symbol(eq) if eq == "="))
         ));
+    }
+}
+
+#[cfg(test)]
+mod box_frame_tests {
+    use super::super::{canonical::to_hwp_script, symbols::DecoKind};
+    use super::*;
+
+    #[test]
+    fn box_frame_parses_content_and_canonical_roundtrips() {
+        for command in ["BOX", "box", "Box"] {
+            for content in [
+                "~(가)~",
+                "~(나)~",
+                "~(다)~",
+                "~A+x_1~",
+                "~{1} over {x^2}~",
+                "BOX{가}",
+            ] {
+                let script = format!("{command}{{{content}}}");
+                let ast = parse(&script);
+                let EqNode::Decoration {
+                    kind: DecoKind::Box,
+                    body,
+                } = &ast
+                else {
+                    panic!("expected framed content: {script}: {ast:?}");
+                };
+                assert_eq!(body.as_ref(), &parse(content));
+                let canonical = to_hwp_script(&ast).unwrap();
+                assert_eq!(parse(&canonical), ast, "{script} -> {canonical}");
+            }
+        }
+        let scripted = parse("BOX{가}^{2}");
+        assert!(matches!(scripted, EqNode::Superscript { base, .. }
+            if matches!(base.as_ref(), EqNode::Decoration { kind: DecoKind::Box, .. })));
+        assert!(
+            matches!(parse("BOX x"), EqNode::Decoration { kind: DecoKind::Box, body }
+            if *body == EqNode::Text("x".into()))
+        );
+    }
+
+    #[test]
+    fn box_frame_numeric_identifiers_keep_scripts_and_spaced_operands() {
+        for command in ["BOX", "box", "Box"] {
+            let identifier = format!("{command}1");
+            assert_eq!(
+                parse(&format!("{identifier}_{{2}}^{{3}}")),
+                EqNode::SubSup {
+                    base: Box::new(EqNode::Text(identifier.clone())),
+                    sub: Box::new(EqNode::Number("2".into())),
+                    sup: Box::new(EqNode::Number("3".into())),
+                }
+            );
+            assert_eq!(
+                parse(&format!("{identifier}{{x}}")),
+                EqNode::Row(vec![EqNode::Text(identifier), EqNode::Text("x".into())])
+            );
+            assert_eq!(
+                parse(&format!("{command} 1")),
+                EqNode::Decoration {
+                    kind: DecoKind::Box,
+                    body: Box::new(EqNode::Number("1".into())),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn box_frame_preserves_identifiers_and_tolerant_group_boundaries() {
+        for word in [
+            "BOX",
+            "box",
+            "Box",
+            "BOXER",
+            "boxplot",
+            "BOX1",
+            "box12",
+            "Box007",
+            "BOX1RIGHT",
+            "BOX12x",
+            "bOX",
+            "BoX",
+            "boX",
+        ] {
+            assert_eq!(parse(word), EqNode::Text(word.into()), "{word}");
+        }
+        // 이미 원본에 있는 미완성 소문자 box 그룹은 기존 parse_group의 관대한 경로다.
+        for script in ["box{~3~`", "box{~{8} over {3}~`", "BOX{BOX{가}"] {
+            let EqNode::Decoration {
+                kind: DecoKind::Box,
+                body,
+            } = parse(script)
+            else {
+                panic!("expected partial frame: {script}");
+            };
+            assert_ne!(*body, EqNode::Empty);
+        }
+        assert_eq!(parse("{BOX} + x"), parse("BOX + x"));
+        let nested = format!("{}x{}", "BOX{".repeat(100), "}".repeat(100));
+        let mut parser = EqParser::new(tokenize(&nested));
+        let _ = parser.parse();
+        assert!(parser
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("한도")));
     }
 }
