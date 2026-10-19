@@ -139,7 +139,7 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
   const actions = document.createElement('div');
   actions.className = 'trial-ended-actions';
   const activate = button('trial-ended-primary', '라이선스 키 입력하기');
-  const purchase = button('trial-ended-secondary', '라이선스 구매하기');
+  const purchase = button('trial-ended-secondary', '연 ₩9,900에 구매하기');
   actions.append(activate, purchase);
 
   const later = button('trial-ended-later', options.leave?.label ?? '나중에');

@@ -224,6 +224,27 @@ test('an annual key shows its renewal date; a lifetime key shows none', async (t
   assert.equal(status.license.autoRenew, null);
 });
 
+test('lifetime and beta keys never expire, renew or ask for payment, however long they run', async (t) => {
+  for (const tier of ['paid', 'beta']) {
+    const { manager, server, clock } = await setup(t);
+    await manager.activate(server.issueKey({ tier }));
+    clock.t = T0 + 3 * 365 * DAY;
+    const before = server.calls.length;
+    let status = await manager.check();
+    assert.equal(status.state, 'licensed', tier);
+    assert.equal(server.calls.length, before + 1, `${tier}: one daily check, no hourly expiry recheck`);
+    clock.t += 2 * HOUR;
+    status = await manager.check();
+    assert.equal(server.calls.length, before + 1, `${tier}: no recheck within the day`);
+    assert.deepEqual(
+      [status.license.licenseExpiresAt, status.license.autoRenew, status.license.graceEndsAt, status.license.paymentFailed, status.license.paymentGraceEndsAt, status.license.paymentFixUrl],
+      [null, null, null, false, null, null],
+      tier,
+    );
+    await manager.assertCanSave();
+  }
+});
+
 test('an annual key: the server saying expired locks at once, and a renewal unlocks on the next check', async (t) => {
   const { manager, make, server, clock } = await setup(t);
   const expiresAt = T0 + 30 * DAY;

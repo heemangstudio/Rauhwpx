@@ -1,6 +1,6 @@
 # Desktop license gate
 
-This draft depends on the key server in [PR #490](https://github.com/heemangstudio/Rauhwpx/pull/490). The macOS launch price is ₩9,900 once, with two devices per key. Development runs are unenforced unless `HAMA_LICENSE_GATE=on`.
+The key server lives in `site-api/` (subscriptions since #541). HamaEditor sells as a yearly subscription, 연 ₩9,900 (VAT included), renewed automatically through Groble and cancellable at any time, with two devices per key. Keys sold before the subscription, beta keys and manual keys stay lifetime keys. Development runs are unenforced unless `HAMA_LICENSE_GATE=on`.
 
 ## Production public key
 

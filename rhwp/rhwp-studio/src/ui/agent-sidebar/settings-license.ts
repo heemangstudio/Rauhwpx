@@ -250,7 +250,7 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const actions = document.createElement('span');
   actions.className = 'ag-settings-license-actions';
   const activate = button('키 넣기');
-  const buy = button('구매하기');
+  const buy = button('연 ₩9,900에 구매하기');
   const check = button('지금 확인');
   const deactivate = button('이 기기 비활성화');
   const fixPayment = button('결제 수단 바꾸기');
