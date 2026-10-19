@@ -87,6 +87,7 @@ export async function installLicenseGate(
 
   let current: LicenseStatus | null = null;
   let tick: number | undefined;
+  let pillObserver: ResizeObserver | null = null;
   const renewalNotice = createRenewalNotice();
   /** 이 페이지가 체험 끝 처리를 시작했는지. 메인이 아직 'trial' 이라고 해도 잠근 채로 둔다. */
   let trialFinished = false;
@@ -110,8 +111,37 @@ export async function installLicenseGate(
   function mount(): void {
     if (pill.isConnected) return;
     const search = document.getElementById('editor-command-search');
-    if (search?.parentElement) search.before(pill);
-    else document.getElementById('menu-bar')?.append(pill);
+    const bar = search?.parentElement ?? document.getElementById('menu-bar');
+    if (!bar) return;
+    if (search) search.before(pill);
+    else bar.append(pill);
+    bar.classList.add('has-license-pill');
+    measurePillReserve();
+    if (typeof ResizeObserver !== 'undefined' && !pillObserver) {
+      pillObserver = new ResizeObserver(measurePillReserve);
+      pillObserver.observe(bar);
+      pillObserver.observe(pill);
+    }
+  }
+
+  function unmount(): void {
+    const bar = pill.parentElement;
+    pill.remove();
+    pillObserver?.disconnect();
+    pillObserver = null;
+    bar?.classList.remove('has-license-pill');
+    bar?.style.removeProperty('--license-pill-reserve');
+  }
+
+  /**
+   * 통합 제목 막대는 파일 이름을 창 가운데에 절대 배치한다. 오른쪽에 붙는 알약·검색
+   * 묶음의 실제 폭을 CSS 에 넘겨, 이름이 알약 위로 겹치지 않게 양쪽 여백을 비운다.
+   */
+  function measurePillReserve(): void {
+    const bar = pill.parentElement;
+    if (!bar || !pill.isConnected) return;
+    const reserve = Math.max(0, Math.ceil(bar.getBoundingClientRect().right - pill.getBoundingClientRect().left));
+    bar.style.setProperty('--license-pill-reserve', `${reserve}px`);
   }
 
   function show(text: string, actionText: string, readOnly: boolean, hint = ''): void {
@@ -122,6 +152,8 @@ export async function installLicenseGate(
     pill.title = hint;
     pill.setAttribute('aria-label', [text, actionText].filter(Boolean).join(', '));
     mount();
+    // 글자가 바뀌면 알약 폭도 바뀐다. ResizeObserver 알림을 기다리지 않고 바로 다시 잰다.
+    measurePillReserve();
   }
 
   function locked(status: LicenseStatus): boolean {
@@ -154,7 +186,7 @@ export async function installLicenseGate(
       return;
     }
     if (status.canEdit) {
-      pill.remove();
+      unmount();
       return;
     }
     const summary = licenseSummary(status);
@@ -258,6 +290,7 @@ export async function installLicenseGate(
   window.addEventListener('pagehide', () => {
     unsubscribe();
     window.clearTimeout(tick);
+    pillObserver?.disconnect();
   }, { once: true });
   try {
     const initial = await api.getStatus();
