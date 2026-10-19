@@ -2,6 +2,9 @@ import { licenseError, tokenEquals } from './licenses.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
+/** Device platforms whose beta keys get the gift unless GIFT_PLATFORMS says otherwise. */
+export const DEFAULT_GIFT_PLATFORMS = Object.freeze(['darwin', 'win32']);
+
 /**
  * Gift credits for beta keys: one OpenRouter key per license (keyId) per event, created through the
  * provisioning API with `limit = amountUsd`. The key never leaves the server; the app calls
@@ -95,7 +98,7 @@ export function createGiftsService({
     endsAt,
     totalBudgetUsd,
     modelPrefixes = ['anthropic/'],
-    platforms = ['darwin'],
+    platforms = DEFAULT_GIFT_PLATFORMS,
     maxOutputTokens = 32000,
     apiBase = 'https://openrouter.ai/api/v1',
   } = config;
@@ -148,8 +151,8 @@ export function createGiftsService({
   }
 
   /**
-   * Lease → license principal. Eligible = an active beta key on an allowed platform (macOS by
-   * default). Checked on every status, claim and proxy call, so a key that stops qualifying
+   * Lease → license principal. Eligible = an active beta key on an allowed platform (macOS and
+   * Windows by default). Checked on every status, claim and proxy call, so a key that stops qualifying
    * loses an already claimed gift too.
    */
   async function principal(lease) {

@@ -64,7 +64,7 @@ node scripts/license-admin.mjs webhooks --rejected        # or --held, or neithe
 
 ### Gift credits (SPECIAL EVENT)
 
-A one-time gift of `GIFT_AMOUNT_USD` of Claude usage for Pi, one per beta license key (`tier: 'beta'`, shared by its devices) and macOS only. Paid and grandfathered keys do not get it. The app authenticates with its license lease as `Authorization: Bearer <lease>`; the server checks its own signature, expiry, that the license is active, that the lease's device is still activated, and the key hash. Anything else is `unauthorized` (401). A valid lease is `not_eligible` unless the key is a beta key and the device's `platform` is in `GIFT_PLATFORMS`; this is checked on every status, claim and proxy call.
+A one-time gift of `GIFT_AMOUNT_USD` of Claude usage for Pi, one per beta license key (`tier: 'beta'`, shared by its devices) on macOS and Windows. Paid and grandfathered keys do not get it. The app authenticates with its license lease as `Authorization: Bearer <lease>`; the server checks its own signature, expiry, that the license is active, that the lease's device is still activated, and the key hash. Anything else is `unauthorized` (401). A valid lease is `not_eligible` unless the key is a beta key and the device's `platform` is in `GIFT_PLATFORMS`; this is checked on every status, claim and proxy call.
 
 - `GET /v1/gift/status` → `{ok, event:{id, amountUsd, endsAt, active}, eligible, claimed, remainingUsd, usedUsd, claimedAt}`. Balances come from the key's `limit_remaining` on OpenRouter (BYOK spend plus OpenRouter fees), cached 15 s, and are `null` when it does not answer.
 - `POST /v1/gift/claim` (body `{}`) is idempotent. The first call creates one OpenRouter key named `hama-gift-<event>-<keyId>` with `limit = GIFT_AMOUNT_USD` and `include_byok_in_limit: true`, and keeps the key in `gifts.json`; it is never sent to the app. Errors: `unauthorized` 401, `not_eligible` 403, `event_inactive` 410 (event not configured or past `GIFT_ENDS_AT`), `budget_exhausted` 409 (the created limits would pass `GIFT_TOTAL_BUDGET_USD`), `upstream_unavailable` 502. A claim interrupted after OpenRouter created the key leaves a `provisioning` record; the next claim deletes keys with that name before creating a new one.
@@ -129,7 +129,7 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GIFT_ENDS_AT` | Optional ISO-8601 time after which no new gifts are claimed. Claimed gifts keep working |
 | `GIFT_TOTAL_BUDGET_USD` | Cap on the sum of created gift limits. Unset means no cap |
 | `GIFT_MODEL_PREFIXES` | Comma list of allowed model id prefixes, default `anthropic/` |
-| `GIFT_PLATFORMS` | Comma list of device platforms where beta keys get the gift, default `darwin` |
+| `GIFT_PLATFORMS` | Comma list of device platforms where beta keys get the gift, default `darwin,win32` |
 | `GIFT_MAX_OUTPUT_TOKENS` | Output token cap per request, default 32000 |
 | `OPENROUTER_API_BASE` | OpenRouter API base, default `https://openrouter.ai/api/v1`. Only for local tests |
 | `LICENSE_DOWNLOAD_URL` | Download button in the key email. Unset or the homepage means the latest Mac dmg |
