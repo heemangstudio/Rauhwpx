@@ -38,20 +38,30 @@ export interface ToastOptions {
 /** 토스트 칸의 최소 폭(.rhwp-toast min-width)과 오른쪽 여백. base.css 와 같다. */
 const TOAST_LANE_PX = 280 + 16;
 
+/** 레이아웃은 남지만 보이지 않는 요소(문서 홈이 덮은 편집 화면 등)는 측정하지 않는다. */
+function isShown(el: Element): boolean {
+  return getComputedStyle(el).visibility !== 'hidden';
+}
+
 /**
  * 제목 막대와 도구 모음을 가리지 않도록 크롬 판 바로 아래에 둔다.
  * 오른쪽에 에이전트 사이드바 머리줄(또는 전체 화면 작업 막대)이 있으면 그 아래로 내려,
  * 들어오는 동안 반투명한 토스트가 살아 있는 조작 위에 겹쳐 보이지 않게 한다.
+ * 문서 홈이 창을 덮고 있으면 뒤의 편집 크롬은 보이지 않으므로 홈 위 막대 아래에 둔다.
  */
 function chromeBottom(): number {
+  if (document.documentElement.classList.contains('document-home-open')) {
+    const topbar = document.querySelector('.document-home .dh-topbar');
+    return Math.max(0, Math.round(topbar?.getBoundingClientRect().bottom ?? 0));
+  }
   const header = document.getElementById('studio-header');
-  let bottom = header?.getBoundingClientRect().bottom ?? 0;
+  let bottom = header && isShown(header) ? header.getBoundingClientRect().bottom : 0;
   const laneLeft = window.innerWidth - TOAST_LANE_PX;
   for (const bar of document.querySelectorAll<HTMLElement>(
     '.ag-root:not(.ag-collapsed) :is(.ag-header, .ag-workspace-bar)',
   )) {
     const rect = bar.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0 || rect.right <= laneLeft) continue;
+    if (rect.width === 0 || rect.height === 0 || rect.right <= laneLeft || !isShown(bar)) continue;
     bottom = Math.max(bottom, rect.bottom);
   }
   return Math.max(0, Math.round(bottom));
