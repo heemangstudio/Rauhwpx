@@ -554,3 +554,160 @@ test('Codex version output is parsed to its semantic version', async (t) => {
   assert.equal(status.version, '0.159.0');
   assert.equal(status.updateRequired, false);
 });
+
+/** 설치하면 버전이 바뀌는 가짜 npm/CLI. --version 실행 횟수와 npm 캐시 폴더를 기록한다. */
+function versionedCli(rootDir, platform = process.platform) {
+  const prefixDir = path.join(rootDir, 'prefix');
+  const state = { installed: null, nextVersion: '1.0.0', installCode: 0, failVersion: false, versionRuns: 0, cacheDirs: [] };
+  const binFile = path.join(prefixDir, 'node_modules', '.bin', platform === 'win32' ? 'claude.cmd' : 'claude');
+  async function writeInstall(version) {
+    const packageDir = path.join(prefixDir, 'node_modules', '@anthropic-ai', 'claude-code');
+    await fs.mkdir(packageDir, { recursive: true });
+    await fs.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-code', version }));
+    await fs.mkdir(path.dirname(binFile), { recursive: true });
+    await fs.writeFile(binFile, `rem ${version}\n`);
+    state.installed = version;
+  }
+  const spawnProcess = (command, argv) => {
+    const proc = new FakeProcess();
+    queueMicrotask(async () => {
+      if (argv.includes('install')) {
+        // 진짜 npm 처럼 --cache 폴더에 tarball 을 남긴다.
+        const cacheDir = argv[argv.indexOf('--cache') + 1];
+        state.cacheDirs.push(cacheDir);
+        await fs.mkdir(path.join(cacheDir, '_cacache', 'content-v2'), { recursive: true });
+        await fs.writeFile(path.join(cacheDir, '_cacache', 'content-v2', 'tarball'), 'x'.repeat(4096));
+        if (state.installCode === 0) await writeInstall(state.nextVersion);
+        else proc.stderr.emit('data', 'npm ERR! network\n');
+        proc.emit('close', state.installCode, null);
+        return;
+      }
+      if (argv.includes('--version')) {
+        state.versionRuns += 1;
+        if (state.failVersion) { proc.emit('close', 1, null); return; }
+        proc.stdout.emit('data', `${state.installed} (Claude Code)\n`);
+        proc.emit('close', 0, null);
+        return;
+      }
+      proc.emit('close', 0, null);
+    });
+    return proc;
+  };
+  return { state, spawnProcess, writeInstall };
+}
+
+function versionedManager(rootDir, cli, options = {}) {
+  return createCliSetupManager({
+    rootDir,
+    spawnProcess: cli.spawnProcess,
+    baseEnv: { CODEX_HOME: path.join(rootDir, 'codex-home') },
+    readClaudeLogin: async () => null,
+    verifyClaude: async () => 'unknown',
+    fetchImpl: async () => { throw new Error('offline'); },
+    ...options,
+  }).init();
+}
+
+test('status reuses the managed CLI version until the installed files change', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+
+  assert.equal((await manager.install('claude')).version, '1.0.0');
+  const runsAfterInstall = cli.state.versionRuns;
+  // 메시지마다·Studio 연결마다 부르는 상태 확인은 CLI 를 다시 띄우지 않는다. 동시에 들어온 확인도 한 번만 띄운다.
+  for (let i = 0; i < 5; i += 1) assert.equal((await manager.status('claude')).version, '1.0.0');
+  await Promise.all([manager.status('claude'), manager.status('claude')]);
+  assert.equal(cli.state.versionRuns, runsAfterInstall);
+
+  // 앱 밖에서 설치 파일이 바뀌면(크기·수정 시각) 다시 확인해 새 버전을 보여 준다.
+  await cli.writeInstall('1.0.10');
+  assert.equal((await manager.status('claude')).version, '1.0.10');
+  assert.equal(cli.state.versionRuns, runsAfterInstall + 1);
+
+  // 앱의 업데이트는 끝나자마자 새 버전을 알린다.
+  cli.state.nextVersion = '2.0.0';
+  assert.equal((await manager.install('claude')).version, '2.0.0');
+  assert.equal((await manager.status('claude')).version, '2.0.0');
+});
+
+test('a concurrent status check during an install never keeps the pre-install version', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+  await manager.install('claude');
+  cli.state.nextVersion = '3.0.0';
+  const [during, installed] = await Promise.all([manager.status('claude'), manager.install('claude')]);
+  assert.equal(during.version, '1.0.0');
+  assert.equal(installed.version, '3.0.0');
+  assert.equal((await manager.status('claude')).version, '3.0.0');
+});
+
+test('a failed version probe is retried on the next status check', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  await cli.writeInstall('1.0.0');
+  cli.state.failVersion = true;
+  const manager = await versionedManager(rootDir, cli);
+
+  const failed = await manager.status('claude');
+  assert.equal(failed.installed, true);
+  assert.notEqual(failed.version, '1.0.0');
+  cli.state.failVersion = false;
+  assert.equal((await manager.status('claude')).version, '1.0.0');
+});
+
+test('a login completed mid-session is seen by the next status check without probing the CLI again', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const codexHome = path.join(rootDir, 'codex-home');
+  const cli = versionedCli(rootDir);
+  await cli.writeInstall('1.0.0');
+  const manager = await versionedManager(rootDir, cli);
+
+  assert.equal((await manager.status('claude')).authenticated, false);
+  assert.equal((await manager.status('codex')).authenticated, false);
+  await manager.authenticate('claude', 'api-key', 'sk-ant-test-key');
+  await fs.mkdir(codexHome, { recursive: true });
+  await fs.writeFile(path.join(codexHome, 'auth.json'), JSON.stringify({ tokens: { refresh_token: 'r' } }));
+  const runs = cli.state.versionRuns;
+
+  assert.equal((await manager.status('claude')).authenticated, true);
+  assert.equal((await manager.status('codex')).authenticated, true);
+  assert.equal(cli.state.versionRuns, runs);
+});
+
+test('installs keep no npm download cache, whether they succeed or fail', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+
+  assert.equal((await manager.install('claude')).version, '1.0.0');
+  cli.state.installCode = 1;
+  cli.state.nextVersion = '2.0.0';
+  await assert.rejects(manager.install('claude'), (error) => error.code === 'AGENT_INSTALL_FAILED');
+  // 실패한 업데이트는 설치된 CLI 를 그대로 둔다.
+  assert.equal((await manager.status('claude')).version, '1.0.0');
+
+  assert.equal(new Set(cli.state.cacheDirs).size, 2);
+  for (const cacheDir of cli.state.cacheDirs) {
+    assert.ok(path.resolve(cacheDir).startsWith(path.resolve(rootDir) + path.sep), 'npm cache stays inside the app folder');
+    await assert.rejects(fs.stat(cacheDir), { code: 'ENOENT' });
+  }
+});
+
+test('startup removes the old shared npm cache and abandoned install caches but keeps a recent one', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const nowMs = 1_800_000_000_000;
+  const legacy = path.join(rootDir, 'npm-cache', '_cacache', 'content-v2');
+  const abandoned = path.join(rootDir, 'npm-cache-runs', `${nowMs - 60 * 60 * 1000}-old`);
+  const recent = path.join(rootDir, 'npm-cache-runs', `${nowMs - 60 * 1000}-running`);
+  for (const dir of [legacy, abandoned, recent]) {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'tarball'), 'x');
+  }
+  await createCliSetupManager({ rootDir, now: () => nowMs, readClaudeLogin: async () => null }).init();
+
+  await assert.rejects(fs.stat(path.join(rootDir, 'npm-cache')), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(abandoned), { code: 'ENOENT' });
+  assert.ok((await fs.stat(path.join(recent, 'tarball'))).isFile(), 'another hub may still be installing with it');
+});

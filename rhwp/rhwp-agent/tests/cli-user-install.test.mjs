@@ -66,7 +66,40 @@ if (process.argv.includes('--version')) {
   }
   assert.equal(await fs.readFile(path.join(manager.prefixDir, 'node_modules', 'fixture-cli', 'postinstall-ok'), 'utf8'), nodeCommand);
   assert.equal(await fs.readFile(path.join(root, 'not-a-directory'), 'utf8'), 'must remain unchanged');
-  assert.ok((await fs.stat(path.join(rootDir, 'npm-cache'))).isDirectory());
+  // npm 은 앱 폴더 안의 설치별 캐시를 쓰고, 설치가 끝나면 그 캐시는 남지 않는다.
+  const cacheDirs = launches.filter(({ argv }) => argv.includes('install')).map(({ argv }) => argv[argv.indexOf('--cache') + 1]);
+  assert.equal(cacheDirs.length, 2);
+  for (const cacheDir of cacheDirs) {
+    assert.ok(path.resolve(cacheDir).startsWith(path.resolve(rootDir) + path.sep));
+    await assert.rejects(fs.stat(cacheDir), { code: 'ENOENT' });
+  }
   assert.ok(launches.every(({ options }) => options.windowsHide === true));
   assert.equal(baseEnv.PATH, path.join(systemRoot, 'System32'));
+});
+
+test('a failed install keeps the npm log its error message points to, while its cache is removed', { timeout: 60_000 }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-install-log-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const rootDir = path.join(root, 'cli');
+  const baseEnv = {
+    ...process.env,
+    TEMP: root, TMP: root,
+    npm_config_audit: 'false', npm_config_fund: 'false',
+    // 닿지 않는 레지스트리로 실제 번들 npm 을 빠르게 실패시킨다.
+    npm_config_registry: 'http://127.0.0.1:1', npm_config_fetch_retries: '0',
+  };
+  const launches = [];
+  const manager = await createCliSetupManager({
+    rootDir, baseEnv, homeDir: root,
+    readClaudeLogin: async () => null, verifyClaude: async () => 'unknown',
+    fetchImpl: async () => { throw new Error('offline'); },
+    spawnProcess(command, argv, options) { launches.push(argv); return spawn(command, argv, options); },
+  }).init();
+  const error = await manager.install('codex').then(() => null, (failure) => failure);
+  assert.equal(error?.code, 'AGENT_INSTALL_FAILED');
+  const logFile = String(error.message).match(/complete log of this run can be found in:\s*(\S+\.log)/)?.[1];
+  assert.ok(logFile, `npm names its debug log: ${error.message}`);
+  assert.ok((await fs.stat(logFile)).isFile(), 'the log the user is pointed to still exists');
+  const install = launches.find((argv) => argv.includes('install'));
+  await assert.rejects(fs.stat(install[install.indexOf('--cache') + 1]), { code: 'ENOENT' });
 });

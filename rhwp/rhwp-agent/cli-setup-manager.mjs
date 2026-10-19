@@ -148,6 +148,10 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   const claudeOAuthStagingDir = path.join(rootDir, 'claude-oauth-staging');
   const claudeLoginDir = path.join(rootDir, 'claude-login');
   const legacyClaudeSeedDir = path.join(rootDir, 'claude-source-credentials');
+  // 예전 빌드가 설치마다 쌓아 두던 npm 캐시. 지금은 설치마다 npmCacheRunsDir 아래 임시 캐시를 쓰고 지운다.
+  const legacyNpmCacheDir = path.join(rootDir, 'npm-cache');
+  const npmCacheRunsDir = path.join(rootDir, 'npm-cache-runs');
+  const npmLogsDir = path.join(rootDir, 'npm-logs');
   /**
    * The app's Claude connection. An in-app login stores a long-lived token that
    * every Claude child receives through CLAUDE_CODE_OAUTH_TOKEN, so nothing in
@@ -171,6 +175,12 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   const loginScreens = new Map();
   /** 진행 중인 설치. 같은 prefix 의 npm 은 package.json 을 서로 덮어쓰므로 설치는 한 번에 하나씩 돈다. */
   const installs = new Map();
+  /**
+   * 관리형 CLI 의 `--version` 결과. 버전은 실행 파일이 바뀔 때만 달라지므로 .bin shim 과
+   * 패키지 package.json 의 크기·수정 시각이 같으면 프로세스를 다시 띄우지 않는다.
+   * 같은 지문의 확인이 이미 돌고 있으면 그 결과를 함께 기다린다.
+   */
+  const versionProbes = new Map();
   let installQueue = Promise.resolve();
   let activeLaunches = 0;
   let launchReady = Promise.resolve();
@@ -398,9 +408,34 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       return Boolean(auth?.tokens?.refresh_token || auth?.tokens?.access_token || auth?.OPENAI_API_KEY);
     } catch { return false; }
   }
+  async function binFingerprint(agent, bin) {
+    const manifest = path.join(prefixDir, 'node_modules', ...CONFIG[agent].package.split('/'), 'package.json');
+    const stamps = await Promise.all([bin, manifest].map((file) => fs.stat(file).then(
+      (stat) => `${stat.size}:${stat.mtimeMs}:${stat.ino}`,
+      () => '-',
+    )));
+    return `${bin}|${stamps.join('|')}`;
+  }
+  async function managedVersion(agent) {
+    const bin = binPath(agent);
+    if (!existsSync(bin)) { versionProbes.delete(agent); return null; }
+    const fingerprint = await binFingerprint(agent, bin);
+    const cached = versionProbes.get(agent);
+    if (cached?.fingerprint === fingerprint) return cached.version;
+    const probe = {
+      fingerprint,
+      version: run(bin, ['--version'], { env: envFor(agent) })
+        .then((result) => (result.code === 0 ? parseCliVersion(cleanOutput(result.stdout)) : null)),
+    };
+    versionProbes.set(agent, probe);
+    const version = await probe.version;
+    // 실패(시간 초과·설치 중 교체)는 기억하지 않고 다음 상태 확인에서 다시 실행한다.
+    if (!version && versionProbes.get(agent) === probe) versionProbes.delete(agent);
+    return version;
+  }
   async function status(agent) {
-    assertAgent(agent); await load(); const bin = binPath(agent); let version = null;
-    if (existsSync(bin)) { const result = await run(bin, ['--version'], { env: envFor(agent) }); if (result.code === 0) version = parseCliVersion(cleanOutput(result.stdout)); }
+    assertAgent(agent); await load(); const bin = binPath(agent);
+    const version = await managedVersion(agent);
     let authenticated = Boolean(apiKeys[agent]);
     let authMethod = authenticated ? 'api-key' : null;
     if (agent === 'codex' && !authenticated && await readCodexLogin()) {
@@ -436,12 +471,21 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       await launchReady;
       await load(); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
       // 사용자 npm 설정의 global/cache 값이 관리자 폴더로 설치를 돌리지 않도록 고정한다.
-      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', path.join(rootDir, 'npm-cache'), `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      // 캐시는 이번 설치에만 쓰고 지운다. 설치는 늘 @latest 라 받아 둔 tarball(Claude 는 100MB 이상)을 다시 쓸 일이 없다.
+      // npm 로그는 캐시 밖(npm-logs, npm 이 최근 10개만 남김)에 두어 실패 메시지가 가리키는 로그 파일이 지워지지 않게 한다.
+      // 캐시가 매번 새로 생기므로 번들 npm 의 업데이트 확인도 매번 돌게 되는데, 번들 npm 은 앱이 고정하므로 끈다.
+      const npmCacheDir = path.join(npmCacheRunsDir, `${now()}-${randomUUID()}`);
+      let result;
+      try {
+        result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', npmCacheDir, '--logs-dir', npmLogsDir, '--update-notifier=false', `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      } finally {
+        await fs.rm(npmCacheDir, { recursive: true, force: true }).catch(() => {});
+      }
       assertPrefixAvailable();
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
     });
     installQueue = task.catch(() => {});
-    const settled = task.finally(() => installs.delete(agent)).then(() => { onProgress?.({ state: 'done' }); return status(agent); });
+    const settled = task.finally(() => { installs.delete(agent); versionProbes.delete(agent); }).then(() => { onProgress?.({ state: 'done' }); return status(agent); });
     installs.set(agent, settled);
     return settled;
   }
@@ -649,6 +693,18 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     await persist();
     return status(agent);
   }
+  /** 예전 공유 캐시와, 끝나지 못한(허브 종료 등) 설치가 남긴 임시 캐시를 지운다. 다른 허브가 아직 쓰고 있을 수 있는 최근 것은 남긴다. */
+  async function pruneNpmCaches() {
+    await fs.rm(legacyNpmCacheDir, { recursive: true, force: true }).catch(() => {});
+    const entries = await fs.readdir(npmCacheRunsDir).catch(() => []);
+    const cutoff = now() - 2 * INSTALL_TIMEOUT_MS;
+    await Promise.all(entries.map((name) => {
+      const startedAt = Number.parseInt(name, 10);
+      return Number.isFinite(startedAt) && startedAt < cutoff
+        ? fs.rm(path.join(npmCacheRunsDir, name), { recursive: true, force: true }).catch(() => {})
+        : null;
+    }));
+  }
   async function cancelLogin(agent) { const terminal = authTerminals.get(agent); if (terminal) return terminal.cancel().catch(() => false); const proc = authProcesses.get(agent); if (!proc) return false; proc.kill?.(); authProcesses.delete(agent); return true; }
   return {
     rootDir, prefixDir, binDir, codexOAuthStagingDir: path.join(rootDir, 'codex-oauth-staging'), claudeOAuthStagingDir, claudeLoginDir, binPath, envFor,
@@ -656,7 +712,8 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     async init() { await fs.mkdir(rootDir, { recursive: true, mode: 0o700 }); await cleanupStaleOAuthCredentialStaging(claudeOAuthStagingDir).catch(() => {});
       // Earlier builds copied Claude logins into these folders. Nothing reads them now.
       await fs.rm(claudeLoginDir, { recursive: true, force: true }).catch(() => {});
-      await fs.rm(legacyClaudeSeedDir, { recursive: true, force: true }).catch(() => {}); nodeHostShimDir = await ensureNodeHost().catch(() => null); await load(); return this; },
+      await fs.rm(legacyClaudeSeedDir, { recursive: true, force: true }).catch(() => {});
+      await pruneNpmCaches(); nodeHostShimDir = await ensureNodeHost().catch(() => null); await load(); return this; },
     status, install, prepareLaunch, authenticate,
     async submitAuthCode(agent, code) { assertAgent(agent); if (typeof code !== 'string' || Buffer.byteLength(code) > AUTH_CODE_MAX_BYTES) throw setupError('AGENT_AUTH_CODE_INVALID', '인증 코드가 올바르지 않아요.'); if (authTerminals.has(agent)) authTerminals.get(agent).write(`${code.trim()}\n`); else authProcesses.get(agent)?.stdin?.write?.(`${code.trim()}\n`); },
     terminalSnapshot(agent) { return authTerminals.get(agent)?.snapshot() ?? null; }, terminalInput(agent, data) { authTerminals.get(agent)?.write(String(data ?? '')); }, terminalResize(agent, cols, rows) { authTerminals.get(agent)?.resize(cols, rows); loginScreens.get(agent)?.resize(cols, rows); },
