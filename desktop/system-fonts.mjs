@@ -41,6 +41,8 @@ const CACHE_FORMAT = 4;
 const CACHE_FILE = 'system-font-index.json';
 const { maxDepth: MAX_DEPTH, maxFiles: MAX_FILES, maxDirs: MAX_DIRS } = FONT_SCAN_LIMITS;
 const PARSE_CONCURRENCY = 8;
+const MAX_NAME_TABLE_FACES = 16384;
+const MAX_NAME_TABLE_BYTES = 1024 * 1024;
 const HANCOM_FONT_DIR = /^(fonts|ttf|hft)$/i;
 // Hancom Office HWP, Hancom Docs, 한컴오피스 한글 뷰어 등
 const HANCOM_APP = /hancom|한컴|hwp/i;
@@ -542,7 +544,7 @@ async function parseFontFile(file) {
  *   env?: Record<string, string|undefined>, home?: string,
  *   roots?: Array<{path: string, kind: 'system'|'user'|'hancom'|'app', label?: string, sniff?: boolean,
  *     maxDepth?: number}>, hancomInstalls?: string[],
- *   addedFolders?: () => string[] | Promise<string[]>,
+ *   addedFolders?: () => string[] | Promise<string[]>, blobIsWholeFile?: boolean,
  *   revalidateAfterMs?: number, onIndexChanged?: () => void, savedIndexKey?: string }} options
  * revalidateAfterMs: 주면 첫 list() 가 지난 실행이 저장한 색인을 바로 돌려주고 그만큼 뒤에
  * 백그라운드에서 다시 훑는다. 결과가 달라졌으면 onIndexChanged 를 부른다.
@@ -551,6 +553,8 @@ async function parseFontFile(file) {
  */
 export function createSystemFontService(options = {}) {
   const platform = options.platform ?? process.platform;
+  // Chromium 의 FontData.blob(): macOS 는 face 를 단독 SFNT 로 다시 짜고, 다른 OS 는 글꼴 파일 그대로다.
+  const blobIsWholeFile = options.blobIsWholeFile ?? platform !== 'darwin';
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const log = typeof options.log === 'function' ? options.log : () => {};
   const cachePath = options.cacheDir ? path.join(options.cacheDir, CACHE_FILE) : null;
@@ -904,7 +908,64 @@ export function createSystemFontService(options = {}) {
     return { size: sfnt.length, chunks };
   }
 
-  return { list, openFace };
+  /**
+   * 설치 글꼴 감지가 face 이름을 읽는 테이블. 브라우저 FontData.blob() 은 face 마다 글꼴 전체를
+   * 복사하므로, 그 blob 에서 읽던 부분(name 전체, OS/2 앞 64, head 앞 46 바이트)과 blob 크기만
+   * 파일에서 읽어 준다. macOS 의 blob 은 face 하나를 단독 SFNT 로 다시 짠 것이고, 다른 OS 는 파일
+   * 그대로라 컬렉션이면 Studio 가 첫 face 를 읽는다. 없거나 바뀐 face, 웹 글꼴·HFT 는 null 이다.
+   * @param {unknown} ids
+   * @returns {Promise<Array<{ size: number, name: Uint8Array | null, os2: Uint8Array | null, head: Uint8Array | null } | null>>}
+   */
+  async function nameTables(ids) {
+    if (!Array.isArray(ids) || ids.length > MAX_NAME_TABLE_FACES) throw new Error('invalid font id list');
+    if (!index) await list();
+    const result = new Array(ids.length).fill(null);
+    const byFile = new Map();
+    ids.forEach((id, at) => {
+      const entry = typeof id === 'string' ? facesById.get(id) : undefined;
+      if (!entry || !['ttf', 'otf', 'ttc', 'otc'].includes(entry.face.format)) return;
+      const group = byFile.get(entry.file.path) ?? { file: entry.file, faces: [] };
+      group.faces.push({ at, faceIndex: entry.face.faceIndex });
+      byFile.set(entry.file.path, group);
+    });
+    await mapLimit([...byFile.values()], PARSE_CONCURRENCY, async ({ file, faces }) => {
+      let handle;
+      try {
+        handle = await fs.open(file.path, 'r');
+        const now = await handle.stat();
+        if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) return;
+        const source = fileSource(handle, file.size);
+        const { collection, offsets } = await faceOffsets(source);
+        const wholeFile = collection && blobIsWholeFile;
+        for (const { at, faceIndex } of faces) {
+          if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= offsets.length) continue;
+          const { tables } = await readTableDirectory(source, offsets[wholeFile ? 0 : faceIndex]);
+          // 작은 Buffer 는 공용 풀의 조각이라 IPC 가 풀 전체를 복사한다. 제 크기의 배열로 읽는다.
+          const read = async (tag, limit) => {
+            const table = tables.get(tag);
+            if (!table) return null;
+            const length = Math.min(table.length, limit);
+            return readInto(handle, new Uint8Array(length), length, table.offset);
+          };
+          let size = wholeFile ? file.size : 12 + tables.size * 16;
+          if (!wholeFile) for (const table of tables.values()) size += pad4(table.length);
+          result[at] = {
+            size,
+            name: await read('name', MAX_NAME_TABLE_BYTES),
+            os2: await read('OS/2', 64),
+            head: await read('head', 46),
+          };
+        }
+      } catch {
+        // 읽지 못한 face 는 null 로 두고 Studio 가 브라우저 경로로 읽는다.
+      } finally {
+        await handle?.close();
+      }
+    });
+    return result;
+  }
+
+  return { list, openFace, nameTables };
 }
 
 function staleError(id, detail) {

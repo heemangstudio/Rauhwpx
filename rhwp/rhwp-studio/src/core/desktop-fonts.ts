@@ -39,8 +39,10 @@ import {
   registerLocalFontFace,
   resolveSessionLocalFont,
   setDesktopFontByteReader,
+  setLocalFontNameTableSource,
   type LocalFontFaceNames,
   type LocalFontRecord,
+  type SfntNameTables,
 } from './local-fonts.ts';
 import { hftWasmApiGeneration, registerHftOutlines } from './hft-glyphs.ts';
 import { isLegacyEquationFont } from './equation-font.ts';
@@ -104,6 +106,8 @@ export interface DesktopFontHostApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
   /** face 주소의 앞부분. face id를 붙여 fetch하면 main 프로세스가 파일을 조각으로 흘려보낸다. */
   systemFontBaseUrl?: () => Promise<string>;
+  /** face 이름 테이블. 설치 글꼴 감지가 글꼴 전체를 복사하지 않고 이름만 읽는다. */
+  systemFontNameTables?: (ids: readonly string[]) => Promise<Array<SfntNameTables | null>>;
   /** 사용자가 더한 글꼴 폴더. add 는 main 의 폴더 선택 창을 열고, 취소하면 null 이다. */
   fontFolders?: {
     list(): Promise<string[]>;
@@ -125,6 +129,8 @@ export interface SystemFontHost {
   list(options?: { refresh?: boolean }): Promise<SystemFontIndex>;
   /** TTC face는 단독 SFNT로 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
   read(id: string): Promise<Uint8Array | ArrayBuffer>;
+  /** face 이름 테이블만 읽는다 (설치 글꼴 감지용). 읽지 못한 face 는 null. */
+  nameTables?(ids: readonly string[]): Promise<Array<SfntNameTables | null>>;
 }
 
 /** wasm 런타임 메트릭 등록 API. 오래된 wasm 빌드에는 없을 수 있다. */
@@ -749,6 +755,25 @@ export function createCombinedFontHost(members: ReadonlyArray<readonly [string, 
       if (!host) return Promise.reject(new Error(`unknown font id ${id}`));
       return host.read(id.slice(split + 1));
     },
+    async nameTables(ids) {
+      const result: Array<SfntNameTables | null> = ids.map(() => null);
+      const byHost = new Map<string, number[]>();
+      ids.forEach((id, at) => {
+        const split = id.indexOf(':');
+        if (split <= 0) return;
+        const tag = id.slice(0, split);
+        const positions = byHost.get(tag);
+        if (positions) positions.push(at);
+        else byHost.set(tag, [at]);
+      });
+      await Promise.all(Array.from(byHost, async ([tag, positions]) => {
+        const host = byTag.get(tag);
+        if (!host?.nameTables) return;
+        const tables = await host.nameTables(positions.map(at => ids[at]!.slice(tag.length + 1))).catch(() => []);
+        positions.forEach((at, order) => { result[at] = tables[order] ?? null; });
+      }));
+      return result;
+    },
   };
   return combined;
 }
@@ -767,6 +792,7 @@ function desktopHostAdapter(api: DesktopFontHostApi): SystemFontHost {
       coversSystem: true,
       list: (options) => api.listSystemFonts!(options?.refresh ? { refresh: true } : undefined),
       read: streamedFaceReader(api.systemFontBaseUrl!),
+      ...(api.systemFontNameTables ? { nameTables: (ids: readonly string[]) => api.systemFontNameTables!(ids) } : {}),
     };
     desktopAdapters.set(api, adapter);
   }
@@ -901,6 +927,59 @@ export function getDesktopFontMenuNames(): string[] {
   desktopMenuNames = Array.from(names).sort((a, b) => a.localeCompare(b, 'ko'));
   return desktopMenuNames;
 }
+
+// ─── 설치 글꼴 감지용 이름 테이블 ───────────────────────────────
+
+/** 설치 글꼴로 등록된 사본(시스템·사용자)을 앱 번들 사본보다 먼저 고른다. */
+const NAME_SOURCE_RANK: Record<SystemFontSource, number> = { system: 0, user: 1, hancom: 2, app: 3 };
+
+let installedFaceIds: { index: SystemFontIndex; byPostscript: Map<string, string> } | null = null;
+
+function installedFaceIdsByPostscript(index: SystemFontIndex): Map<string, string> {
+  if (installedFaceIds?.index === index) return installedFaceIds.byPostscript;
+  const lookup = currentLookup?.index === index ? currentLookup : buildDesktopFontLookup(index);
+  const byPostscript = new Map<string, string>();
+  for (const [key, faces] of lookup.postscript) {
+    let best: SystemFontFace | undefined;
+    for (const face of faces) {
+      if (!best || NAME_SOURCE_RANK[face.source] < NAME_SOURCE_RANK[best.source]) best = face;
+    }
+    if (best) byPostscript.set(key, best.id);
+  }
+  installedFaceIds = { index, byPostscript };
+  return byPostscript;
+}
+
+/**
+ * 설치 글꼴 감지(queryLocalFonts)가 face 이름을 읽을 테이블을 색인 host 에서 받는다. 같은 PostScript
+ * 이름의 face 가 색인에 있으면 host 가 그 파일에서 테이블만 읽어 주고, 없으면 감지가 blob 으로 읽는다.
+ */
+async function installedFontNameTables(postscriptNames: readonly string[]): Promise<Map<string, SfntNameTables> | null> {
+  const host = getSystemFontHost();
+  if (!host?.coversSystem || !host.nameTables) return null;
+  const byPostscript = installedFaceIdsByPostscript(await loadDesktopFontIndex());
+  const wanted = new Map<string, string>();
+  for (const name of postscriptNames) {
+    const id = byPostscript.get(exactFontKey(name));
+    if (id && !wanted.has(name)) wanted.set(name, id);
+  }
+  if (wanted.size === 0) return null;
+  const ids = Array.from(new Set(wanted.values()));
+  const tables = await host.nameTables(ids);
+  const byId = new Map<string, SfntNameTables>();
+  ids.forEach((id, at) => {
+    const entry = tables[at];
+    if (entry) byId.set(id, entry);
+  });
+  const result = new Map<string, SfntNameTables>();
+  for (const [name, id] of wanted) {
+    const entry = byId.get(id);
+    if (entry) result.set(name, entry);
+  }
+  return result;
+}
+
+setLocalFontNameTableSource(installedFontNameTables);
 
 /** 다시 연결을 시도하도록 시도 기록을 지운다 (글꼴 감지를 다시 돌릴 때). */
 export function forgetAttemptedFonts(fontNames: readonly string[] | undefined): void {

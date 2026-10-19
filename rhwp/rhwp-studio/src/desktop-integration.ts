@@ -311,6 +311,7 @@ export interface RhwpDesktopApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
   /** face 주소의 앞부분. TTC face는 단독 SFNT로 추출되고, 파일이 바뀌었으면 409로 응답한다. */
   systemFontBaseUrl?: () => Promise<string>;
+  systemFontNameTables?: DesktopFontHostApi['systemFontNameTables'];
   fontFolders?: DesktopFontHostApi['fontFolders'];
   onFontsChanged?: DesktopFontHostApi['onFontsChanged'];
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */

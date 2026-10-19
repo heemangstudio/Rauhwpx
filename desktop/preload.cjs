@@ -254,6 +254,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
   systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
+  systemFontNameTables: (ids) => ipcRenderer.invoke('desktop:font-name-tables', ids),
   // 사용자가 더한 글꼴 폴더. 고르기는 main 의 폴더 선택 창이 하고, 바뀌면 모든 창에 fonts-changed 가 온다.
   fontFolders: {
     list: () => ipcRenderer.invoke('desktop:font-folders-list'),

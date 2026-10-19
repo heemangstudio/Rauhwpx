@@ -195,6 +195,39 @@ test('browser blob sources parse and extract the same as in-memory bytes', async
   assert.equal((await parseFontSource(blobSource(new Blob([hft])), 'HGSMJ.HFT')).type, 'hft');
 });
 
+test('name tables match the standalone face a browser blob would copy', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-font-names-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { noto, collection } = await koreanCollection();
+  await writeFile(path.join(dir, 'Rau.ttc'), collection);
+  await writeFile(path.join(dir, 'Noto.ttf'), noto);
+  const service = createSystemFontService({ roots: [{ path: dir, kind: 'user' }], blobIsWholeFile: false });
+  const { faces } = await service.list();
+  const batang = faces.find((face) => face.koreanNames.includes('라우바탕'));
+  const single = faces.find((face) => face.path.endsWith('Noto.ttf'));
+  const [fromCollection, fromFile, missing] = await service.nameTables([batang.id, single.id, '0000000000000000']);
+
+  const standalone = await extractCollectionFace(collection, 1);
+  const tables = readTables(standalone);
+  assert.equal(fromCollection.size, standalone.length);
+  assert.deepEqual(Buffer.from(fromCollection.name), tables.get('name'));
+  assert.deepEqual(Buffer.from(fromCollection.os2), tables.get('OS/2').subarray(0, 64));
+  // 단독 SFNT 는 head 의 checksumAdjustment 만 다시 계산한다.
+  const withoutAdjustment = (head) => Buffer.concat([head.subarray(0, 8), head.subarray(12, 46)]);
+  assert.deepEqual(withoutAdjustment(Buffer.from(fromCollection.head)), withoutAdjustment(tables.get('head')));
+  assert.equal(fromCollection.name.byteLength, fromCollection.name.buffer.byteLength, 'IPC copies only the table bytes');
+  assert.equal(fromFile.size, noto.length);
+  assert.deepEqual(Buffer.from(fromFile.name), readTables(noto).get('name'));
+  assert.equal(missing, null);
+
+  // Windows·Linux 의 blob 은 컬렉션 파일 그대로라 Studio 가 첫 face 를 읽는다.
+  const wholeFile = createSystemFontService({ roots: [{ path: dir, kind: 'user' }], blobIsWholeFile: true });
+  await wholeFile.list();
+  const [asFile] = await wholeFile.nameTables([batang.id]);
+  assert.equal(asFile.size, collection.length);
+  assert.deepEqual(Buffer.from(asFile.name), readTables(await extractCollectionFace(collection, 0)).get('name'));
+});
+
 test('parses Hancom font list files', () => {
   const fixture = [
     '; HWP HFT Information Data V5.00',

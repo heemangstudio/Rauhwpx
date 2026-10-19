@@ -25,6 +25,7 @@ import {
   loadStoredLocalFonts,
   registerLocalFontFace,
   setDesktopFontByteReader,
+  setLocalFontNameTableSource,
   resetLocalFontsForTests,
   resolveLocalFont,
   type LocalFontSnapshot,
@@ -1441,4 +1442,50 @@ test('SFNT regular family lookup selects unique nearest 400 and preserves ties',
     await registerLocalFontFace(localizedStyleFont('Medium', 500, 0), {source: 'imported', fileName: 'medium.ttf'});
     assert.equal(resolveLocalFont('Locale Family'), null, 'equal physical distance remains ambiguous');
   } finally {resetLocalFontsForTests(); g.document = doc; g.FontFace = ff;}
+});
+
+test('installed font detection reads names from the name-table source without copying the font', async () => {
+  const g = globalThis as TestGlobals;
+  const originals = {browser: g.browser, chrome: g.chrome, document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
+  const indexed = localizedStyleFont('Corsivo', 400, 1);
+  const other = createSfntWithNameRecords([{nameId: 1, value: '08서울한강체'}, {nameId: 4, value: '08서울한강체 M'}]);
+  const tableOf = (bytes: ArrayBuffer, tag: string, limit: number): Uint8Array | null => {
+    const view = new DataView(bytes);
+    for (let index = 0; index < view.getUint16(4); index += 1) {
+      const at = 12 + index * 16;
+      if (String.fromCharCode(...new Uint8Array(bytes, at, 4)) !== tag) continue;
+      return new Uint8Array(bytes, view.getUint32(at + 8), Math.min(view.getUint32(at + 12), limit)).slice();
+    }
+    return null;
+  };
+  const blobReads: string[] = [];
+  const faces = () => [
+    {family: 'Locale Family', fullName: 'Locale Family Corsivo', postscriptName: 'Locale-I', style: 'Corsivo',
+      blob: async () => { blobReads.push('Locale-I'); return new Blob([indexed]); }},
+    {family: '08SeoulHangang', fullName: '08SeoulHangang M', postscriptName: 'SeoulHangangM', style: 'M',
+      blob: async () => { blobReads.push('SeoulHangangM'); return new Blob([other]); }},
+  ];
+  const detect = async () => {
+    resetLocalFontsForTests(); g.localStorage = createStorage(); g.queryLocalFonts = async () => faces();
+    await detectLocalFonts({force: true, includeRegistered: true});
+    return getLocalFontRecords({includeRegistered: true});
+  };
+  try {
+    const fromBlobs = await detect();
+    assert.deepEqual(blobReads.sort(), ['Locale-I', 'SeoulHangangM']);
+    blobReads.length = 0;
+    const requested: string[][] = [];
+    setLocalFontNameTableSource(async (names) => {
+      requested.push([...names]);
+      return new Map([['Locale-I', {size: indexed.byteLength, name: tableOf(indexed, 'name', Infinity), os2: tableOf(indexed, 'OS/2', 64), head: tableOf(indexed, 'head', 46)}]]);
+    });
+    const fromTables = await detect();
+    assert.deepEqual(requested, [['Locale-I', 'SeoulHangangM']]);
+    assert.deepEqual(blobReads, ['SeoulHangangM'], 'only faces missing from the source are copied');
+    assert.deepEqual(fromTables, fromBlobs);
+  } finally {
+    setLocalFontNameTableSource(null);
+    resetLocalFontsForTests();
+    restoreGlobals(originals);
+  }
 });
