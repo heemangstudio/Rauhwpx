@@ -2,7 +2,7 @@
 @media (prefers-color-scheme: dark) { :root { --bg: #141416; --fg: #ececea; --muted: #a3a3a0; --line: #3a3a38; --card: #1f1f22; --bad: #f08a7a; } }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', system-ui, sans-serif; }
-main { padding: 28px 30px 22px; }
+main { display: flex; flex-direction: column; min-height: 100vh; padding: 28px 30px 22px; }
 h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -.02em; }
 h2 { margin: 22px 0 8px; font-size: 14px; }
 .summary { margin: 0; color: var(--fg); }
@@ -20,6 +20,6 @@ button.link { min-height: 0; padding: 0; border: 0; background: none; color: inh
 dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0 0 12px; }
 dt { color: var(--muted); }
 dd { margin: 0; font-variant-numeric: tabular-nums; }
-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; }
+footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 22px; }
 .contact { margin: 0; color: var(--muted); font-size: 13px; }
 [hidden] { display: none !important; }
