@@ -63,8 +63,7 @@ async function callHttpTool() {
     const text = await response.text();
     if (message.id === undefined) return undefined;
     const frames = (response.headers.get('content-type') ?? '').includes('text/event-stream')
-      ? text.split('
-').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+      ? text.split('\\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
       : [JSON.parse(text)];
     return frames.find((frame) => frame.id === message.id);
   };
