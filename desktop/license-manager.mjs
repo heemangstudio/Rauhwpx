@@ -545,6 +545,11 @@ export function createLicenseManager({
       if (!state.license?.lease || state.license.revokedAt || state.license.expiredAt) return null;
       return leaseCheck(clock()).ok ? state.license.lease : null;
     },
+    /** 이 기기에 넣은 라이선스 키. 없으면 null. 설정의 키 복사가 쓴다. */
+    async licenseKey() {
+      await serialize(load);
+      return state.license?.key ?? null;
+    },
     activate,
     deactivate,
     assertCanSave,

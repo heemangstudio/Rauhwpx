@@ -77,6 +77,7 @@ export function createMockLicense(mode: MockLicenseMode, report: (message: strin
     deactivate: async () => ({ ok: false, message: '미리보기에서는 비활성화하지 않아요.', status }),
     openActivation: async () => { report('Activation window placeholder'); return true; },
     openPricing: async () => { report('Pricing page placeholder'); },
+    copyKey: async () => { report('License key copied (sample)'); return status.license !== null; },
     onChange: (callback) => {
       listeners.add(callback);
       return () => { listeners.delete(callback); };

@@ -587,13 +587,13 @@ class FakeLicenseWindow {
   loadURL() { return Promise.resolve(); }
 }
 
-async function hostFor(manager, { shell = {}, trusted = true } = {}) {
+async function hostFor(manager, { shell = {}, clipboard, trusted = true } = {}) {
   const { installLicenseHost } = await import('../desktop/license-host.mjs');
   const handlers = new Map();
   FakeLicenseWindow.opened = 0;
   const host = installLicenseHost({
     ipcMain: { handle(channel, fn) { handlers.set(channel, fn); } },
-    BrowserWindow: FakeLicenseWindow, shell, manager,
+    BrowserWindow: FakeLicenseWindow, shell, clipboard, manager,
     isTrustedStudioEvent: () => trusted, log: quiet,
   });
   return { host, invoke: (channel, sender, ...args) => handlers.get(channel)({ sender }, ...args) };
@@ -610,6 +610,17 @@ test('the support link opens only the fixed license mailto, and only for trusted
   const untrusted = await hostFor(manager, { shell, trusted: false });
   assert.throws(() => untrusted.invoke('license:open-support', {}), /Untrusted license IPC sender/);
   assert.equal(opened.length, 1);
+});
+
+test('copying the key writes the activated key to the clipboard and nothing before activation', async (t) => {
+  const { manager, server } = await setup(t);
+  const copied = [];
+  const { invoke } = await hostFor(manager, { clipboard: { writeText: (text) => copied.push(text) } });
+  assert.equal(await invoke('license:copy-key'), false);
+  const key = server.issueKey();
+  assert.equal((await manager.activate(key.toLowerCase())).ok, true);
+  assert.equal(await invoke('license:copy-key'), true);
+  assert.deepEqual(copied, [key]);
 });
 
 test('native saves never use up the trial; only the 72-hour deadline ends it', async (t) => {

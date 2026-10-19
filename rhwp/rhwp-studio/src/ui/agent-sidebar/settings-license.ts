@@ -52,6 +52,8 @@ export interface DesktopLicenseApi {
   openPaymentFix?: () => Promise<void>;
   /** 문의 메일을 쓴다. 예전 메인 프로세스에는 없다. */
   openSupport?: () => Promise<void>;
+  /** 이 기기의 키를 클립보드에 복사한다. 키는 메인이 바로 쓰고 렌더러로 오지 않는다. 예전 메인 프로세스에는 없다. */
+  copyKey?: () => Promise<boolean>;
   /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
   beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
@@ -264,6 +266,14 @@ export function createLicenseSettingsSection(
   const detail = document.createElement('span');
   detail.className = 'ag-settings-control-description';
   detail.setAttribute('role', 'status');
+  // 가린 키(HAMA-…2000)를 누르면 전체 키를 복사한다.
+  const keyButton = document.createElement('button');
+  keyButton.type = 'button';
+  keyButton.className = 'ag-settings-license-key';
+  keyButton.title = '키 복사';
+  keyButton.hidden = true;
+  const detailText = document.createElement('span');
+  detail.append(keyButton, detailText);
   copy.append(title, detail);
   if (api.openSupport) {
     const contact = document.createElement('span');
@@ -288,6 +298,9 @@ export function createLicenseSettingsSection(
   body.append(row);
   root.append(head, body, actions);
 
+  let maskedKey = '';
+  let copiedTimer: number | undefined;
+
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
     // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다. 무료 체험이 끝난 기기는 설정에서만 그렇게 부른다.
@@ -295,7 +308,12 @@ export function createLicenseSettingsSection(
     title.textContent = status.state === 'trial_expired'
       ? '무료 체험 만료'
       : renewalPrompt(status)?.title ?? summary.title;
-    detail.textContent = summary.detail;
+    maskedKey = status.license?.maskedKey ?? '';
+    const keyFirst = Boolean(maskedKey && api.copyKey && summary.detail.startsWith(maskedKey));
+    keyButton.hidden = !keyFirst;
+    keyButton.setAttribute('aria-label', `라이선스 키 복사, ${maskedKey}`);
+    if (keyFirst && !copiedTimer) keyButton.textContent = maskedKey;
+    detailText.textContent = keyFirst ? summary.detail.slice(maskedKey.length) : summary.detail;
     activate.hidden = !summary.showActivate;
     buy.hidden = !summary.showActivate;
     check.hidden = !status.license;
@@ -308,6 +326,17 @@ export function createLicenseSettingsSection(
     onAvailableChange?.(available);
   }
 
+  keyButton.addEventListener('click', () => {
+    void api.copyKey?.().then((copied) => {
+      if (!copied) return;
+      keyButton.textContent = '복사했어요';
+      window.clearTimeout(copiedTimer);
+      copiedTimer = window.setTimeout(() => {
+        copiedTimer = undefined;
+        keyButton.textContent = maskedKey;
+      }, 1400);
+    });
+  });
   activate.addEventListener('click', () => { void api.openActivation(); });
   buy.addEventListener('click', () => { void api.openPricing(); });
   fixPayment.addEventListener('click', () => { void api.openPaymentFix?.(); });
@@ -320,7 +349,10 @@ export function createLicenseSettingsSection(
     deactivate.disabled = true;
     void api.deactivate().then((result) => {
       render(result.status);
-      if (!result.ok && result.message) detail.textContent = result.message;
+      if (!result.ok && result.message) {
+        keyButton.hidden = true;
+        detailText.textContent = result.message;
+      }
     }).finally(() => { deactivate.disabled = false; });
   });
 
