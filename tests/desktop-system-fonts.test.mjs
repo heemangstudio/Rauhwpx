@@ -344,6 +344,13 @@ test('collection faces are planned once and later reads stream the same bytes', 
   await assert.rejects(service.openFace(face.id), /stale/);
 });
 
+// 백그라운드 재검색 타이머는 unref 라 앱 종료를 막지 않는다. 테스트가 그 결과만 기다리는 동안에는
+// 이벤트 루프가 비어 Node 가 테스트를 끝내 버리므로, 기다리는 동안만 루프를 붙잡아 둔다.
+function whileAlive(promise) {
+  const keep = setInterval(() => {}, 1_000);
+  return promise.finally(() => clearInterval(keep));
+}
+
 test('a later launch opens with the saved index and rescans in the background', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-saved-index-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -378,7 +385,7 @@ test('a later launch opens with the saved index and rescans in the background', 
   const korean = restored.faces.find((face) => face.faceIndex === 1);
   assert.deepEqual(await drain(service, korean.id), await extractCollectionFace(collection, 1));
 
-  await indexChanged;
+  await whileAlive(indexChanged);
   const rescanned = await service.list();
   assert.ok(rescanned.faces.some((face) => face.path.endsWith('Noto.ttf')));
   assert.equal(rescanned.faces.length, first.faces.length + 1);
@@ -395,7 +402,7 @@ test('a later launch opens with the saved index and rescans in the background', 
   });
   const again = await quiet.list();
   assert.deepEqual(again.faces.map((face) => face.id), rescanned.faces.map((face) => face.id));
-  await quietScan;
+  await whileAlive(quietScan);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(notified, 0);
 
