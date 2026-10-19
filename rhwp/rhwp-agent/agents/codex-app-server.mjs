@@ -8,8 +8,7 @@ import {
   isPlanningRestricted,
   chatPermissionGrantsFor,
   hasLocalExecutionGrant,
-  mcpCapabilityEnv,
-  mcpRuntimeFor,
+  codexRhwpMcpServerConfig,
   applyPreparedProviderLaunch,
   nativeProviderInteractionMode,
   redactDiagnosticText,
@@ -51,24 +50,11 @@ export class CodexAppServerUnavailableError extends Error {
 }
 
 function capabilityConfig(opts) {
-  const runtime = mcpRuntimeFor(opts);
-  const capabilityEnv = {
-    ...runtime.env,
-    RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
-    RHWP_AGENT_TOKEN: opts.token,
-    RHWP_AGENT_NAME: 'codex',
-    ...mcpCapabilityEnv(opts),
-  };
-  const mcpEnv = Object.entries(capabilityEnv)
-    .map(([key, value]) => `${key} = ${JSON.stringify(String(value))}`)
-    .join(', ');
   return [
-    '-c', `mcp_servers.rhwp.command=${JSON.stringify(runtime.command)}`,
-    '-c', `mcp_servers.rhwp.args=${JSON.stringify(runtime.args)}`,
-    '-c', `mcp_servers.rhwp.env={${mcpEnv}}`,
+    ...codexRhwpMcpServerConfig(opts),
     '-c', 'mcp_servers.rhwp.startup_timeout_sec=20',
     // 기본 60초는 사용자 답을 기다리는 질문(ask_user_question), 저장 창을 기다릴 수 있는 문서 떼기(5분),
-    // Studio 가 문서를 붙이는 호출(2분)을 끊는다. 다른 도구는 mcp-stdio 의 180초가 먼저 끝낸다.
+    // Studio 가 문서를 붙이는 호출(2분)을 끊는다. 다른 도구는 MCP 서버의 180초가 먼저 끝낸다.
     '-c', 'mcp_servers.rhwp.tool_timeout_sec=600',
     '-c', 'mcp_servers.rhwp.default_tools_approval_mode="auto"',
     // 자료 저장은 허브가 모드·설정·세션 경계를 검사하므로 승인 UI 없이 실행한다.

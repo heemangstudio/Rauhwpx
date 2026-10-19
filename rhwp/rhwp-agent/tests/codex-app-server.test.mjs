@@ -348,7 +348,8 @@ test('app-server argv carries the isolated MCP capability profile', () => {
   assert.ok(argv.includes('multi_agent'));
   assert.ok(argv.includes('web_search="live"'));
   assert.ok(argv.includes('sandbox_mode="read-only"'));
-  assert.match(argv.find((value) => value.startsWith('mcp_servers.rhwp.env=')), /RHWP_AGENT_ROLE = "chat"/);
+  const mcpUrl = new URL(JSON.parse(argv.find((value) => value.startsWith('mcp_servers.rhwp.url=')).slice('mcp_servers.rhwp.url='.length)));
+  assert.equal(mcpUrl.searchParams.get('RHWP_AGENT_ROLE'), 'chat');
 });
 
 test('direct mode negotiates native input and answers the original app-server request', async (t) => {
@@ -1052,10 +1053,9 @@ test('approved Plan restarts advertise mutation tools and returning to planning 
   t.after(() => h.session.dispose());
 
   async function advertisedTools() {
-    const config = h.spawns.at(-1).argv.find((value) => value.startsWith('mcp_servers.rhwp.env='));
+    const config = h.spawns.at(-1).argv.find((value) => value.startsWith('mcp_servers.rhwp.url='));
     assert.ok(config);
-    const env = Object.fromEntries([...config.matchAll(/([A-Z_]+) = ("(?:\\.|[^"\\])*")/g)]
-      .map(([, key, value]) => [key, JSON.parse(value)]));
+    const env = Object.fromEntries(new URL(JSON.parse(config.slice('mcp_servers.rhwp.url='.length))).searchParams);
     assert.equal(env.RHWP_AGENT_PHASE, h.opts.phase);
     assert.equal(env.RHWP_TOOL_PROFILE, undefined, 'chat profile must follow the current phase');
     const transport = new StdioClientTransport({

@@ -226,6 +226,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 // 페이지에 입력한 사용자 비밀 값. 허브 로그·실패 문구·도구 결과에서 가린다(값은 이 프로세스 메모리에만 있다).
 const filledSecretValues = new Set();
 const MCP_SCRIPT = fileURLToPath(new URL('./mcp-stdio.mjs', import.meta.url));
+// Claude·Codex 는 허브의 HTTP MCP(/mcp-http)를 쓴다. stdio 는 문제 해결용으로 남긴 예전 경로(mcp-stdio 자식)다.
+const MCP_TRANSPORT = process.env.RHWP_MCP_TRANSPORT === 'stdio' ? 'stdio' : 'http';
 const BUNDLED_SKILLS = fileURLToPath(new URL('./skills', import.meta.url));
 if (PRODUCTION && !process.env.RHWP_WORK_DIR) {
   throw Object.assign(new Error('RHWP_WORK_DIR is required in production'), { code: 'HUB_WORK_DIR_REQUIRED' });
@@ -3284,6 +3286,7 @@ async function launchTemplateJob(record, job) {
     prepareClaudeHome,
     sourceClaudeAuth,
     MCP_SCRIPT,
+    MCP_TRANSPORT,
     hubPort,
     sessions,
     TOKEN,
@@ -5054,11 +5057,16 @@ async function startSession(
     role: providerRole,
     generation,
   });
+  // Claude·Codex 는 첫 턴부터 /mcp-http 에 붙는다. MCP SDK 는 CLI 가 뜨는 동안 미리 읽어 둔다.
+  if (MCP_TRANSPORT === 'http' && (agent === 'claude' || agent === 'codex')) {
+    void mcpHttpEndpoint().catch((error) => log(`mcp http endpoint load failed: ${error?.message ?? error}`));
+  }
   const opts = {
     rootDir: record.workDir,
     workDir: record.workDir,
     readOnlyRoots: record.hubReadOnlyRoots,
     mcpScriptPath: MCP_SCRIPT,
+    mcpTransport: MCP_TRANSPORT,
     hubPort,
     token: sessions.issue(TOKEN, record.sessionId, {
       audience: HUB_CAPABILITY_AUDIENCES.MCP,
@@ -8271,6 +8279,11 @@ const httpServer = http.createServer((req, res) => {
       res.end(artifact.bytes);
       return;
     }
+    if (url.pathname === '/mcp-http') {
+      // Claude·Codex 의 rhwp MCP 서버. 세션 범위 능력 토큰은 Authorization 헤더로 받는다.
+      await (await mcpHttpEndpoint()).handle(req, res, url);
+      return;
+    }
     if (isFontPath(url.pathname)) {
       await handleFontHttp(req, res, url);
       return;
@@ -8676,6 +8689,215 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
+/**
+ * /studio·/mcp 연결의 능력 토큰과 provider 신원을 확인한다. 맞지 않으면 던진다.
+ * /mcp WebSocket 업그레이드와 허브 내 HTTP MCP(/mcp-http)가 같은 검사를 쓴다.
+ */
+function authenticateHubConnection({
+  pathname,
+  token,
+  sessionId,
+  requestedAgentRole,
+  requestedWorkerJobId,
+  requestedSubagentId,
+  requestedAgent,
+}) {
+  let record;
+  let authenticatedWorkerJob = null;
+  let authenticatedPiSubagent = null;
+  let authenticatedProviderIdentity = null;
+  const audience = pathname === '/studio'
+    ? HUB_CAPABILITY_AUDIENCES.STUDIO
+    : requestedWorkerJobId
+      ? HUB_CAPABILITY_AUDIENCES.COPY_LAYOUT_WORKER
+      : HUB_CAPABILITY_AUDIENCES.MCP;
+  let providerCapabilityResource;
+  if (pathname === '/mcp' && !requestedWorkerJobId) {
+    const candidateRecord = sessions.get(sessionId);
+    const activeSession = candidateRecord?.agentSession;
+    if (!activeSession?.providerCapabilityResource) {
+      throw new Error('active provider identity required');
+    }
+    if (requestedSubagentId) {
+      const registration = candidateRecord.piSubagents.get(requestedSubagentId);
+      if (!registration || !candidateRecord.piSubagents.isCurrent(registration, activeSession)) {
+        throw new Error('active Pi subagent identity required');
+      }
+      providerCapabilityResource = registration.resource;
+    } else {
+      providerCapabilityResource = activeSession.providerCapabilityResource;
+    }
+  }
+  const authenticatedSessionId = sessions.authenticate({
+    masterToken: TOKEN,
+    token,
+    sessionId,
+    audience,
+    ...(requestedWorkerJobId
+      ? { resource: requestedWorkerJobId }
+      : providerCapabilityResource
+        ? { resource: providerCapabilityResource }
+        : {}),
+    allowMaster: !PRODUCTION,
+  });
+  record = sessions.require(authenticatedSessionId);
+  if (requestedWorkerJobId) {
+    authenticatedWorkerJob = record.templateJobs.get(requestedWorkerJobId);
+    if (
+      !authenticatedWorkerJob
+      || authenticatedWorkerJob.status !== 'running'
+      || requestedAgentRole !== authenticatedWorkerJob.workerRole
+    ) {
+      throw new Error('copy-layout worker identity mismatch');
+    }
+  } else if (requestedAgentRole.startsWith('copy-layout-worker:')) {
+    throw new Error('copy-layout worker capability required');
+  } else if (pathname === '/mcp') {
+    const activeSession = record.agentSession;
+    if (requestedSubagentId) {
+      const piSubagent = record.piSubagents.get(requestedSubagentId);
+      if (
+        !piSubagent
+        || !record.piSubagents.isCurrent(piSubagent, activeSession)
+        || piSubagent.resource !== providerCapabilityResource
+        || requestedAgent !== piSubagent.agent
+        || requestedAgentRole !== piSubagent.agentRole
+      ) {
+        throw new Error('Pi subagent identity mismatch');
+      }
+      authenticatedPiSubagent = piSubagent;
+      authenticatedProviderIdentity = Object.freeze({
+        agent: piSubagent.agent,
+        role: piSubagent.agentRole,
+        generation: piSubagent.providerGeneration,
+      });
+    } else {
+      if (
+        !activeSession
+        || activeSession.providerCapabilityResource !== providerCapabilityResource
+        || requestedAgent !== activeSession.agent
+        || requestedAgentRole !== activeSession.providerRole
+      ) {
+        throw new Error('provider identity mismatch');
+      }
+      authenticatedProviderIdentity = Object.freeze({
+        agent: activeSession.agent,
+        role: activeSession.providerRole,
+        generation: activeSession.generation,
+      });
+    }
+  }
+  return { record, authenticatedWorkerJob, authenticatedPiSubagent, authenticatedProviderIdentity };
+}
+
+/**
+ * 인증된 provider 연결(/mcp WebSocket 또는 /mcp-http 의 가상 소켓)을 세션에 붙인다.
+ * 소켓은 연결된 순간의 provider 턴 하나에만 묶인다.
+ */
+function acceptMcpSocket(ws, {
+  record,
+  authenticatedWorkerJob,
+  authenticatedPiSubagent,
+  authenticatedProviderIdentity,
+}, { workflow, capabilityEpoch, maxPayload }) {
+  const agentLabel = authenticatedWorkerJob?.agent ?? authenticatedProviderIdentity.agent;
+  ws.agentLabel = agentLabel;
+  ws.agentRole = authenticatedWorkerJob?.workerRole ?? authenticatedProviderIdentity.role;
+  ws.agentGeneration = authenticatedWorkerJob ? null : authenticatedProviderIdentity.generation;
+  const activeProviderSession = authenticatedWorkerJob ? null : record.agentSession;
+  const providerIdentityCurrent = authenticatedPiSubagent
+    ? record.piSubagents.isCurrent(authenticatedPiSubagent, activeProviderSession)
+    : activeProviderSession?.providerRole === ws.agentRole;
+  const providerTurnId = activeProviderSession
+    && activeProviderSession.generation === ws.agentGeneration
+    && activeProviderSession.agent === ws.agentLabel
+    && providerIdentityCurrent
+    && activeProviderSession.status === 'running'
+    && activeProviderSession.providerTurnStarted === true
+    && activeProviderSession.turnId
+    ? activeProviderSession.turnId
+    : null;
+  // A root MCP socket is born into exactly one provider turn. Never promote
+  // a connection that arrived while idle/queued: it may belong to a stale
+  // descendant from the process tree that just settled.
+  ws.agentTurnId = authenticatedWorkerJob ? null : providerTurnId;
+  ws.providerTurnRetired = authenticatedWorkerJob ? false : providerTurnId === null;
+  ws.copyLayoutJobId = authenticatedWorkerJob?.jobId ?? null;
+  ws.piSubagentId = authenticatedPiSubagent?.childId ?? null;
+  ws.parentTaskId = authenticatedPiSubagent?.taskId ?? null;
+  ws.toolProfile = authenticatedPiSubagent?.profile ?? null;
+  ws.workflow = workflow;
+  ws.capabilityEpoch = capabilityEpoch;
+  // mcp-stdio·/mcp-http 는 자신의 maxPayload 를 알린다. 알리지 않는 클라이언트(Pi 확장 등)는 제한 없음.
+  const advertisedMaxPayload = Number(maxPayload);
+  ws.maxResultFrameBytes = Number.isSafeInteger(advertisedMaxPayload) && advertisedMaxPayload > 0
+    ? advertisedMaxPayload
+    : null;
+  record.mcpSockets.add(ws);
+  attachSocket(record, ws, 'mcp');
+  if (!authenticatedWorkerJob && ws.providerTurnRetired) {
+    queueMicrotask(() => {
+      try { ws.close(4003, 'provider tool connection outside active turn'); } catch {}
+    });
+  }
+  ws.on('close', () => {
+    record.mcpSockets.delete(ws);
+    if (record.pendingUserQuestion?.mcpSocket === ws) {
+      settleUserQuestion(record, { status: 'expired', reason: 'provider-disconnected' });
+    }
+    for (const [hubId, entry] of record.pendingCalls) {
+      if (entry.mcpSocket === ws) {
+        clearTimeout(entry.timer);
+        record.pendingCalls.delete(hubId);
+        cancelStudioToolRequest(record, hubId, entry, 'provider-disconnected');
+        // 타임아웃 해제 경로도 함께 취소됐으니 스냅샷 점유를 여기서 풀어야 재시도가 막히지 않는다.
+        if (entry.tool === 'materialize_document_snapshot' && entry.copyLayoutJobId) {
+          releaseCopyLayoutSnapshot(record.templateJobs.get(entry.copyLayoutJobId));
+        }
+      }
+    }
+    log(`mcp client disconnected (agent=${agentLabel}, session=${record.sessionId})`);
+  });
+  log(`mcp client connected (agent=${agentLabel}, session=${record.sessionId})`);
+}
+
+/**
+ * /mcp-http 의 MCP 세션이 허브에 붙는 경로. 같은 프로세스 안의 가상 소켓을 /mcp WebSocket 과
+ * 같은 인증·턴 묶기로 받아들인다. 맞지 않으면 던진다.
+ */
+function acceptVirtualMcpSocket(identity, hubSocket) {
+  if (shutdownPreparationPromise) throw new Error('hub is shutting down');
+  const auth = authenticateHubConnection({
+    pathname: '/mcp',
+    token: identity.token,
+    sessionId: identity.sessionId,
+    requestedAgentRole: identity.role ?? 'chat',
+    requestedWorkerJobId: identity.workerJobId,
+    requestedSubagentId: null,
+    requestedAgent: identity.agent,
+  });
+  acceptMcpSocket(hubSocket, auth, {
+    workflow: identity.workflow,
+    capabilityEpoch: identity.capabilityEpoch,
+    maxPayload: identity.maxPayload,
+  });
+}
+
+/** @type {Promise<ReturnType<import('./mcp-http.mjs').createMcpHttpEndpoint>> | null} */
+let mcpHttpEndpointPromise = null;
+/** MCP SDK 는 Claude·Codex 세션이 처음 시작될 때 읽는다 — Pi 만 쓰는 허브는 읽지 않는다. */
+function mcpHttpEndpoint() {
+  mcpHttpEndpointPromise ??= import('./mcp-http.mjs').then(({ createMcpHttpEndpoint }) => createMcpHttpEndpoint({
+    acceptSocket: acceptVirtualMcpSocket,
+    log,
+  }), (error) => {
+    // 실패한 읽기를 붙들지 않는다 — 다음 요청이 다시 시도한다.
+    mcpHttpEndpointPromise = null;
+    throw error;
+  });
+  return mcpHttpEndpointPromise;
+}
+
 httpServer.on('upgrade', (req, socket, head) => {
   if (shutdownPreparationPromise) {
     rejectUpgrade(socket, 503, 'Service Unavailable');
@@ -8708,106 +8930,25 @@ httpServer.on('upgrade', (req, socket, head) => {
       return;
     }
   }
-  const token = url.searchParams.get('token') ?? '';
-  const sessionId = url.searchParams.get('sessionId');
-  const requestedAgentRole = url.searchParams.get('role') ?? 'chat';
   const requestedWorkerJobId = pathname === '/mcp'
     ? url.searchParams.get('workerJobId')
     : null;
-  const requestedSubagentId = pathname === '/mcp'
-    ? url.searchParams.get('subagentId')
-    : null;
-  const requestedAgent = pathname === '/mcp' ? url.searchParams.get('agent') : null;
-  let record;
-  let authenticatedWorkerJob = null;
-  let authenticatedPiSubagent = null;
-  let authenticatedProviderIdentity = null;
+  let auth;
   try {
-    const audience = pathname === '/studio'
-      ? HUB_CAPABILITY_AUDIENCES.STUDIO
-      : requestedWorkerJobId
-        ? HUB_CAPABILITY_AUDIENCES.COPY_LAYOUT_WORKER
-        : HUB_CAPABILITY_AUDIENCES.MCP;
-    let providerCapabilityResource;
-    if (pathname === '/mcp' && !requestedWorkerJobId) {
-      const candidateRecord = sessions.get(sessionId);
-      const activeSession = candidateRecord?.agentSession;
-      if (!activeSession?.providerCapabilityResource) {
-        throw new Error('active provider identity required');
-      }
-      if (requestedSubagentId) {
-        const registration = candidateRecord.piSubagents.get(requestedSubagentId);
-        if (!registration || !candidateRecord.piSubagents.isCurrent(registration, activeSession)) {
-          throw new Error('active Pi subagent identity required');
-        }
-        providerCapabilityResource = registration.resource;
-      } else {
-        providerCapabilityResource = activeSession.providerCapabilityResource;
-      }
-    }
-    const authenticatedSessionId = sessions.authenticate({
-      masterToken: TOKEN,
-      token,
-      sessionId,
-      audience,
-      ...(requestedWorkerJobId
-        ? { resource: requestedWorkerJobId }
-        : providerCapabilityResource
-          ? { resource: providerCapabilityResource }
-          : {}),
-      allowMaster: !PRODUCTION,
+    auth = authenticateHubConnection({
+      pathname,
+      token: url.searchParams.get('token') ?? '',
+      sessionId: url.searchParams.get('sessionId'),
+      requestedAgentRole: url.searchParams.get('role') ?? 'chat',
+      requestedWorkerJobId,
+      requestedSubagentId: pathname === '/mcp' ? url.searchParams.get('subagentId') : null,
+      requestedAgent: pathname === '/mcp' ? url.searchParams.get('agent') : null,
     });
-    record = sessions.require(authenticatedSessionId);
-    if (requestedWorkerJobId) {
-      authenticatedWorkerJob = record.templateJobs.get(requestedWorkerJobId);
-      if (
-        !authenticatedWorkerJob
-        || authenticatedWorkerJob.status !== 'running'
-        || requestedAgentRole !== authenticatedWorkerJob.workerRole
-      ) {
-        throw new Error('copy-layout worker identity mismatch');
-      }
-    } else if (requestedAgentRole.startsWith('copy-layout-worker:')) {
-      throw new Error('copy-layout worker capability required');
-    } else if (pathname === '/mcp') {
-      const activeSession = record.agentSession;
-      if (requestedSubagentId) {
-        const piSubagent = record.piSubagents.get(requestedSubagentId);
-        if (
-          !piSubagent
-          || !record.piSubagents.isCurrent(piSubagent, activeSession)
-          || piSubagent.resource !== providerCapabilityResource
-          || requestedAgent !== piSubagent.agent
-          || requestedAgentRole !== piSubagent.agentRole
-        ) {
-          throw new Error('Pi subagent identity mismatch');
-        }
-        authenticatedPiSubagent = piSubagent;
-        authenticatedProviderIdentity = Object.freeze({
-          agent: piSubagent.agent,
-          role: piSubagent.agentRole,
-          generation: piSubagent.providerGeneration,
-        });
-      } else {
-        if (
-          !activeSession
-          || activeSession.providerCapabilityResource !== providerCapabilityResource
-          || requestedAgent !== activeSession.agent
-          || requestedAgentRole !== activeSession.providerRole
-        ) {
-          throw new Error('provider identity mismatch');
-        }
-        authenticatedProviderIdentity = Object.freeze({
-          agent: activeSession.agent,
-          role: activeSession.providerRole,
-          generation: activeSession.generation,
-        });
-      }
-    }
   } catch {
     rejectUpgrade(socket, 401, 'Unauthorized');
     return;
   }
+  const { record } = auth;
   const wss = pathname === '/studio' ? studioWss : mcpWss;
   wss.handleUpgrade(req, socket, head, (ws) => {
     if (pathname === '/studio') {
@@ -8950,65 +9091,11 @@ httpServer.on('upgrade', (req, socket, head) => {
       return;
     }
 
-    const agentLabel = authenticatedWorkerJob?.agent ?? authenticatedProviderIdentity.agent;
-    ws.agentLabel = agentLabel;
-    ws.agentRole = authenticatedWorkerJob?.workerRole ?? authenticatedProviderIdentity.role;
-    ws.agentGeneration = authenticatedWorkerJob ? null : authenticatedProviderIdentity.generation;
-    const activeProviderSession = authenticatedWorkerJob ? null : record.agentSession;
-    const providerIdentityCurrent = authenticatedPiSubagent
-      ? record.piSubagents.isCurrent(authenticatedPiSubagent, activeProviderSession)
-      : activeProviderSession?.providerRole === ws.agentRole;
-    const providerTurnId = activeProviderSession
-      && activeProviderSession.generation === ws.agentGeneration
-      && activeProviderSession.agent === ws.agentLabel
-      && providerIdentityCurrent
-      && activeProviderSession.status === 'running'
-      && activeProviderSession.providerTurnStarted === true
-      && activeProviderSession.turnId
-      ? activeProviderSession.turnId
-      : null;
-    // A root MCP socket is born into exactly one provider turn. Never promote
-    // a connection that arrived while idle/queued: it may belong to a stale
-    // descendant from the process tree that just settled.
-    ws.agentTurnId = authenticatedWorkerJob ? null : providerTurnId;
-    ws.providerTurnRetired = authenticatedWorkerJob ? false : providerTurnId === null;
-    ws.copyLayoutJobId = authenticatedWorkerJob?.jobId ?? null;
-    ws.piSubagentId = authenticatedPiSubagent?.childId ?? null;
-    ws.parentTaskId = authenticatedPiSubagent?.taskId ?? null;
-    ws.toolProfile = authenticatedPiSubagent?.profile ?? null;
-    ws.workflow = url.searchParams.get('workflow');
-    ws.capabilityEpoch = url.searchParams.get('capabilityEpoch');
-    // mcp-stdio 는 자신의 maxPayload 를 알린다. 알리지 않는 클라이언트(Pi 확장 등)는 제한 없음.
-    const advertisedMaxPayload = Number(url.searchParams.get('maxPayload'));
-    ws.maxResultFrameBytes = Number.isSafeInteger(advertisedMaxPayload) && advertisedMaxPayload > 0
-      ? advertisedMaxPayload
-      : null;
-    record.mcpSockets.add(ws);
-    attachSocket(record, ws, 'mcp');
-    if (!authenticatedWorkerJob && ws.providerTurnRetired) {
-      queueMicrotask(() => {
-        try { ws.close(4003, 'provider tool connection outside active turn'); } catch {}
-      });
-    }
-    ws.on('close', () => {
-      record.mcpSockets.delete(ws);
-      if (record.pendingUserQuestion?.mcpSocket === ws) {
-        settleUserQuestion(record, { status: 'expired', reason: 'provider-disconnected' });
-      }
-      for (const [hubId, entry] of record.pendingCalls) {
-        if (entry.mcpSocket === ws) {
-          clearTimeout(entry.timer);
-          record.pendingCalls.delete(hubId);
-          cancelStudioToolRequest(record, hubId, entry, 'provider-disconnected');
-          // 타임아웃 해제 경로도 함께 취소됐으니 스냅샷 점유를 여기서 풀어야 재시도가 막히지 않는다.
-          if (entry.tool === 'materialize_document_snapshot' && entry.copyLayoutJobId) {
-            releaseCopyLayoutSnapshot(record.templateJobs.get(entry.copyLayoutJobId));
-          }
-        }
-      }
-      log(`mcp client disconnected (agent=${agentLabel}, session=${record.sessionId})`);
+    acceptMcpSocket(ws, auth, {
+      workflow: url.searchParams.get('workflow'),
+      capabilityEpoch: url.searchParams.get('capabilityEpoch'),
+      maxPayload: url.searchParams.get('maxPayload'),
     });
-    log(`mcp client connected (agent=${agentLabel}, session=${record.sessionId})`);
   });
 });
 
@@ -9085,6 +9172,12 @@ async function disposeRecord(record, reason) {
   }
   record.mcpSockets.clear();
   record.studioSocket = null;
+  // 이 세션의 HTTP MCP 세션도 닫는다 (provider 프로세스가 DELETE 없이 사라질 수 있다).
+  if (mcpHttpEndpointPromise) {
+    void mcpHttpEndpointPromise
+      .then((endpoint) => endpoint.closeSessionsFor(record.sessionId, reason))
+      .catch(() => {});
+  }
   const cleanupResults = await Promise.allSettled([
     backendExit,
     ...templateBackendExits,
@@ -9150,6 +9243,9 @@ function prepareShutdown(signal) {
       for (const sock of wss.clients) {
         try { sock.close(1001, 'server shutting down'); } catch {}
       }
+    }
+    if (mcpHttpEndpointPromise) {
+      await mcpHttpEndpointPromise.then((endpoint) => endpoint.closeAll()).catch(() => {});
     }
     return cleanupProven && browserClosed !== false;
   })();

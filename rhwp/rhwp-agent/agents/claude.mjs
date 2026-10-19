@@ -24,8 +24,7 @@ import {
   hasLocalExecutionGrant,
   isPlanningRestricted,
   isSafeSessionId,
-  mcpCapabilityEnv,
-  mcpRuntimeFor,
+  claudeRhwpMcpServer,
   normalizeExecutionMode,
   normalizeTaskUsage,
   normalizeUsageTokens,
@@ -238,24 +237,8 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
   const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
-  const capabilityEnv = mcpCapabilityEnv(opts);
   const readOnlyRoots = providerReadOnlyRoots(opts);
-  const runtime = mcpRuntimeFor(opts);
-  const mcpConfig = {
-    mcpServers: {
-      rhwp: {
-        command: runtime.command,
-        args: runtime.args,
-        env: {
-          ...runtime.env,
-          RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
-          RHWP_AGENT_TOKEN: opts.token,
-          RHWP_AGENT_NAME: 'claude',
-          ...capabilityEnv,
-        },
-      },
-    },
-  };
+  const mcpConfig = { mcpServers: { rhwp: claudeRhwpMcpServer(opts) } };
   const allow = mcpOnly ? ['mcp__rhwp__*'] : [
     ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
@@ -329,9 +312,7 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
   const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
-  const capabilityEnv = mcpCapabilityEnv(opts);
   const readOnlyRoots = providerReadOnlyRoots(opts);
-  const runtime = mcpRuntimeFor(opts);
   const allow = mcpOnly ? ['mcp__rhwp__*'] : [
     ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
@@ -377,19 +358,7 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     extraArgs: slashCommands ? {} : { 'disable-slash-commands': null },
     forwardSubagentText: true,
     includePartialMessages: true,
-    mcpServers: {
-      rhwp: {
-        command: runtime.command,
-        args: runtime.args,
-        env: {
-          ...runtime.env,
-          RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
-          RHWP_AGENT_TOKEN: opts.token,
-          RHWP_AGENT_NAME: 'claude',
-          ...capabilityEnv,
-        },
-      },
-    },
+    mcpServers: { rhwp: claudeRhwpMcpServer(opts) },
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.effort ? { effort: opts.effort } : {}),
     ...(opts.claudeBin && path.isAbsolute(opts.claudeBin)
