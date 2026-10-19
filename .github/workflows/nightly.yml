@@ -17,7 +17,7 @@ concurrency:
 jobs:
   rust-tests:
     name: Rust tests
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -39,7 +39,7 @@ jobs:
           fallback: none
       - name: Test Rust workspace in parallel
         working-directory: rhwp
-        run: cargo nextest run --locked --workspace --test-threads 8
+        run: cargo nextest run --locked --workspace
       - name: Test Rust doc examples
         if: ${{ !cancelled() }}
         working-directory: rhwp
@@ -55,7 +55,7 @@ jobs:
 
   cargo-audit:
     name: Cargo audit
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -104,7 +104,7 @@ jobs:
 
   app:
     name: App
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -160,7 +160,7 @@ jobs:
 
   browser:
     name: Browser
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -195,7 +195,7 @@ jobs:
 
   sidebar:
     name: Sidebar preview
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -232,7 +232,7 @@ jobs:
 
   e2e:
     name: Editor smoke flows
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
