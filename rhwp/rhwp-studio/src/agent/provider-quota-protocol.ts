@@ -27,6 +27,7 @@ export function readProviderQuota(value: unknown): ProviderQuota {
     status: src['status'] === 'ok' || src['status'] === 'error' ? src['status'] : 'unavailable',
     session: window(src['session']),
     week: window(src['week']),
+    month: window(src['month']),
     updatedAt: number(src['updatedAt']),
     error: typeof src['error'] === 'string' ? src['error'] : null,
     accountKey: typeof src['accountKey'] === 'string' ? src['accountKey'] : null,

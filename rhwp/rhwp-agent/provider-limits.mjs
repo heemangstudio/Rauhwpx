@@ -18,7 +18,7 @@ const OUTCOMES = { reset: 'reset', nothing_to_reset: 'nothingToReset', no_credit
 const runFile = promisify(execFile);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const blankWindow = () => ({ percent: null, resetsAt: null });
-const blankQuota = () => ({ status: 'unavailable', session: blankWindow(), week: blankWindow(), updatedAt: null, error: null, accountKey: null, planType: null, resetCredits: null });
+const blankQuota = () => ({ status: 'unavailable', session: blankWindow(), week: blankWindow(), month: blankWindow(), updatedAt: null, error: null, accountKey: null, planType: null, resetCredits: null });
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 function timestamp(value) {
@@ -34,13 +34,14 @@ function windowQuota(value, camel = false) {
   return { percent: Math.min(100, Math.max(0, percent)), resetsAt: timestamp(camel ? value.resetsAt : value.resets_at ?? value.reset_at) };
 }
 
+// Codex CLI 와 같은 기준으로 창 길이를 나눈다. 무료 계정은 30일 창 하나만 보낸다.
 function codexWindows(primary, secondary, camel = false) {
-  const result = { session: blankWindow(), week: blankWindow() };
+  const result = { session: blankWindow(), week: blankWindow(), month: blankWindow() };
   for (const [index, value] of [primary, secondary].entries()) {
     if (!value) continue;
     const minutes = camel ? value.windowDurationMins : value.limit_window_seconds / 60;
-    const key = Math.abs(minutes - 10080) <= 1 ? 'week'
-      : Math.abs(minutes - 300) <= 1 ? 'session' : index === 0 ? 'session' : 'week';
+    const key = !Number.isFinite(minutes) || minutes <= 0 ? (index === 0 ? 'session' : 'week')
+      : minutes <= 1440 + 3 ? 'session' : minutes <= 10080 + 3 ? 'week' : 'month';
     if (result[key].percent === null) result[key] = windowQuota(value, camel);
   }
   return result;
@@ -259,7 +260,7 @@ export function createProviderLimitsClient({
           auth = renewed;
           body = await readUsage();
         }
-        result = { session: windowQuota(body.five_hour), week: windowQuota(body.seven_day), planType: auth.planType, resetCredits: null };
+        result = { session: windowQuota(body.five_hour), week: windowQuota(body.seven_day), month: blankWindow(), planType: auth.planType, resetCredits: null };
       } else {
         let rpc = null;
         try { rpc = await codexRpc({ bin: getCodexBin(), env: { ...auth.env, CODEX_HOME: auth.home }, homeDir, timeoutMs }); } catch {}
@@ -273,11 +274,11 @@ export function createProviderLimitsClient({
         auth = afterRpc;
         const windows = codexWindows(rpc?.rateLimits?.primary, rpc?.rateLimits?.secondary, true);
         result = { ...windows, planType: rpc?.rateLimits?.planType ?? null, resetCredits: resetCredits(rpc?.rateLimitResetCredits) };
-        if (result.session.percent === null || result.week.percent === null) {
+        if (result.month.percent === null && (result.session.percent === null || result.week.percent === null)) {
           try {
             const body = await request(`${CODEX_API}/usage`, codexHeaders(auth));
             const httpWindows = codexWindows(body.rate_limit?.primary_window, body.rate_limit?.secondary_window);
-            for (const key of ['session', 'week']) if (result[key].percent === null) result[key] = httpWindows[key];
+            for (const key of ['session', 'week', 'month']) if (result[key].percent === null) result[key] = httpWindows[key];
             result.planType = body.plan_type ?? result.planType;
             result.resetCredits = resetCredits(body.rate_limit_reset_credits) ?? result.resetCredits;
           } catch (error) { if (result.session.percent === null && result.week.percent === null) throw error; }
@@ -286,7 +287,7 @@ export function createProviderLimitsClient({
           try { result.resetCredits = resetCredits(await request(`${CODEX_API}/rate-limit-reset-credits`, codexHeaders(auth))) ?? result.resetCredits; } catch {}
         }
       }
-      if (result.session.percent === null && result.week.percent === null) throw failure('PROVIDER_INVALID_RESPONSE', 'This account does not report subscription usage limits.');
+      if ([result.session, result.week, result.month].every((window) => window.percent === null)) throw failure('PROVIDER_INVALID_RESPONSE', 'This account does not report subscription usage limits.');
       const activeAuth = await credentials(provider);
       if (!activeAuth || activeAuth.accountKey !== auth.accountKey) {
         auth = activeAuth;

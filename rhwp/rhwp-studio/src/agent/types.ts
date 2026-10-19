@@ -648,6 +648,8 @@ export interface ProviderQuota {
   status: 'ok' | 'unavailable' | 'error';
   session: QuotaWindow;
   week: QuotaWindow;
+  /** Codex 무료 계정처럼 30일 창을 쓰는 계정만 채워진다. */
+  month: QuotaWindow;
   updatedAt: number | null;
   error: string | null;
   accountKey: string | null;

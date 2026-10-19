@@ -68,12 +68,12 @@ export function createFixtures() {
   usage.limits = {
     claude: {
       status: 'ok', session: { percent: 24, resetsAt: now + 3600000 },
-      week: { percent: 72, resetsAt: now + 86400000 }, updatedAt: now,
+      week: { percent: 72, resetsAt: now + 86400000 }, month: { percent: null, resetsAt: null }, updatedAt: now,
       error: null, accountKey: 'preview-claude', planType: 'Pro', resetCredits: null,
     },
     codex: {
       status: 'ok', session: { percent: 92, resetsAt: now + 7200000 },
-      week: { percent: 42, resetsAt: now + 172800000 }, updatedAt: now,
+      week: { percent: 42, resetsAt: now + 172800000 }, month: { percent: null, resetsAt: null }, updatedAt: now,
       error: null, accountKey: 'preview-codex', planType: 'Plus',
       resetCredits: { availableCount: 2, nextExpiresAt: now + 604800000 },
     },
@@ -89,6 +89,12 @@ export function createFixtures() {
   }
   if (quotaScenario === 'empty') usage.limits.codex.resetCredits!.availableCount = 0;
   if (quotaScenario === 'pro') usage.limits.codex.planType = 'Pro';
+  if (quotaScenario === 'free') {
+    Object.assign(usage.limits.codex, {
+      planType: 'free', session: { percent: null, resetsAt: null }, week: { percent: null, resetsAt: null },
+      month: { percent: 5, resetsAt: now + 29 * 86400000 }, resetCredits: { availableCount: 0, nextExpiresAt: null },
+    });
+  }
   const pi: T.PiStatus = {
     installed: true,
     installing: false,
