@@ -1,23 +1,8 @@
 name: Production dependencies
 
 # Installs the real packaged dependencies on every desktop platform and audits them.
-# Runs nightly (nightly.yml) and on pull requests that change a lock, a manifest or packaging.
+# Runs nightly (nightly.yml); release.yml audits again before publishing.
 on:
-  pull_request:
-    paths:
-      - package.json
-      - package-lock.json
-      - rhwp/rhwp-agent/package.json
-      - rhwp/rhwp-agent/package-lock.json
-      - rhwp/rhwp-studio/package.json
-      - rhwp/rhwp-studio/package-lock.json
-      - site-api/package.json
-      - site-api/package-lock.json
-      - build/**
-      - scripts/audit-production.mjs
-      - scripts/verify-production-dependencies.mjs
-      - scripts/verify-keyring-binding.mjs
-      - .github/workflows/dependencies.yml
   workflow_call:
   workflow_dispatch:
 
@@ -32,13 +17,13 @@ jobs:
       matrix:
         include:
           - os: macos-15
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
             architecture: arm64
           - os: windows-latest
-            runner: blacksmith-2vcpu-windows-2025
+            runner: windows-2025
             architecture: x64
           - os: ubuntu-24.04
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             architecture: x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -52,6 +37,7 @@ jobs:
             /*
             !/rhwp/pdf/
             !/rhwp/pdf-large/
+            !/rhwp/samples/
       - uses: actions/setup-node@v5
         with:
           node-version: 22.23.3

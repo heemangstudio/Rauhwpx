@@ -60,10 +60,10 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 | Studio unit | `npm --prefix rhwp/rhwp-studio test` | App |
 | Hub | `node --test rhwp/rhwp-agent/tests/*.test.mjs` | App |
 | Desktop | `npm run test:desktop` | App, Session tests (macOS, Windows) |
-| Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | Browser |
+| Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | nightly only |
 | Sidebar | `npm run test:sidebar` | nightly only |
 
-PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the corpus sweeps, Skia rendering, cargo and npm audits, and the 3-OS production dependency check.
+PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the browser and smoke flows, doc tests, corpus sweeps, Skia rendering, cargo and npm audits, and the 3-OS production dependency check. All workflows run on GitHub-hosted runners.
 
 ## Rust engine (from `rhwp/`)
 

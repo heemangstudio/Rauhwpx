@@ -28,7 +28,7 @@ concurrency:
 jobs:
   wasm:
     name: WASM package
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -48,7 +48,7 @@ jobs:
 
   engine:
     name: Engine build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5

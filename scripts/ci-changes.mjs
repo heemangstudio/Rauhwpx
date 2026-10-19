@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 // Checks a path can select. `app` is one job whose steps run per part.
 export const APP_PARTS = ['studio', 'hub', 'desktop', 'site', 'extensions'];
-const JOBS = ['engine', 'browser', 'sessions', 'docs'];
+const JOBS = ['engine', 'sessions'];
 const ALL = [...JOBS, ...APP_PARTS];
 
 // First matching rule wins. A path no rule matches runs every check, so new
@@ -15,33 +15,28 @@ const RULES = [
   [/^rhwp\/(?:docs|pdf|pdf-large|bindings|typescript|rhwp-vscode|scripts)\//, []],
   [/^rhwp\/tools\/(?!rhwp-subsecond\/)/, []],
   [/(?:^|\/)(?:LICENSE[^/]*|THIRD_PARTY_LICENSES\.md|CHANGELOG\.md|SECURITY\.md)$/, []],
-  // Publish docs, website and the tool list the docs must not hardcode.
-  [/(?:^|\/)(?:README[^/]*|CONTRIBUTING|AGENTS|CLAUDE|DESIGN|PRODUCT|PRIVACY|DEVELOPER_GUIDE)\.md$/, ['docs']],
+  // Publish docs and the website are checked at release and before the Pages deploy.
+  [/(?:^|\/)(?:README[^/]*|CONTRIBUTING|AGENTS|CLAUDE|DESIGN|PRODUCT|PRIVACY|DEVELOPER_GUIDE)\.md$/, []],
   // site-api tests check every image the emails link ships here.
-  [/^website\/assets\/email\//, ['docs', 'site']],
-  [/^website\/|^scripts\/check-publish-docs/, ['docs']],
-  [/^rhwp\/rhwp-agent\/tools\.mjs$/, ['docs', 'hub', 'studio', 'browser', 'sessions']],
-  // Engine: WASM inputs rebuild rhwp/pkg for the browser job; fixtures are also read by Studio tests.
-  [/^rhwp\/(?:src\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|build\.rs$|\.cargo\/)/, ['engine', 'browser']],
-  [/^rhwp\/(?:samples|saved|ttfs|assets)\//, ['engine', 'browser', 'studio']],
+  [/^website\/assets\/email\//, ['site']],
+  [/^website\//, []],
+  // Engine: Studio builds rhwp/pkg from these and runs its tests on the real engine.
+  [/^rhwp\/(?:src\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|build\.rs$|\.cargo\/)/, ['engine', 'studio']],
+  [/^rhwp\/(?:samples|saved|ttfs|assets)\//, ['engine', 'studio']],
   [/^rhwp\/(?:tests|fuzz|\.config|tools\/rhwp-subsecond)\/|^rhwp\/rustfmt\.toml$/, ['engine']],
-  // Owned browser behavior needs the real Chromium + Studio research flow.
-  [/^rhwp\/rhwp-agent\/server\.mjs$/, ['hub', 'studio', 'browser', 'sessions']],
-  [/^desktop\/browser-[^/]+$/, ['desktop', 'hub', 'studio', 'browser', 'sessions']],
-  [/^rhwp\/rhwp-agent\/(?:owned-browser[^/]*\.mjs|browser-[^/]*\.mjs|download-manager\.mjs|project-ingest\.mjs|tests\/(?:owned-browser|browser-|download-manager|project-ingest)[^/]*\.test\.mjs)$/, ['hub', 'studio', 'browser', 'sessions']],
   // Hub tests read Studio's tool executor; Studio tests import hub modules.
-  [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub', 'browser']],
+  [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub']],
   [/^rhwp\/rhwp-studio\/tests\/desktop-/, ['studio', 'sessions']],
-  [/^rhwp\/rhwp-studio\//, ['studio', 'browser']],
+  [/^rhwp\/rhwp-studio\//, ['studio']],
   // Studio `npm test` runs the npm/editor tests.
   [/^rhwp\/npm\//, ['studio']],
   [/^rhwp\/rhwp-agent\//, ['hub', 'studio', 'sessions']],
   // Root tests, packaging script tests, Studio desktop-* tests and the hub all import desktop modules.
   [/^(?:desktop|tests)\//, ['desktop', 'studio', 'hub', 'sessions']],
   [/^site-api\//, ['site']],
-  // The desktop and hub font index uses rhwp-shared/fonts.
-  [/^rhwp\/rhwp-shared\/fonts\//, ['extensions', 'browser', 'desktop', 'hub', 'sessions']],
-  [/^rhwp\/rhwp-shared\//, ['extensions', 'browser']],
+  // Studio, the desktop and the hub font index use rhwp-shared/fonts.
+  [/^rhwp\/rhwp-shared\/fonts\//, ['extensions', 'studio', 'desktop', 'hub', 'sessions']],
+  [/^rhwp\/rhwp-shared\//, ['extensions', 'studio']],
   [/^rhwp\/rhwp-(?:chrome|firefox|safari)\//, ['extensions']],
 ];
 

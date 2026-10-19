@@ -17,7 +17,7 @@ concurrency:
 jobs:
   rust-tests:
     name: Rust tests
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -39,7 +39,7 @@ jobs:
           fallback: none
       - name: Test Rust workspace in parallel
         working-directory: rhwp
-        run: cargo nextest run --locked --workspace --test-threads 8
+        run: cargo nextest run --locked --workspace
       - name: Test Rust doc examples
         if: ${{ !cancelled() }}
         working-directory: rhwp
@@ -55,7 +55,7 @@ jobs:
 
   cargo-audit:
     name: Cargo audit
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -104,7 +104,7 @@ jobs:
 
   app:
     name: App
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -142,6 +142,11 @@ jobs:
       - name: Install managed Chromium for hub behavioral tests
         if: ${{ !cancelled() }}
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+      # prevents the sandboxed managed Chromium from starting.
+      - name: Allow the Chromium sandbox
+        if: ${{ !cancelled() }}
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       - name: Test agent hub
         if: ${{ !cancelled() }}
         run: |
@@ -160,7 +165,7 @@ jobs:
 
   browser:
     name: Browser
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -195,7 +200,7 @@ jobs:
 
   sidebar:
     name: Sidebar preview
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -232,7 +237,7 @@ jobs:
 
   e2e:
     name: Editor smoke flows
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -267,6 +272,10 @@ jobs:
           key: owned-chromium-${{ runner.os }}-${{ hashFiles('rhwp/rhwp-agent/package-lock.json') }}
       - name: Install managed Chromium for owned browser flows
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+      # prevents the sandboxed managed Chromium from starting.
+      - name: Allow the Chromium sandbox
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
       - name: Run owned browser research flows
         run: node rhwp/rhwp-studio/e2e/owned-browser-live.mjs
       - uses: actions/upload-artifact@v4
