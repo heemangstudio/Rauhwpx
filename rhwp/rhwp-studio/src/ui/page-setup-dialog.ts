@@ -78,6 +78,8 @@ export class PageSetupDialog extends ModalDialog {
 
   show(): void {
     super.show(); // build() → createBody() 호출
+    // dialogs.css 의 편집 용지 레이아웃은 이 클래스로 고른다(:has() 는 입력마다 전체 스타일 재계산을 부른다).
+    this.overlay.classList.add('page-setup-overlay');
     this.pageDef = this.wasm.getPageDef(this.sectionIdx);
     this.populateFields();
     // 구역이 여럿이면 현재 구역만 바꾸는 것이 기본이다.

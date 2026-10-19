@@ -159,9 +159,11 @@ function itemParams(el: HTMLElement): Record<string, string> {
 
 export function serializeMenuBar(
   menuBar: HTMLElement,
-  dispatcher: Pick<CommandDispatcher, 'isEnabled'>,
+  dispatcher: Pick<CommandDispatcher, 'enabledChecker'>,
   registry: Pick<CommandRegistry, 'get'>,
 ): NativeMenuModel {
+  // 항목 이백여 개가 같은 편집 상태를 묻는다. 컨텍스트는 한 번만 만든다.
+  const isEnabled = dispatcher.enabledChecker();
   const entries = (parent: Element | null | undefined): NativeMenuEntry[] => {
     const out: NativeMenuEntry[] = [];
     for (const child of Array.from(parent?.children ?? [])) {
@@ -187,7 +189,7 @@ export function serializeMenuBar(
         out.push({
           id: encodeMenuCommandId(cmd, itemParams(child)),
           label,
-          enabled: dispatcher.isEnabled(cmd),
+          enabled: isEnabled(cmd),
           ...(checked ? { checked } : {}),
           ...(child.getAttribute('role') === 'menuitemradio' ? { radio: true } : {}),
           ...(accelerator ? { accelerator } : {}),

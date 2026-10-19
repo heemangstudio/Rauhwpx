@@ -6,7 +6,8 @@ interface TableRibbonMenu {
 }
 
 export interface TableRibbonMenusController {
-  refresh(): void;
+  /** 항목 활성 상태를 다시 계산한다. 호출하는 쪽이 이미 만든 컨텍스트로 묻는 판별기를 넘길 수 있다. */
+  refresh(enabled?: (cmd: string) => boolean): void;
   closeAll(): void;
   destroy(): void;
 }
@@ -65,14 +66,18 @@ export function setupTableRibbonMenus(
     menu.panel.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`;
   };
 
-  const refresh = (): void => {
+  // 열린 패널을 단추 옆에 다시 붙이거나, 단추가 사라졌으면 닫는다.
+  const reposition = (): void => {
+    if (!openMenu) return;
+    if (!openMenu.trigger.getClientRects().length) close(false);
+    else position(openMenu);
+  };
+
+  const refresh = (enabled: (cmd: string) => boolean = isEnabled): void => {
     for (const menu of menus) {
-      for (const item of menu.items) item.disabled = !isEnabled(item.dataset.cmd ?? '');
+      for (const item of menu.items) item.disabled = !enabled(item.dataset.cmd ?? '');
     }
-    if (openMenu) {
-      if (!openMenu.trigger.getClientRects().length) close(false);
-      else position(openMenu);
-    }
+    reposition();
   };
 
   const open = (menu: TableRibbonMenu, focusItem: 'first' | 'last' | null): void => {
@@ -220,8 +225,9 @@ export function setupTableRibbonMenus(
   toolbar.addEventListener('focusout', onFocusOut);
   document.addEventListener('pointerdown', onOutsidePointerDown, true);
   window.addEventListener('keydown', onEscape, true);
-  window.addEventListener('resize', refresh);
-  window.addEventListener('scroll', refresh, true);
+  // 스크롤·창 크기 변경은 명령 상태를 바꾸지 않는다. 활성 상태는 command-state-changed 와 열 때 갱신한다.
+  window.addEventListener('resize', reposition);
+  window.addEventListener('scroll', reposition, true);
   refresh();
 
   return {
@@ -236,8 +242,8 @@ export function setupTableRibbonMenus(
       toolbar.removeEventListener('focusout', onFocusOut);
       document.removeEventListener('pointerdown', onOutsidePointerDown, true);
       window.removeEventListener('keydown', onEscape, true);
-      window.removeEventListener('resize', refresh);
-      window.removeEventListener('scroll', refresh, true);
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
     },
   };
 }

@@ -447,7 +447,8 @@ export class ParaShapeDialog {
 
     headTypes.forEach(([val, label]) => {
       const row = document.createElement('div');
-      row.className = 'dialog-row';
+      // 수준 드롭다운이 붙는 개요 줄은 일반 높이를 유지한다.
+      row.className = val === 'Outline' ? 'dialog-row' : 'dialog-row ps-choice-row';
       row.style.padding = '1px 0';
       const lbl = document.createElement('label');
       lbl.className = 'dialog-radio-group';
@@ -476,7 +477,7 @@ export class ParaShapeDialog {
 
     // ── 기타 섹션
     const etcSection = document.createElement('div');
-    etcSection.className = 'dialog-section';
+    etcSection.className = 'dialog-section ps-checkbox-grid';
     const etcTitle = document.createElement('div');
     etcTitle.className = 'dialog-section-title';
     etcTitle.textContent = '기타';
@@ -484,7 +485,7 @@ export class ParaShapeDialog {
 
     const makeCb = (label: string): HTMLInputElement => {
       const row = document.createElement('div');
-      row.className = 'dialog-row';
+      row.className = 'dialog-row ps-choice-row ps-checkbox-row';
       row.style.padding = '1px 0';
       const lbl = document.createElement('label');
       lbl.className = 'dialog-checkbox';

@@ -52,7 +52,13 @@ export function createWorktreeChip(): HTMLSpanElement {
   return chip;
 }
 
+/** 칩마다 마지막으로 그린 상태. 입력마다 같은 값으로 다시 그리면 스타일 재계산만 늘어난다. */
+const paintedChips = new WeakMap<HTMLElement, string>();
+
 export function paintWorktreeChip(chip: HTMLElement, identity: WorktreeIdentity | null): void {
+  const key = identity ? `${identity.branch}\n${identity.color}\n${worktreeLabel(identity)}` : '';
+  if (paintedChips.get(chip) === key) return;
+  paintedChips.set(chip, key);
   chip.hidden = !identity;
   if (!identity) {
     chip.replaceChildren();

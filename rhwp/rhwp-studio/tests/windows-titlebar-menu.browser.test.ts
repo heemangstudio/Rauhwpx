@@ -27,7 +27,7 @@ test('Windows compact menus dispatch commands and return keyboard focus on dismi
       const commands: string[] = [];
       Object.assign(window, { menuCommands: commands });
       new MenuBar(document.querySelector('#menu-bar')!, {} as any,
-        { isEnabled: (id: string) => id !== 'file:save', dispatch: (id: string) => commands.push(id) } as any,
+        { enabledChecker: () => (id: string) => id !== 'file:save', dispatch: (id: string) => commands.push(id) } as any,
         { get: () => undefined } as any);
     });
     const hidden = () => page.$eval('.desktop-document-menus', e => (e as HTMLElement).hidden);

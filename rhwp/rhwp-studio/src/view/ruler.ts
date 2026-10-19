@@ -41,7 +41,10 @@ export class Ruler {
   /** 마지막으로 그린 축별 입력 키. 스크롤 프레임에서 입력이 같으면 그리기를 생략한다. */
   private lastHKey = '';
   private lastVKey = '';
-  /** getComputedStyle 은 스타일 재계산을 유발하므로 테마·문서 변경 때만 다시 읽는다. */
+  /**
+   * getComputedStyle 은 스타일 재계산을 유발하므로 테마가 바뀔 때만 다시 읽는다.
+   * --ruler-* 는 테마 프리셋·강조색·색 구성으로만 바뀌고, 그 길은 모두 applyTheme → theme-changed 를 지난다.
+   */
   private cachedPalette: RulerPalette | null = null;
 
   /** 현재 커서 문단의 왼쪽 여백 (px, zoom=1 기준) */
@@ -189,7 +192,6 @@ export class Ruler {
     this.syncCanvasSize(dpr);
     const force = this.forceRedraw;
     this.forceRedraw = false;
-    if (force) this.cachedPalette = null;
 
     // 축별로 그림을 결정하는 입력만 모은다. 세로 스크롤 중에는 가로 눈금자가,
     // 가로 팬 중에는 세로 눈금자가 그대로이므로 다시 그리지 않는다.

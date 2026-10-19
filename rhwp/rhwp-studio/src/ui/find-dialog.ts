@@ -67,6 +67,7 @@ export class FindDialog {
   private replaceInput!: HTMLInputElement;
   private caseSensitiveCheck!: HTMLInputElement;
   private replaceRow!: HTMLDivElement;
+  private findButtonRow!: HTMLDivElement;
   private replaceButtonRow!: HTMLDivElement;
   private statusLabel!: HTMLSpanElement;
   private titleLabel!: HTMLSpanElement;
@@ -202,6 +203,7 @@ export class FindDialog {
     // 버튼 행
     const btnRow = document.createElement('div');
     btnRow.className = 'find-dialog-buttons';
+    this.findButtonRow = btnRow;
 
     const prevBtn = this.createButton('이전 찾기', () => this.findPrev());
     const nextBtn = this.createButton('다음 찾기', () => this.findNext());
@@ -278,6 +280,8 @@ export class FindDialog {
     this.titleLabel.textContent = isReplace ? '찾아 바꾸기' : '찾기';
     this.replaceRow.style.display = isReplace ? '' : 'none';
     this.replaceButtonRow.style.display = isReplace ? '' : 'none';
+    // 바꾸기 버튼 줄이 보이면 찾기 버튼 줄을 바로 위에 붙인다(find-dialog.css).
+    this.findButtonRow.classList.toggle('find-dialog-buttons--joined', isReplace);
   }
 
   private doSearch(forward: boolean): void {
