@@ -136,3 +136,34 @@ test('admin page: gift amounts reach the admin API with only keyId and amountUsd
     ['/v1/admin/licenses/issue-beta', 'Bearer admin-secret', { name: 'T', giftUsd: 3 }],
   ]);
 });
+
+test('admin page: customer, device, renewal and attention routes forward only their fields, with issue and extend pinned to one emailed year', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const port = await listen(t, createAdminUiServer({ port: 0, base: upstream.base, envToken: 'admin-secret', keychain: { read: async () => '' } }));
+  const session = (await request(port)).text.match(/name="admin-session" content="([^"]+)"/)[1];
+  const headers = { 'X-Admin-Session': session, 'Content-Type': 'application/json' };
+  const extra = { merchantUid: 'm_x', note: 'n', until: '2099-01-01', years: 10, sendEmail: false, reason: 'r', tier: 'beta' };
+  const calls = [
+    ['GET', '/api/customers?email=a@b.c'],
+    ['GET', '/api/attention?kind=rejected'],
+    ['POST', '/api/issue', { email: 'buyer@example.com', ...extra }],
+    ['POST', '/api/extend', { keyId: 'lic_1', ...extra }],
+    ['POST', '/api/resend-email', { keyId: 'lic_1', email: 'fixed@example.com', ...extra }],
+    ['POST', '/api/remove-device', { keyId: 'lic_1', deviceId: 'device-1', ...extra }],
+    ['POST', '/api/release', { merchantUid: 'm_1', keyId: 'lic_1', amount: 1 }],
+    ['POST', '/api/apply-renewal', { merchantUid: 'm_2', keyId: 'lic_1', until: '2099-01-01', years: 10 }],
+    ['POST', '/api/ack', { id: 'wh_1', merchantUid: 'm_3', status: 'issued' }],
+  ];
+  for (const [method, path, body] of calls) assert.equal((await request(port, { method, path, headers, body })).status, 200, path);
+  assert.deepEqual(upstream.calls.map((c) => [c.method, c.url, c.body]), [
+    ['GET', '/v1/admin/licenses/customers', null],
+    ['GET', '/v1/admin/attention', null],
+    ['POST', '/v1/admin/licenses/issue', { email: 'buyer@example.com', sendEmail: true, years: 1 }],
+    ['POST', '/v1/admin/licenses/extend', { keyId: 'lic_1', years: 1 }],
+    ['POST', '/v1/admin/licenses/resend-email', { keyId: 'lic_1', email: 'fixed@example.com' }],
+    ['POST', '/v1/admin/licenses/remove-device', { keyId: 'lic_1', deviceId: 'device-1' }],
+    ['POST', '/v1/admin/orders/release', { merchantUid: 'm_1' }],
+    ['POST', '/v1/admin/orders/apply-renewal', { merchantUid: 'm_2', keyId: 'lic_1' }],
+    ['POST', '/v1/admin/attention/ack', { id: 'wh_1', merchantUid: 'm_3' }],
+  ]);
+});

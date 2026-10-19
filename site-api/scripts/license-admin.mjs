@@ -10,6 +10,11 @@
 //   node scripts/license-admin.mjs orders [--status held|issued|refunded]
 //   node scripts/license-admin.mjs webhooks [--rejected | --held] [--limit 50]   # recorded webhook rejections and holds
 //   node scripts/license-admin.mjs release --merchant-uid ...          # issue a key for a held order
+//   node scripts/license-admin.mjs apply-renewal --merchant-uid ... --key HAMA-...   # a held renewal onto the buyer's annual key
+//   node scripts/license-admin.mjs attention                          # held orders and events waiting for review
+//   node scripts/license-admin.mjs ack --id wh_... | --merchant-uid ...   # dismiss one of them
+//   node scripts/license-admin.mjs customers                          # paid keys with term, devices and email delivery
+//   node scripts/license-admin.mjs remove-device --key-id lic_... --device-id ...   # free one device, keep the others
 //   node scripts/license-admin.mjs revoke --key HAMA-... | --merchant-uid ... [--reason "..."]
 //   node scripts/license-admin.mjs restore --key HAMA-...
 //   node scripts/license-admin.mjs reset-devices --key HAMA-...
@@ -50,12 +55,17 @@ const posts = {
   'resend-email': '/v1/admin/licenses/resend-email',
   extend: '/v1/admin/licenses/extend',
   release: '/v1/admin/orders/release',
+  'apply-renewal': '/v1/admin/orders/apply-renewal',
+  ack: '/v1/admin/attention/ack',
+  'remove-device': '/v1/admin/licenses/remove-device',
   'gift-disable': '/v1/admin/gifts/disable',
   'gift-amount': '/v1/admin/gifts/amount',
 };
 const gets = {
   lookup: '/v1/admin/licenses',
   betas: '/v1/admin/licenses/betas',
+  customers: '/v1/admin/licenses/customers',
+  attention: '/v1/admin/attention',
   orders: '/v1/admin/orders',
   webhooks: '/v1/admin/webhooks',
   gifts: '/v1/admin/gifts',
@@ -84,7 +94,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|lookup|orders|webhooks|release|revoke|restore|reset-devices|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
