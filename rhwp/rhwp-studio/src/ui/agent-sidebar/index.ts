@@ -396,7 +396,8 @@ export interface AgentSidebarDeps {
    * 알리고, 사용자 말풍선의 되돌리기 버튼이 상태를 읽고 되돌린다. 없으면 버튼이 없다.
    */
   turnRestore?: TurnRestoreControl;
-  navigateToChange?: (position: DocumentPosition, anchor?: DiffItem['rightAnchor']) => void;
+  /** 변경 위치로 캐럿을 옮기고 그 자리를 짚는다. anchor 는 커밋된 변경의 정확한 rect, opId 는 대기 편집 op. */
+  navigateToChange?: (position: DocumentPosition, target?: { anchor?: DiffItem['rightAnchor']; opId?: string }) => void;
   /** 기존 RHWP 문서 이력 대화상자를 연다. */
   openClassicVersionControl?: () => void;
   /**
@@ -4654,7 +4655,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onNavigate: (item) => {
       const location = item.contextOnRight ?? item.path;
       if (location.paragraph === undefined) return;
-      navigateToChange({ sectionIndex: location.section, paragraphIndex: location.paragraph, charOffset: 0 }, item.rightAnchor);
+      navigateToChange(
+        { sectionIndex: location.section, paragraphIndex: location.paragraph, charOffset: 0 },
+        { anchor: item.rightAnchor },
+      );
     },
     onWorkingDiff: (items) => {
       workingDiff = items;
@@ -4676,10 +4680,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     changesRefreshTimer = setTimeout(() => { void changesDrawer.refresh(); }, delay);
   }
 
-  function navigateToChange(position: DocumentPosition, anchor?: DiffItem['rightAnchor']): void {
+  function navigateToChange(
+    position: DocumentPosition,
+    target: { anchor?: DiffItem['rightAnchor']; opId?: string } = {},
+  ): void {
     if (!deps.navigateToChange) return;
     const navigate = () => {
-      window.requestAnimationFrame(() => deps.navigateToChange?.(position, anchor));
+      window.requestAnimationFrame(() => deps.navigateToChange?.(position, target));
     };
     if (fullscreen) setFullscreen(false, { then: navigate });
     else navigate();
@@ -11946,7 +11953,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     } : null;
     if (position && canNavigate && deps.navigateToChange) {
       const jump = createJumpButton(`${entry.dataset.location ?? '문단'}으로 이동`, 'ag-changes-jump');
-      jump.addEventListener('click', () => navigateToChange(position));
+      jump.addEventListener('click', () => navigateToChange(position, { opId: op.id }));
       entry.append(jump);
     }
     return entry;

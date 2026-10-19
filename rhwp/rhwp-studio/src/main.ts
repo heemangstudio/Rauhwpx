@@ -2254,12 +2254,12 @@ function installChatAgent(
       },
       subscribe: (listener) => session.turnCheckpoints.subscribe(listener),
     },
-    navigateToChange: (position, anchor) => {
+    navigateToChange: (position, target) => {
       if (!shown()) return;
-      if (anchor && position.cellIndex === undefined) {
-        position = { ...position, cursorRect: { ...anchor } };
-      }
-      editor.moveCursorTo(position);
+      const anchor = position.cellIndex === undefined ? target?.anchor : undefined;
+      if (anchor) position = { ...position, cursorRect: { ...anchor } };
+      if (!editor.moveCursorTo(position)) return;
+      bridge.flashJumpTarget({ opId: target?.opId, rect: anchor });
     },
     openClassicVersionControl: () => openClassicDocumentHistory(commandServices),
     getDocumentContext: () => {
