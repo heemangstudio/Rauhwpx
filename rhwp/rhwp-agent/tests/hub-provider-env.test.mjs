@@ -26,9 +26,10 @@ const DEV_TOKEN = 'hub-dev-master-PLANTED0123';
 
 /**
  * A Claude CLI for the Agent SDK transport: it answers the SDK's control
- * requests, starts the rhwp MCP server from `--mcp-config` the way Claude Code
- * does (its own environment plus the config's `env`), calls one tool through
- * it and writes what it saw to `reportPath`.
+ * requests, reaches the rhwp MCP server from `--mcp-config` the way Claude Code
+ * does (Streamable HTTP with the config's headers, or a stdio child with its
+ * own environment plus the config's `env`), calls one tool through it and
+ * writes what it saw to `reportPath`.
  */
 function fakeClaudeSource(reportPath) {
   return `
@@ -45,7 +46,35 @@ const rhwpEnv = (env) => Object.fromEntries(Object.entries(env).filter(([name]) 
 const raw = valueOf('--mcp-config');
 const server = raw ? JSON.parse(raw.trim().startsWith('{') ? raw : fs.readFileSync(raw, 'utf8')).mcpServers.rhwp : null;
 
+async function callHttpTool() {
+  let mcpSession;
+  const post = async (message) => {
+    const response = await fetch(server.url, {
+      method: 'POST',
+      headers: {
+        ...server.headers,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...(mcpSession ? { 'mcp-session-id': mcpSession } : {}),
+      },
+      body: JSON.stringify(message),
+    });
+    mcpSession ??= response.headers.get('mcp-session-id') ?? undefined;
+    const text = await response.text();
+    if (message.id === undefined) return undefined;
+    const frames = (response.headers.get('content-type') ?? '').includes('text/event-stream')
+      ? text.split('
+').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+      : [JSON.parse(text)];
+    return frames.find((frame) => frame.id === message.id);
+  };
+  await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code', version: '2.1.235' } } });
+  await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  return post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_document_info', arguments: {} } });
+}
+
 async function callTool() {
+  if (server.url) return callHttpTool();
   const mcp = spawn(server.command, server.args || [], { env: { ...process.env, ...(server.env || {}) }, stdio: ['pipe', 'pipe', 'inherit'] });
   const pending = new Map();
   createInterface({ input: mcp.stdout }).on('line', (line) => {
@@ -72,7 +101,7 @@ async function runTurn() {
   const tool = await callTool();
   fs.writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({
     provider: rhwpEnv(process.env),
-    mcpConfigToken: server.env.RHWP_AGENT_TOKEN,
+    mcpConfigToken: server.url ? String(server.headers.Authorization).replace(/^Bearer /, '') : server.env.RHWP_AGENT_TOKEN,
     tool,
   }));
   emit({ type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'checked' }] } });
