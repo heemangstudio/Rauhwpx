@@ -865,28 +865,6 @@
   margin: 8px 0 0;
 }
 
-/* 받은 문서 병합: 기록이 꺼져 있어도 패널 바닥에 남는다. */
-.ag-versions-merge-bar {
-  flex-shrink: 0;
-  margin-top: auto;
-  padding: 8px 12px;
-  border-top: 1px solid var(--version-rule);
-}
-
-.ag-versions-merge-received {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.ag-versions-merge-bar + .ag-versions-footer {
-  border-top: 0;
-  padding-top: 2px;
-}
-
-
 .ag-versions-footer {
   display: grid;
   grid-template-columns: 1fr auto;

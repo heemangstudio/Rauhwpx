@@ -473,7 +473,8 @@ function requestImportConfirmation(options: ImportConfirmOptions): {
       finish(null);
     });
 
-    (document.querySelector<HTMLElement>('.ag-root:not(.ag-collapsed)') ?? document.body).appendChild(overlay);
+    // 상태 바에서 열면 사이드바가 접혀 있을 수 있다. 사이드바 색 변수를 받도록 그 안에 붙인다.
+    (document.querySelector<HTMLElement>('.ag-root:not(.ag-collapsed)') ?? document.querySelector<HTMLElement>('.ag-root') ?? document.body).appendChild(overlay);
     overlay.showModal();
     const first = nameInput ?? baseSelect ?? confirm;
     first.focus();
@@ -498,6 +499,21 @@ function importBranchName(fileName: string, existing: readonly string[]): string
     const candidate = `${cleaned}-${index}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
+}
+
+/**
+ * 받은 문서를 골라 현재 브랜치에 병합한다. 기록이 꺼져 있으면 켜고, 바이트가 같은 커밋이 있으면 기준 버전은 묻지
+ * 않는다. 취소하면 아무것도 하지 않는다.
+ */
+export async function mergeReceivedDocument(controller: VersionManagerController): Promise<void> {
+  if (!controller.getState().enabled) await controller.enable();
+  const file = await controller.pickExternalDocument();
+  if (!file) return;
+  const base = await controller.detectImportBase(file);
+  const baseCommitId = base.exactCommitId
+    ?? (await requestImportConfirmation({ mode: 'merge', file, base }).promise)?.baseCommitId;
+  if (!baseCommitId) return;
+  await controller.importExternal(file.bytes, { fileName: file.fileName, baseCommitId });
 }
 
 function formatBytes(value: number): string {
@@ -890,14 +906,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   recoveryPanel.hidden = true;
   body.append(recoveryPanel);
 
-  // 받은 문서 병합은 버전 기록이 꺼져 있어도 보인다. 누르면 기록을 켠다.
-  const mergeBar = el('div', 'ag-versions-merge-bar');
-  const mergeReceivedButton = el('button', 'ag-versions-secondary ag-versions-merge-received');
-  mergeReceivedButton.type = 'button';
-  mergeReceivedButton.dataset.versionEnable = 'true';
-  mergeReceivedButton.append(createIcon('documentAdd'), el('span', '', '받은 문서 병합'));
-  mergeReceivedButton.addEventListener('click', () => void importReceived('merge'));
-  mergeBar.appendChild(mergeReceivedButton);
   const footer = el('footer', 'ag-versions-footer');
   const storage = el('span', 'ag-versions-storage');
   const aiLabel = el('label', 'ag-versions-ai');
@@ -905,7 +913,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   aiToggle.type = 'checkbox';
   aiLabel.append(aiToggle, document.createTextNode('AI 제목'));
   footer.append(storage, aiLabel);
-  page.append(head, notice, tabs, toolbar, body, mergeBar, footer);
+  page.append(head, notice, tabs, toolbar, body, footer);
 
   let current = controller.getState();
   let tab: VersionTab = 'history';
@@ -974,11 +982,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     });
   }
 
-  /**
-   * 받은 문서를 고르고 기준 버전을 확인한 뒤 브랜치로 가져오거나 현재 브랜치에 병합한다. 바이트가 같은 커밋이
-   * 있으면 병합은 묻지 않고 바로 연다.
-   */
-  async function importReceived(mode: 'merge' | 'branch', openAsWorktree = false): Promise<void> {
+  /** 받은 문서를 고르고 기준 버전과 브랜치 이름을 확인한 뒤 새 브랜치로 가져온다. */
+  async function importReceived(openAsWorktree: boolean): Promise<void> {
     let picked: { file: ExternalDocumentFile; base: ImportBaseView } | null = null;
     await perform(async () => {
       if (!current.enabled) await controller.enable();
@@ -988,33 +993,30 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     });
     if (!picked || !active) return;
     const { file, base } = picked as { file: ExternalDocumentFile; base: ImportBaseView };
+    activeTextPrompt?.cancel();
+    const branches = current.branches.map((branch) => branch.name);
+    const prompt = requestImportConfirmation({
+      mode: 'branch',
+      file,
+      base,
+      defaultBranchName: importBranchName(file.fileName, branches),
+      existingBranches: branches,
+      openAsWorktree,
+    });
+    activeTextPrompt = prompt;
     let choice: ImportConfirmResult | null;
-    if (mode === 'merge' && base.exactCommitId) {
-      choice = { baseCommitId: base.exactCommitId, openAsWorktree: false };
-    } else {
-      activeTextPrompt?.cancel();
-      const branches = current.branches.map((branch) => branch.name);
-      const prompt = requestImportConfirmation({
-        mode,
-        file,
-        base,
-        defaultBranchName: importBranchName(file.fileName, branches),
-        existingBranches: branches,
-        openAsWorktree,
-      });
-      activeTextPrompt = prompt;
-      try {
-        choice = await prompt.promise;
-      } finally {
-        if (activeTextPrompt === prompt) activeTextPrompt = null;
-      }
+    try {
+      choice = await prompt.promise;
+    } finally {
+      if (activeTextPrompt === prompt) activeTextPrompt = null;
     }
-    if (!choice) return;
-    const confirmed = choice;
+    if (!choice?.branchName) return;
+    const confirmed = { ...choice, branchName: choice.branchName };
     await perform(() => controller.importExternal(file.bytes, {
       fileName: file.fileName,
       baseCommitId: confirmed.baseCommitId,
-      ...(confirmed.branchName ? { branchName: confirmed.branchName, openAsWorktree: confirmed.openAsWorktree } : {}),
+      branchName: confirmed.branchName,
+      openAsWorktree: confirmed.openAsWorktree,
     }));
   }
 
@@ -1364,7 +1366,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     button.type = 'button';
     button.dataset.versionMutation = 'true';
     button.append(createIcon('documentAdd'), el('span', '', '받은 문서 가져오기'));
-    button.addEventListener('click', () => void importReceived('branch', asWorktree));
+    button.addEventListener('click', () => void importReceived(asWorktree));
     return button;
   }
 
@@ -1568,7 +1570,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     toolbar.hidden = !available;
     body.hidden = !available;
     footer.hidden = !available;
-    mergeBar.hidden = !current.documentId || !current.saved;
     if (!current.documentId || !current.saved) {
       notice.hidden = false;
       notice.dataset.kind = 'empty';
