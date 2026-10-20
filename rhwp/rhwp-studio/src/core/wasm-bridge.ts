@@ -3661,6 +3661,18 @@ export class WasmBridge {
     return document.shareSnapshot?.(sourceId) ?? document.saveSnapshot();
   }
 
+  /**
+   * sourceId 스냅샷을 공유하는 새 id. shareSnapshot 과 달리 현재 문서가 sourceId 와 다른 상태일 때도
+   * 쓸 수 있도록, 엔진이 공유를 지원하지 않으면 현재 상태를 대신 저장하지 않고 null 을 돌려준다.
+   */
+  shareSnapshotExact(sourceId: number): number | null {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const document = this.doc as HwpDocument & {
+      shareSnapshot?: (id: number) => number;
+    };
+    return typeof document.shareSnapshot === 'function' ? document.shareSnapshot(sourceId) : null;
+  }
+
   restoreSnapshot(id: number): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;

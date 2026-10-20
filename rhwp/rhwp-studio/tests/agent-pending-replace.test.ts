@@ -839,7 +839,11 @@ test('runAtomicBatch: per-op 스냅샷을 생략해 배치 전체에 문서 클�
 
   assert.equal(fake.text(0), 'X bar X baz X');
   assert.equal(saves, 1, '배치 외부 스냅샷 하나만 — 항목별 클론 없음');
-  assert.equal(fake.snapshotCount(), 0, '성공한 배치는 스냅샷을 남기지 않는다 (역연산 폴백 되돌림)');
+  // 배치가 연 set 은 그 스냅샷을 승인용 기준점(첫 변이 직전 문서)으로 넘겨받는다 — op 별 점유는 없다.
+  assert.equal(fake.snapshotCount(), 1, '성공한 배치는 set 기준점 하나만 남긴다');
+  mgr.reject(mgr.getChangeSets()[0].id);
+  assert.equal(fake.text(0), 'foo bar foo baz foo');
+  assert.equal(fake.snapshotCount(), 0, 'set 이 정리되면 기준점도 해제된다');
 });
 
 test('runAtomicBatch: 임의 연산 조합(삽입+교체)의 중간 실패가 통째로 롤백된다', () => {

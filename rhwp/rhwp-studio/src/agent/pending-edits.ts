@@ -289,6 +289,13 @@ function hfFieldMarkers(s: string): string {
 
 type TableTargetOp = Extract<ObjectOp, { tableParaIdx: number }>;
 
+/** set 기준점 스냅샷과, 그것을 잡을 때의 사용자 편집·set 확정 순번 */
+interface SetBaseline {
+  snapshotId: number;
+  userEditSeq: number;
+  settledSetSeq: number;
+}
+
 /** 기존 표를 (tableParaIdx, controlIdx) 로 가리키는 객체 op 인가 */
 function isTableTargetOp(obj: ObjectOp): obj is TableTargetOp {
   return 'tableParaIdx' in obj;
@@ -370,6 +377,18 @@ export class PendingEditManager {
    */
   private directApply = false;
   private templateLocked = false;
+  /**
+   * 마지막 권위 조판(reconcilePreviewLayout) 뒤로 문서가 바뀌지 않았는가. 같은 IR 에 대한
+   * refreshLayout 은 결과가 같으므로, 이 값이 true 면 승인 직전의 재조판을 건너뛴다.
+   * 매니저의 변이 진입점(beginMutation)과 매니저 밖의 문서 변이 이벤트가 지운다.
+   */
+  private layoutReconciled = false;
+  /** 이번 변이 진입점이 잡은, 아직 set 에 붙지 않은 기준점 (첫 op 이 등록되면 그 set 의 것이 된다) */
+  private nextSetBaseline: SetBaseline | null = null;
+  /** set 의 첫 변이 직전 문서 스냅샷 — 승인 때 op 을 되돌리지 않고 before 로 공유한다 */
+  private setBaselines = new Map<PendingChangeSet, SetBaseline & { firstOpSeq: number }>();
+  /** 가장 바깥 원자 배치가 기준점으로 넘긴 롤백 스냅샷 — 배치가 끝날 때까지 배치가 소유한다 */
+  private atomicBaseline: SetBaseline | null = null;
   // 파라미터 프로퍼티 대신 명시적 할당 (node --test strip-only 모드 호환).
   private deps: PendingEditDeps;
 
@@ -380,16 +399,23 @@ export class PendingEditManager {
     // 문서 교체는 dirty 전이 없이도 일어난다(깨끗한 문서 → 깨끗한 문서). 교체 신호마다
     // 인스턴스를 확인해, 이전 문서의 set 이 새 문서의 첫 쓰기와 섞이기 전에 잊는다.
     for (const name of ['document-swapped', 'document-context-changed'] as const) {
-      this.unsubs.push(deps.eventBus.on(name, () => this.syncDocumentInstance()));
+      this.unsubs.push(deps.eventBus.on(name, () => {
+        this.layoutReconciled = false;
+        this.syncDocumentInstance();
+      }));
     }
     this.unsubs.push(deps.eventBus.on('document-mutated', (reason) => {
+      // 'agent-*' 는 매니저 자신이 권위 조판 뒤에 내는 이벤트다. 그 밖의 변이는 조판을 다시 흔든다.
+      const own = typeof reason === 'string' && reason.startsWith('agent-');
+      if (!own) this.layoutReconciled = false;
       // 매니저 자신의 변이는 'agent-*' 이유로 발행되지만, approve 가 부르는
       // InputHandler 경로는 'input-handler-edit' 로 재진입하므로 플래그로도 막는다.
       if (this.selfMutating > 0) return;
-      if (typeof reason === 'string' && reason.startsWith('agent-')) return;
+      if (own) return;
       this.userEditSeq++;
     }));
     this.unsubs.push(deps.eventBus.on('history-jumped', () => {
+      this.layoutReconciled = false;
       // undo/redo 후에는 대기 편집을 유지할 수 없다. 다만 그냥 버리면(R3 위반)
       // 이미 적용된 에이전트 삽입/서식이 승인 절차 없이 문서에 영구히 남으므로,
       // 텍스트 검증을 통과한 op 만 best-effort 로 되돌린 뒤 전부 해제한다.
@@ -484,6 +510,7 @@ export class PendingEditManager {
     text: string,
   ): { changeSetId: string; insertedRange: DocRange } {
     if (text.length === 0) throw new AgentToolError('INVALID_ARGS', 'text must not be empty');
+    this.beginMutation({ baseline: true });
     const splits = text.includes('\n');
     const fixControls = splits
       ? this.trackControls(addr.sectionIdx, addr.paraIdx, addr.paraIdx, addr.cell)
@@ -594,6 +621,8 @@ export class PendingEditManager {
     // 외부 스냅샷이 에러 롤백을 전담하므로 클론 자체를 생략한다. retainSnapshot 이
     // true 면 배치 안에서도 클론을 유지한다 — reject/실패 턴 복원과 approve 의
     // undo 기준(before)이 역연산 폴백으로 서식을 잃지 않게 하기 위해서다.
+    // 스냅샷을 남기지 않는 벌크 교체는 set 기준점을 잡는다 (배치 안이면 배치가 이미 잡았다).
+    this.beginMutation({ baseline: !retainSnapshot });
     let snapshotId: number | null = null;
     if (retainSnapshot || !this.inAtomicBatch) {
       this.deps.editor.prepareSnapshotCapacity?.(1);
@@ -716,6 +745,7 @@ export class PendingEditManager {
       }
     }
     const charShapeRuns = this.tryCaptureCharShapeRuns(range);
+    this.beginMutation({ baseline: true });
     const raw = this.applyFormatRaw(range, format);
     this.parseOkLenient(raw, 'applyCharFormat');
     const appliedCharShapeRuns = charShapeRuns && this.tryCaptureCharShapeRuns(range);
@@ -741,6 +771,7 @@ export class PendingEditManager {
 
   setFieldValue(agent: AgentName, name: string, value: string):
       { changeSetId: string; fieldId: number; oldValue: string; newValue: string } {
+    this.beginMutation({ baseline: true });
     const parsed = this.deps.wasm.setFieldValueByName(name, value);
     if (parsed?.ok !== true) {
       throw new AgentToolError('FIELD_NOT_FOUND',
@@ -785,6 +816,7 @@ export class PendingEditManager {
       snapshotId = wasm.saveSnapshot();
       this.deps.editor.retainExternalSnapshot?.();
     }
+    this.beginMutation({ baseline: snapshotId === null });
     const dimsBefore = this.tableDims(obj);
     // 구조 op 은 flat cellIdx 를 다시 매긴다 — 이 표 셀을 가리키는 앞선 pending op 이
     // 있으면 적용 전 셀 앵커(행, 열)를 읽어 두었다가 적용 후 주소를 옮긴다.
@@ -865,6 +897,7 @@ export class PendingEditManager {
       );
     }
     const wasm = this.deps.wasm;
+    this.beginMutation();
     this.deps.editor.prepareSnapshotCapacity?.(1);
     const snapshotId = wasm.saveSnapshot();
     this.deps.editor.retainExternalSnapshot?.();
@@ -907,6 +940,7 @@ export class PendingEditManager {
   addEngineBatch<T>(agent: AgentName, methods: string[], run: () => T): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
     const wasm = this.deps.wasm;
     const digestsBefore = this.bodyDigests();
+    this.beginMutation();
     this.deps.editor.prepareSnapshotCapacity?.(1);
     const snapshotId = wasm.saveSnapshot();
     this.deps.editor.retainExternalSnapshot?.();
@@ -999,6 +1033,7 @@ export class PendingEditManager {
     // 롤백이 이전 문서의 op 을 새 문서의 대기 편집으로 되살린다.
     this.syncDocumentInstance();
     const wasm = this.deps.wasm;
+    this.beginMutation();
     const pendingState = this.capturePendingState();
     const setIdsBefore = new Set(this.sets.map((s) => s.id));
     const openBefore = this.open;
@@ -1006,6 +1041,15 @@ export class PendingEditManager {
     const snapId = wasm.saveSnapshot();
     this.deps.editor.retainExternalSnapshot?.();
     const wasAtomic = this.inAtomicBatch;
+    // 열린 set 이 비어 있으면 배치 시작 문서가 곧 그 set 의 첫 변이 직전 문서다. 롤백용
+    // 스냅샷을 기준점으로 넘긴다 — 첫 op 이 등록되면 set 이 소유하고, 아니면 아래에서 버린다.
+    // 배치 안의 op 은 기준점을 새로 잡지 않는다 (롤백이 문서를 배치 시작으로 되돌린다).
+    let batchBaseline: SetBaseline | null = null;
+    if (!wasAtomic && !(this.open && this.open.ops.length > 0)) {
+      batchBaseline = { snapshotId: snapId, userEditSeq: this.userEditSeq, settledSetSeq: this.settledSetSeq };
+      this.nextSetBaseline = batchBaseline;
+      this.atomicBaseline = batchBaseline;
+    }
     const textInsertedBefore = this.bulkTextInserted.length;
     this.inAtomicBatch = true;
     this.beginBulk();
@@ -1028,14 +1072,24 @@ export class PendingEditManager {
       this.sets = this.sets.filter((s) => setIdsBefore.has(s.id));
       this.open = openBefore && setIdsBefore.has(openBefore.id) ? openBefore : null;
       this.restorePendingState(pendingState);
+      // 롤백으로 사라진 첫 op 이 받은 바깥 배치 스냅샷은 다시 배치 몫으로 돌린다 — 중첩 배치의
+      // 롤백이 그것을 해제하면 바깥 배치가 실패할 때 문서를 되돌릴 스냅샷이 없다.
+      this.reclaimAtomicBaseline();
+      this.releaseSetBaselines();
       this.emitDocEvents('agent-pending-edit');
       this.syncOverlay();
       this.emitChange({ type: 'ops-changed' });
       if (restored && !wasAtomic) opts?.onRolledBack?.();
       throw err;
     } finally {
-      wasm.discardSnapshot(snapId);
-      this.deps.editor.releaseExternalSnapshot?.();
+      // 기준점이 set 에 붙었으면(또는 이미 해제됐으면) 스냅샷은 더 이상 배치의 것이 아니다.
+      const handedOver = batchBaseline !== null && this.nextSetBaseline !== batchBaseline;
+      if (batchBaseline !== null && this.nextSetBaseline === batchBaseline) this.nextSetBaseline = null;
+      if (!handedOver) {
+        wasm.discardSnapshot(snapId);
+        this.deps.editor.releaseExternalSnapshot?.();
+      }
+      if (batchBaseline !== null) this.atomicBaseline = null;
       this.inAtomicBatch = wasAtomic;
       this.endBulk();
     }
@@ -1157,7 +1211,8 @@ export class PendingEditManager {
     if (set === this.open) this.open = null;
     // 승인 직전에도 현재 IR에서 권위 조판을 다시 만든다. 미리보기 캐시가 어긋난
     // 상태를 after snapshot으로 굳히거나, 승인 뒤에만 우연히 고쳐지는 일을 막는다.
-    this.reconcilePreviewLayout();
+    // 마지막 op 의 재조판 뒤로 문서가 그대로면 결과가 같으므로 다시 돌리지 않는다.
+    if (!this.layoutReconciled) this.reconcilePreviewLayout();
     const { kept, dropped, causes, deferred } = this.partitionDriftedOps(set);
 
     if (kept.length === 0 && dropped.length === 0) {
@@ -1177,7 +1232,9 @@ export class PendingEditManager {
 
     const wasm = this.deps.wasm;
     const cursor = this.deps.editor.getCursorPosition();
-    const previewState = this.capturePendingState();
+    const baselineId = this.approvalBaseline(set, kept, dropped, deferred, userEditSeqNow);
+    // 빠른 경로는 op 을 건드리지 않으므로 되돌림용 사본이 필요 없다.
+    let previewState: Array<{ id: string; ops: PendingOp[] }> | null = null;
     let previewId: number | null = null;
     let beforeId: number | null = null;
     let failed = new Map<string, PendingDropCause>();
@@ -1195,20 +1252,37 @@ export class PendingEditManager {
     let command: PreparedSnapshotCommand | null = null;
 
     try {
-      // preview + before + after 세 id가 잠시 공존한다. 오래된 history snapshot을
-      // 선제 정리해 WASM 저장소의 무통보 축출을 막는다.
-      this.deps.editor.prepareSnapshotCapacity?.(3);
-      // before 캡처를 위해 잠시 되돌리되, 즉시 원본 스냅샷을 복원한다. 텍스트를
-      // 삭제 후 재삽입하지 않으므로 줄/문단/혼합 글자 서식이 미리보기와 동일하다.
-      previewId = wasm.saveSnapshot();
-      retainExternal();
-      if (kept.length > 0) {
+      if (baselineId !== null) {
+        // before + after 두 id 만 새로 생긴다.
+        this.deps.editor.prepareSnapshotCapacity?.(2);
+        // 첫 변이 직전 문서가 곧 모든 op 을 되돌린 before 다. 문서 전체 복원 없이 공유한다.
+        try {
+          beforeId = wasm.shareSnapshotExact(baselineId);
+        } catch (err) {
+          console.warn('[pending-edits] baseline share failed; reverting ops instead', err);
+        }
+        if (beforeId !== null) retainExternal();
+      }
+      if (beforeId !== null) {
+        // 빠른 경로: 문서와 op 은 미리보기 그대로다.
+      } else if (kept.length > 0) {
+        // preview + before + after 세 id가 잠시 공존한다. 오래된 history snapshot을
+        // 선제 정리해 WASM 저장소의 무통보 축출을 막는다.
+        this.deps.editor.prepareSnapshotCapacity?.(3);
+        // before 캡처를 위해 잠시 되돌리되, 즉시 원본 스냅샷을 복원한다. 텍스트를
+        // 삭제 후 재삽입하지 않으므로 줄/문단/혼합 글자 서식이 미리보기와 동일하다.
+        previewState = this.capturePendingState();
+        previewId = wasm.saveSnapshot();
+        retainExternal();
         failed = this.revertAppliedOps(kept, keepPreviewsOf, userEditSeqNow, deferred);
         beforeId = wasm.saveSnapshot();
         retainExternal();
         wasm.restoreSnapshot(previewId);
         this.restorePendingState(previewState);
+        // 복원이 다시 만든 조판은 권위 조판으로 치지 않는다.
+        this.layoutReconciled = false;
       } else {
+        this.deps.editor.prepareSnapshotCapacity?.(2);
         // 전부 드리프트: 미리보기는 사용자 소유이므로 되돌리지 않는다.
         beforeId = wasm.saveSnapshot();
         retainExternal();
@@ -1219,7 +1293,7 @@ export class PendingEditManager {
       beforeId = null; // command가 소유권을 인수했다.
       command.execute(wasm);
       this.settledSetSeq++;
-      wasm.discardSnapshot(previewId);
+      if (previewId !== null) wasm.discardSnapshot(previewId);
       previewId = null;
       this.deps.editor.executeOperation({
         kind: 'record',
@@ -1234,13 +1308,14 @@ export class PendingEditManager {
       if (previewId !== null) {
         try { wasm.restoreSnapshot(previewId); } catch { /* best effort */ }
         wasm.discardSnapshot(previewId);
+        this.layoutReconciled = false;
       }
       if (beforeId !== null) wasm.discardSnapshot(beforeId);
       command?.discard(wasm);
       releaseExternal(heldExternal);
       // set 은 드리프트 op 까지 그대로 검토 대기로 돌아간다 — 복원된 op 이 그 스냅샷·문단
       // 보관본을 계속 가리키므로 여기서 해제하지 않는다 (해제하면 이후 거절·승인이 죽은 id 를 쓴다).
-      this.restorePendingState(previewState);
+      if (previewState) this.restorePendingState(previewState);
       set.status = 'awaiting-review';
       this.emitDocEvents('agent-pending-edit');
       this.syncOverlay();
@@ -1355,10 +1430,99 @@ export class PendingEditManager {
     for (const set of this.sets) this.discardOpSnapshots(set.ops);
     this.sets = [];
     this.open = null;
+    this.releaseSetBaselines();
+    this.dropNextSetBaseline();
     this.syncTemplateLock();
   }
 
   // ─── 내부 ────────────────────────────────────────────
+
+  /**
+   * 매니저 변이 진입점 공통 처리. 권위 조판 표시를 지우고, baseline 이면 열린 set 의 첫
+   * 변이 직전 문서를 기준점으로 잡는다. 배치 안에서는 배치 시작에 잡은 기준점을 그대로 둔다.
+   * 앞선 호출이 실패해 붙지 못한 기준점은 그 뒤 문서를 보장하지 않으므로 버린다.
+   */
+  private beginMutation(opts: { baseline?: boolean } = {}): void {
+    this.layoutReconciled = false;
+    if (this.inAtomicBatch) return;
+    this.dropNextSetBaseline();
+    if (!opts.baseline || (this.open && this.open.ops.length > 0)) return;
+    try {
+      this.deps.editor.prepareSnapshotCapacity?.(1);
+      const snapshotId = this.deps.wasm.saveSnapshot();
+      this.deps.editor.retainExternalSnapshot?.();
+      this.nextSetBaseline = { snapshotId, userEditSeq: this.userEditSeq, settledSetSeq: this.settledSetSeq };
+    } catch (err) {
+      // 기준점이 없으면 승인은 op 을 되돌려 before 를 잡는 기존 경로로 간다.
+      console.warn('[pending-edits] set baseline capture failed', err);
+    }
+  }
+
+  private releaseBaselineSnapshot(snapshotId: number, discard: boolean): void {
+    if (discard) {
+      try { this.deps.wasm.discardSnapshot(snapshotId); } catch { /* best effort */ }
+    }
+    this.deps.editor.releaseExternalSnapshot?.();
+  }
+
+  /** 붙지 않은 기준점을 해제한다. discard=false 는 이미 내려간 문서의 id 라 엔진을 부르지 않는다. */
+  private dropNextSetBaseline(discard = true): void {
+    const baseline = this.nextSetBaseline;
+    if (!baseline) return;
+    this.nextSetBaseline = null;
+    this.releaseBaselineSnapshot(baseline.snapshotId, discard);
+  }
+
+  /**
+   * 원자 배치 롤백 뒤, 바깥 배치의 롤백 스냅샷을 넘겨받았던 set 이 목록에서 빠졌거나 op 이
+   * 비었으면 그 기준점을 떼어 다시 붙지 않은 기준점으로 돌린다. 문서는 배치 시작(또는 그와
+   * 같은 중첩 배치 시작)으로 돌아갔으므로 다음 첫 op 이 다시 넘겨받거나 바깥 배치가 정리한다.
+   */
+  private reclaimAtomicBaseline(): void {
+    const batch = this.atomicBaseline;
+    if (!batch) return;
+    for (const [set, baseline] of this.setBaselines) {
+      if (baseline.snapshotId !== batch.snapshotId) continue;
+      if (this.sets.includes(set) && set.ops.length > 0) continue;
+      this.setBaselines.delete(set);
+      this.nextSetBaseline = batch;
+    }
+  }
+
+  /** 목록에서 빠진 set 의 기준점을 해제한다 (all 이면 전부). */
+  private releaseSetBaselines(discard = true, all = false): void {
+    for (const [set, baseline] of this.setBaselines) {
+      if (!all && this.sets.includes(set)) continue;
+      this.setBaselines.delete(set);
+      this.releaseBaselineSnapshot(baseline.snapshotId, discard);
+    }
+  }
+
+  /**
+   * 승인 before 로 그대로 쓸 수 있는 스냅샷 id — set 의 첫 변이 직전 문서다. 모든 op 을
+   * 드리프트 없이 채택하고, 그 뒤로 사용자 편집·다른 set 의 확정·이 set 밖의 나중 op 이
+   * 없을 때만 쓴다. 그때 op 을 역순으로 되돌려 잡는 before 가 바로 이 상태다.
+   */
+  private approvalBaseline(
+    set: PendingChangeSet, kept: PendingOp[], dropped: PendingOp[], deferred: ReadonlySet<PendingOp>,
+    userEditSeqNow: number,
+  ): number | null {
+    if (typeof this.deps.wasm.shareSnapshotExact !== 'function') return null;
+    if (kept.length === 0 || dropped.length > 0 || deferred.size > 0 || kept.length !== set.ops.length) return null;
+    const first = kept.reduce((a, b) => ((b.seq ?? 0) < (a.seq ?? 0) ? b : a));
+    if (this.hasLaterAppliedOpsOutside(first, kept, [])) return null;
+    const current = (userEditSeq: number | undefined, settledSetSeq: number | undefined): boolean =>
+      userEditSeq === userEditSeqNow && settledSetSeq === this.settledSetSeq;
+    const baseline = this.setBaselines.get(set);
+    if (baseline && baseline.firstOpSeq === first.seq && current(baseline.userEditSeq, baseline.settledSetSeq)) {
+      return baseline.snapshotId;
+    }
+    if ((first.kind === 'replace' || first.kind === 'object') && first.snapshotId != null
+      && current(first.userEditSeqAtSnapshot, first.settledSetSeqAtSnapshot)) {
+      return first.snapshotId;
+    }
+    return null;
+  }
 
   private nextId(prefix: string): string {
     return `${prefix}-${Date.now()}-${++this.counter}`;
@@ -1386,6 +1550,7 @@ export class PendingEditManager {
     if (!set) return;
     if (set.ops.length === 0) {
       this.sets = this.sets.filter((s) => s !== set);
+      this.releaseSetBaselines();
       this.emitChange({ type: 'ops-changed' });
       return;
     }
@@ -1397,6 +1562,7 @@ export class PendingEditManager {
   private removeSet(set: PendingChangeSet): void {
     this.sets = this.sets.filter((s) => s !== set);
     if (this.open === set) this.open = null;
+    this.releaseSetBaselines();
     this.syncTemplateLock();
   }
 
@@ -1415,6 +1581,8 @@ export class PendingEditManager {
     for (const set of this.sets) this.discardOpSnapshots(set.ops);
     this.sets = [];
     this.open = null;
+    this.releaseSetBaselines();
+    this.dropNextSetBaseline();
     this.syncTemplateLock();
     this.deps.overlay.clear();
     this.emitChange({ type: 'invalidated', reason });
@@ -1431,6 +1599,10 @@ export class PendingEditManager {
     if (current === undefined || current === this.documentInstance) return;
     this.documentInstance = current;
     this.lastDigest = this.deps.wasm.documentDigest;
+    this.layoutReconciled = false;
+    // 기준점 id 는 이전 문서의 것이다 — 엔진을 부르지 않고 예산 점유만 반환한다.
+    this.releaseSetBaselines(false, true);
+    this.dropNextSetBaseline(false);
     this.forgetAll('document replaced');
   }
 
@@ -1485,6 +1657,8 @@ export class PendingEditManager {
     if (reverted) this.reconcilePreviewLayout();
     this.sets = [];
     this.open = null;
+    this.releaseSetBaselines();
+    this.dropNextSetBaseline();
     this.syncTemplateLock();
     this.deps.overlay.clear();
     if (reverted) this.emitDocEvents('agent-invalidate');
@@ -1497,6 +1671,17 @@ export class PendingEditManager {
   /** op 에 전역 등록 순번을 부여하고 set 에 추가한다 */
   private pushOp(set: PendingChangeSet, op: PendingOp): void {
     op.seq = ++this.opSeq;
+    const baseline = this.nextSetBaseline;
+    if (baseline && set.ops.length === 0) {
+      // set 의 첫 op — 이번 진입점이 잡은 기준점이 곧 이 set 의 변이 직전 문서다.
+      this.nextSetBaseline = null;
+      const stale = this.setBaselines.get(set);
+      if (stale) this.releaseBaselineSnapshot(stale.snapshotId, true);
+      this.setBaselines.set(set, { ...baseline, firstOpSeq: op.seq });
+    } else if (baseline && !this.inAtomicBatch) {
+      // 배치의 기준점은 배치 롤백용 스냅샷이기도 하다 — 배치가 끝날 때 직접 정리한다.
+      this.dropNextSetBaseline();
+    }
     set.ops.push(op);
   }
 
@@ -1571,6 +1756,7 @@ export class PendingEditManager {
     // 테스트 더블/이전 WASM 번들과도 호환되도록 호출 자체는 feature-detect 한다.
     // 현재 번들의 WasmBridge.refreshLayout은 실패를 로깅하고 안전하게 반환한다.
     this.deps.wasm.refreshLayout?.();
+    this.layoutReconciled = true;
   }
 
   private syncOverlay(): void {
