@@ -140,12 +140,10 @@
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
 }
 
-.rhwp-autofix[data-phase='fixed'] .rhwp-autofix-check {
-  animation: rhwp-autofix-draw 320ms 120ms var(--ag-ease-out, ease-out) forwards;
+.rhwp-autofix[data-phase='fixed'] [data-label='fixed'] {
+  animation: rhwp-autofix-fade 260ms var(--ag-ease-out, ease-out);
 }
 
 .rhwp-autofix-status {
@@ -167,8 +165,8 @@
   30% { transform: translateY(-3px); opacity: 1; }
 }
 
-@keyframes rhwp-autofix-draw {
-  to { stroke-dashoffset: 0; }
+@keyframes rhwp-autofix-fade {
+  from { opacity: 0; }
 }
 
 @keyframes rhwp-autofix-shake {
@@ -183,11 +181,8 @@
 @media (prefers-reduced-motion: reduce) {
   .rhwp-autofix[data-phase],
   .rhwp-autofix[data-phase='unavailable'],
-  .rhwp-autofix[data-phase='running'] .rhwp-autofix-dot {
+  .rhwp-autofix[data-phase='running'] .rhwp-autofix-dot,
+  .rhwp-autofix[data-phase='fixed'] [data-label='fixed'] {
     animation: none;
-  }
-
-  .rhwp-autofix-check {
-    stroke-dashoffset: 0;
   }
 }

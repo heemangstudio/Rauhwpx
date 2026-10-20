@@ -73,7 +73,7 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   return { element: button, phase: controller.phase, dispose: controller.dispose };
 }
 
-/** 고침 앞의 체크. 고침이 되는 순간 획이 그려진다. */
+/** 고침 앞의 체크. */
 function checkIcon(): SVGSVGElement {
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
@@ -81,7 +81,6 @@ function checkIcon(): SVGSVGElement {
   svg.setAttribute('viewBox', '0 0 12 12');
   const path = document.createElementNS(ns, 'path');
   path.setAttribute('d', 'M2.5 6.3 5 8.7 9.5 3.6');
-  path.setAttribute('pathLength', '1');
   svg.append(path);
   return svg;
 }
