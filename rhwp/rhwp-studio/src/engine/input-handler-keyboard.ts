@@ -1726,6 +1726,11 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
   // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M) ───
   if ((e.key === 'k' || e.key === 'K' || e.key === 'ㅏ') && !e.shiftKey && !e.altKey) {
     e.preventDefault();
+    // 글자를 선택한 채 Ctrl/Cmd+K → 바로 하이퍼링크 대화상자. 선택이 없으면 Ctrl+K,? 코드 단축키.
+    if (this.cursor.hasSelection() && this.dispatcher) {
+      this.dispatcher.dispatch('insert:hyperlink');
+      return;
+    }
     this._pendingChordK = true;
     return;
   }
