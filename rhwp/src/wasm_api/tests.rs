@@ -2718,6 +2718,124 @@ fn issue2308_immediate_edit_rederives_existing_compat_projection() {
     );
 }
 
+/// 본문 문단 하나짜리 구역 0 + 표 셀에 부동 그림 스택(#2004 투영 대상)이 있는 구역 1.
+fn create_doc_with_text_section_and_cell_image_stack() -> (HwpDocument, Paragraph) {
+    use crate::model::image::Picture;
+    use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap};
+
+    fn floating_picture() -> Control {
+        Control::Picture(Box::new(Picture {
+            common: CommonObjAttr {
+                height: 50_000,
+                text_wrap: TextWrap::Square,
+                allow_overlap: false,
+                treat_as_char: false,
+                horz_rel_to: HorzRelTo::Para,
+                horz_align: HorzAlign::Left,
+                ..Default::default()
+            },
+            ..Default::default()
+        }))
+    }
+
+    let mut doc = create_doc_with_table();
+    let stack = Paragraph {
+        controls: vec![floating_picture(), floating_picture()],
+        line_segs: vec![LineSeg {
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut document = doc.document.clone();
+    let Control::Table(table) = &mut document.sections[0].paragraphs[0].controls[0] else {
+        panic!("table control");
+    };
+    table.cells[0].paragraphs[0] = stack.clone();
+    let mut text_section = document.sections[0].clone();
+    text_section.paragraphs = vec![Paragraph {
+        text: "본문".to_string(),
+        char_count: 2,
+        char_offsets: make_char_offsets("본문"),
+        line_segs: vec![LineSeg {
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    document.sections.insert(0, text_section);
+    doc.set_document(document);
+    assert!(
+        doc.render_normalization.sections[0].is_none(),
+        "plain body text needs no compatibility projection"
+    );
+    assert!(
+        doc.render_normalization.sections[1].is_some(),
+        "the cell image stack must create a #2004 compatibility projection"
+    );
+    (doc, stack)
+}
+
+#[test]
+fn render_normalization_skips_unchanged_unprojected_sections_on_keystroke() {
+    let (mut doc, stack) = create_doc_with_text_section_and_cell_image_stack();
+    doc.insert_text_in_cell_native(1, 0, 0, 0, 0, 0, "x")
+        .expect("visible text removes the stack");
+    assert!(doc.render_normalization.sections[1].is_none());
+
+    // 구역 1을 dirty 표시 없이 다시 스택 형태로 되돌린다. 구역 0 타이핑이 구역 1의
+    // "투영 불필요" 판정을 재계산한다면 여기서 투영이 다시 생긴다.
+    let Control::Table(table) = &mut doc.document_mut().sections[1].paragraphs[0].controls[0]
+    else {
+        panic!("table control");
+    };
+    table.cells[0].paragraphs[0] = stack;
+    for offset in 0..3 {
+        doc.insert_text_native(0, 0, 2 + offset, "가")
+            .expect("type in section 0");
+    }
+    assert!(
+        doc.render_normalization.sections[1].is_none(),
+        "typing in section 0 must reuse section 1's cached no-projection result"
+    );
+
+    // 구역 1이 dirty가 되면 캐시된 판정을 버리고 다시 계산한다.
+    doc.mark_section_pagination_dirty(1);
+    doc.paginate();
+    assert!(
+        doc.render_normalization.sections[1].is_some(),
+        "a dirty section must re-derive its projection"
+    );
+}
+
+#[test]
+fn render_normalization_negative_cache_never_hides_a_new_projection() {
+    let (mut doc, _) = create_doc_with_text_section_and_cell_image_stack();
+    doc.insert_text_in_cell_native(1, 0, 0, 0, 0, 0, "x")
+        .expect("visible text removes the stack");
+    assert!(doc.render_normalization.sections[1].is_none());
+    doc.insert_text_native(0, 0, 2, "가")
+        .expect("type in section 0");
+    assert!(doc.render_normalization.sections[1].is_none());
+
+    // 구조가 안정적인 deferred 셀 편집은 section revision을 올리지 않는다.
+    // 그래도 dirty 구역이므로 스택이 돌아오면 투영도 돌아와야 한다.
+    let revision_before = doc.render_normalization.section_revisions[1];
+    doc.delete_text_in_cell_native_deferred_pagination(1, 0, 0, 0, 0, 0, 1)
+        .expect("deferred delete restores the stack");
+    doc.flush_deferred_pagination().expect("flush");
+    assert_eq!(
+        doc.render_normalization.section_revisions[1], revision_before,
+        "the deferred path must not bump the section revision"
+    );
+    assert!(
+        doc.render_normalization.sections[1].is_some(),
+        "the restored image stack must regain its compatibility projection"
+    );
+}
+
 #[test]
 fn issue2214_invalid_shape_cell_index_does_not_mutate_text() {
     let mut doc = HwpDocument::create_empty();

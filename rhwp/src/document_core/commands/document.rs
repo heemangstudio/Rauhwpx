@@ -45,17 +45,25 @@ struct TacWireGroup {
     wire: Vec<TacParagraphSource>,
 }
 
+/// 현재 구역 또는 스냅샷 구역에 TAC 줄 원점이 하나라도 있는지 판정한다.
+/// 구역 단위 값이므로 문단마다 다시 훑지 않도록 호출자가 구역당 한 번 계산해 넘긴다.
+fn tac_snapshot_scope(paras: &[Paragraph], snapshot: &SnapshotSection) -> bool {
+    use crate::renderer::float_placement::has_tac_line_origin;
+    paras.iter().any(has_tac_line_origin)
+        || snapshot
+            .paragraphs
+            .iter()
+            .any(|p| has_tac_line_origin(&p.paragraph))
+}
+
+/// `scoped`는 같은 `paras`/`snapshot`에 대한 `tac_snapshot_scope` 결과여야 한다.
 fn tac_dependent_snapshot_inputs_match(
     paras: &[Paragraph],
     snapshot: &SnapshotSection,
     i: usize,
+    scoped: bool,
 ) -> bool {
     use crate::renderer::float_placement::{has_tac_line_origin, tac_snapshot_inputs_match};
-    let scoped = paras.iter().any(has_tac_line_origin)
-        || snapshot
-            .paragraphs
-            .iter()
-            .any(|p| has_tac_line_origin(&p.paragraph));
     if scoped
         && !paras
             .get(i)
@@ -91,18 +99,13 @@ fn tac_dependent_snapshot_inputs_match(
 }
 
 fn tac_snapshot_section_matches(section: &Section, snapshot: &SnapshotSection) -> bool {
-    use crate::renderer::float_placement::{has_tac_line_origin, leading_section_inputs};
-    if !section.paragraphs.iter().any(has_tac_line_origin)
-        && !snapshot
-            .paragraphs
-            .iter()
-            .any(|p| has_tac_line_origin(&p.paragraph))
-    {
+    use crate::renderer::float_placement::leading_section_inputs;
+    if !tac_snapshot_scope(&section.paragraphs, snapshot) {
         return true;
     }
     if section.paragraphs.len() != snapshot.paragraphs.len()
         || !(0..section.paragraphs.len())
-            .all(|i| tac_dependent_snapshot_inputs_match(&section.paragraphs, snapshot, i))
+            .all(|i| tac_dependent_snapshot_inputs_match(&section.paragraphs, snapshot, i, true))
     {
         return false;
     }
@@ -6151,6 +6154,9 @@ impl DocumentCore {
                         snapshot_section.paragraph_sequence_revision == paragraph_sequence_revision
                             && snapshot_section.paragraphs.len() == section.paragraphs.len()
                     });
+                let tac_scoped = baseline_section.is_some_and(|snapshot_section| {
+                    tac_snapshot_scope(&section.paragraphs, snapshot_section)
+                });
                 let paragraphs = section
                     .paragraphs
                     .iter()
@@ -6168,6 +6174,7 @@ impl DocumentCore {
                                             &self.document.sections[section_idx].paragraphs,
                                             section,
                                             paragraph_idx,
+                                            tac_scoped,
                                         )
                                     })
                             })
@@ -6274,6 +6281,7 @@ impl DocumentCore {
         // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
         crate::renderer::layout::clear_measure_caches();
         self.render_normalization.sections.clear();
+        self.render_normalization.unprojected_revisions.clear();
         self.styles = self.resolve_document_styles();
         // 로드 뒤 등록한 글꼴도 합성 줄의 나눔에 반영한다. 저장 줄이 섞인 문서는
         // 문단별 합성 태그를 따르고, 저장 줄이 전혀 없던 문서만 전체를 다시 계산한다.
@@ -6418,6 +6426,19 @@ impl DocumentCore {
         } else {
             (0..snapshot.sections.len()).collect()
         };
+        // 구역 단위 TAC 범위는 문단별 비교 전에 한 번만 계산한다.
+        let tac_scopes: Vec<bool> = snapshot
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(section_idx, snapshot_section)| {
+                same_section_count
+                    && tac_snapshot_scope(
+                        &self.document.sections[section_idx].paragraphs,
+                        snapshot_section,
+                    )
+            })
+            .collect();
         let selectively_changed_paragraphs: Vec<Option<Vec<usize>>> = snapshot
             .sections
             .iter()
@@ -6443,6 +6464,7 @@ impl DocumentCore {
                                     &self.document.sections[section_idx].paragraphs,
                                     snapshot_section,
                                     paragraph_idx,
+                                    tac_scopes[section_idx],
                                 ))
                             .then_some(paragraph_idx)
                         })
@@ -6469,10 +6491,8 @@ impl DocumentCore {
         restored.doc_info.font_metrics_policy = self.document.doc_info.font_metrics_policy;
         restored.sections.reserve(snapshot.sections.len());
         for (section_idx, snapshot_section) in snapshot.sections.iter().enumerate() {
-            if same_section_count
-                && current_revisions[section_idx] == snapshot_section.revision
-                && tac_snapshot_section_matches(&current_sections[section_idx], snapshot_section)
-            {
+            // 위 changed_sections 판정과 같은 조건이다. 구역 비교를 다시 하지 않는다.
+            if same_section_count && changed_sections.binary_search(&section_idx).is_err() {
                 let mut section = std::mem::take(&mut current_sections[section_idx]);
                 section.raw_stream = snapshot_section.raw_stream.as_deref().cloned();
                 restored.sections.push(section);
@@ -6491,6 +6511,7 @@ impl DocumentCore {
                                 &current_sections[section_idx].paragraphs,
                                 snapshot_section,
                                 i,
+                                tac_scopes[section_idx],
                             )
                         })
                         .collect();
@@ -6530,6 +6551,8 @@ impl DocumentCore {
             self.section_carry.clear();
         }
         self.document = restored;
+        // 복원된 DocInfo로 스타일이 다시 해소되므로 "투영 불필요" 판정을 모두 다시 한다.
+        self.render_normalization.unprojected_revisions.clear();
         if same_section_count {
             self.styles = self.resolve_document_styles();
             for &section_idx in &changed_sections {
