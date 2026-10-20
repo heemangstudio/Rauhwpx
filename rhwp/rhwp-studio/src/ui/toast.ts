@@ -33,13 +33,13 @@ export interface ToastOptions {
    * 자동 페이드를 끄고 사용자 닫기를 강제하는 용도 (durationMs: 0 와 함께 사용).
    */
   confirmLabel?: string;
-  /** 오류 안내면 true — 데스크톱 앱에서 '문제 보고' 단추를 함께 둔다. */
+  /** 오류 안내면 true — 데스크톱 앱에서 '오류 제보' 단추를 함께 둔다. */
   report?: boolean;
 }
 
 let reporter: (() => void) | null = null;
 
-/** 오류 토스트의 '문제 보고' 가 부를 함수. 데스크톱 앱만 건다. */
+/** 오류 토스트의 '오류 제보' 가 부를 함수. 데스크톱 앱만 건다. */
 export function setToastReporter(next: (() => void) | null): void {
   reporter = next;
 }
@@ -139,7 +139,7 @@ export function showToast(options: ToastOptions): void {
     const reportBtn = document.createElement('button');
     reportBtn.type = 'button';
     reportBtn.className = 'rhwp-toast-action rhwp-toast-report';
-    reportBtn.textContent = '문제 보고';
+    reportBtn.textContent = '오류 제보';
     reportBtn.addEventListener('click', () => {
       report();
       window.setTimeout(removeToast, 400);

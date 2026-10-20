@@ -48,7 +48,7 @@ export function queuedFollowUpsText(count: number): string {
 /** 끊긴 계획 실행을 이어 갈 때 — 승인은 끊김을 넘지 못해 남은 작업의 계획부터 다시 승인받는다. */
 export const RESUME_REPLANS_TEXT = '이어서 진행하면 남은 작업의 계획을 다시 세워 승인을 받아요';
 
-/** 앱이 스스로 끊긴 이유 — 이때만 문제 보고 단추를 둔다. 새로고침·앱 재시작은 사용자가 한 일이다. */
+/** 앱이 스스로 끊긴 이유 — 이때만 오류 제보 단추를 둔다. 새로고침·앱 재시작은 사용자가 한 일이다. */
 const REPORTABLE_REASONS: ReadonlySet<TurnInterruptionReason> = new Set(['hub-restart', 'agent-exit', 'engine-trap']);
 
 export function createTurnInterruptionRow(
@@ -72,7 +72,7 @@ export function createTurnInterruptionRow(
     if (resume.getAttribute('aria-disabled') === 'true') return;
     opts.onResume();
   });
-  const report = opts.onReport ? el('button', 'ag-turn-interrupted-report', '문제 보고') : null;
+  const report = opts.onReport ? el('button', 'ag-turn-interrupted-report', '오류 제보') : null;
   if (report) {
     report.type = 'button';
     report.hidden = true;

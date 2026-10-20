@@ -155,9 +155,9 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
         break;
       }
       if (failure.code === 'gift_credits') {
-        // 내 키가 있으면 허브가 다음 요청부터 그 키로 넘어가므로 다시 보내면 된다. 없으면 설정에서 키를 잇는다.
+        // 다시 보내도 같은 결과다. 설정에서 내 키를 이어야 계속할 수 있다.
         actions.push({ id: 'settings', label: '설정 열기' });
-        retryAllowed = true;
+        retryAllowed = false;
         break;
       }
       const credits = failure.code === 'openrouter_credits';
@@ -323,6 +323,8 @@ export interface FailureNoticeHandlers {
   /** × 로 접었다 (true) 또는 '다시 보기' 로 폈다 (false) */
   onDismissChange(dismissed: boolean): void;
   onDetailToggle?(open: boolean): void;
+  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '오류 제보' 단추를 둔다. */
+  onReport?(): void;
 }
 
 export interface FailureNoticeOptions {
@@ -332,6 +334,15 @@ export interface FailureNoticeOptions {
   retryAfterPartialEdits?: boolean;
   /** 다시 그릴 때 '자세히' 를 펼친 채로 둔다 */
   detailOpen?: boolean;
+  /** 사용자가 고칠 수 없는 실패(서버·네트워크·프로세스·원인 불명)다 — 오류 제보를 권한다. */
+  reportable?: boolean;
+}
+
+/** 로그인·사용량·요청 문제는 사용자가 고친다. 나머지는 앱이나 서버 쪽 실패라 제보를 받는다. */
+const REPORTABLE_CLASSES: ReadonlySet<ProviderFailure['class']> = new Set(['provider_error', 'network', 'process_exited', 'unknown']);
+
+function failureReportable(failure: Pick<ProviderFailure, 'class'>): boolean {
+  return REPORTABLE_CLASSES.has(failure.class);
 }
 
 /** 알림 DOM. 같은 자리에서 다시 그릴 수 있게 루트 하나를 돌려준다. */
@@ -351,6 +362,12 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
     return root;
   }
   if (view.compact) return root;
+  if (options.reportable && handlers.onReport) {
+    const report = el('button', 'ag-failure-link ag-failure-report', '오류 제보');
+    report.type = 'button';
+    report.addEventListener('click', () => handlers.onReport?.());
+    head.append(report);
+  }
   const close = el('button', 'ag-failure-close', '×');
   close.type = 'button';
   close.setAttribute('aria-label', '알림 닫기');
@@ -457,6 +474,8 @@ export interface FailureNoticeControllerDeps {
    * 턴 도중 끊겼으면 이어서 진행으로 보낸다(retryWire). 지금 보낼 수 없으면 false.
    */
   resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
+  /** 오류 제보를 연다(데스크톱). 없으면 제보 단추를 두지 않는다. */
+  reportIssue?: () => void;
   now?: () => number;
   /** 리셋 시각 뒤 이어서 보내기까지의 여유 (시계 차이) */
   resumeGraceMs?: number;
@@ -552,6 +571,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       agent: message.failure.agent,
       retryAfterPartialEdits: message.retry?.afterPartialEdits === true,
       detailOpen: detailOpen.has(message),
+      reportable: failureReportable(message.failure),
     }, {
       onAction: (id) => act(message, id),
       onDismissChange: (dismissed) => {
@@ -562,6 +582,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
         if (open) detailOpen.add(message);
         else detailOpen.delete(message);
       },
+      ...(deps.reportIssue ? { onReport: deps.reportIssue } : {}),
     });
   }
 

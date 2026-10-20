@@ -457,7 +457,7 @@ export interface AgentSidebarDeps {
    * 참이면 시작할 때 이 창이 남긴 끊긴 턴을 모두 정리한다(S3).
    */
   ownsWindowSession?: boolean;
-  /** 문제 보고를 연다(데스크톱). 있으면 허브 끊김 안내와 끊긴 턴 줄에 '문제 보고' 단추를 둔다. */
+  /** 문제 보고를 연다(데스크톱). 있으면 허브 끊김 안내·끊긴 턴 줄·실패 알림에 '오류 제보' 단추를 둔다. */
   reportIssue?: () => void;
 }
 
@@ -1394,6 +1394,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
+    ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
   });
 
@@ -3254,7 +3255,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connPopoverText.textContent = '연결 중';
     void bridge.reconnectNow();
   });
-  const connReport = deps.reportIssue ? el('button', 'ag-conn-report', '문제 보고') : null;
+  const connReport = deps.reportIssue ? el('button', 'ag-conn-report', '오류 제보') : null;
   if (connReport) {
     connReport.type = 'button';
     connReport.hidden = true;
