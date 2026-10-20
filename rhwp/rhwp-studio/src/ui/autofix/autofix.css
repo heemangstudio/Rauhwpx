@@ -65,11 +65,10 @@
   background: transparent;
 }
 
-/* 고침: 채움이 돌아오며 한 번 튀고, 바깥으로 퍼지는 고리와 함께 체크가 그려진다. */
+/* 고침: 채움 없이 초록 글자와 체크만 조용히 남는다. */
 .rhwp-autofix[data-phase='fixed'] {
-  animation:
-    rhwp-autofix-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
-    rhwp-autofix-ring 640ms var(--ag-ease-out, ease-out);
+  background: transparent;
+  color: var(--rhwp-autofix-dot);
 }
 
 .rhwp-autofix[data-phase='failed'] {
@@ -168,16 +167,6 @@
   30% { transform: translateY(-3px); opacity: 1; }
 }
 
-@keyframes rhwp-autofix-pop {
-  0% { transform: scale(0.9); }
-  100% { transform: none; }
-}
-
-@keyframes rhwp-autofix-ring {
-  from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--rhwp-autofix-dot) 45%, transparent); }
-  to { box-shadow: 0 0 0 8px transparent; }
-}
-
 @keyframes rhwp-autofix-draw {
   to { stroke-dashoffset: 0; }
 }
@@ -194,7 +183,6 @@
 @media (prefers-reduced-motion: reduce) {
   .rhwp-autofix[data-phase],
   .rhwp-autofix[data-phase='unavailable'],
-  .rhwp-autofix[data-phase='fixed'],
   .rhwp-autofix[data-phase='running'] .rhwp-autofix-dot {
     animation: none;
   }
