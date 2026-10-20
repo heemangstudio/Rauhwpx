@@ -180,11 +180,6 @@ export interface RhwpDesktopApi {
   createAgentSession?: () => Promise<{ sessionId: string }>;
   getAgentSessionContext?: (sessionId: string) => Promise<RendererSessionContext>;
   releaseAgentSession?: (sessionId: string) => Promise<boolean>;
-  getUniqueInstalls?: () => Promise<{
-    uniqueInstalls: number | null;
-    publicUrl?: string | null;
-    recorded?: boolean;
-  } | null>;
   getLaunchFiles?: () => Promise<NativeFileHandleDescriptor[]>;
   getLaunchGeneratedDocument?: () => Promise<{
     launchDocumentId: string;

@@ -72,7 +72,6 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     'desktop:agent-session-release',
     agentSessionId,
   ),
-  getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
   // 체험·라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
   license: {
     getStatus: () => ipcRenderer.invoke('license:status'),
