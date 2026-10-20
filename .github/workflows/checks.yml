@@ -163,7 +163,7 @@ jobs:
     name: Session tests (windows-latest)
     needs: changes
     if: needs.changes.outputs.sessions == 'true'
-    runs-on: windows-2025
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
