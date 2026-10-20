@@ -53,6 +53,7 @@ import {
 import { launchRequest } from './launch-routing.mjs';
 import {
   NativeFileHandleRegistry,
+  recoverInterruptedNativeSave,
   StaleNativeHandleError,
   validateNativeDocumentBytes,
   writeNativeFileAtomically,
@@ -831,6 +832,8 @@ function noteRecentDocument(sessionId, handleId) {
 
 async function loadNativeBookmarks() {
   try {
+    // 북마크도 문서와 같은 원자적 저장을 쓴다. 저장 도중 꺼졌으면 직전 내용을 되돌린다.
+    await recoverInterruptedNativeSave(nativeBookmarkFile);
     const raw = await readBookmarkState(nativeBookmarkFile);
     if (raw === null) return;
     try {
