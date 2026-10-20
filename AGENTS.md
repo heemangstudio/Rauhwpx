@@ -37,7 +37,8 @@ There is no root `src/` and no `rhwp/.cargo/`. `rhwp/README.md` is the only READ
 # GitHub
 
 - PRs, CI, branch protection and releases live on `heemangstudio/Rauhwpx` (remote `heemangstudio`). `origin` is the `ghandhitechnology` mirror. Pass `-R heemangstudio/Rauhwpx` to `gh` unless `gh repo set-default` is configured.
-- `main` requires signed commits, linear history, an up-to-date branch and the `Session tests (macos-15)` and `Session tests (windows-latest)` checks. Rebase with `git rebase -S` when commits were created unsigned.
+- `main` has no branch protection or branch ruleset, so no check is required to merge; the only ruleset protects release tags. Keep commits signed anyway and rebase with `git rebase -S` when they were created unsigned.
+- Do not push temporary or diagnostic workflows (such as the `ci/math10-*` branches). Run Windows probes on `windows1` (`ssh windows1`, Tailscale node `windows`) and macOS probes locally.
 
 # Setup in a new worktree
 
@@ -59,11 +60,11 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 | Engine | `cargo test` from `rhwp/` | Engine |
 | Studio unit | `npm --prefix rhwp/rhwp-studio test` | App |
 | Hub | `node --test rhwp/rhwp-agent/tests/*.test.mjs` | App |
-| Desktop | `npm run test:desktop` | App, Session tests (macOS, Windows) |
+| Desktop | `npm run test:desktop` | App, Session tests (Windows); macOS session tests run nightly |
 | Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | nightly only |
 | Sidebar | `npm run test:sidebar` | nightly only |
 
-PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the browser and smoke flows, doc tests, corpus sweeps, Skia rendering, cargo and npm audits, and the 3-OS production dependency check. All workflows run on GitHub-hosted runners.
+PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the browser and smoke flows, doc tests, corpus sweeps, Skia rendering, cargo and npm audits, the 3-OS production dependency check and the macOS session tests, and skips a commit the last successful nightly already tested. Linux jobs run on Blacksmith; macOS and Windows jobs run on GitHub-hosted runners.
 
 ## Rust engine (from `rhwp/`)
 

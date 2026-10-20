@@ -6,6 +6,11 @@ on:
     # 03:00 Asia/Seoul (GitHub Actions cron uses UTC).
     - cron: '0 18 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: Run even when the last successful nightly tested this commit
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -15,9 +20,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: Skip unchanged commits
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          if [ "$FORCE" = true ]; then
+            echo run=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A failed or cancelled run does not count, so the next night retries the same commit.
+          last_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=$GITHUB_REF_NAME&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')"
+          echo "Last successful nightly tested ${last_sha:-nothing}"
+          if [ "$last_sha" = "$GITHUB_SHA" ]; then
+            echo run=false >> "$GITHUB_OUTPUT"
+          else
+            echo run=true >> "$GITHUB_OUTPUT"
+          fi
+
   rust-tests:
     name: Rust tests
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -43,7 +78,7 @@ jobs:
           fallback: none
       - name: Test Rust workspace in parallel
         working-directory: rhwp
-        run: cargo nextest run --locked --workspace
+        run: cargo nextest run --locked --workspace --test-threads 8
       - name: Test Rust doc examples
         if: ${{ !cancelled() }}
         working-directory: rhwp
@@ -59,7 +94,9 @@ jobs:
 
   cargo-audit:
     name: Cargo audit
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -104,11 +141,15 @@ jobs:
 
   dependencies:
     name: Dependencies
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     uses: ./.github/workflows/dependencies.yml
 
   app:
     name: App
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -146,11 +187,13 @@ jobs:
       - name: Install managed Chromium for hub behavioral tests
         if: ${{ !cancelled() }}
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
-      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
-      # prevents the sandboxed managed Chromium from starting.
+      # GitHub's Ubuntu 24.04 image restricts unprivileged user namespaces with
+      # AppArmor, which prevents the sandboxed managed Chromium from starting.
       - name: Allow the Chromium sandbox
         if: ${{ !cancelled() }}
-        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        run: |
+          sysctl=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$sysctl" ]; then echo 0 | sudo tee "$sysctl"; fi
       - name: Test agent hub
         if: ${{ !cancelled() }}
         run: |
@@ -169,7 +212,9 @@ jobs:
 
   browser:
     name: Browser
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -204,7 +249,9 @@ jobs:
 
   sidebar:
     name: Sidebar preview
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -241,7 +288,9 @@ jobs:
 
   e2e:
     name: Editor smoke flows
-    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -276,10 +325,12 @@ jobs:
           key: owned-chromium-${{ runner.os }}-${{ hashFiles('rhwp/rhwp-agent/package-lock.json') }}
       - name: Install managed Chromium for owned browser flows
         run: node rhwp/rhwp-agent/node_modules/playwright/cli.js install --with-deps chromium
-      # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
-      # prevents the sandboxed managed Chromium from starting.
+      # GitHub's Ubuntu 24.04 image restricts unprivileged user namespaces with
+      # AppArmor, which prevents the sandboxed managed Chromium from starting.
       - name: Allow the Chromium sandbox
-        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        run: |
+          sysctl=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$sysctl" ]; then echo 0 | sudo tee "$sysctl"; fi
       - name: Run owned browser research flows
         run: node rhwp/rhwp-studio/e2e/owned-browser-live.mjs
       - uses: actions/upload-artifact@v4
@@ -292,3 +343,32 @@ jobs:
             docs/pr-evidence/owned-browser/
           if-no-files-found: ignore
           retention-days: 7
+
+  sessions:
+    name: Session tests (macos-15)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          # These tests read no sample documents.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+            !/rhwp/samples/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: rhwp/rhwp-agent/package-lock.json
+      - name: Assert runner architecture
+        run: node -e "if (process.arch !== 'arm64') throw new Error('Unexpected architecture ' + process.arch)"
+      - name: Install agent dependencies
+        run: npm --prefix rhwp/rhwp-agent ci
+      - name: Test platform launch, file replacement, and desktop sessions
+        run: npm run test:sessions
