@@ -2,7 +2,7 @@ import { WasmBridge } from '@/core/wasm-bridge';
 import { EventBus } from '@/core/event-bus';
 import type { PageInfo } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
-import { CanvasPool } from './canvas-pool';
+import { CanvasPool, removeAndReleaseCanvases } from './canvas-pool';
 import { MutationRefreshQueue, type MutationRefreshBatch } from './mutation-refresh-queue';
 import { PageRenderer, type PageRenderContext, type PageRenderResult } from './page-renderer';
 import { MAX_ZOOM, MIN_ZOOM, ViewportManager } from './viewport-manager';
@@ -602,7 +602,7 @@ export class CanvasView {
         this.applyPageBox(existing, pageIdx);
         continue;
       }
-      existing?.remove();
+      if (existing) removeAndReleaseCanvases(existing);
 
       const layer = document.createElement('div');
       layer.className = `hf-edit-surface-layer ${isPreview ? 'is-representative' : 'is-related'}`;
@@ -675,12 +675,12 @@ export class CanvasView {
     this.scrollContent.querySelectorAll<HTMLElement>('[data-rhwp-hf-edit-page]')
       .forEach((element) => {
         const pageIdx = Number(element.dataset.rhwpHfEditPage);
-        if (!desiredPages.has(pageIdx)) element.remove();
+        if (!desiredPages.has(pageIdx)) removeAndReleaseCanvases(element);
       });
   }
 
   private removeHeaderFooterEditOverlays(): void {
-    this.scrollContent.querySelectorAll('[data-rhwp-hf-edit-page]').forEach((element) => element.remove());
+    this.scrollContent.querySelectorAll('[data-rhwp-hf-edit-page]').forEach(removeAndReleaseCanvases);
   }
 
   /** 스크롤 중에는 다음 페이지의 선렌더를 idle time으로 미룬다. */
@@ -744,7 +744,8 @@ export class CanvasView {
     this.pageRenderer.cancelReRender(pageIdx);
     this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
     this.pageRenderer.releasePageDiagnostics(pageIdx);
-    this.scrollContent.querySelector(`[data-rhwp-hf-edit-page="${pageIdx}"]`)?.remove();
+    const hfLayer = this.scrollContent.querySelector(`[data-rhwp-hf-edit-page="${pageIdx}"]`);
+    if (hfLayer) removeAndReleaseCanvases(hfLayer);
     this.removeGridOverlay(pageIdx);
     this.canvasPool.release(pageIdx);
   }

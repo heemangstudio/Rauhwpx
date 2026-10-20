@@ -11,6 +11,7 @@ import {
   type FlowImagePaintOp,
 } from './flow-image-clip';
 import type { RenderBackend } from './render-backend';
+import { removeAndReleaseCanvases } from './canvas-pool';
 // 브라우저 테스트가 이 모듈을 alias 없는 Vite 로 읽으므로 상대 경로로 가져온다.
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 
@@ -78,6 +79,18 @@ interface AppliedOverlays {
 
 type LayerImagePrefetchResult = 'decoded' | 'none' | 'wait';
 
+/**
+ * 본문 그림 DOM 층의 입력.
+ * - reuse: 같은 key 로 만든 층이 이미 있다. 트리(그림 base64 포함)를 다시 읽지 않는다.
+ * - build: 새로 읽은 그림 op 로 층을 만든다.
+ */
+type FlowImageLayerInput =
+  | { kind: 'none' }
+  | { kind: 'reuse' }
+  | { kind: 'build'; images: readonly FlowImagePaintOp[] };
+
+const NO_FLOW_IMAGE_LAYER: FlowImageLayerInput = { kind: 'none' };
+
 const IMAGE_RE_RENDER_FALLBACK_DELAY_MS = 1500;
 // 순수 SVG 차트/OLE는 prefetch 대상 data URL이 없을 수 있다. 첫 paint가 시작한
 // 이미지 decode를 빠르게 반영하되, 일반 이미지처럼 전역 반복 재렌더는 피한다.
@@ -125,7 +138,12 @@ export class PageRenderer {
   invalidateDocumentRevision(): void {
     this.cancelAll();
     this.releaseAllPageDiagnostics();
-    this.layerSummaryCache.clear();
+    // layer 요약 캐시는 남긴다. 편집마다 문서 revision 이 올라가므로 여기서 비우면 텍스트 편집
+    // 렌더가 캐시를 한 번도 못 쓰고 키 입력마다 getPageOverlayImages(그림 base64 포함)를 다시
+    // 부른다. 캐시는 text-edit + allowStaticOverlayReuse 렌더만 읽고, 다른 렌더는 매번 새로
+    // 읽어 덮어쓴다. engine 이 그리는 정적 층이 있으면 입력이 멈춘 뒤 검증 렌더가 다시 읽고,
+    // 본문 그림만 `<img>` 로 띄운 쪽은 다음 전체 렌더가 다시 읽는다 (auto renderer 를 고정한
+    // 편집 경로가 이미 이렇게 캐시를 이어 쓴다).
     this.pageInfoByPage.clear();
   }
 
@@ -149,14 +167,20 @@ export class PageRenderer {
     const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
     const preferStaticFlow = this.shouldSplitStaticFlow(layers);
     let reuseStaticFlow = this.renderFlowCanvas(pageIdx, canvas, renderScale, preferStaticFlow);
-    const flowImages = reuseStaticFlow && layers.flowImageCount > 0
-      ? this.getFlowImagePaintOps(pageIdx)
-      : [];
-    const usesDomFlowImages =
-      reuseStaticFlow &&
-      layers.flowRawSvgCount === 0 &&
-      flowImages.length === layers.flowImageCount &&
-      flowImages.length > 0;
+    // 이번 렌더가 읽은 트리. 첫 렌더의 그림 prefetch 가 같은 트리를 다시 읽고 parse 하지 않게 넘긴다.
+    let layerTree: unknown;
+    let flowImageInput = NO_FLOW_IMAGE_LAYER;
+    if (reuseStaticFlow && layers.flowImageCount > 0 && layers.flowRawSvgCount === 0) {
+      if (this.findReusableFlowImageLayer(pageIdx, canvas, renderScale, dpr, context, layers)) {
+        flowImageInput = { kind: 'reuse' };
+      } else {
+        layerTree = this.readPageLayerTree(pageIdx);
+        const images = this.getFlowImagePaintOps(layerTree);
+        if (images.length > 0 && images.length === layers.flowImageCount) {
+          flowImageInput = { kind: 'build', images };
+        }
+      }
+    }
 
     // 다층 layer 모드.
     // 1) 본문 Canvas 는 'flow' 필터로 BehindText/InFrontOfText plane 제외
@@ -172,7 +196,7 @@ export class PageRenderer {
         context,
         layers,
         reuseStaticFlow,
-        usesDomFlowImages ? flowImages : [],
+        flowImageInput,
       );
     } catch (error) {
       if (!reuseStaticFlow) throw error;
@@ -181,7 +205,16 @@ export class PageRenderer {
       reuseStaticFlow = false;
       this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
       this.drawMarginGuides(pageIdx, canvas, renderScale);
-      overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, false, []);
+      overlays = this.applyOverlays(
+        pageIdx,
+        canvas,
+        renderScale,
+        dpr,
+        context,
+        layers,
+        false,
+        NO_FLOW_IMAGE_LAYER,
+      );
     }
     this.rememberLayerPlaneSummary(pageIdx, canvas, renderScale, layers);
     const summary = overlays.layers;
@@ -202,6 +235,7 @@ export class PageRenderer {
         reuseStaticFlow,
         reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
       },
+      layerTree,
     );
     return {
       needsTextEditStaticLayerVerification:
@@ -313,7 +347,7 @@ export class PageRenderer {
     context: PageRenderContext,
     layers: LayerPlaneSummary,
     reuseStaticFlow: boolean,
-    flowImages: readonly FlowImagePaintOp[],
+    flowImageInput: FlowImageLayerInput,
   ): AppliedOverlays {
     const parent = canvas.parentElement;
     if (!parent) return { layers: emptyLayerPlaneSummary(), domFlowImages: false };
@@ -336,14 +370,14 @@ export class PageRenderer {
 
     let domFlowImages = false;
     if (reuseStaticFlow) {
-      const flowImageLayer = flowImages.length > 0
+      const flowImageLayer = flowImageInput.kind !== 'none'
         ? this.createOrReuseFlowImageLayer(
           pageIdx,
           canvas,
           renderScale / safeDpr,
           layers,
           allowReuse,
-          flowImages,
+          flowImageInput,
         )
         : null;
       if (flowImageLayer) {
@@ -451,13 +485,16 @@ export class PageRenderer {
     displayScale: number,
     summary: LayerPlaneSummary,
     allowReuse: boolean,
-    images: readonly FlowImagePaintOp[],
+    input: Exclude<FlowImageLayerInput, { kind: 'none' }>,
   ): HTMLElement | null {
     const key = this.buildStaticOverlayKey(pageIdx, sourceCanvas, displayScale, 'flow-static', summary);
     const existing = this.findFlowImageLayer(sourceCanvas.parentElement, pageIdx);
     if (allowReuse && existing?.dataset.rhwpStaticOverlayKey === key) return existing;
 
     existing?.remove();
+    // reuse 로 왔는데 맞는 층이 없으면 그릴 그림 op 가 없다. 호출자가 엔진 flow-static canvas 로 그린다.
+    if (input.kind !== 'build') return null;
+    const images = input.images;
     // flow canvas 는 이미 본문 그림을 뺀 채 그려졌다. `<img>` 가 못 그리는 그림이 하나라도
     // 있으면 이 층을 만들지 않고, 호출자가 엔진 flow-static canvas 로 쪽 전체를 그리게 한다.
     // 헤더 검사는 층을 새로 만들 때만 한다 — 같은 key 로 재사용한 층은 이미 통과했다.
@@ -541,7 +578,7 @@ export class PageRenderer {
       return reusableLayer;
     }
 
-    reusableLayer?.remove();
+    if (reusableLayer) removeAndReleaseCanvases(reusableLayer);
     const layer = this.createFilteredCanvasLayer(
       pageIdx,
       sourceCanvas,
@@ -608,7 +645,7 @@ export class PageRenderer {
       `[data-rhwp-overlay="background-${pageIdx}"],` +
       `[data-rhwp-overlay="behind-${pageIdx}"],` +
       `[data-rhwp-overlay="front-${pageIdx}"]`,
-    ).forEach((el) => el.remove());
+    ).forEach(removeAndReleaseCanvases);
   }
 
   private findOverlayLayer(
@@ -622,7 +659,28 @@ export class PageRenderer {
   }
 
   private removeOverlayLayer(parent: HTMLElement, pageIdx: number, layerKind: StaticCanvasLayerKind): void {
-    this.findOverlayLayer(parent, pageIdx, layerKind)?.remove();
+    const layer = this.findOverlayLayer(parent, pageIdx, layerKind);
+    if (layer) removeAndReleaseCanvases(layer);
+  }
+
+  /**
+   * 텍스트 편집 렌더에서 같은 key 의 본문 그림 DOM 층이 이미 있으면 돌려준다. 그 층은 만들 때
+   * 그림 수와 표시 가능 검사를 통과했으므로, 그림 base64 를 담은 트리를 다시 읽을 필요가 없다.
+   */
+  private findReusableFlowImageLayer(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    renderScale: number,
+    dpr: number,
+    context: PageRenderContext,
+    layers: LayerPlaneSummary,
+  ): HTMLElement | null {
+    if (context.reason !== 'text-edit' || context.allowStaticOverlayReuse !== true) return null;
+    const existing = this.findFlowImageLayer(canvas.parentElement, pageIdx);
+    if (!existing) return null;
+    const safeDpr = dpr > 0 && Number.isFinite(dpr) ? dpr : 1;
+    const key = this.buildStaticOverlayKey(pageIdx, canvas, renderScale / safeDpr, 'flow-static', layers);
+    return existing.dataset.rhwpStaticOverlayKey === key ? existing : null;
   }
 
   private findFlowImageLayer(parent: HTMLElement | null, pageIdx: number): HTMLElement | null {
@@ -659,7 +717,7 @@ export class PageRenderer {
       '[data-rhwp-overlay^="background-"],' +
       '[data-rhwp-overlay^="behind-"],' +
       '[data-rhwp-overlay^="front-"]',
-    ).forEach((el) => el.remove());
+    ).forEach(removeAndReleaseCanvases);
   }
 
   /**
@@ -691,15 +749,18 @@ export class PageRenderer {
     );
   }
 
-  private getFlowImagePaintOps(pageIdx: number): FlowImagePaintOp[] {
-    let json: string;
+  /** 쪽 PageLayerTree 를 읽어 parse 한다. 읽거나 parse 하지 못하면 null. */
+  private readPageLayerTree(pageIdx: number): unknown {
     try {
-      json = this.wasm.getPageLayerTree(pageIdx);
+      return JSON.parse(this.wasm.getPageLayerTree(pageIdx));
     } catch {
-      return [];
+      return null;
     }
+  }
+
+  private getFlowImagePaintOps(tree: unknown): FlowImagePaintOp[] {
     try {
-      const root = JSON.parse(json)?.root;
+      const root = (tree as { root?: unknown } | null)?.root;
       return collectFlowImagePaintOps(
         root,
         (op, layer) => op.type === 'image' && layerReplayPlane(op, layer) === 'flow',
@@ -914,6 +975,7 @@ export class PageRenderer {
     imageCount: number,
     rawSvgCount: number,
     policy: ReRenderPolicy,
+    layerTree?: unknown,
   ): void {
     if (imageCount <= 0) {
       this.cancelReRender(pageIdx);
@@ -941,6 +1003,7 @@ export class PageRenderer {
     this.startReRenderJob(pageIdx, canvas, renderScale, policy, state, {
       rawSvgCount,
       prefetch: true,
+      layerTree,
     });
   }
 
@@ -950,7 +1013,7 @@ export class PageRenderer {
     renderScale: number,
     policy: ReRenderPolicy,
     state: ImageRetryState,
-    options: { rawSvgCount: number; prefetch: boolean },
+    options: { rawSvgCount: number; prefetch: boolean; layerTree?: unknown },
   ): void {
     const job: ReRenderJob = {
       prefetchAbort: new AbortController(),
@@ -991,10 +1054,15 @@ export class PageRenderer {
       }
     }
 
+    // 렌더가 이미 읽은 트리는 prefetch 계획에만 쓰고 놓는다. 대기 중인 fallback 타이머가 수 MB
+    // 트리를 붙잡지 않게 클로저에는 이 지역 변수만 담고 읽은 즉시 비운다.
+    let renderedTree = options.layerTree ?? undefined;
     // 자체 prefetch로 실제 decode를 마친 경우에만 fallback보다 먼저 다시 그린다.
     queueMicrotask(() => {
+      const tree = renderedTree;
+      renderedTree = undefined;
       if (!isCurrent()) return;
-      this.prefetchLayerImages(pageIdx, job.prefetchAbort.signal)
+      this.prefetchLayerImages(pageIdx, job.prefetchAbort.signal, tree)
         .then((result) => {
           if (result === 'decoded') finish();
           // 첫 paint 가 이미 완전하다 — fallback 재렌더도 필요 없다.
@@ -1032,7 +1100,7 @@ export class PageRenderer {
           } catch (error) {
             if (reportEngineTrap(error)) return;
             this.flowSplitSupported = false;
-            flowStatic.remove();
+            removeAndReleaseCanvases(flowStatic);
             console.warn('[PageRenderer] flow-static 지연 재렌더 실패, 기존 flow 재렌더로 fallback:', error);
           }
         } else if (this.findFlowImageLayer(parent, pageIdx)) {
@@ -1084,12 +1152,15 @@ export class PageRenderer {
   private async prefetchLayerImages(
     pageIdx: number,
     signal: AbortSignal,
+    renderedTree?: unknown,
   ): Promise<LayerImagePrefetchResult> {
     if (signal.aborted) return 'wait';
     let plan: ReturnType<typeof collectLayerImagePrefetch>;
     try {
       // 트리 JSON 의 op 는 bbox 가 mime 앞에 온다 — 정규식이 아니라 구조를 따라 읽는다.
-      plan = collectLayerImagePrefetch(JSON.parse(this.wasm.getPageLayerTree(pageIdx)));
+      plan = collectLayerImagePrefetch(
+        renderedTree ?? JSON.parse(this.wasm.getPageLayerTree(pageIdx)),
+      );
     } catch {
       // 트리를 못 읽으면 무엇이 비었는지 모른다. 조기/fallback 타이머에 맡긴다.
       return 'wait';
