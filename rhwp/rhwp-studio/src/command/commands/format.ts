@@ -7,6 +7,28 @@ import { StyleEditDialog } from '@/ui/style-edit-dialog';
 import { PicturePropsDialog } from '@/ui/picture-props-dialog';
 import { EquationPropertiesDialog } from '@/ui/equation-props-dialog';
 import { TableCellPropsDialog } from '@/ui/table-cell-props-dialog';
+import { PARA_SPACING_PRESETS, matchParaSpacingPreset, paraSpacingRaw } from '@/core/layout-presets';
+
+/**
+ * 서식 › 문단 간격 프리셋. 본문의 "글자에 따라" 문단 전체(표 셀·글상자·머리말 등 제외)와
+ * 바탕글·본문 스타일의 줄 간격·문단 간격만 바꾸고 한 번의 되돌리기로 기록한다.
+ * 이미 그 프리셋이면 기록을 남기지 않는다.
+ */
+function applyParaSpacingPreset(services: Parameters<CommandDef['execute']>[0], presetId: string): void {
+  const preset = PARA_SPACING_PRESETS.find(p => p.id === presetId);
+  const ih = services.getInputHandler();
+  if (!preset || !ih) return;
+  const current = services.wasm.getDocumentParaSpacing();
+  if (current.count === 0 || matchParaSpacingPreset(current) === preset.id) return;
+  ih.executeOperation({
+    kind: 'snapshot',
+    operationType: 'paraSpacingPreset',
+    operation: (wasm) => {
+      wasm.applyDocumentParaSpacing(paraSpacingRaw(preset));
+      return ih.getCursorPosition();
+    },
+  });
+}
 
 export const formatCommands: CommandDef[] = [
   {
@@ -157,6 +179,15 @@ export const formatCommands: CommandDef[] = [
       const current = props?.lineSpacing ?? 160;
       const newValue = Math.min(500, current + 10);
       ih.setLineSpacing(newValue);
+    },
+  },
+  // 문단 간격 프리셋 (서식 › 문단 간격) — 인자 없이(명령 팔레트) 부르면 기본으로 되돌린다
+  {
+    id: 'format:spacing-preset',
+    label: '문단 간격',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services, params) {
+      applyParaSpacingPreset(services, String(params?.preset ?? 'default'));
     },
   },
   // 글꼴 크기 크게 (Alt+Shift+E)

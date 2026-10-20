@@ -46,6 +46,14 @@ import {
   type EngineEditOperation,
 } from './engine-edit.ts';
 import { inferExportFormat } from '../command/save-target.ts';
+import {
+  PAGE_MARGIN_PRESET_IDS,
+  PAPER_SIZES,
+  findPageMarginPreset,
+  pageMarginsError,
+  withPageMarginsMm,
+  type PageMarginsMm,
+} from '../core/layout-presets.ts';
 import { fatalEquationDiagnostics, parseEquationPreview, type EquationPreview } from '../core/equation-preview.ts';
 import {
   AFTER_MAX_PAGES,
@@ -7777,75 +7785,80 @@ export class AgentToolExecutor {
 
   // ─── 객체 툴 (Phase 2: 쪽/문서 설계) ───────────────────────
 
-  private static readonly PAPERS: Record<string, { wMm: number; hMm: number }> = {
-    A4: { wMm: 210, hMm: 297 },
-    A3: { wMm: 297, hMm: 420 },
-    B5: { wMm: 182, hMm: 257 },
-    Letter: { wMm: 215.9, hMm: 279.4 },
-  };
-
+  /**
+   * 쪽 설정. sectionIdx 한 구역 또는 allSections 로 모든 구역에 같은 변경을 건다(구역마다
+   * pageLayout op 하나 — 검토·되돌리기는 구역 단위 op 그대로다).
+   *
+   * 용지 이름은 세로 기준 크기로 저장하고 landscape 플래그로 돌린다 — 엔진은 landscape 면
+   * 폭/길이를 바꿔 그린다. 사용자 지정 크기(widthMm/heightMm)는 보이는 쪽 크기 그대로다.
+   * landscape 를 주면 저장 크기를 세로 기준으로 맞추고 플래그만 정한다.
+   */
   private setPageLayout(args: Record<string, unknown>, agent: AgentName): unknown {
     this.requireRevision(args);
-    const sectionIdx = reqInt(args, 'sectionIdx');
     const { wasm } = this.deps;
-    if (sectionIdx < 0 || sectionIdx >= wasm.getSectionCount()) {
-      throw new AgentToolError('INVALID_ARGS', `sectionIdx ${sectionIdx} out of range`);
+    const sectionCount = wasm.getSectionCount();
+    const allSections = args['allSections'];
+    if (allSections !== undefined && allSections !== null && typeof allSections !== 'boolean') {
+      throw new AgentToolError('INVALID_ARGS', 'allSections must be a boolean');
     }
-    const prevDef = wasm.getPageDef(sectionIdx) as unknown as Record<string, unknown>;
-    const next: Record<string, unknown> = { ...prevDef };
-    let touched = false;
+    let sections: number[];
+    if (allSections === true) {
+      if (args['sectionIdx'] !== undefined && args['sectionIdx'] !== null) {
+        throw new AgentToolError('INVALID_ARGS', 'pass either sectionIdx or allSections, not both');
+      }
+      sections = Array.from({ length: sectionCount }, (_, i) => i);
+    } else {
+      const sectionIdx = reqInt(args, 'sectionIdx');
+      if (sectionIdx < 0 || sectionIdx >= sectionCount) {
+        throw new AgentToolError('INVALID_ARGS', `sectionIdx ${sectionIdx} out of range`);
+      }
+      sections = [sectionIdx];
+    }
 
+    // ── 구역과 무관한 인자 검증 ──
+    let paperSize: { width: number; height: number; custom: boolean } | undefined;
     const paper = args['paper'];
     if (paper !== undefined && paper !== null) {
-      let wMm: number; let hMm: number;
       if (typeof paper === 'string') {
-        const p = AgentToolExecutor.PAPERS[paper];
-        if (!p) throw new AgentToolError('INVALID_ARGS', `paper must be one of ${Object.keys(AgentToolExecutor.PAPERS).join('|')} or {widthMm,heightMm}`);
-        wMm = p.wMm; hMm = p.hMm;
+        const named = PAPER_SIZES.find(([name]) => name === paper);
+        if (!named) throw new AgentToolError('INVALID_ARGS', `paper must be one of ${PAPER_SIZES.map(([name]) => name).join('|')} or {widthMm,heightMm}`);
+        paperSize = { width: named[1], height: named[2], custom: false };
       } else {
         const rec = asRecord(paper);
         const w = rec['widthMm']; const h = rec['heightMm'];
         if (typeof w !== 'number' || typeof h !== 'number' || w < 30 || h < 30 || w > 1000 || h > 1000) {
           throw new AgentToolError('INVALID_ARGS', 'paper.widthMm/heightMm must be 30..1000');
         }
-        wMm = w; hMm = h;
+        paperSize = { width: mmToHu(w), height: mmToHu(h), custom: true };
       }
-      next['width'] = mmToHu(wMm);
-      next['height'] = mmToHu(hMm);
-      touched = true;
     }
     const landscape = args['landscape'];
-    if (landscape !== undefined && landscape !== null) {
-      if (typeof landscape !== 'boolean') throw new AgentToolError('INVALID_ARGS', 'landscape must be a boolean');
-      const w = next['width'] as number; const h = next['height'] as number;
-      if (landscape !== (prevDef['landscape'] === true) || paper !== undefined) {
-        // 용지 방향: landscape 면 긴 변이 가로가 되도록 스왑
-        if ((landscape && h > w) || (!landscape && w > h)) {
-          next['width'] = h;
-          next['height'] = w;
-        }
-      }
-      next['landscape'] = landscape;
-      touched = true;
+    if (landscape !== undefined && landscape !== null && typeof landscape !== 'boolean') {
+      throw new AgentToolError('INVALID_ARGS', 'landscape must be a boolean');
     }
-    const margins = args['marginsMm'];
-    if (margins !== undefined && margins !== null) {
-      const rec = asRecord(margins);
-      for (const [mmKey, defKey] of [
-        ['left', 'marginLeft'], ['right', 'marginRight'], ['top', 'marginTop'],
-        ['bottom', 'marginBottom'], ['header', 'marginHeader'], ['footer', 'marginFooter'],
-      ] as const) {
-        const v = rec[mmKey];
+    const margins: Partial<PageMarginsMm> = {};
+    const presetArg = args['marginPreset'];
+    if (presetArg !== undefined && presetArg !== null) {
+      const preset = typeof presetArg === 'string' ? findPageMarginPreset(presetArg) : undefined;
+      if (!preset) throw new AgentToolError('INVALID_ARGS', `marginPreset must be one of ${PAGE_MARGIN_PRESET_IDS.join('|')}`);
+      Object.assign(margins, preset.margins);
+    }
+    const marginsArg = args['marginsMm'];
+    if (marginsArg !== undefined && marginsArg !== null) {
+      const rec = asRecord(marginsArg);
+      for (const key of ['left', 'right', 'top', 'bottom', 'header', 'footer'] as const) {
+        const v = rec[key];
         if (v === undefined || v === null) continue;
         if (typeof v !== 'number' || v < 0 || v > 100) {
-          throw new AgentToolError('INVALID_ARGS', `marginsMm.${mmKey} must be 0..100`);
+          throw new AgentToolError('INVALID_ARGS', `marginsMm.${key} must be 0..100`);
         }
-        next[defKey] = mmToHu(v);
-        touched = true;
+        margins[key] = v;
       }
     }
+    const touched = paperSize !== undefined || (landscape !== undefined && landscape !== null)
+      || Object.keys(margins).length > 0;
 
-    let columns: { next: { columnCount: number; columnType: number; sameWidth: number; spacing: number }; prev: { columnCount: number; columnType: number; sameWidth: boolean | number; spacing: number } } | undefined;
+    let columnArg: { count: number; spacingMm: number | null } | undefined;
     const colArg = args['columns'];
     if (colArg !== undefined && colArg !== null) {
       const rec = asRecord(colArg);
@@ -7855,37 +7868,79 @@ export class AgentToolExecutor {
       if (spacingMm !== undefined && spacingMm !== null && (typeof spacingMm !== 'number' || spacingMm < 0 || spacingMm > 50)) {
         throw new AgentToolError('INVALID_ARGS', 'columns.spacingMm must be 0..50');
       }
-      const prevCol = this.deps.wasm.getColumnDef(sectionIdx);
-      columns = {
-        next: {
-          columnCount: count,
-          columnType: prevCol.columnType,
-          sameWidth: 1,
-          spacing: spacingMm !== undefined && spacingMm !== null ? mmToHu(spacingMm as number) : prevCol.spacing,
-        },
-        prev: prevCol,
-      };
+      columnArg = { count, spacingMm: typeof spacingMm === 'number' ? spacingMm : null };
     }
-    if (!touched && !columns) {
-      throw new AgentToolError('INVALID_ARGS', 'At least one of paper/landscape/marginsMm/columns is required');
+    if (!touched && !columnArg) {
+      throw new AgentToolError('INVALID_ARGS', 'At least one of paper/landscape/marginPreset/marginsMm/columns is required');
     }
-    const obj: ObjectOp = {
-      type: 'pageLayout', sectionIdx,
-      ...(touched ? { pageDef: { next, prev: prevDef } } : {}),
-      ...(columns ? {
-        columns: {
-          next: columns.next,
-          prev: {
-            columnCount: columns.prev.columnCount,
-            columnType: columns.prev.columnType,
-            sameWidth: columns.prev.sameWidth ? 1 : 0,
-            spacing: columns.prev.spacing,
+
+    // ── 구역별 op ──
+    const ops: ObjectOp[] = [];
+    for (const sectionIdx of sections) {
+      const prevDef = wasm.getPageDef(sectionIdx);
+      let pageDef: { next: Record<string, unknown>; prev: Record<string, unknown> } | undefined;
+      if (touched) {
+        let next = { ...prevDef };
+        if (paperSize) {
+          next.width = paperSize.width;
+          next.height = paperSize.height;
+          if (paperSize.custom) next.landscape = false;
+        }
+        if (landscape !== undefined && landscape !== null) {
+          const [w, h] = [next.width, next.height];
+          next.width = Math.min(w, h);
+          next.height = Math.max(w, h);
+          next.landscape = landscape;
+        }
+        next = withPageMarginsMm(next, margins);
+        const error = pageMarginsError(next);
+        if (error) {
+          throw new AgentToolError('INVALID_ARGS', `section ${sectionIdx}: margins do not fit the paper`);
+        }
+        pageDef = {
+          next: next as unknown as Record<string, unknown>,
+          prev: prevDef as unknown as Record<string, unknown>,
+        };
+      }
+      let columns: Extract<ObjectOp, { type: 'pageLayout' }>['columns'];
+      if (columnArg) {
+        const prevCol = wasm.getColumnDef(sectionIdx);
+        columns = {
+          next: {
+            columnCount: columnArg.count,
+            columnType: prevCol.columnType,
+            sameWidth: 1,
+            spacing: columnArg.spacingMm !== null ? mmToHu(columnArg.spacingMm) : prevCol.spacing,
           },
-        },
-      } : {}),
+          prev: {
+            columnCount: prevCol.columnCount,
+            columnType: prevCol.columnType,
+            sameWidth: prevCol.sameWidth ? 1 : 0,
+            spacing: prevCol.spacing,
+          },
+        };
+      }
+      ops.push({
+        type: 'pageLayout', sectionIdx,
+        ...(pageDef ? { pageDef } : {}),
+        ...(columns ? { columns } : {}),
+      });
+    }
+    const stage = () => {
+      let changeSetId = '';
+      for (const obj of ops) changeSetId = this.deps.pending.addObjectOp(agent, obj).changeSetId;
+      return changeSetId;
     };
-    const r = this.deps.pending.addObjectOp(agent, obj);
-    return { revision: this.revision, changeSetId: r.changeSetId, applied: true, pageCount: this.deps.wasm.pageCount };
+    const changeSetId = ops.length === 1
+      ? stage()
+      : this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(stage, opts));
+    return {
+      revision: this.revision,
+      changeSetId,
+      applied: true,
+      pageCount: wasm.pageCount,
+      ...(ops.length > 1 ? { sections: ops.length } : {}),
+    };
   }
 
   private editHeaderFooter(args: Record<string, unknown>, agent: AgentName): unknown {

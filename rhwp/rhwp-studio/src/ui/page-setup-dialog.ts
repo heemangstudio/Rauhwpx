@@ -4,8 +4,10 @@ import type { WasmBridge } from '@/core/wasm-bridge';
 import type { PageDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
+import { PAPER_SIZES } from '@/core/layout-presets';
 import {
   PAGE_MARGIN_KEYS,
+  applyPageDefs,
   buildPageDefFromForm,
   formatPageMm,
   type PageSetupFields,
@@ -27,16 +29,6 @@ function matchesPaperPreset(
     samePaperSize(width, presetHeight) && samePaperSize(height, presetWidth)
   );
 }
-
-/** 용지 프리셋 (이름 → [폭, 길이] HWPUNIT) */
-const PAPER_PRESETS: [string, number, number][] = [
-  ['A4',     59528,  84188],
-  ['A3',     84188, 119055],
-  ['B4',     72850, 103040],
-  ['B5',     51502,  72850],
-  ['Letter', 62208,  80496],
-  ['Legal',  62208, 102816],
-];
 
 /** 용지 방향 SVG 아이콘 (세로/가로) */
 const ORIENT_ICONS: Record<string, string> = {
@@ -97,7 +89,7 @@ export class PageSetupDialog extends ModalDialog {
     this.paperSelect = document.createElement('select');
     this.paperSelect.className = 'dialog-select';
     this.paperSelect.style.width = '100px';
-    for (const [name] of PAPER_PRESETS) {
+    for (const [name] of PAPER_SIZES) {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
@@ -231,31 +223,13 @@ export class PageSetupDialog extends ModalDialog {
       this.errorMessage.hidden = false;
       return false;
     }
-    const newDef: PageDef = result.pageDef;
-    const sections = this.scopeSelect.value === 'all'
-      ? Array.from({ length: Math.max(1, this.wasm.getSectionCount()) }, (_, i) => i)
-      : [this.sectionIdx];
-
     // [편집 용지 이관] 쪽 정의 변경을 snapshot 으로 라우팅해 undo 가능(#2077 수식 속성 동형).
     // 문서 전체는 한 스냅샷 안에서 모든 구역에 적용해 한 번의 되돌리기로 복구된다.
-    // services 미주입 환경(구 호출부)에서만 직접 적용 fallback.
-    const apply = (): boolean => {
-      let ok = true;
-      for (const section of sections) {
-        ok = this.wasm.setPageDef(section, newDef).ok && ok;
-      }
-      return ok;
-    };
-    const ih = this.services?.getInputHandler();
-    if (ih) {
-      ih.executeOperation({
-        kind: 'snapshot',
-        operationType: 'pageSetup',
-        operation: () => { apply(); return ih.getCursorPosition(); },
-      });
-    } else if (apply()) {
-      this.eventBus.emit('document-changed');
-    }
+    applyPageDefs(
+      { wasm: this.wasm, inputHandler: this.services?.getInputHandler(), eventBus: this.eventBus },
+      this.scopeSelect.value === 'all' ? 'all' : this.sectionIdx,
+      result.pageDef,
+    );
     return true;
   }
 
@@ -273,7 +247,7 @@ export class PageSetupDialog extends ModalDialog {
     // landscape면 실제 표시 크기로 교환
     if (pd.landscape) { [w, h] = [h, w]; }
 
-    const matched = PAPER_PRESETS.find(([, pw, ph]) =>
+    const matched = PAPER_SIZES.find(([, pw, ph]) =>
       matchesPaperPreset(pd.width, pd.height, pw, ph)
     );
     this.paperSelect.value = matched ? matched[0] : 'custom';
@@ -298,7 +272,7 @@ export class PageSetupDialog extends ModalDialog {
 
   private onPaperChange(): void {
     const val = this.paperSelect.value;
-    const preset = PAPER_PRESETS.find(([name]) => name === val);
+    const preset = PAPER_SIZES.find(([name]) => name === val);
     if (preset) {
       const landscape = this.landscapeRadios[1].checked;
       const [w, h] = landscape ? [preset[2], preset[1]] : [preset[1], preset[2]];

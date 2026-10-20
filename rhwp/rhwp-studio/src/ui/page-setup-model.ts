@@ -1,4 +1,5 @@
-import type { PageDef } from '@/core/types';
+import type { PageDef, DocumentPosition } from '@/core/types';
+import { pageMarginsError } from '../core/layout-presets.ts';
 
 const HWPUNIT_PER_MM = 7200 / 25.4; // ≈283.46
 
@@ -64,23 +65,57 @@ export function buildPageDefFromForm(
     const text = form.margins[key];
     margins[key] = text === shown.margins[key] ? original[key] : Math.max(0, mmTextToHwpunit(text));
   }
-  if (margins.marginLeft + margins.marginRight + margins.marginGutter >= width) {
-    return { ok: false, error: '왼쪽·오른쪽·제본 여백의 합이 용지 폭보다 작아야 합니다.' };
-  }
-  if (margins.marginTop + margins.marginBottom + margins.marginHeader + margins.marginFooter >= height) {
-    return { ok: false, error: '위쪽·아래쪽·머리말·꼬리말 여백의 합이 용지 길이보다 작아야 합니다.' };
-  }
 
   // landscape 는 PageDef 에 원래(세로) 크기로 저장한다.
   const [storedWidth, storedHeight] = form.landscape ? [height, width] : [width, height];
-  return {
-    ok: true,
-    pageDef: {
-      width: storedWidth,
-      height: storedHeight,
-      ...margins,
-      landscape: form.landscape,
-      binding: form.binding,
-    },
+  const pageDef: PageDef = {
+    width: storedWidth,
+    height: storedHeight,
+    ...margins,
+    landscape: form.landscape,
+    binding: form.binding,
   };
+  const error = pageMarginsError(pageDef);
+  return error ? { ok: false, error } : { ok: true, pageDef };
+}
+
+export interface PageDefApplyTarget {
+  wasm: {
+    setPageDef(sectionIdx: number, def: PageDef): { ok: boolean };
+    setPageDefAll(patch: Partial<PageDef>): { ok: boolean };
+  };
+  inputHandler?: {
+    executeOperation(desc: {
+      kind: 'snapshot';
+      operationType: string;
+      operation: () => DocumentPosition;
+    }): void;
+    getCursorPosition(): DocumentPosition;
+  } | null;
+  eventBus: { emit(event: string): void };
+}
+
+/**
+ * 쪽 정의를 한 번의 되돌리기 단위로 적용한다(편집 용지·쪽 여백 프리셋 공용).
+ * `scope` 가 'all' 이면 모든 구역에 같은 키만 덮어쓰고 재조판은 한 번만 한다.
+ * 입력 처리기가 없으면(구 호출부) 기록 없이 바로 적용하고 문서 변경만 알린다.
+ */
+export function applyPageDefs(
+  target: PageDefApplyTarget,
+  scope: 'all' | number,
+  patch: PageDef | Partial<PageDef>,
+): void {
+  const apply = (): boolean => scope === 'all'
+    ? target.wasm.setPageDefAll(patch).ok
+    : target.wasm.setPageDef(scope, patch as PageDef).ok;
+  const ih = target.inputHandler;
+  if (ih) {
+    ih.executeOperation({
+      kind: 'snapshot',
+      operationType: 'pageSetup',
+      operation: () => { apply(); return ih.getCursorPosition(); },
+    });
+  } else if (apply()) {
+    target.eventBus.emit('document-changed');
+  }
 }

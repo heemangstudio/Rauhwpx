@@ -68,6 +68,14 @@ export const BATCHABLE_READ_TOOL_NAMES = Object.freeze([
   'verify_changes',
 ]);
 
+/**
+ * set_page_layout marginPreset — 한컴 쪽 여백 목록 순서. 값(mm)은 스튜디오
+ * src/core/layout-presets.ts 의 PAGE_MARGIN_PRESETS 에만 있다(같은 id 목록이어야 한다).
+ */
+export const PAGE_MARGIN_PRESET_IDS = Object.freeze([
+  'default', 'narrow1-hf', 'narrow2-hf', 'wide-hf', 'narrow', 'wide',
+]);
+
 // 숫자 범위는 스튜디오가 검증하고 오류에 범위를 담아 돌려주므로 스키마에는 두지 않는다
 // (tablePropsParam 과 같은 정책 — 크기 한도 안에 들어가려는 목적도 있다).
 export function cellParam() {
@@ -1520,13 +1528,15 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'set_page_layout',
-    description: `Set a section's paper (named or custom mm), orientation, margins and columns. ${WRITE_POINTER}`,
+    description: `Set paper (named or custom mm), orientation, margins and columns for sectionIdx, or for every section with allSections. marginPreset applies a Hancom margin preset; marginsMm fields override it. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
-      sectionIdx: z.number().int(),
+      sectionIdx: z.number().int().optional(),
+      allSections: z.boolean().optional(),
+      marginPreset: z.enum(PAGE_MARGIN_PRESET_IDS).optional(),
       paper: z.union([
-        z.enum(['A4', 'A3', 'B5', 'Letter']),
+        z.enum(['A4', 'A3', 'B4', 'B5', 'Letter', 'Legal']),
         z.object({ widthMm: z.number().positive(), heightMm: z.number().positive() }),
       ]).optional(),
       landscape: z.boolean().optional(),

@@ -20,7 +20,7 @@
 /** 문서 IR(직렬화 결과)을 바꾸는 WasmBridge 공개 메서드 전수. */
 export const MUTATING_METHODS: readonly string[] = [
   // 쪽/구역/다단
-  'setPageDef', 'setSectionDef', 'setSectionDefAll', 'setPageBorderFill', 'setColumnDef',
+  'setPageDef', 'setPageDefAll', 'setSectionDef', 'setSectionDefAll', 'setPageBorderFill', 'setColumnDef',
   // 본문 텍스트/문단
   'insertText', 'insertTextLogical', 'replaceBodyTextLocal', 'deleteText', 'deleteRange', 'deleteRangeAcrossSections',
   'splitParagraph', 'splitParagraphLogical', 'mergeParagraph', 'insertParagraph', 'deleteParagraph',
@@ -67,7 +67,7 @@ export const MUTATING_METHODS: readonly string[] = [
   'applyCharFormatInCell', 'applyCharFormatInCellByPath',
   'setCharShapeIdInCell', 'setCharShapeIdInCellByPath',
   'setCharShapeRuns', 'setCharShapeRunsInCellByPath',
-  'applyParaFormat', 'applyParaFormatAcrossSections', 'setParaShapeId',
+  'applyParaFormat', 'applyParaFormatAcrossSections', 'applyDocumentParaSpacing', 'setParaShapeId',
   'applyParaFormatInCell', 'setCellParaShapeId',
   'applyParaFormatInCellByPath', 'setCellParaShapeIdByPath',
   // 스타일/번호 정의 (DocInfo 변이 포함)

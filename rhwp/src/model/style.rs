@@ -932,6 +932,11 @@ impl ParaShapeMods {
         }
         if let Some(v) = self.line_spacing {
             ps.line_spacing = v;
+            // 5.0.2.5 이상 문서는 줄 간격을 line_spacing_v2 에도 담는다. 둘이 어긋나면
+            // HWP 저장본을 한컴이 옛 줄 간격으로 연다. v2 를 쓰지 않는 문서(0)는 그대로 둔다.
+            if ps.line_spacing_v2 != 0 && v >= 0 {
+                ps.line_spacing_v2 = v as u32;
+            }
         }
         if let Some(v) = self.line_spacing_type {
             ps.line_spacing_type = v;

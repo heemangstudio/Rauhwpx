@@ -1093,6 +1093,12 @@ export class WasmBridge {
     return JSON.parse(this.doc.setPageDef(sectionIdx, JSON.stringify(pageDef)));
   }
 
+  /** 모든 구역의 쪽 정의에 같은 키만 덮어쓰고 한 번만 재조판한다. */
+  setPageDefAll(patch: Partial<PageDef>): { ok: boolean; pageCount: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.setPageDefAll(JSON.stringify(patch)));
+  }
+
   getSectionDef(sectionIdx: number): SectionDef {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getSectionDef(sectionIdx));
@@ -3368,6 +3374,18 @@ export class WasmBridge {
   applyParaFormatAcrossSections(startSec: number, startPara: number, endSec: number, endPara: number, propsJson: string): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.applyParaFormatAcrossSections(startSec, startPara, endSec, endPara, propsJson);
+  }
+
+  /** 서식 › 문단 간격: 본문 "글자에 따라" 문단 전체의 줄 간격·문단 간격 (원시값) */
+  applyDocumentParaSpacing(spacing: { lineSpacing: number; spacingBefore: number; spacingAfter: number }): { ok: boolean; changed: number; pageCount: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.applyDocumentParaSpacing(JSON.stringify(spacing)));
+  }
+
+  /** 문단 간격 프리셋 대상 문단의 공통 값 (섞였으면 null) */
+  getDocumentParaSpacing(): { count: number; lineSpacing: number | null; spacingBefore: number | null; spacingAfter: number | null } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.getDocumentParaSpacing());
   }
 
   setParaShapeId(sec: number, para: number, paraShapeId: number): string {
