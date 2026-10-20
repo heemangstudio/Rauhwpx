@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path';
 
 /** site-api, deployed as the Railway service `rau-credits`. */
-const SITE_API_ORIGIN = 'https://rau-credits-production.up.railway.app';
+export const SITE_API_ORIGIN = 'https://rau-credits-production.up.railway.app';
 export const UNIQUE_INSTALL_FILE = 'unique-install.json';
 export const UNIQUE_INSTALLS_JSON_PATH = '/v1/unique-installs';
 export const UNIQUE_INSTALLS_PAGE_PATH = '/unique-installs';

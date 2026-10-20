@@ -24,6 +24,24 @@ export function resolveUniqueInstallPingKey(env = process.env) {
     : '';
 }
 
+/** Issue reports, one directory each plus index.json. */
+export function resolveFeedbackDir(env = process.env) {
+  return path.join(resolveDataDir(env), 'feedback');
+}
+
+export function resolveFeedbackProofKey(env = process.env) {
+  return typeof env.RAU_FEEDBACK_PROOF_KEY === 'string' ? env.RAU_FEEDBACK_PROOF_KEY.trim() : '';
+}
+
+/** RAU_FEEDBACK_MAX_BYTES caps all stored reports together; undefined means the module default. */
+export function resolveFeedbackMaxBytes(env = process.env) {
+  const text = typeof env.RAU_FEEDBACK_MAX_BYTES === 'string' ? env.RAU_FEEDBACK_MAX_BYTES.trim() : '';
+  if (!text) return undefined;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`RAU_FEEDBACK_MAX_BYTES must be a positive integer: ${text}`);
+  return value;
+}
+
 export function resolveLicensesDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'licenses.json');
 }

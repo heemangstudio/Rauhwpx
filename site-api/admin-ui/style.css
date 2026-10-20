@@ -226,3 +226,44 @@ ul.devices li { display: contents; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ─────────── 제보 ─────────── */
+h2 .count { margin-left: 8px; padding: 1px 6px; background: var(--accent); color: var(--navy); font-size: 11px; }
+h2 .storage { margin-left: 12px; color: var(--bad); }
+.inbox { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 16px; align-items: start; }
+.inbox-list { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow-y: auto; border-top: 2px solid var(--deep); }
+.inbox-list li { border-bottom: 1px solid var(--line); }
+.inbox-list button.report {
+  display: flex; align-items: center; gap: 0; width: 100%; min-height: 0; padding: 10px 8px; text-align: left;
+  clip-path: none; box-shadow: none; background: none;
+}
+.inbox-list button.report:hover:not(:disabled) { box-shadow: none; background: var(--night-2); }
+.inbox-list button.report[aria-current="true"] { background: var(--night-3); box-shadow: inset 2px 0 0 var(--accent); }
+.inbox-list .what { display: flex; flex-direction: column; gap: 2px; flex: 1 1 0; min-width: 0; }
+.inbox-list .what span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-list li.new .line { font-weight: 650; }
+.inbox-list li.resolved .line { color: var(--meta); }
+.inbox-detail:empty { display: none; }
+.inbox-detail { min-width: 0; padding: 14px 16px; background: var(--night-2); clip-path: var(--notch); }
+.inbox-detail .head { display: flex; align-items: center; gap: 12px; }
+.inbox-detail .head .actions { display: flex; gap: 6px; margin-left: auto; }
+a.button {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; clip-path: var(--notch);
+  background: var(--night-3); box-shadow: inset 0 0 0 2px var(--deep); color: var(--text); text-decoration: none;
+}
+a.button:hover { box-shadow: inset 0 0 0 2px var(--sea); }
+.inbox-detail .message { margin: 14px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+button.thumb { display: block; min-height: 0; padding: 0; margin-bottom: 14px; background: none; clip-path: none; box-shadow: inset 0 0 0 2px var(--deep); cursor: zoom-in; }
+button.thumb img { display: block; max-width: 100%; max-height: 300px; padding: 2px; }
+dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0 0 14px; }
+dl.meta dt { color: var(--meta); font: 400 12px/1.6 var(--pixel); }
+dl.meta dd { margin: 0; overflow-wrap: anywhere; }
+pre.log { max-height: 320px; margin: 0 0 14px; padding: 10px 12px; overflow: auto; background: var(--night); box-shadow: inset 0 0 0 1px var(--line); white-space: pre; font-size: 11px; line-height: 1.5; }
+.files { display: flex; flex-wrap: wrap; gap: 6px; }
+.files .muted { margin-left: 4px; }
+dialog.shot { max-width: 96vw; max-height: 96vh; padding: 0; border: 0; background: var(--night); overflow: auto; cursor: zoom-out; }
+dialog.shot::backdrop { background: rgba(5, 8, 12, 0.86); }
+dialog.shot img { display: block; }
+@media (max-width: 760px) {
+  .inbox { grid-template-columns: 1fr; }
+}

@@ -42,6 +42,17 @@
       <p id="attention-error" class="error" role="alert"></p>
     </div>
 
+    <section aria-labelledby="feedback-title">
+      <h2 id="feedback-title">제보<span id="feedback-new" class="count" hidden></span><span id="feedback-storage" class="muted storage" hidden></span></h2>
+      <p id="feedback-error" class="error" role="alert"></p>
+      <div id="inbox" class="inbox" hidden>
+        <ol id="feedback-list" class="inbox-list" aria-label="제보 목록"></ol>
+        <article id="feedback-detail" class="inbox-detail"></article>
+      </div>
+      <p id="feedback-empty" class="muted" hidden>아직 제보가 없어요.</p>
+      <dialog id="shot-dialog" class="shot"><img id="shot-full" alt="스크린샷 원본"></dialog>
+    </section>
+
     <section aria-labelledby="customer-title">
       <h2 id="customer-title">고객</h2>
       <div class="row">

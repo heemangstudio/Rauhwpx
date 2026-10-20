@@ -180,6 +180,10 @@ export interface RhwpDesktopApi {
   createAgentSession?: () => Promise<{ sessionId: string }>;
   getAgentSessionContext?: (sessionId: string) => Promise<RendererSessionContext>;
   releaseAgentSession?: (sessionId: string) => Promise<boolean>;
+  /** 문제 보고. 메인이 창을 찍고 진단 기록을 붙여 site-api 로 보낸다. */
+  issueReport?: import('./ui/issue-report/types.ts').DesktopIssueReportApi;
+  /** 렌더러 오류를 메인의 진단 기록에 남긴다. */
+  logDiagnostics?: (entries: Array<{ level: 'error' | 'warn'; text: string }>) => void;
   getLaunchFiles?: () => Promise<NativeFileHandleDescriptor[]>;
   getLaunchGeneratedDocument?: () => Promise<{
     launchDocumentId: string;
@@ -483,6 +487,19 @@ function validSessionContext(value: unknown): value is RendererSessionContext {
 
 function desktopHost(win?: DesktopHost): DesktopHost | undefined {
   return win ?? (typeof globalThis !== 'undefined' ? (globalThis as DesktopHost) : undefined);
+}
+
+/** 문제 보고(데스크톱). 없으면 null — 웹·확장에서는 문제 보고 명령을 두지 않는다. */
+export function desktopIssueReportApi(win?: DesktopHost): import('./ui/issue-report/types.ts').DesktopIssueReportApi | null {
+  const api = desktopHost(win)?.rhwpDesktop?.issueReport;
+  return api && typeof api.prepare === 'function' && typeof api.submit === 'function' ? api : null;
+}
+
+/** 렌더러 오류를 메인의 진단 기록으로 보내는 함수. 데스크톱이 아니면 undefined. */
+export function desktopDiagnosticsLogger(win?: DesktopHost): RhwpDesktopApi['logDiagnostics'] {
+  const api = desktopHost(win)?.rhwpDesktop;
+  const log = api?.logDiagnostics;
+  return typeof log === 'function' ? (entries) => log(entries) : undefined;
 }
 
 function isDevBuild(): boolean {

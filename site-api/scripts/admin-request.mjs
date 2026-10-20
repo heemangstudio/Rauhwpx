@@ -6,8 +6,11 @@ export function siteApiBase(env = process.env) {
   return (env.SITE_API_BASE || DEFAULT_SITE_API_BASE).replace(/\/+$/, '');
 }
 
-/** GET with `query` as the query string, or POST `body` as JSON. Resolves to `{ status, ok, text, json }`. */
-export async function adminRequest({ base, token, method = 'GET', path, query, body, fetchImpl = fetch }) {
+/**
+ * GET with `query` as the query string, or POST `body` as JSON. Resolves to `{ status, ok, text, json }`,
+ * or with `binary` to `{ status, ok, headers, bytes }` so files pass through unchanged.
+ */
+export async function adminRequest({ base, token, method = 'GET', path, query, body, binary = false, fetchImpl = fetch }) {
   const qs = query ? new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString() : '';
   const res = await fetchImpl(`${base}${path}${qs ? `?${qs}` : ''}`, {
     method,
@@ -18,6 +21,7 @@ export async function adminRequest({ base, token, method = 'GET', path, query, b
     ...(method === 'GET' ? {} : { body: JSON.stringify(body ?? {}) }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
+  if (binary) return { status: res.status, ok: res.ok, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) };
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch {}

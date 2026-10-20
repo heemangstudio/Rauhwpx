@@ -1,10 +1,10 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { createMemoryStore } from './store.mjs';
+import { createTelegramSender } from './telegram.mjs';
 
 const MAX_EMAIL_BYTES = 254;
 const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
-const NOTIFY_TIMEOUT_MS = 5000;
 
 function waitlistError(code, message) {
   const error = new Error(message);
@@ -48,21 +48,13 @@ export function createWaitlistService({
     return result;
   }
 
-  async function notify(email) {
-    if (!telegramBotToken || !telegramChatId) return;
-    try {
-      const response = await fetchImpl(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: telegramChatId, text: `HamaEditor 체험 신청: ${email}` }),
-        signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
-      });
-      if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);
-    } catch (error) {
-      // 토큰이 로그에 남지 않도록 메시지만 적는다.
-      process.stderr.write(`[site-api] waitlist notify failed: ${String(error?.message ?? error).replace(telegramBotToken, '***')}\n`);
-    }
-  }
+  const sendTelegram = createTelegramSender({
+    botToken: telegramBotToken,
+    chatId: telegramChatId,
+    fetchImpl,
+    label: 'waitlist',
+  });
+  const notify = (email) => sendTelegram(`HamaEditor 체험 신청: ${email}`);
 
   async function join(body) {
     const email = parseWaitlistEmail(body);

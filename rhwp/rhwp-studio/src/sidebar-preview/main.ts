@@ -541,6 +541,8 @@ const sidebar = initAgentSidebar({
     showMockDocument(`preview-new-${createdDocuments}`, `새 문서 ${createdDocuments}.hwpx`);
   },
   openDocumentFile: () => report('File picker placeholder'),
+  // 데스크톱의 문제 보고. 끊김 안내와 끊긴 턴 줄의 '문제 보고' 단추를 보이게 한다.
+  reportIssue: () => report('Issue report placeholder'),
   // 문서 없는 채팅에 문서 잇기 — 편집기처럼 연결을 알리고, 표본 문서를 연 뒤 이 채팅에 잇는다.
   linkDocument: (target) => linkPreviewDocument(target),
   detachDocument: () => detachPreviewDocument(),

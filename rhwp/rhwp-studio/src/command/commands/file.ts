@@ -1152,7 +1152,7 @@ async function runPdfPrint(services: CommandServices): Promise<void> {
     if (dialogVisible && dialog) {
       dialog.showError(msg);
     } else {
-      showToast({ message: `PDF 준비에 실패했습니다: ${msg}`, durationMs: 5000 });
+      showToast({ message: `PDF 준비에 실패했습니다: ${msg}`, durationMs: 5000, report: true });
     }
   } finally {
     if (originalDocumentTitle !== null) {
@@ -1231,7 +1231,7 @@ async function runDesktopPdfExport(
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[file:print-to-pdf]', msg);
     if (statusEl) statusEl.textContent = `PDF 내보내기 실패: ${msg}`;
-    showToast({ message: `PDF 내보내기에 실패했습니다: ${msg}`, durationMs: 5000 });
+    showToast({ message: `PDF 내보내기에 실패했습니다: ${msg}`, durationMs: 5000, report: true });
   } finally {
     surface?.close();
     printJobActive = false;
@@ -1292,7 +1292,7 @@ async function runPrintPreview(services: CommandServices): Promise<void> {
     if (err instanceof PrintPreviewBlockedError) {
       alert('인쇄 미리보기 팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.');
     } else {
-      showToast({ message: `인쇄 미리보기에 실패했습니다: ${msg}`, durationMs: 5000 });
+      showToast({ message: `인쇄 미리보기에 실패했습니다: ${msg}`, durationMs: 5000, report: true });
     }
   } finally {
     if (!keepPreviewOpen) surface?.close();

@@ -800,7 +800,31 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   background: var(--ag-primary-bg-hover);
 }
 
+/* 끊김 안내의 문제 보고 — 다시 연결 아래의 조용한 보조 단추. */
+.ag-conn-report {
+  height: 28px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-muted);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-conn-report:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-conn-report[hidden] {
+  display: none;
+}
+
 .ag-conn-retry:focus-visible,
+.ag-conn-report:focus-visible,
+.ag-turn-interrupted-report:focus-visible,
 .ag-conn-command-copy:focus-visible,
 .ag-hub-retry-btn:focus-visible {
   outline: var(--ag-focus-ring);
@@ -980,6 +1004,24 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-turn-interrupted-resume[aria-disabled='true'] {
   opacity: 0.5;
+}
+
+.ag-turn-interrupted-report {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-muted);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-interrupted-report:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
 }
 
 /* 사이드바 폭이 좁아져도 요약은 한 줄을 유지한다. 각 flex item 이
