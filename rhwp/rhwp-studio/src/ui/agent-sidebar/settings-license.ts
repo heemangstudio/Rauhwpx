@@ -44,12 +44,16 @@ export interface DesktopLicenseApi {
   getStatus: () => Promise<LicenseStatus>;
   checkNow: () => Promise<LicenseStatus>;
   deactivate: () => Promise<{ ok: boolean; message?: string; status: LicenseStatus }>;
+  /** 키를 이 창에서 바로 활성화한다. 처음 설정의 라이선스 단계가 쓴다. */
+  activate: (key: string) => Promise<{ ok: boolean; code?: string; message?: string; status: LicenseStatus }>;
   openActivation: () => Promise<boolean>;
   openPricing: () => Promise<void>;
-  /** 결제 수단을 바꾸는 Groble 페이지를 연다. 예전 메인 프로세스에는 없다. */
+  /** Groble 주문 페이지를 연다. 결제 수단 바꾸기와 구독 관리(해지)가 쓴다. 예전 메인 프로세스에는 없다. */
   openPaymentFix?: () => Promise<void>;
   /** 문의 메일을 쓴다. 예전 메인 프로세스에는 없다. */
   openSupport?: () => Promise<void>;
+  /** 이 기기의 키를 클립보드에 복사한다. 키는 메인이 바로 쓰고 렌더러로 오지 않는다. 예전 메인 프로세스에는 없다. */
+  copyKey?: () => Promise<boolean>;
   /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
   beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
@@ -58,6 +62,11 @@ export interface DesktopLicenseApi {
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_SECONDS = 3600;
+
+/** HAMA- 로 시작하고 다섯 묶음이 다 찼는지. 붙여 넣은 키를 바로 확인할지 정한다. */
+export function looksLikeFullKey(raw: string): boolean {
+  return /^HAMA(-?[0-9A-Z]{5}){5}$/.test(raw.trim().toUpperCase().replace(/\s+/g, ''));
+}
 
 /**
  * 체험 남은 시간. '2일 13시간' → '13시간 42분' → 마지막 한 시간은 '42분 15초' → '9초'.
@@ -230,7 +239,14 @@ function button(label: string): HTMLButtonElement {
   return node;
 }
 
-export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HTMLElement; dispose: () => void } {
+/**
+ * 라이선스 탭의 내용. 상태 카드 아래에 버튼을 둔다.
+ * 라이선스를 보지 않는 빌드(unenforced)면 숨기고 onAvailableChange 로 알린다.
+ */
+export function createLicenseSettingsSection(
+  api: DesktopLicenseApi,
+  { onAvailableChange }: { onAvailableChange?: (available: boolean) => void } = {},
+): { root: HTMLElement; dispose: () => void } {
   const root = document.createElement('section');
   root.className = 'ag-settings-section ag-settings-license-section';
   const head = document.createElement('div');
@@ -250,6 +266,14 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const detail = document.createElement('span');
   detail.className = 'ag-settings-control-description';
   detail.setAttribute('role', 'status');
+  // 가린 키(HAMA-…2000)를 누르면 전체 키를 복사한다.
+  const keyButton = document.createElement('button');
+  keyButton.type = 'button';
+  keyButton.className = 'ag-settings-license-key';
+  keyButton.title = '키 복사';
+  keyButton.hidden = true;
+  const detailText = document.createElement('span');
+  detail.append(keyButton, detailText);
   copy.append(title, detail);
   if (api.openSupport) {
     const contact = document.createElement('span');
@@ -269,10 +293,15 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
   const check = button('지금 확인');
   const deactivate = button('이 기기 비활성화');
   const fixPayment = button('결제 수단 바꾸기');
-  actions.append(fixPayment, activate, buy, check, deactivate);
-  row.append(copy, actions);
+  // 연간 구독 키: 해지·결제 수단은 Groble 주문 페이지에서 관리한다.
+  const manage = button('구독 관리');
+  actions.append(fixPayment, manage, activate, buy, check, deactivate);
+  row.append(copy);
   body.append(row);
-  root.append(head, body);
+  root.append(head, body, actions);
+
+  let maskedKey = '';
+  let copiedTimer: number | undefined;
 
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
@@ -281,7 +310,12 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
     title.textContent = status.state === 'trial_expired'
       ? '무료 체험 만료'
       : renewalPrompt(status)?.title ?? summary.title;
-    detail.textContent = summary.detail;
+    maskedKey = status.license?.maskedKey ?? '';
+    const keyFirst = Boolean(maskedKey && api.copyKey && summary.detail.startsWith(maskedKey));
+    keyButton.hidden = !keyFirst;
+    keyButton.setAttribute('aria-label', `라이선스 키 복사, ${maskedKey}`);
+    if (keyFirst && !copiedTimer) keyButton.textContent = maskedKey;
+    detailText.textContent = keyFirst ? summary.detail.slice(maskedKey.length) : summary.detail;
     activate.hidden = !summary.showActivate;
     buy.hidden = !summary.showActivate;
     check.hidden = !status.license;
@@ -289,12 +323,28 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
     const prompt = renewalPrompt(status);
     fixPayment.hidden = !prompt || !api.openPaymentFix;
     if (prompt) fixPayment.textContent = prompt.action;
-    root.hidden = status.state === 'unenforced';
+    // 결제 안내가 같은 페이지를 열고 있으면 겹쳐 두지 않는다.
+    manage.hidden = !status.license?.licenseExpiresAt || !api.openPaymentFix || !fixPayment.hidden;
+    const available = status.state !== 'unenforced';
+    root.hidden = !available;
+    onAvailableChange?.(available);
   }
 
+  keyButton.addEventListener('click', () => {
+    void api.copyKey?.().then((copied) => {
+      if (!copied) return;
+      keyButton.textContent = '복사됨';
+      window.clearTimeout(copiedTimer);
+      copiedTimer = window.setTimeout(() => {
+        copiedTimer = undefined;
+        keyButton.textContent = maskedKey;
+      }, 1400);
+    });
+  });
   activate.addEventListener('click', () => { void api.openActivation(); });
   buy.addEventListener('click', () => { void api.openPricing(); });
   fixPayment.addEventListener('click', () => { void api.openPaymentFix?.(); });
+  manage.addEventListener('click', () => { void api.openPaymentFix?.(); });
   check.addEventListener('click', () => {
     check.disabled = true;
     void api.checkNow().then(render).finally(() => { check.disabled = false; });
@@ -304,11 +354,17 @@ export function createLicenseSettingsSection(api: DesktopLicenseApi): { root: HT
     deactivate.disabled = true;
     void api.deactivate().then((result) => {
       render(result.status);
-      if (!result.ok && result.message) detail.textContent = result.message;
+      if (!result.ok && result.message) {
+        keyButton.hidden = true;
+        detailText.textContent = result.message;
+      }
     }).finally(() => { deactivate.disabled = false; });
   });
 
   const unsubscribe = api.onChange(render);
-  void api.getStatus().then(render).catch(() => { root.hidden = true; });
+  void api.getStatus().then(render).catch(() => {
+    root.hidden = true;
+    onAvailableChange?.(false);
+  });
   return { root, dispose: unsubscribe };
 }

@@ -1,9 +1,10 @@
 /**
- * 첫 실행 설정 — 테마, 모델 연결, (데스크톱이면) 자동 버그 수정, (필요하면) 글꼴.
+ * 첫 실행 설정 — 테마, 모델 연결, (필요하면) 글꼴, (데스크톱에서 키가 없으면) 라이선스, (데스크톱이면) 자동 버그 수정.
  *
  * 화면에는 고를 것만 두고 설명은 하마의 말풍선 한 줄로 한다. 실제 로그인·설치는 설정 모달이
  * 맡는다. 문체 보정은 여기서 묻지 않고 첫 대화 뒤 사이드바의 작은 칩이 권한다.
  * 부트 화면이 사라진 뒤에 열리고, 첫 실행이 문서를 열면서 시작됐으면 열지 않고 미룬다.
+ * 라이선스 장에서 키를 활성화하면 선물 크레딧 창(special-event)이 이 창 위에 바로 뜰 수 있게 비켜 준다.
  */
 import '../agent-sidebar/motion.css';
 import './initial-setup.css';
@@ -28,7 +29,9 @@ import {
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
 import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
-import { holdInitialSetup, releaseInitialSetup } from './active.ts';
+import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
+import { createLicenseStep, licenseLine, needsLicenseStep } from './license-step.ts';
+import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
   loadInitialSetup,
@@ -50,6 +53,8 @@ import {
 } from './steps.ts';
 
 const FONT_SEARCH_TIMEOUT_MS = 30_000;
+/** 활성화를 축하한 뒤 마지막 장면으로 넘어가기까지. */
+const LICENSED_HOLD_MS = 1_400;
 
 const THEME_CHOICES: ReadonlyArray<{ mode: ThemeMode; label: string }> = [
   { mode: 'system', label: '시스템 설정' },
@@ -88,6 +93,8 @@ export interface InitialSetupDeps {
   openExternal?: (url: string) => void;
   /** 자동 버그 수정 단계를 넣을지. 기본은 데스크톱 자동 수정 API 가 있을 때. */
   autofixAvailable?: () => boolean;
+  /** 데스크톱 라이선스. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 라이선스 장이 없다. */
+  license?: DesktopLicenseApi | null;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -119,12 +126,25 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
   let fontSearch: 'idle' | 'searching' | 'found' | 'missing' = 'idle';
+  const licenseApi = deps.license === undefined
+    ? (window as Window & { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null
+    : deps.license;
+  let licenseStatus: LicenseStatus | null = null;
+  let licenseStep = false;
   const fontStepReady = (deps.detectFontStep ?? detectFontStep)()
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind, { autofix: withAutofix });
+      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep });
       renderFonts();
+      renderStep();
+    });
+  // 라이선스 장은 처음 본 상태로 정한다. 이 창에서 활성화해도 장은 그대로 남는다.
+  const licenseStepReady = (licenseApi ? licenseApi.getStatus().catch(() => null) : Promise.resolve(null))
+    .then((status) => {
+      licenseStatus = status;
+      licenseStep = needsLicenseStep(status);
+      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep });
       renderStep();
     });
 
@@ -318,13 +338,34 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   window.addEventListener('focus', onWindowFocus);
 
+  // ── 라이선스: 구매와 키 넣기. 활성화를 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
+  let licensedTimer: number | undefined;
+  const licensePanel = licenseApi
+    ? createLicenseStep({
+      api: licenseApi,
+      status: null,
+      say: (line) => hippo.say(line),
+      cheer: (line) => hippo.cheer(line),
+      onLicensed: () => {
+        markLicensedHere();
+        window.clearTimeout(licensedTimer);
+        licensedTimer = window.setTimeout(() => {
+          if (overlay.isConnected && !celebrating && currentStep() === 'license') void next();
+        }, LICENSED_HOLD_MS);
+      },
+      onStateChange: () => renderStep(),
+    })
+    : null;
+  const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
+
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, autofixPanel, fontsPanel);
+  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, autofixPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,
     autofix: autofixPanel,
     fonts: fontsPanel,
+    license: licenseElement,
   };
 
   const footer = el('footer', 'rhwp-setup-footer');
@@ -389,6 +430,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
     if (step === 'autofix') return HIPPO_LINES.autofix;
+    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : licenseLine(licenseStatus);
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -407,7 +449,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    primary.textContent = last ? '완료' : '다음';
+    // 키 없이 넘어가면 체험으로 쓴다.
+    const later = step === 'license' && !licensePanel?.licensed();
+    primary.textContent = later ? '나중에' : last ? '완료' : '다음';
+    // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.
+    primary.dataset.quiet = later ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
       hippo.say(lineFor(step));
@@ -416,6 +462,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   function focusStep(): void {
     const step = currentStep();
+    if (step === 'license' && licensePanel) {
+      licensePanel.focusTarget().focus({ preventScroll: true });
+      return;
+    }
     const panel = panels[step];
     // 자동 버그 수정은 직접 골라야 켜진다. 아무것도 고르지 않았으면 켜기에 포커스를 두지 않는다.
     const target = panel.querySelector<HTMLElement>('[aria-checked="true"]')
@@ -446,8 +496,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   /* 마지막 장면: 고를 것은 치우고, 하마가 신나서 완료를 알린다. */
   let celebrating = false;
   function showDone(): void {
+    window.clearTimeout(licensedTimer);
     save();
     celebrating = true;
+    // 키를 활성화했으면 선물 창이 이 장면 위에 바로 뜨도록 비켜 준다.
+    if (licensePanel?.licensed()) releaseInitialSetup(overlay);
     for (const panel of Object.values(panels)) panel.hidden = true;
     dialog.dataset.step = 'done';
     dots.hidden = true;
@@ -461,7 +514,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       finish();
       return;
     }
-    if (currentStep() === 'models') await fontStepReady;
+    // 글꼴·라이선스 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
+    await Promise.all([fontStepReady, licenseStepReady]);
     if (stepIndex >= steps.length - 1) {
       showDone();
       return;
@@ -532,6 +586,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     },
     dispose(): void {
       disposed = true;
+      window.clearTimeout(licensedTimer);
+      licensePanel?.dispose();
       hippo.dispose();
       stopAutofixSettings();
       document.removeEventListener('keydown', onKeyDown);

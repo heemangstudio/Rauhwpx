@@ -1,6 +1,6 @@
 import {
   installLicenseGate,
-  mountLicenseBuyButton,
+  mountLicenseRegisterButton,
   showLicenseLockedPrompt,
   showLicenseRequiredPrompt,
 } from './ui/license-gate';
@@ -331,7 +331,7 @@ import {
 } from './agent/foreign-documents.ts';
 import { initAgentSidebar, type DocumentDetachStart } from './ui/agent-sidebar/index.ts';
 import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
-import { isInitialSetupActive, onInitialSetupInactive } from './ui/initial-setup/active.ts';
+import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from './ui/initial-setup/active.ts';
 import { desktopGiftApi } from './ui/special-event/gift.ts';
 import { startSpecialEvent } from './ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from './ui/autofix/autofix-intro.ts';
@@ -3001,7 +3001,7 @@ function installDocumentHome(): void {
       if (!session) return null;
       return renderFirstPage(session.wasm).catch(() => null);
     },
-    mountTopbarTrailing: (slot) => mountLicenseBuyButton(slot),
+    mountTopbarTrailing: (slot) => mountLicenseRegisterButton(slot),
     mountCorner: (slot) => mountUpdateHippo(slot),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
@@ -6418,6 +6418,7 @@ void initPromise.then(() => {
     whenReady: afterBootScreen,
     isSetupActive: isInitialSetupActive,
     onSetupInactive: onInitialSetupInactive,
+    occasion: () => (wasLicensedHere() ? 'license' : 'update'),
     // 내 키가 있으면 쓰는 순서도 고른다. 순서는 허브(Pi)가 저장한다.
     pi: {
       status: async () => (await currentAgentBridge()?.requestPiStatus()) ?? null,

@@ -9,6 +9,7 @@ export function installLicenseHost({
   ipcMain,
   BrowserWindow,
   shell,
+  clipboard,
   manager,
   isTrustedStudioEvent,
   studioWebContents = () => [],
@@ -82,6 +83,13 @@ export function installLicenseHost({
     'license:open-payment-fix': async () => shell.openExternal(paymentFixUrlFrom((await manager.status()).license?.paymentFixUrl)),
     // 고정된 문의 주소만 연다. 렌더러가 주소를 넘기지 않는다.
     'license:open-support': () => shell.openExternal(SUPPORT_MAILTO),
+    // 키는 렌더러로 보내지 않고 메인이 클립보드에 바로 쓴다.
+    'license:copy-key': async () => {
+      const key = await manager.licenseKey();
+      if (!key || !clipboard) return false;
+      clipboard.writeText(key);
+      return true;
+    },
     'license:open-window': () => { openWindow(); return true; },
     'license:close-window': () => { licenseWindow?.close(); return true; },
     'license:begin-expiry-save': async (event) => {

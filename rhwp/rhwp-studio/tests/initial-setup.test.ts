@@ -23,6 +23,9 @@ import {
   shouldSuppressInitialSetup,
 } from '../src/ui/initial-setup/state.ts';
 import { indexHasHancomFonts, planFontStep, planSteps } from '../src/ui/initial-setup/steps.ts';
+import { needsLicenseStep } from '../src/ui/initial-setup/license-step.ts';
+import { looksLikeFullKey } from '../src/ui/agent-sidebar/settings-license.ts';
+import type { LicenseStatus } from '../src/ui/agent-sidebar/settings-license.ts';
 import { BOOT_FINAL_HOLD_MS, remainingBootMs } from '../src/ui/boot-screen.ts';
 
 function memoryStore(seed: Record<string, string> = {}) {
@@ -153,10 +156,23 @@ test('글꼴 단계는 한컴 글꼴을 스스로 찾지 못했을 때만 넣는
   assert.deepEqual(planSteps(null), ['theme', 'models']);
 });
 
-test('자동 버그 수정 단계는 데스크톱에서만 모델 바로 다음에 넣는다', () => {
-  assert.deepEqual(planSteps('missing', { autofix: true }), ['theme', 'models', 'autofix', 'fonts']);
+test('자동 버그 수정 단계는 데스크톱에서만 맨 끝에 넣는다', () => {
+  assert.deepEqual(planSteps('missing', { autofix: true }), ['theme', 'models', 'fonts', 'autofix']);
   assert.deepEqual(planSteps(null, { autofix: true }), ['theme', 'models', 'autofix']);
   assert.deepEqual(planSteps(null, { autofix: false }), ['theme', 'models']);
+});
+
+test('라이선스 장은 키를 넣지 않은 데스크톱 사용자에게만 자동 버그 수정 앞에 뜬다', () => {
+  const status = (state: LicenseStatus['state']) => ({ state } as LicenseStatus);
+  for (const state of ['trial', 'trial_expired', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
+  for (const state of ['licensed', 'unenforced', 'lease_expired', 'revoked', 'expired'] as const) assert.equal(needsLicenseStep(status(state)), false);
+  // 웹 빌드처럼 라이선스 API 가 없으면 장이 없다.
+  assert.equal(needsLicenseStep(null), false);
+  assert.deepEqual(planSteps('missing', { license: true }), ['theme', 'models', 'fonts', 'license']);
+  assert.deepEqual(planSteps(null, { autofix: true, license: true }), ['theme', 'models', 'license', 'autofix']);
+  // 붙여 넣은 키는 다 찼을 때만 바로 확인한다.
+  assert.equal(looksLikeFullKey(' hama-7kq2m-px4rt-9wzlb-c3vnd-h8yja\n'), true);
+  assert.equal(looksLikeFullKey('HAMA-7KQ2M-PX4RT'), false);
 });
 
 test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {

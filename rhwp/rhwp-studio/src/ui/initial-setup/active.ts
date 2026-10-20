@@ -18,6 +18,17 @@ export function releaseInitialSetup(owner: object): void {
   for (const listener of [...listeners]) listener();
 }
 
+/** 이 창에서(처음 설정이나 홈의 라이선스 등록) 키를 활성화했는지. 선물 창이 환영 인사로 뜬다. */
+let licensedHere = false;
+
+export function markLicensedHere(): void {
+  licensedHere = true;
+}
+
+export function wasLicensedHere(): boolean {
+  return licensedHere;
+}
+
 /** 처음 설정이 모두 닫히면 한 번씩 부른다. 해제 함수를 돌려준다. */
 export function onInitialSetupInactive(listener: () => void): () => void {
   listeners.add(listener);

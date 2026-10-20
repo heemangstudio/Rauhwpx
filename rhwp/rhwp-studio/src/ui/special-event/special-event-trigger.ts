@@ -9,7 +9,7 @@
  * 따로(`…:order`) 남겨, 예전 창을 보거나 닫은 사람에게도 한 번 더 뜬다. 이미 받았으면 순서만 고른다.
  */
 import { GiftClaimError, type DesktopGiftApi, type DesktopGiftStatus, type PiGiftOrderAccess } from './gift.ts';
-import type { SpecialEventOptions, SpecialEventResult } from './special-event-popup.ts';
+import type { SpecialEventOccasion, SpecialEventOptions, SpecialEventResult } from './special-event-popup.ts';
 
 export const SPECIAL_EVENT_STORAGE_PREFIX = 'rhwp-special-event:';
 /** 내 키가 있는 사람에게 띄운 순서 고르기 창의 기록. */
@@ -98,6 +98,8 @@ export interface SpecialEventRunnerDeps {
   pi?: PiGiftOrderAccess;
   /** 기다림을 시험에서 줄인다. */
   piStatusWaitMs?: number;
+  /** 띄울 때 정하는 계기. 처음 설정에서 키를 막 활성화했으면 license. 없으면 update. */
+  occasion?: () => SpecialEventOccasion;
 }
 
 /** 받기를 데스크톱에 맡긴다. 거절되면 그 메시지로 실패한다. */
@@ -170,10 +172,11 @@ export function startSpecialEvent(deps: SpecialEventRunnerDeps): { dispose(): vo
     const plan = planSpecialEvent(status, deps.storage, pi);
     if (!plan) return;
     const current = status.event!;
+    const occasion = deps.occasion?.() ?? 'update';
     opened = true;
     if (plan.kind === 'offer') {
       writeSpecialEventRecord(deps.storage, current.id, 'shown');
-      void deps.open({ amountUsd: current.amountUsd, claim: () => claimThrough(deps.gift, current.amountUsd) })
+      void deps.open({ amountUsd: current.amountUsd, occasion, claim: () => claimThrough(deps.gift, current.amountUsd) })
         .then((result) => writeSpecialEventRecord(deps.storage, current.id, result))
         .catch(() => {
           // 창을 열지 못했다. 'shown' 이 남아 다음 실행에도 띄우지 않는다. 받기는 Pi 설정에 있다.
@@ -185,6 +188,7 @@ export function startSpecialEvent(deps: SpecialEventRunnerDeps): { dispose(): vo
     const access = deps.pi!;
     void deps.open({
       amountUsd: current.amountUsd,
+      occasion,
       claim: () => claimThrough(deps.gift, current.amountUsd),
       ...(plan.claimed ? { claimedBalanceUsd: plan.balanceUsd } : {}),
       order: { initial: pi?.giftOrder ?? 'first', choose: (order) => access.setGiftOrder(order) },
