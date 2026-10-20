@@ -18,7 +18,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@anthropic-ai/claude-agent-sdk": "0.3.281",
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@napi-rs/keyring": "2.1.0",
     "@sinclair/typebox": "^0.34.0",
     "@xterm/headless": "6.0.0",
