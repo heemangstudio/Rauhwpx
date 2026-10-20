@@ -1,6 +1,6 @@
 # Website
 
-The public site at [heemangstudios.com](https://heemangstudios.com/) lives here. GitHub Pages publishes this directory when website changes land on `main`. Repository checks validate local links and assets on pull requests, and Pages runs the same check before deployment.
+The public site at [heemangstudios.com](https://heemangstudios.com/) lives here. When website changes land on `main`, `website-deploy.yml` checks it and deploys it to the Railway service `website` (project `rau-credits`). The `Dockerfile` serves it with Caddy (`Caddyfile`): `/pricing` resolves to `pricing.html`, unknown paths get `404.html`, and `www.` redirects to the apex. Repository checks validate local links and assets on pull requests.
 
 To preview it locally, run `python3 -m http.server 8000 --directory website` from the repository root and open `http://localhost:8000`. Run `python3 website/check.py` before submitting site changes.
 
