@@ -95,7 +95,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
     case 'auth_required':
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
-      if (failure.code === 'gift_credits') return '선물 크레딧을 모두 사용했어요';
+      if (failure.code === 'gift_credits') return '무료 크레딧을 다 썼어요';
       return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
       return `${label} 서버가 요청을 처리하지 못했어요`;
