@@ -41,14 +41,20 @@ export class VersionSnapshotCache {
   #key: string | null = null;
   #fingerprint: ContentFingerprint | null = null;
   #content: VersionContent | null = null;
-  /** #content 를 내보내기 직전의 엔진 변경 번호. 그 뒤로 엔진을 바꾼 호출이 없으면 다시 내보내도 같다. */
+  /** #fingerprint 를 낸 내보내기 직전의 엔진 변경 번호. 그 뒤로 엔진을 바꾼 호출이 없으면 다시 내보내도 같다. */
   #contentEpoch = -1;
-  #snapshot: CapturedVersionSnapshot | null = null;
+  /** 비교 스냅샷. 바이트 없이도 만든다(커밋 전 diff). 바이트는 커밋할 때에야 내보낸다. */
+  #snapshot: CompareDocumentSnapshot | null = null;
+  /** #snapshot 을 다 만든 뒤의 엔진 변경 번호. */
+  #snapshotEpoch = -1;
+  /** 바이트와 비교 스냅샷을 묶은 마지막 캡처. 같은 둘이면 같은 객체를 돌려준다. */
+  #captured: CapturedVersionSnapshot | null = null;
   #releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   clear(): void {
     this.#key = null;
     this.#fingerprint = null;
+    this.#contentEpoch = -1;
     this.#release();
   }
 
@@ -61,6 +67,13 @@ export class VersionSnapshotCache {
     this.#releaseTimer = null;
     this.#content = null;
     this.#snapshot = null;
+    this.#captured = null;
+  }
+
+  #compose(content: VersionContent, compareSnapshot: CompareDocumentSnapshot): CapturedVersionSnapshot {
+    const captured = this.#captured;
+    if (captured && captured.bytes === content.bytes && captured.compareSnapshot === compareSnapshot) return captured;
+    return this.#captured = { ...content, compareSnapshot };
   }
 
   #scheduleRelease(): void {
@@ -69,6 +82,7 @@ export class VersionSnapshotCache {
       this.#releaseTimer = null;
       this.#content = null;
       this.#snapshot = null;
+      this.#captured = null;
     }, CACHE_RELEASE_MS);
     (this.#releaseTimer as { unref?: () => void }).unref?.();
   }
@@ -103,13 +117,59 @@ export class VersionSnapshotCache {
     const epoch = engineMutationEpoch();
     const bytes = exportVersionContent(wasm);
     this.#contentEpoch = epoch;
-    if (!this.#content || !sameBytes(this.#content.bytes, bytes)) {
-      this.#snapshot = null;
-      this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
-      this.#fingerprint = this.#content.fingerprint;
+    let content = this.#content;
+    if (!content || !sameBytes(content.bytes, bytes)) {
+      const fingerprint = fingerprintBytes(bytes);
+      // 바이트 없이 만든 스냅샷은 그 뒤로 엔진이 그대로였을 때만 이 바이트의 것이다.
+      const sameContent = this.#fingerprint === null ? this.#snapshotEpoch === epoch : fingerprint === this.#fingerprint;
+      if (!sameContent) this.#snapshot = null;
+      content = { bytes, fingerprint };
+      this.#content = content;
+      this.#fingerprint = fingerprint;
     }
     this.#scheduleRelease();
-    return this.#content;
+    return content;
+  }
+
+  /**
+   * 내보내지 않고 아는 지문. 이 revision 에서 낸 지문이 있고 그 뒤로 어떤 엔진 쓰기도 없었을 때만 돌려준다.
+   */
+  knownFingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint | null {
+    this.#select(wasm, documentId, revision);
+    return this.#fingerprint !== null && this.#contentEpoch === engineMutationEpoch() ? this.#fingerprint : null;
+  }
+
+  /**
+   * 커밋 전 diff 용 비교 스냅샷. 바이트를 내보내지 않는다. 만든 뒤로 엔진이 바뀌었으면 다시 만들고, 그때
+   * 앞서 낸 바이트와 지문도 버린다(커밋할 때 다시 내보낸다). 그사이 문서가 바뀌면 null.
+   */
+  async compareSnapshotInSlices(
+    wasm: WasmBridge,
+    documentId: string | null,
+    revision: number,
+    isCurrent: () => boolean,
+  ): Promise<CompareDocumentSnapshot | null> {
+    this.#select(wasm, documentId, revision);
+    const epoch = engineMutationEpoch();
+    if (this.#fingerprint !== null && this.#contentEpoch !== epoch) {
+      this.#fingerprint = null;
+      this.#contentEpoch = -1;
+      this.#content = null;
+    }
+    if (this.#snapshot && this.#snapshotEpoch === epoch) {
+      this.#scheduleRelease();
+      return this.#snapshot;
+    }
+    const key = this.#key;
+    const compareSnapshot = await buildSnapshotFromWasmInSlices(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS, isCurrent);
+    if (!compareSnapshot) return null;
+    // 만드는 동안 엔진이 바뀌었으면 어느 내용의 스냅샷인지 알 수 없으므로 기억하지 않는다.
+    if (this.#key === key && engineMutationEpoch() === epoch) {
+      this.#snapshot = compareSnapshot;
+      this.#snapshotEpoch = epoch;
+      this.#scheduleRelease();
+    }
+    return compareSnapshot;
   }
 
   fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
@@ -119,10 +179,11 @@ export class VersionSnapshotCache {
 
   capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
     const content = this.content(wasm, documentId, revision);
-    return this.#snapshot ??= {
-      ...content,
-      compareSnapshot: buildSnapshotFromWasm(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS),
-    };
+    if (!this.#snapshot) {
+      this.#snapshot = buildSnapshotFromWasm(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS);
+      this.#snapshotEpoch = engineMutationEpoch();
+    }
+    return this.#compose(content, this.#snapshot);
   }
 
   /** `capture`와 같은 캡처를 입력을 막지 않게 조각으로 나눠 만든다. 그사이 문서가 바뀌면 null. */
@@ -133,16 +194,18 @@ export class VersionSnapshotCache {
     isCurrent: () => boolean,
   ): Promise<CapturedVersionSnapshot | null> {
     const content = this.content(wasm, documentId, revision);
-    if (this.#snapshot) return this.#snapshot;
+    if (this.#snapshot) return this.#compose(content, this.#snapshot);
     const key = this.#key;
     const compareSnapshot = await buildSnapshotFromWasmInSlices(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS, isCurrent);
     if (!compareSnapshot) return null;
-    const captured = { ...content, compareSnapshot };
-    if (this.#key !== key) return captured;
+    if (this.#key !== key) return { ...content, compareSnapshot };
     this.#content ??= content;
-    this.#snapshot ??= captured;
+    if (!this.#snapshot) {
+      this.#snapshot = compareSnapshot;
+      this.#snapshotEpoch = engineMutationEpoch();
+    }
     this.#scheduleRelease();
-    return this.#snapshot;
+    return this.#compose(this.#content, this.#snapshot);
   }
 }
 

@@ -3,6 +3,7 @@ import { openIndexedDatabase } from '../core/idb-open.ts';
 import { buildMergeManifest, MERGE_MANIFEST_VERSION } from '../merge/manifest.ts';
 import { hashBytes, hashCompareSnapshot, serializeCompareSnapshot } from './hash.ts';
 import {
+  blobId as blobIdOf,
   branchName,
   branchGeneration,
   commitId,
@@ -101,6 +102,7 @@ interface GraphTransaction {
   listRecoveryEntries(repositoryId: RepositoryId): Promise<VersionRecoveryEntry[]>;
   listRepositoryCommits(repositoryId: RepositoryId): Promise<VersionCommit[]>;
   listRepositoryManifests(repositoryId: RepositoryId): Promise<VersionMergeManifest[]>;
+  countRepositoryRows(store: 'commits' | 'mergeManifests', repositoryId: RepositoryId): Promise<number>;
   listObjectRows(kind: 'blobs' | 'compareSnapshots', after: string | undefined, limit: number): Promise<(VersionBlob | VersionCompareSnapshot)[]>;
   isBlobReferenced(id: BlobId): Promise<boolean>;
   isCompareSnapshotReferenced(id: CompareSnapshotId): Promise<boolean>;
@@ -306,6 +308,10 @@ export interface SaveWorktreeInput {
   expectedRevision: number;
   expectedDocumentId?: DocumentId;
   bytes?: Uint8Array;
+  /** bytes 의 지문(fingerprintBytes). 넘기면 저장소가 다시 해시하지 않는다. */
+  fingerprint?: ContentFingerprint;
+  /** true 면 호출자가 bytes 를 더 고치지 않는다. 방어용 사본을 만들지 않는다. */
+  bytesOwned?: boolean;
   baseCommitId?: CommitId;
   savedFingerprint?: ContentFingerprint;
   fileName?: string;
@@ -519,6 +525,11 @@ function memoryTransaction(state: MemoryState): GraphTransaction {
     async listRepositoryManifests(repositoryId) {
       return [...state.mergeManifests.values()].filter((row) => row.repositoryId === repositoryId).map(cloneValue);
     },
+    async countRepositoryRows(store, repositoryId) {
+      let count = 0;
+      for (const row of state[store].values()) if (row.repositoryId === repositoryId) count += 1;
+      return count;
+    },
     async listObjectRows(kind, after, limit) {
       return [...state[kind].values()].filter((row) => !after || row.id > after).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit).map(cloneValue);
     },
@@ -637,6 +648,9 @@ function indexedDbTransaction(transaction: IDBTransaction): GraphTransaction {
     async listRepositoryManifests(repositoryId) {
       const index = transaction.objectStore('mergeManifests').index('repositoryId');
       return requestResult(index.getAll(IDBKeyRange.only(repositoryId))) as Promise<VersionMergeManifest[]>;
+    },
+    async countRepositoryRows(store, repositoryId) {
+      return requestResult(transaction.objectStore(store).index('repositoryId').count(IDBKeyRange.only(repositoryId)));
     },
     async listObjectRows(kind, after, limit) {
       const range = after ? IDBKeyRange.lowerBound(after, true) : undefined;
@@ -1253,15 +1267,19 @@ async function worktreeBranch(tx: GraphTransaction, row: VersionWorktree): Promi
   return branch;
 }
 
-const storeListeners = new Set<(id: RepositoryId) => void>();
+type StoreListener = (id: RepositoryId) => void;
+const storeListeners = new Set<StoreListener>();
 const notificationOrigin = createId('version-store');
 let notificationChannel: BroadcastChannel | null = null;
-function notifyRepository(id: RepositoryId, broadcast = true): void {
+function notifyRepository(id: RepositoryId, broadcast = true, skip?: StoreListener): void {
   for (const listener of storeListeners) {
+    if (listener === skip) continue;
     try { listener(id); } catch { /* A subscriber cannot interrupt a committed transaction. */ }
   }
   if (broadcast) notificationChannel?.postMessage({ origin: notificationOrigin, repositoryId: id });
 }
+
+const OWNERLESS_STORES: ReadonlySet<StoreName> = new Set(['blobs', 'compareSnapshots', 'objectSizes']);
 
 function observeTransaction(tx: GraphTransaction, changed: Set<RepositoryId>): GraphTransaction {
   return {
@@ -1273,7 +1291,8 @@ function observeTransaction(tx: GraphTransaction, changed: Set<RepositoryId>): G
       if (id) changed.add(id);
     },
     async delete(store, key) {
-      const row = await tx.get(store, key);
+      // 문서 바이트·비교 스냅샷·크기 행에는 저장소 id 가 없다. 지우기 전에 읽으면 큰 바이트만 복제한다.
+      const row = OWNERLESS_STORES.has(store) ? undefined : await tx.get(store, key);
       await tx.delete(store, key);
       const id = store === 'repositories' ? (row as VersionRepository | undefined)?.id
         : row && 'repositoryId' in row ? row.repositoryId : undefined;
@@ -1292,6 +1311,12 @@ export class VersionGraphStore {
   #memory = memoryState();
   #memoryWriteTail: Promise<void> = Promise.resolve();
   readonly #queues = new Map<string, Promise<void>>();
+  /**
+   * 마지막으로 아무것도 지우지 않은 GC 의 도달성 입력. 같고 가장 이른 복구 항목 만료 전이면 커밋과 병합
+   * 식별 정보(한 벌에 수 MiB)를 다시 읽지 않는다.
+   */
+  readonly #idleGarbage = new Map<RepositoryId, { key: string; until: number }>();
+  #objectSizesBackfilled = false;
 
   constructor(options: VersionGraphStoreOptions = {}) {
     this.#factory = options.indexedDB === null
@@ -1565,7 +1590,12 @@ export class VersionGraphStore {
     }));
   }
 
-  async #transaction<Result>(mode: IDBTransactionMode, operation: (transaction: GraphTransaction) => Promise<Result>): Promise<Result> {
+  /** skip 은 이 기록을 직접 반영하는 구독자다. 같은 창의 다른 구독자와 다른 창은 그대로 알림을 받는다. */
+  async #transaction<Result>(
+    mode: IDBTransactionMode,
+    operation: (transaction: GraphTransaction) => Promise<Result>,
+    skip?: StoreListener,
+  ): Promise<Result> {
     if (!this.#factory) {
       if (mode === 'readonly') return operation(memoryTransaction(this.#memory));
       const result = this.#memoryWriteTail.catch(() => undefined).then(async () => {
@@ -1573,7 +1603,7 @@ export class VersionGraphStore {
         const changed = new Set<RepositoryId>();
         const value = await operation(observeTransaction(memoryTransaction(working), changed));
         this.#memory = working;
-        for (const id of changed) notifyRepository(id);
+        for (const id of changed) notifyRepository(id, true, skip);
         return cloneValue(value);
       });
       this.#memoryWriteTail = result.then(() => undefined, () => undefined);
@@ -1597,7 +1627,7 @@ export class VersionGraphStore {
       const tx = indexedDbTransaction(transaction);
       const result = await operation(mode === 'readwrite' ? observeTransaction(tx, changed) : tx);
       await done;
-      for (const id of changed) notifyRepository(id);
+      for (const id of changed) notifyRepository(id, true, skip);
       return result;
     } catch (error) {
       try {
@@ -1714,9 +1744,12 @@ export class VersionGraphStore {
     }));
   }
 
-  async saveWorktree(input: SaveWorktreeInput): Promise<VersionWorktree> {
-    const bytes = input.bytes === undefined ? undefined : new Uint8Array(input.bytes);
-    const blobId = bytes === undefined ? undefined : hashBytes(bytes);
+  /** skipListener: 결과를 직접 반영하는 호출자의 구독자. 자기 기록 알림으로 저장소 전체를 다시 읽지 않는다. */
+  async saveWorktree(input: SaveWorktreeInput, options: { skipListener?: StoreListener } = {}): Promise<VersionWorktree> {
+    // 넘겨받은 바이트(bytesOwned)는 복사하지 않고, 지문을 이미 알면 다시 해시하지 않는다.
+    const bytes = input.bytes === undefined || input.bytesOwned ? input.bytes : new Uint8Array(input.bytes);
+    const blobId = bytes === undefined ? undefined
+      : input.fingerprint !== undefined ? blobIdOf(input.fingerprint) : hashBytes(bytes);
     return this.#serialize(`worktree:${input.id}`, () => this.#transaction('readwrite', async (tx) => {
       const current = await tx.get('worktrees', input.id);
       if (!current) missing('WORKTREE_NOT_FOUND', 'Document workspace was not found');
@@ -1740,7 +1773,7 @@ export class VersionGraphStore {
       await tx.put('worktrees', updated);
       if (current.blobId !== updated.blobId && !await tx.isBlobReferenced(current.blobId)) await tx.delete('blobs', current.blobId);
       return updated;
-    }));
+    }, options.skipListener));
   }
 
   async switchWorktreeBranch(input: SwitchWorktreeBranchInput): Promise<VersionWorktree> {
@@ -2318,8 +2351,10 @@ export class VersionGraphStore {
 
   /** Backfills v1/v2 object sizes in small persistent batches without blocking database upgrade. */
   async backfillObjectSizes(limit = 100): Promise<{ processed: number; hasMore: boolean }> {
+    // 끝난 뒤에 생기는 바이트·스냅샷은 기록할 때 크기 행도 함께 쓴다. 다시 열 까닭이 없다.
+    if (this.#objectSizesBackfilled) return { processed: 0, hasMore: false };
     const bounded = Math.min(Math.max(1, Math.floor(limit) || 100), 500);
-    return this.#serialize('object-size-backfill', () => this.#transaction('readwrite', async (tx) => {
+    const result = await this.#serialize('object-size-backfill', () => this.#transaction('readwrite', async (tx) => {
       const state = await tx.get('maintenance', 'object-size-backfill')
         ?? { id: 'object-size-backfill', phase: 'blobs' as const };
       if (state.phase === 'done') return { processed: 0, hasMore: false };
@@ -2348,6 +2383,8 @@ export class VersionGraphStore {
       await tx.put('maintenance', { id: state.id, phase, ...(cursor ? { cursor } : {}) });
       return { processed, hasMore: phase !== 'done' };
     }));
+    if (!result.hasMore) this.#objectSizesBackfilled = true;
+    return result;
   }
 
   async getBlob(id: BlobId): Promise<VersionBlob | null> {
@@ -2901,20 +2938,36 @@ export class VersionGraphStore {
       assertRepositoryRevision(repository, expectedRepositoryRevision);
 
       const refs = await tx.listRefs(repositoryId);
-      const repositoryCommits = await tx.listRepositoryCommits(repositoryId);
-      const commitById = new Map(repositoryCommits.map((commit) => [commit.id, commit]));
-      const manifestById = new Map((await tx.listRepositoryManifests(repositoryId))
-        .map((manifest) => [manifest.id, manifest]));
       const repositoryShelves = await tx.listShelves(repositoryId);
       const repositoryDrafts = await tx.listMergeDrafts(repositoryId);
+      const repositoryWorktreeRows = await tx.listWorktrees(repositoryId);
       const now = Date.now();
       const entries = await tx.listRecoveryEntries(repositoryId);
       const activeEntries = entries.filter((entry) => entry.expiresAt > now);
       const expiredEntries = entries.filter((entry) => entry.expiresAt <= now);
+      const idleKey = JSON.stringify([
+        repository.revision,
+        refs.map((ref) => `${ref.key}>${ref.target}`).sort(),
+        repositoryWorktreeRows.map((row) => `${row.id}>${row.baseCommitId}`).sort(),
+        repositoryShelves.map((shelf) => `${shelf.id}>${shelf.baseCommitId}`).sort(),
+        repositoryDrafts.map((draft) => [draft.id, draft.currentHead, draft.sourceHead, ...draft.baseCommitIds].join('>')).sort(),
+        activeEntries.map((entry) => entry.id).sort(),
+        await tx.countRepositoryRows('commits', repositoryId),
+        await tx.countRepositoryRows('mergeManifests', repositoryId),
+      ]);
+      const idle = this.#idleGarbage.get(repositoryId);
+      if (expiredEntries.length === 0 && idle?.key === idleKey && now < idle.until) {
+        return { repository, garbageCollected: { commits: 0, blobs: 0, compareSnapshots: 0 }, hasMore: false };
+      }
+      this.#idleGarbage.delete(repositoryId);
+      const repositoryCommits = await tx.listRepositoryCommits(repositoryId);
+      const commitById = new Map(repositoryCommits.map((commit) => [commit.id, commit]));
+      const manifestById = new Map((await tx.listRepositoryManifests(repositoryId))
+        .map((manifest) => [manifest.id, manifest]));
       const reachable = new Set<CommitId>();
       const seenManifests = new Set<string>();
       const frontier = [
-        ...(await tx.listWorktrees(repositoryId)).map((row) => row.baseCommitId),
+        ...repositoryWorktreeRows.map((row) => row.baseCommitId),
         ...refs.map((ref) => ref.target),
         ...repositoryShelves.map((shelf) => shelf.baseCommitId),
         ...repositoryDrafts.flatMap((draft) => [
@@ -2996,6 +3049,10 @@ export class VersionGraphStore {
       const changed = removedRecovery.length > 0 || removedCommits.length > 0 || removedManifests.length > 0;
       const updatedRepository = changed ? nextRepositoryRevision(repository) : repository;
       if (changed) await tx.put('repositories', updatedRepository);
+      if (!changed && unreachable.length === 0 && expiredEntries.length === 0 && orphanManifests.length === 0) {
+        const until = Math.min(Number.POSITIVE_INFINITY, ...activeEntries.map((entry) => entry.expiresAt));
+        this.#idleGarbage.set(repositoryId, { key: idleKey, until });
+      }
       return {
         repository: updatedRepository,
         garbageCollected,

@@ -488,6 +488,47 @@ test('tags and shelves keep history reachable during permanent branch deletion',
   assert.ok(await store.getShelf(shelved.shelf.id));
 });
 
+test('a collection that removed nothing does not hide garbage once a deleted branch expires', async () => {
+  const { store, repository: repo, branch: main, commit: root } = await repository();
+  const branched = await store.createBranch({
+    repositoryId: repo.id,
+    name: branchName('Expiring'),
+    target: root.id,
+    expectedRepositoryRevision: repo.revision,
+  });
+  const only = await store.createCheckpoint({
+    repositoryId: repo.id,
+    branch: branched.branch.name,
+    expectedRepositoryRevision: branched.repository.revision,
+    expectedBranchRevision: branched.branch.revision,
+    reason: 'manual',
+    ...payload(11, 'Expiring only'),
+  });
+  const quiet = await store.collectGarbage(repo.id, only.repository.revision);
+  assert.deepEqual(quiet.garbageCollected, { commits: 0, blobs: 0, compareSnapshots: 0 });
+  const deleted = await store.deleteBranch({
+    repositoryId: repo.id,
+    branch: branched.branch.name,
+    currentBranch: main.name,
+    expectedRepositoryRevision: quiet.repository.revision,
+    expectedBranchRevision: only.branch.revision,
+  });
+  const retained = await store.collectGarbage(repo.id, deleted.revision);
+  assert.deepEqual(retained.garbageCollected, { commits: 0, blobs: 0, compareSnapshots: 0 });
+  const entry = (await store.listRecoveryEntries(repo.id)).find((item) => item.previousHead === only.commit.id);
+  assert.ok(entry);
+
+  const realNow = Date.now;
+  Date.now = () => entry.expiresAt + 1;
+  try {
+    const expired = await store.collectGarbage(repo.id, retained.repository.revision);
+    assert.equal(expired.garbageCollected.commits, 1);
+    assert.equal(await store.getCommit(only.commit.id), null);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test('ref names are case-insensitively unique and title amendments use their own revision', async () => {
   const { store, repository: repo, branch, commit } = await repository();
   const created = await store.createBranch({

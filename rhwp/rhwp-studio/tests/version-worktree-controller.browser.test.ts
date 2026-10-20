@@ -399,3 +399,56 @@ test('after an engine trap, version history stops calling the engine but still k
     assert.equal(result.worktreeKeptTrapContent, true, 'the worktree still records the content at the trap');
   } finally { await page.close(); }
 });
+
+test('closing the window writes the primary worktree edit that was waiting for idle', { timeout: 45_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }, snapshots, hash] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'), import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'), import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'), import('/src/versioning/snapshot.ts'),
+        import('/src/versioning/hash.ts'),
+      ]);
+      const wasm = new WasmBridge(); await wasm.initialize();
+      wasm.loadDocument(new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer()), 'shift-return.hwp');
+      const eventBus = new EventBus(); const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty, getDocumentId: () => 'close-doc',
+        getInputHandler: () => ({ canRedo: () => false, prepareSnapshotCapacity() {} }) as never,
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined, isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }), requestCheckpointTitle: async () => null,
+        },
+        worktreeHost: {
+          ensureOwnership: async () => true, canMutate: () => true,
+          getStatus: () => ({ isOpen: true, busy: false }),
+          open: async () => {}, close: async () => {}, remove: async () => false, merge: async () => {},
+        },
+      });
+      const worktreeContent = async () => {
+        const worktree = (await store.findWorktreeByDocumentId(versions.documentId('close-doc')))!;
+        return hash.fingerprintBytes((await store.getBlob(worktree.blobId))!.bytes);
+      };
+      try {
+        await controller.documentLoaded();
+        await controller.enable();
+        await controller.whenIdle();
+        wasm.insertText(0, 0, 0, 'BEFORE CLOSE ');
+        dirty.markDirty('typing'); eventBus.emit('document-mutated');
+        const edited = snapshots.fingerprintVersionContent(wasm);
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await controller.whenIdle();
+        const deferred = await worktreeContent() !== edited;
+        await controller.flushScheduledPersist();
+        return { deferred, flushed: await worktreeContent() === edited };
+      } finally { controller.dispose(); await store.close(); }
+    });
+    assert.equal(result.deferred, true, 'with the 버전 page closed, typing does not write the worktree right away');
+    assert.equal(result.flushed, true, 'the close flush writes the pending edit before the window goes away');
+  } finally { await page.close(); }
+});

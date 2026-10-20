@@ -79,6 +79,12 @@ import {
 } from './snapshot.ts';
 
 const PAGE_SIZE = 100;
+/** 버전 창이 보일 때와 관리되는 워크트리: 편집이 멎고 이만큼 지나면 작업 공간에 적는다. */
+const WORKTREE_PERSIST_EAGER_MS = 500;
+/** 버전 창이 닫혀 있으면 원본 작업 공간은 자동 저장처럼 쉴 때 적는다(같은 내보내기를 함께 쓴다). */
+const WORKTREE_PERSIST_IDLE_MS = 10_000;
+/** 쉬지 않고 편집해도 이 시간 안에는 한 번 적는다. */
+const WORKTREE_PERSIST_MAX_WAIT_MS = 60_000;
 const ACTIVE_BRANCH_PREFIX = 'rhwp-versions-active-branch-v1:';
 const AI_TITLES_KEY = 'rhwp-versions-ai-titles-v1';
 
@@ -318,6 +324,14 @@ export class DocumentVersionController implements VersionManagerController {
   #worktree: VersionWorktree | null = null;
   #worktrees: VersionWorktree[] = [];
   #persistTimer: ReturnType<typeof setTimeout> | null = null;
+  #persistIdle: number | null = null;
+  /** 미뤄 둔 작업 공간 기록의 마감 시각. 첫 편집에서 정한다. */
+  #persistDeadline: number | null = null;
+  /** 이 문서를 보여 주는 버전 창 수. 0 이면 자기 기록 뒤 저장소 전체를 다시 읽지 않는다. */
+  #pageViews = 0;
+  readonly #onStoreChange = (repositoryId: RepositoryId): void => {
+    if (repositoryId === this.#repository?.id) void this.refresh().catch(console.warn);
+  };
   #mergeCompletion: {
     sourceBranch: BranchName;
     targetBranch: BranchName;
@@ -398,9 +412,7 @@ export class DocumentVersionController implements VersionManagerController {
       this.#scheduleWorktreePersistence();
     };
     this.#unsubscribers.push(
-      this.#store.subscribe((repositoryId) => {
-        if (repositoryId === this.#repository?.id) void this.refresh().catch(console.warn);
-      }),
+      this.#store.subscribe(this.#onStoreChange),
       this.#eventBus.on('document-mutated', documentChanged),
       this.#eventBus.on('document-changed', documentChanged),
       this.#eventBus.on('document-dirty-changed', () => this.#syncTransientState()),
@@ -445,6 +457,25 @@ export class DocumentVersionController implements VersionManagerController {
       this.#agentBridge.onEvent(() => this.#syncTransientState()),
       this.#agentBridge.pendingEdits.onChange(() => this.#syncTransientState()),
     );
+    if (typeof document !== 'undefined') {
+      // 창을 가리거나 내리면 미뤄 둔 작업 공간 기록을 바로 적는다.
+      const flushWhenHidden = () => {
+        if (document.visibilityState === 'hidden' && this.#hasScheduledPersist()) {
+          void this.persistWorktree().catch((error) => console.warn('[worktrees] 저장 실패:', error));
+        }
+      };
+      document.addEventListener('visibilitychange', flushWhenHidden);
+      this.#unsubscribers.push(() => document.removeEventListener('visibilitychange', flushWhenHidden));
+    }
+  }
+
+  /**
+   * 버전 창이 이 문서를 보여 주는지. 보이는 동안에는 편집 0.5초 뒤 작업 공간을 적고 상태를 다시 읽어
+   * 더티 표시와 보관 버튼을 바로 맞춘다.
+   */
+  setPageVisible(visible: boolean): void {
+    this.#pageViews = Math.max(0, this.#pageViews + (visible ? 1 : -1));
+    if (visible && this.#hasScheduledPersist()) this.#scheduleWorktreePersistence();
   }
 
   getState(): VersionManagerState {
@@ -678,9 +709,29 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async persistWorktree(): Promise<void> {
-    if (this.#persistTimer) clearTimeout(this.#persistTimer);
-    this.#persistTimer = null;
+    this.#cancelScheduledPersist();
     await this.#enqueue(() => this.#persistWorktree());
+  }
+
+  /**
+   * 미뤄 둔 작업 공간 기록이 있으면 바로 적고, 진행 중인 작업까지 기다린다. 창을 닫을 때 쓴다 — pagehide 의
+   * 기록은 창이 사라지기 전에 끝난다는 보장이 없다.
+   */
+  async flushScheduledPersist(): Promise<void> {
+    if (this.#hasScheduledPersist()) await this.persistWorktree();
+    await this.whenIdle();
+  }
+
+  #hasScheduledPersist(): boolean {
+    return this.#persistTimer !== null || this.#persistIdle !== null;
+  }
+
+  #cancelScheduledPersist(): void {
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    if (this.#persistIdle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(this.#persistIdle);
+    this.#persistTimer = null;
+    this.#persistIdle = null;
+    this.#persistDeadline = null;
   }
 
   async saveManagedWorktree(): Promise<void> {
@@ -715,13 +766,37 @@ export class DocumentVersionController implements VersionManagerController {
     return worktree;
   }
 
+  /**
+   * 편집 뒤 작업 공간 기록을 미룬다. 버전 창이 보이거나 관리되는 워크트리면 0.5초, 아니면 쉴 때(최대
+   * WORKTREE_PERSIST_MAX_WAIT_MS) 적는다. 문서 닫기·전환·업데이트 재시작은 persistWorktree, 창 닫기는
+   * flushScheduledPersist 로 바로 적는다.
+   */
   #scheduleWorktreePersistence(): void {
     if (!this.#worktree || this.#worktreeHost?.canMutate() === false) return;
-    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    const eager = this.#pageViews > 0 || !this.#worktree.primary;
+    // 최대 대기를 넘겨 쉴 때 기록이 이미 줄을 섰으면 그대로 둔다. 끊임없는 입력이 기록을 계속 미루지 않게 한다.
+    if (!eager && this.#persistIdle !== null && this.#persistDeadline !== null
+      && Date.now() >= this.#persistDeadline) return;
+    let delay = WORKTREE_PERSIST_EAGER_MS;
+    if (!eager) {
+      const now = Date.now();
+      this.#persistDeadline ??= now + WORKTREE_PERSIST_MAX_WAIT_MS;
+      delay = Math.max(0, Math.min(WORKTREE_PERSIST_IDLE_MS, this.#persistDeadline - now));
+    }
+    const deadline = eager ? null : this.#persistDeadline;
+    this.#cancelScheduledPersist();
+    this.#persistDeadline = deadline;
+    const persist = () => {
+      this.#persistIdle = null;
+      this.#persistDeadline = null;
+      void this.persistWorktree().catch((error) => console.warn('[worktrees] 저장 실패:', error));
+    };
     this.#persistTimer = setTimeout(() => {
       this.#persistTimer = null;
-      void this.persistWorktree().catch((error) => console.warn('[worktrees] 저장 실패:', error));
-    }, 500);
+      if (!eager && typeof requestIdleCallback === 'function') {
+        this.#persistIdle = requestIdleCallback(persist, { timeout: 2_000 });
+      } else persist();
+    }, delay);
   }
 
   async #persistWorktree(saved = false): Promise<void> {
@@ -729,17 +804,30 @@ export class DocumentVersionController implements VersionManagerController {
     if (!worktree || worktree.documentId !== this.#getDocumentId()) return;
     if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     const workspace = this.#captureWorkspaceToken();
-    const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const revision = this.#editorRevision;
+    const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), revision);
     const branch = this.#requireActiveBranch();
     const current = await this.#store.getWorktree(worktree.id);
     if (!current) throw new VersionError('STALE_WORKSPACE', '워크트리가 삭제되었습니다.');
     this.#assertWorkspaceToken(workspace);
-    this.#worktree = await this.#store.saveWorktree({
+    // 버전 창이 닫혀 있으면 자기 기록 알림으로 저장소 전체를 다시 읽지 않고 결과만 반영한다.
+    const quiet = this.#pageViews === 0;
+    const saved_ = await this.#store.saveWorktree({
       id: current.id, expectedRevision: current.revision, bytes: content.bytes,
+      fingerprint: content.fingerprint, bytesOwned: true,
       fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(content.bytes),
       baseCommitId: branch.target,
       ...(saved ? { savedFingerprint: content.fingerprint } : {}),
-    });
+    }, quiet ? { skipListener: this.#onStoreChange } : {});
+    this.#worktree = saved_;
+    if (!quiet) return;
+    this.#worktrees = this.#worktrees.map((entry) => entry.id === saved_.id ? saved_ : entry);
+    if (this.#editorRevision !== revision || this.#getDocumentId() !== workspace.documentId) return;
+    const head = this.#commits.find((commit) => commit.id === branch.target) ?? await this.#store.getCommit(branch.target);
+    if (this.#editorRevision !== revision || this.#getDocumentId() !== workspace.documentId) return;
+    this.#semanticDirty = !head || content.fingerprint !== head.contentFingerprint;
+    this.#semanticDirtyRevision = revision;
+    this.#syncTransientState();
   }
 
   async loadMore(): Promise<void> {
@@ -919,25 +1007,36 @@ export class DocumentVersionController implements VersionManagerController {
         return cache.items;
       }
       this.#assertEngineRunning();
-      // 지금 내용이 HEAD 와 같으면 비교 스냅샷을 만들지 않는다. 다르면 체크포인트와 같은
-      // revision 의 캡처(강제 재조판 없음)를 함께 쓰되, 캐시가 지금 내용과 다르면 버린다.
-      // 캡처는 입력을 막지 않게 조각으로 나눠 만들고, 그사이 편집이 끼면 stale 로 거절한다.
+      // 이 revision 의 지문을 이미 알고 HEAD 와 같으면 비교 스냅샷을 만들지 않는다. 아니면 문서를
+      // 내보내지 않고 비교 스냅샷(강제 재조판 없음)만 만들어 비교한다. 바이트는 커밋할 때 내보낸다.
+      // 스냅샷은 입력을 막지 않게 조각으로 나눠 만들고, 그사이 편집이 끼면 stale 로 거절한다.
       const revision = this.#editorRevision;
-      const live = this.#snapshotCache.reexport(this.#wasm, requestedDocumentId, revision);
+      const known = this.#snapshotCache.knownFingerprint(this.#wasm, requestedDocumentId, revision);
       let diffs: DiffItem[] = [];
-      if (live.fingerprint !== head.contentFingerprint) {
-        const current = await this.#snapshotCache.captureInSlices(
+      let confirmed: string | null = null;
+      if (known !== head.contentFingerprint) {
+        const current = await this.#snapshotCache.compareSnapshotInSlices(
           this.#wasm, requestedDocumentId, revision, () => this.#isWorkspaceTokenCurrent(workspace),
         );
         if (!current) throw new VersionError('STALE_WORKSPACE', 'The document changed during comparison');
         diffs = compareSnapshots(
-          stored.snapshot, current.compareSnapshot, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+          stored.snapshot, current, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
         ).diffItems;
+        // 비교로 드러나지 않는 변경(서식·설정)일 수도, HEAD 로 돌아온 것일 수도 있다. 이때만 내보내
+        // 지문으로 커밋 전 표시를 바로 맞춘다.
+        if (diffs.length === 0 && known === null && this.#isWorkspaceTokenCurrent(workspace)) {
+          confirmed = this.#snapshotCache.reexport(this.#wasm, requestedDocumentId, revision).fingerprint;
+        }
       }
       const latestBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
       if (!latestBranch || latestBranch.revision !== freshBranch.revision || latestBranch.target !== freshBranch.target) {
         throw new VersionError('STALE_WORKSPACE', 'HEAD changed during comparison');
+      }
+      if (confirmed !== null) {
+        this.#semanticDirty = confirmed !== head.contentFingerprint;
+        this.#semanticDirtyRevision = revision;
+        this.#syncTransientState();
       }
       this.#workingDiffCache = {
         documentId: requestedDocumentId,
@@ -1687,8 +1786,7 @@ export class DocumentVersionController implements VersionManagerController {
 
   dispose(): void {
     this.#disposed = true;
-    if (this.#persistTimer) clearTimeout(this.#persistTimer);
-    this.#persistTimer = null;
+    this.#cancelScheduledPersist();
     for (const unsubscribe of this.#unsubscribers) unsubscribe();
     this.#listeners.clear();
     this.#compareWindow.hide();
@@ -2804,8 +2902,12 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #syncTransientState(): void {
-    this.#state.dirty = this.#isSemanticDirty();
-    this.#state.mutationBlockedReason = this.#mutationBlockedReason();
+    const dirty = this.#isSemanticDirty();
+    const mutationBlockedReason = this.#mutationBlockedReason();
+    // 스트리밍 이벤트·키 입력마다 불린다. 바뀐 것이 없으면 상태를 복제해 알리지 않는다.
+    if (dirty === this.#state.dirty && mutationBlockedReason === this.#state.mutationBlockedReason) return;
+    this.#state.dirty = dirty;
+    this.#state.mutationBlockedReason = mutationBlockedReason;
     this.#emit();
   }
 
@@ -3249,6 +3351,6 @@ export class DocumentVersionController implements VersionManagerController {
       ?? this.#commits.find((commit) => commit.id === active?.target)?.contentFingerprint;
     this.#semanticDirty = head ? fingerprint !== head : true;
     this.#semanticDirtyRevision = this.#editorRevision;
-    this.#state.dirty = this.#semanticDirty;
+    this.#syncTransientState();
   }
 }

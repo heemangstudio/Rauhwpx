@@ -919,8 +919,15 @@ async function closeLicenseViewer(): Promise<boolean> {
     const names = lost.map((session) => `"${session.wasm.fileName}"`).join(', ');
     if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n닫으면 저장하지 않은 변경이 사라져요.`)) return false;
   }
+  await flushWorktreesBeforeClose();
   for (const session of liveSessions) session.documentState.permitNextUnload();
   return true;
+}
+
+/** 창을 닫기 전에 미뤄 둔 작업 공간 기록을 적는다. 다시 열면 파일 대신 이 작업 공간을 연다. */
+async function flushWorktreesBeforeClose(): Promise<void> {
+  await Promise.all(liveSessions.filter((session) => session.worktreeWritable)
+    .map((session) => session.versions?.flushScheduledPersist().catch(() => {})));
 }
 
 installDesktopCloseHandling(async () => {
@@ -928,6 +935,7 @@ installDesktopCloseHandling(async () => {
   if (!await confirmCloseWithBackgroundSessions()) return false;
   const allowClose = await canReplaceCurrentDocument();
   if (allowClose) {
+    await flushWorktreesBeforeClose();
     for (const session of liveSessions) session.documentState.permitNextUnload();
   }
   return allowClose;
