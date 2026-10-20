@@ -32,19 +32,23 @@ export function installDocumentTitle(
   );
   const update = () => {
     const loaded = bridge.hasLoadedDocument();
-    document.title = loaded
+    const pageTitle = loaded
       ? (appModes.matches ? bridge.fileName : `${bridge.fileName} - HamaEditor`)
       : 'HamaEditor';
+    if (document.title !== pageTitle) document.title = pageTitle;
     if (!titleHost) return;
+    // 버전 상태가 바뀔 때마다(입력마다) 불리므로 값이 같으면 DOM 을 건드리지 않는다.
+    const name = loaded ? bridge.fileName : '';
     if (nameText && worktreeChip) {
-      if (!nameText.querySelector('.inline-rename-input')) nameText.textContent = loaded ? bridge.fileName : '';
+      if (!nameText.querySelector('.inline-rename-input') && nameText.textContent !== name) nameText.textContent = name;
       paintWorktreeChip(worktreeChip, loaded ? options.worktree?.() ?? null : null);
-      titleHost.title = loaded ? [bridge.fileName, worktreeChip.title].filter(Boolean).join(' · ') : '';
+      const title = loaded ? [bridge.fileName, worktreeChip.title].filter(Boolean).join(' · ') : '';
+      if (titleHost.title !== title) titleHost.title = title;
     } else {
-      titleHost.textContent = loaded ? bridge.fileName : '';
-      titleHost.title = loaded ? bridge.fileName : '';
+      if (titleHost.textContent !== name) titleHost.textContent = name;
+      if (titleHost.title !== name) titleHost.title = name;
     }
-    titleHost.hidden = !loaded;
+    if (titleHost.hidden !== !loaded) titleHost.hidden = !loaded;
     // 이름을 바꿀 수 없는 문서의 제목은 창 끌기·확대를 그대로 받는다.
     if (options.rename) {
       titleHost.classList.toggle('editor-document-title-renamable', loaded && options.canRename?.() !== false);

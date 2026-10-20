@@ -3,6 +3,7 @@
 
 import type { ContextMenuItem } from '@/ui/context-menu';
 import { hyperlinkAtPointer, hoverHyperlink, rememberHyperlinkClick, followHyperlinkClick } from './input-handler-hyperlink';
+import { hoverHitTest, runHoverFrame } from './hover-hit-test';
 import type { CellPathLike, DocumentPosition, ObjectRef } from '@/core/types';
 import * as _connector from './input-handler-connector';
 import { MoveLineEndpointCommand } from './command';
@@ -2084,19 +2085,21 @@ export function onMouseMove(this: any, e: MouseEvent): void {
     const hoverEvent: MouseEvent | null = this.pendingHoverEvent;
     this.pendingHoverEvent = null;
     if (!hoverEvent) return;
-    // 같은 프레임의 hover 판정들이 scroll-content 사각형을 한 번만 읽는다.
-    const scrollContent = this.container.querySelector('#scroll-content') as HTMLElement | null;
-    const contentRect = scrollContent?.getBoundingClientRect() ?? null;
-    if (hoverHyperlink(this, hoverEvent, contentRect)) {
-      this.tableResizeRenderer?.clear();
-      hideProtectedCellHover(this);
-      return;
-    }
-    if (this.tableResizeRenderer) {
-      handleResizeHover.call(this, hoverEvent, contentRect);
-    } else if (this.container.style.cursor) {
-      this.container.style.cursor = '';
-    }
+    // 같은 프레임의 hover 판정들이 scroll-content 사각형과 같은 점의 hitTest 를 한 번만 읽는다.
+    runHoverFrame(this, () => {
+      const scrollContent = this.container.querySelector('#scroll-content') as HTMLElement | null;
+      const contentRect = scrollContent?.getBoundingClientRect() ?? null;
+      if (hoverHyperlink(this, hoverEvent, contentRect)) {
+        this.tableResizeRenderer?.clear();
+        hideProtectedCellHover(this);
+        return;
+      }
+      if (this.tableResizeRenderer) {
+        handleResizeHover.call(this, hoverEvent, contentRect);
+      } else if (this.container.style.cursor) {
+        this.container.style.cursor = '';
+      }
+    });
   });
 }
 
@@ -2121,7 +2124,7 @@ export function handleResizeHover(this: any, e: MouseEvent, cachedContentRect?: 
   let tableRef: TableRef | null = null;
   let tableHit: any = null;
   try {
-    const hit = this.wasm.hitTest(pageIdx, pageX, pageY);
+    const hit = hoverHitTest(this, pageIdx, pageX, pageY);
     if (hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && !hit.isTextBox) {
       tableHit = hit;
       tableRef = {

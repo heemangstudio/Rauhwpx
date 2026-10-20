@@ -350,6 +350,8 @@ export class InputHandler {
 
   // 표 경계선 hover 상태
   private resizeHoverRafId = 0;
+  /** hover 프레임 동안만 쓰는 hitTest 결과(hover-hit-test.ts) */
+  hoverFrameHits: Map<string, unknown> | null = null;
   private pendingHoverEvent: MouseEvent | null = null;
   private pointerHoverEvent: MouseEvent | null = null;
   private hoverRefreshRafId = 0;

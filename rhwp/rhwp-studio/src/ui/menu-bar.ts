@@ -505,10 +505,11 @@ export class MenuBar {
   private updateMenuStates(menuElement: HTMLElement): void {
     // 일반 항목
     const items = menuElement.querySelectorAll('.md-item[data-cmd]');
+    const isEnabled = this.dispatcher.enabledChecker();
     for (const item of items) {
       const el = item as HTMLElement;
       const cmdId = el.dataset.cmd!;
-      const enabled = this.dispatcher.isEnabled(cmdId);
+      const enabled = isEnabled(cmdId);
       el.classList.toggle('disabled', !enabled);
       el.setAttribute('aria-disabled', String(!enabled));
       if (cmdId === 'file:save') {

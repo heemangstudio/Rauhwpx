@@ -88,14 +88,15 @@
 .ps-dialog .dialog-row { min-height: 30px; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .ps-dialog .dialog-row:last-child { margin-bottom: 0; }
 /* 체크박스·라디오 한 개만 있는 줄은 입력칸 높이를 비워 두지 않는다. */
-.ps-dialog .dialog-row:has(> :is(.dialog-checkbox, .dialog-radio-group):only-child) { min-height: 24px; margin-bottom: 2px; }
+/* :has() 대신 빌더가 붙이는 클래스로 고른다. :has()는 입력 중 hidden·style 변경마다 문서 전체 스타일 재계산을 일으킨다. */
+.ps-dialog .dialog-row.ps-choice-row { min-height: 24px; margin-bottom: 2px; }
 /* 체크박스가 여럿인 묶음은 두 줄로 나눠 세로 길이를 줄인다. */
-.ps-dialog .dialog-section:has(> .dialog-row > .dialog-checkbox:only-child) {
+.ps-dialog .dialog-section.ps-checkbox-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 12px;
 }
-.ps-dialog .dialog-section:has(> .dialog-row > .dialog-checkbox:only-child) > :not(.dialog-row:has(> .dialog-checkbox:only-child)) { grid-column: 1 / -1; }
+.ps-dialog .dialog-section.ps-checkbox-grid > :not(.ps-checkbox-row) { grid-column: 1 / -1; }
 .ps-dialog .dialog-label { min-width: 0; text-align: left; font-size: 12px; font-weight: 550; }
 .ps-dialog :is(.dialog-input, .dialog-select, .dialog-text-input) {
   height: 30px;

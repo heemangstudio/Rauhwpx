@@ -2,6 +2,7 @@ import { hyperlinkTarget, applyHyperlinkFormat } from '@/core/hyperlink';
 import type { HyperlinkInfo, HyperlinkTarget } from '@/core/hyperlink';
 import type { DocumentPosition } from '@/core/types';
 import { showToast } from '@/ui/toast';
+import { hoverHitTest } from './hover-hit-test';
 
 type LinkHit = { target: HyperlinkTarget; link: HyperlinkInfo; position: DocumentPosition };
 
@@ -18,7 +19,7 @@ export function hyperlinkAtPointer(self: any, e: MouseEvent, cachedContentRect?:
     const zoom = self.viewportManager.getZoom();
     const px = (x - self.virtualScroll.getPageLeftResolved(page, content.clientWidth)) / zoom;
     const py = (y - self.virtualScroll.getPageOffset(page)) / zoom;
-    const hit = self.wasm.hitTest(page, px, py);
+    const hit = hoverHitTest(self, page, px, py);
     const target = hyperlinkTarget(hit);
     const context = self.wasm.getHyperlinkContext(target);
     for (const link of context.links as HyperlinkInfo[]) {

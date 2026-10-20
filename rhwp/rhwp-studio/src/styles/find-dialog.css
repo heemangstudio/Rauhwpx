@@ -76,7 +76,7 @@
 .find-dialog-input { min-width: 0; height: 30px; padding: 0 10px; border-color: var(--ui-border-strong); border-radius: 6px; background: var(--ui-surface-raised); color: var(--ui-text); }
 .find-dialog-buttons { gap: 8px; padding: 6px 14px 12px; }
 /* 바꾸기 버튼 줄은 찾기 버튼 줄 바로 아래에 붙인다. */
-.find-dialog-buttons:has(+ .find-dialog-buttons:not([style*="display: none"])) { padding-bottom: 0; }
+.find-dialog-buttons.find-dialog-buttons--joined { padding-bottom: 0; }
 .find-dialog-buttons + .find-dialog-buttons { padding-top: 6px; }
 .find-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 @media (max-width: 480px) { .find-dialog { top: 44px; right: 8px; width: calc(100vw - 16px); } .find-dialog-label { width: 56px; } }

@@ -4293,11 +4293,11 @@ function setupEventListeners(): void {
     document.querySelectorAll<HTMLButtonElement>(
       '#icon-toolbar .tb-group:not(.tb-mode-group) .tb-btn[data-cmd]',
     ).forEach((button) => {
-      button.disabled = !dispatcher.isEnabled(button.dataset.cmd ?? '');
+      button.disabled = !dispatcher.isEnabled(button.dataset.cmd ?? '', context);
     });
     // 글머리표는 명령 대신 고르기 팝업을 여는 단추라 data-cmd 가 없다. 같은 명령의 상태를 따른다.
     const bulletButton = document.getElementById('tb-bullet') as HTMLButtonElement | null;
-    if (bulletButton) bulletButton.disabled = !dispatcher.isEnabled('format:bullet-shape');
+    if (bulletButton) bulletButton.disabled = !dispatcher.isEnabled('format:bullet-shape', context);
     modeGroups.forEach((group) => {
       group.style.display = group.dataset.toolbarMode === mode ? '' : 'none';
       if (group.dataset.toolbarMode === mode) {
@@ -4326,12 +4326,12 @@ function setupEventListeners(): void {
         };
         group.querySelectorAll<HTMLButtonElement>('.tb-btn[data-cmd]').forEach((button) => {
           const command = button.dataset.cmd ?? '';
-          button.disabled = !dispatcher.isEnabled(command)
+          button.disabled = !dispatcher.isEnabled(command, context)
             || (mode === 'object' && !contextualObjectCommandEnabled(command, objectSelection));
         });
       }
     });
-    tableRibbonMenus?.refresh();
+    tableRibbonMenus?.refresh((command) => dispatcher.isEnabled(command, context));
     document.getElementById('icon-toolbar')?.setAttribute('data-context-mode', mode);
     return mode;
   };

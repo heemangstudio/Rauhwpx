@@ -117,15 +117,25 @@ export class CommandDispatcher {
    * 커맨드가 현재 활성(실행 가능)인지 확인.
    * 메뉴/툴바의 enabled/disabled 상태 갱신에 사용.
    */
-  isEnabled(commandId: string): boolean {
+  isEnabled(commandId: string, context?: EditorContext): boolean {
     const def = this.registry.get(commandId);
     if (!def) return false;
-    const ctx = this.services.getContext();
+    const ctx = context ?? this.services.getContext();
     if (
       isBlockedInFormMode(commandId, ctx)
       || isBlockedByDocumentEditLock(commandId, ctx)
     ) return false;
     if (!def.canExecute) return true;
     return def.canExecute(ctx);
+  }
+
+  /**
+   * 같은 상태에서 명령 여러 개의 활성 여부를 물을 때 쓴다. 컨텍스트(엔진 질의 십여 번)를
+   * 처음 물을 때 한 번만 만들고 돌려쓴다. 상태가 바뀐 뒤에는 새로 받아야 한다.
+   */
+  enabledChecker(): (commandId: string) => boolean {
+    let ctx: EditorContext | undefined;
+    return (commandId) => this.registry.get(commandId) !== undefined
+      && this.isEnabled(commandId, ctx ??= this.services.getContext());
   }
 }
