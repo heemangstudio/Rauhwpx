@@ -97,6 +97,23 @@ function codexConfig(argv, prefix) {
   assert.fail(`missing Codex config: ${prefix}`);
 }
 
+/** RHWP_* settings a Claude `mcpServers.rhwp` entry hands the MCP server (URL query for http, env for stdio). */
+function claudeMcpSettings(entry) {
+  if (entry.type === 'http') return Object.fromEntries(new URL(entry.url).searchParams);
+  return entry.env;
+}
+
+/** RHWP_* settings the Codex `-c mcp_servers.rhwp.*` overrides hand the MCP server. */
+function codexMcpSettings(argv) {
+  const urlConfig = argv.find((value) => String(value).startsWith('mcp_servers.rhwp.url='));
+  if (urlConfig) {
+    return Object.fromEntries(new URL(JSON.parse(urlConfig.slice('mcp_servers.rhwp.url='.length))).searchParams);
+  }
+  const envConfig = codexConfig(argv, 'mcp_servers.rhwp.env=');
+  return Object.fromEntries([...envConfig.matchAll(/([A-Z_]+) = ("(?:\\.|[^"\\])*")/g)]
+    .map(([, key, value]) => [key, JSON.parse(value)]));
+}
+
 class FakeStream extends EventEmitter {
   chunks = [];
 
@@ -190,12 +207,17 @@ test('dedicated worker identity and exact tool profile reach every provider MCP 
   });
   assert.equal(systemBriefFor(opts), 'AUTONOMOUS TEMPLATE WORKER');
 
-  const claudeMcp = JSON.parse(argValue(buildClaudeArgv(opts, sessionId, false), '--mcp-config')).mcpServers.rhwp;
-  assert.equal(claudeMcp.env.RHWP_TOOL_PROFILE, 'copy-layout-worker');
-  assert.equal(claudeMcp.env.RHWP_AGENT_ROLE, 'copy-layout-worker:job:secret');
-  const codexEnv = codexConfig(buildCodexArgv(opts, null), 'mcp_servers.rhwp.env=');
-  assert.match(codexEnv, /RHWP_TOOL_PROFILE = "copy-layout-worker"/);
-  assert.match(codexEnv, /RHWP_AGENT_ROLE = "copy-layout-worker:job:secret"/);
+  for (const mcpTransport of ['http', 'stdio']) {
+    const transportOpts = { ...opts, mcpTransport };
+    const claudeMcp = claudeMcpSettings(
+      JSON.parse(argValue(buildClaudeArgv(transportOpts, sessionId, false), '--mcp-config')).mcpServers.rhwp,
+    );
+    assert.equal(claudeMcp.RHWP_TOOL_PROFILE, 'copy-layout-worker', mcpTransport);
+    assert.equal(claudeMcp.RHWP_AGENT_ROLE, 'copy-layout-worker:job:secret', mcpTransport);
+    const codexMcp = codexMcpSettings(buildCodexArgv(transportOpts, null));
+    assert.equal(codexMcp.RHWP_TOOL_PROFILE, 'copy-layout-worker', mcpTransport);
+    assert.equal(codexMcp.RHWP_AGENT_ROLE, 'copy-layout-worker:job:secret', mcpTransport);
+  }
 });
 
 test('safe copy-layout workers have job-local reads and no native write, shell, or web surface', () => {
@@ -286,7 +308,7 @@ test('hub-private paths are readable but never writable across every provider pr
     assert.equal(claudeSettings.sandbox.filesystem.allowWrite.includes(privateRoot), false);
 
     const codex = buildCodexArgv(profile, null);
-    assert.match(codexConfig(codex, 'mcp_servers.rhwp.env='), /Rau hub private\/snapshots/);
+    assert.match(codexMcpSettings(codex).RHWP_IMAGE_ROOTS, /Rau hub private\/snapshots/);
     assert.equal(codex.some((value) => String(value).includes('writable_roots')), false);
     const appPolicy = codexAppServerSandboxPolicy(profile);
     assert.equal(appPolicy.writableRoots?.includes(privateRoot) ?? false, false);
@@ -377,14 +399,30 @@ for (const entry of matrix) {
       assert.deepEqual(claudeSettings.sandbox.filesystem.allowWrite, []);
       assert.doesNotMatch(JSON.stringify(claudeSettings.permissions.allow), /Write|Edit/);
     }
-    assert.equal(claudeMcp.env.RHWP_AGENT_WORKFLOW, entry.workflow);
-    assert.equal(claudeMcp.env.RHWP_AGENT_PHASE, entry.phase);
-    assert.equal(claudeMcp.env.RHWP_CAPABILITY_EPOCH, `epoch-${entry.name}`);
-    assert.equal(claudeMcp.env.RHWP_SESSION_ID, 'studio-thread-42');
-    assert.equal(claudeMcp.command, '/Applications/Rau App/Rau');
-    assert.deepEqual(claudeMcp.args, ['--no-warnings', '/tmp/Rau runtime/mcp stdio.mjs']);
-    assert.equal(claudeMcp.env.ELECTRON_RUN_AS_NODE, '1');
-    assert.equal(claudeMcp.env.RHWP_WS_URL, 'ws://127.0.0.1:6199/mcp');
+    // 기본은 허브가 여는 HTTP MCP 다 — provider 프로세스마다 Node MCP 자식을 띄우지 않는다.
+    assert.equal(claudeMcp.type, 'http');
+    assert.equal(claudeMcp.command, undefined);
+    const claudeUrl = new URL(claudeMcp.url);
+    assert.equal(`${claudeUrl.origin}${claudeUrl.pathname}`, 'http://127.0.0.1:6199/mcp-http');
+    assert.deepEqual(claudeMcp.headers, { Authorization: 'Bearer secret-token' });
+    // Claude cuts a silent http MCP call after 5 minutes but a stdio one after 30. Questions wait on the
+    // user, so the http entry must keep at least the stdio idle limit.
+    assert.ok(claudeMcp.timeout >= 30 * 60 * 1000, `Claude http MCP timeout ${claudeMcp.timeout}`);
+    assert.equal(claudeUrl.searchParams.has('RHWP_AGENT_TOKEN'), false, 'the token travels only in the header');
+    const claudeMcpEnv = claudeMcpSettings(claudeMcp);
+    assert.equal(claudeMcpEnv.RHWP_AGENT_NAME, 'claude');
+    assert.equal(claudeMcpEnv.RHWP_AGENT_WORKFLOW, entry.workflow);
+    assert.equal(claudeMcpEnv.RHWP_AGENT_PHASE, entry.phase);
+    assert.equal(claudeMcpEnv.RHWP_CAPABILITY_EPOCH, `epoch-${entry.name}`);
+    assert.equal(claudeMcpEnv.RHWP_SESSION_ID, 'studio-thread-42');
+    // RHWP_MCP_TRANSPORT=stdio 대체 경로는 예전 Electron-as-node 자식을 그대로 띄운다.
+    const claudeStdio = JSON.parse(argValue(buildClaudeArgv({ ...opts, mcpTransport: 'stdio' }, sessionId, false), '--mcp-config')).mcpServers.rhwp;
+    assert.equal(claudeStdio.command, '/Applications/Rau App/Rau');
+    assert.deepEqual(claudeStdio.args, ['--no-warnings', '/tmp/Rau runtime/mcp stdio.mjs']);
+    assert.equal(claudeStdio.env.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(claudeStdio.env.RHWP_WS_URL, 'ws://127.0.0.1:6199/mcp');
+    assert.equal(claudeStdio.env.RHWP_AGENT_TOKEN, 'secret-token');
+    assert.equal(claudeMcpSettings(claudeStdio).RHWP_AGENT_PHASE, entry.phase);
 
     const codex = buildCodexArgv(opts, null);
     assert.ok(codex.includes(`sandbox_mode="${entry.codexSandbox}"`));
@@ -395,18 +433,26 @@ for (const entry of matrix) {
     assert.notEqual(multiAgentIndex, -1);
     assert.equal(codex[multiAgentIndex - 1], '--enable');
     assert.equal(codex.includes('web_search="live"'), entry.planCapabilities);
-    assert.equal(JSON.parse(codexConfig(codex, 'mcp_servers.rhwp.command=').split('=', 2)[1]), '/Applications/Rau App/Rau');
+    assert.equal(codex.some((value) => String(value).startsWith('mcp_servers.rhwp.command=')), false);
+    const codexUrl = new URL(JSON.parse(codexConfig(codex, 'mcp_servers.rhwp.url=').slice('mcp_servers.rhwp.url='.length)));
+    assert.equal(`${codexUrl.origin}${codexUrl.pathname}`, 'http://127.0.0.1:6199/mcp-http');
+    assert.equal(codexConfig(codex, 'mcp_servers.rhwp.http_headers='), 'mcp_servers.rhwp.http_headers={Authorization = "Bearer secret-token"}');
+    const codexMcp = codexMcpSettings(codex);
+    assert.equal(codexMcp.RHWP_AGENT_NAME, 'codex');
+    assert.equal(codexMcp.RHWP_AGENT_WORKFLOW, entry.workflow);
+    assert.equal(codexMcp.RHWP_AGENT_PHASE, entry.phase);
+    assert.equal(codexMcp.RHWP_CAPABILITY_EPOCH, `epoch-${entry.name}`);
+    assert.equal(codexMcp.RHWP_SESSION_ID, 'studio-thread-42');
+    const codexStdio = buildCodexArgv({ ...opts, mcpTransport: 'stdio' }, null);
+    assert.equal(JSON.parse(codexConfig(codexStdio, 'mcp_servers.rhwp.command=').split('=', 2)[1]), '/Applications/Rau App/Rau');
     assert.deepEqual(
-      JSON.parse(codexConfig(codex, 'mcp_servers.rhwp.args=').slice('mcp_servers.rhwp.args='.length)),
+      JSON.parse(codexConfig(codexStdio, 'mcp_servers.rhwp.args=').slice('mcp_servers.rhwp.args='.length)),
       ['--no-warnings', '/tmp/Rau runtime/mcp stdio.mjs'],
     );
-    const codexEnv = codexConfig(codex, 'mcp_servers.rhwp.env=');
-    assert.match(codexEnv, new RegExp(`RHWP_AGENT_WORKFLOW = "${entry.workflow}"`));
-    assert.match(codexEnv, new RegExp(`RHWP_AGENT_PHASE = "${entry.phase}"`));
-    assert.match(codexEnv, new RegExp(`RHWP_CAPABILITY_EPOCH = "epoch-${entry.name}"`));
-    assert.match(codexEnv, /RHWP_SESSION_ID = "studio-thread-42"/);
-    assert.match(codexEnv, /ELECTRON_RUN_AS_NODE = "1"/);
-    assert.match(codexEnv, /RHWP_WS_URL = "ws:\/\/127\.0\.0\.1:6199\/mcp"/);
+    const codexStdioEnv = codexMcpSettings(codexStdio);
+    assert.equal(codexStdioEnv.RHWP_AGENT_PHASE, entry.phase);
+    assert.equal(codexStdioEnv.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(codexStdioEnv.RHWP_WS_URL, 'ws://127.0.0.1:6199/mcp');
   });
 }
 
@@ -501,8 +547,9 @@ test('Windows restricted Claude uses only owned MCP tools without native executi
     assert.deepEqual(Object.keys(sdk.mcpServers), ['rhwp']);
     assert.deepEqual(sdk.agents, {});
     assert.deepEqual(sdk.settingSources, []);
-    assert.equal(sdk.mcpServers.rhwp.env.RHWP_AGENT_WORKFLOW, entry.workflow);
-    assert.equal(sdk.mcpServers.rhwp.env.RHWP_AGENT_PHASE, entry.phase);
+    assert.equal(claudeMcpSettings(sdk.mcpServers.rhwp).RHWP_AGENT_WORKFLOW, entry.workflow);
+    assert.equal(claudeMcpSettings(sdk.mcpServers.rhwp).RHWP_AGENT_PHASE, entry.phase);
+    assert.ok(sdk.mcpServers.rhwp.timeout >= 30 * 60 * 1000, `Claude SDK http MCP timeout ${sdk.mcpServers.rhwp.timeout}`);
     for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent', 'Workflow', 'Task', 'NotebookEdit']) {
       assert.ok(sdk.disallowedTools.includes(tool));
       assert.ok(sdk.settings.permissions.deny.includes(tool));
@@ -1386,7 +1433,7 @@ test('Claude waits for an idle restart and resumes with the new phase', async ()
   assert.equal(spawns.length, 2);
   assert.ok(spawns[1].argv.includes('--resume'));
   assert.match(argValue(spawns[1].argv, '--append-system-prompt'), /approved canonical implementation plan/);
-  const env = JSON.parse(argValue(spawns[1].argv, '--mcp-config')).mcpServers.rhwp.env;
+  const env = claudeMcpSettings(JSON.parse(argValue(spawns[1].argv, '--mcp-config')).mcpServers.rhwp);
   assert.deepEqual(
     [env.RHWP_AGENT_WORKFLOW, env.RHWP_AGENT_PHASE, env.RHWP_CAPABILITY_EPOCH],
     ['plan', 'implementing', '2'],

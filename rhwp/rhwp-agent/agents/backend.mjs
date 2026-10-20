@@ -1226,6 +1226,76 @@ export function createTurnProcessLifecycle({
   return lifecycle;
 }
 
+/**
+ * How Claude and Codex reach the rhwp MCP server.
+ *
+ * By default the hub serves MCP itself over Streamable HTTP, so a provider
+ * process does not start a Node `mcp-stdio` child (about 90 MB and 0.3 s per
+ * turn). `mcpTransport: 'stdio'` (hub `RHWP_MCP_TRANSPORT=stdio`) keeps the
+ * old bridge. Both carry the same capability settings; the session-scoped token
+ * travels in the Authorization header (http) or the child env (stdio).
+ *
+ * @returns {{ type: 'http', url: string, headers: Record<string, string> }
+ *   | { type: 'stdio', command: string, args: string[], env: Record<string, string> }}
+ */
+export function rhwpMcpServerFor(opts, agentName) {
+  const capabilityEnv = { RHWP_AGENT_NAME: agentName, ...mcpCapabilityEnv(opts) };
+  if (opts.mcpTransport === 'stdio') {
+    const runtime = mcpRuntimeFor(opts);
+    return {
+      type: 'stdio',
+      command: runtime.command,
+      args: runtime.args,
+      env: {
+        ...runtime.env,
+        RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
+        RHWP_AGENT_TOKEN: opts.token,
+        ...capabilityEnv,
+      },
+    };
+  }
+  const url = new URL(`http://127.0.0.1:${opts.hubPort}/mcp-http`);
+  for (const [key, value] of Object.entries(capabilityEnv)) url.searchParams.set(key, String(value));
+  return { type: 'http', url: url.toString(), headers: { Authorization: `Bearer ${opts.token}` } };
+}
+
+/**
+ * Claude aborts an MCP tool call that sends no result or progress for its idle
+ * timeout: 30 minutes for stdio servers but only 5 minutes for http servers.
+ * rhwp tools send no progress, so a user who takes more than 5 minutes to
+ * answer ask_user_question (or a detach waiting on the save dialog) would get
+ * a tool error over http. The per-server `timeout` raises the http idle limit
+ * to the stdio value; it also caps the whole call at the same 30 minutes, which
+ * a silent call could never exceed under stdio either.
+ */
+export const CLAUDE_HTTP_MCP_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Claude `mcpServers.rhwp` entry (CLI `--mcp-config` and Agent SDK options). */
+export function claudeRhwpMcpServer(opts) {
+  const server = rhwpMcpServerFor(opts, 'claude');
+  return server.type === 'http'
+    ? { type: 'http', url: server.url, headers: server.headers, timeout: CLAUDE_HTTP_MCP_TOOL_TIMEOUT_MS }
+    : { command: server.command, args: server.args, env: server.env };
+}
+
+/** Codex `-c mcp_servers.rhwp.*` overrides that select the transport. */
+export function codexRhwpMcpServerConfig(opts) {
+  const server = rhwpMcpServerFor(opts, 'codex');
+  const table = (entries) => `{${Object.entries(entries)
+    .map(([key, value]) => `${key} = ${JSON.stringify(String(value))}`)
+    .join(', ')}}`;
+  return server.type === 'http'
+    ? [
+      '-c', `mcp_servers.rhwp.url=${JSON.stringify(server.url)}`,
+      '-c', `mcp_servers.rhwp.http_headers=${table(server.headers)}`,
+    ]
+    : [
+      '-c', `mcp_servers.rhwp.command=${JSON.stringify(server.command)}`,
+      '-c', `mcp_servers.rhwp.args=${JSON.stringify(server.args)}`,
+      '-c', `mcp_servers.rhwp.env=${table(server.env)}`,
+    ];
+}
+
 /** Runtime used for the MCP stdio child. Prefix args support packaged Electron runtimes. */
 export function mcpRuntimeFor(opts = {}, sourceEnv = process.env) {
   const command = String(opts.mcpRuntimeCommand || process.execPath);

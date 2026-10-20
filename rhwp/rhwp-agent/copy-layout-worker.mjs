@@ -9,6 +9,7 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     prepareClaudeHome,
     sourceClaudeAuth,
     MCP_SCRIPT,
+    MCP_TRANSPORT,
     hubPort,
     sessions,
     TOKEN,
@@ -62,6 +63,7 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     // generated candidates, never the owning chat's workspace/downloads.
     readOnlyRoots: [jobSnapshotRoot, jobGeneratedRoot],
     mcpScriptPath: MCP_SCRIPT,
+    mcpTransport: MCP_TRANSPORT,
     hubPort,
     token: sessions.issue(TOKEN, record.sessionId, {
       audience: HUB_CAPABILITY_AUDIENCES.COPY_LAYOUT_WORKER,

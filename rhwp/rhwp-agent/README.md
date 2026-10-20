@@ -3,9 +3,11 @@
 Local WebSocket hub. Claude, Codex, and Pi read and edit the document open in HamaEditor through MCP. The hub owns chat workflow, downloads, and the app-owned browser runtime. Document logic stays in the browser.
 
 ```text
-agent CLI ──spawn──► mcp-stdio.mjs ──ws──► server.mjs ◄──ws── rhwp-studio
-                     (MCP server)         (127.0.0.1)
+Claude / Codex CLI ──http /mcp-http──► server.mjs ◄──ws── rhwp-studio
+Pi extension ───────────ws /mcp──────► (127.0.0.1)
 ```
+
+The hub serves the rhwp MCP tools itself over Streamable HTTP, so a provider turn does not start a Node MCP child. Set `RHWP_MCP_TRANSPORT=stdio` on the hub to fall back to the `mcp-stdio.mjs` bridge.
 
 ## Requirements
 
@@ -117,9 +119,10 @@ The app's Pi runs only with resources from the app bundle. `pi/resources.mjs` pa
 
 | File | Role |
 | --- | --- |
-| `rhwp/rhwp-agent/server.mjs` | WS hub (`/studio`, `/mcp`, `/healthz`) |
+| `rhwp/rhwp-agent/server.mjs` | WS hub (`/studio`, `/mcp`, `/healthz`) and HTTP MCP (`/mcp-http`) |
 | `rhwp/rhwp-agent/ctl.mjs` | `npm start` / `stop` / `status` |
 | `rhwp/rhwp-agent/tools.mjs` | MCP tool definitions |
-| `rhwp/rhwp-agent/mcp-stdio.mjs` | MCP stdio forwarder |
+| `rhwp/rhwp-agent/mcp-http.mjs` | Hub-served MCP endpoint used by Claude and Codex |
+| `rhwp/rhwp-agent/mcp-stdio.mjs` | MCP stdio forwarder (`RHWP_MCP_TRANSPORT=stdio` fallback) |
 | `rhwp/rhwp-agent/agents/` | Provider backends |
 | `rhwp/rhwp-agent/tests/` | Tool and hub contracts |
