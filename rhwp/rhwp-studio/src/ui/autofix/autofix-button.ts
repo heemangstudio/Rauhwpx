@@ -23,8 +23,8 @@ export interface AutofixButton {
 }
 
 /**
- * 초록 자동 수정 단추. 모든 문구를 한 칸에 겹쳐 두어 상태가 바뀌어도 폭이 같다. 실행 중에는 점만
- * 움직인다(…→..→.). 다시 그려도 상태가 남도록 같은 요소를 옮겨 붙여 쓴다.
+ * 초록 자동 수정 단추. 모든 문구를 한 칸에 겹쳐 두어 상태가 바뀌어도 폭이 같다. 실행 중에는 채움이
+ * 빠지고 점 셋만 물결친다. 다시 그려도 상태가 남도록 같은 요소를 옮겨 붙여 쓴다.
  */
 export function createAutofixButton(options: AutofixButtonOptions): AutofixButton {
   const button = document.createElement('button');
@@ -37,7 +37,8 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   for (const [phase, text] of LABELS) {
     const label = document.createElement('span');
     label.dataset.label = phase;
-    label.textContent = text;
+    if (phase === 'fixed') label.append(checkIcon());
+    label.append(text);
     labels.append(label);
   }
   const dots = document.createElement('span');
@@ -45,7 +46,7 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   dots.className = 'rhwp-autofix-dots';
   for (let index = 0; index < 3; index += 1) {
     const dot = document.createElement('span');
-    dot.textContent = '.';
+    dot.className = 'rhwp-autofix-dot';
     dots.append(dot);
   }
   labels.append(dots);
@@ -70,6 +71,19 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   button.dataset.phase = 'idle';
   button.addEventListener('click', () => controller.start());
   return { element: button, phase: controller.phase, dispose: controller.dispose };
+}
+
+/** 고침 앞의 체크. 고침이 되는 순간 획이 그려진다. */
+function checkIcon(): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'rhwp-autofix-check');
+  svg.setAttribute('viewBox', '0 0 12 12');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M2.5 6.3 5 8.7 9.5 3.6');
+  path.setAttribute('pathLength', '1');
+  svg.append(path);
+  return svg;
 }
 
 /** 자리의 단추를 갈아 끼운다. 이미 그 단추면 그대로 둔다. 초점이 있던 단추면 새 단추로 옮긴다. */

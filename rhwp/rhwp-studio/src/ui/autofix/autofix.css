@@ -6,6 +6,8 @@
   --rhwp-autofix-danger: var(--theme-danger, #c8372d);
   --rhwp-autofix-muted-bg: color-mix(in oklab, var(--theme-text, #1f1f1f) 10%, transparent);
   --rhwp-autofix-muted-fg: var(--theme-text-secondary, #555);
+  /* 채움이 빠진 실행 중 점의 색. 단추 바탕이 아니라 주변 면 위에 놓인다. */
+  --rhwp-autofix-dot: var(--theme-success, #2f7d4f);
 }
 
 :root[data-theme-effective='dark'] {
@@ -14,6 +16,7 @@
   --rhwp-autofix-danger: color-mix(in oklab, var(--theme-danger, #ff6b60) 78%, #000);
   --rhwp-autofix-muted-bg: color-mix(in oklab, var(--theme-text, #ececec) 14%, transparent);
   --rhwp-autofix-muted-fg: var(--theme-text-secondary, #b4b4b4);
+  --rhwp-autofix-dot: var(--theme-success, #5cbb7f);
 }
 
 .rhwp-autofix[data-phase] {
@@ -35,12 +38,18 @@
   cursor: default;
   transition:
     color var(--ag-dur-fast, 150ms) var(--ag-ease-out, ease-out),
-    background-color var(--ag-dur-fast, 150ms) var(--ag-ease-out, ease-out);
+    background-color var(--ag-dur-base, 220ms) var(--ag-ease-out, ease-out),
+    transform 120ms var(--ag-ease-out, ease-out);
   animation: rhwp-autofix-in var(--ag-dur-base, 220ms) var(--ag-ease-out, ease-out);
 }
 
 .rhwp-autofix[data-phase]:is(:hover, :active):not(:disabled) {
   background: color-mix(in oklab, var(--rhwp-autofix-bg) 88%, #000);
+}
+
+/* 누르는 순간 살짝 눌린다. 놓으면 채움이 빠지며 점으로 넘어간다. */
+.rhwp-autofix[data-phase]:active:not(:disabled) {
+  transform: scale(0.95);
 }
 
 .rhwp-autofix:focus-visible {
@@ -50,6 +59,17 @@
 
 .rhwp-autofix[data-phase]:disabled {
   opacity: 1;
+}
+
+.rhwp-autofix[data-phase='running'] {
+  background: transparent;
+}
+
+/* 고침: 채움이 돌아오며 한 번 튀고, 바깥으로 퍼지는 고리와 함께 체크가 그려진다. */
+.rhwp-autofix[data-phase='fixed'] {
+  animation:
+    rhwp-autofix-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    rhwp-autofix-ring 640ms var(--ag-ease-out, ease-out);
 }
 
 .rhwp-autofix[data-phase='failed'] {
@@ -81,19 +101,52 @@
   visibility: visible;
 }
 
-/* ... → .. → . → ... 사라진 점도 자리를 지켜 가운데가 흔들리지 않는다. */
+/* 점 셋이 차례로 떠올랐다 내려앉는 물결. */
 .rhwp-autofix-dots {
   display: inline-flex;
-  font-weight: 700;
-  letter-spacing: 1px;
+  align-items: center;
+  gap: 4px;
 }
 
-.rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > :nth-child(2) {
-  animation: rhwp-autofix-dot-2 1200ms linear infinite;
+.rhwp-autofix-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--rhwp-autofix-dot);
 }
 
-.rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > :nth-child(3) {
-  animation: rhwp-autofix-dot-3 1200ms linear infinite;
+.rhwp-autofix[data-phase='running'] .rhwp-autofix-dot {
+  animation: rhwp-autofix-wave 1100ms ease-in-out infinite;
+}
+
+.rhwp-autofix[data-phase='running'] .rhwp-autofix-dot:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.rhwp-autofix[data-phase='running'] .rhwp-autofix-dot:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.rhwp-autofix [data-label='fixed'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rhwp-autofix-check {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.rhwp-autofix[data-phase='fixed'] .rhwp-autofix-check {
+  animation: rhwp-autofix-draw 320ms 120ms var(--ag-ease-out, ease-out) forwards;
 }
 
 .rhwp-autofix-status {
@@ -110,14 +163,23 @@
   to { opacity: 1; transform: none; }
 }
 
-@keyframes rhwp-autofix-dot-2 {
-  0%, 66.6% { opacity: 1; }
-  66.7%, 100% { opacity: 0; }
+@keyframes rhwp-autofix-wave {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-3px); opacity: 1; }
 }
 
-@keyframes rhwp-autofix-dot-3 {
-  0%, 33.3% { opacity: 1; }
-  33.4%, 100% { opacity: 0; }
+@keyframes rhwp-autofix-pop {
+  0% { transform: scale(0.9); }
+  100% { transform: none; }
+}
+
+@keyframes rhwp-autofix-ring {
+  from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--rhwp-autofix-dot) 45%, transparent); }
+  to { box-shadow: 0 0 0 8px transparent; }
+}
+
+@keyframes rhwp-autofix-draw {
+  to { stroke-dashoffset: 0; }
 }
 
 @keyframes rhwp-autofix-shake {
@@ -132,7 +194,12 @@
 @media (prefers-reduced-motion: reduce) {
   .rhwp-autofix[data-phase],
   .rhwp-autofix[data-phase='unavailable'],
-  .rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > * {
+  .rhwp-autofix[data-phase='fixed'],
+  .rhwp-autofix[data-phase='running'] .rhwp-autofix-dot {
     animation: none;
+  }
+
+  .rhwp-autofix-check {
+    stroke-dashoffset: 0;
   }
 }
