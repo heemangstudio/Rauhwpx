@@ -1,5 +1,5 @@
 /**
- * 첫 실행 설정 — 테마, 모델 연결, (데스크톱이면) 자동 버그 수정, (필요하면) 글꼴, (데스크톱에서 키가 없으면) 라이선스.
+ * 첫 실행 설정 — 테마, 모델 연결, (필요하면) 글꼴, (데스크톱에서 키가 없으면) 라이선스, (데스크톱이면) 자동 버그 수정.
  *
  * 화면에는 고를 것만 두고 설명은 하마의 말풍선 한 줄로 한다. 실제 로그인·설치는 설정 모달이
  * 맡는다. 문체 보정은 여기서 묻지 않고 첫 대화 뒤 사이드바의 작은 칩이 권한다.
@@ -338,7 +338,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   window.addEventListener('focus', onWindowFocus);
 
-  // ── 라이선스: 구매와 키 넣기. 활성화를 잠깐 보여 준 뒤 마지막 장면으로 가며 선물 창에 자리를 비켜 준다. ──
+  // ── 라이선스: 구매와 키 넣기. 활성화를 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
   let licensedTimer: number | undefined;
   const licensePanel = licenseApi
     ? createLicenseStep({
@@ -350,7 +350,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
         markLicensedHere();
         window.clearTimeout(licensedTimer);
         licensedTimer = window.setTimeout(() => {
-          if (overlay.isConnected && !celebrating && currentStep() === 'license') showDone();
+          if (overlay.isConnected && !celebrating && currentStep() === 'license') void next();
         }, LICENSED_HOLD_MS);
       },
       onStateChange: () => renderStep(),
@@ -359,7 +359,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, autofixPanel, fontsPanel, licenseElement);
+  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, autofixPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,

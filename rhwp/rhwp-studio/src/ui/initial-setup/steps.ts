@@ -22,7 +22,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'models' | 'autofix' | 'fonts' | 'license';
+export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'autofix';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -82,15 +82,15 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
   return env.canDiscover ? 'discover' : null;
 }
 
-/** 라이선스 단계는 데스크톱에서 아직 키를 넣지 않았을 때만 마지막에 둔다. */
+/** 라이선스는 데스크톱에서 아직 키를 넣지 않았을 때만, 자동 버그 수정은 데스크톱에서 맨 끝에 둔다. */
 export function planSteps(
   fontStep: FontStepKind | null,
   options: { autofix?: boolean; license?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['theme', 'models'];
-  if (options.autofix) steps.push('autofix');
   if (fontStep) steps.push('fonts');
   if (options.license) steps.push('license');
+  if (options.autofix) steps.push('autofix');
   return steps;
 }
 
