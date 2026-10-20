@@ -1557,7 +1557,31 @@ async function broadcastPiStatus() {
 function refreshGiftAndBroadcast(refresh = true) {
   return piManager.refreshGift({ refresh })
     .then(() => broadcastPiStatus())
+    .then((status) => installPiForGift(status))
     .catch((error) => log(`gift refresh failed: ${error?.message ?? error}`));
+}
+
+/**
+ * 선물 크레딧을 받았는데 Pi 가 없으면 뒤에서 설치한다. 사용자가 설정에서 따로 설치하지 않아도 된다.
+ * 허브 실행마다 한 번만 시도한다. 실패하면 설정의 설치 버튼이 그대로 남는다.
+ */
+let giftPiInstallAttempted = false;
+function installPiForGift(status) {
+  if (giftPiInstallAttempted || status?.credential !== 'gift' || status.installed || status.installing) return;
+  giftPiInstallAttempted = true;
+  log('gift claimed without Pi: installing Pi in the background');
+  const installing = mutateSharedNpmPrefix(() => {
+    const running = piManager.install();
+    // 설치 중이라는 사실을 모든 Studio 에 알려 설정 카드가 설치 중으로 보이게 한다.
+    void broadcastPiStatus().catch(() => {});
+    return running;
+  });
+  void installing
+    .then((next) => { piStatus = next; })
+    .then(() => providerHealth.check(true))
+    .then((providers) => broadcastToStudios({ v: 1, type: 'provider-status', providers }))
+    .catch((error) => log(`gift Pi install failed: ${error?.message ?? error}`))
+    .finally(() => { void broadcastPiStatus().catch(() => {}); });
 }
 
 giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
