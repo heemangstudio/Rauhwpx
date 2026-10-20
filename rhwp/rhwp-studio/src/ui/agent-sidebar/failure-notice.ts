@@ -19,8 +19,10 @@ import {
   type ContinuationCarryingWire,
   type ContinuationContext,
 } from '../../agent/turn-interruption.ts';
+import { createRetryEscalation } from '../autofix/autofix.ts';
+import type { AutofixButton, AutofixButtonOptions } from '../autofix/autofix-button.ts';
 
-export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume';
+export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume' | 'autofix';
 
 export interface FailureAction {
   id: FailureActionId;
@@ -50,6 +52,10 @@ export interface FailureViewContext {
   resumeArmed?: boolean;
   /** 리셋 뒤 이어서 보내려 했지만 막혔다 */
   resumeBlocked?: boolean;
+  /** 자동 수정을 쓸 수 있다(데스크톱 + 설정에서 켬) */
+  autofix?: boolean;
+  /** 같은 실패의 다시 시도가 두 번 실패했다 */
+  escalated?: boolean;
   timeZone?: string;
 }
 
@@ -68,6 +74,21 @@ const RUNNING_TITLE = '작업이 끝난 뒤 다시 시도할 수 있어요';
 const CONTEXT_CODES = new Set(['context_window', 'codex:contextWindowExceeded', 'claude:prompt_too_long']);
 const MODEL_CODES = new Set(['model_not_found', 'claude:model_not_found']);
 const CLEANUP_CODES = new Set(['cleanup_uncertain', 'AGENT_PROCESS_CLEANUP_UNCERTAIN']);
+
+/**
+ * 자동 수정이 맡을 수 있는 실패 — 앱·서버 쪽 실패(제보 대상)에서 설정으로 가야 하는 것(CLI 없음, 모델)을 뺀다.
+ * 로그인·사용량·요청 문제는 사용자가 고친다.
+ */
+function autofixEligible(failure: ProviderFailure): boolean {
+  if (!REPORTABLE_CLASSES.has(failure.class)) return false;
+  return failure.code !== 'cli_missing' && failure.code !== 'PI_MODEL_MISSING'
+    && !(failure.code !== null && MODEL_CODES.has(failure.code));
+}
+
+/** 다시 시도로 풀릴 것 같지 않은 실패(원인 불명, 프로세스가 죽음) — 처음부터 자동 수정을 보인다. */
+function autofixImmediate(failure: ProviderFailure): boolean {
+  return failure.class === 'unknown' || failure.class === 'process_exited';
+}
 
 /** 리셋 시각 — 같은 날이면 시:분, 다른 날이면 월·일도 붙인다 (보는 사람의 시간대). */
 export function formatResetAt(at: number, now: number, timeZone?: string): string {
@@ -209,6 +230,12 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       break;
   }
   if (retryAllowed && ctx.hasRetry) actions.unshift(retryAction());
+  // 다시 시도가 소용없어 보이면 그 자리에 자동 수정을 둔다. 고친 뒤 자동 수정이 다시 시도를 대신한다.
+  if (ctx.autofix && autofixEligible(failure) && (autofixImmediate(failure) || ctx.escalated)) {
+    const retryIndex = actions.findIndex((action) => action.id === 'retry');
+    if (retryIndex >= 0) actions.splice(retryIndex, 1);
+    actions.unshift({ id: 'autofix', label: '자동 수정' });
+  }
   return { title, line, actions, detail, compact: false };
 }
 
@@ -324,8 +351,10 @@ export interface FailureNoticeHandlers {
   onAction(id: FailureActionId): void;
   /** × 로 접었다 (true) 또는 '다시 보기' 로 폈다 (false) */
   onDismissChange(dismissed: boolean): void;
-  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '오류 제보' 단추를 둔다. */
+  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '버그 제보' 단추를 둔다. */
   onReport?(): void;
+  /** 이 알림의 자동 수정 단추. 다시 그려도 실행 상태가 남도록 같은 요소를 돌려준다. */
+  autofixButton?(): HTMLElement | null;
 }
 
 export interface FailureNoticeOptions {
@@ -371,6 +400,11 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
   }
   if (view.compact) return root;
   for (const action of view.actions) {
+    if (action.id === 'autofix') {
+      const autofix = handlers.autofixButton?.();
+      if (autofix) actions.append(autofix);
+      continue;
+    }
     // 다시 시도는 글자 대신 새로고침 아이콘 단추다. 이름은 aria-label·툴팁으로 남는다.
     const retry = action.id === 'retry';
     const button = retry
@@ -395,7 +429,7 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
     actions.append(button);
   }
   if (options.reportable && handlers.onReport) {
-    const report = el('button', 'ag-failure-link ag-failure-report', '오류 제보');
+    const report = el('button', 'ag-failure-link ag-failure-report', '버그 제보');
     report.type = 'button';
     report.addEventListener('click', () => handlers.onReport?.());
     actions.append(report);
@@ -477,6 +511,11 @@ export interface FailureNoticeControllerDeps {
   resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
   /** 오류 제보를 연다(데스크톱). 없으면 제보 단추를 두지 않는다. */
   reportIssue?: () => void;
+  /** 자동 수정(데스크톱). ready 는 지금 단추를 세워도 되는지(설정에서 켬). */
+  autofix?: {
+    ready(): boolean;
+    create(options: AutofixButtonOptions): AutofixButton;
+  };
   now?: () => number;
   /** 리셋 시각 뒤 이어서 보내기까지의 여유 (시계 차이) */
   resumeGraceMs?: number;
@@ -526,6 +565,11 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   /** 채팅 시작을 이미 다시 시도한 알림 — 같은 실패가 다시 오면 새 알림이 생긴다. */
   const restarted = new WeakSet<ThreadFailureMessage>();
   const resumes = new Map<string, ArmedResume>();
+  /** 같은 실패의 다시 시도가 실패한 횟수. 두 번이면 그 뒤 알림의 다시 시도가 자동 수정이 된다. */
+  const escalation = createRetryEscalation();
+  const escalated = new WeakSet<ThreadFailureMessage>();
+  const autofixButtons = new Map<ThreadFailureMessage, AutofixButton>();
+  const escalationKey = (failure: ProviderFailure) => `${failure.agent}:${failure.class}:${failure.code ?? ''}`;
 
   function latestIn(thread: ChatThread): ThreadFailureMessage | null {
     for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
@@ -560,7 +604,30 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       isLatest,
       resumeArmed: resumes.get(thread.id)?.message === message,
       resumeBlocked: blocked.has(message),
+      autofix: deps.autofix?.ready() === true,
+      escalated: escalated.has(message),
     });
+  }
+
+  function autofixButton(message: ThreadFailureMessage, view: FailureView): AutofixButton | null {
+    if (!deps.autofix) return null;
+    let button = autofixButtons.get(message);
+    if (!button) {
+      button = deps.autofix.create({
+        request: () => ({
+          surface: 'provider-failure',
+          title: view.title,
+          detail: [message.failure.code ?? message.failure.class, message.failure.message].filter(Boolean).join(': '),
+          attempts: escalation.attempts(escalationKey(message.failure)),
+        }),
+        // 고친 뒤 실패했던 요청을 다시 보낸다(이 알림이 아직 마지막일 때만).
+        onFixed: () => {
+          if (latestIn(deps.thread()) === message) retryNow(message);
+        },
+      });
+      autofixButtons.set(message, button);
+    }
+    return button;
   }
 
   function render(message: ThreadFailureMessage): HTMLElement {
@@ -578,6 +645,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
         rerender(message);
       },
       ...(deps.reportIssue ? { onReport: deps.reportIssue } : {}),
+      autofixButton: () => autofixButton(message, view)?.element ?? null,
     });
   }
 
@@ -653,12 +721,13 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
     if (message.origin === 'start') {
       restarted.add(message);
       deps.restartSession();
+      escalation.retried(escalationKey(message.failure));
       refresh();
       return;
     }
     if (!message.retry) return;
     blocked.delete(message);
-    deps.resend(message.retry, message.failure);
+    if (deps.resend(message.retry, message.failure)) escalation.retried(escalationKey(message.failure));
     refresh();
   }
 
@@ -750,6 +819,8 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
         at: now(),
       };
       live.add(message);
+      escalation.failed(escalationKey(failure));
+      if (escalation.escalated(escalationKey(failure))) escalated.add(message);
       // 새 실패가 오면 걸려 있던 이어서 보내기는 거둔다.
       cancelResume(thread.id);
       // 조치는 마지막 알림만 가진다 — 앞선 알림의 다시 보낼 요청(최대 128k 자 두 벌)은 걷어 저장을 가볍게 한다.
@@ -788,6 +859,10 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       nodes.clear();
     },
     refresh,
+    /** 턴이 실패 없이 끝났다 — 다시 시도 실패 횟수를 처음부터 센다. */
+    noteSuccess(): void {
+      escalation.reset();
+    },
     setLimits(next: UsageSummary['limits'] | null | undefined): void {
       limits = next ?? null;
       refresh();
@@ -802,6 +877,8 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
     },
     dispose(): void {
       for (const threadId of [...resumes.keys()]) cancelResume(threadId);
+      for (const button of autofixButtons.values()) button.dispose();
+      autofixButtons.clear();
       nodes.clear();
     },
   };

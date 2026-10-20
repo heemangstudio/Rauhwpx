@@ -198,6 +198,25 @@ export class TrapRecoveryPage {
   }
 
   /**
+   * 대화상자 없이 다시 연다 — 자동 수정이 환경을 고친 뒤. 복구본 저장이 끝나기를(상한까지) 기다린다.
+   * 다시 열 수 없으면 그 이유를 돌려준다.
+   */
+  async reopenWhenReady(): Promise<string | null> {
+    this.begin();
+    if (!this.ready()) {
+      await new Promise<void>((resolve) => {
+        const listener = () => {
+          if (!this.ready()) return;
+          this.listeners.delete(listener);
+          resolve();
+        };
+        this.listeners.add(listener);
+      });
+    }
+    return this.reload();
+  }
+
+  /**
    * 1. 일하는 채팅을 멈추고 턴이 끝나기를 잠깐 기다린다 — 다시 불러와도 남는 기본 허브 세션이
    *    쉬는 상태로 새 페이지를 맞게 한다. 도구는 이미 ENGINE_TRAPPED 로 실패하므로 금방 끝난다.
    * 2. 다시 열 문서 목록을 sessionStorage 에 적는다.

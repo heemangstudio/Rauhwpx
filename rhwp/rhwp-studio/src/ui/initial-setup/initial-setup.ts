@@ -1,5 +1,5 @@
 /**
- * 첫 실행 설정 — 테마, 모델 연결, (필요하면) 글꼴.
+ * 첫 실행 설정 — 테마, 모델 연결, (데스크톱이면) 자동 버그 수정, (필요하면) 글꼴.
  *
  * 화면에는 고를 것만 두고 설명은 하마의 말풍선 한 줄로 한다. 실제 로그인·설치는 설정 모달이
  * 맡는다. 문체 보정은 여기서 묻지 않고 첫 대화 뒤 사이드바의 작은 칩이 권한다.
@@ -27,6 +27,7 @@ import {
   SUGGESTED_AGENT,
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
+import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
 import { holdInitialSetup, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
@@ -85,6 +86,8 @@ export interface InitialSetupDeps {
   chooseFontFolder?: () => Promise<unknown>;
   canOfferFontFolder?: () => boolean;
   openExternal?: (url: string) => void;
+  /** 자동 버그 수정 단계를 넣을지. 기본은 데스크톱 자동 수정 API 가 있을 때. */
+  autofixAvailable?: () => boolean;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -110,7 +113,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let setupStatuses: AgentSetupStatusMap | null = null;
   let lastFocus: HTMLElement | null = null;
   let fontStep: FontStepKind | null = null;
-  let steps: SetupStep[] = planSteps(null);
+  const withAutofix = (deps.autofixAvailable ?? (() => autofixApi() !== null))();
+  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix });
   let stepIndex = 0;
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
@@ -119,7 +123,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind);
+      steps = planSteps(kind, { autofix: withAutofix });
       renderFonts();
       renderStep();
     });
@@ -201,6 +205,43 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   modelsPanel.append(grid);
 
+  // ── 자동 버그 수정: 기본은 꺼짐. 고르는 순간 답한 것으로 저장한다. ──
+  const autofixPanel = el('div', 'rhwp-setup-panel');
+  autofixPanel.dataset.step = 'autofix';
+  const autofixGroup = el('div', 'rhwp-setup-font-actions');
+  autofixGroup.setAttribute('role', 'radiogroup');
+  autofixGroup.setAttribute('aria-label', '자동 버그 수정');
+  /* 글꼴 단추와 같은 면을 쓴다. */
+  const autofixChoices = ([[true, '켜기', 'sparkles'], [false, '끄기', 'minimize']] as const).map(([enabled, label, icon]) => {
+    const root = button('rhwp-setup-font-action');
+    root.setAttribute('role', 'radio');
+    const iconSlot = el('span', 'rhwp-setup-font-icon');
+    iconSlot.appendChild(createIcon(icon));
+    const check = el('span', 'rhwp-setup-check');
+    check.appendChild(createIcon('check'));
+    root.append(iconSlot, el('span', 'rhwp-setup-font-label', label), check);
+    root.addEventListener('click', () => {
+      autofixChoice = enabled;
+      renderAutofix();
+      void updateAutofixSettings({ decided: true, enabled }).catch((error) => {
+        console.warn('[initial-setup] 자동 버그 수정 설정을 저장하지 못했습니다:', error);
+      });
+    });
+    autofixGroup.append(root);
+    return { enabled, root };
+  });
+  autofixPanel.append(autofixGroup);
+  /** 답한 값. 아직 답하지 않았으면 null(둘 다 고르지 않은 상태). */
+  let autofixChoice: boolean | null = null;
+  const readAutofixChoice = () => {
+    const current = autofixSettings();
+    if (current?.decided) autofixChoice = current.enabled;
+  };
+  readAutofixChoice();
+  const stopAutofixSettings = withAutofix
+    ? onAutofixSettings(() => { readAutofixChoice(); renderAutofix(); })
+    : () => {};
+
   // ── 글꼴: 스스로 찾고, 못 찾으면 찾기·한컴오피스 받기, 그래도 없으면 폴더 ──
   const fontsPanel = el('div', 'rhwp-setup-panel');
   fontsPanel.dataset.step = 'fonts';
@@ -278,10 +319,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   window.addEventListener('focus', onWindowFocus);
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, fontsPanel);
+  body.append(themePanel, modelsPanel, autofixPanel, fontsPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,
+    autofix: autofixPanel,
     fonts: fontsPanel,
   };
 
@@ -318,6 +360,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
   }
 
+  function renderAutofix(): void {
+    for (const choice of autofixChoices) {
+      const picked = autofixChoice === choice.enabled;
+      choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
+      choice.root.dataset.done = picked ? 'true' : 'false';
+    }
+  }
+
   function renderFonts(): void {
     if (fontSearch === 'idle' && fontStep === 'missing') fontSearch = 'missing';
     const rescan = fontStep === 'missing' || fontSearch === 'missing';
@@ -338,6 +388,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
+    if (step === 'autofix') return HIPPO_LINES.autofix;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -364,9 +415,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function focusStep(): void {
-    const panel = panels[currentStep()];
+    const step = currentStep();
+    const panel = panels[step];
+    // 자동 버그 수정은 직접 골라야 켜진다. 아무것도 고르지 않았으면 켜기에 포커스를 두지 않는다.
     const target = panel.querySelector<HTMLElement>('[aria-checked="true"]')
-      ?? panel.querySelector<HTMLElement>('button:not([disabled])');
+      ?? (step === 'autofix' ? null : panel.querySelector<HTMLElement>('button:not([disabled])'));
     (target ?? primary).focus({ preventScroll: true });
   }
 
@@ -441,6 +494,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     dots.hidden = false;
     renderTheme();
     renderCards();
+    renderAutofix();
     renderFonts();
     renderStep();
     requestAnimationFrame(() => {
@@ -479,6 +533,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     dispose(): void {
       disposed = true;
       hippo.dispose();
+      stopAutofixSettings();
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', onWindowFocus);
       overlay.remove();

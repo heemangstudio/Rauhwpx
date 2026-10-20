@@ -61,7 +61,12 @@ function failure(overrides: Partial<ProviderFailure> = {}): ProviderFailure {
   return { class: 'network', agent: 'claude', message: 'stream disconnected', code: null, retryable: true, resetAt: null, ...overrides };
 }
 
-function sidebar(shown: ChatThread) {
+interface FakeAutofix {
+  ready: boolean;
+  created: Array<{ onFixed(): void; request(): { surface: string; attempts?: number } }>;
+}
+
+function sidebar(shown: ChatThread, autofix?: FakeAutofix) {
   const drawn: FakeElement[] = [];
   const saved: string[] = [];
   const resent: ThreadRetryPayload[] = [];
@@ -85,6 +90,17 @@ function sidebar(shown: ChatThread) {
     resend: (retry) => { resent.push(retry); return true; },
     resumeGraceMs: 0,
     dismissals: createFailureDismissals(() => null),
+    ...(autofix ? {
+      autofix: {
+        ready: () => autofix.ready,
+        create: (options: FakeAutofix['created'][number]) => {
+          autofix.created.push(options);
+          const element = new FakeElement();
+          element.dataset.action = 'autofix';
+          return { element: element as unknown as HTMLButtonElement, phase: () => 'idle' as const, dispose: () => {} };
+        },
+      },
+    } : {}),
   });
   const action = (node: FakeElement, id: string) => node.find((element) => element.dataset.action === id);
   return { controller, drawn, saved, resent, persisted: () => persisted, action };
@@ -163,4 +179,87 @@ test('only the newest failure notice keeps the request to resend; the newest sti
   assert.equal(second.retry?.requestText, SEND.requestText);
   action(drawn.at(-1)!, 'retry')!.click();
   assert.deepEqual(resent.map((retry) => retry.requestText), [SEND.requestText]);
+});
+
+/** 같은 실패가 다시 시도 뒤에 또 나는 흐름 — 사용자의 다시 시도가 다시 보낸 요청이 또 실패한다. */
+function failRetryLoop(h: ReturnType<typeof sidebar>, shown: ChatThread, times: number, kind: Partial<ProviderFailure> = {}) {
+  let notice = h.controller.add(failure(kind), { origin: 'turn', turnId: 't0', userInitiated: true });
+  for (let index = 1; index <= times; index += 1) {
+    h.action(h.drawn.at(-1)!, 'retry')!.click();
+    h.controller.noteSend(shown.id, SEND);
+    notice = h.controller.add(failure(kind), { origin: 'turn', turnId: `t${index}`, userInitiated: true });
+  }
+  return notice;
+}
+
+test('two failed retries of the same failure turn 다시 시도 into 자동 수정, which retries once fixed', () => {
+  const shown = thread('t');
+  const autofix: FakeAutofix = { ready: true, created: [] };
+  const h = sidebar(shown, autofix);
+  h.controller.noteSend(shown.id, SEND);
+  failRetryLoop(h, shown, 1);
+  assert.ok(h.action(h.drawn.at(-1)!, 'retry'), 'one failed retry still offers 다시 시도');
+  assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null);
+
+  h.action(h.drawn.at(-1)!, 'retry')!.click();
+  h.controller.noteSend(shown.id, SEND);
+  h.controller.add(failure(), { origin: 'turn', turnId: 't9', userInitiated: true });
+  const latest = h.drawn.at(-1)!;
+  assert.equal(h.action(latest, 'retry'), null, '자동 수정 takes the retry slot');
+  assert.ok(h.action(latest, 'autofix'));
+  assert.equal(autofix.created.at(-1)!.request().attempts, 2);
+
+  const before = h.resent.length;
+  autofix.created.at(-1)!.onFixed();
+  assert.equal(h.resent.length, before + 1, 'after 고침 the failed request is sent again');
+});
+
+test('a different failure or a completed turn starts the retry count over', () => {
+  const shown = thread('t');
+  const autofix: FakeAutofix = { ready: true, created: [] };
+  const h = sidebar(shown, autofix);
+  h.controller.noteSend(shown.id, SEND);
+  failRetryLoop(h, shown, 1);
+  h.action(h.drawn.at(-1)!, 'retry')!.click();
+  h.controller.noteSend(shown.id, SEND);
+  h.controller.add(failure({ class: 'provider_error', code: 'overloaded' }), { origin: 'turn', turnId: 'x', userInitiated: true });
+  assert.ok(h.action(h.drawn.at(-1)!, 'retry'), 'a new kind of failure begins with 다시 시도');
+
+  const fresh = sidebar(thread('u'), autofix);
+  fresh.controller.noteSend('u', SEND);
+  failRetryLoop(fresh, thread('u'), 1);
+  fresh.controller.noteSuccess();
+  fresh.action(fresh.drawn.at(-1)!, 'retry')!.click();
+  fresh.controller.add(failure(), { origin: 'turn', turnId: 'y', userInitiated: true });
+  assert.ok(fresh.action(fresh.drawn.at(-1)!, 'retry'), 'a success in between resets the count');
+});
+
+test('without autofix (web build or turned off) repeated failures keep 다시 시도', () => {
+  for (const autofix of [undefined, { ready: false, created: [] }]) {
+    const shown = thread('t');
+    const h = sidebar(shown, autofix);
+    h.controller.noteSend(shown.id, SEND);
+    failRetryLoop(h, shown, 3);
+    assert.ok(h.action(h.drawn.at(-1)!, 'retry'));
+    assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null);
+    const unknown = h.controller.add(failure({ class: 'unknown' }), { origin: 'turn', turnId: 'u', userInitiated: true });
+    assert.ok(unknown);
+    assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null);
+  }
+});
+
+test('unknown failures and crashed processes offer 자동 수정 right away; user-fixable ones never do', () => {
+  const shown = thread('t');
+  const h = sidebar(shown, { ready: true, created: [] });
+  h.controller.noteSend(shown.id, SEND);
+  h.controller.add(failure({ class: 'unknown' }), { origin: 'turn', turnId: 'a', userInitiated: true });
+  assert.ok(h.action(h.drawn.at(-1)!, 'autofix'));
+  assert.equal(h.action(h.drawn.at(-1)!, 'retry'), null);
+  h.controller.add(failure({ class: 'process_exited', code: 'exit_1' }), { origin: 'turn', turnId: 'b', userInitiated: true });
+  assert.ok(h.action(h.drawn.at(-1)!, 'autofix'));
+  h.controller.add(failure({ class: 'process_exited', code: 'cli_missing', retryable: false }), { origin: 'start', turnId: null, userInitiated: false });
+  assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null, 'a missing CLI goes to settings');
+  const auth = failure({ class: 'auth_required', retryable: false, code: 'claude:authentication_failed' });
+  failRetryLoop(h, shown, 0, auth);
+  assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null);
 });

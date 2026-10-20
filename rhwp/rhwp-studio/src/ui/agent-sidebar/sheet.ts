@@ -14,6 +14,12 @@ export interface SheetOptions {
   cancelLabel?: string;
   /** 되돌릴 수 없는 동작이면 확인 버튼을 경고색으로 칠한다. */
   destructive?: boolean;
+  /** 처음 초점을 취소에 둔다 — 직접 눌러야만 켜지는 선택. */
+  focusCancel?: boolean;
+  /** 바깥에서 닫는다(취소로 끝난다). */
+  signal?: AbortSignal;
+  /** 사이드바가 아닌 앱 전체의 물음 — 사이드바가 가려져 있어도 보이게 창 가운데에 띄운다. */
+  center?: boolean;
   /** 시트를 띄울 기준 요소. 가장 가까운 .ag-root 안에 뜬다. */
   anchor?: Element | null;
   /** 확인 버튼 위의 선택지. 하나만 고를 수 있고, 다시 누르면 고르지 않은 상태가 된다. */
@@ -66,7 +72,7 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
 }
 
 export function openSheet(options: SheetOptions): Promise<SheetResult> {
-  const { host, docked } = resolveHost(options.anchor);
+  const { host, docked } = options.center ? { host: document.body, docked: false } : resolveHost(options.anchor);
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   openCount += 1;
   const id = `ag-sheet-${openCount}`;
@@ -183,6 +189,7 @@ export function openSheet(options: SheetOptions): Promise<SheetResult> {
     };
     const dismiss = (): void => finish(false);
     liveSheets.add(dismiss);
+    options.signal?.addEventListener('abort', dismiss, { once: true });
 
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === 'Escape') {
@@ -246,7 +253,7 @@ export function openSheet(options: SheetOptions): Promise<SheetResult> {
 
     requestAnimationFrame(() => {
       layer.classList.add('ag-sheet-open');
-      (options.destructive ? cancel : confirm).focus({ preventScroll: true });
+      (options.destructive || options.focusCancel ? cancel : confirm).focus({ preventScroll: true });
     });
   });
 }

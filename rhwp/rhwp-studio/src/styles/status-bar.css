@@ -40,6 +40,10 @@
   color: var(--ui-text-muted);
 }
 .stb-message:empty { display: none; }
+/* 초기화 실패의 자동 수정 — 메시지 바로 뒤에 선다. */
+.stb-message:has(+ .stb-autofix) { flex: 0 1 auto; }
+#status-bar .stb-autofix[data-phase] { height: 20px; margin-right: auto; padding: 0 8px; font-size: 12px; }
+#status-bar .stb-autofix[data-phase]:disabled { opacity: 1; }
 
 #status-bar .stb-action {
   flex: 0 0 auto;

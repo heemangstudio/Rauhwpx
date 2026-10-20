@@ -8,7 +8,7 @@ export const MENU_COMMAND_CHANNEL = 'desktop:menu-command';
 export const AGENT_COMMAND_CHANNEL = 'desktop:agent-command';
 /** 도움말 메뉴의 문제 보고. 렌더러의 help:report-issue 명령을 연다. */
 export const REPORT_ISSUE_COMMAND = 'help:report-issue';
-export const REPORT_ISSUE_LABEL = '문제 보고…';
+export const REPORT_ISSUE_LABEL = '버그 제보…';
 export const REPORT_ISSUE_ACCELERATOR = 'CmdOrCtrl+Shift+/';
 
 const isMac = process.platform === 'darwin';

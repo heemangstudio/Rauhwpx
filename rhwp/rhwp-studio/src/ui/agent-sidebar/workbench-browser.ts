@@ -10,6 +10,8 @@ import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMo
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
 import { createSiteMark, siteOrigin } from './site-mark.ts';
+import { autofixReady, createRetryEscalation, onAutofixSettings } from '../autofix/autofix.ts';
+import { createAutofixButton, swapSlot, type AutofixButton } from '../autofix/autofix-button.ts';
 import type { WorkbenchResource } from './workbench.ts';
 
 /** 사이트 이름은 주소로 구분하고, 다른 사이트는 페이지 제목을 사용한다. */
@@ -118,7 +120,21 @@ export function createWorkbenchBrowser(options: {
   const error = document.createElement('div'); error.className = 'ag-browser-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const errorMessage = document.createElement('span'); error.append(errorMessage);
   const reconnectButton = button('브라우저 다시 연결', '다시 연결', () => { handle(reconnectBrowser()); }, error);
-  const stalledReload = button('페이지 다시 열기', '새로고침', () => { handle(reloadStalled()); }, error); stalledReload.hidden = true;
+  const stalledReload = button('페이지 다시 열기', '새로고침', () => {
+    const tabId = controller.tab()?.tabId; if (tabId) stalledEscalation.retried(tabId);
+    handle(reloadStalled());
+  }, error); stalledReload.hidden = true;
+  // 다시 열어도 두 번 더 멈춘 페이지는 그 자리에 자동 수정을 둔다. 고치면 다시 연다.
+  const stalledEscalation = createRetryEscalation();
+  let stalledAutofix: AutofixButton | null = null;
+  const stalledAutofixButton = (): AutofixButton => stalledAutofix ??= createAutofixButton({
+    request: () => {
+      const tab = controller.tab();
+      return { surface: 'browser-page', title: '화면을 표시하지 못했습니다.', detail: `paint-timeout ${siteOrigin(tab?.url ?? '') ?? ''}`.trim(), attempts: stalledEscalation.attempts(tab?.tabId ?? '') };
+    },
+    onFixed: () => { if (stalledCurrent()) handle(reloadStalled()); },
+  });
+  const stopAutofixSettings = onAutofixSettings(() => paint());
   element.append(error);
   const challenge = document.createElement('div'); challenge.className = 'ag-browser-challenge'; challenge.hidden = true; challenge.setAttribute('role', 'status');
   const challengeMessage = document.createElement('span'); challengeMessage.textContent = 'Google에서 트래픽 확인을 요청했습니다.'; challenge.append(challengeMessage);
@@ -523,6 +539,7 @@ export function createWorkbenchBrowser(options: {
     if (!current()) return;
     const health = state?.presentationHealth;
     if (stalled?.tabId === placement.tabId && health !== 'paint-timeout') stalled = null;
+    if (health !== 'paint-timeout' && health !== 'failed' && health !== 'loading') stalledEscalation.reset();
     if (health === 'loading' && !timedOut) {
       cancelNativeHealth();
       nativeHealthTimer = setTimeout(() => { nativeHealthTimer = null; if (current()) handle(checkNativeHealth(placement, sequence, true).catch(() => { if (current()) { nativeError = '브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.'; paint(); } })); }, 15_000);
@@ -533,6 +550,7 @@ export function createWorkbenchBrowser(options: {
     if (health === 'paint-timeout' && state?.presentationReloadSafe !== true) {
       // 입력한 내용이나 제출 결과가 있는 페이지는 자동으로 다시 열지 않는다.
       stalled = { tabId: placement.tabId, navigationEpoch: epoch, nativeEpoch: state?.navigationEpoch as number | undefined };
+      stalledEscalation.failed(placement.tabId);
       paint(); return;
     }
     if (!native.reload || nativeReloadedIdentity === scope) throw new Error('브라우저 페이지를 다시 열지 못했습니다. 다시 연결해 주세요.');
@@ -741,6 +759,10 @@ export function createWorkbenchBrowser(options: {
     const stalledPage = stalledCurrent() && !controller.state.error && !nativeError;
     errorMessage.textContent = controller.state.error ?? nativeError ?? (stalledPage ? '화면을 표시하지 못했습니다.' : ''); error.hidden = !controller.state.error && !nativeError && !stalledPage;
     reconnectButton.hidden = stalledPage; stalledReload.hidden = !stalledPage;
+    if (!stalledAutofix || stalledAutofix.phase() === 'idle') {
+      if (stalledPage && autofixReady() && stalledEscalation.escalated(tab?.tabId ?? '')) swapSlot(stalledReload, stalledAutofixButton().element);
+      else if (stalledAutofix) swapSlot(stalledAutofix.element, stalledReload);
+    }
     sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
     wakeButton.hidden = !manuallySleeping;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
@@ -867,7 +889,7 @@ export function createWorkbenchBrowser(options: {
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
     float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
     async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
-    dispose() { cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { stopAutofixSettings(); stalledAutofix?.dispose(); cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

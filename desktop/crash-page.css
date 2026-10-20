@@ -1,0 +1,31 @@
+:root { color-scheme: light dark; --bg: #f5f5f7; --fg: #1b1b1a; --line: #cdcdca; --card: #fff; --go: #1f8f4e; --go-fg: #fff; --bad: #c8372d; }
+@media (prefers-color-scheme: dark) { :root { --bg: #141416; --fg: #ececea; --line: #3a3a38; --card: #1f1f22; --go: #2fa862; --bad: #e0574b; } }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; }
+/* 제목 막대가 숨겨진 창이라 화면 전체로 창을 옮긴다. */
+body { -webkit-app-region: drag; user-select: none; }
+main { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; height: 100%; }
+p { margin: 0; font-size: 15px; }
+button {
+  -webkit-app-region: no-drag;
+  min-width: 96px; min-height: 34px; padding: 0 16px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit; font-weight: 600; line-height: 1; cursor: pointer;
+  transition: background-color .18s ease, border-color .18s ease;
+}
+button:disabled { cursor: default; }
+button.autofix { background: var(--go); border-color: var(--go); color: var(--go-fg); }
+button.autofix:disabled { opacity: 1; }
+button.running { font-variant-numeric: tabular-nums; letter-spacing: .12em; }
+button.unavailable { background: var(--bad); border-color: var(--bad); color: #fff; animation: shake .42s ease; }
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-5px); }
+  40% { transform: translateX(5px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+  button.unavailable { animation: none; }
+}

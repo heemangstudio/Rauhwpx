@@ -9,6 +9,9 @@
  * - 일반 재사용 가능 — 다른 안내에도 활용 가능
  */
 
+import { autofixReady, type AutofixRequest } from './autofix/autofix.ts';
+import { createAutofixButton } from './autofix/autofix-button.ts';
+
 const CONTAINER_ID = 'rhwp-toast-container';
 const DEFAULT_DURATION_MS = 8000;
 /** 등장·퇴장 시간. base.css 의 .rhwp-toast transition 과 같다. */
@@ -33,13 +36,18 @@ export interface ToastOptions {
    * 자동 페이드를 끄고 사용자 닫기를 강제하는 용도 (durationMs: 0 와 함께 사용).
    */
   confirmLabel?: string;
-  /** 오류 안내면 true — 데스크톱 앱에서 '오류 제보' 단추를 함께 둔다. */
+  /** 오류 안내면 true — 데스크톱 앱에서 '버그 제보' 단추를 함께 둔다. */
   report?: boolean;
+  /**
+   * 다시 해도 풀리지 않는 오류. 자동 수정을 켠 데스크톱 앱에서는 자동 수정 단추를 앞에 두고 액션은 그 옆의
+   * 링크로 남긴다(자동 수정이 실패해도 쓸 수 있다). 고치면 onFixed 를 부르고 토스트를 닫는다.
+   */
+  autofix?: AutofixRequest & { onFixed: () => void };
 }
 
 let reporter: (() => void) | null = null;
 
-/** 오류 토스트의 '오류 제보' 가 부를 함수. 데스크톱 앱만 건다. */
+/** 오류 토스트의 '버그 제보' 가 부를 함수. 데스크톱 앱만 건다. */
 export function setToastReporter(next: (() => void) | null): void {
   reporter = next;
 }
@@ -119,6 +127,20 @@ export function showToast(options: ToastOptions): void {
   body.textContent = options.message;
   toast.appendChild(body);
 
+  // 자동 수정 (켠 데스크톱 앱) — 액션 앞에 선다.
+  const autofix = options.autofix && autofixReady() ? options.autofix : null;
+  if (autofix) {
+    const { onFixed, ...request } = autofix;
+    toast.appendChild(createAutofixButton({
+      className: 'rhwp-toast-autofix',
+      request: () => request,
+      onFixed: () => {
+        removeToast();
+        onFixed();
+      },
+    }).element);
+  }
+
   // 액션 버튼 (선택, 텍스트 링크 스타일)
   if (options.action) {
     const actionBtn = document.createElement('button');
@@ -139,7 +161,7 @@ export function showToast(options: ToastOptions): void {
     const reportBtn = document.createElement('button');
     reportBtn.type = 'button';
     reportBtn.className = 'rhwp-toast-action rhwp-toast-report';
-    reportBtn.textContent = '오류 제보';
+    reportBtn.textContent = '버그 제보';
     reportBtn.addEventListener('click', () => {
       report();
       window.setTimeout(removeToast, 400);

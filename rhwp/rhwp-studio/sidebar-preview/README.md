@@ -103,6 +103,9 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?scenario=error&failure=unknown` | Unclassified failure with 다시 시도 |
 | `?scenario=error&failure=start` | Chat start failure (`AGENT_SPAWN_FAILED`); 다시 시도 restarts the session |
 | `?scenario=error&failure=legacy` | An older hub's text-only failure, classified in Studio (login notice) |
+| `&autofix=fixed` (`failed`, `unavailable`) | The desktop autofix API, turned on, answering with that result after 2.4 s (switch it with **Autofix result**). Two failed 다시 시도 of the same failure turn ↻ into the green 자동 수정; `failure=unknown` and `failure=exited` show it right away. `sidebarPreview.autofix.requests` lists what was sent |
+| `&autofix=off` / `&autofix=undecided` | Autofix answered and off (settings → AI shows the section) / not answered yet (the one-time intro sheet opens) |
+| `?autofix=fixed&hub=down` | The hub never comes up: 다시 연결 fails, and after two tries the connection popover offers 자동 수정; 고침 reconnects |
 | `?scenario=writer-busy` | A write refused because another chat of the document is editing it |
 | `?scenario=interrupted` | A turn that reads the document and asks a question, then loses the agent hub (restart): the question card reads `만료됨 · 허브 재시작`, the fold `중단됨 · …`, and one row says `에이전트 허브가 다시 시작되어 작업이 중단됐어요` with **이어서 진행** — no failure notice, no green dot |
 | `?scenario=interrupted&hold=1`, then type a follow-up and press Enter, then `sidebarPreview.askQuestion()` and `sidebarPreview.restartHub()` | The same cut-off with a queued follow-up: the queue holds as `허브 재시작 · 작업이 끊겨…` and the row says `대기 메시지 1개는 이어서 진행한 뒤 보내요`. **이어서 진행** sends `이어서 진행해 주세요.` (the agent also gets a `<turn_interrupted reason="hub-restart">` block, see `snapshot().messageTexts`), starts a new chat session first, and the queue drains when that turn ends |
