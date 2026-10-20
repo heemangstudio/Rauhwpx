@@ -68,7 +68,7 @@
 /* 고침: 채움 없이 초록 글자와 체크만 조용히 남는다. */
 .rhwp-autofix[data-phase='fixed'] {
   background: transparent;
-  color: var(--rhwp-autofix-dot);
+  color: color-mix(in oklab, var(--rhwp-autofix-dot) 55%, var(--rhwp-autofix-muted-fg));
 }
 
 .rhwp-autofix[data-phase='failed'] {
