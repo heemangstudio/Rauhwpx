@@ -631,7 +631,8 @@ export class SkillRegistry {
       ? ' Skills shown in <product_skill> blocks are already loaded: when the request matches one, follow it directly without read_product_skill.'
       : '';
     const skills = `<rhwp_product_skills>\nOnly the skills in this catalog are product skills.${loadedNote} If the request clearly matches a skill listed by name only, call read_product_skill for its SKILL.md before acting, then read supporting resources progressively. Do not use provider-global skills.\n${metadata || '(no enabled skills)'}\n</rhwp_product_skills>${activated}`;
-    return `${writingStyle ? `${writingStyle}\n\n` : ''}${humanizer ? `${humanizer}\n\n` : ''}${skills}\n\n${requestContext ? `${requestContext}\n\n` : ''}<user_request>\n${text}\n</user_request>`;
+    const request = typeof text === 'string' && text.length > 0 ? `<user_request>\n${text}\n</user_request>` : '';
+    return [writingStyle, humanizer, skills, requestContext, request].filter(Boolean).join('\n\n');
   }
 
   async _commit(change) {

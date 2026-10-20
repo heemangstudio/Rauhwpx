@@ -2568,6 +2568,22 @@ button.ag-skill-copy {
   flex-basis: 100%;
 }
 
+/* 첨부만 보낸 요청은 본문 말풍선 없이 알약만 오른쪽에 둔다. */
+.ag-msg-user.ag-attachment-only {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.ag-msg-user.ag-attachment-only .ag-msg-attachments {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
 /* 인라인 프롬프트로 보낸 메시지에 붙는 문서 선택 인용. */
 .ag-msg-selection {
   display: flex;

@@ -114,6 +114,24 @@ test('a staged attachment reaches the provider only after promotion, wrapped as 
   assert.deepEqual(await attachedFileIds(hub, started), [file.id]);
 });
 
+test('an attachment-only message is accepted and reaches the provider without a fake user request', { timeout: 60_000 }, async (t) => {
+  const hub = await startLiveHub(t);
+  await hub.start();
+  const staged = await stage(hub);
+
+  hub.message('', { messageId: 'message-attachment-only', requireAcceptance: true, stagedReferenceIds: [staged.id] });
+  const accepted = await hub.studio.next((frame) => frame.type === 'chat-user-message-accepted'
+    && frame.messageId === 'message-attachment-only');
+  assert.equal(accepted.messageId, 'message-attachment-only');
+
+  const delta = await hub.studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+  await hub.studio.next(isTurnEnd);
+  const prompt = JSON.parse(delta.event.text).prompt;
+  assert.match(prompt, /<message_attachments trust="untrusted-data">/);
+  assert.match(prompt, /notes\.txt/);
+  assert.doesNotMatch(prompt, /<user_request>/);
+});
+
 test('a studio disconnect during promotion drops the staged message', { timeout: 60_000, skip: process.platform === 'win32' }, async (t) => {
   const hub = await startLiveHub(t);
   const started = await hub.start();

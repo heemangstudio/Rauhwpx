@@ -116,6 +116,7 @@ import {
   setThreadTitle,
   addCompactionMarker,
   addHandoffMarker,
+  attachmentOnlyMarker,
   captureTurnWatermark,
   createThreadMessageId,
   forgetProviderSession,
@@ -6856,9 +6857,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       messageText = activeTemplate && !skillName
           ? `/templates ${activeTemplate.name}${text ? ` ${text}` : ''}`
           : text;
-      // 대화 기록은 skill block만 보이도록 빈 본문을 유지한다. 다만 wire
-      // protocol은 비어 있지 않은 text를 요구하므로 명시적 slash 호출 자체를
-      // 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
+      // 대화 기록은 skill block만 보이도록 빈 본문을 유지한다. 첨부만 보낸 요청은
+      // 참조 id 만 실어 보내므로 요청 본문도 비운다. 본문이 없는 명시적 slash 호출은
+      // 호출 자체를 요청 본문으로 보낸다. 자연어 fallback을 UI나 기록에 숨겨 넣지 않는다.
       const skillRequestText = requestTextForSkillInvocation(text, skillName);
       requestText = spec.revisionPlanId && !skillName
         ? `현재 계획(${spec.revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
@@ -6867,14 +6868,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 실패하면 '다시 시도' 가 다시 보낼 요청 — 꾸밈 전 본문이다(꾸밈은 보낼 때마다 새로 붙는다).
     // 인라인 프롬프트는 다시 보낼 요청을 두지 않는다: 선택 콘텍스트가 그 시점 문서에 묶여 있어, 콘텍스트 없이
     // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
+    // 첨부만 보낸 요청도 두지 않는다: 파일은 이미 채팅 참조 범위로 옮겨졌으니 본문 없이 다시 보내 봐야 빈 요청이다.
     const carriesContinuation = spec.wire?.continuation === true;
-    const retryPayload = {
-      displayText: messageText,
-      requestText,
-      ...(skillName ? { skillName } : {}),
-      ...(skillName && spec.skillIcon ? { skillIcon: spec.skillIcon } : {}),
-      ...(carriesContinuation ? { continuation: true } : {}),
-    };
+    const retryPayload = requestText.trim()
+      ? {
+        displayText: messageText,
+        requestText,
+        ...(skillName ? { skillName } : {}),
+        ...(skillName && spec.skillIcon ? { skillIcon: spec.skillIcon } : {}),
+        ...(carriesContinuation ? { continuation: true } : {}),
+      }
+      : null;
     // 끊긴 턴이 아직 이어지지 않았으면 이 메시지가 이어 간다(아래에서 resolution 을 남긴다).
     // 이어 가는 메시지는 언제나 receipt 를 받는다 — 브리지가 버리거나 허브가 받지 않으면 끊김을 다시 열어
     // 다음 보내기(다시 시도 포함)가 블록을 다시 싣게 한다.
@@ -6969,17 +6973,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
       return;
     }
-    if (!text && !activeComposerSkill) {
-      text = captureInbox.hasDrafts() ? '첨부한 선택 자료와 의견을 확인해 주세요.' : !referenceLibrary.hasDrafts()
-        ? '언급한 자료 확인 필요'
-        : referenceLibrary.allDraftsAreImages()
-        ? '첨부 이미지 확인 필요'
-        : '첨부 파일 확인 필요';
-    }
     if (!activeComposerSkill && text.startsWith('//')) text = text.slice(1);
     // 잠긴 채팅은 계획 수정 요청도 채팅 모드의 질문으로 보낸다.
     if (chatModeLockReason !== null && currentMode() !== 'chat') revisionPlanId = null;
-    if (!queueing && revisionPlanId && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !activeComposerSkill && text) {
+    // 멘션만 보낸 요청에는 자유 본문이 없다 — 계획 수정 요청으로 보내면 멘션이 조용히 사라진다.
+    if (!queueing && revisionPlanId && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !activeComposerSkill && text.trim()) {
       const planId = revisionPlanId;
       if (!planApprovable || activePlan?.planId !== planId) {
         revisionPlanId = null;
@@ -7368,6 +7366,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function renderUserMessage(message: ThreadMessage): HTMLElement {
     const bubble = el('div', 'ag-msg ag-msg-user');
+    if (!message.skillName && !message.selection && !message.text.trim()
+      && (message.attachments?.length || message.mentions?.length)) {
+      bubble.classList.add('ag-attachment-only');
+    }
     if (message.skillName) {
       bubble.classList.add('ag-has-skill');
       const skill = el('span', 'ag-skill-token ag-msg-skill');
@@ -7660,6 +7662,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function maybeRequestTitle(): void {
     if (currentThread.titleRequested) return;
     if (!currentThread.messages.some((m) => m.role === 'user')) return;
+    // 첨부만 보낸 첫 요청에는 본문이 없다 — 파일 이름만으로 제목을 지어내지 않고,
+    // 답변이 붙은 뒤에 그 답을 재료로 제목을 청한다.
+    const hasText = currentThread.messages.some((m) => m.role === 'user' && (m.text.trim() || m.skillName))
+      || currentThread.messages.some((m) => m.role === 'assistant' && !m.kind && m.text.trim());
+    if (!hasText) return;
     currentThread.titleRequested = true;
     persistCurrentThread();
     const preview = currentThread.messages
@@ -7667,6 +7674,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       .filter((m) => !isTurnMarker(m) && m.kind !== 'error')
       .slice(0, 6)
       .map((m) => {
+        // 첨부만 보낸 요청은 본문이 없다 — 빈 "사용자: " 대신 파일 이름을 사실대로 적는다.
+        if (m.role === 'user' && !m.text.trim() && !m.skillName && m.attachments?.length) {
+          return `사용자: ${attachmentOnlyMarker(m.attachments)}`;
+        }
         const text = m.role === 'user' && m.skillName
           ? `/${m.skillName}${m.text ? ` ${m.text}` : ''}`
           : m.text;
