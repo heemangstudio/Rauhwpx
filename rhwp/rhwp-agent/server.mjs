@@ -1531,11 +1531,16 @@ async function refreshPiStatus() {
 /** 바뀐 Pi 상태를 모든 Studio 탭에 보낸다 (선물 크레딧 수령·소진처럼 탭 밖에서 생긴 변화). */
 async function broadcastPiStatus() {
   const status = await refreshPiStatus();
-  for (const record of sessions.values()) {
-    if (!record.studioSocket) continue;
-    sendJson(record.studioSocket, { v: 1, type: 'pi-status', status });
-    void agentSetupStatuses(record.sessionId)
-      .then((statuses) => sendJson(record.studioSocket, { v: 1, type: 'agent-setup-status', statuses }))
+  const records = [...sessions.values()].filter((record) => record.studioSocket);
+  for (const record of records) sendJson(record.studioSocket, { v: 1, type: 'pi-status', status });
+  // 설정 상태는 한 번만 만들고 탭마다 로그인 진행 상태만 덧붙인다 — 탭 수만큼 CLI 상태를 다시 읽지 않는다.
+  if (records.length) {
+    void agentSetupStatuses()
+      .then((statuses) => {
+        for (const record of records) {
+          if (record.studioSocket) sendJson(record.studioSocket, { v: 1, type: 'agent-setup-status', statuses: withAuthRunStatus(statuses, record.sessionId) });
+        }
+      })
       .catch((error) => log(`agent setup status push failed: ${error?.message ?? error}`));
   }
   return status;
