@@ -81,6 +81,40 @@
   margin-top: 20px;
 }
 
+/* 받은 문서의 기준 확인 */
+.ag-version-import-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: -8px 0 16px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-version-import-file span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-version-import-file .ag-icon { flex-shrink: 0; }
+
+.ag-version-import .ag-version-prompt-input + .ag-version-prompt-label {
+  margin-top: 14px;
+}
+
+.ag-version-import-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+}
+
 /* Author display rules below must never override the native hidden contract. */
 
 .ag-versions-page [hidden] {
@@ -340,9 +374,14 @@
   margin: 8px 8px 0;
 }
 
-.ag-versions-create-branch,
 .ag-versions-create-shelf {
   margin-right: auto;
+}
+
+.ag-versions-toolbar > .ag-versions-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ── 그래프 ────────────────────────────────────────── */
@@ -580,6 +619,26 @@
 
 .ag-tag-ref {
   color: var(--ag-text-secondary);
+}
+
+.ag-file-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 120px;
+  color: var(--ag-text-secondary);
+}
+
+.ag-file-ref span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-file-ref .ag-icon {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
 }
 
 .ag-version-badges {

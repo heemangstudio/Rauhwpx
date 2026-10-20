@@ -330,6 +330,7 @@ import {
   type KnownDocumentSources,
 } from './agent/foreign-documents.ts';
 import { initAgentSidebar, type DocumentDetachStart } from './ui/agent-sidebar/index.ts';
+import { mergeReceivedDocument } from './ui/agent-sidebar/version-manager.ts';
 import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from './ui/initial-setup/active.ts';
 import { desktopGiftApi } from './ui/special-event/gift.ts';
@@ -1943,6 +1944,13 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     getDocumentId: () => session.documentId,
     agentBridge: documentAgentView(session),
     autoEnable: () => userSettings.getUseHancomGit(),
+    // 가져오기는 바이트만 읽는다. 데스크톱 열기 창이 잡아 둔 저장 대상은 바로 놓는다.
+    pickExternalDocument: async () => {
+      const picked = await pickDocumentFile(commandServices);
+      if (!picked) return null;
+      await picked.handle?.releaseUnusedSaveTarget?.().catch(() => {});
+      return { bytes: picked.bytes, name: picked.name };
+    },
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
       canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
@@ -4221,6 +4229,16 @@ function setupZoomControls(): void {
   });
   document.getElementById('sb-zoom-out')!.addEventListener('click', () => {
     vm.smoothZoomBy(-0.1);
+  });
+
+  // 받기: 받은 문서를 지금 문서의 현재 브랜치에 병합한다.
+  document.getElementById('sb-receive')!.addEventListener('click', () => {
+    if (wasm.pageCount === 0) return;
+    const session = attachedSession;
+    mergeReceivedDocument(session.versions ?? installDocumentVersions(session)).catch((error) => {
+      if (versionErrorCode(error) === 'CANCELLED') return;
+      showToast({ message: error instanceof Error ? error.message : String(error), durationMs: 5000 });
+    });
   });
 
   // 폭 맞춤: 용지 폭에 맞게 줌 조절

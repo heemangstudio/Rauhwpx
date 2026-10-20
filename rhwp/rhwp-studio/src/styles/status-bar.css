@@ -76,6 +76,22 @@
 }
 #status-bar .stb-link:hover { background: var(--ui-hover); color: var(--ui-text); }
 #status-bar .stb-link[hidden] { display: none; }
+/* 받은 문서 병합 */
+#status-bar .stb-receive {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+#status-bar .stb-receive svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 .stb-right,
 .stb-fit-controls {

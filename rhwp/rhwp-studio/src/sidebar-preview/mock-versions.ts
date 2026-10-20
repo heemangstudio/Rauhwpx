@@ -395,6 +395,45 @@ export function createMockVersions(
       changed();
       report('Sample merge created; document conflict editor is a placeholder');
     },
+    pickExternalDocument: async () => ({
+      fileName: '사업 제안서 (검토).hwpx',
+      bytes: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+    }),
+    detectImportBase: async () => {
+      const similarities = [0.62, 0.86, 0.41];
+      const candidates = state.commits.slice(0, 3).map((item, index) => ({
+        id: item.id,
+        title: item.title,
+        createdAt: item.createdAt,
+        similarity: similarities[index] ?? 0.2,
+        branchLabels: [...item.branchLabels],
+      })).sort((left, right) => right.similarity - left.similarity);
+      return { exactCommitId: null, suggestedCommitId: candidates[0]?.id ?? null, candidates };
+    },
+    importExternal: async (_bytes, options) => {
+      const imported = commit(crypto.randomUUID(), '받은 문서', [options.baseCommitId], false);
+      Object.assign(imported, { reason: 'import', sourceFileName: options.fileName, createdAt: Date.now() });
+      state.commits.unshift(imported);
+      committedDiffs.set(imported.id, [...workingDiffFixture.slice(0, 2)]);
+      if (options.branchName) {
+        state.branches.push({
+          name: options.branchName, headId: imported.id, isActive: false, isDefault: false, updatedAt: Date.now(),
+        });
+        if (options.openAsWorktree) {
+          state.worktrees.push({ id: crypto.randomUUID(), documentId: crypto.randomUUID(), branch: options.branchName,
+            primary: false, isCurrent: false, isOpen: true, dirty: false, mergeTarget: state.activeBranch ?? 'main' });
+          changed();
+        } else {
+          switchBranch(options.branchName);
+        }
+        report(`Fixture import: ${options.fileName}`);
+        return;
+      }
+      checkpoint('받은 문서 병합', [imported.id]);
+      Object.assign(state.commits[0], { reason: 'merge', sourceFileName: options.fileName });
+      changed();
+      report('Fixture merge of a received document; the conflict editor is a placeholder');
+    },
     resumeMerge: async (id) => {
       const draft = state.mergeDrafts.find((item) => item.id === id)!;
       checkpoint(`${draft.sourceBranch} 가지를 병합했습니다.`, [state.branches.find((branch) => branch.name === draft.sourceBranch)!.headId]);

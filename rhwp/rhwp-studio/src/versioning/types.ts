@@ -30,13 +30,21 @@ export type CommitReason =
   | 'pre-merge'
   | 'merge'
   | 'restore'
-  | 'adopt';
+  | 'adopt'
+  | 'import';
 
 export interface VersionMergeMetadata {
   sourceBranchAtMerge: string;
   targetBranchAtMerge: string;
   baseCommitIds: CommitId[];
   conflictCount: number;
+  /** 외부 문서를 병합했으면 그 파일 이름. */
+  sourceFileName?: string;
+}
+
+/** 다른 사람이 고쳐 보낸 문서처럼 기록 밖에서 들어온 커밋의 출처. */
+export interface VersionImportSource {
+  fileName: string;
 }
 
 export type VersionAuthor =
@@ -101,6 +109,7 @@ interface VersionCommitBase {
   stats: VersionStats;
   createdAt: number;
   merge?: VersionMergeMetadata;
+  importedFrom?: VersionImportSource;
 }
 
 export type VersionTitle =
@@ -252,6 +261,11 @@ export interface MergeDraftHistoryEntry {
 export interface VersionMergeDraft {
   /** Reapply a stash into the working tree without advancing the target branch. */
   shelfApply?: { id: ShelfId; remove: boolean };
+  /**
+   * 브랜치가 아닌 커밋을 병합한다(외부 문서 병합). 이때 sourceBranch 는 표시용 이름일 뿐 참조가 아니며,
+   * sourceBranchRevision 은 0 이다.
+   */
+  sourceCommit?: { id: CommitId; fileName: string };
   id: MergeDraftId;
   repositoryId: RepositoryId;
   targetBranch: BranchName;

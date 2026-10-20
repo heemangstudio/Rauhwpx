@@ -421,7 +421,7 @@ test('quick branch buttons switch once and respect mutation locks', async () => 
           const rect = node.getBoundingClientRect();
           return { center: rect.y + rect.height / 2, left: rect.left, right: rect.right };
         }));
-      assert.equal(buttons.length, 4);
+      assert.equal(buttons.length, 2);
       assert(buttons.every((button) => Math.abs(button.center - buttons[0].center) < 1), `${width}px single action row`);
       assert(buttons.every((button) => button.left >= 0 && button.right <= width), `${width}px actions fit`);
     }
@@ -455,7 +455,7 @@ test('shared actions stay fixed across tab switches', async () => {
     for (const width of [280, 480, 900]) {
       await page.setViewport({ width, height: 820 });
       let baseline: unknown;
-      for (const tab of ['history', 'branches', 'shelves', 'history']) {
+      for (const tab of ['history', 'shelves', 'history']) {
         await page.click(`[data-tab="${tab}"]`);
         const positions = await page.$$eval('.ag-versions-toolbar > button:not(.ag-versions-create-branch):not(.ag-versions-create-shelf)', (buttons) => buttons.map((button) => {
           const { x, y, width, height } = button.getBoundingClientRect();

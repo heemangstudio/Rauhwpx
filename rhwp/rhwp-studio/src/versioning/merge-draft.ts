@@ -52,7 +52,7 @@ function resolutionAssetIds(resolutions: Readonly<Record<string, MergeResolution
 export function retainedMergeDraftLocalState(
   previous: VersionMergeDraft | undefined,
   target: BranchRef,
-  source: BranchRef,
+  source: Pick<BranchRef, 'target'> & { generation?: BranchRef['generation'] },
   carriedResolutions: Readonly<Record<string, MergeResolution>>,
   analysisVersion = previous?.analysisVersion,
   conflicts: readonly MergeConflict[] = previous?.conflicts ?? [],
