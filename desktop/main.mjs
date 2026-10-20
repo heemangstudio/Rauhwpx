@@ -1436,6 +1436,11 @@ ipcMain.handle('desktop:font-folders-remove', (event, folder) => {
   if (typeof folder !== 'string' || !folder) throw new Error('Font folder path is required');
   return changeFontFolders(() => fontFolders.remove(folder));
 });
+ipcMain.handle('desktop:font-name-tables', (event, ids) => {
+  sessionForEvent(event);
+  assertSystemFontsEnabled();
+  return systemFonts.nameTables(ids);
+});
 ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);
   return systemFontBaseUrl(systemFontKey);

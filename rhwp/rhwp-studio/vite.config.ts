@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
 import { execSync } from 'node:child_process';
@@ -24,6 +24,44 @@ const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
 // 동작한다. 바인딩은 그대로 127.0.0.1 — Host 허용과 HMR 되돌이 연결만 공개 주소로 맞춘다.
 // clientPort 가 없으면 HMR 웹소켓이 로컬 포트로 붙으려다 조용히 실패한다.
 const publicHost = process.env.RHWP_PUBLIC_HOST;
+
+// boot.ts 는 저장소 가져오기를 마친 뒤에 main.ts 를 부른다. 그동안 편집기 chunk 를 받아 컴파일해 두도록
+// main.ts 와 그 정적 의존 chunk 를 index.html 에 modulepreload 로 건다. 실행 순서는 그대로다.
+function preloadEditorChunkPlugin(): Plugin {
+  let base = '/';
+  return {
+    name: 'preload-editor-chunk',
+    apply: 'build',
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: 'post',
+      handler(_html, ctx) {
+        const bundle = ctx.bundle;
+        if (!bundle) return;
+        const entry = Object.values(bundle).find(item => (
+          item.type === 'chunk' && item.facadeModuleId?.endsWith('/src/main.ts')
+        ));
+        if (entry?.type !== 'chunk') return;
+        const files: string[] = [];
+        const visit = (fileName: string) => {
+          if (files.includes(fileName)) return;
+          files.push(fileName);
+          const chunk = bundle[fileName];
+          if (chunk?.type === 'chunk') chunk.imports.forEach(visit);
+        };
+        visit(entry.fileName);
+        const booted = new Set(ctx.chunk ? [ctx.chunk.fileName, ...ctx.chunk.imports] : []);
+        return files.filter(file => !booted.has(file)).map(file => ({
+          tag: 'link',
+          attrs: { rel: 'modulepreload', crossorigin: true, href: `${base}${file}` },
+          injectTo: 'head',
+        }));
+      },
+    },
+  };
+}
 
 // wasm 섹션 머리만 훑어 디버그 흔적(name/.debug_* 커스텀 섹션)을 찾는다.
 // `wasm-pack build --dev` 결과가 ../pkg 에 남아 있으면 dist 에 3배 크기의 엔진이 실린다.
@@ -137,6 +175,7 @@ export default defineConfig({
         }
       },
     },
+    preloadEditorChunkPlugin(),
     rhwpAgentHubPlugin(__dirname),
     rhwpPinnedDocumentPlugin(__dirname),
     rhwpDevFontPackPlugin(),

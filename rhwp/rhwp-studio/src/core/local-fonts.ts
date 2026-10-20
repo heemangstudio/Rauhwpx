@@ -138,6 +138,8 @@ const PROBE_TEXTS = [
   '한글과 English 12345',
 ];
 const LOCAL_FONT_NAME_READ_CONCURRENCY = 4;
+/** 미리 읽은 테이블 해석은 동기라, 이만큼마다 메인 스레드를 양보해 긴 작업 하나가 되지 않게 한다. */
+const LOCAL_FONT_NAME_PARSE_YIELD_EVERY = 32;
 let importedFontGeneration = 0;
 /** resolveLocalFont·repairedLocalFontFamily 결과가 바뀔 수 있을 때마다 증가한다 (글꼴 체인 캐시 무효화 기준). */
 let localFontLookupGeneration = 0;
@@ -271,6 +273,30 @@ interface SfntFontNames {
   postscriptNames: string[];
   styles: string[];
   sfntStyle?: LocalFontRecord['sfntStyle'];
+}
+
+/**
+ * FontData.blob() 이 내주는 단독 SFNT 에서 이름을 읽는 데 쓰던 부분: 그 SFNT 의 크기, name 테이블,
+ * OS/2 앞 64 바이트, head 앞 46 바이트.
+ */
+export interface SfntNameTables {
+  size: number;
+  name: Uint8Array | null;
+  os2: Uint8Array | null;
+  head: Uint8Array | null;
+}
+
+/**
+ * PostScript 이름으로 설치 글꼴의 이름 테이블을 찾아 주는 곳 (데스크톱 글꼴 색인).
+ * blob() 은 face 마다 글꼴 전체를 복사해 렌더러와 브라우저 프로세스에 남기므로, 여기서 찾은 face 는
+ * blob 을 만들지 않는다. 돌려준 Map 에 없는 이름만 blob 으로 읽는다.
+ */
+export type LocalFontNameTableSource = (postscriptNames: readonly string[]) => Promise<Map<string, SfntNameTables> | null>;
+
+let localFontNameTableSource: LocalFontNameTableSource | null = null;
+
+export function setLocalFontNameTableSource(source: LocalFontNameTableSource | null): void {
+  localFontNameTableSource = source;
 }
 
 interface LocalFontLookup {
@@ -515,6 +541,23 @@ async function readSfntFontNames(fontData: FontData): Promise<SfntFontNames> {
       if (tag === 'head') head = new DataView(buffer);
     }
     names.sfntStyle = decodeSfntStyle(os2, head);
+    return names;
+  } catch { return emptySfntFontNames(); }
+}
+
+function tableView(bytes: Uint8Array | null): DataView | undefined {
+  return bytes ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : undefined;
+}
+
+/** readSfntFontNames 와 같은 한도·해석으로 미리 읽은 테이블에서 이름을 꺼낸다. */
+function sfntFontNamesFromTables(tables: SfntNameTables): SfntFontNames {
+  if (!Number.isSafeInteger(tables.size) || tables.size < 12
+    || tables.size > LOCAL_FONT_MAX_BYTES_PER_FACE) return emptySfntFontNames();
+  try {
+    const names = tables.name
+      ? parseSfntNameTable(tables.name.slice().buffer)
+      : emptySfntFontNames();
+    names.sfntStyle = decodeSfntStyle(tableView(tables.os2), tableView(tables.head));
     return names;
   } catch { return emptySfntFontNames(); }
 }
@@ -1226,15 +1269,40 @@ async function registerRepairedLocalFamily(faces: readonly LocalFontRecord[]): P
   return registered.length > 0;
 }
 
-async function collectLocalFontRecords(fontDataList: readonly FontData[]): Promise<LocalFontRecord[]> {
+async function loadLocalFontNameTables(fontDataList: readonly FontData[]): Promise<Map<string, SfntNameTables> | null> {
+  if (!localFontNameTableSource || fontDataList.length === 0) return null;
+  try {
+    return await localFontNameTableSource(fontDataList.map(fontData => fontData.postscriptName));
+  } catch {
+    return null;
+  }
+}
+
+function yieldToMain(): Promise<void> {
+  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (typeof scheduler?.yield === 'function') return scheduler.yield();
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function collectLocalFontRecords(
+  fontDataList: readonly FontData[],
+  nameTables: ReadonlyMap<string, SfntNameTables> | null = null,
+): Promise<LocalFontRecord[]> {
   const records: Array<LocalFontRecord | null> = new Array(fontDataList.length).fill(null);
   let nextIndex = 0;
+  let parsedSinceYield = 0;
   const worker = async (): Promise<void> => {
     while (nextIndex < fontDataList.length) {
       const index = nextIndex;
       nextIndex += 1;
       const fontData = fontDataList[index];
-      records[index] = makeLocalFontRecord(fontData, await readSfntFontNames(fontData));
+      const tables = nameTables?.get(fontData.postscriptName);
+      if (tables && ++parsedSinceYield >= LOCAL_FONT_NAME_PARSE_YIELD_EVERY) {
+        parsedSinceYield = 0;
+        await yieldToMain();
+      }
+      const names = tables ? sfntFontNamesFromTables(tables) : await readSfntFontNames(fontData);
+      records[index] = makeLocalFontRecord(fontData, names);
     }
   };
   await Promise.all(Array.from(
@@ -1578,7 +1646,8 @@ export async function detectLocalFonts(options: DetectLocalFontsOptions = {}): P
   if (isLocalFontAccessSupported()) {
     const queryLocalFonts = (globalThis as LocalFontGlobal).queryLocalFonts!;
     const fontDataList = await queryLocalFonts();
-    snapshot = makeSnapshot(await collectLocalFontRecords(fontDataList), 'local-font-access');
+    const nameTables = await loadLocalFontNameTables(fontDataList);
+    snapshot = makeSnapshot(await collectLocalFontRecords(fontDataList, nameTables), 'local-font-access');
   } else if (isFontPresenceProbeSupported() && options.candidateFamilies?.length) {
     const checkedFamilies = normalizeFamilies(options.candidateFamilies);
     const families = probeCandidateFamilies(checkedFamilies);
