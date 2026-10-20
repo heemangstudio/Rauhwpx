@@ -149,12 +149,26 @@ runs:
             echo "Rejected development or ad-hoc signature: ${app_path}" >&2
             exit 1
           fi
-          # stapler validate looks the ticket up on Apple's CloudKit, which drops connections now and then.
+          if ! grep -F 'Notarization Ticket=stapled' <<<"${signing_info}"; then
+            echo "No stapled notarization ticket: ${app_path}" >&2
+            exit 1
+          fi
+          # stapler validate looks the ticket up on Apple's CloudKit, which GitHub's macOS runners
+          # often cannot reach. Gatekeeper then judges the stapled ticket offline.
+          validated=0
           for attempt in 1 2 3; do
-            xcrun stapler validate "${app_path}" && break
-            if [ "${attempt}" = 3 ]; then exit 1; fi
-            sleep $((attempt * 20))
+            if xcrun stapler validate "${app_path}"; then validated=1; break; fi
+            if [ "${attempt}" != 3 ]; then sleep $((attempt * 20)); fi
           done
+          if [ "${validated}" = 0 ]; then
+            assessment="$(spctl --assess --type execute -vv "${app_path}" 2>&1)"
+            printf '%s\n' "${assessment}"
+            if ! grep -F 'source=Notarized Developer ID' <<<"${assessment}"; then
+              echo "Gatekeeper did not accept the notarization: ${app_path}" >&2
+              exit 1
+            fi
+            echo "::warning::stapler validate could not reach CloudKit; Gatekeeper accepted the stapled ticket for ${app_path}."
+          fi
         done < <(find release -type d -name 'HamaEditor.app' -print0)
     - name: Verify Windows installer is unsigned by design
       if: inputs.platform == 'windows'
