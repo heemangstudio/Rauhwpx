@@ -14,6 +14,7 @@ import {
   rename as renameFs,
   rm as rmFs,
   stat as statFs,
+  utimes,
   writeFile as writeFs,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1284,6 +1285,9 @@ test('reopening a file rewritten with identical bytes clears the save conflict',
     // A sync client replaces the file with the same bytes: new inode, same digest.
     const replacement = join(directory, 'sync.tmp');
     await writeFs(replacement, original);
+    // Windows file times tick about every 15 ms, so pin a distinct mtime.
+    const replacedAt = new Date(Date.now() - 60_000);
+    await utimes(replacement, replacedAt, replacedAt);
     await renameFs(replacement, target);
     await assert.rejects(
       registry.write('session-a', handleId, minimalCfbBytes(3), active, leases),
@@ -1448,12 +1452,22 @@ test('icacls save files yield the DACL line', () => {
   );
 });
 
-async function writeWithFakeIcacls(target: string, daclFor: (path: string) => string) {
+// icacls and PowerShell get the extended-length form of Windows paths.
+function withoutNamespacePrefix(path: string) {
+  return path.startsWith('\\\\?\\') ? path.slice(4) : path;
+}
+
+async function writeWithFakeIcacls(
+  target: string,
+  daclFor: (path: string) => string,
+  metadataDirectory: string,
+) {
   const events: string[] = [];
   const commandCalls: Array<{ command: string; args: string[]; options: { env: Record<string, string> } }> = [];
   await writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
     platform: 'win32',
     windowsSystemRoot: 'C:\\Windows',
+    metadataDirectory,
     windowsProcessEnv: {
       GITHUB_TOKEN: 'must-not-leak',
       RHWP_AGENT_TOKEN: 'must-not-leak',
@@ -1474,7 +1488,8 @@ async function writeWithFakeIcacls(target: string, daclFor: (path: string) => st
         const probe = await openFs(args[0], 'r+');
         await probe.close();
         events.push('dacl');
-        await writeFs(args[2], icaclsSaveFile(basename(args[0]), daclFor(args[0])));
+        const source = withoutNamespacePrefix(args[0]);
+        await writeFs(args[2], icaclsSaveFile(basename(source), daclFor(source)));
       } else {
         events.push('apply');
       }
@@ -1497,16 +1512,24 @@ test('Windows replacement skips the DACL write when the temp file already matche
   await withTemporaryDirectory(async (directory) => {
     const target = join(directory, 'report.hwp');
     await writeFs(target, 'previous');
-    const { events, commandCalls } = await writeWithFakeIcacls(target, () => 'D:AI(A;ID;FA;;;BA)');
+    const metadataDirectory = join(directory, '..', 'metadata');
+    await mkdir(metadataDirectory);
+    const { events, commandCalls } = await writeWithFakeIcacls(
+      target,
+      () => 'D:AI(A;ID;FA;;;BA)',
+      metadataDirectory,
+    );
     assert.deepEqual(events, ['dacl', 'dacl', 'rename-aside', 'fingerprint', 'publish']);
     assert.equal(commandCalls.length, 2);
     for (const call of commandCalls) {
       assert.equal(call.command, 'C:\\Windows\\System32\\icacls.exe');
       assert.equal(call.args[1], '/save');
-      assert.match(call.args[2], /\.rauhwpx-.*\.tmp(\.target)?\.rauhwpx-dacl$/);
+      // The save files stay short and out of the document folder.
+      assert.equal(join(call.args[2], '..'), metadataDirectory);
+      assert.match(basename(call.args[2]), /^rauhwpx-[0-9a-f]+(\.target)?\.rauhwpx-dacl$/);
       assert.equal(call.args[3], '/q');
     }
-    assert.equal(commandCalls[0].args[0], target);
+    assert.equal(withoutNamespacePrefix(commandCalls[0].args[0]), target);
     assert.match(commandCalls[1].args[0], /\.rauhwpx-.*\.tmp$/);
     const env = commandCalls[0].options.env;
     assert.equal(env.SystemRoot, 'C:\\Windows');
@@ -1522,6 +1545,7 @@ test('Windows replacement skips the DACL write when the temp file already matche
       'WINDIR',
     ]);
     assert.deepEqual(await readdir(directory), ['report.hwp']);
+    assert.deepEqual(await readdir(metadataDirectory), []);
   });
 });
 
@@ -1532,6 +1556,7 @@ test('Windows replacement applies a differing source DACL without icacls /restor
     const { events, commandCalls } = await writeWithFakeIcacls(
       target,
       (path) => (path === target ? 'D:PAI(A;;FA;;;BA)' : 'D:AI(A;ID;FA;;;WD)'),
+      tmpdir(),
     );
     assert.deepEqual(events, ['dacl', 'dacl', 'apply', 'rename-aside', 'fingerprint', 'publish']);
     assert.equal(commandCalls.length, 3);

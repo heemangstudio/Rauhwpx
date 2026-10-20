@@ -707,7 +707,12 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
                     }
                 }
 
-                if attached_master_page_count == 0 {
+                // 바탕쪽이 없다고 밝힌 구역(masterPageCnt="0")에는 추정 바탕쪽을 붙이지 않는다.
+                // rhwp 가 저장한 파일은 manifest 에서 바탕쪽을 모든 구역 뒤에 두므로, 추정이
+                // 다른 구역의 바탕쪽을 첫 구역에 붙이고 다음 저장이 그것을 굳혔다.
+                let declares_no_master_page =
+                    section::hwpx_section_declared_master_page_count(&section_xml) == Some(0);
+                if attached_master_page_count == 0 && !declares_no_master_page {
                     if let Some(master_page_files) =
                         package_info.section_master_page_files.get(section_idx)
                     {

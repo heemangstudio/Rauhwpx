@@ -3575,6 +3575,10 @@ pub(crate) fn parse_hwp3_validated(data: &[u8]) -> Result<Document, Hwp3Error> {
             doc_bin_data_list.push(bin_data);
         }
     }
+    // HWP5 는 그림의 bin_data_id 를 BinData 목록의 1-based 순번으로 읽는다. 연결 그림은
+    // HashMap 순회 순서로 붙으므로 id 순으로 맞춘다. 어긋나면 HWP 로 저장한 문서에서
+    // 그림이 다른 그림이나 연결을 가리켰다.
+    doc_bin_data_list.sort_by_key(|bin_data| bin_data.storage_id);
 
     use crate::model::document::{Section, SectionDef};
     use crate::model::page::PageDef;

@@ -754,6 +754,53 @@ mod tests {
     }
 
     #[test]
+    fn section_without_master_pages_stays_without_them_across_saves() {
+        use crate::model::document::Section;
+        use crate::model::header_footer::{HeaderFooterApply, MasterPage};
+        use crate::model::paragraph::Paragraph;
+
+        // 표지·목차 구역에는 바탕쪽이 없고 본문 구역에만 홀수·짝수 바탕쪽이 있는 문서.
+        let mut blank = crate::document_core::DocumentCore::new_empty();
+        blank
+            .create_blank_document_native()
+            .expect("blank document");
+        let mut doc = blank.document().clone();
+        let mut body: Section = doc.sections[0].clone();
+        for (apply_to, text) in [
+            (HeaderFooterApply::Odd, "odd"),
+            (HeaderFooterApply::Even, "even"),
+        ] {
+            let mut para = Paragraph::default();
+            para.text = text.to_string();
+            body.section_def.master_pages.push(MasterPage {
+                apply_to,
+                text_width: 10_000,
+                text_height: 10_000,
+                text_ref: 1,
+                paragraphs: vec![para],
+                ..Default::default()
+            });
+        }
+        doc.sections.push(body);
+
+        let mut current = doc;
+        for cycle in 1..=2 {
+            let bytes = serialize_hwpx(&current).expect("serialize");
+            current = parse_hwpx(&bytes).expect("parse back");
+            assert_eq!(
+                current.sections[0].section_def.master_pages.len(),
+                0,
+                "save {cycle} gave the first section another section's master pages",
+            );
+            assert_eq!(
+                current.sections[1].section_def.master_pages.len(),
+                2,
+                "save {cycle}"
+            );
+        }
+    }
+
+    #[test]
     fn container_rdf_lists_every_section() {
         let mut doc = Document::default();
         for _ in 0..3 {

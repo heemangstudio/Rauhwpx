@@ -1280,13 +1280,12 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
         // 컨트롤이 자동번호인데 공백이 마지막이면 그 공백이 곧 placeholder 다 — 진짜
         // 공백이었다면 그 뒤에 placeholder 가 하나 더 붙어 마지막이 아니게 된다.
         let is_last_text_char = i + 1 == text_len;
+        // 0x0012 만 본다. 각주·미주(0x0011)는 파서가 placeholder 공백을 넣지 않으므로
+        // 그 앞의 공백은 사용자가 친 진짜 공백이다. 함께 보면 저장할 때마다 사라졌다.
         let is_autonum_placeholder = ch == ' '
             && offset == prev_end
             && ctrl_idx < para.controls.len()
-            && matches!(
-                control_char_code_and_id(&para.controls[ctrl_idx]).0,
-                0x0011 | 0x0012
-            )
+            && control_char_code_and_id(&para.controls[ctrl_idx]).0 == 0x0012
             && next_offset.map_or(is_last_text_char, |n| n >= offset.saturating_add(8));
         if is_autonum_placeholder {
             let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);

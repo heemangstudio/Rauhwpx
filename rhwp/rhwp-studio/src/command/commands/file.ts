@@ -14,6 +14,7 @@ import {
 } from '@/command/save-target';
 import { SAVE_FORMAT_DETAILS } from '@/command/save-format';
 import { exportDocumentForFormat } from '@/command/save-document-format';
+import { describeSaveError } from '@/command/save-error-message';
 import { SaveSession, type SaveOutcome } from '@/command/save-session';
 import {
   readHmlSaveContext,
@@ -629,7 +630,7 @@ function reportSaveError(scope: string, error: unknown): void {
     return;
   }
   console.error(`[${scope}] 저장 실패:`, message);
-  alert(`파일 저장에 실패했습니다:\n${message}`);
+  alert(`파일 저장에 실패했습니다:\n${describeSaveError(error)}`);
 }
 
 function assertCanSaveDocument(services: CommandServices): void {

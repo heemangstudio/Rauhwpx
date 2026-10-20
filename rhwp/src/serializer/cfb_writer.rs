@@ -432,7 +432,10 @@ fn validate_stream_metadata(
         generated_paths.insert(mini_cfb::cfb_path_key(&path));
         emitted_paths.push(path);
     }
-    for content in bin_data_content {
+    for content in bin_data_content
+        .iter()
+        .filter(|content| !content.is_position_placeholder())
+    {
         let (storage_id, ext, _, _) =
             find_bin_data_info_with_compress(bin_data_list, content, compressed);
         let storage_name = format!("BIN{:04X}.{}", storage_id, ext);
@@ -641,7 +644,10 @@ fn append_bin_data<'a>(
     compressed: bool,
 ) -> Result<(), SerializeError> {
     const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-    for content in bin_data_content {
+    for content in bin_data_content
+        .iter()
+        .filter(|content| !content.is_position_placeholder())
+    {
         let (storage_id, ext, should_compress, ole_storage) =
             find_bin_data_info_with_compress(bin_data_list, content, compressed);
         let storage_name = format!("BIN{:04X}.{}", storage_id, ext);

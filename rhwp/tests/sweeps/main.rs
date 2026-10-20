@@ -9,4 +9,5 @@ mod hwpx_roundtrip_baseline;
 mod ir_field_sweep_baseline;
 mod issue_1402_enum_token_whitelist;
 mod line_spacing_pagination;
+mod linked_images_save;
 mod visual_roundtrip_baseline;

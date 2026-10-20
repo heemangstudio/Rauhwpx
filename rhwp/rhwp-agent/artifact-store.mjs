@@ -25,19 +25,18 @@ const MAX_HWPX_CONTENT_HPF_BYTES = 8 * 1024 * 1024;
 const HWPX_MIMETYPE = 'application/hwp+zip';
 const HWPX_MIMETYPE_BYTES = Buffer.byteLength(HWPX_MIMETYPE);
 const inflateRawAsync = promisify(inflateRaw);
+// Previews, settings.xml, container.rdf and manifest.xml are optional parts.
+// Hancom and government systems often omit them, and rhwp opens such packages.
 const HWPX_REQUIRED_ENTRIES = Object.freeze([
   'mimetype',
   'version.xml',
   'Contents/header.xml',
   'Contents/content.hpf',
   'Contents/section0.xml',
-  'Preview/PrvText.txt',
-  'Preview/PrvImage.png',
-  'settings.xml',
   'META-INF/container.xml',
-  'META-INF/container.rdf',
-  'META-INF/manifest.xml',
 ]);
+// A linked (isEmbeded="0") item names a file outside the package.
+const HWPX_EXTERNAL_HREF = /^(?:[A-Za-z]:[\\/]|[\\/]{2}|[A-Za-z][A-Za-z0-9+.-]*:)/u;
 const FORMATS = Object.freeze({
   '.hwp': {
     mime: 'application/x-hwp',
@@ -338,8 +337,11 @@ export async function validateHwpxPackage(input) {
   }
 
   const manifest = entries.get('Contents/content.hpf').content.toString('utf8');
-  for (const match of manifest.matchAll(/<(?:[\w.-]+:)?item\b[^>]*\bhref\s*=\s*["']([^"']+)["']/giu)) {
-    const href = match[1].split(/[?#]/, 1)[0];
+  for (const [item] of manifest.matchAll(/<(?:[\w.-]+:)?item\b[^>]*>/giu)) {
+    const rawHref = item.match(/\bhref\s*=\s*["']([^"']+)["']/u)?.[1];
+    if (!rawHref) continue;
+    if (/\bisEmbeded\s*=\s*["']0["']/u.test(item) && HWPX_EXTERNAL_HREF.test(rawHref)) continue;
+    const href = rawHref.split(/[?#]/, 1)[0];
     let decoded;
     try {
       decoded = decodeURIComponent(href);

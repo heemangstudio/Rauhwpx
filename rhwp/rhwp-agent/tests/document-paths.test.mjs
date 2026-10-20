@@ -229,3 +229,28 @@ test('document lists gain other-window state and project members, filtered and c
   assert.equal(many.documents.length, 50);
   assert.equal(many.truncated, true);
 });
+
+test('Windows 8.3 short paths are accepted, while a junction still counts as a link', { skip: process.platform !== 'win32' }, async (t) => {
+  const { execFileSync } = await import('node:child_process');
+  const root = tempRoot(t);
+  // cmd prints the short name in the OEM code page, so keep this fixture ASCII.
+  const folder = path.join(root, 'long folder name with space');
+  mkdirSync(folder);
+  const file = path.join(folder, 'quarterly report.hwp');
+  writeFileSync(file, 'x');
+  const short = execFileSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${file}") do @echo %~sI"`], {
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+    encoding: 'utf8',
+  }).trim();
+  if (!/~\d/.test(short)) {
+    t.skip('this volume does not generate 8.3 names');
+  } else {
+    assert.equal((await validateDocumentPath(short)).path, file);
+  }
+
+  const junction = path.join(root, 'junction');
+  execFileSync('cmd.exe', ['/d', '/c', 'mklink', '/J', junction, folder], { windowsHide: true });
+  assert.equal(await codeOf(validateDocumentPath(path.join(junction, 'quarterly report.hwp'))), 'PATH_REJECTED');
+  assert.equal(await codeOf(validateDocumentFolder(junction, { home: root })), 'PATH_REJECTED');
+});

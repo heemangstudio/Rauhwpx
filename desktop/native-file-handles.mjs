@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, lstat, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, link, lstat, open, opendir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 
 import { retryWindows } from './fs-replace.mjs';
@@ -40,6 +41,12 @@ export const NATIVE_FILE_ATOMIC_UNSUPPORTED_CODE = 'NATIVE_FILE_ATOMIC_UNSUPPORT
 export const NATIVE_FILE_ATOMIC_UNSUPPORTED_MESSAGE = 'This filesystem cannot safely publish an atomic document save.';
 export const NATIVE_FILE_RECOVERY_REQUIRED_CODE = 'NATIVE_FILE_RECOVERY_REQUIRED';
 export const NATIVE_FILE_WRITE_BUSY_CODE = 'NATIVE_FILE_WRITE_BUSY';
+export const NATIVE_FILE_READ_ONLY_CODE = 'NATIVE_FILE_READ_ONLY';
+export const NATIVE_FILE_READ_ONLY_MESSAGE = 'This document is marked read-only. Save it under a different name.';
+export const NATIVE_FILE_IN_USE_CODE = 'NATIVE_FILE_IN_USE';
+export const NATIVE_FILE_IN_USE_MESSAGE = 'Another program is using this document. Close it there or wait a moment, then save again.';
+export const NATIVE_FILE_ACCESS_DENIED_CODE = 'NATIVE_FILE_ACCESS_DENIED';
+export const NATIVE_FILE_ACCESS_DENIED_MESSAGE = 'Windows denied access to this document or its folder. Save it under a different name or in another folder.';
 
 const WINDOWS_ICACLS_DACL_SUFFIX = '.rauhwpx-dacl';
 
@@ -79,10 +86,79 @@ function nativeFileRecoveryRequiredError(original, backupPath, restoreErrors) {
   return error;
 }
 
-function nativeRecoveryPath(filePath) {
+function nativeFileReadOnlyError() {
+  const error = new Error(NATIVE_FILE_READ_ONLY_MESSAGE);
+  error.code = NATIVE_FILE_READ_ONLY_CODE;
+  return error;
+}
+
+/**
+ * 다른 프로그램이 문서를 쥐었거나(EBUSY) 쓸 권한이 없어(EPERM, EACCES) 실패한 Windows 저장은
+ * 내부 임시 경로 대신 이유를 알린다.
+ */
+function windowsSharingError(error, platform) {
+  if (platform !== 'win32') return error;
+  let message;
+  let code;
+  if (error?.code === 'EBUSY') {
+    message = NATIVE_FILE_IN_USE_MESSAGE;
+    code = NATIVE_FILE_IN_USE_CODE;
+  } else if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+    message = NATIVE_FILE_ACCESS_DENIED_MESSAGE;
+    code = NATIVE_FILE_ACCESS_DENIED_CODE;
+  } else {
+    return error;
+  }
+  const failure = new Error(message, { cause: error });
+  failure.code = code;
+  return failure;
+}
+
+// NTFS allows 255 UTF-16 units per name; APFS and Linux filesystems allow 255
+// UTF-8 bytes, so 85 Korean characters already fill one. Clip the document name
+// inside helper names under both limits so the suffix always fits.
+const HELPER_NAME_STEM_MAX_UNITS = 96;
+const HELPER_NAME_STEM_MAX_BYTES = 180;
+
+function clippedName(name) {
+  let units = 0;
+  let bytes = 0;
+  let clipped = '';
+  for (const character of name) {
+    units += character.length;
+    bytes += Buffer.byteLength(character, 'utf8');
+    if (units > HELPER_NAME_STEM_MAX_UNITS || bytes > HELPER_NAME_STEM_MAX_BYTES) break;
+    clipped += character;
+  }
+  return clipped;
+}
+
+function shortRandomId() {
+  return randomUUID().replaceAll('-', '').slice(0, 12);
+}
+
+function nativeRecoveryPrefix(filePath) {
   const extension = extname(filePath);
-  const stem = extension ? filePath.slice(0, -extension.length) : filePath;
-  return `${stem}.rauhwpx-recovery-${process.pid}-${randomUUID()}${extension}`;
+  const name = basename(filePath);
+  return `${clippedName(extension ? name.slice(0, -extension.length) : name)}.rauhwpx-recovery-`;
+}
+
+function nativeRecoveryPath(filePath) {
+  return join(dirname(filePath), `${nativeRecoveryPrefix(filePath)}${shortRandomId()}${extname(filePath)}`);
+}
+
+function nativeHelperPath(filePath, suffix) {
+  return join(dirname(filePath), `${clippedName(basename(filePath))}.rauhwpx-${shortRandomId()}${suffix}`);
+}
+
+/**
+ * icacls.exe is not long-path aware even with LongPathsEnabled. The \\?\ form
+ * lets it reach documents whose full path passes MAX_PATH.
+ */
+function windowsCommandPath(filePath) {
+  return /^[A-Za-z]:[\\/]/.test(filePath) || /^[\\/]{2}[^\\/?.]/.test(filePath)
+    ? win32.toNamespacedPath(filePath)
+    : filePath;
 }
 
 function statValue(info, key, fallbackKey = null) {
@@ -157,22 +233,33 @@ function isNativeFileFingerprint(value) {
       && /^sha256:[0-9a-f]{64}$/.test(value.digest));
 }
 
-function sameNativeFileFingerprint(left, right) {
-  if (!isNativeFileFingerprint(left) || !isNativeFileFingerprint(right)) return false;
-  if (left.state !== right.state) return false;
-  return left.state === 'missing'
-    || (left.generation === right.generation
-      && left.changeTime === right.changeTime
-      && left.digest === right.digest);
+// dev, ino and nlink in nativeFileGeneration. FAT and exFAT derive the file
+// index from the directory entry, so a rename changes ino; deleting a stray
+// temp link changes nlink. Neither means the content changed.
+const MOVED_IDENTITY_FIELDS = new Set([0, 1, 3]);
+
+function movedGenerationFields(generation) {
+  try {
+    const fields = JSON.parse(generation);
+    return Array.isArray(fields)
+      ? JSON.stringify(fields.filter((_, index) => !MOVED_IDENTITY_FIELDS.has(index)))
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function sameMovedNativeFileFingerprint(left, right) {
-  return isNativeFileFingerprint(left)
-    && isNativeFileFingerprint(right)
-    && left.state === 'file'
-    && right.state === 'file'
-    && left.generation === right.generation
-    && left.digest === right.digest;
+  if (
+    !isNativeFileFingerprint(left)
+    || !isNativeFileFingerprint(right)
+    || left.state !== 'file'
+    || right.state !== 'file'
+    || left.digest !== right.digest
+  ) return false;
+  if (left.generation === right.generation) return true;
+  const leftFields = movedGenerationFields(left.generation);
+  return leftFields !== null && leftFields === movedGenerationFields(right.generation);
 }
 
 function waitForCommandExit(child, timeoutMs, { setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
@@ -385,6 +472,7 @@ async function copyWindowsDacl(
   runCommandImpl,
   systemRoot = process.env.SystemRoot ?? process.env.WINDIR,
   sourceEnv = process.env,
+  metadataDirectory = tmpdir(),
 ) {
   if (typeof systemRoot !== 'string' || !win32.isAbsolute(systemRoot)) {
     const error = new Error('Windows system root is unavailable for DACL preservation');
@@ -394,13 +482,16 @@ async function copyWindowsDacl(
   const icacls = win32.join(systemRoot, 'System32', 'icacls.exe');
   const env = windowsMetadataCommandEnv(systemRoot, sourceEnv);
   const options = { platform: 'win32', env };
-  const sourceAclFile = `${temporaryPath}${WINDOWS_ICACLS_DACL_SUFFIX}`;
-  const temporaryAclFile = `${temporaryPath}.target${WINDOWS_ICACLS_DACL_SUFFIX}`;
+  // Keep the save files short and away from the document: icacls cannot write
+  // one whose path passes MAX_PATH, and a deep document folder gets there fast.
+  const saveId = shortRandomId();
+  const sourceAclFile = join(metadataDirectory, `rauhwpx-${saveId}${WINDOWS_ICACLS_DACL_SUFFIX}`);
+  const temporaryAclFile = join(metadataDirectory, `rauhwpx-${saveId}.target${WINDOWS_ICACLS_DACL_SUFFIX}`);
   try {
-    await runCommandImpl(icacls, [sourcePath, '/save', sourceAclFile, '/q'], options);
+    await runCommandImpl(icacls, [windowsCommandPath(sourcePath), '/save', sourceAclFile, '/q'], options);
     const sourceDacl = await readSavedDacl(sourceAclFile);
     if (sourceDacl === null) return;
-    await runCommandImpl(icacls, [temporaryPath, '/save', temporaryAclFile, '/q'], options);
+    await runCommandImpl(icacls, [windowsCommandPath(temporaryPath), '/save', temporaryAclFile, '/q'], options);
     // Most documents carry only entries inherited from their folder, and the
     // temp file beside them already inherits the same ones.
     if (sourceDacl === await readSavedDacl(temporaryAclFile)) return;
@@ -411,7 +502,7 @@ async function copyWindowsDacl(
       ...env,
       PSModulePath: win32.join(powershellHome, 'Modules'),
       RAUHWPX_DACL_SDDL: sourceDacl,
-      RAUHWPX_DACL_TARGET: temporaryPath,
+      RAUHWPX_DACL_TARGET: windowsCommandPath(temporaryPath),
     };
     for (const key of WINDOWS_POWERSHELL_ENV_KEYS) {
       const value = sourceEnv?.[key];
@@ -596,6 +687,29 @@ function hasValidPortableHistoryLayout(bytes, signature, manifestLength) {
   return payloadOffset + expectedOffset === bytes.byteLength;
 }
 
+function isCfbV4Package(bytes) {
+  return bytes.byteLength >= 3 * 4096
+    && bytes.byteLength % 4096 === 0
+    && startsWithBytes(bytes, CFB_SIGNATURE)
+    && bytes[26] === 4 && bytes[27] === 0
+    && bytes[28] === 0xfe && bytes[29] === 0xff
+    && bytes[30] === 12 && bytes[31] === 0;
+}
+
+/**
+ * Check a document that is about to be opened, not written. Other CFB writers
+ * emit major version 4 (4096-byte sectors), which the publish check accepts;
+ * only rhwp's own save output is held to the v3 layout.
+ */
+export function validateOpenedDocumentBytes(filePath, bytes) {
+  if (extname(filePath).toLowerCase() === '.hwp' && bytes instanceof Uint8Array && isCfbV4Package(bytes)) return;
+  try {
+    validateNativeDocumentBytes(filePath, bytes);
+  } catch (error) {
+    throw new Error(`The document cannot be opened because its data is invalid or incomplete (${extname(filePath).slice(1).toUpperCase()})`, { cause: error });
+  }
+}
+
 /** Reject obviously truncated or format-mismatched output before replacing a real document. */
 export function validateNativeDocumentBytes(filePath, bytes) {
   if (!(bytes instanceof Uint8Array)) throw new Error('Native file writes require byte data');
@@ -663,10 +777,12 @@ async function syncParentDirectory(filePath, platform) {
 }
 
 export function nativePathOwnershipKey(filePath, { platform = process.platform } = {}) {
+  // APFS treats NFC and NFD spellings as one name. NTFS does not: a 보고서.hwpx
+  // unzipped from a Mac archive (NFD) can sit beside the NFC one as a separate
+  // file, and folding them would point a Save As at the open original.
+  if (platform === 'win32') return String(filePath).toLocaleLowerCase('en-US');
   const normalized = String(filePath).normalize('NFC');
-  return platform === 'win32' || platform === 'darwin'
-    ? normalized.toLocaleLowerCase('en-US')
-    : normalized;
+  return platform === 'darwin' ? normalized.toLocaleLowerCase('en-US') : normalized;
 }
 
 // Codes a link probe returns on volumes without hard links: exFAT/FAT USB
@@ -713,16 +829,17 @@ export async function writeNativeFileAtomically(
     runCommandImpl = runNativeMetadataCommand,
     windowsSystemRoot = process.env.SystemRoot ?? process.env.WINDIR,
     windowsProcessEnv = process.env,
+    metadataDirectory = tmpdir(),
     expectedFingerprint,
     sleep,
     logger = console,
   } = {},
 ) {
-  const temporaryPath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.tmp`;
+  const temporaryPath = nativeHelperPath(filePath, '.tmp');
   // Keep the real document extension so a recovery copy left by a power loss
   // remains visible and openable in the platform file picker.
   const backupPath = nativeRecoveryPath(filePath);
-  const linkProbePath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.link-probe`;
+  const linkProbePath = nativeHelperPath(filePath, '.link-probe');
   let temporaryFile;
   let backupMoved = false;
   let linkProbeCreated = false;
@@ -734,6 +851,11 @@ export async function writeNativeFileAtomically(
       if (!sourceInfo.isFile()) throw nativeFileConflictError();
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
+    }
+    // CopyFile carries FILE_ATTRIBUTE_READONLY onto the temp, whose r+ open
+    // then fails with an EPERM that names the temp. Say why instead.
+    if (platform === 'win32' && sourceInfo && (Number(sourceInfo.mode) & 0o200) === 0) {
+      throw nativeFileReadOnlyError();
     }
     const effectiveExpectedFingerprint = expectedFingerprint
       ?? await fingerprintImpl(filePath);
@@ -750,9 +872,22 @@ export async function writeNativeFileAtomically(
       } else {
         // libuv uses the Windows CopyFile API. It retains EFS, compression,
         // alternate streams, extended attributes, and file attributes.
-        await copyFileImpl(filePath, temporaryPath, constants.COPYFILE_EXCL);
+        // Antivirus, indexers and sync clients open documents exclusively for
+        // a moment, so a sharing violation here is retried like the renames.
+        await retryWindows(async () => {
+          try {
+            await copyFileImpl(filePath, temporaryPath, constants.COPYFILE_EXCL);
+          } catch (error) {
+            await rmImpl(temporaryPath, { force: true }).catch(() => {});
+            throw error;
+          }
+        }, platform, sleep).catch((error) => {
+          throw error?.code === 'ENOENT' ? nativeFileConflictError() : windowsSharingError(error, platform);
+        });
       }
-      temporaryFile = await openImpl(temporaryPath, 'r+');
+      // A scanner may also open the fresh copy for a moment.
+      temporaryFile = await retryWindows(() => openImpl(temporaryPath, 'r+'), platform, sleep)
+        .catch((error) => { throw windowsSharingError(error, platform); });
       await temporaryFile.truncate(0);
     } else {
       temporaryFile = await openImpl(temporaryPath, 'wx');
@@ -777,6 +912,7 @@ export async function writeNativeFileAtomically(
           runCommandImpl,
           windowsSystemRoot,
           windowsProcessEnv,
+          metadataDirectory,
         );
       } catch (error) {
         // icacls cannot save the DACL of a source that was deleted or moved
@@ -813,12 +949,14 @@ export async function writeNativeFileAtomically(
         await retryWindows(() => renameImpl(filePath, backupPath), platform, sleep);
       } catch (error) {
         if (error?.code === 'ENOENT') throw nativeFileConflictError();
-        throw error;
+        // Another editor (Hancom, Word) holding the document without
+        // FILE_SHARE_DELETE blocks the rename for as long as it stays open.
+        throw windowsSharingError(error, platform);
       }
       backupMoved = true;
-      const movedFingerprint = await fingerprintImpl(backupPath);
-      // Renaming the target changes ctime on POSIX. The stable file id,
-      // mode, size, mtime, birth time, and content digest must still match.
+      const movedFingerprint = await retryWindows(() => fingerprintImpl(backupPath), platform, sleep);
+      // Renaming the target changes ctime on POSIX, and the file id on FAT and
+      // exFAT. Mode, size, mtime, birth time, and content digest must match.
       if (!sameMovedNativeFileFingerprint(effectiveExpectedFingerprint, movedFingerprint)) {
         throw nativeFileConflictError();
       }
@@ -877,7 +1015,9 @@ export async function writeNativeFileAtomically(
       }
     }
     if (!error?.processCleanupUncertain) {
-      await rmImpl(temporaryPath, { force: true }).catch(() => {});
+      // A scanner still reading the temp would otherwise leave a full copy of
+      // the document beside it.
+      await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep).catch(() => {});
     }
     if (backupMoved) {
       throw nativeFileRecoveryRequiredError(error, backupPath, restoreErrors);
@@ -924,6 +1064,77 @@ export async function writeNativeFileAtomically(
   if (durabilityError) throw publishedWriteError(durabilityError, publishedFingerprint);
   if (!publishedFingerprint) throw publishedWriteError(fingerprintError, null);
   return publishedFingerprint;
+}
+
+/**
+ * A save moves the document aside before it publishes the new bytes. If the
+ * process dies in between (crash, End task, power loss), the path is empty and
+ * the last complete version sits beside it under its recovery name. Put the
+ * newest valid one back, the same rollback a failed save performs in-process.
+ * Returns true when the path was restored.
+ */
+export async function recoverInterruptedNativeSave(
+  filePath,
+  {
+    platform = process.platform,
+    readdirImpl = readdir,
+    statImpl = stat,
+    lstatImpl = lstat,
+    linkImpl = link,
+    renameImpl = rename,
+    rmImpl = rm,
+    sleep,
+    logger = console,
+  } = {},
+) {
+  try {
+    await lstatImpl(filePath);
+    return false;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false;
+  }
+  const directory = dirname(filePath);
+  const foldCase = platform === 'win32' || platform === 'darwin';
+  const fold = (value) => (foldCase ? value.toLowerCase() : value);
+  const prefix = fold(nativeRecoveryPrefix(filePath));
+  const extension = fold(extname(filePath));
+  let names;
+  try {
+    names = await readdirImpl(directory);
+  } catch {
+    return false;
+  }
+  const candidates = [];
+  for (const name of names) {
+    const folded = fold(String(name));
+    if (!folded.startsWith(prefix) || !folded.endsWith(extension)) continue;
+    const candidatePath = join(directory, String(name));
+    const info = await statImpl(candidatePath).catch(() => null);
+    // The recovery copy is the original renamed whole, so any non-empty one
+    // is complete. Hancom's own files need not match the writer's CFB layout.
+    if (info?.isFile?.() && Number(info.size) > 0) {
+      candidates.push({ path: candidatePath, mtimeMs: Number(info.mtimeMs) || 0 });
+    }
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const [newest] = candidates;
+  if (!newest) return false;
+  try {
+    // Never overwrite a file that appeared in the meantime.
+    try {
+      await linkImpl(newest.path, filePath);
+      await retryWindows(() => rmImpl(newest.path, { force: true }), platform, sleep).catch(() => {});
+    } catch (error) {
+      if (error?.code === 'EEXIST' || !hardLinksUnsupported(error, platform)) throw error;
+      if (await lstatImpl(filePath).then(() => true, () => false)) return false;
+      await retryWindows(() => renameImpl(newest.path, filePath), platform, sleep);
+    }
+    logger?.warn?.('[native-save] restored an interrupted save from', newest.path);
+    return true;
+  } catch (error) {
+    logger?.warn?.('[native-save] could not restore an interrupted save:', error);
+    return false;
+  }
 }
 
 function isPortableHistoryBundleName(filePath) {
@@ -1042,6 +1253,7 @@ export async function canonicalNativePath(
     platform = process.platform,
     resolveRealPath = realpath,
     allowMissing = false,
+    recoverInterruptedSave = resolveRealPath === realpath ? recoverInterruptedNativeSave : null,
   } = {},
 ) {
   validateNativeDocumentPath(filePath, { platform });
@@ -1049,6 +1261,15 @@ export async function canonicalNativePath(
   try {
     resolved = await resolveRealPath(filePath);
   } catch (error) {
+    if (
+      error?.code === 'ENOENT'
+      && !allowMissing
+      && await recoverInterruptedSave?.(filePath, { platform })
+    ) {
+      resolved = await resolveRealPath(filePath);
+      validateNativeDocumentPath(resolved, { platform });
+      return platform === 'win32' ? win32.normalize(resolved) : normalize(resolved);
+    }
     if (!allowMissing || error?.code !== 'ENOENT') throw error;
     const parent = await resolveRealPath(dirname(filePath));
     resolved = join(parent, basename(filePath));
@@ -1083,6 +1304,7 @@ export class NativeFileHandleRegistry {
   #digest;
   #fingerprint;
   #openFile;
+  #recoverInterruptedSave;
 
   constructor({
     canonicalize = canonicalNativePath,
@@ -1095,6 +1317,7 @@ export class NativeFileHandleRegistry {
     digestImpl = null,
     fingerprintImpl = fingerprintNativeFile,
     openFileImpl = open,
+    recoverInterruptedSaveImpl = statImpl === stat ? recoverInterruptedNativeSave : null,
   } = {}) {
     this.#canonicalize = canonicalize;
     this.#ownershipKey = ownershipKey;
@@ -1106,6 +1329,7 @@ export class NativeFileHandleRegistry {
     this.#digest = digestImpl;
     this.#fingerprint = fingerprintImpl;
     this.#openFile = openFileImpl;
+    this.#recoverInterruptedSave = recoverInterruptedSaveImpl;
   }
 
   async create(sessionId, filePath, { allowMissing = false } = {}) {
@@ -1164,7 +1388,9 @@ export class NativeFileHandleRegistry {
       sessionId,
       canonicalPath,
       ownershipPath,
-      name: filePath.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1),
+      // The real on-disk name, not the caller's spelling: an 8.3 alias such as
+      // REPORT~1.HWP for report.hwpx would otherwise pick the save format.
+      name: basename(canonicalPath),
       activeWrites: 0,
       writeChain: Promise.resolve(),
       releaseRequested: false,
@@ -1448,7 +1674,7 @@ export class NativeFileHandleRegistry {
    * 꺼낸 디스크·닿지 않는 네트워크일 수 있으므로 unavailable 로 구분한다. 지금 저장 중인
    * 경로는 원자적 교체 사이에 잠깐 비므로 있는 것으로 친다.
    */
-  async inspectDocument(documentId) {
+  async inspectDocument(documentId, { recovered = false } = {}) {
     const bookmark = this.#bookmarks.get(documentId);
     if (!bookmark) return { state: 'unknown' };
     const holder = this.#byPath.get(this.#ownershipKey(bookmark.path));
@@ -1469,7 +1695,12 @@ export class NativeFileHandleRegistry {
     }
     try {
       const parent = await withTimeout(this.#stat(dirname(bookmark.path)), HOME_STAT_TIMEOUT_MS);
-      return parent.isDirectory() ? { state: 'missing' } : { state: 'unavailable' };
+      if (!parent.isDirectory()) return { state: 'unavailable' };
+      // 저장 도중 앱이 꺼지면 원본은 복구 이름으로 곁에 남는다. 없어진 문서로 보이기 전에 되돌린다.
+      if (!recovered && await this.#recoverInterruptedSave?.(bookmark.path)) {
+        return this.inspectDocument(documentId, { recovered: true });
+      }
+      return { state: 'missing' };
     } catch {
       return { state: 'unavailable' };
     }

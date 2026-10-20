@@ -357,3 +357,16 @@ test('rejects paths outside the workspace, symlinks, and mismatched formats', as
     (error) => error.code === 'ARTIFACT_HWP_INVALID',
   );
 });
+
+test('accepts Hancom HWPX packages without previews and with linked images', async () => {
+  // A government document saved without Preview/* or container.rdf, and a
+  // package whose linked image (isEmbeded="0") names a file outside the ZIP.
+  for (const sample of [
+    '../../samples/hwpx/opengov/36384689_결재문서본문_화재발생종합보고서(제2026-298호).hwpx',
+    '../../samples/issue1891_external_bindata_link.hwpx',
+  ]) {
+    const bytes = await fs.readFile(new URL(sample, import.meta.url));
+    const result = await validateHwpxPackage(bytes);
+    assert.ok(result.sectionCount >= 1, sample);
+  }
+});

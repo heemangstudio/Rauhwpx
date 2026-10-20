@@ -1164,24 +1164,34 @@ impl Paragraph {
         // 마지막 문자 + 후행 컨트롤 갭을 포함한 값으로 계산
         let effective_char_offset = char_offset.min(text_len);
         let control_positions = self.control_text_positions();
+        let is_inline_object = |ctrl: &Control| {
+            matches!(
+                ctrl,
+                Control::Shape(_)
+                    | Control::Table(_)
+                    | Control::Picture(_)
+                    | Control::Equation(_)
+                    | Control::Footnote(_)
+                    | Control::Endnote(_)
+                    | Control::AutoNumber(_)
+            )
+        };
+        // 같은 위치에서 첫 인라인 개체보다 앞선 컨트롤 수. 구역·단 정의처럼 문단 맨 앞에 있는
+        // 컨트롤은 새 글자보다 앞에 남아야 한다. 0 으로 두면 글자가 그 앞(UTF-16 0)에 들어가
+        // 저장한 줄 위치(textpos)가 컨트롤 안을 가리켰고, 다시 연 문서에서 글자가 사라졌다.
+        let controls_before_inline_object = self
+            .controls
+            .iter()
+            .zip(control_positions.iter())
+            .filter(|(_, &pos)| pos == effective_char_offset)
+            .take_while(|(ctrl, _)| !is_inline_object(ctrl))
+            .count() as u32;
         let inserts_before_inline_control = char_offset <= text_len
             && self
                 .controls
                 .iter()
                 .zip(control_positions.iter())
-                .any(|(ctrl, &pos)| {
-                    pos == effective_char_offset
-                        && matches!(
-                            ctrl,
-                            Control::Shape(_)
-                                | Control::Table(_)
-                                | Control::Picture(_)
-                                | Control::Equation(_)
-                                | Control::Footnote(_)
-                                | Control::Endnote(_)
-                                | Control::AutoNumber(_)
-                        )
-                });
+                .any(|(ctrl, &pos)| pos == effective_char_offset && is_inline_object(ctrl));
 
         // 삽입 지점의 UTF-16 위치 결정
         let utf16_insert_pos: u32 = if char_offset > text_len && !self.char_offsets.is_empty() {
@@ -1200,14 +1210,13 @@ impl Paragraph {
             let trailing_ctrl_count = (char_offset - text_len).min(actual_trailing_ctrls) as u32;
             last_char_end + trailing_ctrl_count * 8
         } else if inserts_before_inline_control {
-            if effective_char_offset == 0 {
+            let gap_start = if effective_char_offset == 0 || self.char_offsets.is_empty() {
                 0
-            } else if !self.char_offsets.is_empty() {
+            } else {
                 let prev_idx = effective_char_offset - 1;
                 self.char_offsets[prev_idx] + Self::char_utf16_len(text_chars[prev_idx])
-            } else {
-                0
-            }
+            };
+            gap_start + controls_before_inline_object * 8
         } else if effective_char_offset < self.char_offsets.len() {
             self.char_offsets[effective_char_offset]
         } else if !self.char_offsets.is_empty() {
