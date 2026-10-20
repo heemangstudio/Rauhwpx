@@ -103,13 +103,13 @@ test('only the newest notice keeps actions; older ones keep the title only', () 
   assert.equal(view.title, 'Claude에 연결하지 못했어요');
 });
 
-test('unknown failures provide connection settings and recover unreadable saved details', () => {
+test('unknown failures offer only 다시 시도 and recover unreadable saved details', () => {
   const unknown = failure({ message: 'undefined' });
   const view = failureView(unknown, 'turn', ctx());
-  assert.deepEqual(actions(view), ['retry', 'settings']);
-  assert.ok(view.line);
+  assert.deepEqual(actions(view), ['retry']);
+  assert.equal(view.line, null);
   assert.notEqual(view.detail, 'undefined');
-  assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ hasRetry: false }))), ['settings']);
+  assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ hasRetry: false }))), []);
   assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ isLatest: false }))), []);
 });
 

@@ -334,6 +334,7 @@ import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
+import { formatThreadTranscript } from '../issue-report/transcript.ts';
 import {
   isLicenseViewerMode,
   noteAgentOpenBeforeLock,
@@ -456,6 +457,8 @@ export interface AgentSidebarDeps {
    * 참이면 시작할 때 이 창이 남긴 끊긴 턴을 모두 정리한다(S3).
    */
   ownsWindowSession?: boolean;
+  /** 문제 보고를 연다(데스크톱). 있으면 허브 끊김 안내·끊긴 턴 줄·실패 알림에 '오류 제보' 단추를 둔다. */
+  reportIssue?: () => void;
 }
 
 const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
@@ -583,6 +586,15 @@ export interface AgentSidebarHandle {
   resumeAfterRestart(threadId: string): Promise<boolean>;
   /** 보이는 채팅의 미뤄 둔 기록을 지금 저장소에 넘긴다(창을 닫기 직전). */
   persistThread(): void;
+  /** 문제 보고에 싣는 지금 고른 공급자·모델·모드와 보이는 대화 기록(없으면 null). */
+  reportSnapshot(): {
+    provider: AgentName;
+    model: string;
+    effort: string;
+    agentMode: AgentMode;
+    hubConnection: string;
+    transcript: string | null;
+  };
   dispose(): void;
 }
 
@@ -1382,6 +1394,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
+    ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
   });
 
@@ -3242,7 +3255,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connPopoverText.textContent = '연결 중';
     void bridge.reconnectNow();
   });
-  connPopover.append(connPopoverText, connCommand, connRetry);
+  const connReport = deps.reportIssue ? el('button', 'ag-conn-report', '오류 제보') : null;
+  if (connReport) {
+    connReport.type = 'button';
+    connReport.hidden = true;
+    connReport.addEventListener('click', () => {
+      setConnPopoverOpen(false);
+      deps.reportIssue?.();
+    });
+  }
+  connPopover.append(connPopoverText, connCommand, connRetry, ...(connReport ? [connReport] : []));
   header.append(connPopover);
 
   function setConnPopoverOpen(open: boolean): void {
@@ -9145,6 +9167,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     connPopoverText.textContent = visual === 'disconnected' ? '허브 연결 끊김' : '연결 중';
     connCommand.hidden = managedHub || visual !== 'disconnected';
+    if (connReport) connReport.hidden = visual !== 'disconnected';
   }
 
   function setTurnRunning(running: boolean): void {
@@ -10287,7 +10310,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 끊긴 턴 줄을 만든다(이미 있던 같은 턴의 줄은 걷는다). */
   function mountInterruptionRow(marker: ThreadTurnMessage): HTMLElement {
     interruptionRows.get(marker.messageId)?.root.remove();
-    const row = createTurnInterruptionRow(marker.messageId, { onResume: () => resumeInterruptedTurn() });
+    const row = createTurnInterruptionRow(marker.messageId, {
+      onResume: () => resumeInterruptedTurn(),
+      ...(deps.reportIssue ? { onReport: deps.reportIssue } : {}),
+    });
     interruptionRows.set(marker.messageId, row);
     row.update(interruptionRowState(marker));
     return row.root;
@@ -13288,6 +13314,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     persistThread(): void {
       if (root.dataset.disposed !== 'true') flushTranscriptPersist();
+    },
+    reportSnapshot() {
+      return {
+        provider: selectedAgent,
+        model: selectedModel,
+        effort: selectedEffort,
+        agentMode: currentMode(),
+        hubConnection: connState,
+        transcript: currentThread.messages.length > 0 ? formatThreadTranscript(currentThread) : null,
+      };
     },
     dispose(): void {
       if (root.dataset.disposed === 'true') return;

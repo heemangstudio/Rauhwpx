@@ -33,6 +33,15 @@ export interface ToastOptions {
    * 자동 페이드를 끄고 사용자 닫기를 강제하는 용도 (durationMs: 0 와 함께 사용).
    */
   confirmLabel?: string;
+  /** 오류 안내면 true — 데스크톱 앱에서 '오류 제보' 단추를 함께 둔다. */
+  report?: boolean;
+}
+
+let reporter: (() => void) | null = null;
+
+/** 오류 토스트의 '오류 제보' 가 부를 함수. 데스크톱 앱만 건다. */
+export function setToastReporter(next: (() => void) | null): void {
+  reporter = next;
 }
 
 /** 토스트 칸의 최소 폭(.rhwp-toast min-width)과 오른쪽 여백. base.css 와 같다. */
@@ -122,6 +131,20 @@ export function showToast(options: ToastOptions): void {
       if (!options.confirmLabel) removeToast();
     });
     toast.appendChild(actionBtn);
+  }
+
+  // 문제 보고 (오류 토스트, 데스크톱). 토스트가 보이는 채로 화면을 찍은 뒤 닫는다.
+  const report = options.report ? reporter : null;
+  if (report) {
+    const reportBtn = document.createElement('button');
+    reportBtn.type = 'button';
+    reportBtn.className = 'rhwp-toast-action rhwp-toast-report';
+    reportBtn.textContent = '오류 제보';
+    reportBtn.addEventListener('click', () => {
+      report();
+      window.setTimeout(removeToast, 400);
+    });
+    toast.appendChild(reportBtn);
   }
 
   // 확인 버튼 (선택, 강조 스타일) 또는 닫기 버튼

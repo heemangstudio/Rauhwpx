@@ -6,6 +6,10 @@ import { deliverPlainTextPaste } from './plain-text-paste.mjs';
 export const APP_MENU_MODEL_CHANNEL = 'desktop:set-app-menu-model';
 export const MENU_COMMAND_CHANNEL = 'desktop:menu-command';
 export const AGENT_COMMAND_CHANNEL = 'desktop:agent-command';
+/** 도움말 메뉴의 문제 보고. 렌더러의 help:report-issue 명령을 연다. */
+export const REPORT_ISSUE_COMMAND = 'help:report-issue';
+export const REPORT_ISSUE_LABEL = '문제 보고…';
+export const REPORT_ISSUE_ACCELERATOR = 'CmdOrCtrl+Shift+/';
 
 const isMac = process.platform === 'darwin';
 
@@ -139,6 +143,19 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
     label,
     click: (_menuItem, browserWindow) => browserWindow?.minimize(),
   });
+  // 키는 렌더러가 받는다(편집기 단축키와 같은 길). 메뉴는 단축키를 보여 주기만 한다.
+  const reportIssue = {
+    label: REPORT_ISSUE_LABEL,
+    accelerator: REPORT_ISSUE_ACCELERATOR,
+    registerAccelerator: false,
+    click: (_menuItem, browserWindow) => {
+      sendToWindow(
+        browserWindow ?? BrowserWindow.getFocusedWindow(),
+        MENU_COMMAND_CHANNEL,
+        { commandId: REPORT_ISSUE_COMMAND },
+      );
+    },
+  };
   // 배포본에는 새로 고침·개발자 도구를 두지 않는다.
   const developmentItems = app.isPackaged ? [] : [
     { type: 'separator' },
@@ -189,7 +206,7 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
       { label: 'Window', role: 'window', submenu: [minimizeWindow('Minimize'), { role: 'close' }] },
       {
         role: 'help',
-        submenu: [{
+        submenu: [reportIssue, { type: 'separator' }, {
           label: `${PRODUCT_NAME} 정보`,
           // 네이티브 about 패널은 "Electron 43.x" 만 보인다 — 렌더러의 제품 정보
           // 다이얼로그(앱 이름·버전·라이선스)를 연다.
@@ -356,6 +373,7 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
           { role: 'front', label: '모두 앞으로 가져오기' },
         ],
       },
+      { label: '도움말', role: 'help', submenu: [reportIssue] },
     ]);
   };
 

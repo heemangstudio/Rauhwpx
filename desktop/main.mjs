@@ -91,6 +91,14 @@ import {
 } from './update-restart.mjs';
 import { installAppMenu } from './app-menu.mjs';
 import {
+  DIAGNOSTIC_LOG_DIR,
+  createDiagnosticLog,
+  createLineSink,
+  installProcessDiagnostics,
+  teeConsole,
+} from './diagnostic-log.mjs';
+import { feedbackOrigin, installIssueReportHost } from './issue-report.mjs';
+import {
   AgentAttention,
   WindowFrameStore,
   applyAppUserModelId,
@@ -187,6 +195,18 @@ const profileDirectories = resolveProfileDirectories({
 app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+// 문제 보고에 싣는 진단 기록(userData/logs). console.warn/error 출력은 그대로 두고 함께 남긴다.
+// 잠금을 쥔 인스턴스만 기록을 이어 쓴다 — 곧 끝날 두 번째 인스턴스가 같은 파일을 돌리면 안 된다.
+const diagnosticLog = createDiagnosticLog({
+  dir: join(app.getPath('userData'), DIAGNOSTIC_LOG_DIR),
+  home: app.getPath('home'),
+  secrets: [hubToken],
+});
+if (hasSingleInstanceLock) {
+  teeConsole(diagnosticLog);
+  installProcessDiagnostics(diagnosticLog);
+  diagnosticLog.writeText('main', 'info', `${PRODUCT_NAME} ${app.getVersion()} started (${process.platform} ${process.arch}, Electron ${process.versions.electron}${app.isPackaged ? '' : ', development'})`);
+}
 
 function studioDist() {
   return join(__dirname, '..', 'rhwp', 'rhwp-studio', 'dist');
@@ -497,6 +517,10 @@ class AgentHubOwner {
         this.scheduleRestart();
       },
     });
+    // 허브 stderr 는 터미널로도 그대로 가고, 진단 기록에도 줄 단위로 남는다(조각 경계에 걸린 비밀도 가린다).
+    const hubStderr = createLineSink((text) => diagnosticLog.writeText('hub', 'log', text));
+    child.stderr?.on('data', (chunk) => hubStderr.write(chunk));
+    child.stderr?.on('end', () => hubStderr.end());
     this.#child = child;
 
     try {
@@ -1124,7 +1148,7 @@ async function createWindow(launch = launchRequest(), {
     console.warn('[hamaeditor] preload error', preloadPath, error);
   });
   window.webContents.on('render-process-gone', (_event, details) => {
-    console.warn('[hamaeditor] renderer process gone:', details?.reason);
+    console.warn('[hamaeditor] renderer process gone:', details?.reason, `exit ${details?.exitCode ?? '?'}`);
     // An unanswered close prompt died with the renderer; clear it so the
     // window can close (the close handler skips the prompt for dead renderers).
     session.pendingCloseRequestId = null;
@@ -1358,6 +1382,64 @@ const licenseHost = installLicenseHost({
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
+
+// ── 문제 보고 ─────────────────────────────────────────────────────────────
+installIssueReportHost({
+  ipcMain,
+  sessionForEvent,
+  diagnosticLog,
+  userDataDir: app.getPath('userData'),
+  appInfo: () => ({
+    appVersion: app.getVersion(),
+    os: process.platform,
+    osVersion: process.getSystemVersion(),
+    arch: process.arch,
+    locale: app.getLocale(),
+    electron: process.versions.electron,
+    packaged: app.isPackaged,
+  }),
+  licenseStatus: () => licenseManager.status(),
+  origin: feedbackOrigin({ packaged: app.isPackaged }),
+  fetchImpl: (url, init) => net.fetch(url, init),
+});
+// 렌더러 오류. 렌더러가 줄이고 겹친 것을 묶어 보내지만, 메인도 창마다 1분에 120줄까지만 받는다.
+const RENDERER_LOG_PER_MINUTE = 120;
+const rendererLogBudget = new Map();
+ipcMain.on('desktop:diagnostic-log', (event, entries) => {
+  let session;
+  try {
+    session = sessionForEvent(event);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(entries)) return;
+  const now = Date.now();
+  const id = event.sender.id;
+  let budget = rendererLogBudget.get(id);
+  if (!budget || now - budget.since > 60_000) {
+    if (!budget) event.sender.once('destroyed', () => rendererLogBudget.delete(id));
+    budget = { since: now, used: 0, dropped: 0 };
+    rendererLogBudget.set(id, budget);
+  }
+  const source = `renderer:${session.window.id}`;
+  for (const entry of entries.slice(0, 40)) {
+    if (budget.used >= RENDERER_LOG_PER_MINUTE) {
+      budget.dropped += 1;
+      if (budget.dropped === 1) diagnosticLog.writeText(source, 'warn', 'renderer log budget exhausted; dropping entries for this minute');
+      continue;
+    }
+    budget.used += 1;
+    const level = entry?.level === 'warn' ? 'warn' : 'error';
+    const text = typeof entry?.text === 'string' ? entry.text.slice(0, 8192) : '';
+    if (text) diagnosticLog.writeText(source, level, text);
+  }
+});
+// GPU·네트워크·유틸리티 프로세스가 비정상으로 끝나면 남긴다.
+app.on('child-process-gone', (_event, details) => {
+  if (details?.reason === 'clean-exit') return;
+  console.warn('[hamaeditor] child process gone:', details?.type, details?.name ?? '', details?.reason, `exit ${details?.exitCode ?? '?'}`);
+});
+app.on('will-quit', () => diagnosticLog.flushSync());
 
 ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);

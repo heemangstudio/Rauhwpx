@@ -533,8 +533,223 @@
     }
   }
 
+  // ─────────── 제보 ───────────
+  const ATTACHMENT_TEXT = { screenshot: '스크린샷', log: '로그', chat: '대화', document: '문서' };
+  const bytes = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  const platformText = (r) => [PLATFORMS[r.os] ?? r.os, r.osVersion, r.arch].filter(Boolean).join(' ');
+  // 받기 이름과 화면에서 방향 제어·제어 문자를 지워요.
+  const plainName = (name) => String(name ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '');
+
+  /** 세션 헤더가 필요해서 첨부는 blob 으로 받아요. */
+  async function attachmentBlob(id, name) {
+    let res;
+    try {
+      res = await fetch(`/api/feedback/attachment?${new URLSearchParams({ id, name })}`, { headers: { 'X-Admin-Session': session } });
+    } catch {
+      throw new Error('upstream_unreachable');
+    }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    return res.blob();
+  }
+
+  let reports = [];
+  let selectedId = null;
+  let objectUrls = [];
+
+  function releaseUrls() {
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls = [];
+  }
+
+  function showFeedbackList() {
+    $('feedback-list').replaceChildren(...reports.map((r) => {
+      const item = el('li', r.status);
+      const open = el('button', 'report');
+      open.type = 'button';
+      if (r.id === selectedId) open.setAttribute('aria-current', 'true');
+      const what = el('span', 'what');
+      what.append(
+        el('span', 'line', r.preview.split('\n').find((l) => l.trim()) ?? r.preview),
+        el('span', 'muted', [r.appVersion, PLATFORMS[r.os] ?? r.os, ago(r.receivedAt)].filter(Boolean).join(' · ')),
+      );
+      open.append(lamp(r.status === 'new'), what);
+      if (r.status === 'resolved') open.append(el('span', 'tag', '해결함'));
+      open.addEventListener('click', () => { void openReport(r.id); });
+      item.append(open);
+      return item;
+    }));
+  }
+
+  function metaRows(report) {
+    const m = report.meta ?? {};
+    const known = {
+      '앱 버전': [m.appVersion, m.commit && String(m.commit).slice(0, 10)].filter(Boolean).join(' · '),
+      OS: platformText(m),
+      언어: m.locale,
+      라이선스: m.licenseTier,
+      모델: [m.provider, m.model, m.agentMode].filter(Boolean).join(' · '),
+      창: m.window?.width ? `${m.window.width}×${m.window.height}` : '',
+      블러: typeof m.screenshotBlurred === 'boolean' ? (m.screenshotBlurred ? '켬' : '끔') : '',
+      이메일: report.email,
+      '보낸 시각': fmt(report.createdAt),
+      설치: report.installHash?.slice(0, 12),
+    };
+    const skip = new Set(['appVersion', 'commit', 'os', 'osVersion', 'arch', 'locale', 'licenseTier', 'provider', 'model', 'agentMode', 'window', 'screenshotBlurred']);
+    const extra = Object.entries(m).filter(([k]) => !skip.has(k))
+      .map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]);
+    const list = el('dl', 'meta');
+    for (const [k, v] of [...Object.entries(known), ...extra]) {
+      if (!v) continue;
+      list.append(el('dt', '', k), el('dd', k === '설치' ? 'mono' : '', v));
+    }
+    return list;
+  }
+
+  async function setReportStatus(id, status) {
+    await api('POST', '/api/feedback/status', { id, status });
+    const entry = reports.find((r) => r.id === id);
+    if (entry) entry.status = status;
+  }
+
+  async function openReport(id) {
+    selectedId = id;
+    showFeedbackList();
+    const detail = $('feedback-detail');
+    releaseUrls();
+    try {
+      const { report } = await api('GET', `/api/feedback/report?${new URLSearchParams({ id })}`);
+      if (selectedId !== id) return;
+      if (report.status === 'new') {
+        await setReportStatus(id, 'seen').catch(() => {});
+        report.status = 'seen';
+        showFeedbackList();
+        showNewCount();
+      }
+      detail.replaceChildren(...await reportView(report));
+    } catch (error) {
+      showError('feedback-error', error);
+    }
+  }
+
+  async function reportView(report) {
+    const a = report.attachments ?? {};
+    const head = el('header', 'head');
+    head.append(el('span', 'num', fmt(report.receivedAt)), el('span', 'muted', platformText(report.meta ?? {})));
+    const actions = el('div', 'actions');
+    if (report.email) {
+      const reply = el('a', 'button', '답장');
+      reply.href = `mailto:${encodeURIComponent(report.email)}?subject=${encodeURIComponent('HamaEditor 문제 보고 답변')}`;
+      actions.append(reply);
+    }
+    const resolved = report.status === 'resolved';
+    const toggle = el('button', resolved ? '' : 'primary', resolved ? '다시 열기' : '해결');
+    toggle.type = 'button';
+    toggle.addEventListener('click', async () => {
+      toggle.disabled = true;
+      try {
+        await setReportStatus(report.id, resolved ? 'seen' : 'resolved');
+      } catch (error) {
+        showError('feedback-error', error);
+      }
+      await loadFeedback();
+      await openReport(report.id);
+    });
+    const remove = confirmButton('삭제', '삭제할까요?', async () => {
+      try {
+        await api('POST', '/api/feedback/delete', { id: report.id });
+        selectedId = null;
+        releaseUrls();
+        $('feedback-detail').replaceChildren();
+      } catch (error) {
+        showError('feedback-error', error);
+      }
+      await loadFeedback();
+    }, 'danger');
+    actions.append(toggle, remove);
+    head.append(actions);
+
+    const parts = [head, el('p', 'message', report.message)];
+    if (a.screenshot) {
+      const url = URL.createObjectURL(await attachmentBlob(report.id, 'screenshot'));
+      objectUrls.push(url);
+      const thumb = el('button', 'thumb');
+      thumb.type = 'button';
+      thumb.title = '크게 보기';
+      const img = el('img');
+      img.src = url;
+      img.alt = '스크린샷';
+      thumb.append(img);
+      thumb.addEventListener('click', () => {
+        $('shot-full').src = url;
+        $('shot-dialog').showModal();
+      });
+      parts.push(thumb);
+    }
+    parts.push(metaRows(report));
+    if (a.log) {
+      const log = el('pre', 'log mono', '');
+      log.textContent = await (await attachmentBlob(report.id, 'log')).text();
+      parts.push(log);
+    }
+    const files = el('div', 'files');
+    for (const name of ['chat', 'document']) {
+      if (!a[name]) continue;
+      const button = el('button', '', `${ATTACHMENT_TEXT[name]} 받기`);
+      button.type = 'button';
+      button.append(el('span', 'muted', ` ${plainName(a[name].name)} ${bytes(a[name].size)}`.replace(/\s+/g, ' ')));
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const url = URL.createObjectURL(await attachmentBlob(report.id, name));
+          const link = el('a');
+          link.href = url;
+          link.download = name === 'document' ? plainName(a.document.name) || 'document.bin' : `${report.id}-chat.txt`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        } catch (error) {
+          showError('feedback-error', error);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      files.append(button);
+    }
+    if (files.childElementCount) parts.push(files);
+    return parts;
+  }
+
+  function showNewCount() {
+    const fresh = reports.filter((r) => r.status === 'new').length;
+    $('feedback-new').hidden = fresh === 0;
+    $('feedback-new').textContent = fresh;
+  }
+
+  async function loadFeedback({ background = false } = {}) {
+    try {
+      const { reports: list, storage } = await api('GET', '/api/feedback');
+      reports = list;
+      showNewCount();
+      const used = storage.maxBytes ? storage.bytes / storage.maxBytes : 0;
+      $('feedback-storage').hidden = used < 0.8;
+      $('feedback-storage').textContent = `저장 공간 ${Math.round(used * 100)}%`;
+      $('inbox').hidden = reports.length === 0;
+      $('feedback-empty').hidden = reports.length > 0;
+      if (background && busy('#feedback-detail')) return;
+      if (selectedId && !reports.some((r) => r.id === selectedId)) {
+        selectedId = null;
+        releaseUrls();
+        $('feedback-detail').replaceChildren();
+      }
+      showFeedbackList();
+    } catch (error) {
+      if (!background) showError('feedback-error', error);
+    }
+  }
+
+  $('shot-dialog').addEventListener('click', () => $('shot-dialog').close());
+
   async function refreshAll() {
-    await Promise.all([loadAttention(), loadCustomers(), loadBetas(), runLookup()]);
+    await Promise.all([loadAttention(), loadFeedback(), loadCustomers(), loadBetas(), runLookup()]);
   }
 
   $('issue-form').addEventListener('submit', async (event) => {
@@ -617,9 +832,10 @@
         $('token-form').hidden = false;
         return;
       }
-      await Promise.all([loadAttention(), loadCustomers(), loadBetas()]);
+      await Promise.all([loadAttention(), loadFeedback(), loadCustomers(), loadBetas()]);
       setInterval(() => {
         void loadAttention({ background: true });
+        void loadFeedback({ background: true });
         void loadCustomers({ background: true });
         void loadBetas({ background: true });
       }, 60_000);

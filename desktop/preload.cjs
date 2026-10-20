@@ -72,6 +72,15 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     'desktop:agent-session-release',
     agentSessionId,
   ),
+  // 문제 보고. prepare 는 시트를 띄우기 전에 창을 찍고 진단 기록을 붙잡고, submit 은 메인이 보낸다.
+  issueReport: {
+    prepare: () => ipcRenderer.invoke('desktop:issue-report-prepare'),
+    submit: (draft) => ipcRenderer.invoke('desktop:issue-report-submit', draft),
+  },
+  // 렌더러 오류(window error·unhandledrejection·console.error)를 메인의 진단 기록에 남긴다.
+  logDiagnostics: (entries) => {
+    if (Array.isArray(entries) && entries.length > 0) ipcRenderer.send('desktop:diagnostic-log', entries);
+  },
   // 체험·라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
   license: {
     getStatus: () => ipcRenderer.invoke('license:status'),

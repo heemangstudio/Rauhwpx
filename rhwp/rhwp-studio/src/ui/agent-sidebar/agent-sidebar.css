@@ -800,7 +800,31 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   background: var(--ag-primary-bg-hover);
 }
 
+/* 끊김 안내의 문제 보고 — 다시 연결 아래의 조용한 보조 단추. */
+.ag-conn-report {
+  height: 28px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-muted);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-conn-report:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-conn-report[hidden] {
+  display: none;
+}
+
 .ag-conn-retry:focus-visible,
+.ag-conn-report:focus-visible,
+.ag-turn-interrupted-report:focus-visible,
 .ag-conn-command-copy:focus-visible,
 .ag-hub-retry-btn:focus-visible {
   outline: var(--ag-focus-ring);
@@ -812,11 +836,10 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   align-self: stretch;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 6px 6px 6px 12px;
   border: 1px solid var(--ag-border);
-  border-left: 3px solid var(--ag-err);
   border-radius: var(--ag-r-card);
   background: var(--ag-surface);
   color: var(--ag-text);
@@ -826,16 +849,39 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-failure-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 4px;
   min-width: 0;
+}
+
+/* 제목과 조치 묶음. 한 줄에 다 들어가지 않으면 묶음째 제목 아래로 내려간다. */
+.ag-failure-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  min-height: 28px;
+}
+
+.ag-failure-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.ag-failure-actions:empty {
+  display: none;
 }
 
 .ag-failure-title {
   flex: 1 1 auto;
   min-width: 0;
+  word-break: keep-all;
   font-weight: var(--ag-fw-medium);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .ag-failure-line {
@@ -843,14 +889,20 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   font-size: var(--ag-fs-meta);
 }
 
-.ag-failure-actions {
-  display: flex;
+.ag-failure-retry {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: center;
 }
 
-.ag-hub-retry-btn:disabled {
+.ag-failure-retry .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-hub-retry-btn:disabled,
+.ag-failure-link:disabled,
+.ag-failure-retry:disabled {
   opacity: 0.5;
 }
 
@@ -859,7 +911,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-failure-link,
-.ag-failure-close {
+.ag-failure-close,
+.ag-failure-retry {
   height: 28px;
   padding: 0 8px;
   border: 0;
@@ -872,7 +925,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   transition: var(--ag-transition-color);
 }
 
-.ag-failure-close {
+.ag-failure-close,
+.ag-failure-retry {
   flex: none;
   width: 28px;
   padding: 0;
@@ -881,35 +935,22 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-failure-link:hover,
-.ag-failure-close:hover {
+.ag-failure-close:hover,
+.ag-failure-retry:hover {
   background: var(--ag-surface-subtle);
   color: var(--ag-text);
 }
 
 .ag-failure-link:focus-visible,
-.ag-failure-close:focus-visible {
+.ag-failure-close:focus-visible,
+.ag-failure-retry:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
-}
-
-.ag-failure-detail {
-  max-height: 200px;
-  margin: 0;
-  padding: 8px 10px;
-  overflow: auto;
-  border-radius: var(--ag-r-row);
-  background: var(--ag-surface-subtle);
-  color: var(--ag-text-secondary);
-  font-family: var(--ag-mono);
-  font-size: var(--ag-fs-meta);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 /* 오래되거나 닫은 알림은 제목 한 줄만 남는다. */
 .ag-failure-notice-compact {
   padding: 4px 10px;
-  border-left-width: 2px;
   background: transparent;
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-meta);
@@ -980,6 +1021,24 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 .ag-turn-interrupted-resume[aria-disabled='true'] {
   opacity: 0.5;
+}
+
+.ag-turn-interrupted-report {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-muted);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-turn-interrupted-report:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
 }
 
 /* 사이드바 폭이 좁아져도 요약은 한 줄을 유지한다. 각 flex item 이

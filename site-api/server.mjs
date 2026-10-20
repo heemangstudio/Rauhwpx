@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DEFAULT_PORT,
+  resolveFeedbackDir,
+  resolveFeedbackMaxBytes,
+  resolveFeedbackProofKey,
   resolveGiftConfig,
   resolveGiftsDbPath,
   resolveLicenseConfig,
@@ -15,6 +18,12 @@ import {
   resolveWebhookLogDbPath,
   resolveDownloadsDbPath,
 } from './config.mjs';
+import {
+  DEFAULT_FEEDBACK_PROOF_KEY,
+  MAX_FEEDBACK_BODY_BYTES,
+  createFeedbackService,
+  feedbackError,
+} from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
@@ -24,6 +33,7 @@ import { createLicensesService, emptyLicensesState, licenseError } from './licen
 import { renderUniqueInstallsPage } from './pages.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
+import { createTelegramSender } from './telegram.mjs';
 import {
   DEFAULT_UNIQUE_INSTALL_PING_KEY,
   createUniqueInstallsService,
@@ -38,6 +48,10 @@ const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
 const MINUTE = 60 * 1000;
 const TEN_MINUTES = 10 * MINUTE;
+const HOUR = 60 * MINUTE;
+const FEEDBACK_PER_IP_PER_HOUR = 20;
+// Issue-report bodies one replica holds at once; each can buffer up to MAX_FEEDBACK_BODY_BYTES.
+const MAX_FEEDBACK_UPLOADS = 3;
 // Groble retries 408/429/5xx for about 44 hours and treats any other 4xx as final.
 // Anything that fails before the signature matches answers 503: a stranger loses nothing,
 // and a real sale we failed to verify (secret mismatch, missing secret, stripped headers)
@@ -111,8 +125,39 @@ function clientIp(req) {
   return req.socket?.remoteAddress ?? 'unknown';
 }
 
+/**
+ * Reads a large upload without destroying the socket on overflow: an oversized body is
+ * discarded to its end so the client can still read the 413, unless it runs past twice the
+ * limit, which closes the connection.
+ */
+function readUpload(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 2 * maxBytes) req.destroy();
+      else if (size <= maxBytes) chunks.push(chunk);
+      else chunks.length = 0;
+    });
+    req.on('end', () => (size > maxBytes ? reject(feedbackError('too_large', 413)) : resolve(Buffer.concat(chunks))));
+    req.on('error', reject);
+    req.on('close', () => { if (!req.complete) reject(feedbackError('too_large', 413)); });
+  });
+}
+
+/** Discards an upload we refuse unread so the client can still read the answer; a body past maxBytes closes the connection. */
+function discardUpload(req, maxBytes) {
+  let size = 0;
+  req.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > maxBytes) req.destroy();
+  });
+  req.resume();
+}
+
 function errorStatus(error) {
-  if (error?.licenseError && Number.isInteger(error.status)) return error.status;
+  if ((error?.licenseError || error?.expose) && Number.isInteger(error.status)) return error.status;
   if (error?.code === 'RATE_LIMITED') return 429;
   if (error?.code === 'BODY_TOO_LARGE') return 413;
   if (error?.code === 'WAITLIST_FORBIDDEN' || error?.code === 'DOWNLOADS_FORBIDDEN') return 403;
@@ -142,6 +187,7 @@ export function siteRequestListener({
   downloads,
   licenses,
   gifts,
+  feedback,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
@@ -149,6 +195,7 @@ export function siteRequestListener({
   log = () => {},
 }) {
   const limiter = createRateLimiter();
+  let feedbackUploads = 0;
   const allowedOrigins = new Set(licenseConfig.allowedOrigins ?? []);
   // Work that must never delay or fail a response: runs after it is sent.
   const later = (fn) => setImmediate(() => {
@@ -205,7 +252,9 @@ export function siteRequestListener({
       }
       const { pathname, searchParams } = new URL(requestTarget, 'http://127.0.0.1');
       const route = `${req.method} ${pathname}`;
-      if (pathname.startsWith('/v1/license/') || pathname.startsWith('/v1/admin/') || pathname === '/v1/groble/webhook') {
+      const feedbackRoute = pathname === '/v1/feedback' || pathname.startsWith('/v1/admin/feedback');
+      if (feedbackRoute && !feedback) throw siteError('NOT_FOUND', 'not found');
+      if (!feedbackRoute && (pathname.startsWith('/v1/license/') || pathname.startsWith('/v1/admin/') || pathname === '/v1/groble/webhook')) {
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
@@ -426,6 +475,69 @@ export function siteRequestListener({
           }
           return;
         }
+        case 'POST /v1/feedback': {
+          // A body declared past twice the cap is refused unread and the connection closes.
+          if (Number(req.headers['content-length']) > 2 * MAX_FEEDBACK_BODY_BYTES) throw feedbackError('too_large', 413);
+          // Refusals come before the body is buffered; the body is discarded so the client still reads the answer.
+          const refuse = feedbackUploads >= MAX_FEEDBACK_UPLOADS ? [503, 'busy']
+            : !limiter.check(`feedback:${ip}`, FEEDBACK_PER_IP_PER_HOUR, HOUR) ? [429, 'rate_limited'] : null;
+          if (refuse) {
+            discardUpload(req, 2 * MAX_FEEDBACK_BODY_BYTES);
+            send(refuse[0], { ok: false, error: refuse[1] });
+            return;
+          }
+          feedbackUploads += 1;
+          let summary;
+          try {
+            const raw = await readUpload(req, MAX_FEEDBACK_BODY_BYTES);
+            let parsed;
+            try {
+              parsed = JSON.parse(raw.toString('utf8'));
+            } catch {
+              throw feedbackError('invalid', 400);
+            }
+            summary = await feedback.submit(parsed);
+          } finally {
+            feedbackUploads -= 1;
+          }
+          log(`[site-api] feedback ${summary.id} (${summary.bytes} bytes)`);
+          send(201, { ok: true, id: summary.id });
+          later(() => feedback.notify(summary));
+          return;
+        }
+        case 'GET /v1/admin/feedback':
+          allow('admin-feedback', 300, TEN_MINUTES);
+          send(200, await feedback.admin.list(bearerToken(req)));
+          return;
+        case 'GET /v1/admin/feedback/report':
+          allow('admin-feedback', 300, TEN_MINUTES);
+          send(200, await feedback.admin.detail(bearerToken(req), searchParams.get('id')));
+          return;
+        case 'GET /v1/admin/feedback/attachment': {
+          allow('admin-feedback', 300, TEN_MINUTES);
+          const file = await feedback.admin.attachment(bearerToken(req), {
+            id: searchParams.get('id'),
+            name: searchParams.get('name'),
+          });
+          const ascii = file.fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+          res.writeHead(200, {
+            'Content-Type': file.contentType,
+            'Content-Length': file.bytes.length,
+            'Content-Disposition': `${file.inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+            'Content-Security-Policy': "default-src 'none'; sandbox",
+            ...securityHeaders(false),
+          });
+          res.end(file.bytes);
+          return;
+        }
+        case 'POST /v1/admin/feedback/status':
+          allow('admin-feedback', 300, TEN_MINUTES);
+          send(200, await feedback.admin.setStatus(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/feedback/delete':
+          allow('admin-feedback', 300, TEN_MINUTES);
+          send(200, await feedback.admin.remove(bearerToken(req), await readJson(req)));
+          return;
         case 'GET /rau.png':
         case 'GET /favicon.ico':
           res.writeHead(200, {
@@ -481,6 +593,12 @@ export function siteRequestListener({
         return;
       }
       const status = errorStatus(error);
+      if (error?.expose) {
+        // An unread upload is not drained; the connection closes after the answer.
+        send(status, { ok: false, error: error.code, ...(error.field ? { field: error.field } : {}) },
+          req.complete ? {} : { Connection: 'close' });
+        return;
+      }
       if (error?.licenseError) {
         send(status, {
           ok: false,
@@ -565,7 +683,22 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const feedback = createFeedbackService({
+    dir: resolveFeedbackDir(env),
+    proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
+    maxStorageBytes: resolveFeedbackMaxBytes(env),
+    adminToken: licenseConfig.adminToken,
+    now: options.now,
+    notify: createTelegramSender({
+      botToken: env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
+      chatId: env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
+      fetchImpl: options.fetchImpl,
+      label: 'feedback',
+      log,
+    }),
+  });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
   const server = http.createServer((req, res) => {

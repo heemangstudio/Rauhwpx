@@ -39,7 +39,7 @@ import { setupStatusZoomSlider } from '@/ui/status-zoom';
 import { describePaperSize } from '@/ui/status-paper-size';
 import { StatusCharacterCounter } from '@/ui/status-character-count';
 import { MenuBar } from '@/ui/menu-bar';
-import { installDesktopNativeMenu } from '@/desktop-native-menu';
+import { installDesktopMenuCommands, installDesktopNativeMenu } from '@/desktop-native-menu';
 import { syncSpacingPresetMenus } from '@/ui/spacing-preset-menu';
 import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
@@ -88,7 +88,11 @@ import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
 import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
-import { showToast } from '@/ui/toast';
+import { setToastReporter, showToast } from '@/ui/toast';
+import { installRendererDiagnostics } from '@/ui/issue-report/renderer-diagnostics';
+import { REPORT_ISSUE_COMMAND, startIssueReport } from '@/ui/issue-report/issue-report';
+import { exportDocumentForFormat } from '@/command/save-document-format';
+import type { SaveFormat } from '@/command/save-format';
 import {
   documentSourceDigest,
   resolveDocumentPreflight,
@@ -300,6 +304,8 @@ import {
   createNamedNativeDocument,
   syncDesktopWindowBackground,
   desktopUpdatesApi,
+  desktopDiagnosticsLogger,
+  desktopIssueReportApi,
   nativeFileHandleId,
   restoredNativeFileHandle,
   type UpdateRestartSlice,
@@ -357,6 +363,9 @@ import {
   isTopLevelLayerOrderTarget,
   objectAddressScope,
 } from '@/core/object-address';
+
+// 데스크톱 앱이면 렌더러 오류를 메인의 진단 기록(문제 보고에 실린다)으로도 보낸다.
+installRendererDiagnostics(desktopDiagnosticsLogger());
 
 const rendererSessionContextPromise = getRendererSessionContext();
 /**
@@ -503,6 +512,7 @@ function showTrapRecoveryToast(): void {
   showToast({
     message: '문서 엔진이 멈췄습니다. 열린 문서를 모두 다시 열어 복구할 수 있습니다.',
     durationMs: 0,
+    report: true,
     action: { label: '문서 복구', onClick: () => void openTrapRecoveryDialog() },
   });
 }
@@ -529,6 +539,7 @@ function refuseDocumentOpenWhileTrapped(): boolean {
       ? '문서 엔진이 멈춰 문서를 열거나 만들 수 없습니다.\n문서 복구를 먼저 진행하세요.'
       : '문서 엔진이 멈춰 문서를 열거나 만들 수 없습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
     durationMs: 6000,
+    report: true,
     action: recoverable
       ? { label: '문서 복구', onClick: () => void openTrapRecoveryDialog() }
       : { label: '사본 저장', onClick: saveTrappedDocumentCopy },
@@ -544,6 +555,7 @@ onEngineTrap(() => {
     showToast({
       message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
       durationMs: 0,
+      report: true,
       action: { label: '사본 저장', onClick: saveTrappedDocumentCopy },
     });
     return;
@@ -623,7 +635,7 @@ function saveTrappedDocumentCopy(): void {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) {
     console.error('[engine] 멈춘 엔진에서 사본을 만들지 못했습니다:', error);
-    showToast({ message: '사본을 만들지 못했습니다. 앱을 다시 열어 자동 저장본으로 복구하세요.', durationMs: 0 });
+    showToast({ message: '사본을 만들지 못했습니다. 앱을 다시 열어 자동 저장본으로 복구하세요.', durationMs: 0, report: true });
   }
 }
 
@@ -968,6 +980,71 @@ registry.registerAll(pageCommands);
 registry.registerAll(toolCommands);
 // 엔진이 멈춘 뒤의 열기·새 문서는 저장 확인과 파일 선택 전에 문서 복구로 안내한다.
 holdDocumentLoadingCommands(registry, refuseDocumentOpenWhileTrapped);
+// 네이티브 메뉴 명령은 편집기 준비와 상관없이 받는다(문서 엔진이 뜨지 못해도 문제 보고는 열린다).
+installDesktopMenuCommands(dispatcher);
+/** 문제 보고를 여는 함수. 데스크톱이 아니면 null — 사이드바의 문제 보고 단추도 없다. */
+let issueReporter: (() => void) | null = null;
+installIssueReport();
+
+/**
+ * 문제 보고(데스크톱 전용): 도움말 메뉴·명령 팔레트·Cmd/Ctrl+Shift+/·오류 토스트·허브 끊김 안내에서 연다.
+ * 웹·확장에는 보낼 곳이 없으므로 명령을 두지 않는다.
+ */
+function installIssueReport(): void {
+  const api = desktopIssueReportApi();
+  if (!api) return;
+  const report = (): void => {
+    void startIssueReport({
+      api,
+      chat: () => attachedSession.sidebar?.reportSnapshot() ?? null,
+      document: () => {
+        if (engineTrap() || wasm.pageCount <= 0) return null;
+        const format = wasm.getSourceFormat() as SaveFormat;
+        return {
+          name: wasm.fileName,
+          format,
+          pageCount: wasm.pageCount,
+          export: () => exportDocumentForFormat(wasm, format),
+        };
+      },
+      meta: () => ({
+        commit: __APP_COMMIT__,
+        view: documentHome?.visible ? 'home' : attachedSession.sidebar?.isFullscreen() ? 'chat' : 'editor',
+        zoom: canvasView?.getViewportManager().getZoom() ?? null,
+        devicePixelRatio: window.devicePixelRatio,
+        theme: document.documentElement.dataset.themeEffective ?? '',
+      }),
+    }).catch((error) => console.warn('[issue-report] 문제 보고를 열지 못했습니다:', error));
+  };
+  issueReporter = report;
+  registry.register({
+    id: REPORT_ISSUE_COMMAND,
+    label: '문제 보고',
+    shortcutLabel: 'Ctrl+Shift+/',
+    icon: 'icon-help',
+    execute: report,
+  });
+  setToastReporter(report);
+  // 편집기·사이드바 입력 어디서나 받는다. 한글 자판에서도 물리 / 키로 알아본다.
+  document.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey || event.isComposing) return;
+    if (event.code !== 'Slash' && event.key !== '?' && event.key !== '/') return;
+    event.preventDefault();
+    event.stopPropagation();
+    dispatcher.dispatch(REPORT_ISSUE_COMMAND);
+  }, true);
+  // Windows 는 HTML 메뉴 막대가 창의 메뉴다. macOS 는 네이티브 도움말 메뉴에 있다.
+  if (detectPlatformKind() !== 'mac') {
+    const about = document.querySelector('#menu-bar .md-item[data-cmd="file:about"]');
+    if (about && !document.querySelector(`#menu-bar .md-item[data-cmd="${REPORT_ISSUE_COMMAND}"]`)) {
+      const item = document.createElement('div');
+      item.className = 'md-item';
+      item.dataset.cmd = REPORT_ISSUE_COMMAND;
+      item.innerHTML = '<span class="md-icon"></span><span class="md-label">문제 보고…</span><span class="md-shortcut">Ctrl+Shift+/</span>';
+      about.after(item);
+    }
+  }
+}
 
 // 상태 바 요소
 const sbMessage = () => document.getElementById('sb-message')!;
@@ -2259,6 +2336,7 @@ function installChatAgent(
     bridge,
     eventBus: session.bus,
     startActive: active && docAttached,
+    ...(issueReporter ? { reportIssue: issueReporter } : {}),
     editorSettingsRuntime: {
       preview: applyEditorSettingsPreview,
       committed: commitEditorSettingsRuntime,
@@ -4068,6 +4146,7 @@ async function handleDocumentDrop(e: DragEvent, options: { fromHome?: boolean } 
         showToast({
           message: `그림 삽입에 실패했습니다.\n${result.error ?? '삽입 위치 또는 이미지 정보를 확인할 수 없습니다.'}`,
           durationMs: 6000,
+          report: true,
         });
       }
     } catch (error) {
@@ -4572,7 +4651,7 @@ async function initializeDocument(
       });
     } catch (error) {
       console.warn('[Hancom Git] Could not initialize document history', error);
-      showToast({ message: '문서는 열렸지만 버전 기록을 준비하지 못했습니다.', durationMs: 4500 });
+      showToast({ message: '문서는 열렸지만 버전 기록을 준비하지 못했습니다.', durationMs: 4500, report: true });
     }
   } catch (error) {
     console.error('[initDoc] 오류:', error);
@@ -5560,7 +5639,7 @@ async function restoreWindowAfterUpdate(restore: UpdateRestoreSlice): Promise<vo
           }
         } catch (error) {
           console.warn('[update] 업데이트 전 문서를 다시 열지 못했습니다:', error);
-          showToast({ message: `"${entry.fileName}"을(를) 다시 열지 못했어요.`, durationMs: 5000 });
+          showToast({ message: `"${entry.fileName}"을(를) 다시 열지 못했어요.`, durationMs: 5000, report: true });
         } finally {
           await handle?.releaseUnusedSaveTarget?.().catch(() => {});
         }
@@ -6280,6 +6359,7 @@ function showLoadError(error: unknown): void {
     message: errMsg,
     durationMs: 0, // 에러는 자동 페이드 없음 — 사용자가 읽고 닫기
     confirmLabel: '확인',
+    report: true,
   });
 }
 

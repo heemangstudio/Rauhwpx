@@ -51,7 +51,14 @@ const ROUTES = {
   'POST /api/release': { path: '/v1/admin/orders/release', fields: ['merchantUid'] },
   'POST /api/apply-renewal': { path: '/v1/admin/orders/apply-renewal', fields: ['merchantUid', 'key', 'keyId'] },
   'POST /api/ack': { path: '/v1/admin/attention/ack', fields: ['id', 'merchantUid'] },
+  'GET /api/feedback': { path: '/v1/admin/feedback', fields: [] },
+  'GET /api/feedback/report': { path: '/v1/admin/feedback/report', fields: ['id'] },
+  'GET /api/feedback/attachment': { path: '/v1/admin/feedback/attachment', fields: ['id', 'name'], binary: true },
+  'POST /api/feedback/status': { path: '/v1/admin/feedback/status', fields: ['id', 'status'] },
+  'POST /api/feedback/delete': { path: '/v1/admin/feedback/delete', fields: ['id'] },
 };
+/** Response headers a binary route passes through. Length is recounted: fetch may have decoded gzip. */
+const BINARY_HEADERS = ['content-type', 'content-disposition'];
 
 function pick(source, fields) {
   const out = {};
@@ -150,7 +157,7 @@ export function createAdminUiServer({
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; font-src 'self'; frame-ancestors 'none'",
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
       });
@@ -197,8 +204,16 @@ export function createAdminUiServer({
       method: req.method,
       path: target.path,
       ...(req.method === 'GET' ? { query: fields } : { body: fields }),
+      binary: Boolean(target.binary),
       fetchImpl,
     });
+    if (target.binary) {
+      const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" };
+      for (const name of BINARY_HEADERS) if (upstream.headers.get(name)) headers[name] = upstream.headers.get(name);
+      headers['content-length'] = upstream.bytes.length;
+      res.writeHead(upstream.status, headers);
+      return res.end(upstream.bytes);
+    }
     return send(res, upstream.status, upstream.json ?? { ok: false, error: 'upstream_invalid' });
   }
 

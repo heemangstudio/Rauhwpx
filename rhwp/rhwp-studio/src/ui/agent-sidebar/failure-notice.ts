@@ -13,6 +13,7 @@ import type {
 } from '../../agent/types.ts';
 import type { ChatThread, ThreadFailureMessage, ThreadRetryPayload } from '../../agent/threads.ts';
 import { failureDismissKey, resetAtFromLimits } from '../../agent/provider-failure.ts';
+import { createIcon } from './icons.ts';
 import {
   continuationWire,
   type ContinuationCarryingWire,
@@ -27,6 +28,8 @@ export interface FailureAction {
   disabled?: boolean;
   /** 비활성 이유 등 보조 설명 */
   title?: string;
+  /** 단추 대신 작은 글자 링크로 둔다 */
+  quiet?: boolean;
 }
 
 export interface FailureViewContext {
@@ -55,7 +58,7 @@ export interface FailureView {
   /** 제목 아래 짧은 한 줄 (리셋 시각, 다시 연결됨 등) */
   line: string | null;
   actions: FailureAction[];
-  /** '자세히' 아래의 가린 프로바이더 문구 */
+  /** 가린 프로바이더 문구 — 제목에 마우스를 올리면 보인다 */
   detail: string;
   /** 오래된 알림은 제목만 남긴다 */
   compact: boolean;
@@ -92,7 +95,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
     case 'auth_required':
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
-      if (failure.code === 'gift_credits') return '선물 크레딧을 모두 사용했어요';
+      if (failure.code === 'gift_credits') return '무료 크레딧을 다 썼어요';
       return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
       return `${label} 서버가 요청을 처리하지 못했어요`;
@@ -110,7 +113,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
       if (failure.code && MODEL_CODES.has(failure.code)) return `${label} 모델을 찾지 못했어요`;
       return `${label}가 요청을 거절했어요`;
     default:
-      return `${label} 작업 중 오류가 발생했어요`;
+      return '원인을 알 수 없는 오류';
   }
 }
 
@@ -149,15 +152,17 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       break;
     case 'usage_limit': {
       if (failure.code === 'own_credits') {
-        // 내 키 크레딧이 떨어졌고 허브가 다음 요청부터 선물 크레딧으로 넘어간다. 다시 보내면 된다.
-        line = '다음 요청부터 Claude 크레딧을 써요';
-        retryAllowed = true;
+        // 내 키 크레딧이 떨어졌고 허브가 다음 요청부터 선물 크레딧으로 넘어간다. 키를 채우러 설정으로 가는 것이
+        // 주된 조치이고, 다시 보내기는 작은 링크로 둔다.
+        actions.push({ id: 'settings', label: '설정 열기' });
+        if (ctx.hasRetry) actions.push({ ...retryAction(), quiet: true });
+        retryAllowed = false;
         break;
       }
       if (failure.code === 'gift_credits') {
-        // 내 키가 있으면 허브가 다음 요청부터 그 키로 넘어가므로 다시 보내면 된다. 없으면 설정에서 키를 잇는다.
+        // 다시 보내도 같은 결과다. 설정에서 내 키를 이어야 계속할 수 있다.
         actions.push({ id: 'settings', label: '설정 열기' });
-        retryAllowed = true;
+        retryAllowed = false;
         break;
       }
       const credits = failure.code === 'openrouter_credits';
@@ -177,6 +182,7 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
         actions.push({
           id: 'resume',
           label: '리셋 후 이어서',
+          quiet: true,
           ...(ctx.turnRunning ? { disabled: true, title: RUNNING_TITLE } : {}),
         });
       }
@@ -198,10 +204,6 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
         retryAllowed = true;
       }
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });
-      break;
-    case 'unknown':
-      line = '원인을 확인하지 못했어요. 다시 시도하거나 AI 연결 설정을 확인해 주세요.';
-      actions.push({ id: 'settings', label: '연결 설정 확인' });
       break;
     default:
       break;
@@ -322,7 +324,8 @@ export interface FailureNoticeHandlers {
   onAction(id: FailureActionId): void;
   /** × 로 접었다 (true) 또는 '다시 보기' 로 폈다 (false) */
   onDismissChange(dismissed: boolean): void;
-  onDetailToggle?(open: boolean): void;
+  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '오류 제보' 단추를 둔다. */
+  onReport?(): void;
 }
 
 export interface FailureNoticeOptions {
@@ -330,38 +333,56 @@ export interface FailureNoticeOptions {
   agent: AgentName;
   /** 다시 보낼 요청이 이전 시도의 편집을 알린다 */
   retryAfterPartialEdits?: boolean;
-  /** 다시 그릴 때 '자세히' 를 펼친 채로 둔다 */
-  detailOpen?: boolean;
+  /** 사용자가 고칠 수 없는 실패(서버·네트워크·프로세스·원인 불명)다 — 오류 제보를 권한다. */
+  reportable?: boolean;
 }
 
-/** 알림 DOM. 같은 자리에서 다시 그릴 수 있게 루트 하나를 돌려준다. */
+/** 로그인·사용량·요청 문제는 사용자가 고친다. 나머지는 앱이나 서버 쪽 실패라 제보를 받는다. */
+const REPORTABLE_CLASSES: ReadonlySet<ProviderFailure['class']> = new Set(['provider_error', 'network', 'process_exited', 'unknown']);
+
+function failureReportable(failure: Pick<ProviderFailure, 'class'>): boolean {
+  return REPORTABLE_CLASSES.has(failure.class);
+}
+
+/**
+ * 알림 DOM. 같은 자리에서 다시 그릴 수 있게 루트 하나를 돌려준다. 제목·조치·오류 제보·닫기가 한 줄에
+ * 서고, 좁으면 조치 묶음이 제목 아래로 내려간다(닫기는 오른쪽 위에 남는다). 보조 문구(리셋 시각 등)가
+ * 있을 때만 그 아래 한 줄이 붙는다. 프로바이더 문구는 제목의 툴팁이다.
+ */
 export function createFailureNotice(view: FailureView, options: FailureNoticeOptions, handlers: FailureNoticeHandlers): HTMLElement {
   const root = el('div', `ag-msg ag-failure-notice ag-${options.agent}`);
   root.setAttribute('role', 'status');
   if (view.compact || options.dismissed) root.classList.add('ag-failure-notice-compact');
   const head = el('div', 'ag-failure-head');
-  head.append(el('span', 'ag-failure-title', view.title));
+  const main = el('div', 'ag-failure-main');
+  const title = el('span', 'ag-failure-title', view.title);
+  if (view.detail) title.title = view.detail;
+  const actions = el('div', 'ag-failure-actions');
+  main.append(title, actions);
+  head.append(main);
   root.append(head);
   if (options.dismissed) {
     root.classList.add('ag-failure-notice-dismissed');
     const reopen = el('button', 'ag-failure-link', '다시 보기');
     reopen.type = 'button';
     reopen.addEventListener('click', () => handlers.onDismissChange(false));
-    head.append(reopen);
+    actions.append(reopen);
     return root;
   }
   if (view.compact) return root;
-  const close = el('button', 'ag-failure-close', '×');
-  close.type = 'button';
-  close.setAttribute('aria-label', '알림 닫기');
-  close.addEventListener('click', () => handlers.onDismissChange(true));
-  head.append(close);
-  if (view.line) root.append(el('div', 'ag-failure-line', view.line));
-  const actions = el('div', 'ag-failure-actions');
   for (const action of view.actions) {
-    const button = el('button', 'ag-hub-retry-btn ag-failure-action', action.label);
+    // 다시 시도는 글자 대신 새로고침 아이콘 단추다. 이름은 aria-label·툴팁으로 남는다.
+    const retry = action.id === 'retry';
+    const button = retry
+      ? el('button', 'ag-failure-retry ag-failure-action')
+      : el('button', action.quiet ? 'ag-failure-link ag-failure-action' : 'ag-hub-retry-btn ag-failure-action', action.label);
     button.type = 'button';
     button.dataset.action = action.id;
+    if (retry) {
+      button.append(createIcon('refresh'));
+      button.setAttribute('aria-label', action.label);
+      button.title = action.label;
+    }
     if (action.disabled) button.disabled = true;
     if (action.title) button.title = action.title;
     else if (action.id === 'retry' && options.retryAfterPartialEdits) {
@@ -373,21 +394,18 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
     });
     actions.append(button);
   }
-  const detail = el('pre', 'ag-failure-detail', view.detail);
-  detail.hidden = options.detailOpen !== true;
-  if (view.detail) {
-    const toggle = el('button', 'ag-failure-link ag-failure-detail-toggle', detail.hidden ? '자세히' : '접기');
-    toggle.type = 'button';
-    toggle.setAttribute('aria-expanded', detail.hidden ? 'false' : 'true');
-    toggle.addEventListener('click', () => {
-      detail.hidden = !detail.hidden;
-      toggle.textContent = detail.hidden ? '자세히' : '접기';
-      toggle.setAttribute('aria-expanded', detail.hidden ? 'false' : 'true');
-      handlers.onDetailToggle?.(!detail.hidden);
-    });
-    actions.append(toggle);
+  if (options.reportable && handlers.onReport) {
+    const report = el('button', 'ag-failure-link ag-failure-report', '오류 제보');
+    report.type = 'button';
+    report.addEventListener('click', () => handlers.onReport?.());
+    actions.append(report);
   }
-  root.append(actions, detail);
+  const close = el('button', 'ag-failure-close', '×');
+  close.type = 'button';
+  close.setAttribute('aria-label', '알림 닫기');
+  close.addEventListener('click', () => handlers.onDismissChange(true));
+  head.append(close);
+  if (view.line) root.append(el('div', 'ag-failure-line', view.line));
   return root;
 }
 
@@ -457,6 +475,8 @@ export interface FailureNoticeControllerDeps {
    * 턴 도중 끊겼으면 이어서 진행으로 보낸다(retryWire). 지금 보낼 수 없으면 false.
    */
   resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
+  /** 오류 제보를 연다(데스크톱). 없으면 제보 단추를 두지 않는다. */
+  reportIssue?: () => void;
   now?: () => number;
   /** 리셋 시각 뒤 이어서 보내기까지의 여유 (시계 차이) */
   resumeGraceMs?: number;
@@ -503,7 +523,6 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   /** 이 페이지에서 만든 알림 — 사용량 보고에서 찾은 리셋 시각을 써 넣어도 되는 것 */
   const live = new WeakSet<ThreadFailureMessage>();
   const blocked = new WeakSet<ThreadFailureMessage>();
-  const detailOpen = new WeakSet<ThreadFailureMessage>();
   /** 채팅 시작을 이미 다시 시도한 알림 — 같은 실패가 다시 오면 새 알림이 생긴다. */
   const restarted = new WeakSet<ThreadFailureMessage>();
   const resumes = new Map<string, ArmedResume>();
@@ -551,17 +570,14 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       dismissed: dismissals.has(thread.id, message.failure),
       agent: message.failure.agent,
       retryAfterPartialEdits: message.retry?.afterPartialEdits === true,
-      detailOpen: detailOpen.has(message),
+      reportable: failureReportable(message.failure),
     }, {
       onAction: (id) => act(message, id),
       onDismissChange: (dismissed) => {
         dismissals.set(thread.id, message.failure, dismissed);
         rerender(message);
       },
-      onDetailToggle: (open) => {
-        if (open) detailOpen.add(message);
-        else detailOpen.delete(message);
-      },
+      ...(deps.reportIssue ? { onReport: deps.reportIssue } : {}),
     });
   }
 

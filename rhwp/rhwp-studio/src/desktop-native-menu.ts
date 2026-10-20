@@ -214,6 +214,19 @@ export function serializeMenuBar(
 }
 
 /**
+ * 네이티브 메뉴 항목(macOS 메뉴 막대, Windows 도움말 메뉴)의 명령을 받아 실행한다. 모든 데스크톱 OS 에서,
+ * 편집기 준비와 상관없이 일찍 건다 — 문서 엔진을 띄우지 못해도 도움말의 문제 보고는 열린다.
+ */
+export function installDesktopMenuCommands(dispatcher: Pick<CommandDispatcher, 'dispatch'>): void {
+  if (typeof window === 'undefined') return;
+  const api = (window as unknown as { rhwpDesktop?: NativeMenuApi }).rhwpDesktop;
+  api?.onMenuCommand?.((commandId) => {
+    const { cmd, params } = decodeMenuCommandId(commandId);
+    dispatcher.dispatch(cmd, params);
+  });
+}
+
+/**
  * macOS 데스크톱에서만 네이티브 메뉴를 켠다. 켜지면 `html.desktop-native-menu` 로
  * HTML 메뉴 제목을 숨기고 제목 막대를 창 드래그 영역으로 쓴다.
  */
@@ -240,10 +253,6 @@ export function installDesktopNativeMenu(options: DesktopNativeMenuOptions): boo
 
   for (const name of STATE_EVENTS) eventBus.on(name, schedule);
   window.addEventListener('focus', schedule);
-  api.onMenuCommand?.((commandId) => {
-    const { cmd, params } = decodeMenuCommandId(commandId);
-    dispatcher.dispatch(cmd, params);
-  });
   api.onAgentCommand?.((command) => {
     window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command } }));
   });

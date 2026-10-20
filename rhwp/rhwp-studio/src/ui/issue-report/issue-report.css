@@ -1,0 +1,133 @@
+/* ─── 문제 보고 시트 ─────────────────────────────────────
+   확인 시트(ag-sheet)의 면·모서리·높이·버튼을 그대로 쓰고, 폭과 입력 칸만 더한다. */
+
+.ag-sheet-layer[data-placement='center'] .ag-sheet.ir-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 460px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  touch-action: auto;
+}
+
+.ir-sheet .ag-sheet-title {
+  margin-bottom: 2px;
+}
+
+.ir-field {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--n-ink-hairline-strong);
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink);
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-secondary);
+  letter-spacing: var(--ag-track-tight);
+  transition: var(--ag-transition-color);
+}
+
+.ir-field::placeholder {
+  color: var(--n-ink-tertiary);
+}
+
+.ir-field:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.ir-message {
+  min-height: 112px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.ir-email {
+  height: 36px;
+  padding: 0 12px;
+}
+
+.ir-shot {
+  position: relative;
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  box-shadow: 0 0 0 1px var(--n-ink-hairline);
+}
+
+.ir-shot img {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+}
+
+.ir-sheet .ag-sheet-choices {
+  margin-top: 0;
+}
+
+.ir-sheet .ag-sheet-choice:has(input:disabled) {
+  color: var(--n-ink-quaternary);
+}
+
+.ir-choice-reason {
+  margin-left: auto;
+  font-size: var(--ag-fs-meta);
+  color: var(--n-ink-tertiary);
+}
+
+.ir-details {
+  font-size: var(--ag-fs-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.ir-details summary {
+  width: fit-content;
+  border-radius: var(--ag-r-chip);
+  cursor: default;
+  list-style-position: inside;
+}
+
+.ir-details summary:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ir-details pre {
+  box-sizing: border-box;
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+  font: var(--ag-fs-mono) / 1.5 var(--ag-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ir-error {
+  margin: 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--ag-err, var(--ui-danger));
+}
+
+.ir-sheet .ag-sheet-actions {
+  margin-top: 4px;
+}
+
+.ir-sheet .ag-sheet-confirm:disabled {
+  background: var(--ag-primary-bg-disabled);
+}
+
+.ir-sheet .ag-sheet-choice[hidden] {
+  display: none;
+}

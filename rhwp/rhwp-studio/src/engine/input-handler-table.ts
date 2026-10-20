@@ -1293,6 +1293,7 @@ export function finishImagePlacement(this: any, e: MouseEvent): void {
     showToast({
       message: `그림 삽입에 실패했습니다.\n${msg}`,
       durationMs: 6000,
+      report: true,
     });
   }
 
