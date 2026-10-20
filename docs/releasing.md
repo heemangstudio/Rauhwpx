@@ -15,11 +15,11 @@ git push origin "v$(node -p "require('./package.json').version")"
 
 Installed apps update from, and the website downloads from, the public [heemangstudio/hamaeditor-releases](https://github.com/heemangstudio/hamaeditor-releases) repository, so this source repository can be private. The publish job copies every release there with fixed `HamaEditor-mac-arm64.dmg` and `HamaEditor-win-x64.exe` aliases through `releases/latest/download`. Both aliases are included in `SHA256SUMS.txt`. Versioned Windows installers, their blockmaps and `latest.yml` must also be published there: Windows updates follow that descriptor, not the stable download alias. It needs the `RELEASES_TOKEN` repository secret: a fine-grained token with Contents read and write on that repository only.
 
-Pull-request CI runs the engine and agent suites; browser and smoke flows run nightly, so check the latest nightly run before tagging. Tagged releases run repository and release contract checks and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
+Pull-request CI runs the engine and agent suites; browser, smoke and macOS session tests run nightly, so check the latest nightly run before tagging. Tagged releases run repository and release contract checks and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
 
 ## Nightly verification
 
-[Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) on GitHub-hosted runners and also supports manual verification runs. It runs the Rust workspace tests and audits, builds the WASM engine, and uses that exact build for application, browser and security checks. Nightly installer builds and GitHub Release publication are disabled.
+[Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) and also supports manual verification runs. Linux jobs run on Blacksmith; the macOS and Windows jobs run on GitHub-hosted runners. A scheduled run skips every job when the last completed nightly on the same branch tested the same commit; a manual run always runs unless started with `force` off. It runs the Rust workspace tests and audits, the macOS session tests, builds the WASM engine, and uses that exact build for application, browser and security checks. Nightly installer builds and GitHub Release publication are disabled.
 
 ## Installing desktop updates
 

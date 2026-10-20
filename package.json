@@ -38,6 +38,7 @@
     "audit:production": "node scripts/audit-production.mjs",
     "dev:studio": "npm --prefix rhwp/rhwp-studio run dev",
     "test:desktop": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:sessions": "node --test --test-concurrency=1 rhwp/rhwp-agent/tests/windows-cli-launch.test.mjs rhwp/rhwp-agent/tests/windows-setup-hardening.test.mjs rhwp/rhwp-studio/tests/desktop-agent-hub.test.ts rhwp/rhwp-studio/tests/desktop-shell.test.ts tests/desktop-system-fonts.test.mjs tests/desktop-application-fonts.test.mjs tests/desktop-document-home.test.mjs tests/desktop-pdf-export.test.mjs",
     "package:linux": "electron-builder --linux AppImage deb --publish never",
     "dist:linux": "npm run build:desktop && npm run package:linux --",
     "package:linux:x64": "electron-builder --linux AppImage deb --x64 --publish never",

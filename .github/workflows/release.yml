@@ -15,7 +15,7 @@ concurrency:
 jobs:
   preflight:
     name: Verify release tag
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Check out tagged source
@@ -44,7 +44,7 @@ jobs:
   verification:
     name: Verify release contracts
     needs: preflight
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -81,7 +81,7 @@ jobs:
     # WASM is platform independent. Building it once keeps every installer on the
     # same engine and avoids the Windows Binaryen crash in wasm-opt.
     needs: preflight
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
@@ -143,7 +143,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [verification, macos, windows]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: write
