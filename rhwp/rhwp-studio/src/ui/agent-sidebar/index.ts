@@ -94,12 +94,15 @@ import {
   expirePendingUserQuestion,
   fallbackTitle,
   getThread,
+  getThreadLink,
+  hasThread,
   documentGroupKey,
   forgetDocumentThreads,
   detachThreadDocument,
   linkOf,
   threadLinkSupersedes,
   listThreads,
+  listThreadSummaries,
   peekThreads,
   orderPinnedThreads,
   archiveThread,
@@ -126,6 +129,8 @@ import {
   upsertThread,
   linkThreadDocument,
   type ChatThread,
+  type ThreadLink,
+  type ThreadSummary,
   type ThreadMessage,
   type ThreadRetryPayload,
   type ThreadTurnOutcome,
@@ -2366,7 +2371,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 이 채팅의 사본에 저장본의 문서 연결(문서·이름·이은·바꾼 시각·뗀 문서)을 그대로 얹는다. */
-  function applyThreadLink(target: ChatThread, source: ChatThread): void {
+  function applyThreadLink(target: ChatThread, source: ThreadLink): void {
     delete target.documentLinkedAt;
     delete target.documentLinkChangedAt;
     delete target.documentDetachedFrom;
@@ -2380,7 +2385,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    */
   function adoptStoredThreadLink(): boolean {
     if (draftChat) return false;
-    const stored = getThread(currentThread.id);
+    // 저장마다 불린다 — 대화는 복제하지 않고 연결만 읽는다.
+    const stored = getThreadLink(currentThread.id);
     if (!stored || !threadLinkSupersedes(stored, currentThread)) return false;
     const detachedHere = readOnlyDocLabel === null
       && stored.documentId === null && stored.docKey === null
@@ -7864,7 +7870,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 이름 바꾸기 — 행 자리에서 바로 편집한다. Enter 확정 / Esc 취소 /
    * 포커스 이탈 시 확정. 확정된 이름은 고정되어 자동 제목이 덮지 않는다.
    */
-  function beginThreadRename(thread: ChatThread, row: HTMLElement): void {
+  function beginThreadRename(thread: ThreadSummary, row: HTMLElement): void {
     const title = row.querySelector<HTMLElement>('.ag-threads-item-title');
     if (!title) return;
     beginInlineRename(title, {
@@ -7937,7 +7943,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 행 오른쪽 위 — 실행 중이면 점과 짧은 상태, 아니면 마지막 대화 이후 경과.
       작업 중은 시작 뒤 400ms 가 지나야 보인다 — 짧은 턴은 경과 표시에서 곧바로 완료 점으로 간다.
       입력 대기·완료 같은 다른 상태는 바로 보인다. 삭제·보관 판단은 실제 상태를 읽는다. */
-  function fillThreadWhen(when: HTMLElement, thread: ChatThread, now = Date.now()): void {
+  function fillThreadWhen(when: HTMLElement, thread: ThreadSummary, now = Date.now()): void {
     let status = getChatStatus(thread.id);
     const since = status === 'working' ? getChatWorkingSince(thread.id) : null;
     if (status === 'working') {
@@ -7997,7 +8003,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 행 버튼 → 채팅. 키보드 삭제가 버튼에서 채팅을 되찾는다. */
-  const threadRowTargets = new WeakMap<HTMLElement, { thread: ChatThread; row: HTMLElement }>();
+  const threadRowTargets = new WeakMap<HTMLElement, { thread: ThreadSummary; row: HTMLElement }>();
   const threadsPlatformKind = detectPlatformKind();
   /** 문서를 옮겨 가는 동안 가라앉혀 보여 줄 채팅. */
   let openingThreadId: string | null = null;
@@ -8017,7 +8023,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 채팅 하나를 지운다 — 채팅 기록 삭제와 같은 정리를 한 채팅에만 한다. */
-  async function deleteThreadWithConfirm(thread: ChatThread): Promise<boolean> {
+  async function deleteThreadWithConfirm(thread: ThreadSummary): Promise<boolean> {
     if (getChatStatus(thread.id) === 'working') return false;
     const confirmed = await confirmSheet(root, '채팅 삭제', `"${thread.title || '새 채팅'}" 채팅을 지웁니다.`, { confirmLabel: '삭제', destructive: true });
     if (!confirmed) return false;
@@ -8035,7 +8041,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 채팅을 보관함으로 옮긴다 — 기록은 그대로 두고 목록에서만 뺀다. 삭제처럼 작업 중인
    * 채팅은 옮기지 않고, 지금 채팅이면 먼저 새 채팅으로 빠져나온다.
    */
-  async function archiveThreadWithConfirm(thread: ChatThread): Promise<boolean> {
+  async function archiveThreadWithConfirm(thread: ThreadSummary): Promise<boolean> {
     if (getChatStatus(thread.id) === 'working') {
       showToast({ message: '작업이 끝난 뒤 보관할 수 있습니다', durationMs: 2400 });
       return false;
@@ -8064,7 +8070,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 고정은 맨 위에 붙고, 풀면 아래 목록의 제자리로 돌아간다. */
-  function toggleThreadPin(thread: ChatThread): void {
+  function toggleThreadPin(thread: ThreadSummary): void {
     if (thread.pinOrder !== undefined) unpinThread(thread.id);
     else pinThread(thread.id);
   }
@@ -8075,7 +8081,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else placeThread(id, place);
   }
 
-  async function openThreadMenu(thread: ChatThread, anchor: { x: number; y: number }): Promise<void> {
+  async function openThreadMenu(thread: ThreadSummary, anchor: { x: number; y: number }): Promise<void> {
     const pinned = thread.pinOrder !== undefined;
     const choice = await showContextMenu([
       { id: 'open', label: '열기', enabled: thread.id !== currentThread.id },
@@ -8104,7 +8110,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 채팅 한 줄 — 위에는 제목과 상태(또는 경과), 아래에는 문서와 에이전트.
    * 문서 아이콘이 점선이면 문서 없이 시작한 채팅이다.
    */
-  function buildThreadRow(thread: ChatThread): HTMLElement {
+  function buildThreadRow(thread: ThreadSummary): HTMLElement {
     const li = el('li', 'ag-threads-row');
     li.dataset.threadId = thread.id;
     const isCurrent = thread.id === currentThread.id;
@@ -8294,7 +8300,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 다시 그려도 키보드 포커스는 같은 행에 남는다.
     const focusedKey = threadNavKey(document.activeElement);
     threadsList.replaceChildren();
-    const all = listThreads();
+    const all = listThreadSummaries();
     const filter = threadDocFilter;
     if (filter && !all.some((thread) => documentGroupKey(thread) === filter.key)) {
       setThreadDocFilter(null, { rebuild: false });
@@ -8349,9 +8355,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 채팅이 있는 문서 — 현재 문서가 맨 위, 나머지는 마지막 대화 순. */
-  function documentFilterOptions(): Array<DocumentFilterOption & { sample: ChatThread }> {
-    const byKey = new Map<string, DocumentFilterOption & { sample: ChatThread }>();
-    for (const thread of listThreads()) {
+  function documentFilterOptions(): Array<DocumentFilterOption & { sample: ThreadSummary }> {
+    const byKey = new Map<string, DocumentFilterOption & { sample: ThreadSummary }>();
+    for (const thread of listThreadSummaries()) {
       const key = documentGroupKey(thread);
       const entry = byKey.get(key);
       if (entry) {
@@ -8401,7 +8407,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
   }
 
-  async function openDocumentMenu(sample: ChatThread, anchor: { x: number; y: number }): Promise<void> {
+  async function openDocumentMenu(sample: ThreadSummary, anchor: { x: number; y: number }): Promise<void> {
     const isCurrent = threadMatchesDocument(sample, currentDocumentId, currentDocKey);
     const choice = await showContextMenu([
       { id: 'open', label: '문서 열기', enabled: !isCurrent && canFollowThreadDocument(sample) },
@@ -8756,7 +8762,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!draftChat) return;
     const returnThreadId = draftReturnThreadId;
     draftReturnThreadId = null;
-    if (!returnThreadId || !getThread(returnThreadId)) return;
+    if (!returnThreadId || !hasThread(returnThreadId)) return;
     openThread(returnThreadId, { routed: true });
   }
 
@@ -10740,13 +10746,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const record = transcriptTools.get(callId)?.tool;
     if (!record) return;
     record.outcome = storedOutcome(execution.outcome);
-    persistCurrentThread();
+    // 도구 행처럼 모아 저장한다 — 도구마다 대화 전체를 곧바로 저장하지 않는다. 턴 끝·채팅 전환이 함께 쓴다.
+    queueTranscriptPersist();
     const image = execution.outcome.image;
     if (!image) return;
     void shrinkToolImage(image).then((small) => {
       if (!small || !record.outcome) return;
       record.outcome = { ...record.outcome, image: small };
-      persistCurrentThread();
+      queueTranscriptPersist();
     });
   }
 
@@ -11854,7 +11861,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         followUps.chatStopped();
         break;
       case 'title-result': {
-        if (e.threadId !== currentThread.id && !getThread(e.threadId)) break;
+        if (e.threadId !== currentThread.id && !hasThread(e.threadId)) break;
         const title = e.title?.trim() || null;
         if (title) {
           setThreadTitle(e.threadId, title);
@@ -12729,7 +12736,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (threadsListVisible()) rebuildThreadsList();
     if (restoringLiveQuestion) return;
     for (const livePermission of bridge.getPendingChatPermissionRequests()) {
-      if (permissionController.hasRequest(livePermission.requestId) || !getThread(livePermission.threadId)) continue;
+      if (permissionController.hasRequest(livePermission.requestId) || !hasThread(livePermission.threadId)) continue;
       restoringLiveQuestion = true;
       try { handleSidebarEvent({ type: 'chat-permission-requested', request: livePermission, replayed: true }); }
       finally { restoringLiveQuestion = false; }

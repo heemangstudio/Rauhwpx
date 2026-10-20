@@ -240,3 +240,210 @@ test('reading one chat copies only that chat, so it costs the same however many 
     await server.close();
   }
 });
+
+/** 비운 저장소를 연 탭 하나로 시험한다. openTab 은 같은 저장소를 읽은 새 탭을 연다. */
+async function withFreshStore(run: (page: Page, openTab: () => Promise<Page>) => Promise<void>): Promise<void> {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({
+    root,
+    configFile: false,
+    server: { host: '127.0.0.1', port: 0, open: false, hmr: false },
+    optimizeDeps: { entries: [HARNESS.slice(1)] },
+    logLevel: 'error',
+  });
+  await server.listen();
+  const browser = await puppeteer.launch({ executablePath: browserExecutable(), headless: true, args: browserLaunchArgs() });
+  try {
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as { port: number }).port}`;
+    const page = await browser.newPage();
+    await page.goto(`${origin}${HARNESS}`);
+    await page.evaluate(async () => {
+      localStorage.clear();
+      await new Promise<void>((done, fail) => {
+        const request = indexedDB.deleteDatabase('rhwpAgentThreads');
+        request.onsuccess = () => done();
+        request.onerror = () => fail(request.error);
+      });
+    });
+    await openStore(page, origin);
+    await run(page, async () => {
+      const tab = await browser.newPage();
+      await openStore(tab, origin);
+      return tab;
+    });
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
+
+test('back-to-back saves of one chat are written once with the newest content, and deletes still win', { timeout: 60_000 }, async () => {
+  await withFreshStore(async (page, openTab) => {
+    const other = await openTab();
+    const result = await page.evaluate(async () => {
+      const { threads } = window as any;
+      const puts: string[] = [];
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (this: IDBObjectStore, value: any, key?: IDBValidKey) {
+        if (this.name === 'threads') puts.push(value.id);
+        return put.call(this, value, key);
+      };
+      const make = (text: string) => {
+        const thread = threads.createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'medium' });
+        thread.messages = [{ role: 'user', text }];
+        return thread;
+      };
+      // 한 턴 안의 저장처럼 같은 채팅을 잇달아 저장한다. 메모리의 채팅은 저장마다 곧바로 바뀐다.
+      const burst = make('step 0');
+      const seenRightAway: number[] = [];
+      for (let step = 1; step < 10; step += 1) {
+        burst.messages.push({ role: 'assistant', text: `step ${step}` });
+        threads.upsertThread(burst);
+        seenRightAway.push(threads.getThread(burst.id)?.messages.length ?? 0);
+      }
+      // 저장했다가 곧바로 지운 채팅은 남지 않고, 지운 뒤 다시 저장한 채팅은 남는다.
+      const gone = make('deleted right away');
+      threads.upsertThread(gone);
+      threads.removeThread(gone.id);
+      const revived = make('saved again after delete');
+      threads.upsertThread(revived);
+      threads.removeThread(revived.id);
+      threads.upsertThread({ ...revived, messages: [...revived.messages, { role: 'assistant', text: 'back' }] });
+      await threads.waitForThreadsPersistence();
+      IDBObjectStore.prototype.put = put;
+      return {
+        ids: { burst: burst.id, gone: gone.id, revived: revived.id },
+        burstWrites: puts.filter((id) => id === burst.id).length,
+        seenRightAway,
+      };
+    });
+    assert.deepEqual(result.seenRightAway, [2, 3, 4, 5, 6, 7, 8, 9, 10], 'every save updates the in-memory chat at once');
+    assert.equal(result.burstWrites, 1, 'queued saves of the same chat collapse into one IndexedDB write');
+    // 다른 창은 저장마다 알림을 받아 마지막 내용을 본다.
+    await other.waitForFunction((id) => (window as any).threads.getThread(id)?.messages.length === 10, { timeout: 5_000 }, result.ids.burst);
+    const reopened = await openTab();
+    assert.deepEqual(await reopened.evaluate((ids) => {
+      const { threads } = window as any;
+      return {
+        burst: threads.getThread(ids.burst)?.messages.map((message: { text: string }) => message.text) ?? null,
+        gone: threads.hasThread(ids.gone),
+        revived: threads.getThread(ids.revived)?.messages.length ?? 0,
+      };
+    }, result.ids), {
+      burst: Array.from({ length: 10 }, (_, step) => `step ${step}`),
+      gone: false,
+      revived: 2,
+    });
+  });
+});
+
+test('rail and archive listings copy no conversations and match the full listings', { timeout: 60_000 }, async () => {
+  await withFreshStore(async (page) => {
+    const result = await page.evaluate(async () => {
+      const { threads } = window as any;
+      const ids: string[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const thread = threads.createEmptyThread({ agent: i % 2 ? 'codex' : 'claude', model: 'm', effort: 'medium' });
+        thread.title = `chat ${i}`;
+        thread.documentId = i === 0 ? 'doc-1' : null;
+        thread.docKey = i === 0 ? 'a.hwpx' : null;
+        thread.messages = [{ role: 'user', text: 'x'.repeat(10_000) }];
+        threads.upsertThread(thread);
+        ids.push(thread.id);
+        await new Promise((done) => setTimeout(done, 3));
+      }
+      threads.pinThread(ids[1]);
+      threads.archiveThread(ids[2]);
+      await threads.waitForThreadsPersistence();
+      let copies = 0;
+      const clone = window.structuredClone;
+      window.structuredClone = ((value: any, options?: StructuredSerializeOptions) => {
+        if (value && Array.isArray(value.messages)) copies += 1;
+        return clone(value, options);
+      }) as typeof structuredClone;
+      const summaries = threads.listThreadSummaries();
+      const archived = threads.listArchivedThreadSummaries();
+      const present = threads.hasThread(ids[0]);
+      const link = threads.getThreadLink(ids[0]);
+      const listingCopies = copies;
+      window.structuredClone = clone;
+      const pick = (thread: any) => ({ id: thread.id, title: thread.title, pinOrder: thread.pinOrder, docKey: thread.docKey });
+      return {
+        listingCopies,
+        withMessages: [...summaries, ...archived].filter((summary: object) => 'messages' in summary).length,
+        summaries: summaries.map(pick),
+        full: threads.listThreads().map(pick),
+        archived: archived.map(pick),
+        fullArchived: threads.listArchivedThreads().map(pick),
+        present,
+        link,
+      };
+    });
+    assert.equal(result.listingCopies, 0, 'listing and link reads do not deep-copy any stored chat');
+    assert.equal(result.withMessages, 0);
+    assert.equal(result.summaries.length, 3);
+    assert.deepEqual(result.summaries, result.full);
+    assert.equal(result.archived.length, 1);
+    assert.deepEqual(result.archived, result.fullArchived);
+    assert.equal(result.present, true);
+    assert.equal(result.link.documentId, 'doc-1');
+    assert.equal(result.link.docKey, 'a.hwpx');
+  });
+});
+
+test('the settings archive list stays untouched while hidden and is current when opened or shown', { timeout: 60_000 }, async () => {
+  await withFreshStore(async (page) => {
+    const result = await page.evaluate(async () => {
+      const { threads } = window as any;
+      const { createArchiveSettingsPane } = await import('/src/ui/agent-sidebar/settings-archive.ts');
+      let shown = false;
+      const pane = createArchiveSettingsPane({ deleteThread: async () => false, isShown: () => shown });
+      document.body.append(pane.element);
+      const rows = () => [...pane.element.querySelectorAll('.ag-archive-title')].map((node) => node.textContent);
+      const make = (title: string) => {
+        const thread = threads.createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'medium' });
+        thread.title = title;
+        thread.messages = [{ role: 'user', text: title }];
+        threads.upsertThread(thread);
+        return thread;
+      };
+      const first = make('first');
+      threads.archiveThread(first.id);
+      // 숨은 보관함은 저장마다 다시 그리지 않는다.
+      let mutations = 0;
+      const observer = new MutationObserver((records) => { mutations += records.length; });
+      observer.observe(pane.element, { childList: true, subtree: true, attributes: true });
+      const busy = make('busy');
+      for (let i = 0; i < 5; i += 1) {
+        busy.messages.push({ role: 'assistant', text: `reply ${i}` });
+        threads.upsertThread(busy);
+      }
+      await new Promise((done) => setTimeout(done, 0));
+      const hiddenMutations = mutations;
+      observer.disconnect();
+      // 열면 그사이 보관한 채팅이 보인다.
+      shown = true;
+      pane.open();
+      const opened = rows();
+      // 보이는 동안에는 저장소의 변경을 곧바로 따른다.
+      const second = make('second');
+      threads.archiveThread(second.id);
+      const afterArchive = rows();
+      pane.element.querySelector<HTMLButtonElement>(`[data-thread-id="${first.id}"] .ag-archive-restore`)!.click();
+      const afterRestore = rows();
+      await threads.waitForThreadsPersistence();
+      return {
+        hiddenMutations,
+        opened,
+        afterArchive,
+        afterRestore,
+        restoredListed: threads.listThreadSummaries().some((thread: { id: string }) => thread.id === first.id),
+      };
+    });
+    assert.equal(result.hiddenMutations, 0, 'saves while the archive is hidden do not rebuild it');
+    assert.deepEqual(result.opened, ['first']);
+    assert.deepEqual(result.afterArchive, ['second', 'first']);
+    assert.deepEqual(result.afterRestore, ['second']);
+    assert.equal(result.restoredListed, true);
+  });
+});
