@@ -286,7 +286,8 @@ test('recovery picks the newest copy and ignores other documents', async (t) => 
 
 test('helper files stay within the name-length limit for a very long document name', async (t) => {
   await withDirectory(t, async (directory) => {
-    const name = `${'가'.repeat(220)}.hwp`;
+    // Near each platform's limit: 255 UTF-16 units on NTFS, 255 UTF-8 bytes elsewhere.
+    const name = `${'가'.repeat(process.platform === 'win32' ? 220 : 83)}.hwp`;
     const target = join(directory, name);
     await writeFile(target, cfbBytes(1));
     await writeNativeFileAtomically(target, cfbBytes(2));

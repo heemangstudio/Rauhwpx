@@ -114,12 +114,23 @@ function windowsSharingError(error, platform) {
   return failure;
 }
 
-// NTFS allows 255 UTF-16 units per name. Clip the document name inside helper
-// names so a long document name still leaves room for the suffix.
-const HELPER_NAME_STEM_MAX = 96;
+// NTFS allows 255 UTF-16 units per name; APFS and Linux filesystems allow 255
+// UTF-8 bytes, so 85 Korean characters already fill one. Clip the document name
+// inside helper names under both limits so the suffix always fits.
+const HELPER_NAME_STEM_MAX_UNITS = 96;
+const HELPER_NAME_STEM_MAX_BYTES = 180;
 
 function clippedName(name) {
-  return name.length > HELPER_NAME_STEM_MAX ? name.slice(0, HELPER_NAME_STEM_MAX) : name;
+  let units = 0;
+  let bytes = 0;
+  let clipped = '';
+  for (const character of name) {
+    units += character.length;
+    bytes += Buffer.byteLength(character, 'utf8');
+    if (units > HELPER_NAME_STEM_MAX_UNITS || bytes > HELPER_NAME_STEM_MAX_BYTES) break;
+    clipped += character;
+  }
+  return clipped;
 }
 
 function shortRandomId() {
