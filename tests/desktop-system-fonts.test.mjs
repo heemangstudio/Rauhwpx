@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { promises as fsPromises } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -298,6 +299,153 @@ test('indexes roots, caches parses, maps Hancom names and guards reads', async (
   const refreshed = await service.list({ refresh: true });
   assert.equal(refreshed.stats.parsed, 1);
   assert.ok(!refreshed.faces.some((face) => face.id === korean.id));
+});
+
+/** fs.promises 의 함수 호출 수를 센다. system-fonts.mjs 는 같은 객체를 부른다. */
+function countFsCalls(t, names) {
+  const counts = Object.fromEntries(names.map((name) => [name, 0]));
+  for (const name of names) {
+    const original = fsPromises[name];
+    fsPromises[name] = function counted(...args) {
+      counts[name] += 1;
+      return original.apply(this, args);
+    };
+    t.after(() => { fsPromises[name] = original; });
+  }
+  return counts;
+}
+
+async function drain(service, id) {
+  const parts = [];
+  for await (const chunk of (await service.openFace(id)).chunks()) parts.push(chunk);
+  return Buffer.concat(parts);
+}
+
+test('collection faces are planned once and later reads stream the same bytes', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-collection-plan-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { collection } = await koreanCollection();
+  await writeFile(path.join(dir, 'Rau.ttc'), collection);
+  const service = createSystemFontService({ roots: [{ path: dir, kind: 'user' }] });
+  const index = await service.list();
+  const face = index.faces.find((entry) => entry.faceIndex === 1);
+  const expected = await extractCollectionFace(collection, 1);
+
+  assert.deepEqual(await drain(service, face.id), expected);
+  const counts = countFsCalls(t, ['open']);
+  const [second, third] = await Promise.all([drain(service, face.id), drain(service, face.id)]);
+  assert.deepEqual(second, expected);
+  assert.deepEqual(third, expected);
+  // 다시 읽을 때는 체크섬을 다시 훑지 않고 face 를 흘려보내는 열기만 한다.
+  assert.equal(counts.open, 2);
+
+  // 파일이 바뀌면 계획을 쓰지 않고 stale 로 거절한다.
+  await utimes(path.join(dir, 'Rau.ttc'), new Date(), new Date(Date.now() + 5_000));
+  await assert.rejects(service.openFace(face.id), /stale/);
+});
+
+// 백그라운드 재검색 타이머는 unref 라 앱 종료를 막지 않는다. 테스트가 그 결과만 기다리는 동안에는
+// 이벤트 루프가 비어 Node 가 테스트를 끝내 버리므로, 기다리는 동안만 루프를 붙잡아 둔다.
+function whileAlive(promise) {
+  const keep = setInterval(() => {}, 1_000);
+  return promise.finally(() => clearInterval(keep));
+}
+
+test('a later launch opens with the saved index and rescans in the background', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-saved-index-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fonts = path.join(dir, 'fonts');
+  await mkdir(fonts);
+  const { noto, collection } = await koreanCollection();
+  await writeFile(path.join(fonts, 'Rau.ttc'), collection);
+  const options = { cacheDir: path.join(dir, 'cache'), roots: [{ path: fonts, kind: 'user' }], log: () => {} };
+
+  const first = await createSystemFontService({ ...options, revalidateAfterMs: 60_000 }).list();
+  assert.equal(first.fromCache, false);
+
+  // 다음 실행 전에 글꼴이 하나 설치됐다.
+  await writeFile(path.join(fonts, 'Noto.ttf'), noto);
+  let changed;
+  const indexChanged = new Promise((resolve) => { changed = resolve; });
+  const logs = [];
+  const counts = countFsCalls(t, ['readdir', 'stat']);
+  const service = createSystemFontService({
+    ...options,
+    log: (line) => logs.push(line),
+    revalidateAfterMs: 0,
+    onIndexChanged: () => changed(),
+  });
+  const [restored, concurrent] = await Promise.all([service.list(), service.list()]);
+  assert.equal(restored, concurrent);
+  assert.equal(restored.fromCache, true);
+  assert.deepEqual(restored.faces.map((face) => face.id), first.faces.map((face) => face.id));
+  assert.deepEqual([counts.readdir, counts.stat], [0, 0], 'the saved index does not walk or stat font roots');
+  assert.ok(logs[0].startsWith('restored '));
+  // 되살린 색인의 face 도 바로 읽힌다.
+  const korean = restored.faces.find((face) => face.faceIndex === 1);
+  assert.deepEqual(await drain(service, korean.id), await extractCollectionFace(collection, 1));
+
+  await whileAlive(indexChanged);
+  const rescanned = await service.list();
+  assert.ok(rescanned.faces.some((face) => face.path.endsWith('Noto.ttf')));
+  assert.equal(rescanned.faces.length, first.faces.length + 1);
+
+  // 바뀐 것이 없으면 다시 훑어도 알리지 않는다.
+  let notified = 0;
+  let rescannedQuietly;
+  const quietScan = new Promise((resolve) => { rescannedQuietly = resolve; });
+  const quiet = createSystemFontService({
+    ...options,
+    log: (line) => { if (line.startsWith('scan ')) rescannedQuietly(); },
+    revalidateAfterMs: 0,
+    onIndexChanged: () => { notified += 1; },
+  });
+  const again = await quiet.list();
+  assert.deepEqual(again.faces.map((face) => face.id), rescanned.faces.map((face) => face.id));
+  await whileAlive(quietScan);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(notified, 0);
+
+  // 저장된 색인 뒤에 바뀐 파일은 stale 로 거절하고, 예약한 시간을 기다리지 않고 바로 다시 훑어 알린다.
+  let lateChanged;
+  const lateIndexChanged = new Promise((resolve) => { lateChanged = resolve; });
+  const late = createSystemFontService({ ...options, revalidateAfterMs: 60_000, onIndexChanged: () => lateChanged() });
+  const lateIndex = await late.list();
+  assert.equal(lateIndex.fromCache, true);
+  await utimes(path.join(fonts, 'Noto.ttf'), new Date(), new Date(Date.now() + 5_000));
+  const noto2 = lateIndex.faces.find((face) => face.path.endsWith('Noto.ttf'));
+  await assert.rejects(late.openFace(noto2.id), /stale/);
+  let waited;
+  await Promise.race([
+    lateIndexChanged,
+    new Promise((_, reject) => {
+      waited = setTimeout(() => reject(new Error('stale read did not start the rescan')), 10_000);
+    }),
+  ]).finally(() => clearTimeout(waited));
+  const fresh = (await late.list()).faces.find((face) => face.path.endsWith('Noto.ttf'));
+  assert.notEqual(fresh.id, noto2.id);
+  assert.ok((await drain(late, fresh.id)).length > 0);
+});
+
+test('an index saved by another app version is rescanned, not restored', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-saved-index-key-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fonts = path.join(dir, 'fonts');
+  await mkdir(fonts);
+  const { collection } = await koreanCollection();
+  await writeFile(path.join(fonts, 'Rau.ttc'), collection);
+  const options = { cacheDir: path.join(dir, 'cache'), roots: [{ path: fonts, kind: 'user' }], revalidateAfterMs: 60_000 };
+  const launch = async (savedIndexKey) => {
+    const logs = [];
+    await createSystemFontService({ ...options, savedIndexKey, log: (line) => logs.push(line) }).list();
+    return logs.find((line) => line.startsWith('restored ') || line.startsWith('scan '))?.split(' ')[0];
+  };
+
+  assert.equal(await launch('1.0.0'), 'scan');
+  assert.equal(await launch('1.0.0'), 'restored');
+  // 업데이트 뒤 첫 실행은 글꼴이 그대로여도 새로 훑고, 그 색인을 다음 실행이 되살린다.
+  assert.equal(await launch('1.1.0'), 'scan');
+  assert.equal(await launch('1.1.0'), 'restored');
 });
 
 test('expands catalog roots with home, Windows variables and wildcard folders', async (t) => {

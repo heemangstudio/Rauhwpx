@@ -624,6 +624,7 @@ const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
 const logFonts = (line) => console.log(`[hamaeditor] fonts: ${line}`);
+const SYSTEM_FONT_REVALIDATE_DELAY_MS = 10_000;
 const fontFolders = createFontFolderStore({
   filePath: join(app.getPath('userData'), 'font-folders.json'),
   writeAtomically: writeNativeFileAtomically,
@@ -633,6 +634,12 @@ const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
   log: logFonts,
   addedFolders: () => fontFolders.list(),
+  // 실행마다 Program Files 를 훑고 reg.exe 를 부르지 않도록 지난 색인으로 먼저 열고,
+  // 첫 문서를 여는 동안은 비켜 있다가 다시 훑는다. 달라졌으면 열린 창이 글꼴을 다시 잇는다.
+  revalidateAfterMs: SYSTEM_FONT_REVALIDATE_DELAY_MS,
+  // 업데이트 뒤 첫 실행은 예전 버전이 조립한 색인 대신 새로 훑는다.
+  savedIndexKey: app.getVersion(),
+  onIndexChanged: () => broadcastFontsChanged(),
 });
 const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
@@ -1316,10 +1323,13 @@ function assertSystemFontsEnabled() {
 async function changeFontFolders(change) {
   const folders = await change();
   await systemFonts.list({ refresh: true });
+  broadcastFontsChanged();
+  return folders;
+}
+function broadcastFontsChanged() {
   for (const window of sessions.windows()) {
     if (!window.isDestroyed()) window.webContents.send('desktop:fonts-changed');
   }
-  return folders;
 }
 ipcMain.handle('desktop:font-folders-list', (event) => {
   sessionForEvent(event);
