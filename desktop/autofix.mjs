@@ -14,6 +14,7 @@ import { bundledClaudeBinary, createCliSetupManager, defaultCliSetupRoot } from 
 import { OFFICIAL_CLAUDE_MODELS } from '../rhwp/rhwp-agent/claude-model-label.mjs';
 import { codexLineup, createCodexModelResolver, discoverCodexModels } from '../rhwp/rhwp-agent/codex-model-routing.mjs';
 import { applyManagedCliLaunch, applyNodeHostEnv, createNodeHost } from '../rhwp/rhwp-agent/npm-cli-launch.mjs';
+import { defaultPiRoot } from '../rhwp/rhwp-agent/pi-manager.mjs';
 import { processTreeSpawnOptions, terminateProcessTree } from '../rhwp/rhwp-agent/process-tree.mjs';
 
 const agentRequire = createRequire(new URL('../rhwp/rhwp-agent/package.json', import.meta.url));
@@ -33,10 +34,23 @@ export const AUTOFIX_EFFORTS = Object.freeze({
   claude: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
 });
 const CODEX_LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
+/**
+ * 자동 수정의 Claude 모델 선택지: 채팅의 공식 목록에 Sonnet 5.5 를 더한다(채팅 목록은 그대로 둔다).
+ * Studio 사본은 rhwp-studio/src/agent/models.ts 의 AUTOFIX_CLAUDE_MODELS 다.
+ */
+export const AUTOFIX_CLAUDE_MODELS = Object.freeze(OFFICIAL_CLAUDE_MODELS.includes('claude-sonnet-5-5')
+  ? [...OFFICIAL_CLAUDE_MODELS]
+  : OFFICIAL_CLAUDE_MODELS.flatMap((id) => (id === 'claude-sonnet-5' ? ['claude-sonnet-5-5', id] : [id])));
 const DEFAULT_PROVIDERS = Object.freeze([
   Object.freeze({ id: 'codex', enabled: true, model: 'sol', effort: 'low' }),
-  Object.freeze({ id: 'claude', enabled: true, model: 'claude-opus-5-5', effort: 'medium' }),
+  Object.freeze({ id: 'claude', enabled: true, model: 'claude-sonnet-5-5', effort: 'medium' }),
 ]);
+/**
+ * 마지막 수단: 선물 크레딧. Codex·Claude 를 둘 다 쓸 수 없을 때만, 받은 선물에 잔액이 있으면 Pi 를
+ * 선물 프록시로 돌린다. 사용자의 OpenRouter 키는 쓰지 않는다. 설정의 순서 목록에는 없다.
+ */
+export const GIFT_AUTOFIX_MODEL = 'anthropic/claude-sonnet-5.5';
+export const GIFT_AUTOFIX_EFFORT = 'medium';
 
 /** @returns {{ enabled: boolean, decided: boolean, providers: Array<{ id: 'codex'|'claude', enabled: boolean, model: string, effort: string }> }} */
 export function defaultAutofixSettings() {
@@ -48,7 +62,7 @@ function normalizeProviderEntry(raw, base) {
   const fallback = DEFAULT_PROVIDERS.find((item) => item.id === base.id);
   let model = typeof entry.model === 'string' ? entry.model.trim() : base.model;
   if (base.id === 'codex') model = codexLineup(model) ?? (CODEX_LINEUPS.has(base.model) ? base.model : fallback.model);
-  else if (!OFFICIAL_CLAUDE_MODELS.includes(model)) model = OFFICIAL_CLAUDE_MODELS.includes(base.model) ? base.model : fallback.model;
+  else if (!AUTOFIX_CLAUDE_MODELS.includes(model)) model = AUTOFIX_CLAUDE_MODELS.includes(base.model) ? base.model : fallback.model;
   const efforts = AUTOFIX_EFFORTS[base.id];
   let effort = typeof entry.effort === 'string' ? entry.effort.trim() : base.effort;
   if (!efforts.includes(effort)) effort = efforts.includes(base.effort) ? base.effort : fallback.effort;
@@ -248,6 +262,89 @@ export function claudeAutofixArgv({ model, effort }) {
   ];
 }
 
+export function piAutofixArgv({ model, effort }) {
+  return [
+    '-p',
+    '--mode', 'text',
+    '--model', `openrouter/${model}`,
+    '--thinking', effort,
+    '--no-session',
+    // 앱의 선물 홈만 읽는다: 사용자 Pi 설정·확장·스킬·AGENTS.md 는 싣지 않는다. 기본 도구(read·bash·edit·write)는 모두 켠다.
+    '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-mcp', '--no-approve',
+    '--offline',
+  ];
+}
+
+/** 선물 프록시 주소. https, 또는 개발용 루프백 http 만 받는다. OpenRouter 로 바로 가는 주소는 받지 않는다. */
+function giftProxyUrl(raw) {
+  let url;
+  try { url = new URL(String(raw ?? '').trim()); } catch { return null; }
+  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  if (url.hostname === 'openrouter.ai' || url.hostname.endsWith('.openrouter.ai')) return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  return url.toString().replace(/\/+$/, '');
+}
+
+/** 자동 수정 전용 Pi 홈: 선물 프록시와 모델 하나만 담는다. apiKey 는 두지 않는다(리스는 env 로만). */
+export async function writeGiftPiHome(dir, { baseUrl, model = GIFT_AUTOFIX_MODEL }) {
+  await mkdir(dir, { recursive: true });
+  const levels = { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high', xhigh: null, max: null };
+  const models = {
+    providers: {
+      openrouter: {
+        baseUrl,
+        api: 'openai-completions',
+        models: [{
+          id: model,
+          name: model,
+          reasoning: true,
+          input: ['text'],
+          contextWindow: 200_000,
+          maxTokens: 32_000,
+          thinkingLevelMap: levels,
+          compat: { openRouterRouting: { require_parameters: true, sort: 'throughput' } },
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        }],
+      },
+    },
+  };
+  const settings = { defaultProjectTrust: 'never', enableSkillCommands: false, enableInstallTelemetry: false };
+  await writeFile(path.join(dir, 'models.json'), `${JSON.stringify(models, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(path.join(dir, 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * 선물 크레딧으로 돌 수 있는지 본다. 받았고(claimed) 잔액이 있는 활성 선물과, 앱이 설치한 Pi 가 있어야 한다.
+ * env 에는 사용자 키 대신 선물 리스만 OPENROUTER_API_KEY 로 싣는다.
+ */
+export async function probeGiftProvider({ credentials, piBin, agentDir, baseEnv, home, platform = process.platform, exists = existsSync }) {
+  if (!piBin || !exists(piBin)) return { available: false, reason: 'missing' };
+  const gift = await Promise.resolve().then(() => credentials?.()).catch(() => null);
+  const baseUrl = giftProxyUrl(gift?.baseUrl);
+  const remaining = Number(gift?.remainingUsd);
+  if (!gift?.active || gift.claimed !== true || typeof gift.lease !== 'string' || !gift.lease || !baseUrl
+    || !(Number.isFinite(remaining) && remaining > 0)) {
+    return { available: false, reason: 'gift-inactive' };
+  }
+  const pathEnv = buildHubPath({ home, envPath: baseEnv.PATH ?? baseEnv.Path ?? '', exists, platform });
+  const env = {};
+  for (const [name, value] of Object.entries(baseEnv)) {
+    // 사용자의 OpenRouter·Anthropic·OpenAI 키는 넘기지 않는다.
+    if (/^(?:OPENROUTER|ANTHROPIC|OPENAI|CODEX|CLAUDE_CODE|PI)_/i.test(name)) continue;
+    env[name] = value;
+  }
+  Object.assign(env, {
+    PATH: pathEnv,
+    PI_CODING_AGENT_DIR: agentDir,
+    OPENROUTER_API_KEY: gift.lease,
+    PI_OFFLINE: '1',
+    PI_TELEMETRY: '0',
+  });
+  if (platform === 'win32') env.Path = pathEnv;
+  return { available: true, command: piBin, source: 'gift', env, baseUrl, remainingUsd: remaining };
+}
+
 /** Claude `-p --output-format json` 출력의 result. 오류 결과나 읽을 수 없는 출력은 null. */
 export function claudeResultText(stdout) {
   const text = String(stdout ?? '').trim();
@@ -371,7 +468,7 @@ export async function executeAutofixAgent({
   const outputFile = scratch ? path.join(scratch, 'last-message.txt') : null;
   const argv = provider === 'codex'
     ? codexAutofixArgv({ model, effort, cwd, outputFile })
-    : claudeAutofixArgv({ model, effort });
+    : provider === 'gift' ? piAutofixArgv({ model, effort }) : claudeAutofixArgv({ model, effort });
   try {
     const launch = applyManagedCliLaunch(command, argv, { platform, nodeCommand, env: applyNodeHostEnv(env, { nodeCommand, shimDir, platform }) });
     let child;
@@ -419,6 +516,8 @@ export async function executeAutofixAgent({
     let finalText = '';
     if (provider === 'codex') {
       finalText = await readFileImpl(outputFile, 'utf8').catch(() => '') || stdout;
+    } else if (provider === 'gift') {
+      finalText = stdout;
     } else {
       finalText = claudeResultText(stdout) ?? '';
     }
@@ -464,6 +563,7 @@ export function buildAutofixReportPayload({ installId, createdAt, status, reques
 export function createAutofixService({
   settings,
   probe,
+  probeGift = null,
   resolveModel,
   execute,
   buildPrompt,
@@ -499,6 +599,11 @@ export function createAutofixService({
       chosen = { entry, found, model };
       break;
     }
+    if (!chosen && probeGift) {
+      const found = await probeGift().catch((error) => ({ available: false, reason: String(error?.message ?? error) }));
+      if (found.available) chosen = { entry: { id: 'gift', effort: GIFT_AUTOFIX_EFFORT }, found, model: GIFT_AUTOFIX_MODEL };
+      else log('info', `autofix gift unavailable: ${found.reason}`);
+    }
     if (!chosen) return { status: 'unavailable' };
     const provider = chosen.entry.id;
     const started = now();
@@ -507,7 +612,7 @@ export function createAutofixService({
     let answer = null;
     try {
       const prompt = await buildPrompt(request);
-      run = await execute({ provider, command: chosen.found.command, env: chosen.found.env, model: chosen.model, effort: chosen.entry.effort, prompt });
+      run = await execute({ provider, command: chosen.found.command, env: chosen.found.env, model: chosen.model, effort: chosen.entry.effort, prompt, found: chosen.found });
       answer = parseAutofixAnswer(run.finalText);
     } catch (error) {
       log('error', `autofix run failed: ${error?.stack ?? error}`);
@@ -551,6 +656,7 @@ export function installAutofixHost({
   origin,
   fetchImpl,
   secretStore = () => null,
+  giftCredentials = null,
   broadcast = () => {},
   paths = {},
   mainPid = process.pid,
@@ -585,6 +691,10 @@ export function installAutofixHost({
   const ensureNodeHost = createNodeHost({ rootDir: cliRoot, nodeCommand, platform });
   const spawnChild = spawnProcess ?? ((command, args, options) => agentRequire('cross-spawn')(command, args, options));
   let activeChild = null;
+  let giftLease = null;
+  const piRoot = defaultPiRoot(env, platform, home);
+  const piBin = path.join(piRoot, 'prefix', 'node_modules', '.bin', platform === 'win32' ? 'pi.cmd' : 'pi');
+  const giftPiHome = path.join(userDataDir, 'autofix-pi');
   // 목록을 늦게 주거나 못 주면 그 라인업의 기본 모델(gpt-6-sol 등)로 돈다.
   const codexModels = createCodexModelResolver({ discover: discoverCodexModels });
 
@@ -598,6 +708,9 @@ export function installAutofixHost({
       platform,
       bundledClaudeBin,
     }),
+    probeGift: giftCredentials
+      ? () => probeGiftProvider({ credentials: giftCredentials, piBin, agentDir: giftPiHome, baseEnv: env, home, platform })
+      : null,
     async resolveModel(entry, found) {
       if (entry.id !== 'codex') return entry.model;
       const shimDir = await ensureNodeHost().catch(() => null);
@@ -616,6 +729,7 @@ export function installAutofixHost({
           'Logs folder': path.join(userDataDir, 'logs'),
           'Backup folder': path.join(userDataDir, 'autofix-backups', new Date().toISOString().replace(/[:.]/g, '-')),
           'Managed CLI root': cliRoot,
+          'Managed Pi root': piRoot,
           'Codex config folder': codexHomeDir({ env, home, platform }),
           'Claude config folder': typeof env.CLAUDE_CONFIG_DIR === 'string' && env.CLAUDE_CONFIG_DIR ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude'),
           ...paths,
@@ -623,8 +737,12 @@ export function installAutofixHost({
         logTail: diagnosticLog?.tail(LOG_TAIL_BYTES) ?? '',
       });
     },
-    async execute(options) {
+    async execute({ found, ...options }) {
       const shimDir = await ensureNodeHost().catch(() => null);
+      if (options.provider === 'gift') {
+        await writeGiftPiHome(giftPiHome, { baseUrl: found.baseUrl, model: options.model });
+        giftLease = found.env.OPENROUTER_API_KEY;
+      }
       try {
         return await executeAutofixAgent({
           ...options,
@@ -649,7 +767,7 @@ export function installAutofixHost({
         request,
         answer,
         meta: { ...appInfo(), autofix: { status, provider, model, surface: request.surface, attempts: request.attempts, durationMs } },
-        log: `${diagnosticLog?.tail(LOG_TAIL_BYTES) ?? ''}\n\n--- 자동 수정 에이전트 출력 ---\n${redactSecrets(output, { home })}`,
+        log: `${diagnosticLog?.tail(LOG_TAIL_BYTES) ?? ''}\n\n--- 자동 수정 에이전트 출력 ---\n${redactSecrets(output, { home, secrets: giftLease ? [giftLease] : [] })}`,
       }, { proofKey });
       return submitFeedback(payload, { origin, fetchImpl });
     },

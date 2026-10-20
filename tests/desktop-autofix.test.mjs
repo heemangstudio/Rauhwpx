@@ -19,7 +19,9 @@ import {
   executeAutofixAgent,
   normalizeAutofixSettings,
   parseAutofixAnswer,
+  piAutofixArgv,
   probeAutofixProvider,
+  probeGiftProvider,
 } from '../desktop/autofix.mjs';
 
 function jwt(claims) {
@@ -57,9 +59,12 @@ test('settings normalize to opt-in defaults and keep the priority order', () => 
   assert.equal(settings.enabled, true);
   assert.equal(settings.decided, false);
   assert.deepEqual(settings.providers, [
-    { id: 'claude', enabled: false, model: 'claude-opus-5-5', effort: 'medium' },
+    { id: 'claude', enabled: false, model: 'claude-sonnet-5-5', effort: 'medium' },
     { id: 'codex', enabled: true, model: 'sol', effort: 'low' },
   ]);
+  // 예전 기본값(Opus 5.5)으로 저장한 파일은 사용자가 고른 값으로 남는다.
+  const saved = normalizeAutofixSettings({ providers: [{ id: 'codex' }, { id: 'claude', model: 'claude-opus-5-5' }] });
+  assert.equal(saved.providers[1].model, 'claude-opus-5-5');
   const codex = normalizeAutofixSettings({ providers: [{ id: 'codex', model: 'gpt-6-luna', effort: 'ultra' }] }).providers[0];
   assert.deepEqual(codex, { id: 'codex', enabled: true, model: 'luna', effort: 'ultra' });
 });
@@ -200,7 +205,7 @@ test('executor kills the tree on timeout', async () => {
   assert.equal(terminated[0], calls[0].child);
 });
 
-function serviceHarness({ settings = { enabled: true }, available = { codex: true, claude: true }, finalText, code = 0, executeDelay = 0 } = {}) {
+function serviceHarness({ settings = { enabled: true }, available = { codex: true, claude: true }, gift = null, finalText, code = 0, executeDelay = 0 } = {}) {
   const probed = [];
   const executed = [];
   const reports = [];
@@ -210,6 +215,10 @@ function serviceHarness({ settings = { enabled: true }, available = { codex: tru
     probe: async (agent) => {
       probed.push(agent);
       return available[agent] ? { available: true, command: `/bin/${agent}`, env: {}, source: 'path' } : { available: false, reason: 'missing' };
+    },
+    probeGift: gift === null ? null : async () => {
+      probed.push('gift');
+      return gift ? { available: true, command: '/bin/pi', env: {}, source: 'gift', baseUrl: 'https://gift.example' } : { available: false, reason: 'gift-inactive' };
     },
     resolveModel: async (entry) => (entry.id === 'codex' ? `gpt-6-${entry.model}` : entry.model),
     buildPrompt: async () => 'PROMPT',
@@ -246,7 +255,7 @@ test('providers run in priority order, skipping disabled and unavailable ones', 
   harness = serviceHarness({ available: { codex: false, claude: true } });
   const result = await harness.service.run({});
   assert.deepEqual(result, { status: 'fixed', provider: 'claude' });
-  assert.equal(harness.executed[0].model, 'claude-opus-5-5');
+  assert.equal(harness.executed[0].model, 'claude-sonnet-5-5');
   assert.equal(harness.executed[0].effort, 'medium');
 
   harness = serviceHarness({ available: { codex: false, claude: false } });
@@ -293,4 +302,62 @@ test('the report carries the agent answer but no screenshot, document, or chat',
   assert.equal(payload.meta.autofix.provider, 'codex');
   assert.equal(payload.meta.autofix.attempts, 2);
   assert.equal(payload.log, 'log tail');
+});
+
+test('gift credit runs only after Codex and Claude are both unusable', async () => {
+  let harness = serviceHarness({ gift: true });
+  assert.equal((await harness.service.run({})).provider, 'codex');
+  assert.deepEqual(harness.probed, ['codex']);
+
+  harness = serviceHarness({ available: { codex: false, claude: false }, gift: true });
+  assert.deepEqual(await harness.service.run({}), { status: 'fixed', provider: 'gift' });
+  assert.deepEqual(harness.probed, ['codex', 'claude', 'gift']);
+  assert.equal(harness.executed[0].model, 'anthropic/claude-sonnet-5.5');
+  assert.equal(harness.executed[0].effort, 'medium');
+
+  harness = serviceHarness({ settings: { enabled: true, providers: [{ id: 'codex', enabled: false }, { id: 'claude', enabled: false }] }, gift: true });
+  assert.equal((await harness.service.run({})).provider, 'gift');
+
+  harness = serviceHarness({ available: { codex: false, claude: false }, gift: false });
+  assert.deepEqual(await harness.service.run({}), { status: 'unavailable' });
+  assert.deepEqual(harness.executed, []);
+
+  harness = serviceHarness({ settings: { enabled: false }, gift: true });
+  assert.deepEqual(await harness.service.run({}), { status: 'unavailable' });
+  assert.deepEqual(harness.probed, []);
+});
+
+test('gift probe needs a claimed gift with balance and never passes the own OpenRouter key', async () => {
+  const active = { available: true, active: true, claimed: true, lease: 'lease.sig', baseUrl: 'https://api.example/v1/gift/openrouter', remainingUsd: 12.5 };
+  const probe = (gift, extra = {}) => probeGiftProvider({
+    credentials: async () => gift,
+    piBin: '/pi/bin/pi',
+    agentDir: '/data/autofix-pi',
+    baseEnv: { PATH: '/usr/bin', OPENROUTER_API_KEY: 'sk-or-own-key', ANTHROPIC_API_KEY: 'sk-ant' },
+    home: '/home/u',
+    platform: 'linux',
+    exists: (file) => file === '/pi/bin/pi',
+    ...extra,
+  });
+  const ok = await probe(active);
+  assert.equal(ok.available, true);
+  assert.equal(ok.env.OPENROUTER_API_KEY, 'lease.sig');
+  assert.equal(ok.env.PI_CODING_AGENT_DIR, '/data/autofix-pi');
+  assert.equal(ok.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(ok.baseUrl, 'https://api.example/v1/gift/openrouter');
+
+  assert.equal((await probe({ ...active, claimed: false, active: false })).available, false, 'unclaimed');
+  assert.equal((await probe({ ...active, remainingUsd: 0 })).available, false, 'no balance');
+  assert.equal((await probe({ ...active, active: false, lease: null })).available, false, 'inactive');
+  assert.equal((await probe(null)).available, false, 'no gift (own key only)');
+  assert.equal((await probe({ ...active, baseUrl: 'https://openrouter.ai/api/v1' })).available, false, 'direct OpenRouter');
+  assert.deepEqual(await probe(active, { exists: () => false }), { available: false, reason: 'missing' });
+});
+
+test('Pi argv runs the gift model headless with the default tools', () => {
+  const argv = piAutofixArgv({ model: 'anthropic/claude-sonnet-5.5', effort: 'medium' });
+  assert.ok(argv.includes('-p'));
+  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'openrouter/anthropic/claude-sonnet-5.5']);
+  assert.deepEqual(argv.slice(argv.indexOf('--thinking'), argv.indexOf('--thinking') + 2), ['--thinking', 'medium']);
+  assert.ok(!argv.some((arg) => /^--(?:no-)?tools$|^--exclude-tools$|^-nt$/.test(arg)));
 });

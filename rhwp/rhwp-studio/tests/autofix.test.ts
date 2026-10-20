@@ -132,7 +132,7 @@ const SETTINGS: AutofixSettings = {
   decided: false,
   providers: [
     { id: 'codex', enabled: true, model: 'sol', effort: 'low' },
-    { id: 'claude', enabled: true, model: 'claude-opus-5-5', effort: 'medium' },
+    { id: 'claude', enabled: true, model: 'claude-sonnet-5-5', effort: 'medium' },
   ],
 };
 

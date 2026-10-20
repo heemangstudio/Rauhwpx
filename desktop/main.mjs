@@ -1498,6 +1498,8 @@ const autofix = installAutofixHost({
   origin: feedbackOrigin({ packaged: app.isPackaged }),
   fetchImpl: (url, init) => net.fetch(url, init),
   secretStore: () => secretVault,
+  // Codex·Claude 를 둘 다 쓸 수 없을 때의 마지막 수단. 받은 선물에 잔액이 있을 때만 쓴다.
+  giftCredentials: () => giftManager.credentials(),
   broadcast: (channel, value) => {
     for (const window of sessions.windows()) {
       if (!window.webContents.isDestroyed()) window.webContents.send(channel, value);

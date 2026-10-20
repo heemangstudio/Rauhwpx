@@ -15,6 +15,7 @@ import {
   modelGroupsForAgent,
   modelsForAgent,
   modelSupportsImages,
+  AUTOFIX_CLAUDE_MODELS,
   OFFICIAL_CLAUDE_MODELS,
   resolveEffortForAgent,
   resolveModelForAgent,
@@ -221,8 +222,16 @@ test('Claude 모델은 해석된 ID에서 버전 이름을 얻고 허브와 같�
   }
 });
 
-test('공식 Claude 모델 목록은 허브(자동 버그 수정이 받는 값)와 같다', () => {
+test('공식 Claude 모델 목록은 허브와 같다', () => {
   assert.deepEqual([...OFFICIAL_CLAUDE_MODELS], [...hubLabels.OFFICIAL_CLAUDE_MODELS]);
+});
+
+test('자동 버그 수정의 Claude 선택지는 데스크톱이 받는 값과 같고 기본값 Sonnet 5.5 를 담는다', async () => {
+  const desktop = await import('../../../desktop/autofix.mjs');
+  assert.deepEqual([...AUTOFIX_CLAUDE_MODELS], [...desktop.AUTOFIX_CLAUDE_MODELS]);
+  assert.ok(AUTOFIX_CLAUDE_MODELS.includes('claude-sonnet-5-5'));
+  assert.equal(desktop.defaultAutofixSettings().providers.find((entry: { id: string }) => entry.id === 'claude')?.model, 'claude-sonnet-5-5');
+  assert.equal(claudeModelLabel('claude-sonnet-5-5'), 'Sonnet 5.5');
 });
 
 test('Claude 카탈로그는 예전 캐시 이름도 버전 이름으로 고치고 카탈로그 순서로 선다', () => {

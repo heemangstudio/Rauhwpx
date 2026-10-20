@@ -5,9 +5,9 @@ import './settings-autofix.css';
 
 import {
   AGENT_MODELS,
+  AUTOFIX_CLAUDE_MODELS,
   claudeModelLabel,
   effortsForAgent,
-  OFFICIAL_CLAUDE_MODELS,
   resolveEffortForAgent,
   type AgentModelOption,
 } from '../../agent/models.ts';
@@ -48,7 +48,7 @@ function createSwitch(label: string): { root: HTMLLabelElement; input: HTMLInput
 export function autofixModelOptions(id: AutofixProviderId, current: string): AgentModelOption[] {
   const options: AgentModelOption[] = id === 'codex'
     ? AGENT_MODELS.codex.map((model) => ({ id: model.id, label: model.label }))
-    : OFFICIAL_CLAUDE_MODELS.map((model) => ({ id: model, label: claudeModelLabel(model) }));
+    : AUTOFIX_CLAUDE_MODELS.map((model) => ({ id: model, label: claudeModelLabel(model) }));
   if (current && !options.some((option) => option.id === current)) {
     options.push({ id: current, label: id === 'claude' ? claudeModelLabel(current) : current });
   }

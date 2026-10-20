@@ -23,7 +23,8 @@ export interface AutofixRequest {
 
 export interface AutofixResult {
   status: AutofixStatus;
-  provider?: AutofixProviderId;
+  /** 'gift' 는 Codex·Claude 를 둘 다 쓸 수 없을 때 받은 선물 크레딧으로 돈 경우다(설정 목록에는 없다). */
+  provider?: AutofixProviderId | 'gift';
 }
 
 export interface AutofixProviderSettings {

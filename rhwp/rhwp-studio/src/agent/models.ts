@@ -24,7 +24,7 @@ export const AGENT_MODELS: Record<CatalogAgent, readonly AgentModelOption[]> = {
 
 /**
  * Anthropic 공식 최신 Claude 모델 ID. 허브 rhwp-agent/claude-model-label.mjs 의 같은 이름 목록과 같다
- * (agent-models.test.ts 가 비교). 자동 버그 수정의 Claude 모델 선택지다.
+ * (agent-models.test.ts 가 비교).
  */
 export const OFFICIAL_CLAUDE_MODELS: readonly string[] = [
   'claude-fable-5-1',
@@ -32,6 +32,14 @@ export const OFFICIAL_CLAUDE_MODELS: readonly string[] = [
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ];
+
+/**
+ * 자동 버그 수정의 Claude 모델 선택지: 공식 목록에 Sonnet 5.5(자동 수정의 기본값)를 더한다. 채팅 목록은 그대로다.
+ * 데스크톱 desktop/autofix.mjs 의 AUTOFIX_CLAUDE_MODELS 와 같은 규칙이다.
+ */
+export const AUTOFIX_CLAUDE_MODELS: readonly string[] = OFFICIAL_CLAUDE_MODELS.includes('claude-sonnet-5-5')
+  ? [...OFFICIAL_CLAUDE_MODELS]
+  : OFFICIAL_CLAUDE_MODELS.flatMap((id) => (id === 'claude-sonnet-5' ? ['claude-sonnet-5-5', id] : [id]));
 
 const CLAUDE_EFFORTS_FULL = [
   { id: 'max', label: 'Max' }, { id: 'xhigh', label: 'Extra high' },
