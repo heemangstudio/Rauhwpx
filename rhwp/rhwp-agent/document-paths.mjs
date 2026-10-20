@@ -37,6 +37,30 @@ function assertLocalAbsolutePath(candidate, label) {
 }
 
 /**
+ * 입력 경로가 링크를 지나는지. 실제 경로가 입력과 같으면 링크가 없다.
+ * Windows 의 realpath 는 8.3 짧은 이름과 SUBST 드라이브도 풀어 쓰므로 문자열이 달라도 링크가
+ * 아닐 수 있다. 그때는 각 경로 요소를 lstat 으로 확인한다(정션도 심볼릭 링크로 보인다).
+ * 연결된 네트워크 드라이브는 UNC 경로로 풀리므로 네트워크 경로로 거절한다.
+ */
+async function assertNoLinkInPath(lexical, real, platform, { linkMessage, inspectMessage }) {
+  if (foldCase(real, platform) === foldCase(lexical, platform)) return;
+  if (platform !== 'win32') throw pathError('PATH_REJECTED', linkMessage);
+  if (/^[\\/]{2}/.test(real)) {
+    throw pathError('PATH_REJECTED', 'Network drives cannot be used; copy the file to a local folder');
+  }
+  for (let current = lexical; ; current = path.dirname(current)) {
+    let info;
+    try {
+      info = await fs.lstat(current);
+    } catch {
+      throw pathError('PATH_REJECTED', inspectMessage);
+    }
+    if (info.isSymbolicLink()) throw pathError('PATH_REJECTED', linkMessage);
+    if (path.dirname(current) === current) return;
+  }
+}
+
+/**
  * 절대 경로의 hwp/hwpx/hml/hwpml 일반 파일(1..24 MiB)인지 확인한다. 파일이나 상위 폴더가 링크면 거절한다.
  * open_document 는 extensions·maxBytes 로 연 뒤 저장할 수 있는 형식과 데스크톱 한도를 준다.
  * 오류 코드: PATH_INVALID(인자), PATH_NOT_FOUND(없음), PATH_REJECTED(링크·폴더·확장자), PATH_TOO_LARGE.
@@ -66,9 +90,10 @@ export async function validateDocumentPath(candidate, {
     throw pathError('PATH_REJECTED', 'The file cannot be inspected');
   }
   // 링크된 상위 폴더가 있으면 실제 경로가 입력과 달라진다.
-  if (foldCase(real, platform) !== foldCase(lexical, platform)) {
-    throw pathError('PATH_REJECTED', 'The path passes through a link');
-  }
+  await assertNoLinkInPath(lexical, real, platform, {
+    linkMessage: 'The path passes through a link',
+    inspectMessage: 'The file cannot be inspected',
+  });
   if (!Number.isSafeInteger(link.size) || link.size < 1) throw pathError('PATH_REJECTED', 'The file is empty');
   if (link.size > maxBytes) throw pathError('PATH_TOO_LARGE', `The file is larger than ${Math.round(maxBytes / (1024 * 1024))} MiB`);
   return { path: real, name, size: link.size, mtimeMs: Math.round(link.mtimeMs) };
@@ -100,7 +125,10 @@ export async function validateDocumentFolder(candidate, { platform = process.pla
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') throw pathError('PATH_NOT_FOUND', 'The folder does not exist');
     throw pathError('PATH_REJECTED', 'The folder cannot be inspected');
   }
-  if (foldCase(real, platform) !== foldCase(lexical, platform)) throw pathError('PATH_REJECTED', 'The folder path passes through a link');
+  await assertNoLinkInPath(lexical, real, platform, {
+    linkMessage: 'The folder path passes through a link',
+    inspectMessage: 'The folder cannot be inspected',
+  });
   if (!insideFolder(real, homeReal, platform)) throw pathError('PATH_REJECTED', 'folder must be inside the home folder');
   return real;
 }

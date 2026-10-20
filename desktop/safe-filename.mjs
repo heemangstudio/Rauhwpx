@@ -4,8 +4,11 @@ const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt[1
  * authoritative; this only prevents an unsafe renderer suggestion from
  * becoming a reserved or malformed default filename. */
 export function safeSuggestedFilename(value, fallback = 'document') {
+  // NFC, not NFKC: compatibility folding renamed legal Korean names (회의록① →
+  // 회의록1, ㈜ → (주)), so accepting the suggestion wrote a second file
+  // beside the original instead of saving over it.
   const clean = (input) => String(input ?? '').split(/[\\/]/).at(-1)
-    .normalize('NFKC')
+    .normalize('NFC')
     .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, '_')
     .replace(/[ .]+$/g, '')
     .trim();

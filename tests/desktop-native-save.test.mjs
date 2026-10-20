@@ -333,3 +333,14 @@ test('a document opened through its 8.3 alias keeps its real name and saves in i
     assert.equal(opened.descriptor.name, 'quarterly report.hwpx');
   });
 });
+
+test('a CFB v4 HWP from another writer opens, but a save is still held to the v3 layout', async () => {
+  const { validateNativeDocumentBytes, validateOpenedDocumentBytes } = await import('../desktop/native-file-handles.mjs');
+  const v4 = new Uint8Array(3 * 4096);
+  v4.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+  v4.set([0x3e, 0x00, 0x04, 0x00, 0xfe, 0xff, 0x0c, 0x00], 24);
+  assert.doesNotThrow(() => validateOpenedDocumentBytes('생성 문서.hwp', v4));
+  assert.throws(() => validateNativeDocumentBytes('생성 문서.hwp', v4), /Refusing to replace/);
+  assert.throws(() => validateOpenedDocumentBytes('생성 문서.hwp', v4.subarray(0, 4096)), /cannot be opened/);
+  assert.doesNotThrow(() => validateOpenedDocumentBytes('생성 문서.hwp', cfbBytes(1)));
+});

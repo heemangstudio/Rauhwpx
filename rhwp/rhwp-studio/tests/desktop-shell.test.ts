@@ -125,6 +125,10 @@ test('dialog suggestions are portable across Windows and strip renderer paths', 
   assert.equal(safeSuggestedFilename('../report?.hwpx', 'document.hwpx'), 'report_.hwpx');
   assert.equal(safeSuggestedFilename('AUX. ', 'document.hwp'), '_AUX');
   assert.equal(safeSuggestedFilename('', 'document.rhwpx'), 'document.rhwpx');
+  // Legal Korean names stay as they are, so Save As suggests the open file itself.
+  for (const name of ['회의록①.hwp', '㈜하마 계약서.hwpx', '㎡당 단가표.hwp', 'Ⅱ장 개요.hwpx', '보고서（최종）.hwp', 'ㅋㅋ 메모.hwpx']) {
+    assert.equal(safeSuggestedFilename(name, 'document.hwp'), name);
+  }
 });
 
 test('SessionManager gives each owned BrowserWindow an isolated UUID context', async () => {

@@ -4,7 +4,7 @@
  * 한컴 웹기안기의 HwpCtrl ActiveX/JavaScript 객체와 동일한 인터페이스.
  * 내부적으로 rhwp WASM API를 호출한다.
  */
-import { inferExportFormat } from '@/command/save-target';
+import { fileNameForFormat, inferExportFormat } from '@/command/save-target';
 import { Action } from './action';
 import { ParameterSet } from './parameter-set';
 import { getActionDef, getRegisteredCount, getImplementedCount, getAllActions } from './action-registry';
@@ -108,10 +108,9 @@ export class HwpCtrl {
         ext = '.hwp';
       }
 
-      // 파일명에 확장자가 없으면 지정 형식에 맞게 추가
-      if (!filename.endsWith(ext) && !filename.endsWith('.hwp') && !filename.endsWith('.hwpx') && !filename.endsWith('.hml')) {
-        filename += ext;
-      }
+      // 확장자는 실제로 쓴 형식을 따른다. SaveAs('a.hwp', 'HWPX') 가 ZIP 을 .hwp 로,
+      // SaveAs('A.HWP') 가 'A.HWP.hwp' 로 내려받게 하지 않는다.
+      filename = fileNameForFormat(filename, saveFormat);
 
       const formatLabel = isHml ? 'HML' : isHwpx ? 'HWPX' : 'HWP';
       console.log(`[hwpctl] SaveAs: ${formatLabel}, ${bytes.length} bytes, ext=${ext}`);

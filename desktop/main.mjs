@@ -55,7 +55,7 @@ import {
   NativeFileHandleRegistry,
   recoverInterruptedNativeSave,
   StaleNativeHandleError,
-  validateNativeDocumentBytes,
+  validateOpenedDocumentBytes,
   writeNativeFileAtomically,
 } from './native-file-handles.mjs';
 import { SerializedStateWriter } from './serialized-state-writer.mjs';
@@ -1710,7 +1710,7 @@ ipcMain.handle('desktop:open-generated-document-window', async (event, payload =
   } finally {
     clearTimeout(timeout);
   }
-  validateNativeDocumentBytes(artifact.fileName, bytes);
+  validateOpenedDocumentBytes(artifact.fileName, bytes);
   const opened = await createWindow(
     launchRequest({ source: 'chat-artifact' }),
     { generatedDocument: { fileName: artifact.fileName, bytes, readOnly: artifact.readOnly } },

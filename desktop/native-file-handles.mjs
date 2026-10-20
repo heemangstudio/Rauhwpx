@@ -676,6 +676,29 @@ function hasValidPortableHistoryLayout(bytes, signature, manifestLength) {
   return payloadOffset + expectedOffset === bytes.byteLength;
 }
 
+function isCfbV4Package(bytes) {
+  return bytes.byteLength >= 3 * 4096
+    && bytes.byteLength % 4096 === 0
+    && startsWithBytes(bytes, CFB_SIGNATURE)
+    && bytes[26] === 4 && bytes[27] === 0
+    && bytes[28] === 0xfe && bytes[29] === 0xff
+    && bytes[30] === 12 && bytes[31] === 0;
+}
+
+/**
+ * Check a document that is about to be opened, not written. Other CFB writers
+ * emit major version 4 (4096-byte sectors), which the publish check accepts;
+ * only rhwp's own save output is held to the v3 layout.
+ */
+export function validateOpenedDocumentBytes(filePath, bytes) {
+  if (extname(filePath).toLowerCase() === '.hwp' && bytes instanceof Uint8Array && isCfbV4Package(bytes)) return;
+  try {
+    validateNativeDocumentBytes(filePath, bytes);
+  } catch (error) {
+    throw new Error(`The document cannot be opened because its data is invalid or incomplete (${extname(filePath).slice(1).toUpperCase()})`, { cause: error });
+  }
+}
+
 /** Reject obviously truncated or format-mismatched output before replacing a real document. */
 export function validateNativeDocumentBytes(filePath, bytes) {
   if (!(bytes instanceof Uint8Array)) throw new Error('Native file writes require byte data');
