@@ -72,14 +72,14 @@ export function rememberHyperlinkClick(self: any, e: MouseEvent): void {
   self.hyperlinkClick = null;
   if (e.button !== 0 || e.shiftKey || e.altKey) return;
   const hit = hyperlinkAtPointer(self, e);
-  if (hit) self.hyperlinkClick = { hit, x: e.clientX, y: e.clientY, generation: self.wasm.documentGeneration };
+  if (hit) self.hyperlinkClick = { hit, x: e.clientX, y: e.clientY };
 }
 
 export function followHyperlinkClick(self: any, e: MouseEvent): void {
   const pending = self.hyperlinkClick;
   self.hyperlinkClick = null;
   if (!pending || e.button !== 0 || Math.hypot(e.clientX - pending.x, e.clientY - pending.y) > 3
-    || pending.generation !== self.wasm.documentGeneration || self.cursor.hasSelection()) return;
+    || self.cursor.hasSelection()) return;
   const current = hyperlinkAtPointer(self, e);
   if (!current || current.link.fieldId !== pending.hit.link.fieldId || current.link.uri !== pending.hit.link.uri
     || JSON.stringify(current.target) !== JSON.stringify(pending.hit.target)) return;
