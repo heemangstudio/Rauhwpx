@@ -828,6 +828,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   })());
   toolbar.prepend(shelf);
 
+  // 브랜치·워크트리 탭에서 받은 문서를 새 브랜치나 워크트리로 가져온다.
+  const importButton = el('button', 'ag-versions-secondary ag-versions-import');
+  importButton.type = 'button';
+  importButton.dataset.versionMutation = 'true';
+  importButton.append(createIcon('documentAdd'), el('span', '', '문서 불러오기'));
+  importButton.addEventListener('click', () => void importReceived(tab === 'worktrees'));
+  toolbar.insertBefore(importButton, createWorktreeButton);
+
   const body = el('div', 'ag-versions-body');
   const historyPanel = el('div', 'ag-versions-panel ag-versions-history');
   historyPanel.setAttribute('role', 'tabpanel');
@@ -1078,9 +1086,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     changesHost.hidden = changeCount === 0;
     createBranchButton.hidden = tab !== 'branches';
     createWorktreeButton.hidden = tab !== 'worktrees';
-    mergeButton.hidden = tab === 'worktrees';
-    branchButton.hidden = tab === 'worktrees';
-    checkpointButton.hidden = tab === 'worktrees';
+    const refTab = tab === 'branches' || tab === 'worktrees';
+    importButton.hidden = !refTab;
+    mergeButton.hidden = refTab;
+    branchButton.hidden = refTab;
+    checkpointButton.hidden = refTab;
     shelf.hidden = tab !== 'shelves';
     for (const [id, button] of tabButtons) {
       const selected = id === tab;
@@ -1361,15 +1371,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   }
 
   /** 브랜치·워크트리 목록 끝의 받은 문서 가져오기. 워크트리 탭에서는 워크트리로 열기가 기본이다. */
-  function importRow(asWorktree: boolean): HTMLElement {
-    const button = el('button', 'ag-versions-quiet ag-versions-import');
-    button.type = 'button';
-    button.dataset.versionMutation = 'true';
-    button.append(createIcon('documentAdd'), el('span', '', '받은 문서 가져오기'));
-    button.addEventListener('click', () => void importReceived(asWorktree));
-    return button;
-  }
-
   function renderBranches(): void {
     branchesPanel.replaceChildren();
     const list = el('div', 'ag-versions-ref-list');
@@ -1466,7 +1467,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         list.appendChild(row);
       }
     }
-    list.appendChild(importRow(false));
     branchesPanel.appendChild(list);
   }
 
@@ -1523,7 +1523,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       list.appendChild(row);
     }
     if (current.worktrees.length === 0) list.appendChild(el('p', 'ag-versions-placeholder', '워크트리가 없습니다.'));
-    list.appendChild(importRow(true));
     worktreesPanel.appendChild(list);
   }
 

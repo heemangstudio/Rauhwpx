@@ -374,9 +374,14 @@
   margin: 8px 8px 0;
 }
 
-.ag-versions-create-branch,
 .ag-versions-create-shelf {
   margin-right: auto;
+}
+
+.ag-versions-toolbar > .ag-versions-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ── 그래프 ────────────────────────────────────────── */
@@ -855,15 +860,6 @@
 }
 
 /* ── 바닥 줄 ───────────────────────────────────────── */
-
-/* 브랜치·워크트리 목록 끝의 받은 문서 가져오기 */
-.ag-versions-import {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin: 8px 0 0;
-}
 
 .ag-versions-footer {
   display: grid;
