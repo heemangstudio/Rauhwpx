@@ -72,7 +72,7 @@ export function createTurnInterruptionRow(
     if (resume.getAttribute('aria-disabled') === 'true') return;
     opts.onResume();
   });
-  const report = opts.onReport ? el('button', 'ag-turn-interrupted-report', '오류 제보') : null;
+  const report = opts.onReport ? el('button', 'ag-turn-interrupted-report', '버그 제보') : null;
   if (report) {
     report.type = 'button';
     report.hidden = true;

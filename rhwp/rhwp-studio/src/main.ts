@@ -1034,12 +1034,12 @@ function installIssueReport(): void {
         devicePixelRatio: window.devicePixelRatio,
         theme: document.documentElement.dataset.themeEffective ?? '',
       }),
-    }).catch((error) => console.warn('[issue-report] 문제 보고를 열지 못했습니다:', error));
+    }).catch((error) => console.warn('[issue-report] 버그 제보를 열지 못했습니다:', error));
   };
   issueReporter = report;
   registry.register({
     id: REPORT_ISSUE_COMMAND,
-    label: '문제 보고',
+    label: '버그 제보',
     shortcutLabel: 'Ctrl+Shift+/',
     icon: 'icon-help',
     execute: report,
@@ -1060,7 +1060,7 @@ function installIssueReport(): void {
       const item = document.createElement('div');
       item.className = 'md-item';
       item.dataset.cmd = REPORT_ISSUE_COMMAND;
-      item.innerHTML = '<span class="md-icon"></span><span class="md-label">문제 보고…</span><span class="md-shortcut">Ctrl+Shift+/</span>';
+      item.innerHTML = '<span class="md-icon"></span><span class="md-label">버그 제보…</span><span class="md-shortcut">Ctrl+Shift+/</span>';
       about.after(item);
     }
   }

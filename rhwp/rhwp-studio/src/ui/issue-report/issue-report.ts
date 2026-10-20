@@ -131,7 +131,7 @@ export async function startIssueReport(host: IssueReportHost): Promise<void> {
       rects.push(...visibleDocumentRects());
     } catch (error) {
       console.warn('[issue-report] 준비 실패:', error);
-      showToast({ message: '문제 보고를 열지 못했습니다.', durationMs: 4000 });
+      showToast({ message: '버그 제보를 열지 못했습니다.', durationMs: 4000 });
       return;
     }
     let screenshot: PreparedScreenshot | null = null;
@@ -179,7 +179,7 @@ export async function startIssueReport(host: IssueReportHost): Promise<void> {
       },
       onClose({ sent, message, email }) {
         carried = sent ? null : { message, email };
-        if (sent) showToast({ message: '문제 보고를 보냈습니다.', durationMs: 3200 });
+        if (sent) showToast({ message: '버그 제보를 보냈습니다.', durationMs: 3200 });
       },
     });
   } finally {

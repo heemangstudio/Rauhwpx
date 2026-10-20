@@ -32,14 +32,14 @@ export interface IssueReportSheetOptions {
 }
 
 const FAILURE_TEXT: Record<IssueReportFailureCode, string> = {
-  rate_limited: '보고가 많아 잠시 받을 수 없습니다. 나중에 다시 보내십시오.',
-  busy: '서버가 다른 보고를 받는 중입니다. 잠시 뒤 다시 보내십시오.',
+  rate_limited: '제보가 많아 잠시 받을 수 없습니다. 나중에 다시 보내십시오.',
+  busy: '서버가 다른 제보를 받는 중입니다. 잠시 뒤 다시 보내십시오.',
   too_large: '첨부가 너무 큽니다. 문서나 대화를 빼고 보내십시오.',
   offline: '서버에 연결하지 못했습니다. 인터넷 연결을 확인하십시오.',
   timeout: '서버가 응답하지 않습니다. 다시 보내십시오.',
-  invalid: '보고를 보내지 못했습니다.',
-  rejected: '보고를 보내지 못했습니다.',
-  server: '보고를 보내지 못했습니다. 잠시 뒤 다시 보내십시오.',
+  invalid: '제보를 보내지 못했습니다.',
+  rejected: '제보를 보내지 못했습니다.',
+  server: '제보를 보내지 못했습니다. 잠시 뒤 다시 보내십시오.',
 };
 
 export function issueReportFailureText(result: Extract<IssueReportResult, { ok: false }>): string {
@@ -95,12 +95,12 @@ export function openIssueReportSheet(options: IssueReportSheetOptions): void {
   sheet.setAttribute('aria-labelledby', 'ir-title');
   sheet.tabIndex = -1;
 
-  const title = el('h2', 'ag-sheet-title', '문제 보고');
+  const title = el('h2', 'ag-sheet-title', '버그 제보');
   title.id = 'ir-title';
 
   const message = el('textarea', 'ir-field ir-message');
-  message.placeholder = '문제 설명';
-  message.setAttribute('aria-label', '문제 설명');
+  message.placeholder = '버그 설명';
+  message.setAttribute('aria-label', '버그 설명');
   message.maxLength = 5000;
   message.rows = 5;
   message.value = options.message;

@@ -351,7 +351,7 @@ export interface FailureNoticeHandlers {
   onAction(id: FailureActionId): void;
   /** × 로 접었다 (true) 또는 '다시 보기' 로 폈다 (false) */
   onDismissChange(dismissed: boolean): void;
-  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '오류 제보' 단추를 둔다. */
+  /** 오류 제보를 연다. 있으면 앱·서버 쪽 실패 알림의 오른쪽 위에 '버그 제보' 단추를 둔다. */
   onReport?(): void;
   /** 이 알림의 자동 수정 단추. 다시 그려도 실행 상태가 남도록 같은 요소를 돌려준다. */
   autofixButton?(): HTMLElement | null;
@@ -429,7 +429,7 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
     actions.append(button);
   }
   if (options.reportable && handlers.onReport) {
-    const report = el('button', 'ag-failure-link ag-failure-report', '오류 제보');
+    const report = el('button', 'ag-failure-link ag-failure-report', '버그 제보');
     report.type = 'button';
     report.addEventListener('click', () => handlers.onReport?.());
     actions.append(report);
