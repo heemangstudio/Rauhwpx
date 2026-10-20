@@ -31,28 +31,27 @@ export function tryConfirmDeleteHyperlink(
   } catch { return false; }
   const link = context.links.find(item => item.start <= deleteOffset && deleteOffset < item.end);
   if (!link) return false;
-  const generation = self.wasm.documentGeneration;
-  const before = JSON.stringify(context);
+  const documentInstance = self.wasm.documentInstance;
   const finish = () => { pending.delete(self); self.focusTextarea(); };
   pending.add(self);
   confirmHyperlinkDelete(() => {
     try {
-      if (!canEdit() || self.wasm.documentGeneration !== generation
-        || JSON.stringify(self.wasm.getHyperlinkContext(target)) !== before) {
-        throw new Error('편집 상태가 바뀌었습니다. 하이퍼링크를 다시 선택해 주세요.');
-      }
+      // 확인하는 사이 같은 문서가 바뀌었으면 같은 링크를 지금 위치에서 다시 찾는다.
+      if (self.wasm.documentInstance !== documentInstance) return;
+      const current = self.wasm.getHyperlinkContext(target).links.find(item => item.fieldId === link.fieldId);
+      if (!current) return;
       self.executeOperation({
         kind: 'snapshot', operationType: 'deleteHyperlink', selectionBefore: null,
         operation: wasm => {
-          wasm.removeHyperlink(target, link.fieldId);
+          wasm.removeHyperlink(target, current.fieldId);
           if (target.cellPath.length) {
             const path = JSON.stringify(target.cellPath.map(([controlIndex, cellIndex, cellParaIndex]) =>
               ({ controlIndex, cellIndex, cellParaIndex })));
-            wasm.deleteTextInCellByPath(target.section, target.para, path, link.start, link.end - link.start);
+            wasm.deleteTextInCellByPath(target.section, target.para, path, current.start, current.end - current.start);
           } else {
-            wasm.deleteText(target.section, target.para, link.start, link.end - link.start);
+            wasm.deleteText(target.section, target.para, current.start, current.end - current.start);
           }
-          return { ...pos, charOffset: link.start };
+          return { ...pos, charOffset: current.start };
         },
       });
     } catch (error) {

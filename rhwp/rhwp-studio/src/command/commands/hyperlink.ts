@@ -1,7 +1,7 @@
 import type { CommandDef } from '../types';
 import type { HyperlinkEdit } from '@/ui/hyperlink-dialog';
 import { HyperlinkDialog, confirmHyperlinkEdit } from '@/ui/hyperlink-dialog';
-import { hyperlinkRange, selectedHyperlink, applyHyperlinkFormat } from '@/core/hyperlink';
+import { hyperlinkRange, selectedHyperlink, resolveHyperlinkRange, applyHyperlinkFormat } from '@/core/hyperlink';
 import { showToast } from '@/ui/toast';
 
 export const hyperlinkCommand: CommandDef = {
@@ -20,20 +20,19 @@ export const hyperlinkCommand: CommandDef = {
       const range = hyperlinkRange(ih.getCursorPosition(), selection);
       const { target, pos, start, end } = range;
       const context = services.wasm.getHyperlinkContext(target);
-      const generation = services.wasm.documentGeneration;
-      const existing = selectedHyperlink(context.links, start, end);
-      const canInsertText = !existing && start === end;
-      const text = existing?.text ?? Array.from(context.text).slice(start, end).join('');
+      const opened = selectedHyperlink(context.links, start, end);
+      const canInsertText = !opened && start === end;
+      const text = opened?.text ?? Array.from(context.text).slice(start, end).join('');
+      const documentInstance = services.wasm.documentInstance;
       const applyEdit = (edit: HyperlinkEdit) => {
-        if (services.wasm.documentGeneration !== generation || services.getInputHandler() !== ih || !services.getContext().isEditable
-          || services.getContext().isFormMode || !ih.canEditHyperlink()) {
-          throw new Error('편집 상태가 바뀌었습니다. 대화상자를 닫고 다시 열어 주세요.');
-        }
-        if (JSON.stringify(services.wasm.getHyperlinkContext(target)) !== JSON.stringify(context)) {
-          throw new Error('문서 내용이 바뀌었습니다. 대화상자를 닫고 다시 열어 주세요.');
-        }
-        if (edit.kind === 'save' && existing?.uri === edit.uri && existing.text === edit.text) return;
-        if (edit.kind === 'save' && (canInsertText || edit.text !== text) && (!edit.text.trim() || /[\r\n\t\x00-\x1f\x7f]/.test(edit.text))) {
+        // 다른 문서로 바뀌었으면 적용할 대상이 없다. 같은 문서의 변경은 지금 내용 기준으로 다시 잡는다.
+        if (services.wasm.documentInstance !== documentInstance || services.getInputHandler() !== ih) return;
+        const current = resolveHyperlinkRange(services.wasm.getHyperlinkContext(target), opened?.fieldId, start, end);
+        const { existing } = current;
+        const insertText = !existing && current.start === current.end;
+        if (edit.kind === 'remove' && !existing) return;
+        if (edit.kind === 'save' && existing?.uri === edit.uri && (edit.text === text || existing.text === edit.text)) return;
+        if (edit.kind === 'save' && (insertText || edit.text !== text) && (!edit.text.trim() || /[\r\n\t\x00-\x1f\x7f]/.test(edit.text))) {
           throw new Error('표시할 글자를 한 줄로 입력해 주세요.');
         }
         let applied = false;
@@ -44,34 +43,37 @@ export const hyperlinkCommand: CommandDef = {
           operation: wasm => {
             switch (edit.kind) {
               case 'remove': {
-                if (!existing) return { ...pos, charOffset: end };
+                if (!existing) return { ...pos, charOffset: current.end };
                 wasm.removeHyperlink(target, existing.fieldId, true);
                 applied = true;
                 return { ...pos, charOffset: existing.end };
               }
               case 'save': {
+                // 대화상자에서 고친 글자만 반영한다. 그대로 둔 글자는 지금 문서의 글자를 유지한다.
+                const newText = edit.text !== text || insertText ? edit.text : null;
                 if (existing) {
                   wasm.updateHyperlink(target, existing.fieldId, edit.uri);
-                  if (edit.text !== text) wasm.replaceHyperlinkText(target, existing.fieldId, edit.text);
+                  if (newText !== null) wasm.replaceHyperlinkText(target, existing.fieldId, newText);
                   applied = true;
-                  return { ...pos, charOffset: existing.start + Array.from(edit.text).length };
+                  return { ...pos, charOffset: existing.start + Array.from(newText ?? existing.text).length };
                 }
-                let linkEnd = end;
-                if (canInsertText) {
+                const linkStart = current.start;
+                let linkEnd = current.end;
+                if (insertText) {
                   if (target.cellPath.length) {
                     const path = target.cellPath.map(([controlIndex, cellIndex, cellParaIndex]) => ({ controlIndex, cellIndex, cellParaIndex }));
-                    wasm.insertTextInCellByPath(target.section, target.para, JSON.stringify(path), start, edit.text);
+                    wasm.insertTextInCellByPath(target.section, target.para, JSON.stringify(path), linkStart, edit.text);
                   } else {
-                    wasm.insertText(target.section, target.para, start, edit.text);
+                    wasm.insertText(target.section, target.para, linkStart, edit.text);
                   }
-                  linkEnd = start + Array.from(edit.text).length;
+                  linkEnd = linkStart + Array.from(edit.text).length;
                 }
-                const fieldId = wasm.insertHyperlink(target, start, linkEnd, edit.uri);
-                if (!canInsertText && edit.text !== text) {
-                  wasm.replaceHyperlinkText(target, fieldId, edit.text);
-                  linkEnd = start + Array.from(edit.text).length;
+                const fieldId = wasm.insertHyperlink(target, linkStart, linkEnd, edit.uri);
+                if (!insertText && newText !== null) {
+                  wasm.replaceHyperlinkText(target, fieldId, newText);
+                  linkEnd = linkStart + Array.from(newText).length;
                 }
-                applyHyperlinkFormat(wasm, target, start, linkEnd, '#0000ff');
+                applyHyperlinkFormat(wasm, target, linkStart, linkEnd, '#0000ff');
                 applied = true;
                 return { ...pos, charOffset: linkEnd };
               }
@@ -85,17 +87,16 @@ export const hyperlinkCommand: CommandDef = {
         if (!applied) throw new Error('하이퍼링크를 적용할 수 없습니다. 편집 모드를 확인해 주세요.');
       };
       if (params?.action === 'remove') {
-        if (existing) applyEdit({ kind: 'remove' });
+        if (opened) applyEdit({ kind: 'remove' });
         ih.focus();
         return;
       }
       const open = () => {
-        if (services.wasm.documentGeneration !== generation || services.getInputHandler() !== ih) return;
-        const dialog = new HyperlinkDialog({ text, uri: existing?.uri ?? '', existing: !!existing, canInsertText }, applyEdit);
+        const dialog = new HyperlinkDialog({ text, uri: opened?.uri ?? '', existing: !!opened, canInsertText }, applyEdit);
         dialog.afterClose = () => ih.focus();
         dialog.show();
       };
-      if (existing && params?.action !== 'edit') confirmHyperlinkEdit(open, () => ih.focus());
+      if (opened && params?.action !== 'edit') confirmHyperlinkEdit(open, () => ih.focus());
       else open();
     } catch (error) {
       showToast({ message: error instanceof Error ? error.message : String(error) });

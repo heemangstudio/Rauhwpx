@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hyperlinkTarget, hyperlinkRange, selectedHyperlink, webHyperlinkUrl } from '../src/core/hyperlink.ts';
+import { hyperlinkTarget, hyperlinkRange, selectedHyperlink, resolveHyperlinkRange, webHyperlinkUrl } from '../src/core/hyperlink.ts';
 
 const pos = { sectionIndex: 0, paragraphIndex: 3, charOffset: 2 };
 test('하이퍼링크 주소는 중첩 셀 전체 경로를 보존한다', () => {
@@ -40,4 +40,13 @@ test('웹 주소 미리 열기는 HTTP/HTTPS만 허용하고 한글 query와 fra
   for (const uri of ['', 'javascript:alert(1)', 'file:///tmp/a', 'https://user:pw@example.com', 'https://', 'https://example.com/a b', 'https://example.com/\\evil']) {
     assert.equal(webHyperlinkUrl(uri), null, uri);
   }
+});
+
+test('대화상자를 연 뒤 문서가 바뀌어도 지금 문서에서 링크와 범위를 다시 잡는다', () => {
+  const link = { fieldId: 7, start: 4, end: 6, text: '링크', uri: 'https://a.test' };
+  // 앞에 글자가 늘어 링크가 밀려도 필드 ID로 따라간다.
+  assert.deepEqual(resolveHyperlinkRange({ text: 'ab앞말링크', links: [link] }, 7, 2, 4), { existing: link, start: 4, end: 6 });
+  // 링크가 사라졌으면 열 때의 범위를 줄여 새로 넣는다.
+  assert.deepEqual(resolveHyperlinkRange({ text: 'abc', links: [] }, 7, 2, 6), { existing: undefined, start: 2, end: 3 });
+  assert.deepEqual(resolveHyperlinkRange({ text: '', links: [] }, undefined, 5, 5), { existing: undefined, start: 0, end: 0 });
 });

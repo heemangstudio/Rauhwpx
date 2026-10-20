@@ -56,6 +56,18 @@ export function selectedHyperlink(links: HyperlinkInfo[], start: number, end: nu
   return hits[0];
 }
 
+/**
+ * 대화상자를 연 뒤 문서가 바뀌었어도(실행 취소, 에이전트 편집 등) 지금 문서에서 대상을 다시 잡는다.
+ * 열 때의 링크는 필드 ID로 따라가고, 사라졌으면 열 때의 범위를 문단 길이 안으로 줄여 쓴다.
+ */
+export function resolveHyperlinkRange(context: HyperlinkContext, fieldId: number | undefined, start: number, end: number) {
+  const link = fieldId === undefined ? undefined : context.links.find(l => l.fieldId === fieldId);
+  if (link) return { existing: link, start: link.start, end: link.end };
+  const length = Array.from(context.text).length;
+  const from = Math.min(start, length), to = Math.min(end, length);
+  return { existing: selectedHyperlink(context.links, from, to), start: from, end: to };
+}
+
 /** 링크 색/밑줄만 변경해 굵기·글꼴 등 기존 서식을 유지한다. snapshot 안에서 호출한다. */
 export function applyHyperlinkFormat(wasm: WasmBridge, target: HyperlinkTarget,
   start: number, end: number, color: string): void {
