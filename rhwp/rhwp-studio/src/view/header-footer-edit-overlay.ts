@@ -46,6 +46,8 @@ export function drawHeaderFooterGuideCorners(
   canvas: HTMLCanvasElement,
   scale: number,
   displayScale = 1,
+  originX = 0,
+  originY = 0,
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -57,7 +59,7 @@ export function drawHeaderFooterGuideCorners(
   const L = HF_GUIDE_LENGTH;
 
   ctx.save();
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.setTransform(scale, 0, 0, scale, -originX, -originY);
   ctx.strokeStyle = HF_GUIDE_COLOR;
   ctx.lineWidth = resolveHeaderFooterGuideLineWidth(displayScale);
   ctx.beginPath();
@@ -80,6 +82,41 @@ export function drawHeaderFooterGuideCorners(
 
   ctx.stroke();
   ctx.restore();
+}
+
+/**
+ * 안내 꺾쇠 canvas 를 쪽 전체가 아니라 꺾쇠가 닿는 밴드 둘레만 덮게 만든다. 쪽 전체 canvas 와
+ * 같은 장치 픽셀 격자(정수 offset)에 놓아 꺾쇠 픽셀은 같고, 편집 중 쪽 크기 비트맵을 두지 않는다.
+ * `dpr` 은 renderScale / zoom (CSS px 당 장치 픽셀).
+ */
+export function createHeaderFooterGuideCanvas(
+  page: Pick<PageInfo, 'width' | 'height'>,
+  band: HeaderFooterBandBox,
+  renderScale: number,
+  dpr: number,
+  zoom: number,
+): HTMLCanvasElement {
+  const pageWidth = Math.max(1, Math.round(page.width * renderScale));
+  const pageHeight = Math.max(1, Math.round(page.height * renderScale));
+  // 선 두께 절반과 안티앨리어싱 여유.
+  const pad = Math.ceil((resolveHeaderFooterGuideLineWidth(zoom) * renderScale) / 2) + 2;
+  const clampX = (value: number) => Math.min(pageWidth, Math.max(0, value));
+  const clampY = (value: number) => Math.min(pageHeight, Math.max(0, value));
+  const left = clampX(Math.floor((band.x - HF_GUIDE_LENGTH) * renderScale) - pad);
+  const top = clampY(Math.floor((band.y - HF_GUIDE_LENGTH) * renderScale) - pad);
+  const right = clampX(Math.ceil((band.x + band.width + HF_GUIDE_LENGTH) * renderScale) + pad);
+  const bottom = clampY(Math.ceil((band.y + band.height + HF_GUIDE_LENGTH) * renderScale) + pad);
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'hf-edit-guide-canvas';
+  canvas.width = Math.max(1, right - left);
+  canvas.height = Math.max(1, bottom - top);
+  canvas.style.left = `${left / dpr}px`;
+  canvas.style.top = `${top / dpr}px`;
+  canvas.style.width = `${canvas.width / dpr}px`;
+  canvas.style.height = `${canvas.height / dpr}px`;
+  drawHeaderFooterGuideCorners(band, canvas, renderScale, zoom, left, top);
+  return canvas;
 }
 
 /**
