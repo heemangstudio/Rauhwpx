@@ -435,6 +435,15 @@ test('편집 용지 edits the caret section, validates sizes, and applies 문서
         getPageDef: (index: number) => structuredClone(defs[index]),
         getSectionCount: () => defs.length,
         setPageDef: (index: number, def: unknown) => { writes.push([index, def]); return { ok: true, pageCount: 1 }; },
+        setPageDefAll: (patch: unknown) => {
+          const fields = structuredClone(patch) as Partial<typeof defs[number]>;
+          for (let index = 0; index < defs.length; index++) {
+            const updated = { ...defs[index], ...fields };
+            defs[index] = updated;
+            writes.push([index, updated]);
+          }
+          return { ok: true, pageCount: 1 };
+        },
       };
       const inputHandler = {
         executeOperation: (desc: { operationType: string; operation: (w: unknown) => unknown }) => {
