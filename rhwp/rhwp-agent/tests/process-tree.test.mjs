@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
+import { Readable } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -306,6 +307,125 @@ test('already-exited Windows leader fails closed without targeting a reusable pi
 
   assert.equal(await exited, null);
   assert.deepEqual(calls, [], 'an expired Windows pid must never be passed to taskkill');
+});
+
+/** A fake exited child whose stdout/stderr read ends are real Readable streams. */
+function exitedChildWithPipes(pid) {
+  const stdout = new Readable({ read() {} });
+  const stderr = new Readable({ read() {} });
+  stdout.resume();
+  stderr.resume();
+  return Object.assign(new EventEmitter(), { pid, exitCode: 0, signalCode: null, stdout, stderr });
+}
+
+test('an exited Windows leader whose pipes drained proves cleanup without targeting its pid', async () => {
+  const child = exitedChildWithPipes(9882);
+  const calls = [];
+  const options = {
+    terminateOptions: {
+      platform: 'win32',
+      env: WINDOWS_ENV,
+      spawnProcess(command, args) { calls.push([command, args]); },
+    },
+  };
+  const outcome = terminateAndWaitForProcessTreeExitOutcome(child, options);
+  child.stdout.push(null);
+  child.stderr.push(null);
+
+  assert.equal(await outcome, PROCESS_TREE_CLEANUP_OUTCOME.PROVEN);
+  assert.deepEqual(calls, [], 'an expired Windows pid must never be passed to taskkill');
+});
+
+test('an exited Windows leader whose pipe was destroyed before EOF stays unavailable', async () => {
+  const child = exitedChildWithPipes(9883);
+  const outcome = terminateAndWaitForProcessTreeExitOutcome(child, {
+    terminateOptions: { platform: 'win32', env: WINDOWS_ENV, spawnProcess() {} },
+  });
+  child.stdout.push(null);
+  child.stderr.destroy();
+
+  assert.equal(await outcome, PROCESS_TREE_CLEANUP_OUTCOME.UNAVAILABLE);
+});
+
+test('an exited Windows leader whose pipe stays open past the grace stays unavailable', async () => {
+  const child = exitedChildWithPipes(9884);
+  const timers = timerHarness();
+  const termination = terminateProcessTree(child, {
+    platform: 'win32',
+    env: WINDOWS_ENV,
+    setTimer: timers.setTimer,
+    spawnProcess() {},
+  });
+  child.stdout.push(null);
+  await new Promise((resolve) => setImmediate(resolve));
+  timers.fire();
+
+  assert.equal(await termination, null);
+});
+
+test('a drained Windows leader that beat its taskkill still proves cleanup', async () => {
+  const child = Object.assign(exitedChildWithPipes(9885), { exitCode: null });
+  const calls = [];
+  const taskkills = [];
+  const termination = terminateProcessTree(child, {
+    platform: 'win32',
+    env: WINDOWS_ENV,
+    spawnProcess(command, args) {
+      calls.push([command, args]);
+      const taskkill = new EventEmitter();
+      taskkills.push(taskkill);
+      return taskkill;
+    },
+  });
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+  taskkills[0].emit('close', 128, null);
+  child.stdout.push(null);
+  child.stderr.push(null);
+
+  assert.equal(await termination, true);
+  assert.deepEqual(calls, [[WINDOWS_TASKKILL, ['/PID', '9885', '/T', '/F']]]);
+});
+
+test('real Windows one-shot children prove cleanup only when no descendant holds their pipes', {
+  skip: process.platform !== 'win32' && 'Windows pipe inheritance',
+}, async () => {
+  const finished = spawn(process.execPath, ['-e', 'console.log("done")'], {
+    ...processTreeSpawnOptions(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  finished.stdout.resume();
+  await once(finished, 'exit');
+  assert.equal(
+    await terminateAndWaitForProcessTreeExitOutcome(finished),
+    PROCESS_TREE_CLEANUP_OUTCOME.PROVEN,
+  );
+
+  // cmd.exe `start /b` leaves a live descendant that inherited the leader's stdout.
+  const marker = `rhwp-pipe-holder-${randomUUID()}`;
+  const holderScript = `setTimeout(() => {}, 8000); // ${marker}`;
+  const leaked = spawn(process.env.ComSpec ?? 'cmd.exe', [
+    '/d', '/s', '/c', `start "" /b "${process.execPath}" -e "${holderScript}" & echo started`,
+  ], {
+    ...processTreeSpawnOptions(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsVerbatimArguments: true,
+  });
+  leaked.stdout.resume();
+  leaked.stderr.resume();
+  await once(leaked, 'exit');
+  try {
+    assert.equal(
+      await terminateAndWaitForProcessTreeExitOutcome(leaked),
+      PROCESS_TREE_CLEANUP_OUTCOME.UNAVAILABLE,
+    );
+  } finally {
+    const reaper = spawn('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+    ], { stdio: 'ignore', windowsHide: true });
+    await once(reaper, 'exit');
+  }
 });
 
 test('an exited leader without a tree identity reports unavailable proof', async () => {

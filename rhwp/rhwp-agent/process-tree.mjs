@@ -12,7 +12,8 @@ export const PROVIDER_TERMINATION_HOOK = Symbol.for('rhwp.providerTerminationHoo
 
 /**
  * Process-tree cleanup has three outcomes. `UNAVAILABLE` means the leader
- * exited before Windows could safely target its tree. It is not cleanup proof.
+ * exited before Windows could safely target its tree and its stdio pipes did
+ * not drain to EOF. It is not cleanup proof.
  */
 export const PROCESS_TREE_CLEANUP_OUTCOME = Object.freeze({
   PROVEN: 'proven',
@@ -103,6 +104,46 @@ function windowsTaskkillPath(sourceEnv) {
   const systemRoot = sourceEnv?.SystemRoot ?? sourceEnv?.WINDIR;
   if (typeof systemRoot !== 'string' || !win32.isAbsolute(systemRoot)) return null;
   return win32.join(systemRoot, 'System32', 'taskkill.exe');
+}
+
+/**
+ * Windows proof for a leader that exited before it could be targeted: every
+ * piped stdout/stderr read end reached EOF. EOF means no process in the tree
+ * still holds an inherited write handle, which is the descendant shape that
+ * outlives a CLI. A stream destroyed before EOF, a child without readable
+ * pipes, or a pipe still open after `graceMs` is not proof (resolves false).
+ * Node resumes unread child stdio on exit, so an unconsumed pipe still ends.
+ */
+function windowsExitedLeaderDrained(child, { graceMs, setTimer, clearTimer }) {
+  const readables = [child.stdout, child.stderr].filter((stream) => typeof stream?.once === 'function');
+  if (readables.length === 0) return Promise.resolve(false);
+  const settled = (stream) => stream.readableEnded === true || stream.destroyed === true || stream.closed === true;
+  const proven = () => readables.every((stream) => stream.readableEnded === true);
+  if (readables.every(settled)) return Promise.resolve(proven());
+  return new Promise((resolve) => {
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let timer = null;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimer(timer);
+      for (const stream of readables) {
+        stream.off?.('end', check);
+        stream.off?.('close', check);
+      }
+      resolve(proven());
+    };
+    function check() {
+      if (readables.every(settled)) finish();
+    }
+    for (const stream of readables) {
+      stream.once('end', check);
+      stream.once('close', check);
+    }
+    timer = setTimer(finish, graceMs);
+    timer?.unref?.();
+  });
 }
 
 function posixProcessGroupAlive(pid, killProcess) {
@@ -281,10 +322,18 @@ export function terminateProcessTree(child, {
     // Windows does not retain a killable tree identity after the leader has
     // exited. Calling taskkill with this numeric pid can either report
     // process-not-found while descendants survive or target a reused pid.
-    // Callers that need a positive proof must start cleanup while their owned
-    // leader is still alive (the structured copy-layout runner does this).
-    completedTerminations.set(child, null);
-    return Promise.resolve(null);
+    // One-shot CLIs (titles, `codex exec`, `claude -p`) always end this way,
+    // so the drained stdio pipes are the proof; without it the outcome stays
+    // unavailable and callers fail closed.
+    /** @type {Promise<boolean | null>} */
+    const completion = windowsExitedLeaderDrained(child, { graceMs, setTimer, clearTimer })
+      .then((drained) => (drained ? true : null));
+    activeTerminations.set(child, { completion, finished: false, timer: null });
+    void completion.then((cleaned) => {
+      activeTerminations.delete(child);
+      completedTerminations.set(child, cleaned);
+    });
+    return completion;
   }
   if (pid === null && (child.exitCode != null || child.signalCode != null)) {
     completedTerminations.set(child, null);
@@ -366,6 +415,14 @@ export function terminateProcessTree(child, {
       return true;
     }
   };
+  /** @type {Promise<void> | null} */
+  let windowsDrainCheck = null;
+  const finishFromWindowsDrain = () => {
+    // taskkill commonly loses the race with a CLI that exits on its own and
+    // reports process-not-found. Fall back to the drained-pipe proof.
+    windowsDrainCheck ??= windowsExitedLeaderDrained(child, { graceMs, setTimer, clearTimer })
+      .then((drained) => finish(drained ? true : null));
+  };
   const settleExitedWindowsLeader = () => {
     if (!leaderExited || state.finished) return;
     if (initialTaskkillSucceeded) {
@@ -374,7 +431,7 @@ export function terminateProcessTree(child, {
     }
     // Once the leader exits, its numeric PID can be recycled. Wait only for
     // the single taskkill command started while the leader was known live.
-    if (initialTaskkillSettled) finish(null);
+    if (initialTaskkillSettled) finishFromWindowsDrain();
   };
   const noteLeaderExit = () => {
     leaderExited = true;
@@ -465,7 +522,8 @@ export function terminateProcessTree(child, {
       state.timer = setTimer(() => {
         leaderExited ||= child.exitCode != null || child.signalCode != null;
         if (leaderExited) {
-          finish(initialTaskkillSucceeded ? true : null);
+          if (initialTaskkillSucceeded) finish(true);
+          else finishFromWindowsDrain();
           return;
         }
         finish(false);
