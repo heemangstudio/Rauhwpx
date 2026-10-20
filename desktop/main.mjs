@@ -113,7 +113,7 @@ import {
   removeStaleLaunchDirectories,
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
-import { reportUniqueInstall, uniqueInstallsPublicUrl, uniqueInstallStatePath } from './unique-install.mjs';
+import { reportUniqueInstall, uniqueInstallStatePath } from './unique-install.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
@@ -723,34 +723,18 @@ const systemFonts = createSystemFontService({
   onIndexChanged: () => broadcastFontsChanged(),
 });
 const systemFontKey = randomBytes(32).toString('hex');
-let uniqueInstallSnapshot = {
-  uniqueInstalls: null,
-  publicUrl: uniqueInstallsPublicUrl(),
-  recorded: false,
-};
-let resolveUniqueInstallSync = () => {};
-const uniqueInstallSync = new Promise((resolve) => {
-  resolveUniqueInstallSync = resolve;
-});
-
-async function syncUniqueInstallMetric() {
-  uniqueInstallSnapshot = await reportUniqueInstall({
-    userDataDir: app.getPath('userData'),
-    packaged: app.isPackaged,
-    devUrl,
-    appVersion: app.getVersion(),
-    os: process.platform,
-    arch: process.arch,
-  });
-}
-
-async function finishUniqueInstallMetric() {
+async function reportUniqueInstallMetric() {
   try {
-    await syncUniqueInstallMetric();
+    await reportUniqueInstall({
+      userDataDir: app.getPath('userData'),
+      packaged: app.isPackaged,
+      devUrl,
+      appVersion: app.getVersion(),
+      os: process.platform,
+      arch: process.arch,
+    });
   } catch (error) {
     console.warn('[hamaeditor] unique install ping failed:', error);
-  } finally {
-    resolveUniqueInstallSync();
   }
 }
 const nativeBookmarkWriter = new SerializedStateWriter({
@@ -1375,11 +1359,6 @@ const licenseHost = installLicenseHost({
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
 
-ipcMain.handle('desktop:get-unique-installs', async (event) => {
-  sessionForEvent(event);
-  await uniqueInstallSync;
-  return uniqueInstallSnapshot;
-});
 ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
   return sessions.contextForSender(event.sender, agentSessionId);
@@ -2139,17 +2118,15 @@ if (!hasSingleInstanceLock) {
       console.warn('[hamaeditor] license status failed:', error);
     });
     if (failedLaunches > 0 && sessions.windows().length === 0) {
-      resolveUniqueInstallSync();
       app.quit();
       return;
     }
     // 허브 시작 실패는 창이 뜬 뒤에도 오류 창을 띄우고 종료한다.
     await Promise.all([hubStartup, staleCleanup]);
-    void finishUniqueInstallMetric();
+    void reportUniqueInstallMetric();
     // 실행 4초 뒤 확인하고, 그 뒤로 한 시간마다 확인한다.
     updates.start();
   }).catch((error) => {
-    resolveUniqueInstallSync();
     // 창이 먼저 뜨므로 시작 중에 종료하면 허브 시작이 거절될 수 있다. 그때는 알리지 않는다.
     if (!quitting) showLaunchError(error);
     app.quit();

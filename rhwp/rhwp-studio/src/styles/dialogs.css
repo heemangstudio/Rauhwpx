@@ -722,37 +722,46 @@
 
 /* ── 제품 정보 다이얼로그 ── */
 
-.about-body {
+.modal-overlay > .dialog-wrap > .dialog-body.about-body {
   text-align: center;
-  padding: 16px 24px;
+  padding: 32px 24px 8px;
 }
 
+/* 하마는 제품명 오른쪽 끝 뒤에서 고개만 내민다. 글자가 하마 앞에 그려진다. */
 .about-product-name {
-  font-size: 18px;
-  font-weight: bold;
-  color: var(--accent-strong);
-  margin-bottom: 2px;
-}
-
-.about-product-name-ko {
-  font-size: var(--font-size-md);
-  color: var(--accent-subtle);
-  margin-bottom: 8px;
-}
-
-.about-version {
-  font-size: var(--font-size-md);
-  color: var(--color-text-muted);
-  margin-bottom: 4px;
-}
-
-.about-unique-installs {
-  font-size: var(--font-size-md);
+  position: relative;
+  isolation: isolate;
+  display: inline-block;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
   color: var(--color-text);
 }
 
+.about-hippo {
+  position: absolute;
+  right: -10px;
+  bottom: calc(100% - 6px);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.about-product-name-ko {
+  margin-top: 8px;
+  font-size: var(--font-size-md);
+  color: var(--color-text-secondary);
+}
+
+.about-version {
+  margin-top: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .about-info {
-  margin-top: 12px;
+  margin-top: 20px;
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
   text-align: left;
@@ -761,17 +770,22 @@
 .about-info summary {
   width: fit-content;
   margin: 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  list-style: none;
   cursor: pointer;
+}
+
+.about-info summary::-webkit-details-marker {
+  display: none;
+}
+
+.about-info summary:hover {
+  color: var(--color-text);
 }
 
 .about-info[open] summary {
   margin-bottom: 10px;
-}
-
-.about-unique-installs-note {
-  margin-bottom: 10px;
-  line-height: 1.45;
-  word-break: break-all;
 }
 
 .about-notice {

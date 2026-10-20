@@ -14,11 +14,6 @@ import {
   uniqueInstallsPublicUrl,
   writeUniqueInstallState,
 } from '../../../desktop/unique-install.mjs';
-import {
-  formatUniqueInstallCount,
-  loadUniqueInstallSnapshot,
-  UNIQUE_INSTALLS_PUBLIC_URL,
-} from '../src/unique-installs.ts';
 
 const INSTALL_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const RECORDED_STATE = {
@@ -440,42 +435,10 @@ test('the desktop ping talks only to the site API unique-installs, never GitHub 
 test('public CEO readout URLs stay on the hosted site API origin', () => {
   assert.equal(
     uniqueInstallsPublicUrl('https://rau-credits-production.up.railway.app'),
-    UNIQUE_INSTALLS_PUBLIC_URL,
+    'https://rau-credits-production.up.railway.app/unique-installs',
   );
   assert.equal(
     uniqueInstallsJsonUrl('https://site.rau.test/'),
     'https://site.rau.test/v1/unique-installs',
   );
-  assert.equal(UNIQUE_INSTALLS_PUBLIC_URL, 'https://rau-credits-production.up.railway.app/unique-installs');
-  assert.equal(formatUniqueInstallCount(1234), new Intl.NumberFormat('ko-KR').format(1234));
-});
-
-test('settings and about read the snapshot through desktop IPC without inventing a count', async () => {
-  const missing = await loadUniqueInstallSnapshot({});
-  assert.equal(missing.uniqueInstalls, null);
-  assert.equal(missing.unavailable, undefined);
-  const emptyIpc = await loadUniqueInstallSnapshot({
-    rhwpDesktop: {
-      getUniqueInstalls: async () => ({ uniqueInstalls: null, publicUrl: 'https://site.rau.test/unique-installs' }),
-    },
-  });
-  assert.equal(emptyIpc.uniqueInstalls, null);
-  assert.equal(emptyIpc.unavailable, undefined);
-  assert.equal(emptyIpc.publicUrl, 'https://site.rau.test/unique-installs');
-  const live = await loadUniqueInstallSnapshot({
-    rhwpDesktop: {
-      getUniqueInstalls: async () => ({ uniqueInstalls: 12, publicUrl: 'https://site.rau.test/unique-installs' }),
-    },
-  });
-  assert.equal(live.uniqueInstalls, 12);
-  assert.equal(live.publicUrl, 'https://site.rau.test/unique-installs');
-  const failed = await loadUniqueInstallSnapshot({
-    rhwpDesktop: {
-      getUniqueInstalls: async () => {
-        throw new Error('ipc failed');
-      },
-    },
-  });
-  assert.equal(failed.unavailable, true);
-  assert.equal(failed.uniqueInstalls, null);
 });
