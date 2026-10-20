@@ -384,11 +384,11 @@ function requestImportConfirmation(options: ImportConfirmOptions): {
         baseSelect.appendChild(placeholder);
       }
       for (const candidate of options.base.candidates) {
-        const refs = candidate.branchLabels.length ? ` · ${candidate.branchLabels.join(', ')}` : '';
+        const refs = candidate.branchLabels.length ? `\u00a0\u00a0${candidate.branchLabels.join(', ')}` : '';
         const option = el(
           'option',
           '',
-          `${candidate.title} · ${formatTime(candidate.createdAt)}${refs} · ${Math.round(candidate.similarity * 100)}%`,
+          `${candidate.title}\u00a0\u00a0${formatTime(candidate.createdAt)}${refs}\u00a0\u00a0${Math.round(candidate.similarity * 100)}%`,
         );
         option.value = candidate.id;
         baseSelect.appendChild(option);
@@ -1205,7 +1205,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         formatTime(selected.createdAt),
         formatBytes(selected.byteLength),
         ...(selected.sourceFileName ? [selected.sourceFileName] : []),
-      ].join(' · ')),
+      ].join('\u00a0\u00a0')),
       commitBadges(selected),
     );
     const actions = el('div', 'ag-versions-inspector-actions');
