@@ -64,7 +64,7 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 | Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | nightly only |
 | Sidebar | `npm run test:sidebar` | nightly only |
 
-PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the browser and smoke flows, doc tests, corpus sweeps, Skia rendering, cargo and npm audits, the 3-OS production dependency check and the macOS session tests, and skips a commit the last successful nightly already tested. Linux jobs run on Blacksmith; macOS and Windows jobs run on GitHub-hosted runners.
+PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the browser and smoke flows, doc tests, corpus sweeps, Skia rendering, cargo and npm audits, the 3-OS production dependency check and the macOS session tests, and skips a commit the last successful nightly already tested. Every job runs on Blacksmith (Linux, `macos-15` and `windows-2025` runners).
 
 ## Rust engine (from `rhwp/`)
 
