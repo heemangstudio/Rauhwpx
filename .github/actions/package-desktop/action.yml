@@ -149,7 +149,12 @@ runs:
             echo "Rejected development or ad-hoc signature: ${app_path}" >&2
             exit 1
           fi
-          xcrun stapler validate "${app_path}"
+          # stapler validate looks the ticket up on Apple's CloudKit, which drops connections now and then.
+          for attempt in 1 2 3; do
+            xcrun stapler validate "${app_path}" && break
+            if [ "${attempt}" = 3 ]; then exit 1; fi
+            sleep $((attempt * 20))
+          done
         done < <(find release -type d -name 'HamaEditor.app' -print0)
     - name: Verify Windows installer is unsigned by design
       if: inputs.platform == 'windows'
