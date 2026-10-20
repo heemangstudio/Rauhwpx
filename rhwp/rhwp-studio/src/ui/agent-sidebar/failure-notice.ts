@@ -182,6 +182,7 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
         actions.push({
           id: 'resume',
           label: '리셋 후 이어서',
+          quiet: true,
           ...(ctx.turnRunning ? { disabled: true, title: RUNNING_TITLE } : {}),
         });
       }
