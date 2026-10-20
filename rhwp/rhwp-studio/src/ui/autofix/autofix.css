@@ -100,11 +100,11 @@
   visibility: visible;
 }
 
-/* 점 다섯 개가 차례로 떠올랐다 내려앉는 물결. */
+/* 점 셋이 차례로 떠올랐다 내려앉는 물결. */
 .rhwp-autofix-dots {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
 }
 
 .rhwp-autofix-dot {
@@ -124,14 +124,6 @@
 
 .rhwp-autofix[data-phase='running'] .rhwp-autofix-dot:nth-child(3) {
   animation-delay: 280ms;
-}
-
-.rhwp-autofix[data-phase='running'] .rhwp-autofix-dot:nth-child(4) {
-  animation-delay: 420ms;
-}
-
-.rhwp-autofix[data-phase='running'] .rhwp-autofix-dot:nth-child(5) {
-  animation-delay: 560ms;
 }
 
 .rhwp-autofix [data-label='fixed'] {
