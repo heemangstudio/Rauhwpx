@@ -40,6 +40,7 @@ import { describePaperSize } from '@/ui/status-paper-size';
 import { StatusCharacterCounter } from '@/ui/status-character-count';
 import { MenuBar } from '@/ui/menu-bar';
 import { installDesktopNativeMenu } from '@/desktop-native-menu';
+import { syncSpacingPresetMenus } from '@/ui/spacing-preset-menu';
 import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
 import { loadExtensionViewerSettings, type ExtensionViewerSettings } from '@/core/extension-settings';
@@ -1612,9 +1613,13 @@ async function initialize(): Promise<void> {
     new MenuBar(document.getElementById('menu-bar')!, eventBus, dispatcher, registry, {
       onMenuOpen: (menuName) => {
         if (menuName === 'file') void renderRecentSubmenu();
+        if (menuName === 'page' || menuName === 'format') syncSpacingPresetMenus(wasm);
       },
     });
-    installDesktopNativeMenu({ menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus });
+    installDesktopNativeMenu({
+      menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus,
+      beforeSync: () => syncSpacingPresetMenus(wasm),
+    });
 
     // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
     // (.tb-btn + 서식바 접기 버튼 .sb-collapse-btn)

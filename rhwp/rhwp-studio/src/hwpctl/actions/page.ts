@@ -4,40 +4,50 @@
  */
 import { registerAction } from '../action-registry';
 import type { HwpCtrl } from '../index';
-import type { ParameterSet } from '../parameter-set';
+import { ParameterSet } from '../parameter-set';
 
 /**
- * PageSetup (SecDef ParameterSet)
- * hwpctl Item → rhwp JSON:
+ * PageSetup (SecDef ParameterSet) — 값은 모두 HWPUNIT 이다.
+ * 한컴처럼 SecDef 의 하위 셋 "PageDef" 에 담아도 되고, SecDef 에 바로 넣어도 된다.
+ * hwpctl Item → rhwp setPageDef JSON:
  *   PaperWidth → width, PaperHeight → height
  *   TopMargin → marginTop, BottomMargin → marginBottom
  *   LeftMargin → marginLeft, RightMargin → marginRight
- *   HeaderMargin → headerMargin, FooterMargin → footerMargin
+ *   HeaderLen(HeaderMargin) → marginHeader, FooterLen(FooterMargin) → marginFooter
+ *   GutterLen(GutterMargin) → marginGutter, GutterType → binding (0=한쪽, 1=맞쪽, 2=위로)
  *   Landscape → landscape (0=세로, 1=가로)
  */
+const PAGE_SETUP_ITEMS: ReadonlyArray<readonly [string, string]> = [
+  ['PaperWidth', 'width'], ['PaperHeight', 'height'],
+  ['TopMargin', 'marginTop'], ['BottomMargin', 'marginBottom'],
+  ['LeftMargin', 'marginLeft'], ['RightMargin', 'marginRight'],
+  ['HeaderLen', 'marginHeader'], ['HeaderMargin', 'marginHeader'],
+  ['FooterLen', 'marginFooter'], ['FooterMargin', 'marginFooter'],
+  ['GutterLen', 'marginGutter'], ['GutterMargin', 'marginGutter'],
+  ['GutterType', 'binding'],
+];
+
+/** PageSetup 셋을 setPageDef JSON 으로 옮긴다(없는 항목은 바꾸지 않는다). */
+export function pageSetupToPageDefPatch(set: ParameterSet): Record<string, number | boolean> {
+  const nested = set.GetItem('PageDef');
+  const item = (key: string): unknown => (nested instanceof ParameterSet ? nested.GetItem(key) : undefined)
+    ?? set.GetItem(key);
+  const patch: Record<string, number | boolean> = {};
+  for (const [hwpKey, rhwpKey] of PAGE_SETUP_ITEMS) {
+    const v = item(hwpKey);
+    if (typeof v === 'number' && Number.isFinite(v)) patch[rhwpKey] = Math.max(0, Math.round(v));
+  }
+  const landscape = item('Landscape');
+  if (landscape !== undefined) patch.landscape = !!landscape;
+  return patch;
+}
+
 function executePageSetup(ctrl: HwpCtrl, set: ParameterSet | null): boolean {
   if (!set) return false;
   const doc = ctrl.getWasmDoc();
   const cursor = ctrl.getCursor();
-
-  const obj: Record<string, any> = {};
-  const mapping: [string, string][] = [
-    ['PaperWidth', 'width'], ['PaperHeight', 'height'],
-    ['TopMargin', 'marginTop'], ['BottomMargin', 'marginBottom'],
-    ['LeftMargin', 'marginLeft'], ['RightMargin', 'marginRight'],
-    ['HeaderMargin', 'headerMargin'], ['FooterMargin', 'footerMargin'],
-  ];
-
-  for (const [hwpKey, rhwpKey] of mapping) {
-    const v = set.GetItem(hwpKey);
-    if (v !== undefined) obj[rhwpKey] = v;
-  }
-
-  const landscape = set.GetItem('Landscape');
-  if (landscape !== undefined) obj.landscape = !!landscape;
-
   try {
-    const result = doc.setPageDef(cursor.section, JSON.stringify(obj));
+    const result = doc.setPageDef(cursor.section, JSON.stringify(pageSetupToPageDefPatch(set)));
     return JSON.parse(result).ok === true;
   } catch (e) {
     console.error('[hwpctl] PageSetup 실패:', e);

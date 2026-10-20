@@ -439,7 +439,7 @@ const SPECS: Record<string, ToolSpec> = {
     summary: (a) => join([
       str(a['paper']),
       a['landscape'] === true ? '가로' : a['landscape'] === false ? '세로' : '',
-      a['marginsMm'] !== undefined ? '여백' : '',
+      a['marginsMm'] !== undefined || a['marginPreset'] !== undefined ? '여백' : '',
       a['columns'] !== undefined ? '단' : '',
     ]),
   },

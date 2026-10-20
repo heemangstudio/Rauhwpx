@@ -7,6 +7,9 @@ import { ColumnSettingsDialog } from '@/ui/column-settings-dialog';
 import { NewNumberDialog } from '@/ui/new-number-dialog';
 import { InsertFieldInHeaderFooterCommand } from '@/engine/command';
 import { emitHeaderFooterModeChanged } from '@/engine/header-footer-mode';
+import { findPageMarginPreset, pageMarginsError, withPageMarginsMm, mmToHwpunit } from '@/core/layout-presets';
+import { applyPageDefs } from '@/ui/page-setup-model';
+import { showToast } from '@/ui/toast';
 
 function stub(id: string, label: string, icon?: string, shortcut?: string): CommandDef {
   return {
@@ -209,6 +212,54 @@ function applyHfTemplate(
   setTimeout(() => textarea?.focus(), 50);
 }
 
+/** 편집 용지 대화상자 — 커서가 있는 구역 기준으로 연다. */
+function openPageSetup(services: Parameters<CommandDef['execute']>[0]): void {
+  const ih = services.getInputHandler();
+  const cursor = ih ? (ih as any).cursor : null;
+  const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
+  new PageSetupDialog(services.wasm, services.eventBus, sectionIdx, services).show();
+}
+
+/**
+ * 쪽 › 쪽 여백 프리셋. 문서의 모든 구역에 여백 6칸만 바꿔 한 번의 되돌리기로 적용한다
+ * (용지·방향·제본 여백은 구역마다 그대로). 이미 그 여백이면 기록을 남기지 않는다.
+ */
+function applyPageMarginPreset(
+  services: Parameters<CommandDef['execute']>[0],
+  presetId: string,
+): void {
+  const preset = findPageMarginPreset(presetId);
+  if (!preset) return;
+  const { wasm } = services;
+  const sectionCount = Math.max(1, wasm.getSectionCount());
+  let changed = false;
+  for (let section = 0; section < sectionCount; section++) {
+    const current = wasm.getPageDef(section);
+    const next = withPageMarginsMm(current, preset.margins);
+    const error = pageMarginsError(next);
+    if (error) {
+      showToast({ message: error });
+      return;
+    }
+    if ((['marginTop', 'marginBottom', 'marginLeft', 'marginRight', 'marginHeader', 'marginFooter'] as const)
+      .some(key => current[key] !== next[key])) changed = true;
+  }
+  if (!changed) return;
+  const { top, bottom, left, right, header, footer } = preset.margins;
+  applyPageDefs(
+    { wasm, inputHandler: services.getInputHandler(), eventBus: services.eventBus },
+    'all',
+    {
+      marginTop: mmToHwpunit(top),
+      marginBottom: mmToHwpunit(bottom),
+      marginLeft: mmToHwpunit(left),
+      marginRight: mmToHwpunit(right),
+      marginHeader: mmToHwpunit(header),
+      marginFooter: mmToHwpunit(footer),
+    },
+  );
+}
+
 export const pageCommands: CommandDef[] = [
   {
     id: 'page:setup',
@@ -217,11 +268,20 @@ export const pageCommands: CommandDef[] = [
     shortcutLabel: 'F7',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const ih = services.getInputHandler();
-      const cursor = ih ? (ih as any).cursor : null;
-      const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
-      const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx, services);
-      dialog.show();
+      openPageSetup(services);
+    },
+  },
+  {
+    id: 'page:margin-preset',
+    label: '쪽 여백',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services, params) {
+      // 인자 없이(명령 팔레트) 부르면 한컴의 "쪽 여백 설정…"처럼 편집 용지를 연다.
+      if (params?.preset === undefined) {
+        openPageSetup(services);
+        return;
+      }
+      applyPageMarginPreset(services, String(params.preset));
     },
   },
   {

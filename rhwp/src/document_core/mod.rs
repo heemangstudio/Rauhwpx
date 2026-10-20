@@ -14,6 +14,7 @@ mod commands;
 pub const IGNORE_STORED_LINESEGS_ENV: &str = "RHWP_IGNORE_STORED_LINESEGS";
 mod equation_fonts;
 pub(crate) use commands::caret_edit::CaretParagraph;
+pub use commands::document_spacing::DocumentParaSpacing;
 pub mod converters;
 pub(crate) mod html_table_import;
 /// 한글 클립보드 문서모델(hwpjson) → HWPX 변환

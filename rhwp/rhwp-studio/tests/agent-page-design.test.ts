@@ -9,14 +9,16 @@ import { AgentToolExecutor } from '../src/agent/tool-executor.ts';
 import { PendingEditManager } from '../src/agent/pending-edits.ts';
 import { AgentToolError } from '../src/agent/types.ts';
 
-function makeEnv() {
+function makeEnv(sectionCount = 1) {
   const body = ['첫 문단', '둘째 문단'];
   const bodyParaShapes = [10, 11];
-  let pageDef: Record<string, unknown> = {
+  const initialPageDef: Record<string, unknown> = {
     width: 59528, height: 84186, marginLeft: 8504, marginRight: 8504,
     marginTop: 5668, marginBottom: 4252, marginHeader: 4252, marginFooter: 4252,
     marginGutter: 0, landscape: false, binding: 0,
   };
+  /** 구역별 쪽 정의 — 0번 구역은 기존 테스트의 단일 pageDef 다 */
+  let pageDefs: Record<string, unknown>[] = Array.from({ length: sectionCount }, () => ({ ...initialPageDef }));
   let columnDef = { columnCount: 1, columnType: 0, sameWidth: true, spacing: 1300 };
   let sectionDef: Record<string, unknown> = {
     pageNum: 0, pageNumType: 0, pictureNum: 0, tableNum: 0, equationNum: 0,
@@ -30,15 +32,15 @@ function makeEnv() {
   const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
 
   const wasm = {
-    getSectionCount: () => 1,
+    getSectionCount: () => sectionCount,
     getParagraphCount: () => body.length,
     getParagraphLength: (_s: number, p: number) => body[p].length,
     getTextRange: (_s: number, p: number, off: number, cnt: number) => body[p].slice(off, off + cnt),
     get pageCount() { return 2; },
-    getPageDef: () => ({ ...pageDef }),
-    setPageDef: (_s: number, def: Record<string, unknown>) => {
-      record('setPageDef', { ...def });
-      pageDef = { ...def };
+    getPageDef: (s: number) => ({ ...pageDefs[s] }),
+    setPageDef: (s: number, def: Record<string, unknown>) => {
+      record('setPageDef', s, { ...def });
+      pageDefs[s] = { ...def };
       return { ok: true, pageCount: 2 };
     },
     getColumnDef: () => ({ ...columnDef }),
@@ -135,7 +137,7 @@ function makeEnv() {
 
   let snapshotId = 0;
   const snapshots = new Map<number, {
-    pageDef: Record<string, unknown>;
+    pageDefs: Record<string, unknown>[];
     columnDef: typeof columnDef;
     sectionDef: Record<string, unknown>;
     hfs: Map<string, string[]>;
@@ -145,7 +147,7 @@ function makeEnv() {
     saveSnapshot: () => {
       const id = ++snapshotId;
       snapshots.set(id, {
-        pageDef: structuredClone(pageDef),
+        pageDefs: structuredClone(pageDefs),
         columnDef: structuredClone(columnDef),
         sectionDef: structuredClone(sectionDef),
         hfs: structuredClone(hfs),
@@ -155,7 +157,7 @@ function makeEnv() {
     },
     restoreSnapshot: (id: number) => {
       const saved = snapshots.get(id)!;
-      pageDef = structuredClone(saved.pageDef);
+      pageDefs = structuredClone(saved.pageDefs);
       columnDef = structuredClone(saved.columnDef);
       sectionDef = structuredClone(saved.sectionDef);
       hfs.clear();
@@ -209,7 +211,7 @@ function makeEnv() {
     executor.execute(tool, { expectedRevision: revision.revision, ...args }, 'claude');
   return {
     call, pending, calls, hfs,
-    getPageDefNow: () => pageDef,
+    getPageDefNow: (s = 0) => pageDefs[s],
     getColumnDefNow: () => columnDef,
     getSectionDefNow: () => sectionDef,
     getParaShape: (p: number) => bodyParaShapes[p],
@@ -229,19 +231,46 @@ async function expectErr(p: Promise<unknown>, code: string): Promise<void> {
 
 // ─── set_page_layout ────────────────────────────────────────
 
-test('set_page_layout: A4 landscape 는 가로/세로 스왑 + reject 시 원상복구', async () => {
+test('set_page_layout: A4 landscape 는 세로 크기로 저장하고 플래그로 돌린다 + reject 시 원상복구', async () => {
   const { call, pending, getPageDefNow } = makeEnv();
   const r = (await call('set_page_layout', {
     sectionIdx: 0, paper: 'A4', landscape: true,
   })) as { changeSetId: string };
   const d = getPageDefNow();
+  // 엔진은 landscape 면 폭/길이를 바꿔 그린다 — 저장 크기가 이미 가로면 다시 세로가 된다
   assert.equal(d['landscape'], true);
-  assert.ok((d['width'] as number) > (d['height'] as number)); // 가로가 길다
-  assert.equal(d['height'], Math.round(210 * (7200 / 25.4)));
+  assert.deepEqual([d['width'], d['height']], [59527, 84188]);
   pending.reject(r.changeSetId);
   const d2 = getPageDefNow();
   assert.equal(d2['landscape'], false);
   assert.equal(d2['width'], 59528);
+});
+
+test('set_page_layout: allSections + marginPreset 은 구역마다 여백만 바꾸고 marginsMm 이 덮어쓴다', async () => {
+  const { call, pending, getPageDefNow } = makeEnv(3);
+  const hu = (mm: number) => Math.round(mm * (7200 / 25.4));
+  const r = (await call('set_page_layout', {
+    allSections: true, marginPreset: 'narrow2-hf', marginsMm: { left: 12 },
+  })) as { changeSetId: string; sections: number };
+  assert.equal(r.sections, 3);
+  for (const s of [0, 1, 2]) {
+    const d = getPageDefNow(s);
+    assert.deepEqual(
+      [d['marginTop'], d['marginBottom'], d['marginLeft'], d['marginRight'], d['marginHeader'], d['marginFooter']],
+      [hu(5), hu(5), hu(12), hu(10), hu(10), hu(10)],
+      `구역 ${s}`,
+    );
+    assert.equal(d['width'], 59528, `구역 ${s} 용지는 그대로`);
+  }
+  pending.reject(r.changeSetId);
+  for (const s of [0, 1, 2]) assert.equal(getPageDefNow(s)['marginTop'], 5668, `구역 ${s} 복원`);
+});
+
+test('set_page_layout: 구역 지정이 없거나 둘 다 주면 INVALID_ARGS, 모르는 프리셋도 거절', async () => {
+  const { call } = makeEnv(2);
+  await expectErr(call('set_page_layout', { marginPreset: 'wide' }), 'INVALID_ARGS');
+  await expectErr(call('set_page_layout', { sectionIdx: 0, allSections: true, marginPreset: 'wide' }), 'INVALID_ARGS');
+  await expectErr(call('set_page_layout', { allSections: true, marginPreset: 'tiny' }), 'INVALID_ARGS');
 });
 
 test('set_page_layout: 여백 + 다단 설정, reject 는 다단도 복원한다', async () => {

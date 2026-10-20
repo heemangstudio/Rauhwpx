@@ -2661,16 +2661,30 @@ impl DocumentCore {
         section_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
-        use crate::model::page::BindingMethod;
-
         let section = self
             .document
             .sections
             .get_mut(section_idx)
             .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?;
-        let pd = &mut section.section_def.page_def;
+        Self::apply_page_def_json(section, json);
+        Ok(self.finish_page_def_change())
+    }
 
+    /// 모든 구역의 용지 설정을 같은 JSON(주어진 키만)으로 바꾸고 한 번만 재조판한다.
+    /// 구역마다 `set_page_def_native` 를 부르면 구역 수만큼 전체 재조판이 돈다.
+    pub fn set_page_def_all_native(&mut self, json: &str) -> Result<String, HwpError> {
+        for section in &mut self.document.sections {
+            Self::apply_page_def_json(section, json);
+        }
+        Ok(self.finish_page_def_change())
+    }
+
+    /// JSON 에 있는 키만 구역 PageDef 에 반영한다(재조판은 호출측 몫).
+    fn apply_page_def_json(section: &mut crate::model::document::Section, json: &str) {
         use super::super::helpers::{json_bool, json_u32};
+        use crate::model::page::BindingMethod;
+
+        let pd = &mut section.section_def.page_def;
 
         if let Some(v) = json_u32(json, "width") {
             pd.width = v;
@@ -2732,15 +2746,15 @@ impl DocumentCore {
 
         // FIX 3: raw_stream 무효화 → 직렬화 시 모델에서 재구성
         section.raw_stream = None;
+    }
 
-        // 재조판 + 재페이지네이션
+    /// 용지 설정 변경 뒤 재조판 + 재페이지네이션.
+    fn finish_page_def_change(&mut self) -> String {
         self.normalize_leading_hosts_for_layout();
         self.recompose_body_sections();
         self.mark_all_sections_dirty();
         self.paginate();
-
-        let page_count = self.page_count();
-        Ok(format!("{{\"ok\":true,\"pageCount\":{}}}", page_count))
+        format!("{{\"ok\":true,\"pageCount\":{}}}", self.page_count())
     }
 
     /// 텍스트 레이아웃 정보 (네이티브 에러 타입)

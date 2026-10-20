@@ -40,6 +40,8 @@ export interface DesktopNativeMenuOptions {
   dispatcher: CommandDispatcher;
   registry: CommandRegistry;
   eventBus: EventBus;
+  /** 직렬화 직전에 문서 상태로 정해지는 체크 표시(쪽 여백 프리셋 등)를 갱신한다. */
+  beforeSync?: () => void;
 }
 
 // 명령 활성 상태가 바뀔 수 있는 신호. 모두 한 번의 지연 갱신으로 합친다.
@@ -219,12 +221,13 @@ export function installDesktopNativeMenu(options: DesktopNativeMenuOptions): boo
   if (typeof window === 'undefined') return false;
   const api = (window as unknown as { rhwpDesktop?: NativeMenuApi }).rhwpDesktop;
   if (api?.platform !== 'darwin' || typeof api.setAppMenuModel !== 'function') return false;
-  const { menuBar, dispatcher, registry, eventBus } = options;
+  const { menuBar, dispatcher, registry, eventBus, beforeSync } = options;
 
   let lastSent = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
   const sync = () => {
     timer = null;
+    beforeSync?.();
     const model = serializeMenuBar(menuBar, dispatcher, registry);
     const serialized = JSON.stringify(model);
     if (serialized === lastSent) return;

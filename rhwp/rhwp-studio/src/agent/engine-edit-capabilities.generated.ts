@@ -122,6 +122,14 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "applyCharFormatInHf(sec: number, isHeader: boolean, applyTo: number, para: number, start: number, end: number, props: string)"
   },
   {
+    "method": "applyDocumentParaSpacing",
+    "kind": "document",
+    "parameters": [
+      "spacing"
+    ],
+    "signature": "applyDocumentParaSpacing(spacing: { lineSpacing: number; spacingBefore: number; spacingAfter: number })"
+  },
+  {
     "method": "applyEndnoteShape",
     "kind": "document",
     "parameters": [
@@ -1820,6 +1828,14 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "pageDef"
     ],
     "signature": "setPageDef(sectionIdx: number, pageDef: PageDef)"
+  },
+  {
+    "method": "setPageDefAll",
+    "kind": "document",
+    "parameters": [
+      "patch"
+    ],
+    "signature": "setPageDefAll(patch: Partial<PageDef>)"
   },
   {
     "method": "setPageHide",

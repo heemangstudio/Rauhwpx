@@ -1161,6 +1161,12 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 모든 구역의 용지 설정을 같은 JSON(주어진 키만)으로 바꾸고 한 번만 재조판한다.
+    #[wasm_bindgen(js_name = setPageDefAll)]
+    pub fn set_page_def_all(&mut self, json: &str) -> Result<String, JsValue> {
+        self.set_page_def_all_native(json).map_err(|e| e.into())
+    }
+
     /// 구역 정의(SectionDef)를 JSON으로 반환한다.
     #[wasm_bindgen(js_name = getSectionDef)]
     pub fn get_section_def(&self, section_idx: u32) -> Result<String, JsValue> {
@@ -9161,6 +9167,32 @@ impl HwpDocument {
             props_json,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 문서 전체 문단 간격 프리셋을 적용한다 (서식 › 문단 간격).
+    ///
+    /// json: {"lineSpacing":160,"spacingBefore":0,"spacingAfter":0} — 단위는
+    /// applyParaFormat 과 같은 문단 모양 원시값(줄 간격 %, 문단 간격 HWPUNIT×2).
+    /// 반환: {"ok":true,"changed":문단 수,"pageCount":N}
+    #[wasm_bindgen(js_name = applyDocumentParaSpacing)]
+    pub fn apply_document_para_spacing(&mut self, json: &str) -> Result<String, JsValue> {
+        use crate::document_core::helpers::json_i32;
+        use crate::document_core::DocumentParaSpacing;
+        let spacing = DocumentParaSpacing {
+            line_spacing: json_i32(json, "lineSpacing").unwrap_or(0),
+            spacing_before: json_i32(json, "spacingBefore").unwrap_or(0),
+            spacing_after: json_i32(json, "spacingAfter").unwrap_or(0),
+        };
+        self.apply_document_para_spacing_native(spacing)
+            .map_err(|e| e.into())
+    }
+
+    /// 문단 간격 프리셋 대상 문단들의 공통 줄 간격·문단 간격 (값이 섞였으면 null).
+    ///
+    /// 반환: {"count":N,"lineSpacing":160|null,"spacingBefore":0|null,"spacingAfter":0|null}
+    #[wasm_bindgen(js_name = getDocumentParaSpacing)]
+    pub fn get_document_para_spacing(&self) -> String {
+        self.get_document_para_spacing_native()
     }
 
     /// 문단의 paraShapeId를 직접 설정한다.

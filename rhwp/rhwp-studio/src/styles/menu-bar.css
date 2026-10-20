@@ -294,8 +294,9 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-title {
   color: var(--color-text-disabled);
 }
 
-/* 단축키 칸 — 오른쪽 정렬, 고정폭 숫자, 강조 전에는 보조 색 */
-.md-shortcut {
+/* 단축키 칸(·값 힌트) — 오른쪽 정렬, 고정폭 숫자, 강조 전에는 보조 색 */
+.md-shortcut,
+.md-hint {
   margin-left: auto;
   padding-left: 28px;
   color: var(--ui-text-muted, var(--color-text-hint));
@@ -304,11 +305,11 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-title {
   text-align: right;
 }
 
-.md-item:not(.disabled):is(:hover, :focus-within) .md-shortcut {
+.md-item:not(.disabled):is(:hover, :focus-within) :is(.md-shortcut, .md-hint) {
   color: inherit;
 }
 
-.md-item.disabled .md-shortcut {
+.md-item.disabled :is(.md-shortcut, .md-hint) {
   color: var(--color-text-disabled);
 }
 
