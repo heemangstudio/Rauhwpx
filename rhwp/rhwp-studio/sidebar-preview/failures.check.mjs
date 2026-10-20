@@ -93,11 +93,11 @@ export async function checkFailureNotices(page, origin, artifacts) {
   await page.waitForFunction(() => document.querySelector('.ag-settings-page')?.getAttribute('aria-hidden') === 'false');
   assert.ok(await page.$('.ag-settings-page'), 'connection settings opened');
 
-  // 자세히 shows the redacted provider text, and only as text.
+  // The redacted provider text stays reachable as the title's tooltip, never as markup.
   await openFailure(page, origin, 'provider');
   await playFailure(page);
-  await page.click('.ag-failure-detail-toggle');
-  assert.match(await page.$eval('.ag-failure-detail', (node) => node.hidden ? '' : node.textContent), /Overloaded/);
+  assert.match(await page.$eval('.ag-failure-title', (node) => node.title), /Overloaded/);
+  assert.equal(await page.$('.ag-failure-detail'), null, 'no detail panel');
   await shot(page, artifacts, 'provider-detail');
 
   // 다시 시도 resends the stored request as a new user turn; the old notice loses its actions.
