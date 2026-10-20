@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDocumentRegion, createAgentContextStore, installAgentContextStore } from '../desktop/agent-context-store.mjs';
@@ -26,9 +26,55 @@ test('capture PNG and JSON survive reload, consumption and discard', async (t) =
   assert.deepEqual(Buffer.from((await reopened.readFiles(first.id))[0].bytes), png);
   await reopened.setState([first.id], 'consumed'); await reopened.setState([second.id], 'discarded');
   assert.deepEqual(await reopened.list('document-a'), []);
-  assert.equal(JSON.parse(await readFile(join(root, first.id, 'record.json'), 'utf8')).state, 'consumed');
-  assert.equal(JSON.parse(await readFile(join(root, second.id, 'record.json'), 'utf8')).comment, '여기 수정');
-  assert.deepEqual(await readFile(join(root, second.id, 'region.png')), png);
+  // 끝난 기록은 원본을 archive/ 에 남기고 다시 읽을 수 있다.
+  assert.equal(JSON.parse(await readFile(join(root, 'archive', first.id, 'record.json'), 'utf8')).state, 'consumed');
+  assert.equal(JSON.parse(await readFile(join(root, 'archive', second.id, 'record.json'), 'utf8')).comment, '여기 수정');
+  assert.deepEqual(await readFile(join(root, 'archive', second.id, 'region.png')), png);
+  assert.deepEqual(Buffer.from((await reopened.readFiles(second.id))[0].bytes), png);
+  await reopened.setState([first.id, second.id], 'discarded');
+  assert.equal(JSON.parse(await readFile(join(root, 'archive', first.id, 'record.json'), 'utf8')).state, 'consumed');
+});
+test('finished captures leave the scanned root so lists and saves stay bounded by queued drafts', async (t) => {
+  const root = await temporary(t); const store = createAgentContextStore({ rootDir: root });
+  const queued = await store.save(payload());
+  for (let index = 0; index < 30; index += 1) {
+    const record = await store.save(payload(index % 2 ? 'document-a' : 'document-b'));
+    await store.setState([record.id], index % 3 ? 'consumed' : 'discarded');
+  }
+  const scanned = (await readdir(root)).filter((name) => name !== 'archive');
+  assert.deepEqual(scanned, [queued.id]);
+  assert.equal((await readdir(join(root, 'archive'))).length, 30);
+  // 지난 기록은 대기 한도에 세지 않는다.
+  for (let index = 0; index < 19; index += 1) await store.save(payload());
+  await assert.rejects(store.save(payload()), /저장된 메모가 많습니다/);
+  assert.equal((await store.list('document-a')).length, 20);
+});
+test('captures finished by an older version move out of the root on the next list', async (t) => {
+  const root = await temporary(t); const store = createAgentContextStore({ rootDir: root });
+  const kept = await store.save(payload()); const old = await store.save(payload());
+  await store.setState([old.id], 'consumed');
+  // 이전 버전은 끝난 기록을 rootDir 에 그대로 두었다.
+  await rename(join(root, 'archive', old.id), join(root, old.id));
+  const reopened = createAgentContextStore({ rootDir: root });
+  assert.deepEqual((await reopened.list('document-a')).map((record) => record.id), [kept.id]);
+  await reopened.save(payload('document-b'));
+  assert.ok(!(await readdir(root)).includes(old.id));
+  assert.equal(JSON.parse(await readFile(join(root, 'archive', old.id, 'record.json'), 'utf8')).state, 'consumed');
+  assert.deepEqual(Buffer.from((await reopened.readFiles(old.id))[0].bytes), png);
+});
+test('an older capture that cannot move out of the root does not hold up later saves', async (t) => {
+  const root = await temporary(t); const seed = createAgentContextStore({ rootDir: root, platform: 'win32' });
+  const old = await seed.save(payload()); await seed.setState([old.id], 'consumed');
+  await rename(join(root, 'archive', old.id), join(root, old.id));
+  // 같은 이름의 보관 폴더가 있으면 옮기기가 계속 실패한다(잠긴 폴더와 같은 경우).
+  await mkdir(join(root, 'archive', old.id)); await writeFile(join(root, 'archive', old.id, 'keep'), 'x');
+  const store = createAgentContextStore({ rootDir: root, platform: 'win32' });
+  for (let index = 0; index < 4; index += 1) assert.deepEqual(await store.list('document-a'), []);
+  const started = performance.now();
+  const saved = await store.save(payload());
+  assert.ok(performance.now() - started < 1000, 'saves do not wait on lock retries for older captures');
+  assert.deepEqual((await store.list('document-a')).map((record) => record.id), [saved.id]);
+  assert.deepEqual(Buffer.from((await store.readFiles(old.id))[0].bytes), png);
 });
 test('capture storage rejects paths, invalid geometry and oversized PNGs without saving', async (t) => {
   const root = await temporary(t); const store = createAgentContextStore({ rootDir: root });
