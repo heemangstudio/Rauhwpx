@@ -7692,22 +7692,26 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   margin: 0;
 }
 
-/* 인사 한 줄은 세로로 긴 해바라기체(Sunflower Medium, SIL OFL 1.1)로 쓴다.
-   글꼴은 KS X 1001 완성형 2,350자를 담는다. */
+/* 인사 한 줄은 Pretendard SemiBold(SIL OFL 1.1)로 쓴다. 문서 글꼴 목록의
+   'Pretendard' 와 겹치지 않게 따로 이름을 붙인다. */
 @font-face {
-  font-family: 'Sunflower';
+  font-family: 'Ag Greeting';
   font-style: normal;
-  font-weight: 500;
+  font-weight: 600;
   font-display: block;
-  src: url('./fonts/Sunflower-Medium.woff2') format('woff2');
+  src:
+    local('Pretendard SemiBold'),
+    local('Pretendard-SemiBold'),
+    url('/fonts/Pretendard-SemiBold.woff2') format('woff2');
 }
 
 .ag-focus-greeting-line {
   margin: 0;
   color: var(--ag-text);
-  font-family: 'Sunflower', var(--ag-font);
+  font-family: 'Ag Greeting', var(--ag-font);
   font-size: 36px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   line-height: 1.25;
   text-wrap: balance;
 }
