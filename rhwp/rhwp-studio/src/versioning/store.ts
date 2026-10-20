@@ -36,6 +36,7 @@ import {
   type VersionBlob,
   type VersionCommit,
   type VersionCompareSnapshot,
+  type VersionImportSource,
   type VersionMergeDraft,
   type VersionMergeManifest,
   type VersionMergeMetadata,
@@ -225,12 +226,23 @@ export type CompleteMergeCheckpointInput = CheckpointPayload & {
   expectedRepositoryRevision: number;
   expectedBranchRevision: number;
   expectedHead: CommitId;
-  sourceBranch: BranchName;
-  expectedSourceRevision: number;
-  deleteSource: boolean;
   draftId?: MergeDraftId;
   lastSavedFingerprint?: ContentFingerprint;
   merge: VersionMergeMetadata;
+} & (
+  | { sourceBranch: BranchName; expectedSourceRevision: number; deleteSource: boolean; sourceCommit?: never }
+  /** 참조 없는 커밋(외부 문서 가져오기)을 병합한다. 소스 브랜치를 읽거나 지우지 않는다. */
+  | { sourceCommit: CommitId; sourceBranch?: never; expectedSourceRevision?: never; deleteSource?: false }
+);
+
+export type CreateImportCommitInput = CheckpointPayload & {
+  repositoryId: RepositoryId;
+  expectedRepositoryRevision: number;
+  /** 외부 문서가 갈라져 나온 기준 커밋. */
+  parent: CommitId;
+  importedFrom: VersionImportSource;
+  /** 주면 같은 트랜잭션에서 새 커밋에 이 브랜치를 만든다. 없으면 참조 없는 커밋으로 남는다. */
+  branch?: BranchName;
 };
 
 export interface BranchRefExpectation {
@@ -251,7 +263,8 @@ export interface RestoreCompositeRefsInput {
   targetBranch: BranchName;
   expectedTarget: BranchRefExpectation;
   restoreTarget: CommitId;
-  sourceBranch: BranchName;
+  /** 없으면 대상 브랜치만 되돌린다(참조 없는 커밋을 병합한 경우). */
+  sourceBranch?: BranchName;
   expectedSource: BranchRefExpectation | null;
   /** minimumRevision prevents a recreated ref from reusing a pre-delete CAS token. */
   restoreSource: { target: CommitId; minimumRevision?: number; generation: BranchGeneration } | null;
@@ -1111,7 +1124,9 @@ function validateRepositorySnapshot(input: VersionRepositorySnapshot): VersionRe
       || !draft.baseCommitIds.every((base) => commits.has(base))
       || !draft.manualAssetBlobIds.every((asset) => blobs.has(asset))
       || !refKeys.has(refKey(id, 'branch', draft.targetBranch))
-      || !refKeys.has(refKey(id, 'branch', draft.sourceBranch))
+      || (draft.sourceCommit
+        ? draft.sourceCommit.id !== draft.sourceHead
+        : !refKeys.has(refKey(id, 'branch', draft.sourceBranch)))
     ) throw new VersionError('MERGE_DRAFT_NOT_FOUND', `Portable merge draft ${draft.id} is invalid`);
     draftIds.add(draft.id);
   }
@@ -1203,17 +1218,21 @@ async function logRecovery(
 function assertDraftMatchesRefs(
   draft: VersionMergeDraft,
   target: BranchRef,
-  source: BranchRef,
+  source: BranchRef | { sourceCommit: CommitId },
 ): void {
+  const sourceMatches = 'sourceCommit' in source
+    ? draft.sourceCommit?.id === source.sourceCommit && draft.sourceHead === source.sourceCommit
+    : !draft.sourceCommit
+      && normalizedRefKey(draft.sourceBranch) === normalizedRefKey(source.name)
+      && draft.sourceHead === source.target
+      && draft.sourceBranchRevision === source.revision
+      && (draft.sourceBranchGeneration === undefined || draft.sourceBranchGeneration === source.generation);
   if (
     normalizedRefKey(draft.targetBranch) !== normalizedRefKey(target.name)
-    || normalizedRefKey(draft.sourceBranch) !== normalizedRefKey(source.name)
+    || !sourceMatches
     || draft.currentHead !== target.target
-    || draft.sourceHead !== source.target
     || draft.targetBranchRevision !== target.revision
-    || draft.sourceBranchRevision !== source.revision
     || (draft.targetBranchGeneration !== undefined && draft.targetBranchGeneration !== target.generation)
-    || (draft.sourceBranchGeneration !== undefined && draft.sourceBranchGeneration !== source.generation)
   ) {
     stale('The merge draft no longer matches the branch refs');
   }
@@ -1240,7 +1259,9 @@ async function deleteMergeDrafts(
 
 function draftNamesBranch(draft: VersionMergeDraft, branch: BranchName): boolean {
   const key = normalizedRefKey(branch);
-  return normalizedRefKey(draft.targetBranch) === key || normalizedRefKey(draft.sourceBranch) === key;
+  // 커밋을 병합하는 초안의 sourceBranch 는 표시용 이름이라 브랜치와 묶지 않는다.
+  return normalizedRefKey(draft.targetBranch) === key
+    || (!draft.sourceCommit && normalizedRefKey(draft.sourceBranch) === key);
 }
 
 async function repositoryWorktrees(tx: GraphTransaction, id: RepositoryId): Promise<VersionWorktree[]> {
@@ -2014,6 +2035,85 @@ export class VersionGraphStore {
     }));
   }
 
+  /**
+   * 기록 밖에서 들어온 문서(다른 사람이 고친 사본)를 기준 커밋의 자식으로 적는다. 브랜치 이름을 주면 같은
+   * 트랜잭션에서 그 커밋에 브랜치를 만들고, 없으면 참조 없는 커밋으로 남긴다(바로 병합할 때). 참조 없는
+   * 커밋은 병합 초안이 붙잡지 않으면 정리 대상이다.
+   */
+  async createImportCommit(input: CreateImportCommitInput): Promise<{
+    repository: VersionRepository;
+    commit: VersionCommit;
+    branch: BranchRef | null;
+  }> {
+    const payload = preparePayload(input);
+    const fileName = input.importedFrom.fileName.normalize('NFC').trim();
+    if (!fileName || fileName.length > 255) {
+      throw new VersionError('VERSION_STORE_FAILED', 'Imported file name is invalid');
+    }
+    const name = input.branch === undefined ? null : branchName(input.branch);
+    return this.#serialize(input.repositoryId, () => this.#transaction('readwrite', async (tx) => {
+      const repository = await tx.get('repositories', input.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      assertRepositoryRevision(repository, input.expectedRepositoryRevision);
+      const parent = await tx.get('commits', input.parent);
+      assertCommitInRepository(parent, input.repositoryId, 'Import base commit was not found in this repository');
+      if (name && await tx.get('refs', refKey(input.repositoryId, 'branch', name))) {
+        throw new VersionError('BRANCH_EXISTS', `Branch ${name} already exists`);
+      }
+      const id = input.id ?? commitId(createId('commit'));
+      if (await tx.get('commits', id)) {
+        throw new VersionError('VERSION_STORE_FAILED', 'Commit ID already exists');
+      }
+      const createdAt = input.createdAt ?? Date.now();
+      const parentManifest = parent.mergeManifestId ? await tx.get('mergeManifests', parent.mergeManifestId) : undefined;
+      const manifest = buildMergeManifest(
+        input.repositoryId,
+        id,
+        input.compareSnapshot,
+        createdAt,
+        parentManifest ? [parentManifest] : [],
+        input.mergeManifestEntries,
+      );
+      const commit: VersionCommit = {
+        id,
+        repositoryId: input.repositoryId,
+        parents: [parent.id],
+        ordinal: repository.nextOrdinal,
+        blobId: payload.blob.id,
+        compareSnapshotId: payload.compareSnapshot.id,
+        mergeManifestId: manifest.id,
+        contentFingerprint: contentFingerprint(input.contentFingerprint),
+        ...commitTitle(input),
+        author: cloneValue(input.author),
+        reason: 'import',
+        stats: cloneValue(input.stats ?? EMPTY_STATS),
+        createdAt,
+        importedFrom: { fileName },
+      };
+      const branch: BranchRef | null = name ? {
+        repositoryId: input.repositoryId,
+        kind: 'branch',
+        name,
+        generation: newBranchGeneration(),
+        target: id,
+        revision: 1,
+      } : null;
+      const updatedRepository = nextRepositoryRevision(repository, { nextOrdinal: repository.nextOrdinal + 1 });
+      if (!await tx.has('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
+      if (!await tx.has('compareSnapshots', payload.compareSnapshot.id)) {
+        await tx.put('compareSnapshots', payload.compareSnapshot);
+      }
+      if (!await tx.get('mergeManifests', manifest.id)) await tx.put('mergeManifests', manifest);
+      await tx.put('commits', commit);
+      if (branch) {
+        await tx.put('refs', toRefRow(branch));
+        await logRecovery(tx, 'branch-created', null, branch);
+      }
+      await tx.put('repositories', updatedRepository);
+      return { repository: updatedRepository, commit, branch };
+    }));
+  }
+
   async getCommit(id: CommitId): Promise<VersionCommit | null> {
     return this.#transaction('readonly', async (tx) => await tx.get('commits', id) ?? null);
   }
@@ -2234,7 +2334,13 @@ export class VersionGraphStore {
       ]) {
         assertCommitInRepository(await tx.get('commits', head), input.draft.repositoryId);
       }
-      for (const branch of [input.draft.targetBranch, input.draft.sourceBranch]) {
+      if (input.draft.sourceCommit && input.draft.sourceCommit.id !== input.draft.sourceHead) {
+        throw new VersionError('VERSION_STORE_FAILED', 'The merge source commit does not match the draft head');
+      }
+      const branches = input.draft.sourceCommit
+        ? [input.draft.targetBranch]
+        : [input.draft.targetBranch, input.draft.sourceBranch];
+      for (const branch of branches) {
         const row = await tx.get('refs', refKey(input.draft.repositoryId, 'branch', branch));
         if (!row || row.kind !== 'branch') missing('REF_NOT_FOUND', `Merge branch ${branch} was not found`);
       }
@@ -2594,7 +2700,7 @@ export class VersionGraphStore {
       const repository = await tx.get('repositories', input.repositoryId);
       if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
       assertRepositoryRevision(repository, input.expectedRepositoryRevision);
-      if (normalizedRefKey(input.branch) === normalizedRefKey(input.sourceBranch)) {
+      if (input.sourceBranch !== undefined && normalizedRefKey(input.branch) === normalizedRefKey(input.sourceBranch)) {
         throw new VersionError('VERSION_STORE_FAILED', 'Merge source and target branches must be distinct');
       }
       const targetKey = refKey(input.repositoryId, 'branch', input.branch);
@@ -2603,19 +2709,26 @@ export class VersionGraphStore {
       const targetBranch = fromRefRow(targetRow) as BranchRef;
       assertRefRevision(targetBranch, input.expectedBranchRevision);
       if (targetBranch.target !== input.expectedHead) stale('The merge target head changed');
-      const sourceKey = refKey(input.repositoryId, 'branch', input.sourceBranch);
-      const sourceRow = await tx.get('refs', sourceKey);
-      if (!sourceRow || sourceRow.kind !== 'branch') missing('REF_NOT_FOUND', 'Merge source branch was not found');
-      const sourceBranch = fromRefRow(sourceRow) as BranchRef;
-      assertRefRevision(sourceBranch, input.expectedSourceRevision);
-      if (targetBranch.target === sourceBranch.target) {
+      let sourceBranch: BranchRef | null = null;
+      let sourceTarget: CommitId;
+      const sourceKey = input.sourceBranch === undefined ? null : refKey(input.repositoryId, 'branch', input.sourceBranch);
+      if (input.sourceBranch !== undefined) {
+        const sourceRow = await tx.get('refs', sourceKey!);
+        if (!sourceRow || sourceRow.kind !== 'branch') missing('REF_NOT_FOUND', 'Merge source branch was not found');
+        sourceBranch = fromRefRow(sourceRow) as BranchRef;
+        assertRefRevision(sourceBranch, input.expectedSourceRevision);
+        if (input.deleteSource && isDefaultBranch(repository, sourceBranch.name)) {
+          throw new VersionError('DEFAULT_BRANCH', 'The default branch cannot be deleted');
+        }
+        sourceTarget = sourceBranch.target;
+      } else {
+        sourceTarget = input.sourceCommit;
+      }
+      if (targetBranch.target === sourceTarget) {
         throw new VersionError('VERSION_STORE_FAILED', 'Merge parents must be distinct');
       }
-      if (input.deleteSource && isDefaultBranch(repository, sourceBranch.name)) {
-        throw new VersionError('DEFAULT_BRANCH', 'The default branch cannot be deleted');
-      }
       if (
-        input.merge.sourceBranchAtMerge !== sourceBranch.name
+        (sourceBranch && input.merge.sourceBranchAtMerge !== sourceBranch.name)
         || input.merge.targetBranchAtMerge !== targetBranch.name
       ) {
         throw new VersionError('VERSION_STORE_FAILED', 'Merge metadata does not match the branch refs');
@@ -2623,7 +2736,7 @@ export class VersionGraphStore {
       for (const base of input.merge.baseCommitIds) {
         assertCommitInRepository(await tx.get('commits', base), input.repositoryId, 'Merge base was not found');
       }
-      const parents: CommitParents = [targetBranch.target, sourceBranch.target];
+      const parents: CommitParents = [targetBranch.target, sourceTarget];
       const parentCommits = await Promise.all(parents.map(async (parent) => {
         const commit = await tx.get('commits', parent);
         assertCommitInRepository(commit, input.repositoryId, 'Merge parent was not found');
@@ -2634,7 +2747,7 @@ export class VersionGraphStore {
         if (!draft || draft.repositoryId !== input.repositoryId) {
           missing('MERGE_DRAFT_NOT_FOUND', 'Merge draft was not found');
         }
-        assertDraftMatchesRefs(draft, targetBranch, sourceBranch);
+        assertDraftMatchesRefs(draft, targetBranch, sourceBranch ?? { sourceCommit: sourceTarget });
       }
       const id = input.id ?? commitId(createId('commit'));
       if (await tx.get('commits', id)) {
@@ -2685,21 +2798,22 @@ export class VersionGraphStore {
       await tx.put('commits', commit);
       await tx.put('refs', toRefRow(updatedBranch));
       await logRecovery(tx, 'head-moved', targetBranch, updatedBranch);
-      if (input.deleteSource) {
-        await assertBranchUnoccupied(tx, input.repositoryId, input.sourceBranch);
-        await tx.delete('refs', sourceKey);
-        await logRecovery(tx, 'branch-deleted', sourceBranch, null);
+      const deletedSource = input.deleteSource && sourceBranch ? sourceBranch : null;
+      if (deletedSource) {
+        await assertBranchUnoccupied(tx, input.repositoryId, deletedSource.name);
+        await tx.delete('refs', sourceKey!);
+        await logRecovery(tx, 'branch-deleted', deletedSource, null);
       }
-      if (input.draftId || input.deleteSource) {
+      if (input.draftId || deletedSource) {
         await deleteMergeDrafts(tx, input.repositoryId, (draft) => (
-          draft.id === input.draftId || (input.deleteSource && draftNamesBranch(draft, sourceBranch.name))
+          draft.id === input.draftId || (deletedSource !== null && draftNamesBranch(draft, deletedSource.name))
         ));
       }
       await tx.put('repositories', updatedRepository);
       return {
         repository: updatedRepository,
         branch: updatedBranch,
-        sourceBranch: input.deleteSource ? null : sourceBranch,
+        sourceBranch: deletedSource ? null : sourceBranch,
         commit,
       };
     }));
@@ -2722,7 +2836,7 @@ export class VersionGraphStore {
       } else if (repository.revision < input.expectedRepositoryRevision) {
         stale(`Repository revision ${input.expectedRepositoryRevision} is ahead of current revision ${repository.revision}`);
       }
-      if (normalizedRefKey(input.targetBranch) === normalizedRefKey(input.sourceBranch)) {
+      if (input.sourceBranch !== undefined && normalizedRefKey(input.targetBranch) === normalizedRefKey(input.sourceBranch)) {
         throw new VersionError('VERSION_STORE_FAILED', 'Composite refs must name distinct branches');
       }
       const targetKey = refKey(input.repositoryId, 'branch', input.targetBranch);
@@ -2731,7 +2845,19 @@ export class VersionGraphStore {
       const currentTarget = fromRefRow(targetRow) as BranchRef;
       assertRefRevision(currentTarget, input.expectedTarget.revision);
       if (currentTarget.target !== input.expectedTarget.target) stale('The composite target head changed');
-      const sourceKey = refKey(input.repositoryId, 'branch', input.sourceBranch);
+      if (input.sourceBranch === undefined) {
+        if (currentTarget.generation !== input.expectedTarget.generation) stale('The composite target branch was replaced');
+        assertCommitInRepository(await tx.get('commits', input.restoreTarget), input.repositoryId);
+        if (currentTarget.target === input.restoreTarget) return { repository, targetBranch: currentTarget, sourceBranch: null };
+        const targetBranch: BranchRef = { ...currentTarget, target: input.restoreTarget, revision: currentTarget.revision + 1 };
+        await tx.put('refs', toRefRow(targetBranch));
+        await logRecovery(tx, 'head-moved', currentTarget, targetBranch);
+        const updatedRepository = nextRepositoryRevision(repository);
+        await tx.put('repositories', updatedRepository);
+        return { repository: updatedRepository, targetBranch, sourceBranch: null };
+      }
+      const sourceBranchName = input.sourceBranch;
+      const sourceKey = refKey(input.repositoryId, 'branch', sourceBranchName);
       const sourceRow = await tx.get('refs', sourceKey);
       const currentSource = sourceRow?.kind === 'branch' ? fromRefRow(sourceRow) as BranchRef : null;
       if (input.expectedSource === null) {
@@ -2762,7 +2888,7 @@ export class VersionGraphStore {
           : {
               repositoryId: input.repositoryId,
               kind: 'branch',
-              name: branchName(input.sourceBranch),
+              name: branchName(sourceBranchName),
               generation: input.restoreSource.generation,
               target: input.restoreSource.target,
               revision: Math.max(0, input.restoreSource.minimumRevision ?? 0) + 1,
@@ -2775,10 +2901,10 @@ export class VersionGraphStore {
       if (targetBranch.target !== currentTarget.target) await logRecovery(tx, 'head-moved', currentTarget, targetBranch);
       if (sourceBranch) await tx.put('refs', toRefRow(sourceBranch));
       else {
-        await assertBranchUnoccupied(tx, input.repositoryId, input.sourceBranch);
+        await assertBranchUnoccupied(tx, input.repositoryId, sourceBranchName);
         await tx.delete('refs', sourceKey);
         if (currentSource) await logRecovery(tx, 'branch-deleted', currentSource, null);
-        await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, input.sourceBranch));
+        await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, sourceBranchName));
       }
       if (sourceBranch && !currentSource) await logRecovery(tx, 'branch-created', null, sourceBranch);
       else if (sourceBranch && currentSource && sourceBranch.target !== currentSource.target) {

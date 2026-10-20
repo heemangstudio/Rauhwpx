@@ -6,7 +6,12 @@ import type { DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import { engineTrap, onEngineTrap } from '../core/engine-trap.ts';
-import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '../core/document-input-limits.ts';
+import {
+  INSERTED_IMAGE_MAX_BYTES,
+  MIB,
+  UNTRUSTED_DOCUMENT_MAX_BYTES,
+  readBlobBytesWithLimit,
+} from '../core/document-input-limits.ts';
 import { WasmBridge } from '../core/wasm-bridge.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import {
@@ -23,6 +28,9 @@ import { showPendingAgentEditsDialog } from '../ui/pending-agent-edits-dialog.ts
 import { prepareUncommittedMerge } from '../ui/version-merge-preparation.ts';
 import { CompareResultWindow } from '../ui/compare-result-window.ts';
 import type {
+  ExternalDocumentFile,
+  ExternalImportOptions,
+  ImportBaseView,
   LegacyVersionView,
   VersionBranchView,
   VersionCommitView,
@@ -37,6 +45,7 @@ import {
   branchName,
   commitId,
   createPortableHistoryArchive,
+  detectPortableDocumentFormat,
   documentId,
   layoutCommitGraph,
   orderBranchHeadFrontier,
@@ -46,6 +55,7 @@ import {
   tagName,
   VersionError,
   type BranchName,
+  type BranchGeneration,
   type BranchRef,
   type RepositoryId,
   type CommitId,
@@ -60,6 +70,7 @@ import {
   type MergeResolution,
 } from './index.ts';
 import { hashBytes } from './hash.ts';
+import { detectImportBase, findExactImportBase, importBaseAncestry } from './import-base.ts';
 import {
   commitCompositeMerge,
   reconcileCompositeEditor,
@@ -115,6 +126,8 @@ interface VersionControllerDeps {
   getDocumentId: () => string | null;
   agentBridge: VersionAgentView;
   autoEnable?: () => boolean;
+  /** 가져오거나 병합할 외부 문서를 고르는 창. 고르지 않으면 null. */
+  pickExternalDocument?: () => Promise<{ bytes: Uint8Array; name: string } | null>;
 }
 
 /**
@@ -142,10 +155,32 @@ interface CreateCheckpointOptions {
   onPersisted?: () => void;
 }
 
+/** 병합할 쪽. 브랜치 이름이거나, 참조 없이 병합할 커밋(외부 문서)이다. */
+type MergeSource = BranchName | { commit: CommitId; fileName: string };
+
+interface ResolvedMergeSource {
+  /** 브랜치 이름, 커밋이면 표시용 이름(파일 이름). */
+  name: BranchName;
+  target: CommitId;
+  revision: number;
+  generation?: BranchGeneration;
+  commit?: { id: CommitId; fileName: string };
+}
+
+/** 파일 이름을 브랜치 이름 규칙(64자, 제어 문자·경로 구분자 없음)에 맞춘다. */
+function importLabel(fileName: string): string {
+  const label = fileName.normalize('NFC').replace(/[\u0000-\u001f\u007f/\\]/gu, ' ').trim().slice(0, 64).trim();
+  return label || '외부 문서';
+}
+
 interface MergeResolverPresentation {
   title?: string;
   labels?: { base: string; current: string; incoming: string };
   onClosed?: (reason: 'saved' | 'discarded' | 'completed') => void;
+}
+
+function importMergePresentation(fileName: string): MergeResolverPresentation {
+  return { title: '받은 문서 병합', labels: { base: '기준 버전', current: '현재', incoming: fileName } };
 }
 
 export interface AutosaveRecoveryInput {
@@ -294,6 +329,19 @@ function worktreeSnapshotFormat(bytes: Uint8Array): 'hwp' | 'hwpx' | 'hml' {
   return 'hml';
 }
 
+/** 외부 문서는 믿지 않는 입력이다. 크기와 문서 형식만 먼저 확인한다. */
+function checkedExternalDocument(bytes: Uint8Array, fileName: string): ExternalDocumentFile {
+  if (bytes.byteLength === 0 || bytes.byteLength > UNTRUSTED_DOCUMENT_MAX_BYTES) {
+    throw new Error(`문서 크기는 ${Math.floor(UNTRUSTED_DOCUMENT_MAX_BYTES / MIB)} MiB를 넘을 수 없습니다.`);
+  }
+  try {
+    detectPortableDocumentFormat(bytes);
+  } catch {
+    throw new Error('HWP, HWPX, HML 문서만 가져올 수 있습니다.');
+  }
+  return { bytes, fileName };
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
@@ -345,6 +393,9 @@ export class DocumentVersionController implements VersionManagerController {
   readonly #getDocumentId: () => string | null;
   readonly #agentBridge: VersionAgentView;
   readonly #autoEnable: () => boolean;
+  readonly #pickExternalDocument?: () => Promise<{ bytes: Uint8Array; name: string } | null>;
+  /** 기준 찾기와 가져오기가 같은 외부 바이트를 두 번 열지 않게 한다. */
+  readonly #externalCaptures = new WeakMap<Uint8Array, { fileName: string; captured: CapturedVersionSnapshot }>();
   readonly #ownsStore: boolean;
   readonly #listeners = new Set<(state: VersionManagerState) => void>();
   readonly #unsubscribers: Array<() => void> = [];
@@ -404,6 +455,7 @@ export class DocumentVersionController implements VersionManagerController {
     this.#getDocumentId = deps.getDocumentId;
     this.#agentBridge = deps.agentBridge;
     this.#autoEnable = deps.autoEnable ?? (() => false);
+    this.#pickExternalDocument = deps.pickExternalDocument;
     this.#compareStore = new CompareSessionStore(this.#eventBus);
 
     const documentChanged = () => {
@@ -666,24 +718,28 @@ export class DocumentVersionController implements VersionManagerController {
       await this.#guardMutation(true);
       await this.#checkpointDirty('pre-switch');
       await this.#persistWorktree();
-      const repository = this.#requireRepository();
-      const branch = await this.#store.getBranch(repository.id, branchName(sourceBranch));
-      if (!branch) throw new VersionError('REF_NOT_FOUND', '브랜치를 찾을 수 없습니다.');
-      return this.#store.createWorktree({
-        repositoryId: repository.id, branch: branch.name,
-        documentId: documentId(globalThis.crypto.randomUUID()),
-        fileName: this.#wasm.fileName,
-        sourceFormat: this.#wasm.getSourceFormat(),
-        expectedRepositoryRevision: repository.revision,
-        expectedBranchRevision: branch.revision,
-        mergeTarget: this.#worktrees.some((worktree) => worktree.branch === branch.name)
-          ? { name: branch.name, generation: branch.generation }
-          : { name: this.#requireActiveBranch().name, generation: this.#requireActiveBranch().generation },
-        ...(newBranchName ? { forkName: branchName(newBranchName) } : {}),
-      });
+      return this.#createWorktreeRecord(sourceBranch, newBranchName);
     });
     await host.open(worktree);
     await this.refresh();
+  }
+
+  async #createWorktreeRecord(sourceBranch: string, newBranchName?: string): Promise<VersionWorktree> {
+    const repository = this.#requireRepository();
+    const branch = await this.#store.getBranch(repository.id, branchName(sourceBranch));
+    if (!branch) throw new VersionError('REF_NOT_FOUND', '브랜치를 찾을 수 없습니다.');
+    return this.#store.createWorktree({
+      repositoryId: repository.id, branch: branch.name,
+      documentId: documentId(globalThis.crypto.randomUUID()),
+      fileName: this.#wasm.fileName,
+      sourceFormat: this.#wasm.getSourceFormat(),
+      expectedRepositoryRevision: repository.revision,
+      expectedBranchRevision: branch.revision,
+      mergeTarget: this.#worktrees.some((worktree) => worktree.branch === branch.name)
+        ? { name: branch.name, generation: branch.generation }
+        : { name: this.#requireActiveBranch().name, generation: this.#requireActiveBranch().generation },
+      ...(newBranchName ? { forkName: branchName(newBranchName) } : {}),
+    });
   }
 
   async openWorktree(id: string): Promise<void> {
@@ -1368,6 +1424,154 @@ export class DocumentVersionController implements VersionManagerController {
     });
   }
 
+  /** 다른 사람이 고쳐 보낸 문서를 고른다. 크기와 형식을 확인한 바이트를 돌려준다. 고르지 않으면 null. */
+  async pickExternalDocument(): Promise<ExternalDocumentFile | null> {
+    if (!this.#pickExternalDocument) throw new Error('이 환경에서는 문서를 고를 수 없습니다.');
+    const picked = await this.#pickExternalDocument();
+    if (!picked) return null;
+    return checkedExternalDocument(picked.bytes, picked.name);
+  }
+
+  /**
+   * 외부 문서가 갈라져 나온 커밋을 찾는다. 바이트가 같은 커밋이 있으면 그것을, 없으면 현재 브랜치의 최근
+   * 조상 가운데 내용이 가장 가까운 커밋을 고른다. 버전 기록이 꺼져 있으면 먼저 켠다.
+   */
+  async detectImportBase(file: ExternalDocumentFile): Promise<ImportBaseView> {
+    checkedExternalDocument(file.bytes, file.fileName);
+    return this.#enqueue(async () => {
+      await this.#refreshData(false);
+      if (!this.#repository) await this.#enableVersioning();
+      const repository = this.#requireRepository();
+      const workspace = this.#captureWorkspaceToken();
+      const captured = await this.#captureExternal(file.bytes);
+      const commits = await this.#store.listCommits(repository.id, { limit: 500 });
+      const byId = new Map(commits.map((commit) => [commit.id, commit]));
+      const detection = await detectImportBase({
+        hashes: [hashBytes(file.bytes), captured.fingerprint],
+        incoming: captured.compareSnapshot,
+        commits,
+        candidateIds: importBaseAncestry(this.#requireActiveBranch().target, byId),
+        loadSnapshot: async (commit) => (await this.#store.getCompareSnapshot(commit.compareSnapshotId))?.snapshot ?? null,
+        yieldBetween: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      });
+      this.#assertWorkspaceToken(workspace, { editor: false });
+      const branchRefs = this.#refs.filter((ref): ref is BranchRef => ref.kind === 'branch');
+      return {
+        exactCommitId: detection.exact,
+        suggestedCommitId: detection.suggested,
+        candidates: detection.candidates.flatMap(({ commitId: id, similarity }) => {
+          const commit = byId.get(id);
+          return commit ? [{
+            id: commit.id,
+            title: commit.title,
+            createdAt: commit.createdAt,
+            similarity,
+            branchLabels: branchRefs.filter((ref) => ref.target === commit.id).map((ref) => ref.name),
+          }] : [];
+        }),
+      };
+    });
+  }
+
+  /**
+   * 외부 문서를 기준 커밋의 자식 커밋으로 기록한다. branchName 이 있으면 그 커밋에 브랜치를 만들어 전환하거나
+   * (openAsWorktree 면) 워크트리로 연다. 없으면 참조를 만들지 않고 현재 브랜치로 병합 창을 연다. 기준과 내용이
+   * 같으면 새 커밋 없이 기준 커밋을 쓴다.
+   */
+  async importExternal(bytes: Uint8Array, options: ExternalImportOptions): Promise<void> {
+    checkedExternalDocument(bytes, options.fileName);
+    const host = options.branchName !== undefined && options.openAsWorktree ? this.#requireWorktreeHost() : null;
+    const worktree = await this.#enqueue(async (): Promise<VersionWorktree | null> => {
+      await this.#refreshData(false);
+      if (!this.#repository) await this.#enableVersioning();
+      await this.#guardMutation(true);
+      const fileName = options.fileName.normalize('NFC').trim().slice(0, 255) || '외부 문서';
+      const base = await this.#requireCommit(options.baseCommitId);
+      const captured = await this.#captureExternal(bytes);
+      const sameAsBase = findExactImportBase([hashBytes(bytes), captured.fingerprint], [base]) !== null;
+      if (options.branchName === undefined) {
+        if (!await this.#prepareMergeWorkingTree()) return null;
+        await this.#refreshData(false);
+        const incoming = sameAsBase ? base.id : (await this.#writeImportCommit(base, captured, fileName)).commit.id;
+        await this.#openMergeResolver({ commit: incoming, fileName }, undefined, undefined, importMergePresentation(fileName));
+        return null;
+      }
+      const name = branchName(options.branchName);
+      if (options.openAsWorktree) {
+        await this.#checkpointDirty('pre-switch');
+        await this.#persistWorktree();
+      }
+      if (sameAsBase) {
+        const created = await this.#store.createBranch({
+          repositoryId: this.#requireRepository().id, name, target: base.id,
+          expectedRepositoryRevision: this.#requireRepository().revision,
+        });
+        this.#repository = created.repository;
+      } else {
+        await this.#writeImportCommit(base, captured, fileName, name);
+      }
+      await this.#refreshData(false);
+      if (options.openAsWorktree) return this.#createWorktreeRecord(name);
+      await this.#switchBranch(name);
+      return null;
+    });
+    if (worktree && host) {
+      await host.open(worktree);
+      await this.refresh();
+    }
+  }
+
+  /** 외부 바이트를 따로 열어 이 문서의 저장 형식으로 다시 내보낸다. 같은 바이트는 한 번만 연다. */
+  async #captureExternal(bytes: Uint8Array): Promise<CapturedVersionSnapshot> {
+    const fileName = this.#wasm.fileName;
+    const cached = this.#externalCaptures.get(bytes);
+    if (cached?.fileName === fileName) return cached.captured;
+    let captured: CapturedVersionSnapshot;
+    try {
+      captured = await this.#captureDetached(bytes, fileName);
+    } catch (error) {
+      throw new VersionError('RESTORE_PARSE_FAILED', '이 문서를 열지 못했습니다.', {
+        cause: error instanceof Error ? error : undefined,
+      });
+    }
+    this.#externalCaptures.set(bytes, { fileName, captured });
+    return captured;
+  }
+
+  async #writeImportCommit(
+    base: VersionCommit,
+    captured: CapturedVersionSnapshot,
+    fileName: string,
+    branch?: BranchName,
+  ): Promise<{ commit: VersionCommit; branch: BranchRef | null }> {
+    const workspace = this.#captureWorkspaceToken();
+    const repository = this.#requireRepository();
+    await this.#ensureFullMergeManifest(repository.id, base.id, new Map());
+    const [mergeManifestEntries, before] = await Promise.all([
+      this.#mergeWorker.buildDocumentManifest(captured.bytes),
+      this.#store.getCompareSnapshot(base.compareSnapshotId),
+    ]);
+    this.#assertWorkspaceToken(workspace, { editor: false });
+    const result = await this.#store.createImportCommit({
+      repositoryId: repository.id,
+      expectedRepositoryRevision: repository.revision,
+      parent: base.id,
+      importedFrom: { fileName },
+      ...(branch ? { branch } : {}),
+      bytes: captured.bytes,
+      compareSnapshot: captured.compareSnapshot,
+      contentFingerprint: captured.fingerprint,
+      mergeManifestEntries,
+      title: '받은 문서',
+      titleOrigin: 'manual',
+      titleRevision: 0,
+      author: { kind: 'user', label: '사용자' },
+      stats: analyzeVersionDiff(before?.snapshot ?? null, captured.compareSnapshot).stats,
+    });
+    this.#repository = result.repository;
+    return result;
+  }
+
   /**
    * 디스크 파일이 바뀐 뒤 남은 자동 저장본을 병합한다. 열려 있는 문서는 디스크에서 막 읽은
    * 깨끗한 원본(D)이어야 한다. 기준(B)에서 갈라진 복구 브랜치에 자동 저장 내용(R)을 두고,
@@ -1549,7 +1753,12 @@ export class DocumentVersionController implements VersionManagerController {
       }
       if (!await this.#prepareMergeWorkingTree()) return;
       await this.#refreshData(false);
-      await this.#openMergeResolver(draft.sourceBranch, draft);
+      if (draft.sourceCommit) {
+        const { id: commit, fileName } = draft.sourceCommit;
+        await this.#openMergeResolver({ commit, fileName }, draft, undefined, importMergePresentation(fileName));
+      } else {
+        await this.#openMergeResolver(draft.sourceBranch, draft);
+      }
     });
   }
 
@@ -1885,8 +2094,24 @@ export class DocumentVersionController implements VersionManagerController {
     }
   }
 
+  /** 병합할 쪽. 브랜치 이름이거나, 참조 없이 병합할 커밋(외부 문서)이다. */
+  async #resolveMergeSource(repository: VersionRepository, source: MergeSource): Promise<ResolvedMergeSource> {
+    if (typeof source !== 'string') {
+      const commit = await this.#requireCommit(source.commit);
+      return {
+        name: branchName(importLabel(source.fileName)),
+        target: commit.id,
+        revision: 0,
+        commit: { id: commit.id, fileName: source.fileName },
+      };
+    }
+    const branch = await this.#store.getBranch(repository.id, source);
+    if (!branch) throw new VersionError('REF_NOT_FOUND', '병합할 소스 브랜치를 찾을 수 없습니다.');
+    return { name: branch.name, target: branch.target, revision: branch.revision, generation: branch.generation };
+  }
+
   async #openMergeResolver(
-    sourceName: BranchName,
+    source: MergeSource,
     previousDraft?: VersionMergeDraft,
     shelfApply = previousDraft?.shelfApply,
     presentation: MergeResolverPresentation = {},
@@ -1894,14 +2119,15 @@ export class DocumentVersionController implements VersionManagerController {
     const workspace = this.#captureWorkspaceToken();
     const repository = this.#requireRepository();
     const targetBranch = this.#requireActiveBranch();
-    const sourceBranch = await this.#store.getBranch(repository.id, sourceName);
-    if (!sourceBranch) throw new VersionError('REF_NOT_FOUND', '병합할 소스 브랜치를 찾을 수 없습니다.');
-    if (sourceBranch.name === targetBranch.name) {
+    const sourceBranch = await this.#resolveMergeSource(repository, source);
+    if (!sourceBranch.commit && sourceBranch.name === targetBranch.name) {
       throw new VersionError('CURRENT_BRANCH', '현재 브랜치는 자기 자신과 병합할 수 없습니다.');
     }
     const relation = await this.#store.getMergeRelation(repository.id, targetBranch.target, sourceBranch.target);
     this.#assertWorkspaceToken(workspace);
-    if (relation.relation === 'already-integrated') throw new Error('이미 병합된 브랜치입니다.');
+    if (relation.relation === 'already-integrated') {
+      throw new Error(sourceBranch.commit ? '이미 반영된 문서입니다.' : '이미 병합된 브랜치입니다.');
+    }
     const [currentCommit, incomingCommit] = await Promise.all([
       this.#requireCommit(targetBranch.target),
       this.#requireCommit(sourceBranch.target),
@@ -1970,6 +2196,7 @@ export class DocumentVersionController implements VersionManagerController {
     const now = Date.now();
     const draft: VersionMergeDraft = {
       ...(shelfApply ? { shelfApply } : {}),
+      ...(sourceBranch.commit ? { sourceCommit: sourceBranch.commit } : {}),
       id: previousDraft?.id ?? createMergeDraftId(),
       repositoryId: repository.id,
       targetBranch: targetBranch.name,
@@ -1980,7 +2207,7 @@ export class DocumentVersionController implements VersionManagerController {
       targetBranchRevision: targetBranch.revision,
       sourceBranchRevision: sourceBranch.revision,
       targetBranchGeneration: targetBranch.generation,
-      sourceBranchGeneration: sourceBranch.generation,
+      ...(sourceBranch.generation ? { sourceBranchGeneration: sourceBranch.generation } : {}),
       mode: relation.relation === 'fast-forward' ? 'explicit-checkpoint' : 'diverged',
       analysisVersion: analysis.analysisVersion,
       conflicts: analysis.conflicts,
@@ -2081,7 +2308,7 @@ export class DocumentVersionController implements VersionManagerController {
             label: presentation.labels?.incoming ?? '가져올 변경',
           },
         },
-        canDeleteSource: !shelfApply && sourceBranch.name !== repository.defaultBranch
+        canDeleteSource: !shelfApply && !sourceBranch.commit && sourceBranch.name !== repository.defaultBranch
           && !this.#worktrees.some((worktree) => worktree.branch === sourceBranch.name),
         materialize: ({ analysis: nextAnalysis, resolutions: nextResolutions, signal }) => (
           materialize(nextAnalysis, nextResolutions, signal)
@@ -2213,7 +2440,8 @@ export class DocumentVersionController implements VersionManagerController {
 
   async #completeMerge(request: MergeApplicationRequest): Promise<MergeAppliedReceipt> {
     if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
-    if (request.draft.analysisVersion >= 2 && request.mode === 'fast-forward') {
+    // 커밋(외부 문서)을 병합할 때는 소스 브랜치가 없으니 언제나 두 부모 병합 커밋으로 남긴다.
+    if ((request.draft.analysisVersion >= 2 || request.draft.sourceCommit) && request.mode === 'fast-forward') {
       request = { ...request, mode: 'explicit-checkpoint', draft: { ...request.draft, mode: 'explicit-checkpoint' } };
     }
     if (!request.materialized.validation.valid || !request.materialized.document) {
@@ -2237,22 +2465,27 @@ export class DocumentVersionController implements VersionManagerController {
     });
     const repository = await this.#store.getRepository(request.draft.repositoryId);
     if (!repository) throw new VersionError('REPOSITORY_NOT_FOUND', '버전 저장소를 찾을 수 없습니다.');
+    const sourceCommit = request.draft.sourceCommit ?? null;
     const [targetBranch, sourceBranch] = await Promise.all([
       this.#store.getBranch(repository.id, request.draft.targetBranch),
-      this.#store.getBranch(repository.id, request.draft.sourceBranch),
+      sourceCommit ? Promise.resolve(null) : this.#store.getBranch(repository.id, request.draft.sourceBranch),
     ]);
-    if (!targetBranch || !sourceBranch) throw new VersionError('REF_NOT_FOUND', '병합할 브랜치를 찾을 수 없습니다.');
+    if (!targetBranch || (!sourceCommit && !sourceBranch)) {
+      throw new VersionError('REF_NOT_FOUND', '병합할 브랜치를 찾을 수 없습니다.');
+    }
+    const sourceTarget = sourceCommit?.id ?? sourceBranch!.target;
     if (
       targetBranch.target !== request.draft.currentHead
-      || sourceBranch.target !== request.draft.sourceHead
+      || sourceTarget !== request.draft.sourceHead
       || targetBranch.revision !== request.draft.targetBranchRevision
-      || sourceBranch.revision !== request.draft.sourceBranchRevision
+      || (sourceBranch && sourceBranch.revision !== request.draft.sourceBranchRevision)
       || (
         request.draft.targetBranchGeneration !== undefined
         && targetBranch.generation !== request.draft.targetBranchGeneration
       )
       || (
-        request.draft.sourceBranchGeneration !== undefined
+        sourceBranch
+        && request.draft.sourceBranchGeneration !== undefined
         && sourceBranch.generation !== request.draft.sourceBranchGeneration
       )
     ) {
@@ -2336,7 +2569,7 @@ export class DocumentVersionController implements VersionManagerController {
           },
         });
       },
-      commitRefs: async () => request.mode === 'fast-forward'
+      commitRefs: async () => request.mode === 'fast-forward' && sourceBranch
         ? await this.#store.completeFastForwardMerge({
           repositoryId: repository.id,
           branch: targetBranch.name,
@@ -2355,24 +2588,25 @@ export class DocumentVersionController implements VersionManagerController {
           expectedRepositoryRevision: repository.revision,
           expectedBranchRevision: targetBranch.revision,
           expectedHead: targetBranch.target,
-          sourceBranch: sourceBranch.name,
-          expectedSourceRevision: sourceBranch.revision,
-          deleteSource: false,
+          ...(sourceBranch
+            ? { sourceBranch: sourceBranch.name, expectedSourceRevision: sourceBranch.revision, deleteSource: false }
+            : { sourceCommit: sourceTarget }),
           draftId: completionDraft.id,
           bytes: captured.bytes,
           compareSnapshot: captured.compareSnapshot,
           contentFingerprint: captured.fingerprint,
           mergeManifestEntries: mergeManifestEntries!,
-          title: request.title.trim() || `${sourceBranch.name} → ${targetBranch.name} 병합`,
+          title: request.title.trim() || `${request.draft.sourceBranch} → ${targetBranch.name} 병합`,
           titleOrigin: 'manual',
           titleRevision: 0,
           author: { kind: 'user', label: '사용자' },
           stats: analysis.stats,
           merge: {
-            sourceBranchAtMerge: sourceBranch.name,
+            sourceBranchAtMerge: sourceBranch?.name ?? request.draft.sourceBranch,
             targetBranchAtMerge: targetBranch.name,
             baseCommitIds: [...request.draft.baseCommitIds],
             conflictCount: request.draft.conflicts.filter((item) => item.automatic !== true).length,
+            ...(sourceCommit ? { sourceFileName: sourceCommit.fileName } : {}),
           },
         }),
       rollbackEditor: () => {
@@ -2419,7 +2653,7 @@ export class DocumentVersionController implements VersionManagerController {
           const [latestRepository, latestTarget, latestSource] = await Promise.all([
             this.#store.getRepository(repository.id),
             this.#store.getBranch(repository.id, targetBranch.name),
-            this.#store.getBranch(repository.id, sourceBranch.name),
+            sourceBranch ? this.#store.getBranch(repository.id, sourceBranch.name) : Promise.resolve(null),
           ]);
           if (!latestRepository || !latestTarget) {
             throw new VersionError('STALE_WORKSPACE', '병합 기록에 필요한 브랜치 참조가 더 이상 존재하지 않습니다.');
@@ -2439,17 +2673,28 @@ export class DocumentVersionController implements VersionManagerController {
           ) {
             throw new VersionError('STALE_WORKSPACE', '소스 브랜치의 최신 커밋이 변경되었습니다.');
           }
-          const restore = await this.#store.restoreCompositeRefs({
+          const expectedTarget = {
+            target: latestTarget.target,
+            revision: latestTarget.revision,
+            generation: latestTarget.generation,
+          };
+          const restoreTarget = direction === 'undo' ? targetBranch.target : postTarget.target;
+          const restore = !sourceBranch ? await this.#store.restoreCompositeRefs({
             repositoryId: repository.id,
             expectedRepositoryRevision: latestRepository.revision,
             allowRepositoryRevisionAdvance: true,
             targetBranch: targetBranch.name,
-            expectedTarget: {
-              target: latestTarget.target,
-              revision: latestTarget.revision,
-              generation: latestTarget.generation,
-            },
-            restoreTarget: direction === 'undo' ? targetBranch.target : postTarget.target,
+            expectedTarget,
+            restoreTarget,
+            expectedSource: null,
+            restoreSource: null,
+          }) : await this.#store.restoreCompositeRefs({
+            repositoryId: repository.id,
+            expectedRepositoryRevision: latestRepository.revision,
+            allowRepositoryRevisionAdvance: true,
+            targetBranch: targetBranch.name,
+            expectedTarget,
+            restoreTarget,
             sourceBranch: sourceBranch.name,
             expectedSource: latestSource
               ? {
@@ -2524,7 +2769,7 @@ export class DocumentVersionController implements VersionManagerController {
     this.#pendingMergeFinalizers.set(receipt, async (disposition) => {
       if (disposition === 'delete') {
         const source = refState.source;
-        if (!source) return;
+        if (!source || !sourceBranch) return;
         const [latestRepository, latestTarget, latestSource] = await Promise.all([
           this.#store.getRepository(repository.id),
           this.#store.getBranch(repository.id, targetBranch.name),
@@ -2827,6 +3072,9 @@ export class DocumentVersionController implements VersionManagerController {
         parentLanes: graph?.edges.map((edge) => edge.toLane) ?? [],
         isHead: active?.target === commit.id,
         byteLength: blobLengths.get(commit.blobId) ?? 0,
+        ...(commit.importedFrom?.fileName ?? commit.merge?.sourceFileName
+          ? { sourceFileName: commit.importedFrom?.fileName ?? commit.merge?.sourceFileName }
+          : {}),
       };
     });
     const commitById = new Map(this.#commits.map((commit) => [commit.id, commit]));

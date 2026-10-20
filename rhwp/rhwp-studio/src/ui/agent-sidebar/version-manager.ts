@@ -29,6 +29,39 @@ export interface VersionCommitView {
   parentLanes: number[];
   isHead: boolean;
   byteLength: number;
+  /** 외부 문서를 가져오거나 병합한 커밋이면 그 파일 이름. */
+  sourceFileName?: string;
+}
+
+/** 가져오거나 병합하려고 고른 외부 문서. */
+export interface ExternalDocumentFile {
+  fileName: string;
+  bytes: Uint8Array;
+}
+
+export interface ImportBaseCandidateView {
+  id: string;
+  title: string;
+  createdAt: number;
+  /** 0..1 */
+  similarity: number;
+  branchLabels: string[];
+}
+
+export interface ImportBaseView {
+  /** 바이트가 같은 커밋. 있으면 묻지 않고 쓴다. */
+  exactCommitId: string | null;
+  /** 미리 고를 기준. 닮은 커밋이 없으면 null 이고 사용자가 고른다. */
+  suggestedCommitId: string | null;
+  candidates: ImportBaseCandidateView[];
+}
+
+export interface ExternalImportOptions {
+  fileName: string;
+  baseCommitId: string;
+  /** 있으면 이 이름의 브랜치로 가져온다. 없으면 현재 브랜치로 병합한다. */
+  branchName?: string;
+  openAsWorktree?: boolean;
 }
 
 export interface VersionBranchView {
@@ -124,6 +157,9 @@ export interface VersionManagerController {
   listRecoveryEntries(): Promise<VersionRecoveryView[]>;
   recoverBranch(entryId: string, name: string): Promise<void>;
   startMerge(sourceBranch: string): Promise<void>;
+  pickExternalDocument(): Promise<ExternalDocumentFile | null>;
+  detectImportBase(file: ExternalDocumentFile): Promise<ImportBaseView>;
+  importExternal(bytes: Uint8Array, options: ExternalImportOptions): Promise<void>;
   resumeMerge(draftId: string): Promise<void>;
   discardMergeDraft(draftId: string): Promise<void>;
   createTag(name: string, commitId: string): Promise<void>;
@@ -285,6 +321,183 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
     if (input instanceof HTMLInputElement) input.select();
   });
   return { promise, cancel: () => cancelPrompt() };
+}
+
+interface ImportConfirmOptions {
+  mode: 'merge' | 'branch';
+  file: ExternalDocumentFile;
+  base: ImportBaseView;
+  /** branch 일 때 브랜치 이름 기본값과 이미 있는 이름. */
+  defaultBranchName?: string;
+  existingBranches?: readonly string[];
+  openAsWorktree?: boolean;
+}
+
+interface ImportConfirmResult {
+  baseCommitId: string;
+  branchName?: string;
+  openAsWorktree: boolean;
+}
+
+/**
+ * 받은 문서의 기준 버전을 확인하는 작은 창. 가장 닮은 커밋을 미리 고르고, 닮은 커밋이 없으면 사용자가 고를
+ * 때까지 확인을 받지 않는다. 바이트가 같은 커밋이 있으면 기준은 묻지 않는다.
+ */
+function requestImportConfirmation(options: ImportConfirmOptions): {
+  promise: Promise<ImportConfirmResult | null>;
+  cancel(): void;
+} {
+  let cancelPrompt = (): void => undefined;
+  const promise = new Promise<ImportConfirmResult | null>((resolve) => {
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const promptId = `ag-version-import-${++textPromptSequence}`;
+    const overlay = el('dialog', 'ag-version-prompt-overlay');
+    const dialog = el('form', 'ag-version-prompt ag-version-import');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', `${promptId}-title`);
+    const title = el('h3', 'ag-version-prompt-title', options.mode === 'merge' ? '받은 문서 병합' : '받은 문서 가져오기');
+    title.id = `${promptId}-title`;
+    const file = el('p', 'ag-version-import-file');
+    file.append(createIcon('document'), el('span', '', options.file.fileName));
+    file.title = options.file.fileName;
+    dialog.append(title, file);
+
+    const error = el('p', 'ag-version-prompt-error');
+    error.id = `${promptId}-error`;
+    error.hidden = true;
+    const field = (labelText: string, input: HTMLElement): void => {
+      const label = el('label', 'ag-version-prompt-label', labelText);
+      label.htmlFor = input.id;
+      input.setAttribute('aria-describedby', error.id);
+      dialog.append(label, input);
+    };
+
+    let baseSelect: HTMLSelectElement | null = null;
+    if (!options.base.exactCommitId) {
+      baseSelect = el('select', 'ag-version-prompt-input');
+      baseSelect.id = `${promptId}-base`;
+      if (!options.base.suggestedCommitId) {
+        const placeholder = el('option', '', '기준 버전 선택');
+        placeholder.value = '';
+        placeholder.disabled = true;
+        baseSelect.appendChild(placeholder);
+      }
+      for (const candidate of options.base.candidates) {
+        const refs = candidate.branchLabels.length ? ` · ${candidate.branchLabels.join(', ')}` : '';
+        const option = el(
+          'option',
+          '',
+          `${candidate.title} · ${formatTime(candidate.createdAt)}${refs} · ${Math.round(candidate.similarity * 100)}%`,
+        );
+        option.value = candidate.id;
+        baseSelect.appendChild(option);
+      }
+      baseSelect.value = options.base.suggestedCommitId ?? '';
+      field('기준 버전', baseSelect);
+    }
+
+    let nameInput: HTMLInputElement | null = null;
+    let worktreeToggle: HTMLInputElement | null = null;
+    if (options.mode === 'branch') {
+      nameInput = el('input', 'ag-version-prompt-input');
+      nameInput.id = `${promptId}-name`;
+      nameInput.type = 'text';
+      nameInput.maxLength = 63;
+      nameInput.autocomplete = 'off';
+      nameInput.value = options.defaultBranchName ?? '';
+      field('브랜치 이름', nameInput);
+      const toggle = el('label', 'ag-version-import-toggle');
+      worktreeToggle = document.createElement('input');
+      worktreeToggle.type = 'checkbox';
+      worktreeToggle.checked = options.openAsWorktree === true;
+      toggle.append(worktreeToggle, document.createTextNode('워크트리로 열기'));
+      dialog.appendChild(toggle);
+    }
+    dialog.appendChild(error);
+
+    const actions = el('div', 'ag-version-prompt-actions');
+    const cancel = el('button', 'ag-versions-secondary', '취소');
+    cancel.type = 'button';
+    const confirm = el('button', 'ag-versions-primary', options.mode === 'merge' ? '병합' : '가져오기');
+    confirm.type = 'submit';
+    actions.append(cancel, confirm);
+    dialog.appendChild(actions);
+    overlay.appendChild(dialog);
+
+    let settled = false;
+    const finish = (value: ImportConfirmResult | null): void => {
+      if (settled) return;
+      settled = true;
+      if (overlay.open) overlay.close();
+      overlay.remove();
+      returnFocus?.focus();
+      resolve(value);
+    };
+    cancelPrompt = () => finish(null);
+    const fail = (message: string, target: HTMLElement): void => {
+      error.textContent = message;
+      error.hidden = false;
+      target.setAttribute('aria-invalid', 'true');
+      target.focus();
+    };
+    dialog.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const baseCommitId = options.base.exactCommitId ?? baseSelect?.value ?? '';
+      if (!baseCommitId) { fail('기준 버전 선택 필요', baseSelect ?? confirm); return; }
+      if (!nameInput) { finish({ baseCommitId, openAsWorktree: false }); return; }
+      const name = nameInput.value.trim();
+      if (!validRefName(name)) { fail('글자나 숫자로 시작하는 63자 이하 이름', nameInput); return; }
+      const taken = new Set((options.existingBranches ?? []).map((branch) => branch.normalize('NFC').toLowerCase()));
+      if (taken.has(name.normalize('NFC').toLowerCase())) { fail('같은 이름의 브랜치가 있습니다.', nameInput); return; }
+      finish({ baseCommitId, branchName: name, openAsWorktree: worktreeToggle?.checked === true });
+    });
+    for (const input of [baseSelect, nameInput]) {
+      input?.addEventListener('input', () => {
+        error.hidden = true;
+        input.removeAttribute('aria-invalid');
+      });
+    }
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      finish(null);
+    });
+    cancel.addEventListener('click', () => finish(null));
+    overlay.addEventListener('mousedown', (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    overlay.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish(null);
+    });
+
+    (document.querySelector<HTMLElement>('.ag-root:not(.ag-collapsed)') ?? document.body).appendChild(overlay);
+    overlay.showModal();
+    const first = nameInput ?? baseSelect ?? confirm;
+    first.focus();
+    if (first instanceof HTMLInputElement) first.select();
+  });
+  return { promise, cancel: () => cancelPrompt() };
+}
+
+/** 파일 이름에서 브랜치 이름 기본값을 만든다. 이미 있는 이름이면 숫자를 붙인다. */
+function importBranchName(fileName: string, existing: readonly string[]): string {
+  const stem = fileName.normalize('NFC').replace(/\.[^.]+$/u, '');
+  const cleaned = stem
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/\.{2,}/gu, '.')
+    .replace(/-{2,}/gu, '-')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/[-.]+$/u, '')
+    .slice(0, 56) || '받은-문서';
+  const taken = new Set(existing.map((name) => name.normalize('NFC').toLowerCase()));
+  if (!taken.has(cleaned.toLowerCase())) return cleaned;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${cleaned}-${index}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
 }
 
 function formatBytes(value: number): string {
@@ -478,6 +691,7 @@ function reasonLabel(reason: string): string {
     restore: '복원',
     adopt: '채택',
     merge: '병합',
+    import: '가져오기',
   };
   return labels[reason] ?? reason;
 }
@@ -583,6 +797,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     await perform(() => controller.createWorktree(source, name ?? undefined));
   })());
   toolbar.prepend(createWorktreeButton);
+
   const shelf = el('button', 'ag-versions-primary ag-versions-create-shelf', '현재 변경 보관');
   shelf.type = 'button';
   shelf.dataset.versionMutation = 'true';
@@ -675,6 +890,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   recoveryPanel.hidden = true;
   body.append(recoveryPanel);
 
+  // 받은 문서 병합은 버전 기록이 꺼져 있어도 보인다. 누르면 기록을 켠다.
+  const mergeBar = el('div', 'ag-versions-merge-bar');
+  const mergeReceivedButton = el('button', 'ag-versions-secondary ag-versions-merge-received');
+  mergeReceivedButton.type = 'button';
+  mergeReceivedButton.dataset.versionEnable = 'true';
+  mergeReceivedButton.append(createIcon('documentAdd'), el('span', '', '받은 문서 병합'));
+  mergeReceivedButton.addEventListener('click', () => void importReceived('merge'));
+  mergeBar.appendChild(mergeReceivedButton);
   const footer = el('footer', 'ag-versions-footer');
   const storage = el('span', 'ag-versions-storage');
   const aiLabel = el('label', 'ag-versions-ai');
@@ -682,14 +905,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   aiToggle.type = 'checkbox';
   aiLabel.append(aiToggle, document.createTextNode('AI 제목'));
   footer.append(storage, aiLabel);
-  page.append(head, notice, tabs, toolbar, body, footer);
+  page.append(head, notice, tabs, toolbar, body, mergeBar, footer);
 
   let current = controller.getState();
   let tab: VersionTab = 'history';
   let selectedCommitId: string | null = null;
   let active = false;
   let actionPending = false;
-  let activeTextPrompt: VersionTextPrompt | null = null;
+  let activeTextPrompt: { cancel(): void } | null = null;
   let recovering = false;
   let recoveryEntries: VersionRecoveryView[] = [];
   const comparedCommits = new Set<string>();
@@ -749,6 +972,50 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         ? null
         : '글자나 숫자로 시작하는 63자 이하 이름',
     });
+  }
+
+  /**
+   * 받은 문서를 고르고 기준 버전을 확인한 뒤 브랜치로 가져오거나 현재 브랜치에 병합한다. 바이트가 같은 커밋이
+   * 있으면 병합은 묻지 않고 바로 연다.
+   */
+  async function importReceived(mode: 'merge' | 'branch', openAsWorktree = false): Promise<void> {
+    let picked: { file: ExternalDocumentFile; base: ImportBaseView } | null = null;
+    await perform(async () => {
+      if (!current.enabled) await controller.enable();
+      const file = await controller.pickExternalDocument();
+      if (!file) return;
+      picked = { file, base: await controller.detectImportBase(file) };
+    });
+    if (!picked || !active) return;
+    const { file, base } = picked as { file: ExternalDocumentFile; base: ImportBaseView };
+    let choice: ImportConfirmResult | null;
+    if (mode === 'merge' && base.exactCommitId) {
+      choice = { baseCommitId: base.exactCommitId, openAsWorktree: false };
+    } else {
+      activeTextPrompt?.cancel();
+      const branches = current.branches.map((branch) => branch.name);
+      const prompt = requestImportConfirmation({
+        mode,
+        file,
+        base,
+        defaultBranchName: importBranchName(file.fileName, branches),
+        existingBranches: branches,
+        openAsWorktree,
+      });
+      activeTextPrompt = prompt;
+      try {
+        choice = await prompt.promise;
+      } finally {
+        if (activeTextPrompt === prompt) activeTextPrompt = null;
+      }
+    }
+    if (!choice) return;
+    const confirmed = choice;
+    await perform(() => controller.importExternal(file.bytes, {
+      fileName: file.fileName,
+      baseCommitId: confirmed.baseCommitId,
+      ...(confirmed.branchName ? { branchName: confirmed.branchName, openAsWorktree: confirmed.openAsWorktree } : {}),
+    }));
   }
 
   function renderMutationState(): void {
@@ -885,6 +1152,13 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     });
   })());
 
+  function fileLabel(className: string, fileName: string): HTMLElement {
+    const label = el('span', className);
+    label.title = fileName;
+    label.append(createIcon('document'), el('span', '', fileName));
+    return label;
+  }
+
   function commitBadges(commit: VersionCommitView): HTMLElement {
     const badges = el('span', 'ag-version-badges');
     for (const branch of commit.branchLabels) {
@@ -912,6 +1186,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     for (const tag of commit.tagLabels) {
       refs.appendChild(el('span', 'ag-version-ref ag-tag-ref', `tag: ${tag}`));
     }
+    if (commit.sourceFileName) refs.appendChild(fileLabel('ag-version-ref ag-file-ref', commit.sourceFileName));
     return refs;
   }
 
@@ -926,7 +1201,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     inspector.append(
       el('span', 'ag-versions-inspector-kicker', `${selected.shortId} · ${reasonLabel(selected.reason)}`),
       el('h3', 'ag-versions-inspector-title', selected.title),
-      el('p', 'ag-versions-inspector-meta', `${formatTime(selected.createdAt)} · ${formatBytes(selected.byteLength)}`),
+      el('p', 'ag-versions-inspector-meta', [
+        formatTime(selected.createdAt),
+        formatBytes(selected.byteLength),
+        ...(selected.sourceFileName ? [selected.sourceFileName] : []),
+      ].join(' · ')),
       commitBadges(selected),
     );
     const actions = el('div', 'ag-versions-inspector-actions');
@@ -1042,6 +1321,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
           commit.isHead && branch === current.activeBranch ? `HEAD ${branch}` : `브랜치 ${branch}`
         )),
         ...commit.tagLabels.map((tag) => `태그 ${tag}`),
+        ...(commit.sourceFileName ? [`파일 ${commit.sourceFileName}`] : []),
       ];
       row.setAttribute('aria-label', [
         commit.title,
@@ -1076,6 +1356,16 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     else renderInspector();
     loadMoreButton.hidden = !current.hasMoreCommits;
     loadMoreButton.disabled = current.loading;
+  }
+
+  /** 브랜치·워크트리 목록 끝의 받은 문서 가져오기. 워크트리 탭에서는 워크트리로 열기가 기본이다. */
+  function importRow(asWorktree: boolean): HTMLElement {
+    const button = el('button', 'ag-versions-quiet ag-versions-import');
+    button.type = 'button';
+    button.dataset.versionMutation = 'true';
+    button.append(createIcon('documentAdd'), el('span', '', '받은 문서 가져오기'));
+    button.addEventListener('click', () => void importReceived('branch', asWorktree));
+    return button;
   }
 
   function renderBranches(): void {
@@ -1174,6 +1464,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         list.appendChild(row);
       }
     }
+    list.appendChild(importRow(false));
     branchesPanel.appendChild(list);
   }
 
@@ -1230,6 +1521,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       list.appendChild(row);
     }
     if (current.worktrees.length === 0) list.appendChild(el('p', 'ag-versions-placeholder', '워크트리가 없습니다.'));
+    list.appendChild(importRow(true));
     worktreesPanel.appendChild(list);
   }
 
@@ -1276,6 +1568,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     toolbar.hidden = !available;
     body.hidden = !available;
     footer.hidden = !available;
+    mergeBar.hidden = !current.documentId || !current.saved;
     if (!current.documentId || !current.saved) {
       notice.hidden = false;
       notice.dataset.kind = 'empty';

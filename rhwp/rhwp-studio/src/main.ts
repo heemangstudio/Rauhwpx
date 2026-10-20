@@ -1943,6 +1943,13 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     getDocumentId: () => session.documentId,
     agentBridge: documentAgentView(session),
     autoEnable: () => userSettings.getUseHancomGit(),
+    // 가져오기는 바이트만 읽는다. 데스크톱 열기 창이 잡아 둔 저장 대상은 바로 놓는다.
+    pickExternalDocument: async () => {
+      const picked = await pickDocumentFile(commandServices);
+      if (!picked) return null;
+      await picked.handle?.releaseUnusedSaveTarget?.().catch(() => {});
+      return { bytes: picked.bytes, name: picked.name };
+    },
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
       canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
