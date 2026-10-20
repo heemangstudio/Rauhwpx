@@ -22,7 +22,10 @@ async function setup(t, { maxStorageBytes, notify = async () => {} } = {}) {
   const feedback = createFeedbackService({ dir, now: () => clock.now, adminToken: ADMIN, maxStorageBytes, notify });
   const server = http.createServer(siteRequestListener({ feedback }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => new Promise((resolve) => {
+    server.close(resolve);
+    server.closeAllConnections();
+  }));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const post = (body) => fetch(`${origin}/v1/feedback`, {
     method: 'POST',
@@ -106,7 +109,7 @@ test('feedback: bad proof, stale clock, bad fields and oversize bodies are refus
   await expect('{"v":1,', 400, 'invalid');
   const bigShot = Buffer.concat([PNG, Buffer.alloc(4 * 1024 * 1024)]).toString('base64');
   await expect(report(clock, { screenshot: { mime: 'image/png', base64: bigShot } }), 413, 'too_large', 'screenshot');
-  await expect(report(clock, { log: 'x'.repeat(33 * 1024 * 1024) }), 413, 'too_large');
+  await expect(report(clock, { log: 'x'.repeat(41 * 1024 * 1024) }), 413, 'too_large');
   assert.deepEqual(await fs.readdir(dir).catch(() => []), [], 'nothing was stored');
 });
 
@@ -118,6 +121,60 @@ test('feedback: five reports per install per hour, then 429', async (t) => {
   assert.equal(limited.status, 429);
   assert.deepEqual(await limited.json(), { ok: false, error: 'rate_limited' });
   assert.equal((await post(light({ installId: '0a2b8c1e-5d4a-4f6b-9c7d-1e2f3a4b5c6d' }))).status, 201, 'another install is not limited');
+});
+
+test('feedback: only hwp, hwpx and hml keep their name; bidi and control characters are stripped', async (t) => {
+  const { dir, clock, post } = await setup(t);
+  const stored = async (name) => {
+    const { id } = await (await post(report(clock, { installId: crypto.randomUUID(), document: { name, base64: HWP.toString('base64') } }))).json();
+    const json = JSON.parse(await fs.readFile(path.join(dir, id, 'report.json'), 'utf8'));
+    return [json.attachments.document.name, (await fs.readdir(path.join(dir, id))).find((f) => f.startsWith('document'))];
+  };
+  assert.deepEqual(await stored('invoice.exe'), ['document.bin', 'document.bin']);
+  assert.deepEqual(await stored('보고\u202Eexe.hwp'), ['보고exe.hwp', 'document.hwp']);
+  assert.deepEqual(await stored('a\u2066b\u0085.HWPX'), ['ab.HWPX', 'document.hwpx']);
+  assert.deepEqual(await stored('notes.hml\u202E'), ['notes.hml', 'document.hml']);
+});
+
+/** Starts a feedback upload that declares a large body, sends one chunk and leaves it open. */
+function openUpload(origin) {
+  const req = http.request(`${origin}/v1/feedback`, {
+    method: 'POST',
+    agent: false,
+    headers: { 'Content-Type': 'application/json', 'Content-Length': 30 * 1024 * 1024 },
+  });
+  req.on('error', () => {});
+  req.write(Buffer.alloc(64 * 1024, 0x20));
+  const answer = new Promise((resolve) => req.on('response', (res) => {
+    let text = '';
+    res.on('data', (chunk) => { text += chunk; });
+    res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+  }));
+  return { req, answer };
+}
+
+test('feedback: the per-IP limit refuses before the body is read', { timeout: 5000 }, async (t) => {
+  const { origin, post } = await setup(t);
+  for (let i = 0; i < 20; i += 1) assert.equal((await post('{}')).status, 400);
+  const upload = openUpload(origin);
+  assert.deepEqual(await upload.answer, { status: 429, body: { ok: false, error: 'rate_limited' } });
+  upload.req.destroy();
+});
+
+test('feedback: a fourth upload in flight is refused as busy, and the slot frees when one ends', { timeout: 5000 }, async (t) => {
+  const { origin, clock, post } = await setup(t);
+  const held = [];
+  for (let i = 0; i < 3; i += 1) {
+    held.push(openUpload(origin));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  const busy = openUpload(origin);
+  assert.deepEqual(await busy.answer, { status: 503, body: { ok: false, error: 'busy' } });
+  busy.req.destroy();
+  held[0].req.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal((await post(report(clock))).status, 201);
+  for (const { req } of held) req.destroy();
 });
 
 test('feedback admin: list, detail, attachments, status and delete need the token and stay inside the report', async (t) => {

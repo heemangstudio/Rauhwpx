@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { formatWithOptions } from 'node:util';
 
 // 문제 보고에 싣는 진단 기록. 메인 경고·오류, 허브 stderr, 렌더러 오류를 한 파일에 시간순으로 모은다.
@@ -167,6 +168,36 @@ export function createDiagnosticLog({
       } catch {
         return tailText(ring, limit);
       }
+    },
+  };
+}
+
+/**
+ * 흐름(허브 stderr 등)의 조각을 완성된 줄로 모아 write 에 넘긴다. 조각 경계에서 잘린 비밀도 한 줄로
+ * 모인 뒤 가려진다. 줄바꿈 없이 길어지면 ENTRY_MAX_CHARS 에서 끊는다. end() 는 남은 글을 넘긴다.
+ */
+export function createLineSink(write) {
+  const decoder = new StringDecoder('utf8');
+  let rest = '';
+  const emit = (text) => {
+    if (text) write(text);
+  };
+  return {
+    write(chunk) {
+      rest += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      const cut = rest.lastIndexOf('\n');
+      if (cut >= 0) {
+        emit(rest.slice(0, cut));
+        rest = rest.slice(cut + 1);
+      }
+      if (rest.length > ENTRY_MAX_CHARS) {
+        emit(rest);
+        rest = '';
+      }
+    },
+    end() {
+      emit(rest + decoder.end());
+      rest = '';
     },
   };
 }

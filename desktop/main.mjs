@@ -93,6 +93,7 @@ import { installAppMenu } from './app-menu.mjs';
 import {
   DIAGNOSTIC_LOG_DIR,
   createDiagnosticLog,
+  createLineSink,
   installProcessDiagnostics,
   teeConsole,
 } from './diagnostic-log.mjs';
@@ -192,17 +193,18 @@ const profileDirectories = resolveProfileDirectories({
   developmentUserData: join(__dirname, '..', '.run', 'desktop-user-data'),
 });
 app.setPath('userData', profileDirectories.userData);
+registerStudioScheme(protocol);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 // 문제 보고에 싣는 진단 기록(userData/logs). console.warn/error 출력은 그대로 두고 함께 남긴다.
+// 잠금을 쥔 인스턴스만 기록을 이어 쓴다 — 곧 끝날 두 번째 인스턴스가 같은 파일을 돌리면 안 된다.
 const diagnosticLog = createDiagnosticLog({
   dir: join(app.getPath('userData'), DIAGNOSTIC_LOG_DIR),
   home: app.getPath('home'),
   secrets: [hubToken],
 });
-teeConsole(diagnosticLog);
-installProcessDiagnostics(diagnosticLog);
-registerStudioScheme(protocol);
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (hasSingleInstanceLock) {
+  teeConsole(diagnosticLog);
+  installProcessDiagnostics(diagnosticLog);
   diagnosticLog.writeText('main', 'info', `${PRODUCT_NAME} ${app.getVersion()} started (${process.platform} ${process.arch}, Electron ${process.versions.electron}${app.isPackaged ? '' : ', development'})`);
 }
 
@@ -515,8 +517,10 @@ class AgentHubOwner {
         this.scheduleRestart();
       },
     });
-    // 허브 stderr 는 터미널로도 그대로 가고, 진단 기록에도 남는다.
-    child.stderr?.on('data', (chunk) => diagnosticLog.writeText('hub', 'log', String(chunk)));
+    // 허브 stderr 는 터미널로도 그대로 가고, 진단 기록에도 줄 단위로 남는다(조각 경계에 걸린 비밀도 가린다).
+    const hubStderr = createLineSink((text) => diagnosticLog.writeText('hub', 'log', text));
+    child.stderr?.on('data', (chunk) => hubStderr.write(chunk));
+    child.stderr?.on('end', () => hubStderr.end());
     this.#child = child;
 
     try {

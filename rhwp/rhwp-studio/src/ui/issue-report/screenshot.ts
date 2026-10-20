@@ -1,5 +1,5 @@
 /**
- * 문제 보고 스크린숏. 메인이 창 전체를 찍고, 여기서 보이는 문서 쪽(편집 용지, 문서 홈의 미리보기)만
+ * 문제 보고 스크린숏. 메인이 창 전체를 찍고, 여기서 화면에 걸친 문서 쪽(편집 용지, 문서 홈의 미리보기)만
  * 알아볼 수 없게 흐린다. 나머지 화면은 그대로 둔다. 흐리지 않은 원본은 메모리에만 두고 '블러 해제'
  * 때만 보낸다.
  */
@@ -22,23 +22,6 @@ function shown(el: Element): boolean {
   return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0;
 }
 
-/** 그 영역의 몇 점이 실제로 이 요소 쪽을 보여 주는지 — 집중 화면·홈이 덮은 용지는 뺀다. */
-function visibleAt(rect: { left: number; top: number; right: number; bottom: number }, owner: Element): boolean {
-  const insetX = Math.min(24, (rect.right - rect.left) / 4);
-  const insetY = Math.min(24, (rect.bottom - rect.top) / 4);
-  const points: Array<[number, number]> = [
-    [(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2],
-    [rect.left + insetX, rect.top + insetY],
-    [rect.right - insetX, rect.top + insetY],
-    [rect.left + insetX, rect.bottom - insetY],
-    [rect.right - insetX, rect.bottom - insetY],
-  ];
-  return points.some(([x, y]) => {
-    const hit = document.elementFromPoint(x, y);
-    return Boolean(hit && (hit === owner || owner.contains(hit)));
-  });
-}
-
 function clipTo(
   rect: DOMRect,
   view: { left: number; top: number; right: number; bottom: number },
@@ -54,33 +37,36 @@ function blockFor(pageWidth: number): number {
   return Math.max(MIN_BLOCK_CSS_PX, Math.round(pageWidth / BLOCKS_PER_PAGE_WIDTH));
 }
 
-/** 지금 화면에 보이는 문서 쪽 영역(CSS px, 창 기준). 시트를 띄우기 전에 부른다. */
+/**
+ * 화면에 걸친 문서 쪽 영역(CSS px, 창 기준). 대화상자·홈이 덮고 있어도 흐린다 — 더 흐리는 편이 낫다.
+ * 찍는 사이 스크롤로 어긋나도 글자가 드러나지 않게 흐림 한 칸만큼 넓힌다.
+ */
 export function visibleDocumentRects(root: Document = document): CssRect[] {
   const viewport = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
   const rects: CssRect[] = [];
-  const add = (el: Element, owner: Element, clip: typeof viewport) => {
-    if (!shown(el)) return;
+  const add = (el: Element, clip: typeof viewport) => {
     const box = el.getBoundingClientRect();
-    const area = clipTo(box, clip);
-    if (!area || !visibleAt(area, owner)) return;
+    if (box.width < 1 || box.height < 1 || !shown(el)) return;
+    const block = blockFor(box.width);
+    const area = clipTo(new DOMRect(box.x - block, box.y - block, box.width + 2 * block, box.height + 2 * block), clip);
+    if (!area) return;
     rects.push({
       x: area.left,
       y: area.top,
       width: area.right - area.left,
       height: area.bottom - area.top,
-      block: blockFor(box.width),
+      block,
     });
   };
 
   const container = root.getElementById('scroll-container');
   if (container && shown(container)) {
-    const box = container.getBoundingClientRect();
-    const clip = clipTo(box, viewport);
+    const clip = clipTo(container.getBoundingClientRect(), viewport);
     if (clip) {
-      for (const page of container.querySelectorAll('#scroll-content > canvas')) add(page, container, clip);
+      for (const page of container.querySelectorAll('#scroll-content > canvas')) add(page, clip);
     }
   }
-  for (const thumb of root.querySelectorAll('.document-home .dh-thumb')) add(thumb, thumb, viewport);
+  for (const thumb of root.querySelectorAll('.document-home .dh-thumb')) add(thumb, viewport);
   return rects;
 }
 

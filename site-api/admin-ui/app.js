@@ -537,6 +537,8 @@
   const ATTACHMENT_TEXT = { screenshot: '스크린샷', log: '로그', chat: '대화', document: '문서' };
   const bytes = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
   const platformText = (r) => [PLATFORMS[r.os] ?? r.os, r.osVersion, r.arch].filter(Boolean).join(' ');
+  // 받기 이름과 화면에서 방향 제어·제어 문자를 지워요.
+  const plainName = (name) => String(name ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '');
 
   /** 세션 헤더가 필요해서 첨부는 blob 으로 받아요. */
   async function attachmentBlob(id, name) {
@@ -694,14 +696,14 @@
       if (!a[name]) continue;
       const button = el('button', '', `${ATTACHMENT_TEXT[name]} 받기`);
       button.type = 'button';
-      button.append(el('span', 'muted', ` ${a[name].name ?? ''} ${bytes(a[name].size)}`.replace(/\s+/g, ' ')));
+      button.append(el('span', 'muted', ` ${plainName(a[name].name)} ${bytes(a[name].size)}`.replace(/\s+/g, ' ')));
       button.addEventListener('click', async () => {
         button.disabled = true;
         try {
           const url = URL.createObjectURL(await attachmentBlob(report.id, name));
           const link = el('a');
           link.href = url;
-          link.download = name === 'document' ? a.document.name : `${report.id}-chat.txt`;
+          link.download = name === 'document' ? plainName(a.document.name) || 'document.bin' : `${report.id}-chat.txt`;
           link.click();
           setTimeout(() => URL.revokeObjectURL(url), 10_000);
         } catch (error) {

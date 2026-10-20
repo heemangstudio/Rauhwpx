@@ -33,6 +33,7 @@ export interface IssueReportSheetOptions {
 
 const FAILURE_TEXT: Record<IssueReportFailureCode, string> = {
   rate_limited: '보고가 많아 잠시 받을 수 없습니다. 나중에 다시 보내십시오.',
+  busy: '서버가 다른 보고를 받는 중입니다. 잠시 뒤 다시 보내십시오.',
   too_large: '첨부가 너무 큽니다. 문서나 대화를 빼고 보내십시오.',
   offline: '서버에 연결하지 못했습니다. 인터넷 연결을 확인하십시오.',
   timeout: '서버가 응답하지 않습니다. 다시 보내십시오.',

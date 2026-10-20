@@ -11,7 +11,7 @@ import { createFileStore, syncDirectory } from './store.mjs';
  * out drive-by junk, not a determined forger. Railway may override it with RAU_FEEDBACK_PROOF_KEY.
  */
 export const DEFAULT_FEEDBACK_PROOF_KEY = 'rau.feedback.v1.desktop';
-export const MAX_FEEDBACK_BODY_BYTES = 32 * 1024 * 1024;
+export const MAX_FEEDBACK_BODY_BYTES = 40 * 1024 * 1024;
 export const DEFAULT_FEEDBACK_MAX_STORAGE_BYTES = 2 * 1024 * 1024 * 1024;
 export const FEEDBACK_RETENTION_DAYS = 90;
 export const FEEDBACK_STATUSES = Object.freeze(['new', 'seen', 'resolved']);
@@ -36,7 +36,8 @@ const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 const REPORT_ID_RE = /^fb_[0-9a-z]{8,40}$/;
-const STORED_FILE_RE = /^(?:screenshot\.(?:png|jpg)|log\.txt|chat\.txt|document(?:\.[a-z0-9]{1,10})?)$/;
+const STORED_FILE_RE = /^(?:screenshot\.(?:png|jpg)|log\.txt|chat\.txt|document\.(?:hwp|hwpx|hml|bin))$/;
+const DOCUMENT_EXTENSIONS = new Set(['.hwp', '.hwpx', '.hml']);
 const SCREENSHOT_TYPES = {
   'image/png': { ext: 'png', magic: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
   'image/jpeg': { ext: 'jpg', magic: Buffer.from([0xff, 0xd8, 0xff]) },
@@ -90,20 +91,21 @@ function decodeBase64(value, maxBytes, field) {
   return bytes;
 }
 
-/** A display name with no path, no control characters and no quotes. The file on disk never uses it. */
+/**
+ * A display name with no path, no control or bidi-override characters and no quotes. Only the
+ * formats the editor opens keep their name; anything else becomes document.bin, so the inbox
+ * never downloads an executable. The file on disk never uses the name.
+ */
 export function sanitizeDocumentName(name) {
   const base = String(name ?? '').normalize('NFC').split(/[\\/]/).pop()
-    .replace(/[\u0000-\u001f\u007f"<>|:*?]/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069"<>|:*?]/g, '')
     .trim()
     .replace(/^\.+/, '')
     .slice(0, 200);
-  return base || 'document';
+  return DOCUMENT_EXTENSIONS.has(path.extname(base).toLowerCase()) ? base : 'document.bin';
 }
 
-function documentFileName(name) {
-  const ext = path.extname(name).toLowerCase();
-  return /^\.[a-z0-9]{1,10}$/.test(ext) ? `document${ext}` : 'document';
-}
+const documentFileName = (name) => `document${path.extname(name).toLowerCase()}`;
 
 function shortText(value, max = 80) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';

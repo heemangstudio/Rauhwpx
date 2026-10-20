@@ -8,18 +8,22 @@ import test from 'node:test';
 
 import {
   createDiagnosticLog,
+  createLineSink,
   redactSecrets,
   teeConsole,
 } from '../desktop/diagnostic-log.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
+  FEEDBACK_MAX_BODY_BYTES,
   FeedbackDraftError,
   buildFeedbackPayload,
   feedbackOrigin,
+  feedbackTimeoutMs,
   submitFeedback,
 } from '../desktop/issue-report.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY as SERVER_PROOF_KEY,
+  MAX_FEEDBACK_BODY_BYTES as SERVER_MAX_BODY_BYTES,
   createFeedbackProof as serverProof,
 } from '../site-api/feedback.mjs';
 
@@ -91,6 +95,21 @@ test('secrets are redacted before they reach the disk', () => withTempDir(async 
   assert.equal(redactSecrets('nothing secret here'), 'nothing secret here');
 }));
 
+test('hub stderr split mid-token is joined into lines before redaction', () => withTempDir(async (dir) => {
+  const log = createDiagnosticLog({ dir });
+  const sink = createLineSink((text) => log.writeText('hub', 'log', text));
+  const line = Buffer.from('fail 키 OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789\ntail');
+  // 6 splits the UTF-8 bytes of 키, 25 and 40 split the key itself.
+  const cuts = [0, 6, 25, 40, line.length];
+  for (let i = 1; i < cuts.length; i += 1) sink.write(line.subarray(cuts[i - 1], cuts[i]));
+  sink.end();
+  log.flushSync();
+  const written = readFileSync(log.filePath, 'utf8');
+  assert.ok(!written.includes('0123456789abcdef'), written);
+  assert.match(written, /fail 키 OPENROUTER_API_KEY=\[redacted\]/);
+  assert.match(written, /\[hub\] tail\n$/);
+}));
+
 test('console tee keeps the original output and records it', () => withTempDir(async (dir) => {
   const log = createDiagnosticLog({ dir });
   const printed = [];
@@ -160,6 +179,7 @@ test('submission maps server answers to distinct client codes', async () => {
   assert.deepEqual(await submitFeedback(payload, { origin, fetchImpl: reply(201, { ok: true, id: 'fb_abc12345' }) }), { ok: true, id: 'fb_abc12345' });
   assert.equal((await submitFeedback(payload, { origin, fetchImpl: reply(429, { ok: false, error: 'rate_limited' }) })).code, 'rate_limited');
   assert.equal((await submitFeedback(payload, { origin, fetchImpl: reply(413, { ok: false, error: 'too_large' }) })).code, 'too_large');
+  assert.equal((await submitFeedback(payload, { origin, fetchImpl: reply(503, { ok: false, error: 'busy' }) })).code, 'busy');
   assert.equal((await submitFeedback(payload, { origin, fetchImpl: reply(507, { ok: false }) })).code, 'server');
   const offline = await submitFeedback(payload, { origin, fetchImpl: async () => { throw new TypeError('fetch failed'); } });
   assert.equal(offline.code, 'offline');
@@ -171,6 +191,21 @@ test('submission maps server answers to distinct client codes', async () => {
     }),
   });
   assert.equal(hanging.code, 'timeout');
+});
+
+test('a body past the server cap fails as too_large without a request, and big bodies get more time', async () => {
+  const payload = buildFeedbackPayload({ installId: INSTALL_ID, createdAt: new Date().toISOString(), message: 'hi' });
+  assert.equal(FEEDBACK_MAX_BODY_BYTES, SERVER_MAX_BODY_BYTES);
+  let requests = 0;
+  const result = await submitFeedback({ ...payload, chat: 'x'.repeat(FEEDBACK_MAX_BODY_BYTES) }, {
+    origin: 'http://127.0.0.1:9',
+    fetchImpl: async () => { requests += 1; throw new Error('should not send'); },
+  });
+  assert.deepEqual(result, { ok: false, code: 'too_large' });
+  assert.equal(requests, 0);
+  assert.equal(feedbackTimeoutMs(1024), 31_000);
+  assert.ok(feedbackTimeoutMs(35 * 1024 * 1024) > 5 * 60_000, 'a 35 MiB upload may take minutes');
+  assert.equal(feedbackTimeoutMs(1024 * 1024 * 1024), 10 * 60_000);
 });
 
 test('the site-api origin override only applies to development runs', () => {

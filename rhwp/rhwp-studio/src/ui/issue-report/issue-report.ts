@@ -108,8 +108,6 @@ export async function startIssueReport(host: IssueReportHost): Promise<void> {
   try {
     // 팔레트·메뉴·토스트 단추가 지운 화면이 그려진 뒤에 찍는다.
     await frames(2);
-    const rects = visibleDocumentRects();
-    const cssWidth = window.innerWidth;
     const chat = safe(() => host.chat());
     const doc = safe(() => host.document());
     const rendererMeta: Record<string, unknown> = {
@@ -124,9 +122,13 @@ export async function startIssueReport(host: IssueReportHost): Promise<void> {
       ...(doc ? { document: { format: doc.format, pages: doc.pageCount } } : {}),
     };
 
+    // 메인이 찍는 순간에 가깝게, 부르기 직전과 돌아온 직후에 잰다. 그 사이 스크롤했어도 두 자리를 모두 흐린다.
+    const rects = visibleDocumentRects();
+    const cssWidth = window.innerWidth;
     let prepared;
     try {
       prepared = await host.api.prepare();
+      rects.push(...visibleDocumentRects());
     } catch (error) {
       console.warn('[issue-report] 준비 실패:', error);
       showToast({ message: '문제 보고를 열지 못했습니다.', durationMs: 4000 });

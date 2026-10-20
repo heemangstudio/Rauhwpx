@@ -50,6 +50,8 @@ const MINUTE = 60 * 1000;
 const TEN_MINUTES = 10 * MINUTE;
 const HOUR = 60 * MINUTE;
 const FEEDBACK_PER_IP_PER_HOUR = 20;
+// Issue-report bodies one replica holds at once; each can buffer up to MAX_FEEDBACK_BODY_BYTES.
+const MAX_FEEDBACK_UPLOADS = 3;
 // Groble retries 408/429/5xx for about 44 hours and treats any other 4xx as final.
 // Anything that fails before the signature matches answers 503: a stranger loses nothing,
 // and a real sale we failed to verify (secret mismatch, missing secret, stripped headers)
@@ -144,6 +146,16 @@ function readUpload(req, maxBytes) {
   });
 }
 
+/** Discards an upload we refuse unread so the client can still read the answer; a body past maxBytes closes the connection. */
+function discardUpload(req, maxBytes) {
+  let size = 0;
+  req.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > maxBytes) req.destroy();
+  });
+  req.resume();
+}
+
 function errorStatus(error) {
   if ((error?.licenseError || error?.expose) && Number.isInteger(error.status)) return error.status;
   if (error?.code === 'RATE_LIMITED') return 429;
@@ -183,6 +195,7 @@ export function siteRequestListener({
   log = () => {},
 }) {
   const limiter = createRateLimiter();
+  let feedbackUploads = 0;
   const allowedOrigins = new Set(licenseConfig.allowedOrigins ?? []);
   // Work that must never delay or fail a response: runs after it is sent.
   const later = (fn) => setImmediate(() => {
@@ -465,15 +478,28 @@ export function siteRequestListener({
         case 'POST /v1/feedback': {
           // A body declared past twice the cap is refused unread and the connection closes.
           if (Number(req.headers['content-length']) > 2 * MAX_FEEDBACK_BODY_BYTES) throw feedbackError('too_large', 413);
-          const raw = await readUpload(req, MAX_FEEDBACK_BODY_BYTES);
-          if (!limiter.check(`feedback:${ip}`, FEEDBACK_PER_IP_PER_HOUR, HOUR)) throw feedbackError('rate_limited', 429);
-          let parsed;
-          try {
-            parsed = JSON.parse(raw.toString('utf8'));
-          } catch {
-            throw feedbackError('invalid', 400);
+          // Refusals come before the body is buffered; the body is discarded so the client still reads the answer.
+          const refuse = feedbackUploads >= MAX_FEEDBACK_UPLOADS ? [503, 'busy']
+            : !limiter.check(`feedback:${ip}`, FEEDBACK_PER_IP_PER_HOUR, HOUR) ? [429, 'rate_limited'] : null;
+          if (refuse) {
+            discardUpload(req, 2 * MAX_FEEDBACK_BODY_BYTES);
+            send(refuse[0], { ok: false, error: refuse[1] });
+            return;
           }
-          const summary = await feedback.submit(parsed);
+          feedbackUploads += 1;
+          let summary;
+          try {
+            const raw = await readUpload(req, MAX_FEEDBACK_BODY_BYTES);
+            let parsed;
+            try {
+              parsed = JSON.parse(raw.toString('utf8'));
+            } catch {
+              throw feedbackError('invalid', 400);
+            }
+            summary = await feedback.submit(parsed);
+          } finally {
+            feedbackUploads -= 1;
+          }
           log(`[site-api] feedback ${summary.id} (${summary.bytes} bytes)`);
           send(201, { ok: true, id: summary.id });
           later(() => feedback.notify(summary));

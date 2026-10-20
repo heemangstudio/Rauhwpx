@@ -7,10 +7,10 @@ import { uniqueInstallStatePath, loadOrCreateUniqueInstallState, SITE_API_ORIGIN
 /** Must match site-api/feedback.mjs DEFAULT_FEEDBACK_PROOF_KEY. 막는 것은 지나가는 쓰레기 요청뿐이다. */
 export const DEFAULT_FEEDBACK_PROOF_KEY = 'rau.feedback.v1.desktop';
 export const FEEDBACK_PATH = '/v1/feedback';
-export const FEEDBACK_TIMEOUT_MS = 30_000;
-
 const KIB = 1024;
 const MIB = 1024 * KIB;
+/** site-api MAX_FEEDBACK_BODY_BYTES 와 같다. 넘는 본문은 보내기 전에 too_large 로 끝낸다. */
+export const FEEDBACK_MAX_BODY_BYTES = 40 * MIB;
 export const FEEDBACK_LIMITS = Object.freeze({
   messageChars: 5000,
   emailBytes: 254,
@@ -23,6 +23,11 @@ export const FEEDBACK_LIMITS = Object.freeze({
 const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const SCREENSHOT_MIMES = new Set(['image/png', 'image/jpeg']);
 const META_STRING_CHARS = 300;
+
+/** 응답까지 기다릴 시간. 느린 회선에서 큰 첨부가 끊기지 않게 본문 100 KiB 마다 1초를 더하고, 10분에서 멈춘다. */
+export function feedbackTimeoutMs(bodyBytes) {
+  return Math.min(10 * 60_000, 30_000 + Math.ceil(bodyBytes / (100 * KIB)) * 1000);
+}
 
 export class FeedbackDraftError extends Error {
   constructor(field, code = 'invalid') {
@@ -141,41 +146,46 @@ export function buildFeedbackPayload({
 
 /**
  * 보낸다. 결과는 렌더러가 고를 문구의 코드로 준다.
- * @returns {Promise<{ ok: true, id: string } | { ok: false, code: 'rate_limited'|'too_large'|'invalid'|'rejected'|'offline'|'timeout'|'server', status?: number }>}
+ * @returns {Promise<{ ok: true, id: string } | { ok: false, code: 'rate_limited'|'busy'|'too_large'|'invalid'|'rejected'|'offline'|'timeout'|'server', status?: number }>}
  */
 export async function submitFeedback(payload, {
   origin,
   fetchImpl = globalThis.fetch,
-  timeoutMs = FEEDBACK_TIMEOUT_MS,
+  timeoutMs,
 } = {}) {
+  const body = JSON.stringify(payload);
+  const bytes = Buffer.byteLength(body, 'utf8');
+  // 필드마다 상한 안이어도 base64 로 불어난 합이 서버 상한을 넘을 수 있다.
+  if (bytes > FEEDBACK_MAX_BODY_BYTES) return { ok: false, code: 'too_large' };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs ?? feedbackTimeoutMs(bytes));
   let response;
   try {
     response = await fetchImpl(`${origin}${FEEDBACK_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(payload),
+      body,
       signal: controller.signal,
     });
   } catch (error) {
     clearTimeout(timer);
     return { ok: false, code: controller.signal.aborted || error?.name === 'AbortError' ? 'timeout' : 'offline' };
   }
-  let body = null;
+  let answer = null;
   try {
-    body = await response.json();
+    answer = await response.json();
   } catch {
-    body = null;
+    answer = null;
   } finally {
     clearTimeout(timer);
   }
   const { status } = response;
-  if (response.ok && body?.ok === true && typeof body.id === 'string') return { ok: true, id: body.id };
+  if (response.ok && answer?.ok === true && typeof answer.id === 'string') return { ok: true, id: answer.id };
   if (status === 429) return { ok: false, code: 'rate_limited', status };
+  if (status === 503 && answer?.error === 'busy') return { ok: false, code: 'busy', status };
   if (status === 413) return { ok: false, code: 'too_large', status };
   if (status === 401) return { ok: false, code: 'rejected', status };
-  if (status === 400) return { ok: false, code: 'invalid', status, ...(typeof body?.field === 'string' ? { field: body.field } : {}) };
+  if (status === 400) return { ok: false, code: 'invalid', status, ...(typeof answer?.field === 'string' ? { field: answer.field } : {}) };
   return { ok: false, code: 'server', status };
 }
 

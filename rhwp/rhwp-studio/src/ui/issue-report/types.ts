@@ -17,6 +17,7 @@ export interface IssueReportDraft {
 
 export type IssueReportFailureCode =
   | 'rate_limited'
+  | 'busy'
   | 'too_large'
   | 'invalid'
   | 'rejected'
