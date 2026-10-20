@@ -236,7 +236,8 @@ export async function findRunOrphans({ listing, tracked, since, uid, dir, readCw
   if (candidates.length === 0) return [];
   const root = await resolvePath(dir);
   const cwds = await readCwd(candidates.map((row) => row.pid)).catch(() => new Map());
-  const inside = (cwd) => cwd === root || cwd.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+  // POSIX 에서만 돈다(Windows 는 uid 가 없다). 경로 구분자도 POSIX 것으로 본다.
+  const inside = (cwd) => cwd === root || cwd.startsWith(root.endsWith('/') ? root : `${root}/`);
   const found = [];
   for (const row of candidates) {
     const cwd = cwds.get(row.pid);
