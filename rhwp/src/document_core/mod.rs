@@ -340,8 +340,12 @@ pub(crate) struct SnapshotSection {
 
 #[derive(Clone)]
 pub(crate) struct DocumentSnapshot {
-    // 보존용 스트림과 미리보기 이미지 바이트는 셸에서 제외한다.
+    // 보존용 스트림과 미리보기 이미지 바이트, DocInfo는 셸에서 제외한다.
     pub(crate) document_shell: Document,
+    // 모양 표는 편집 사이에 거의 바뀌지 않아 직전 스냅샷과 같으면 공유한다.
+    // 텍스트 편집마다 캐럿을 덧쓰는 원본 스트림은 표와 따로 공유한다.
+    pub(crate) doc_info: Arc<crate::model::document::DocInfo>,
+    pub(crate) doc_info_raw_stream: Option<Arc<Vec<u8>>>,
     pub(crate) extra_streams: Arc<Vec<(String, Vec<u8>)>>,
     pub(crate) hwpx_aux_entries: Arc<Vec<(String, Vec<u8>)>>,
     pub(crate) preview_image: Option<Arc<Vec<u8>>>,

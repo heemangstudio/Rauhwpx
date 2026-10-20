@@ -1,7 +1,7 @@
 //! 바이너리 데이터 (BinData, 이미지/OLE 참조)
 
 /// 바이너리 데이터 아이템 (HWPTAG_BIN_DATA)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BinData {
     /// 원본 레코드 바이트 (라운드트립 보존용)
     pub raw_data: Option<Vec<u8>>,

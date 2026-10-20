@@ -10776,7 +10776,8 @@ mod tests {
         assert_eq!(resolver.decoded_calls.load(Ordering::SeqCst), 0);
 
         let merged_bytes = serialize_hwp(&merged).expect("merged serialization");
-        assert_eq!(resolver.decoded_calls.load(Ordering::SeqCst), 1);
+        // 그대로인 lazy 항목은 원본 스트림을 옮기므로 풀지 않는다.
+        assert_eq!(resolver.decoded_calls.load(Ordering::SeqCst), 0);
         assert_eq!(resolver.raw_calls.load(Ordering::SeqCst), 1);
         let reparsed = parse_document(&merged_bytes).expect("merged reparse");
         assert_eq!(
