@@ -6,7 +6,7 @@
 import '../agent-sidebar/sheet.css';
 import { openSheet } from '../agent-sidebar/sheet.ts';
 
-export const AUTOFIX_INTRO_MESSAGE = '다시 시도해도 풀리지 않는 오류가 나면, 연결된 AI가 이 컴퓨터의 앱 설정을 고치고 개발자에게 보고를 보냅니다.';
+export const AUTOFIX_INTRO_MESSAGE = '예상치 못한 오류가 발생하면, AI가 자동으로 고치고 개발자에게 버그를 제보하는 기능입니다. 앱의 실행 기록 및 현재 상태 등을 개발자가 버그 수정용으로 사용할 수 있습니다.';
 
 export async function openAutofixIntro(signal?: AbortSignal): Promise<boolean> {
   const result = await openSheet({
