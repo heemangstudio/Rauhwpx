@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Run even when the last completed nightly tested this commit
+        description: Run even when the last successful nightly tested this commit
         type: boolean
         default: true
 
@@ -39,8 +39,9 @@ jobs:
             echo run=true >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          last_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=$GITHUB_REF_NAME&status=completed&per_page=1" --jq '.workflow_runs[0].head_sha // ""')"
-          echo "Last completed nightly tested ${last_sha:-nothing}"
+          # A failed or cancelled run does not count, so the next night retries the same commit.
+          last_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=$GITHUB_REF_NAME&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')"
+          echo "Last successful nightly tested ${last_sha:-nothing}"
           if [ "$last_sha" = "$GITHUB_SHA" ]; then
             echo run=false >> "$GITHUB_OUTPUT"
           else
