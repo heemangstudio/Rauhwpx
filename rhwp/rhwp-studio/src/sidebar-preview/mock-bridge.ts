@@ -97,7 +97,7 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
     case 'unknown':
       return failure('unknown', 'Unexpected provider response: the stream ended without a terminal frame.', null, true);
     case 'sandbox':
-      return failure('invalid_request', 'Sandbox required but unavailable: sandbox is enabled but the Windows sandbox is not active on this session (feature gate off).', 'sandbox_unavailable', false);
+      return failure('invalid_request', 'Sandbox required but unavailable: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed · install missing tools (e.g. apt install bubblewrap socat) or run /sandbox for details.', 'sandbox_unavailable', false);
     case 'start':
       return failure('process_exited', 'spawn failed: the CLI exited before it was ready', 'AGENT_SPAWN_FAILED', true);
     case 'legacy':

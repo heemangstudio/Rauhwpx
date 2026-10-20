@@ -22,7 +22,7 @@ const KINDS = [
   ['cli-missing', /CLI를 찾지 못했어요$/, ['settings']],
   ['invalid', /^대화가 너무 길어 .+가 처리하지 못했어요$/, []],
   ['unknown', /작업 중 오류가 발생했어요$/, ['retry', 'settings']],
-  ['sandbox', /안전 실행을 사용할 수 없어요$/, ['settings']],
+  ['sandbox', /안전 실행을 사용할 수 없어요$/, ['retry', 'settings']],
   ['start', /CLI를 시작하지 못했어요$/, ['retry']],
   ['legacy', /로그인이 필요해요$/, ['login']],
 ];
