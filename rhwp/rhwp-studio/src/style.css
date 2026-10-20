@@ -34,3 +34,4 @@
 @import './styles/document-home.css';
 @import './styles/empty-document-view.css';
 @import './styles/themes/index.css';
+@import './ui/autofix/autofix.css';

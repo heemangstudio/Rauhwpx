@@ -51,6 +51,7 @@ import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
+import { createAutofixSettingsSection } from './settings-autofix.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
@@ -1230,6 +1231,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     notificationsSection.root.hidden = !desktopShell && !webNotificationsGranted();
   };
   syncNotificationsSection();
+  // 자동 버그 수정 — 데스크톱만. 바꾸는 즉시 저장한다.
+  const autofixSection = createAutofixSettingsSection();
 
   instructionsEditor.addEventListener('input', () => {
     instructionsDirty = instructionsEditor.value !== (agentInstructions?.content ?? '');
@@ -1440,6 +1443,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     calibration.root,
     templatesSection.root,
     notificationsSection.root,
+    ...(autofixSection ? [autofixSection.root] : []),
     advanced,
     aiFooter,
   );
@@ -3591,6 +3595,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       unsubscribeAttentionPrefs();
       unsubscribeInitialSetup();
       licenseSection?.dispose();
+      autofixSection?.dispose();
       piGift?.dispose();
       editingSettings.dispose();
       themeSettings.dispose();

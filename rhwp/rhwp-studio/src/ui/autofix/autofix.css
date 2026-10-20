@@ -1,0 +1,138 @@
+/* 자동 수정 단추 — 사이드바·토스트·초기화 실패 화면이 함께 쓴다. 색은 테마의 성공·위험 색을 따른다.
+   선택자에 [data-phase] 를 붙여 자리의 일반 단추 규칙(.ag-browser button 등)보다 앞선다. */
+:root {
+  --rhwp-autofix-bg: var(--theme-success, #2f7d4f);
+  --rhwp-autofix-fg: #fff;
+  --rhwp-autofix-danger: var(--theme-danger, #c8372d);
+  --rhwp-autofix-muted-bg: color-mix(in oklab, var(--theme-text, #1f1f1f) 10%, transparent);
+  --rhwp-autofix-muted-fg: var(--theme-text-secondary, #555);
+}
+
+:root[data-theme-effective='dark'] {
+  /* 어두운 테마의 성공·위험 색은 밝아 흰 글자가 묻힌다. 한 단 눌러 쓴다. */
+  --rhwp-autofix-bg: color-mix(in oklab, var(--theme-success, #5cbb7f) 70%, #000);
+  --rhwp-autofix-danger: color-mix(in oklab, var(--theme-danger, #ff6b60) 78%, #000);
+  --rhwp-autofix-muted-bg: color-mix(in oklab, var(--theme-text, #ececec) 14%, transparent);
+  --rhwp-autofix-muted-fg: var(--theme-text-secondary, #b4b4b4);
+}
+
+.rhwp-autofix[data-phase] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--rhwp-autofix-bg);
+  color: var(--rhwp-autofix-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    color var(--ag-dur-fast, 150ms) var(--ag-ease-out, ease-out),
+    background-color var(--ag-dur-fast, 150ms) var(--ag-ease-out, ease-out);
+  animation: rhwp-autofix-in var(--ag-dur-base, 220ms) var(--ag-ease-out, ease-out);
+}
+
+.rhwp-autofix[data-phase]:is(:hover, :active):not(:disabled) {
+  background: color-mix(in oklab, var(--rhwp-autofix-bg) 88%, #000);
+}
+
+.rhwp-autofix:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--rhwp-autofix-bg) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.rhwp-autofix[data-phase]:disabled {
+  opacity: 1;
+}
+
+.rhwp-autofix[data-phase='failed'] {
+  background: var(--rhwp-autofix-muted-bg);
+  color: var(--rhwp-autofix-muted-fg);
+}
+
+.rhwp-autofix[data-phase='unavailable'] {
+  background: var(--rhwp-autofix-danger);
+  animation: rhwp-autofix-shake 360ms var(--ag-ease-out, ease-out);
+}
+
+/* 모든 문구가 한 칸에 겹친다 — 가장 긴 문구가 폭을 정해 상태가 바뀌어도 단추가 흔들리지 않는다. */
+.rhwp-autofix-labels {
+  display: inline-grid;
+  justify-items: center;
+}
+
+.rhwp-autofix-labels > * {
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+
+.rhwp-autofix[data-phase='idle'] [data-label='idle'],
+.rhwp-autofix[data-phase='running'] [data-label='running'],
+.rhwp-autofix[data-phase='fixed'] [data-label='fixed'],
+.rhwp-autofix[data-phase='failed'] [data-label='failed'],
+.rhwp-autofix[data-phase='unavailable'] [data-label='unavailable'] {
+  visibility: visible;
+}
+
+/* ... → .. → . → ... 사라진 점도 자리를 지켜 가운데가 흔들리지 않는다. */
+.rhwp-autofix-dots {
+  display: inline-flex;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > :nth-child(2) {
+  animation: rhwp-autofix-dot-2 1200ms linear infinite;
+}
+
+.rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > :nth-child(3) {
+  animation: rhwp-autofix-dot-3 1200ms linear infinite;
+}
+
+.rhwp-autofix-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@keyframes rhwp-autofix-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes rhwp-autofix-dot-2 {
+  0%, 66.6% { opacity: 1; }
+  66.7%, 100% { opacity: 0; }
+}
+
+@keyframes rhwp-autofix-dot-3 {
+  0%, 33.3% { opacity: 1; }
+  33.4%, 100% { opacity: 0; }
+}
+
+@keyframes rhwp-autofix-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-5px); }
+  30% { transform: translateX(5px); }
+  45% { transform: translateX(-4px); }
+  60% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rhwp-autofix[data-phase],
+  .rhwp-autofix[data-phase='unavailable'],
+  .rhwp-autofix[data-phase='running'] .rhwp-autofix-dots > * {
+    animation: none;
+  }
+}

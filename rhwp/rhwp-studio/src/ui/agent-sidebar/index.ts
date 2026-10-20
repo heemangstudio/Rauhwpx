@@ -215,6 +215,8 @@ import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.
 import './workbench-agents.css';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
 import { createFailureNoticeController, failureRailLabel, retryWire } from './failure-notice.ts';
+import { autofixReady, createRetryEscalation, onAutofixSettings } from '../autofix/autofix.ts';
+import { createAutofixButton, swapSlot, type AutofixButton } from '../autofix/autofix-button.ts';
 import {
   baseToolName,
   parseToolArgs,
@@ -271,6 +273,7 @@ import {
   type VersionManagerController,
 } from './version-manager.ts';
 import {
+  agentHubLaunchFailed,
   isDesktopApp,
   openPublishedDocumentInNewWindow,
   parsePublishedDocumentLink,
@@ -1396,6 +1399,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     resend: (retry, failure) => resendFailedRequest(retry, failure),
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
+    autofix: { ready: autofixReady, create: createAutofixButton },
   });
 
   let planHistory: StructuredPlan[] = initialWorkflowState.latestPlan ? [initialWorkflowState.latestPlan] : [];
@@ -3251,10 +3255,40 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   connCommand.append(connCommandText, connCommandCopy);
   const connRetry = el('button', 'ag-conn-retry', '다시 연결');
   connRetry.type = 'button';
-  connRetry.addEventListener('click', () => {
+  /** 다시 연결이 두 번 실패했거나 앱이 띄우는 허브가 뜨지 않으면 그 자리에 자동 수정을 둔다. */
+  const hubEscalation = createRetryEscalation();
+  let hubRetryPending = false;
+  let connAutofix: AutofixButton | null = null;
+  function reconnectHub(): void {
     connPopoverText.textContent = '연결 중';
+    hubEscalation.retried('hub');
+    hubRetryPending = true;
     void bridge.reconnectNow();
-  });
+  }
+  connRetry.addEventListener('click', reconnectHub);
+  function connAutofixButton(): AutofixButton {
+    connAutofix ??= createAutofixButton({
+      className: 'ag-conn-autofix',
+      request: () => ({
+        surface: 'hub-connection',
+        title: '허브 연결 끊김',
+        detail: agentHubLaunchFailed() ? 'managed hub not ready' : `reconnect attempt ${connAttempt}`,
+        attempts: hubEscalation.attempts('hub'),
+      }),
+      onFixed: () => {
+        if (connState !== 'connected') reconnectHub();
+      },
+    });
+    return connAutofix;
+  }
+  /** 보이는 상태에 맞춰 다시 연결과 자동 수정 중 하나를 세운다. 자동 수정이 도는 동안은 그대로 둔다. */
+  function syncConnAutofix(disconnected: boolean): void {
+    if (connAutofix && connAutofix.phase() !== 'idle') return;
+    const show = disconnected && autofixReady()
+      && (hubEscalation.escalated('hub') || (managedHub && agentHubLaunchFailed()));
+    if (show) swapSlot(connRetry, connAutofixButton().element);
+    else if (connAutofix) swapSlot(connAutofix.element, connRetry);
+  }
   const connReport = deps.reportIssue ? el('button', 'ag-conn-report', '오류 제보') : null;
   if (connReport) {
     connReport.type = 'button';
@@ -3266,6 +3300,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   connPopover.append(connPopoverText, connCommand, connRetry, ...(connReport ? [connReport] : []));
   header.append(connPopover);
+  // 자동 수정을 켜고 끄면 실패 알림과 연결 안내의 단추가 바로 바뀐다.
+  const stopAutofixSettings = onAutofixSettings(() => {
+    failureNotices.refresh();
+    renderConnStatus();
+  });
 
   function setConnPopoverOpen(open: boolean): void {
     if (open === !connPopover.hidden) return;
@@ -3273,7 +3312,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connDot.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       renderConnStatus();
-      requestAnimationFrame(() => connRetry.focus({ preventScroll: true }));
+      requestAnimationFrame(() => (connRetry.isConnected ? connRetry : connAutofix?.element ?? connRetry).focus({ preventScroll: true }));
     }
   }
   connDot.addEventListener('click', (event) => {
@@ -9131,6 +9170,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connState = state;
     if (typeof meta?.attempt === 'number') connAttempt = meta.attempt;
     if (state === 'connected') connAttempt = 0;
+    // 다시 연결을 누른 뒤 붙지 못하고 다음 시도가 잡혔다 — 실패한 다시 연결이다.
+    if (state === 'connected') {
+      hubEscalation.reset();
+      hubRetryPending = false;
+    } else if (hubRetryPending && meta?.retryInMs !== undefined) {
+      hubEscalation.failed('hub');
+      hubRetryPending = false;
+    }
     takeoverBtn.hidden = state !== 'replaced';
     if (state === 'replaced') setConfigPanelOpen(false);
     // 점과 스크린리더 문구는 400ms 를 넘긴 상태만 보인다. 판단은 실제 connState 로 한다.
@@ -9168,6 +9215,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     connPopoverText.textContent = visual === 'disconnected' ? '허브 연결 끊김' : '연결 중';
     connCommand.hidden = managedHub || visual !== 'disconnected';
     if (connReport) connReport.hidden = visual !== 'disconnected';
+    syncConnAutofix(visual === 'disconnected');
   }
 
   function setTurnRunning(running: boolean): void {
@@ -11243,6 +11291,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           && event.stopReason !== 'exited'
           && !event.errorMessage
           && turnFailedToolCount === 0;
+        if (completed) failureNotices.noteSuccess();
         if (completed && authFailedAgents.delete(event.agent)) updateComposer();
         if (reconnectRestartPending.delete(event.agent) && event.agent === selectedAgent) {
           restartAgentSession();
@@ -13353,6 +13402,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       permissionController.dispose();
       // 걸어 둔 '리셋 후 이어서' 는 창과 함께 사라진다.
       failureNotices.dispose();
+      stopAutofixSettings();
+      connAutofix?.dispose();
       // 이 사이드바가 쓴 작업·입력·검토 점을 걷는다. 미뤄 둔 알림은 그대로 나간다.
       runStatus.dispose();
       attentionViewObserver?.disconnect();

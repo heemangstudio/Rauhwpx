@@ -57,7 +57,10 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
+import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
+import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
+import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from '../ui/initial-setup/active.ts';
 
 const params = new URLSearchParams(location.search);
@@ -202,6 +205,14 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
+/** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
+const mockAutofix = createMockAutofix(params);
+setAutofixApi(mockAutofix?.api ?? null);
+// `hub=down`: 허브가 뜨지 않아 다시 연결이 실패한다. 자동 수정이 고치면 다시 붙는다.
+if (params.get('hub') === 'down') {
+  mock.setHubDown(true);
+  mockAutofix?.onFixed(() => mock.setHubDown(false));
+}
 if (params.get('pikey') === 'none') mock.setPiOwnKey(false);
 const previewProjects = mock.projects;
 if (params.get('services') === 'setup') mock.setServices(false);
@@ -308,6 +319,8 @@ if (params.has('accent')) {
 }
 initThemeSync();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
+// 앱과 같은 트리거로 자동 버그 수정 소개를 띄운다. `autofix=undecided` 일 때만 뜬다.
+if (mockAutofix) startAutofixIntro({ whenReady: async () => {} });
 if (params.get('event') === 'special' && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
   const records = new Map<string, string>();
@@ -579,6 +592,7 @@ const sidebar = initAgentSidebar({
   },
 });
 mock.boot();
+if (params.get('hub') === 'down') mock.setConnection('disconnected');
 const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
 chats.push({ sidebar, mock });
@@ -670,6 +684,11 @@ services.addEventListener('change', () => {
   mock.setServices(services.value === 'ready');
   eventBus.emit('settings:open', { destination: 'ai' });
 });
+const autofixSelect = document.querySelector<HTMLSelectElement>('#autofix')!;
+for (const outcome of mockAutofixOutcomes) autofixSelect.add(new Option(outcome, outcome));
+autofixSelect.closest('label')!.hidden = !mockAutofix;
+if (mockAutofix) autofixSelect.value = mockAutofix.outcome();
+autofixSelect.addEventListener('change', () => mockAutofix?.setOutcome(autofixSelect.value as AutofixStatus));
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
 theme.value = userSettings.getThemeSettings().mode;
 theme.addEventListener('change', () =>
@@ -804,6 +823,7 @@ if (parallel === 'locked') await openLockedParallelScene();
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
+  autofix: mockAutofix,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,

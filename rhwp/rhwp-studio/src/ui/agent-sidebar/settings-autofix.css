@@ -1,0 +1,104 @@
+/* 설정 → AI → 자동 버그 수정. 켜기 줄 아래에 쓰는 순서대로 프로바이더 카드를 둔다.
+   면·테두리·반경은 설정의 컨트롤 줄(.ag-settings-control-row)과 같다. */
+
+.ag-autofix-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-autofix-providers[hidden] {
+  display: none;
+}
+
+.ag-autofix-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-field);
+  background: var(--ag-bg-2);
+}
+
+.ag-autofix-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.ag-autofix-rank {
+  flex: 0 0 auto;
+  min-width: 10px;
+  color: var(--ag-text-muted);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-autofix-provider-name {
+  display: inline-flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-autofix-up {
+  width: 28px;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  color: var(--ag-text-secondary);
+}
+
+.ag-autofix-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.ag-autofix-provider-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-autofix-provider-controls .ag-settings-select {
+  width: 100%;
+  max-width: none;
+}
+
+.ag-autofix-provider[data-enabled='false'] .ag-autofix-provider-controls {
+  opacity: 0.5;
+}
+
+/* 설정 페이지: 섹션 카드 안의 행처럼 테두리를 걷고 머리선으로만 나눈다. */
+.ag-settings-page .ag-autofix-providers {
+  gap: 0;
+}
+
+.ag-settings-page .ag-autofix-provider {
+  padding: 12px var(--ag-set-inset);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ag-settings-page .ag-autofix-provider + .ag-autofix-provider {
+  background-image: linear-gradient(var(--ag-set-sep), var(--ag-set-sep));
+  background-position: var(--ag-set-inset) 0;
+  background-size: calc(100% - var(--ag-set-inset)) 1px;
+  background-repeat: no-repeat;
+}
+
+.ag-settings-page .ag-autofix-provider-name {
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+}

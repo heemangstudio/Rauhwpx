@@ -15,6 +15,7 @@ import {
   modelGroupsForAgent,
   modelsForAgent,
   modelSupportsImages,
+  OFFICIAL_CLAUDE_MODELS,
   resolveEffortForAgent,
   resolveModelForAgent,
   resolveServiceTier,
@@ -218,6 +219,10 @@ test('Claude 모델은 해석된 ID에서 버전 이름을 얻고 허브와 같�
   for (const text of ['Sonnet 5 · Efficient for routine tasks', 'Opus 5 with 1M context · Best for everyday, complex tasks', 'Plain']) {
     assert.equal(claudeModelDescription(text), hubLabels.claudeModelDescription(text));
   }
+});
+
+test('공식 Claude 모델 목록은 허브(자동 버그 수정이 받는 값)와 같다', () => {
+  assert.deepEqual([...OFFICIAL_CLAUDE_MODELS], [...hubLabels.OFFICIAL_CLAUDE_MODELS]);
 });
 
 test('Claude 카탈로그는 예전 캐시 이름도 버전 이름으로 고치고 카탈로그 순서로 선다', () => {

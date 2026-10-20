@@ -9640,3 +9640,17 @@ html:is(.desktop-mac, .desktop-windows) .ag-workspace-home-btn {
 html:is(.desktop-mac, .desktop-windows) .ag-root {
   --ag-workspace-home-w: 0px !important;
 }
+
+/* 허브 연결 팝오버의 자동 수정 — 다시 연결 자리와 같은 크기. */
+.ag-conn-popover .ag-conn-autofix[data-phase] {
+  width: 100%;
+  height: 32px;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+}
+
+/* 실패 알림의 자동 수정 — 다시 시도 자리의 높이와 글자. */
+.ag-failure-actions .rhwp-autofix[data-phase] {
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+}

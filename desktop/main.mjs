@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   app,
   autoUpdater as nativeAutoUpdater,
@@ -98,6 +98,7 @@ import {
   teeConsole,
 } from './diagnostic-log.mjs';
 import { feedbackOrigin, installIssueReportHost } from './issue-report.mjs';
+import { installAutofixHost } from './autofix.mjs';
 import {
   AgentAttention,
   WindowFrameStore,
@@ -142,6 +143,11 @@ const RELEASES_URL = 'https://github.com/heemangstudio/hamaeditor-releases/relea
 const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/hamaeditor-releases/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
 const REBRAND_EXPORT_PRELOAD_PATH = join(__dirname, 'rebrand-export-preload.cjs');
+// 렌더러가 죽으면 창에 띄우는 안내 화면. 창의 프리로드를 그대로 쓴다.
+const CRASH_PAGE_PATH = join(__dirname, 'crash-page.html');
+const CRASH_PAGE_PATHNAME = pathToFileURL(CRASH_PAGE_PATH).pathname;
+// 이보다 많이 죽은 창에는 안내 화면도 다시 띄우지 않는다(안내 화면 자체가 계속 죽는 경우).
+const MAX_CRASH_PAGES = 6;
 const devUrl = resolveDevelopmentUrl({
   packaged: app.isPackaged,
   rawUrl: process.env.RHWP_DEV_URL,
@@ -178,6 +184,27 @@ function sessionForEvent(event) {
   const senderUrl = event.senderFrame?.url || event.sender.getURL();
   if (!isTrustedRendererUrl(senderUrl)) throw new Error('Untrusted renderer IPC sender');
   return sessions.sessionForSender(event.sender);
+}
+
+function isCrashPageUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'file:') return false;
+    return process.platform === 'win32'
+      ? url.pathname.toLowerCase() === CRASH_PAGE_PATHNAME.toLowerCase()
+      : url.pathname === CRASH_PAGE_PATHNAME;
+  } catch {
+    return false;
+  }
+}
+
+/** 안내 화면은 메인이 띄운 창 안에서만 IPC 를 쓸 수 있다. */
+function crashPageSessionForEvent(event) {
+  const senderUrl = event.senderFrame?.url || event.sender.getURL();
+  if (!isCrashPageUrl(senderUrl)) throw new Error('Untrusted crash page IPC sender');
+  const session = sessions.sessionForSender(event.sender);
+  if (!session.crashPage) throw new Error('Window is not showing the crash page');
+  return session;
 }
 
 // Electron 은 앱 이름으로 사용자 데이터 폴더와 safeStorage 키체인 항목을 정한다. 실행 내내
@@ -1091,6 +1118,8 @@ async function createWindow(launch = launchRequest(), {
     if (window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
     // A window whose first load failed has no document and no listener.
     if (session.rendererLoadFailed) return;
+    // 안내 화면에는 문서가 없다.
+    if (session.crashPage) return;
     event.preventDefault();
     if (!session.rendererLoaded) {
       session.closeDeferred = true;
@@ -1161,6 +1190,13 @@ async function createWindow(launch = launchRequest(), {
     sessions.releaseAgentSessions(window);
     forgetUnsavedDocuments(session.sessionId);
     updates?.forgetRunningChats(session.sessionId);
+    // 비정상 종료면 빈 창 대신 안내 화면을 띄운다. 첫 번째는 다시 열기, 두 번째부터는 자동 수정을 권한다.
+    if (details?.reason === 'clean-exit' || quitting || updateRestartClosing || window.isDestroyed()) return;
+    session.crashCount = (session.crashCount ?? 0) + 1;
+    if (session.crashCount > MAX_CRASH_PAGES) return;
+    session.crashPage = true;
+    session.crashReason = `${details?.reason ?? 'unknown'}, exit ${details?.exitCode ?? '?'}`;
+    setImmediate(() => showCrashPage(window, session));
   });
   // A reloaded page knows only its window session and reopens the default
   // document itself. Background documents and their agents died with the old page.
@@ -1211,6 +1247,13 @@ async function createWindow(launch = launchRequest(), {
     });
   }
   window.webContents.on('did-finish-load', () => {
+    if (session.crashPage) {
+      if (session.closeDeferred && !window.isDestroyed()) {
+        session.closeDeferred = false;
+        window.close();
+      }
+      return;
+    }
     session.rendererLoaded = true;
     // A reload after a failed first load brings back the document and its prompt.
     session.rendererLoadFailed = false;
@@ -1243,6 +1286,37 @@ async function createWindow(launch = launchRequest(), {
   if (!window.isDestroyed() && !window.isVisible()) window.show();
   return window;
 }
+
+function showCrashPage(window, session) {
+  if (window.isDestroyed() || !session.crashPage) return;
+  const mode = session.crashCount >= 2 || session.crashReopenFailed ? 'autofix' : 'reopen';
+  void window.loadFile(CRASH_PAGE_PATH, {
+    query: { mode, reason: session.crashReason ?? 'unknown', crashes: String(session.crashCount ?? 1) },
+  }).catch((error) => {
+    if (error?.code !== 'ERR_ABORTED') console.warn('[hamaeditor] crash page failed to load:', error);
+  });
+}
+
+/** 안내 화면의 다시 열기(또는 자동 수정 뒤): 편집기를 평소처럼 다시 불러온다. 실패하면 자동 수정을 권한다. */
+async function reopenAfterCrash(window, session) {
+  if (window.isDestroyed() || !session.crashPage) return;
+  session.crashPage = false;
+  try {
+    await window.loadURL(devUrl || STUDIO_URL);
+  } catch (error) {
+    // 다시 죽어서 안내 화면이 이미 이 불러오기를 끊었다.
+    if (window.isDestroyed() || session.crashPage) return;
+    console.warn('[hamaeditor] reopen after crash failed:', error?.code ?? error);
+    session.crashPage = true;
+    session.crashReopenFailed = true;
+    showCrashPage(window, session);
+  }
+}
+
+ipcMain.handle('desktop:crash-page-reopen', (event) => {
+  const session = crashPageSessionForEvent(event);
+  void reopenAfterCrash(session.window, session);
+});
 
 async function openLaunch(request) {
   if (request.openFiles.length === 0) {
@@ -1402,6 +1476,42 @@ installIssueReportHost({
   origin: feedbackOrigin({ packaged: app.isPackaged }),
   fetchImpl: (url, init) => net.fetch(url, init),
 });
+// ── 자동 수정 ─────────────────────────────────────────────────────────────
+const autofix = installAutofixHost({
+  ipcMain,
+  // 편집기와 렌더러가 죽은 창의 안내 화면에서 부를 수 있다.
+  sessionForEvent: (event) => {
+    const senderUrl = event.senderFrame?.url || event.sender.getURL();
+    return isCrashPageUrl(senderUrl) ? crashPageSessionForEvent(event) : sessionForEvent(event);
+  },
+  diagnosticLog,
+  userDataDir: app.getPath('userData'),
+  appInfo: () => ({
+    appVersion: app.getVersion(),
+    os: process.platform,
+    osVersion: process.getSystemVersion(),
+    arch: process.arch,
+    locale: app.getLocale(),
+    electron: process.versions.electron,
+    packaged: app.isPackaged,
+  }),
+  origin: feedbackOrigin({ packaged: app.isPackaged }),
+  fetchImpl: (url, init) => net.fetch(url, init),
+  secretStore: () => secretVault,
+  broadcast: (channel, value) => {
+    for (const window of sessions.windows()) {
+      if (!window.webContents.isDestroyed()) window.webContents.send(channel, value);
+    }
+  },
+  paths: {
+    'App install folder (read-only)': app.getAppPath(),
+    'Agent hub source (read-only)': agentScript(),
+    'Agent hub runtime folder': launchStorage.runtimeRoot,
+    'Agent hub work folder': launchStorage.workRoot,
+  },
+  unpacked: unpackedPath,
+});
+app.on('will-quit', () => { void autofix.dispose(); });
 // 렌더러 오류. 렌더러가 줄이고 겹친 것을 묶어 보내지만, 메인도 창마다 1분에 120줄까지만 받는다.
 const RENDERER_LOG_PER_MINUTE = 120;
 const rendererLogBudget = new Map();

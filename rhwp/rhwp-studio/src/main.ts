@@ -89,6 +89,8 @@ import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
 import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
 import { setToastReporter, showToast } from '@/ui/toast';
+import { loadAutofixSettings } from '@/ui/autofix/autofix';
+import { createAutofixButton } from '@/ui/autofix/autofix-button';
 import { installRendererDiagnostics } from '@/ui/issue-report/renderer-diagnostics';
 import { REPORT_ISSUE_COMMAND, startIssueReport } from '@/ui/issue-report/issue-report';
 import { exportDocumentForFormat } from '@/command/save-document-format';
@@ -332,6 +334,7 @@ import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from './ui/initial-setup/active.ts';
 import { desktopGiftApi } from './ui/special-event/gift.ts';
 import { startSpecialEvent } from './ui/special-event/special-event-trigger.ts';
+import { startAutofixIntro } from './ui/autofix/autofix-intro.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -509,11 +512,28 @@ const trapRecoveryPage = new TrapRecoveryPage({
 });
 
 function showTrapRecoveryToast(): void {
+  const message = '문서 엔진이 멈췄습니다. 열린 문서를 모두 다시 열어 복구할 수 있습니다.';
   showToast({
-    message: '문서 엔진이 멈췄습니다. 열린 문서를 모두 다시 열어 복구할 수 있습니다.',
+    message,
     durationMs: 0,
     report: true,
     action: { label: '문서 복구', onClick: () => void openTrapRecoveryDialog() },
+    // 다시 연 페이지에서 또 멈췄으면 다시 여는 것만으로는 풀리지 않는다 — 자동 수정을 앞에 두고, 문서 복구는
+    // 자동 수정이 실패해도 쓸 수 있게 옆의 링크로 남는다.
+    // 고치면 같은 복구(다시 불러오기)를 이어서 한다.
+    ...(trapManifestToRecover ? {
+      autofix: {
+        surface: 'engine-trap',
+        title: message,
+        detail: engineTrap()?.message ?? '',
+        attempts: trapManifestToRecover.attempt,
+        onFixed: () => {
+          void trapRecoveryPage.reopenWhenReady().then((problem) => {
+            if (problem) showToast({ message: problem, durationMs: 0, report: true });
+          });
+        },
+      },
+    } : {}),
   });
 }
 
@@ -1888,7 +1908,24 @@ async function initialize(): Promise<void> {
     rendererInitializationError = error instanceof Error ? error.message : String(error);
     msg.textContent = `초기화 실패: ${error}`;
     console.error('[main] 초기화 실패:', error);
+    offerInitAutofix(msg, rendererInitializationError);
   }
+}
+
+/**
+ * 엔진·렌더러가 뜨지 못했다 — 새로고침으로 풀릴 일이 드물어 자동 수정을 켠 데스크톱 앱에서는 메시지 옆에
+ * 자동 수정을 바로 둔다. 고치면 페이지를 다시 불러온다.
+ */
+function offerInitAutofix(message: HTMLElement, detail: string): void {
+  void loadAutofixSettings().then((settings) => {
+    if (!settings?.enabled || !message.isConnected) return;
+    const button = createAutofixButton({
+      className: 'stb-autofix',
+      request: () => ({ surface: 'init-failure', title: '초기화 실패', detail }),
+      onFixed: () => window.location.reload(),
+    });
+    message.after(button.element);
+  }, () => {});
 }
 
 // ─── 문서 세션 전환 ─────────────────────────────
@@ -6390,6 +6427,10 @@ void initPromise.then(() => {
     },
     open: async (options) => (await import('./ui/special-event/special-event-popup.ts')).openSpecialEventPopup(options),
   });
+}, () => {});
+// 자동 버그 수정 소개(데스크톱만). 처음 설정을 마치고 아직 답하지 않은 사람에게 한 번 묻는다.
+void initPromise.then(() => {
+  startAutofixIntro({ whenReady: afterBootScreen, isBlocked: () => licenseReadOnly || isLicenseViewerMode() });
 }, () => {});
 
 installEmbedRuntime({

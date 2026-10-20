@@ -268,6 +268,8 @@ export function createMockBridge(
   const leaseListeners = new Set<(lease: T.AgentEditingLease) => void>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let connection: ReturnType<SidebarBridge['getConnectionState']> = 'connected';
+  /** 허브가 뜨지 않는다 — 다시 연결이 붙지 못하고 다음 시도를 잡는다. */
+  let hubDown = false;
   let agent: T.AgentName = loadAgentPrefs().defaultAgent;
   let running = false;
   let usageRefreshFailed = false;
@@ -913,7 +915,13 @@ export function createMockBridge(
     getServiceTier: () => tier,
     getWorkflowState: () => workflow,
     takeOverConnection: () => setConnection('connected'),
-    reconnectNow: async () => setConnection('connected'),
+    reconnectNow: async () => {
+      if (!hubDown) return setConnection('connected');
+      setConnection('connecting');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      connection = 'disconnected';
+      emit({ type: 'connection', state: 'disconnected', attempt: 4, retryInMs: 4000 });
+    },
     requestProviderStatus: async () => data.providers,
     requestModelCatalog: async (modelAgent) => {
       const models = sampleModelCatalogs[modelAgent];
@@ -2168,6 +2176,8 @@ export function createMockBridge(
   return {
     bridge,
     setConnection,
+    /** 허브가 뜨지 않는 상태(`hub=down`). 다시 연결이 실패한다. */
+    setHubDown: (value: boolean) => { hubDown = value; },
     setServices,
     setPiOwnKey,
     setUpdateAvailable,

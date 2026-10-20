@@ -182,6 +182,8 @@ export interface RhwpDesktopApi {
   releaseAgentSession?: (sessionId: string) => Promise<boolean>;
   /** 문제 보고. 메인이 창을 찍고 진단 기록을 붙여 site-api 로 보낸다. */
   issueReport?: import('./ui/issue-report/types.ts').DesktopIssueReportApi;
+  /** 자동 수정. 메인이 숨은 코딩 에이전트로 앱 환경을 고치고 오류 보고를 보낸다. */
+  autofix?: import('./ui/autofix/autofix.ts').DesktopAutofixApi;
   /** 렌더러 오류를 메인의 진단 기록에 남긴다. */
   logDiagnostics?: (entries: Array<{ level: 'error' | 'warn'; text: string }>) => void;
   getLaunchFiles?: () => Promise<NativeFileHandleDescriptor[]>;
@@ -790,6 +792,14 @@ export function installDesktopCloseHandling(
   return true;
 }
 
+/** 마지막 허브 기동 요청의 결과. 아직 묻지 않았으면 null. */
+let lastAgentHubReady: boolean | null = null;
+
+/** 앱이 띄우는 허브가 마지막 요청에서 준비되지 않았다(기동 실패·시간 초과). */
+export function agentHubLaunchFailed(): boolean {
+  return lastAgentHubReady === false;
+}
+
 export async function ensureDesktopAgentHub(win?: DesktopHost): Promise<boolean> {
   if (inflight) return inflight;
   const ensure = desktopHost(win)?.rhwpDesktop?.ensureAgentHub;
@@ -804,7 +814,7 @@ export async function ensureDesktopAgentHub(win?: DesktopHost): Promise<boolean>
     }
   })();
   inflight = run;
-  void run.finally(() => {
+  void run.then((ready) => { lastAgentHubReady = ready; }).finally(() => {
     if (inflight === run) inflight = null;
   });
   return run;

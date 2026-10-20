@@ -77,6 +77,22 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     prepare: () => ipcRenderer.invoke('desktop:issue-report-prepare'),
     submit: (draft) => ipcRenderer.invoke('desktop:issue-report-submit', draft),
   },
+  // 자동 수정. run 은 메인이 코딩 에이전트를 창 없이 돌려 이 컴퓨터의 앱 상태를 고치고, 결과를 문제 보고로 보낸다.
+  // 설정(켜기·제공자 순서·모델·노력)은 메인이 저장하고, 바뀌면 모든 창에 알린다.
+  autofix: {
+    run: (request) => ipcRenderer.invoke('desktop:autofix-run', request),
+    getSettings: () => ipcRenderer.invoke('desktop:autofix-get-settings'),
+    setSettings: (patch) => ipcRenderer.invoke('desktop:autofix-set-settings', patch),
+    onChange: (callback) => {
+      const listener = (_event, settings) => callback(settings);
+      ipcRenderer.on('autofix:changed', listener);
+      return () => ipcRenderer.removeListener('autofix:changed', listener);
+    },
+  },
+  // 렌더러가 죽었을 때 메인이 띄우는 안내 화면(crash-page.html)이 편집기를 다시 연다.
+  crashPage: {
+    reopen: () => ipcRenderer.invoke('desktop:crash-page-reopen'),
+  },
   // 렌더러 오류(window error·unhandledrejection·console.error)를 메인의 진단 기록에 남긴다.
   logDiagnostics: (entries) => {
     if (Array.isArray(entries) && entries.length > 0) ipcRenderer.send('desktop:diagnostic-log', entries);

@@ -22,6 +22,17 @@ export const AGENT_MODELS: Record<CatalogAgent, readonly AgentModelOption[]> = {
   ],
 } as const;
 
+/**
+ * Anthropic 공식 최신 Claude 모델 ID. 허브 rhwp-agent/claude-model-label.mjs 의 같은 이름 목록과 같다
+ * (agent-models.test.ts 가 비교). 자동 버그 수정의 Claude 모델 선택지다.
+ */
+export const OFFICIAL_CLAUDE_MODELS: readonly string[] = [
+  'claude-fable-5-1',
+  'claude-opus-5-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+];
+
 const CLAUDE_EFFORTS_FULL = [
   { id: 'max', label: 'Max' }, { id: 'xhigh', label: 'Extra high' },
   { id: 'high', label: 'High' }, { id: 'medium', label: 'Medium' }, { id: 'low', label: 'Low' },

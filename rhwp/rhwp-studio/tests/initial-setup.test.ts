@@ -153,6 +153,12 @@ test('글꼴 단계는 한컴 글꼴을 스스로 찾지 못했을 때만 넣는
   assert.deepEqual(planSteps(null), ['theme', 'models']);
 });
 
+test('자동 버그 수정 단계는 데스크톱에서만 모델 바로 다음에 넣는다', () => {
+  assert.deepEqual(planSteps('missing', { autofix: true }), ['theme', 'models', 'autofix', 'fonts']);
+  assert.deepEqual(planSteps(null, { autofix: true }), ['theme', 'models', 'autofix']);
+  assert.deepEqual(planSteps(null, { autofix: false }), ['theme', 'models']);
+});
+
 test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {
   const face = (partial: { source?: 'system' | 'user' | 'hancom'; families?: string[]; koreanNames?: string[] }) => ({
     source: partial.source ?? 'system',
