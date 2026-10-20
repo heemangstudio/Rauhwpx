@@ -28,6 +28,7 @@ class FakeElement {
   }
   click() { for (const listener of this.listeners.get('click') ?? []) listener(); }
   append(...nodes: FakeElement[]) { this.children.push(...nodes); }
+  appendChild(node: FakeElement) { this.children.push(node); return node; }
   replaceWith(next: FakeElement) { next.connected = this.connected; this.connected = false; }
   find(predicate: (node: FakeElement) => boolean): FakeElement | null {
     if (predicate(this)) return this;
@@ -41,7 +42,7 @@ class FakeElement {
 
 Object.defineProperty(globalThis, 'document', {
   configurable: true,
-  value: { createElement: () => new FakeElement() },
+  value: { createElement: () => new FakeElement(), createElementNS: () => new FakeElement() },
 });
 
 const { createFailureNoticeController, createFailureDismissals } = await import('../src/ui/agent-sidebar/failure-notice.ts');
