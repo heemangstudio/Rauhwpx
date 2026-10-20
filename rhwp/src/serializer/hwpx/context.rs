@@ -190,6 +190,9 @@ impl SerializeContext {
         // 순번(i+1) 명명은 링크 항목으로 id 에 구멍이 있는 문서(#1891 73504)에서
         // 이름과 id 가 어긋나 재파스 그림 참조가 엉킨다.
         for bd in doc.bin_data_content.iter() {
+            if bd.is_position_placeholder() {
+                continue;
+            }
             if bd.extension == "ooxml_chart" && bd.id > 60000 {
                 ctx.chart_part_map.insert(
                     u32::from(bd.id),
@@ -222,23 +225,37 @@ impl SerializeContext {
         // 통째로 드롭되고 레이아웃 앵커가 사라져 렌더가 갈라진다). ZIP 엔트리는
         // 만들지 않고 content.hpf 에 isEmbeded="0" + 원본 href 로만 방출한다.
         // 명명은 위와 같은 숫자 불변식(`image{storage_id}`)을 따른다.
-        for bd in &doc.doc_info.bin_data_list {
+        for (index, bd) in doc.doc_info.bin_data_list.iter().enumerate() {
             if !matches!(bd.data_type, crate::model::bin_data::BinDataType::Link) {
                 continue;
             }
-            // storage_id=0 은 "참조 없는 placeholder pic" 센티널(#1567)과 겹치므로
-            // 등록하지 않는다 (HWP5 Link 항목은 storage_id 미부여일 수 있음).
-            if bd.storage_id == 0 || ctx.bin_data_map.contains_key(&bd.storage_id) {
+            // storage_id=0 은 "참조 없는 placeholder pic" 센티널(#1567)과 겹치므로 그 값으로는
+            // 등록하지 않는다. HWP5 Link 항목은 storage_id 가 없고, 그림은 BinData 목록의
+            // 1-based 순번으로 가리키므로 그 순번으로 등록한다. 빠뜨리면 연결 그림이 든 HWP5
+            // 문서를 HWPX 로 저장할 수 없었다.
+            let key = if bd.storage_id != 0 {
+                bd.storage_id
+            } else {
+                match u16::try_from(index + 1) {
+                    Ok(position) => position,
+                    Err(_) => continue,
+                }
+            };
+            if ctx.bin_data_map.contains_key(&key) {
                 continue;
             }
             let ext = bd.extension.as_deref().unwrap_or("");
             ctx.bin_data_map.insert(
-                bd.storage_id,
+                key,
                 BinDataEntry {
-                    manifest_id: format!("image{}", bd.storage_id),
-                    href: bd.abs_path.clone().unwrap_or_default(),
+                    manifest_id: format!("image{key}"),
+                    href: bd
+                        .abs_path
+                        .clone()
+                        .or_else(|| bd.rel_path.clone())
+                        .unwrap_or_default(),
                     media_type: mime_from_ext(ext).to_string(),
-                    bin_data_id: bd.storage_id,
+                    bin_data_id: key,
                     is_embedded: false,
                 },
             );

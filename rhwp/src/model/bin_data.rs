@@ -72,6 +72,16 @@ pub struct BinDataContent {
     pub extension: String,
 }
 
+impl BinDataContent {
+    /// 순번 조회(`bin_data_id - 1`)를 맞추려고 비워 둔 자리인지.
+    ///
+    /// HWP3 파서는 연결(Link) 그림 자리를 id 0·빈 바이트로 채운다. 저장할 스트림이 아니므로
+    /// 직렬화는 건너뛴다. 모두 `BIN0000.` 이름을 받아 저장이 중복 스트림으로 실패했다.
+    pub fn is_position_placeholder(&self) -> bool {
+        self.id == 0 && self.extension.is_empty() && self.data.is_empty()
+    }
+}
+
 /// Encoding properties that must remain unchanged when an HWP5 BinData stream
 /// is copied verbatim from its source container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -187,7 +187,7 @@ pub fn check_package(hwpx_bytes: &[u8], doc: &Document) -> PackageCheckReport {
     let ir_bin_data: Vec<_> = doc
         .bin_data_content
         .iter()
-        .filter(|entry| entry.extension != "ooxml_chart")
+        .filter(|entry| entry.extension != "ooxml_chart" && !entry.is_position_placeholder())
         .collect();
     if zip_bin.len() != ir_bin_data.len() {
         report.push(format!(

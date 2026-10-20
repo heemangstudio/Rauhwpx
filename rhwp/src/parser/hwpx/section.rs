@@ -206,6 +206,31 @@ pub fn collect_hwpx_section_master_page_refs(xml: &str) -> Result<Vec<String>, H
     Ok(refs)
 }
 
+/// 구역 정의(`secPr`)가 밝힌 바탕쪽 수. 속성이 없으면 None.
+///
+/// `masterPageCnt="0"` 은 "이 구역에는 바탕쪽이 없다"는 명시다. manifest 순서로 바탕쪽을
+/// 추정하는 보정은 이 경우 건너뛰어야 한다.
+pub fn hwpx_section_declared_master_page_count(xml: &str) -> Option<u32> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                if local_name(e.name().as_ref()) == b"secPr" {
+                    return e
+                        .attributes()
+                        .flatten()
+                        .find(|attr| attr.key.as_ref() == b"masterPageCnt")
+                        .and_then(|attr| attr_str(&attr).trim().parse().ok());
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 fn push_master_page_id_ref(e: &quick_xml::events::BytesStart, refs: &mut Vec<String>) {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == b"idRef" {
@@ -796,6 +821,12 @@ fn parse_paragraph(
                         text_parts.push("\u{0002}".to_string());
                         para.controls.push(ctrl);
                     }
+                    b"bookmark" => {
+                        // <hp:ctrl> 로 감싸지 않은 책갈피. 0 폭이라 위치를 차지하지 않는다.
+                        para.controls
+                            .push(Control::Bookmark(parse_bookmark_attrs(ce)));
+                        skip_element(reader, b"bookmark")?;
+                    }
                     _ => {}
                 }
             }
@@ -869,7 +900,18 @@ fn parse_paragraph(
                         para.controls.push(parse_empty_equation(ce));
                         text_parts.push("\u{0002}".to_string());
                     }
-                    _ => {}
+                    b"bookmark" => {
+                        // <hp:ctrl> 로 감싸지 않은 책갈피. 0 폭이라 위치를 차지하지 않는다.
+                        para.controls
+                            .push(Control::Bookmark(parse_bookmark_attrs(ce)));
+                    }
+                    _ => {
+                        // 모르는 빈 요소는 모델에 남지 않는다. 작성된 자식 수에서 빼야 저장이
+                        // 되살릴 수 없는 자식을 기다리다 문서 전체 저장을 거부하지 않는다.
+                        if let Some(index) = authored_run {
+                            authored_runs[index].child_count -= 1;
+                        }
+                    }
                 }
             }
             Ok(Event::End(ref ee)) => {
