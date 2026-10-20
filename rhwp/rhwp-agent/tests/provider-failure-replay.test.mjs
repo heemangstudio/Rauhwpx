@@ -41,8 +41,8 @@ function hubView(events, agent) {
   return out;
 }
 
-async function replayTurn(t, fixture) {
-  const run = startReplaySession(fixture, { t });
+async function replayTurn(t, fixture, options = {}) {
+  const run = startReplaySession(fixture, { t, ...options });
   await run.runTurn('replay prompt');
   await run.replay.settled();
   run.replay.assertConsumed();
@@ -116,7 +116,8 @@ test('claude: failure result errors survive the adapter and select the right rec
     ['Connection error: ECONNRESET', 'network'],
     ['Sandbox required but unavailable: sandbox is enabled but the Windows sandbox is not active on this session (feature gate off).', 'invalid_request'],
   ]) {
-    await t.test(expectedClass, async (t) => {
+    const sandbox = /sandbox required/i.test(message);
+    await t.test(sandbox ? 'sandbox_unavailable' : expectedClass, async (t) => {
       const bundle = fixtureVariant('claude/auth-failure', 'SDK error result uses errors[] without result', (records) => records
         .filter((record) => record.json?.type !== 'assistant')
         .map((record) => {
@@ -124,9 +125,12 @@ test('claude: failure result errors survive the adapter and select the right rec
           const { result, api_error_status, terminal_reason, ...rest } = record.json;
           return { ...record, json: { ...rest, subtype: 'error_during_execution', errors: [message] } };
         }));
-      const { end, events } = await replayTurn(t, bundle);
+      // 샌드박스를 요구한 스폰의 거절은 어댑터가 MCP 전용으로 다시 보낸다(claude-sandbox-fallback.test.mjs).
+      // 사용자에게 닿는 거절은 이미 샌드박스 없이 띄운 스폰(Windows 의 MCP 전용 프로필)의 것뿐이다.
+      const { end, events } = await replayTurn(t, bundle, sandbox ? { dependencies: { platform: 'win32' } } : {});
       assert.equal(end.failure.message, message);
       assert.equal(end.failure.class, expectedClass);
+      if (sandbox) assert.equal(end.failure.code, 'sandbox_unavailable');
       assert.deepEqual(events.filter((event) => event.type === 'text-delta'), []);
     });
   }
