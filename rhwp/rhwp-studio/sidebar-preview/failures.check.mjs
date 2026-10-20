@@ -21,7 +21,7 @@ const KINDS = [
   ['cleanup', /프로세스를 정리하지 못했어요$/, []],
   ['cli-missing', /CLI를 찾지 못했어요$/, ['settings']],
   ['invalid', /^대화가 너무 길어 .+가 처리하지 못했어요$/, []],
-  ['unknown', /작업 중 오류가 발생했어요$/, ['retry', 'settings']],
+  ['unknown', /^원인을 알 수 없는 오류$/, ['retry']],
   ['sandbox', /안전 실행을 사용할 수 없어요$/, ['retry', 'settings']],
   ['start', /CLI를 시작하지 못했어요$/, ['retry']],
   ['legacy', /로그인이 필요해요$/, ['login']],
@@ -86,8 +86,8 @@ export async function checkFailureNotices(page, origin, artifacts) {
     await shot(page, artifacts, kind);
   }
 
-  // 알 수 없는 실패에서도 연결 설정을 바로 열어 복구할 수 있다.
-  await openFailure(page, origin, 'unknown');
+  // CLI 를 찾지 못한 실패는 설정 열기로 바로 복구할 수 있다.
+  await openFailure(page, origin, 'cli-missing');
   await playFailure(page);
   await page.click('.ag-failure-action[data-action="settings"]');
   await page.waitForFunction(() => document.querySelector('.ag-settings-page')?.getAttribute('aria-hidden') === 'false');

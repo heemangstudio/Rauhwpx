@@ -911,7 +911,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-failure-link,
-.ag-failure-close {
+.ag-failure-close,
+.ag-failure-retry {
   height: 28px;
   padding: 0 8px;
   border: 0;
@@ -924,7 +925,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   transition: var(--ag-transition-color);
 }
 
-.ag-failure-close {
+.ag-failure-close,
+.ag-failure-retry {
   flex: none;
   width: 28px;
   padding: 0;
@@ -933,13 +935,15 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 .ag-failure-link:hover,
-.ag-failure-close:hover {
+.ag-failure-close:hover,
+.ag-failure-retry:hover {
   background: var(--ag-surface-subtle);
   color: var(--ag-text);
 }
 
 .ag-failure-link:focus-visible,
-.ag-failure-close:focus-visible {
+.ag-failure-close:focus-visible,
+.ag-failure-retry:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }

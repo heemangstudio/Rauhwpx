@@ -113,7 +113,7 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
       if (failure.code && MODEL_CODES.has(failure.code)) return `${label} 모델을 찾지 못했어요`;
       return `${label}가 요청을 거절했어요`;
     default:
-      return `${label} 작업 중 오류가 발생했어요`;
+      return '원인을 알 수 없는 오류';
   }
 }
 
@@ -204,10 +204,6 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
         retryAllowed = true;
       }
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });
-      break;
-    case 'unknown':
-      line = '원인을 확인하지 못했어요. 다시 시도하거나 AI 연결 설정을 확인해 주세요.';
-      actions.push({ id: 'settings', label: '연결 설정 확인' });
       break;
     default:
       break;
@@ -378,7 +374,7 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
     // 다시 시도는 글자 대신 새로고침 아이콘 단추다. 이름은 aria-label·툴팁으로 남는다.
     const retry = action.id === 'retry';
     const button = retry
-      ? el('button', 'ag-failure-close ag-failure-action ag-failure-retry')
+      ? el('button', 'ag-failure-retry ag-failure-action')
       : el('button', action.quiet ? 'ag-failure-link ag-failure-action' : 'ag-hub-retry-btn ag-failure-action', action.label);
     button.type = 'button';
     button.dataset.action = action.id;
