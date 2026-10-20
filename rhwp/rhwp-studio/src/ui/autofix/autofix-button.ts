@@ -24,7 +24,7 @@ export interface AutofixButton {
 
 /**
  * 초록 자동 수정 단추. 모든 문구를 한 칸에 겹쳐 두어 상태가 바뀌어도 폭이 같다. 실행 중에는 채움이
- * 빠지고 점 셋만 물결치고, 고침은 채움 없는 초록 글자로 남는다. 다시 그려도 상태가 남도록 같은 요소를 옮겨 붙여 쓴다.
+ * 빠지고 점 다섯 개만 물결치고, 고침은 채움 없는 초록 글자로 남는다. 다시 그려도 상태가 남도록 같은 요소를 옮겨 붙여 쓴다.
  */
 export function createAutofixButton(options: AutofixButtonOptions): AutofixButton {
   const button = document.createElement('button');
@@ -44,7 +44,7 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   const dots = document.createElement('span');
   dots.dataset.label = 'running';
   dots.className = 'rhwp-autofix-dots';
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     const dot = document.createElement('span');
     dot.className = 'rhwp-autofix-dot';
     dots.append(dot);
