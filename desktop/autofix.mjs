@@ -1,11 +1,12 @@
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { PRODUCT_NAME } from './app-identity.mjs';
 import { buildHubPath, findOnPath, sanitizeHubEnv } from './agent-hub.mjs';
+import { aliveTracked, createCwdReader, createProcessKiller, createProcessLister, createTreeWatcher, findRunOrphans, killSurvivors } from './autofix-process.mjs';
 import { redactSecrets } from './diagnostic-log.mjs';
 import { replaceFile } from './fs-replace.mjs';
 import { buildFeedbackPayload, DEFAULT_FEEDBACK_PROOF_KEY, FEEDBACK_LIMITS, submitFeedback } from './issue-report.mjs';
@@ -16,8 +17,6 @@ import { codexLineup, createCodexModelResolver, discoverCodexModels } from '../r
 import { applyManagedCliLaunch, applyNodeHostEnv, createNodeHost } from '../rhwp/rhwp-agent/npm-cli-launch.mjs';
 import { defaultPiRoot } from '../rhwp/rhwp-agent/pi-manager.mjs';
 import { processTreeSpawnOptions, terminateProcessTree } from '../rhwp/rhwp-agent/process-tree.mjs';
-
-const agentRequire = createRequire(new URL('../rhwp/rhwp-agent/package.json', import.meta.url));
 
 // 자동 수정. 새로고침으로 풀리지 않는 오류에서 사용자가 누르면, 코딩 에이전트(Codex → Claude 순, 설정으로 바꿀 수 있다)를
 // 창 없이 전체 권한으로 띄워 이 컴퓨터의 앱 상태만 고치게 하고, 끝나면 문제 보고(#581) 경로로 개발자에게 알린다.
@@ -187,18 +186,123 @@ export function codexHomeDir({ env = process.env, home = os.homedir(), platform 
 }
 
 /**
- * 실행 파일: 앱이 설치한 CLI → PATH(GUI 앱에 없는 Homebrew·nvm 등 위치를 더한 것) → Claude 는 SDK 번들 런타임.
- * Windows 의 .cmd 심은 실행할 때 applyManagedCliLaunch 가 푼다.
+ * 실행 파일 후보를 순서대로: 앱이 설치한 CLI → PATH(GUI 앱에 없는 Homebrew·nvm 등 위치를 더한 것) → Claude 는 SDK 번들 런타임.
+ * 앞 후보가 진짜 CLI 가 아니면 다음 후보를 쓴다. Windows 의 .cmd 심은 실행할 때 applyManagedCliLaunch 가 node·exe 로 푼다.
  */
-export function resolveCliCommand(agent, { managedBin, pathEnv, platform = process.platform, exists = existsSync, bundledClaudeBin = null }) {
-  if (managedBin && exists(managedBin)) return { command: managedBin, source: 'managed' };
-  const names = platform === 'win32' ? [`${agent}.cmd`, `${agent}.exe`] : [agent];
-  for (const name of names) {
-    const found = findOnPath(name, pathEnv, exists, platform);
-    if (found) return { command: found, source: 'path' };
+export function resolveCliCandidates(agent, { managedBin, pathEnv, platform = process.platform, exists = existsSync, bundledClaudeBin = null }) {
+  const candidates = [];
+  const add = (command, source) => {
+    if (command && !candidates.some((item) => item.command === command)) candidates.push({ command, source });
+  };
+  if (managedBin && exists(managedBin)) add(managedBin, 'managed');
+  for (const name of platform === 'win32' ? [`${agent}.cmd`, `${agent}.exe`] : [agent]) {
+    add(findOnPath(name, pathEnv, exists, platform), 'path');
   }
-  if (agent === 'claude' && bundledClaudeBin && exists(bundledClaudeBin)) return { command: bundledClaudeBin, source: 'bundled' };
-  return null;
+  if (agent === 'claude' && bundledClaudeBin && exists(bundledClaudeBin)) add(bundledClaudeBin, 'bundled');
+  return candidates;
+}
+
+/** 넘기는 인자를 그 CLI 가 아는지 `--help` 로 확인한다. 버전 번호보다 정확하다. */
+const CLI_IDENTITY = Object.freeze({
+  claude: {
+    version: /^v?(\d+\.\d+\.\d+)\S*\s+\(Claude Code\)\s*$/m,
+    helpArgs: ['--help'],
+    flags: ['--print', '--output-format', '--model', '--effort', '--permission-mode', 'bypassPermissions',
+      '--dangerously-skip-permissions', '--no-session-persistence', '--setting-sources', '--strict-mcp-config'],
+  },
+  codex: {
+    version: /^codex-cli (\d+\.\d+\.\d+)\S*\s*$/m,
+    helpArgs: ['exec', '--help'],
+    flags: ['--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--color',
+      '--dangerously-bypass-approvals-and-sandbox', '--model', '--config', '--cd', '--output-last-message'],
+  },
+  pi: {
+    version: /^(\d+\.\d+\.\d+)\S*\s*$/m,
+    helpArgs: ['--help'],
+    head: /^pi - /m,
+    flags: ['--print', '--mode', '--model', '--thinking', '--no-session', '--no-extensions', '--no-skills',
+      '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-mcp', '--no-approve', '--offline'],
+  },
+});
+
+/** `--version`·`--help` 출력이 진짜 Claude Code·Codex CLI·Pi 이고 쓰는 인자를 모두 아는지. */
+export function checkCliIdentity(agent, versionOutput, helpOutput) {
+  const spec = CLI_IDENTITY[agent];
+  if (!spec) return { ok: false, reason: 'unknown-agent' };
+  const version = spec.version.exec(String(versionOutput ?? '').trim())?.[1];
+  if (!version) return { ok: false, reason: 'not-genuine' };
+  const help = String(helpOutput ?? '');
+  if (spec.head && !spec.head.test(help)) return { ok: false, reason: 'not-genuine', version };
+  const missing = spec.flags.filter((flag) => !help.includes(flag));
+  if (missing.length > 0) return { ok: false, reason: `unsupported-flags:${missing.join(',')}`, version };
+  return { ok: true, version };
+}
+
+/**
+ * 실행 파일이 진짜 CLI 인지 창 없이 `--version`·`--help` 로 확인한다. 결과는 실제 파일 경로·수정 시각·크기마다 기억한다.
+ */
+export function createCliIdentityVerifier({
+  platform = process.platform,
+  nodeCommand = process.execPath,
+  spawnProcess,
+  statImpl = stat,
+  realpath = (file) => { try { return realpathSync(file); } catch { return file; } },
+  timeoutMs = 20_000,
+}) {
+  const cache = new Map();
+  const runText = (command, args, env) => new Promise((resolve) => {
+    let child;
+    try {
+      const launch = applyManagedCliLaunch(command, args, { platform, nodeCommand, env });
+      if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(launch.command)) {
+        resolve(null);
+        return;
+      }
+      child = spawnProcess(launch.command, launch.argv, { shell: false, detached: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: launch.env });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = '';
+    const timer = setTimeout(() => { void terminateProcessTree(child, { platform }); resolve(null); }, timeoutMs);
+    child.stdout?.on('data', (chunk) => { out += String(chunk); });
+    child.stderr?.on('data', (chunk) => { out += String(chunk); });
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', () => { clearTimeout(timer); resolve(out); });
+  });
+  return async function verifyCliIdentity(agent, command, env) {
+    const real = realpath(command);
+    const info = await statImpl(real).catch(() => null);
+    if (!info) return { ok: false, reason: 'missing' };
+    const key = `${agent}\0${command}\0${real}\0${info.mtimeMs}\0${info.size}`;
+    if (!cache.has(key)) {
+      cache.set(key, (async () => {
+        const versionOutput = await runText(command, ['--version'], env);
+        const pre = checkCliIdentity(agent, versionOutput, '');
+        if (!pre.version) return { ok: false, reason: 'not-genuine' };
+        const helpOutput = await runText(command, CLI_IDENTITY[agent].helpArgs, env);
+        return checkCliIdentity(agent, versionOutput, helpOutput);
+      })());
+    }
+    const result = await cache.get(key);
+    // 실행이 실패한 결과(시간 초과 등)는 다음 번에 다시 확인한다.
+    if (!result.ok && result.reason === 'not-genuine') cache.delete(key);
+    return result;
+  };
+}
+
+/**
+ * 창·브라우저·업데이트를 띄우지 않게 하는 환경. BROWSER 는 POSIX 의 `true` 로(열려는 주소를 그냥 버린다),
+ * Claude 는 자동 업데이트와 필수 아닌 통신을 끈다.
+ */
+export function hardenAgentEnv(env, provider, platform = process.platform) {
+  const next = { ...env, NO_COLOR: '1', TERM: 'dumb' };
+  if (platform !== 'win32') next.BROWSER = 'true';
+  if (provider === 'claude') {
+    next.DISABLE_AUTOUPDATER = '1';
+    next.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+  }
+  return next;
 }
 
 /**
@@ -213,10 +317,24 @@ export async function probeAutofixProvider(agent, {
   exists = existsSync,
   readFileImpl = readFile,
   bundledClaudeBin = null,
+  verifyIdentity,
 }) {
   const pathEnv = buildHubPath({ home, envPath: baseEnv.PATH ?? baseEnv.Path ?? '', exists, platform });
-  const found = resolveCliCommand(agent, { managedBin: cliSetup.binPath(agent), pathEnv, platform, exists, bundledClaudeBin });
-  if (!found) return { available: false, reason: 'missing' };
+  const candidates = resolveCliCandidates(agent, { managedBin: cliSetup.binPath(agent), pathEnv, platform, exists, bundledClaudeBin });
+  if (candidates.length === 0) return { available: false, reason: 'missing' };
+  const env = { ...cliSetup.envFor(agent), PATH: pathEnv };
+  if (platform === 'win32') env.Path = pathEnv;
+  let found = null;
+  const rejected = [];
+  for (const candidate of candidates) {
+    const identity = await verifyIdentity(agent, candidate.command, hardenAgentEnv(env, agent, platform)).catch(() => ({ ok: false, reason: 'probe-failed' }));
+    if (identity.ok) {
+      found = { ...candidate, version: identity.version };
+      break;
+    }
+    rejected.push(`${candidate.source}:${identity.reason}`);
+  }
+  if (!found) return { available: false, reason: `not-genuine (${rejected.join(', ')})` };
   const auth = await cliSetup.authStatus(agent).catch(() => null);
   const envKey = agent === 'codex' && typeof baseEnv.CODEX_API_KEY === 'string' && baseEnv.CODEX_API_KEY.trim();
   if (!auth?.authenticated && !envKey) return { available: false, reason: 'signed-out' };
@@ -227,9 +345,7 @@ export async function probeAutofixProvider(agent, {
     } catch {}
     if (plan === 'free') return { available: false, reason: 'free-plan' };
   }
-  const env = { ...cliSetup.envFor(agent), PATH: pathEnv };
-  if (platform === 'win32') env.Path = pathEnv;
-  return { available: true, command: found.command, source: found.source, env };
+  return { available: true, command: found.command, source: found.source, version: found.version, env };
 }
 
 // ── 실행 ──────────────────────────────────────────────────────────────────
@@ -239,6 +355,9 @@ export function codexAutofixArgv({ model, effort, cwd, outputFile }) {
     'exec',
     '--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules',
     '--color', 'never',
+    // 업데이트 확인과 완료 알림(notify 명령)을 끈다. 사용자 config.toml 의 hooks·notify·MCP 는 --ignore-user-config 로 읽지 않는다.
+    '-c', 'check_for_update_on_startup=false',
+    '-c', 'notify=[]',
     // 전체 권한: 승인 없이, 샌드박스 없이 돈다.
     '--dangerously-bypass-approvals-and-sandbox',
     '-m', model,
@@ -318,7 +437,7 @@ export async function writeGiftPiHome(dir, { baseUrl, model = GIFT_AUTOFIX_MODEL
  * 선물 크레딧으로 돌 수 있는지 본다. 받았고(claimed) 잔액이 있는 활성 선물과, 앱이 설치한 Pi 가 있어야 한다.
  * env 에는 사용자 키 대신 선물 리스만 OPENROUTER_API_KEY 로 싣는다.
  */
-export async function probeGiftProvider({ credentials, piBin, agentDir, baseEnv, home, platform = process.platform, exists = existsSync }) {
+export async function probeGiftProvider({ credentials, piBin, agentDir, baseEnv, home, platform = process.platform, exists = existsSync, verifyIdentity }) {
   if (!piBin || !exists(piBin)) return { available: false, reason: 'missing' };
   const gift = await Promise.resolve().then(() => credentials?.()).catch(() => null);
   const baseUrl = giftProxyUrl(gift?.baseUrl);
@@ -342,7 +461,9 @@ export async function probeGiftProvider({ credentials, piBin, agentDir, baseEnv,
     PI_TELEMETRY: '0',
   });
   if (platform === 'win32') env.Path = pathEnv;
-  return { available: true, command: piBin, source: 'gift', env, baseUrl, remainingUsd: remaining };
+  const identity = await verifyIdentity('pi', piBin, hardenAgentEnv(env, 'gift', platform)).catch(() => ({ ok: false, reason: 'probe-failed' }));
+  if (!identity.ok) return { available: false, reason: `not-genuine (${identity.reason})` };
+  return { available: true, command: piBin, source: 'gift', version: identity.version, env, baseUrl, remainingUsd: remaining };
 }
 
 /** Claude `-p --output-format json` 출력의 result. 오류 결과나 읽을 수 없는 출력은 null. */
@@ -420,6 +541,8 @@ ${pathLines}
 - Before deleting or replacing any file, copy it into ${paths['Backup folder']}.
 - Do not quit or kill the ${PRODUCT_NAME} main or renderer process; the app reloads itself after you finish.
 - Do not change the app's source code. If the root cause is a bug in the app, work around it locally if you safely can, and describe the real fix for the developer.
+- This run is invisible to the user. Never open a terminal, console, GUI app, browser, or any new window (no \`open\`, \`osascript\`, \`start\`, \`Start-Process\`, \`xdg-open\`, \`cmd /c start\`).
+- Never run anything detached or in the background (no \`&\`, \`nohup\`, \`setsid\`, \`disown\`, services, or scheduled tasks). Wait for every command to finish. Anything left running is killed when you end.
 
 ## Diagnostic log (most recent last)
 \`\`\`
@@ -442,9 +565,22 @@ function keepTailBytes(text, maxBytes) {
   return bytes.subarray(bytes.length - maxBytes).toString('utf8').replace(/^[^\n]*\n/, '');
 }
 
+/** 끝난 뒤 정리 결과. clean: 남은 것 없이 끝남, forced: 남은 것·시간 초과·중단을 끝냄, uncertain: 다 끝났는지 확인 못 함. */
+export function classifyCleanup({ forced, stragglers, outcome, survivors }) {
+  if (survivors.remaining === null && stragglers === null) {
+    if (outcome !== true) return 'uncertain';
+    return forced ? 'forced' : 'clean';
+  }
+  if (survivors.remaining !== null && survivors.remaining > 0) return 'uncertain';
+  if (forced || (stragglers ?? 0) > 0 || survivors.found > 0) return 'forced';
+  if (outcome === false) return 'uncertain';
+  return 'clean';
+}
+
 /**
- * 에이전트를 한 번 돌린다. 창은 띄우지 않고(windowsHide, 분리된 프로세스 그룹), 시간이 넘거나 dispose 되면
- * 프로세스 트리를 끝낸다. 끝난 뒤에도 남은 자식은 트리째 정리한다.
+ * 에이전트를 한 번 돌린다. 창은 띄우지 않는다: shell 없이, Windows 는 detached 없이 windowsHide 로(숨은 콘솔을 손자까지
+ * 물려받는다), POSIX 는 자기 프로세스 그룹으로. 도는 동안 자손을 기록해 두고, 끝나거나 시간이 넘거나 중단되면 트리를 끝낸 뒤
+ * 기록된 것 가운데 살아남은 것까지 끝낸다.
  */
 export async function executeAutofixAgent({
   provider,
@@ -459,7 +595,15 @@ export async function executeAutofixAgent({
   shimDir = null,
   spawnProcess,
   terminate = terminateProcessTree,
+  listProcesses = createProcessLister({ platform }),
+  killProcess = createProcessKiller({ platform }),
+  readCwd = createCwdReader({ platform }),
+  uid = typeof process.getuid === 'function' && platform !== 'win32' ? process.getuid() : null,
+  // ps 한 번이 수십 ms 라 POSIX 는 자주 본다. Windows 의 CIM 조회는 무거워 덜 자주 본다.
+  watchIntervalMs = platform === 'win32' ? 3_000 : 250,
   timeoutMs = AUTOFIX_TIMEOUT_MS,
+  cleanupTimeoutMs = 10_000,
+  signal = null,
   tmpRoot = os.tmpdir(),
   readFileImpl = readFile,
   onChild = () => {},
@@ -470,20 +614,30 @@ export async function executeAutofixAgent({
     ? codexAutofixArgv({ model, effort, cwd, outputFile })
     : provider === 'gift' ? piAutofixArgv({ model, effort }) : claudeAutofixArgv({ model, effort });
   try {
-    const launch = applyManagedCliLaunch(command, argv, { platform, nodeCommand, env: applyNodeHostEnv(env, { nodeCommand, shimDir, platform }) });
+    const launch = applyManagedCliLaunch(command, argv, {
+      platform, nodeCommand, env: applyNodeHostEnv(hardenAgentEnv(env, provider, platform), { nodeCommand, shimDir, platform }),
+    });
+    // Windows 에서 node·exe 로 풀리지 않은 배치 심은 cmd.exe 를 거쳐야 하므로 돌리지 않는다.
+    if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(launch.command)) {
+      return { code: null, timedOut: false, aborted: false, stdout: '', stderr: `refusing to run a batch shim: ${launch.command}`, finalText: '', cleanup: 'clean' };
+    }
     let child;
     try {
       child = spawnProcess(launch.command, launch.argv, {
         ...processTreeSpawnOptions(platform),
+        shell: false,
         windowsHide: true,
         cwd,
         env: launch.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
-      return { code: null, timedOut: false, stdout: '', stderr: String(error?.message ?? error), finalText: '' };
+      return { code: null, timedOut: false, aborted: false, stdout: '', stderr: String(error?.message ?? error), finalText: '', cleanup: 'clean' };
     }
     onChild(child);
+    const rootPid = Number.isSafeInteger(child.pid) && child.pid > 0 ? child.pid : null;
+    const startedAt = Date.now();
+    const watcher = rootPid ? createTreeWatcher({ rootPid, list: listProcesses, intervalMs: watchIntervalMs }) : null;
     let stdout = '';
     let stderr = '';
     const capture = (current, chunk) => {
@@ -493,26 +647,41 @@ export async function executeAutofixAgent({
     child.stdout?.on('data', (chunk) => { stdout = capture(stdout, chunk); });
     child.stderr?.on('data', (chunk) => { stderr = capture(stderr, chunk); });
     child.stdin?.on('error', () => {});
+    // 프롬프트를 쓰고 바로 닫는다. 열린 stdin 을 기다리며 멈추는 CLI 가 없게 한다.
     child.stdin?.end(prompt);
     let timedOut = false;
-    const result = await new Promise((resolve) => {
+    let aborted = false;
+    const code = await new Promise((resolve) => {
       let settled = false;
-      const finish = (code, extra = '') => {
+      let fallback = null;
+      const finish = (value, extra = '') => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearTimeout(fallback);
+        signal?.removeEventListener?.('abort', onAbort);
         if (extra) stderr += `\n${extra}`;
-        resolve(code);
+        resolve(value);
       };
-      const timer = setTimeout(() => {
-        timedOut = true;
-        Promise.resolve(terminate(child)).catch(() => {}).finally(() => finish(null, 'timeout'));
-      }, timeoutMs);
+      const stop = (reason) => {
+        if (timedOut || aborted) return;
+        if (reason === 'timeout') timedOut = true;
+        else aborted = true;
+        void Promise.resolve(terminate(child)).catch(() => {});
+        // 끝내도 close 가 오지 않으면(파이프를 쥔 손자 등) 기다리지 않고 정리로 넘어간다.
+        fallback = setTimeout(() => finish(null, reason), cleanupTimeoutMs);
+      };
+      const onAbort = () => stop('aborted');
+      const timer = setTimeout(() => stop('timeout'), timeoutMs);
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) stop('aborted');
       child.on('error', (error) => finish(null, String(error?.message ?? error)));
-      child.on('close', (code) => finish(code));
+      child.on('close', (value) => finish(value, timedOut ? 'timeout' : aborted ? 'aborted' : ''));
     });
-    // 에이전트가 띄우고 남긴 자식이 앱보다 오래 살지 않게 한다.
-    await Promise.resolve(terminate(child)).catch(() => {});
+    const cleanup = await cleanupAgentTree({
+      child, rootPid, watcher, list: listProcesses, kill: killProcess, terminate, forced: timedOut || aborted, timeoutMs: cleanupTimeoutMs,
+      orphans: { since: startedAt, uid, dir: cwd, readCwd },
+    });
     let finalText = '';
     if (provider === 'codex') {
       finalText = await readFileImpl(outputFile, 'utf8').catch(() => '') || stdout;
@@ -521,10 +690,37 @@ export async function executeAutofixAgent({
     } else {
       finalText = claudeResultText(stdout) ?? '';
     }
-    return { code: result, timedOut, stdout, stderr, finalText };
+    return { code, timedOut, aborted, stdout, stderr, finalText, cleanup };
   } finally {
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** 에이전트 트리를 끝내고 기록된 프로세스 가운데 살아남은 것을 끝낸다. */
+async function cleanupAgentTree({ child, rootPid, watcher, list, kill, terminate, forced, timeoutMs, orphans }) {
+  let listing = null;
+  if (watcher) {
+    await watcher.stop();
+    // 마지막으로 한 번 더 본다: 부모가 끝나 고아가 된 것도 그룹·기록된 부모로 찾는다.
+    listing = await watcher.snapshot();
+  }
+  const stragglers = listing ? aliveTracked(watcher.tracked, listing, { exclude: [rootPid] }).length : null;
+  let timer;
+  const outcome = await Promise.race([
+    Promise.resolve().then(() => terminate(child)).catch(() => false),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+  ]);
+  clearTimeout(timer);
+  if (watcher && orphans) {
+    const after = await list().catch(() => null);
+    if (after) {
+      for (const row of await findRunOrphans({ listing: after, tracked: watcher.tracked, ...orphans })) watcher.tracked.set(row.pid, row.start);
+    }
+  }
+  const survivors = watcher
+    ? await killSurvivors({ tracked: watcher.tracked, list, kill })
+    : { found: 0, remaining: null };
+  return classifyCleanup({ forced, stragglers, outcome, survivors });
 }
 
 // ── 보고 ──────────────────────────────────────────────────────────────────
@@ -572,9 +768,10 @@ export function createAutofixService({
   now = Date.now,
 }) {
   let inflight = null;
+  let controller = null;
   const log = (level, text) => diagnosticLog?.writeText?.('autofix', level, text);
 
-  async function runOnce(rawRequest) {
+  async function runOnce(rawRequest, signal) {
     const request = sanitizeAutofixRequest(rawRequest);
     const current = await settings.get();
     if (!current.enabled) {
@@ -612,33 +809,52 @@ export function createAutofixService({
     let answer = null;
     try {
       const prompt = await buildPrompt(request);
-      run = await execute({ provider, command: chosen.found.command, env: chosen.found.env, model: chosen.model, effort: chosen.entry.effort, prompt, found: chosen.found });
+      if (signal.aborted) throw new Error('aborted before start');
+      run = await execute({ provider, command: chosen.found.command, env: chosen.found.env, model: chosen.model, effort: chosen.entry.effort, prompt, found: chosen.found, signal });
       answer = parseAutofixAnswer(run.finalText);
     } catch (error) {
       log('error', `autofix run failed: ${error?.stack ?? error}`);
     }
     const status = run && run.code === 0 && !run.timedOut && answer?.fixed === true ? 'fixed' : 'failed';
     const durationMs = now() - started;
-    log(status === 'fixed' ? 'info' : 'warn', `autofix ${status}: ${provider} exit ${run?.code ?? '?'}${run?.timedOut ? ' (timeout)' : ''}${answer ? '' : ', no answer'} in ${durationMs} ms`);
+    log(status === 'fixed' ? 'info' : 'warn', `autofix ${status}: ${provider} exit ${run?.code ?? '?'}${run?.timedOut ? ' (timeout)' : ''}${run?.aborted ? ' (aborted)' : ''}${answer ? '' : ', no answer'}, cleanup ${run?.cleanup ?? '?'} in ${durationMs} ms`);
+    const cli = { path: chosen.found.command, version: chosen.found.version ?? null, source: chosen.found.source };
     void Promise.resolve()
-      .then(() => sendReport({ status, provider, model: chosen.model, request, answer, run, durationMs }))
+      .then(() => sendReport({ status, provider, model: chosen.model, request, answer, run, durationMs, cli }))
       .then((result) => log(result?.ok ? 'info' : 'warn', `autofix report ${result?.ok ? `sent ${result.id}` : `failed: ${result?.code ?? 'unknown'}${result?.status ? ` (${result.status})` : ''}`}`))
       .catch((error) => log('warn', `autofix report failed: ${error?.message ?? error}`));
     return { status, provider };
   }
 
   return {
+    /** 도는 중이면 그 실행(정리까지 끝나야 끝난다)을 함께 기다린다. */
     run(request) {
       if (inflight) return inflight;
-      inflight = runOnce(request)
+      controller = new AbortController();
+      inflight = runOnce(request, controller.signal)
         .catch((error) => {
           log('error', `autofix failed: ${error?.stack ?? error}`);
           return { status: 'failed' };
         })
-        .finally(() => { inflight = null; });
+        .finally(() => { inflight = null; controller = null; });
       return inflight;
     },
     running: () => Boolean(inflight),
+    /** 도는 실행을 멈춘다. 프로세스 정리는 실행 안에서 끝까지 한다. */
+    abort(reason = 'aborted') {
+      if (!controller || controller.signal.aborted) return;
+      log('warn', `autofix aborting: ${reason}`);
+      controller.abort(reason);
+    },
+    /** 앱을 끝낼 때: 멈추고 정리가 끝날 때까지(최대 limitMs) 기다린다. */
+    async dispose({ limitMs = 20_000 } = {}) {
+      const current = inflight;
+      if (!current) return;
+      this.abort('app quit');
+      let timer;
+      await Promise.race([current, new Promise((resolve) => { timer = setTimeout(resolve, limitMs); })]);
+      clearTimeout(timer);
+    },
   };
 }
 
@@ -689,8 +905,13 @@ export function installAutofixHost({
   // 로그인은 실행마다 새로 읽는다(그사이 앱에서 로그인했을 수 있다).
   const cliRoot = defaultCliSetupRoot(env, platform, home);
   const ensureNodeHost = createNodeHost({ rootDir: cliRoot, nodeCommand, platform });
-  const spawnChild = spawnProcess ?? ((command, args, options) => agentRequire('cross-spawn')(command, args, options));
-  let activeChild = null;
+  // cross-spawn 은 풀지 못한 .cmd 를 cmd.exe 로 돌린다. 여기서는 Node 의 spawn 만 쓴다(shell 없음).
+  const spawnChild = spawnProcess ?? nodeSpawn;
+  const verifyCli = createCliIdentityVerifier({ platform, nodeCommand, spawnProcess: spawnChild });
+  // npm 으로 깐 CLI 는 `#!/usr/bin/env node` 스크립트다. node 가 없는 GUI 환경에서도 허브처럼 node-host 로 돈다.
+  const verifyIdentity = async (agent, command, agentEnv) => verifyCli(agent, command, applyNodeHostEnv(agentEnv, {
+    nodeCommand, shimDir: await ensureNodeHost().catch(() => null), platform,
+  }));
   let giftLease = null;
   const piRoot = defaultPiRoot(env, platform, home);
   const piBin = path.join(piRoot, 'prefix', 'node_modules', '.bin', platform === 'win32' ? 'pi.cmd' : 'pi');
@@ -707,9 +928,10 @@ export function installAutofixHost({
       home,
       platform,
       bundledClaudeBin,
+      verifyIdentity,
     }),
     probeGift: giftCredentials
-      ? () => probeGiftProvider({ credentials: giftCredentials, piBin, agentDir: giftPiHome, baseEnv: env, home, platform })
+      ? () => probeGiftProvider({ credentials: giftCredentials, piBin, agentDir: giftPiHome, baseEnv: env, home, platform, verifyIdentity })
       : null,
     async resolveModel(entry, found) {
       if (entry.id !== 'codex') return entry.model;
@@ -743,21 +965,16 @@ export function installAutofixHost({
         await writeGiftPiHome(giftPiHome, { baseUrl: found.baseUrl, model: options.model });
         giftLease = found.env.OPENROUTER_API_KEY;
       }
-      try {
-        return await executeAutofixAgent({
-          ...options,
-          cwd: userDataDir,
-          platform,
-          nodeCommand,
-          shimDir,
-          spawnProcess: spawnChild,
-          onChild: (child) => { activeChild = child; },
-        });
-      } finally {
-        activeChild = null;
-      }
+      return executeAutofixAgent({
+        ...options,
+        cwd: userDataDir,
+        platform,
+        nodeCommand,
+        shimDir,
+        spawnProcess: spawnChild,
+      });
     },
-    async sendReport({ status, provider, model, request, answer, run, durationMs }) {
+    async sendReport({ status, provider, model, request, answer, run, durationMs, cli }) {
       const { installId } = await loadOrCreateUniqueInstallState(uniqueInstallStatePath(userDataDir));
       const output = keepTailBytes(`${run?.finalText ? `${run.finalText}\n` : ''}${run?.stderr ?? ''}`, AGENT_OUTPUT_TAIL_BYTES);
       const payload = buildAutofixReportPayload({
@@ -766,15 +983,35 @@ export function installAutofixHost({
         status,
         request,
         answer,
-        meta: { ...appInfo(), autofix: { status, provider, model, surface: request.surface, attempts: request.attempts, durationMs } },
+        meta: {
+          ...appInfo(),
+          autofix: {
+            status, provider, model, surface: request.surface, attempts: request.attempts, durationMs,
+            cliPath: redactSecrets(cli?.path ?? '', { home }), cliVersion: cli?.version ?? '', cliSource: cli?.source ?? '',
+            cleanup: run?.cleanup ?? 'uncertain',
+          },
+        },
         log: `${diagnosticLog?.tail(LOG_TAIL_BYTES) ?? ''}\n\n--- 자동 수정 에이전트 출력 ---\n${redactSecrets(output, { home, secrets: giftLease ? [giftLease] : [] })}`,
       }, { proofKey });
       return submitFeedback(payload, { origin, fetchImpl });
     },
   });
 
+  // 실행을 기다리는 창. 모두 닫히면 실행을 멈추고 프로세스를 정리한다.
+  const waiting = new Set();
+  const watched = new WeakSet();
   ipcMain.handle('desktop:autofix-run', async (event, request) => {
     sessionForEvent(event);
+    const sender = event.sender;
+    if (!service.running()) waiting.clear();
+    if (sender && typeof sender === 'object') waiting.add(sender);
+    if (sender && typeof sender === 'object' && !watched.has(sender)) {
+      watched.add(sender);
+      sender.once?.('destroyed', () => {
+        if (!waiting.delete(sender)) return;
+        if (waiting.size === 0) service.abort('window closed');
+      });
+    }
     return service.run(request);
   });
   ipcMain.handle('desktop:autofix-get-settings', (event) => {
@@ -789,12 +1026,7 @@ export function installAutofixHost({
   return {
     run: (request) => service.run(request),
     settings,
-    /** 앱을 끝낼 때 도는 에이전트를 트리째 끝낸다. */
-    dispose() {
-      const child = activeChild;
-      activeChild = null;
-      if (child) return Promise.resolve(terminateProcessTree(child)).catch(() => {});
-      return Promise.resolve();
-    },
+    /** 앱을 끝낼 때 도는 에이전트를 멈추고, 트리 정리가 끝날 때까지 기다린다. */
+    dispose: (options) => service.dispose(options),
   };
 }

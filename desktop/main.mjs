@@ -857,12 +857,16 @@ async function bestEffortStartupCleanup(label, cleanup) {
   }
 }
 
+// 자동 수정은 아래에서 설치된다. 그 전에 앱이 끝나도 정리 단계가 그대로 돌게 빈 함수로 시작한다.
+let disposeAutofix = async () => {};
 const updateLifecycle = createUpdateLifecycle({
   app,
   updater: autoUpdater,
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
   cleanup: async () => {
+    // 도는 자동 수정 에이전트를 멈추고 그 프로세스 트리 정리가 끝날 때까지 기다린다.
+    await disposeAutofix();
     await hubOwner.teardown();
     await browserHost.dispose();
   },
@@ -1513,7 +1517,7 @@ const autofix = installAutofixHost({
   },
   unpacked: unpackedPath,
 });
-app.on('will-quit', () => { void autofix.dispose(); });
+disposeAutofix = () => autofix.dispose();
 // 렌더러 오류. 렌더러가 줄이고 겹친 것을 묶어 보내지만, 메인도 창마다 1분에 120줄까지만 받는다.
 const RENDERER_LOG_PER_MINUTE = 120;
 const rendererLogBudget = new Map();

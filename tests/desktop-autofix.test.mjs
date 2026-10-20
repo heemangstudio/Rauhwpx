@@ -18,11 +18,16 @@ import {
   defaultAutofixSettings,
   executeAutofixAgent,
   normalizeAutofixSettings,
+  checkCliIdentity,
+  classifyCleanup,
   parseAutofixAnswer,
   piAutofixArgv,
   probeAutofixProvider,
   probeGiftProvider,
 } from '../desktop/autofix.mjs';
+import { createTreeWatcher, findRunOrphans, killSurvivors, parsePsListing, parseWindowsProcessListing, treeMembers } from '../desktop/autofix-process.mjs';
+
+const genuine = async (agent) => ({ ok: true, version: agent === 'codex' ? '0.163.0' : '2.1.304' });
 
 function jwt(claims) {
   const part = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -98,7 +103,7 @@ test('codex plan comes from the login token', () => {
 });
 
 test('provider probe: managed binary first, PATH second, bundled Claude last', async () => {
-  const base = { baseEnv: { PATH: '/usr/bin' }, home: '/home/u', platform: 'linux', readFileImpl: async () => codexAuth('plus') };
+  const base = { baseEnv: { PATH: '/usr/bin' }, home: '/home/u', platform: 'linux', readFileImpl: async () => codexAuth('plus'), verifyIdentity: genuine };
   const managed = await probeAutofixProvider('codex', { ...base, cliSetup: fakeCliSetup(), exists: (file) => file === '/managed/bin/codex' || file === '/usr/bin/codex' });
   assert.equal(managed.available, true);
   assert.equal(managed.command, '/managed/bin/codex');
@@ -119,7 +124,7 @@ test('provider probe: managed binary first, PATH second, bundled Claude last', a
 
 test('a free ChatGPT Codex login is unavailable; API keys and unknown plans are not', async () => {
   const probe = (auth, cliSetup = fakeCliSetup()) => probeAutofixProvider('codex', {
-    cliSetup, baseEnv: {}, home: '/home/u', platform: 'linux', exists: (file) => file === '/managed/bin/codex', readFileImpl: async () => auth,
+    cliSetup, baseEnv: {}, home: '/home/u', platform: 'linux', exists: (file) => file === '/managed/bin/codex', readFileImpl: async () => auth, verifyIdentity: genuine,
   });
   assert.deepEqual(await probe(codexAuth('free')), { available: false, reason: 'free-plan' });
   assert.equal((await probe(codexAuth(null))).available, true);
@@ -169,7 +174,7 @@ function fakeChild({ onSpawn = () => {}, exitCode = 0, hang = false } = {}) {
     calls.push({ command, argv, options, child, stdin: () => stdin });
     setImmediate(() => {
       onSpawn({ argv, child });
-      if (!hang) setImmediate(() => child.emit('close', exitCode));
+      if (!hang) setImmediate(() => { child.exitCode = exitCode; child.emit('close', exitCode); });
     });
     return child;
   };
@@ -184,13 +189,44 @@ test('executor pipes the prompt, hides the window, and reads the Codex last mess
   const run = await executeAutofixAgent({
     provider: 'codex', command: '/bin/codex', env: { PATH: '/usr/bin' }, model: 'gpt-6-sol', effort: 'low', prompt: 'PROMPT',
     cwd: '/data', platform: 'linux', nodeCommand: '/usr/bin/node', spawnProcess, terminate: (child) => { terminated.push(child); return Promise.resolve(true); },
+    listProcesses: async () => [],
   });
   assert.equal(run.code, 0);
   assert.equal(parseAutofixAnswer(run.finalText).fixed, true);
   assert.equal(calls[0].stdin(), 'PROMPT');
   assert.equal(calls[0].options.windowsHide, true);
   assert.equal(calls[0].options.cwd, '/data');
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.detached, true, 'own process group on POSIX');
+  assert.equal(calls[0].options.env.NO_COLOR, '1');
+  assert.equal(calls[0].options.env.BROWSER, 'true');
+  assert.ok(calls[0].argv.includes('check_for_update_on_startup=false'));
   assert.deepEqual(terminated, [calls[0].child]);
+  assert.equal(run.cleanup, 'clean');
+});
+
+test('on Windows the agent gets a hidden console, no shell and no detached console, and batch shims are refused', async () => {
+  const { spawnProcess, calls } = fakeChild();
+  const run = await executeAutofixAgent({
+    provider: 'claude', command: 'C:\\Tools\\claude.exe', env: { Path: 'C:\\Windows' }, model: 'claude-sonnet-5-5', effort: 'medium', prompt: 'P',
+    cwd: 'C:\\data', platform: 'win32', nodeCommand: 'C:\\App\\HamaEditor.exe', spawnProcess, terminate: async () => true,
+    listProcesses: async () => [],
+  });
+  assert.equal(run.code, 0);
+  assert.equal(calls[0].options.windowsHide, true);
+  assert.equal(calls[0].options.detached, false);
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.env.DISABLE_AUTOUPDATER, '1');
+  assert.equal(calls[0].options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  assert.equal(calls[0].options.env.BROWSER, undefined);
+
+  const refused = await executeAutofixAgent({
+    provider: 'claude', command: 'C:\\nowhere\\claude.cmd', env: {}, model: 'm', effort: 'medium', prompt: 'P',
+    cwd: 'C:\\data', platform: 'win32', nodeCommand: 'C:\\App\\HamaEditor.exe', spawnProcess, terminate: async () => true,
+    listProcesses: async () => [],
+  });
+  assert.equal(refused.code, null);
+  assert.equal(calls.length, 1, 'never spawned through cmd.exe');
 });
 
 test('executor kills the tree on timeout', async () => {
@@ -199,10 +235,92 @@ test('executor kills the tree on timeout', async () => {
   const run = await executeAutofixAgent({
     provider: 'claude', command: '/bin/claude', env: {}, model: 'claude-opus-5-5', effort: 'medium', prompt: 'P',
     cwd: '/data', platform: 'linux', nodeCommand: '/usr/bin/node', spawnProcess, timeoutMs: 20,
-    terminate: (child) => { terminated.push(child); child.emit('close', null); return Promise.resolve(true); },
+    terminate: (child) => { terminated.push(child); child.exitCode = null; child.emit('close', null); return Promise.resolve(true); },
+    listProcesses: async () => [],
   });
   assert.equal(run.timedOut, true);
   assert.equal(terminated[0], calls[0].child);
+  assert.equal(run.cleanup, 'forced');
+});
+
+test('an abort (app quit, window closed) goes through the same cleanup', async () => {
+  const { spawnProcess } = fakeChild({ hang: true });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort('app quit'), 10);
+  const run = await executeAutofixAgent({
+    provider: 'claude', command: '/bin/claude', env: {}, model: 'm', effort: 'medium', prompt: 'P', cwd: '/data', platform: 'linux',
+    nodeCommand: '/usr/bin/node', spawnProcess, signal: controller.signal, listProcesses: async () => [],
+    terminate: (child) => { child.emit('close', null); return Promise.resolve(true); },
+  });
+  assert.equal(run.aborted, true);
+  assert.equal(run.cleanup, 'forced');
+});
+
+test('survivors that lost their parent are found and killed after the CLI exits', async () => {
+  const start = (n) => `Tue Oct 21 10:00:0${n} 2026`;
+  // 100 = CLI, 101 = its shell, 102 = a background job the shell started in its own session.
+  let phase = 'running';
+  const killed = [];
+  const list = async () => {
+    if (phase === 'running') {
+      return [
+        { pid: 1, ppid: 0, pgid: 1, start: start(0) },
+        { pid: 100, ppid: 50, pgid: 100, start: start(1) },
+        { pid: 101, ppid: 100, pgid: 100, start: start(2) },
+        { pid: 102, ppid: 101, pgid: 102, start: start(3) },
+      ];
+    }
+    // CLI 와 셸은 끝났고, 102 는 launchd(1) 아래로 넘어갔다. 103 은 같은 PID 가 아니라 무관한 프로세스다.
+    return [
+      { pid: 1, ppid: 0, pgid: 1, start: start(0) },
+      ...(killed.includes(102) ? [] : [{ pid: 102, ppid: 1, pgid: 102, start: start(3) }]),
+      { pid: 101, ppid: 1, pgid: 101, start: start(9) },
+    ];
+  };
+  const watcher = createTreeWatcher({ rootPid: 100, list, intervalMs: 1_000_000 });
+  await watcher.snapshot();
+  await watcher.stop();
+  assert.deepEqual([...watcher.tracked.keys()].sort(), [100, 101, 102]);
+  phase = 'exited';
+  const result = await killSurvivors({ tracked: watcher.tracked, list, kill: async (pid) => { killed.push(pid); }, settleMs: 0 });
+  assert.deepEqual(killed, [102], 'the reused PID 101 is left alone');
+  assert.deepEqual(result, { found: 1, remaining: 0 });
+  assert.equal(classifyCleanup({ forced: false, stragglers: 1, outcome: true, survivors: result }), 'forced');
+  assert.equal(classifyCleanup({ forced: false, stragglers: 0, outcome: true, survivors: { found: 0, remaining: 0 } }), 'clean');
+  assert.equal(classifyCleanup({ forced: false, stragglers: 0, outcome: true, survivors: { found: 1, remaining: 1 } }), 'uncertain');
+  assert.equal(classifyCleanup({ forced: false, stragglers: null, outcome: null, survivors: { found: 0, remaining: null } }), 'uncertain');
+});
+
+test('process listings parse on macOS and Windows', () => {
+  const mac = parsePsListing('  100     1   100   501 Tue Oct 21 10:00:01 2026\n  101   100   100   501 Tue Oct 21 10:00:02 2026\n');
+  assert.deepEqual(mac[1], { pid: 101, ppid: 100, pgid: 100, uid: 501, start: 'Tue Oct 21 10:00:02 2026' });
+  const win = parseWindowsProcessListing('4,0,\r\n100,50,133000000000000000\r\n101,100,133000000000000001\r\n');
+  assert.deepEqual(treeMembers(100, win).map((row) => row.pid).sort(), [100, 101]);
+});
+
+test('identity probe rejects a fake claude or codex and an older CLI missing our flags', () => {
+  const claudeHelp = '--print --output-format --model --effort --permission-mode bypassPermissions --dangerously-skip-permissions --no-session-persistence --setting-sources --strict-mcp-config';
+  assert.deepEqual(checkCliIdentity('claude', '2.1.304 (Claude Code)\n', claudeHelp), { ok: true, version: '2.1.304' });
+  assert.equal(checkCliIdentity('claude', 'claude 1.0.0\n', claudeHelp).ok, false, 'a script named claude');
+  assert.equal(checkCliIdentity('claude', '2.1.304 (Claude Code)', claudeHelp.replace('--effort ', '')).reason, 'unsupported-flags:--effort');
+  assert.equal(checkCliIdentity('codex', 'codex-cli 0.163.0', '').ok, false);
+  assert.equal(checkCliIdentity('codex', 'codex 0.163.0', '--skip-git-repo-check').ok, false);
+  assert.equal(checkCliIdentity('pi', '1.1.0', 'something else --print').ok, false);
+});
+
+test('a fake claude on PATH is skipped for the next genuine candidate', async () => {
+  const probe = await probeAutofixProvider('claude', {
+    cliSetup: fakeCliSetup(), baseEnv: { PATH: '/usr/bin' }, home: '/home/u', platform: 'linux', bundledClaudeBin: '/sdk/claude',
+    exists: (file) => file === '/usr/bin/claude' || file === '/sdk/claude',
+    verifyIdentity: async (agent, command) => (command === '/usr/bin/claude' ? { ok: false, reason: 'not-genuine' } : { ok: true, version: '2.1.304' }),
+  });
+  assert.deepEqual([probe.available, probe.command, probe.source, probe.version], [true, '/sdk/claude', 'bundled', '2.1.304']);
+  const none = await probeAutofixProvider('claude', {
+    cliSetup: fakeCliSetup(), baseEnv: { PATH: '/usr/bin' }, home: '/home/u', platform: 'linux',
+    exists: (file) => file === '/usr/bin/claude', verifyIdentity: async () => ({ ok: false, reason: 'not-genuine' }),
+  });
+  assert.equal(none.available, false);
+  assert.match(none.reason, /^not-genuine/);
 });
 
 function serviceHarness({ settings = { enabled: true }, available = { codex: true, claude: true }, gift = null, finalText, code = 0, executeDelay = 0 } = {}) {
@@ -337,6 +455,7 @@ test('gift probe needs a claimed gift with balance and never passes the own Open
     home: '/home/u',
     platform: 'linux',
     exists: (file) => file === '/pi/bin/pi',
+    verifyIdentity: async () => ({ ok: true, version: '1.1.0' }),
     ...extra,
   });
   const ok = await probe(active);
@@ -360,4 +479,23 @@ test('Pi argv runs the gift model headless with the default tools', () => {
   assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'openrouter/anthropic/claude-sonnet-5.5']);
   assert.deepEqual(argv.slice(argv.indexOf('--thinking'), argv.indexOf('--thinking') + 2), ['--thinking', 'medium']);
   assert.ok(!argv.some((arg) => /^--(?:no-)?tools$|^--exclude-tools$|^-nt$/.test(arg)));
+});
+
+test('orphans the agent left in its working folder are found; daemons, other users and older processes are not', async () => {
+  const since = Date.parse('Tue Oct 21 10:00:00 2026');
+  const row = (pid, extra) => ({ pid, ppid: 1, pgid: 900, uid: 501, start: 'Tue Oct 21 10:00:05 2026', ...extra });
+  const listing = [
+    row(201),                                        // 작업 폴더 안의 고아 → 찾는다
+    row(202, { pgid: 202 }),                         // 그룹 리더(데몬·앱)
+    row(203, { uid: 0 }),                            // 다른 사용자
+    row(204, { start: 'Tue Oct 21 09:00:00 2026' }), // 실행 전에 시작
+    row(205),                                        // 다른 폴더
+    row(206, { ppid: 77 }),                          // 부모가 살아 있음
+  ];
+  const cwds = new Map([[201, '/data/user/sub'], [202, '/data/user'], [203, '/data/user'], [204, '/data/user'], [205, '/tmp'], [206, '/data/user']]);
+  const found = await findRunOrphans({
+    listing, tracked: new Map(), since, uid: 501, dir: '/data/user',
+    readCwd: async (pids) => new Map(pids.map((pid) => [pid, cwds.get(pid)])), resolvePath: async (file) => file,
+  });
+  assert.deepEqual(found.map((item) => item.pid), [201]);
 });
