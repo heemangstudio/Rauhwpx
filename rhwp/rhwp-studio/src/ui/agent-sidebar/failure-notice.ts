@@ -191,9 +191,11 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       break;
     case 'invalid_request':
       if (failure.code === 'sandbox_unavailable') {
-        line = '현재 환경에서 필요한 실행 보호 기능이 지원되지 않아요. AI 설정에서 다른 AI를 선택해 주세요.';
+        // 허브는 샌드박스 거절을 배우면 앱 도구만 쓰는 실행으로 이어 간다 — 이전 버전에서 저장된
+        // 실패는 다시 보내면 풀린다. 그래도 거절되면(관리 정책이 샌드박스를 강제) 다른 AI 를 고른다.
+        line = '현재 환경에서 실행 보호 기능을 사용할 수 없어요. 다시 시도해도 안 되면 AI 설정에서 다른 AI를 선택해 주세요.';
         actions.push({ id: 'settings', label: '다른 AI 연결' });
-        retryAllowed = false;
+        retryAllowed = true;
       }
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });
       break;

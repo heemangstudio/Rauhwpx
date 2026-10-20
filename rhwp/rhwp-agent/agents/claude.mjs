@@ -60,7 +60,8 @@ import {
 // (CLI 확인: 2.1.235) planning 의 read-only 경계가 서브에이전트에서도 유지된다.
 const DIRECT_TOOLS = 'Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
 const PLANNING_TOOLS = 'Read,Glob,Grep,Bash,WebSearch,WebFetch,Agent,Workflow';
-// Windows의 기본 실행은 앱 MCP만 사용한다. 네이티브 도구를 제거하고 명시적으로도 차단한다.
+// Claude 의 OS 샌드박스가 없는 곳(Windows, 그리고 샌드박스를 띄우지 못한다고 배운 호스트)의 제한
+// 실행은 앱 MCP만 사용한다. 네이티브 도구를 제거하고 명시적으로도 차단한다.
 const MCP_ONLY_DENIED_TOOLS = [...DIRECT_TOOLS.split(','), 'Task', 'NotebookEdit'];
 const MCP_ONLY_BRIEF = '\n이 환경에서는 앱의 rhwp MCP 도구만 사용하세요. 문서 읽기·편집은 MCP로 수행하며, 네이티브 파일/셸 도구는 사용할 수 없습니다. 로컬 실행이 필요하면 앱의 권한 요청 도구로 사용자에게 요청하세요.';
 const LOCAL_EXECUTION_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
@@ -229,16 +230,76 @@ function usesNativePlanMode(opts) {
     && normalizeExecutionMode(opts).workflow !== 'question';
 }
 
-export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false, platform = process.platform } = {}) {
+/**
+ * 이 허브 프로세스에서 Claude 가 OS 샌드박스 없이는 시작하지 않겠다고 거절한 이유. 한 번 거절되면
+ * (Linux 의 bubblewrap·socat 누락, WSL1, 관리 정책 등 — 호스트가 바뀌지 않는 한 그대로다) 이후의
+ * 제한 실행은 처음부터 Windows 와 같은 MCP 전용 프로필로 시작한다.
+ * @type {string | null}
+ */
+let claudeOsSandboxRefusal = null;
+
+/** 제한 실행이 Claude 의 OS 샌드박스(Seatbelt·bubblewrap)에 기댈 수 있는지. */
+export function claudeOsSandboxSupported(platform = process.platform) {
+  return platform !== 'win32' && claudeOsSandboxRefusal === null;
+}
+
+function rememberClaudeOsSandboxRefusal(reason) {
+  claudeOsSandboxRefusal = String(reason || 'sandbox required but unavailable');
+}
+
+/** 테스트 전용: 배운 거절을 잊는다. */
+export function resetClaudeOsSandboxRefusalForTests() {
+  claudeOsSandboxRefusal = null;
+}
+
+const SANDBOX_REFUSAL = /sandbox required but unavailable/i;
+
+/**
+ * `sandbox.failIfUnavailable` 아래에서 샌드박스를 띄우지 못한 CLI 의 result (모델 호출 전, 종료 코드 1).
+ * 거절 이유 문구를 돌려준다. 아니면 null.
+ */
+function sandboxRefusalOfResult(e) {
+  if (e?.type !== 'result' || e.is_error !== true) return null;
+  const errors = Array.isArray(e.errors) ? e.errors : [];
+  const found = [...errors, e.result].find((value) => typeof value === 'string' && SANDBOX_REFUSAL.test(value));
+  return found ? found.replace(/\s*Set sandbox\.failIfUnavailable=false[^.]*\.?/i, '').trim() : null;
+}
+
+/**
+ * 샌드박스는 떴지만 그 안에서 명령을 하나도 실행하지 못하는 호스트의 Bash 결과. 시작 검사는
+ * 통과하므로 거절 result 가 없다 — 다른 샌드박스 안에서 허브가 돈 macOS(Seatbelt 는 겹치지 않는다),
+ * 비특권 사용자 네임스페이스를 막은 Linux(Ubuntu 23.10+ 의 AppArmor, 컨테이너)가 그렇다.
+ */
+const SANDBOX_RUNTIME_FAILURE = /sandbox-exec: sandbox_apply: |^bwrap: (?:setting up uid map|No permissions to creat|Creating new namespace failed|loopback: Failed RTM_NEWADDR|Can't mount proc)/m;
+
+/** Bash 결과가 샌드박스 자체의 실패인지 — 그 줄을 돌려준다. 아니면 null. */
+function sandboxRuntimeFailureOfToolResult(block) {
+  if (block?.type !== 'tool_result' || block.is_error !== true) return null;
+  const content = typeof block.content === 'string'
+    ? block.content
+    : Array.isArray(block.content)
+      ? block.content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('\n')
+      : '';
+  const match = SANDBOX_RUNTIME_FAILURE.exec(content);
+  if (!match) return null;
+  const start = content.lastIndexOf('\n', match.index) + 1;
+  const end = content.indexOf('\n', match.index);
+  return content.slice(start, end === -1 ? undefined : end).trim();
+}
+
+/**
+ * 모드·권한·호스트에 따른 Claude 실행 프로필 — CLI 인자와 SDK 옵션이 같은 경계를 쓴다.
+ * 제한 실행은 OS 샌드박스 안의 네이티브 도구를 쓰고, 샌드박스가 없으면 앱 MCP 도구만 쓴다.
+ */
+function claudeLaunchProfile(opts, { platform = process.platform, osSandbox = claudeOsSandboxSupported(platform) } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const localExecution = hasLocalExecutionGrant(opts);
   const planningRestricted = isPlanningRestricted(opts) && !localExecution;
-  const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
-  const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
+  const restricted = !localExecution && (!unrestricted || planningRestricted);
+  const mcpOnly = restricted && !osSandbox;
   const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const readOnlyRoots = providerReadOnlyRoots(opts);
-  const mcpConfig = { mcpServers: { rhwp: claudeRhwpMcpServer(opts) } };
   const allow = mcpOnly ? ['mcp__rhwp__*'] : [
     ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
     permissionPathRule('Read', opts.rootDir),
@@ -256,7 +317,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
     ? { permissions: { allow, deny: MCP_ONLY_DENIED_TOOLS }, sandbox: { enabled: false } }
     : localExecution
     ? { permissions: { allow }, sandbox: { enabled: false } }
-    : unrestricted && !planningRestricted ? {} : {
+    : !restricted ? {} : {
     permissions: { allow },
     sandbox: {
       enabled: true,
@@ -268,6 +329,31 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
       },
     },
   };
+  return {
+    unrestricted,
+    localExecution,
+    planningRestricted,
+    nativePlan: usesNativePlanMode(opts),
+    mcpOnly,
+    /** 이 프로필로 띄운 CLI 는 샌드박스를 띄우지 못하면 시작을 거절한다. */
+    requiresOsSandbox: restricted && osSandbox,
+    activeTools,
+    allow,
+    settings,
+    brief: systemBriefFor(opts) + (mcpOnly ? MCP_ONLY_BRIEF : ''),
+  };
+}
+
+/** 지금 이 세션을 띄우면 OS 샌드박스를 요구하는지 — 거절 result 를 폴백으로 읽을지 정한다. */
+function claudeLaunchRequiresOsSandbox(opts, { platform = process.platform } = {}) {
+  return claudeLaunchProfile(opts, { platform }).requiresOsSandbox;
+}
+
+export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, slashCommands = false, platform = process.platform, osSandbox = claudeOsSandboxSupported(platform) } = {}) {
+  const {
+    unrestricted, planningRestricted, nativePlan, mcpOnly, activeTools, settings, brief,
+  } = claudeLaunchProfile(opts, { platform, osSandbox });
+  const mcpConfig = { mcpServers: { rhwp: claudeRhwpMcpServer(opts) } };
   return [
     '-p', '--verbose',
     '--output-format', 'stream-json',
@@ -292,7 +378,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
       : unrestricted && !planningRestricted
         ? ['--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions']
         : ['--permission-mode', 'dontAsk']),
-    '--append-system-prompt', systemBriefFor(opts) + (mcpOnly ? MCP_ONLY_BRIEF : ''),
+    '--append-system-prompt', brief,
     ...(opts.model ? ['--model', opts.model] : []),
     ...(opts.effort ? ['--effort', opts.effort] : []),
   ];
@@ -304,44 +390,10 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null, sl
  * advertises requestUserInput. Without that host capability, buildClaudeArgv
  * remains the automatic MCP fallback.
  */
-export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false, platform = process.platform } = {}) {
-  const unrestricted = opts.permissionProfile === 'unrestricted';
-  const localExecution = hasLocalExecutionGrant(opts);
-  const planningRestricted = isPlanningRestricted(opts) && !localExecution;
-  const nativePlan = usesNativePlanMode(opts);
-  const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
-  const mcpOnly = platform === 'win32' && !localExecution && (!unrestricted || planningRestricted);
-  const activeTools = mcpOnly ? '' : copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
-  const readOnlyRoots = providerReadOnlyRoots(opts);
-  const allow = mcpOnly ? ['mcp__rhwp__*'] : [
-    ...(localExecution ? [...LOCAL_EXECUTION_TOOLS] : []),
-    permissionPathRule('Read', opts.rootDir),
-    ...readOnlyRoots.map((root) => permissionPathRule('Read', root)),
-    ...(!planningRestricted && !copyLayoutWorker ? [
-      permissionPathRule('Write', opts.rootDir),
-      permissionPathRule('Edit', opts.rootDir),
-    ] : []),
-    permissionPathRule('Glob', opts.rootDir),
-    permissionPathRule('Grep', opts.rootDir),
-    ...(copyLayoutWorker ? [] : ['Bash', 'WebSearch', 'WebFetch', 'Agent', 'Workflow']),
-    'mcp__rhwp__*',
-  ];
-  const settings = mcpOnly
-    ? { permissions: { allow, deny: MCP_ONLY_DENIED_TOOLS }, sandbox: { enabled: false } }
-    : localExecution
-    ? { permissions: { allow }, sandbox: { enabled: false } }
-    : unrestricted && !planningRestricted ? {} : {
-    permissions: { allow },
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
-      allowUnsandboxedCommands: false,
-      filesystem: {
-        allowRead: [opts.rootDir, ...readOnlyRoots],
-        allowWrite: planningRestricted || copyLayoutWorker ? [] : [opts.rootDir],
-      },
-    },
-  };
+export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, { slashCommands = false, platform = process.platform, osSandbox = claudeOsSandboxSupported(platform) } = {}) {
+  const {
+    unrestricted, localExecution, planningRestricted, nativePlan, mcpOnly, activeTools, allow, settings, brief,
+  } = claudeLaunchProfile(opts, { platform, osSandbox });
   const requestPermission = createClaudeAskUserQuestionPermissionHandler(opts);
   if (!requestPermission) throw new Error('Claude native user input requires a root requestUserInput capability');
   const canUseTool = (toolName, input, context) => localExecution && LOCAL_EXECUTION_TOOLS.has(toolName)
@@ -372,7 +424,7 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController, 
     settingSources: [],
     settings,
     strictMcpConfig: true,
-    systemPrompt: { type: 'preset', preset: 'claude_code', append: systemBriefFor(opts) + (mcpOnly ? MCP_ONLY_BRIEF : '') },
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: brief },
     tools: [...(activeTools ? activeTools.split(',') : []), 'AskUserQuestion'],
   };
 }
@@ -452,6 +504,13 @@ export function createClaudeSession(opts, {
   let turnRetryText = null;
   let turnResumeLost = false;
   let turnResumeRetried = false;
+  /** 이번 턴에 마지막으로 보낸 글 — 샌드박스 거절 뒤 MCP 전용 프로필로 같은 글을 다시 보낸다. */
+  let turnDispatchedText = null;
+  let turnSandboxRetried = false;
+  // 마지막 스폰이 OS 샌드박스를 요구했는지 — 그 스폰의 거절만 폴백으로 읽는다.
+  let lastSpawnRequiredSandbox = false;
+  /** 샌드박스 안에서 돈 Bash 호출 — 그 결과가 샌드박스 자체의 실패인지 본다. */
+  const sandboxedBashCalls = new Set();
   // 마지막 스폰이 --resume 이었는지 — stderr 의 "No conversation found" 를 해석할 때 쓴다.
   let lastSpawnResumed = false;
   // ── 콘텍스트 사용량 ─────────────────────────────────────────────
@@ -592,6 +651,8 @@ export function createClaudeSession(opts, {
   const workflowFingerprints = new Map();
 
   function buildArgv(resume) {
+    lastSpawnRequiredSandbox = claudeLaunchRequiresOsSandbox(opts, { platform });
+    sandboxedBashCalls.clear();
     return buildClaudeArgv(opts, sessionId, resume, {
       platform,
       agentsPath: writeClaudeAgentsFile(opts.isolatedHome),
@@ -1076,6 +1137,7 @@ export function createClaudeSession(opts, {
       }
       for (const block of blocks) {
         if (block?.type === 'tool_use') {
+          if (block.name === 'Bash' && lastSpawnRequiredSandbox && block.id) sandboxedBashCalls.add(String(block.id));
           onEvent({
             type: 'tool-call',
             agent: 'claude',
@@ -1104,10 +1166,20 @@ export function createClaudeSession(opts, {
       const parentTaskId = parentTaskIdOf(e);
       for (const b of blocks) {
         if (b?.type === 'tool_result') {
+          const callId = String(b.tool_use_id ?? '');
+          if (sandboxedBashCalls.delete(callId) && claudeOsSandboxSupported(platform)) {
+            const failure = sandboxRuntimeFailureOfToolResult(b);
+            if (failure) {
+              // 이 턴은 그대로 둔다(모델은 오류를 받았고 문서를 이미 고쳤을 수 있다). 다음 턴부터
+              // 샌드박스를 요구하지 않는 MCP 전용 프로필로 다시 띄운다.
+              rememberClaudeOsSandboxRefusal(failure);
+              process.stderr.write(`[claude] OS sandbox cannot run commands here; next turns use app MCP tools only: ${redactDiagnosticText(failure, [opts.token])}\n`);
+            }
+          }
           onEvent({
             type: 'tool-result',
             agent: 'claude',
-            callId: String(b.tool_use_id ?? ''),
+            callId,
             ok: !b.is_error,
             resultPreview: truncate(typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? null)),
             ...(parentTaskId ? { parentTaskId } : {}),
@@ -1117,6 +1189,18 @@ export function createClaudeSession(opts, {
       return;
     }
     if (e?.type === 'result') {
+      const sandboxRefusal = turnOpen && !turnSandboxRetried && lastSpawnRequiredSandbox
+        ? sandboxRefusalOfResult(e)
+        : null;
+      if (sandboxRefusal) {
+        // 이 호스트에서 Claude 가 OS 샌드박스를 띄우지 못해 시작을 거절했다 — 모델 호출 전이다.
+        // 샌드박스 없이 네이티브 도구를 열지 않고, 앱 MCP 도구만 쓰는 프로필로 같은 턴을 한 번 다시 보낸다.
+        turnSandboxRetried = true;
+        rememberClaudeOsSandboxRefusal(sandboxRefusal);
+        process.stderr.write(`[claude] OS sandbox unavailable; continuing with app MCP tools only: ${redactDiagnosticText(sandboxRefusal, [opts.token])}\n`);
+        retryTurn(source, turnDispatchedText);
+        return;
+      }
       if (turnOpen && !turnResumeRetried && lastSpawnResumed && isMissingConversationResult(e)) {
         // 재개할 세션이 저장소에 없다 — 모델 호출 전이다. 새 세션으로 같은 턴을 한 번 다시 보낸다.
         turnResumeRetried = true;
@@ -1128,7 +1212,7 @@ export function createClaudeSession(opts, {
           settleTurn(source);
           return;
         }
-        retryTurnOnFreshSession(source);
+        retryTurn(source, turnRetryText);
         return;
       }
       hasCompletedTurn = true;
@@ -1286,6 +1370,8 @@ export function createClaudeSession(opts, {
     let query;
     try {
       const launch = claudeCliLaunch();
+      lastSpawnRequiredSandbox = claudeLaunchRequiresOsSandbox(opts, { platform });
+      sandboxedBashCalls.clear();
       const options = buildClaudeSdkOptions({
         ...opts,
         ...(launch.leadingArgs[0]
@@ -1642,20 +1728,22 @@ export function createClaudeSession(opts, {
   }
 
   /**
-   * 재개 세션이 없다는 result 뒤: 그 스폰을 정리하고 같은 턴을 새 세션으로 다시 보낸다.
+   * 모델 호출 전에 끝난 스폰(재개 세션 없음, 샌드박스 거절) 뒤: 그 스폰을 정리하고 같은 턴을
+   * 다시 보낸다. 다음 스폰의 인자는 그때의 세션·프로필 상태로 다시 만든다.
    * turn-start 는 다시 내지 않는다 — 허브에는 한 턴이다.
    */
-  function retryTurnOnFreshSession(source) {
-    const text = turnRetryText;
+  function retryTurn(source, text) {
+    const generation = userTurnGeneration;
     const cleanup = source ? closeSdkQuery(source) : (() => {
       const proc = child;
       childAlive = false;
       return proc ? stopChildProcess(proc, true) : Promise.resolve(true);
     })();
     void cleanup.then((cleaned) => {
-      if (disposed || !turnOpen) return;
+      // 정리를 기다리는 사이 사용자가 멈추고 새 글을 보냈다면 그 턴에 이전 글을 보내지 않는다.
+      if (disposed || !turnOpen || userTurnGeneration !== generation) return;
       if (!cleaned) {
-        const message = 'Claude process cleanup could not be confirmed before retrying on a fresh session';
+        const message = 'Claude process cleanup could not be confirmed before retrying the turn';
         const failure = { source: 'claude', code: 'cleanup_uncertain' };
         onEvent({ type: 'error', agent: 'claude', message, failure });
         endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'failed', errorMessage: message, failure });
@@ -1669,6 +1757,7 @@ export function createClaudeSession(opts, {
   }
 
   function dispatchTurnText(text) {
+    turnDispatchedText = text;
     try {
       if (nativeUserInput) dispatchNative(text);
       else dispatchLegacy(text);
@@ -1703,6 +1792,7 @@ export function createClaudeSession(opts, {
     turnRetryText = entry.retryText;
     turnResumeLost = false;
     turnResumeRetried = false;
+    turnSandboxRetried = false;
     if (entry.replaceSession) {
       // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 ID 로 전체 기록을 보내고 resumeLost 를 싣는다.
       forgetLostResume();

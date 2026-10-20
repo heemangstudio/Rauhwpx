@@ -113,14 +113,15 @@ test('unknown failures provide connection settings and recover unreadable saved 
   assert.deepEqual(actions(failureView(unknown, 'turn', ctx({ isLatest: false }))), []);
 });
 
-test('unsupported sandbox offers another provider without retrying or weakening permissions', () => {
+test('unsupported sandbox offers a retry the hub can recover and another provider', () => {
   const view = failureView(failure({ class: 'invalid_request', code: 'sandbox_unavailable', retryable: false }), 'turn', ctx());
-  assert.deepEqual(actions(view), ['settings']);
+  assert.deepEqual(actions(view), ['retry', 'settings']);
   assert.match(view.title, /안전 실행/);
   assert.match(view.line!, /다른 AI/);
+  assert.deepEqual(actions(failureView(failure({ class: 'invalid_request', code: 'sandbox_unavailable' }), 'turn', ctx({ hasRetry: false }))), ['settings']);
   const saved = failureView(failure({ message: 'Sandbox required but unavailable: Windows sandbox is not active.' }), 'turn', ctx());
   assert.equal(saved.title, view.title);
-  assert.deepEqual(actions(saved), ['settings']);
+  assert.deepEqual(actions(saved), ['retry', 'settings']);
 });
 
 test('formatResetAt shows the time on the same day and the date on another day, in the viewer time zone', () => {
