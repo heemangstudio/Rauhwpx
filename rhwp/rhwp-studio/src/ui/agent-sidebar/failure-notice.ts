@@ -13,6 +13,7 @@ import type {
 } from '../../agent/types.ts';
 import type { ChatThread, ThreadFailureMessage, ThreadRetryPayload } from '../../agent/threads.ts';
 import { failureDismissKey, resetAtFromLimits } from '../../agent/provider-failure.ts';
+import { createIcon } from './icons.ts';
 import {
   continuationWire,
   type ContinuationCarryingWire,
@@ -373,9 +374,18 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
   }
   if (view.compact) return root;
   for (const action of view.actions) {
-    const button = el('button', action.quiet ? 'ag-failure-link ag-failure-action' : 'ag-hub-retry-btn ag-failure-action', action.label);
+    // 다시 시도는 글자 대신 새로고침 아이콘 단추다. 이름은 aria-label·툴팁으로 남는다.
+    const retry = action.id === 'retry';
+    const button = retry
+      ? el('button', 'ag-failure-close ag-failure-action ag-failure-retry')
+      : el('button', action.quiet ? 'ag-failure-link ag-failure-action' : 'ag-hub-retry-btn ag-failure-action', action.label);
     button.type = 'button';
     button.dataset.action = action.id;
+    if (retry) {
+      button.append(createIcon('refresh'));
+      button.setAttribute('aria-label', action.label);
+      button.title = action.label;
+    }
     if (action.disabled) button.disabled = true;
     if (action.title) button.title = action.title;
     else if (action.id === 'retry' && options.retryAfterPartialEdits) {

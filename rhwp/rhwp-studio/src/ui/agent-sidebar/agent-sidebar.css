@@ -889,8 +889,20 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   font-size: var(--ag-fs-meta);
 }
 
+.ag-failure-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ag-failure-retry .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
 .ag-hub-retry-btn:disabled,
-.ag-failure-link:disabled {
+.ag-failure-link:disabled,
+.ag-failure-retry:disabled {
   opacity: 0.5;
 }
 
