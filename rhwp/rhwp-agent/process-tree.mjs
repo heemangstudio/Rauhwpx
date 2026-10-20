@@ -141,8 +141,9 @@ function windowsExitedLeaderDrained(child, { graceMs, setTimer, clearTimer }) {
       stream.once('end', check);
       stream.once('close', check);
     }
+    // Not unref'd: like the taskkill grace timer, a pending bounded proof must
+    // keep the process alive until it settles.
     timer = setTimer(finish, graceMs);
-    timer?.unref?.();
   });
 }
 
