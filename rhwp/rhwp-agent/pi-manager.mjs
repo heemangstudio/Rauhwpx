@@ -1528,6 +1528,8 @@ export function createPiManager({
     modelsPath,
     settingsPath,
     piBin,
+    /** 설치·업데이트가 도는 중인지. 데스크톱이 창 없이 허브를 내리기 전에 묻는다. */
+    isInstalling: () => installing,
     extensionPath: PI_EXTENSION_PATH,
     subagentExtensionPath: PI_SUBAGENT_EXTENSION_PATH,
     skillsDir: PI_SKILLS_DIR,

@@ -42,6 +42,10 @@ export const SUBSCRIPTION_OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXPIRED_RECHECK_MS = 60 * 60 * 1000;
 /** 잠자기에서 깬 뒤 등 24시간이 지났는지 이 간격으로 본다. */
 const SCHEDULE_TICK_MS = 60 * 1000;
+/** 매분 확인에서 시계 기록(maxSeenAt)만 바뀌었으면 이 간격으로만 상태 파일에 쓴다. */
+const MAX_SEEN_PERSIST_MS = 60 * 60 * 1000;
+/** 서버가 이 기기에 lease 를 주지 않겠다고 답한 코드. 해지(revoked)는 revokedAt 으로 따로 본다. */
+const SERVER_LEASELESS_CODES = new Set(['invalid_key', 'not_activated', 'device_limit']);
 export const PRICING_URL = 'https://heemangstudios.com/pricing.html';
 /** 결제가 실패한 구매자가 결제 수단을 바꾸는 Groble 주문조회. 서버가 paymentFixUrl 로 다른 주소를 주면 그것을 쓴다. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
@@ -158,6 +162,13 @@ export function createLicenseManager({
   let wasEditable = false;
   /** 라이선스 쪽 잠금: 편집 가능 → 읽기 전용이 된 때와 그 전환의 유예 시작 시각. 체험 끝은 따로 다룬다. */
   let lockTransition = null;
+  /** 마지막으로 알린 상태. 같은 상태는 다시 알리지 않는다. */
+  let notifiedStatus = null;
+  /** 상태 파일에 마지막으로 쓴 maxSeenAt 과, 그것을 뺀 나머지 내용. */
+  let persistedMaxSeenAt = 0;
+  let persistedBody = null;
+  /** 이 실행에서 마지막으로 서버에 lease 를 물은 시각. */
+  let lastValidateAt = 0;
 
   function serialize(task) {
     const next = queue.then(task);
@@ -172,13 +183,22 @@ export function createLicenseManager({
     return Math.max(t, state?.maxSeenAt ?? 0);
   }
 
+  function bodyWithoutClock() {
+    const { maxSeenAt: _maxSeenAt, ...rest } = state;
+    return JSON.stringify(rest);
+  }
+
   async function persist() {
+    const maxSeenAt = state.maxSeenAt;
+    const withoutClock = bodyWithoutClock();
     const body = `${JSON.stringify(state, null, 2)}\n`;
     const temp = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
     await fs.mkdir(dirname(statePath), { recursive: true });
     try {
       await fs.writeFile(temp, body, { mode: 0o600 });
       await fs.rename(temp, statePath);
+      persistedMaxSeenAt = maxSeenAt;
+      persistedBody = withoutClock;
     } catch (error) {
       await fs.rm(temp, { force: true }).catch(() => {});
       throw error;
@@ -276,8 +296,21 @@ export function createLicenseManager({
     };
   }
 
+  /**
+   * 매분 확인에서 바뀐 것이 시계 기록(maxSeenAt)뿐이면 쓰지 않는다. 되감기 방지에는 한 시간 단위로
+   * 남기면 충분하다. 그 밖의 내용이 바뀌면 바로 쓴다.
+   */
+  async function persistIfChanged() {
+    if (bodyWithoutClock() === persistedBody && state.maxSeenAt - persistedMaxSeenAt < MAX_SEEN_PERSIST_MS) return;
+    await persist();
+  }
+
   function changed() {
-    try { onChange(computeStatus()); } catch (error) { log.warn?.('[license] change listener failed:', error); }
+    const status = computeStatus();
+    const fingerprint = JSON.stringify(status);
+    if (fingerprint === notifiedStatus) return;
+    notifiedStatus = fingerprint;
+    try { onChange(status); } catch (error) { log.warn?.('[license] change listener failed:', error); }
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
@@ -324,7 +357,7 @@ export function createLicenseManager({
             }
           } catch (error) { lastNetworkError = error.code ?? 'network'; }
         }
-        await persist();
+        await persistIfChanged();
         changed();
         return computeStatus();
       }
@@ -337,6 +370,14 @@ export function createLicenseManager({
       if (!force && license.lastCheckAt && t - license.lastCheckAt < interval && (lease.ok || license.expiredAt)) {
         return computeStatus();
       }
+      // 서버가 lease 를 주지 않겠다고 답한 키(해지·키 없음·기기 초과·재활성화 필요)는 매분 묻지 않고
+      // 한 시간마다 묻는다. 서버에 닿지 못한 경우는 연결되자마자 풀리도록 그대로 매분 묻는다.
+      // 사용자의 '다시 확인'(force)은 바로 묻는다.
+      if (!force && !lease.ok && (license.revokedAt || SERVER_LEASELESS_CODES.has(license.lastErrorCode))
+        && lastValidateAt && t - lastValidateAt < Math.min(checkIntervalMs, expiredRecheckMs)) {
+        return computeStatus();
+      }
+      lastValidateAt = t;
       try {
         const lease = await client.validate({ key: license.key, deviceId: state.deviceId });
         acceptLease(license.key, lease, clock());
@@ -368,7 +409,8 @@ export function createLicenseManager({
           license.lastErrorCode = code;
         }
       }
-      await persist();
+      // 오프라인이면 매분 같은 실패를 받는다. 내용이 그대로면 다시 쓰지 않는다.
+      await persistIfChanged();
       changed();
       return computeStatus();
     });
@@ -478,7 +520,7 @@ export function createLicenseManager({
     void check({ force: true }).catch((error) => log.warn?.('[license] launch check failed:', error));
     timer = setIntervalImpl(() => {
       void check().then(() => {
-        // 체험 72시간이 지나면 서버 확인 없이도 상태가 바뀐다.
+        // 체험 72시간이나 lease 끝처럼 서버 확인 없이도 상태가 바뀐다. 바뀐 때만 알린다.
         changed();
       }).catch((error) => log.warn?.('[license] scheduled check failed:', error));
     }, SCHEDULE_TICK_MS);

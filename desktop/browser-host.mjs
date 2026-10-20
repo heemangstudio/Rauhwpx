@@ -124,6 +124,8 @@ export class OwnedBrowserHost {
     }
     await privateDirectory(this.dataDir);
     const canonicalProfile = await privateDirectory(expected);
+    // 패스키 설정은 실행할 때 첫 창과 나란히 끝난다. 브라우저 세션과 상태는 그 결과를 따른다.
+    await this.webAuthn?.configure?.();
     if (!this.session) {
       this.session = this.electronSession.fromPath(canonicalProfile);
       this.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

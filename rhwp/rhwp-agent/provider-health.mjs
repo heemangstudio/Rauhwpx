@@ -15,7 +15,7 @@ function firstLine(text) { return String(text ?? '').split(/\r?\n/).map((line) =
 function stderrTail(text) { return String(text ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-3).join(' / ').slice(-STDERR_TAIL_LIMIT); }
 
 /** Probe supported CLI providers and the locally managed Pi binary. */
-export function createProviderHealth({ spawnProcess = spawn, timeoutMs = PROBE_TIMEOUT_MS, cacheTtlMs = CACHE_TTL_MS, now = Date.now, piBin = () => null, cliBin = (agent) => PROBE_COMMANDS[agent], probeEnv = () => undefined, platform = process.platform, nodeCommand = process.execPath } = {}) {
+export function createProviderHealth({ spawnProcess = spawn, timeoutMs = PROBE_TIMEOUT_MS, cacheTtlMs = CACHE_TTL_MS, now = Date.now, piBin = () => null, cliBin = (agent) => PROBE_COMMANDS[agent], probeEnv = () => undefined, platform = process.platform, nodeCommand = process.execPath, versionCache = null } = {}) {
   let cache = null;
   let inFlight = null;
   function probe(command, env) {
@@ -65,7 +65,7 @@ export function createProviderHealth({ spawnProcess = spawn, timeoutMs = PROBE_T
       });
       const finish = (code, signal) => {
         if (forcedHealth) return;
-        if (code === 0) { done({ available: true, version: firstLine(stdout), error: null }); return; }
+        if (code === 0) { done({ available: true, version: firstLine(stdout), error: null, stdout }); return; }
         const exit = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
         const detail = stderrTail(stderr);
         done({ available: false, version: null, error: detail ? `${command} --version 이 실패했습니다 (${exit}): ${detail}` : `${command} --version 이 실패했습니다 (${exit}).` });
@@ -74,18 +74,31 @@ export function createProviderHealth({ spawnProcess = spawn, timeoutMs = PROBE_T
       proc.on('exit', (code, signal) => setImmediate(() => finish(code, signal)));
     });
   }
+  /**
+   * `--version` 을 허브의 버전 캐시로 거친다. 같은 실행 파일이면 설정 상태가 이미 돌린 출력을 쓴다.
+   * 응답 모양은 직접 실행한 것과 같다.
+   */
+  async function probeVersion(command, env) {
+    const run = () => probe(command, env).then((health) => ({ ok: health.available, stdout: health.stdout, health }));
+    const result = versionCache ? await versionCache.probe(command, run, { env }) : await run();
+    if (result.health) {
+      const { stdout: _stdout, ...health } = result.health;
+      return health;
+    }
+    return { available: true, version: firstLine(result.stdout), error: null, checkedAt: now() };
+  }
   function probePi() {
     let bin = null;
     try { bin = typeof piBin === 'function' ? piBin() : null; } catch {}
     if (typeof bin !== 'string' || !bin) return Promise.resolve({ available: false, version: null, error: PI_NOT_INSTALLED, checkedAt: now() });
-    return probe(bin).then((health) => (!health.available && /찾을 수 없습니다/.test(health.error ?? '') ? { ...health, error: PI_NOT_INSTALLED } : health));
+    return probeVersion(bin).then((health) => (!health.available && /찾을 수 없습니다/.test(health.error ?? '') ? { ...health, error: PI_NOT_INSTALLED } : health));
   }
   return {
     cached: () => cache?.result ?? null,
     check(refresh = false) {
       if (!refresh && cache && now() - cache.checkedAt < cacheTtlMs) return Promise.resolve(cache.result);
       if (inFlight) return inFlight;
-      const probing = Promise.all([...CLI_AGENTS.map((agent) => probe(cliBin(agent) || PROBE_COMMANDS[agent], probeEnv(agent))), probePi()]).then((healths) => { const result = {}; CLI_AGENTS.forEach((agent, index) => { result[agent] = healths[index]; }); result.pi = healths[CLI_AGENTS.length]; cache = { result, checkedAt: now() }; return result; });
+      const probing = Promise.all([...CLI_AGENTS.map((agent) => probeVersion(cliBin(agent) || PROBE_COMMANDS[agent], probeEnv(agent))), probePi()]).then((healths) => { const result = {}; CLI_AGENTS.forEach((agent, index) => { result[agent] = healths[index]; }); result.pi = healths[CLI_AGENTS.length]; cache = { result, checkedAt: now() }; return result; });
       inFlight = probing;
       probing.then(() => { if (inFlight === probing) inFlight = null; }, () => { if (inFlight === probing) inFlight = null; });
       return probing;

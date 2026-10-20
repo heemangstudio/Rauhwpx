@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { loadClaudeSdk } from './claude-sdk.mjs';
 import { resolveCommandOnPath, resolveNpmCliLaunch } from './npm-cli-launch.mjs';
 import { OFFICIAL_CLAUDE_MODELS, claudeModelDescription, claudeModelLabel } from './claude-model-label.mjs';
 
-const CACHE_MS = 5 * 60 * 1000;
+// 계정마다 한 시간 쓴다. 설정의 새로고침은 바로 다시 읽는다.
+const CACHE_MS = 60 * 60 * 1000;
 const TIMEOUT_MS = 12_000;
 
 /** Ask the managed Claude CLI for the models available to this account. */
 export async function discoverClaudeModels({
-  bin, env = process.env, cwd = process.cwd(), queryModels = query, timeoutMs = TIMEOUT_MS,
+  bin, env = process.env, cwd = process.cwd(), queryModels = null, timeoutMs = TIMEOUT_MS,
   platform = process.platform,
 } = {}) {
   // 채팅(agents/claude.mjs)과 같은 실행 파일을 고른다. 경로가 없으면 SDK 는 PATH 대신
@@ -19,7 +20,7 @@ export async function discoverClaudeModels({
   if (!path.isAbsolute(executable)) {
     executable = platform === 'win32' ? null : resolveCommandOnPath(executable, { env });
   }
-  const stream = queryModels({
+  const stream = (queryModels ?? (await loadClaudeSdk()).query)({
     // An empty input stream opens the SDK control channel without sending a prompt.
     prompt: (async function* () {})(),
     options: {
@@ -140,7 +141,9 @@ function credentialFingerprint(env) {
 export function createClaudeModelCatalog({ discover = discoverClaudeModels, now = Date.now } = {}) {
   const cache = new Map();
   return async function claudeModelCatalog(options = {}, { refresh = false } = {}) {
-    const key = `${options.bin ?? ''}\0${options.env?.CLAUDE_CONFIG_DIR ?? ''}\0${credentialFingerprint(options.env)}`;
+    // 채팅마다 CLAUDE_CONFIG_DIR 이 따로 있지만 설정 파일을 읽지 않고(settingSources: []) 같은 자격 증명을 쓰므로
+    // 실행 파일과 자격 증명 지문으로만 나눈다.
+    const key = `${options.bin ?? ''}\0${credentialFingerprint(options.env)}`;
     let entry = cache.get(key);
     if (refresh || !entry || entry.expiresAt <= now()) {
       const pending = Promise.resolve().then(() => discover(options)).then((models) => {

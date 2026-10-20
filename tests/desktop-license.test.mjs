@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -483,6 +483,56 @@ test('the schedule runs a launch check and re-checks time boundaries for the 24-
   await manager.status();
   assert.equal(server.calls.length, before + 1);
   manager.stop();
+});
+
+test('minute ticks stay quiet: trials write hourly and announce only changes; refused keys ask hourly', async (t) => {
+  const { dir, clock, server } = await setup(t);
+  const writes = [];
+  const changes = [];
+  let tick = null;
+  const make = () => createLicenseManager({
+    statePath: join(dir, 'license.json'),
+    client: createLicenseClient({ baseUrl: 'https://keys.test', fetchImpl: server.fetch }),
+    publicKeys: DEV_PUBLIC_KEYS,
+    now: () => clock.t,
+    fs: { mkdir, readFile, rm, rename,
+      writeFile: async (...args) => { writes.push(clock.t); return writeFile(...args); } },
+    onChange: (status) => changes.push(status.state),
+    log: quiet,
+  });
+  const runTicks = async (manager, count) => {
+    for (let i = 0; i < count; i += 1) {
+      clock.t += 60 * 1000;
+      tick();
+      await manager.status();
+    }
+  };
+  const trial = make();
+  trial.start({ setIntervalImpl: (fn) => { tick = fn; return 1; }, clearIntervalImpl: () => {} });
+  await trial.status();
+  writes.length = 0;
+  await runTicks(trial, 120);
+  assert.equal(writes.length, 2, 'two hours of ticks write the trial clock twice');
+  assert.deepEqual(changes, ['trial']);
+  clock.t = T0 + TRIAL_DURATION_MS - 60 * 1000;
+  await runTicks(trial, 1);
+  assert.deepEqual(changes, ['trial', 'trial_expired']);
+  trial.stop();
+
+  const key = server.issueKey();
+  const licensed = make();
+  await licensed.activate(key);
+  server.revoke(key);
+  clock.t += 25 * HOUR;
+  licensed.start({ setIntervalImpl: (fn) => { tick = fn; return 1; }, clearIntervalImpl: () => {} });
+  assert.equal((await licensed.check()).state, 'revoked');
+  const validates = () => server.calls.filter((call) => call.path === '/v1/license/validate').length;
+  const before = validates();
+  await runTicks(licensed, 120);
+  assert.equal(validates() - before, 2, 'a revoked key is asked once an hour');
+  assert.equal((await licensed.check({ force: true })).state, 'revoked');
+  assert.equal(validates() - before, 3, 'a manual check still asks at once');
+  licensed.stop();
 });
 
 test('eligible installs receive and activate a grandfather key, then renew normally', async (t) => {
