@@ -7298,7 +7298,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!currentThread.title || currentThread.title === '새 채팅') {
       currentThread.title = fallbackTitle(currentThread.messages);
     }
-    upsertThread(currentThread);
+    // 저장이 실패해도 부른 쪽(채팅 전환·턴 끝 정리)은 이어 간다. 다음 저장이 대화를 다시 싣는다.
+    try {
+      upsertThread(currentThread);
+    } catch (error) {
+      console.error('[agent-sidebar] 채팅을 저장하지 못했습니다:', error);
+    }
     updateWorkspaceChatTitle();
   }
 
@@ -8548,13 +8553,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   ): Promise<LibraryMoveResult> {
     if (!moveToLibraryDocument) return 'failed';
     if (!openThreadDocument && bridge.isTurnRunning()) bridge.interrupt();
-    flushAssistantBuffer();
-    persistCurrentThread();
+    saveBeforeLeaving(() => flushAssistantBuffer());
     try {
       return await moveToLibraryDocument(target, { commit: true });
     } catch (error) {
-      console.warn('[agent-sidebar] 문서 이동 실패:', error);
+      console.error('[agent-sidebar] 문서 이동 실패:', error);
       return 'failed';
+    }
+  }
+
+  /**
+   * 떠나기 전에 지금 채팅을 저장한다. 저장이 실패해도 이동은 막지 않는다 — 막으면 이 채팅에서는 어떤 채팅·문서도
+   * 눌리지 않고, 대화는 다음 저장이 다시 싣는다.
+   */
+  function saveBeforeLeaving(flush: () => void): void {
+    try {
+      flush();
+      persistCurrentThread();
+    } catch (error) {
+      console.error('[agent-sidebar] 떠나기 전에 채팅을 저장하지 못했습니다:', error);
     }
   }
 
@@ -8563,8 +8580,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 끊으면 이어서 흐르는 답변이 말풍선 두 개로 갈라진다. 턴이 끝나면 그대로 저장된다.
    */
   function saveBeforeHandOff(): void {
-    if (!turnRunning) flushAssistantBuffer();
-    persistCurrentThread();
+    saveBeforeLeaving(() => { if (!turnRunning) flushAssistantBuffer(); });
   }
 
   /** 다른 문서의 채팅을 편집기에 맡긴다 — 지금 채팅은 저장만 하고 멈추지 않는다. */
@@ -8574,7 +8590,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     try {
       return await openThreadDocument({ id: thread.id, documentId: thread.documentId, docKey: thread.docKey });
     } catch (error) {
-      console.warn('[agent-sidebar] 채팅 문서 열기 실패:', error);
+      console.error('[agent-sidebar] 채팅 문서 열기 실패:', error);
       return 'failed';
     }
   }
@@ -8596,7 +8612,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     try {
       result = await openChat(request);
     } catch (error) {
-      console.warn('[agent-sidebar] 채팅 열기 실패:', error);
+      console.error('[agent-sidebar] 채팅 열기 실패:', error);
       return false;
     }
     if (ticket !== openChatTicket || root.dataset.disposed === 'true') return false;
@@ -8654,6 +8670,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 문서가 바뀌는 순간 handleDocumentSwitch 가 이 채팅을 잇는다.
    */
   async function followThreadToDocument(thread: ChatThread): Promise<void> {
+    // 이미 여는 중인 채팅을 다시 누른 것이다 — 같은 이동을 또 줄 세우지 않는다.
+    if (openingThreadId === thread.id) return;
     pendingThreadSwitch = { threadId: thread.id };
     openingThreadId = thread.id;
     rebuildThreadsList();
@@ -11035,16 +11053,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     while (replayBacklogIndex < end && replayBacklog === backlog) {
       const entry = backlog[replayBacklogIndex]!;
       replayBacklogIndex += 1;
-      if ('live' in entry) {
-        handleSidebarEvent(entry.live);
-        continue;
-      }
-      if ('agent' in entry && entry.agent.type === 'turn-end') replayTurnEndsAhead = Math.max(0, replayTurnEndsAhead - 1);
-      replayingUnbound = true;
-      replayAwaitsTurnEnd = replayTurnEndsAhead > 0;
+      // 이벤트 하나를 그리다 실패해도 나머지는 흘려보낸다. 여기서 멈추면 줄이 영영 비지 않아 이 채팅의 새
+      // 이벤트가 모두 갇히고 저장도 미뤄지며, 채팅을 바꾸려 할 때마다(finishReplayNow) 다음 실패가 그 전환을 끊는다.
       try {
+        if ('live' in entry) {
+          handleSidebarEvent(entry.live);
+          continue;
+        }
+        if ('agent' in entry && entry.agent.type === 'turn-end') replayTurnEndsAhead = Math.max(0, replayTurnEndsAhead - 1);
+        replayingUnbound = true;
+        replayAwaitsTurnEnd = replayTurnEndsAhead > 0;
         if ('agent' in entry) handleAgentEvent(entry.agent);
         else handleSidebarEvent(entry.failure);
+      } catch (error) {
+        console.error('[agent-sidebar] 미뤄 둔 채팅 이벤트를 그리지 못했습니다:', error);
       } finally {
         replayingUnbound = false;
         replayAwaitsTurnEnd = false;

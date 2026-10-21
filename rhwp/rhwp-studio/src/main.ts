@@ -2630,10 +2630,13 @@ function openChatFromChat(
   chat: ChatSession,
   request: { kind: 'new' } | { kind: 'thread'; threadId: string },
 ): Promise<'handled' | 'local'> {
-  if (isNavigating()) return Promise.resolve('handled');
+  if (refuseWhileNavigating()) return Promise.resolve('handled');
   return runNavigation(async () => {
     const session = chat.document;
-    if (attachedSession !== session || session.activeChat !== chat) return 'handled';
+    if (attachedSession !== session || session.activeChat !== chat) {
+      console.error('[navigation] 화면에 없는 채팅 창이 채팅 열기를 요청했습니다');
+      return 'handled';
+    }
     if (request.kind === 'thread') {
       const holder = session.chats.find((other) => (
         other !== chat && other.sidebar.currentThreadId() === request.threadId
@@ -2654,7 +2657,7 @@ function openChatFromChat(
     if (request.kind === 'new') fresh.sidebar.startDraftChat();
     else fresh.sidebar.openThreadById(request.threadId);
     return 'handled';
-  });
+  }, { label: 'open-chat' });
 }
 
 /** 문서를 연 뒤 그 문서의 채팅 하나를 보인다. 일하는 채팅은 멈추지 않는다. */
@@ -3038,7 +3041,7 @@ function installDocumentHome(): void {
       eventBus.emit('document-open-intent');
       const live = liveSessionForDocument(row.documentId);
       if (live) {
-        await runNavigation(() => attachSession(live));
+        await runNavigation(() => attachSession(live), { label: 'home-open' });
         documentHome?.hide();
         showOpenedDocumentInSidebar();
         return 'opened';
@@ -3116,7 +3119,7 @@ async function startNoDocumentChat(): Promise<void> {
     showLicenseRequiredPrompt('채팅은 라이선스를 활성화한 뒤에 쓸 수 있어요.');
     return;
   }
-  if (isNavigating()) return;
+  if (refuseWhileNavigating()) return;
   if (attachedSession.wasm.hasLoadedDocument()) {
     const moved = await runNavigation(async () => {
       const current = attachedSession;
@@ -3277,23 +3280,48 @@ let navigationQueued = 0;
 /** 지금 실행 중인 이동. 그 안에서 내보낸 열기는 같은 일의 일부다. */
 let navigationRunning = 0;
 
+/** 이 시간이 지나도 끝나지 않은 이동은 문제 보고의 진단 기록에 남긴다. 그동안 사이드바의 이동은 모두 막힌다. */
+const NAVIGATION_STALL_MS = 15_000;
+let navigationRefusedNoticeUntil = 0;
+
 function isNavigating(): boolean {
   return navigationQueued > 0;
 }
 
 /**
- * 문서를 열거나 다른 문서 세션으로 넘어가는 일은 한 번에 하나씩 한다. nested 는 이미 진행 중인
- * 이동이 스스로 내보낸 열기라 줄을 서지 않는다 (줄을 서면 자기 자신을 기다린다).
+ * 이동이 진행 중이면 사이드바의 새 이동을 받지 않는다. 누른 것이 아무 일도 하지 않은 것처럼 보이지 않게 한 줄로
+ * 알린다. 받지 않았으면 true.
  */
-function runNavigation<T>(run: () => Promise<T>, options: { nested?: boolean } = {}): Promise<T> {
+function refuseWhileNavigating(): boolean {
+  if (!isNavigating()) return false;
+  if (Date.now() >= navigationRefusedNoticeUntil) {
+    navigationRefusedNoticeUntil = Date.now() + 3000;
+    showToast({ message: '다른 문서를 여는 중입니다. 열린 뒤 다시 고르세요.', durationMs: 3000 });
+  }
+  return true;
+}
+
+/**
+ * 문서를 열거나 다른 문서 세션으로 넘어가는 일은 한 번에 하나씩 한다. nested 는 이미 진행 중인
+ * 이동이 스스로 내보낸 열기라 줄을 서지 않는다 (줄을 서면 자기 자신을 기다린다). label 은 오래 걸린
+ * 이동을 진단 기록에 남길 때 쓴다.
+ */
+function runNavigation<T>(run: () => Promise<T>, options: { nested?: boolean; label?: string } = {}): Promise<T> {
   if (options.nested) return run();
   navigationQueued += 1;
+  const label = options.label ?? 'navigation';
   const next = navigationChain.then(async () => {
     navigationRunning += 1;
+    let stage = '입출력 대기';
+    const stall = window.setTimeout(() => {
+      console.error(`[navigation] ${label} 이동이 ${NAVIGATION_STALL_MS / 1000}초 넘게 끝나지 않았습니다 (${stage}, 문서 입출력 ${documentIoCount}건)`);
+    }, NAVIGATION_STALL_MS);
     try {
       await whenDocumentIoIdle();
+      stage = '실행';
       return await run();
     } finally {
+      window.clearTimeout(stall);
       navigationRunning -= 1;
       navigationQueued -= 1;
     }
@@ -3597,10 +3625,10 @@ function moveFromSession(
   options: { commit?: boolean; threadId?: string } = {},
 ): Promise<LibraryMoveResult> {
   // 다른 문서를 여는 중에 누른 이동은 받지 않는다. 겹치면 열던 일이 엉뚱한 세션에 닿는다.
-  if (isNavigating()) return Promise.resolve('cancelled');
+  if (refuseWhileNavigating()) return Promise.resolve('cancelled');
   // 멈춘 엔진에서는 저장 확인과 다른 문서 열기가 지금 문서를 잃게 한다.
   if (refuseDocumentOpenWhileTrapped()) return Promise.resolve('cancelled');
-  return runNavigation(() => moveFromSessionNow(session, target, options));
+  return runNavigation(() => moveFromSessionNow(session, target, options), { label: 'move-to-document' });
 }
 
 async function moveFromSessionNow(
@@ -3608,7 +3636,10 @@ async function moveFromSessionNow(
   target: LibraryDocumentTarget,
   options: { commit?: boolean; threadId?: string },
 ): Promise<LibraryMoveResult> {
-  if (session !== attachedSession) return 'cancelled';
+  if (session !== attachedSession) {
+    console.error('[navigation] 화면에 없는 문서의 채팅 창이 문서 이동을 요청했습니다');
+    return 'cancelled';
+  }
   const versions = session.versions;
   const commitCurrent = options.commit && versions
     ? () => commitBeforeLibraryMove(versions)
@@ -3773,7 +3804,7 @@ function linkChatDocument(chat: ChatSession, request: ChatDocumentLinkRequest): 
     if (request.origin === 'user') refuseDocumentOpenWhileTrapped();
     return Promise.reject(linkError('LINK_UNAVAILABLE', 'The document engine stopped; the user must recover documents first.'));
   }
-  return runNavigation(() => linkChatDocumentNow(chat, request));
+  return runNavigation(() => linkChatDocumentNow(chat, request), { label: 'link-document' });
 }
 
 async function linkChatDocumentNow(chat: ChatSession, request: ChatDocumentLinkRequest): Promise<ChatDocumentLinked> {
@@ -3860,9 +3891,12 @@ function linkVisibleChatDocument(target: ChatDocumentLinkTarget): Promise<ChatDo
  * 옮겨 갈 때처럼 저장하고, 에이전트가 일하지 않으면 닫는다.
  */
 function openUnlinkedThread(session: DocumentSession, threadId: string): Promise<LibraryMoveResult> {
-  if (isNavigating()) return Promise.resolve('cancelled');
+  if (refuseWhileNavigating()) return Promise.resolve('cancelled');
   return runNavigation(async (): Promise<LibraryMoveResult> => {
-    if (session !== attachedSession) return 'cancelled';
+    if (session !== attachedSession) {
+      console.error('[navigation] 화면에 없는 문서의 채팅 창이 문서 없는 채팅 열기를 요청했습니다');
+      return 'cancelled';
+    }
     const versions = session.versions;
     const commitCurrent = versions ? () => commitBeforeLibraryMove(versions) : undefined;
     const route = routeUnlinkedThread(session, threadId, allChats());
@@ -3906,8 +3940,8 @@ const DETACH_FAILURE_MESSAGES: Partial<Record<DetachFailure, string>> = {
 };
 
 function detachChatDocument(chat: ChatSession): Promise<boolean> {
-  if (isNavigating() || refuseDocumentOpenWhileTrapped()) return Promise.resolve(false);
-  return runNavigation(async () => await detachChatDocumentNow(chat, null) === true);
+  if (refuseWhileNavigating() || refuseDocumentOpenWhileTrapped()) return Promise.resolve(false);
+  return runNavigation(async () => await detachChatDocumentNow(chat, null) === true, { label: 'detach-document' });
 }
 
 /** 에이전트의 detach_document. 이동은 한 번에 하나라 줄을 선다. 실패는 그 이유의 ChatDocumentLinkError 로 던진다. */
@@ -6149,6 +6183,7 @@ function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {
   // 라이브러리 이동이 내보내는 열기는 그 이동의 일부라 줄을 서지 않는다. 문서 연결 중에 온 열기(밖에서 연 파일)는
   // 그 연결의 일부가 아니다 — 연결하는 세션에 끼어들지 않게 줄을 선다.
   return runNavigation(() => openDocumentBytesNow(data), {
+    label: 'open-document',
     nested: opensNestedInNavigation({ navigationRunning, linking: linkingSession !== null }),
   });
 }
