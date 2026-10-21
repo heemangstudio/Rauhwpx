@@ -1077,13 +1077,16 @@ export function createClaudeSession(opts, {
       return;
     }
     if (e?.type === 'rate_limit_event') {
-      // 매 턴 오는 'allowed' 는 버린다. 'rejected' 는 이 턴의 rate_limit 오류가 구독
-      // 한도 소진이라는 뜻이고, resetsAt(epoch 초)이 다시 쓸 수 있는 시각이다. 다만 추가 사용량
-      // (overage)으로 넘어간 계정은 구독 창이 'rejected' 인 채로 매 턴 계속 쓴다 — CLI 도 그때는
-      // 한도 오류로 보지 않는다(isUsingOverage, overageStatus 'allowed'/'allowed_warning'). 그런 턴의
-      // 429 는 일시적인 제한이다.
+      // 'rejected' 는 이 턴의 rate_limit 오류가 구독 한도 소진일 수 있다는 단서이고, resetsAt(epoch 초)이
+      // 다시 쓸 수 있는 시각이다. CLI 는 한도와 무관한 429 에도 'rejected' 를 보낸다 — 그 오류가 일시적인
+      // 제한인지는 provider-failure.mjs 가 오류 문구로 가려낸다. 그 뒤 요청이 통과해 'allowed' 가 다시 오면
+      // 앞의 거절은 지난 상태다. 추가 사용량(overage)으로 넘어간 계정은 구독 창이 'rejected' 인 채로 매 턴
+      // 계속 쓴다 — CLI 도 그때는 한도 오류로 보지 않는다(isUsingOverage, overageStatus 'allowed'/
+      // 'allowed_warning'). 그런 턴의 429 는 일시적인 제한이다.
       const info = e.rate_limit_info;
-      if (info?.status === 'rejected' && !info.isUsingOverage
+      if (info?.status === 'allowed' || info?.status === 'allowed_warning') {
+        turnRateLimit = null;
+      } else if (info?.status === 'rejected' && !info.isUsingOverage
         && (!info.overageStatus || info.overageStatus === 'rejected')) {
         const resetsAt = Number(info.resetsAt);
         turnRateLimit = {
