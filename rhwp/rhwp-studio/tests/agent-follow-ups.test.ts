@@ -156,6 +156,27 @@ test('normalize keeps valid items, drops malformed ones and an itemless hold', (
   });
 });
 
+test('attachments ride with the item: editing keeps them, an empty edit keeps the item, and they survive a reload', () => {
+  const staged = {
+    id: 'stage-1', scope: 'chat' as const, scopeId: 'thread-1', name: 'a.png', mimeType: 'image/png', size: 3,
+    status: 'ready' as const, createdAt: '2026-10-21T00:00:00.000Z', expiresAt: '2026-10-21T12:00:00.000Z',
+  };
+  const attachments = { staged: [staged], mentions: [{ id: 'doc-1', title: '보고서', kind: 'document' as const }], context: '[선택 자료]', labels: ['a.png', '@보고서'] };
+  const q: ThreadFollowUps = { items: [{ ...item('a'), attachments }, item('b')] };
+  const edited = edit(q, 'a', '  고친 글  ');
+  assert.deepEqual(edited.items[0], { ...item('a', '고친 글'), attachments });
+  assert.deepEqual(edit(q, 'a', '   ').items.map((entry) => entry.id), ['a', 'b'], 'an attachment-only item stays');
+  assert.deepEqual(requeueHead(remove(q, 'a'), q.items[0]!).items[0], q.items[0]);
+  // 저장본을 거쳐도 그대로 돌아오고, 첨부만 있는 항목도 남는다. 망가진 첨부는 걸러진다.
+  const stored = JSON.parse(JSON.stringify({
+    items: [
+      { ...q.items[0], text: '' },
+      { id: 'c', text: '', attachments: { staged: [{ id: 'x' }], mentions: [{ title: '이름 없음' }], labels: [] } },
+    ],
+  }));
+  assert.deepEqual(normalizeFollowUps(stored), { items: [{ ...item('a', ''), attachments }] });
+});
+
 test('stored threads not open in a sidebar can be held and released in place', () => {
   const thread: { followUps?: ThreadFollowUps } = { followUps: queueOf('a') };
   assert.equal(holdFollowUps(thread, 'interrupted', '앱 재시작', 9), true);

@@ -5937,6 +5937,21 @@ button.ag-skill-copy {
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-secondary);
   line-height: var(--ag-lh-secondary);
+  transition: opacity var(--ag-dur-base) var(--ag-ease-out);
+}
+
+/* 안내는 몇 초 뒤 흐려지며 걷힌다. 안내만 떠 있으면 띠째 내려앉는다. */
+.ag-followups[data-hint-leaving] .ag-followups-hint {
+  opacity: 0;
+}
+
+.ag-followups[data-hint-leaving]:not(:has(.ag-followup)) {
+  animation: ag-lift-out var(--ag-dur-base) var(--ag-ease-out) both;
+}
+
+@keyframes ag-lift-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(6px); }
 }
 
 .ag-followups-list {
@@ -5983,6 +5998,19 @@ button.ag-skill-copy {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ag-followup-attachments {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  color: var(--ag-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-followup-attachments[hidden] {
+  display: none;
 }
 
 .ag-followup-action {

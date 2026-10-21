@@ -9,6 +9,7 @@
  * 이 모듈은 브리지(agent/bridge.ts)를 싣지 않는다 — 사이드바 미리보기가 같은 코드를 쓴다.
  */
 import {
+  FOLLOW_UP_LIMIT,
   createFollowUpId,
   decideAfterTurn,
   edit as editItem,
@@ -22,6 +23,7 @@ import {
   requeueHead,
   storedFollowUps,
   followUpTurnOutcome,
+  type FollowUpAttachments,
   type FollowUpDecision,
   type FollowUpHold,
   type FollowUpHoldReason,
@@ -29,6 +31,7 @@ import {
   type FollowUpTurnOutcome,
   type ThreadFollowUps,
 } from '../../agent/follow-ups.ts';
+import type { ThreadMention } from '../../agent/threads.ts';
 import type { ProductSkillIcon } from '../../agent/types.ts';
 import type { FollowUpStrip } from './follow-up-strip.ts';
 
@@ -46,6 +49,10 @@ export interface ComposedMessageSpec<Staged = never, Selection = never> {
   skillIcon?: ProductSkillIcon;
   /** 이 메시지에 붙여 보낼, 준비가 끝난 첨부. */
   staged?: readonly Staged[];
+  /** 이 메시지의 멘션. 없으면 입력기에서 보낸 메시지만 입력기의 멘션을 꺼낸다. */
+  mentions?: readonly ThreadMention[];
+  /** 선택 자료의 콘텍스트 블록 — 요청문 앞에 붙는다. 이 첨부와 묶이므로 다시 보낼 요청을 두지 않는다. */
+  contextPrefix?: string;
   origin: ComposedMessageOrigin;
   /** 허브의 거절을 이 메시지와 짝지을 receipt id 를 받는다. */
   requireReceipt?: boolean;
@@ -72,7 +79,6 @@ export interface ComposedMessageResult<Message, Bubble> {
 
 export const FOLLOW_UP_HINTS = {
   full: '대기 메시지는 10개까지 둘 수 있어요',
-  attachment: '첨부가 있는 메시지는 작업이 끝난 뒤 보낼 수 있어요',
   template: '템플릿은 작업이 끝난 뒤 고를 수 있어요',
 } as const;
 export type FollowUpHintKind = keyof typeof FOLLOW_UP_HINTS;
@@ -91,8 +97,10 @@ export interface FollowUpControllerDeps<Message, Bubble> {
   /** 지금 보이는 채팅 스레드 — 대기열이 붙어 산다. */
   thread(): { followUps?: ThreadFollowUps };
   persist(): void;
-  /** 대기 메시지 하나를 보낸다(sendComposedMessage, origin 'queue', receipt 필요). */
+  /** 대기 메시지 하나를 보낸다(sendComposedMessage, origin 'queue', receipt 필요). 첨부도 함께 나간다. */
   send(item: FollowUpItem): ComposedMessageResult<Message, Bubble>;
+  /** 사용자가 지운 항목의 첨부를 버린다(허브 스테이징). 보내지 않을 첨부만 여기로 온다. */
+  discardAttachments?(attachments: FollowUpAttachments): void;
   /** 허브가 받지 않은 메시지를 기록과 대화에서 걷는다. */
   unsend(message: Message, bubble: Bubble): void;
   /** steer: 지금 보내기가 끊는다 — 편집 턴은 보낼 메시지의 턴으로 이어진다. */
@@ -133,6 +141,8 @@ export interface FollowUpQueueInput {
   text: string;
   skillName?: string;
   skillIcon?: ProductSkillIcon;
+  /** 입력기에서 꺼낸 첨부 — 항목이 갖고 다니다 보낼 때 함께 나간다. */
+  attachments?: FollowUpAttachments;
 }
 
 export function createFollowUpController<Message, Bubble>(deps: FollowUpControllerDeps<Message, Bubble>) {
@@ -156,6 +166,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
   let editingId: string | null = null;
   /** 편집 중이라 미룬 보내기 차례. */
   let drainDeferred = false;
+  /** 띠에 떠 있는 안내 — 그 까닭이 사라지면 걷는다. */
+  let hintKind: FollowUpHintKind | null = null;
 
   function queue(): ThreadFollowUps | undefined {
     return deps.thread().followUps;
@@ -181,12 +193,24 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     });
   }
 
+  function showHint(kind: FollowUpHintKind): void {
+    hintKind = kind;
+    deps.strip.showHint(FOLLOW_UP_HINTS[kind]);
+  }
+
+  function clearHint(): void {
+    hintKind = null;
+    deps.strip.clearHint();
+  }
+
   function commit(next: ThreadFollowUps): void {
     const thread = deps.thread();
     thread.followUps = storedFollowUps(next);
     const ids = new Set(next.items.map((item) => item.id));
     if (sendNowId !== null && !ids.has(sendNowId)) sendNowId = null;
     if (editingId !== null && !ids.has(editingId)) editingId = null;
+    // 자리가 났다 — 가득 찼다는 안내는 더 맞지 않는다.
+    if (hintKind === 'full' && next.items.length < FOLLOW_UP_LIMIT) clearHint();
     deps.persist();
     render();
     deps.onChange();
@@ -303,6 +327,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
    */
   function settle(): void {
     const working = deps.isWorking();
+    // 작업이 끝났다 — 이제 템플릿을 고를 수 있다.
+    if (hintKind === 'template' && !working) clearHint();
     if (!working) {
       // 프레임까지 나간 메시지의 턴이 이제 돌지 않는다 — 끝났거나 사라졌다.
       if (inFlight?.dispatched) inFlight = null;
@@ -380,14 +406,15 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
         text: input.text,
         ...(input.skillName ? { skillName: input.skillName } : {}),
         ...(input.skillName && input.skillIcon ? { skillIcon: input.skillIcon } : {}),
+        ...(input.attachments ? { attachments: input.attachments } : {}),
         createdAt: now(),
       };
       const next = enqueueItem(queue(), item, opts);
       if (next === 'full') {
-        deps.strip.showHint(FOLLOW_UP_HINTS.full);
+        showHint('full');
         return null;
       }
-      deps.strip.clearHint();
+      clearHint();
       commit(next);
       deps.strip.announce(QUEUED_ANNOUNCEMENT);
       return item;
@@ -405,10 +432,15 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       const head = items()[0];
       if (head) sendNow(head.id);
     },
+    /** 가득 찼으면 true — 첨부를 꺼내기 전에 묻는다. */
+    isFull: () => items().length >= FOLLOW_UP_LIMIT,
     removeItem(id: string): void {
       if (deps.readOnly()) return;
+      const item = items().find((entry) => entry.id === id);
       if (editingId === id) editingId = null;
       commit(removeItem(queue(), id));
+      // 지운 항목의 첨부는 다시 보낼 곳이 없다 — 허브 스테이징도 버린다.
+      if (item?.attachments) deps.discardAttachments?.(item.attachments);
       settle();
     },
     startEdit(id: string): void {
@@ -430,12 +462,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       deps.focusComposer();
       afterEdit();
     },
-    hint(kind: FollowUpHintKind): void {
-      deps.strip.showHint(FOLLOW_UP_HINTS[kind]);
-    },
-    clearHint(): void {
-      deps.strip.clearHint();
-    },
+    hint: showHint,
+    clearHint,
 
     /** 중지(입력기 단추·질문 카드). 나중의 뜻이 이긴다 — 걸어 둔 지금 보내기는 취소된다. */
     noteUserStop(): void {
@@ -535,12 +563,12 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       // busy 붙잡음은 이 채팅의 다음 정상 종료를 기다리는 런타임 약속이다 — 떠나면 그 약속도 끝난다.
       if (current?.items.length && !holdNeedsUser(current.hold)) holdWith(reason);
       else render();
-      deps.strip.clearHint();
+      clearHint();
     },
     /** 다른 채팅을 열었다. 보지 못한 턴 끝 뒤이므로 대기열은 붙잡힌 채로 돌아온다. */
     attach(): void {
       resetRuntime();
-      deps.strip.clearHint();
+      clearHint();
       const current = queue();
       const before = renderedShape;
       // 저장된 busy 붙잡음은 다시 열면 아무 턴도 기다리지 않는다 — 다른 붙잡음처럼 사용자가 풀게 한다.

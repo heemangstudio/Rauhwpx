@@ -41,7 +41,7 @@ export interface FollowUpStrip {
   render(view: FollowUpStripView): void;
   /** 화면 읽기 프로그램에 알린다. */
   announce(message: string): void;
-  /** 다음 입력까지 보이는 한 줄 안내(대기열에 넣지 못한 이유). */
+  /** 잠깐 보이는 한 줄 안내(대기열에 넣지 못한 이유). 몇 초 뒤, 다음 입력이나 까닭이 사라지면 걷힌다. */
   showHint(message: string): void;
   clearHint(): void;
   /** 열린 편집기의 지금 본문(없으면 null). */
@@ -95,6 +95,9 @@ interface RowRefs {
   skill: HTMLSpanElement;
   skillName: string | null;
   text: HTMLSpanElement;
+  /** 첨부 표시 — 클립과 개수. 이름은 제목으로만 보인다. */
+  attachments: HTMLSpanElement;
+  attachmentCount: HTMLSpanElement;
   sendNow: HTMLButtonElement;
   edit: HTMLButtonElement;
   remove: HTMLButtonElement;
@@ -102,6 +105,11 @@ interface RowRefs {
 }
 
 let stripSeq = 0;
+
+/** 안내가 머무는 시간. 다시 띄우면 처음부터 다시 잰다. */
+export const FOLLOW_UP_HINT_MS = 4000;
+/** 흐려지는 전환(--ag-dur-base)이 끝나지 않아도 걷는 한도 — 줄인 움직임에서는 전환이 거의 없다. */
+const HINT_FADE_FALLBACK_MS = 400;
 
 export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStrip {
   const prefix = `ag-followups-${++stripSeq}`;
@@ -135,6 +143,41 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
 
   function syncHidden(): void {
     root.hidden = view.items.length === 0 && hint.hidden;
+  }
+
+  let hintTimer: ReturnType<typeof setTimeout> | null = null;
+  let hintFadeTimer: ReturnType<typeof setTimeout> | null = null;
+  let hintFadeDone: (() => void) | null = null;
+
+  function stopHintTimers(): void {
+    if (hintTimer !== null) clearTimeout(hintTimer);
+    if (hintFadeTimer !== null) clearTimeout(hintFadeTimer);
+    if (hintFadeDone) {
+      root.removeEventListener('transitionend', hintFadeDone);
+      root.removeEventListener('animationend', hintFadeDone);
+    }
+    hintTimer = null;
+    hintFadeTimer = null;
+    hintFadeDone = null;
+    delete root.dataset.hintLeaving;
+  }
+
+  function hideHint(): void {
+    stopHintTimers();
+    if (hint.hidden) return;
+    hint.hidden = true;
+    hint.textContent = '';
+    syncHidden();
+  }
+
+  /** 흐리게 한 뒤 걷는다. 안내만 떠 있으면 띠째 흐려진다(CSS). */
+  function fadeHint(): void {
+    hintTimer = null;
+    root.dataset.hintLeaving = 'true';
+    hintFadeDone = hideHint;
+    root.addEventListener('transitionend', hideHint);
+    root.addEventListener('animationend', hideHint);
+    hintFadeTimer = setTimeout(hideHint, HINT_FADE_FALLBACK_MS);
   }
 
   function openEditor(row: RowRefs, item: FollowUpItem): void {
@@ -193,6 +236,12 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
     skill.hidden = true;
     const text = el('span', 'ag-followup-text');
     text.id = `${prefix}-${rows.size}-${item.id}`;
+    const attachments = el('span', 'ag-followup-attachments');
+    attachments.hidden = true;
+    const attachmentIcon = createIcon('paperclip');
+    attachmentIcon.setAttribute('aria-hidden', 'true');
+    const attachmentCount = el('span', 'ag-followup-attachment-count');
+    attachments.append(attachmentIcon, attachmentCount);
     const sendNow = iconButton('ag-followup-send-now', '지금 보내기', 'send');
     sendNow.title = sendNowTitle;
     const edit = iconButton('ag-followup-edit-btn', '수정', 'pencil');
@@ -202,8 +251,10 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
     sendNow.addEventListener('click', () => options.onSendNow(id));
     edit.addEventListener('click', () => options.onEditStart(id));
     remove.addEventListener('click', () => options.onRemove(id));
-    li.append(index, skill, text, sendNow, edit, remove);
-    return { li, index, skill, skillName: null, text, sendNow, edit, remove, editor: null };
+    li.append(index, skill, attachments, text, sendNow, edit, remove);
+    return {
+      li, index, skill, skillName: null, text, attachments, attachmentCount, sendNow, edit, remove, editor: null,
+    };
   }
 
   function updateRow(row: RowRefs, item: FollowUpItem, position: number): void {
@@ -222,6 +273,18 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
     // 줄바꿈은 한 줄 미리보기에서 칸 하나로 접는다. 전체 본문은 제목으로 남긴다.
     setText(row.text, item.text.replace(/\s*\n+\s*/g, ' '));
     if (row.text.title !== item.text) row.text.title = item.text;
+    const labels = item.attachments?.labels ?? [];
+    // 선택 자료 하나는 파일 여러 개로 올라가므로 이름(첨부 단위)으로 센다. 이름이 없으면 파일·멘션 수다.
+    const count = labels.length
+      || (item.attachments ? Math.max(1, item.attachments.staged.length + item.attachments.mentions.length) : 0);
+    row.attachments.hidden = !item.attachments;
+    setText(row.attachmentCount, count > 1 ? String(count) : '');
+    const attachmentTitle = item.attachments ? `첨부 ${count}개${labels.length ? `\n${labels.join('\n')}` : ''}` : '';
+    if (row.attachments.title !== attachmentTitle) {
+      row.attachments.title = attachmentTitle;
+      if (attachmentTitle) row.attachments.setAttribute('aria-label', `첨부 ${count}개`);
+      else row.attachments.removeAttribute('aria-label');
+    }
     const locked = view.readOnly;
     const sendBlocked = locked || view.sendBlockedTitle !== null;
     row.sendNow.disabled = sendBlocked;
@@ -279,17 +342,14 @@ export function createFollowUpStrip(options: FollowUpStripOptions): FollowUpStri
     render,
     announce,
     showHint(message: string): void {
+      stopHintTimers();
       hint.textContent = message;
       hint.hidden = false;
       syncHidden();
       announce(message);
+      hintTimer = setTimeout(fadeHint, FOLLOW_UP_HINT_MS);
     },
-    clearHint(): void {
-      if (hint.hidden) return;
-      hint.hidden = true;
-      hint.textContent = '';
-      syncHidden();
-    },
+    clearHint: hideHint,
     editingText(): string | null {
       for (const row of rows.values()) if (row.editor) return row.editor.value;
       return null;
