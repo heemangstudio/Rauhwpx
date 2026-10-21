@@ -199,62 +199,6 @@
   outline-offset: -2px;
 }
 
-/* 확인 필요 — 손을 대야 하는 채팅이 있을 때 도구 줄 아래 왼쪽에 서는 작은 칩.
-   누르면 그 채팅만 남기고, 행은 자리를 옮기지 않는다. */
-.ag-threads-attention {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-self: flex-start;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  height: 24px;
-  margin: 2px 0 2px 4px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--ag-r-chip);
-  background: transparent;
-  color: var(--ag-text-secondary);
-  font: inherit;
-  font-size: var(--ag-fs-meta);
-  font-variant-numeric: var(--ag-numeric);
-  white-space: nowrap;
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.ag-threads-attention[hidden] {
-  display: none;
-}
-
-.ag-threads-attention:hover {
-  background: var(--ag-hover);
-  color: var(--ag-text);
-}
-
-.ag-threads-attention.ag-active {
-  background: var(--ag-selected);
-  color: var(--ag-text);
-}
-
-.ag-threads-attention:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: -2px;
-}
-
-.ag-threads-attention-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ag-err);
-}
-
-.ag-threads-attention-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 문서 없이 시작한 채팅 — 종이 윤곽을 점선으로 그린다. 둥근 끝이 선을 늘리므로
    빈칸을 선 굵기보다 넉넉히 둔다. */
 .ag-doc-missing path {
@@ -567,11 +511,18 @@
   transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
 }
 
+.ag-threads-section[data-section='attention'],
 .ag-threads-section[data-section='recent'] {
   margin-top: 6px;
 }
 
-.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section {
+.ag-threads-list:not(.ag-has-pinned) > .ag-threads-section[data-section='attention'] {
+  margin-top: 0;
+}
+
+/* 고정 머리는 고정한 채팅이 있을 때만, 최근 머리는 위에 다른 구역이 있을 때만 선다. 끄는 동안은 둘 다 놓을 자리다. */
+.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section[data-section='pinned'],
+.ag-threads-list:not(.ag-has-pinned):not(.ag-has-attention):not(.ag-dragging) > .ag-threads-section[data-section='recent'] {
   display: none;
 }
 

@@ -43,8 +43,6 @@ export interface ThreadsToolbarOptions {
   onClearFilter(): void;
   /** 검색 칸에서 ↓ — 목록 첫 채팅으로 내려간다. */
   onEnterList(): void;
-  /** 확인 필요 칩 — 확인이 필요한 채팅만 보기를 켜고 끈다. */
-  onToggleAttention?(): void;
 }
 
 export interface ThreadsToolbar {
@@ -55,12 +53,8 @@ export interface ThreadsToolbar {
   readonly newButton: HTMLButtonElement;
   /** 필터가 걸렸을 때 도구 줄 아래에 서는 문서 칩 */
   readonly filterChip: HTMLElement;
-  /** 확인이 필요한 채팅이 있을 때 도구 줄 아래에 서는 칩 — 누르면 그 채팅만 남는다. */
-  readonly attentionChip: HTMLButtonElement;
   query(): string;
   setFilter(filter: { label: string; missing: boolean } | null): void;
-  /** 확인 필요 수와 거름 상태. 0 이면 칩을 숨긴다. */
-  setAttention(state: { count: number; pressed: boolean }): void;
 }
 
 export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToolbar {
@@ -95,17 +89,6 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
   chipClear.title = '문서 필터 해제';
   chipClear.appendChild(createIcon('close'));
   filterChip.append(chipIcon, chipLabel, chipClear);
-
-  // 확인 필요 — 자리를 옮기지 않고 거른다. 행은 원래 순서 그대로 남는다.
-  const attentionChip = el('button', 'ag-threads-attention');
-  attentionChip.type = 'button';
-  attentionChip.hidden = true;
-  attentionChip.setAttribute('aria-pressed', 'false');
-  const attentionDot = el('span', 'ag-threads-attention-dot');
-  attentionDot.setAttribute('aria-hidden', 'true');
-  const attentionLabel = el('span', 'ag-threads-attention-label');
-  attentionChip.append(attentionDot, attentionLabel);
-  attentionChip.addEventListener('click', () => options.onToggleAttention?.());
 
   search.addEventListener('input', () => options.onQueryChange(search.value));
   search.addEventListener('keydown', (event) => {
@@ -142,7 +125,6 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
     openButton,
     newButton,
     filterChip,
-    attentionChip,
     query: () => search.value,
     setFilter(filter) {
       filterButton.setAttribute('aria-pressed', filter ? 'true' : 'false');
@@ -152,17 +134,6 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
       chipLabel.textContent = filter?.label ?? '';
       chipLabel.title = filter?.label ?? '';
       chipIcon.classList.toggle('ag-doc-missing', Boolean(filter?.missing));
-    },
-    setAttention({ count, pressed }) {
-      const shown = count > 0;
-      attentionChip.hidden = !shown;
-      attentionChip.setAttribute('aria-pressed', shown && pressed ? 'true' : 'false');
-      attentionChip.classList.toggle('ag-active', shown && pressed);
-      attentionLabel.textContent = shown && pressed ? `확인 필요 ${count} · 모두 보기` : `확인 필요 ${count}`;
-      // 눌림은 aria-pressed 가 말한다 — 이름은 그대로 둔다.
-      const label = `확인이 필요한 채팅만 보기 (${count}개)`;
-      attentionChip.title = label;
-      attentionChip.setAttribute('aria-label', label);
     },
   };
 }
@@ -588,9 +559,10 @@ export function showDocumentPalette(config: {
 
 // ── 끌어서 고정 · 순서 바꾸기 ─────────────────────────────
 //
-// 목록은 [고정됨 머리][고정한 행…][최근 머리][나머지 행…] 순서로 선다.
+// 목록은 [고정됨 머리][고정한 행…]([입력 필요 머리][행…])[최근 머리][나머지 행…] 순서로 선다.
 // 행은 li.ag-threads-row[data-thread-id], 머리는 li.ag-threads-section[data-section]
-// 이다. 두 구역 어디에나 놓을 수 있고, 고정 구역에 놓으면 고정, 아래에 놓으면 풀린다.
+// 이다. 고정·최근 구역 어디에나 놓을 수 있고, 고정 구역에 놓으면 고정, 아래에 놓으면 풀린다.
+// 입력 필요 구역은 상태가 정하므로 끌 수도, 놓을 수도 없다.
 
 /** 놓은 구역과 그 자리의 이웃 — after 는 바로 위, before 는 바로 아래 채팅. */
 export interface ThreadDrop {
@@ -636,7 +608,7 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
     frame: number;
   } | null = null;
 
-  const section = (name: 'pinned' | 'recent') =>
+  const section = (name: 'pinned' | 'attention' | 'recent') =>
     list.querySelector<HTMLElement>(`:scope > .ag-threads-section[data-section='${name}']`);
 
   /** 목록 내용 좌표의 세로 위치 — 행의 offsetTop 과 같은 기준. */
@@ -671,12 +643,14 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
 
     const recent = section('recent');
     const y = contentY(drag.pointerY);
-    const toPinned = !recent || y < recent.offsetTop + recent.offsetHeight / 2;
+    // 고정 구역은 입력 필요(없으면 최근) 머리 앞에서 끝난다.
+    const boundary = section('attention') ?? recent;
+    const toPinned = !boundary || y < boundary.offsetTop + boundary.offsetHeight / 2;
     section('pinned')?.classList.toggle('ag-drop-target', toPinned);
     recent?.classList.toggle('ag-drop-target', !toPinned);
     // 놓일 구역 안에서 가운데를 넘은 첫 행 앞에 선다. 없으면 구역의 끝이다.
     const start = toPinned ? section('pinned') : recent;
-    const end = toPinned ? recent : null;
+    const end = toPinned ? boundary : null;
     let before: Element | null = end;
     for (let node = start?.nextElementSibling ?? null; node && node !== end; node = node.nextElementSibling) {
       if (node === row || !isRow(node)) continue;
@@ -750,10 +724,10 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
     const next = row.nextElementSibling;
     const prev = row.previousElementSibling;
     if (prev === origin.prev && next === origin.next) return null;
-    const recent = section('recent');
+    const boundary = section('attention') ?? section('recent');
     return {
       id: row.dataset.threadId!,
-      pinned: recent !== null && Boolean(row.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING),
+      pinned: boundary !== null && Boolean(row.compareDocumentPosition(boundary) & Node.DOCUMENT_POSITION_FOLLOWING),
       before: isRow(next) ? next.dataset.threadId ?? null : null,
       after: isRow(prev) ? prev.dataset.threadId ?? null : null,
     };
@@ -835,7 +809,7 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
   list.addEventListener('pointerdown', (event) => {
     if (drag || event.button !== 0 || event.pointerType === 'touch' || event.ctrlKey || event.metaKey) return;
     const row = (event.target as Element).closest('.ag-threads-item')?.closest<HTMLElement>('.ag-threads-row');
-    if (!row || row.parentElement !== list || !row.dataset.threadId) return;
+    if (!row || row.parentElement !== list || !row.dataset.threadId || row.dataset.attention) return;
     pending = { id: row.dataset.threadId, pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);

@@ -31,12 +31,13 @@ function attentionState(page) {
     });
     const visibleCount = [...root.querySelectorAll('.ag-threads-btn-count')]
       .find((badge) => !badge.hidden && badge.checkVisibility());
-    const chip = root.querySelector('.ag-threads-attention');
+    const section = root.querySelector('.ag-threads-section[data-section="attention"]');
     const preview = window.sidebarPreview;
     return {
       rows,
       headerCount: visibleCount?.textContent ?? null,
-      chip: chip && !chip.hidden ? { text: chip.textContent, pressed: chip.getAttribute('aria-pressed') } : null,
+      section: section ? [...root.querySelectorAll('.ag-threads-row[data-attention]')].map((row) => row.dataset.threadId) : null,
+      sectionLabel: section?.textContent ?? null,
       toasts: [...document.querySelectorAll('.rhwp-toast')]
         .filter((toast) => toast.querySelector('.rhwp-toast-action'))
         .map((toast) => toast.querySelector('.rhwp-toast-message').textContent),
@@ -137,7 +138,7 @@ export async function checkHiddenReview(page, origin, artifacts) {
   }, hidden, 'approving clears the row');
   state = await attentionState(page);
   assert.equal(rowOf(state, hidden).dot, null);
-  assert.equal(state.chip, null);
+  assert.equal(state.section, null);
 }
 
 /** 숨은 채팅이 실패하면 빨간 고리와 짧은 이유, 토스트에는 실패 제목. 열어 보면 걷힌다. */
@@ -236,7 +237,7 @@ export async function checkFinished(page, origin) {
   state = await attentionState(page);
   assert.equal(rowOf(state, watched).status, '', 'a chat watched while it finishes has no dot');
   assert.equal(state.badge, 0);
-  assert.equal(state.chip, null);
+  assert.equal(state.section, null);
 }
 
 /** 계획 승인·질문은 입력 대기, 답하면 걷힌다. 사용자가 멈춘 턴은 아무것도 남기지 않는다. */
@@ -266,6 +267,7 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   state = await attentionState(page);
   assert.equal(rowOf(state, questionThread).status, 'needs-input', 'a question waits for input');
+  assert.deepEqual(state.section, [questionThread], 'a question in the open chat lifts it into 입력 필요');
   // 목록에서 대화로 돌아온 그 순간부터 질문 카드가 클릭을 받는다(동작 줄이기에서도 한 프레임 숨지 않는다).
   const hitAfterReturn = await page.evaluate(async () => {
     document.querySelector('.ag-root .ag-threads-close').click();
@@ -288,6 +290,13 @@ export async function checkBlockingStates(page, origin) {
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
     .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when')?.dataset.status === '',
   questionThread, 'answering clears 입력 대기');
+  assert.deepEqual((await attentionState(page)).section, [questionThread], 'the answered chat stays while it is open');
+  await page.click('.ag-root .ag-threads-new');
+  await waitFor(page, () => !document.querySelector('.ag-root').classList.contains('ag-threads-open'),
+    undefined, 'the new chat replaces the rail');
+  await showRail(page);
+  await waitFor(page, () => !document.querySelector('.ag-root .ag-threads-row[data-attention]'),
+    undefined, 'leaving the chat drops it back to 최근');
 
   // 멈춤: 노란 불이 걷히고 아무 점도 남지 않는다.
   await openPreview(page, origin, 'scenario=chat&hold=1');
@@ -308,8 +317,8 @@ export async function checkBlockingStates(page, origin) {
   assert.equal((await attentionState(page)).badge, 0);
 }
 
-/** 확인 필요 칩은 행을 옮기지 않고 거른다. 순서는 거르기 전과 같다. */
-export async function checkAttentionFilter(page, origin, artifacts) {
+/** 확인이 필요한 채팅은 입력 필요 구역으로 올라가고 일하는 채팅은 최근에 남는다. */
+export async function checkAttentionSection(page, origin, artifacts) {
   await openPreview(page, origin, 'chats=sample');
   await showRail(page);
   await waitFor(page, () => document.querySelector('.ag-root .ag-threads-item-when[data-status="working"]'),
@@ -318,26 +327,15 @@ export async function checkAttentionFilter(page, origin, artifacts) {
   const byId = Object.fromEntries(state.rows.map((row) => [row.id, row]));
   assert.deepEqual(byId['preview-chat-minutes'], { id: 'preview-chat-minutes', status: 'finished', label: '14분', dot: 'finished' });
   assert.deepEqual(byId['preview-chat-totals'], { id: 'preview-chat-totals', status: 'needs-review', label: '검토 대기', dot: 'needs-review' });
-  assert.deepEqual(byId['preview-chat-interrupted'], { id: 'preview-chat-interrupted', status: 'failed', label: '중단됨', dot: 'failed' });
   assert.equal(byId['preview-chat-schedule'].dot, 'working');
-  assert.deepEqual(state.chip, { text: '확인 필요 3', pressed: 'false' });
+  assert.equal(state.sectionLabel, '입력 필요');
+  const needing = ['preview-chat-minutes', 'preview-chat-totals', 'preview-chat-interrupted'];
+  assert.deepEqual([...state.section].sort(), [...needing].sort());
   assert.equal(state.headerCount, '3');
+  // 구역이 목록 맨 위에 서고 일하는 채팅은 아래 최근에 남는다.
+  assert.deepEqual(state.rows.slice(0, 3).map((row) => row.id).sort(), [...needing].sort());
   await page.$eval('.ag-root', (root) => root.scrollTop = 0);
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'attention-rail.png') });
-
-  const order = state.rows.map((row) => row.id);
-  await page.click('.ag-root .ag-threads-attention');
-  await waitFor(page, () => document.querySelector('.ag-root .ag-threads-attention')?.getAttribute('aria-pressed') === 'true',
-    undefined, 'the chip filters');
-  state = await attentionState(page);
-  const expected = order.filter((id) => ['preview-chat-minutes', 'preview-chat-totals', 'preview-chat-interrupted'].includes(id));
-  assert.deepEqual(state.rows.map((row) => row.id), expected, 'filtered rows keep their order');
-  assert.deepEqual(state.chip, { text: '확인 필요 3 · 모두 보기', pressed: 'true' });
-  await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'attention-filter.png') });
-  await page.click('.ag-root .ag-threads-attention');
-  await waitFor(page, (count) => document.querySelectorAll('.ag-root .ag-threads-item').length === count,
-    order.length, 'pressing again shows every chat');
-  assert.deepEqual((await attentionState(page)).rows.map((row) => row.id), order);
 }
 
 /**
@@ -416,12 +414,12 @@ export async function checkAttention(page, origin, artifacts) {
   await checkHiddenRejectedFollowUp(page, origin);
   await checkFinished(page, origin);
   await checkBlockingStates(page, origin);
-  await checkAttentionFilter(page, origin, artifacts);
+  await checkAttentionSection(page, origin, artifacts);
   await checkSystemNotices(page, origin);
   await checkSystemNotices(page, origin, { details: true });
   await checkAttentionSetting(page, origin, artifacts);
 }
 
 if (isMainModule(import.meta)) {
-  await runStandalone('Background-chat attention: rail states, chip, count, toasts and notices', checkAttention);
+  await runStandalone('Background-chat attention: rail states, 입력 필요 section, count, toasts and notices', checkAttention);
 }

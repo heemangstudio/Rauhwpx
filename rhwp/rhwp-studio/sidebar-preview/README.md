@@ -136,7 +136,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?page=settings&destination=theme` | Settings → 테마 (presets, mode, accent) |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
-| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), with **확인 필요 3** under the rail toolbar and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
+| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), with those three lifted into **입력 필요** at the top of the rail and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
 | `?chats=long&fullscreen=1` | The sample chats plus an 18-turn 사업 제안서 chat in focus mode: the turn rail on the chat's right edge replaces the scrollbar; hover a tick for the request and reply preview, click it to scroll there |
 | `?chats=engine-trap` | The sample chats plus the shown document's chat that an engine trap interrupted; it opens with `문서 엔진이 멈춰 작업이 중단됐어요` and **이어서 진행**, as the editor marks it after reopening documents |
 | `?chats=sample`, then open 추진 일정 분기별로 나누기 | A turn the app cut off by restarting (stored sample): `앱이 다시 시작되어 작업이 중단됐어요` with **이어서 진행**, the question card `만료됨 · 앱 재시작` and one follow-up held as `앱 재시작 · …`. Set **Connection** to disconnected: the button is dimmed with `허브에 연결되면 이어서 진행할 수 있어요` |
@@ -251,8 +251,9 @@ approval, `작업 중` (breathing yellow, 400 ms after the turn starts), `검토
 dot) for staged edits, a red ring with a short reason (`오류`, `중단됨`, `로그인 필요`, `사용 한도` …)
 for a failed or cut-off turn, and a green dot for a turn that finished while nobody watched it.
 Seeing a chat (shown, window focused) clears its green dot and red ring; 입력 대기 and 검토 대기
-stay until answered. When any chat needs attention, **확인 필요 N** appears under the rail toolbar
-and filters the list without moving rows, and the chat-list button shows the count of other chats.
+stay until answered. A chat that needs attention (unpinned) moves into **입력 필요** under 고정됨 and stays there while
+it is open, even after the dot clears; it drops back to 최근 when you switch to another chat.
+The chat-list button shows the count of other chats.
 A hidden chat's question, review or failure shows a toast with **열기** when the window has focus;
 an unfocused desktop window gets one OS notification per turn and state and an app-icon badge.
 OS and browser notifications show the app name and a fixed phrase (`답변을 기다립니다`,

@@ -1219,8 +1219,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 채팅 목록 검색어와 문서 필터(키: documentGroupKey). */
   let threadQuery = '';
   let threadDocFilter: { key: string; label: string; missing: boolean } | null = null;
-  /** 확인 필요 칩을 눌러 확인이 필요한 채팅만 보는 중. */
-  let attentionFilter = false;
+  /** 입력 필요 구역에 선 채팅 — 확인이 필요해진 뒤 사용자가 그 채팅을 떠날 때까지 남는다. */
+  const attentionSection = new Set<string>();
   let currentThread = createEmptyThread({
     agent: selectedAgent,
     model: selectedModel,
@@ -4490,10 +4490,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onEnterList() {
       threadNavItems()[0]?.focus();
     },
-    onToggleAttention() {
-      attentionFilter = !attentionFilter;
-      rebuildThreadsList();
-    },
   });
   const threadsList = el('ul', 'ag-threads-list');
   threadsList.setAttribute('aria-label', '채팅');
@@ -4504,7 +4500,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onDrop: (drop) => moveThread(drop.id, drop.pinned, { before: drop.before, after: drop.after }),
     onDragEnd: () => rebuildThreadsList(),
   });
-  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsToolbar.attentionChip, threadsList, workspaceSettingsBtn);
+  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList, workspaceSettingsBtn);
 
   const skillsPage = el('div', 'ag-skills-page');
   skillsPage.id = 'ag-skills-panel';
@@ -8310,9 +8306,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 채팅 한 줄 — 위에는 제목과 상태(또는 경과), 아래에는 문서와 에이전트.
    * 문서 아이콘이 점선이면 문서 없이 시작한 채팅이다.
    */
-  function buildThreadRow(thread: ThreadSummary): HTMLElement {
+  function buildThreadRow(thread: ThreadSummary, opts?: { attention?: boolean }): HTMLElement {
     const li = el('li', 'ag-threads-row');
     li.dataset.threadId = thread.id;
+    if (opts?.attention) li.dataset.attention = 'true';
     const isCurrent = thread.id === currentThread.id;
     const opening = thread.id === openingThreadId;
     if (isCurrent) li.classList.add('ag-current');
@@ -8454,7 +8451,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // Alt+↑/↓ — 채팅을 제 구역 안에서 한 칸씩 옮긴다.
     if (e.altKey && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const entry = threadRowTargets.get(target);
-      if (!entry) return;
+      if (!entry || entry.row.dataset.attention) return;
       e.preventDefault();
       const rowId = (node: Element | null | undefined) => (
         node instanceof HTMLElement && node.matches('.ag-threads-row') ? node.dataset.threadId ?? null : null
@@ -8482,7 +8479,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   /** 고정 구역과 아래 목록의 머리. 고정한 채팅이 없으면 끄는 동안에만 보인다. */
-  function buildThreadsSection(name: 'pinned' | 'recent', label: string): HTMLElement {
+  function buildThreadsSection(name: 'pinned' | 'attention' | 'recent', label: string): HTMLElement {
     const section = el('li', 'ag-threads-section');
     section.dataset.section = name;
     section.appendChild(el('span', 'ag-threads-section-label', label));
@@ -8506,16 +8503,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setThreadDocFilter(null, { rebuild: false });
     }
     const query = searchKey(threadQuery);
-    // 확인 필요 거름은 문서·검색 거름 뒤에 건다 — 고정·최근 구역과 순서는 그대로다.
-    const attentionIds = attentionThreadIds(all);
-    if (attentionFilter && attentionIds.size === 0) attentionFilter = false;
-    threadsToolbar.setAttention({ count: attentionIds.size, pressed: attentionFilter });
+    syncAttentionSection(all);
     const visible = all.filter((thread) => (
       (!threadDocFilter || documentGroupKey(thread) === threadDocFilter.key)
       && (!query
         || searchKey(thread.title || '새 채팅').includes(query)
         || searchKey(docGroupLabel(thread.docKey)).includes(query))
-      && (!attentionFilter || attentionIds.has(thread.id))
     ));
     if (visible.length === 0) {
       threadsList.appendChild(el(
@@ -8523,20 +8516,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         'ag-threads-empty',
         all.length === 0
           ? '이전 채팅이 없습니다'
-          : attentionFilter ? '확인할 채팅이 없습니다' : '일치하는 채팅이 없습니다',
+          : '일치하는 채팅이 없습니다',
       ));
       return;
     }
     const pinned = orderPinnedThreads(visible);
+    // 고정한 채팅은 고정 구역에 남는다 — 입력 필요 구역은 나머지에서 고른다.
+    const unpinned = visible
+      .filter((thread) => thread.pinOrder === undefined)
+      .sort((a, b) => threadListKey(b) - threadListKey(a));
+    const needsInput = unpinned.filter((thread) => attentionSection.has(thread.id));
     threadsList.classList.toggle('ag-has-pinned', pinned.length > 0);
+    threadsList.classList.toggle('ag-has-attention', needsInput.length > 0);
     threadsList.append(
       buildThreadsSection('pinned', '고정됨'),
-      ...pinned.map(buildThreadRow),
+      ...pinned.map((thread) => buildThreadRow(thread)),
+      ...(needsInput.length > 0
+        ? [buildThreadsSection('attention', '입력 필요'), ...needsInput.map((thread) => buildThreadRow(thread, { attention: true }))]
+        : []),
       buildThreadsSection('recent', '최근'),
-      ...visible
-        .filter((thread) => thread.pinOrder === undefined)
-        .sort((a, b) => threadListKey(b) - threadListKey(a))
-        .map(buildThreadRow),
+      ...unpinned.filter((thread) => !attentionSection.has(thread.id)).map((thread) => buildThreadRow(thread)),
     );
     const restore = focusedKey
       ? threadNavItems().find((item) => threadNavKey(item) === focusedKey) ?? null
@@ -8941,6 +8940,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     scheduleWorkbenchAgents();
     followUps.attach();
     draftChat = draft;
+    refreshAttentionAfterSwitch();
     draftReturnThreadId = draft ? returnThreadId : null;
     updateWorkspaceChatTitle();
     if (draft) {
@@ -8991,6 +8991,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     if (!draftChat) return;
     draftChat = false;
+    refreshAttentionAfterSwitch();
     draftReturnThreadId = null;
     chatChosen = true;
     // 앞 채팅의 허브 세션을 닫고 이 스레드로 새로 연다.
@@ -9055,6 +9056,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (draftChat) threadComposerDrafts.delete(currentThread.id);
     setComposerSkill(null);
     draftChat = false;
+    refreshAttentionAfterSwitch();
     draftReturnThreadId = null;
     threadWorkflows.set(id, loaded.workflow);
     planArchives.set(id, loaded.plans?.length
@@ -9447,18 +9449,45 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return ids;
   }
 
+  /** 채팅을 옮겼다 — 떠난 채팅이 입력 필요 구역에서 내려오도록 새 상태로 다시 센다. */
+  function refreshAttentionAfterSwitch(): void {
+    queueMicrotask(() => {
+      if (root.dataset.disposed !== 'true') refreshAttentionViews();
+    });
+  }
+
   /**
-   * 확인 필요 칩과 목록 단추의 수. 칩은 확인이 필요한 모든 채팅을, 단추는 지금 보이는 대화를 뺀
+   * 입력 필요 구역의 채팅을 정한다 — 확인이 필요한 채팅이 들어오고, 사용자가 열어 상태가 걷혀도
+   * 그 채팅을 떠날 때까지(다른 채팅·새 채팅으로 가면) 남는다. 바뀌었는가를 돌려준다.
+   */
+  function syncAttentionSection(threads: ReadonlyArray<{ id: string }> = peekThreads()): boolean {
+    const needing = attentionThreadIds(threads);
+    const open = draftChat ? null : currentThread.id;
+    const known = new Set(threads.map((thread) => thread.id));
+    let changed = false;
+    for (const id of needing) {
+      if (!attentionSection.has(id)) {
+        attentionSection.add(id);
+        changed = true;
+      }
+    }
+    for (const id of attentionSection) {
+      if (!known.has(id) || (!needing.has(id) && id !== open)) {
+        attentionSection.delete(id);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * 목록 단추의 수. 칩은 확인이 필요한 모든 채팅을, 단추는 지금 보이는 대화를 뺀
    * 수를 센다. 화면에 붙은 사이드바만 그린다 — 실제 상태를 읽고, 늦춰 보이는 표시는 읽지 않는다.
    */
   function refreshAttentionViews(): void {
     if (!active || root.dataset.disposed === 'true') return;
     const ids = attentionThreadIds();
-    if (attentionFilter && ids.size === 0) {
-      attentionFilter = false;
-      if (threadsListVisible()) rebuildThreadsList();
-    }
-    threadsToolbar.setAttention({ count: ids.size, pressed: attentionFilter });
+    if (syncAttentionSection() && threadsListVisible()) rebuildThreadsList();
     const count = ids.size - (chatShown() && ids.has(currentThread.id) ? 1 : 0);
     const text = count > 9 ? '9+' : count > 0 ? String(count) : '';
     for (const badge of [threadsBtnCount, workspaceThreadsBtnCount]) {
