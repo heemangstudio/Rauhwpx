@@ -301,6 +301,7 @@ test('desktop close and native-file IPC contracts stay sender-owned', () => {
     'desktop:pick-native-save-file',
     'desktop:release-native-file',
     'desktop:native-file-read',
+    'desktop:native-file-locate',
     'desktop:native-file-source-path',
     'desktop:native-file-validate-save',
     'desktop:native-file-write',
@@ -1029,7 +1030,7 @@ test('save picker strips document extensions so the managed one is applied once'
   // every document extension a user could type is stripped before `.ext` is
   // appended — so `name.hwpx` never becomes `name.hwpx.hwpx`.
   assert.match(desktopMain, /const suggestedStem = \['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(suggestedName\)\.toLowerCase\(\)\)/);
-  assert.match(desktopMain, /defaultPath: suggestedStem/);
+  assert.match(desktopMain, /defaultPath: documentFolder \? join\(documentFolder, suggestedStem\) : suggestedStem/);
   assert.match(desktopMain, /while \(\['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(saveStem\)\.toLowerCase\(\)\)\)/);
   assert.match(desktopMain, /const filePath = join\(saveDir, `\$\{saveStem \|\| 'document'\}\.\$\{extension\}`\)/);
 });

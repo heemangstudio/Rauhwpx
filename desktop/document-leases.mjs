@@ -176,18 +176,50 @@ export class DocumentLeaseManager {
   /** 창이 쥔 문서 파일의 이름이 바뀌었다. 그 경로로 잡은 점유를 새 경로로 옮긴다. */
   renamePath(sessionId, previousPath, nextPath) {
     if (previousPath === nextPath) return true;
-    const previousKey = `path:${previousPath}`;
-    const nextKey = `path:${nextPath}`;
-    const claim = this.#claimsByKey.get(previousKey);
-    if (!claim || claim.sessionId !== sessionId) return false;
-    const other = this.#claimsByKey.get(nextKey);
-    if (other && other !== claim) throw new Error('The renamed path is already owned');
-    this.#claimsByKey.delete(previousKey);
-    this.#claimsByKey.set(nextKey, claim);
-    claim.canonicalPath = nextPath;
-    claim.keys = claim.keys.map((key) => (key === previousKey ? nextKey : key));
-    claim.claimedKeys = claim.claimedKeys.map((key) => (key === previousKey ? nextKey : key));
-    return true;
+    return this.movePaths([{ sessionId, from: previousPath, to: nextPath }]) > 0;
+  }
+
+  /**
+   * 문서 파일들의 경로가 바뀌었다(앱 안의 이름 바꾸기, 또는 바깥에서 바뀐 이름을 핸들이 따라감).
+   * 각 창이 그 경로로 잡은 확정 점유와 예약을 한꺼번에 새 경로로 옮긴다. 두 문서의 이름이
+   * 맞바뀌어도 옮겨진다. 새 경로를 이 이동과 무관한 점유가 쥐고 있으면 아무것도 옮기지 않고
+   * 던진다. 옮긴 경로 수를 돌려준다.
+   */
+  movePaths(moves) {
+    const planned = [];
+    for (const { sessionId, from, to } of moves) {
+      if (from === to) continue;
+      const claims = this.#claimsForPath(sessionId, from);
+      if (claims.length === 0) continue;
+      const previousKey = `path:${from}`;
+      const holder = this.#claimsByKey.get(previousKey);
+      planned.push({
+        claims,
+        holder: holder && claims.includes(holder) ? holder : null,
+        previousKey,
+        nextKey: `path:${to}`,
+        to,
+      });
+    }
+    const vacated = new Set(planned.filter((move) => move.holder).map((move) => move.previousKey));
+    for (const move of planned) {
+      const other = this.#claimsByKey.get(move.nextKey);
+      if (other && !move.claims.includes(other) && !vacated.has(move.nextKey)) {
+        throw new Error('The renamed path is already owned');
+      }
+    }
+    for (const move of planned) {
+      if (move.holder) this.#claimsByKey.delete(move.previousKey);
+    }
+    for (const move of planned) {
+      for (const claim of move.claims) {
+        claim.canonicalPath = move.to;
+        claim.keys = claim.keys.map((key) => (key === move.previousKey ? move.nextKey : key));
+        claim.claimedKeys = claim.claimedKeys.map((key) => (key === move.previousKey ? move.nextKey : key));
+      }
+      if (move.holder) this.#claimsByKey.set(move.nextKey, move.holder);
+    }
+    return planned.length;
   }
 
   leaseForSession(sessionId, slotId = DEFAULT_DOCUMENT_SLOT) {
@@ -206,6 +238,15 @@ export class DocumentLeaseManager {
       this.#leasesBySession.set(sessionId, slots);
     }
     return slots;
+  }
+
+  #claimsForPath(sessionId, canonicalPath) {
+    const claims = [...(this.#leasesBySession.get(sessionId)?.values() ?? [])]
+      .filter((lease) => lease.canonicalPath === canonicalPath);
+    for (const reservation of this.#reservations.values()) {
+      if (reservation.sessionId === sessionId && reservation.canonicalPath === canonicalPath) claims.push(reservation);
+    }
+    return claims;
   }
 
   #reservationForSession(sessionId, reservationId, slotId) {

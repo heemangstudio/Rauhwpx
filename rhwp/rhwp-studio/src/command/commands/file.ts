@@ -14,7 +14,8 @@ import {
 } from '@/command/save-target';
 import { SAVE_FORMAT_DETAILS } from '@/command/save-format';
 import { exportDocumentForFormat } from '@/command/save-document-format';
-import { describeSaveError } from '@/command/save-error-message';
+import { describeSaveError, unreachableFileSaveError } from '@/command/save-error-message';
+import { showConfirm } from '@/ui/confirm-dialog';
 import { SaveSession, type SaveOutcome } from '@/command/save-session';
 import {
   readHmlSaveContext,
@@ -688,6 +689,11 @@ export function whenSavesIdle(): Promise<void> {
   return saveSession.whenIdle();
 }
 
+/** 저장이 진행 중이거나 줄을 섰다. 문서를 바꾸기 직전에 다시 확인한다. */
+export function isSaveInProgress(): boolean {
+  return saveSession.busy;
+}
+
 export function saveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   return saveSession.save(
     () => runSaveCurrentDocument(services),
@@ -761,9 +767,37 @@ async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCu
     });
     return 'saved';
   } catch (error) {
+    const unreachable = unreachableFileSaveError(error);
+    if (unreachable) return saveAsAfterUnreachableFile(services, unreachable);
     reportSaveError('file:save', error);
     return 'failed';
   }
+}
+
+/**
+ * 원래 파일에 닿지 못해 저장하지 않았다. 옛 경로에 몰래 새 파일을 만들지 않고, 다른 이름으로
+ * 저장할지 묻는다. 대화상자는 원래 폴더에서 열린다(닿지 않으면 시스템이 고른 폴더).
+ */
+async function saveAsAfterUnreachableFile(
+  services: CommandServices,
+  reason: 'missing' | 'unavailable',
+): Promise<SaveOutcome> {
+  const saveAs = reason === 'missing'
+    ? await showConfirm(
+      '원래 파일을 찾을 수 없습니다',
+      '문서를 연 뒤 파일이 지워졌거나 찾을 수 없는 곳으로 옮겨져 저장하지 않았습니다. 다른 이름으로 저장할까요?',
+    )
+    : await showConfirm(
+      '문서가 있는 곳에 연결할 수 없습니다',
+      '문서가 있는 드라이브나 네트워크 폴더에 연결할 수 없어 저장하지 않았습니다. 다시 연결한 뒤 저장하려면 취소하세요. 다른 이름으로 저장할까요?',
+    );
+  if (!saveAs) return 'cancelled';
+  const format = resolveSaveTarget(
+    services.wasm.getSourceFormat(),
+    services.wasm.fileName,
+    services.wasm.currentFileHandle,
+  ).format;
+  return saveAsFormat(services, format);
 }
 
 async function fallbackNameForCurrentSave(
