@@ -104,7 +104,7 @@ import {
   type VerifiedDocumentGrant,
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
-import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import { createDocumentHome, type DocumentHome, type HomeCloseResult } from '@/home/document-home';
 import { createEmptyDocumentView, type EmptyDocumentView } from '@/ui/empty-document-view';
 import {
   createUnsavedDocuments,
@@ -3058,6 +3058,7 @@ function installDocumentHome(): void {
       return live ? canRenameSessionDocument(live) : isDesktopApp();
     },
     renameDocument: renameRecentDocument,
+    closeDocument: (row) => closeLiveDocument(row.documentId),
     openInNewWindow: canOpenNativeDocumentWindow()
       ? (row) => openNativeDocumentWindow(row.documentId)
       : undefined,
@@ -3487,6 +3488,52 @@ async function openInNewSession<T>(
       await disposeSession(fresh);
     }
   }
+}
+
+/**
+ * 문서 홈의 닫기. 바뀐 내용은 저장하고 커밋한 뒤 세션을 닫는다. 지금 문서를 닫으면 문서 없는 화면으로 간다.
+ * 에이전트가 일하거나 검토할 변경이 남은 문서는 닫지 않는다.
+ */
+function closeLiveDocument(documentId: string): Promise<HomeCloseResult> {
+  if (isNavigating() || refuseDocumentOpenWhileTrapped()) return Promise.resolve('cancelled');
+  return runNavigation(async () => {
+    const session = liveSessionForDocument(documentId);
+    if (!session) return 'closed';
+    if (isDocumentSessionBusy(session) || mutatingWorktreeSessions.has(session)
+      || documentAgentView(session).pendingEdits.hasPending()) return 'busy';
+    try {
+      if (isManagedWorktree(session)) {
+        await closeWorktreeSession(session.worktree!);
+        return 'closed';
+      }
+      const previous = attachedSession;
+      if (session.wasm.hasLoadedDocument()) {
+        if (previous !== session) await attachSession(session);
+        const versions = session.versions;
+        const left = await runSaveBeforeLeaving(
+          commandServices,
+          () => session.documentId,
+          versions ? () => commitBeforeLibraryMove(versions) : undefined,
+        );
+        if (left !== 'ok') {
+          if (previous !== session && liveSessions.includes(previous)) await attachSession(previous);
+          return left;
+        }
+      }
+      const next = previous !== session && liveSessions.includes(previous)
+        ? previous
+        : liveSessions.find((candidate) => candidate !== session && !candidate.wasm.hasLoadedDocument())
+          ?? await createLiveSession()
+          ?? liveSessions.find((candidate) => candidate !== session);
+      if (!next) return 'failed';
+      await attachSession(next);
+      await disposeSession(session);
+      return 'closed';
+    } catch (error) {
+      console.error('[sessions] 문서를 닫지 못했습니다:', error);
+      return 'failed';
+    }
+  });
 }
 
 /**
