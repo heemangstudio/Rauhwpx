@@ -500,7 +500,7 @@ export async function checkComposerSendPath(page, origin) {
   assert.equal(attachment.referenceIds.length, 1);
   assert.equal(attachment.text, '첨부를 확인해 줘');
 
-  // 일하는 동안 첨부가 있는 글은 대기열에 넣지 않고 입력기에 남긴다.
+  // 일하는 동안 첨부가 있는 글도 대기열에 들어가고, 그 차례에 같은 스테이징 id 와 함께 나간다.
   await settle();
   await page.evaluate(() => window.sidebarPreview.setHold(true));
   await submit('하나 더');
@@ -510,12 +510,34 @@ export async function checkComposerSendPath(page, origin) {
     data.items.add(new File(['more'], 'more.txt', { type: 'text/plain' }));
     document.querySelector('.ag-input').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
   });
-  await page.waitForSelector('.ag-reference-upload-chip');
+  await page.waitForFunction(() => document.querySelector('.ag-reference-upload-chip.ag-ready'));
   await submit('첨부와 함께 대기');
-  await page.waitForSelector('.ag-followups-hint:not([hidden])');
-  const refused = await queueState(page);
-  assert.deepEqual(refused.rows, []);
-  assert.equal(refused.composer, '첨부와 함께 대기', 'the text stays in the composer');
+  await waitFor(page, () => document.querySelectorAll('.ag-followup').length === 1, undefined, 'the attachment message was not queued');
+  const queuedWithFile = await queueState(page);
+  assert.deepEqual(queuedWithFile.rows, ['첨부와 함께 대기']);
+  assert.equal(queuedWithFile.composer, '', 'the composer is cleared after queueing');
+  assert.equal(await page.$$eval('.ag-reference-upload-chip', (nodes) => nodes.length), 0, 'the attachment left the composer');
+  assert.equal(await page.$eval('.ag-followup .ag-followup-attachments', (node) => !node.hidden && node.title.includes('more.txt')), true);
+  const before = (await sent()).length;
+  await page.evaluate(() => window.sidebarPreview.finishTurn('completed'));
+  await page.waitForFunction((count) => window.sidebarPreview.snapshot().sentMessages.length === count + 1, {}, before);
+  const queuedAttachment = (await sent()).at(-1);
+  assert.equal(queuedAttachment.text, '첨부와 함께 대기');
+  assert.equal(queuedAttachment.referenceIds.length, 1, 'the queued message carries its staged file');
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-msg-user')].at(-1)?.querySelector('.ag-msg-attachment'));
+
+  // 대기열에 넣지 못한 이유는 잠깐만 보인다 — 입력하면 걷히고, 그대로 두면 몇 초 뒤 사라진다.
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().running);
+  const hintShown = () => page.waitForSelector('.ag-followups-hint:not([hidden])');
+  const hintGone = (timeout) => page.waitForFunction(() => document.querySelector('.ag-followups-hint')?.hidden !== false, { timeout });
+  await submit('/templates 회의록 다시 정리해 줘');
+  await hintShown();
+  await page.type('.ag-input', ' ');
+  await hintGone(1000);
+  await page.keyboard.press('Enter');
+  await hintShown();
+  await hintGone(6000);
+  assert.equal(await page.$eval('.ag-followups', (node) => node.hidden), true, 'the strip leaves with its last hint');
 }
 
 // 혼자 돌리기 — check.mjs 의 알려진 앞 단계 실패와 상관없이 이 검사만 본다.

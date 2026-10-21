@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { HUB_USER_MESSAGE_BUSY, createFollowUpController } from '../src/ui/agent-sidebar/follow-up-controller.ts';
 import type { FollowUpStripView } from '../src/ui/agent-sidebar/follow-up-strip.ts';
-import type { FollowUpItem, ThreadFollowUps } from '../src/agent/follow-ups.ts';
+import type { FollowUpAttachments, FollowUpItem, ThreadFollowUps } from '../src/agent/follow-ups.ts';
 
 interface Sent { item: FollowUpItem; resolve(value: string | null): void }
 
@@ -19,6 +19,7 @@ function harness(opts: { errorSeen?: () => boolean } = {}) {
   let editing: string | null = null;
   let interrupts = 0;
   let persists = 0;
+  const discarded: FollowUpAttachments[] = [];
   const env = { running: false, replyPending: false, blocked: null as string | null, readOnly: false, plan: false };
   const controller = createFollowUpController<{ id: string }, object>({
     strip: {
@@ -39,6 +40,7 @@ function harness(opts: { errorSeen?: () => boolean } = {}) {
       return { message: { id: item.id }, bubble: {}, sent: promise };
     },
     unsend: (message) => { unsent.push(message.id); },
+    discardAttachments: (attachments) => { discarded.push(attachments); },
     interrupt: () => { interrupts += 1; },
     isTurnRunning: () => env.running,
     isWorking: () => env.running || env.replyPending,
@@ -56,6 +58,7 @@ function harness(opts: { errorSeen?: () => boolean } = {}) {
     thread,
     sent,
     unsent,
+    discarded,
     hints,
     env,
     view: () => lastView,
@@ -185,6 +188,36 @@ test('a rejected queue send goes back to the head with a busy hold that the next
   await h.end('end_turn');
   assert.deepEqual(h.sent.map((entry) => entry.item.text), ['A', 'A']);
   assert.equal(h.hold(), null);
+});
+
+test('attachments go out with their item, come back with it when the hub refuses, and are discarded only on delete', async () => {
+  const h = harness();
+  const attachments: FollowUpAttachments = {
+    staged: [{
+      id: 'stage-1', scope: 'chat', scopeId: 'thread-1', name: 'a.png', mimeType: 'image/png', size: 3,
+      status: 'ready', createdAt: '', expiresAt: '',
+    }],
+    mentions: [],
+    context: '[선택 자료]',
+    labels: ['a.png'],
+  };
+  h.start();
+  assert.ok(h.controller.enqueue({ text: '', attachments }));
+  queue(h, 'B');
+  await h.end('end_turn');
+  assert.deepEqual(h.sent[0]!.item.attachments, attachments, 'the dispatched item carries its attachments');
+  const messageId = await h.dispatched();
+  assert.equal(h.controller.hubError({ code: 'AGENT_BUSY', messageId }), true);
+  assert.deepEqual(h.thread.followUps!.items[0]!.attachments, attachments, 'a bounced item keeps its attachments');
+  // 채팅을 떠났다 돌아와도 항목과 첨부가 그대로다.
+  h.controller.detach('stopped');
+  h.controller.attach();
+  assert.deepEqual(h.thread.followUps!.items[0]!.attachments, attachments);
+  assert.deepEqual(h.discarded, []);
+  h.controller.removeItem(h.thread.followUps!.items[1]!.id);
+  assert.deepEqual(h.discarded, [], 'removing a text-only item discards nothing');
+  h.controller.removeItem(h.thread.followUps!.items[0]!.id);
+  assert.deepEqual(h.discarded, [attachments]);
 });
 
 test('other rejection codes hold as rejected with the code', async () => {

@@ -11,7 +11,8 @@
  */
 import { turnOutcomeFor, type TurnEndFacts } from './turn-outcome.ts';
 import { INTERRUPTION_LABEL } from './turn-interruption-reason.ts';
-import type { ProductSkillIcon } from './types.ts';
+import type { ProductSkillIcon, StagedReference } from './types.ts';
+import type { ThreadMention } from './threads.ts';
 
 /** 한 채팅에 쌓아 둘 수 있는 대기 메시지 수. */
 export const FOLLOW_UP_LIMIT = 10;
@@ -31,6 +32,25 @@ export type FollowUpHoldReason =
   | 'rejected'
   | 'busy';
 
+/** 한 대기 메시지에 붙일 수 있는 파일 수 — 허브의 메시지 첨부 상한(server.mjs)과 같다. */
+const FOLLOW_UP_MAX_FILES = 10;
+const FOLLOW_UP_MAX_MENTIONS = 20;
+
+/**
+ * 대기 메시지에 붙은 첨부. 넣을 때 입력기에서 꺼내 항목이 갖는다. 파일과 선택 자료는 이미 허브
+ * 스테이징(채팅 범위, 허브 디스크에 12시간)에 올라가 있어 그 메타데이터만 들고 있으면 새로고침이나
+ * 허브 재시작 뒤에도 같은 채팅에서 보낼 수 있다. 그래서 대기열과 함께 저장한다.
+ */
+export interface FollowUpAttachments {
+  /** 허브에 올려 둔 파일 — 일반 첨부와 선택 자료의 기록·이미지. */
+  staged: StagedReference[];
+  /** 선택 자료의 콘텍스트 블록. 보낼 때 요청문 앞에 붙는다. */
+  context?: string;
+  mentions: ThreadMention[];
+  /** 띠에 보일 첨부 이름(파일·선택 자료·멘션). 개수와 제목에만 쓴다. */
+  labels: string[];
+}
+
 export interface FollowUpItem {
   id: string;
   /** 사용자가 친 본문(앞뒤 공백 제거, '//x' 는 이미 '/x' 로 풀었다). */
@@ -38,7 +58,15 @@ export interface FollowUpItem {
   /** 넣을 때의 입력기 스킬 토큰. */
   skillName?: string;
   skillIcon?: ProductSkillIcon;
+  /** 넣을 때 입력기에서 꺼낸 첨부. */
+  attachments?: FollowUpAttachments;
   createdAt: number;
+}
+
+/** 보낼 첨부가 있는가 — 본문 없이도 항목이 남는다. */
+export function hasFollowUpAttachments(item: Pick<FollowUpItem, 'attachments'>): boolean {
+  const attachments = item.attachments;
+  return Boolean(attachments && (attachments.staged.length > 0 || attachments.mentions.length > 0 || attachments.context));
 }
 
 export interface FollowUpHold {
@@ -107,13 +135,16 @@ export function enqueue(
   return make(next, q?.hold);
 }
 
-/** 본문을 고친다. 빈 본문은 항목을 지운다 — 스킬만 부르는 항목은 본문 없이도 남는다. */
+/**
+ * 본문을 고친다. 첨부는 그대로 둔다. 빈 본문은 항목을 지운다 — 스킬만 부르거나 첨부가 있는 항목은
+ * 본문 없이도 남는다.
+ */
 export function edit(q: ThreadFollowUps | undefined, id: string, text: string): ThreadFollowUps {
   const trimmed = text.trim();
   const items = itemsOf(q);
   const target = items.find((item) => item.id === id);
   if (!target) return make(items, q?.hold);
-  if (!trimmed && !target.skillName) return remove(q, id);
+  if (!trimmed && !target.skillName && !hasFollowUpAttachments(target)) return remove(q, id);
   return make(items.map((item) => (item.id === id ? { ...item, text: trimmed } : item)), q?.hold);
 }
 
@@ -256,6 +287,55 @@ const SKILL_ICONS: ReadonlySet<string> = new Set<ProductSkillIcon>([
   'calendar', 'code', 'check', 'heart', 'bolt', 'shield',
 ]);
 
+const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+
+function normalizeStaged(raw: unknown): StagedReference | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (!isText(value.id) || !isText(value.scopeId) || typeof value.name !== 'string' || typeof value.mimeType !== 'string'
+    || typeof value.size !== 'number' || !Number.isFinite(value.size) || value.size < 0) return null;
+  return {
+    id: value.id,
+    scope: 'chat',
+    scopeId: value.scopeId,
+    name: value.name,
+    mimeType: value.mimeType,
+    size: value.size,
+    status: 'ready',
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
+    expiresAt: typeof value.expiresAt === 'string' ? value.expiresAt : '',
+  };
+}
+
+function normalizeMention(raw: unknown): ThreadMention | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  if (!isText(value.id) || typeof value.title !== 'string') return null;
+  return {
+    id: value.id,
+    title: value.title,
+    ...(value.kind === 'document' ? { kind: 'document' as const } : {}),
+    ...(value.open === true ? { open: true as const } : {}),
+  };
+}
+
+/**
+ * 저장된 첨부를 읽는다. 허브 스테이징이 그새 만료됐어도 버리지 않는다 — 보내면 허브가 그 파일을
+ * 실패로 알리고 말풍선에 그대로 보인다. 조용히 빼면 사용자는 빠진 줄 모른다.
+ */
+function normalizeAttachments(raw: unknown): FollowUpAttachments | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const list = (entry: unknown): unknown[] => (Array.isArray(entry) ? entry : []);
+  const staged = list(value.staged).flatMap((entry) => normalizeStaged(entry) ?? []).slice(0, FOLLOW_UP_MAX_FILES);
+  const mentions = list(value.mentions).flatMap((entry) => normalizeMention(entry) ?? []).slice(0, FOLLOW_UP_MAX_MENTIONS);
+  const context = typeof value.context === 'string' ? value.context.slice(0, FOLLOW_UP_MAX_CHARS) : '';
+  const labels = list(value.labels).filter((label): label is string => typeof label === 'string')
+    .slice(0, FOLLOW_UP_MAX_FILES + FOLLOW_UP_MAX_MENTIONS);
+  const attachments: FollowUpAttachments = { staged, mentions, labels, ...(context ? { context } : {}) };
+  return hasFollowUpAttachments({ attachments }) ? attachments : undefined;
+}
+
 function normalizeItem(raw: unknown): FollowUpItem | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Record<string, unknown>;
@@ -264,7 +344,8 @@ function normalizeItem(raw: unknown): FollowUpItem | null {
     ? value.skillName
     : undefined;
   const text = value.text.trim().slice(0, FOLLOW_UP_MAX_CHARS);
-  if (!text && !skillName) return null;
+  const attachments = normalizeAttachments(value.attachments);
+  if (!text && !skillName && !attachments) return null;
   const skillIcon = typeof value.skillIcon === 'string' && SKILL_ICONS.has(value.skillIcon)
     ? value.skillIcon as ProductSkillIcon
     : undefined;
@@ -274,6 +355,7 @@ function normalizeItem(raw: unknown): FollowUpItem | null {
     text,
     ...(skillName ? { skillName } : {}),
     ...(skillName && skillIcon ? { skillIcon } : {}),
+    ...(attachments ? { attachments } : {}),
     createdAt,
   };
 }

@@ -159,7 +159,7 @@ import {
 import { chatAttention, type ChatAttentionLedger } from '../../agent/chat-attention.ts';
 import { createRunStatusController, type TurnFailureNote } from './run-status.ts';
 import { turnOutcomeFor, type TurnOutcome } from '../../agent/turn-outcome.ts';
-import { holdFollowUps } from '../../agent/follow-ups.ts';
+import { holdFollowUps, type FollowUpAttachments } from '../../agent/follow-ups.ts';
 import {
   TURN_CHECK_DOCUMENT_TEXT,
   createTurnFoldRow,
@@ -4324,7 +4324,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       skillIcon: item.skillIcon,
       origin: 'queue',
       requireReceipt: true,
+      ...(item.attachments ? {
+        staged: item.attachments.staged,
+        mentions: item.attachments.mentions,
+        ...(item.attachments.context ? { contextPrefix: item.attachments.context } : {}),
+      } : {}),
     }),
+    discardAttachments: (attachments) => {
+      for (const file of attachments.staged) {
+        void bridge.discardStagedReference(file.scopeId, file.id).catch(() => undefined);
+      }
+    },
     unsend: (message, bubble) => unrecordUserMessage(message, bubble),
     interrupt: (opts) => bridge.interrupt(opts),
     releaseSteer: () => bridge.releaseSteerCarryOver(),
@@ -6726,6 +6736,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const index = currentThread.messages.lastIndexOf(message);
     if (index >= 0) currentThread.messages.splice(index, 1);
     bubble.remove();
+    // 첨부를 실은 메시지였다 — 그 첨부의 처리 상태는 오지 않는다. 남은 메시지로 잠금을 다시 정한다.
+    if (message.attachments?.length) {
+      attachmentsSending = captureSendPending || currentThread.messages.some((entry) =>
+        entry.attachments?.some((attachment) => attachment.status === 'processing'));
+    }
     // 그 사이 허브가 스스로 시작한 턴이 이 요청에 묶였으면 남은 마지막 요청으로 옮긴다 — 되돌리기 단추가
     // 사라진 말풍선을 가리키지 않게.
     if (message.role === 'user' && message.turnKey) {
@@ -6735,13 +6750,107 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateTurnPending();
   }
 
+  /** 보낼 것(본문·스킬·첨부·멘션)이 입력기에 있다. */
+  function composerHasPayload(): boolean {
+    return Boolean(input.value.trim()) || activeComposerSkill !== null || referenceLibrary.hasDrafts()
+      || captureInbox.hasDrafts() || (composerMentions?.list().length ?? 0) > 0;
+  }
+
+  /**
+   * 일하는 동안의 Enter — 입력기의 첨부(준비된 파일·선택 자료·멘션)를 꺼내 대기 항목에 싣는다. 파일은 이미
+   * 허브 스테이징에 있고, 선택 자료는 여기서 올린다. 넣은 뒤에는 선택 자료를 받은함에서 지운다 — 이제
+   * 항목(과 함께 저장되는 대기열)이 갖는다. 못 넣으면 꺼낸 것을 입력기에 되돌린다.
+   */
+  async function queueComposerAttachments(request: {
+    text: string;
+    skillName?: string;
+    skillIcon?: ProductSkillIcon;
+    sendNow: boolean;
+  }): Promise<void> {
+    const threadId = currentThread.id;
+    const documentId = currentDocumentId;
+    const inputText = input.value;
+    const ordinaryFiles = referenceLibrary.snapshotDraftFiles();
+    let captures: CaptureStaging | null = null;
+    let staged: StagedReference[] = [];
+    let mentions: ThreadMention[] = [];
+    let queued: { id: string } | null = null;
+    /** 넣지 못했다 — 올린 선택 자료는 버리고, 꺼낸 파일·멘션은 입력기에 되돌린다. */
+    const restore = async (): Promise<void> => {
+      if (captures) await captureInbox.discardStaging(captures);
+      const ordinary = staged.filter((file) => !captures?.files.includes(file));
+      if (ordinary.length) {
+        await referenceLibrary.discardInlineFiles(ordinary);
+        if (threadId === currentThread.id) referenceLibrary.stageDraftFiles(ordinaryFiles);
+      }
+      if (mentions.length && threadId === currentThread.id) composerMentions?.set(mentions);
+    };
+    const stagesCaptures = captureInbox.hasDrafts();
+    if (stagesCaptures) {
+      captureSendPending = true;
+      attachmentsSending = true;
+      updateComposer();
+    }
+    try {
+      if (stagesCaptures) {
+        captures = await captureInbox.stage(ordinaryFiles.length, request.text.length);
+        if (threadId !== currentThread.id || documentId !== currentDocumentId || readOnlyDocLabel !== null
+          || root.dataset.disposed === 'true') throw new Error('채팅이 바뀌었습니다. 자료를 다시 확인해 주세요.');
+      }
+      const ordinary = referenceLibrary.takeReadyDrafts();
+      if (ordinary.length !== ordinaryFiles.length) throw new Error('첨부 준비가 끝나지 않았습니다. 다시 시도해 주세요.');
+      mentions = composerMentions?.take() ?? [];
+      staged = [...ordinary, ...(captures?.files ?? [])];
+      const attachments: FollowUpAttachments = {
+        staged,
+        mentions,
+        labels: [
+          ...ordinary.map((file) => file.name),
+          ...(captures?.drafts ?? []).map((draft) => `${draft.label} · ${draft.comment.replace(/\s+/g, ' ').slice(0, 48)}`),
+          ...mentions.map((mention) => `@${mention.title}`),
+        ],
+        ...(captures?.context ? { context: captures.context } : {}),
+      };
+      queued = followUps.enqueue(
+        { text: request.text, skillName: request.skillName, skillIcon: request.skillIcon, attachments },
+        { atHead: request.sendNow },
+      );
+      if (!queued) {
+        await restore();
+        return;
+      }
+      if (captures) await captureInbox.consume(captures);
+      if (input.value === inputText) {
+        input.value = '';
+        // 대기열에 넣은 글도 입력기를 떠났다 — 미뤄 둔 질문이 지금 열려도 잃을 것이 없다.
+        typing.noteSend();
+        setComposerSkill(null);
+        setSlashMenuOpen(false);
+        resizeComposerInput();
+      }
+    } catch (error) {
+      if (!queued) await restore();
+      if (root.dataset.disposed !== 'true') {
+        systemMessage(error instanceof Error ? error.message : '첨부를 대기열에 넣지 못했습니다.');
+      }
+    } finally {
+      if (stagesCaptures) {
+        captureSendPending = false;
+        attachmentsSending = currentThread.messages.some((entry) =>
+          entry.attachments?.some((attachment) => attachment.status === 'processing'));
+      }
+      if (root.dataset.disposed !== 'true') updateComposer();
+    }
+    if (queued && request.sendNow) followUps.sendNow(queued.id);
+  }
+
   /** 일하는 동안 입력기가 대기열에 넣는다는 것을 자리 표시와 ⏎ 힌트로 말한다. */
   function syncFollowUpComposerCues(): void {
     // 보이는 잠금(readOnly)이나 질문 카드가 입력기를 쥐고 있으면 그 문구가 먼저다.
     const queueing = agentWorking() && !input.disabled && !input.readOnly && !questionController.isPresented();
     if (queueing) input.placeholder = '작업이 끝나면 보낼 메시지 입력';
     sendHint.textContent = queueing ? '⏎ 대기' : '⏎';
-    if (queueing) sendHint.hidden = (!input.value.trim() && !activeComposerSkill) || referenceLibrary.hasDrafts();
+    if (queueing) sendHint.hidden = !composerHasPayload() || referenceLibrary.hasBlockingDrafts() || attachmentsSending;
   }
   // 대기열에 넣지 못한 이유는 다음 입력까지만 보인다.
   input.addEventListener('input', () => {
@@ -6871,7 +6980,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 지시만 다시 보내면 ("이 부분을 표로") 에이전트가 엉뚱한 곳을 고칠 수 있다.
     // 첨부만 보낸 요청도 두지 않는다: 파일은 이미 채팅 참조 범위로 옮겨졌으니 본문 없이 다시 보내 봐야 빈 요청이다.
     const carriesContinuation = spec.wire?.continuation === true;
-    const retryPayload = requestText.trim()
+    // 선택 자료의 콘텍스트는 그 첨부와 한 전송에 묶인다 — 첨부 없이 다시 보낼 요청을 두지 않는다.
+    if (spec.contextPrefix) requestText = `${spec.contextPrefix}\n\n${requestText}`;
+    const retryPayload = !spec.contextPrefix && requestText.trim()
       ? {
         displayText: messageText,
         requestText,
@@ -6898,7 +7009,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       skillName,
       spec.skillIcon,
       undefined,
-      spec.origin === 'composer' ? composerMentions?.take() ?? [] : [],
+      spec.mentions ? [...spec.mentions] : spec.origin === 'composer' ? composerMentions?.take() ?? [] : [],
     );
     const userBubble = renderUserMessage(userMessage);
     replyPending = true;
@@ -6970,7 +7081,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     let text = input.value.trim();
     const hasMentions = (composerMentions?.list().length ?? 0) > 0;
     if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !hasMentions) || (!queueing && connState !== 'connected')) return;
-    if (!queueing && (referenceLibrary.hasImageDrafts() || captureInbox.hasImages()) && !modelSupportsImages(selectedAgent, selectedModel)) {
+    if ((referenceLibrary.hasImageDrafts() || captureInbox.hasImages()) && !modelSupportsImages(selectedAgent, selectedModel)) {
       systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
       return;
     }
@@ -7094,9 +7205,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ? invokedSkill.icon ?? defaultSkillIconForName(invokedSkill.name)
       : undefined;
     if (queueing) {
-      // 첨부는 지금 허브 세션의 스테이징에 묶여 있어 미뤄 보낼 수 없다 — 글은 입력기에 남긴다.
+      // 첨부는 항목에 실어 넣는다. 올리는 중이거나 다른 첨부를 보내는 중이면 끝날 때까지 기다린다.
       if (referenceLibrary.hasDrafts() || captureInbox.hasDrafts() || hasMentions) {
-        followUps.hint('attachment');
+        if (referenceLibrary.hasBlockingDrafts() || attachmentsSending) return;
+        if (followUps.isFull()) {
+          followUps.hint('full');
+          return;
+        }
+        void queueComposerAttachments({
+          text, skillName: skillNameForMessage, skillIcon: skillIconForMessage, sendNow: intent === 'send-now',
+        });
         return;
       }
       const queued = followUps.enqueue(
