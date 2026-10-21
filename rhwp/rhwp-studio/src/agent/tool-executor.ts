@@ -31,6 +31,7 @@ import {
 } from './foreign-documents.ts';
 import { renderChartPng, validateChartSpec } from './chart-render.ts';
 import { cropImageOnCanvas, REFERENCE_READ_MAX_PIXELS, type ImageCropper, type PixelBox } from './image-crop.ts';
+import { documentImageReencodeReason } from '../core/document-image.ts';
 import { renderPdfImage, type PdfImage, type PdfImageRenderer } from './pdf-render.ts';
 import { normalizeClipRect } from './clip-geometry.ts';
 import { describeObject, EDIT_OBJECT_ARG_KEYS, planInsertShape, planObjectEdit, type ObjectKind } from './object-edit-args.ts';
@@ -7306,7 +7307,8 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', 'image too large — max 5MB');
     }
     const bytes = decodeBase64(b64, 'imageBase64');
-    if (!viaCanvas) {
+    // 한컴이 그대로 못 그리는 그림(EXIF 회전 JPEG 등)도 캔버스로 다시 인코딩한다
+    if (!viaCanvas && documentImageReencodeReason(bytes) === null) {
       const naturalWidthPx = reqInt(args, 'naturalWidthPx');
       const naturalHeightPx = reqInt(args, 'naturalHeightPx');
       if (naturalWidthPx < 1 || naturalHeightPx < 1) {

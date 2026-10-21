@@ -13,6 +13,7 @@ import type { ShapeType } from '@/ui/shape-picker';
 import type { CellPathLike, DocumentPosition } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '@/core/document-input-limits';
+import { prepareDocumentImage } from '@/core/document-image';
 import type { InputHandler } from '@/engine/input-handler';
 import {
   assertEncodedImageDecodeDimensions,
@@ -155,7 +156,10 @@ export const insertCommands: CommandDef[] = [
             img.onerror = () => reject(new Error('브라우저가 이 이미지 파일을 읽지 못했습니다.'));
             img.src = objectUrl;
           });
-          ih.enterImagePlacementMode(data, ext, img.naturalWidth, img.naturalHeight, file.name);
+          const prepared = await prepareDocumentImage(data, ext, file.type);
+          ih.enterImagePlacementMode(
+            prepared.bytes, prepared.extension, img.naturalWidth, img.naturalHeight, file.name,
+          );
           showToast({
             message: '그림을 넣을 위치를 문서 본문 또는 표 셀 안에서 클릭하거나 드래그하세요.',
             durationMs: 3500,

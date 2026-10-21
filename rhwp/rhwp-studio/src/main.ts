@@ -22,6 +22,7 @@ import {
   readBlobBytesWithLimit,
   readResponseBytesWithLimit,
 } from '@/core/document-input-limits';
+import { prepareDocumentImage } from '@/core/document-image';
 import { RemoteDocumentUrlError, validateRemoteDocumentUrl } from '@/core/remote-document-url';
 import { ExtensionRemoteProxyUnavailableError } from '@/core/extension-file-transfer';
 import { CanvasView } from '@/view/canvas-view';
@@ -4178,9 +4179,10 @@ async function handleDocumentDrop(e: DragEvent, options: { fromHome?: boolean } 
       img.src = objectUrl;
       await img.decode();
       assertImageDecodeDimensions(img.naturalWidth, img.naturalHeight, '그림');
+      const prepared = await prepareDocumentImage(data, ext, file.type);
       const result = inputHandler.insertDroppedImageAtClientPoint(
-        data,
-        ext,
+        prepared.bytes,
+        prepared.extension,
         img.naturalWidth,
         img.naturalHeight,
         file.name,

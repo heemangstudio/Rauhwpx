@@ -15,6 +15,7 @@ import {
 import type { DocumentPosition, CellPathLike, CellPathEntry, CursorRect } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '@/core/document-input-limits';
+import { prepareDocumentImage } from '@/core/document-image';
 import { canDeleteObjectControl } from './input-handler-picture';
 import {
   assertEncodedImageDecodeDimensions,
@@ -2523,6 +2524,7 @@ async function pasteImageFile(this: any, file: File, hasSelection: boolean): Pro
 
     const natW = img.naturalWidth;
     const natH = img.naturalHeight;
+    const prepared = await prepareDocumentImage(data, ext, file.type);
     const selection = hasSelection ? this.cursor.getSelectionOrdered() : null;
     const insertAt = selection?.start ?? this.cursor.getPosition();
 
@@ -2537,7 +2539,7 @@ async function pasteImageFile(this: any, file: File, hasSelection: boolean): Pro
       const target = inlinePictureInsertionTarget(p);
       const result = wasm.insertPicture(
         p.sectionIndex, target.paragraphIndex, p.charOffset,
-        target.cellPathJson, data, wHwp, hHwp, natW, natH, ext, '',
+        target.cellPathJson, prepared.bytes, wHwp, hHwp, natW, natH, prepared.extension, '',
         undefined, undefined, 'inline',
       );
       if (result.ok) {
