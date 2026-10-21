@@ -34,7 +34,7 @@ import type { UnsavedDocument } from './unsaved-documents.ts';
 import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
-/** busy: 에이전트가 일하거나 검토할 변경이 남아 닫지 않았다. */
+/** busy: 검토할 변경이 남아 닫지 않았다. */
 export type HomeCloseResult = 'closed' | 'busy' | 'cancelled' | 'failed';
 
 /** 홈을 닫으면 돌아갈 곳. 열린 문서, 또는 에이전트 전체 화면의 채팅. */
@@ -937,7 +937,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     closing = row.id;
     try {
       const result = await deps.closeDocument!(row);
-      if (result === 'busy') deps.toast('에이전트가 일하는 중이거나 검토할 변경이 남아 닫지 않았습니다.');
+      if (result === 'busy') deps.toast('검토할 변경이 남아 있어 닫지 않았습니다.');
       else if (result === 'failed') deps.toast('문서를 닫지 못했습니다.');
       if (result !== 'closed' || !visible) return;
       focusedId = row.id;
