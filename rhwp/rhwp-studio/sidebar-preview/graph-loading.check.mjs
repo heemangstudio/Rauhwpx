@@ -58,6 +58,8 @@ try {
       const graph = createProjectGraph({ store: {}, openPreview() {}, announce(message) { window.graphErrors.push(message); } });
       graph.element.style.cssText = 'width:900px;height:700px';
       document.body.append(graph.element);
+      window.graph = graph;
+      window.sampleProject = sampleProject;
       document.querySelector('#open').onclick = () => { graph.update(sampleProject()); graph.setActive(true); };
     });
   }
@@ -71,6 +73,34 @@ try {
   await page.click('#open');
   await page.waitForFunction(() => document.querySelector('.ag-pgraph')?.graphStats.ticks > 0);
   assert.deepEqual(await page.evaluate(() => window.graphErrors), []);
+
+  // Snapshots that keep the graph's structure (a rename, a column move, re-pinning a pinned
+  // node after a drag) must keep drawing every connection.
+  const lines = await page.evaluate(async () => {
+    const stats = document.querySelector('.ag-pgraph').graphStats;
+    let current = 0;
+    const proto = CanvasRenderingContext2D.prototype;
+    const { lineTo, clearRect } = proto;
+    proto.lineTo = function (...args) { current++; return lineTo.apply(this, args); };
+    proto.clearRect = function (...args) { current = 0; return clearRect.apply(this, args); };
+    const nextDraw = async () => {
+      const draws = stats.draws;
+      while (stats.draws === draws) await new Promise((done) => requestAnimationFrame(done));
+      return current;
+    };
+    const before = await nextDraw();
+    const renamed = window.sampleProject();
+    renamed.revision += 1;
+    renamed.items[0] = { ...renamed.items[0], title: `${renamed.items[0].title} (고침)` };
+    window.graph.update(renamed);
+    const after = await nextDraw();
+    window.graph.update({ ...renamed, revision: renamed.revision + 1, graph: { pinned: { ...renamed.graph.pinned } } });
+    const repinned = await nextDraw();
+    return { before, after, repinned, visible: stats.links };
+  });
+  assert(lines.before > 0, `the graph draws its connections: ${JSON.stringify(lines)}`);
+  assert.equal(lines.after, lines.before, `a rename keeps every connection: ${JSON.stringify(lines)}`);
+  assert.equal(lines.repinned, lines.before, `re-pinning keeps every connection: ${JSON.stringify(lines)}`);
   await mkdir(artifacts, { recursive: true });
   await preview.screenshot({ path: resolve(artifacts, 'graph-loading.png') });
 

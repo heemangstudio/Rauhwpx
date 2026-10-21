@@ -36,29 +36,44 @@ export interface GraphModel {
   maxStrength: number;
 }
 
-function pairKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
-}
+/** 이름 없는 연결이 함께 쓰는 빈 목록. 이름이 붙으면 새 배열로 바꾼다. */
+const NO_LABELS: string[] = [];
 
 /** 프로젝트 관계를 노드 쌍마다 하나의 가중 연결로 모은다. nodeIds 밖의 끝은 버린다. */
 export function buildGraphModel(
   project: Pick<ProjectSnapshot, 'items' | 'links'>,
   nodeIds: ReadonlySet<string>,
 ): GraphModel {
-  const pairs = new Map<string, GraphEdge & { solid: boolean }>();
+  // 스냅샷마다 다시 만든다. 관계 수만큼 도는 곳이라 쌍은 노드 번호 둘로 찾고, 문자열 열쇠는
+  // 쌍마다 한 번만 만든다.
+  const order = new Map<string, number>();
+  for (const id of nodeIds) order.set(id, order.size);
+  const count = order.size;
+  const pairs = new Map<number, GraphEdge>();
+  const solid = new Set<GraphEdge>();
   const add = (a: string, b: string, weight: number, kind: 'solid' | 'clip' | 'tag', label?: string) => {
-    if (a === b || !nodeIds.has(a) || !nodeIds.has(b)) return;
-    const key = pairKey(a, b);
-    let edge = pairs.get(key);
+    const ia = order.get(a);
+    const ib = order.get(b);
+    if (ia === undefined || ib === undefined || ia === ib) return;
+    const pair = ia < ib ? ia * count + ib : ib * count + ia;
+    let edge = pairs.get(pair);
     if (!edge) {
-      const [source, target] = a < b ? [a, b] : [b, a];
-      edge = { key, source, target, weight: 0, visible: false, dashed: false, labels: [], solid: false };
-      pairs.set(key, edge);
+      const forward = a < b;
+      edge = {
+        key: forward ? `${a}|${b}` : `${b}|${a}`,
+        source: forward ? a : b,
+        target: forward ? b : a,
+        weight: 0,
+        visible: false,
+        dashed: false,
+        labels: NO_LABELS,
+      };
+      pairs.set(pair, edge);
     }
     edge.weight += weight;
     if (kind !== 'tag') edge.visible = true;
-    if (kind === 'solid') edge.solid = true;
-    if (label && !edge.labels.includes(label)) edge.labels.push(label);
+    if (kind === 'solid') solid.add(edge);
+    if (label && !edge.labels.includes(label)) edge.labels = [...edge.labels, label];
   };
 
   for (const link of project.links) {
@@ -71,7 +86,7 @@ export function buildGraphModel(
   for (const item of project.items) {
     if (item.trashedAt || !nodeIds.has(item.id)) continue;
     if (item.kind === 'clip') add(item.id, item.sourceId, RELATION_WEIGHT.clip, 'clip');
-    for (const tag of new Set(item.tags)) {
+    for (const tag of item.tags.length > 1 ? new Set(item.tags) : item.tags) {
       const members = tagMembers.get(tag);
       if (members) members.push(item.id);
       else tagMembers.set(tag, [item.id]);
@@ -93,16 +108,18 @@ export function buildGraphModel(
   const strength = new Map<string, number>();
   let maxStrength = 0;
   const edges: GraphEdge[] = [];
-  for (const { solid, ...edge } of pairs.values()) {
+  const grow = (id: string, weight: number) => {
+    const next = (strength.get(id) ?? 0) + weight;
+    strength.set(id, next);
+    if (next > maxStrength) maxStrength = next;
+  };
+  for (const edge of pairs.values()) {
     edge.weight = Math.round(edge.weight * 1000) / 1000;
-    edge.dashed = edge.visible && !solid;
+    edge.dashed = edge.visible && !solid.has(edge);
     edges.push(edge);
     if (!edge.visible) continue;
-    for (const id of [edge.source, edge.target]) {
-      const next = (strength.get(id) ?? 0) + edge.weight;
-      strength.set(id, next);
-      if (next > maxStrength) maxStrength = next;
-    }
+    grow(edge.source, edge.weight);
+    grow(edge.target, edge.weight);
   }
   return { edges, strength, maxStrength };
 }

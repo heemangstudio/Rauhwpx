@@ -15,6 +15,7 @@ import { itemColumnId, otherWorktreeBranch, projectShowsWorktrees } from '../../
 import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
 import type { ProjectItem, ProjectSnapshot, ProjectWorktreeContext } from '../../../agent/types.ts';
 import { cachedClipThumbUrl, clipThumbUrl } from './clip-thumbs.ts';
+import { forceCollideFast, forceManyBodyFast } from './graph-forces.ts';
 import {
   DEFAULT_FORCE_SETTINGS,
   FORCE_KEYS,
@@ -79,11 +80,28 @@ interface GraphNode extends SimulationNodeDatum {
 
 interface GraphLink extends SimulationLinkDatum<GraphNode> {
   id: string;
+  /**
+   * 끝은 처음부터 노드 객체다. id 문자열로 두면 d3 가 풀어 주기 전까지 그릴 수 없어서, 구조가
+   * 그대로인 스냅샷(이름 바꾸기, 열 옮기기, 고정 노드 다시 고정)마다 선이 모두 사라졌다.
+   */
+  source: GraphNode;
+  target: GraphNode;
   weight: number;
   /** 태그만 겹친 쌍은 그리지 않는 용수철이다. */
   visible: boolean;
   /** 영역 → 원본뿐이면 점선. */
   dashed: boolean;
+  /** 쉬는 동안의 선 굵기(화면 px)·불투명도. 세기에서 한 번 계산한다. */
+  width: number;
+  alpha: number;
+}
+
+/** 굵기·불투명도·점선이 같은 선 묶음. 한 번의 stroke 로 긋는다. */
+interface EdgeGroup {
+  width: number;
+  alpha: number;
+  dashed: boolean;
+  links: GraphLink[];
 }
 
 /** 측정용. 미리보기·성능 스크립트가 element.graphStats 로 읽는다. */
@@ -153,8 +171,24 @@ const FORCE_LABELS: Record<keyof GraphForceSettings, string> = {
   linkDistance: '연결 거리',
 };
 
-function endpointId(end: string | number | GraphNode | undefined): string {
-  return typeof end === 'object' && end ? end.id : String(end ?? '');
+function otherEnd(link: GraphLink, node: GraphNode): GraphNode {
+  return link.source === node ? link.target : link.source;
+}
+
+function touch(adjacent: Map<string, GraphLink[]>, id: string, link: GraphLink): void {
+  const list = adjacent.get(id);
+  if (list) list.push(link);
+  else adjacent.set(id, [link]);
+}
+
+/** 시뮬레이션에 넣은 구조(노드와 용수철)가 그대로인가. 이름·색·보이기만 바뀐 스냅샷은 배치를 다시 하지 않는다. */
+function sameStructure(nodes: GraphNode[], nextNodes: GraphNode[], links: GraphLink[], nextLinks: GraphLink[]): boolean {
+  if (nodes.length !== nextNodes.length || links.length !== nextLinks.length) return false;
+  for (let index = 0; index < nodes.length; index++) if (nodes[index] !== nextNodes[index]) return false;
+  for (let index = 0; index < links.length; index++) {
+    if (links[index].id !== nextLinks[index].id || links[index].weight !== nextLinks[index].weight) return false;
+  }
+  return true;
 }
 
 function truncate(text: string): string {
@@ -193,9 +227,29 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   let nodes: GraphNode[] = [];
   let links: GraphLink[] = [];
   let adjacent = new Map<string, GraphLink[]>();
+  /** 보이는 선을 굵기 순으로 묶은 것. 선 세기가 바뀔 때만 다시 묶는다. */
+  let edgeGroups: EdgeGroup[] = [];
+  /** 이름을 놓는 순서: 문서 → 고정 → 세기 순. 초점과 이웃은 그릴 때 먼저 놓는다. */
+  let labelOrder: GraphNode[] = [];
+  /** labelOrder 에서 문서·고정 다음, 세기 순이 시작하는 자리. */
+  let labelRanked = 0;
+  /** 색이 같은 파일·노트 점. 색이 바뀔 때(recolor) 다시 묶는다. */
+  let circleGroups: Array<{ color: string; nodes: GraphNode[] }> = [];
+  /** 가운데가 빈 노트 점. */
+  let noteNodes: GraphNode[] = [];
+  /** 하나씩 그리는 문서·영역. */
+  let singleNodes: GraphNode[] = [];
   let maxStrength = 0;
   const nodeById = new Map<string, GraphNode>();
-  let structureKey = '';
+  /** 마지막 스냅샷의 고정 노드 id. null 이면 아직 그래프를 만든 적이 없다. */
+  let structurePinned: string | null = null;
+  /** 보이지 않는 동안 받은 스냅샷. 보일 때 한 번만 다시 만든다(보드를 고칠 때마다 그래프를 만들지 않는다). */
+  let rebuildPending = false;
+  /** 구조가 바뀌었지만 아직 시뮬레이션에 넣지 않았다. 그래프가 보일 때 넣는다(d3 도 그때 불러온다). */
+  let layoutStale = false;
+  /** 다음 배치가 처음 배치다(미리 풀고 바로 맞춘다). */
+  let firstLayout = false;
+  let loadingD3 = false;
   let colorMode: ColorMode = 'column';
   let view = { x: 0, y: 0, k: 1 };
   /** 휠·전체 보기가 향하는 화면. 같은 비율로 x, y, k 를 옮기면 커서 아래 점이 그대로 있다. */
@@ -207,6 +261,8 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   let focus: GraphNode | null = null;
   let fade = 0;
   let neighbors = new Set<string>();
+  /** 초점의 이웃을 세기 순으로. 이름을 먼저 놓는다. */
+  let neighborOrder: GraphNode[] = [];
   let frame = 0;
   let lastFrameAt = 0;
   let dirty = false;
@@ -337,7 +393,21 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       ? worktreeColors(context, project.items, palette.muted)
       : null;
     worktreeColorById = worktreeLegend?.byId ?? new Map();
-    for (const node of nodes) node.color = nodeColor(node);
+    const groups = new Map<string, GraphNode[]>();
+    noteNodes = [];
+    singleNodes = [];
+    for (const node of nodes) {
+      node.color = nodeColor(node);
+      if (node.kind === 'doc' || node.kind === 'clip') {
+        singleNodes.push(node);
+        continue;
+      }
+      const group = groups.get(node.color);
+      if (group) group.push(node);
+      else groups.set(node.color, [node]);
+      if (node.kind === 'note') noteNodes.push(node);
+    }
+    circleGroups = [...groups].map(([color, members]) => ({ color, nodes: members }));
     renderLegend(worktreeLegend?.legend ?? null);
   }
 
@@ -377,9 +447,15 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       nodes = [];
       links = [];
       adjacent = new Map();
+      edgeGroups = [];
+      labelOrder = [];
+      labelRanked = 0;
+      circleGroups = [];
+      noteNodes = [];
+      singleNodes = [];
       nodeById.clear();
       itemById = new Map();
-      structureKey = '';
+      structurePinned = null;
       return;
     }
     itemById = new Map(project.items.map((item) => [item.id, item]));
@@ -425,17 +501,29 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     const index = new Map(nextNodes.map((node) => [node.id, node]));
     const nextLinks: GraphLink[] = [];
     const nextAdjacent = new Map<string, GraphLink[]>();
+    const groups = new Map<number, EdgeGroup>();
+    let visibleLinks = 0;
     for (const edge of model.edges) {
-      const link: GraphLink = { id: edge.key, source: edge.source, target: edge.target, weight: edge.weight, visible: edge.visible, dashed: edge.dashed };
+      const source = index.get(edge.source)!;
+      const target = index.get(edge.target)!;
+      const style = edgeStyle(edge.weight);
+      const link: GraphLink = {
+        id: edge.key, source, target, weight: edge.weight, visible: edge.visible, dashed: edge.dashed, width: style.width, alpha: style.alpha,
+      };
       nextLinks.push(link);
-      index.get(edge.source)!.springs += 1;
-      index.get(edge.target)!.springs += 1;
+      source.springs += 1;
+      target.springs += 1;
       if (!edge.visible) continue;
-      for (const id of [edge.source, edge.target]) {
-        const list = nextAdjacent.get(id);
-        if (list) list.push(link);
-        else nextAdjacent.set(id, [link]);
-      }
+      touch(nextAdjacent, edge.source, link);
+      touch(nextAdjacent, edge.target, link);
+      visibleLinks += 1;
+      // 굵기는 0.2px, 불투명도는 1/40 단위로 묶는다.
+      const width = Math.round(style.width * 5);
+      const alpha = Math.round(style.alpha * 40);
+      const key = (width * 64 + alpha) * 2 + (edge.dashed ? 1 : 0);
+      const group = groups.get(key);
+      if (group) group.links.push(link);
+      else groups.set(key, { width: width / 5, alpha: alpha / 40, dashed: edge.dashed, links: [link] });
     }
     maxStrength = model.maxStrength;
     for (const node of nextNodes) {
@@ -446,32 +534,43 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     for (const node of nextNodes) {
       if (node.x !== undefined && node.y !== undefined) continue;
       const neighbor = (nextAdjacent.get(node.id) ?? [])
-        .map((link) => nodeById.get(endpointId(link.source) === node.id ? endpointId(link.target) : endpointId(link.source)))
-        .find((other) => other?.x !== undefined);
+        .map((link) => otherEnd(link, node))
+        .find((other) => other.x !== undefined);
       const angle = Math.random() * Math.PI * 2;
       const spread = neighbor ? 24 : 24 + Math.sqrt(nextNodes.length) * 6 * Math.random();
       node.x = (neighbor?.x ?? 0) + Math.cos(angle) * spread;
       node.y = (neighbor?.y ?? 0) + Math.sin(angle) * spread;
     }
+    // 노드는 id 마다 같은 객체를 다시 쓰므로 객체와 연결 세기만 견주면 된다.
+    const pinnedKey = Object.keys(pinned).sort().join(',');
+    const first = structurePinned === null;
+    const changed = first || pinnedKey !== structurePinned || !sameStructure(nodes, nextNodes, links, nextLinks);
+    structurePinned = pinnedKey;
     nodes = nextNodes;
     links = nextLinks;
     adjacent = nextAdjacent;
+    edgeGroups = [...groups.values()].sort((a, b) => a.width - b.width);
+    if (changed) {
+      const labelRank = (node: GraphNode) => (node.kind === 'doc' ? 0 : node.pinned ? 1 : 2);
+      labelOrder = [...nextNodes].sort((a, b) => labelRank(a) - labelRank(b) || b.strength - a.strength);
+      labelRanked = labelOrder.findIndex((node) => labelRank(node) === 2);
+      if (labelRanked < 0) labelRanked = labelOrder.length;
+    }
     nodeById.clear();
     for (const node of nodes) nodeById.set(node.id, node);
     grid = null;
     if (hover && !nodeById.has(hover.id)) setHover(null);
-    else if (hover) neighbors = neighborIds(hover);
+    else if (hover) setNeighbors(hover);
     stats.nodes = nodes.length;
-    stats.links = links.filter((link) => link.visible).length;
+    stats.links = visibleLinks;
     recolor();
     canvas.setAttribute('aria-label', `프로젝트 그래프, 노드 ${nodes.length}개, 연결 ${stats.links}개`);
     empty.hidden = nodes.length > 0;
-    const key = `${nodes.map((node) => node.id).join(',')}|${links.map((link) => `${link.id}:${link.weight}`).join(',')}|${Object.keys(pinned).sort().join(',')}`;
-    const changed = key !== structureKey;
-    const first = structureKey === '';
-    structureKey = key;
-    if (changed) void layout(first);
-    else requestDraw();
+    if (changed) {
+      layoutStale = true;
+      firstLayout ||= first;
+    }
+    requestDraw();
   }
 
   /** 힘 설정을 시뮬레이션에 넣는다. 용수철은 다시 계산된다. */
@@ -480,29 +579,36 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     (simulation.force('charge') as ForceManyBody<GraphNode>).strength(params.repel);
     (simulation.force('x') as ForceX<GraphNode>).strength(params.center);
     (simulation.force('y') as ForceY<GraphNode>).strength(params.center);
-    const spring = (link: GraphLink) => {
-      const source = link.source as GraphNode;
-      const target = link.target as GraphNode;
-      return springFor(link.weight, Math.min(source.springs, target.springs), params);
-    };
+    const spring = (link: GraphLink) => springFor(link.weight, Math.min(link.source.springs, link.target.springs), params);
     (simulation.force('link') as ForceLink<GraphNode, GraphLink>)
       .strength((link) => spring(link).strength)
-      .distance((link) => spring(link).distance + (link.source as GraphNode).radius + (link.target as GraphNode).radius);
+      .distance((link) => spring(link).distance + link.source.radius + link.target.radius);
   }
 
-  async function layout(first: boolean): Promise<void> {
-    try {
-      d3 ??= await loadD3();
-    } catch (error) {
-      announce(`그래프를 불러오지 못했습니다. ${errorText(error)}`, 'error');
-      return;
+  async function layout(): Promise<void> {
+    if (!d3) {
+      // 불러오는 중이면 그 호출이 다 불러온 뒤 지금 상태로 배치한다.
+      if (loadingD3) return;
+      loadingD3 = true;
+      try {
+        d3 = await loadD3();
+      } catch (error) {
+        announce(`그래프를 불러오지 못했습니다. ${errorText(error)}`, 'error');
+        return;
+      } finally {
+        loadingD3 = false;
+      }
     }
-    if (disposed) return;
+    if (disposed || !active || !layoutStale) return;
+    layoutStale = false;
+    const first = firstLayout;
+    firstLayout = false;
     if (!simulation) {
       simulation = d3.forceSimulation<GraphNode, GraphLink>()
-        .force('charge', d3.forceManyBody<GraphNode>().theta(0.9).distanceMax(900))
+        // 밀어내기·겹침은 d3 와 같은 값을 내는 typed array 판이다(graph-forces.ts).
+        .force('charge', forceManyBodyFast<GraphNode>().theta(0.9).distanceMax(900))
         .force('link', d3.forceLink<GraphNode, GraphLink>().id((node) => node.id))
-        .force('collide', alternate(d3.forceCollide<GraphNode>().radius((node) => node.radius + 2).strength(0.7)))
+        .force('collide', alternate(forceCollideFast<GraphNode>().radius((node) => node.radius + 2).strength(0.7)))
         .force('x', d3.forceX<GraphNode>(0))
         .force('y', d3.forceY<GraphNode>(0))
         .alphaTarget(IDLE_ALPHA)
@@ -616,6 +722,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       if (fade === 0 && !hover) {
         focus = null;
         neighbors = new Set();
+        neighborOrder = [];
       }
       if (fade !== fadeGoal) animating = true;
       dirty = true;
@@ -757,98 +864,99 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     const right = (width / 2 - view.x) / k + margin;
     const top = (-height / 2 - view.y) / k - margin;
     const bottom = (height / 2 - view.y) / k + margin;
-    const related = (id: string) => focus !== null && (id === focus.id || neighbors.has(id));
+    const related = (node: GraphNode) => focus !== null && (node === focus || neighbors.has(node.id));
+    const inView = (node: GraphNode) => node.x !== undefined && node.y !== undefined
+      && node.x + node.radius >= left && node.x - node.radius <= right && node.y + node.radius >= top && node.y - node.radius <= bottom;
     const dimmed = 1 - (1 - DIM_ALPHA) * fade;
+    const dimmedStep = Math.round(dimmed * 40) / 40;
 
-    // 선: 굵기·불투명도·점선별로 묶어 한 번에 긋는다.
-    const buckets = new Map<string, { width: number; alpha: number; lit: boolean; dashed: boolean; list: GraphLink[] }>();
-    for (const link of links) {
-      if (!link.visible) continue;
-      const source = link.source as GraphNode;
-      const target = link.target as GraphNode;
-      if (source.x === undefined || target.x === undefined) continue;
-      if (Math.max(source.x, target.x!) < left || Math.min(source.x, target.x!) > right) continue;
-      if (Math.max(source.y!, target.y!) < top || Math.min(source.y!, target.y!) > bottom) continue;
-      const style = edgeStyle(link.weight);
-      const lit = focus !== null && (source.id === focus.id || target.id === focus.id);
-      const lineWidth = lit ? style.width + (style.width * 0.6 + 0.6) * fade : style.width;
-      const alpha = lit ? style.alpha + (0.8 - style.alpha) * fade : style.alpha * (focus ? 1 - 0.8 * fade : 1);
-      const qWidth = Math.round(lineWidth * 5) / 5;
-      const qAlpha = Math.round(alpha * 40) / 40;
-      const key = `${qWidth}|${qAlpha}|${lit ? 1 : 0}|${link.dashed ? 1 : 0}`;
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        bucket = { width: qWidth, alpha: qAlpha, lit, dashed: link.dashed, list: [] };
-        buckets.set(key, bucket);
-      }
-      bucket.list.push(link);
-    }
-    const ordered = [...buckets.values()].sort((a, b) => Number(a.lit) - Number(b.lit) || a.width - b.width);
-    for (const bucket of ordered) {
-      ctx.globalAlpha = bucket.alpha;
-      ctx.strokeStyle = bucket.lit ? palette.text : palette.muted;
-      ctx.lineWidth = bucket.width / k;
-      ctx.setLineDash(bucket.dashed ? [3 / k, 2.5 / k] : []);
+    // 선: rebuild 때 굵기·불투명도·점선별로 묶어 둔 대로 한 번에 긋는다. 초점에 닿은 선은
+    // 건너뛰었다가 맨 위에 굵게 긋는다.
+    const crosses = (link: GraphLink) => {
+      const { source, target } = link;
+      if (source.x === undefined || target.x === undefined) return false;
+      return !(Math.max(source.x, target.x) < left || Math.min(source.x, target.x) > right
+        || Math.max(source.y!, target.y!) < top || Math.min(source.y!, target.y!) > bottom);
+    };
+    const restDim = focus ? 1 - 0.8 * fade : 1;
+    ctx.strokeStyle = palette.muted;
+    for (const group of edgeGroups) {
+      ctx.globalAlpha = Math.round(group.alpha * restDim * 40) / 40;
+      ctx.lineWidth = group.width / k;
+      ctx.setLineDash(group.dashed ? [3 / k, 2.5 / k] : []);
       ctx.beginPath();
-      for (const link of bucket.list) {
-        const source = link.source as GraphNode;
-        const target = link.target as GraphNode;
-        ctx.moveTo(source.x!, source.y!);
-        ctx.lineTo(target.x!, target.y!);
+      for (const link of group.links) {
+        if (focus && (link.source === focus || link.target === focus)) continue;
+        if (!crosses(link)) continue;
+        ctx.moveTo(link.source.x!, link.source.y!);
+        ctx.lineTo(link.target.x!, link.target.y!);
       }
       ctx.stroke();
     }
+    if (focus) {
+      const lit = new Map<number, { width: number; alpha: number; dashed: boolean; links: GraphLink[] }>();
+      for (const link of adjacent.get(focus.id) ?? []) {
+        if (!crosses(link)) continue;
+        const lineWidth = Math.round((link.width + (link.width * 0.6 + 0.6) * fade) * 5);
+        const alpha = Math.round((link.alpha + (0.8 - link.alpha) * fade) * 40);
+        const key = (lineWidth * 64 + alpha) * 2 + (link.dashed ? 1 : 0);
+        const bucket = lit.get(key);
+        if (bucket) bucket.links.push(link);
+        else lit.set(key, { width: lineWidth / 5, alpha: alpha / 40, dashed: link.dashed, links: [link] });
+      }
+      ctx.strokeStyle = palette.text;
+      for (const bucket of [...lit.values()].sort((a, b) => a.width - b.width)) {
+        ctx.globalAlpha = bucket.alpha;
+        ctx.lineWidth = bucket.width / k;
+        ctx.setLineDash(bucket.dashed ? [3 / k, 2.5 / k] : []);
+        ctx.beginPath();
+        for (const link of bucket.links) {
+          ctx.moveTo(link.source.x!, link.source.y!);
+          ctx.lineTo(link.target.x!, link.target.y!);
+        }
+        ctx.stroke();
+      }
+    }
     ctx.setLineDash([]);
 
-    // 점: 색·불투명도별로 묶는다. 문서와 영역은 수가 적어 하나씩 그린다.
-    const circles = new Map<string, GraphNode[]>();
-    const holes = new Map<number, GraphNode[]>();
-    const rings: GraphNode[] = [];
-    const singles: GraphNode[] = [];
-    const visibleNodes: GraphNode[] = [];
-    for (const node of nodes) {
-      if (node.x === undefined || node.y === undefined) continue;
-      if (node.x + node.radius < left || node.x - node.radius > right || node.y + node.radius < top || node.y - node.radius > bottom) continue;
-      visibleNodes.push(node);
-      if (node.kind === 'doc' || node.kind === 'clip') {
-        singles.push(node);
-        continue;
-      }
-      const alpha = focus && !related(node.id) ? Math.round(dimmed * 40) / 40 : 1;
-      const key = `${node.color}|${alpha}`;
-      const group = circles.get(key);
-      if (group) group.push(node);
-      else circles.set(key, [node]);
-      if (node.kind === 'note') {
-        const hole = holes.get(alpha);
-        if (hole) hole.push(node);
-        else holes.set(alpha, [node]);
-      }
-      if (node.pinned || (node === focus && fade > 0)) rings.push(node);
-    }
-    for (const [key, group] of circles) {
-      const split = key.lastIndexOf('|');
-      ctx.globalAlpha = Number(key.slice(split + 1));
-      ctx.fillStyle = key.slice(0, split);
+    // 점: recolor 때 색별로 묶어 둔 대로 한 번에 채운다. 초점이 있으면 흐린 점을 먼저, 초점과
+    // 이웃을 위에 채운다. 문서와 영역은 수가 적어 하나씩 그린다.
+    const fillCircles = (list: GraphNode[], scale: number) => {
+      let lit: GraphNode[] | null = null;
+      ctx.globalAlpha = focus ? dimmedStep : 1;
       ctx.beginPath();
-      for (const node of group) {
-        ctx.moveTo(node.x! + node.radius, node.y!);
-        ctx.arc(node.x!, node.y!, node.radius, 0, Math.PI * 2);
+      for (const node of list) {
+        if (!inView(node)) continue;
+        if (focus && related(node)) {
+          (lit ??= []).push(node);
+          continue;
+        }
+        ctx.moveTo(node.x! + node.radius * scale, node.y!);
+        ctx.arc(node.x!, node.y!, node.radius * scale, 0, Math.PI * 2);
       }
       ctx.fill();
+      if (!lit) return;
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      for (const node of lit) {
+        ctx.moveTo(node.x! + node.radius * scale, node.y!);
+        ctx.arc(node.x!, node.y!, node.radius * scale, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    };
+    for (const group of circleGroups) {
+      ctx.fillStyle = group.color;
+      fillCircles(group.nodes, 1);
     }
     ctx.fillStyle = palette.bg;
-    for (const [alpha, group] of holes) {
-      ctx.globalAlpha = alpha;
-      ctx.beginPath();
-      for (const node of group) {
-        ctx.moveTo(node.x! + node.radius * 0.42, node.y!);
-        ctx.arc(node.x!, node.y!, node.radius * 0.42, 0, Math.PI * 2);
-      }
-      ctx.fill();
+    fillCircles(noteNodes, 0.42);
+    const rings: GraphNode[] = [];
+    for (const node of nodes) {
+      if (node.kind !== 'doc' && node.kind !== 'clip' && (node.pinned || (node === focus && fade > 0)) && inView(node)) rings.push(node);
     }
-    for (const node of singles) {
-      ctx.globalAlpha = focus && !related(node.id) ? dimmed : 1;
+    for (const node of singleNodes) {
+      if (!inView(node)) continue;
+      ctx.globalAlpha = focus && !related(node) ? dimmed : 1;
       const ringed = node.pinned || (node === focus && fade > 0);
       if (node.kind === 'clip') {
         drawClipNode(ctx, node, ringed);
@@ -865,7 +973,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       ctx.strokeStyle = palette.text;
       ctx.lineWidth = 1.2 / k;
       for (const node of rings) {
-        ctx.globalAlpha = focus && !related(node.id) ? dimmed : 1;
+        ctx.globalAlpha = focus && !related(node) ? dimmed : 1;
         ctx.beginPath();
         ctx.arc(node.x!, node.y!, node.radius + 2.5 / k + (node.kind === 'doc' ? 1.5 : 0), 0, Math.PI * 2);
         ctx.stroke();
@@ -879,32 +987,40 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.lineJoin = 'round';
-    const rank = (node: GraphNode) => (node === focus ? 0 : related(node.id) ? 1 : node.kind === 'doc' ? 2 : node.pinned ? 3 : 4);
-    const candidates: Array<{ node: GraphNode; alpha: number }> = [];
-    for (const node of visibleNodes) {
-      let alpha = node.kind === 'doc' ? 1 : labelAlpha(k, node.strength, maxStrength);
-      if (focus) alpha = related(node.id) ? Math.max(alpha, fade) : alpha * (1 - fade);
-      if (alpha < 0.03) continue;
-      candidates.push({ node, alpha });
-    }
-    candidates.sort((a, b) => rank(a.node) - rank(b.node) || b.node.strength - a.node.strength);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = palette.bg;
     const placed: Array<[number, number, number, number]> = [];
-    for (const { node, alpha } of candidates) {
-      if (placed.length >= MAX_LABELS) break;
+    const place = (node: GraphNode, alpha: number) => {
+      if (!inView(node)) return;
       if (node.labelWidth < 0) node.labelWidth = ctx.measureText(node.labelText).width;
       const sx = width / 2 + view.x + node.x! * k;
       const sy = height / 2 + view.y + (node.y! + node.radius) * k + 3;
       const half = node.labelWidth / 2 + 3;
       const box: [number, number, number, number] = [sx - half, sy - 1, sx + half, sy + 14];
-      if (box[2] < 0 || box[0] > width || box[1] > height || box[3] < 0) continue;
-      if (rank(node) > 0 && placed.some((other) => box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])) continue;
+      if (box[2] < 0 || box[0] > width || box[1] > height || box[3] < 0) return;
+      if (node !== focus && placed.some((other) => box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])) return;
       placed.push(box);
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = palette.bg;
       ctx.strokeText(node.labelText, sx, sy);
       ctx.fillStyle = node === focus || node.kind === 'doc' ? palette.text : palette.muted;
       ctx.fillText(node.labelText, sx, sy);
+    };
+    const restAlpha = (node: GraphNode) => node.kind === 'doc' ? 1 : labelAlpha(k, node.strength, maxStrength);
+    if (focus) {
+      for (const node of [focus, ...neighborOrder]) {
+        if (placed.length >= MAX_LABELS) break;
+        const alpha = Math.max(restAlpha(node), fade);
+        if (alpha >= 0.03) place(node, alpha);
+      }
+    }
+    const restFade = focus ? 1 - fade : 1;
+    for (let index = 0; index < labelOrder.length && placed.length < MAX_LABELS; index++) {
+      const node = labelOrder[index];
+      if (focus && related(node)) continue;
+      const alpha = restAlpha(node) * restFade;
+      if (alpha >= 0.03) place(node, alpha);
+      // 문서·고정 다음은 세기가 줄어드는 순서이고, 이름 불투명도도 세기를 따라 줄어든다.
+      else if (index >= labelRanked) break;
     }
     ctx.globalAlpha = 1;
     stats.draws += 1;
@@ -973,31 +1089,36 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
 
   function nodeAt(clientX: number, clientY: number): GraphNode | null {
     const point = toWorld(clientX, clientY);
-    grid ??= buildGrid();
-    const reach = 16 + 5 / view.k;
-    let best: GraphNode | null = null;
-    let bestDistance = Infinity;
-    for (let cx = Math.floor((point.x - reach) / GRID_CELL); cx <= Math.floor((point.x + reach) / GRID_CELL); cx++) {
-      for (let cy = Math.floor((point.y - reach) / GRID_CELL); cy <= Math.floor((point.y + reach) / GRID_CELL); cy++) {
-        for (const node of grid.get(cellKey(cx, cy)) ?? []) {
-          const distance = Math.hypot(node.x! - point.x, node.y! - point.y);
-          if (distance <= node.radius + 5 / view.k && distance < bestDistance) {
-            best = node;
-            bestDistance = distance;
-          }
+    const slack = 5 / view.k;
+    const hit = { node: null as GraphNode | null, distance: Infinity };
+    const consider = (list: readonly GraphNode[]) => {
+      for (const node of list) {
+        if (node.x === undefined || node.y === undefined) continue;
+        const distance = Math.hypot(node.x - point.x, node.y - point.y);
+        if (distance <= node.radius + slack && distance < hit.distance) {
+          hit.node = node;
+          hit.distance = distance;
         }
       }
+    };
+    if (simAwake) {
+      // 움직이는 동안은 틱마다 위치가 바뀌어 찾을 때마다 격자를 새로 만들게 된다. 한 번 훑는 편이 싸다.
+      consider(nodes);
+      return hit.node;
     }
-    return best;
+    grid ??= buildGrid();
+    const reach = 16 + slack;
+    for (let cx = Math.floor((point.x - reach) / GRID_CELL); cx <= Math.floor((point.x + reach) / GRID_CELL); cx++) {
+      for (let cy = Math.floor((point.y - reach) / GRID_CELL); cy <= Math.floor((point.y + reach) / GRID_CELL); cy++) {
+        consider(grid.get(cellKey(cx, cy)) ?? []);
+      }
+    }
+    return hit.node;
   }
 
-  function neighborIds(node: GraphNode): Set<string> {
-    const ids = new Set<string>();
-    for (const link of adjacent.get(node.id) ?? []) {
-      const source = endpointId(link.source);
-      ids.add(source === node.id ? endpointId(link.target) : source);
-    }
-    return ids;
+  function setNeighbors(node: GraphNode): void {
+    neighborOrder = (adjacent.get(node.id) ?? []).map((link) => otherEnd(link, node)).sort((a, b) => b.strength - a.strength);
+    neighbors = new Set(neighborOrder.map((other) => other.id));
   }
 
   function setHover(node: GraphNode | null): void {
@@ -1006,7 +1127,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     if (node) {
       // 다른 노드로 바로 옮기면 흐림을 유지한 채 초점만 바꾼다.
       focus = node;
-      neighbors = neighborIds(node);
+      setNeighbors(node);
     }
     canvas.style.cursor = node ? 'pointer' : '';
     const branch = node && node.kind !== 'doc' ? otherWorktreeBranch(itemById.get(node.id)?.origin, worktrees()) : null;
@@ -1350,7 +1471,12 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       project = next;
       renderModes();
       if (next) loadProjectForces(next.id);
-      rebuild();
+      if (active) {
+        rebuild();
+        if (layoutStale) void layout();
+      } else {
+        rebuildPending = true;
+      }
       if (!next) {
         simAwake = false;
         requestDraw();
@@ -1369,9 +1495,14 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
         return;
       }
       readPalette();
-      recolor();
+      if (rebuildPending) {
+        rebuildPending = false;
+        rebuild();
+      } else {
+        recolor();
+      }
       resize();
-      if (project && !simulation) void layout(true);
+      if (layoutStale) void layout();
       else wake();
       requestDraw();
     },
