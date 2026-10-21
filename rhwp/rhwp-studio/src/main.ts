@@ -197,7 +197,7 @@ import {
   type ChatSession,
   type DocumentSession,
 } from './document-session.ts';
-import { opensInNewSession, opensNestedInNavigation, routeUnlinkedThread, sessionHoldsActiveUnlinkedChat, settledLinkLoad, type LinkLoad } from './document-session-routing.ts';
+import { opensInNewSession, opensNestedInNavigation, planChatCapacity, routeUnlinkedThread, sessionHoldsActiveUnlinkedChat, settledLinkLoad, type LinkLoad } from './document-session-routing.ts';
 import {
   BLOCKED_RESTORE_MESSAGE,
   offerAutosaveRecovery,
@@ -2210,7 +2210,7 @@ async function mergeWorktreeSession(requested: VersionWorktree): Promise<void> {
     candidate.branch === source.mergeTarget!.name && candidate.branchGeneration === source.mergeTarget!.generation
   ));
   if (!target) {
-    if (allChats().length >= MAX_PARALLEL_CHATS) throw new Error('열린 문서나 채팅을 닫은 뒤 다시 병합하세요.');
+    if (!await makeRoomForChat(null, { quiet: true })) throw new Error('열린 문서나 채팅을 닫은 뒤 다시 병합하세요.');
     const [repository, branch] = await Promise.all([
       worktreeStore.getRepository(source.repositoryId),
       worktreeStore.getBranch(source.repositoryId, source.mergeTarget.name),
@@ -2533,6 +2533,46 @@ function takeTrapInterruptedTurnOptions(): { interruptTurnsOnFirstWelcome: strin
 }
 
 /**
+ * 새 채팅 하나의 자리를 낸다. 화면 밖에서 일을 마친 문서 세션이 자리를 차지하고 있으면 오래된 것부터 닫는다 — 저장하지
+ * 않았거나 검토·답을 기다리는 문서는 닫지 않는다. 그래도 자리가 없으면 그 까닭을 한 줄로 알리고 false.
+ * target 은 채팅을 달 세션이라 닫지 않는다.
+ */
+async function makeRoomForChat(
+  target: DocumentSession | null = null,
+  options: { quiet?: boolean } = {},
+): Promise<boolean> {
+  for (const session of liveSessions) closeIdleHiddenChats(session);
+  const plan = planChatCapacity(liveSessions.map((session) => ({
+    session,
+    chats: session.chats,
+    inUse: session === attachedSession || session === target,
+    working: session.chats.some((chat) => chat.bridge.isTurnRunning()),
+    holds: isDocumentSessionBusy(session)
+      || session.documentState.isDirty()
+      || documentCreatedBy(session) !== null
+      || isManagedWorktree(session)
+      || mutatingWorktreeSessions.has(session)
+      || loadingWorktreeSessions.has(session)
+      || linkingSession === session
+      || sessionHoldsActiveUnlinkedChat(session)
+      || session.chats.some((chat) => restartResumingChats.has(chat)),
+  })), MAX_PARALLEL_CHATS);
+  if (plan.kind === 'room') {
+    for (const { session } of plan.release) await disposeSession(session);
+    if (allChats().length < MAX_PARALLEL_CHATS) return true;
+  }
+  if (!options.quiet) {
+    showToast({
+      message: plan.kind === 'room' || plan.working
+        ? `에이전트는 한 창에서 ${MAX_PARALLEL_CHATS}개까지 함께 실행할 수 있습니다. 하나가 끝나면 다시 여세요.`
+        : '다른 문서에 저장하거나 검토할 변경이 남아 있어 채팅을 더 열 수 없습니다.',
+      durationMs: 4500,
+    });
+  }
+  return false;
+}
+
+/**
  * 새 채팅을 만든다. 창의 기본 허브 세션이 비어 있으면 그것을, 아니면 허브 세션을 따로 받는다.
  * 채팅 수가 상한이거나 허브 세션을 받을 수 없으면 null.
  */
@@ -2540,13 +2580,7 @@ async function createChatSession(
   session: DocumentSession,
   options: { active: boolean },
 ): Promise<ChatSession | null> {
-  if (allChats().length >= MAX_PARALLEL_CHATS) {
-    showToast({
-      message: `에이전트는 한 창에서 ${MAX_PARALLEL_CHATS}개까지 함께 실행할 수 있습니다. 끝난 채팅을 닫은 뒤 다시 여세요.`,
-      durationMs: 4500,
-    });
-    return null;
-  }
+  if (!await makeRoomForChat(session)) return null;
   const usesDefaultHub = !allChats().some((chat) => chat.hubSession === null);
   let hubSession: AgentHubSessionLease | null = null;
   if (!usesDefaultHub) {
@@ -3397,13 +3431,7 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
 
 /** 새 문서 세션을 만든다. 첫 채팅은 비어 있는 허브 세션으로 붙는다. */
 async function createLiveSession(): Promise<DocumentSession | null> {
-  if (allChats().length >= MAX_PARALLEL_CHATS) {
-    showToast({
-      message: `에이전트는 한 창에서 ${MAX_PARALLEL_CHATS}개까지 함께 실행할 수 있습니다. 끝난 채팅을 닫은 뒤 다시 여세요.`,
-      durationMs: 4500,
-    });
-    return null;
-  }
+  if (!await makeRoomForChat()) return null;
   const session = await createEmptySession();
   if (!session) return null;
   const chat = await createChatSession(session, { active: true });
