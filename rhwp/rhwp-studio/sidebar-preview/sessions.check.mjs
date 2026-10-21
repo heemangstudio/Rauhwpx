@@ -109,6 +109,31 @@ export async function checkSessionsPreview(page, origin) {
     const restoredScroll = await page.$eval('.ag-messages', (node) => node.scrollTop);
     assert(Math.abs(restoredScroll - primaryScroll) <= 2, `Conversation scroll ${restoredScroll} restored near ${primaryScroll}`);
     await page.evaluate(() => window.sidebarPreview.sessions[0].mock.bridge.interrupt());
+
+    // A chat whose save throws still hands off to the other document's chat. A throw before the
+    // hand-off used to drop the click, so nothing in that chat could switch until a restart.
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector(`.ag-root.ag-threads-open .ag-threads-item[data-thread-id="${MINUTES_CHAT}"]`);
+    await page.evaluate(() => {
+      window.__previewPostMessage = BroadcastChannel.prototype.postMessage;
+      window.__previewConsoleError = console.error;
+      BroadcastChannel.prototype.postMessage = () => {
+        throw new DOMException('preview save failure', 'DataCloneError');
+      };
+      // The injected failure is logged on purpose; any other error still fails the run.
+      console.error = (...args) => {
+        if (!args.some((arg) => String(arg).includes('preview save failure'))) window.__previewConsoleError(...args);
+      };
+    });
+    try {
+      await page.click(`.ag-threads-item[data-thread-id="${MINUTES_CHAT}"]`);
+      await page.waitForFunction(() => window.sidebarPreview.sessions[1].sidebar.isActive(), { timeout: 5000 });
+    } finally {
+      await page.evaluate(() => {
+        BroadcastChannel.prototype.postMessage = window.__previewPostMessage;
+        console.error = window.__previewConsoleError;
+      });
+    }
   } finally {
     await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   }
