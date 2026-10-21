@@ -551,7 +551,10 @@ export interface AgentBridge {
   setWritingStyleInstruction(instruction: string): string;
   /** 현재 막힌 프로바이더 요청에 답한다. 재연결 재시도에도 같은 응답 ID를 쓴다. */
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
-  interrupt(): void;
+  /** steer: 지금 보내기가 끊는 턴이다 — 열린 편집 턴을 검토로 닫지 않고 다음 턴에 잇는다. */
+  interrupt(opts?: { steer?: boolean }): void;
+  /** 끼어들기로 이어 둔 편집 턴을 검토로 닫는다 — 끼어든 메시지가 턴을 열지 못했다. */
+  releaseSteerCarryOver(): void;
   onEvent(cb: (e: SidebarEvent) => void): () => void;
   /**
    * 채팅을 멈추고 소켓을 닫고 리스너·구독을 모두 걷는다. 다시 쓸 수 없다. keepHubChat 이면 허브의 채팅을
@@ -1636,6 +1639,10 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 콘텍스트로 보낸다 */
   private editReport: string[] = [];
   private pendingTurnOpen = false;
+  /** 지금 보내기가 끊는 턴 — 그 turn-end 는 열린 편집 턴을 닫지 않는다. */
+  private steerInterruptRequested = false;
+  /** 끼어든 메시지의 턴을 기다리며 열어 둔 편집 턴. turn-start 가 잇고 releaseSteerCarryOver 가 닫는다. */
+  private steerCarryOver = false;
   /**
    * 소켓은 열렸지만 이 연결의 welcome 을 아직 반영하지 않았다. 그동안 chat-start 를 붙잡는다 —
    * 새로고침 전 페이지의 턴이 허브에 살아 있으면 welcome 이 그 턴을 그대로 잇게 한다.
@@ -2706,6 +2713,8 @@ export class AgentBridgeImpl implements AgentBridge {
     outcome: 'commit' | 'review' = 'review',
     turnStopped = true,
   ) {
+    this.steerInterruptRequested = false;
+    this.steerCarryOver = false;
     if (!this.pendingTurnOpen) return;
     // 전체 모드에는 검토 단계가 없다 — 어떤 종료든 쓰기와 경합해 열린 set 에 남은 편집도 확정한다.
     const resolved = this.writesApplyDirectly() ? 'commit' : outcome;
@@ -3943,6 +3952,8 @@ export class AgentBridgeImpl implements AgentBridge {
         this.editingAgent = event.agent;
         this.turnHadError = false;
         this.beginPlanExecutionTurn();
+        // 끼어든 메시지의 턴이 열렸다 — 이어 둔 편집 턴이 그대로 이 턴의 것이 된다.
+        this.steerCarryOver = false;
         try {
           this.beginPendingTurn(event.agent);
         } catch (e) {
@@ -3971,7 +3982,12 @@ export class AgentBridgeImpl implements AgentBridge {
           // 권한 요청만 그 턴과 함께 끝난다. 브라우저·비밀 값 요청은 허브가 해소할 때까지 둔다.
           this.clearChatPermissionRequests({ status: 'expired', reason: 'turn-interrupted' }, (request) => !request.kind);
         }
-        if (this.pendingTurnOpen) {
+        // 지금 보내기로 끊은 턴은 검토로 닫지 않는다 — 편집은 끼어든 메시지의 턴이 이어 가고, 검토는 그 턴이 끝날 때 뜬다.
+        const steered = this.steerInterruptRequested && this.pendingTurnOpen && !this.writesApplyDirectly();
+        this.steerInterruptRequested = false;
+        if (steered) {
+          this.steerCarryOver = true;
+        } else if (this.pendingTurnOpen) {
           try {
             this.endPendingTurn(disposition.outcome, !succeeded);
           } catch (e) {
@@ -5454,7 +5470,8 @@ export class AgentBridgeImpl implements AgentBridge {
     });
   }
 
-  interrupt(): void {
+  interrupt(opts?: { steer?: boolean }): void {
+    this.steerInterruptRequested = opts?.steer === true;
     this.cancelChatPermissionRequest();
     this.syncEditingLease();
     // Fence requests already in transit before the hub acknowledges the stop.
@@ -5478,6 +5495,16 @@ export class AgentBridgeImpl implements AgentBridge {
       this.flushPendingQuestionCancellation();
     } else {
       this.pendingInterrupt = !this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-interrupt' });
+    }
+  }
+
+  releaseSteerCarryOver(): void {
+    if (!this.steerCarryOver || this.turnRunning) return;
+    this.steerCarryOver = false;
+    try {
+      this.endPendingTurn('review', true);
+    } catch (e) {
+      console.warn('[AgentBridge] endTurn 실패:', e);
     }
   }
 

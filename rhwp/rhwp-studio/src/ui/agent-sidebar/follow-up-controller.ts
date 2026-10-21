@@ -95,7 +95,10 @@ export interface FollowUpControllerDeps<Message, Bubble> {
   send(item: FollowUpItem): ComposedMessageResult<Message, Bubble>;
   /** 허브가 받지 않은 메시지를 기록과 대화에서 걷는다. */
   unsend(message: Message, bubble: Bubble): void;
-  interrupt(): void;
+  /** steer: 지금 보내기가 끊는다 — 편집 턴은 보낼 메시지의 턴으로 이어진다. */
+  interrupt(opts?: { steer?: boolean }): void;
+  /** 끼어들 메시지가 턴을 열지 못한다 — 이어 두던 편집 턴을 검토로 닫는다. */
+  releaseSteer?(): void;
   isTurnRunning(): boolean;
   /** 턴이 돌거나, 보낸 메시지가 턴을 기다린다(turnRunning || replyPending). */
   isWorking(): boolean;
@@ -207,6 +210,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     } catch (error) {
       // 보내지 못했다 — 글을 잃지 않게 맨 앞으로 되돌려 붙잡는다.
       console.warn('[follow-ups] 대기 메시지를 보내지 못했습니다:', error);
+      deps.releaseSteer?.();
       commit(holdQueue(requeueHead(queue(), item), 'failed', undefined, now()));
       return;
     }
@@ -244,6 +248,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     opts?: { keepNeedsUserHold?: boolean },
   ): void {
     if (inFlight === flight) inFlight = null;
+    deps.releaseSteer?.();
     // 이 메시지의 턴은 오지 않는다 — 그 턴을 기다리던 중지도 끝났다.
     stopAwaitingTurn = false;
     deps.unsend(flight.message, flight.bubble);
@@ -349,7 +354,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       sendNowId = id;
       // 이 중지는 사용자가 보내려고 고른 것이다. 걸어 둔 항목이 사라지면 '멈춤'으로 남는다.
       userStopRequested = true;
-      deps.interrupt();
+      deps.interrupt({ steer: true });
       return;
     }
     if (deps.isWorking()) {
@@ -479,6 +484,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
       }
       // 이 턴 끝에서 대기 메시지 하나를 보낸다 — 채팅은 끝나지 않았다(레일에 완료를 남기지 않는다).
       const drained = pendingDispatch !== null;
+      // 끼어들 메시지를 보내지 않는다 — 이어 두던 편집은 지금 검토로 넘긴다.
+      if (!drained) deps.releaseSteer?.();
       settle();
       return drained;
     },

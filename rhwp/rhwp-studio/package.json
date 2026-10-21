@@ -17,6 +17,7 @@
     "test": "npm run generate:agent-edit-capabilities && node scripts/run-tests.mjs unit",
     "e2e:smoke": "node e2e/smoke/run.mjs",
     "e2e:chat-permissions": "node e2e/chat-permissions.test.mjs --mode=headless",
+    "e2e:steer": "node e2e/steer-keeps-editing.test.mjs --mode=headless",
     "e2e:background-sessions": "node e2e/background-agent-sessions.test.mjs --mode=headless",
     "e2e:agent-document-detach": "node e2e/agent-document-detach.test.mjs --mode=headless",
     "e2e:engine-trap-recovery": "node e2e/engine-trap-recovery.test.mjs --mode=headless",

@@ -2015,6 +2015,7 @@ export function createMockBridge(
         });
         finish();
       }),
+    releaseSteerCarryOver: () => {},
     interrupt: () => {
       interrupts += 1;
       generation++;
