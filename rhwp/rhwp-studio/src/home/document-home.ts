@@ -34,6 +34,8 @@ import type { UnsavedDocument } from './unsaved-documents.ts';
 import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
 export type HomeOpenResult = 'opened' | 'cancelled' | 'missing' | 'failed';
+/** busy: 검토할 변경이 남아 닫지 않았다. */
+export type HomeCloseResult = 'closed' | 'busy' | 'cancelled' | 'failed';
 
 /** 홈을 닫으면 돌아갈 곳. 열린 문서, 또는 에이전트 전체 화면의 채팅. */
 export interface HomeReturnTarget {
@@ -64,6 +66,8 @@ export interface DocumentHomeDeps {
   canRename(row: RecentDoc): boolean;
   renameDocument(row: RecentDoc, name: string): Promise<string | null>;
   openInNewWindow?: (row: RecentDoc) => Promise<boolean>;
+  /** 이 창에 열린 문서를 닫는다. 바뀐 내용은 저장하고 닫는다. */
+  closeDocument?: (row: RecentDoc) => Promise<HomeCloseResult>;
   reveal?: { label: string; run(row: RecentDoc): Promise<boolean> };
   returnTarget(): HomeReturnTarget | null;
   /** 닫힐 때 열기 전 초점 자리가 사라졌으면 편집기나 입력기로 초점을 돌린다. */
@@ -160,6 +164,7 @@ const ICONS = {
   window: 'M9.5 2.5h4v4M13.5 2.5l-5 5M11.5 9.5v4h-9v-9h4',
   pencil: 'M10.5 2.5l3 3L6 13H3v-3z',
   remove: 'M4.5 4.5l7 7M11.5 4.5l-7 7',
+  close: 'M3 3h10v10H3zM6 6l4 4M10 6l-4 4',
 };
 
 const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -282,6 +287,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   const flagged = new Map<string, string>();
   const openFailures = new Map<string, number>();
   let opening: string | null = null;
+  let closing: string | null = null;
   let templateList: DocumentTemplate[] | null = null;
   let galleryOpen = false;
   let expanded: string | null = null;
@@ -767,6 +773,9 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         void deps.reveal!.run(row).then((ok) => { if (!ok) deps.toast('파일 위치를 찾을 수 없습니다.'); });
       }, 'dh-action', ICONS.open));
     }
+    if (deps.closeDocument && live) {
+      actions.append(action('닫기', () => void closeRow(row), 'dh-action', ICONS.close));
+    }
     if (deps.canRename(row)) actions.append(action('이름 바꾸기', () => beginRename(doc, row, actions), 'dh-action', ICONS.pencil));
     actions.append(action('목록에서 제거', () => {
       void defaultHealIo.forget(row).then(() => {
@@ -921,6 +930,22 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
         return renamed;
       },
     });
+  }
+
+  async function closeRow(row: RecentDoc): Promise<void> {
+    if (closing) return;
+    closing = row.id;
+    try {
+      const result = await deps.closeDocument!(row);
+      if (result === 'busy') deps.toast('검토할 변경이 남아 있어 닫지 않았습니다.');
+      else if (result === 'failed') deps.toast('문서를 닫지 못했습니다.');
+      if (result !== 'closed' || !visible) return;
+      focusedId = row.id;
+      paintReturn();
+      renderRecent();
+    } finally {
+      closing = null;
+    }
   }
 
   async function openRow(row: RecentDoc): Promise<void> {

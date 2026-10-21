@@ -104,7 +104,7 @@ import {
   type VerifiedDocumentGrant,
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
-import { createDocumentHome, type DocumentHome } from '@/home/document-home';
+import { createDocumentHome, type DocumentHome, type HomeCloseResult } from '@/home/document-home';
 import { createEmptyDocumentView, type EmptyDocumentView } from '@/ui/empty-document-view';
 import {
   createUnsavedDocuments,
@@ -113,6 +113,7 @@ import {
   type UnsavedDocuments,
 } from '@/home/unsaved-documents';
 import { createIcon } from '@/ui/agent-sidebar/icons';
+import { showSheet } from '@/ui/agent-sidebar/sheet';
 import { loadWorktreeData } from '@/home/home-data';
 import { renderFirstPage } from '@/home/thumbnail-render';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
@@ -3058,6 +3059,7 @@ function installDocumentHome(): void {
       return live ? canRenameSessionDocument(live) : isDesktopApp();
     },
     renameDocument: renameRecentDocument,
+    closeDocument: (row) => closeLiveDocument(row.documentId),
     openInNewWindow: canOpenNativeDocumentWindow()
       ? (row) => openNativeDocumentWindow(row.documentId)
       : undefined,
@@ -3487,6 +3489,76 @@ async function openInNewSession<T>(
       await disposeSession(fresh);
     }
   }
+}
+
+/**
+ * 문서 홈의 닫기. 바뀐 내용은 저장하고 커밋한 뒤 세션을 닫는다. 지금 문서를 닫으면 문서 없는 화면으로 간다.
+ * 채팅이 진행 중이면 먼저 묻고, 닫기로 하면 그 채팅을 멈추고 검토 전 변경을 버린 뒤 닫는다.
+ * 검토할 변경만 남은 문서는 닫지 않는다.
+ */
+async function closeLiveDocument(documentId: string): Promise<HomeCloseResult> {
+  if (isNavigating() || refuseDocumentOpenWhileTrapped()) return 'cancelled';
+  const running = liveSessionForDocument(documentId)?.chats.filter((chat) => chat.bridge.isBusy()).length ?? 0;
+  if (running > 0 && !await showSheet({
+    title: '정말로 닫을까요?',
+    message: `${running}개의 채팅이 진행 중이에요`,
+    confirmLabel: '닫기',
+    cancelLabel: '돌아가기',
+    destructive: true,
+    focusCancel: true,
+    center: true,
+  })) return 'cancelled';
+  return runNavigation(async () => {
+    const session = liveSessionForDocument(documentId);
+    if (!session) return 'closed';
+    if (running > 0 && !await stopSessionChats(session)) return 'failed';
+    if (isDocumentSessionBusy(session) || mutatingWorktreeSessions.has(session)
+      || documentAgentView(session).pendingEdits.hasPending()) return 'busy';
+    try {
+      if (isManagedWorktree(session)) {
+        await closeWorktreeSession(session.worktree!);
+        return 'closed';
+      }
+      const previous = attachedSession;
+      if (session.wasm.hasLoadedDocument()) {
+        if (previous !== session) await attachSession(session);
+        const versions = session.versions;
+        const left = await runSaveBeforeLeaving(
+          commandServices,
+          () => session.documentId,
+          versions ? () => commitBeforeLibraryMove(versions) : undefined,
+        );
+        if (left !== 'ok') {
+          if (previous !== session && liveSessions.includes(previous)) await attachSession(previous);
+          return left;
+        }
+      }
+      const next = previous !== session && liveSessions.includes(previous)
+        ? previous
+        : liveSessions.find((candidate) => candidate !== session && !candidate.wasm.hasLoadedDocument())
+          ?? await createLiveSession()
+          ?? liveSessions.find((candidate) => candidate !== session);
+      if (!next) return 'failed';
+      await attachSession(next);
+      await disposeSession(session);
+      return 'closed';
+    } catch (error) {
+      console.error('[sessions] 문서를 닫지 못했습니다:', error);
+      return 'failed';
+    }
+  });
+}
+
+/** 문서의 채팅을 모두 멈추고 검토 전 변경을 버린다. 정해진 시간 안에 멈추지 않으면 false. */
+async function stopSessionChats(session: DocumentSession): Promise<boolean> {
+  for (const chat of session.chats) if (chat.bridge.isBusy()) chat.bridge.interrupt();
+  const deadline = Date.now() + 5000;
+  while (isDocumentSessionBusy(session)) {
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+  }
+  for (const chat of session.chats) chat.bridge.pendingEdits.rejectAll();
+  return true;
 }
 
 /**
