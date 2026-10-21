@@ -129,6 +129,7 @@ test('text patterns classify messages from older paths, in order', () => {
     ['Overloaded', 'provider_error'],
     ['upstream returned 502', 'provider_error'],
     ['Too many requests', 'provider_error'],
+    ['API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited', 'provider_error'],
     ['prompt is too long: 210000 tokens > 200000 maximum', 'invalid_request'],
     ['Context limit reached · /compact or /clear to continue', 'invalid_request'],
     ['model gpt-x not found', 'invalid_request'],

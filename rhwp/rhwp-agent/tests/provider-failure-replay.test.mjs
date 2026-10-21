@@ -280,6 +280,46 @@ test('claude: extra usage keeps a rejected subscription window from being read a
   assert.equal(end.failure.resetAt, null);
 });
 
+/** 일시적인 429 의 CLI 문구 — 구독 계정이면 CLI 가 한도 헤더 없이도 rate_limit_event 를 'rejected' 로 보낸다. */
+const TRANSIENT_429 = 'API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited';
+
+function transient429Variant(change, extraEvents = []) {
+  return fixtureVariant('claude/usage-limit', change, (records) => records.flatMap((record) => {
+    if (record.json?.type === 'rate_limit_event') return [record, ...extraEvents.map((json) => ({ kind: 'out', json }))];
+    if (record.json?.type === 'assistant') {
+      return [{ ...record, json: { ...record.json, message: { ...record.json.message, content: [{ type: 'text', text: TRANSIENT_429 }] } } }];
+    }
+    if (record.json?.type === 'result') return [{ ...record, json: { ...record.json, result: TRANSIENT_429 } }];
+    return [record];
+  }));
+}
+
+test('claude: a transient 429 the CLI marks "not your usage limit" is a retryable server error despite a rejected event', { timeout: 20_000 }, async (t) => {
+  const { end } = await replayTurn(t, transient429Variant('the 429 has no quota headers; the CLI still sends status rejected with the open five-hour window reset.'));
+  assert.equal(end.failure.class, 'provider_error');
+  assert.equal(end.failure.code, 'claude:rate_limit');
+  assert.equal(end.failure.retryable, true);
+  assert.equal(end.failure.resetAt, null, 'no reset time to wait for');
+});
+
+test('claude: a rejected window that turns allowed again in the same turn no longer counts as a usage limit', { timeout: 20_000 }, async (t) => {
+  const allowed = {
+    type: 'rate_limit_event', uuid: '00000000-0000-4000-8000-0000000000a1', session_id: 'replay-claude-session-1',
+    rate_limit_info: { status: 'allowed', resetsAt: 4102444800, rateLimitType: 'five_hour', isUsingOverage: false },
+  };
+  const bundle = fixtureVariant('claude/usage-limit', 'a later request succeeds (status allowed) before a plain 429 ends the turn.', (records) => records.flatMap((record) => {
+    if (record.json?.type === 'rate_limit_event') return [record, { kind: 'out', json: allowed }];
+    if (record.json?.type === 'assistant') {
+      return [{ ...record, json: { ...record.json, message: { ...record.json.message, content: [{ type: 'text', text: 'API Error: 429 rate_limit_error' }] } } }];
+    }
+    if (record.json?.type === 'result') return [{ ...record, json: { ...record.json, result: 'API Error: 429 rate_limit_error' } }];
+    return [record];
+  }));
+  const { end } = await replayTurn(t, bundle);
+  assert.equal(end.failure.class, 'provider_error');
+  assert.equal(end.failure.resetAt, null);
+});
+
 test('claude SDK: an auth API error followed by a transport failure stays a login failure, with its text', { timeout: 20_000 }, async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-sdk-fail-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

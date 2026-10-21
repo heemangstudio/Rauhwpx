@@ -236,6 +236,12 @@ const INVALID_TEXT = /invalid[_ ]request|\b40[04]\b|\b413\b/i;
 const CLEANUP_TEXT = /cleanup (?:could not be confirmed|remains unconfirmed)|could not be confirmed stopped/i;
 const CLI_MISSING_TEXT = /\bENOENT\b|command not found|is not recognized as an internal or external command/i;
 const SANDBOX_UNAVAILABLE_TEXT = /sandbox required but unavailable/i;
+/**
+ * Claude CLI 가 일시적인 429 에 붙이는 문구 ('Server is temporarily limiting requests (not your usage limit)',
+ * '…this may be a temporary capacity issue.'). CLI 는 구독 계정의 429 라면 한도 헤더가 없어도
+ * rate_limit_event 를 'rejected' 로 바꿔 보내고 지금 창의 resetsAt 을 그대로 싣는다 — 이 문구가 그 거절보다 맞다.
+ */
+const CLAUDE_TRANSIENT_429_TEXT = /not your usage limit|temporarily limiting requests|temporary capacity issue/i;
 /** Claude 레거시 사용 한도 문구의 `…|<epoch 초>` 꼬리 — 유일하게 모호하지 않은 문구 속 시각. */
 const CLAUDE_EPOCH_SUFFIX = /\|(\d{10})(?!\d)/;
 
@@ -269,6 +275,7 @@ function exitTextClass(raw) {
   if (EXIT_AUTH_TEXT.test(text)) return { class: 'auth_required' };
   // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
+  if (CLAUDE_TRANSIENT_429_TEXT.test(text)) return { class: 'provider_error' };
   if (EXIT_USAGE_TEXT.test(text)) return { class: 'usage_limit' };
   if (MODEL_TEXT.test(text)) return { class: 'invalid_request', code: 'model_not_found' };
   return null;
@@ -279,6 +286,7 @@ function textClass(text) {
   if (AUTH_TEXT.test(text)) return { class: 'auth_required', code: null };
   // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
+  if (CLAUDE_TRANSIENT_429_TEXT.test(text)) return { class: 'provider_error', code: null };
   if (USAGE_TEXT.test(text)) return { class: 'usage_limit', code: null };
   if (NETWORK_TEXT.test(text)) return { class: 'network', code: null };
   if (PROVIDER_TEXT.test(text)) return { class: 'provider_error', code: null };
@@ -299,7 +307,7 @@ function httpClass(status, text, source) {
     return 'auth_required';
   }
   if (status === 402) return 'usage_limit';
-  if (status === 429) return USAGE_TEXT.test(text) ? 'usage_limit' : 'provider_error';
+  if (status === 429) return USAGE_TEXT.test(text) && !CLAUDE_TRANSIENT_429_TEXT.test(text) ? 'usage_limit' : 'provider_error';
   if (status >= 500 && status <= 599) return 'provider_error';
   if (status === 400 || status === 404 || status === 413) return 'invalid_request';
   return null;
@@ -311,13 +319,14 @@ function validResetAt(value) {
 }
 
 /** 프로바이더 이름 → 이 프로바이더의 구조화된 코드 표. */
-function structuredClass(hint) {
+function structuredClass(hint, text) {
   const code = typeof hint?.code === 'string' ? hint.code : null;
   if (!code) return null;
   if (SHARED_CODES[code]) return { class: SHARED_CODES[code], code };
   if (hint.source === 'claude') {
     if (code === 'rate_limit') {
-      return { class: hint.rateLimitRejected ? 'usage_limit' : 'provider_error', code: `claude:${code}` };
+      const rejected = hint.rateLimitRejected && !CLAUDE_TRANSIENT_429_TEXT.test(text);
+      return { class: rejected ? 'usage_limit' : 'provider_error', code: `claude:${code}` };
     }
     if (CLAUDE_CODES[code]) return { class: CLAUDE_CODES[code], code: `claude:${code}` };
     return { class: null, code: `claude:${code}` };
@@ -346,7 +355,7 @@ function structuredClass(hint) {
 export function classifyProviderFailure({ agent, message, hint = null, origin = 'error', stopReason } = {}, { secrets = [] } = {}) {
   const source = String(message ?? '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   const raw = source.slice(0, CLASSIFY_TEXT_LIMIT);
-  let resolved = structuredClass(hint);
+  let resolved = structuredClass(hint, raw);
   let failureClass = resolved?.class ?? null;
   let code = resolved?.code ?? null;
   if (hint?.source === 'claude' && hint.terminalReason === 'prompt_too_long' && !failureClass) {
