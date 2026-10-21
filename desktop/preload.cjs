@@ -172,6 +172,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   releaseNativeFile: (handleId) => ipcRenderer.invoke('desktop:release-native-file', handleId),
   renameNativeFile: (handleId, nextName) => ipcRenderer.invoke('desktop:rename-native-file', handleId, nextName),
   readNativeFile: (handleId) => ipcRenderer.invoke('desktop:native-file-read', handleId),
+  locateNativeFile: (handleId) => ipcRenderer.invoke('desktop:native-file-locate', handleId),
   getNativeFileSourcePath: (handleId) => ipcRenderer.invoke(
     'desktop:native-file-source-path',
     handleId,
@@ -346,6 +347,20 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     ipcRenderer.on('window:fullscreen-changed', (_event, fullscreen) => {
       callback(Boolean(fullscreen));
     });
+  },
+  // 탐색기에서 이름이 바뀌거나 옮겨진 문서를 메인이 따라갔다. 제목·목록을 새 이름으로 고친다.
+  onNativeFileMoved: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.handleId === 'string' && typeof payload?.name === 'string') {
+        callback({
+          handleId: payload.handleId,
+          name: payload.name,
+          previousName: typeof payload.previousName === 'string' ? payload.previousName : '',
+        });
+      }
+    };
+    ipcRenderer.on('desktop:native-file-moved', listener);
+    return () => ipcRenderer.removeListener('desktop:native-file-moved', listener);
   },
   onOpenFiles: (callback) => {
     ipcRenderer.on('desktop:open-files', (_event, files) => {

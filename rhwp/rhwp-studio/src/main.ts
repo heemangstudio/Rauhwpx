@@ -60,10 +60,12 @@ import {
   runLibraryMove,
   runSaveBeforeLeaving,
   whenSavesIdle,
+  isSaveInProgress,
   saveCurrentDocument,
   saveToCurrentFileQuietly,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
+import { waitForDocumentIoIdle } from '@/core/document-io-idle';
 import {
   applyCompactToolbar,
   setBasicToolboxExpanded,
@@ -293,6 +295,9 @@ import {
   canRenameNativeFile,
   renameNativeDocumentFile,
   NativeRenameRefusedError,
+  locateNativeDocumentFile,
+  subscribeNativeFileMoves,
+  type NativeFileMovedEvent,
   type AgentHubSessionLease,
   releaseReplacedNativeFileHandle,
   rememberNativeDocument,
@@ -905,7 +910,8 @@ const commandServices: CommandServices = {
   getInputHandler: () => inputHandler,
   getViewportManager: () => canvasView?.getViewportManager() ?? null,
   pickOpenHandle: pickDesktopNativeOpenFile,
-  pickSaveHandle: pickDesktopNativeSaveFile,
+  // 다른 이름으로 저장은 지금 문서가 있는 폴더에서 연다.
+  pickSaveHandle: (options) => pickDesktopNativeSaveFile(options, undefined, wasm.currentFileHandle),
   validateSaveHandle: reserveSaveHandleForWrite,
   canSaveDocument: () => !sessionReadOnly(),
   createPortableHistoryBundle: async () => {
@@ -2883,9 +2889,92 @@ function renameFailureMessage(error: unknown): string {
     saving: '저장이 끝난 뒤 다시 바꾸세요.',
     invalid: '쓸 수 있는 이름을 입력하세요.',
     extension: '확장자는 바꿀 수 없습니다.',
+    missing: '문서 파일을 찾을 수 없습니다. 지워졌거나 다른 곳으로 옮겨졌습니다.',
+    unavailable: '문서가 있는 드라이브나 네트워크 폴더에 연결할 수 없습니다.',
+    'in-use': '다른 프로그램이 이 문서를 쓰고 있습니다. 그 프로그램에서 닫은 뒤 다시 바꾸세요.',
+    denied: '이 파일이나 폴더의 이름을 바꿀 권한이 없습니다.',
   };
   return (reason && messages[reason]) || '파일 이름을 바꾸지 못했습니다.';
 }
+
+/** 문서 파일의 이름이 바뀌었다. 채팅과 최근 문서가 새 이름을 쓰게 한다. */
+async function rememberRenamedDocumentFile(session: DocumentSession, fileName: string): Promise<void> {
+  const doc = session.wasm;
+  const documentId = session.documentId;
+  if (!documentId) return;
+  renameThreadsDocument(documentId, fileName);
+  const sourceDigest = doc.documentDigest;
+  if (sourceDigest && doc.currentFileHandle) {
+    await addRecentDoc({
+      documentId,
+      sourceDigest,
+      fileName,
+      sourceFormat: doc.getSourceFormat(),
+      handle: doc.currentFileHandle,
+    }).catch((error) => console.warn('[recent] 이름을 바꾼 문서를 기록하지 못했습니다:', error));
+  }
+}
+
+/**
+ * 탐색기에서 문서 파일의 이름이 바뀌었거나 다른 폴더로 옮겨져 데스크톱이 그 파일을 따라갔다.
+ * 그 파일을 연 문서의 이름·채팅·최근 문서를 맞춘다. 저장은 이미 옮긴 파일로 간다.
+ */
+async function applyFollowedNativeFile(event: NativeFileMovedEvent): Promise<void> {
+  for (const session of liveSessions) {
+    const doc = session.wasm;
+    if (nativeFileHandleId(doc.currentFileHandle) !== event.handleId) continue;
+    const renamed = event.name !== event.previousName;
+    // 저장이 먼저 새 이름을 받아 왔으면 이미 맞다.
+    if (renamed && doc.fileName === event.previousName) doc.fileName = event.name;
+    if (renamed) await rememberRenamedDocumentFile(session, event.name);
+    session.bus.emit('document-context-changed');
+    if (session === attachedSession) {
+      missingNativeFileNotices.delete(session);
+      showToast({
+        message: renamed
+          ? `파일 이름이 '${event.name}'(으)로 바뀌어 그 파일에 이어서 저장합니다.`
+          : '문서 파일이 다른 폴더로 옮겨져 옮긴 파일에 이어서 저장합니다.',
+        durationMs: 4000,
+      });
+    }
+  }
+}
+
+/** 원래 파일을 찾을 수 없다고 이미 알린 문서. 파일을 다시 찾으면 지운다. */
+const missingNativeFileNotices = new WeakSet<DocumentSession>();
+let nativeFileLocatedAt = 0;
+
+/** 창이 다시 앞으로 오면 보이는 문서의 파일이 아직 그 자리에 있는지 본다. 옮겨졌으면 따라간다. */
+async function checkAttachedNativeFile(): Promise<void> {
+  const session = attachedSession;
+  const handle = session.wasm.currentFileHandle;
+  if (!handle || !nativeFileHandleId(handle)) return;
+  const now = Date.now();
+  if (now - nativeFileLocatedAt < 1500) return;
+  nativeFileLocatedAt = now;
+  try {
+    const location = await locateNativeDocumentFile(handle);
+    if (location?.state !== 'missing') {
+      missingNativeFileNotices.delete(session);
+      return;
+    }
+    if (session !== attachedSession || missingNativeFileNotices.has(session)) return;
+    missingNativeFileNotices.add(session);
+    showToast({
+      message: '원래 문서 파일을 찾을 수 없습니다. 지워졌거나 다른 드라이브로 옮겨졌습니다. 다른 이름으로 저장하세요.',
+      durationMs: 6000,
+    });
+  } catch (error) {
+    console.warn('[desktop] 문서 파일 위치를 확인하지 못했습니다:', error);
+  }
+}
+
+subscribeNativeFileMoves((event) => {
+  void applyFollowedNativeFile(event).catch((error) => {
+    console.warn('[desktop] 옮겨진 문서 파일을 반영하지 못했습니다:', error);
+  });
+});
+window.addEventListener('focus', () => { void checkAttachedNativeFile(); });
 
 async function renameDocumentInSession(
   session: DocumentSession,
@@ -2898,32 +2987,24 @@ async function renameDocumentInSession(
   if (!nextName) return { ok: false, message: '쓸 수 있는 이름을 입력하세요.' };
   if (nextName === current) return { ok: true, fileName: current };
   const handle = doc.currentFileHandle;
+  let fileName = nextName;
   try {
     if (handle && canRenameNativeFile(handle)) {
+      // 진행 중인 저장이 끝난 뒤 바꾼다. 저장 도중 바꾸면 데스크톱이 거절한다.
+      await whenSavesIdle().catch(() => {});
       doc.currentFileHandle = await renameNativeDocumentFile(handle, nextName);
+      // 바깥에서 대소문자만 바꾼 이름처럼 디스크가 정한 이름을 쓴다.
+      fileName = doc.currentFileHandle.name;
     } else if (handle) {
       return { ok: false, message: '이 문서의 파일 이름은 여기서 바꿀 수 없습니다.' };
     }
   } catch (error) {
     return { ok: false, message: renameFailureMessage(error) };
   }
-  doc.fileName = nextName;
-  const documentId = session.documentId;
-  if (documentId) {
-    renameThreadsDocument(documentId, nextName);
-    const sourceDigest = doc.documentDigest;
-    if (sourceDigest && doc.currentFileHandle) {
-      await addRecentDoc({
-        documentId,
-        sourceDigest,
-        fileName: nextName,
-        sourceFormat: doc.getSourceFormat(),
-        handle: doc.currentFileHandle,
-      }).catch((error) => console.warn('[recent] 이름을 바꾼 문서를 기록하지 못했습니다:', error));
-    }
-  }
+  doc.fileName = fileName;
+  await rememberRenamedDocumentFile(session, fileName);
   session.bus.emit('document-context-changed');
-  return { ok: true, fileName: nextName };
+  return { ok: true, fileName };
 }
 
 /**
@@ -3304,8 +3385,12 @@ async function trackDocumentIo<T>(run: () => Promise<T>): Promise<T> {
 
 /** 진행 중인 문서 열기와 저장이 모두 끝날 때까지 기다린다. 끝나기 전에 세션을 바꾸면 그 일이 다른 문서에 닿는다. */
 async function whenDocumentIoIdle(): Promise<void> {
-  await whenSavesIdle();
-  while (documentIoCount > 0) await documentIoIdle;
+  await waitForDocumentIoIdle({
+    whenSavesIdle,
+    isSaving: isSaveInProgress,
+    pendingLoads: () => documentIoCount,
+    whenLoadsIdle: () => documentIoIdle,
+  });
 }
 
 let navigationChain: Promise<unknown> = Promise.resolve();

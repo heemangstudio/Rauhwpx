@@ -47,6 +47,12 @@ export const NATIVE_FILE_IN_USE_CODE = 'NATIVE_FILE_IN_USE';
 export const NATIVE_FILE_IN_USE_MESSAGE = 'Another program is using this document. Close it there or wait a moment, then save again.';
 export const NATIVE_FILE_ACCESS_DENIED_CODE = 'NATIVE_FILE_ACCESS_DENIED';
 export const NATIVE_FILE_ACCESS_DENIED_MESSAGE = 'Windows denied access to this document or its folder. Save it under a different name or in another folder.';
+export const NATIVE_FILE_MISSING_CODE = 'NATIVE_FILE_MISSING';
+export const NATIVE_FILE_MISSING_MESSAGE = 'This document was moved or deleted after it was opened and could not be found. Nothing was written; save it under a different name.';
+export const NATIVE_FILE_UNAVAILABLE_CODE = 'NATIVE_FILE_UNAVAILABLE';
+export const NATIVE_FILE_UNAVAILABLE_MESSAGE = 'The drive or network folder that holds this document is not available. Nothing was written; reconnect it, or save under a different name.';
+export const NATIVE_FILE_MOVED_INTO_OPEN_CODE = 'NATIVE_FILE_MOVED_INTO_OPEN';
+export const NATIVE_FILE_MOVED_INTO_OPEN_MESSAGE = 'This document was renamed to the name of another open document. Nothing was written; close that document or save this one under a different name.';
 
 const WINDOWS_ICACLS_DACL_SUFFIX = '.rauhwpx-dacl';
 
@@ -92,6 +98,24 @@ function nativeFileReadOnlyError() {
   return error;
 }
 
+function nativeFileMissingError() {
+  const error = new Error(NATIVE_FILE_MISSING_MESSAGE);
+  error.code = NATIVE_FILE_MISSING_CODE;
+  return error;
+}
+
+function nativeFileUnavailableError() {
+  const error = new Error(NATIVE_FILE_UNAVAILABLE_MESSAGE);
+  error.code = NATIVE_FILE_UNAVAILABLE_CODE;
+  return error;
+}
+
+function nativeFileMovedIntoOpenError() {
+  const error = new Error(NATIVE_FILE_MOVED_INTO_OPEN_MESSAGE);
+  error.code = NATIVE_FILE_MOVED_INTO_OPEN_CODE;
+  return error;
+}
+
 /**
  * 다른 프로그램이 문서를 쥐었거나(EBUSY) 쓸 권한이 없어(EPERM, EACCES) 실패한 Windows 저장은
  * 내부 임시 경로 대신 이유를 알린다.
@@ -131,6 +155,12 @@ function clippedName(name) {
     clipped += character;
   }
   return clipped;
+}
+
+/** CON.hwp, nul.hwpx and the like name a Windows device, not a file, whatever the extension. */
+function isWindowsDeviceName(name) {
+  const stem = String(name).split('.')[0].replace(/[ ]+$/, '');
+  return /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i.test(stem);
 }
 
 function shortRandomId() {
@@ -201,7 +231,34 @@ function bookmarkContentOf(fingerprint) {
     size = null;
   }
   // 크기를 모르면 후보를 좁힐 수 없다. 내용 표시를 남기지 않고 옮겨진 파일도 찾지 않는다.
-  return size === null ? null : { contentDigest: fingerprint.digest, size };
+  if (size === null) return null;
+  // 파일 id 와 시각까지 남겨야 이름이 바뀐 파일을 같은 내용의 사본과 가려 찾는다.
+  return { contentDigest: fingerprint.digest, size, generation: fingerprint.generation };
+}
+
+/** 북마크가 기억한 마지막 파일 상태. 옮겨진 파일을 찾는 기준으로 쓴다. */
+function bookmarkFingerprintOf(bookmark) {
+  const fingerprint = {
+    state: 'file',
+    generation: bookmark?.generation,
+    changeTime: null,
+    digest: bookmark?.contentDigest,
+  };
+  return isNativeFileFingerprint(fingerprint) ? fingerprint : null;
+}
+
+function parseStoredGeneration(value) {
+  if (typeof value !== 'string' || value.length > 1024) return null;
+  try {
+    const fields = JSON.parse(value);
+    return Array.isArray(fields)
+      && fields.length === 9
+      && fields.every((field) => field === null || typeof field === 'string')
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -233,10 +290,14 @@ function isNativeFileFingerprint(value) {
       && /^sha256:[0-9a-f]{64}$/.test(value.digest));
 }
 
-// dev, ino and nlink in nativeFileGeneration. FAT and exFAT derive the file
-// index from the directory entry, so a rename changes ino; deleting a stray
-// temp link changes nlink. Neither means the content changed.
-const MOVED_IDENTITY_FIELDS = new Set([0, 1, 3]);
+// dev, ino, nlink and birth time in nativeFileGeneration. FAT and exFAT derive
+// the file index from the directory entry, so a rename changes ino; deleting a
+// stray temp link changes nlink. Windows name tunneling gives a file renamed
+// onto a name that was removed in the last 15 s that file's creation time, and
+// every save briefly removes the document's name, so renaming it right after a
+// save (even only its letter case) changes the birth time. None of these means
+// the content changed; size, modification time and the digest still must match.
+const MOVED_IDENTITY_FIELDS = new Set([0, 1, 3, 8]);
 
 function movedGenerationFields(generation) {
   try {
@@ -260,6 +321,248 @@ function sameMovedNativeFileFingerprint(left, right) {
   if (left.generation === right.generation) return true;
   const leftFields = movedGenerationFields(left.generation);
   return leftFields !== null && leftFields === movedGenerationFields(right.generation);
+}
+
+/**
+ * Volume serial and file id. NTFS, ReFS and APFS keep both across a rename and
+ * a move within the volume, so they still name the file the user is editing
+ * after its path stops doing so. A volume that reports no id (some SMB servers
+ * report 0) gives null; such files are matched by content instead.
+ */
+function fileIdentityOfFields(dev, ino) {
+  if (typeof dev !== 'string' || typeof ino !== 'string' || !/^\d+$/.test(ino) || /^0+$/.test(ino)) return null;
+  return { dev, ino };
+}
+
+function fileIdentityOfGeneration(generation) {
+  try {
+    const fields = JSON.parse(generation);
+    return Array.isArray(fields) ? fileIdentityOfFields(fields[0], fields[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function fileIdentityOfStat(info) {
+  return fileIdentityOfFields(statValue(info, 'dev'), statValue(info, 'ino'));
+}
+
+function sameFileIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino);
+}
+
+/**
+ * FAT keeps modification times in 2 s units and exFAT in 10 ms units; both give
+ * a renamed file a new id. Such a document can only be recognized by content.
+ */
+function hasCoarseModificationTime(generation) {
+  try {
+    const value = JSON.parse(generation)?.[7];
+    return typeof value === 'string' && /^\d+$/.test(value) && BigInt(value) % 10_000_000n === 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** Windows Recycle Bin, macOS and freedesktop trash. A document there was deleted, not moved. */
+const TRASH_PATH = /[\\/](?:\$recycle\.bin|\.trash(?:es)?|\.trash-\d+)(?:[\\/]|$)|[\\/]\.local[\\/]share[\\/]trash[\\/]/i;
+const MOVED_FILE_DIRECTORY_ENTRY_CAP = 4096;
+const MOVED_FILE_SIBLING_FOLDER_CAP = 512;
+const MOVED_FILE_CONTENT_CANDIDATE_CAP = 8;
+const WINDOWS_FILE_ID_LOOKUP_TIMEOUT_MS = 5_000;
+const WINDOWS_FILE_ID_LOOKUP_OUTPUT_CAP = 64 * 1024;
+
+/** The path fsutil prints after "\\?\" (localized text around it is ignored). */
+export function parseWindowsFileIdLookupOutput(text) {
+  const match = /\\\\\?\\([^\r\n]+)/.exec(String(text ?? ''));
+  if (!match) return null;
+  const rest = match[1].trimEnd();
+  if (/^UNC\\/i.test(rest)) return `\\\\${rest.slice(4)}`;
+  return /^[A-Za-z]:\\/.test(rest) ? rest : null;
+}
+
+/**
+ * Ask Windows where the file with this id now lives on the volume of filePath.
+ * A document moved to another folder of the same volume keeps its id, and
+ * fsutil answers without elevation. The console is switched to UTF-8 first;
+ * otherwise a name outside the console code page comes back with '?'.
+ * Resolves null when there is no answer; callers verify any path it returns.
+ */
+export function lookupWindowsFileIdPath(filePath, fileId, {
+  env = process.env,
+  spawnImpl = spawn,
+  timeoutMs = WINDOWS_FILE_ID_LOOKUP_TIMEOUT_MS,
+} = {}) {
+  const drive = /^([A-Za-z]):[\\/]/.exec(String(filePath))?.[1];
+  const systemRoot = env.SystemRoot ?? env.WINDIR;
+  let id;
+  try {
+    id = BigInt(fileId);
+  } catch {
+    return Promise.resolve(null);
+  }
+  if (!drive || id <= 0n || typeof systemRoot !== 'string' || !win32.isAbsolute(systemRoot)) {
+    return Promise.resolve(null);
+  }
+  const system32 = win32.join(systemRoot, 'System32');
+  // Only a drive letter and a hex number reach the command line.
+  const command = `"chcp 65001 >nul & "${win32.join(system32, 'fsutil.exe')}" file queryFileNameById ${drive.toUpperCase()}:\\ 0x${id.toString(16)}"`;
+  const commandEnv = windowsMetadataCommandEnv(systemRoot, env);
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnImpl(win32.join(system32, 'cmd.exe'), ['/d', '/s', '/c', command], {
+        env: commandEnv,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => {
+      void terminateMetadataCommand(child, { platform: 'win32', env: commandEnv, spawnImpl }).catch(() => {});
+      finish(null);
+    }, timeoutMs);
+    child.stdout?.on?.('data', (chunk) => {
+      size += chunk.length;
+      if (size <= WINDOWS_FILE_ID_LOOKUP_OUTPUT_CAP) chunks.push(chunk);
+    });
+    child.once?.('error', () => finish(null));
+    child.once?.('close', (code) => {
+      finish(code === 0 && size <= WINDOWS_FILE_ID_LOOKUP_OUTPUT_CAP
+        ? parseWindowsFileIdLookupOutput(Buffer.concat(chunks).toString('utf8'))
+        : null);
+    });
+  });
+}
+
+/**
+ * Find the document that was at filePath after it was renamed or moved outside
+ * the app. The same volume and file id is the same file. Where ids are missing
+ * or change on rename (FAT, exFAT), exactly one file with the same size, times,
+ * mode and content stands in for it; two identical copies are not guessed
+ * between. Looks in the document's folder, then for a renamed parent folder,
+ * then (Windows) across the volume by file id. Never returns trash, recovery
+ * or helper files, or a file with another extension. Null when not found.
+ */
+export async function locateMovedNativeFile(filePath, expectedFingerprint, {
+  platform = process.platform,
+  readdirImpl = readdir,
+  statImpl = stat,
+  fingerprintImpl = fingerprintNativeFile,
+  lookupFileIdImpl = platform === 'win32' ? lookupWindowsFileIdPath : null,
+} = {}) {
+  if (expectedFingerprint?.state !== 'file' || !isNativeFileFingerprint(expectedFingerprint)) return null;
+  const identity = fileIdentityOfGeneration(expectedFingerprint.generation);
+  const movedFields = movedGenerationFields(expectedFingerprint.generation);
+  const matchByContent = movedFields !== null
+    && (!identity || hasCoarseModificationTime(expectedFingerprint.generation));
+  const extension = extname(filePath).toLowerCase();
+  const foldCase = platform === 'win32' || platform === 'darwin';
+  const pathKey = (value) => (foldCase ? value.toLowerCase() : value);
+  const originalKey = pathKey(filePath);
+  const contentCandidates = [];
+  const seen = new Set();
+
+  const eligible = (candidatePath) => extname(candidatePath).toLowerCase() === extension
+    && !TRANSIENT_DOCUMENT_NAME.test(basename(candidatePath))
+    && !TRASH_PATH.test(candidatePath)
+    && pathKey(candidatePath) !== originalKey;
+  const sameFile = async (candidatePath, { contentCandidate = true } = {}) => {
+    if (!eligible(candidatePath) || seen.has(pathKey(candidatePath))) return false;
+    seen.add(pathKey(candidatePath));
+    let info;
+    try {
+      info = await statImpl(candidatePath, { bigint: true });
+    } catch {
+      return false;
+    }
+    if (!info?.isFile?.()) return false;
+    if (identity && sameFileIdentity(identity, fileIdentityOfStat(info))) return true;
+    if (
+      contentCandidate
+      && matchByContent
+      && movedGenerationFields(nativeFileGeneration(info)) === movedFields
+    ) {
+      contentCandidates.push(candidatePath);
+    }
+    return false;
+  };
+
+  const directory = dirname(filePath);
+  let names = null;
+  try {
+    names = await readdirImpl(directory);
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') names = [];
+  }
+  if (names) {
+    for (const name of names.slice(0, MOVED_FILE_DIRECTORY_ENTRY_CAP)) {
+      const candidatePath = join(directory, String(name));
+      if (await sameFile(candidatePath)) return { path: candidatePath, via: 'file-id' };
+    }
+  } else {
+    // The document's folder is gone. If it was renamed, the document keeps its
+    // own name in one of the sibling folders.
+    const parent = dirname(directory);
+    if (parent !== directory) {
+      let folders = [];
+      try {
+        folders = await readdirImpl(parent, { withFileTypes: true });
+      } catch {
+        folders = [];
+      }
+      for (const folder of folders.slice(0, MOVED_FILE_SIBLING_FOLDER_CAP)) {
+        if (typeof folder !== 'string' && typeof folder?.isDirectory === 'function' && !folder.isDirectory()) continue;
+        const name = typeof folder === 'string' ? folder : folder?.name;
+        if (typeof name !== 'string' || !name) continue;
+        const candidatePath = join(parent, name, basename(filePath));
+        if (await sameFile(candidatePath)) return { path: candidatePath, via: 'parent-folder' };
+      }
+    }
+  }
+
+  // An unplugged drive has no volume to ask.
+  const volumeRoot = platform === 'win32' ? win32.parse(filePath).root : '';
+  const volumePresent = Boolean(volumeRoot)
+    && await statImpl(volumeRoot).then((info) => info?.isDirectory?.() === true, () => false);
+  if (identity && lookupFileIdImpl && volumePresent) {
+    let found = null;
+    try {
+      found = await lookupFileIdImpl(filePath, identity.ino);
+    } catch {
+      found = null;
+    }
+    if (typeof found === 'string' && found && await sameFile(found, { contentCandidate: false })) {
+      return { path: found, via: 'volume' };
+    }
+  }
+
+  if (contentCandidates.length === 0 || contentCandidates.length > MOVED_FILE_CONTENT_CANDIDATE_CAP) return null;
+  const matches = [];
+  for (const candidatePath of contentCandidates) {
+    let fingerprint;
+    try {
+      fingerprint = await fingerprintImpl(candidatePath);
+    } catch {
+      continue;
+    }
+    if (sameMovedNativeFileFingerprint(expectedFingerprint, fingerprint)) matches.push(candidatePath);
+  }
+  return matches.length === 1 ? { path: matches[0], via: 'content' } : null;
 }
 
 function waitForCommandExit(child, timeoutMs, { setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
@@ -1305,6 +1608,11 @@ export class NativeFileHandleRegistry {
   #fingerprint;
   #openFile;
   #recoverInterruptedSave;
+  #locateMoved;
+  #renameFile;
+  #moveLeases;
+  #onEntriesMoved;
+  #platform;
 
   constructor({
     canonicalize = canonicalNativePath,
@@ -1318,6 +1626,19 @@ export class NativeFileHandleRegistry {
     fingerprintImpl = fingerprintNativeFile,
     openFileImpl = open,
     recoverInterruptedSaveImpl = statImpl === stat ? recoverInterruptedNativeSave : null,
+    // Following a moved document needs the real filesystem. Doubles that fake
+    // paths or fingerprints keep the fixed-path behavior unless they opt in.
+    locateMovedImpl = statImpl === stat
+      && canonicalize === canonicalNativePath
+      && fingerprintImpl === fingerprintNativeFile
+      ? locateMovedNativeFile
+      : null,
+    renameImpl = rename,
+    platform = process.platform,
+    /** Move the window's document claims with a followed rename. May throw to refuse it. */
+    moveLeases = null,
+    /** Told after a document was found under a new path. */
+    onEntriesMoved = null,
   } = {}) {
     this.#canonicalize = canonicalize;
     this.#ownershipKey = ownershipKey;
@@ -1330,6 +1651,11 @@ export class NativeFileHandleRegistry {
     this.#fingerprint = fingerprintImpl;
     this.#openFile = openFileImpl;
     this.#recoverInterruptedSave = recoverInterruptedSaveImpl;
+    this.#locateMoved = locateMovedImpl;
+    this.#renameFile = renameImpl;
+    this.#platform = platform;
+    this.#moveLeases = moveLeases;
+    this.#onEntriesMoved = onEntriesMoved;
   }
 
   async create(sessionId, filePath, { allowMissing = false } = {}) {
@@ -1351,7 +1677,10 @@ export class NativeFileHandleRegistry {
       }
     }
     const ownershipPath = this.#ownershipKey(canonicalPath);
-    const existing = this.#byPath.get(ownershipPath);
+    // A document renamed outside the app leaves its handle on the old name. A
+    // new file with that name is not the open document, so let the handle
+    // follow its own file before treating the path as taken.
+    const existing = await this.#settledHolder(ownershipPath);
     if (existing && existing.sessionId !== sessionId) {
       return { ok: false, ownerSessionId: existing.sessionId };
     }
@@ -1407,11 +1736,15 @@ export class NativeFileHandleRegistry {
 
   /**
    * 이 창이 연 문서 파일의 이름을 같은 폴더 안에서 바꾼다. 확장자는 바꾸지 않고, 이미 있는 이름이나
-   * 다른 창이 쥔 경로는 거절한다. 핸들 id 는 그대로 두고 경로·이름·북마크를 새 경로로 옮긴다.
+   * 다른 창이 쥔 경로는 거절한다. 핸들 id 는 그대로 두고 경로·이름·북마크·점유를 새 경로로 옮긴다.
+   * 바깥에서 먼저 이름이 바뀌었으면 그 파일을 따라간 뒤 바꾼다. 저장과 겹치지 않는다.
    */
   async renameHandle(sessionId, handleId, nextName) {
     const entry = this.#entryForSender(sessionId, handleId);
-    const refuse = (reason, message) => Object.assign(new Error(message), { renameRefusal: reason });
+    const refuse = (reason, message, cause) => Object.assign(
+      new Error(message, cause ? { cause } : undefined),
+      { renameRefusal: reason },
+    );
     if (entry.legacyPortableHistoryFolder) throw refuse('invalid', 'Legacy RHWPX folders cannot be renamed');
     if (entry.activeWrites > 0) throw refuse('saving', 'The document is being saved; try again in a moment');
     const name = typeof nextName === 'string' ? nextName.trim() : '';
@@ -1422,60 +1755,101 @@ export class NativeFileHandleRegistry {
       || name.length > 255
       // eslint-disable-next-line no-control-regex
       || /[\\/:*?"<>|\u0000-\u001f]/.test(name)
+      || isWindowsDeviceName(name)
     ) {
       throw refuse('invalid', 'Invalid file name');
     }
     if (extname(name).toLowerCase() !== extname(entry.canonicalPath).toLowerCase()) {
       throw refuse('extension', 'The file extension cannot change');
     }
-    const previousPath = entry.canonicalPath;
-    const previousOwnershipPath = entry.ownershipPath;
-    const target = join(dirname(previousPath), name);
-    validateNativeDocumentPath(target);
-    if (basename(previousPath) === name) {
+    // 이름을 바꾸는 동안 저장·놓기·바깥 이동 확인이 끼어들지 않게 쓰기 중으로 둔다.
+    entry.activeWrites += 1;
+    try {
+      const located = await this.#locate(entry, { writing: true });
+      if (located === 'missing') throw refuse('missing', 'The document file was moved or deleted');
+      if (located === 'unavailable') throw refuse('unavailable', 'The drive or network folder of the document is not available');
+      const previousPath = entry.canonicalPath;
+      const previousOwnershipPath = entry.ownershipPath;
+      const target = join(dirname(previousPath), name);
+      validateNativeDocumentPath(target);
+      if (basename(previousPath) === name) {
+        return {
+          descriptor: this.#descriptor(entry),
+          previousPath,
+          canonicalPath: previousPath,
+          previousOwnershipPath,
+          ownershipPath: previousOwnershipPath,
+        };
+      }
+      const targetOwnership = this.#ownershipKey(target);
+      // 대소문자만 다른 이름은 같은 파일이다 (대소문자를 가리지 않는 볼륨).
+      if (targetOwnership !== entry.ownershipPath) {
+        if (this.#byPath.has(targetOwnership)) throw refuse('open', 'A file with that name is already open');
+        let exists = true;
+        try {
+          await this.#stat(target);
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+          exists = false;
+        }
+        if (exists) throw refuse('exists', 'A file with that name already exists');
+      }
+      try {
+        // 백신·색인기가 문서를 잠깐 쥐면 Windows 이름 바꾸기가 실패한다. 저장처럼 다시 해 본다.
+        await retryWindows(() => this.#renameFile(previousPath, target), this.#platform);
+      } catch (error) {
+        if (error?.code === 'ENOENT') throw refuse('missing', 'The document file was moved or deleted', error);
+        if (error?.code === 'EEXIST') throw refuse('exists', 'A file with that name already exists', error);
+        if (error?.code === 'EBUSY') throw refuse('in-use', 'Another program is using this document', error);
+        if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+          throw refuse('denied', 'Access to this document or its folder was denied', error);
+        }
+        throw error;
+      }
+      const canonicalPath = await this.#canonicalize(target);
+      const previousFingerprint = entry.diskFingerprint;
+      this.#applyMoves([{ entry, from: previousPath, path: canonicalPath }], { reason: 'rename' });
+      // 이름을 바꾸면 파일 상태 시각이 바뀐다(FAT·exFAT 는 파일 id 도). 다음 저장이 바깥 수정으로
+      // 오해하지 않게 다시 재되, 이름을 바꾸기 전에 다른 프로그램이 내용을 바꿨으면 예전 기준을 둔다.
+      // 새 기준으로 삼으면 다음 저장이 그 바뀐 내용을 묻지 않고 덮어쓴다.
+      const fingerprint = await this.#fingerprint(canonicalPath).catch(() => null);
+      if (
+        isNativeFileFingerprint(fingerprint)
+        && fingerprint.state === 'file'
+        && (previousFingerprint?.state !== 'file' || fingerprint.digest === previousFingerprint.digest)
+      ) {
+        entry.diskFingerprint = fingerprint;
+        entry.fingerprintEpoch += 1;
+      }
       return {
         descriptor: this.#descriptor(entry),
         previousPath,
-        canonicalPath: previousPath,
+        canonicalPath: entry.canonicalPath,
         previousOwnershipPath,
-        ownershipPath: previousOwnershipPath,
+        ownershipPath: entry.ownershipPath,
       };
+    } finally {
+      entry.activeWrites -= 1;
+      if (entry.activeWrites === 0 && entry.releaseRequested) this.#deleteEntry(entry);
     }
-    const targetOwnership = this.#ownershipKey(target);
-    // 대소문자만 다른 이름은 같은 파일이다 (대소문자를 가리지 않는 볼륨).
-    if (targetOwnership !== entry.ownershipPath) {
-      if (this.#byPath.has(targetOwnership)) throw refuse('open', 'A file with that name is already open');
-      let exists = true;
+  }
+
+  /**
+   * 바깥에서 이름이 바뀌거나 옮겨진 문서를 찾아 핸들이 그 파일을 다시 가리키게 한다. 창이 다시
+   * 앞으로 올 때 렌더러가 부른다. state 가 missing 이면 파일이 지워졌거나 찾을 수 없는 곳으로 갔고,
+   * unavailable 이면 문서가 있는 드라이브나 네트워크 폴더에 닿지 않는다.
+   */
+  async locate(senderSessionId, handleId) {
+    const entry = this.#entryForSender(senderSessionId, handleId);
+    let state = 'present';
+    if (entry.activeWrites === 0) {
       try {
-        await this.#stat(target);
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-        exists = false;
-      }
-      if (exists) throw refuse('exists', 'A file with that name already exists');
-    }
-    await rename(previousPath, target);
-    const canonicalPath = await this.#canonicalize(target);
-    this.#byPath.delete(entry.ownershipPath);
-    entry.canonicalPath = canonicalPath;
-    entry.ownershipPath = this.#ownershipKey(canonicalPath);
-    entry.name = name;
-    this.#byPath.set(entry.ownershipPath, entry);
-    // 이름을 바꾸면 파일 상태 시각이 바뀐다. 다음 저장이 바깥 수정으로 오해하지 않게 다시 잰다.
-    entry.diskFingerprint = await this.#fingerprint(canonicalPath);
-    entry.fingerprintEpoch += 1;
-    for (const bookmark of this.#bookmarks.values()) {
-      if (this.#ownershipKey(bookmark.path) === this.#ownershipKey(previousPath)) {
-        bookmark.path = canonicalPath;
+        state = await this.#locate(entry);
+      } catch {
+        state = 'present';
       }
     }
-    return {
-      descriptor: this.#descriptor(entry),
-      previousPath,
-      canonicalPath,
-      previousOwnershipPath,
-      ownershipPath: entry.ownershipPath,
-    };
+    return { name: entry.name, state: state === 'missing' || state === 'unavailable' ? state : 'present' };
   }
 
   async createSaveTarget(sessionId, filePath) {
@@ -1522,7 +1896,7 @@ export class NativeFileHandleRegistry {
 
   async ownerForPath(filePath) {
     const canonicalPath = await this.#canonicalize(filePath);
-    return this.#byPath.get(this.#ownershipKey(canonicalPath))?.sessionId ?? null;
+    return (await this.#settledHolder(this.#ownershipKey(canonicalPath)))?.sessionId ?? null;
   }
 
   pathForSender(senderSessionId, handleId) {
@@ -1536,6 +1910,8 @@ export class NativeFileHandleRegistry {
 
   async read(senderSessionId, handleId) {
     const entry = this.#entryForSender(senderSessionId, handleId);
+    // A reload after a rename outside the app reads the document, not its old name.
+    if (entry.activeWrites === 0) await this.#locate(entry).catch(() => {});
     return {
       name: entry.name,
       bytes: await readPortableHistoryBytes(entry.canonicalPath, {
@@ -1565,6 +1941,11 @@ export class NativeFileHandleRegistry {
       this.validateSave(senderSessionId, handleId, identity, leases);
       validateNativeDocumentBytes(entry.canonicalPath, bytes);
       const write = entry.writeChain.then(async () => {
+        // Follow a rename or move made outside the app, so the save lands in
+        // the file being edited instead of failing or recreating the old name.
+        const located = await this.#locate(entry, { writing: true });
+        if (located === 'missing') throw nativeFileMissingError();
+        if (located === 'unavailable') throw nativeFileUnavailableError();
         // Revalidate after earlier queued writes. A stale window/document must
         // never reach the filesystem merely because it entered the queue first.
         this.validateSave(senderSessionId, handleId, identity, leases);
@@ -1661,6 +2042,8 @@ export class NativeFileHandleRegistry {
   async reopenDocument(sessionId, documentId) {
     const bookmark = this.#bookmarks.get(documentId);
     if (!bookmark) return null;
+    // 닫혀 있는 동안 이름이 바뀐 문서는 그 파일을 연다. 옛 이름에 새로 생긴 다른 파일이 아니다.
+    await this.#followBookmark(sessionId, documentId, bookmark);
     return this.create(sessionId, bookmark.path);
   }
 
@@ -1701,6 +2084,17 @@ export class NativeFileHandleRegistry {
         return this.inspectDocument(documentId, { recovered: true });
       }
       return { state: 'missing' };
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return { state: 'unavailable' };
+    }
+    // 폴더째 없다. 꺼낸 디스크·끊긴 네트워크일 수 있어 그대로 두되, 폴더 이름만 바뀌어 그 파일이
+    // 다른 이름의 폴더에 있으면 missing 으로 알려 문서 홈이 새 위치를 기억하게 한다.
+    try {
+      const found = await withTimeout(
+        this.#findBookmarkedFile(null, documentId, bookmark),
+        HOME_STAT_TIMEOUT_MS * 4,
+      );
+      return { state: found ? 'missing' : 'unavailable' };
     } catch {
       return { state: 'unavailable' };
     }
@@ -1714,6 +2108,13 @@ export class NativeFileHandleRegistry {
   async relocateDocument(sessionId, documentId) {
     const bookmark = this.#bookmarks.get(documentId);
     if (!bookmark?.contentDigest) return null;
+    // 이름이나 폴더만 바뀐 그 파일 (파일 id 로 확인).
+    const followed = await this.#findBookmarkedFile(sessionId, documentId, bookmark);
+    if (followed) {
+      bookmark.path = followed;
+      return { fileName: basename(followed) };
+    }
+    const matches = [];
     const claimed = new Set();
     for (const [otherDocumentId, other] of this.#bookmarks) {
       if (otherDocumentId !== documentId) claimed.add(this.#ownershipKey(other.path));
@@ -1738,10 +2139,59 @@ export class NativeFileHandleRegistry {
         continue;
       }
       if (fingerprint?.state !== 'file' || fingerprint.digest !== bookmark.contentDigest) continue;
-      bookmark.path = candidate;
-      return { fileName: basename(candidate) };
+      matches.push(candidate);
+      if (matches.length > 1) break;
     }
-    return null;
+    // 같은 내용의 파일이 둘이면 어느 쪽이 그 문서인지 모른다. 사본에 이어 저장하지 않게 고르지 않는다.
+    if (matches.length !== 1) return null;
+    bookmark.path = matches[0];
+    return { fileName: basename(matches[0]) };
+  }
+
+  /**
+   * 기억한 문서 파일이 이름이나 폴더를 바꿨으면 그 파일의 경로. 파일 id 로(FAT·exFAT 는 시각과
+   * 내용으로) 같은 파일임을 확인한 것만 돌려준다. 다른 문서가 기억하거나 다른 창이 쥔 파일은 아니다.
+   */
+  async #findBookmarkedFile(sessionId, documentId, bookmark) {
+    const expected = bookmarkFingerprintOf(bookmark);
+    if (!expected || !this.#locateMoved) return null;
+    let found = null;
+    try {
+      found = await this.#locateMoved(bookmark.path, expected, { platform: this.#platform });
+    } catch {
+      found = null;
+    }
+    if (!found?.path) return null;
+    const canonicalPath = await this.#canonicalize(found.path).catch(() => null);
+    if (!canonicalPath || extname(canonicalPath).toLowerCase() !== extname(bookmark.path).toLowerCase()) return null;
+    const key = this.#ownershipKey(canonicalPath);
+    for (const [otherDocumentId, other] of this.#bookmarks) {
+      if (otherDocumentId !== documentId && this.#ownershipKey(other.path) === key) return null;
+    }
+    const owner = this.#byPath.get(key);
+    if (owner && owner.sessionId !== sessionId) return null;
+    return canonicalPath;
+  }
+
+  /** 기억한 경로가 그 파일을 더는 가리키지 않으면 파일의 새 경로로 옮긴다. 옮겼으면 true. */
+  async #followBookmark(sessionId, documentId, bookmark) {
+    const expected = bookmarkFingerprintOf(bookmark);
+    // 열린 핸들은 자기 파일을 스스로 따라간다.
+    if (!expected || this.#byPath.has(this.#ownershipKey(bookmark.path))) return false;
+    const identity = fileIdentityOfGeneration(expected.generation);
+    let info = null;
+    try {
+      info = await this.#stat(bookmark.path, { bigint: true });
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return false;
+    }
+    if (info?.isFile?.() && (!identity || sameFileIdentity(identity, fileIdentityOfStat(info)))) return false;
+    if (!info && await this.#recoverInterruptedSave?.(bookmark.path)) return false;
+    // 옛 이름의 파일이 다른 프로그램의 저장으로 바뀌었을 뿐이면 원래 id 는 어디에도 없다. 그대로 연다.
+    const found = await this.#findBookmarkedFile(sessionId, documentId, bookmark);
+    if (!found) return false;
+    bookmark.path = found;
+    return true;
   }
 
   /**
@@ -1801,7 +2251,15 @@ export class NativeFileHandleRegistry {
   async searchNearby(sessionId, documentId, { basenameHint = '' } = {}) {
     this.#forgetSessionProbes(sessionId);
     const probes = [];
-    for (const filePath of await this.#collectNearbyFiles(sessionId, documentId, basenameHint)) {
+    const nearby = await this.#collectNearbyFiles(sessionId, documentId, basenameHint);
+    // 이름이나 폴더만 바뀐 그 파일을 먼저 본다. 같은 내용의 사본이 앞에 있으면 사본이 열린다.
+    const bookmark = this.#bookmarks.get(documentId);
+    const followed = bookmark ? await this.#findBookmarkedFile(sessionId, documentId, bookmark) : null;
+    if (followed) {
+      const key = this.#ownershipKey(followed);
+      nearby.splice(0, nearby.length, followed, ...nearby.filter((filePath) => this.#ownershipKey(filePath) !== key));
+    }
+    for (const filePath of nearby) {
       const probeId = this.#createId();
       const name = basename(filePath);
       this.#probes.set(probeId, { sessionId, path: filePath, name });
@@ -1855,6 +2313,7 @@ export class NativeFileHandleRegistry {
         path: parsed.path,
         digest: parsed.digest,
         ...(parsed.contentDigest && parsed.size !== null ? { contentDigest: parsed.contentDigest, size: parsed.size } : {}),
+        ...(parsed.contentDigest && parsed.size !== null && parsed.generation ? { generation: parsed.generation } : {}),
       });
     }
     if (strict && next.size > 200) throw new Error('Native bookmark store contains too many entries');
@@ -1868,6 +2327,7 @@ export class NativeFileHandleRegistry {
         path: bookmark.path,
         digest: bookmark.digest,
         ...(bookmark.contentDigest ? { contentDigest: bookmark.contentDigest, size: bookmark.size } : {}),
+        ...(bookmark.contentDigest && bookmark.generation ? { generation: bookmark.generation } : {}),
       },
     ]);
   }
@@ -2014,6 +2474,175 @@ export class NativeFileHandleRegistry {
     return probe;
   }
 
+  /**
+   * Make the entry name its file again after the file was renamed or moved
+   * outside the app. 'present': the path holds the file (now under its real
+   * spelling), or there is nothing to follow. 'moved': the entry follows the
+   * file to its new path. 'missing': the file left its path and was not found.
+   * 'unavailable': its drive or network folder cannot be reached.
+   * Callers share one search. Only the entry's own save or rename may look
+   * while it writes: the path is briefly empty while a save publishes.
+   */
+  #locate(entry, { writing = false } = {}) {
+    if (!this.#locateMoved || entry.legacyPortableHistoryFolder) return Promise.resolve('present');
+    if (entry.activeWrites > (writing ? 1 : 0)) return Promise.resolve('present');
+    if (!entry.locating) {
+      entry.locating = this.#locateNow(entry).finally(() => {
+        entry.locating = null;
+      });
+    }
+    return entry.locating;
+  }
+
+  async #locateNow(entry) {
+    // Another entry can move between planning and applying; plan again then.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const where = await this.#findEntryFile(entry);
+      if (where.state !== 'moved') return where.state;
+      if (where.path === entry.canonicalPath) return 'present';
+      const moves = await this.#planMoves(entry, where.path, new Set());
+      if (!moves) throw nativeFileMovedIntoOpenError();
+      if (moves.some((move) => move.entry.canonicalPath !== move.from || !this.#byId.has(move.entry.handleId))) {
+        continue;
+      }
+      this.#applyMoves(moves, { reason: 'followed' });
+      return 'moved';
+    }
+    return 'present';
+  }
+
+  /**
+   * Where the entry's file is now: { state: 'moved', path } when it sits at a
+   * path other than the recorded one (a case-only rename included),
+   * { state: 'present' } when the recorded path still names it or nothing can
+   * be followed, { state: 'missing' } when it is gone, { state: 'unavailable' }
+   * when its folder cannot be reached.
+   */
+  async #findEntryFile(entry, { recover = true } = {}) {
+    const expected = entry.diskFingerprint;
+    // A Save As target the app has not written yet has nothing to follow.
+    if (expected?.state !== 'file') return { state: 'present' };
+    const identity = fileIdentityOfGeneration(expected.generation);
+    let info = null;
+    try {
+      info = await this.#stat(entry.canonicalPath, { bigint: true });
+    } catch (error) {
+      // Locked, offline or denied: let the save itself report why.
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return { state: 'present' };
+    }
+    if (info?.isFile?.() && (!identity || sameFileIdentity(identity, fileIdentityOfStat(info)))) {
+      // Windows keeps the case a name was given in Explorer. Writing through
+      // the old spelling would put the old case back.
+      const spelled = await this.#canonicalize(entry.canonicalPath).catch(() => entry.canonicalPath);
+      return spelled !== entry.canonicalPath
+        && extname(spelled).toLowerCase() === extname(entry.canonicalPath).toLowerCase()
+        ? { state: 'moved', path: spelled }
+        : { state: 'present' };
+    }
+    // A save that was killed while the document sat under its recovery name.
+    if (!info && recover && await this.#recoverInterruptedSave?.(entry.canonicalPath)) {
+      return this.#findEntryFile(entry, { recover: false });
+    }
+    let found = null;
+    try {
+      found = await this.#locateMoved(entry.canonicalPath, expected, { platform: this.#platform });
+    } catch {
+      found = null;
+    }
+    if (found?.path) {
+      const canonicalPath = await this.#canonicalize(found.path).catch(() => null);
+      if (canonicalPath && extname(canonicalPath).toLowerCase() === extname(entry.canonicalPath).toLowerCase()) {
+        return { state: 'moved', path: canonicalPath };
+      }
+    }
+    // A different file under the old name is left to the save's conflict check.
+    if (info) return { state: 'present' };
+    // Neither the folder nor the one above it is there: an unplugged drive or
+    // an offline share, not a deleted document.
+    const reachable = async (path) => this.#stat(path).then(() => true, () => false);
+    const folder = dirname(entry.canonicalPath);
+    if (!await reachable(folder) && (dirname(folder) === folder || !await reachable(dirname(folder)))) {
+      return { state: 'unavailable' };
+    }
+    return { state: 'missing' };
+  }
+
+  /**
+   * The entry's file is at `path`. If another open entry still claims that
+   * name, its own file went elsewhere (names swapped or shifted); move it too.
+   * Null when a claimed name cannot be freed.
+   */
+  async #planMoves(entry, path, visiting) {
+    visiting.add(entry);
+    const moves = [{ entry, from: entry.canonicalPath, path }];
+    const holder = this.#byPath.get(this.#ownershipKey(path));
+    if (!holder || holder === entry || visiting.has(holder)) return moves;
+    if (visiting.size >= 16 || holder.activeWrites > 0 || holder.locating || holder.legacyPortableHistoryFolder) {
+      return null;
+    }
+    const where = await this.#findEntryFile(holder);
+    if (where.state !== 'moved' || !where.path) return null;
+    const rest = await this.#planMoves(holder, where.path, visiting);
+    return rest ? [...moves, ...rest] : null;
+  }
+
+  /** Point entries at their files' new paths. Claims move all at once, so swapped names work. */
+  #applyMoves(moves, { reason }) {
+    const changes = moves.map(({ entry, path }) => ({
+      entry,
+      sessionId: entry.sessionId,
+      handleId: entry.handleId,
+      previousPath: entry.canonicalPath,
+      previousOwnershipPath: entry.ownershipPath,
+      canonicalPath: path,
+      ownershipPath: this.#ownershipKey(path),
+      name: basename(path),
+    }));
+    const moving = new Set(changes.map((change) => change.entry));
+    for (const change of changes) {
+      const holder = this.#byPath.get(change.ownershipPath);
+      if (holder && !moving.has(holder)) throw nativeFileMovedIntoOpenError();
+    }
+    const leaseMoves = changes
+      .filter((change) => change.previousOwnershipPath !== change.ownershipPath)
+      .map(({ sessionId, previousOwnershipPath, ownershipPath }) => ({
+        sessionId,
+        from: previousOwnershipPath,
+        to: ownershipPath,
+      }));
+    // Leases refuse first, so a refused move changes nothing.
+    if (leaseMoves.length > 0) this.#moveLeases?.(leaseMoves);
+    for (const change of changes) {
+      if (this.#byPath.get(change.previousOwnershipPath) === change.entry) {
+        this.#byPath.delete(change.previousOwnershipPath);
+      }
+    }
+    for (const change of changes) {
+      change.entry.canonicalPath = change.canonicalPath;
+      change.entry.ownershipPath = change.ownershipPath;
+      change.entry.name = change.name;
+      this.#byPath.set(change.ownershipPath, change.entry);
+    }
+    const nextPathByKey = new Map(changes.map((change) => [change.previousOwnershipPath, change.canonicalPath]));
+    for (const bookmark of this.#bookmarks.values()) {
+      const nextPath = nextPathByKey.get(this.#ownershipKey(bookmark.path));
+      if (nextPath) bookmark.path = nextPath;
+    }
+    try {
+      this.#onEntriesMoved?.(changes.map(({ entry: _entry, ...change }) => change), { reason });
+    } catch (error) {
+      console.warn('[native-file] moved document notification failed:', error);
+    }
+  }
+
+  /** The entry that claims a path, after it had the chance to follow its own file elsewhere. */
+  async #settledHolder(ownershipPath) {
+    const holder = this.#byPath.get(ownershipPath);
+    if (!holder || holder.activeWrites > 0) return holder ?? null;
+    await this.#locate(holder).catch(() => {});
+    return this.#byPath.get(ownershipPath) ?? null;
+  }
+
   #deleteEntry(entry) {
     this.#byId.delete(entry.handleId);
     if (this.#byPath.get(entry.ownershipPath) === entry) this.#byPath.delete(entry.ownershipPath);
@@ -2064,7 +2693,14 @@ function parseBookmarkEntry(item) {
       ? value.contentDigest
       : null;
     const size = Number.isSafeInteger(value.size) && value.size >= 0 ? value.size : null;
-    return { documentId, path: value.path, digest: parseStoredDigest(value.digest), contentDigest, size };
+    return {
+      documentId,
+      path: value.path,
+      digest: parseStoredDigest(value.digest),
+      contentDigest,
+      size,
+      generation: parseStoredGeneration(value.generation),
+    };
   }
   return null;
 }

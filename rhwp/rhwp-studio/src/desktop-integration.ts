@@ -169,6 +169,21 @@ interface NativeFileReadResult {
   bytes: Uint8Array;
 }
 
+/**
+ * missing: 문서를 연 뒤 파일이 지워졌거나 찾을 수 없는 곳으로 옮겨졌다.
+ * unavailable: 문서가 있는 드라이브나 네트워크 폴더에 닿지 않는다(빼낸 USB, 끊긴 공유 폴더).
+ */
+export interface NativeFileLocation {
+  name: string;
+  state: 'present' | 'missing' | 'unavailable';
+}
+
+export interface NativeFileMovedEvent {
+  handleId: string;
+  name: string;
+  previousName: string;
+}
+
 export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
   /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
@@ -217,6 +232,8 @@ export interface RhwpDesktopApi {
   pickNativeSaveFile?: (options: {
     suggestedName: string;
     extension: 'hwp' | 'hwpx' | 'hml' | 'rhwpx';
+    /** 대화상자를 이 핸들의 문서가 있는 폴더에서 연다. */
+    handleId?: string;
   }) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   releaseNativeFile?: (handleId: string) => Promise<void>;
   renameNativeFile?: (
@@ -224,6 +241,10 @@ export interface RhwpDesktopApi {
     nextName: string,
   ) => Promise<{ ok: true; descriptor: NativeFileHandleDescriptor } | { ok: false; reason: string }>;
   readNativeFile?: (handleId: string) => Promise<NativeFileReadResult>;
+  /** 탐색기에서 바뀐 이름·옮긴 폴더를 메인이 따라간 뒤 지금 이름. 놓은 핸들이면 null. */
+  locateNativeFile?: (handleId: string) => Promise<NativeFileLocation | null>;
+  /** 메인이 바깥에서 이름이 바뀌거나 옮겨진 문서 파일을 따라갔다. 해제 함수를 돌려준다. */
+  onNativeFileMoved?: (callback: (event: NativeFileMovedEvent) => void) => (() => void) | void;
   getNativeFileSourcePath?: (handleId: string) => Promise<string | null>;
   validateNativeSave?: (
     handleId: string,
@@ -449,6 +470,8 @@ type DevHubContext = Pick<
   'launchId' | 'hubUrl' | 'hubToken' | 'referenceToken' | 'templateToken'
 >;
 let devHubContext: DevHubContext | null = null;
+/** 메인 핸들 하나를 가리키는 렌더러 쪽 핸들 객체들. 파일 이름이 바뀌면 모두 새 이름을 보인다. */
+const nativeHandlesById = new Map<string, Set<WeakRef<FileSystemFileHandleLike>>>();
 const nativeHandleMetadata = new WeakMap<FileSystemFileHandleLike, {
   api: RhwpDesktopApi;
   handleId: string;
@@ -945,7 +968,9 @@ export function createNativeFileHandle(
               throw new Error('저장 파일을 읽는 동안 크기가 변경되었습니다.');
             }
             totalBytes = 0;
-            await api.writeNativeFile!(descriptor.handleId, bytes, identity);
+            const written = await api.writeNativeFile!(descriptor.handleId, bytes, identity);
+            // 탐색기에서 이름이 바뀐 문서는 메인이 그 파일을 따라가 저장한다. 저장 결과가 새 이름을 쓰게 한다.
+            if (typeof written?.name === 'string') applyNativeHandleName(descriptor.handleId, written.name);
           })();
           return closePromise;
         },
@@ -981,7 +1006,37 @@ export function createNativeFileHandle(
     verifiedDocumentId: descriptor.verifiedDocumentId ?? null,
     legacyPortableHistoryFolder: descriptor.legacyPortableHistoryFolder === true,
   });
+  let wrappers = nativeHandlesById.get(descriptor.handleId);
+  if (!wrappers) {
+    wrappers = new Set();
+    nativeHandlesById.set(descriptor.handleId, wrappers);
+  }
+  for (const ref of wrappers) if (!ref.deref()) wrappers.delete(ref);
+  wrappers.add(new WeakRef(handle));
   return handle;
+}
+
+/**
+ * 메인 핸들 하나를 가리키는 모든 핸들 객체의 이름을 바꾼다. 같은 파일의 같은 확장자 이름만
+ * 받는다(저장 형식은 이름의 확장자로 정한다). 이름이 바뀌었으면 true.
+ */
+function applyNativeHandleName(handleId: string, name: string): boolean {
+  const wrappers = nativeHandlesById.get(handleId);
+  if (!wrappers || !name || name !== name.trim() || /[\\/\0]/.test(name)) return false;
+  const extension = (value: string) => value.match(/\.[^.]+$/)?.[0]?.toLowerCase() ?? '';
+  let changed = false;
+  for (const ref of wrappers) {
+    const handle = ref.deref();
+    if (!handle) {
+      wrappers.delete(ref);
+      continue;
+    }
+    if (handle.name === name || extension(handle.name) !== extension(name)) continue;
+    handle.name = name;
+    changed = true;
+  }
+  if (wrappers.size === 0) nativeHandlesById.delete(handleId);
+  return changed;
 }
 
 /** Main-issued identity derived from the exact canonical path bookmark. */
@@ -1026,13 +1081,50 @@ export async function renameNativeDocumentFile(
   const metadata = nativeHandleMetadata.get(handle);
   if (!metadata?.api.renameNativeFile) throw new Error('이 파일은 이름을 바꿀 수 없습니다.');
   const result = await metadata.api.renameNativeFile(metadata.handleId, nextName);
-  // 이름이 이미 있는 등 고칠 수 있는 거절은 이유 코드로 온다 (exists·open·saving·invalid·extension).
+  // 이름이 이미 있는 등 고칠 수 있는 거절은 이유 코드로 온다 (exists·open·saving·invalid·extension·missing·in-use·denied).
   if (!result.ok) throw new NativeRenameRefusedError(result.reason);
-  const renamed = createNativeFileHandle(result.descriptor, metadata.api);
-  renamed.adoptSaveTarget?.();
-  const renamedMetadata = nativeHandleMetadata.get(renamed);
-  if (renamedMetadata && metadata.identity) renamedMetadata.identity = { ...metadata.identity };
-  return renamed;
+  if (!validNativeDescriptor(result.descriptor) || result.descriptor.handleId !== metadata.handleId) {
+    throw new Error('Desktop rename returned an invalid handle');
+  }
+  // 같은 핸들 객체가 새 이름을 쓴다. 새 객체를 만들면 그 객체에 붙은 표시(HML 변환 저장 등)와
+  // 문서 점유가 끊기고, 이름을 바꾸는 동안 끝난 저장이 옛 이름을 되살린다.
+  applyNativeHandleName(metadata.handleId, result.descriptor.name);
+  handle.adoptSaveTarget?.();
+  return handle;
+}
+
+/**
+ * 창이 다시 앞으로 왔을 때 부른다. 탐색기에서 문서 파일의 이름이 바뀌었거나 다른 폴더로 옮겨졌으면
+ * 메인이 그 파일을 따라가고 핸들이 새 이름을 쓴다. 네이티브 핸들이 아니거나 물을 수 없으면 null.
+ */
+export async function locateNativeDocumentFile(
+  handle: FileSystemFileHandleLike | null | undefined,
+): Promise<NativeFileLocation | null> {
+  const metadata = handle ? nativeHandleMetadata.get(handle) : null;
+  if (!metadata?.api.locateNativeFile || metadata.legacyPortableHistoryFolder) return null;
+  const location = await metadata.api.locateNativeFile(metadata.handleId);
+  if (!location || typeof location.name !== 'string') return null;
+  applyNativeHandleName(metadata.handleId, location.name);
+  const state = location.state === 'missing' || location.state === 'unavailable' ? location.state : 'present';
+  return { name: location.name, state };
+}
+
+/**
+ * 메인이 바깥에서 이름이 바뀌거나 옮겨진 문서 파일을 따라갔다는 알림을 받는다. 콜백 전에 그 파일의
+ * 핸들 객체들이 새 이름을 쓰게 한다. 해제 함수를 돌려준다.
+ */
+export function subscribeNativeFileMoves(
+  callback: (event: NativeFileMovedEvent) => void,
+  win?: DesktopHost,
+): () => void {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.onNativeFileMoved) return () => {};
+  const dispose = api.onNativeFileMoved((event) => {
+    if (typeof event?.handleId !== 'string' || typeof event.name !== 'string') return;
+    applyNativeHandleName(event.handleId, event.name);
+    callback({ handleId: event.handleId, name: event.name, previousName: event.previousName ?? '' });
+  });
+  return typeof dispose === 'function' ? dispose : () => {};
 }
 
 export function bindNativeFileHandleIdentity(
@@ -1193,15 +1285,19 @@ export async function pickDesktopLegacyHistoryFolder(
 export async function pickDesktopNativeSaveFile(
   options: SaveFilePickerOptionsLike,
   win?: DesktopHost,
+  /** 대화상자를 이 문서 파일이 있는 폴더에서 연다. */
+  nearHandle?: FileSystemFileHandleLike | null,
 ): Promise<FileSystemFileHandleLike | null | undefined> {
   const api = desktopHost(win)?.rhwpDesktop;
   if (!api?.pickNativeSaveFile) return undefined;
   const suggestedName = options.suggestedName ?? FALLBACK_DOCUMENT_FILE_NAME;
   const match = suggestedName.match(/\.(hwp|hwpx|hml)$/i);
   if (!match) throw new Error('Save target format is unavailable');
+  const nearHandleId = nativeFileHandleId(nearHandle);
   const result = await api.pickNativeSaveFile({
     suggestedName,
     extension: match[1]!.toLowerCase() as 'hwp' | 'hwpx' | 'hml',
+    ...(nearHandleId ? { handleId: nearHandleId } : {}),
   });
   if (!result) return null;
   if ('owned' in result) throw new Error('다른 창에서 이미 열려 있는 문서입니다.');

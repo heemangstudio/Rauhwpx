@@ -755,7 +755,11 @@ const browserWebAuthn = new BrowserWebAuthn({
 });
 browserHost.webAuthn = browserWebAuthn;
 const documentLeases = new DocumentLeaseManager();
-const nativeFiles = new NativeFileHandleRegistry();
+const nativeFiles = new NativeFileHandleRegistry({
+  // 바깥에서 이름이 바뀐 문서를 핸들이 따라가면 그 경로로 잡은 문서 점유도 함께 옮긴다.
+  moveLeases: (moves) => documentLeases.movePaths(moves),
+  onEntriesMoved: (moves, { reason }) => noteMovedNativeDocuments(moves, reason),
+});
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
 const logFonts = (line) => console.log(`[hamaeditor] fonts: ${line}`);
 const SYSTEM_FONT_REVALIDATE_DELAY_MS = 10_000;
@@ -827,6 +831,32 @@ function noteRecentDocument(sessionId, handleId) {
     if (filePath) app.addRecentDocument(filePath);
   } catch (error) {
     console.warn('[hamaeditor] recent document update failed:', error);
+  }
+}
+
+/**
+ * 문서 파일이 새 경로에 있다(앱 안 이름 바꾸기, 또는 탐색기에서 바꾼 이름·옮긴 폴더를 핸들이 따라감).
+ * 북마크와 최근 문서 목록을 새 경로로 남기고, 바깥에서 바뀐 것이면 그 창에 알려 제목과 목록을 고친다.
+ */
+function noteMovedNativeDocuments(moves, reason) {
+  void persistNativeBookmarks().catch(() => {});
+  for (const move of moves) {
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      try {
+        app.addRecentDocument(move.canonicalPath);
+      } catch (error) {
+        console.warn('[hamaeditor] recent document update failed:', error);
+      }
+    }
+    if (reason === 'rename') continue;
+    console.warn('[hamaeditor] document moved outside the app; following it:', move.previousPath, '->', move.canonicalPath);
+    const target = sessions.sessionById(move.sessionId);
+    if (!target || target.sender.isDestroyed()) continue;
+    target.sender.send('desktop:native-file-moved', {
+      handleId: move.handleId,
+      name: move.name,
+      previousName: basename(move.previousPath),
+    });
   }
 }
 
@@ -1827,8 +1857,18 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const suggestedStem = ['.hwp', '.hwpx', '.hml', '.rhwpx'].includes(extname(suggestedName).toLowerCase())
     ? basename(suggestedName, extname(suggestedName))
     : suggestedName;
+  // 다른 이름으로 저장은 지금 문서가 있는 폴더에서 연다. 마지막으로 쓴 폴더에서 열면 사용자가
+  // 그대로 저장해 원래 문서와 다른 폴더에 새 파일이 생긴다.
+  let documentFolder = null;
+  if (typeof options.handleId === 'string' && options.handleId) {
+    try {
+      documentFolder = dirname(nativeFiles.sourcePathForSender(session.sessionId, options.handleId));
+    } catch {
+      documentFolder = null;
+    }
+  }
   const picked = await dialog.showSaveDialog(window, {
-    defaultPath: suggestedStem,
+    defaultPath: documentFolder ? join(documentFolder, suggestedStem) : suggestedStem,
     filters: [{
       name: extension === 'rhwpx' ? 'HamaEditor history archive' : `${extension.toUpperCase()} document`,
       extensions: [extension],
@@ -1862,14 +1902,8 @@ ipcMain.handle('desktop:rename-native-file', async (event, handleId, nextName) =
     if (error?.renameRefusal) return { ok: false, reason: error.renameRefusal };
     throw error;
   }
-  // 문서 점유는 경로의 소유 키로 잡혀 있다. 같은 키 형식으로 옮겨야 다음 저장이 통과한다.
-  documentLeases.renamePath(session.sessionId, renamed.previousOwnershipPath, renamed.ownershipPath);
-  await persistNativeBookmarks();
-  try {
-    app.addRecentDocument(renamed.canonicalPath);
-  } catch (error) {
-    console.warn('[hamaeditor] recent document update failed:', error);
-  }
+  // 문서 점유·북마크·최근 문서는 레지스트리가 이름을 옮길 때 함께 옮겼다 (noteMovedNativeDocuments).
+  // 디스크의 이름은 이미 바뀌었으니, 북마크 기록이 늦거나 실패해도 이름 바꾸기는 성공이다.
   return { ok: true, descriptor: renamed.descriptor };
 });
 ipcMain.handle('desktop:release-native-file', (event, handleId) => {
@@ -1886,10 +1920,23 @@ ipcMain.handle('desktop:native-file-read', async (event, handleId) => {
     throw error;
   }
 });
-ipcMain.handle('desktop:native-file-source-path', (event, handleId) => {
+ipcMain.handle('desktop:native-file-source-path', async (event, handleId) => {
   const session = sessionForEvent(event);
   try {
+    // 에이전트가 일하는 동안 사용자가 탐색기에서 이름을 바꿨을 수 있다. 지금 경로를 준다.
+    await nativeFiles.locate(session.sessionId, handleId);
     return nativeFiles.sourcePathForSender(session.sessionId, handleId);
+  } catch (error) {
+    if (error instanceof StaleNativeHandleError) return null;
+    throw error;
+  }
+});
+// 창이 다시 앞으로 올 때 렌더러가 묻는다. 탐색기에서 바꾼 이름·옮긴 폴더를 따라가 지금 이름을 준다.
+ipcMain.handle('desktop:native-file-locate', async (event, handleId) => {
+  const session = sessionForEvent(event);
+  if (typeof handleId !== 'string' || !handleId) return null;
+  try {
+    return await nativeFiles.locate(session.sessionId, handleId);
   } catch (error) {
     if (error instanceof StaleNativeHandleError) return null;
     throw error;
@@ -1930,7 +1977,10 @@ ipcMain.handle('desktop:remember-native-document', async (event, documentId, han
 ipcMain.handle('desktop:reopen-native-document', async (event, documentId) => {
   const session = sessionForEvent(event);
   if (typeof documentId !== 'string' || !documentId) return null;
+  const rememberedPath = nativeFiles.bookmarkPathFor(documentId);
   const result = await nativeFiles.reopenDocument(session.sessionId, documentId);
+  // 닫혀 있는 동안 이름이 바뀐 문서를 그 파일에서 다시 열었다. 다음에도 그 경로로 연다.
+  if (nativeFiles.bookmarkPathFor(documentId) !== rememberedPath) void persistNativeBookmarks().catch(() => {});
   if (!result) return null;
   if (!result.ok) {
     sessions.focusSession(result.ownerSessionId);

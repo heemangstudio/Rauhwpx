@@ -35,6 +35,11 @@ export class SaveSession {
     return this.followUp;
   }
 
+  /** 저장이 진행 중이거나 후속 저장이 줄을 섰다. */
+  get busy(): boolean {
+    return this.active !== null || this.followUp !== null;
+  }
+
   /** 진행 중인 저장과 이어 붙은 후속 저장이 모두 끝날 때까지 기다린다. */
   async whenIdle(): Promise<void> {
     while (this.active || this.followUp) await (this.followUp ?? this.active);
