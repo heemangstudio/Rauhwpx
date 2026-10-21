@@ -94,3 +94,43 @@ export function routeUnlinkedThread<Chat extends RoutingChat>(
   if (holder) return { kind: 'holder', chat: holder };
   return current.wasm.hasLoadedDocument() ? { kind: 'new-session' } : { kind: 'in-place' };
 }
+
+/** 채팅 자리를 셀 때 보는 문서 세션 하나. */
+export interface ChatCapacitySession {
+  readonly chats: readonly unknown[];
+  /** 화면에 붙어 있거나, 지금 채팅을 다는 세션이다. */
+  readonly inUse: boolean;
+  /** 에이전트 턴이 돈다. */
+  readonly working: boolean;
+  /** 닫으면 잃는 것이 있다 — 검토·답을 기다리는 채팅, 저장하지 않은 변경, 관리되는 작업 트리, 진행 중인 열기 같은 것. */
+  readonly holds: boolean;
+}
+
+export type ChatCapacityPlan<Session> =
+  | { kind: 'room'; release: Session[] }
+  /** 닫을 수 있는 세션을 모두 닫아도 자리가 나지 않는다. working 은 화면 밖 자리를 모두 일하는 에이전트가 쥐었는지. */
+  | { kind: 'full'; working: boolean };
+
+/**
+ * 새 채팅 하나의 자리를 낸다. 화면 밖에서 일을 마친 문서는 돌아올 때 곧바로 보이도록 열어 두지만, 그 문서들이
+ * 자리를 다 차지하면 일하는 에이전트가 하나뿐이어도 새 채팅과 문서 전환이 막힌다. 자리가 모자라면 그런 세션을
+ * 오래된 것부터 닫는다. 닫아도 자리가 나지 않으면 아무것도 닫지 않는다.
+ */
+export function planChatCapacity<Session extends ChatCapacitySession>(
+  sessions: readonly Session[],
+  limit: number,
+): ChatCapacityPlan<Session> {
+  let open = sessions.reduce((count, session) => count + session.chats.length, 0);
+  const release: Session[] = [];
+  for (const session of sessions) {
+    if (open < limit) break;
+    if (session.inUse || session.working || session.holds || session.chats.length === 0) continue;
+    release.push(session);
+    open -= session.chats.length;
+  }
+  if (open < limit) return { kind: 'room', release };
+  return {
+    kind: 'full',
+    working: sessions.every((session) => session.inUse || session.working || session.chats.length === 0 || !session.holds),
+  };
+}
