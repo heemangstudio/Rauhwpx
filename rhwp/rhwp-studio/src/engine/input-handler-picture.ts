@@ -11,6 +11,7 @@ import { clearObjectEditingPage, summarizeObjectSelection } from './object-selec
 import type { CellPathLike } from '@/core/types';
 import { objectAddressScope } from '@/core/object-address';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '@/core/document-input-limits';
+import { prepareDocumentImage } from '@/core/document-image';
 import { showToast } from '@/ui/toast';
 import {
   assertEncodedImageDecodeDimensions,
@@ -190,6 +191,7 @@ export function promptAssignPictureImage(this: any, ref: PictureObjectRef): void
         img.onerror = () => reject(new Error('브라우저가 이 이미지 파일을 읽지 못했습니다.'));
         img.src = objectUrl;
       });
+      const prepared = await prepareDocumentImage(data, ext, file.type);
       const cellPathJson = hasCellPath(ref) ? JSON.stringify(ref.cellPath) : '';
       // 지정 후에는 실그림이므로 placeholder 선택 상태를 먼저 해제한다
       // (스냅샷 실행의 full refresh 가 stale 선택 표시를 남기지 않도록).
@@ -200,7 +202,7 @@ export function promptAssignPictureImage(this: any, ref: PictureObjectRef): void
       this.executeOperation({ kind: 'snapshot', operationType: 'assignPictureImage', operation: (wasm: any) => {
         wasm.assignPictureImage(
           ref.sec, ref.ppi, cellPathJson, ref.ci,
-          data, img.naturalWidth, img.naturalHeight, ext,
+          prepared.bytes, img.naturalWidth, img.naturalHeight, prepared.extension,
         );
         return this.cursor.getPosition();
       }});
