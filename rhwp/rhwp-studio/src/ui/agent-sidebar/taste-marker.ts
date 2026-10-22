@@ -10,8 +10,9 @@ import type { ThreadTasteMarker } from '../../agent/threads.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import type { TasteLearnItem } from '../../agent/types.ts';
 import { createChevron } from '../chevron.ts';
+import { createIcon } from './icons.ts';
 
-const OP_TAG: Record<TasteLearnItem['op'], string> = { add: '새로', update: '고침', remove: '지움' };
+const OP_TAG: Record<TasteLearnItem['op'], string> = { add: 'New', update: '고침', remove: '지움' };
 
 export interface TasteMarkerHandlers {
   /** 항목 하나를 되돌린다. 끝나면 호출한 쪽이 update 로 결과를 그린다. */
@@ -107,8 +108,11 @@ export function createTasteMarkerView(
       row.append(el('span', 'ag-taste-undone', '되돌림'));
       return row;
     }
-    const undo = el('button', 'ag-taste-undo', '되돌리기');
+    const undo = el('button', 'ag-taste-undo');
     undo.type = 'button';
+    undo.setAttribute('aria-label', '되돌리기');
+    undo.title = '되돌리기';
+    undo.append(createIcon('undo'));
     undo.disabled = stale || pendingUndo.has(item.entryId);
     if (pendingUndo.has(item.entryId)) undo.setAttribute('aria-busy', 'true');
     undo.addEventListener('click', () => handlers.onUndo(item.entryId));
