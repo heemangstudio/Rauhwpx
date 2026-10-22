@@ -5,6 +5,8 @@
  * 다른 곳(에이전트 도구·자동 학습·되돌리기)에서 바뀌면 document-memory-changed 를 받아 다시 읽는다.
  * 고치는 중이면 그 줄을 덮지 않고, 고치기가 끝난 뒤 새 목록을 그린다. 쓰는 사이 다른 곳에서 바뀌었으면
  * 그 항목이 고치기를 시작할 때와 같을 때만 다시 쓴다 — 아니면 초안을 남기고 알린다.
+ * 머리의 '기록에서 배우기'는 대화에서 배우기 설정과 상관없이 Rau-0.1 을 한 번 돌린다. 결과 구분선은 사이드바가
+ * taste-history-learned 로 그 문서의 채팅 끝에 남기고, 배운 항목은 document-memory-changed 로 이 목록에 들어온다.
  */
 import './document-memory-sheet.css';
 import type { SidebarBridge } from '../../agent/bridge.ts';
@@ -22,7 +24,7 @@ import { createSheetFrame } from './sheet.ts';
 
 export type DocumentMemorySheetBridge = Pick<
   SidebarBridge,
-  'listDocumentMemory' | 'applyDocumentMemory' | 'missingDocumentMemoryAnchors' | 'onEvent'
+  'listDocumentMemory' | 'applyDocumentMemory' | 'missingDocumentMemoryAnchors' | 'onEvent' | 'learnFromHistory'
 >;
 
 export interface DocumentMemorySheetOptions {
@@ -59,6 +61,7 @@ const ERROR_TEXT: Record<string, string> = {
   MEMORY_INVALID: '기억을 저장하지 못했습니다.',
 };
 const OFFLINE_TEXT = '에이전트 허브에 연결되어 있지 않습니다.';
+const HISTORY_NOTE_MS = 3_200;
 
 function errorText(result: DocumentMemoryResult | null): string {
   if (!result) return OFFLINE_TEXT;
@@ -125,7 +128,9 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
   close.type = 'button';
   close.setAttribute('aria-label', '닫기');
   close.append(createIcon('close'));
-  header.append(frame.header, close);
+  const learnButton = el('button', 'ag-memory-learn', '기록에서 배우기');
+  learnButton.type = 'button';
+  header.append(frame.header, learnButton, close);
 
   const list = el('div', 'ag-memory-list');
   const empty = el('p', 'ag-memory-empty', '아직 기억이 없습니다.');
@@ -149,13 +154,41 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
   const errorLine = el('p', 'ag-memory-error');
   errorLine.setAttribute('role', 'alert');
   errorLine.hidden = true;
+  const noteLine = el('p', 'ag-memory-note');
+  noteLine.setAttribute('role', 'status');
+  noteLine.hidden = true;
 
-  sheet.append(header, list, empty, addRow, errorLine);
+  sheet.append(header, list, empty, addRow, errorLine, noteLine);
   sheet.dataset.loading = 'true';
 
   function showError(text: string | null): void {
     errorLine.textContent = text ?? '';
     errorLine.hidden = !text;
+  }
+
+  let noteTimer: ReturnType<typeof setTimeout> | null = null;
+  function showNote(text: string): void {
+    if (noteTimer !== null) clearTimeout(noteTimer);
+    noteLine.textContent = text;
+    noteLine.hidden = false;
+    noteTimer = setTimeout(() => {
+      noteTimer = null;
+      noteLine.hidden = true;
+    }, HISTORY_NOTE_MS);
+  }
+
+  async function learnFromHistory(): Promise<void> {
+    if (learnButton.getAttribute('aria-busy') === 'true') return;
+    learnButton.setAttribute('aria-busy', 'true');
+    noteLine.hidden = true;
+    showError(null);
+    const outcome = await bridge.learnFromHistory();
+    learnButton.removeAttribute('aria-busy');
+    if (closed) return;
+    if (outcome.status === 'review') showNote('검토 중인 변경이 있습니다.');
+    else if (outcome.status === 'empty') showNote('배울 기록이 없습니다.');
+    else if (outcome.status === 'learned' && outcome.result.items.length === 0) showNote('새로 배운 것이 없습니다.');
+    else if (outcome.status === 'failed') showError(outcome.code === 'OFFLINE' ? OFFLINE_TEXT : '기록에서 배우지 못했습니다.');
   }
 
   /** 새 기억을 받는다 — revision 이 뒤로 가지 않게 한다. */
@@ -415,6 +448,7 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
   }
 
   kindButton.addEventListener('click', () => void chooseKind());
+  learnButton.addEventListener('click', () => void learnFromHistory());
   addRow.addEventListener('submit', (event) => {
     event.preventDefault();
     void addEntry();
@@ -436,6 +470,7 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
   const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const finish = frame.present(() => addInput, () => {
     closed = true;
+    if (noteTimer !== null) clearTimeout(noteTimer);
     stopEvents();
     resolveClosed();
   });

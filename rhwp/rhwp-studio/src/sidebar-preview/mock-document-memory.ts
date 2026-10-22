@@ -4,6 +4,7 @@
  * 문서마다 revision·항목을 들고, 허브처럼 상한(40개·8 000자), 주제 충돌(같은 주제의 add 는 고침),
  * expectedRevision 충돌을 지킨다. 쓰면 붙은 모든 모의 브리지에 document-memory-changed 를 보낸다.
  * `?memory=sample` 은 사업 제안서에 표본 네 개를, `?memory=empty` 는 빈 기억을 둔다.
+ * 기록에서 배우기는 문서마다 처음 한 번 Rau-0.1 항목 하나를 배우고, 그다음부터는 배울 기록이 없다고 답한다.
  */
 import type { SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
@@ -25,6 +26,8 @@ interface Store {
 }
 
 const stores = new Map<string, Store>();
+/** 기록에서 이미 배운 문서 */
+const historyLearned = new Set<string>();
 const sinks = new Set<(event: T.SidebarEvent) => void>();
 let sequence = 0;
 
@@ -139,7 +142,7 @@ function apply(store: Store, ops: readonly T.DocumentMemoryOp[]): T.DocumentMemo
 
 export type MockDocumentMemory = Pick<
   SidebarBridge,
-  'listDocumentMemory' | 'applyDocumentMemory' | 'revertDocumentMemory' | 'missingDocumentMemoryAnchors'
+  'listDocumentMemory' | 'applyDocumentMemory' | 'revertDocumentMemory' | 'missingDocumentMemoryAnchors' | 'learnFromHistory'
 >;
 
 /** 모의 브리지 하나의 문서 기억 메서드. emit 은 이 브리지의 이벤트 구독자에게 보낸다. */
@@ -195,5 +198,27 @@ export function createMockDocumentMemory(
     },
     missingDocumentMemoryAnchors: (entries) =>
       entries.filter((entry) => entry.anchor?.quote === MISSING_QUOTE).map((entry) => entry.id),
+    learnFromHistory: async () => {
+      const id = currentDocumentId() ?? 'preview-proposal';
+      // 학습기가 모델을 부르는 동안의 바쁜 표시가 보이게 잠깐 기다린다.
+      await new Promise((done) => setTimeout(done, 900));
+      if (historyLearned.has(id)) return { status: 'empty' as const };
+      historyLearned.add(id);
+      const store = storeFor(id);
+      const result = apply(store, [{ op: 'add', kind: 'style', subject: '문체.보고', text: '보고 문장은 짧게 끊어 씀' }]);
+      if (!result.ok || !result.changes?.length) return { status: 'failed' as const, code: result.error?.code ?? 'MEMORY_INVALID' };
+      const change = result.changes[0]!;
+      const entry = store.entries.find((item) => item.id === change.entryId);
+      if (entry) entry.origin = 'learned';
+      changed(id, store);
+      const learnId = `learn-history-${sequence}`;
+      const items: T.TasteLearnItem[] = [{ op: change.op, entryId: change.entryId, text: entry?.text ?? '', origin: 'learned' }];
+      emit({ type: 'taste-history-learned', documentId: id, learnId, key: store.key, items, changes: result.changes });
+      return {
+        status: 'learned' as const,
+        documentId: id,
+        result: { ok: true, learnId, key: store.key, items, changes: result.changes, accepted: [0] },
+      };
+    },
   };
 }

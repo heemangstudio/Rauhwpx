@@ -31,6 +31,10 @@ export interface VersionCommitView {
   byteLength: number;
   /** 외부 문서를 가져오거나 병합한 커밋이면 그 파일 이름. */
   sourceFileName?: string;
+  /** 남긴 이 — 에이전트 커밋이면 에이전트 이름. 예전 미리보기 목록에는 없을 수 있다. */
+  author?: { kind: 'user' | 'system' | 'agent'; label: string };
+  /** 에이전트 커밋을 남긴 채팅 */
+  threadId?: string;
 }
 
 /** 가져오거나 병합하려고 고른 외부 문서. */
@@ -1216,6 +1220,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       el('p', 'ag-versions-inspector-meta', [
         formatTime(selected.createdAt),
         formatBytes(selected.byteLength),
+        ...(selected.author?.kind === 'agent' ? [selected.author.label] : []),
         ...(selected.sourceFileName ? [selected.sourceFileName] : []),
       ].join('\u00a0\u00a0')),
       commitBadges(selected),
