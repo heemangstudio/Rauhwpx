@@ -75,6 +75,8 @@ import {
 } from '@/command/commands/view';
 import { formatCommands } from '@/command/commands/format';
 import { insertCommands } from '@/command/commands/insert';
+import { getMemoOverlay, memoCommands, setMemoOverlay, syncMemoViewToggle } from '@/command/commands/memo';
+import { MemoOverlay } from '@/view/memo-overlay';
 import { tableCommands } from '@/command/commands/table';
 import { pageCommands } from '@/command/commands/page';
 import { toolCommands } from '@/command/commands/tool';
@@ -1004,6 +1006,7 @@ registry.registerAll(editCommands);
 registry.registerAll(viewCommands);
 registry.registerAll(formatCommands);
 registry.registerAll(insertCommands);
+registry.registerAll(memoCommands);
 registry.registerAll(tableCommands);
 registry.registerAll(pageCommands);
 registry.registerAll(toolCommands);
@@ -1715,6 +1718,22 @@ async function initialize(): Promise<void> {
     inputHandler.setPictureObjectRenderer(
       new TableObjectRenderer(container, canvasView.getVirtualScroll(), true),
     );
+    // 메모(풍선 주석) 오버레이 — 앵커 강조와 오른쪽 메모 창. 보기 › 메모 설정을 따른다.
+    const memoOverlay = new MemoOverlay({
+      container,
+      wasm,
+      eventBus,
+      virtualScroll: canvasView.getVirtualScroll(),
+      viewportManager: canvasView.getViewportManager(),
+      getInputHandler: () => inputHandler,
+      matchAppShortcut: (e) => {
+        const commandId = matchShortcut(e, defaultShortcuts);
+        return commandId?.startsWith('file:') ? () => { dispatcher.dispatch(commandId); } : null;
+      },
+    });
+    memoOverlay.setVisible(userSettings.getViewSettings().showMemos);
+    syncMemoViewToggle(userSettings.getViewSettings().showMemos);
+    setMemoOverlay(memoOverlay);
 
     new MenuBar(document.getElementById('menu-bar')!, eventBus, dispatcher, registry, {
       onMenuOpen: (menuName) => {
@@ -2256,6 +2275,11 @@ async function mergeWorktreeSession(requested: VersionWorktree): Promise<void> {
 
 type ChatPendingChange = Parameters<Parameters<ChatSession['bridge']['pendingEdits']['onChange']>[0]>[0];
 
+/** 이 문서의 채팅들이 검토를 기다리는 메모를 메모 풍선에 표시한다. */
+function syncPendingMemos(session: DocumentSession): void {
+  getMemoOverlay()?.setPendingFieldIds(session.chats.flatMap((chat) => chat.bridge.pendingEdits.pendingMemoFieldIds()));
+}
+
 /** 문서마다 그 문서 채팅들의 이벤트를 모아 듣는 곳 (나중에 생긴 채팅도 포함). */
 const documentTaps = new WeakMap<DocumentSession, {
   events: Set<(event: AttentionEvent) => void>;
@@ -2522,6 +2546,7 @@ function installChatAgent(
     bridge.pendingEdits.onChange((event) => {
       for (const listener of taps.pending) listener(event);
       notifyChatModeLock(session, created);
+      if (session === attachedSession) syncPendingMemos(session);
     }),
   );
   notifyChatModeLock(session, created);
@@ -3500,6 +3525,8 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
       next.wasm.refreshLayout();
       totalSections = info.sectionCount ?? 1;
       await canvasView.loadDocument(next.viewState);
+      syncPendingMemos(next);
+      getMemoOverlay()?.scheduleRender();
       viewReady = true;
     }
   } catch (error) {
@@ -4873,6 +4900,7 @@ async function initializeDocument(
     applySavedTextMarkSettings();
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     await canvasView?.loadDocument();
+    getMemoOverlay()?.scheduleRender();
     prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');

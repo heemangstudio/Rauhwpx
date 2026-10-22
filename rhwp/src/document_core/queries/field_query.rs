@@ -556,7 +556,7 @@ impl DocumentCore {
         Ok(())
     }
 
-    fn refresh_field_layout(
+    pub(crate) fn refresh_field_layout(
         &mut self,
         location: &FieldLocation,
         stored_end: Option<i32>,
@@ -1251,7 +1251,7 @@ fn para_at_location<'a>(core: &'a DocumentCore, location: &FieldLocation) -> Opt
     Some(para)
 }
 
-fn field_range_bounds(core: &DocumentCore, fi: &FieldInfo) -> Option<(usize, usize)> {
+pub(crate) fn field_range_bounds(core: &DocumentCore, fi: &FieldInfo) -> Option<(usize, usize)> {
     let para = para_at_location(core, &fi.location)?;
     let range = para.field_ranges.get(fi.field_range_index)?;
     Some((range.start_char_idx, range.end_char_idx))

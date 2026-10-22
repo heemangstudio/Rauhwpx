@@ -1658,7 +1658,10 @@ fn has_stored_line_segs(document: &mut Document) -> bool {
 
 /// 문단 목록과 그 하위 목록(표 셀·캡션·글상자·묶음 자식·머리말/꼬리말·각주/미주)의 모든
 /// 문단을 방문한다.
-fn visit_paragraphs_mut(paragraphs: &mut [Paragraph], f: &mut dyn FnMut(&mut Paragraph)) {
+pub(crate) fn visit_paragraphs_mut(
+    paragraphs: &mut [Paragraph],
+    f: &mut dyn FnMut(&mut Paragraph),
+) {
     fn caption(caption: &mut Option<Caption>, f: &mut dyn FnMut(&mut Paragraph)) {
         if let Some(caption) = caption {
             visit_paragraphs_mut(&mut caption.paragraphs, f);
@@ -6079,6 +6082,7 @@ impl DocumentCore {
             is_hwp3_variant,
             is_hwpx_variant,
             provenance,
+            orphan_memo_lists,
         } = document;
         Document {
             header: header.clone(),
@@ -6102,6 +6106,7 @@ impl DocumentCore {
             is_hwp3_variant: *is_hwp3_variant,
             is_hwpx_variant: *is_hwpx_variant,
             provenance: provenance.clone(),
+            orphan_memo_lists: orphan_memo_lists.clone(),
         }
     }
 

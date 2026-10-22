@@ -107,3 +107,37 @@ export function followHyperlinkClick(self: any, e: MouseEvent): void {
     showToast({ message: error instanceof Error ? error.message : String(error) });
   }
 }
+
+/** 포인터 아래 메모 앵커의 fieldId (앵커 글자 사각형 안일 때만), 없으면 null. */
+export function memoAtPointer(self: any, e: MouseEvent): number | null {
+  if (!self.wasm?.getMemoNoteAt || !self.canEditHyperlink?.()) return null;
+  const content = self.container.querySelector('#scroll-content');
+  if (!content) return null;
+  try {
+    const box = content.getBoundingClientRect();
+    const x = e.clientX - box.left, y = e.clientY - box.top;
+    const page = self.virtualScroll.getPageAtPoint(x, y);
+    if (page < 0 || page >= self.wasm.pageCount) return null;
+    const zoom = self.viewportManager.getZoom();
+    const px = (x - self.virtualScroll.getPageLeftResolved(page, content.clientWidth)) / zoom;
+    const py = (y - self.virtualScroll.getPageOffset(page)) / zoom;
+    const hit = hoverHitTest(self, page, px, py);
+    const target = hyperlinkTarget(hit);
+    const path = {
+      sectionIdx: target.section,
+      paraIdx: target.para,
+      ...(target.cellPath.length
+        ? { cellPath: target.cellPath.map(([controlIndex, cellIndex, cellParaIndex]) => ({ controlIndex, cellIndex, cellParaIndex })) }
+        : {}),
+    };
+    const id: number | null = self.wasm.getMemoNoteAt(path, hit.charOffset);
+    if (id === null) return null;
+    const rects: Array<{ pageIndex: number; x: number; y: number; w: number; h: number }> =
+      self.wasm.getMemoNoteAnchorRects(id);
+    return rects.some((r) => r.pageIndex === page && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h)
+      ? id
+      : null;
+  } catch {
+    return null;
+  }
+}

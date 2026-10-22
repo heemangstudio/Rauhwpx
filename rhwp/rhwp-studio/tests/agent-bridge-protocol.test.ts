@@ -237,6 +237,7 @@ test('executor: document-write helper covers every mutating tool', () => {
     'set_bookmark',
     'set_cell_props',
     'set_field_value',
+    'set_memo',
     'set_page_layout',
     'set_table_props',
     'set_zone_borders',

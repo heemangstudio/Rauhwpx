@@ -66,6 +66,8 @@ export interface ViewSettings {
   sidebarMotion: boolean;
   /** 기본 도구 상자와 서식 도구 상자를 한 줄로 합칠지 여부 */
   compactToolbar: boolean;
+  /** 메모(풍선 주석) 앵커 강조와 오른쪽 메모 창 표시 여부. 기본은 켜짐 (한컴 보기 › 메모). */
+  showMemos: boolean;
 }
 
 /** 버전 관리 설정 */
@@ -179,6 +181,7 @@ function defaultSettings(): AppSettings {
       clipView: true,
       sidebarMotion: false,
       compactToolbar: false,
+      showMemos: true,
     },
     versionControl: {
       useHancomGit: true,
@@ -286,6 +289,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       clipView: normalizeBoolean(view.clipView, defaults.view.clipView),
       sidebarMotion: normalizeBoolean(view.sidebarMotion, defaults.view.sidebarMotion),
       compactToolbar: normalizeBoolean(view.compactToolbar, defaults.view.compactToolbar),
+      showMemos: normalizeBoolean(view.showMemos, defaults.view.showMemos),
     },
     versionControl: {
       useHancomGit: normalizeBoolean(versionControl.useHancomGit, defaults.versionControl.useHancomGit),
@@ -395,6 +399,7 @@ class UserSettingsService {
         clipView: normalizeBoolean(next.view.clipView, true),
         sidebarMotion: normalizeBoolean(next.view.sidebarMotion, false),
         compactToolbar: normalizeBoolean(next.view.compactToolbar, false),
+        showMemos: normalizeBoolean(next.view.showMemos, true),
       },
       versionControl: {
         useHancomGit: normalizeBoolean(next.versionControl.useHancomGit, true),
@@ -529,6 +534,12 @@ class UserSettingsService {
   setShowParagraphMarks(value: boolean): void {
     this.data.view.showParagraphMarks = value;
     if (!value) this.data.view.showControlCodes = false;
+    this.save();
+  }
+
+  /** 메모 표시 설정 */
+  setShowMemos(value: boolean): void {
+    this.data.view.showMemos = value;
     this.save();
   }
 

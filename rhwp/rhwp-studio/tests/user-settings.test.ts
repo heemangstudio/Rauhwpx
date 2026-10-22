@@ -277,6 +277,7 @@ test('v1 설정은 최근 글꼴을 더한 v2로 마이그레이션되고 범위
     clipView: true,
     sidebarMotion: false,
     compactToolbar: false,
+    showMemos: true,
   });
   assert.equal(migrated.autosave.recoveryIntervalMinutes, 1);
   assert.equal(migrated.autosave.idleDelaySeconds, 600);

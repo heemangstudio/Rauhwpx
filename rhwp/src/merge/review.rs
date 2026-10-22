@@ -255,6 +255,7 @@ fn document_value(document: &Document) -> Result<Value, String> {
         is_hwp3_variant,
         is_hwpx_variant,
         provenance,
+        orphan_memo_lists,
     } = document;
     let resources = bin_data_content
         .iter()
@@ -293,6 +294,7 @@ fn document_value(document: &Document) -> Result<Value, String> {
         is_hwp3_variant,
         is_hwpx_variant,
         provenance,
+        orphan_memo_lists,
     ));
     Ok(json!({"kind": "document", "hash": format!("blake3:{}", hash.to_hex())}))
 }

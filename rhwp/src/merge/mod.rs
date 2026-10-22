@@ -7158,6 +7158,8 @@ fn merge_doc_for_format(
         is_hwp3_variant,
         is_hwpx_variant,
         provenance,
+        // 앵커 없는 HWP 메모 본문은 병합 대상이 아니다 — 현재 문서 것을 유지한다.
+        orphan_memo_lists: c.orphan_memo_lists.clone(),
     };
     x.conflicts
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));

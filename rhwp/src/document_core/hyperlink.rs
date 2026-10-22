@@ -347,7 +347,7 @@ impl DocumentCore {
             .ok_or_else(|| invalid("문단 인덱스 초과"))
     }
 
-    fn hyperlink_paragraph_list(
+    pub(crate) fn hyperlink_paragraph_list(
         &self,
         target: &HyperlinkTarget,
     ) -> Result<(&[Paragraph], usize), HwpError> {
@@ -383,7 +383,10 @@ impl DocumentCore {
         Ok((paragraphs, para_idx))
     }
 
-    fn validate_hyperlink_paragraph(&self, target: &HyperlinkTarget) -> Result<(), HwpError> {
+    pub(crate) fn validate_hyperlink_paragraph(
+        &self,
+        target: &HyperlinkTarget,
+    ) -> Result<(), HwpError> {
         let p = self.hyperlink_paragraph(target)?;
         if p.field_ranges.iter().any(|r| {
             r.start_char_idx > r.end_char_idx
@@ -486,7 +489,7 @@ fn invalid(message: &str) -> HwpError {
     HwpError::InvalidField(message.into())
 }
 
-fn rebuild_hyperlink_char_offsets(p: &mut Paragraph) {
+pub(crate) fn rebuild_hyperlink_char_offsets(p: &mut Paragraph) {
     p.authored_text_runs = None;
     p.para_text_terminal = None;
     let leading = p
@@ -514,7 +517,7 @@ fn find_link(p: &Paragraph, id: u32) -> Result<(usize, usize), HwpError> {
         .ok_or_else(|| invalid("하이퍼링크 필드를 찾을 수 없습니다"))
 }
 
-fn raw_boundary(p: &Paragraph, offset: usize) -> u32 {
+pub(crate) fn raw_boundary(p: &Paragraph, offset: usize) -> u32 {
     p.char_offsets
         .get(offset)
         .copied()
@@ -523,7 +526,7 @@ fn raw_boundary(p: &Paragraph, offset: usize) -> u32 {
 
 /// 8-unit 마커를 넣거나 빼며 모든 raw UTF-16 참조 축을 함께 옮긴다.
 /// 첫 글자 서식의 0 anchor는 그대로 둔다. 표시 문자 인덱스는 변하지 않는다.
-fn shift_axis(p: &mut Paragraph, boundary: u32, delta: i32) -> Result<(), HwpError> {
+pub(crate) fn shift_axis(p: &mut Paragraph, boundary: u32, delta: i32) -> Result<(), HwpError> {
     p.authored_text_runs = None;
     p.para_text_terminal = None;
     let shift = |v: &mut u32| -> Result<(), HwpError> {

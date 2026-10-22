@@ -42,6 +42,25 @@ pub(crate) fn serialize_section_limited(
     section: &Section,
     max_bytes: usize,
 ) -> Result<Cow<'_, [u8]>, String> {
+    serialize_section_inner(section, max_bytes, None)
+}
+
+/// 문서 저장용 구역 직렬화. `memo_tail` 은 이 구역 끝에 쓸 메모 묶음 전체다 — 한컴처럼
+/// 문서의 모든 메모를 마지막 구역에만 쓰므로, 다른 구역에는 빈 목록을 넘긴다.
+pub(crate) fn serialize_section_with_memo_tail<'a>(
+    section: &'a Section,
+    max_bytes: usize,
+    memo_tail: &[(u32, &[Paragraph])],
+) -> Result<Cow<'a, [u8]>, String> {
+    serialize_section_inner(section, max_bytes, Some(memo_tail))
+}
+
+/// `memo_tail` 이 `None` 이면 구역 자신의 메모 필드에서 메모 묶음을 모은다 (단독 직렬화).
+fn serialize_section_inner<'a>(
+    section: &'a Section,
+    max_bytes: usize,
+    memo_tail: Option<&[(u32, &[Paragraph])]>,
+) -> Result<Cow<'a, [u8]>, String> {
     // 원본 스트림이 있으면 그대로 반환 (완벽한 라운드트립)
     if let Some(ref raw) = section.raw_stream {
         if raw.len() > max_bytes {
@@ -83,8 +102,14 @@ pub(crate) fn serialize_section_limited(
     super::control::reset_form_order_counter();
 
     let mut output = LimitedRecordStream::new(max_bytes);
-    let memo_lists = collect_memo_lists(section);
-    let has_memo_tail = !memo_lists.is_empty();
+    let own_memo_lists;
+    let memo_lists: &[(u32, &[Paragraph])] = match memo_tail {
+        Some(lists) => lists,
+        None => {
+            own_memo_lists = collect_memo_lists(section);
+            &own_memo_lists
+        }
+    };
     let para_count = section.paragraphs.len();
     // [Issue #1915] IR 계약 폴백: 첫 문단에 Control::SectionDef 가 없는 IR(HWP3 파서
     // 산출물, 외부 생성 IR)은 secd/PAGE_DEF 계열 레코드가 통째로 누락되어 재로드 시
@@ -108,7 +133,7 @@ pub(crate) fn serialize_section_limited(
         None
     };
     for (i, para) in section.paragraphs.iter().enumerate() {
-        let is_last = i == para_count - 1 && !has_memo_tail;
+        let is_last = i == para_count - 1;
         let para_ref = if i == 0 {
             first_para_with_secd.as_ref().unwrap_or(para)
         } else {
@@ -116,10 +141,9 @@ pub(crate) fn serialize_section_limited(
         };
         serialize_paragraph_to_stream(para_ref, 0, is_last, &mut output)?;
     }
-    if has_memo_tail {
-        serialize_memo_tail(section, &memo_lists, &mut output)?;
-    }
     serialize_master_page_tail(section, &mut output)?;
+    // 메모 묶음은 스트림 맨 끝, 마지막 문단의 level-1 자식으로 쓴다 (확장 바탕쪽 꼬리 뒤).
+    serialize_memo_tail(section, memo_lists, &mut output)?;
     Ok(Cow::Owned(output.finish()))
 }
 
@@ -229,7 +253,7 @@ fn serialize_master_page_tail(
     Ok(())
 }
 
-fn collect_memo_lists(section: &Section) -> Vec<(u32, &[Paragraph])> {
+pub(crate) fn collect_memo_lists(section: &Section) -> Vec<(u32, &[Paragraph])> {
     let mut memo_lists = Vec::new();
     collect_memo_lists_in_paragraphs(&section.paragraphs, &mut memo_lists);
     for master_page in &section.section_def.master_pages {
@@ -338,40 +362,15 @@ fn serialize_memo_tail(
     }
 
     // HWP5 spec: 메모 관련 정보는 마지막 구역 끝에 문단 리스트 형태로 저장된다.
-    // 한컴 저장본은 마지막 본문 문단의 조판 속성을 복제한 빈 root 문단 아래에
-    // MEMO_LIST, LIST_HEADER, 메모 본문 문단을 순서대로 둔다.
-    let last_para = section.paragraphs.last();
-    let mut root = Paragraph {
-        char_count: 1,
-        para_shape_id: last_para.map_or(0, |p| p.para_shape_id),
-        style_id: last_para.map_or(0, |p| p.style_id),
-        char_shapes: last_para
-            .and_then(|p| p.char_shapes.first().cloned())
-            .map(|mut cs| {
-                cs.start_pos = 0;
-                vec![cs]
-            })
-            .unwrap_or_else(|| {
-                vec![CharShapeRef {
-                    start_pos: 0,
-                    char_shape_id: 0,
-                }]
-            }),
-        line_segs: last_para
-            .map(|p| p.line_segs.clone())
-            .filter(|segs| !segs.is_empty())
-            .unwrap_or_else(|| Paragraph::new_empty().line_segs),
-        raw_header_extra: vec![0; 12],
-        ..Default::default()
-    };
-    for seg in &mut root.line_segs {
-        seg.vertical_pos = seg
-            .vertical_pos
-            .saturating_add(seg.line_height)
-            .saturating_add(seg.line_spacing);
+    // 한컴 저장본은 마지막 level-0 문단(빈 문단이든 본문 문단이든) 아래에 MEMO_LIST,
+    // LIST_HEADER, 메모 본문 문단을 level-1 로 이어 둔다. 별도 root 문단은 만들지 않는다 —
+    // 문단이 하나도 없는 구역에서만 메모 묶음을 매달 빈 문단을 쓴다.
+    if section.paragraphs.is_empty() {
+        let mut root = Paragraph::new_empty();
+        root.raw_header_extra = vec![0; 12];
+        root.has_para_text = false;
+        serialize_paragraph_to_stream(&root, 0, true, output)?;
     }
-    root.has_para_text = false;
-    serialize_paragraph_to_stream(&root, 0, true, output)?;
 
     for (memo_index, paragraphs) in memo_lists {
         output.append_record(tags::HWPTAG_MEMO_LIST, 1, &memo_index.to_le_bytes())?;

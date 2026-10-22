@@ -564,3 +564,159 @@ fn trailing_hwp5_master_is_extension_even_without_legacy_flag() {
     assert!(pages[0].is_extension);
     assert!(pages[0].replace_base);
 }
+
+/// 메모 꼬리: 마지막 본문 문단(글자 있음) 뒤의 level-1 MEMO_LIST 묶음을 잘라내고,
+/// 마지막 문단은 메모가 없을 때와 똑같이 파싱해야 한다.
+fn memo_group_bytes(index: u32, body: &str) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend(make_record_bytes(
+        tags::HWPTAG_MEMO_LIST,
+        1,
+        &index.to_le_bytes(),
+    ));
+    let mut list_header = 1u32.to_le_bytes().to_vec();
+    list_header.extend_from_slice(&[0; 12]);
+    data.extend(make_record_bytes(tags::HWPTAG_LIST_HEADER, 1, &list_header));
+    let char_count = body.encode_utf16().count() as u32 + 1;
+    data.extend(make_record_bytes(
+        tags::HWPTAG_PARA_HEADER,
+        1,
+        &make_para_header_data(char_count | 0x8000_0000, 0, 0),
+    ));
+    data.extend(make_record_bytes(
+        tags::HWPTAG_PARA_TEXT,
+        2,
+        &make_para_text_data(body),
+    ));
+    data
+}
+
+#[test]
+fn memo_tail_is_cut_from_last_paragraph_without_dropping_it() {
+    let mut plain = Vec::new();
+    plain.extend(make_record_bytes(
+        tags::HWPTAG_PARA_HEADER,
+        0,
+        &make_para_header_data(3, 0, 0),
+    ));
+    plain.extend(make_record_bytes(
+        tags::HWPTAG_PARA_TEXT,
+        1,
+        &make_para_text_data("앞"),
+    ));
+    plain.extend(make_record_bytes(
+        tags::HWPTAG_PARA_HEADER,
+        0,
+        &make_para_header_data(3 | 0x8000_0000, 0, 0),
+    ));
+    plain.extend(make_record_bytes(
+        tags::HWPTAG_PARA_TEXT,
+        1,
+        &make_para_text_data("끝"),
+    ));
+    let mut with_memos = plain.clone();
+    with_memos.extend(memo_group_bytes(1, "첫 메모"));
+    with_memos.extend(memo_group_bytes(1, "번호 중복"));
+    with_memos.extend(memo_group_bytes(7, "필드 없음"));
+
+    let expected = parse_body_text_section(&plain).unwrap();
+    let (section, lists) = parse_body_text_section_with_memos(&with_memos).unwrap();
+    assert_eq!(section.paragraphs.len(), expected.paragraphs.len());
+    assert_eq!(section.paragraphs[1].text, "끝");
+    assert_eq!(
+        section.paragraphs[1].char_count,
+        expected.paragraphs[1].char_count
+    );
+    assert!(
+        section.section_def.master_pages.is_empty(),
+        "메모 LIST_HEADER 는 바탕쪽이 아니다"
+    );
+    let got: Vec<(u32, String)> = lists
+        .iter()
+        .map(|l| (l.index, l.paragraphs[0].text.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, "첫 메모".to_string()),
+            (1, "번호 중복".to_string()),
+            (7, "필드 없음".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn memo_lists_attach_best_effort_and_keep_the_rest_as_orphans() {
+    use crate::model::control::{Field, FieldType};
+    use crate::model::document::OrphanMemoList;
+    let field = |command: &str, index: u32| {
+        Control::Field(Field {
+            ctrl_id: tags::FIELD_UNKNOWN,
+            properties: 0x8001,
+            command: command.to_string(),
+            memo_index: index,
+            ..Default::default()
+        })
+    };
+    let body = |text: &str| {
+        vec![Paragraph {
+            text: text.to_string(),
+            ..Default::default()
+        }]
+    };
+    let mut sections = vec![Section {
+        paragraphs: vec![Paragraph {
+            controls: vec![
+                field(r"MEMO/65535/1/0/0/a/\;;", 1),
+                field(r"MEMO/65535/2/0/0/a/\;;", 2),
+                field("$RevisionDelete;", 7),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    let orphans = attach_memo_lists(
+        &mut sections,
+        vec![
+            OrphanMemoList {
+                index: 1,
+                paragraphs: body("첫 메모"),
+            },
+            OrphanMemoList {
+                index: 1,
+                paragraphs: body("번호 중복"),
+            },
+            OrphanMemoList {
+                index: 7,
+                paragraphs: body("필드 없음"),
+            },
+        ],
+    );
+    let fields: Vec<&Field> = sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .map(|c| match c {
+            Control::Field(f) => f,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(fields[0].field_type, FieldType::Memo);
+    assert_eq!(fields[0].memo_paragraphs[0].text, "첫 메모");
+    assert_eq!(
+        fields[1].field_type,
+        FieldType::Memo,
+        "본문 없는 메모도 메모다"
+    );
+    assert!(fields[1].memo_paragraphs.is_empty());
+    assert_eq!(
+        fields[2].field_type,
+        FieldType::Unknown,
+        "$RevisionDelete 는 메모가 아니다"
+    );
+    assert!(fields[2].memo_paragraphs.is_empty());
+    let orphan_texts: Vec<(u32, &str)> = orphans
+        .iter()
+        .map(|o| (o.index, o.paragraphs[0].text.as_str()))
+        .collect();
+    assert_eq!(orphan_texts, vec![(7, "필드 없음"), (1, "번호 중복")]);
+}

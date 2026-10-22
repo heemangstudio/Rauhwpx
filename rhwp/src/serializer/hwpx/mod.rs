@@ -63,6 +63,17 @@ fn write_bounded_binary_entry(
 pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     use static_assets::*;
 
+    // 메모 `Number` 를 문서 전체에서 유일하게 맞춘다 (필요할 때만 사본).
+    let normalized = crate::serializer::memo_plan::normalize_memo_indexes(doc);
+    let doc: &Document = &normalized;
+    if !doc.orphan_memo_lists.is_empty() {
+        // HWPX 에는 앵커(fieldBegin) 없는 메모 본문을 담을 곳이 없다.
+        eprintln!(
+            "경고: 앵커 없는 메모 본문 {}개는 HWPX 에 저장되지 않습니다",
+            doc.orphan_memo_lists.len()
+        );
+    }
+
     // 1-pass: ID 풀 구성
     let mut ctx = SerializeContext::collect_from_document(doc);
 

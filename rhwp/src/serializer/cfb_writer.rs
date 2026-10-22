@@ -15,7 +15,7 @@ use std::io::{self, Read, Write};
 use crate::model::bin_data::{BinData, BinDataContent, BinDataStreamEncoding, BinDataType};
 use crate::model::document::{Document, Preview};
 
-use super::body_text::serialize_section_limited;
+use super::body_text::serialize_section_with_memo_tail;
 use super::doc_info::{
     serialize_doc_info, serialize_doc_info_generated_limited, serialize_doc_info_limited,
     surgical_update_section_count,
@@ -516,6 +516,9 @@ fn serialize_hwp_with_limits(
     doc: &Document,
     limits: HwpWriteLimits,
 ) -> Result<Vec<u8>, SerializeError> {
+    // 메모 번호를 문서 전체에서 유일하게 맞춘다 (필요할 때만 사본).
+    let normalized = super::memo_plan::normalize_memo_indexes(doc);
+    let doc: &Document = &normalized;
     let compressed = doc.header.compressed;
     let preview = supplement_preview(doc);
     let extra_streams = crate::model::hyperlink_format::extra_streams_for_hwp(doc);
@@ -603,11 +606,34 @@ fn serialize_hwp_with_limits(
 
     // Sections are serialized and (when enabled) compressed one at a time.
     // The raw Vec for one section is dropped before the next section begins.
+    //
+    // 한컴처럼 문서의 모든 메모 본문은 마지막 구역 끝에만 쓴다. 메모가 있는 문서에서
+    // 다른 구역이 IR 로 다시 쓰이면, 마지막 구역의 원본 스트림(옛 메모 꼬리)도 버린다.
+    let last_index = doc.sections.len().checked_sub(1);
+    let rewritten_last = if super::memo_plan::hwp_must_rewrite_last_section(doc) {
+        doc.sections
+            .last()
+            .map(|section| crate::model::document::Section {
+                raw_stream: None,
+                ..section.clone()
+            })
+    } else {
+        None
+    };
+    let memo_tail = super::memo_plan::collect_document_memo_tail(doc);
     for (index, section) in doc.sections.iter().enumerate() {
         let path = format!("/BodyText/Section{index}");
         let section_limit = expanded.remaining_member(limits.max_structural_member_bytes);
-        let bytes =
-            serialize_section_limited(section, section_limit).map_err(SerializeError::CfbError)?;
+        let bytes = if Some(index) == last_index {
+            serialize_section_with_memo_tail(
+                rewritten_last.as_ref().unwrap_or(section),
+                section_limit,
+                &memo_tail,
+            )
+        } else {
+            serialize_section_with_memo_tail(section, section_limit, &[])
+        }
+        .map_err(SerializeError::CfbError)?;
         expanded.reserve(&path, bytes.len())?;
         push_structural(&mut streams, path, bytes, compressed)?;
     }

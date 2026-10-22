@@ -100,6 +100,7 @@
           <div class="md-item" data-cmd="view:toggle-clip"><span class="md-icon"></span><span class="md-label">잘림 보기</span></div>
           <div class="md-item" data-cmd="view:toggle-grid"><span class="md-icon icon-grid"></span><span class="md-label">격자 보기</span></div>
           <div class="md-item" data-cmd="view:grid-settings"><span class="md-icon icon-grid"></span><span class="md-label">격자 설정</span></div>
+          <div class="md-item" data-cmd="view:memo"><span class="md-icon icon-comment"></span><span class="md-label">메모</span></div>
           <div class="md-sep"></div>
           <div class="md-sub">
             <span class="md-label">테마</span><span class="md-arrow">▶</span>
@@ -151,6 +152,7 @@
           <div class="md-item" data-cmd="insert:footnote"><span class="md-icon icon-footnote"></span><span class="md-label">각주</span></div>
           <div class="md-item" data-cmd="insert:endnote"><span class="md-icon icon-endnote"></span><span class="md-label">미주</span></div>
           <div class="md-item" data-cmd="insert:endnote-shape"><span class="md-icon icon-endnote"></span><span class="md-label">미주 모양</span></div>
+          <div class="md-item" data-cmd="insert:memo-note"><span class="md-icon icon-comment"></span><span class="md-label">메모</span><span class="md-shortcut">Ctrl+K,M</span></div>
           <div class="md-sep"></div>
           <div class="md-item" data-cmd="insert:symbols"><span class="md-icon icon-symbols"></span><span class="md-label">문자표</span><span class="md-shortcut">Alt+F10</span></div>
           <div class="md-item" data-cmd="insert:hyperlink"><span class="md-icon icon-hyperlink"></span><span class="md-label">하이퍼링크</span><span class="md-shortcut">Ctrl+K+H</span></div>
@@ -462,6 +464,7 @@
       <symbol id="ri-header" viewBox="0 0 16 16"><rect x="3.5" y="1.5" width="9" height="13" rx="1"/><path d="M5.5 4.5h5"/></symbol>
       <symbol id="ri-footer" viewBox="0 0 16 16"><rect x="3.5" y="1.5" width="9" height="13" rx="1"/><path d="M5.5 11.5h5"/></symbol>
       <symbol id="ri-footnote" viewBox="0 0 16 16"><rect x="3.5" y="1.5" width="9" height="13" rx="1"/><path d="M5.5 9.5h2M5.5 11.5h5"/></symbol>
+      <symbol id="ri-memo" viewBox="0 0 16 16"><path d="M2.5 2.5h11v8h-6l-3 3v-3h-2z"/><path style="stroke:var(--ribbon-accent)" d="M5 5.5h6M5 7.5h4"/></symbol>
       <symbol id="ri-endnote" viewBox="0 0 16 16"><path d="M5.5 1.5h7a1 1 0 0 1 1 1v9"/><rect x="2.5" y="3.5" width="9" height="11" rx="1"/><path d="M4.5 11.5h5"/></symbol>
       <symbol id="ri-ctrl-mark" viewBox="0 0 16 16"><path d="M4.5 2.5h-2v11h2M11.5 2.5h2v11h-2"/><path d="M6 6.5h4v3H6z"/></symbol>
       <symbol id="ri-para-mark" viewBox="0 0 16 16"><path d="M13.5 2.5v6.5h-10"/><path d="M6 6.5 3.5 9 6 11.5"/></symbol>
@@ -655,6 +658,9 @@
           <div class="tb-stack">
             <button class="tb-btn tb-sm" data-cmd="insert:footnote" title="각주"><svg class="tb-ico" aria-hidden="true"><use href="#ri-footnote"/></svg><span class="tb-label">각주</span></button>
             <button class="tb-btn tb-sm" data-cmd="insert:endnote" title="미주"><svg class="tb-ico" aria-hidden="true"><use href="#ri-endnote"/></svg><span class="tb-label">미주</span></button>
+          </div>
+          <div class="tb-stack">
+            <button class="tb-btn tb-sm" data-cmd="insert:memo-note" title="메모 (Ctrl+K,M)"><svg class="tb-ico" aria-hidden="true"><use href="#ri-memo"/></svg><span class="tb-label">메모</span></button>
           </div>
         </div>
         <span class="tb-caption">쪽</span>

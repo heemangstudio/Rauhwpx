@@ -1193,8 +1193,20 @@ impl Paragraph {
                 .zip(control_positions.iter())
                 .any(|(ctrl, &pos)| pos == effective_char_offset && is_inline_object(ctrl));
 
+        // 빈 범위 필드(메모·누름틀 등, 하이퍼링크 제외) 자리에 입력하면 아래 field_ranges
+        // 갱신이 범위를 새 글자까지 넓힌다. UTF-16 위치도 FIELD_BEGIN 갭 뒤·FIELD_END 갭
+        // 앞이어야 한다. 갭 앞(또는 뒤)에 넣으면 저장본에서 필드가 새 글자 밖의 빈 범위로
+        // 남고, HWPX 는 fieldEnd 를 fieldBegin 보다 먼저 쓴다.
+        let empty_field_pos = if char_offset <= text_len && !inserts_before_inline_control {
+            self.empty_field_inside_utf16(effective_char_offset, &text_chars, &control_positions)
+        } else {
+            None
+        };
+
         // 삽입 지점의 UTF-16 위치 결정
-        let utf16_insert_pos: u32 = if char_offset > text_len && !self.char_offsets.is_empty() {
+        let utf16_insert_pos: u32 = if let Some(pos) = empty_field_pos {
+            pos
+        } else if char_offset > text_len && !self.char_offsets.is_empty() {
             // 텍스트 끝 이후 (인라인 컨트롤 뒤): 마지막 문자의 UTF-16 위치 + 폭 + 후행 갭
             let last_idx = self.char_offsets.len() - 1;
             let last_char_end =
@@ -1227,6 +1239,60 @@ impl Paragraph {
             (self.controls.len() as u32) * 8
         };
         self.insert_text_at_resolved(effective_char_offset, utf16_insert_pos, new_text)
+    }
+
+    /// `at` 에 빈 범위(시작 = 끝) 비하이퍼링크 필드가 있으면, 그 FIELD_BEGIN 갭 바로 뒤의
+    /// UTF-16 위치(= 필드 안)를 돌려준다. 갭 구성이 예상과 다르면 `None`.
+    fn empty_field_inside_utf16(
+        &self,
+        at: usize,
+        text_chars: &[char],
+        control_positions: &[usize],
+    ) -> Option<u32> {
+        let begin_ctrl = self
+            .field_ranges
+            .iter()
+            .filter(|fr| {
+                fr.start_char_idx == at
+                    && fr.end_char_idx == at
+                    && matches!(
+                        self.controls.get(fr.control_idx),
+                        Some(Control::Field(field)) if field.field_type != FieldType::Hyperlink
+                    )
+            })
+            .map(|fr| fr.control_idx)
+            .min()?;
+        if control_positions.get(begin_ctrl) != Some(&at) {
+            return None;
+        }
+        // 같은 갭에서 이 FIELD_BEGIN 앞에 오는 슬롯: 앞선 컨트롤(자신 포함)과 여기서 닫히는
+        // 다른 필드의 FIELD_END.
+        let ctrls_through_begin = control_positions
+            .iter()
+            .take(begin_ctrl + 1)
+            .filter(|&&pos| pos == at)
+            .count() as u32;
+        let closing_ends = self
+            .field_ranges
+            .iter()
+            .filter(|fr| fr.end_char_idx == at && fr.start_char_idx < at)
+            .count() as u32;
+        let gap_start = if at == 0 {
+            0
+        } else {
+            let prev = *text_chars.get(at - 1)?;
+            let width = if prev == '\t' {
+                8
+            } else {
+                Self::char_utf16_len(prev)
+            };
+            self.char_offsets.get(at - 1)? + width
+        };
+        let pos = gap_start + (ctrls_through_begin + closing_ends) * 8;
+        match self.char_offsets.get(at) {
+            Some(&next) if pos > next => None,
+            _ => Some(pos),
+        }
     }
 
     /// 같은 텍스트 위치의 인라인 개체 **뒤**처럼, 호출자가 정한 UTF-16 지점에 텍스트를 넣는다.

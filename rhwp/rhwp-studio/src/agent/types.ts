@@ -1686,7 +1686,18 @@ export type ObjectOp =
        * delta 만큼 밀었고, 스냅샷 복원 뒤 거꾸로 되민다.
        */
       shifts: Array<{ sectionIdx: number; from: number; delta: number }>;
+      /** 메모 도구(set_memo insert/edit)가 만든 배치면 그 메모 — 풍선에 검토 대기 표시 */
+      memoFieldIds?: number[];
+      /**
+       * 메모 도구 배치의 역연산 — 스테이징 뒤 사용자 편집으로 스냅샷 복원이 막혔을 때 쓴다.
+       * 메모 본문이 적용 직후 그대로일 때만 되돌린다 (사용자가 그 메모를 고쳤으면 남긴다).
+       */
+      memoUndo?: MemoBatchUndo;
     };
+
+export type MemoBatchUndo =
+  | { op: 'insert'; fieldId: number; appliedText: string }
+  | { op: 'edit'; fieldId: number; previousText: string; appliedText: string };
 
 export interface EngineBatchSpan {
   sectionIdx: number;

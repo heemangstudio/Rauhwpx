@@ -2066,6 +2066,7 @@ export class InputHandler {
       { type: 'command', commandId: 'table:transpose-paste' },
       { type: 'separator' },
       { type: 'command', commandId: 'insert:hyperlink', label: '하이퍼링크(H)...' },
+      { type: 'command', commandId: 'insert:memo-note', label: '메모 넣기' },
       { type: 'separator' },
       { type: 'command', commandId: 'format:char-shape', label: '글자 모양' },
       { type: 'command', commandId: 'format:para-shape', label: '문단 모양' },

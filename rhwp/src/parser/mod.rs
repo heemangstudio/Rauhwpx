@@ -309,7 +309,7 @@ fn parse_hwp_with_cfb(
 
     // 4. BodyText 섹션별 파싱
     let section_count = cfb.section_count();
-    let sections = parse_sections_strict(
+    let (sections, orphan_memo_lists) = parse_sections_strict(
         &mut cfb,
         section_count,
         compressed,
@@ -378,6 +378,7 @@ fn parse_hwp_with_cfb(
             hwpx_lineage: is_hwpx_variant,
             own_line_layout: false,
         },
+        orphan_memo_lists,
     };
 
     // 자동 번호 할당 (문서 전체에서 순차적으로)
@@ -567,8 +568,15 @@ fn parse_sections_strict(
     compressed: bool,
     distribution: bool,
     expanded_structural_bytes: &mut u64,
-) -> Result<Vec<crate::model::document::Section>, ParseError> {
+) -> Result<
+    (
+        Vec<crate::model::document::Section>,
+        Vec<crate::model::document::OrphanMemoList>,
+    ),
+    ParseError,
+> {
     let mut sections = Vec::new();
+    let mut memo_lists: Vec<crate::model::document::OrphanMemoList> = Vec::new();
 
     for i in 0..section_count {
         let section_limit = limits::remaining_container_member_limit(
@@ -592,12 +600,13 @@ fn parse_sections_strict(
             "expanded HWP structural streams",
         )?;
 
-        match body_text::parse_body_text_section(&section_data) {
-            Ok(mut section) => {
+        match body_text::parse_body_text_section_with_memos(&section_data) {
+            Ok((mut section, memos)) => {
                 // 원본 BodyText 스트림 보존 (라운드트립용)
                 section.raw_stream = Some(section_data);
                 section.raw_provenance = Some(());
                 sections.push(section);
+                memo_lists.extend(memos);
             }
             Err(e) => {
                 // 개별 섹션 파싱 실패 시 빈 섹션으로 대체 (전체 실패 방지)
@@ -608,8 +617,9 @@ fn parse_sections_strict(
     }
 
     body_text::link_orphan_field_ends_across_sections(&mut sections);
+    let orphan_memo_lists = body_text::attach_memo_lists(&mut sections, memo_lists);
 
-    Ok(sections)
+    Ok((sections, orphan_memo_lists))
 }
 
 /// LenientCfbReader로 파싱 (FAT 검증 무시)
@@ -657,6 +667,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
     // BodyText 섹션별 파싱
     let section_count = lenient.section_count();
     let mut sections = Vec::new();
+    let mut memo_lists: Vec<crate::model::document::OrphanMemoList> = Vec::new();
 
     for i in 0..section_count {
         let section_limit = limits::remaining_container_member_limit(
@@ -680,11 +691,12 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
             "expanded HWP structural streams",
         )?;
 
-        match body_text::parse_body_text_section(&section_data) {
-            Ok(mut section) => {
+        match body_text::parse_body_text_section_with_memos(&section_data) {
+            Ok((mut section, memos)) => {
                 section.raw_stream = Some(section_data);
                 section.raw_provenance = Some(());
                 sections.push(section);
+                memo_lists.extend(memos);
             }
             Err(e) => {
                 eprintln!("경고: Section{} 파싱 실패 (lenient): {}", i, e);
@@ -694,6 +706,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
     }
 
     body_text::link_orphan_field_ends_across_sections(&mut sections);
+    let orphan_memo_lists = body_text::attach_memo_lists(&mut sections, memo_lists);
 
     // BinData 로드 시도
     let bin_data_content = load_bin_data_content_lenient(
@@ -735,6 +748,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
             hwpx_lineage: false,
             own_line_layout: false,
         },
+        orphan_memo_lists,
     };
 
     assign_auto_numbers(&mut doc);

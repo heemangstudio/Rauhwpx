@@ -542,6 +542,19 @@ pub struct Document {
     /// `is_hwp3_variant`/`is_hwpx_variant` 는 shim 으로 존치하며 파서의 같은
     /// 쓰기 지점에서 동기된다. 레이아웃 분기는 [`Self::layout_profile`] 경유.
     pub provenance: crate::model::provenance::SourceProvenance,
+    /// HWP 구역 끝 메모 꼬리에서 읽었지만 붙일 메모 필드가 없는 메모 본문 (번호 중복분 포함).
+    /// HWP 저장 때 마지막 구역 메모 꼬리에 그대로 다시 쓴다. HWPX 는 앵커 없는 메모를 담을
+    /// 곳이 없어 HWPX 저장에서는 버려진다.
+    pub orphan_memo_lists: Vec<OrphanMemoList>,
+}
+
+/// 앵커(메모 필드)가 없는 HWP 메모 본문 하나 (`MEMO_LIST` 번호 + 본문 문단).
+#[derive(Debug, Clone, Default)]
+pub struct OrphanMemoList {
+    /// `MEMO_LIST` 의 메모 번호
+    pub index: u32,
+    /// 메모 본문 문단
+    pub paragraphs: Vec<crate::model::paragraph::Paragraph>,
 }
 
 /// 미리보기 데이터 (PrvImage, PrvText 스트림)

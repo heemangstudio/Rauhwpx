@@ -9,10 +9,10 @@
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
-import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
+import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, MemoNoteInfo, MemoNotePath, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, MemoBatchUndo, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -414,6 +414,7 @@ export const DOCUMENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'insert_footnote',
   'edit_footnote',
   'set_bookmark',
+  'set_memo',
   'apply_engine_edits',
   'prepare_engine_edit_session',
   'template_apply_section_layout',
@@ -484,6 +485,7 @@ const BATCHABLE_READ_TOOLS: ReadonlySet<string> = new Set([
   'get_outline',
   'list_footnotes',
   'list_bookmarks',
+  'list_memos',
   'preview_equation',
   'verify_changes',
 ]);
@@ -1094,6 +1096,31 @@ function cellPathAt(cell: CellAddr, paraIdx: number): string {
   return JSON.stringify(path);
 }
 
+const MEMO_AUTHORS: Partial<Record<AgentName, string>> = { claude: 'Claude', codex: 'Codex', pi: 'Pi' };
+
+/** 도구 좌표(본문 paraIdx 또는 cell + 셀 안 paraIdx) → 엔진 메모 경로. */
+function memoPathForAgent(sectionIdx: number, paraIdx: number, cell: CellAddr | undefined): MemoNotePath {
+  if (!cell) return { sectionIdx, paraIdx };
+  const cellPath = cell.path?.length
+    ? cell.path.map((entry, index, all) => ({ ...entry, cellParaIndex: index === all.length - 1 ? paraIdx : entry.cellParaIndex }))
+    : [{ controlIndex: cell.controlIdx, cellIndex: cell.cellIdx, cellParaIndex: paraIdx }];
+  return { sectionIdx, paraIdx: cell.paraIdx, cellPath };
+}
+
+/** 엔진 메모 앵커 → 도구 좌표 (memoPathForAgent 의 역). */
+function agentMemoAnchor(anchor: NonNullable<MemoNoteInfo['anchor']>): Record<string, unknown> {
+  const base = { sectionIdx: anchor.sectionIdx, startOffset: anchor.startCharIdx, endOffset: anchor.endCharIdx };
+  const path = anchor.cellPath;
+  if (!path?.length) return { ...base, paraIdx: anchor.paraIdx };
+  const last = path[path.length - 1];
+  return {
+    ...base,
+    paraIdx: last.cellParaIndex,
+    cell: { paraIdx: anchor.paraIdx, controlIdx: path[0].controlIndex, cellIdx: path[0].cellIndex },
+    ...(path.length > 1 ? { cellPath: path } : {}),
+  };
+}
+
 /**
  * 범위형 쓰기(delete_range/replace_range)의 리베이스 대상 본문 문단 범위.
  * 셀 편집은 표 컨트롤 문단 하나를 대상으로 삼는다 — 같은 표는 통째로 한 소유자.
@@ -1429,6 +1456,8 @@ export class AgentToolExecutor {
       case 'edit_footnote': return this.editFootnote(args, agent);
       case 'list_bookmarks': return this.listBookmarks();
       case 'set_bookmark': return this.setBookmark(args, agent);
+      case 'list_memos': return this.listMemos();
+      case 'set_memo': return this.setMemo(args, agent);
       case 'apply_engine_edits': return this.applyEngineEdits(args, agent);
       case 'prepare_engine_edit_session': return this.prepareEngineEditSession(args);
       default:
@@ -4060,6 +4089,108 @@ export class AgentToolExecutor {
     };
     const r = this.stageObjectOp(agent, obj, target.sec, target.para);
     return { revision: this.revision, changeSetId: r.changeSetId };
+  }
+
+  /**
+   * 메모(한컴 풍선 주석) 목록 — 본문·표 셀 앵커는 다른 도구와 같은 좌표(셀이면 cell/cellPath 와
+   * 셀 안 paraIdx)로 돌려준다. 머리말·각주 등 그 밖의 메모는 anchor 가 null 이다.
+   */
+  private listMemos(): unknown {
+    this.requireDocLoaded();
+    const memos = this.deps.wasm.getMemoNoteList().map((memo) => ({
+      fieldId: memo.fieldId,
+      author: memo.author,
+      createdAt: memo.createdAt,
+      text: memo.text,
+      anchorText: memo.anchorText,
+      anchor: memo.anchor ? agentMemoAnchor(memo.anchor) : null,
+    }));
+    return { revision: this.revision, memos };
+  }
+
+  /**
+   * 메모 쓰기는 apply_engine_edits 처럼 문서 스냅샷으로 되돌리는 스테이징을 쓴다 — 메모 본문은
+   * 문단 밖(필드 컨트롤 안)이라 문단 보관본으로는 되돌릴 수 없고, 지운 메모를 되살리려면
+   * 작성자·시각·서식까지 그대로여야 한다.
+   */
+  private stageMemoWrite<T>(
+    agent: AgentName, method: string, run: () => T, memoFieldIds: (result: T) => number[],
+    memoUndo?: (result: T) => MemoBatchUndo | undefined,
+  ) {
+    const previousRevision = this.revision;
+    const staged = this.deps.pending.addEngineBatch(agent, [method], run, { memoFieldIds, memoUndo });
+    return { previousRevision, revision: this.revision, changeSetId: staged.changeSetId, result: staged.result };
+  }
+
+  private memoTextOf(fieldId: number): string | undefined {
+    return this.deps.wasm.getMemoNoteList().find((memo) => memo.fieldId === fieldId)?.text;
+  }
+
+  private memoText(args: Record<string, unknown>): string {
+    const text = reqString(args, 'text').replace(/\r\n?/g, '\n');
+    if (text.trim() === '') throw new AgentToolError('INVALID_ARGS', 'text must not be empty');
+    if (text.length > 4000) throw new AgentToolError('INVALID_ARGS', `text must be at most 4000 chars (got ${text.length})`);
+    return text;
+  }
+
+  private requireMemo(args: Record<string, unknown>): number {
+    const fieldId = reqInt(args, 'fieldId');
+    if (!this.deps.wasm.getMemoNoteList().some((memo) => memo.fieldId === fieldId)) {
+      throw new AgentToolError('MEMO_NOT_FOUND', `no memo with fieldId ${fieldId} — call list_memos for current memos`);
+    }
+    return fieldId;
+  }
+
+  private setMemo(args: Record<string, unknown>, agent: AgentName): unknown {
+    this.requireDocLoaded();
+    this.requireRevision(args);
+    const op = reqString(args, 'op');
+    if (op === 'insert') return this.insertMemo(args, agent);
+    if (op === 'edit') return this.editMemo(args, agent);
+    if (op === 'delete') return this.deleteMemo(args, agent);
+    throw new AgentToolError('INVALID_ARGS', `op must be "insert" | "edit" | "delete" (got ${JSON.stringify(op)})`);
+  }
+
+  private insertMemo(args: Record<string, unknown>, agent: AgentName): unknown {
+    const sectionIdx = reqInt(args, 'sectionIdx');
+    const paraIdx = reqInt(args, 'paraIdx');
+    const startOffset = reqInt(args, 'startOffset');
+    const endOffset = reqInt(args, 'endOffset');
+    const cell = optCell(args);
+    const text = this.memoText(args);
+    const length = this.validateAddress(sectionIdx, paraIdx, startOffset, cell);
+    if (endOffset <= startOffset || endOffset > length) {
+      throw new AgentToolError('INVALID_ARGS', `endOffset must be in (${startOffset}..${length}] — a memo anchors to at least one character`);
+    }
+    // 한컴 메모 작성자 자리 — 사용자가 풍선에서 누가 단 메모인지 본다.
+    const author = MEMO_AUTHORS[agent] ?? agent;
+    const path = memoPathForAgent(sectionIdx, paraIdx, cell);
+    const staged = this.stageMemoWrite(
+      agent, 'insertMemoNote',
+      () => this.deps.wasm.insertMemoNote(path, startOffset, endOffset, text, author),
+      (fieldId) => [fieldId],
+      (fieldId) => ({ op: 'insert', fieldId, appliedText: this.memoTextOf(fieldId) ?? text }),
+    );
+    return { previousRevision: staged.previousRevision, revision: staged.revision, changeSetId: staged.changeSetId, fieldId: staged.result };
+  }
+
+  private editMemo(args: Record<string, unknown>, agent: AgentName): unknown {
+    const fieldId = this.requireMemo(args);
+    const text = this.memoText(args);
+    const current = this.deps.wasm.getMemoNoteList().find((memo) => memo.fieldId === fieldId);
+    if (current?.text === text) return { revision: this.revision, fieldId, changed: false };
+    const previousText = current?.text ?? '';
+    const staged = this.stageMemoWrite(
+      agent, 'setMemoNoteText', () => this.deps.wasm.setMemoNoteText(fieldId, text), () => [fieldId],
+      () => ({ op: 'edit', fieldId, previousText, appliedText: this.memoTextOf(fieldId) ?? text }),
+    );
+    return { previousRevision: staged.previousRevision, revision: staged.revision, changeSetId: staged.changeSetId, fieldId, changed: true };
+  }
+
+  private deleteMemo(args: Record<string, unknown>, agent: AgentName): unknown {
+    const fieldId = this.requireMemo(args);
+    const staged = this.stageMemoWrite(agent, 'deleteMemoNote', () => this.deps.wasm.deleteMemoNote(fieldId), () => []);
+    return { previousRevision: staged.previousRevision, revision: staged.revision, changeSetId: staged.changeSetId, fieldId };
   }
 
   private async renderPage(args: Record<string, unknown>): Promise<unknown> {

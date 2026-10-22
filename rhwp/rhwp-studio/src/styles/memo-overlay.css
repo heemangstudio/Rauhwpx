@@ -1,0 +1,135 @@
+/* 메모(풍선 주석) 오버레이 — view/memo-overlay.ts */
+.memo-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.memo-layer .memo-leaders {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.memo-anchor-highlight {
+  position: absolute;
+  pointer-events: none;
+  outline: 1px solid #a9a9a9;
+  outline-offset: 0;
+  border-radius: 1px;
+  mix-blend-mode: multiply;
+}
+
+.memo-balloon {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: auto;
+  border: 1px solid #a9a9a9;
+  border-radius: 6px;
+  background: #f4ffe9;
+  color: #1f2328;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  padding: 4px 8px 6px;
+  user-select: text;
+}
+
+.memo-balloon-pending {
+  border-style: dashed;
+  box-shadow: 0 0 0 2px rgba(51, 144, 255, 0.45);
+}
+
+.memo-balloon-editing {
+  box-shadow: 0 0 0 2px rgba(51, 144, 255, 0.6);
+}
+
+.memo-balloon-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #4b5563;
+  min-height: 18px;
+}
+
+.memo-balloon-author {
+  font-weight: 600;
+  color: #1f2328;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-balloon-date {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.memo-balloon-more {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  color: #4b5563;
+}
+
+.memo-balloon-more:hover {
+  color: #111827;
+}
+
+.memo-balloon-orphan {
+  font-size: 11px;
+  color: #9a3412;
+}
+
+.memo-balloon-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.45em;
+  cursor: text;
+  outline: none;
+}
+
+.memo-balloon-body[contenteditable='true']:empty::before,
+.memo-balloon-body[contenteditable='plaintext-only']:empty::before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+}
+
+.memo-menu {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  background: var(--theme-surface, #fff);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  padding: 4px 0;
+  z-index: 7;
+}
+
+.memo-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.memo-menu-item:hover {
+  background: rgba(51, 144, 255, 0.12);
+}
