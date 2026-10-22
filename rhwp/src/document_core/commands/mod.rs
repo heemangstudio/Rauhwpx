@@ -2,6 +2,7 @@ pub(crate) mod caret_edit;
 mod cell_clipboard;
 mod clipboard;
 mod document;
+pub(crate) use document::visit_paragraphs_mut;
 // 서식 › 문단 간격: 문서 전체 줄 간격·문단 간격 프리셋.
 pub(crate) mod document_spacing;
 mod document_transfer;

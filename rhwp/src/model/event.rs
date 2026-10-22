@@ -158,6 +158,14 @@ pub enum DocumentEvent {
         cell_path: Vec<(usize, usize, usize)>,
         field_id: u32,
     },
+    /// 메모를 삽입·수정·삭제했다. `para`/`cell_path` 는 메모 앵커 문단 주소다
+    /// (머리말·각주 등 앵커 주소가 없는 메모는 구역 첫 문단).
+    MemoChanged {
+        section: usize,
+        para: usize,
+        cell_path: Vec<(usize, usize, usize)>,
+        field_id: u32,
+    },
 }
 
 impl DocumentEvent {
@@ -188,7 +196,8 @@ impl DocumentEvent {
             | DocumentEvent::FootnoteDeleted { section, .. }
             | DocumentEvent::ContentPasted { section, .. }
             | DocumentEvent::HtmlImported { section, .. }
-            | DocumentEvent::HyperlinkChanged { section, .. } => *section,
+            | DocumentEvent::HyperlinkChanged { section, .. }
+            | DocumentEvent::MemoChanged { section, .. } => *section,
         }
     }
 
@@ -219,7 +228,8 @@ impl DocumentEvent {
             | DocumentEvent::FootnoteDeleted { para, .. }
             | DocumentEvent::ContentPasted { para, .. }
             | DocumentEvent::HtmlImported { para, .. }
-            | DocumentEvent::HyperlinkChanged { para, .. } => *para,
+            | DocumentEvent::HyperlinkChanged { para, .. }
+            | DocumentEvent::MemoChanged { para, .. } => *para,
         }
     }
 
@@ -454,7 +464,18 @@ impl DocumentEvent {
                 para,
                 cell_path,
                 field_id,
+            }
+            | DocumentEvent::MemoChanged {
+                section,
+                para,
+                cell_path,
+                field_id,
             } => {
+                let kind = if matches!(self, DocumentEvent::MemoChanged { .. }) {
+                    "MemoChanged"
+                } else {
+                    "HyperlinkChanged"
+                };
                 let mut cell_path_json = String::from("[");
                 for (i, &(control_index, cell_index, cell_para_index)) in
                     cell_path.iter().enumerate()
@@ -469,8 +490,8 @@ impl DocumentEvent {
                 }
                 cell_path_json.push(']');
                 format!(
-                    r#"{{"type":"HyperlinkChanged","section":{},"para":{},"cellPath":{},"fieldId":{}}}"#,
-                    section, para, cell_path_json, field_id
+                    r#"{{"type":"{}","section":{},"para":{},"cellPath":{},"fieldId":{}}}"#,
+                    kind, section, para, cell_path_json, field_id
                 )
             }
         }

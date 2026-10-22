@@ -7629,7 +7629,7 @@ fn collect_field_records(doc: &rhwp::wasm_api::HwpDocument) -> Vec<serde_json::V
                 })
                 .collect();
 
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "fieldId": fi.field.field_id,
                 "fieldType": format!("{:?}", fi.field.field_type),
                 "name": fi.field.field_name().unwrap_or(""),
@@ -7643,7 +7643,14 @@ fn collect_field_records(doc: &rhwp::wasm_api::HwpDocument) -> Vec<serde_json::V
                     "paragraph": fi.location.para_index,
                     "nested": nested,
                 },
-            })
+            });
+            // 메모(풍선 주석) 필드: 본문·작성자·번호. `memo` 키는 누름틀 지시문이다.
+            if let Some(meta) = fi.field.memo_meta() {
+                entry["memoIndex"] = fi.field.memo_index.into();
+                entry["memoText"] = fi.field.memo_body_text().into();
+                entry["author"] = meta.author.into();
+            }
+            entry
         })
         .collect()
 }

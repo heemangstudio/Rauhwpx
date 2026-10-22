@@ -6397,6 +6397,69 @@ impl HwpDocument {
         self.get_field_list_json()
     }
 
+    // ─── 메모 (memoNote) ─────────────────────────────────────
+
+    /// 문서의 모든 메모를 JSON 배열로 반환한다.
+    ///
+    /// 반환: `[{fieldId, memoIndex, author, createdAt, text, paraCount,
+    /// anchor:{sectionIdx, paraIdx, startCharIdx, endCharIdx, cellPath?}|null, anchorText,
+    /// shape:{fillColor, lineColor, width}}]`
+    #[wasm_bindgen(js_name = getMemoNoteList)]
+    pub fn get_memo_note_list(&self) -> String {
+        self.memo_note_list_json()
+    }
+
+    /// 문단 위치(`{sectionIdx, paraIdx, cellPath?}`)의 메모 fieldId. 없으면 `null`.
+    #[wasm_bindgen(js_name = getMemoNoteAt)]
+    pub fn get_memo_note_at(&self, path_json: &str, char_offset: u32) -> Result<JsValue, JsValue> {
+        let path = crate::document_core::queries::memo_query::MemoNotePath::parse(path_json)?;
+        Ok(self
+            .memo_note_at(&path, char_offset as usize)
+            .map_or(JsValue::NULL, |id| JsValue::from_f64(f64::from(id))))
+    }
+
+    /// 메모 앵커 글자의 쪽 좌표 사각형: `[{pageIndex, x, y, w, h}]`.
+    #[wasm_bindgen(js_name = getMemoNoteAnchorRects)]
+    pub fn get_memo_note_anchor_rects(&self, field_id: u32) -> Result<String, JsValue> {
+        let rects = self.memo_note_anchor_rects(field_id)?;
+        serde_json::to_string(&rects).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// 범위 `[start, end)` 에 메모를 단다. 새 메모의 fieldId 를 반환한다.
+    #[wasm_bindgen(js_name = insertMemoNote)]
+    pub fn insert_memo_note_js(
+        &mut self,
+        path_json: &str,
+        start: u32,
+        end: u32,
+        text: &str,
+        author: Option<String>,
+    ) -> Result<u32, JsValue> {
+        let path = crate::document_core::queries::memo_query::MemoNotePath::parse(path_json)?;
+        self.insert_memo_note(&path, start as usize, end as usize, text, author.as_deref())
+            .map_err(Into::into)
+    }
+
+    /// 메모 본문을 평문으로 바꾼다. 바뀌었으면 true.
+    #[wasm_bindgen(js_name = setMemoNoteText)]
+    pub fn set_memo_note_text_js(&mut self, field_id: u32, text: &str) -> Result<bool, JsValue> {
+        self.set_memo_note_text(field_id, text).map_err(Into::into)
+    }
+
+    /// 메모를 지운다 (앵커 글자는 남는다).
+    #[wasm_bindgen(js_name = deleteMemoNote)]
+    pub fn delete_memo_note_js(&mut self, field_id: u32) -> Result<(), JsValue> {
+        self.delete_memo_note(field_id).map_err(Into::into)
+    }
+
+    /// 모든 메모를 지운다. 지운 메모 수를 반환한다.
+    #[wasm_bindgen(js_name = deleteAllMemoNotes)]
+    pub fn delete_all_memo_notes_js(&mut self) -> Result<u32, JsValue> {
+        self.delete_all_memo_notes()
+            .map(|n| n.min(u32::MAX as usize) as u32)
+            .map_err(Into::into)
+    }
+
     /// field_id로 필드 값을 조회한다.
     ///
     /// 반환: `{ok, value}`

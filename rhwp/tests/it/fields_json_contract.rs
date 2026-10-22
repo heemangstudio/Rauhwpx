@@ -161,3 +161,24 @@ fn fields_usage_error_exit_two() {
         describe(&args, &output)
     );
 }
+
+#[test]
+fn fields_reports_memo_bodies_and_authors() {
+    // 메모(풍선 주석)는 앵커 범위만이 아니라 본문·작성자가 핵심이다.
+    let v = run_json("samples/basic/NewYear_s_Day.hwp");
+    let memos: Vec<&serde_json::Value> = v["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["fieldType"] == "Memo")
+        .collect();
+    assert_eq!(memos.len(), 9, "{v}");
+    for memo in memos {
+        assert!(
+            !memo["memoText"].as_str().unwrap_or("").is_empty(),
+            "memoText 가 비었습니다: {memo}"
+        );
+        assert_eq!(memo["author"], "nare", "{memo}");
+        assert!(memo["memoIndex"].as_u64().unwrap_or(0) > 0, "{memo}");
+    }
+}
