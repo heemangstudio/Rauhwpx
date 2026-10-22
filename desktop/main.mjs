@@ -727,6 +727,7 @@ const browserHost = new OwnedBrowserHost({
   BaseWindow,
   WebContentsView,
   electronSession,
+  dialog,
   dataDir: join(app.getPath('userData'), 'browser'),
   getWindowForSession: (sessionId) => {
     const session = sessions.sessionById(sessionId);

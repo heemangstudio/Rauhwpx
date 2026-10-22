@@ -65,6 +65,27 @@ export function browserViewBounds(bounds, window) {
   return { x, y, width: Math.max(0, Math.min(area.width - x, Math.round(bounds.width))), height: Math.max(0, Math.min(area.height - y, Math.round(bounds.height))) };
 }
 
+// 파일 칸의 accept 를 파일 창 확장자 목록으로 옮긴다. 옮기지 못하는 형식이 하나라도 있으면 거르지 않는다.
+const ACCEPT_EXTENSIONS = {
+  'image/*': ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'bmp', 'svg', 'avif'], 'video/*': ['mp4', 'mov', 'webm', 'm4v'], 'audio/*': ['mp3', 'm4a', 'wav', 'aac', 'ogg', 'flac'],
+  'text/plain': ['txt'], 'text/csv': ['csv'], 'application/pdf': ['pdf'], 'application/zip': ['zip'], 'application/json': ['json'],
+  'image/png': ['png'], 'image/jpeg': ['jpg', 'jpeg'], 'image/gif': ['gif'], 'image/webp': ['webp'],
+  'application/msword': ['doc'], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+  'application/vnd.ms-excel': ['xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['xlsx'],
+  'application/vnd.ms-powerpoint': ['ppt'], 'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['pptx'],
+  'application/x-hwp': ['hwp'], 'application/haansofthwp': ['hwp'], 'application/vnd.hancom.hwpx+zip': ['hwpx'], 'application/hwp+zip': ['hwpx'],
+};
+export function fileChooserFilters(accept) {
+  const tokens = String(accept ?? '').split(',').map((token) => token.trim().toLowerCase()).filter(Boolean);
+  const extensions = new Set();
+  for (const token of tokens) {
+    if (/^\.[a-z0-9]{1,16}$/.test(token)) extensions.add(token.slice(1));
+    else if (ACCEPT_EXTENSIONS[token]) for (const extension of ACCEPT_EXTENSIONS[token]) extensions.add(extension);
+    else return null;
+  }
+  return extensions.size ? [{ name: '파일', extensions: [...extensions] }] : null;
+}
+
 async function privateDirectory(dir) {
   const absolute = resolve(dir);
   await mkdir(absolute, { recursive: true, mode: 0o700 });
@@ -75,8 +96,9 @@ async function privateDirectory(dir) {
 }
 
 export class OwnedBrowserHost {
-  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform }) {
+  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dialog, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform }) {
     this.platform = platform;
+    this.dialog = dialog;
     this.BrowserWindow = BrowserWindow;
     this.BaseWindow = BaseWindow;
     this.WebContentsView = WebContentsView;
@@ -801,6 +823,20 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
+  /**
+   * 사용자가 직접 누른 웹사이트 파일 칸에 운영체제 파일 창을 연다. 허브는 고른 경로를 그 칸에 넣는다.
+   * 사용자가 조작하는 화면에 놓인 탭만 연다. 에이전트 미리보기와 숨은 탭은 거절한다.
+   */
+  async chooseFiles({ targetId, tabId, multiple, accept }) {
+    const tab = this.tab(targetId ?? tabId);
+    const window = tab.placement?.window;
+    if (!this.dialog || !tab.human || !tab.interactive || tab.automationInputDepth || !window || window.isDestroyed()) throw new Error('The user is not controlling this browser tab');
+    const filters = fileChooserFilters(accept);
+    const result = await this.dialog.showOpenDialog(window, { properties: ['openFile', ...(multiple === true ? ['multiSelections'] : [])], ...(filters ? { filters } : {}) });
+    if (result.canceled || tab.closing || tab.view.webContents.isDestroyed()) return { paths: [] };
+    return { paths: multiple === true ? result.filePaths : result.filePaths.slice(0, 1) };
+  }
+
   popoutCommand(sender, { command, url, factor } = {}) {
     const pair = [...this.popouts].find(([, window]) => window.webContents === sender && !window.isDestroyed());
     if (!pair) throw new Error('Browser popout sender is not owned');
@@ -1071,6 +1107,7 @@ export class OwnedBrowserHost {
         else if (message.operation === 'sleep') response.value = await this.sleep(params);
         else if (message.operation === 'activity') response.value = await this.activity(params);
         else if (message.operation === 'control') response.value = this.control(params);
+        else if (message.operation === 'choose-files') response.value = await this.chooseFiles(params);
         else if (message.operation === 'release') response.value = await this.release(owner);
         else if (message.operation === 'inventory') response.value = [...this.tabs.values()].map((tab) => this.state(tab));
         else if (message.operation === 'password-accounts') response.value = this.passwords ? await this.passwords.vault.list() : { accounts: [] };

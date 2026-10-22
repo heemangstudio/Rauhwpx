@@ -75,6 +75,7 @@ import { createBrowserCredentialBroker } from './browser-credentials.mjs';
 import { browserContinuationText, createBrowserRequests, denialPayload } from './browser-requests.mjs';
 import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
 import { createBrowserDownloads } from './browser-downloads.mjs';
+import { resolveBrowserUploadFiles } from './browser-upload-sources.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
 import { appendToolTelemetryRow, startToolCall, ToolTurnTelemetry } from './tool-telemetry.mjs';
@@ -7787,6 +7788,13 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             return requestUserSecret(record, actor, args);
           }
           if (tool === 'browser_fill_secret') return fillUserSecret(record, actor, args);
+          if (tool === 'browser_upload') {
+            // 에이전트는 경로를 고르지 않는다. 이 채팅이 가진 파일만 허브가 읽어 넘긴다.
+            const chatKey = record.agentSession?.chatId ?? record.agentSession?.threadId ?? record.sessionId;
+            const files = await resolveBrowserUploadFiles(args.files, { actor, artifactStore: record.artifactStore, downloads: browserDownloads,
+              projectStore, referenceStore, snapshotRoot: record.documentSnapshotManager?.readOnlyRootForChat(chatKey) });
+            return browserMcpResult(await ownedBrowser.uploadFiles(actor, args, files));
+          }
           if (tool === 'browser_request_account') {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may request website account access');

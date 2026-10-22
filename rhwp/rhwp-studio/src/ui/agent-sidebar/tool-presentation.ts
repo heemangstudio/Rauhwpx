@@ -592,6 +592,7 @@ const SPECS: Record<string, ToolSpec> = {
   browser_type: { category: 'other', label: '페이지에 입력하기' },
   browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
   browser_select: { category: 'other', label: '목록에서 고르기', summary: (a) => str(a['option']) },
+  browser_upload: { category: 'other', label: '웹사이트에 파일 첨부', summary: (a) => Array.isArray(a['files']) ? `파일 ${a['files'].length}개` : '' },
   browser_scroll: { category: 'other', label: '페이지 스크롤' },
   browser_wait: { category: 'other', label: '페이지 기다리기' },
   browser_capture: { category: 'other', label: '페이지 캡처' },

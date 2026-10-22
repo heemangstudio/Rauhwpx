@@ -1887,6 +1887,16 @@ const BASE_TOOL_DEFINITIONS = [
     shape: { ...browserRefShape(), option: z.string().min(1).max(500) },
   },
   {
+    name: 'browser_upload',
+    description: 'Attach this chat\'s files to a current snapshot ref: a file input or the control that opens a file chooser. Each file is an artifactId, a completed downloadId, a projectItemId, or snapshotPath from materialize_document_snapshot. Max 5 files, 20 MB each. Needs site access.',
+    shape: { ...browserRefShape(), files: z.array(z.object({
+      artifactId: z.string().min(1).max(160).optional(),
+      downloadId: z.string().min(1).max(160).optional(),
+      projectItemId: z.string().min(1).max(160).optional(),
+      snapshotPath: z.string().min(1).max(4_000).optional(),
+    }).strict()).min(1).max(5) },
+  },
+  {
     name: 'browser_scroll',
     description: 'Scroll an assigned tab, then take a fresh snapshot before choosing a ref.',
     shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
@@ -2036,6 +2046,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   browser_type: 'browser',
   browser_press: 'browser',
   browser_select: 'browser',
+  browser_upload: 'browser',
   browser_scroll: 'browser',
   browser_wait: 'browser',
   browser_close: 'browser',
