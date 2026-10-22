@@ -63,6 +63,8 @@ export interface ProjectPreviewDeps {
   managedClose?: boolean;
   /** `d…` 문서 노드를 열 때. 없으면 미리보기가 안내만 한다. */
   openDocument?: (documentId: string) => void;
+  /** 새로 만든 항목을 열린 채팅 입력창에 멘션으로 붙인다. 붙였으면 true. */
+  attachToChat?: (projectId: string, itemId: string) => Promise<boolean>;
 }
 
 export interface ProjectPreview {
@@ -244,30 +246,96 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     return layer;
   }
 
-  /** CSV 표 머리에 영역 도구를 단다. 고른 칸 범위를 원본으로 이어진 노트(Markdown 표)로 남긴다. */
+  /**
+   * CSV 표 머리에 영역 도구를 단다. 누르면 고른 칸 범위에 메모를 달 수 있는 상자가 뜨고,
+   * 저장하면 원본으로 이어진 노트(메모 + Markdown 표)를 남겨 열린 채팅 입력창에 멘션으로 붙인다.
+   */
   function mountCsvCapture(projectId: string, source: ProjectFileItem, csv: CsvTableView): void {
-    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위를 노트로 저장', { icon: 'clip', text: '영역' });
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위에 메모를 달아 저장', { icon: 'clip', text: '영역' });
     tool.disabled = true;
+    tool.setAttribute('aria-expanded', 'false');
+    const box = el('form', 'ag-pp-capture');
+    box.hidden = true;
+    const heading = el('div', 'ag-pp-capture-ref');
+    const comment = el('textarea', 'ag-pp-capture-comment');
+    comment.rows = 3;
+    comment.placeholder = '메모';
+    comment.setAttribute('aria-label', '범위 메모');
+    const actions = el('div', 'ag-pp-capture-actions');
+    const cancel = button('ag-pp-text-button', '취소', { text: '취소' });
+    const save = button('ag-pp-text-button ag-pp-primary', '저장하고 채팅에 첨부', { text: '저장' });
+    save.type = 'submit';
+    actions.append(cancel, save);
+    box.append(heading, comment, actions);
+    csv.element.append(box);
+
     // 같은 범위는 한 번만 남긴다. 범위를 바꾸면 다시 켜진다.
     let saved = false;
+    let saving = false;
+    const close = (restoreFocus: boolean) => {
+      if (box.hidden) return;
+      box.hidden = true;
+      tool.setAttribute('aria-expanded', 'false');
+      tool.classList.remove('ag-active');
+      if (restoreFocus) csv.scroller.focus({ preventScroll: true });
+    };
     csv.range.onChange((range) => {
       saved = false;
       tool.disabled = !range;
+      if (!range) close(false);
+      else heading.textContent = range.ref;
     });
     tool.addEventListener('click', () => {
       const range = csv.range.current();
       if (!range || saved) return;
-      saved = true;
+      if (!box.hidden) {
+        close(true);
+        return;
+      }
+      heading.textContent = range.ref;
+      box.hidden = false;
+      tool.setAttribute('aria-expanded', 'true');
+      tool.classList.add('ag-active');
+      comment.focus();
+    });
+    cancel.addEventListener('click', () => close(true));
+    box.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        close(true);
+      } else if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        box.requestSubmit();
+      }
+    });
+    box.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const range = csv.range.current();
+      if (!range || saved || saving) return;
+      saving = true;
+      save.disabled = true;
       const label = source.title.replace(/\.(csv|tsv|txt)$/i, '');
-      const body = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] · ${range.ref}\n\n${range.markdown}\n`;
-      tool.disabled = true;
+      const link = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] · ${range.ref}`;
+      const note = comment.value.trim();
+      const body = `${link}\n\n${note ? `${note}\n\n` : ''}${range.markdown}\n`;
       void saveOps(projectId, [{ op: 'note', body, name: `${label} ${range.ref}`, column: source.column ?? undefined }])
-        .then(() => csv.range.note('노트로 저장함'))
-        .catch(() => {
-          saved = false;
-          csv.range.note('저장하지 못함');
+        .then(async (result) => {
+          saved = true;
+          comment.value = '';
+          close(true);
+          csv.range.note('노트로 저장함');
+          const noteId = (result as ProjectOpsResult | undefined)?.created?.[0];
+          const attached = Boolean(noteId && await deps.attachToChat?.(projectId, noteId));
+          // 기다리는 사이 다른 범위를 골랐으면 그 이름표는 건드리지 않는다.
+          if (attached && csv.range.current()?.ref === range.ref) csv.range.note('채팅에 첨부함');
         })
-        .finally(() => { tool.disabled = saved || !csv.range.current(); });
+        .catch(() => csv.range.note('저장하지 못함'))
+        .finally(() => {
+          saving = false;
+          save.disabled = false;
+          tool.disabled = saved || !csv.range.current();
+        });
     });
     tools.prepend(tool);
   }

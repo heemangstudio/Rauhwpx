@@ -16,6 +16,8 @@ export interface WorkbenchDocumentsDeps {
   client: ProjectClient | null;
   bridge?: SidebarBridge;
   openDocument?: (documentId: string) => void;
+  /** 미리보기에서 만든 항목을 열린 채팅 입력창에 붙인다. */
+  attachToChat?: (projectId: string, itemId: string) => Promise<boolean>;
   onChange?: () => void;
 }
 
@@ -420,6 +422,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       onOpen: request => { void open(request); },
       onDirtyChange: sync,
       openDocument: deps.openDocument,
+      attachToChat: deps.attachToChat,
     });
     tab.preview.setVisible(true);
     tab.panel.replaceChildren(tab.preview.element);
