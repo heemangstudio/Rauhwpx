@@ -204,6 +204,80 @@ async function settle(rounds = 12) {
   }
 }
 
+test('JSON-RPC drains buffered stdout after process exit before closing', async () => {
+  const proc = new FakeProcess();
+  const frames = [];
+  const connection = new CodexJsonRpcConnection(proc, {
+    onFrame: (frame) => frames.push(frame), onClosed() {},
+    terminateProcess: async () => true,
+  });
+  proc.exitCode = 0;
+  proc.emit('exit', 0, null);
+  proc.send({ method: 'item/agentMessage/delta', params: { delta: '마지막 답변' } });
+  proc.emit('close', 0, null);
+  await settle();
+  assert.equal(frames[0]?.params.delta, '마지막 답변');
+  assert.equal(connection.closed, true);
+});
+
+test('JSON-RPC delivers a final response without a newline at stdout EOF', async () => {
+  const proc = new FakeProcess();
+  const connection = new CodexJsonRpcConnection(proc, {
+    onFrame() {}, onClosed() {}, terminateProcess: (child) => child.kill(),
+  });
+  const request = connection.request('last/read', {});
+  proc.stdout.emit('data', JSON.stringify({ id: 1, result: { text: '끝' } }));
+  proc.stdout.emit('end');
+  assert.deepEqual(await request, { text: '끝' });
+  await connection.cleanupPromise;
+  assert.equal(connection.closed, true);
+});
+
+test('JSON-RPC bounds the drain wait when an exited child never closes its pipes', async () => {
+  const proc = new FakeProcess();
+  const connection = new CodexJsonRpcConnection(proc, {
+    onFrame() {}, onClosed() {}, terminateProcess: async () => true, closeGraceMs: 10,
+  });
+  const request = connection.request('never/replies', {});
+  proc.exitCode = 23;
+  proc.emit('exit', 23, null);
+  await assert.rejects(request, /exited with code 23/);
+  assert.equal(connection.closed, true);
+  assert.equal(connection.pending.size, 0);
+});
+
+for (const prefix of ['', '문서 ']) {
+  test(`Codex recovers completed message text after missing deltas (${JSON.stringify(prefix)})`, async (t) => {
+    const h = harness(t);
+    t.after(() => h.session.dispose());
+    h.session.sendUserMessage('edit');
+    await settle();
+    const proc = h.spawns[0].process;
+    const params = { threadId: 'thread-native', turnId: 'turn-native', itemId: 'answer' };
+    if (prefix) proc.send({ method: 'item/agentMessage/delta', params: { ...params, delta: prefix } });
+    proc.send({ method: 'item/completed', params: { ...params, item: { id: 'answer', type: 'agentMessage', text: '문서 편집 완료' } } });
+    proc.send({ method: 'turn/completed', params: { ...params, turn: { id: 'turn-native', status: 'completed' } } });
+    await settle();
+    assert.equal(h.events.filter((event) => event.type === 'text-delta').map((event) => event.text).join(''), '문서 편집 완료');
+    assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  });
+}
+
+for (const stream of ['stdin', 'stdout']) {
+  test(`Codex fails and releases the turn when ${stream} breaks without process exit`, async (t) => {
+    const h = harness(t);
+    t.after(() => h.session.dispose());
+    h.session.sendUserMessage('edit');
+    await settle();
+    const proc = h.spawns[0].process;
+    proc[stream].emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+    await settle();
+    assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+    assert.equal(h.events.at(-1).stopReason, 'exited');
+    assert.equal(proc.signalCode, 'SIGTERM');
+  });
+}
+
 test('native Codex launch preparation cancels before spawn and later starts with the current CLI', async (t) => {
   const h = harness(t);
   let release;

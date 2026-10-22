@@ -60,8 +60,11 @@ test('Windows cmd launcher is a Node shebang shim that survives a cmd.exe-length
 
   const longArg = 'x'.repeat(9_000);
   const { code, stdout, stderr } = await collectProcess(
-    nodeSpawn(process.execPath, [binPath, longArg, '--version'], {
+    (process.platform === 'win32' ? spawn : nodeSpawn)(
+      process.platform === 'win32' ? binPath : process.execPath,
+      process.platform === 'win32' ? [longArg, '--version'] : [binPath, longArg, '--version'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     }),
   );
   assert.equal(code, 0, stderr || stdout);

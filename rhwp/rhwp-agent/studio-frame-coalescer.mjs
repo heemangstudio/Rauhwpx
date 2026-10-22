@@ -101,6 +101,7 @@ export function createStudioFrameCoalescer({
     if (!entry) return;
     pending.delete(sock);
     clearTimer(entry.timer);
+    return entry.frame;
   }
 
   return { pushTextDelta, pushProgress, flush, discard };

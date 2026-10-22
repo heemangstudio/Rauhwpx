@@ -521,8 +521,10 @@ export function createClaudeSession(opts, {
   let activeCompaction = null;
   let turnOpen = false;
   let userTurnGeneration = 0;
-  let sawRootTextDelta = false;
-  const streamedSubagents = new Set();
+  // Partial deltas belong to one message and one content block. A root delta
+  // must not suppress a later message, a child, or the unstreamed final suffix.
+  const streamedMessages = new Map();
+  const completedMessages = new Map();
   let disposed = false;
   let restartReady = Promise.resolve();
   /** @type {{ text: string, retryText?: string, kind?: string, replaceSession?: boolean } | null} */
@@ -1126,11 +1128,20 @@ export function createClaudeSession(opts, {
     }
     if (e?.type === 'stream_event') {
       const ev = e.event;
+      const scope = String(e.parent_tool_use_id ?? '');
+      if (ev?.type === 'message_start') {
+        streamedMessages.set(scope, { id: ev.message?.id ?? null, blocks: new Map() });
+      }
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
         const parentTaskId = parentTaskIdOf(e);
-        if (e.parent_tool_use_id) streamedSubagents.add(String(e.parent_tool_use_id));
-        else sawRootTextDelta = true;
         if (ev.delta.text) {
+          let message = streamedMessages.get(scope);
+          if (!message) {
+            message = { id: null, blocks: new Map() };
+            streamedMessages.set(scope, message);
+          }
+          const index = ev.index ?? 0;
+          message.blocks.set(index, (message.blocks.get(index) ?? '') + ev.delta.text);
           const isRoot = !e.parent_tool_use_id;
           onEvent({
             type: 'text-delta', agent: 'claude',
@@ -1146,9 +1157,14 @@ export function createClaudeSession(opts, {
       if (!Array.isArray(blocks)) return;
       const parentToolUseId = e.parent_tool_use_id ? String(e.parent_tool_use_id) : null;
       const parentTaskId = parentTaskIdOf(e);
-      const alreadyStreamed = parentToolUseId
-        ? streamedSubagents.has(parentToolUseId)
-        : sawRootTextDelta;
+      const scope = parentToolUseId ?? '';
+      const messageId = e.message?.id ?? null;
+      let message = streamedMessages.get(scope);
+      if (!message || (message.id && messageId && message.id !== messageId)) {
+        message = { id: messageId, blocks: new Map() };
+      }
+      const completed = messageId ? completedMessages.get(scope)?.get(messageId) : null;
+      if (completed) message = completed;
       // API 오류는 합성 assistant 메시지로 온다 (error 필드). 그 본문은 답이 아니라 오류
       // 문구다 — 말풍선으로 그리지 않고 turn-end 의 실패로만 남긴다. max_output_tokens 는
       // 실제 내용이 담긴 정상 메시지다. 이미 스트리밍된 텍스트는 화면에 있으니 그대로 둔다.
@@ -1166,7 +1182,7 @@ export function createClaudeSession(opts, {
         // 로컬 명령의 합성 응답은 사용량이 0 이다 — 콘텍스트 크기로 치지 않는다.
         if (contextTokens > 0) lastContextTokens = contextTokens;
       }
-      for (const block of blocks) {
+      for (const [index, block] of blocks.entries()) {
         if (block?.type === 'tool_use') {
           if (block.name === 'Bash' && lastSpawnRequiredSandbox && block.id) sandboxedBashCalls.add(String(block.id));
           onEvent({
@@ -1178,16 +1194,23 @@ export function createClaudeSession(opts, {
             ...(parentTaskId ? { parentTaskId } : {}),
           });
         } else if (block?.type === 'text') {
-          // Subagent assistant messages carry parent_tool_use_id. Deduplicate
-          // them independently so a root text delta never suppresses child text.
-          if (!alreadyStreamed && !apiError && block.text) {
+          const streamed = message.blocks.get(index) ?? '';
+          const suffix = typeof block.text === 'string' && block.text.startsWith(streamed)
+            ? block.text.slice(streamed.length) : '';
+          if (!apiError && suffix) {
+            message.blocks.set(index, block.text);
             onEvent({
               type: 'text-delta', agent: 'claude',
-              text: parentToolUseId ? block.text : rootTextWithWakeBreak(block.text),
+              text: parentToolUseId ? suffix : rootTextWithWakeBreak(suffix),
               ...(parentTaskId ? { parentTaskId } : {}),
             });
           }
         }
+      }
+      streamedMessages.delete(scope);
+      if (messageId) {
+        if (!completedMessages.has(scope)) completedMessages.set(scope, new Map());
+        completedMessages.get(scope).set(messageId, message);
       }
       return;
     }
@@ -1835,8 +1858,8 @@ export function createClaudeSession(opts, {
         endTurn({ type: 'turn-end', agent: 'claude', stopReason: 'failed', errorMessage: message, failure });
         return;
       }
-      sawRootTextDelta = false;
-      streamedSubagents.clear();
+      streamedMessages.clear();
+      completedMessages.clear();
       resetTurnTaskState();
       dispatchTurnText(text);
     });
@@ -1885,8 +1908,8 @@ export function createClaudeSession(opts, {
       turnResumeRetried = true;
     }
     activeCompaction = null;
-    sawRootTextDelta = false;
-    streamedSubagents.clear();
+    streamedMessages.clear();
+    completedMessages.clear();
     resetTurnTaskState();
     onEvent({ type: 'turn-start', agent: 'claude' });
     dispatchTurnText(entry.text);

@@ -11,7 +11,9 @@ import path from 'node:path';
  * array, which is also the live PID Windows can taskkill.
  */
 export function writeWindowsCliLauncher(binPath, fixturePath) {
-  const interpreter = process.execPath.replace(/\\/g, '/');
+  // cross-spawn's shebang parser splits at spaces, including Program Files.
+  // Resolve node through PATH so its final .exe is still spawned without cmd.
+  const interpreter = 'node';
   writeFileSync(
     binPath,
     `#!${interpreter}\nrequire(${JSON.stringify(fixturePath)});\n`,

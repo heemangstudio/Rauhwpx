@@ -72,6 +72,44 @@ const turnEnds = (events) => events.filter((event) => event.type === 'turn-end')
 const lifecycle = (uuid, state) => ({ type: 'command_lifecycle', command_uuid: uuid, state, uuid: `${uuid}-${state}` });
 const RESULT = { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'done' };
 
+test('Claude recovers a missing streamed suffix and an unstreamed later message', async (t) => {
+  const events = [];
+  const { session, child } = startSession(events);
+  t.after(() => session.dispose());
+  await tick();
+  child().emitJson(
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'first' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '확인 ' } } },
+    { type: 'assistant', message: { id: 'first', content: [{ type: 'text', text: '확인 완료. ' }] } },
+    { type: 'assistant', message: { id: 'second', content: [{ type: 'text', text: '편집을 저장했습니다.' }] } },
+    RESULT,
+  );
+  for (let i = 0; i < 20 && turnEnds(events).length === 0; i++) await tick();
+  assert.equal(events.filter((event) => event.type === 'text-delta').map((event) => event.text).join(''), '확인 완료. 편집을 저장했습니다.');
+  assert.equal(turnEnds(events).length, 1);
+});
+
+test('Claude reconciles blocks and child scopes without suppressing tools sharing a message id', async (t) => {
+  const events = [];
+  const { session, child } = startSession(events);
+  t.after(() => session.dispose());
+  await tick();
+  const assistant = (parent, content) => ({ type: 'assistant', parent_tool_use_id: parent, message: { id: 'same-id', content } });
+  child().emitJson(
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'same-id' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '첫 ' } } },
+    assistant(null, [{ type: 'thinking', thinking: 'hidden' }, { type: 'text', text: '첫 문장' }]),
+    assistant(null, [{ type: 'thinking', thinking: 'hidden' }, { type: 'text', text: '첫 문장' }]),
+    assistant(null, [{ type: 'tool_use', id: 'read', name: 'mcp__rhwp__get_structure', input: {} }]),
+    assistant('child', [{ type: 'text', text: '자식 답변' }]),
+    RESULT,
+  );
+  for (let i = 0; i < 20 && turnEnds(events).length === 0; i++) await tick();
+  const text = events.filter((event) => event.type === 'text-delta').map((event) => event.text).join('');
+  assert.equal(text, '첫 문장자식 답변');
+  assert.equal(events.filter((event) => event.type === 'tool-call' && event.callId === 'read').length, 1);
+});
+
 test('a steered message rides the running process and keeps the turn open until it completes', async () => {
   const events = [];
   const { session, child } = startSession(events);

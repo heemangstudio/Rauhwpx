@@ -108,7 +108,7 @@ function rpcError(error) {
 }
 
 export class CodexJsonRpcConnection {
-  constructor(proc, { onFrame, onClosed, terminateProcess = terminateProcessTree }) {
+  constructor(proc, { onFrame, onClosed, terminateProcess = terminateProcessTree, closeGraceMs = 2_000 }) {
     this.proc = proc;
     this.onFrame = onFrame;
     this.onClosed = onClosed;
@@ -119,15 +119,30 @@ export class CodexJsonRpcConnection {
     this.lineBytes = 0;
     this.terminateProcess = terminateProcess;
     this.cleanupPromise = null;
+    this.exitTimer = null;
 
     proc.stdout.on('data', (chunk) => this.consume(chunk));
+    // Windows can report exit before the final pipe reads. Give stdout a bounded
+    // drain window; descendants holding inherited pipes must not hang the turn.
+    const finishOutput = () => {
+      if (this.closed) return;
+      if (this.lineBytes) this.consume(Buffer.from('\n'));
+      this.close(new Error('Codex app-server output stream closed'), { terminate: true });
+    };
+    proc.stdout.on('end', finishOutput);
+    proc.stdout.on('error', (error) => this.close(error, { terminate: true }));
+    proc.stdin.on?.('error', (error) => this.close(error, { terminate: true }));
     proc.on('error', (error) => this.close(error, { terminate: Boolean(proc.pid) }));
     proc.on('exit', (code, signal) => {
+      if (this.closed || this.exitTimer) return;
       const suffix = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
-      this.close(new Error(`Codex app-server exited with ${suffix}`), { terminate: true });
+      this.exitTimer = setTimeout(() => {
+        this.close(new Error(`Codex app-server exited with ${suffix}`), { terminate: true });
+      }, closeGraceMs);
     });
     proc.on('close', (code, signal) => {
       if (this.closed) return;
+      if (this.lineBytes) this.consume(Buffer.from('\n'));
       const suffix = signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`;
       this.close(new Error(`Codex app-server closed with ${suffix}`), { terminate: true });
     });
@@ -223,6 +238,10 @@ export class CodexJsonRpcConnection {
   } = {}) {
     if (this.closed) return this.cleanupPromise;
     this.closed = true;
+    clearTimeout(this.exitTimer);
+    this.exitTimer = null;
+    this.lineChunks = [];
+    this.lineBytes = 0;
     for (const pending of this.pending.values()) if (pending.timer) clearTimeout(pending.timer);
     const finish = (cleaned) => {
       for (const pending of this.pending.values()) pending.reject(error);
@@ -479,6 +498,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
    * @type {{ message: string, codexErrorInfo: unknown } | null}
    */
   let lastTurnError = null;
+  const messageText = new Map();
   /** account/rateLimits/updated 의 마지막 스냅샷 — 사용 한도 실패의 리셋 시각을 꺼낸다. */
   let latestRateLimits = null;
   /** @type {import('./backend.mjs').UsageTokens | null} */
@@ -628,6 +648,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     turnOpen = true;
     threadHasTurns = true;
     lastTurnError = null;
+    messageText.clear();
     onEvent({ type: 'turn-start', agent: 'codex' });
     const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
     rolloutWatcher = createRolloutWatcher?.({
@@ -646,6 +667,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       || !notificationMatchesActiveTurn(params)
       || settlingTurnId === completedTurnId) return;
     settlingTurnId = completedTurnId;
+    for (const item of params.turn?.items ?? []) recoverMessageText(item);
     const status = String(params.turn?.status ?? 'completed');
     const usage = pendingUsage;
     const turnError = params.turn?.error ?? null;
@@ -684,6 +706,17 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
   }
 
+  function recoverMessageText(item) {
+    if (item?.type !== 'agentMessage' || !item.id || typeof item.text !== 'string') return;
+    const streamed = messageText.get(item.id) ?? '';
+    // Only append a proven suffix. A revised, non-prefix snapshot must not
+    // duplicate or rewrite text that the user has already seen.
+    if (!item.text.startsWith(streamed)) return;
+    const suffix = item.text.slice(streamed.length);
+    messageText.set(item.id, item.text);
+    if (suffix) onEvent({ type: 'text-delta', agent: 'codex', text: suffix });
+  }
+
   function handleNotification(frame, connection, frameGeneration) {
     if (!connectionIsCurrent(connection, frameGeneration)) return;
     const method = frame?.method;
@@ -700,7 +733,11 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
     if (method === 'item/agentMessage/delta') {
       if (!notificationMatchesActiveTurn(params)) return;
-      if (params.delta) onEvent({ type: 'text-delta', agent: 'codex', text: String(params.delta) });
+      if (params.delta) {
+        const text = String(params.delta);
+        messageText.set(params.itemId, (messageText.get(params.itemId) ?? '') + text);
+        onEvent({ type: 'text-delta', agent: 'codex', text });
+      }
       return;
     }
     if ((method === 'item/started' || method === 'item/completed') && params.item?.type === 'contextCompaction') {
@@ -717,6 +754,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
     if (method === 'item/started' || method === 'item/completed') {
       if (!notificationMatchesActiveTurn(params)) return;
+      if (method === 'item/completed') recoverMessageText(params.item);
       const info = toolInfo(params.item);
       if (!info || info.tool === 'ask_user_question') return;
       if (method === 'item/started') {
@@ -997,9 +1035,6 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       terminateProcess,
     });
     rpc = connection;
-    child.stdin.on('error', (error) => {
-      process.stderr.write(`[codex-app-server] stdin error: ${error?.message ?? error}\n`);
-    });
     child.stderr.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT);
     });

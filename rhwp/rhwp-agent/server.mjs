@@ -56,6 +56,7 @@ import {
 } from './document-paths.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
+import { retainMissedAgentText, replayMissedAgentText } from './agent-stream-replay.mjs';
 import { failureForHubError, normalizeProviderFailureEvent, redactFailureText } from './provider-failure.mjs';
 import { createStudioFrameCoalescer } from './studio-frame-coalescer.mjs';
 import {
@@ -2091,7 +2092,16 @@ function writeJson(sock, obj) {
 }
 
 /** 토큰마다 WS 프레임을 보내지 않도록 스트리밍 이벤트를 소켓별로 잠깐 모은다. */
-const studioFrames = createStudioFrameCoalescer({ write: writeJson });
+const studioSocketOwners = new WeakMap();
+const studioFrames = createStudioFrameCoalescer({ write(sock, frame) {
+  if (writeJson(sock, frame)) return true;
+  const record = studioSocketOwners.get(sock);
+  if (record && frame.event?.type === 'text-delta') {
+    retainMissedAgentText(record, frame.event);
+    return true;
+  }
+  return false;
+} });
 
 /** 모아 둔 스트리밍 프레임을 먼저 보낸 뒤 보낸다 — 프레임 순서가 그대로 유지된다. */
 function sendJson(sock, obj) {
@@ -3812,12 +3822,18 @@ function makeBackendEventHandler(record, generation) {
 /** 턴 끝이 아닌 이벤트는 그대로 보내고, text-delta 만 소켓별로 모은다. */
 function sendAgentEvent(record, event) {
   const frame = { v: 1, type: 'agent-event', event };
-  return event.type === 'text-delta'
-    ? studioFrames.pushTextDelta(record.studioSocket, frame)
-    : sendJson(record.studioSocket, frame);
+  if (event.type !== 'text-delta') return sendJson(record.studioSocket, frame);
+  const delivered = studioFrames.pushTextDelta(record.studioSocket, frame);
+  if (!delivered) {
+    // A CLOSING socket can still own older coalesced text. Retain that first.
+    if (record.studioSocket) studioFrames.flush(record.studioSocket);
+    retainMissedAgentText(record, event);
+  }
+  return delivered;
 }
 
 function disposeSession(record) {
+  record.missedAgentText = null;
   record.pendingReferenceMessage = null;
   rejectPendingUserMessages(record, 'REQUEST_INVALIDATED', 'The chat stopped before accepting the message');
   record.pendingDocumentSaved = null;
@@ -9159,11 +9175,13 @@ httpServer.on('upgrade', (req, socket, head) => {
         armStudioReattachFlush(record);
       }
       record.studioSocket = ws;
+      studioSocketOwners.set(ws, record);
       attachSocket(record, ws, 'studio');
       // 소켓이 닫혔다고 곧바로 인플라이트 호출을 접지 않는다 — 스튜디오는 보통 250ms 안에
       // 같은 세션으로 돌아온다. 대신 유예 타이머를 걸어 돌아오지 않는 경우만 실패시킨다.
       ws.on('close', () => {
-        studioFrames.discard(ws);
+        const pending = studioFrames.discard(ws);
+        if (pending?.event?.type === 'text-delta') retainMissedAgentText(record, pending.event);
         failForeignReadsForSocket(ws);
         if (record.studioSocket === ws) {
           record.studioSocket = null;
@@ -9179,7 +9197,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         // Its terminal handler must see that state before settling document edits.
         sendJson(ws, { v: 1, type: 'plan-progress', ...record.agentSession.planning.snapshot() });
       }
-      replayMissedTurnEnd(record, ws, sendJson);
+      if (replayMissedAgentText(record, ws, sendJson)) replayMissedTurnEnd(record, ws, sendJson);
       sendJson(ws, {
         v: 1,
         type: 'welcome',

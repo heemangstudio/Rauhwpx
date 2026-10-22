@@ -12,6 +12,10 @@ To add a flow, add `smoke/NN-name.mjs` exporting `{ name, run({ page, context, u
 
 These run outside the smoke suite and CI, for changes to the areas they cover.
 
+`npm run e2e:provider-stream-recovery -- --runs=10` drives real child processes, the hub and the Studio sidebar with synthetic Claude SDK and Codex app-server output. It checks complete, partial, missing and duplicate text, auth errors, crashes, Stop, and a turn that finishes while Studio is offline, followed by another healthy turn. The providers use separate browser contexts and isolated managed CLI directories. It needs the WASM build, Chrome (`CHROME_PATH` on Windows), and existing local provider logins for the hub's setup gate. It makes no model requests and does not change those logins. Screenshots, redacted synthetic transcripts and JSON results go to `rhwp/target/provider-stream-recovery/`.
+
+`npm run e2e:provider-stream-live -- --allow-provider-usage` spends real provider quota. It uses only `gpt-6-luna` and `claude-haiku-5-5`. Each provider inserts and reads back a marker in a new document, reconnects the Studio socket, then resumes the same chat to insert a second marker. The check asserts both document text and streamed answers. Existing local logins are required. Evidence goes to `rhwp/target/provider-stream-live.json` and the two `*-stream-live.png` screenshots. The flag is required to prevent accidental paid runs.
+
 `npm run e2e:background-sessions` starts its own hub and Vite with a fake Pi and a mock MCP provider. It checks that an agent keeps working on a document you switch away from, that its writes land only in that document, that parallel chats on one document are locked to 채팅, and that New Document and opens work while an agent runs.
 
 `npm run e2e:agent-document-detach` starts its own hub and Vite with a fake Pi and a mock MCP provider. The agent detaches its chat mid-turn: the chat moves beside an empty paper and the same turn keeps running. It then creates a new document without being asked, writes to it and detaches again. Cancelling the save dialog keeps the chat attached; saving writes the document and closes it, so no unsaved tab is left.
