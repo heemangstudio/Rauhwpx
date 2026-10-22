@@ -363,6 +363,14 @@ impl Field {
         self.extract_wstring_value("HelpState:")
     }
 
+    /// HWP5 메모 필드 표지인지: ctrl_id `%unk` + 속성 비트 0x8000 + `MEMO` 로 시작하는 명령.
+    /// 세 조건이 모두 필요하다 — `$RevisionDelete` 변경 추적 필드도 같은 id 와 비트를 쓴다.
+    pub fn is_hwp_memo_marker(&self) -> bool {
+        self.ctrl_id == crate::parser::tags::FIELD_UNKNOWN
+            && self.properties & 0x8000 != 0
+            && self.command.starts_with("MEMO")
+    }
+
     /// 양식 모드에서 편집 가능 여부 (properties bit 0)
     pub fn is_editable_in_form(&self) -> bool {
         self.properties & 1 != 0

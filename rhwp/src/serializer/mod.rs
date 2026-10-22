@@ -11,6 +11,7 @@ pub mod doc_info;
 pub mod header;
 pub mod hml;
 pub mod hwpx;
+pub(crate) mod memo_plan;
 pub mod mini_cfb;
 pub mod record_writer;
 

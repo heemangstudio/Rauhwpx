@@ -38,6 +38,19 @@ pub fn field_begin_open_tag(field: &Field) -> String {
     let id_str = field.field_id.to_string();
     let ft = field_type_str(field.field_type);
     let name = xml_escape_attr(field.ctrl_data_name.as_deref().unwrap_or(""));
+    if field.field_type == FieldType::Memo {
+        // 한컴 저장본(aift.hwpx)과 같은 속성 집합: dirty·zorder(=메모 번호)·fieldid.
+        // HWP 출처 메모는 fieldid 가 없으므로 한컴 MEMO 필드 값을 쓴다.
+        return format!(
+            r#"<hp:fieldBegin id="{}" type="{}" name="{}" editable="{}" dirty="1" zorder="{}" fieldid="{}""#,
+            id_str,
+            ft,
+            name,
+            bool01(field.is_editable_in_form()),
+            field.memo_index,
+            field.instance_id.unwrap_or(HANCOM_MEMO_FIELD_INSTANCE_ID),
+        );
+    }
     // [#task-m100] 원본 `fieldid` 속성 보존 — id 와 별개 값일 수 있어(#1512) 생략하면
     // 왕복 시 영구 손실된다. 없으면(None) 속성 자체를 생략(#1391 자기닫힘 태그 호환).
     match field.instance_id {
@@ -58,6 +71,9 @@ pub fn field_begin_open_tag(field: &Field) -> String {
         ),
     }
 }
+
+/// 한컴이 MEMO fieldBegin/fieldEnd 에 쓰는 `fieldid` (samples/hwpx/aift.hwpx).
+pub const HANCOM_MEMO_FIELD_INSTANCE_ID: u32 = 623_209_829;
 
 fn xml_escape_attr(s: &str) -> String {
     s.replace('&', "&amp;")

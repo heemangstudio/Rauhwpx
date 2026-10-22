@@ -103,7 +103,19 @@ pub(crate) fn write_header_limited(
     // parse_memo_shape가 만드는 extra_records(HWPTAG_MEMO_SHAPE, hwpx→hwp5
     // 변환 전용)는 여기서 쓰이지 않는다. 원본 verbatim splice로 hwpx→hwpx
     // 라운드트립 시 memoPr 소실을 막는다(#3xxx).
-    if let Some(memo_properties) = &doc.doc_info.memo_properties_xml {
+    // HWP 출처는 원문이 없으므로 MEMO_SHAPE 레코드에서 만든다.
+    let generated_memo_properties = if doc.doc_info.memo_properties_xml.is_none() {
+        let shapes = doc.doc_info.memo_shapes();
+        (!shapes.is_empty()).then(|| crate::model::memo::memo_properties_xml(&shapes))
+    } else {
+        None
+    };
+    if let Some(memo_properties) = doc
+        .doc_info
+        .memo_properties_xml
+        .as_ref()
+        .or(generated_memo_properties.as_ref())
+    {
         w.get_mut()
             .write_all(memo_properties.as_bytes())
             .map_err(|e| SerializeError::XmlError(format!("memoProperties splice: {e}")))?;

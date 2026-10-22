@@ -856,6 +856,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
             hwpx_lineage: false,
             own_line_layout,
         },
+        orphan_memo_lists: Vec::new(),
     };
 
     // BinData Link의 외부 파일 경로를 Picture.external_path로 전달한다.

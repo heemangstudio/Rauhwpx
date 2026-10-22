@@ -20,7 +20,7 @@ use super::record::Record;
 use super::tags;
 
 use crate::model::control::{Control, UnknownControl};
-use crate::model::document::{RawRecord, Section, SectionDef};
+use crate::model::document::{OrphanMemoList, RawRecord, Section, SectionDef};
 use crate::model::footnote::FootnoteShape;
 use crate::model::header_footer::{HeaderFooterApply, MasterPage};
 use crate::model::page::{
@@ -85,8 +85,27 @@ impl Drop for NestingGuard {
 /// 섹션 레코드 데이터를 파싱하여 Section으로 변환
 ///
 /// data: 압축 해제된(배포용은 복호화+해제된) 레코드 바이트 스트림
+///
+/// 구역 끝 메모 꼬리는 잘라내고 버린다. 메모 본문이 필요하면
+/// [`parse_body_text_section_with_memos`] 를 쓴다.
 pub fn parse_body_text_section(data: &[u8]) -> Result<Section, BodyTextError> {
-    let records = Record::read_all(data).map_err(|e| BodyTextError::RecordError(e.to_string()))?;
+    parse_body_text_section_with_memos(data).map(|(section, _)| section)
+}
+
+/// 구역을 파싱하고, 구역 끝 메모 꼬리(MEMO_LIST 묶음)를 함께 돌려준다.
+///
+/// 한컴은 모든 메모 본문을 (마지막) 구역 스트림 끝, 마지막 level-0 문단의 level-1
+/// 자식으로 저장한다: `MEMO_LIST(u32 번호)` + `LIST_HEADER` + level-1 문단 N개를 메모마다
+/// 반복한다. 이 마지막 문단은 빈 문단일 수도, 글자·컨트롤·표가 있는 본문 문단일 수도
+/// 있다. 메모 레코드를 `parse_paragraph` 전에 잘라내므로 마지막 문단은 메모가 없을 때와
+/// 똑같이 파싱되고, 어떤 문단도 빠지지 않는다. 돌려받은 목록은 모든 구역을 파싱한 뒤
+/// [`attach_memo_lists`] 로 메모 필드에 붙인다.
+pub fn parse_body_text_section_with_memos(
+    data: &[u8],
+) -> Result<(Section, Vec<OrphanMemoList>), BodyTextError> {
+    let mut records =
+        Record::read_all(data).map_err(|e| BodyTextError::RecordError(e.to_string()))?;
+    let memo_lists = cut_memo_tail(&mut records);
 
     let mut section = Section::default();
     let mut idx = 0;
@@ -156,7 +175,109 @@ pub fn parse_body_text_section(data: &[u8]) -> Result<Section, BodyTextError> {
 
     link_orphan_field_ends(&mut section.paragraphs);
 
-    Ok(section)
+    Ok((section, memo_lists))
+}
+
+/// 마지막 level-0 문단 안에서 첫 level-1 `MEMO_LIST` 부터 스트림 끝까지의 메모 묶음을
+/// 레코드 목록에서 잘라내 돌려준다. 메모 묶음이 아닌 레코드(확장 바탕쪽 꼬리 등)는
+/// 원래 순서대로 레코드 목록에 남긴다.
+fn cut_memo_tail(records: &mut Vec<Record>) -> Vec<OrphanMemoList> {
+    let Some(last_root) = records
+        .iter()
+        .rposition(|r| r.tag_id == tags::HWPTAG_PARA_HEADER && r.level == 0)
+    else {
+        return Vec::new();
+    };
+    let Some(start) = records[last_root + 1..]
+        .iter()
+        .position(|r| r.tag_id == tags::HWPTAG_MEMO_LIST && r.level == 1)
+        .map(|offset| last_root + 1 + offset)
+    else {
+        return Vec::new();
+    };
+    let tail = records.split_off(start);
+    let mut memo_lists = Vec::new();
+    let mut tail = tail.into_iter().peekable();
+    while let Some(record) = tail.next() {
+        if !(record.tag_id == tags::HWPTAG_MEMO_LIST && record.level == 1) {
+            records.push(record);
+            continue;
+        }
+        let index = record
+            .data
+            .get(..4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .unwrap_or(0);
+        if tail
+            .peek()
+            .is_some_and(|r| r.tag_id == tags::HWPTAG_LIST_HEADER && r.level == 1)
+        {
+            tail.next();
+        }
+        let mut body = Vec::new();
+        while let Some(next) = tail.peek() {
+            if next.level >= 2 || (next.level == 1 && next.tag_id == tags::HWPTAG_PARA_HEADER) {
+                body.extend(tail.next());
+            } else {
+                break;
+            }
+        }
+        memo_lists.push(OrphanMemoList {
+            index,
+            paragraphs: parse_paragraph_list(&body),
+        });
+    }
+    memo_lists
+}
+
+/// 구역 끝에서 읽은 메모 본문을 문서 전체의 메모 필드에 `memo_index` 로 붙인다.
+///
+/// - HWP 메모 필드(`%unk` + 속성 0x8000 + `MEMO` 명령)는 본문이 없어도 `FieldType::Memo`
+///   가 된다. 같은 id·비트를 쓰는 `$RevisionDelete` 등은 그대로 둔다.
+/// - 일치하는 것은 모두 붙인다(전부-아니면-없음이 아니다). 번호가 같은 목록이 여럿이면
+///   첫 목록만 붙이고, 나머지와 필드가 없는 목록은 돌려준다 — 호출자가
+///   `Document::orphan_memo_lists` 에 보관해 HWP 저장 때 다시 쓴다.
+pub fn attach_memo_lists(
+    sections: &mut [Section],
+    memo_lists: Vec<OrphanMemoList>,
+) -> Vec<OrphanMemoList> {
+    use crate::model::control::FieldType;
+
+    let mut duplicates = Vec::new();
+    let mut slots: Vec<(u32, Option<Vec<Paragraph>>)> = Vec::new();
+    let mut by_index: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for list in memo_lists {
+        if by_index.contains_key(&list.index) {
+            duplicates.push(list);
+            continue;
+        }
+        by_index.insert(list.index, slots.len());
+        slots.push((list.index, Some(list.paragraphs)));
+    }
+    let mut visit = |field: &mut crate::model::control::Field| {
+        if field.is_hwp_memo_marker() {
+            field.field_type = FieldType::Memo;
+        }
+        if field.field_type != FieldType::Memo || !field.memo_paragraphs.is_empty() {
+            return;
+        }
+        if let Some(&slot) = by_index.get(&field.memo_index) {
+            if let Some(paragraphs) = slots[slot].1.take() {
+                field.memo_paragraphs = paragraphs;
+            }
+        }
+    };
+    for section in sections.iter_mut() {
+        crate::model::memo::for_each_section_field_mut(section, &mut visit);
+    }
+    let mut unmatched: Vec<OrphanMemoList> = slots
+        .into_iter()
+        .filter_map(|(index, paragraphs)| {
+            paragraphs.map(|paragraphs| OrphanMemoList { index, paragraphs })
+        })
+        .collect();
+    unmatched.extend(duplicates);
+    unmatched
 }
 
 /// 문단 레코드 그룹에서 Paragraph 구성

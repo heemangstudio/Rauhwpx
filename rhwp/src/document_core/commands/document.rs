@@ -6079,6 +6079,7 @@ impl DocumentCore {
             is_hwp3_variant,
             is_hwpx_variant,
             provenance,
+            orphan_memo_lists,
         } = document;
         Document {
             header: header.clone(),
@@ -6102,6 +6103,7 @@ impl DocumentCore {
             is_hwp3_variant: *is_hwp3_variant,
             is_hwpx_variant: *is_hwpx_variant,
             provenance: provenance.clone(),
+            orphan_memo_lists: orphan_memo_lists.clone(),
         }
     }
 

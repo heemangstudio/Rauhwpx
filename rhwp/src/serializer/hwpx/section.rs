@@ -371,6 +371,8 @@ impl ParagraphGraphBudget {
                 self.charge_escaped(&equation.font_name)?;
             }
             Control::Field(field) => {
+                // 메모 파라미터 7개(명령·작성자는 아래/명령 안에서 함께 센다)
+                self.charge(1024)?;
                 self.charge_escaped(&field.command)?;
                 self.charge_opt_escaped(field.ctrl_data_name.as_deref())?;
                 self.charge_opt_escaped(field.memo_text_direction.as_deref())?;
@@ -1588,10 +1590,18 @@ fn emit_field_end(
         // id(f.field_id, beginIDRef 로 사용)와 별개 값 — 파싱된 fr.end_field_id 를 그대로
         // 되돌려 써야 한다. 과거엔 write_field_end 로 beginIDRef 만 쓰고 fieldid 는 항상
         // 누락시켰다(고아 fieldEnd 경로만 write_field_end_full 로 보존, 비대칭).
-        let xml_result = if fr.end_field_id == 0 {
+        let end_field_id =
+            if fr.end_field_id == 0 && f.field_type == crate::model::control::FieldType::Memo {
+                // 메모 fieldEnd 도 fieldBegin 과 같은 fieldid 를 단다 (한컴 저장본 동형).
+                f.instance_id
+                    .unwrap_or(super::field::HANCOM_MEMO_FIELD_INSTANCE_ID)
+            } else {
+                fr.end_field_id
+            };
+        let xml_result = if end_field_id == 0 {
             writer_to_string(|w| write_field_end(w, f.field_id))
         } else {
-            writer_to_string(|w| write_field_end_full(w, f.field_id, fr.end_field_id))
+            writer_to_string(|w| write_field_end_full(w, f.field_id, end_field_id))
         };
         let xml = xml_result?;
         out.push_str("<hp:ctrl>");
@@ -2653,7 +2663,16 @@ fn render_control_slot_inner(
                         let pid = ctx.next_para_id();
                         out.push_str(&render_hp_p_open(para, pid, sid));
                         out.push_str(&runs);
-                        out.push_str(&linesegs);
+                        // 한컴 메모 본문은 linesegarray 를 쓰지 않는다. HWP 메모 본문에는
+                        // LINE_SEG 가 없어 파서가 만든 높이 0 짜리 줄 정보만 있으므로, 실제
+                        // 조판 정보가 있을 때만 쓴다.
+                        if para
+                            .line_segs
+                            .iter()
+                            .any(|seg| seg.line_height != 0 || seg.text_height != 0)
+                        {
+                            out.push_str(&linesegs);
+                        }
                         out.push_str("</hp:p>");
                     }
                     out.push_str("</hp:subList>");
@@ -2766,13 +2785,45 @@ fn render_legacy_hyperlink(out: &mut String, link: &Hyperlink, ctx: &mut Seriali
 }
 
 fn generated_field_parameters(field: &Field) -> Option<String> {
-    if field.command.is_empty() || field.raw_parameters_xml.is_some() {
+    if field.raw_parameters_xml.is_some() {
+        return None;
+    }
+    if field.field_type == crate::model::control::FieldType::Memo {
+        return Some(memo_field_parameters(field));
+    }
+    if field.command.is_empty() {
         return None;
     }
     Some(format!(
         r#"<hp:parameters cnt="1" name=""><hp:stringParam name="Command">{}</hp:stringParam></hp:parameters>"#,
         xml_escape(&field.command),
     ))
+}
+
+/// 한컴 메모 fieldBegin 의 7개 파라미터 (samples/hwpx/aift.hwpx 와 같은 순서).
+/// 번호는 저장 직전 메모 번호 계획을 거친 `memo_index` 를 쓴다.
+fn memo_field_parameters(field: &Field) -> String {
+    let command = crate::model::memo::MemoCommand::parse(&field.command);
+    let number = field.memo_index;
+    let author = command.as_ref().map_or("", |c| c.author.as_str());
+    let shape_ref = command
+        .as_ref()
+        .map_or(crate::model::memo::DEFAULT_MEMO_SHAPE_REF, |c| {
+            c.shape_ref.as_str()
+        });
+    let created = command
+        .as_ref()
+        .and_then(|c| c.created_at_iso())
+        .unwrap_or_default();
+    format!(
+        r#"<hp:parameters cnt="7" name=""><hp:integerParam name="Prop">0</hp:integerParam><hp:stringParam name="Command">{}</hp:stringParam><hp:stringParam name="ID">memo{}</hp:stringParam><hp:integerParam name="Number">{}</hp:integerParam><hp:stringParam name="Author">{}</hp:stringParam><hp:stringParam name="MemoShapeIDRef">{}</hp:stringParam><hp:stringParam name="CreateDateTime">{}</hp:stringParam></hp:parameters>"#,
+        xml_escape(&field.command),
+        number,
+        number,
+        xml_escape(author),
+        xml_escape(shape_ref),
+        created,
+    )
 }
 
 /// 셀·글상자 subList 인라인 `<hp:ctrl><hp:colPr .../></hp:ctrl>` (#1379 3단계).

@@ -12,6 +12,7 @@ pub mod header_footer;
 pub mod hyperlink;
 pub mod hyperlink_format;
 pub mod image;
+pub mod memo;
 pub mod page;
 pub mod paragraph;
 pub mod path;
