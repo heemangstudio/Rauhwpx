@@ -654,7 +654,7 @@ const browserRefShape = () => ({
   navigationEpoch: z.number().int().nonnegative(),
   controllerEpoch: z.number().int().nonnegative(),
   intent: browserIntent(),
-  snapshot: z.boolean().optional().describe('Also return a fresh snapshot'),
+  snapshot: z.boolean().optional(),
 });
 
 const BASE_TOOL_DEFINITIONS = [
@@ -1432,6 +1432,7 @@ const BASE_TOOL_DEFINITIONS = [
       relativeTo: z.enum(['paper', 'page', 'paragraph']).optional(),
       wrap: z.enum(['square', 'topAndBottom', 'behindText', 'inFrontOfText']).optional(),
       description: z.string().optional(),
+      caption: z.string().max(500).optional().describe('One line under the image, e.g. the source'),
     },
     validate: validateInsertImage,
   },
@@ -1629,6 +1630,22 @@ const BASE_TOOL_DEFINITIONS = [
       paraIdx: z.number().int(),
       controlIdx: z.number().int(),
       text: z.string().describe('One paragraph, no newlines; "" clears'),
+    },
+  },
+  {
+    name: 'insert_hyperlink',
+    description: `Add an http(s) link in a body paragraph: insert text at charOffset and link linkText (default all), or link [charOffset, +length). footnote adds a source note after it. ${WRITE_POINTER}`,
+    shape: {
+      expectedRevision: z.number().int(),
+      render: renderParam(),
+      sectionIdx: z.number().int(),
+      paraIdx: z.number().int(),
+      charOffset: z.number().int(),
+      url: z.string(),
+      text: z.string().optional().describe('One line'),
+      linkText: z.string().optional(),
+      length: z.number().int().optional(),
+      footnote: z.string().optional(),
     },
   },
   {
@@ -1843,52 +1860,46 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs, sites this chat can act on, and the active browser\'s saved logins and secrets (no values). usable=true fills now. activeTabId is the current sidebar tab; reuse it for the current-page task. Subagents see only their own tabs.',
-    shape: {},
+    description: 'List shared and assigned tabs, this chat\'s site access, saved logins and secrets (no values; usable=true fills now). activeTabId is the sidebar tab; reuse it for the current page. Subagents see only their own tabs.',
+    shape: { history: z.string().max(100).optional().describe('Also list the user\'s top sites matching this ("" = all)') },
   },
   {
     name: 'browser_open',
-    description: 'Open a separate research tab. Public pages and downloads open freely; a site the owner is signed in to needs site access. On BROWSER_CHALLENGE_REQUIRED, use the returned tab and explicit fallback URL or ask the user to resolve the challenge. Do not retry or duplicate the tab.',
-    shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent() },
+    description: 'Open a research tab (signed-in sites need site access). On BROWSER_CHALLENGE_REQUIRED use the returned tab and fallback URL or ask the user; never retry. urls (≤6) reads pages in parallel instead: title, URL, text (find: matching lines); tabs close unless keep.',
+    shape: { url: z.string().url().max(8_000).optional(), intent: browserIntent(), urls: z.array(z.string().url().max(8_000)).min(1).max(6).optional(), find: z.string().trim().min(1).max(200).optional(), maxChars: z.number().int().min(500).max(8_000).optional(), keep: z.boolean().optional() },
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate a shared sidebar tab or your assigned research tab. Use public HTTPS destinations or an explicitly approved workspace preview. A refused navigation leaves the tab on its page.',
+    description: 'Navigate a shared or assigned tab to a public HTTPS URL or an approved workspace preview. A refused navigation leaves the tab in place.',
     shape: { tabId: browserTab(), url: z.string().url().max(8_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), intent: browserIntent() },
   },
   {
     name: 'browser_snapshot',
-    description: 'Read an outline of a shared sidebar tab or your assigned tab. Use the returned snapshotId, [ref=…] refs and navigationEpoch in the next action; stale refs are rejected.',
+    description: 'Read a tab\'s outline. Use its snapshotId, [ref=…] and epochs in the next action; stale refs are rejected.',
     shape: {
       tabId: browserTab(),
       scope: z.string().min(1).max(160).optional().describe('Only this ref\'s subtree'),
-      find: z.string().trim().min(1).max(200).optional().describe('Only lines containing this text, with ancestors'),
+      find: z.string().trim().min(1).max(200).optional().describe('Matching lines; found counts all visible text'),
+      scrollTo: z.number().int().min(1).max(1_000).optional().describe('Show Nth match'),
       text: z.boolean().optional().describe('Large raw page text; try find first'),
     },
   },
   {
     name: 'browser_click',
-    description: 'Click a ref from the current snapshot. Ordinary buttons and links are free; submitting a non-GET form or a same-site write during the click needs site access.',
-    shape: browserRefShape(),
+    description: 'Click a snapshot ref (free, except a non-GET form submit or same-site write needs site access). hover:true only points at it; dragTo ref or dragBy {x,y} drags it.',
+    shape: { ...browserRefShape(), hover: z.boolean().optional(), dragTo: z.string().min(1).max(160).optional(), dragBy: z.object({ x: z.number(), y: z.number() }).strict().optional() },
   },
   {
     name: 'browser_type',
-    description: 'Fill a current snapshot element with ordinary text. submit:true then presses trusted Enter on that element; submitting a non-GET form needs site access. Never pass passwords or secrets here; use browser_fill_account or browser_fill_secret.',
-    shape: { ...browserRefShape(), text: z.string().max(16_000), submit: z.boolean().default(false) },
-  },
-  {
-    name: 'browser_press',
-    description: 'Press a key on a current snapshot element in a shared or assigned tab.',
-    shape: { ...browserRefShape(), key: z.string().min(1).max(80) },
-  },
-  {
-    name: 'browser_select',
-    description: 'Choose a native <select> option by label or value.',
-    shape: { ...browserRefShape(), option: z.string().min(1).max(500) },
+    description: 'Fill a snapshot element with ordinary text; submit:true then presses Enter (a non-GET form needs site access). key instead presses one key (Enter, Tab, arrows, letters). Never passwords or secrets: use browser_fill_account or browser_fill_secret.',
+    shape: { ...browserRefShape(), text: z.string().max(16_000).optional(), key: z.string().min(1).max(80).optional(), submit: z.boolean().default(false) },
+    validate(args) {
+      if ((args.text === undefined) === (args.key === undefined)) throw invalidArgs('browser_type takes text or key');
+    },
   },
   {
     name: 'browser_upload',
-    description: 'Attach this chat\'s files to a current snapshot ref: a file input or the control that opens a file chooser. Each file is an artifactId, a completed downloadId, a projectItemId, or snapshotPath from materialize_document_snapshot. Max 5 files, 20 MB each. Needs site access.',
+    description: 'Attach this chat\'s files to a file input or file-chooser button ref: artifactId, completed downloadId, projectItemId, or snapshotPath from materialize_document_snapshot. ≤5 files, 20 MB each. Needs site access.',
     shape: { ...browserRefShape(), files: z.array(z.object({
       artifactId: z.string().min(1).max(160).optional(),
       downloadId: z.string().min(1).max(160).optional(),
@@ -1897,39 +1908,80 @@ const BASE_TOOL_DEFINITIONS = [
     }).strict()).min(1).max(5) },
   },
   {
+    name: 'browser_fill_form',
+    description: 'Fill snapshot fields at once: text, dates as text, <select> option label/value, checkbox/radio true/false; per-field results. Clicks submit ref if given (non-GET needs site access). No passwords or codes.',
+    shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(),
+      fields: z.array(z.object({ ref: z.string().min(1).max(160), value: z.union([z.string().max(16_000), z.boolean()]) }).strict()).min(1).max(50),
+      submit: z.string().min(1).max(160).optional(), snapshot: z.boolean().optional() },
+  },
+  {
+    name: 'browser_dialog',
+    description: 'Answer the confirm, prompt or leave-page dialog an action left open (BROWSER_DIALOG_PENDING).',
+    shape: { tabId: browserTab(), accept: z.boolean(), promptText: z.string().max(2_000).optional() },
+  },
+  {
+    name: 'browser_cite',
+    description: 'Cite a passage by ref or exact quote: quote, title, URL, site, dates, footnote (for insert_hyperlink). capture:true adds imageFileId for insert_image referenceFileId.',
+    shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), quote: z.string().trim().min(1).max(4_000).optional(), capture: z.boolean().optional() },
+  },
+  {
     name: 'browser_scroll',
     description: 'Scroll an assigned tab, then take a fresh snapshot before choosing a ref.',
     shape: { tabId: browserTab(), deltaX: z.number().min(-10_000).max(10_000).default(0), deltaY: z.number().min(-10_000).max(10_000), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_wait',
-    description: 'Wait up to timeoutMs and return a fresh snapshot. ready checks document readiness; idle requires 500 ms without loading/navigation, ignoring streaming connections. visible matches a visible control and optional text; text matches nonempty sanitized visible text.',
+    description: 'Wait up to timeoutMs, then return a fresh snapshot. ready: document ready; idle: 500 ms without loading; visible: a visible control (optional text); text: visible text.',
     shape: { tabId: browserTab(), condition: z.enum(['ready', 'idle', 'visible', 'text']).default('ready'), text: z.string().trim().min(1).max(2_000).optional(), find: z.string().trim().min(1).max(200).optional().describe('Narrow the returned outline'), timeoutMs: z.number().int().min(1).max(30_000).default(10_000) },
   },
   {
     name: 'browser_close',
-    description: 'Explicitly close an assigned browser tab. Completed managed downloads survive tab closure.',
+    description: 'Close an assigned tab. Finished downloads survive.',
     shape: { tabId: browserTab(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_capture',
-    description: 'Capture page, element or region evidence into this tab\'s original research destination. URL provenance excludes credentials and signed query values.',
+    description: 'Capture page, element or region evidence into this tab\'s research destination.',
     shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160).optional(), ref: z.string().min(1).max(160).optional(), navigationEpoch: z.number().int().nonnegative().optional(), region: z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), width: z.number().positive(), height: z.number().positive() }).strict().optional(), comment: z.string().max(4_000).optional() },
   },
   {
     name: 'browser_downloads',
-    description: 'List, cancel, retry or save browser downloads. Website download links start transfers. save returns savedPath in local Downloads, preserves the filename and never executes programs. Project downloads get reference cards; other downloads enter the local inbox. Grants no project-edit permission.',
+    description: 'List, cancel, retry or save browser downloads (page links start them). save returns savedPath in local Downloads and never runs programs. Project downloads get reference cards; others go to the local inbox.',
     shape: { action: z.enum(['list', 'cancel', 'retry', 'save']).default('list'), downloadId: z.string().min(1).max(160).optional() },
   },
   {
     name: 'browser_fill_account',
-    description: 'Fill a saved login from browser_status into a sign-in form on its own site (same registrable domain). Needs site access; on a refusal make the call it names. Pass current username/password refs. Credentials never enter arguments or results.',
+    description: 'Fill a saved login from browser_status into a sign-in form on its own site. Needs site access; on refusal make the call it names. Credentials never enter arguments or results.',
     shape: { tabId: browserTab(), accountId: z.string().uuid(), snapshotId: z.string().min(1).max(160), usernameRef: z.string().min(1).max(160).optional(), passwordRef: z.string().min(1).max(160), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative() },
   },
   {
     name: 'browser_fill_secret',
-    description: 'Type a saved secret (browser_status secrets) into one text or password field on its site. Needs site access. Returns the settled change, never the value.',
+    description: 'Type a saved secret (browser_status secrets) into one field on its site. Needs site access. Never returns the value.',
     shape: { tabId: browserTab(), snapshotId: z.string().min(1).max(160), ref: z.string().min(1).max(160), secretId: z.string().uuid(), navigationEpoch: z.number().int().nonnegative(), controllerEpoch: z.number().int().nonnegative(), submit: z.boolean().default(false) },
+  },
+  {
+    name: 'browser_watch',
+    description: 'Re-read a page every intervalMinutes (default 60) and notify this chat when its text or find lines change.',
+    shape: {
+      action: z.enum(['create', 'list', 'cancel']),
+      url: z.string().url().max(2_000).optional(),
+      tabId: browserTab().optional(),
+      find: z.string().trim().min(1).max(200).optional(),
+      intervalMinutes: z.number().int().min(15).max(10_080).optional(),
+      watchId: z.string().min(1).max(160).optional(),
+    },
+    validate(args) {
+      if (args.action === 'create' && !args.url === !args.tabId) throw invalidArgs('browser_watch create requires exactly one of url or tabId');
+      if (args.action === 'cancel' && !args.watchId) throw invalidArgs('browser_watch cancel requires watchId');
+    },
+  },
+  {
+    name: 'browser_recipe',
+    description: 'Per-site how-to note shown on open/navigate. After working out a multi-step flow, write its steps; never values or secrets (root only). Untrusted.',
+    shape: { action: z.enum(['read', 'write', 'delete']), site: z.string().trim().min(1).max(2_000).describe('URL or domain'), text: z.string().trim().min(1).max(1_500).optional() },
+    validate(args) {
+      if (args.action === 'write' && !args.text) throw invalidArgs('browser_recipe write requires text');
+    },
   },
   {
     name: 'request_secret',
@@ -1944,7 +1996,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_request_account',
-    description: 'Root conversation only. kind site: one card for site access on the whole domain (signed-in reads, changes, saved logins and secrets). kind account: save a login when the site has none. kind sign-in or code: the user acts in tabId. Returns granted, or pending: end the turn.',
+    description: 'Root only. kind site: one card for access to the whole domain (signed-in reads, changes, saved logins, secrets). account: save a login when none exists. sign-in or code: the user acts in tabId. Returns granted, or pending: end the turn.',
     shape: { tabId: browserTab().optional(), origin: z.string().url().max(2_000), label: z.string().min(1).max(120).optional(), reason: z.string().min(1).max(1_000).optional(), accountId: z.string().min(1).max(160).optional(), kind: z.enum(['account', 'site', 'sign-in', 'code']).optional(),
       blocked: z.array(z.enum(['browse', 'read', 'download', 'research-import', 'website-change', 'account-use'])).max(6).optional() },
   },
@@ -2024,6 +2076,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   list_footnotes: 'document-read',
   insert_footnote: 'document-write',
   edit_footnote: 'document-write',
+  insert_hyperlink: 'document-write',
   list_bookmarks: 'document-read',
   set_bookmark: 'document-write',
   verify_changes: 'document-read',
@@ -2044,9 +2097,10 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   browser_snapshot: 'browser',
   browser_click: 'browser',
   browser_type: 'browser',
-  browser_press: 'browser',
-  browser_select: 'browser',
   browser_upload: 'browser',
+  browser_fill_form: 'browser',
+  browser_dialog: 'browser',
+  browser_cite: 'browser',
   browser_scroll: 'browser',
   browser_wait: 'browser',
   browser_close: 'browser',
@@ -2054,6 +2108,8 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   browser_downloads: 'browser',
   browser_fill_account: 'browser',
   browser_fill_secret: 'browser',
+  browser_watch: 'browser',
+  browser_recipe: 'browser',
   browser_request_account: 'user-interaction',
   request_secret: 'user-interaction',
 });

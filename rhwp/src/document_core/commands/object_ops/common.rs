@@ -69,6 +69,25 @@ impl DocumentCore {
     /// 에서는 항상 발견되며, 실패 시 스트림 끝을 반환한다.
     pub(crate) fn find_inline_control_gap_start(para: &Paragraph, control_idx: usize) -> u32 {
         let text_chars: Vec<char> = para.text.chars().collect();
+        // 필드 끝 마커는 컨트롤이 아니지만 갭 8칸을 쓴다. 직렬화기처럼 글자 앞 갭에서는
+        // 앞서 열린 필드의 끝이 먼저 오고, 빈 필드의 끝은 시작 마커 바로 뒤에 온다.
+        let closing_ends = |i: usize| {
+            para.field_ranges
+                .iter()
+                .filter(|r| r.end_char_idx == i && r.start_char_idx < i)
+                .count()
+                + para
+                    .orphan_field_ends
+                    .iter()
+                    .filter(|o| o.char_idx == i)
+                    .count()
+        };
+        let empty_ends = |ci: usize| {
+            para.field_ranges
+                .iter()
+                .filter(|r| r.control_idx == ci && r.start_char_idx == r.end_char_idx)
+                .count() as u32
+        };
         let mut ci = 0usize;
         let mut prev_end: u32 = 0;
         for i in 0..text_chars.len() {
@@ -77,12 +96,17 @@ impl DocumentCore {
             } else {
                 prev_end
             };
+            for _ in 0..closing_ends(i) {
+                if prev_end + 8 <= offset {
+                    prev_end += 8;
+                }
+            }
             while prev_end + 8 <= offset && ci < para.controls.len() {
                 if ci == control_idx {
                     return prev_end;
                 }
+                prev_end += 8 * (1 + empty_ends(ci));
                 ci += 1;
-                prev_end += 8;
             }
             let char_size: u32 = if text_chars[i] == '\t' {
                 8
@@ -185,6 +209,12 @@ impl DocumentCore {
         }
         para.controls.insert(idx, control);
         para.ctrl_data_records.insert(idx, None);
+        // 필드 범위는 컨트롤 인덱스로 시작 마커를 가리킨다 — 뒤 필드가 새 컨트롤을 가리키면 링크가 사라진다.
+        for range in &mut para.field_ranges {
+            if range.control_idx >= idx {
+                range.control_idx += 1;
+            }
+        }
     }
 
     /// 문단 맨 앞(텍스트 위치 0)에 모인 구역·단 정의 컨트롤 바로 뒤 인덱스.

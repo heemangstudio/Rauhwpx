@@ -9,6 +9,8 @@ export interface NativeBrowserApi {
   getState(args: { tabId: string; expectedTargetId?: string; checkPaint?: boolean }): Promise<unknown>;
   reload?(args: { tabId: string; expectedTargetId?: string; navigationEpoch?: number; recovery?: boolean }): Promise<unknown>;
   zoom?(args: { tabId: string; factor: number }): Promise<unknown>;
+  /** 에이전트 커서를 게스트 위 표시 계층에 그린다. x·y는 페이지 CSS px다. */
+  pointer?(args: { tabId: string; expectedTargetId?: string; x: number; y: number; phase: 'move' | 'down' | 'up' | 'click'; durationMs: number }): Promise<unknown>;
   onEvent?(callback: (event: Record<string, unknown>) => void): () => void;
 }
 export function nativeBrowserApi(): NativeBrowserApi | undefined {

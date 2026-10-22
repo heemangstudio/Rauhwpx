@@ -358,9 +358,10 @@ mod block_table_clipboard_tests {
                 Control::Field(Field::default()),
             ],
             ctrl_data_records: vec![Some(vec![1]), Some(vec![2]), Some(vec![3])],
+            // 필드는 C 뒤 갭에서 시작해 문단 끝에서 닫힌다 (글자 사이 갭은 컨트롤 셋 몫이다).
             field_ranges: vec![FieldRange {
-                start_char_idx: 2,
-                end_char_idx: 3,
+                start_char_idx: 3,
+                end_char_idx: 4,
                 control_idx: 2,
                 ..Default::default()
             }],

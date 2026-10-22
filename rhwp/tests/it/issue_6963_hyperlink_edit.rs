@@ -807,3 +807,159 @@ fn uri_update_clears_raw_parameters_xml() {
     assert!(field.raw_parameters_xml.is_none());
     assert_eq!(command_uri(&field.command), "https://example.org");
 }
+
+/// 각주를 넣고 내용을 채운다. 반환: 각주 컨트롤 인덱스.
+fn add_footnote(core: &mut DocumentCore, offset: usize, text: &str) -> usize {
+    let res: serde_json::Value =
+        serde_json::from_str(&core.insert_footnote_native(0, 0, offset).unwrap()).unwrap();
+    let ctrl = res["controlIdx"].as_u64().unwrap() as usize;
+    core.insert_text_in_footnote_native(0, 0, ctrl, 0, 2, text)
+        .unwrap();
+    ctrl
+}
+
+/// 본문 첫 문단의 (각주 위치, 각주 내용) 목록.
+fn footnotes(core: &DocumentCore) -> Vec<(usize, String)> {
+    let p = &core.document().sections[0].paragraphs[0];
+    let positions = p.control_text_positions();
+    p.controls
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, c)| match c {
+            Control::Footnote(f) => Some((positions[idx], f.paragraphs[0].text.trim().to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn citation_links_and_footnotes_share_a_paragraph_and_roundtrip() {
+    let target = HyperlinkTarget::body(0, 0);
+    let mut core = blank("앞 첫 인용 가운데 둘째 인용 뒤");
+    // 인용마다 링크를 걸고 바로 뒤에 출처 각주를 단다 (에이전트 insert_hyperlink 순서).
+    let first = core
+        .insert_hyperlink_native(&target, 2, 6, "https://example.com/a")
+        .unwrap();
+    add_footnote(&mut core, 6, "출처 A");
+    let second = core
+        .insert_hyperlink_native(&target, 11, 16, "https://example.org/b?q=1")
+        .unwrap();
+    add_footnote(&mut core, 16, "출처 B");
+    // 각주가 이미 뒤에 있는 문단의 앞쪽에도 링크와 각주를 단다. 새 각주는 뒤 링크보다
+    // 앞 순서의 컨트롤이어야 한다 (필드 끝 마커를 컨트롤로 세면 뒤로 밀린다).
+    core.insert_hyperlink_native(&target, 0, 1, "https://example.net")
+        .unwrap();
+    add_footnote(&mut core, 1, "출처 C");
+    let text = "앞 첫 인용 가운데 둘째 인용 뒤";
+    let expect_links = |c: &DocumentCore| {
+        let links = c.hyperlinks_native(&target).unwrap();
+        let got: Vec<_> = links
+            .iter()
+            .map(|l| (l.start, l.end, l.text.as_str(), l.uri.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, 1, "앞", "https://example.net"),
+                (2, 6, "첫 인용", "https://example.com/a"),
+                (11, 16, "둘째 인용", "https://example.org/b?q=1"),
+            ]
+        );
+        assert_eq!(c.document().sections[0].paragraphs[0].text, text);
+        assert_eq!(
+            footnotes(c),
+            vec![
+                (1, "출처 C".to_string()),
+                (6, "출처 A".to_string()),
+                (16, "출처 B".to_string()),
+            ]
+        );
+    };
+    expect_links(&core);
+    for reopened in roundtrips(&core) {
+        expect_links(&reopened);
+        // 다시 연 문서끼리도 같은 결과로 저장된다.
+        for again in roundtrips(&reopened) {
+            expect_links(&again);
+        }
+    }
+    // 각주가 든 문단에서도 주소 변경과 링크 해제가 각주를 건드리지 않는다.
+    core.update_hyperlink_native(&target, second, "https://example.org/c")
+        .unwrap();
+    core.remove_hyperlink_native(&target, first).unwrap();
+    let reopened = roundtrips(&core);
+    for c in std::iter::once(core).chain(reopened) {
+        let links = c.hyperlinks_native(&target).unwrap();
+        assert_eq!(
+            links
+                .iter()
+                .map(|l| (l.start, l.end, l.uri.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 1, "https://example.net"),
+                (11, 16, "https://example.org/c")
+            ]
+        );
+        assert_eq!(
+            footnotes(&c),
+            vec![
+                (1, "출처 C".to_string()),
+                (6, "출처 A".to_string()),
+                (16, "출처 B".to_string()),
+            ]
+        );
+    }
+}
+
+#[test]
+fn link_range_around_a_footnote_is_rejected_without_mutation() {
+    let target = HyperlinkTarget::body(0, 0);
+    let mut core = blank("가나다라");
+    add_footnote(&mut core, 2, "주");
+    let before = format!("{:?}", core.document());
+    assert!(core
+        .insert_hyperlink_native(&target, 1, 3, "https://example.com")
+        .is_err());
+    assert_eq!(format!("{:?}", core.document()), before);
+    // 표시 문자열 교체는 각주 문단에서 아직 받지 않는다.
+    let id = core
+        .insert_hyperlink_native(&target, 0, 2, "https://example.com")
+        .unwrap();
+    let before = format!("{:?}", core.document());
+    assert!(core
+        .replace_hyperlink_text_native(&target, id, "새 글")
+        .is_err());
+    assert_eq!(format!("{:?}", core.document()), before);
+}
+
+#[test]
+fn footnote_inserted_or_deleted_before_a_link_keeps_the_link() {
+    let target = HyperlinkTarget::body(0, 0);
+    let mut core = blank("앞 가운데 인용 끝");
+    core.insert_hyperlink_native(&target, 6, 8, "https://example.com/a")
+        .unwrap();
+    add_footnote(&mut core, 8, "출처 A");
+    // 링크 앞에 넣은 각주는 링크 시작 마커보다 앞 컨트롤이 된다.
+    let early = add_footnote(&mut core, 1, "앞 각주");
+    let links = |c: &DocumentCore| {
+        c.hyperlinks_native(&target)
+            .unwrap()
+            .iter()
+            .map(|l| (l.start, l.end, l.text.clone()))
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![(6, 8, "인용".to_string())];
+    let reopened = roundtrips(&core);
+    for c in std::iter::once(&core).chain(reopened.iter()) {
+        assert_eq!(links(c), expected);
+        assert_eq!(
+            footnotes(c),
+            vec![(1, "앞 각주".to_string()), (8, "출처 A".to_string())]
+        );
+    }
+    core.delete_footnote_native(0, 0, early).unwrap();
+    for c in std::iter::once(&core).chain(roundtrips(&core).iter()) {
+        assert_eq!(links(c), expected);
+        assert_eq!(footnotes(c), vec![(8, "출처 A".to_string())]);
+    }
+}

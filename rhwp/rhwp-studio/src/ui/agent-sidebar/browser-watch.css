@@ -1,0 +1,173 @@
+/* 페이지 감시 띠 — 대기 메시지 띠와 같은 떠 있는 면에 감시 하나가 한 줄이다. */
+.ag-watches {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0 12px 8px;
+  padding: 4px;
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  animation: ag-lift-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+.ag-watches[hidden] {
+  display: none;
+}
+
+.ag-watches-list {
+  max-height: calc(3 * 30px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.ag-watch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 2px 0 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-watch:hover,
+.ag-watch:focus-within {
+  background: var(--ag-hover);
+}
+
+.ag-watch-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ag-text-muted);
+}
+
+.ag-watch-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-watch-title:hover {
+  text-decoration: underline;
+}
+
+.ag-watch-meta {
+  flex: 0 0 auto;
+  color: var(--ag-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-watch-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-watch-cancel:hover:not(:disabled) {
+  background: var(--ag-pressed);
+  color: var(--ag-text);
+}
+
+.ag-watch-cancel:disabled {
+  color: var(--ag-text-disabled);
+}
+
+.ag-watches :is(a, button):focus-visible,
+.ag-watch-notice a:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* 대화 속 알림 — 시스템 줄처럼 조용하게, 바뀐 줄만 짧게 보인다. */
+.ag-watch-notice {
+  min-width: 0;
+  margin: 4px 0;
+  padding: 8px 10px;
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-watch-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ag-watch-notice-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ag-text);
+  font-weight: var(--ag-fw-medium);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-watch-notice-title:hover {
+  text-decoration: underline;
+}
+
+.ag-watch-notice-state {
+  flex: 0 0 auto;
+}
+
+.ag-watch-notice-diff {
+  margin: 6px 0 0;
+  padding: 0 0 0 20px;
+  list-style: none;
+}
+
+.ag-watch-notice-diff li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-watch-added::before,
+.ag-watch-removed::before {
+  display: inline-block;
+  width: 1.2em;
+  color: var(--ag-text-muted);
+}
+
+.ag-watch-added::before {
+  content: '+';
+}
+
+.ag-watch-removed {
+  color: var(--ag-text-muted);
+  text-decoration: line-through;
+}
+
+.ag-watch-removed::before {
+  content: '−';
+}
+
+.ag-watch-more {
+  color: var(--ag-text-muted);
+}

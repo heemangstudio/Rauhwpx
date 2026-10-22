@@ -3,6 +3,7 @@ import { installBrowserTabDrag } from './browser-tab-drag.ts';
 import { browserAddressURL } from './browser-search.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createBrowserCaptureMotion } from './browser-capture-motion.ts';
+import { createAgentCursor, viewportPointToDisplay, type AgentPointer } from './browser-agent-cursor.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
@@ -175,6 +176,7 @@ export function createWorkbenchBrowser(options: {
   placeholder.prepend(sleepingHama, placeholderTitle, placeholderText);
   const textInput = document.createElement('textarea'); textInput.className = 'ag-browser-ime'; textInput.setAttribute('aria-label', '브라우저 페이지에 입력'); textInput.autocomplete = 'off'; textInput.spellcheck = false;
   surface.append(image, placeholder, textInput); element.append(surface);
+  const agentCursor = createAgentCursor(surface); let agentCursorTab = '';
   const downloads = document.createElement('section'); downloads.className = 'ag-browser-downloads'; downloads.setAttribute('aria-label', '브라우저 다운로드'); downloads.setAttribute('role', 'dialog'); downloadsButton.setAttribute('aria-haspopup', 'dialog'); downloads.hidden = true; element.append(downloads);
   let passwordSaveTab = ''; let passwordSaveEpoch: number | undefined;
   const savePassword = button('이 페이지에서 입력하는 로그인 저장', '비밀번호 저장', () => {
@@ -766,6 +768,7 @@ export function createWorkbenchBrowser(options: {
     sleepingHama.hidden = !tab || !!frame || tab.status === 'crashed' || !!nativeProjection && !nativePending && !nativeError && tab.status === 'ready';
     wakeButton.hidden = !manuallySleeping;
     placeholder.hidden = Boolean(tab); image.hidden = !frame;
+    if (agentCursor.visible() && (!frame || tab?.tabId !== agentCursorTab)) agentCursor.hide();
     if (frame && frame.frameId !== selectedFrameId) { selectedFrameId = frame.frameId; image.src = `data:${frame.mimeType};base64,${frame.data}`; image.style.aspectRatio = `${frame.width} / ${frame.height}`; }
     if (!frame && selectedFrameId) { selectedFrameId = ''; image.removeAttribute('src'); }
     if (tab && !frame) { placeholder.hidden = false; placeholderTitle.textContent = manuallySleeping ? '탭이 잠들어 있습니다' : tab.status === 'crashed' ? '브라우저가 종료되었습니다' : '로딩중...'; placeholderText.textContent = tab.status === 'crashed' ? '상태를 새로 읽고 페이지를 다시 열어 주세요.' : tab.url; emptyOpen.hidden = true; }
@@ -852,6 +855,25 @@ export function createWorkbenchBrowser(options: {
       handle(controller.readFrame());
     },
     endAgentPreview,
+    /** 에이전트의 이동·클릭을 보이는 탭 위에 그린다. 네이티브 게스트 위는 데스크톱 표시 계층이 그린다. */
+    agentPointer(pointer: AgentPointer) {
+      const tab = controller.tab();
+      if (disposed || !visible || !tab || tab.tabId !== pointer.tabId) return;
+      if (controller.usesNativePresentation() || nativePopout) {
+        const native = nativeBrowserApi();
+        if (native?.pointer && (nativeTab === tab.tabId || nativePopout)) {
+          const durationMs = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : pointer.durationMs;
+          handle(native.pointer({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, x: pointer.x, y: pointer.y, phase: pointer.phase, durationMs }));
+        }
+        return;
+      }
+      const frame = controller.frame();
+      if (!frame || image.hidden || frame.tabId !== tab.tabId) { agentCursor.hide(); return; }
+      const box = surface.getBoundingClientRect(); const rect = image.getBoundingClientRect();
+      const at = viewportPointToDisplay(pointer, frame, { left: rect.left - box.left, top: rect.top - box.top, width: rect.width, height: rect.height });
+      if (!at) { agentCursor.hide(); return; }
+      agentCursorTab = tab.tabId; agentCursor.show(pointer, at);
+    },
     suspendShared() {
       const tab = controller.tab(); const mode = presentation.current();
       if (agentPreviewTab || tab?.scope !== 'global' || !mode || mode === 'popout') return null;
@@ -889,7 +911,7 @@ export function createWorkbenchBrowser(options: {
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
     float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
     async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
-    dispose() { stopAutofixSettings(); stalledAutofix?.dispose(); cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { agentCursor.dispose(); stopAutofixSettings(); stalledAutofix?.dispose(); cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

@@ -416,6 +416,10 @@ const SPECS: Record<string, ToolSpec> = {
     summary: (a) => join([para(a), quote(str(a['text']))]),
   },
   edit_footnote: { category: 'edit', label: '각주 수정', summary: (a) => quote(str(a['text'])) },
+  insert_hyperlink: {
+    category: 'edit', label: '하이퍼링크',
+    summary: (a) => join([quote(str(a['linkText']) || str(a['text'])), str(a['url'])]),
+  },
   set_bookmark: {
     category: 'edit',
     label: (a) => str(a['op']) === 'delete' ? '책갈피 삭제' : str(a['op']) === 'rename' ? '책갈피 이름 변경' : '책갈피 추가',
@@ -583,16 +587,20 @@ const SPECS: Record<string, ToolSpec> = {
   register_copy_layout_template: { category: 'other', label: '서식 틀 등록', summary: (a) => quote(str(a['name'])) },
 
   // 앱 브라우저
-  browser_status: { category: 'other', label: '브라우저 상태' },
-  browser_open: { category: 'other', label: '브라우저 열기', summary: (a) => host(str(a['url'])) },
+  browser_status: { category: 'other', label: '브라우저 상태', summary: (a) => typeof a['history'] === 'string' ? (a['history'].trim() ? `방문 기록 · ${quote(a['history'].trim())}` : '방문 기록') : '' },
+  browser_open: { category: 'other', label: (a) => Array.isArray(a['urls']) ? '여러 페이지 읽기' : '브라우저 열기', summary: (a) => Array.isArray(a['urls']) ? `${a['urls'].length}개` : host(str(a['url'])) },
   browser_close: { category: 'other', label: '브라우저 닫기' },
   browser_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
-  browser_snapshot: { category: 'other', label: '페이지 살펴보기' },
-  browser_click: { category: 'other', label: '페이지 요소 누르기' },
-  browser_type: { category: 'other', label: '페이지에 입력하기' },
+  browser_snapshot: { category: 'other', label: (a) => a['find'] ? '페이지에서 찾기' : '페이지 살펴보기', summary: (a) => a['find'] ? quote(str(a['find'])) : '' },
+  browser_click: { category: 'other', label: (a) => a['hover'] === true ? '요소 위에 올리기' : a['dragTo'] || a['dragBy'] ? '끌어서 옮기기' : '페이지 요소 누르기' },
+  browser_type: { category: 'other', label: (a) => typeof a['key'] === 'string' && a['text'] === undefined ? '키 누르기' : '페이지에 입력하기', summary: (a) => a['text'] === undefined ? str(a['key']) : '' },
+  // 예전 기록의 도구 이름(browser_type key·browser_fill_form 으로 합쳤다).
   browser_press: { category: 'other', label: '키 누르기', summary: (a) => str(a['key']) },
   browser_select: { category: 'other', label: '목록에서 고르기', summary: (a) => str(a['option']) },
   browser_upload: { category: 'other', label: '웹사이트에 파일 첨부', summary: (a) => Array.isArray(a['files']) ? `파일 ${a['files'].length}개` : '' },
+  browser_fill_form: { category: 'other', label: '양식 채우기', summary: (a) => Array.isArray(a['fields']) ? `${a['fields'].length}칸` : '' },
+  browser_dialog: { category: 'other', label: (a) => a['accept'] === true ? '대화상자 확인' : '대화상자 취소' },
+  browser_cite: { category: 'other', label: '인용 가져오기' },
   browser_scroll: { category: 'other', label: '페이지 스크롤' },
   browser_wait: { category: 'other', label: '페이지 기다리기' },
   browser_capture: { category: 'other', label: '페이지 캡처' },
@@ -604,6 +612,16 @@ const SPECS: Record<string, ToolSpec> = {
     summary: (a) => host(str(a['origin'])),
   },
   browser_fill_secret: { category: 'other', label: '비밀 값 입력' },
+  browser_watch: {
+    category: 'other',
+    label: '페이지 감시',
+    summary: (a) => a['action'] === 'create' ? host(str(a['url'])) : a['action'] === 'cancel' ? '끝내기' : '',
+  },
+  browser_recipe: {
+    category: 'other',
+    label: (a) => a['action'] === 'write' ? '사이트 사용법 저장' : a['action'] === 'delete' ? '사이트 사용법 삭제' : '사이트 사용법 읽기',
+    summary: (a) => host(str(a['site'])),
+  },
   request_secret: {
     category: 'other', label: '비밀 값 요청',
     summary: (a) => join([str(a['label']), Array.isArray(a['origins']) ? host(str(a['origins'][0])) : '']),

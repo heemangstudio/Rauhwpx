@@ -380,6 +380,11 @@ export function createMockBridge(
   ];
   /** 허브처럼 비밀 값 목록이 바뀌면 열린 설정에 알린다. */
   const secretsChanged = () => emit({ type: 'browser-event', event: { type: 'user-secrets-changed' } });
+  // 사이트 사용법 — 허브의 recipes.list 모양. 빈 계정 시나리오에서는 비운다.
+  const recipes = projectParams.get('browserAccounts') === 'empty' ? [] : [
+    { key: 'https://gov.kr', site: 'gov.kr', text: '민원 신청: 상단 \'민원\' → \'전체 민원\' → 검색창에 서비스명 입력.\n로그인은 간편인증 화면에서 사용자가 직접 합니다.', author: 'agent', updatedAt: Date.now() - 3_600_000 },
+    { key: 'https://hometax.go.kr', site: 'hometax.go.kr', text: '증명서 발급: 민원증명 → 사업자등록증명 → 발급 방법 \'인터넷\'. 팝업 차단을 끄라는 안내가 뜨면 확인을 누르면 됩니다.', author: 'agent', updatedAt: Date.now() - 86_400_000 },
+  ];
   /** 허브에 보낸 chat-link-document — 검사가 연결 순서와 대상을 읽는다. */
   const documentLinks: Array<{ threadId: string; documentId: string; documentName: string | null; createdByThread: string | null; running: boolean }> = [];
   /* 콘텍스트 창 흉내 — ?context=92 로 시작 사용률을 고른다. */
@@ -981,6 +986,13 @@ export function createMockBridge(
         return { secrets: structuredClone(secrets) } as R;
       }
       if (action === 'permissions.list') return { always: [...alwaysGrants] } as R;
+      if (action === 'recipes.list') return { recipes: structuredClone(recipes) } as R;
+      if (action === 'recipes.delete') {
+        const index = recipes.findIndex((entry) => entry.key === args?.['site']);
+        if (index >= 0) recipes.splice(index, 1);
+        emit({ type: 'browser-event', event: { type: 'site-recipes-changed' } });
+        return { deleted: index >= 0 } as R;
+      }
       if (action === 'permissions.revoke') {
         alwaysGrants = alwaysGrants.filter((capability) => capability !== args?.['capability']);
         return { always: [...alwaysGrants] } as R;

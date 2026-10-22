@@ -58,6 +58,15 @@
 .ag-root .ag-settings-page .ag-browser-site-block { height: 26px; padding: 0 9px; border: 1px solid var(--n-hairline-strong); border-radius: var(--ag-r-chip); background: transparent; color: var(--n-text-secondary); font: inherit; font-size: 12px; cursor: default; }
 .ag-root .ag-settings-page .ag-browser-site-block[aria-pressed="true"] { border-color: color-mix(in srgb, var(--ag-err) 40%, transparent); background: color-mix(in srgb, var(--ag-err) 10%, transparent); color: var(--ag-err); }
 .ag-browser-site-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ag-browser-recipes { display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; }
+.ag-browser-recipe { display: flex; align-items: flex-start; gap: 2px; border-radius: var(--ag-r-row); }
+.ag-browser-recipe:hover { background: var(--n-fill-hover); }
+.ag-root .ag-settings-page .ag-browser-recipe-row { display: flex; flex: 1 1 auto; align-items: flex-start; gap: 10px; min-width: 0; padding: 6px; border: 0; background: transparent; color: var(--n-text); font: inherit; text-align: left; cursor: default; }
+.ag-browser-recipe-row .ag-site-mark.ag-browser-provider-mark { --ag-site-mark-size: 28px; }
+.ag-browser-recipe-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ag-browser-recipe-text { display: -webkit-box; overflow: hidden; color: var(--n-text-secondary); font-size: 12px; line-height: 1.45; white-space: pre-line; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.ag-browser-recipe-row[aria-expanded="true"] .ag-browser-recipe-text { display: block; -webkit-line-clamp: unset; }
+.ag-browser-recipe > .ag-browser-icon-btn { margin: 4px 4px 0 0; }
 .ag-browser-site-add { display: flex; align-items: center; gap: 6px; }
 .ag-browser-site-add .ag-browser-site-add-field { display: flex; flex: 1; min-width: 0; margin: 0; }
 .ag-browser-site-add .ag-browser-site-add-field .ag-settings-input { flex: 1; width: 100%; min-width: 0; max-width: none; height: 32px; box-sizing: border-box; }

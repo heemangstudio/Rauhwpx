@@ -78,7 +78,23 @@ app.whenReady().then(async () => {
     assert.equal(await observed, 'alert');
     await responsive();
     assert.equal(await alert, 'continued');
-    assert.equal(await evaluate('confirm("Submit the fixture form?")'), false);
+    const serviceTab = async (tabId) => (await service.request(actor, 'status', {})).tabs.find(entry => entry.tabId === tabId);
+    const serviceDialog = async (tabId) => {
+      for (let attempt = 0; attempt < 60; attempt++) { const current = await serviceTab(tabId); if (current?.dialog) return current; await new Promise(resolve => setTimeout(resolve, 50)); }
+      throw new Error('The hub did not observe the website dialog');
+    };
+    // An agent tab's confirmation stays hidden and waits for the agent's answer.
+    observed = waitDialog();
+    const agentConfirm = evaluate('confirm("Submit the fixture form?")');
+    assert.equal(await observed, 'confirm');
+    await responsive();
+    let current = await serviceDialog(tab.tabId);
+    assert.deepEqual(current.dialog, { type: 'confirm', message: 'Submit the fixture form?' });
+    // Electron always shows its sheet; it stays parented to the editor and the agent's answer closes it.
+    assert.equal(tab.view.webContents.getOwnerBrowserWindow(), editor, 'A pending agent dialog keeps the editor as its async parent');
+    await assert.rejects(service.request(actor, 'snapshot', { tabId: tab.tabId }), { code: 'BROWSER_DIALOG_PENDING' });
+    await service.request(actor, 'dialog', { tabId: tab.tabId, accept: false, navigationEpoch: current.navigationEpoch, controllerEpoch: current.controllerEpoch });
+    assert.equal(await agentConfirm, false);
     assert.equal(await evaluate('document.getElementById("draft").value'), 'retained');
     report.agent = { startupAlertContinued: true, alertContinued: true, confirmCancelled: true, editorResponsive: true };
 
@@ -108,22 +124,29 @@ app.whenReady().then(async () => {
     assert.equal(await evaluate('finished'), 1);
     report.human = { hiddenStartupAlertParented: true, pendingUntilChoice: true, confirmAccepted: true, editorResponsive: true };
 
-    // An agent action on that same human tab must still cancel its own confirmation.
+    // An agent click on that same human tab returns its own confirmation instead of hanging; the agent answers it.
     const snapshot = await service.request(actor, 'snapshot', { tabId: tab.tabId });
-    await service.request(actor, 'click', { tabId: tab.tabId, snapshotId: snapshot.snapshot.snapshotId,
+    const clicked = await service.request(actor, 'click', { tabId: tab.tabId, snapshotId: snapshot.snapshot.snapshotId,
       navigationEpoch: snapshot.tab.navigationEpoch, controllerEpoch: snapshot.tab.controllerEpoch,
       ref: snapshot.snapshot.outline.split('\n').find(line => line.includes('"Submit"')).match(/\[ref=([^\]]+)\]/)[1] });
+    assert.deepEqual(clicked.dialog, { type: 'confirm', message: 'Submit the fixture form?', pending: true });
+    await service.request(actor, 'dialog', { tabId: tab.tabId, accept: false, navigationEpoch: snapshot.tab.navigationEpoch, controllerEpoch: snapshot.tab.controllerEpoch });
     assert.equal(await evaluate('submissions'), 1);
     assert.equal(await evaluate('finished'), 2);
 
-    // A pending human dialog is canceled when new agent work takes over the page.
+    // A pending human dialog stays with the user; agent work reports it without answering.
     observed = waitDialog();
-    const cancelled = evaluate('confirm("Pending human fixture choice")');
+    const humanChoice = evaluate('confirm("Pending human fixture choice")');
     assert.equal(await observed, 'confirm');
     await responsive();
+    current = await serviceDialog(tab.tabId);
+    assert.equal(current.dialog.owner, 'user');
+    await assert.rejects(service.request(actor, 'snapshot', { tabId: tab.tabId }), (failure) => failure.code === 'BROWSER_DIALOG_PENDING' && /user/.test(failure.message));
+    await assert.rejects(service.request(actor, 'dialog', { tabId: tab.tabId, accept: true, navigationEpoch: current.navigationEpoch, controllerEpoch: current.controllerEpoch }), { code: 'BROWSER_USER_CONTROL' });
+    await tab.view.webContents.debugger.sendCommand('Page.handleJavaScriptDialog', { accept: false });
+    assert.equal(await humanChoice, false);
     await service.request(actor, 'snapshot', { tabId: tab.tabId });
-    assert.equal(await cancelled, false);
-    report.shared = { agentCancelledOwnDialog: true, takeoverCancelledPendingDialog: true };
+    report.shared = { agentAnsweredOwnDialog: true, userDialogLeftToUser: true };
 
     // Every presentation returns to the same owner before hidden scripts can run.
     for (const mode of ['dock', 'float', 'popout']) {

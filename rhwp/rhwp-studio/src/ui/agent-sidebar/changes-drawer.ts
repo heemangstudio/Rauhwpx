@@ -166,7 +166,7 @@ function pendingObjectDetail(op: PendingOp): string {
     case 'paraFormat': return '문단 서식 변경';
     case 'applyStyle': return '문단 스타일 적용';
     case 'pageLayout': return '쪽 설정 변경';
-    case 'engineBatch': return `엔진 편집 ${obj.methods.length}개 · ${[...new Set(obj.methods)].slice(0, 3).join(', ')}`;
+    case 'engineBatch': return obj.label ?? `엔진 편집 ${obj.methods.length}개 · ${[...new Set(obj.methods)].slice(0, 3).join(', ')}`;
     case 'headerFooter': {
       const kind = obj.isHeader ? '머리말' : '꼬리말';
       const preview = obj.lines.filter((line) => line.length > 0).join(' / ');

@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrivateBrowserCdp, protectedUrl } from './browser-cdp.mjs';
+import { AgentCursorOverlay, readAgentPointer } from './browser-agent-cursor.mjs';
 
 const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', import.meta.url));
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
@@ -401,6 +402,8 @@ export class OwnedBrowserHost {
     tab.activityQueue = (tab.activityQueue ?? Promise.resolve()).catch(() => {}).then(async () => {
       const contents = tab.view.webContents;
       if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
+      // 열린 페이지 대화상자는 렌더러를 멈춰 이 명령이 돌아오지 않는다. 에이전트가 대화상자에 답할 수 있게 닫힐 때까지 미룬다.
+      if (tab.dialogOpen) { tab.activitySyncDeferred = true; return; }
       await contents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: !!tab.activityLeases?.size });
     });
     return tab.activityQueue;
@@ -515,6 +518,17 @@ export class OwnedBrowserHost {
     if (focus === true && tab.interactive && visible && !tab.view.webContents.isFocused()) tab.view.webContents.focus();
     if (placementChanged || inputChanged) this.emit(tab, 'presentation');
     return this.state(tab);
+  }
+
+  // 에이전트 커서는 지금 보이는 게스트 위에만 그린다. 숨은 탭이나 다른 대상이면 그리지 않는다.
+  pointer(window, { tabId, expectedTargetId, ...payload } = {}) {
+    const tab = this.ownedTab(tabId, window);
+    const pointer = readAgentPointer(payload);
+    const host = tab.placement?.window;
+    if (!pointer || (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) || !host || host.isDestroyed()
+      || host.isVisible?.() === false || !tab.view.getVisible() || tab.view.webContents.isDestroyed()) return { shown: false };
+    this.agentCursor ??= new AgentCursorOverlay({ WebContentsView: this.WebContentsView });
+    return { shown: this.agentCursor.show({ window: host, tab, bounds: tab.view.getBounds(), zoomFactor: tab.view.webContents.getZoomFactor(), ...pointer }) };
   }
 
   // 띄운 페이지는 같은 창의 다른 게스트(사이드바) 위에 있어야 한다.
@@ -666,6 +680,7 @@ export class OwnedBrowserHost {
   onJavaScriptDialog(tab, method) {
     if (tab.closing || tab.view.webContents.isDestroyed() || this.tabs.get(tab.targetId) !== tab) return;
     if (method === 'Page.javascriptDialogOpening') {
+      tab.dialogOpen = true;
       if (tab.placement || !tab.sessionId) return;
       const window = this.getWindowForSession(tab.sessionId);
       if (!window || window.isDestroyed() || window.id !== tab.windowId) return;
@@ -676,6 +691,9 @@ export class OwnedBrowserHost {
       tab.parkingWindow = window;
       tab.dialogParking = { window, targetId: tab.targetId, generation: this.generation };
     } else if (method === 'Page.javascriptDialogClosed') {
+      tab.dialogOpen = false;
+      // 대화상자가 열린 동안 미룬 포커스 흉내를 지금 맞춘다.
+      if (tab.activitySyncDeferred) { tab.activitySyncDeferred = false; void this.syncActivity(tab).catch(() => {}); }
       const parking = tab.dialogParking;
       tab.dialogParking = null;
       if (!parking || tab.placement || tab.parkingWindow !== parking.window
@@ -686,6 +704,7 @@ export class OwnedBrowserHost {
 
   unplace(tab) {
     tab.lastHiddenAt = Date.now();
+    this.agentCursor?.hideTab(tab);
     const placement = tab.placement;
     if (placement && !placement.window.isDestroyed()) placement.window.contentView.removeChildView(tab.view);
     if (tab.parkingWindow && !tab.parkingWindow.isDestroyed()) tab.parkingWindow.contentView.removeChildView(tab.view);
@@ -1150,6 +1169,7 @@ export class OwnedBrowserHost {
     await this.cdp.close();
     if (this.session) { this.session.flushStorageData(); await this.session.cookies.flushStore(); }
     for (const tab of new Set([...this.tabs.values(), ...this.pendingTabs])) this.closeGuest(tab);
+    this.agentCursor?.dispose();
     if (this.parkingWindow && !this.parkingWindow.isDestroyed()) this.parkingWindow.destroy();
     this.parkingWindow = null;
     this.owner = null;

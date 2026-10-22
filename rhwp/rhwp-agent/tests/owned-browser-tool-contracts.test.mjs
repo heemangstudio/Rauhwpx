@@ -10,7 +10,7 @@ import { createOwnedBrowserService } from '../owned-browser-service.mjs';
 import { inspectOwnedBrowserRuntime, startOwnedBrowserRuntime } from '../owned-browser-runtime.mjs';
 
 const actor = { threadId: 'contract-chat', agentId: 'contract-agent' };
-const call = (browser, name, input) => browser.request(actor, name.slice('browser_'.length), z.object(TOOL_DEFINITIONS.find(tool => tool.name === name).shape).parse(input));
+const call = (browser, name, input) => browser.request(actor, name.slice('browser_'.length).replaceAll('_', '-'), z.object(TOOL_DEFINITIONS.find(tool => tool.name === name).shape).parse(input));
 const refOf = (snapshot, name) => snapshot.outline.split('\n').find(line => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1];
 const target = (observation, name) => ({ tabId: observation.snapshot.tabId, snapshotId: observation.snapshot.snapshotId, navigationEpoch: observation.snapshot.navigationEpoch, controllerEpoch: observation.snapshot.controllerEpoch, ref: refOf(observation.snapshot, name) });
 const refs = observation => target(observation, 'Query');
@@ -161,17 +161,18 @@ test('actions settle and return only what changed: navigation, new tabs and dial
   await assert.rejects(call(f.browser, 'browser_click', target(fetched, 'Go next')), { code: 'BROWSER_STALE_NAVIGATION' });
 });
 
-test('browser_select chooses enabled native options by label or value', async t => {
+test('browser_fill_form chooses enabled native options by label or value', async t => {
   const form = '<label>Size<select id="size"><option value="s">Small</option><option value="m">Medium</option><option value="l" disabled>Large</option></select></label><button>Not a list</button>';
   const f = await fixture(t, { start: '/form', '/form': form }); if (!f) return;
   const observed = await call(f.browser, 'browser_snapshot', { tabId: f.tabId });
-  const chosen = await call(f.browser, 'browser_select', { ...target(observed, 'Size'), option: 'Medium' });
-  assert.equal(chosen.ok, true);
+  const { ref: _ref, ...identity } = target(observed, 'Size');
+  const choose = (name, value) => call(f.browser, 'browser_fill_form', { ...identity, fields: [{ ref: refOf(observed.snapshot, name), value }] });
+  assert.equal((await choose('Size', 'Medium')).fields[0].ok, true);
   assert.equal(await f.page.$eval('#size', el => el.value), 'm');
-  await call(f.browser, 'browser_select', { ...target(observed, 'Size'), option: 's' });
+  await choose('Size', 's');
   assert.equal(await f.page.$eval('#size', el => el.value), 's');
-  await assert.rejects(call(f.browser, 'browser_select', { ...target(observed, 'Size'), option: 'Large' }), { code: 'BROWSER_OPTION_NOT_FOUND' });
-  await assert.rejects(call(f.browser, 'browser_select', { ...target(observed, 'Not a list'), option: 'Small' }), { code: 'BROWSER_NOT_SELECTABLE' });
+  assert.equal((await choose('Size', 'Large')).fields[0].error.code, 'BROWSER_OPTION_NOT_FOUND');
+  assert.equal((await choose('Not a list', 'Small')).fields[0].error.code, 'BROWSER_NOT_EDITABLE');
   const after = await call(f.browser, 'browser_snapshot', { tabId: f.tabId, scope: refOf(observed.snapshot, 'Size') });
   assert.match(after.snapshot.outline, /combobox "Size" \[ref=[^\]]+\]: Small/);
 });

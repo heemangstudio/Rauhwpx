@@ -193,6 +193,13 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     if (!actor.isHuman && tab.controller.held && ['navigate', 'click', 'type', 'press', 'scroll', 'close'].includes(action)) throw Object.assign(new Error('The user is controlling this tab. Wait for them to return control, or continue without it.'), { code: 'BROWSER_USER_CONTROL' });
     if (!actor.isHuman) emit({ type: 'owned_browser_activity', active: true, tab: structuredClone(tab), runtime: runtime() });
     if (args.navigationEpoch !== undefined && args.navigationEpoch !== tab.navigationEpoch) throw Object.assign(new Error('페이지가 바뀌었습니다. 다시 캡처해 주세요.'), { code: 'STALE_NAVIGATION' });
+    // 허브처럼 에이전트 클릭은 커서를 먼저 옮기고, 누름이 보인 뒤에 실행한다. 기본 위치는 미리보기 페이지의 버튼이다.
+    if (!actor.isHuman && action === 'click') {
+      const x = typeof args.x === 'number' ? args.x : 230; const y = typeof args.y === 'number' ? args.y : 505;
+      emit({ type: 'owned_browser_pointer', tab: structuredClone(tab), x, y, phase: 'move', durationMs: 160, runtime: runtime() });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      emit({ type: 'owned_browser_pointer', tab: structuredClone(tab), x, y, phase: 'click', durationMs: 0, runtime: runtime() });
+    }
     if (action === 'close') { tabs = tabs.filter((row) => row !== tab); changed(); return { ok: true }; }
     if (action === 'control') {
       if (!actor.isHuman) throw Object.assign(new Error('Only the user can transfer browser control.'), { code: 'BROWSER_HUMAN_REQUIRED' });

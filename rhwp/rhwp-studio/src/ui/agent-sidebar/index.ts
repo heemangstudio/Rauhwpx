@@ -210,6 +210,7 @@ import { createDocumentLinkToggle } from './document-link-toggle.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
 import { browserPopupDestination } from './browser-controller.ts';
+import { readAgentPointer } from './browser-agent-cursor.ts';
 import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
@@ -262,6 +263,8 @@ import type { MentionDocument } from './mention-picker.ts';
 import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
 import { csvRangeFile, readCsvRangeDrag, readProjectItemDrag, transferHasCsvRange, transferHasProjectItem } from './project/project-drag.ts';
 import { createFollowUpStrip } from './follow-up-strip.ts';
+import { createBrowserWatchStrip, renderWatchNotice } from './browser-watch-strip.ts';
+import { normalizeWatchNotice, normalizeWatchSummaries, watchNoticeFallbackText } from '../../agent/browser-watch-notices.ts';
 import {
   createFollowUpController,
   type ComposedMessageOrigin,
@@ -4323,6 +4326,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     onEditCommit: (id, text, viaKey) => followUps.commitEdit(id, text, viaKey),
     onEditCancel: (id) => followUps.cancelEdit(id),
   });
+  // 페이지 감시 — 이 채팅이 맡긴 감시를 대기 메시지 띠 위에 한 줄씩 보인다.
+  let watchListSequence = 0;
+  const watchStrip = createBrowserWatchStrip({
+    onCancel: (watchId) => {
+      void bridge.requestBrowser('watch.cancel', { watchId })
+        .catch((error) => {
+          showToast({ message: `감시를 끝내지 못했습니다: ${readableIpcError(error)}`, durationMs: 4000 });
+          void refreshWatchStrip();
+        });
+    },
+  });
   const followUps = createFollowUpController<ThreadMessage, HTMLElement>({
     strip: followUpStrip,
     thread: () => currentThread,
@@ -4375,7 +4389,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, followUpStrip.root];
+  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -4414,7 +4428,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reroll: threadChanged,
     });
   }
-  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, followUpStrip.root, questionController.root, composer);
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
   const scrollRail = createChatScrollRail({ messages, scrollToTurn: scrollConversationToTurn });
 
@@ -5106,7 +5120,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     syncWorkbenchResources();
   }
 
-  routeChatBrowserLinks(messages, async (url) => {
+  const openChatLink = async (url: string): Promise<void> => {
     const browser = ensureWorkbenchBrowser();
     await browser.controller.refresh();
     const existing = browser.controller.state.tabs.find(tab => tab.url === url);
@@ -5116,7 +5130,57 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbench?.select('browser');
       browser.dock();
     } else browser.float();
-  }, (error) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 }));
+  };
+  const chatLinkError = (error: unknown) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
+  routeChatBrowserLinks(messages, openChatLink, chatLinkError);
+  routeChatBrowserLinks(watchStrip.root, openChatLink, chatLinkError);
+
+  // ── 페이지 감시 ─────────────────────────────────
+  async function refreshWatchStrip(): Promise<void> {
+    const sequence = ++watchListSequence;
+    const threadId = currentThread.id;
+    if (bridge.getConnectionState() !== 'connected') { watchStrip.render([]); return; }
+    try {
+      const result = await bridge.requestBrowser<{ watches?: unknown }>('watch.list', { threadId });
+      if (sequence === watchListSequence && currentThread.id === threadId) watchStrip.render(normalizeWatchSummaries(result.watches));
+    } catch { /* 감시를 모르는 허브 — 띠를 비운 채 둔다. */ }
+  }
+  /** 감시 알림을 그 채팅 기록에 넣고 허브에 받았다고 알린다. 보관·삭제한 채팅이면 그 채팅의 감시를 끝낸다. */
+  async function receiveWatchNotice(raw: unknown): Promise<void> {
+    const notice = normalizeWatchNotice(raw);
+    const threadId = raw && typeof raw === 'object' ? (raw as { threadId?: unknown }).threadId : null;
+    if (!notice || typeof threadId !== 'string' || !threadId) return;
+    await waitForThreadsPersistence();
+    if (root.dataset.disposed === 'true') return;
+    const message: ThreadMessage = { role: 'system', kind: 'watch', text: watchNoticeFallbackText(notice), watch: notice, messageId: notice.noticeId };
+    if (threadId === currentThread.id && !draftChat) {
+      if (!currentThread.messages.some((item) => item.messageId === notice.noticeId)) {
+        currentThread.messages.push(message);
+        persistCurrentThread();
+        withAutoScroll(() => appendConversation(renderWatchNotice(notice)));
+      }
+    } else {
+      const thread = getThread(threadId);
+      if (!thread || thread.archivedAt !== undefined) {
+        void bridge.requestBrowser('watch.endThread', { threadId }).catch(() => {});
+      } else if (!thread.messages.some((item) => item.messageId === notice.noticeId)) {
+        thread.messages.push(message);
+        upsertThread(thread);
+      }
+    }
+    void bridge.requestBrowser('watch.ack', { noticeIds: [notice.noticeId] }).catch(() => {});
+  }
+  const unsubscribeBrowserWatches = bridge.onBrowserEvent((event) => {
+    if (event.type === 'owned_browser_watch_notice') void receiveWatchNotice(event.notice);
+    else if (event.type === 'owned_browser_watches' && event.threadId === currentThread.id) watchStrip.render(normalizeWatchSummaries(event.watches));
+  });
+  const unsubscribeWatchConnection = bridge.onEvent((event) => {
+    if (event.type === 'connection' && event.state === 'connected') void refreshWatchStrip();
+  });
+  /** 보관하거나 지운 채팅은 감시를 이어 가지 않는다. */
+  function endThreadWatches(threadId: string): void {
+    void bridge.requestBrowser('watch.endThread', { threadId }).catch(() => {});
+  }
 
   let browserActivation = 0;
   function restoreSharedBrowser(): void {
@@ -5146,6 +5210,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   const unsubscribeAgentBrowserPreview = bridge.onBrowserEvent((event) => {
     const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+    // 에이전트 커서는 이미 그 탭을 보여 주는 화면에만 그린다. 커서 때문에 브라우저를 새로 열지 않는다.
+    const pointer = readAgentPointer(data);
+    if (pointer) { (floatingBrowser && pointer.tabId === floatingBrowserTab ? floatingBrowser : workbenchBrowser)?.agentPointer(pointer); return; }
     // 떠 있는 화면에서도 새 링크의 실제 게스트를 선택한다. 사이드바의 다른 페이지는 유지한다.
     const destination = floatingBrowser && browserPopupDestination(data, floatingBrowserTab);
     if (floatingBrowser && destination) {
@@ -5547,7 +5614,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     reviewResize.inert = !canResizeDetail;
     if (focusLayoutActive) {
       chatPage.setAttribute('aria-hidden', 'false');
-      if (composer.parentElement !== chatPage) chatPage.append(followUpStrip.root, questionController.root, composer);
+      if (composer.parentElement !== chatPage) chatPage.append(watchStrip.root, followUpStrip.root, questionController.root, composer);
     }
     applyPlanMinimizedState();
   }
@@ -5752,7 +5819,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     threadsPage.setAttribute('aria-hidden', 'true');
     chatPage.setAttribute('aria-hidden', 'false');
     // 변경 검토·계획·질문·입력기는 다시 사이드바의 분리된 inline 흐름으로 돌아간다.
-    chatPage.append(review, compactChanges, planSurface, planRestore, followUpStrip.root, questionController.root, composer);
+    chatPage.append(review, compactChanges, planSurface, planRestore, watchStrip.root, followUpStrip.root, questionController.root, composer);
     changesDrawer.setCompactHost(compactChangesHost());
     updateCompactChangesVisibility();
     applyPlanMinimizedState();
@@ -8026,6 +8093,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (msg.role === 'user') return renderUserMessage(msg);
     // 실패 알림은 흐름에 남는다 — 접힘으로 옮기는 작업 메시지가 아니다.
     if (msg.kind === 'error') return failureNotices.mount(msg);
+    if (msg.kind === 'watch') return renderWatchNotice(msg.watch);
     if (msg.role !== 'assistant') return el('div', 'ag-msg ag-msg-system', msg.text);
     const agent = msg.agent ?? thread.agent;
     if (msg.kind === 'user-question') return renderUserQuestionHistory(msg, interruption);
@@ -8046,6 +8114,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function renderMessagesFromThread(thread: ChatThread): void {
     scheduleWorkbenchAgents();
+    void refreshWatchStrip();
     // 다른 채팅으로 옮기면 고르던 모드는 버린다.
     if (keyboardModeTimer !== null) window.clearTimeout(keyboardModeTimer);
     keyboardModeTimer = null;
@@ -8230,6 +8299,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       thread.id !== leavingThreadId && getChatStatus(thread.id) === 'working'
     ));
     for (const id of removed) {
+      endThreadWatches(id);
       planArchives.delete(id);
       threadWorkflows.delete(id);
       clearChatStatus(id);
@@ -8344,6 +8414,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // startNewChat 이 현재 채팅을 저장하므로, 삭제는 빠져나온 뒤에 한다.
     if (thread.id === currentThread.id) startNewChat({ silent: true });
     removeThread(thread.id);
+    endThreadWatches(thread.id);
     planArchives.delete(thread.id);
     threadWorkflows.delete(thread.id);
     clearChatStatus(thread.id);
@@ -8383,6 +8454,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       draftReturnThreadId = null;
     }
     archiveThread(thread.id);
+    endThreadWatches(thread.id);
     rebuildThreadsList();
     return true;
   }
@@ -13811,6 +13883,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbenchAgents?.dispose();
       unsubscribeSharedBrowser();
       unsubscribeAgentBrowserPreview();
+      unsubscribeBrowserWatches();
+      unsubscribeWatchConnection();
       ++floatingBrowserSequence; floatingBrowser?.dispose(); floatingBrowserHost?.remove();
       workbenchBrowser?.dispose();
       workbench?.dispose();
