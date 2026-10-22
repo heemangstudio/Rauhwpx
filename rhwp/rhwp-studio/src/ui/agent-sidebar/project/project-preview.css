@@ -250,18 +250,6 @@
   color: var(--ag-text);
 }
 
-/* CSV 칸을 고르면 참고 도구가 고른 칸과 같은 빛으로 밝아진다. */
-.ag-pp-clip-tool.ag-pp-csv-ready {
-  background: color-mix(in srgb, var(--ag-accent) 22%, transparent);
-  color: var(--ag-text);
-}
-
-.ag-pp-clip-tool.ag-pp-csv-ready:hover:not(:disabled),
-.ag-pp-clip-tool.ag-pp-csv-ready.ag-active {
-  background: color-mix(in srgb, var(--ag-accent) 34%, transparent);
-  color: var(--ag-text);
-}
-
 /* JSON 같은 구조 텍스트는 고정폭으로 들여쓰기를 살린다. */
 .ag-pp-reader-code {
   font-family: var(--ag-mono);

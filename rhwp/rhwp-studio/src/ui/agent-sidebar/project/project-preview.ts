@@ -247,7 +247,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   }
 
   /**
-   * CSV 표 머리에 참고 도구를 단다. 칸을 고르면 도구가 밝아지고, 누르면 메모를 달 수 있는 상자가 뜨고,
+   * CSV 표 머리에 참고 도구를 단다. 칸을 고르면 도구가 켜지고, 누르면 메모를 달 수 있는 상자가 뜨고,
    * 저장하면 원본으로 이어진 노트(메모 + Markdown 표)를 남겨 열린 채팅 입력창에 멘션으로 붙인다.
    */
   function mountCsvCapture(projectId: string, source: ProjectFileItem, csv: CsvTableView): void {
@@ -274,13 +274,11 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     let saving = false;
     const sync = () => {
       tool.disabled = saved || !csv.range.current();
-      tool.classList.toggle('ag-pp-csv-ready', !tool.disabled);
     };
     const close = (restoreFocus: boolean) => {
       if (box.hidden) return;
       box.hidden = true;
       tool.setAttribute('aria-expanded', 'false');
-      tool.classList.remove('ag-active');
       if (restoreFocus) csv.scroller.focus({ preventScroll: true });
     };
     csv.range.onChange((range) => {
@@ -299,7 +297,6 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       heading.textContent = range.ref;
       box.hidden = false;
       tool.setAttribute('aria-expanded', 'true');
-      tool.classList.add('ag-active');
       comment.focus();
     });
     cancel.addEventListener('click', () => close(true));
