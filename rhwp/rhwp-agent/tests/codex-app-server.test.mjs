@@ -839,6 +839,53 @@ test('interrupt uses turn/interrupt and settles the native turn once', async (t)
   await h.session.dispose();
 });
 
+test('steer adds the message to the running turn with turn/steer and keeps the app-server running', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder: (frame, process) => {
+      if (frame.method === 'turn/steer') return reply({ turnId: frame.params.expectedTurnId })(frame, process);
+      return base(frame, process);
+    },
+  });
+  h.session.sendUserMessage('Draft the report');
+  await settle();
+  assert.equal(await h.session.steer('Add a summary table too'), true);
+  const steer = h.spawns[0].process.frames.find((frame) => frame.method === 'turn/steer');
+  assert.deepEqual(steer.params, {
+    threadId: 'thread-native',
+    expectedTurnId: 'turn-native',
+    input: [{ type: 'text', text: 'Add a summary table too' }],
+  });
+  assert.equal(h.spawns[0].process.signalCode, null, 'steering must not stop the app-server and its subagent threads');
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 0);
+  h.spawns[0].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle();
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  assert.equal(await h.session.steer('Too late'), false, 'a finished turn cannot take a steer');
+  await h.session.dispose();
+});
+
+test('a steer Codex refuses reports false so the hub can stop and resend', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder: (frame, process) => {
+      if (frame.method === 'turn/steer') {
+        process.send({ id: frame.id, error: { code: -32600, message: 'active turn is not steerable' } });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+  h.session.sendUserMessage('Draft the report');
+  await settle();
+  assert.equal(await h.session.steer('Add more'), false);
+  assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 0);
+  await h.session.dispose();
+});
+
 test('Stop during startup negotiation never re-sends the stopped prompt through legacy exec', async (t) => {
   const base = appServerResponder();
   let firstProcess = null;

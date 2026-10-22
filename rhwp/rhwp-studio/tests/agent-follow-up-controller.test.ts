@@ -10,7 +10,10 @@ import type { FollowUpAttachments, FollowUpItem, ThreadFollowUps } from '../src/
 
 interface Sent { item: FollowUpItem; resolve(value: string | null): void }
 
-function harness(opts: { errorSeen?: () => boolean } = {}) {
+function harness(opts: {
+  errorSeen?: () => boolean;
+  steer?: (item: FollowUpItem) => Promise<boolean> | null;
+} = {}) {
   const thread: { followUps?: ThreadFollowUps } = {};
   const sent: Sent[] = [];
   const unsent: string[] = [];
@@ -51,6 +54,7 @@ function harness(opts: { errorSeen?: () => boolean } = {}) {
     onChange: () => {},
     now: () => 100,
     ...(opts.errorSeen ? { errorSeen: opts.errorSeen } : {}),
+    ...(opts.steer ? { steer: opts.steer } : {}),
   });
   const flush = () => new Promise<void>((done) => setImmediate(done));
   return {
@@ -605,4 +609,82 @@ test('a stop pressed while a queued message waits for its turn holds the rest as
   dropped.start();
   await dropped.end('end_turn');
   assert.deepEqual(dropped.sent.map((entry) => entry.item.text), ['A', 'A', 'B'], 'the next turn is not treated as stopped');
+});
+
+/** 끼워 넣기 — 검사가 허브의 답(받음·거절)을 직접 정한다. */
+function steering() {
+  const calls: Array<{ item: FollowUpItem; resolve(accepted: boolean): void }> = [];
+  return {
+    calls,
+    steer: (item: FollowUpItem) => new Promise<boolean>((resolve) => { calls.push({ item, resolve }); }),
+  };
+}
+
+test('send now while running steers the item into the turn without stopping it', async () => {
+  const steer = steering();
+  const h = harness({ steer: steer.steer });
+  h.start();
+  queue(h, 'A', 'B');
+  h.controller.sendNow(h.thread.followUps!.items[1]!.id);
+  assert.deepEqual(steer.calls.map((call) => call.item.text), ['B']);
+  assert.equal(h.interrupts(), 0, 'the turn and its subagents keep running while the hub answers');
+  steer.calls[0]!.resolve(true);
+  await h.flush();
+  assert.equal(h.interrupts(), 0);
+  assert.deepEqual(h.texts(), ['A'], 'the steered item left the queue for the conversation');
+  assert.equal(h.sent.length, 0, 'it is not sent again as a new turn');
+  await h.end('end_turn');
+  assert.deepEqual(h.sent.map((entry) => entry.item.text), ['A'], 'the rest of the queue drains after the steered turn');
+});
+
+test('a refused steer stops the turn and sends the item when it ends', async () => {
+  const steer = steering();
+  const h = harness({ steer: steer.steer });
+  h.start();
+  queue(h, 'A');
+  h.controller.sendNow(h.thread.followUps!.items[0]!.id);
+  steer.calls[0]!.resolve(false);
+  await h.flush();
+  assert.equal(h.interrupts(), 1);
+  await h.end('interrupted');
+  assert.deepEqual(h.sent.map((entry) => entry.item.text), ['A']);
+  assert.equal(h.hold(), null);
+});
+
+test('a turn that ends while the steer is pending sends the item once', async () => {
+  const steer = steering();
+  const h = harness({ steer: steer.steer });
+  h.start();
+  queue(h, 'A', 'B');
+  h.controller.sendNow(h.thread.followUps!.items[1]!.id);
+  await h.end('end_turn');
+  assert.deepEqual(h.sent.map((entry) => entry.item.text), ['B'], 'the pending send now wins at the turn end');
+  steer.calls[0]!.resolve(false);
+  await h.flush();
+  assert.equal(h.interrupts(), 0, 'the refused steer does not stop the new turn');
+  assert.deepEqual(h.sent.map((entry) => entry.item.text), ['B']);
+  assert.deepEqual(h.texts(), ['A']);
+});
+
+test('items the provider cannot steer stop the turn as before', async () => {
+  const h = harness({ steer: () => null });
+  h.start();
+  queue(h, 'A');
+  h.controller.sendNow(h.thread.followUps!.items[0]!.id);
+  assert.equal(h.interrupts(), 1);
+});
+
+test('stop pressed while a steer is pending leaves a refused item queued and held', async () => {
+  const steer = steering();
+  const h = harness({ steer: steer.steer });
+  h.start();
+  queue(h, 'A');
+  h.controller.sendNow(h.thread.followUps!.items[0]!.id);
+  h.controller.noteUserStop();
+  steer.calls[0]!.resolve(false);
+  await h.flush();
+  assert.equal(h.interrupts(), 0, 'the user stop wins over the resend');
+  await h.end('interrupted');
+  assert.deepEqual(h.texts(), ['A']);
+  assert.equal(h.hold(), 'stopped');
 });

@@ -1513,6 +1513,27 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         throw error;
       }
     },
+    /**
+     * 도는 턴에 사용자 메시지를 끼워 넣는다(turn/steer). 턴을 끊지 않으므로 서브에이전트 스레드가 그대로
+     * 돈다. 끼울 수 없으면 false — 허브가 중지 뒤 다시 보내기로 넘긴다. legacy exec 는 끼우지 못한다.
+     */
+    async steer(text) {
+      if (fallback || disposed || !turnOpen || turnKind !== 'message' || interruptRequested) return false;
+      const turnId = activeTurnId;
+      const connection = rpc;
+      if (!threadId || !turnId || settlingTurnId === turnId || !connection || connection.closed) return false;
+      try {
+        const response = await connection.request('turn/steer', {
+          threadId,
+          expectedTurnId: turnId,
+          input: [{ type: 'text', text }],
+        });
+        return String(response?.turnId ?? '') === turnId && turnOpen && activeTurnId === turnId;
+      } catch (error) {
+        process.stderr.write(`[codex] turn/steer rejected: ${redactDiagnosticText(error?.message ?? error, [opts.token])}\n`);
+        return false;
+      }
+    },
     interrupt() {
       if (fallback) return fallback.interrupt();
       if (disposed) return;

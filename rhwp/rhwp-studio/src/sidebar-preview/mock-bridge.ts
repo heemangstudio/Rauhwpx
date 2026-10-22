@@ -309,6 +309,12 @@ export function createMockBridge(
   let rejectNext: string | null = null;
   let interrupts = 0;
   let stops = 0;
+  /** 허브가 끼워 넣기(chat-steer)를 안다 — 검사가 켠다. 꺼 두면 지금 보내기는 예전처럼 멈추고 보낸다. */
+  let steerSupported = false;
+  /** 다음 끼워 넣기를 공급자가 거절한다(STEER_UNAVAILABLE). */
+  let rejectNextSteer = false;
+  /** 도는 턴에 끼워 넣은 메시지. */
+  const steers: string[] = [];
   let threadId = '';
   let chatDocumentId: string | null = null;
   /** The chat whose session the mock hub holds; null before a start and after a stop. */
@@ -2016,6 +2022,22 @@ export function createMockBridge(
         finish();
       }),
     releaseSteerCarryOver: () => {},
+    canSteer: () => steerSupported && running,
+    steerUserMessage: (text: string) => new Promise<boolean>((resolve) => {
+      // 허브 왕복처럼 한 박자 뒤에 답한다. 그 사이 턴이 끝났으면 끼우지 못한다.
+      const turn = generation;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        if (!steerSupported || !running || turn !== generation || rejectNextSteer) {
+          rejectNextSteer = false;
+          resolve(false);
+          return;
+        }
+        steers.push(text);
+        resolve(true);
+      }, 30);
+      timers.add(timer);
+    }),
     interrupt: () => {
       interrupts += 1;
       generation++;
@@ -2192,6 +2214,10 @@ export function createMockBridge(
     restartHub,
     /** 멈춘 턴의 끝을 바로 보내지 않는다(실제 허브처럼 나중에 온다). */
     setLateTurnEnd: (value: boolean) => { lateTurnEnd = value; },
+    /** 허브가 끼워 넣기를 안다(chat-steer). */
+    setSteerSupported: (value: boolean) => { steerSupported = value; },
+    /** 다음 끼워 넣기를 공급자가 거절한다 — 지금 보내기가 멈추고 보내기로 넘어가는지 본다. */
+    rejectNextSteer: () => { rejectNextSteer = true; },
     /**
      * 끊긴 사이에 턴이 끝났는데 허브가 그 끝을 다시 보내지 않았다 — 실제 브리지처럼 welcome 뒤
      * 진행 상태만 내리고 connection 으로 다시 맞추게 한다.
@@ -2280,6 +2306,7 @@ export function createMockBridge(
       sentMentions: sentMentions.map((ids) => [...ids]),
       sentDocumentMentions: sentDocumentMentions.map((rows) => rows.map((row) => ({ ...row }))),
       interrupts,
+      steers: [...steers],
       permissionResponses: permissionResponses.map((response) => ({ ...response })),
       documentLinks: documentLinks.map((link) => ({ ...link })),
       chatDocumentId,
