@@ -781,7 +781,7 @@ export function createWorkbenchBrowser(options: {
     if (event.type !== 'owned_browser_file_chooser') return;
     const data = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : event;
     uploadTarget = { tabId: data.tabId, navigationEpoch: data.navigationEpoch, controllerEpoch: data.controllerEpoch };
-    uploadFiles.multiple = data.multiple === true; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
+    uploadFiles.multiple = data.multiple === true; uploadFiles.accept = typeof data.accept === 'string' ? data.accept : ''; uploadLabel.textContent = '페이지에서 파일을 요청했습니다.'; upload.hidden = false;
   });
   const unsubscribeNative = nativeBrowserApi()?.onEvent?.((event) => {
     // 사용자 입력 알림은 허브용이다. 화면은 다시 읽지 않는다.

@@ -14,7 +14,7 @@ const call = (browser, name, input) => browser.request(actor, name.slice('browse
 const refOf = (snapshot, name) => snapshot.outline.split('\n').find(line => line.includes(`"${name}"`))?.match(/\[ref=([^\]]+)\]/)?.[1];
 const target = (observation, name) => ({ tabId: observation.snapshot.tabId, snapshotId: observation.snapshot.snapshotId, navigationEpoch: observation.snapshot.navigationEpoch, controllerEpoch: observation.snapshot.controllerEpoch, ref: refOf(observation.snapshot, name) });
 const refs = observation => target(observation, 'Query');
-async function fixture(t, pages = {}) {
+async function fixture(t, pages = {}, options = {}) {
   if (!(await inspectOwnedBrowserRuntime()).installed) { t.skip('The pinned managed browser is not installed'); return; }
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'hama-browser-contracts-'));
   const sockets = new Set();
@@ -29,7 +29,7 @@ async function fixture(t, pages = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   let runtime;
-  const browser = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, workspaceTargets: [origin], autoInstall: false, runtimeFactory: async options => runtime = await startOwnedBrowserRuntime(options) });
+  const browser = createOwnedBrowserService({ dataDir, policy: { assertAllowed: async () => {} }, workspaceTargets: [origin], autoInstall: false, runtimeFactory: async options => runtime = await startOwnedBrowserRuntime(options), ...options });
   t.after(async () => { await browser.close(); for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); await rm(dataDir, { recursive: true, force: true }); });
   const opened = await call(browser, 'browser_open', { url: pages.start ? `${origin}${pages.start}` : origin });
   return { browser, origin, tabId: opened.tab.tabId, page: runtime.context.pages().find(page => page.url().startsWith(origin)) };
@@ -109,6 +109,33 @@ test('compact snapshots give every visible control a ref, cap long pages and nar
   assert.ok(found.snapshot.outline.split('\n').length <= 2);
   await call(f.browser, 'browser_click', target(found, 'Result 1999'));
   assert.equal(new URL(f.page.url()).pathname, '/r1999');
+});
+
+test('browser_upload sets only hub-resolved files after site access and never on a held tab', async t => {
+  const page = '<label>Single<input type="file" name="single"></label><label>Many<input type="file" name="many" multiple></label><button onclick="document.querySelector(\'#hidden\').click()">Attach</button><input id="hidden" name="hidden" type="file" hidden><script>window.got={};for(const i of document.querySelectorAll("input"))i.addEventListener("change",()=>got[i.name]=[...i.files].map(f=>f.name+":"+f.size))</script>';
+  let siteAccess = false; const events = [];
+  const policy = { check: async ({ action, url }) => action === 'website-change' && !siteAccess ? { allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: action, site: new URL(url).origin, origin: new URL(url).origin } : { allowed: true } };
+  const f = await fixture(t, { start: '/upload', '/upload': page }, { policy, onEvent: event => events.push(event) }); if (!f) return;
+  const file = (name, body) => ({ name, mimeType: 'text/plain', buffer: Buffer.from(body) });
+  const upload = async (name, files) => { const observed = await call(f.browser, 'browser_snapshot', { tabId: f.tabId }); return f.browser.uploadFiles(actor, target(observed, name), files); };
+  const got = () => f.page.evaluate(() => window.got);
+  await assert.rejects(upload('Single', [file('a.txt', 'aaa')]), { code: 'BROWSER_PERMISSION_REQUIRED' });
+  assert.deepEqual(await got(), {});
+  siteAccess = true;
+  // 모델 인자만으로는 파일을 넣지 못한다. 허브가 읽은 파일이 있어야 한다.
+  const observed = await call(f.browser, 'browser_snapshot', { tabId: f.tabId });
+  await assert.rejects(call(f.browser, 'browser_upload', { ...target(observed, 'Single'), files: [{ artifactId: 'model-chosen' }] }), { code: 'BROWSER_UPLOAD_INVALID' });
+  await assert.rejects(upload('Single', [file('a.txt', 'a'), file('b.txt', 'b')]), { code: 'BROWSER_UPLOAD_LIMIT' });
+  const single = await upload('Single', [file('a.txt', 'aaa')]);
+  assert.deepEqual(single.files, [{ name: 'a.txt', size: 3 }]);
+  await upload('Many', [file('b.txt', 'bb'), file('c.txt', 'c')]);
+  await upload('Attach', [file('d.txt', 'dddd')]);
+  assert.deepEqual(await got(), { single: ['a.txt:3'], many: ['b.txt:2', 'c.txt:1'], hidden: ['d.txt:4'] });
+  assert.equal(events.some(event => event.type === 'owned_browser_file_chooser'), false);
+  const human = { isHuman: true, clientId: 'window', sessionId: 'window' };
+  const held = await call(f.browser, 'browser_snapshot', { tabId: f.tabId });
+  await f.browser.request(human, 'control', { tabId: f.tabId, owner: 'human', navigationEpoch: held.snapshot.navigationEpoch, controllerEpoch: held.snapshot.controllerEpoch });
+  await assert.rejects(f.browser.uploadFiles(actor, { ...target(held, 'Single'), controllerEpoch: held.snapshot.controllerEpoch + 1 }, [file('e.txt', 'e')]), { code: 'BROWSER_USER_CONTROL' });
 });
 
 test('actions settle and return only what changed: navigation, new tabs and dialogs', async t => {

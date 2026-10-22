@@ -22,13 +22,15 @@ const redactValues = (value, secrets) => {
 const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'fill-secret', 'viewport', 'upload']);
 // 허브가 입력 직전에 비밀 값을 꺼내는 함수. 인자 객체의 기호 키라 직렬화·로그에 실리지 않는다.
 const SECRET_FILL = Symbol('rhwp.secretFill');
+// 허브가 browser_upload 출처를 확인해 읽은 파일. 기호 키라 모델 인자로는 넣을 수 없다.
+const UPLOAD_FILES = Symbol('rhwp.uploadFiles');
 // 비밀을 입력할 수 있는 칸: 한 줄 글자 입력과 textarea 만.
 const SECRET_INPUT_TYPES = new Set(['text', 'password', 'email', 'tel', 'url']);
 // 이 조작들은 결과가 자리 잡을 때까지 기다린 뒤 짧은 변화만 돌려준다.
 const SETTLING = new Set(['click', 'type', 'press', 'select']);
 const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
 // 이 조작 동안 페이지가 보내는 같은 사이트 non-GET 은 에이전트의 사이트 변경이다(입력 창).
-const INPUT_WINDOW = new Set(['click', 'press', 'select', 'fill-account', 'fill-secret']);
+const INPUT_WINDOW = new Set(['click', 'press', 'select', 'upload', 'fill-account', 'fill-secret']);
 const nonGet = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(method);
 // GraphQL 읽기: JSON 본문의 query 가 mutation 으로 시작하지 않는다.
 const graphQLRead = (request) => {
@@ -129,10 +131,10 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     message.ok ? waiter.resolve(message.value) : waiter.reject(error(message.error?.code ?? 'BROWSER_NATIVE_FAILED', message.error?.message ?? 'The desktop browser request failed.', message.error?.retryable === true));
   };
   events.on('message', receive);
-  const call = (operation, params = {}) => new Promise((resolve, reject) => {
+  const call = (operation, params = {}, waitMs = timeoutMs) => new Promise((resolve, reject) => {
     if (!send) { reject(error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser is not connected.', true)); return; }
     const requestId = id('native');
-    const timer = setTimeout(() => { pending.delete(requestId); reject(error('BROWSER_NATIVE_TIMEOUT', 'The desktop browser did not respond. Reconnect before retrying.', true)); }, timeoutMs);
+    const timer = setTimeout(() => { pending.delete(requestId); reject(error('BROWSER_NATIVE_TIMEOUT', 'The desktop browser did not respond. Reconnect before retrying.', true)); }, waitMs);
     pending.set(requestId, { resolve, reject, timer });
     try { send({ type: 'rhwp-browser-request', id: requestId, operation, params }); }
     catch { clearTimeout(timer); pending.delete(requestId); reject(error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser disconnected.', true)); }
@@ -142,6 +144,8 @@ export function createIpcNativeBrowserAdapter({ send = process.send?.bind(proces
     importSession: (params) => call('import-session', params),
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     revealDownload: (params) => call('reveal-download', params),
+    // 사용자가 파일 창을 오래 열어 둘 수 있다.
+    chooseFiles: (params) => call('choose-files', params, 30 * 60_000),
     sleep: (params) => call('sleep', params), activity: (params) => call('activity', params), bind: (params) => call('bind', params), control: (params) => call('control', params), reset: () => call('reset'), inventory: () => call('inventory'),
     passwordAccounts: () => call('password-accounts'), passwordSnapshot: (params) => call('password-snapshot', params),
     passwordViewport: (params) => call('password-viewport', params),
@@ -437,6 +441,29 @@ export function createOwnedBrowserService(options = {}) {
     // 사용자가 직접 조작을 가져간 탭은 돌려받을 때까지 에이전트의 페이지 변경을 기다리게 하지 않고 바로 거절한다.
     if (!actor.isHuman && tab.controller.held) throw error('BROWSER_USER_CONTROL', 'The user is controlling this tab. Wait for them to return control, or continue without it.');
   };
+  /**
+   * 페이지가 연 파일 선택을 사용자에게 넘긴다. browser_upload 가 직접 채우는 선택은 넘기지 않는다.
+   * 데스크톱에서 사용자가 직접 누른 파일 칸은 운영체제 파일 창을 열어 고른 파일을 그대로 넣는다.
+   * 그 밖(관리형 브라우저, 에이전트가 누른 단추)은 사이드바의 파일 선택 막대로 받는다.
+   */
+  const offerChooser = (tab, chooser) => {
+    if (tab.agentUpload || tab.page !== chooser.page()) return;
+    const agentTriggered = tab.activeActor && !tab.activeActor.isHuman;
+    void chooser.element().getAttribute('accept').catch(() => null).then(async (accept) => {
+      const multiple = chooser.isMultiple();
+      const adapter = selectedAdapter();
+      if (adapter?.chooseFiles && tab.nativeTargetId && !agentTriggered) {
+        const chosen = await adapter.chooseFiles({ ...nativePasswordBinding(tab), multiple, accept: text(accept, 500) }).catch(() => null);
+        if (chosen) {
+          if (chosen.paths?.length && tab.page === chooser.page()) await chooser.setFiles(chosen.paths).catch(() => {});
+          return;
+        }
+      }
+      if (tab.page !== chooser.page()) return;
+      tab.pendingChooser = chooser;
+      emit('owned_browser_file_chooser', { tabId: tab.tabId, threadId: tab.threadId, multiple, ...(accept ? { accept: text(accept, 500) } : {}), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
+    });
+  };
   const enqueue = (tab, operation) => {
     const result = tab.queue.catch(() => {}).then(operation);
     tab.queue = result.catch(() => {});
@@ -546,10 +573,7 @@ export function createOwnedBrowserService(options = {}) {
       if (selectedAdapter() && human && !closed) return;
       void dismissPendingDialog(tab);
     });
-    page.on('filechooser', (chooser) => {
-      tab.pendingChooser = chooser;
-      emit('owned_browser_file_chooser', { tabId: tab.tabId, threadId: tab.threadId, multiple: chooser.isMultiple(), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch });
-    });
+    page.on('filechooser', (chooser) => offerChooser(tab, chooser));
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return;
       if (tab.page !== page) return;
@@ -1167,6 +1191,36 @@ export function createOwnedBrowserService(options = {}) {
       .filter(Boolean).map((value) => { try { return new URL(value, document.baseURI).origin; } catch { return 'null'; } });
   }).catch(() => ['null']);
 
+  /**
+   * browser_upload: 허브가 확인한 파일만 넣는다. 파일 입력이면 바로 채우고, 버튼·라벨·끌어 놓기 영역이면
+   * 눌러서 열린 파일 선택에 채운다. 비밀번호 보호 페이지에는 넣지 않는다.
+   */
+  const agentUpload = async (tab, args) => {
+    const payloads = args[UPLOAD_FILES];
+    if (!Array.isArray(payloads) || !payloads.length) throw error('BROWSER_UPLOAD_INVALID', 'Choose files from this chat with browser_upload.');
+    if (tab.snapshot?.native) throw error('BROWSER_UPLOAD_UNAVAILABLE', 'Saved passwords protect this page. Ask the user to attach the file.');
+    const page = requirePage(tab);
+    const handle = await elementFor(tab, args);
+    const input = await handle.evaluate((el) => el instanceof HTMLInputElement && el.type === 'file' ? { multiple: el.multiple, disabled: el.disabled } : null);
+    if (input?.disabled) throw error('BROWSER_UPLOAD_UNAVAILABLE', 'This file input is disabled.');
+    const watch = watchConsequences(tab);
+    tab.agentUpload = true;
+    try {
+      if (input) {
+        if (payloads.length > 1 && !input.multiple) throw error('BROWSER_UPLOAD_LIMIT', 'This file input accepts one file.');
+        await handle.setInputFiles(payloads, { timeout: 10_000 });
+      } else {
+        const opened = page.waitForEvent('filechooser', { timeout: 10_000 });
+        opened.catch(() => {});
+        await handle.click({ timeout: 10_000 });
+        const chooser = await opened.catch(() => { throw error('BROWSER_UPLOAD_NO_CHOOSER', 'This element did not open a file chooser. Snapshot the page and choose its file input or upload button.', true); });
+        if (payloads.length > 1 && !chooser.isMultiple()) throw error('BROWSER_UPLOAD_LIMIT', 'This file chooser accepts one file.');
+        await chooser.setFiles(payloads, { timeout: 10_000 });
+      }
+      return { completed: true, consequences: { ...(await watch.settle()), files: payloads.map(({ name, buffer }) => ({ name, size: buffer.length })) } };
+    } finally { tab.agentUpload = false; watch.stop(); }
+  };
+
   const operate = async (actor, action, tab, args, signal) => {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
@@ -1233,8 +1287,9 @@ export function createOwnedBrowserService(options = {}) {
     }
     if (action === 'scroll') { await page.mouse.wheel(bounded(args.deltaX, -2000, 2000, 0), bounded(args.deltaY, -2000, 2000, 600)); return { completed: true }; }
     if (action === 'input') { if (!actor.isHuman) throw error('BROWSER_HUMAN_INPUT_REQUIRED', 'Raw browser input is reserved for human takeover.'); return input(tab, args); }
+    if (action === 'upload' && !actor.isHuman) return agentUpload(tab, args);
     if (action === 'upload') {
-      if (!actor.isHuman || !tab.pendingChooser) throw error('BROWSER_UPLOAD_UNAVAILABLE', 'Choose Upload in a human-controlled page first.');
+      if (!tab.pendingChooser) throw error('BROWSER_UPLOAD_UNAVAILABLE', 'Choose Upload in a human-controlled page first.');
       const files = Array.isArray(args.files) ? args.files : [];
       if (files.length > 5) throw error('BROWSER_UPLOAD_LIMIT', 'Choose at most five files.');
       let total = 0;
@@ -1721,6 +1776,8 @@ export function createOwnedBrowserService(options = {}) {
       if (!actor.isHuman && SETTLING.has(action)) {
         if (await raisesChange(tab, action, args)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
+      // 파일을 보내는 일은 늘 사이트 변경이다(non-GET 폼 제출과 같은 사이트 사용).
+      if (!actor.isHuman && action === 'upload') await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       // 관찰만 하는 읽기는 동시에 진행되는 사용자 입력의 네트워크 귀속을 바꾸지 않는다.
       if (!observeOnly) tab.activeActor = actor;
       if (!actor.isHuman && mutating) tab.humanDriven = false;
@@ -1827,6 +1884,8 @@ export function createOwnedBrowserService(options = {}) {
     request, inventory, sweepSleepingTabs,
     /** 허브만 부른다. resolve 는 입력 직전에 값을 돌려주고, origins 는 비밀의 사이트, item 은 정책이 볼 비밀(끔 여부 포함)이다. */
     fillSecret: (actor, args, { origins, resolve, item }) => performRequest(actor, 'fill-secret', { ...args, [SECRET_FILL]: { origins: [...origins], resolve, item } }),
+    /** 허브만 부른다. files 는 출처를 확인해 읽은 { name, mimeType, buffer } 다(browser-upload-sources.mjs). */
+    uploadFiles: (actor, args, files) => performRequest(actor, 'upload', { ...args, files: undefined, [UPLOAD_FILES]: files }),
     /** 사용자에게 넘긴 로그인·코드 입력이 끝났다. 사용자가 잡고 있던 그 탭을 에이전트에게 돌려준다. */
     async returnControl({ tabId } = {}) {
       const tab = tabs.get(tabId);
