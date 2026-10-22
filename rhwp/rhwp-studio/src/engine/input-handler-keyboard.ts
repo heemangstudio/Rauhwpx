@@ -466,6 +466,9 @@ const chordMapK: Record<string, string> = {
   ㅠ: 'insert:bookmark', // 한글 IME 상태
   n: 'format:para-num-shape',
   ㅜ: 'format:para-num-shape', // 한글 IME 상태
+  // 메모 넣기 — Ctrl+M,M 은 수식이라 Ctrl+K,M 을 쓴다.
+  m: 'insert:memo-note',
+  ㅡ: 'insert:memo-note', // 한글 IME 상태
 };
 
 /** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+M,? 형태)

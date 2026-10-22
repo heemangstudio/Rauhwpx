@@ -5,7 +5,7 @@ import { setSfntGlyphPathApi } from './sfnt-glyphs';
 import { setImageDownsampleApi, setImageAffineSampleApi } from './image-sampling';
 import { withBodyTextPaginationBatch } from './pagination-batch';
 import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
-import type { CharShapeRun } from './types';
+import type { CharShapeRun, MemoNoteInfo, MemoNotePath, MemoNoteRect } from './types';
 import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
 import * as wasmExports from '@wasm/rhwp.js';
 import { blake3Hex, setBlake3WasmApi, type Blake3HasherLike } from './content-hash';
@@ -4019,6 +4019,49 @@ export class WasmBridge {
   setFieldValueByName(name: string, value: string): { ok: boolean; fieldId: number; oldValue: string; newValue: string } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).setFieldValueByName(name, value));
+  }
+
+  /** 문서의 모든 메모 (문서 순서). */
+  getMemoNoteList(): MemoNoteInfo[] {
+    if (!this.doc) return [];
+    return JSON.parse((this.doc as any).getMemoNoteList());
+  }
+
+  /** 문단 위치의 메모 fieldId (앵커 hit-test). 없으면 null. */
+  getMemoNoteAt(path: MemoNotePath, charOffset: number): number | null {
+    if (!this.doc) return null;
+    const id = (this.doc as any).getMemoNoteAt(JSON.stringify(path), charOffset);
+    return typeof id === 'number' ? id : null;
+  }
+
+  /** 메모 앵커 글자의 쪽 좌표 사각형. */
+  getMemoNoteAnchorRects(fieldId: number): MemoNoteRect[] {
+    if (!this.doc) return [];
+    return JSON.parse((this.doc as any).getMemoNoteAnchorRects(fieldId));
+  }
+
+  /** 범위 [start, end) 에 메모를 단다. 새 메모의 fieldId 를 돌려준다. */
+  insertMemoNote(path: MemoNotePath, start: number, end: number, text: string, author?: string): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).insertMemoNote(JSON.stringify(path), start, end, text, author ?? undefined);
+  }
+
+  /** 메모 본문을 평문으로 바꾼다. 같은 글이면 false. */
+  setMemoNoteText(fieldId: number, text: string): boolean {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).setMemoNoteText(fieldId, text);
+  }
+
+  /** 메모를 지운다 (앵커 글자는 남는다). */
+  deleteMemoNote(fieldId: number): void {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    (this.doc as any).deleteMemoNote(fieldId);
+  }
+
+  /** 모든 메모를 지운다. 지운 메모 수를 돌려준다. */
+  deleteAllMemoNotes(): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).deleteAllMemoNotes();
   }
 
   getHyperlinkContext(target: HyperlinkTarget): HyperlinkContext {

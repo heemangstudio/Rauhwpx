@@ -417,6 +417,12 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "createTableEx(options: { sectionIdx: number; paraIdx: number; charOffset: number; rowCount: number; colCount: number; treatAsChar?: boolean; colWidths?: number[]; rowHeights?: number[]; })"
   },
   {
+    "method": "deleteAllMemoNotes",
+    "kind": "document",
+    "parameters": [],
+    "signature": "deleteAllMemoNotes()"
+  },
+  {
     "method": "deleteBookmark",
     "kind": "document",
     "parameters": [
@@ -501,6 +507,14 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "applyTo"
     ],
     "signature": "deleteHeaderFooter(sectionIdx: number, isHeader: boolean, applyTo: number)"
+  },
+  {
+    "method": "deleteMemoNote",
+    "kind": "document",
+    "parameters": [
+      "fieldId"
+    ],
+    "signature": "deleteMemoNote(fieldId: number)"
   },
   {
     "method": "deleteParagraph",
@@ -914,6 +928,18 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "uri"
     ],
     "signature": "insertHyperlink(target: HyperlinkTarget, start: number, end: number, uri: string)"
+  },
+  {
+    "method": "insertMemoNote",
+    "kind": "document",
+    "parameters": [
+      "path",
+      "start",
+      "end",
+      "text",
+      "author"
+    ],
+    "signature": "insertMemoNote(path: MemoNotePath, start: number, end: number, text: string, author?: string)"
   },
   {
     "method": "insertNewNumber",
@@ -1792,6 +1818,15 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "setHeaderFooterPictureProperties(sec: number, outerPara: number, outerCtrl: number, innerPara: number, innerCtrl: number, props: Record<string, unknown>,)"
   },
   {
+    "method": "setMemoNoteText",
+    "kind": "document",
+    "parameters": [
+      "fieldId",
+      "text"
+    ],
+    "signature": "setMemoNoteText(fieldId: number, text: string)"
+  },
+  {
     "method": "setNoteEquationProperties",
     "kind": "document",
     "parameters": [
@@ -2223,6 +2258,7 @@ export const ENGINE_EDIT_TYPE_DEFINITIONS = {
   "EndnoteShapeSettings": "export interface EndnoteShapeSettings { ok?: boolean; numberFormat: EndnoteNumberFormat | string; userChar: string; prefixChar: string; suffixChar: string; startNumber: number; separatorEnabled: boolean; separatorLength: number; separatorMarginTop: number; separatorMarginBottom: number; noteSpacing: number; separatorLineType: number; separatorLineWidth: number; separatorColor: string; numbering: 'continue' | 'restartSection' | 'restartPage' | string; placement: 'documentEnd' | 'sectionEnd' | string; }",
   "CellPathLike": "export type CellPathLike = Array<CellPathEntry | CellPathSegment>;",
   "DocumentPosition": "export interface DocumentPosition { sectionIndex: number; paragraphIndex: number; charOffset: number; parentParaIndex?: number; controlIndex?: number; cellIndex?: number; cellParaIndex?: number; cellPath?: CellPathEntry[]; isTextBox?: boolean; cursorRect?: CursorRect; }",
+  "MemoNotePath": "export interface MemoNotePath { sectionIdx: number; paraIdx: number; cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>; }",
   "TableCellResizeUpdate": "export interface TableCellResizeUpdate { cellIdx: number; widthDelta?: number; heightDelta?: number; localResize?: boolean; renderWidth?: number; renderHeight?: number; }",
   "CellProperties": "export interface CellProperties { width: number; height: number; paddingLeft: number; paddingRight: number; paddingTop: number; paddingBottom: number; applyInnerMargin: boolean; verticalAlign: number; textDirection: number; isHeader: boolean; cellProtect?: boolean; fieldName?: string; editableInForm?: boolean; borderFillId?: number; borderLeft?: BorderLineInfo; borderRight?: BorderLineInfo; borderTop?: BorderLineInfo; borderBottom?: BorderLineInfo; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; diagonalLine?: number; diagonalSlash?: number; diagonalBackSlash?: number; diagonalWidth?: number; diagonalColor?: string; centerLine?: string; }",
   "CharShapeRun": "export interface CharShapeRun { startOffset: number; endOffset: number; charShapeId: number; }",

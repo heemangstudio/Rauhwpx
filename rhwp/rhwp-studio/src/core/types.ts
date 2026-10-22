@@ -336,6 +336,38 @@ export interface SelectionRect {
   height: number;
 }
 
+/** 메모(풍선 주석) 앵커 문단 주소. 셀/글상자면 paraIdx 는 표를 품은 본문 문단이다. */
+export interface MemoNotePath {
+  sectionIdx: number;
+  paraIdx: number;
+  cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>;
+}
+
+/** getMemoNoteList 항목 */
+export interface MemoNoteInfo {
+  fieldId: number;
+  memoIndex: number;
+  author: string;
+  /** `YYYY-MM-DDTHH:MM:SSZ` (UTC) */
+  createdAt: string | null;
+  text: string;
+  paraCount: number;
+  /** 본문·표 셀·글상자 밖(머리말·각주 등)의 메모는 null */
+  anchor: (MemoNotePath & { startCharIdx: number; endCharIdx: number }) | null;
+  /** 앵커 범위의 본문 글자. 앵커 글자를 모두 지웠으면 빈 문자열. */
+  anchorText: string;
+  shape: { fillColor: string; lineColor: string; width: number };
+}
+
+/** 메모 앵커 글자의 쪽 좌표 사각형 (줌 1 기준 px) */
+export interface MemoNoteRect {
+  pageIndex: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /** 글자 서식 속성 (CharShape) */
 export interface CharProperties {
   fontFamily?: string;
