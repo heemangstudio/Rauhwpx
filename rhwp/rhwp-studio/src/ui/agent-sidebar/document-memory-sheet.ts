@@ -15,6 +15,7 @@ import type {
   DocumentMemoryOp,
   DocumentMemoryResult,
 } from '../../agent/types.ts';
+import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createIcon } from './icons.ts';
 import { createSheetFrame } from './sheet.ts';
@@ -210,14 +211,19 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
       }
     });
     body.append(text);
-    if (entry.anchor) {
+    // 자동 학습이 남긴 기억만 이름표를 단다. 사용자 요청·시트에서 고친 기억은 달지 않는다.
+    const learned = entry.origin === 'learned';
+    if (entry.anchor || learned) {
       const anchor = el('div', 'ag-memory-anchor');
-      const quote = el('span', 'ag-memory-quote', `“${entry.anchor.quote}”`);
-      quote.title = entry.anchor.quote;
-      anchor.append(quote);
-      if (missing.has(entry.id)) {
-        row.dataset.stale = 'true';
-        anchor.append(el('span', 'ag-memory-stale', '문서에 없음'));
+      if (learned) anchor.append(el('span', 'ag-memory-origin', RAU_TASTE_NAME));
+      if (entry.anchor) {
+        const quote = el('span', 'ag-memory-quote', `“${entry.anchor.quote}”`);
+        quote.title = entry.anchor.quote;
+        anchor.append(quote);
+        if (missing.has(entry.id)) {
+          row.dataset.stale = 'true';
+          anchor.append(el('span', 'ag-memory-stale', '문서에 없음'));
+        }
       }
       body.append(anchor);
     }

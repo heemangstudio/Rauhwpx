@@ -400,6 +400,45 @@ export interface DocumentMemoryResult {
   error?: { code: string; message: string };
 }
 
+/** 취향 학습(Rau-0.1)이 한 번에 바꾼 기억 하나. remove 의 text 는 지운 글이다. */
+export interface TasteLearnItem {
+  op: 'add' | 'update' | 'remove';
+  entryId: string;
+  text: string;
+  /** update 에서 글이 바뀌었을 때만. */
+  prevText?: string;
+  origin: 'explicit' | 'learned';
+}
+
+/** 허브 → Studio `taste-learned`. 학습 한 번(턴 끝 또는 신호)에서 기억이 바뀌었을 때만 온다. */
+export interface TasteLearned {
+  threadId: string;
+  /** ThreadTurnMessage.hubTurnId 와 같은 허브 턴 id. 모르면 null. */
+  turnId: string | null;
+  documentId: string;
+  /** 문서 기억 키 — 되돌리기에 그대로 돌려보낸다. */
+  key: string;
+  learnId: string;
+  items: TasteLearnItem[];
+  /** 저장소 변경 목록. Studio 는 읽지 않고 그대로 저장했다가 되돌리기에 보낸다. */
+  changes: unknown[];
+  /** 이번 학습이 AGENTS.md 변경안을 냈다(설정 → AI → 지시의 확인 카드). */
+  proposal?: { draftId: string };
+}
+
+export interface TasteUndoResult {
+  ok: boolean;
+  learnId: string;
+  reverted: string[];
+  /** 그새 바뀌었거나 되살릴 수 없는 항목 — 더는 되돌릴 수 없다. */
+  skipped: string[];
+  error?: { code: string; message: string };
+}
+
+export interface TasteSettings {
+  enabled: boolean;
+}
+
 export interface StructuredPlanStep {
   id?: string;
   title: string;
@@ -1241,6 +1280,10 @@ export type SidebarEvent =
   | { type: 'agent-instructions-error'; code: string; message: string; status?: AgentInstructionsStatus }
   /** 이 문서(또는 같은 기억을 나누는 작업 공간 사본)의 문서 기억이 바뀌었다 — 도구·시트·학습·되돌리기 모두. */
   | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
+  /** 취향 학습이 이 채팅의 대화에서 기억을 바꿨다. 턴이 끝난 뒤, 흔히 다른 채팅을 보는 중에 온다. */
+  | ({ type: 'taste-learned' } & TasteLearned)
+  /** 취향 학습 설정 — 요청의 답이거나 다른 창에서 바꾼 알림. */
+  | { type: 'taste-settings'; settings: TasteSettings }
   | { type: 'chat-template-changed'; template: DocumentTemplate | null; reason?: string }
   | { type: 'permission-changed'; permissionProfile: PermissionProfile }
   | { type: 'service-tier-changed'; serviceTier: ServiceTier }

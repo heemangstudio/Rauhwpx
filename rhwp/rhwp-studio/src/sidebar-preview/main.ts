@@ -15,6 +15,7 @@ import {
 import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
+import { skipTasteUndo, tasteUndos } from './mock-taste.ts';
 import { showToast } from '../ui/toast.ts';
 import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
@@ -837,6 +838,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
+  taste: { undos: tasteUndos, skipUndo: skipTasteUndo },
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

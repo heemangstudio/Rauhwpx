@@ -3161,6 +3161,179 @@ button.ag-skill-copy {
   to { opacity: 0; transform: translateX(-100%); }
 }
 
+/* 취향 학습(Rau-0.1) 구분선 — 압축과 같은 선 · 이름 · 선이지만 누르면 배운 것들이 펼쳐진다.
+   이름(Rau-0.1)은 흐리게, 배운 수는 한 단계 진하게. 지금 막 생긴 구분선은 이름에서 선이 양옆으로 그어진다. */
+.ag-taste {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.ag-marker-taste {
+  width: 100%;
+  min-height: 24px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ag-marker-taste:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+/* 이름과 배운 수 사이는 갈매기표와 이름 사이만큼 띄운다. */
+.ag-taste-count {
+  color: var(--ag-text-secondary);
+  transition: color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-marker-taste:hover .ag-taste-count,
+.ag-taste-open .ag-taste-count {
+  color: var(--ag-text);
+}
+
+.ag-taste-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-left: -4px;
+  color: var(--ag-text-tertiary);
+  transition: transform var(--ag-dur-base) var(--ag-spring-edge);
+}
+
+.ag-taste-open .ag-taste-chevron {
+  transform: rotate(180deg);
+}
+
+.ag-marker-taste.ag-marker-live .ag-marker-line:first-child {
+  transform-origin: right center;
+}
+
+.ag-marker-taste.ag-marker-live .ag-marker-line:last-child {
+  transform-origin: left center;
+}
+
+.ag-marker-taste.ag-marker-live .ag-taste-chevron {
+  animation: ag-marker-fade var(--ag-dur-slow) var(--ag-ease-out) both;
+}
+
+.ag-taste-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+}
+
+.ag-taste-body[hidden],
+.ag-taste-action[hidden] {
+  display: none;
+}
+
+.ag-taste-open .ag-taste-body {
+  animation: ag-marker-fade var(--ag-dur-base) var(--ag-ease-out) both;
+}
+
+.ag-taste-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-taste-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 2px 2px 8px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-taste-row:hover {
+  background: var(--ag-hover);
+}
+
+.ag-taste-tag {
+  flex: 0 0 auto;
+  min-width: 2.25em;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-taste-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-taste-row[data-state='undone'] .ag-taste-text {
+  color: var(--ag-text-tertiary);
+  text-decoration: line-through;
+}
+
+.ag-taste-row[data-state='stale'] .ag-taste-text {
+  color: var(--ag-text-secondary);
+}
+
+.ag-taste-undo,
+.ag-taste-action {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--ag-dur-fast) var(--ag-ease-out), background var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-taste-undo:hover:not(:disabled),
+.ag-taste-action:hover {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-taste-undo:focus-visible,
+.ag-taste-action:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-taste-undo:disabled {
+  color: var(--ag-text-disabled);
+  cursor: default;
+}
+
+.ag-taste-undone {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-taste-actions {
+  display: flex;
+  gap: 2px;
+}
+
 /* ─── 진행 타임라인 + 접힌 도구 호출 ────────────────── */
 
 .ag-progress-step {
@@ -4551,8 +4724,13 @@ button.ag-skill-copy {
   }
 
   .ag-marker-live .ag-marker-line,
-  .ag-marker-live .ag-marker-icon {
+  .ag-marker-live .ag-marker-icon,
+  .ag-taste-open .ag-taste-body {
     animation: none;
+  }
+
+  .ag-taste-chevron {
+    transition: none;
   }
 
   .ag-marker-swap .ag-marker-icon-from {

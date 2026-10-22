@@ -17,6 +17,7 @@ import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
 import { createMockDocumentMemory } from './mock-document-memory.ts';
+import { createMockTaste, sampleTasteDraft } from './mock-taste.ts';
 
 export const scenarios = [
   'chat',
@@ -447,6 +448,7 @@ export function createMockBridge(
   const emit = (event: T.SidebarEvent) =>
     listeners.forEach((listener) => listener(event));
   const documentMemory = createMockDocumentMemory(emit, () => chatDocumentId);
+  const taste = createMockTaste(emit);
   /** 선물 프록시의 Claude 모델. 허브처럼 내 키의 모델과 따로 두고 처음에는 Sonnet·Haiku·Opus 를 고른다. */
   const giftCatalog = [
     { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', prompt: 0.000003, completion: 0.000015 },
@@ -1968,6 +1970,7 @@ export function createMockBridge(
         emit({ type: 'writing-style-status', requestId, status: data.writing }),
       ),
     ...documentMemory,
+    ...taste,
     requestAgentInstructions: async () => data.instructions,
     saveAgentInstructions: async (content, expectedRevision) => {
       if (expectedRevision !== data.instructions.revision)
@@ -1984,8 +1987,12 @@ export function createMockBridge(
       });
       return data.instructions;
     },
-    confirmAgentInstructionsDraft: (draft) =>
-      bridge.saveAgentInstructions(draft.content, draft.expectedRevision),
+    confirmAgentInstructionsDraft: async (draft) => {
+      const status = await bridge.saveAgentInstructions(draft.content, draft.expectedRevision);
+      // 허브처럼 적용한 변경안을 거둔다.
+      emit({ type: 'agent-instructions-draft-cleared', draftId: draft.id, outcome: 'confirmed' });
+      return status;
+    },
     rejectAgentInstructionsDraft: async (draft) => {
       emit({
         type: 'agent-instructions-draft-cleared',
@@ -2312,6 +2319,10 @@ export function createMockBridge(
     emitDocumentRequired: (tool = 'project_edit') => {
       emit({ type: 'document-required', tool, reason: 'project-save' });
     },
+    /** 허브의 취향 학습 결과(taste-learned)를 보낸다. */
+    emitTasteLearned: (learned: T.TasteLearned) => emit({ type: 'taste-learned', ...learned }),
+    /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */
+    emitTasteDraft: (id: string) => emit({ type: 'agent-instructions-draft', draft: { ...sampleTasteDraft(data.instructions), id } }),
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
@@ -2325,6 +2336,10 @@ export function createMockBridge(
       emit({ type: 'usage-report', usage: data.usage });
       bridge.listSkills();
       if (!options.liveChat?.deferWelcome) deliverWelcome();
+      // `taste=sample`: 표본 구분선이 가리키는 Rau-0.1 변경안 — 허브가 붙을 때 다시 보내는 것과 같다.
+      if (new URLSearchParams(location.search).get('taste') === 'sample') {
+        emit({ type: 'agent-instructions-draft', draft: sampleTasteDraft(data.instructions) });
+      }
     },
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */

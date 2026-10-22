@@ -13,6 +13,8 @@ import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
 import { openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
+import { createTasteMarkerView, type TasteMarkerView } from './taste-marker.ts';
+import { tasteMarkerLabel } from '../../agent/taste.ts';
 import { installSelectMenus } from './select-menu.ts';
 import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
@@ -117,6 +119,9 @@ import {
   setThreadTitle,
   addCompactionMarker,
   addHandoffMarker,
+  addTasteMarker,
+  findTasteMarker,
+  settleTasteUndo,
   attachmentOnlyMarker,
   captureTurnWatermark,
   createThreadMessageId,
@@ -137,6 +142,7 @@ import {
   type ThreadRetryPayload,
   type ThreadTurnOutcome,
   type ThreadMarkerMessage,
+  type ThreadTasteMarker,
   type ThreadAttachment,
   type ThreadMention,
   type ThreadTaskRecord,
@@ -2234,10 +2240,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 이 채팅 문서의 문서 기억 시트. 하나만 띄운다. */
   let documentMemorySheet: DocumentMemorySheetHandle | null = null;
-  /** 문서 기억 시트를 이 채팅의 문서로 연다. 문서가 없으면 아무것도 하지 않는다. */
-  function openDocumentMemory(): void {
+  /** 문서 기억 시트를 이 채팅의 문서(또는 준 문서)로 연다. 문서가 없으면 아무것도 하지 않는다. */
+  function openDocumentMemory(forDocumentId?: string): void {
     if (root.dataset.disposed === 'true') return;
-    const documentId = getDocumentContext?.()?.documentId ?? currentThread.documentId;
+    const documentId = forDocumentId ?? getDocumentContext?.()?.documentId ?? currentThread.documentId;
     if (!documentId) return;
     documentMemorySheet?.close();
     const sheet = openDocumentMemorySheet({ bridge, documentId, anchor: root });
@@ -6331,6 +6337,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   skillsBtn.addEventListener('click', () => setSkillsPanelOpen(true));
   skillsClose.addEventListener('click', () => { setSkillsPanelOpen(false); skillsBtn.focus(); });
 
+  /** 다음에 여는 설정이 지시의 변경안 카드로 옮겨 간다(취향 학습 구분선의 지시에 추가 제안). */
+  let revealInstructionsOnSettingsOpen = false;
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestinationInput): void {
     // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
     if (open && !fullscreen && !settingsPanelOpen) {
@@ -6377,9 +6385,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setCollapsed(false);
       settingsPanel.open(destination);
       settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
+      if (revealInstructionsOnSettingsOpen) settingsPanel.revealInstructions();
     } else {
       settingsPanel.close();
     }
+    revealInstructionsOnSettingsOpen = false;
   }
 
   function requestSettingsOpen(destination?: SettingsDestinationInput): void {
@@ -12044,6 +12054,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function threadMarkerLabel(message: ThreadMarkerMessage): string {
     if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
+    if (message.marker === 'taste') return tasteMarkerLabel(message.items.length);
     return message.beforeTokens !== undefined && message.afterTokens !== undefined
       ? `콘텍스트 압축됨, ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
       : '콘텍스트 압축됨';
@@ -12054,6 +12065,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 모이고, 전환은 가운데서 선이 벌어지며 앞 프로바이더 아이콘이 새 아이콘에 자리를 넘긴다.
    */
   function renderThreadMarker(message: ThreadMarkerMessage, opts: { live?: boolean } = {}): HTMLElement {
+    if (message.marker === 'taste') return renderTasteMarker(message, opts);
     const label = threadMarkerLabel(message);
     const row = el('div', `ag-marker ag-marker-${message.marker}`);
     row.classList.toggle('ag-marker-live', opts.live === true);
@@ -12081,6 +12093,125 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     row.append(el('span', 'ag-marker-line'), icon, text, el('span', 'ag-marker-line'));
     return row;
+  }
+
+  /** 펼친 취향 학습 구분선(learnId) — 채팅을 다시 그려도 펼친 채로 둔다. */
+  const expandedTasteMarkers = new Set<string>();
+  /** 이 창에 와 있는 AGENTS.md 변경안 id — 구분선의 지시에 추가 제안은 그 변경안이 남아 있을 때만 보인다. */
+  const pendingInstructionDrafts = new Set<string>();
+  const tasteViews = new WeakMap<HTMLElement, TasteMarkerView>();
+
+  /** 취향 학습(Rau-0.1) 구분선. 지금 채팅에만 그리므로 되돌리기는 그 채팅을 가리킨다. */
+  function renderTasteMarker(marker: ThreadTasteMarker, opts: { live?: boolean } = {}): HTMLElement {
+    const threadId = currentThread.id;
+    const { learnId, documentId } = marker;
+    const view = createTasteMarkerView(marker, {
+      onUndo: (entryId) => void undoTasteEntry(threadId, learnId, entryId),
+      onShowAll: () => openDocumentMemory(documentId),
+      onProposal: () => openInstructionsProposal(),
+      onToggle: (expanded) => {
+        if (expanded) expandedTasteMarkers.add(learnId);
+        else expandedTasteMarkers.delete(learnId);
+      },
+    }, {
+      live: opts.live,
+      expanded: expandedTasteMarkers.has(learnId),
+      proposalPending: marker.proposalDraftId !== undefined && pendingInstructionDrafts.has(marker.proposalDraftId),
+    });
+    tasteViews.set(view.root, view);
+    return view.root;
+  }
+
+  function tasteMarkerView(learnId: string): TasteMarkerView | null {
+    const node = messages.querySelector<HTMLElement>(`.ag-taste[data-learn-id="${CSS.escape(learnId)}"]`);
+    return node ? tasteViews.get(node) ?? null : null;
+  }
+
+  function syncTasteProposals(): void {
+    for (const message of currentThread.messages) {
+      if (message.kind !== 'marker' || message.marker !== 'taste' || !message.proposalDraftId) continue;
+      tasteMarkerView(message.learnId)?.setProposalPending(pendingInstructionDrafts.has(message.proposalDraftId));
+    }
+  }
+
+  /**
+   * 학습 결과는 턴이 끝난 뒤, 흔히 다른 채팅을 보는 중에 온다 — 지금 채팅으로 가리지 않고 그 채팅을
+   * 찾아 남긴다(title-result 와 같다). 지금 채팅이면 그 턴의 자리에 바로 그린다.
+   */
+  function handleTasteLearned(e: Extract<SidebarEvent, { type: 'taste-learned' }>): void {
+    const current = e.threadId === currentThread.id;
+    const thread = current ? currentThread : getThread(e.threadId);
+    if (!thread) return;
+    const marker = addTasteMarker(thread, e);
+    if (!marker) return;
+    if (!current) {
+      upsertThread(thread);
+      return;
+    }
+    persistCurrentThread();
+    const view = tasteMarkerView(marker.learnId);
+    if (view) {
+      view.update(marker, {
+        proposalPending: marker.proposalDraftId !== undefined && pendingInstructionDrafts.has(marker.proposalDraftId),
+      });
+      return;
+    }
+    const node = renderTasteMarker(marker, { live: true });
+    withAutoScroll(() => placeTasteMarkerNode(node, marker));
+  }
+
+  /** 구분선을 기록의 자리에 넣는다 — 바로 뒤 기록(다음 요청이나 다음 턴)의 줄 앞, 없으면 끝. */
+  function placeTasteMarkerNode(node: HTMLElement, marker: ThreadTasteMarker): void {
+    const list = currentThread.messages;
+    const index = list.indexOf(marker);
+    const next = index >= 0 ? list[index + 1] : undefined;
+    let before: Element | null = null;
+    if (next?.role === 'user') {
+      // 대화의 사용자 말풍선은 기록의 사용자 메시지와 같은 순서로 놓인다.
+      const users = list.slice(0, index).filter((message) => message.role === 'user').length;
+      before = messages.querySelectorAll(':scope > .ag-msg-user')[users] ?? null;
+    } else if (next && isTurnMarker(next)) {
+      before = turnFoldRows.get(next.messageId)?.root ?? null;
+    }
+    if (before?.parentElement === messages) messages.insertBefore(node, before);
+    else appendConversation(node);
+  }
+
+  async function undoTasteEntry(threadId: string, learnId: string, entryId: string): Promise<void> {
+    const markerIn = (id: string): ThreadTasteMarker | null => {
+      const thread = id === currentThread.id ? currentThread : getThread(id);
+      return thread ? findTasteMarker(thread.messages, learnId) : null;
+    };
+    const marker = markerIn(threadId);
+    if (!marker || marker.undone?.includes(entryId)) return;
+    const viewNow = () => (threadId === currentThread.id ? tasteMarkerView(learnId) : null);
+    viewNow()?.setUndoPending(entryId, true);
+    const result = await bridge.undoTaste({
+      learnId: marker.learnId,
+      learnIds: marker.learnIds ?? [],
+      documentId: marker.documentId,
+      key: marker.key,
+      changes: marker.changes,
+      entryId,
+    });
+    // 기다리는 사이 채팅을 옮겼을 수 있다 — 그 채팅의 저장본에 남긴다.
+    const current = threadId === currentThread.id;
+    const thread = current ? currentThread : getThread(threadId);
+    const settled = thread ? findTasteMarker(thread.messages, learnId) : null;
+    if (thread && settled && result?.ok && settleTasteUndo(settled, result)) {
+      if (current) persistCurrentThread();
+      else upsertThread(thread);
+    }
+    const view = viewNow();
+    view?.setUndoPending(entryId, false);
+    if (view && settled) view.update(settled);
+    if (!result?.ok) showToast({ message: '되돌리지 못했습니다.', durationMs: 3200 });
+  }
+
+  /** 설정 → AI → 사용자화를 열고 지시의 변경안 카드로 옮긴다. */
+  function openInstructionsProposal(): void {
+    revealInstructionsOnSettingsOpen = true;
+    requestSettingsOpen('ai-custom');
   }
 
   function handleSidebarEvent(e: SidebarEvent): void {
@@ -12411,6 +12542,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 멈춘 턴을 먼저 정착해 접고, 그다음 대기열이 다음 턴을 정한다.
         settleOpenTurnFold('interrupted');
         followUps.chatStopped();
+        break;
+      case 'taste-learned':
+        handleTasteLearned(e);
+        break;
+      case 'agent-instructions-draft':
+        pendingInstructionDrafts.add(e.draft.id);
+        syncTasteProposals();
+        break;
+      case 'agent-instructions-draft-cleared':
+        pendingInstructionDrafts.delete(e.draftId);
+        syncTasteProposals();
         break;
       case 'title-result': {
         if (e.threadId !== currentThread.id && !hasThread(e.threadId)) break;

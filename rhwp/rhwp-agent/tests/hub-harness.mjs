@@ -215,6 +215,8 @@ export async function startHub(t, {
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       // Provider usage from fake CLIs must never reach the user's usage log.
       RHWP_USAGE_DIR: path.join(workRoot, 'usage'),
+      // 테스트 허브는 Rau-0.1 학습기로 실제 모델을 부르지 않는다 (켜는 테스트는 env 로 덮어쓴다).
+      RHWP_TASTE_LEARNER: '0',
       ...(fakePi ? { RHWP_PI_DIR: piRoot } : {}),
       ...env,
     },

@@ -53,9 +53,10 @@ function memoryError(code, message) {
  *   store: import('./document-memory-store.mjs').DocumentMemoryStore,
  *   log?: (message: string) => void,
  *   broadcast?: (frame: object) => void,
- * }} deps broadcast 는 모든 Studio 창에 프레임을 보낸다.
+ *   onWrite?: (write: { documentId: string, key: string, threadId?: string, turnId?: string, changes: object[] }) => void,
+ * }} deps broadcast 는 모든 Studio 창에 프레임을 보낸다. onWrite 는 에이전트 도구의 쓰기를 알린다 (턴의 배움 표시에 모은다).
  */
-export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () => {} }) {
+export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () => {}, onWrite = () => {} }) {
   /** Studio 가 알린 문서 원본의 digest·파일 이름을 기억해 둔다. */
   function noteSource(record, documentId, { digest, fileName } = {}) {
     if (typeof documentId !== 'string' || !documentId) return;
@@ -228,7 +229,14 @@ export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () 
       origin: 'explicit',
       source: { threadId, ...(turnId ? { turnId } : {}), kind: 'turn' },
     });
-    if (result.changes.length) changed(documentId, key, result.revision);
+    if (result.changes.length) {
+      changed(documentId, key, result.revision);
+      try {
+        onWrite({ documentId, key, threadId, ...(turnId ? { turnId } : {}), changes: result.changes });
+      } catch (error) {
+        log(`document memory write listener failed: ${error?.message ?? error}`);
+      }
+    }
     return {
       revision: result.revision,
       changes: result.changes.map((change) => ({

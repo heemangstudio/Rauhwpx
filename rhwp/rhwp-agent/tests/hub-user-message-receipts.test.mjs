@@ -112,7 +112,7 @@ async function fixture(t, { synchronousProvider = false } = {}) {
   const child = spawn(process.execPath, serverArgs, {
     cwd: new URL('..', import.meta.url),
     env: {
-      ...process.env, NODE_ENV: 'production', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: token,
+      ...process.env, NODE_ENV: 'production', RHWP_TASTE_LEARNER: '0', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: token,
       RHWP_LAUNCH_ID: launchId, RHWP_WORK_DIR: workRoot, RHWP_PI_DIR: piRoot,
       RHWP_REFERENCES_DIR: path.join(workRoot, 'references'),
       RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
