@@ -5086,6 +5086,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (data.type !== 'owned_browser_activity' || data.active === false) return;
+    // 하위 에이전트 탭은 목록에만 올린다. 여러 하위 에이전트가 동시에 일해도 보던 화면은 바뀌지 않는다.
+    if (data.subagent) { if (data.tab) workbenchBrowser?.controller.accept({ tab: data.tab }); return; }
     // 따로 띄운 탭은 그 창에서 잠근다. 사이드바 브라우저는 이 탭을 걸러 내 빈 창만 하나 더 띄운다.
     if (data.tab) (floatingBrowser && data.tab.tabId === floatingBrowserTab ? floatingBrowser : ensureWorkbenchBrowser()).previewAgent(data.tab);
   });
