@@ -826,7 +826,13 @@ export async function confirmSaveBeforeReplacingDocument(
     });
 
     if (choice === 'cancel') return false;
-    if (choice === 'discard') return true;
+    if (choice === 'discard') {
+      // 버린 편집이 원본 작업 공간에 남으면 같은 파일을 다시 열 때 디스크 내용 대신 돌아온다.
+      await services.discardUnsavedWork?.().catch((error) => {
+        console.warn('[file] 버린 편집을 작업 공간에서 놓지 못했습니다:', error);
+      });
+      return true;
+    }
 
     const result = await saveCurrentDocument(services);
     if (result !== 'saved') return false;
