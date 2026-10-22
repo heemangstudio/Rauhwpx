@@ -247,11 +247,11 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   }
 
   /**
-   * CSV 표 머리에 영역 도구를 단다. 누르면 고른 칸 범위에 메모를 달 수 있는 상자가 뜨고,
+   * CSV 표 머리에 참고 도구를 단다. 칸을 고르면 도구가 밝아지고, 누르면 메모를 달 수 있는 상자가 뜨고,
    * 저장하면 원본으로 이어진 노트(메모 + Markdown 표)를 남겨 열린 채팅 입력창에 멘션으로 붙인다.
    */
   function mountCsvCapture(projectId: string, source: ProjectFileItem, csv: CsvTableView): void {
-    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위에 메모를 달아 저장', { icon: 'clip', text: '영역' });
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위를 참고로 저장', { icon: 'clip', text: '참고' });
     tool.disabled = true;
     tool.setAttribute('aria-expanded', 'false');
     const box = el('form', 'ag-pp-capture');
@@ -272,6 +272,10 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     // 같은 범위는 한 번만 남긴다. 범위를 바꾸면 다시 켜진다.
     let saved = false;
     let saving = false;
+    const sync = () => {
+      tool.disabled = saved || !csv.range.current();
+      tool.classList.toggle('ag-pp-csv-ready', !tool.disabled);
+    };
     const close = (restoreFocus: boolean) => {
       if (box.hidden) return;
       box.hidden = true;
@@ -281,7 +285,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     };
     csv.range.onChange((range) => {
       saved = false;
-      tool.disabled = !range;
+      sync();
       if (!range) close(false);
       else heading.textContent = range.ref;
     });
@@ -334,7 +338,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
         .finally(() => {
           saving = false;
           save.disabled = false;
-          tool.disabled = saved || !csv.range.current();
+          sync();
         });
     });
     tools.prepend(tool);
