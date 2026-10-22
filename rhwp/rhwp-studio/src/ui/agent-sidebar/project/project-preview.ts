@@ -8,7 +8,7 @@
  *   테두리로 보여 주고, 영역 도구로 새 조각을 그린다.
  * - 노트: 채팅과 같은 Markdown 렌더러로 그리고, 바로 고쳐 `note` 연산으로 저장한다.
  * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다. Markdown 파일은
- *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다.
+ *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다. CSV·TSV 는 표로 그리고 인용 칸을 강조한다.
  * 어떤 경우에도 원문 HTML 을 해석하지 않는다.
  */
 
@@ -34,8 +34,12 @@ import {
 } from '../wikilinks.ts';
 import { button, el, itemIconName, projectIcon } from './project-ui.ts';
 import { locateInText } from './passage-locate.ts';
-import { decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
+import { csvDelimiterOf, decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
+import { renderCsvTable, revealCsvCell } from './csv-table.ts';
 import { createPdfViewer, type PdfViewer } from './pdf-viewer.ts';
+
+/** CSV·TSV 표를 짜려고 읽는 원본 앞부분. 그리는 1,000행보다 넉넉하다. */
+const CSV_BYTES = 4 * 1024 * 1024;
 
 export interface ProjectPreviewRequest {
   itemId: string;
@@ -332,11 +336,39 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     busy();
     // 텍스트 파일은 허브가 못 읽은 인코딩(EUC-KR, UTF-16)도 원본 바이트에서 직접 푼다.
     const plainFile = item.fileKind === 'text';
+    const format = plainFile ? textFormatOf(item) : 'plain';
     let chunk: ProjectChunk | null = null;
+    // CSV·TSV 는 허브의 쪽 글자(다듬고 조각으로 이은 앞부분)가 아니라 원본 바이트로 표를 짠다.
+    if (format === 'csv') {
+      if (item.status === 'ready') chunk = await chunkFor(projectId, item.id, anchor);
+      let raw: string | null = null;
+      let partial = false;
+      try {
+        const blob = await deps.service.fileBlob(projectId, item.id);
+        partial = blob.size > CSV_BYTES;
+        raw = decodeTextBytes(new Uint8Array(await (partial ? blob.slice(0, CSV_BYTES) : blob).arrayBuffer()), { partial });
+      } catch {
+        // 원본을 못 받으면 아래 글자 보기로 넘어간다.
+      }
+      if (token !== generation) return;
+      const match = raw !== null && (chunk || quote) ? locateInText(raw, { chunk, quote }) : null;
+      // 읽은 앞부분에서 조각을 못 찾으면 허브 쪽 글자에서 강조한다.
+      if (raw !== null && (match || !chunk)) {
+        const csv = renderCsvTable(raw, { delimiter: csvDelimiterOf(item), match, partial });
+        if (csv) {
+          root.dataset.kind = 'table';
+          if (csv.truncated) meta.textContent = `처음 ${csv.rows.toLocaleString('ko-KR')}행`;
+          body.replaceChildren(csv.element);
+          body.removeAttribute('aria-busy');
+          revealCsvCell(csv);
+          return;
+        }
+      }
+    }
     let text: { page: number | null; text: string } | null = null;
     if (item.status === 'ready') {
       try {
-        chunk = await chunkFor(projectId, item.id, anchor);
+        if (format !== 'csv') chunk = await chunkFor(projectId, item.id, anchor);
         const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
         text = await deps.service.fileText(projectId, item.id, page ?? undefined);
       } catch (error) {
@@ -354,7 +386,6 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     }
     if (text.page) meta.textContent = `p.${text.page}`;
     const match = chunk || quote ? locateInText(text.text, { chunk, quote }) : null;
-    const format = plainFile ? textFormatOf(item) : 'plain';
     if (!match && format === 'markdown') {
       const view = el('div', 'ag-pp-note ag-msg ag-msg-assistant');
       renderChatMarkdown(view, text.text, { citations });

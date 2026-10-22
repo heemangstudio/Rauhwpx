@@ -256,3 +256,77 @@
   font-size: var(--ag-fs-mono);
   word-break: normal;
 }
+
+/* CSV·TSV 표. 표 상자가 두 방향으로 스크롤하고 머리글은 위에 붙어 있다. */
+.ag-pp[data-kind='table'] .ag-pp-body {
+  overflow: hidden;
+}
+
+.ag-pp-csv {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ag-pp-csv-table {
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-pp-csv-table th,
+.ag-pp-csv-table td {
+  max-width: 20em;
+  padding: 7px 12px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--ag-border);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-pp-csv-table :is(th, td):first-child {
+  padding-left: 20px;
+}
+
+.ag-pp-csv-table :is(th, td):last-child {
+  padding-right: 20px;
+}
+
+.ag-pp-csv-table th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--ag-bg);
+  color: var(--ag-text-secondary);
+  font-weight: var(--ag-fw-medium);
+}
+
+/* 첫 열(행 이름)은 옆으로 스크롤해도 왼쪽에 남는다. */
+.ag-pp-csv-table :is(th, td):first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  background: var(--ag-bg);
+}
+
+.ag-pp-csv-table th:first-child {
+  z-index: 2;
+}
+
+.ag-pp-csv-table tbody tr:hover td {
+  background: linear-gradient(var(--ag-hover), var(--ag-hover)), var(--ag-bg);
+}
+
+.ag-pp-csv-table .ag-pp-csv-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ag-pp-csv-table .ag-pp-csv-hit,
+.ag-pp-csv-table tbody tr:hover .ag-pp-csv-hit {
+  background: linear-gradient(var(--ag-cite-hit), var(--ag-cite-hit)), var(--ag-bg);
+}
