@@ -103,6 +103,11 @@ export interface FollowUpControllerDeps<Message, Bubble> {
   discardAttachments?(attachments: FollowUpAttachments): void;
   /** 허브가 받지 않은 메시지를 기록과 대화에서 걷는다. */
   unsend(message: Message, bubble: Bubble): void;
+  /**
+   * 지금 보내기를 도는 턴에 끼워 넣는다 — 턴을 끊지 않으므로 서브에이전트가 멈추지 않는다. 끼울 수 없는
+   * 항목·허브면 null(중지 뒤 다시 보내기로 간다). 받아들여지면 대화에 메시지를 남기고 true 로 끝난다.
+   */
+  steer?(item: FollowUpItem): Promise<boolean> | null;
   /** steer: 지금 보내기가 끊는다 — 편집 턴은 보낼 메시지의 턴으로 이어진다. */
   interrupt(opts?: { steer?: boolean }): void;
   /** 끼어들 메시지가 턴을 열지 못한다 — 이어 두던 편집 턴을 검토로 닫는다. */
@@ -149,6 +154,8 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
   const now = deps.now ?? (() => Date.now());
   /** 지금 보내기로 걸어 둔 항목. */
   let sendNowId: string | null = null;
+  /** 도는 턴에 끼워 넣는 중인 지금 보내기 항목 — 허브의 답을 기다린다. 그동안 항목은 대기열 맨 앞에 남는다. */
+  let steeringId: string | null = null;
   /** 이 턴의 중지는 사용자가 눌렀다. */
   let userStopRequested = false;
   /**
@@ -362,6 +369,7 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
 
   function resetRuntime(): void {
     sendNowId = null;
+    steeringId = null;
     userStopRequested = false;
     stopAwaitingTurn = false;
     errorSeen = false;
@@ -375,12 +383,21 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
   function sendNow(id: string): void {
     if (deps.readOnly() || !items().some((item) => item.id === id)) return;
     if (deps.isTurnRunning()) {
-      if (deps.sendBlockedReason() !== null) return;
+      if (deps.sendBlockedReason() !== null || steeringId !== null) return;
       commit(moveToHead(queue(), id));
       sendNowId = id;
-      // 이 중지는 사용자가 보내려고 고른 것이다. 걸어 둔 항목이 사라지면 '멈춤'으로 남는다.
-      userStopRequested = true;
-      deps.interrupt({ steer: true });
+      // 먼저 도는 턴에 끼워 넣는다. 답을 기다리는 동안 턴이 끝나면 그 끝이 걸어 둔 이 항목을 보낸다.
+      const item = items().find((entry) => entry.id === id)!;
+      const steering = deps.steer?.(item) ?? null;
+      if (steering) {
+        steeringId = id;
+        void steering.then(
+          (accepted) => steered(id, accepted),
+          () => steered(id, false),
+        );
+        return;
+      }
+      interruptToSend();
       return;
     }
     if (deps.isWorking()) {
@@ -392,6 +409,30 @@ export function createFollowUpController<Message, Bubble>(deps: FollowUpControll
     }
     if (deps.sendBlockedReason() !== null) return;
     dispatch(id);
+  }
+
+  /** 지금 보내기: 턴을 멈추고, 그 턴이 끝나면 걸어 둔 항목을 보낸다. */
+  function interruptToSend(): void {
+    // 이 중지는 사용자가 보내려고 고른 것이다. 걸어 둔 항목이 사라지면 '멈춤'으로 남는다.
+    userStopRequested = true;
+    deps.interrupt({ steer: true });
+  }
+
+  function steered(id: string, accepted: boolean): void {
+    if (steeringId !== id) return;
+    steeringId = null;
+    const queued = items().some((item) => item.id === id);
+    if (accepted) {
+      // 메시지는 도는 턴에 들어갔다 — 대화에 있고 대기열에서는 빠진다.
+      if (sendNowId === id) sendNowId = null;
+      if (queued) commit(removeItem(queue(), id));
+      settle();
+      return;
+    }
+    // 끼우지 못했다. 턴이 아직 돌고 이 항목이 여전히 걸려 있으면 예전처럼 멈추고 보낸다. 턴이 이미 끝났으면
+    // 그 끝이 걸어 둔 항목을 보냈다. 그사이 사용자가 멈추거나 항목을 지웠으면 그 뜻을 따른다.
+    if (queued && sendNowId === id && deps.isTurnRunning()) interruptToSend();
+    else settle();
   }
 
   return {

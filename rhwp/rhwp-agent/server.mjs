@@ -4826,6 +4826,49 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     });
 }
 
+/**
+ * 지금 보내기: 도는 턴을 끊지 않고 사용자 메시지를 그 턴에 끼워 넣는다. 공급자 프로세스가 살아 있으므로
+ * 서브에이전트와 백그라운드 작업이 멈추지 않는다. 끼울 수 없으면(공급자가 못 하거나 턴이 끝나 가거나
+ * 계획·압축·전환 중) chat-steer-rejected 의 STEER_UNAVAILABLE 로 답한다 — Studio 가 중지 뒤 다시 보내기로 넘긴다.
+ */
+function steerUserMessage(record, sock, msg) {
+  const messageId = typeof msg.messageId === 'string' && msg.messageId && msg.messageId.length <= 128
+    && !/[\u0000-\u001f\u007f]/.test(msg.messageId) ? msg.messageId : null;
+  const reject = (code, message) => sendJson(sock, { v: 1, type: 'chat-steer-rejected', messageId, code, message });
+  if (!messageId) return reject('INVALID_REQUEST', 'chat-steer requires messageId');
+  if (typeof msg.text !== 'string' || !msg.text.trim()) return reject('INVALID_REQUEST', 'chat-steer requires text');
+  if (msg.text.length > MAX_CHAT_MESSAGE_CHARS) {
+    return reject('INVALID_REQUEST', `chat message exceeds ${MAX_CHAT_MESSAGE_CHARS} characters`);
+  }
+  const activeSession = record.agentSession;
+  if (!activeSession) return reject('AGENT_NOT_STARTED', 'No agent session; send chat-start first.');
+  try {
+    assertMessageScope(activeSession, msg);
+  } catch (error) {
+    return reject(error?.code ?? 'INVALID_REQUEST', describeHubError(error));
+  }
+  const phase = activeSession.planning.phase;
+  if (activeSession.status !== 'running' || !activeSession.turnId || !activeSession.providerTurnStarted
+    || typeof activeSession.backend?.steer !== 'function'
+    || activeSession.manualCompaction || activeSession.pendingTransitions > 0
+    || phase === 'awaiting-approval' || phase === 'switching') {
+    return reject('STEER_UNAVAILABLE', 'The running turn cannot take a message now.');
+  }
+  const turnId = activeSession.turnId;
+  void Promise.resolve()
+    .then(() => activeSession.backend.steer(msg.text))
+    .then((accepted) => {
+      if (!accepted || record.agentSession !== activeSession) {
+        reject('STEER_UNAVAILABLE', 'The running turn cannot take a message now.');
+        return;
+      }
+      sendJson(sock, { v: 1, type: 'chat-steer-accepted', messageId, turnId });
+    }, (error) => {
+      log(`steer error: ${error?.message ?? error}`);
+      reject('STEER_UNAVAILABLE', 'The running turn cannot take a message now.');
+    });
+}
+
 async function requireAgentAuthenticated(agent) {
   if (!CLI_SETUP_AGENTS.includes(agent)) return;
   // An unauthenticated CLI turn used to fail inside the provider with a bare
@@ -6745,6 +6788,10 @@ async function handleStudioMessage(record, sock, msg) {
           code: 'STYLE_INSTRUCTION_FAILED',
           message: String(e?.message ?? e),
         }));
+      return;
+    }
+    case 'chat-steer': {
+      steerUserMessage(record, sock, msg);
       return;
     }
     case 'chat-interrupt': {
@@ -9036,6 +9083,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         v: 1,
         type: 'welcome',
         protocol: PROTOCOL_VERSION,
+        // 이 허브가 답하는 선택 기능. 예전 허브는 모르는 메시지를 답 없이 버린다 — Studio 는 여기 있을 때만 보낸다.
+        features: ['chat-steer'],
         launchId: LAUNCH_ID,
         hubInstanceId: HUB_INSTANCE_ID,
         hubSessionId: record.sessionId,

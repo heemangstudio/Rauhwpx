@@ -631,6 +631,12 @@ export function createClaudeSession(opts, {
   // 아직 안 끝난 task — 하나라도 남아 있으면 result 가 와도 턴을 닫지 않는다.
   const pendingTasks = new Set();
   let tasksSeenThisTurn = 0;
+  // 끼어든 메시지(steer) — 입력 줄의 uuid → CLI 의 command_lifecycle 을 봤는지. CLI 는 도는 턴에 들어온
+  // 메시지를 다음 도구 경계에 끼워 넣거나(같은 result) 그 뒤에 따로 돈다(또 하나의 result). 어느 쪽이든
+  // 그 uuid 의 completed 가 오기 전의 result 는 턴의 끝이 아니다.
+  const steeredInputs = new Map();
+  // 끼어든 메시지를 기다리느라 닫지 않은 result 의 출처 — completed 가 오면 그때 정착을 다시 판정한다.
+  let resultAwaitingSteer;
   // 이번 턴 result 들의 집계 — 정착 시 turn-end 에 실을 값.
   let lastStopReason;
   let resultErrorMessage;
@@ -731,6 +737,8 @@ export function createClaudeSession(opts, {
     clearSettleTimer();
     pendingTasks.clear();
     tasksSeenThisTurn = 0;
+    steeredInputs.clear();
+    resultAwaitingSteer = undefined;
     lastStopReason = undefined;
     resultErrorMessage = undefined;
     turnRateLimit = null;
@@ -1072,6 +1080,26 @@ export function createClaudeSession(opts, {
     // (result 분기가 처리 끝에 다시 예약한다.)
     clearSettleTimer();
     if (TOOL_TRACE_ENABLED) traceClaude(e);
+    if (e?.type === 'command_lifecycle') {
+      const steered = steeredInputs.get(e.command_uuid);
+      if (!steered) return;
+      steered.seen = true;
+      if (e.state !== 'completed' && e.state !== 'failed' && e.state !== 'cancelled') return;
+      steeredInputs.delete(e.command_uuid);
+      if (resultAwaitingSteer !== undefined && turnOpen && !pendingSteer()) {
+        // 따로 돈 끼어든 메시지는 completed 바로 뒤에 제 result 를 낸다 — 그 result 가 닫도록 짧게 기다린다.
+        // result 가 오면 이 예약은 지워지고, 오지 않으면(같은 result 에 끼워졌다) 앞 result 로 닫는다.
+        const resultSource = resultAwaitingSteer;
+        resultAwaitingSteer = undefined;
+        if (pendingTasks.size === 0) {
+          settleTimer = setTimeout(() => {
+            settleTimer = null;
+            settleTurn(resultSource);
+          }, TASK_SETTLE_GRACE_MS);
+        }
+      }
+      return;
+    }
     if (e?.type === 'system') {
       handleSystemEvent(e);
       return;
@@ -1259,20 +1287,75 @@ export function createClaudeSession(opts, {
       }
       // 이 result 뒤에 wake 재호출이 이어질 수 있다 — 그 텍스트는 별개 문단이다.
       needsWakeTextBreak = true;
-      if (pendingTasks.size > 0) return; // 백그라운드 fleet 진행 중 — 턴 유지.
-      if (tasksSeenThisTurn === 0) {
-        // 서브에이전트 없는 보통 턴 — 기존과 동일하게 즉시 닫는다 (지연 없음).
-        settleTurn(source);
+      if (pendingSteer()) {
+        // 끼어든 메시지가 아직 끝나지 않았다 — 그 completed 가 정착을 다시 판정한다.
+        resultAwaitingSteer = source;
         return;
       }
-      // task 가 있었던 턴: task_notification 이 큐에 남긴 wake 재호출이 이 result
-      // 뒤에 이어질 수 있다 (init→…→result 반복). 짧은 정적 후에만 닫는다.
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        settleTurn(source);
-      }, TASK_SETTLE_GRACE_MS);
+      settleAfterResult(source);
       return;
     }
+  }
+
+  /**
+   * 끝나지 않은 끼어든 메시지가 있는가. command_lifecycle 을 한 번도 내지 않은 메시지는 기다리지 않는다 —
+   * 그 이벤트가 없는 CLI 에서 턴이 영영 열려 있지 않게 한다.
+   */
+  function pendingSteer() {
+    for (const steered of steeredInputs.values()) if (steered.seen) return true;
+    return false;
+  }
+
+  function settleAfterResult(source) {
+    if (pendingTasks.size > 0) return; // 백그라운드 fleet 진행 중 — 턴 유지.
+    if (tasksSeenThisTurn === 0 && steeredInputs.size === 0) {
+      // 서브에이전트 없는 보통 턴 — 기존과 동일하게 즉시 닫는다 (지연 없음).
+      settleTurn(source);
+      return;
+    }
+    // task 가 있었던 턴: task_notification 이 큐에 남긴 wake 재호출이 이 result
+    // 뒤에 이어질 수 있다 (init→…→result 반복). 짧은 정적 후에만 닫는다.
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      settleTurn(source);
+    }, TASK_SETTLE_GRACE_MS);
+  }
+
+  /**
+   * 도는 턴에 사용자 메시지를 끼워 넣는다. 프로세스를 내리지 않으므로 서브에이전트와 백그라운드 작업이
+   * 그대로 산다. 끼울 수 없는 상태(턴이 없거나 정착 중, 압축 턴)면 false — 허브가 중지 뒤 다시 보내기로 넘긴다.
+   */
+  function steerTurn(text) {
+    if (disposed || !turnOpen || queuedTurn || turnKind !== 'message') return false;
+    const uuid = crypto.randomUUID();
+    const line = {
+      type: 'user',
+      uuid,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    };
+    if (sdkOwner) {
+      if (!sdkOwner.active || sdkOwner.settling) return false;
+      try {
+        sdkOwner.queue.push(line);
+      } catch {
+        return false;
+      }
+    } else {
+      const proc = child;
+      if (!proc || !childAlive || childLifecycleStates.get(proc)?.settling) return false;
+      proc.stdin.write(JSON.stringify(line) + '\n', (err) => {
+        if (err) process.stderr.write(`[claude] stdin write error: ${err.message}\n`);
+      });
+    }
+    steeredInputs.set(uuid, { seen: false });
+    // 막 닫으려던 result 가 있었다 — 끼어든 메시지가 끝날 때까지 턴을 연다.
+    if (settleTimer) {
+      clearSettleTimer();
+      resultAwaitingSteer = undefined;
+    }
+    needsWakeTextBreak = true;
+    return true;
   }
 
   function dispatchLegacy(text) {
@@ -1892,6 +1975,9 @@ export function createClaudeSession(opts, {
      * 수동 압축: 슬래시 명령을 켠 스폰에 "/compact" 를 한 턴으로 보낸다. instructions 는 "/compact <지시>" 로
      * 붙는다 — CLI 의 /compact 는 뒤의 글을 요약 지시로 받는다 (argumentHint, CLI 2.1.296 확인).
      */
+    steer(text) {
+      return steerTurn(text);
+    },
     compact({ instructions } = {}) {
       const hint = typeof instructions === 'string' ? instructions.replace(/\s+/g, ' ').trim() : '';
       const text = hint ? `/compact ${hint}` : '/compact';

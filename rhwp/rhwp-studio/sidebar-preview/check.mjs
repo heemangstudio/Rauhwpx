@@ -35,6 +35,7 @@ import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 import { checkComposerSendPath, checkFollowUpGap, checkFollowUpQueue } from './queue.check.mjs';
+import { checkSteerSendNow } from './steer.check.mjs';
 import { checkReloadPreview } from './reload.check.mjs';
 import { checkWriterBusyPreview } from './writer-busy.check.mjs';
 import { checkTypingGuard } from './typing-guard.check.mjs';
@@ -90,6 +91,7 @@ const focusedChecks = {
     await checkComposerSendPath(h.page, h.origin, h.artifacts);
     await checkFollowUpQueue(h.page, h.origin, h.artifacts);
     await checkFollowUpGap(h.page, h.origin, h.artifacts);
+    await checkSteerSendNow(h.page, h.origin, h.artifacts);
   },
   reload: (h) => checkReloadPreview(h.page, h.origin, h.artifacts),
   'writer-busy': (h) => checkWriterBusyPreview(h.page, h.origin, h.artifacts),

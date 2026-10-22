@@ -551,6 +551,13 @@ export interface AgentBridge {
   setWritingStyleInstruction(instruction: string): string;
   /** 현재 막힌 프로바이더 요청에 답한다. 재연결 재시도에도 같은 응답 ID를 쓴다. */
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
+  /**
+   * 지금 보내기: 도는 턴을 끊지 않고 메시지를 그 턴에 끼워 넣는다 — 서브에이전트가 계속 돈다. 허브와
+   * 공급자가 받아들이면 true. 끼울 수 없으면 false — 부른 쪽이 중지 뒤 다시 보내기(interrupt steer)로 넘긴다.
+   */
+  steerUserMessage(text: string): Promise<boolean>;
+  /** 이 허브가 끼워 넣기(chat-steer)를 안다. 턴이 끝나 가는지는 보내 봐야 안다. */
+  canSteer(): boolean;
   /** steer: 지금 보내기가 끊는 턴이다 — 열린 편집 턴을 검토로 닫지 않고 다음 턴에 잇는다. */
   interrupt(opts?: { steer?: boolean }): void;
   /** 끼어들기로 이어 둔 편집 턴을 검토로 닫는다 — 끼어든 메시지가 턴을 열지 못했다. */
@@ -1520,6 +1527,10 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 마지막 welcome 의 허브 프로세스·세션 id(옛 허브는 보내지 않는다). */
   private hubInstanceId: string | null = null;
   private hubSessionId: string | null = null;
+  /** welcome 이 알린 허브의 선택 기능. */
+  private hubFeatures = new Set<string>();
+  /** 답을 기다리는 끼워 넣기 — messageId → 결과. 연결이 끊기면 false 로 닫는다. */
+  private pendingSteers = new Map<string, { settle(accepted: boolean): void; timer: ReturnType<typeof setTimeout> }>();
   /**
    * 허브가 내려간다고 알렸다(hub-shutdown). 그 뒤 오는 turn-end 는 허브가 세션을 정리하며 끊은 턴이다 —
    * 프로바이더 실패가 아니라 허브 재시작으로 끊긴 턴으로 넘긴다(S3). 다음 welcome 에서 풀린다.
@@ -2230,6 +2241,7 @@ export class AgentBridgeImpl implements AgentBridge {
       if (this.disposed) return;
       // 응답을 기다리던 요청은 연결과 함께 사라진다 — null 로 닫아 UI 가 멈추지 않게.
       this.requests.cancelAll();
+      this.settlePendingSteers();
       if (ev.code === CLOSE_CODE_REPLACED) {
         // 다른 탭이 허브를 차지했다. 자동 재접속하면 서로 끝없이 밀어내므로
         // 이 탭이 다시 포커스를 받을 때까지 대기한다(마지막 활성 탭 우선).
@@ -2866,6 +2878,7 @@ export class AgentBridgeImpl implements AgentBridge {
         this.hubShuttingDown = false;
         this.hubInstanceId = typeof msg.hubInstanceId === 'string' && msg.hubInstanceId ? msg.hubInstanceId : null;
         this.hubSessionId = typeof msg.hubSessionId === 'string' && msg.hubSessionId ? msg.hubSessionId : null;
+        this.hubFeatures = new Set(Array.isArray(msg.features) ? msg.features.filter((f: unknown) => typeof f === 'string') : []);
         // 엔진이 멈춘 페이지가 멈추지 못한 턴은 새 페이지의 첫 welcome 에서 한 번 멈춘다 (S7).
         this.interruptStaleTurnAfterFirstWelcome(msg.session);
         let session = msg.session;
@@ -3287,6 +3300,13 @@ export class AgentBridgeImpl implements AgentBridge {
         if (msg.serviceTier === 'fast' || msg.serviceTier === 'standard') {
           this.serviceTier = msg.serviceTier;
           this.emit({ type: 'service-tier-changed', serviceTier: this.serviceTier });
+        }
+        break;
+      }
+      case 'chat-steer-accepted':
+      case 'chat-steer-rejected': {
+        if (typeof msg.messageId === 'string') {
+          this.pendingSteers.get(msg.messageId)?.settle(msg.type === 'chat-steer-accepted');
         }
         break;
       }
@@ -5470,6 +5490,41 @@ export class AgentBridgeImpl implements AgentBridge {
     });
   }
 
+  canSteer(): boolean {
+    return this.hubFeatures.has('chat-steer') && this.turnRunning
+      && this.state === 'connected' && !this.awaitingWelcome && this.ws !== null;
+  }
+
+  steerUserMessage(text: string): Promise<boolean> {
+    if (!this.canSteer()) return Promise.resolve(false);
+    const context = this.referenceContext();
+    const messageId = `steer-${++this.requestSeq}-${RECEIPT_SUFFIX}`;
+    return new Promise((resolve) => {
+      const settle = (accepted: boolean): void => {
+        const pending = this.pendingSteers.get(messageId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.pendingSteers.delete(messageId);
+        resolve(accepted);
+      };
+      // 허브는 언제나 답한다 — 답이 없으면 연결이 죽어 가는 것이다. 늦게 온 수락은 버린다.
+      this.pendingSteers.set(messageId, { settle, timer: setTimeout(() => settle(false), 15_000) });
+      const sent = this.sendJson({
+        v: AGENT_PROTOCOL_VERSION,
+        type: 'chat-steer',
+        messageId,
+        text,
+        threadId: context.threadId,
+        documentId: context.documentId,
+      });
+      if (!sent) settle(false);
+    });
+  }
+
+  private settlePendingSteers(): void {
+    for (const pending of [...this.pendingSteers.values()]) pending.settle(false);
+  }
+
   interrupt(opts?: { steer?: boolean }): void {
     this.steerInterruptRequested = opts?.steer === true;
     this.cancelChatPermissionRequest();
@@ -5740,6 +5795,7 @@ export class AgentBridgeImpl implements AgentBridge {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.clearReconnectTimer();
     this.requests.cancelAll();
+    this.settlePendingSteers();
     this.toolResponses.clear();
     this.pendingQuestionAnswer = null;
     this.persistPendingQuestionCancellation();

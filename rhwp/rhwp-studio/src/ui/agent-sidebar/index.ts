@@ -4345,6 +4345,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     },
     unsend: (message, bubble) => unrecordUserMessage(message, bubble),
+    steer: (item) => {
+      // 첨부·스킬·템플릿은 보낼 때 요청문을 새로 꾸민다 — 그런 항목은 턴을 멈추고 새 턴으로 보낸다.
+      if (item.attachments || item.skillName || activeTemplate || !item.text.trim() || !bridge.canSteer()) return null;
+      const thread = currentThread;
+      return bridge.steerUserMessage(item.text).then((accepted) => {
+        if (accepted && currentThread === thread) recordSteeredMessage(item.text);
+        return accepted;
+      });
+    },
     interrupt: (opts) => bridge.interrupt(opts),
     releaseSteer: () => bridge.releaseSteerCarryOver(),
     isTurnRunning: () => turnRunning,
@@ -6769,6 +6778,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** 허브가 받지 않은 대기 메시지를 기록과 대화에서 걷는다 — 대기열 맨 앞으로 돌아간다. */
+  /**
+   * 도는 턴에 끼워 넣은 메시지를 대화에 남긴다. 그 앞까지 흐르던 답은 도구 호출 앞처럼 진행 이정표로
+   * 접고, 이어지는 답은 이 메시지 아래 새 말풍선에서 시작한다.
+   */
+  function recordSteeredMessage(text: string): void {
+    flushAssistantBuffer({ kind: 'progress' });
+    compactStreamIntoActivity(selectedAgent);
+    closeCurrentActivityGroup();
+    const message = recordUserMessage(text);
+    const bubble = renderUserMessage(message);
+    followConversation = true;
+    appendConversation(bubble);
+    scrollConversationToMessage(bubble, { smooth: true });
+  }
+
   function unrecordUserMessage(message: ThreadMessage, bubble: HTMLElement): void {
     // 그 사이 허브가 스스로 연 턴이 실패해도 이 메시지를 다시 보낼 요청으로 삼지 않는다 — 대기열에 있다.
     failureNotices.forgetSend(message);

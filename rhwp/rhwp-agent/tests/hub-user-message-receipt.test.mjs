@@ -186,6 +186,39 @@ test('a rejected user message echoes its messageId, and the next accepted one st
   assert.equal(studio.frames.slice(beforeC).some((frame) => frame.type === 'chat-error'), false);
 });
 
+test('a steer the provider cannot take is refused with its messageId and leaves the turn running', { timeout: 40_000 }, async (t) => {
+  const port = await startHub(t);
+  const studio = await openStudio(port, 'user-message-steer');
+  t.after(() => studio.close());
+  const welcome = await studio.next((frame) => frame.type === 'welcome');
+  assert.ok(welcome.features.includes('chat-steer'), 'Studio only steers a hub that answers chat-steer');
+
+  studio.send({ type: 'chat-start', agent: 'pi', threadId: 'thread-steer', documentId: 'document-steer' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  const scope = { threadId: started.threadId, documentId: started.documentId };
+
+  // 턴이 돌기 전의 끼워 넣기는 받을 턴이 없다.
+  studio.send({ type: 'chat-steer', ...scope, messageId: 's-idle', text: 'Too early.' });
+  const idle = await studio.next((frame) => frame.type === 'chat-steer-rejected' && frame.messageId === 's-idle');
+  assert.equal(idle.code, 'STEER_UNAVAILABLE');
+
+  studio.send({ type: 'chat-user-message', ...scope, text: 'First request.' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+
+  // Pi 는 도는 턴에 메시지를 끼우지 못한다 — 거절하고 턴은 건드리지 않는다. Studio 는 멈추고 다시 보낸다.
+  const beforeSteer = studio.frames.length;
+  studio.send({ type: 'chat-steer', ...scope, messageId: 's-pi', text: 'Add a table.' });
+  const refused = await studio.next((frame) => frame.type === 'chat-steer-rejected', { after: beforeSteer });
+  assert.equal(refused.messageId, 's-pi');
+  assert.equal(refused.code, 'STEER_UNAVAILABLE');
+  assert.equal(studio.frames.slice(beforeSteer).some((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end'), false);
+
+  // 다른 채팅의 끼워 넣기는 범위로 거절한다.
+  studio.send({ type: 'chat-steer', threadId: 'another-thread', documentId: scope.documentId, messageId: 's-stale', text: 'Elsewhere.' });
+  const stale = await studio.next((frame) => frame.type === 'chat-steer-rejected' && frame.messageId === 's-stale');
+  assert.equal(stale.code, 'STALE_CHAT_SCOPE');
+});
+
 test('a scope rejection also echoes the messageId', { timeout: 40_000 }, async (t) => {
   const port = await startHub(t);
   const studio = await openStudio(port, 'user-message-receipt-scope');
