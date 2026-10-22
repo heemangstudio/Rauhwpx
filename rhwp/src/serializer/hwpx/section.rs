@@ -1324,6 +1324,11 @@ impl RunSplitter {
                 restore_empty_text_children(&self.content, &run, self.prefix.as_ref())
             }) {
                 Ok(content) => self.runs.push_str(&content),
+                // 빈 hp:t 자리만 복원하지 못한 경우(위치 없는 책갈피가 다른 run 에 붙는 등)는
+                // 빈 hp:t 없이 방출된 내용 그대로 쓴다. 빈 hp:t 는 표시 내용이 없으므로
+                // 문서 전체 저장을 거부하는 것보다 낫다. secPr/colPr 접두 자식이 걸린
+                // run 은 구역 설정을 잃을 수 있어 종전대로 오류로 둔다.
+                Err(_) if run.prefix_children.is_empty() => self.runs.push_str(&self.content),
                 Err(message) => {
                     self.fragment_error.get_or_insert_with(|| {
                         format!(
@@ -1588,12 +1593,33 @@ fn emit_field_end(
         // id(f.field_id, beginIDRef 로 사용)와 별개 값 — 파싱된 fr.end_field_id 를 그대로
         // 되돌려 써야 한다. 과거엔 write_field_end 로 beginIDRef 만 쓰고 fieldid 는 항상
         // 누락시켰다(고아 fieldEnd 경로만 write_field_end_full 로 보존, 비대칭).
-        let xml_result = if fr.end_field_id == 0 {
-            writer_to_string(|w| write_field_end(w, f.field_id))
+        // fieldEnd 의 fieldid 가 없으면 fieldBegin 과 같은 값(원본 instance id 또는 한컴의
+        // 종류별 값)을 쓴다.
+        let end_field_id = if fr.end_field_id != 0 {
+            Some(fr.end_field_id)
         } else {
-            writer_to_string(|w| write_field_end_full(w, f.field_id, fr.end_field_id))
+            f.instance_id
+                .or_else(|| super::field::hancom_field_type_id(f.field_type))
+        };
+        let xml_result = match end_field_id {
+            None => writer_to_string(|w| write_field_end(w, f.field_id)),
+            Some(id) => writer_to_string(|w| write_field_end_full(w, f.field_id, id)),
         };
         let xml = xml_result?;
+        // 손대지 않은 누름틀(속성 bit 15 == 0)은 한글 저장본에서 안내문을 필드 값으로
+        // 가진다. 로드 때 조판을 위해 비운 값(`initial_text`)을 저장 때 되돌린다 — 빈 채로
+        // 저장하면 빈 누름틀이 이어진 문서를 한글이 열지 못했다 (issue-986-receipt).
+        // 원래 빈 필드는 그대로 둔다.
+        if fr.start_char_idx == fr.end_char_idx
+            && f.field_type == crate::model::control::FieldType::ClickHere
+            && f.properties & (1 << 15) == 0
+        {
+            if let Some(guide) = f.initial_text.as_deref().filter(|text| !text.is_empty()) {
+                out.push_str("<hp:t>");
+                out.push_str(&super::utils::xml_escape(guide));
+                out.push_str("</hp:t>");
+            }
+        }
         out.push_str("<hp:ctrl>");
         out.push_str(&xml);
         out.push_str("</hp:ctrl>");
@@ -1603,7 +1629,14 @@ fn emit_field_end(
 
 /// 고아(다단락) fieldEnd 를 `<hp:ctrl><hp:fieldEnd .../></hp:ctrl>` 로 방출 (Task #1556).
 fn emit_orphan_field_end(out: &mut String, ofe: &OrphanFieldEnd) -> Result<(), SerializeError> {
-    let xml = writer_to_string(|w| write_field_end_full(w, ofe.begin_id_ref, ofe.field_id))?;
+    // 앞 문단에서 시작한 필드의 끝은 fieldid 로 짝을 찾는다. HWP5 출처는 값이 없으므로
+    // 짝 필드 종류의 한컴 값을 쓴다 — 없으면 한글이 문서를 열지 못했다(차례 필드).
+    let field_id = if ofe.field_id != 0 {
+        ofe.field_id
+    } else {
+        super::field::hancom_field_type_id_for_ctrl(ofe.begin_ctrl_id).unwrap_or(0)
+    };
+    let xml = writer_to_string(|w| write_field_end_full(w, ofe.begin_id_ref, field_id))?;
     out.push_str("<hp:ctrl>");
     out.push_str(&xml);
     out.push_str("</hp:ctrl>");
@@ -1947,6 +1980,19 @@ fn render_runs_in_paragraph_scope(
     // 메인 경로는 종전엔 hoist 전담이라 방출 지점이 없었다 — 첫 문단(hidden 슬롯 정합)이
     // 메인 경로로 진입하면서 슬롯 사이 in-order 방출이 필요해졌다.
     let mut bm_done = vec![false; para.controls.len()];
+    // HWP5 출처 문단의 책갈피는 8유닛 확장 컨트롤로 문자 위치를 가진다. 그 위치를 써야
+    // 문단 앞 책갈피가 본문 뒤로 밀려나지 않는다 — 밀린 책갈피가 든 HWPX 를 한글이
+    // 열지 못했다(sungeo.hwp). HWPX 출처(authored runs)는 위치 정보가 없어 종전대로 둔다.
+    let bookmark_positions: Vec<usize> = if para.authored_text_runs.is_none()
+        && para
+            .controls
+            .iter()
+            .any(|ctrl| matches!(ctrl, Control::Bookmark(_)))
+    {
+        para.control_text_positions()
+    } else {
+        Vec::new()
+    };
 
     // 빈 문단(text == "")의 0-length 필드: 메인 루프가 실행되지 않아
     // pre-char 검사를 통과하지 못하므로 루프 전에 slots → fieldEnd 순으로 방출한다.
@@ -2179,6 +2225,44 @@ fn render_runs_in_paragraph_scope(
             continue;
         }
 
+        if bm_inorder && !bookmark_positions.is_empty() {
+            let upto = slot_ctrl_indices
+                .get(slot_idx)
+                .copied()
+                .unwrap_or(usize::MAX);
+            let due: Vec<usize> = para
+                .controls
+                .iter()
+                .enumerate()
+                .filter(|(ci, ctrl)| {
+                    *ci < upto
+                        && !bm_done[*ci]
+                        && matches!(ctrl, Control::Bookmark(_))
+                        && bookmark_positions.get(*ci).is_some_and(|pos| *pos <= idx)
+                })
+                .map(|(ci, _)| ci)
+                .collect();
+            if !due.is_empty() {
+                flush_text_fragment(
+                    &mut splitter.content,
+                    &mut text_buf,
+                    &mut text_origins,
+                    &para.tab_extended,
+                    &mut tab_idx,
+                    max_bytes.saturating_sub(splitter.runs.len()),
+                )?;
+                for ci in due {
+                    if let Control::Bookmark(bm) = &para.controls[ci] {
+                        let xml = writer_to_string(|w| write_bookmark(w, bm))?;
+                        splitter.content.push_str("<hp:ctrl>");
+                        splitter.content.push_str(&xml);
+                        splitter.content.push_str("</hp:ctrl>");
+                        bm_done[ci] = true;
+                    }
+                }
+            }
+        }
+
         // 문자 위치의 경계 — 문자는 새 run 소속 (규칙 1)
         if splitter.needs_cut(char_pos) {
             flush_text_fragment(
@@ -2340,6 +2424,27 @@ fn render_runs_in_paragraph_scope(
     }
     if bm_inorder {
         // 마지막 슬롯 뒤(컨트롤 순서 후미)의 trailing bookmark.
+        // 원본에서 표 뒤 별도 run(책갈피 + 빈 hp:t)에 있던 책갈피는 그 run 경계를
+        // 먼저 적용해야 같은 run 으로 돌아간다. 경계를 미루면 책갈피가 앞 run 에
+        // 붙고, 작성된 run 의 자식 수 검사가 실패해 문서 전체 저장이 거부됐다.
+        let has_trailing_bookmark = para
+            .controls
+            .iter()
+            .enumerate()
+            .any(|(i, ctrl)| !bm_done[i] && matches!(ctrl, Control::Bookmark(_)));
+        let text_end = para
+            .text
+            .chars()
+            .last()
+            .zip(para.char_offsets.last())
+            .map_or(0, |(ch, pos)| pos.saturating_add(char_utf16_width(ch)));
+        if para.authored_text_runs.is_some()
+            && has_trailing_bookmark
+            && text_buf.is_empty()
+            && expected_utf16_pos >= text_end
+        {
+            splitter.cut_before(expected_utf16_pos);
+        }
         emit_inorder_bookmarks(&mut splitter.content, para, &mut bm_done, usize::MAX)?;
     }
 
@@ -3209,7 +3314,7 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> Result<Strin
             &cv.common,
             &cv.drawing.caption,
             Some(&cv.drawing),
-            &cv.points,
+            NO_PTS,
         ),
         ShapeObject::Group(_) => unreachable!(),
         ShapeObject::Picture(pic) => {
@@ -3246,6 +3351,24 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> Result<Strin
             hc("ax1", &a.axis1),
             hc("ax2", &a.axis2),
         ),
+        // 곡선은 한컴처럼 이웃한 두 점을 잇는 `<hp:seg>` 로 쓴다. 다각형식 `<hc:pt>` 로 쓰면
+        // 한글이 곡선이 든 묶음 개체를 열다가 멈췄다(nested_group_vectors.hwpx).
+        ShapeObject::Curve(cv) => cv
+            .points
+            .windows(2)
+            .enumerate()
+            .map(|(i, pair)| {
+                let kind = if cv.segment_types.get(i).copied().unwrap_or(1) == 0 {
+                    "LINE"
+                } else {
+                    "CURVE"
+                };
+                format!(
+                    r#"<hp:seg type="{kind}" x1="{}" y1="{}" x2="{}" y2="{}"/>"#,
+                    pair[0].x, pair[0].y, pair[1].x, pair[1].y
+                )
+            })
+            .collect(),
         _ => String::new(),
     };
     render_common_shape_xml(tag, c, caption, drawing, points, &geom_tail, ctx)
@@ -3913,7 +4036,9 @@ fn render_page_border_fill(ty: &str, pbf: &crate::model::page::PageBorderFill) -
     };
     format!(
         r#"<hp:pageBorderFill type="{ty}" borderFillIDRef="{}" textBorder="{}" headerInside="{}" footerInside="{}" fillArea="{}"><hp:offset left="{}" right="{}" top="{}" bottom="{}"/></hp:pageBorderFill>"#,
-        pbf.border_fill_id,
+        // HWP5 는 0 을 "테두리 없음"으로 쓰지만 HWPX 테두리/배경 ID 는 1부터다. 0 을 그대로
+        // 쓰면 없는 테두리를 가리켜 한글이 문서를 열지 못했다. 한컴 저장본처럼 1 로 쓴다.
+        pbf.border_fill_id.max(1),
         text_border,
         header_inside,
         footer_inside,
@@ -5589,7 +5714,7 @@ mod tests {
             &xml[..500.min(xml.len())]
         );
         assert!(
-            xml.contains(r#"<hp:ctrl><hp:fieldEnd beginIDRef="99"/></hp:ctrl>"#),
+            xml.contains(r#"<hp:ctrl><hp:fieldEnd beginIDRef="99""#),
             "fieldEnd must be emitted: {}",
             &xml[..500.min(xml.len())]
         );
@@ -5666,7 +5791,7 @@ mod tests {
             &xml[..500.min(xml.len())]
         );
         assert!(
-            xml.contains(r#"<hp:ctrl><hp:fieldEnd beginIDRef="55"/></hp:ctrl>"#),
+            xml.contains(r#"<hp:ctrl><hp:fieldEnd beginIDRef="55""#),
             "fieldEnd must be emitted: {}",
             &xml[..500.min(xml.len())]
         );
@@ -5764,7 +5889,7 @@ mod tests {
             &xml[..400.min(xml.len())]
         );
         assert!(
-            xml.contains(r#"<hp:fieldEnd beginIDRef="99"/>"#),
+            xml.contains(r#"<hp:fieldEnd beginIDRef="99""#),
             "fieldEnd must be emitted: {}",
             &xml[..400.min(xml.len())]
         );

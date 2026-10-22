@@ -350,6 +350,15 @@ pub(crate) fn parse_common_obj_attr(ctrl_data: &[u8]) -> CommonObjAttr {
     common.size_protect = attr & (1 << 20) != 0;
     common.hwp5_gen_shape_attr_bit26 = attr & (1 << 26) != 0;
     common.hwp5_gen_shape_attr_bit28 = attr & (1 << 28) != 0;
+    // 개체 번호 매김 종류 (bit 26-27: 1 그림, 2 표, 3 수식). 읽지 않으면 HWP 를 HWPX 로
+    // 저장할 때 표·그림이 numberingType="NONE" 이 되어, 그 표를 가리키는 상호 참조
+    // ("표 14 참조")가 한글에서 "표 1" 로 바뀌었다.
+    common.numbering_type = match (attr >> 26) & 0x03 {
+        1 => crate::model::shape::ObjectNumberingType::Picture,
+        2 => crate::model::shape::ObjectNumberingType::Table,
+        3 => crate::model::shape::ObjectNumberingType::Equation,
+        _ => crate::model::shape::ObjectNumberingType::None,
+    };
     common.vert_rel_to = match (attr >> 3) & 0x03 {
         1 => VertRelTo::Page,
         2 => VertRelTo::Para,

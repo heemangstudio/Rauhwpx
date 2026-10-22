@@ -1144,6 +1144,7 @@ fn collect_fields_from_paragraph(
                                 memo_text_direction: None,
                                 raw_parameters_xml: None,
                                 hyperlink_format: None,
+                                initial_text: None,
                             },
                             location: loc,
                             value,
@@ -1471,6 +1472,7 @@ fn insert_click_here_field_in_para(
         memo_text_direction: None,
         raw_parameters_xml: None,
         hyperlink_format: None,
+        initial_text: None,
     };
 
     para.controls.insert(insert_idx, Control::Field(field));
@@ -1686,6 +1688,7 @@ mod tests {
             memo_text_direction: None,
             raw_parameters_xml: None,
             hyperlink_format: None,
+            initial_text: None,
         })
     }
 

@@ -375,6 +375,7 @@ mod raw_inline_tab_roundtrip;
 mod render_manifest_json_contract;
 mod render_p23_pdf_export_contract;
 mod render_p37_pdf_backend_cli;
+mod save_corruption_regressions;
 mod saved_split_row_height;
 mod saved_table_row_endpoints;
 mod search_json_contract;

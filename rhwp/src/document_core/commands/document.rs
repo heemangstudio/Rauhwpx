@@ -1816,6 +1816,156 @@ fn hwp_structure_counts(document: &Document) -> (HwpStructureCounts, Vec<String>
     (counts, losses)
 }
 
+/// 손대지 않은 누름틀(속성 bit 15 == 0)은 한글 저장본에서 안내문을 필드 값으로 가진다.
+/// 로드 때 `clear_initial_field_texts` 가 조판을 위해 그 값을 비우고 `initial_text` 에
+/// 남기므로, HWP 로 저장할 때 그 값을 그대로 되돌린다. 빈 채로 쓴 HWP 를 한글이 열지
+/// 못했다(누름틀 서식 문서). 원래 빈 필드(`initial_text` 없음)는 그대로 둔다.
+///
+/// 빈 필드는 FIELD_BEGIN(8) + FIELD_END(8) 가 다음 문자 앞 갭에 붙어 있다. 안내문은
+/// 그 사이(다음 문자 위치 - 8)에 넣고, 뒤의 UTF-16 위치를 모두 안내문 길이만큼 민다.
+/// 같은 위치에서 시작하는 필드가 둘 이상이거나 갭이 다른 모양이면 건드리지 않는다.
+/// HWPX 는 직렬화기가 같은 값을 직접 쓴다 (`emit_field_end`).
+fn with_hwp_click_here_guide_texts(document: Cow<'_, Document>) -> Cow<'_, Document> {
+    use crate::model::control::FieldType;
+    fn fills(para: &Paragraph) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        for (index, range) in para.field_ranges.iter().enumerate() {
+            if range.start_char_idx != range.end_char_idx {
+                continue;
+            }
+            if para
+                .field_ranges
+                .iter()
+                .enumerate()
+                .any(|(other, r)| other != index && r.start_char_idx == range.start_char_idx)
+            {
+                continue;
+            }
+            let Some(Control::Field(field)) = para.controls.get(range.control_idx) else {
+                continue;
+            };
+            if field.field_type != FieldType::ClickHere || field.properties & (1 << 15) != 0 {
+                continue;
+            }
+            if let Some(guide) = field
+                .initial_text
+                .as_deref()
+                .filter(|text| !text.is_empty())
+            {
+                out.push((index, guide.to_string()));
+            }
+        }
+        out
+    }
+    fn fill(para: &mut Paragraph, index: usize, guide: &str) {
+        let s = para.field_ranges[index].start_char_idx;
+        let char_len = para.text.chars().count();
+        if para.char_offsets.len() != char_len || s > char_len || para.char_count == 0 {
+            return;
+        }
+        // 다음 문자의 UTF-16 위치 (문단 끝이면 끝 표지 위치).
+        let next = if s < char_len {
+            para.char_offsets[s]
+        } else {
+            para.char_count - 1
+        };
+        let previous_end = if s == 0 {
+            0
+        } else {
+            let ch = para.text.chars().nth(s - 1).unwrap_or(' ');
+            para.char_offsets[s - 1] + if ch == '\t' { 8 } else { ch.len_utf16() as u32 }
+        };
+        // 갭에 이 필드의 BEGIN/END 두 칸이 있어야 한다.
+        if next < previous_end + 16 {
+            return;
+        }
+        let at = next - 8;
+        let units: u32 = guide.encode_utf16().count() as u32;
+        let added = guide.chars().count();
+        let mut text: Vec<char> = para.text.chars().collect();
+        let mut offsets = para.char_offsets.clone();
+        for offset in offsets.iter_mut().skip(s) {
+            *offset += units;
+        }
+        let mut position = at;
+        let mut inserted = Vec::with_capacity(added);
+        for ch in guide.chars() {
+            inserted.push(position);
+            position += ch.len_utf16() as u32;
+        }
+        offsets.splice(s..s, inserted);
+        text.splice(s..s, guide.chars());
+        para.text = text.into_iter().collect();
+        para.char_offsets = offsets;
+        para.char_count += units;
+        for shape in &mut para.char_shapes {
+            if shape.start_pos >= at {
+                shape.start_pos += units;
+            }
+        }
+        // line_segs/range_tags 는 로드 때 안내문을 비우면서도 줄이지 않았다 (안내문을
+        // 포함한 원본 값). 그대로 두어야 원본과 같아진다 — 밀면 줄 시작이 문단 끝을
+        // 넘어 한글이 문서를 열지 못한다.
+        for (other, range) in para.field_ranges.iter_mut().enumerate() {
+            if other == index {
+                range.end_char_idx = s + added;
+                continue;
+            }
+            if range.start_char_idx > s {
+                range.start_char_idx += added;
+            }
+            if range.end_char_idx > s {
+                range.end_char_idx += added;
+            }
+        }
+        for origin in &mut para.special_space_origins {
+            if origin.char_idx >= s {
+                origin.char_idx += added;
+            }
+        }
+        for end in &mut para.orphan_field_ends {
+            if end.char_idx > s {
+                end.char_idx += added;
+            }
+        }
+        if let Some(terminal) = para.para_text_terminal.as_mut() {
+            if *terminal >= at {
+                *terminal += units;
+            }
+        }
+        para.has_para_text = true;
+    }
+    let mut needed = false;
+    for section in &document.sections {
+        if section.raw_stream.is_some() {
+            continue;
+        }
+        visit_paragraphs(&section.paragraphs, &mut |para| {
+            needed |= !fills(para).is_empty()
+        });
+    }
+    if !needed {
+        return document;
+    }
+    let mut document = document.into_owned();
+    for section in &mut document.sections {
+        if section.raw_stream.is_some() {
+            continue;
+        }
+        visit_paragraphs_mut(&mut section.paragraphs, &mut |para| {
+            let mut pending = fills(para);
+            // 뒤쪽 필드부터 채워 앞쪽 필드의 위치를 그대로 둔다.
+            pending.sort_by_key(|(index, _)| {
+                std::cmp::Reverse(para.field_ranges[*index].start_char_idx)
+            });
+            for (index, guide) in pending {
+                fill(para, index, &guide);
+            }
+        });
+    }
+    Cow::Owned(document)
+}
+
 fn document_for_hwp_export(
     document: &Document,
     source_format: crate::parser::FileFormat,
@@ -2217,10 +2367,6 @@ fn count_control(control: &Control, counts: &mut HwpStructureCounts, losses: &mu
         Control::Ruby(ruby) => {
             counts.text_count +=
                 (ruby.main_text.chars().count() + ruby.ruby_text.chars().count()) as u64;
-            losses.push(
-                "Ruby has no validated HWP5 lowering; native HWP opaque Ruby records are preserved"
-                    .to_string(),
-            );
         }
         Control::Unknown(unknown) => {
             counts.opaque_control_bytes += unknown.raw_ctrl_data.len() as u64;
@@ -5215,6 +5361,7 @@ impl DocumentCore {
     pub fn export_hwp_with_adapter(&self) -> Result<Vec<u8>, HwpError> {
         let normalized = self.leading_host_export_document(false)?;
         let export_document = document_for_hwp_export(&normalized, self.source_format);
+        let export_document = with_hwp_click_here_guide_texts(export_document);
         serialize_validated_hwp(&export_document)
     }
 
@@ -6913,6 +7060,11 @@ impl DocumentCore {
                     continue;
                 }
                 let removed_len = end - start;
+                // 비운 값(안내문 + 한컴이 붙인 뒤 공백)을 필드에 남겨 저장 때 그대로 되돌린다.
+                let control_idx = para.field_ranges[fri].control_idx;
+                if let Some(Control::Field(field)) = para.controls.get_mut(control_idx) {
+                    field.initial_text = Some(chars[start..end].iter().collect());
+                }
                 let new_text: String = chars[..start].iter().chain(chars[end..].iter()).collect();
                 para.text = new_text;
                 para.special_space_origins

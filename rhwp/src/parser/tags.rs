@@ -232,6 +232,32 @@ pub const FIELD_TOC: u32 = ctrl_id(b"%toc");
 /// 필드: 알 수 없음
 pub const FIELD_UNKNOWN: u32 = ctrl_id(b"%unk");
 
+/// 필드 타입의 HWP5 CTRL_HEADER ctrl_id.
+///
+/// HWPX 는 ctrl_id 를 담지 않으므로 HWPX·HWP3 출처 필드는 이 매핑으로 ctrl_id 를 얻는다.
+/// 알 수 없는 타입은 `%unk` 로 둔다 — 0 을 쓰면 HWP 재로드 시 필드가 아닌 미지원
+/// 컨트롤이 되어 필드(메모 등)가 사라진다.
+pub fn field_type_ctrl_id(field_type: crate::model::control::FieldType) -> u32 {
+    use crate::model::control::FieldType;
+    match field_type {
+        FieldType::Date => FIELD_DATE,
+        FieldType::DocDate => FIELD_DOCDATE,
+        FieldType::Path => FIELD_PATH,
+        FieldType::Bookmark => FIELD_BOOKMARK,
+        FieldType::MailMerge => FIELD_MAILMERGE,
+        FieldType::CrossRef => FIELD_CROSSREF,
+        FieldType::Formula => FIELD_FORMULA,
+        FieldType::ClickHere => FIELD_CLICKHERE,
+        FieldType::Summary => FIELD_SUMMARY,
+        FieldType::UserInfo => FIELD_USERINFO,
+        FieldType::Hyperlink => FIELD_HYPERLINK,
+        FieldType::Memo => FIELD_MEMO,
+        FieldType::PrivateInfoSecurity => FIELD_PRIVATE_INFO,
+        FieldType::TableOfContents => FIELD_TOC,
+        FieldType::Unknown => FIELD_UNKNOWN,
+    }
+}
+
 /// ctrl_id가 필드 컨트롤인지 확인 (첫 바이트가 '%')
 pub const fn is_field_ctrl_id(id: u32) -> bool {
     (id >> 24) == b'%' as u32

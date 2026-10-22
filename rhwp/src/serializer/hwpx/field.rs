@@ -69,10 +69,44 @@ fn xml_escape_attr(s: &str) -> String {
 /// `<hp:fieldBegin>` — 필드 시작 마커 (자식 없는 경우 자기닫힘).
 ///
 /// HWPX 필드는 텍스트 흐름 안에서 `<hp:fieldBegin>` ~ 텍스트 ~ `<hp:fieldEnd>` 쌍으로 표현된다.
+/// 한컴 저장본이 필드 종류마다 쓰는 `fieldid` 값 (종류마다 같은 값).
+///
+/// HWP5 출처 필드에는 이 값이 없다. `fieldid` 없이 여러 문단에 걸친 필드를 쓰면 한글이
+/// 끝 표지를 짝짓지 못해 문서를 열지 못했다(차례 필드). 알려진 종류만 채운다.
+pub(crate) fn hancom_field_type_id(field_type: FieldType) -> Option<u32> {
+    match field_type {
+        FieldType::ClickHere => Some(627_272_811),
+        FieldType::Formula => Some(627_469_685),
+        FieldType::Hyperlink => Some(627_600_491),
+        FieldType::Bookmark => Some(627_207_531),
+        FieldType::Memo => Some(623_209_829),
+        FieldType::TableOfContents => Some(628_387_683),
+        _ => None,
+    }
+}
+
+/// HWP5 필드 ctrl_id 로 [`hancom_field_type_id`] 를 찾는다 (고아 fieldEnd 용).
+pub(crate) fn hancom_field_type_id_for_ctrl(ctrl_id: u32) -> Option<u32> {
+    use crate::parser::tags;
+    let field_type = match ctrl_id {
+        tags::FIELD_CLICKHERE => FieldType::ClickHere,
+        tags::FIELD_FORMULA => FieldType::Formula,
+        tags::FIELD_HYPERLINK => FieldType::Hyperlink,
+        tags::FIELD_BOOKMARK => FieldType::Bookmark,
+        tags::FIELD_MEMO => FieldType::Memo,
+        tags::FIELD_TOC => FieldType::TableOfContents,
+        _ => return None,
+    };
+    hancom_field_type_id(field_type)
+}
+
 pub fn write_field_begin<W: Write>(w: &mut Writer<W>, field: &Field) -> Result<(), SerializeError> {
     let id_str = field.field_id.to_string();
     let ft = field_type_str(field.field_type);
-    let fieldid_str = field.instance_id.map(|v| v.to_string());
+    let fieldid_str = field
+        .instance_id
+        .or_else(|| hancom_field_type_id(field.field_type))
+        .map(|v| v.to_string());
     let editable_str = bool01(field.is_editable_in_form());
     match &fieldid_str {
         Some(fieldid_str) => empty_tag(
@@ -218,7 +252,8 @@ fn field_type_str(t: FieldType) -> &'static str {
         Hyperlink => "HYPERLINK",
         Memo => "MEMO",
         PrivateInfoSecurity => "PRIVATE_INFO",
-        TableOfContents => "TABLE_OF_CONTENTS",
+        // 한컴 저장본 표기 (파서는 TABLE_OF_CONTENTS 도 받는다).
+        TableOfContents => "TABLEOFCONTENTS",
     }
 }
 
@@ -311,9 +346,10 @@ mod tests {
         assert_eq!(field_type_str(FieldType::Hyperlink), "HYPERLINK");
         assert_eq!(field_type_str(FieldType::Bookmark), "BOOKMARK");
         assert_eq!(field_type_str(FieldType::Date), "DATE");
+        // 한컴 저장본 표기. 파서는 "TABLE_OF_CONTENTS" 도 받는다.
         assert_eq!(
             field_type_str(FieldType::TableOfContents),
-            "TABLE_OF_CONTENTS"
+            "TABLEOFCONTENTS"
         );
     }
 
@@ -323,9 +359,10 @@ mod tests {
         // 재파싱 시 FieldType::Unknown 으로 떨어졌다(TOC 필드 정체성 소실). 파서가
         // 실제로 받아들이는 "TABLE_OF_CONTENTS"/"TABLEOFCONTENTS" 중 하나와 일치해야
         // HWPX 저장→재로드 라운드트립에서 TOC 필드가 살아남는다.
+        // 한컴 저장본 표기. 파서는 "TABLE_OF_CONTENTS" 도 받는다.
         assert_eq!(
             field_type_str(FieldType::TableOfContents),
-            "TABLE_OF_CONTENTS"
+            "TABLEOFCONTENTS"
         );
     }
 
