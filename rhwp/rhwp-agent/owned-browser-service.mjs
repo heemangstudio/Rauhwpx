@@ -61,7 +61,8 @@ const challengeFor = (tab) => {
   } catch { return null; }
 };
 const sameScope = (actor, tab) => tab.scope !== 'global' && actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
-const canAccessTab = (actor, tab) => tab.scope === 'global' || sameScope(actor, tab);
+// 하위 에이전트는 자기 탭만 쓴다. 사용자 탭은 루트 대화와 사용자만 조작해 서로의 화면과 입력을 빼앗지 않는다.
+const canAccessTab = (actor, tab) => tab.scope === 'global' ? !actor.taskId : sameScope(actor, tab);
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
 // Playwright 실패는 첫 줄 사유와 복구 안내만 남긴다. URL·따옴표 안 값·페이지 예외 문구는 넣지 않는다.
@@ -283,7 +284,7 @@ export function createOwnedBrowserService(options = {}) {
   const faviconFor = (tab) => tab.snapshot?.passwordProtected || tab.passwordShielded ? undefined : favicons.peek(faviconOrigin(tab.page?.url?.() ?? tab.url, isWorkspace)) ?? undefined;
   const humanTab = (tab) => { const current = descriptor(tab), faviconUrl = faviconFor(tab); return faviconUrl ? { ...current, faviconUrl } : current; };
   const publish = (tab) => emit('owned_browser_tab', { tab: humanTab(tab), runtime: runtimeInfo() });
-  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), runtime: runtimeInfo() }); };
+  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, ...(actor.taskId ? { subagent: true } : {}), tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
     const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));

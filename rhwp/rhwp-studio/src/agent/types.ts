@@ -817,6 +817,8 @@ export interface BrowserEvent {
   tabId?: string;
   frame?: BrowserFrame;
   job?: BrowserDownload;
+  /** 하위 에이전트의 활동. 사이드바 화면을 옮기지 않는다. */
+  subagent?: boolean;
   [key: string]: unknown;
 }
 export interface BrowserResult {

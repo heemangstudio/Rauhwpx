@@ -129,3 +129,22 @@ test('the desktop browser reports ready before its first tab even without manage
   assert.equal(readiness.installed, true);
   assert.equal(readiness.state, 'ready');
 });
+
+test('each subagent drives only its own tabs and never the user tab the root agent shares', async (t) => {
+  const events = [];
+  const browser = await service(t, { runtimeFactory: fakeRuntime(), onEvent: event => events.push(event) });
+  const root = { ...agent, agentId: 'chat:root' };
+  const first = { ...agent, agentId: 'chat:task:a', taskId: 'a' };
+  const second = { ...agent, agentId: 'chat:task:b', taskId: 'b' };
+  const shared = (await browser.request(human, 'open', { url: 'https://example.com/' })).tab;
+  assert.deepEqual((await browser.request(root, 'status', {})).tabs.map(tab => tab.tabId), [shared.tabId]);
+  assert.deepEqual((await browser.request(first, 'status', {})).tabs, []);
+  await assert.rejects(browser.request(first, 'snapshot', { tabId: shared.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+
+  const own = (await browser.request(first, 'open', { url: 'https://example.com/a' })).tab;
+  assert.deepEqual((await browser.request(first, 'status', {})).tabs.map(tab => tab.tabId), [own.tabId]);
+  await assert.rejects(browser.request(second, 'snapshot', { tabId: own.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  await assert.rejects(browser.request(root, 'snapshot', { tabId: own.tabId }), { code: 'BROWSER_TAB_NOT_FOUND' });
+  // 사이드바는 하위 에이전트 활동으로 화면을 옮기지 않는다.
+  assert.ok(events.some(event => event.type === 'owned_browser_activity' && event.tab.tabId === own.tabId && event.subagent === true));
+});

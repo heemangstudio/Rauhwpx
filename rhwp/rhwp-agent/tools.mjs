@@ -1843,7 +1843,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'browser_status',
-    description: 'List shared user tabs, your assigned tabs, sites this chat can act on, and the active browser\'s saved logins and secrets (no values). usable=true fills now. activeTabId is the current sidebar tab; reuse it for the current-page task.',
+    description: 'List shared user tabs, your assigned tabs, sites this chat can act on, and the active browser\'s saved logins and secrets (no values). usable=true fills now. activeTabId is the current sidebar tab; reuse it for the current-page task. Subagents see only their own tabs.',
     shape: {},
   },
   {

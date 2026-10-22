@@ -17,7 +17,7 @@ Use the app-owned `browser_*` tools. The user's hub runs the browser and retains
 3. Perform the next supported action. Click, type, press and select wait briefly for the page to settle and return `navigated`, `url`, `title`, and `newTab` or `dialog` when they happened. Pass `snapshot: true` when you need the resulting outline. Refs stay valid until a navigation or a new snapshot.
 4. Finish when the requested fact, page state, capture, or completed download is established. Return the source link and outcome.
 
-Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. User-opened tabs are shared across documents and available to agents. Other agents’ assigned tabs remain scoped to their own tasks. When a sidebar is already showing your target, it stays docked during your work.
+Navigate an existing tab for the next destination. Open another tab only when the task needs both pages retained. A popup child has its own `tabId` and `openerTabId`; find it through status rather than assuming the opener navigated. User-opened tabs are shared across documents and available to the root conversation. Each subagent works in its own tabs: it opens them with `browser_open`, never sees user or sibling tabs, and does not move the user's sidebar view. Hand a subagent the URL when it needs the page the user is viewing. When a sidebar is already showing your target, it stays docked during your work.
 
 ## Keep calls useful
 

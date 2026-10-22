@@ -115,4 +115,4 @@ Browser Settings owns installation, runtime modes, accounts, sign-in, cleanup, a
 
 The service treats opening and assigned-tab browsing as the agent's browser territory. Secure fills check site access, the item's own site and the form destination. Keep actions within the user's requested task. The [source comparison](design-sources.md) records the architecture and research sources.
 
-`browser_status.activeTabId` is the selected tab in the current Studio sidebar, or `null` when no browser is docked. It never names another agent’s private tab. For tasks about the current page, use that ID with `browser_snapshot` and the existing navigation and input tools.
+`browser_status.activeTabId` is the selected tab in the current Studio sidebar, or `null` when no browser is docked. It never names another agent’s private tab, and it is always `null` for subagents, which see only their own tabs. For tasks about the current page, use that ID with `browser_snapshot` and the existing navigation and input tools.
