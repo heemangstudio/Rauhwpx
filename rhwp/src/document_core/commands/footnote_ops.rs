@@ -310,6 +310,11 @@ impl DocumentCore {
             if control_idx < para.ctrl_data_records.len() {
                 para.ctrl_data_records.remove(control_idx);
             }
+            for range in &mut para.field_ranges {
+                if range.control_idx > control_idx {
+                    range.control_idx -= 1;
+                }
+            }
             if para.char_count >= 8 {
                 para.char_count -= 8;
             }

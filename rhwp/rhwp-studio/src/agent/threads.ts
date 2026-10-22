@@ -26,6 +26,7 @@ import type {
 } from './types.ts';
 import type { InlineObjectAddress, InlinePromptItem } from './inline-prompt-context.ts';
 import { normalizeFollowUps, type ThreadFollowUps } from './follow-ups.ts';
+import { normalizeWatchNotice, watchNoticeHistoryText, type BrowserWatchNotice } from './browser-watch-notices.ts';
 import { THREADS_DB_NAME as DB_NAME, THREADS_STORE, openThreadsDatabase } from './threads-db.ts';
 
 const STORAGE_KEY = 'rhwp-agent-threads';
@@ -267,6 +268,13 @@ export type ThreadMessage =
   | ThreadTurnMessage
   | ThreadFailureMessage
   | ThreadMarkerMessage
+  | (ThreadMessageBase & {
+      /** 페이지 감시 알림. messageId 는 허브 알림 id 라 같은 알림을 두 번 넣지 않는다. */
+      role: 'system';
+      kind: 'watch';
+      watch: BrowserWatchNotice;
+      planId?: never;
+    })
   | (ThreadMessageBase & {
       role: 'assistant';
       kind: 'plan';
@@ -1199,6 +1207,11 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         ...metadata,
       }];
     }
+    if (message.kind === 'watch') {
+      const watch = normalizeWatchNotice(message.watch);
+      if (message.role !== 'system' || !watch) return [];
+      return [{ role: 'system', kind: 'watch', text: message.text, watch, ...metadata }];
+    }
     if (message.kind === 'plan') {
       if (message.role !== 'assistant' || typeof message.planId !== 'string' || !message.planId) return [];
       return [{
@@ -2054,6 +2067,9 @@ function serializeThreadMessage(
         || `${message.failure.class}${message.failure.code ? ` (${message.failure.code})` : ''}`;
       return [{ role: 'assistant', kind: 'error', text, agent: message.failure.agent }];
     }
+    case 'watch':
+      // 사용자가 알림을 두고 물을 수 있게 넘긴다. 프로바이더 자신의 말이 아니라 진행 줄로 싣는다.
+      return [{ role: 'assistant', kind: 'progress', text: watchNoticeHistoryText(message.watch), ...(message.messageId ? { id: message.messageId } : {}) }];
     case 'plan': {
       const text = historyPlanText(message.planId, message.text, lookup);
       return text ? [{ role: 'assistant', kind: 'plan', text, ...meta, id: message.planId }] : [];
@@ -2166,7 +2182,8 @@ export interface ProviderStartContext {
 
 /** 워터마크 뒤에 이어지는 이 프로바이더 자신의 출력 — 네이티브 세션이 이미 갖고 있다. */
 function isOwnOutput(message: ThreadMessage, agent: AgentName): boolean {
-  return message.role !== 'user' && (!message.agent || message.agent === agent);
+  // 감시 알림은 허브가 넣은 줄이다 — 네이티브 세션은 아직 모른다.
+  return message.role !== 'user' && message.kind !== 'watch' && (!message.agent || message.agent === agent);
 }
 
 /**

@@ -78,13 +78,20 @@ impl DocumentCore {
         uri: &str,
     ) -> Result<u32, HwpError> {
         let command = web_command(uri)?;
-        self.validate_hyperlink_paragraph(target)?;
+        self.validate_hyperlink_paragraph(target, true)?;
         let mut candidate = self.hyperlink_paragraph(target)?.clone();
         let len = candidate.text.chars().count();
         if start >= end || end > len {
             return Err(invalid(
                 "하이퍼링크는 문단 안의 비어 있지 않은 범위가 필요합니다",
             ));
+        }
+        // 범위 경계의 각주·미주는 링크 밖에 남는다. 범위 안의 주석은 감싸지 않는다.
+        let positions = candidate.control_text_positions();
+        if candidate.controls.iter().enumerate().any(|(idx, c)| {
+            is_inline_note(c) && positions.get(idx).is_some_and(|&p| start < p && p < end)
+        }) {
+            return Err(invalid("각주·미주를 감싸는 하이퍼링크는 지원하지 않습니다"));
         }
         if candidate.field_ranges.iter().any(|r| {
             start < r.end_char_idx && r.start_char_idx < end
@@ -103,7 +110,6 @@ impl DocumentCore {
         let field_id = max_id
             .checked_add(1)
             .ok_or_else(|| invalid("필드 ID 공간이 소진되었습니다"))?;
-        let positions = candidate.control_text_positions();
         let insert_idx = candidate
             .controls
             .iter()
@@ -169,7 +175,7 @@ impl DocumentCore {
         uri: &str,
     ) -> Result<bool, HwpError> {
         let command = web_command(uri)?;
-        self.validate_hyperlink_paragraph(target)?;
+        self.validate_hyperlink_paragraph(target, true)?;
         let p = self.hyperlink_paragraph(target)?;
         let (_, idx) = find_link(p, field_id)?;
         let Control::Field(field) = &p.controls[idx] else {
@@ -200,7 +206,7 @@ impl DocumentCore {
         if text.trim().is_empty() || text.chars().any(char::is_control) {
             return Err(invalid("표시할 글자를 한 줄로 입력해 주세요"));
         }
-        self.validate_hyperlink_paragraph(target)?;
+        self.validate_hyperlink_paragraph(target, false)?;
         let mut candidate = self.hyperlink_paragraph(target)?.clone();
         let (range_idx, ctrl_idx) = find_link(&candidate, field_id)?;
         let mut original_format = match &candidate.controls[ctrl_idx] {
@@ -286,7 +292,7 @@ impl DocumentCore {
         field_id: u32,
         restore_format: bool,
     ) -> Result<(), HwpError> {
-        self.validate_hyperlink_paragraph(target)?;
+        self.validate_hyperlink_paragraph(target, true)?;
         let mut candidate = self.hyperlink_paragraph(target)?.clone();
         let (range_idx, ctrl_idx) = find_link(&candidate, field_id)?;
         let range = candidate.field_ranges[range_idx].clone();
@@ -383,7 +389,13 @@ impl DocumentCore {
         Ok((paragraphs, para_idx))
     }
 
-    fn validate_hyperlink_paragraph(&self, target: &HyperlinkTarget) -> Result<(), HwpError> {
+    /// `allow_notes`: 마커만 넣고 빼는 편집은 각주·미주가 든 문단도 받는다.
+    /// 표시 문자열 교체는 글자 축을 다시 짜므로 받지 않는다.
+    fn validate_hyperlink_paragraph(
+        &self,
+        target: &HyperlinkTarget,
+        allow_notes: bool,
+    ) -> Result<(), HwpError> {
         let p = self.hyperlink_paragraph(target)?;
         if p.field_ranges.iter().any(|r| {
             r.start_char_idx > r.end_char_idx
@@ -396,6 +408,7 @@ impl DocumentCore {
             || !p.orphan_field_ends.is_empty()
             || p.controls.iter().enumerate().any(|(idx, c)| match c {
                 Control::SectionDef(_) | Control::ColumnDef(_) => false,
+                c if allow_notes && is_inline_note(c) => false,
                 Control::Field(_) => !p
                     .field_ranges
                     .iter()
@@ -486,9 +499,18 @@ fn invalid(message: &str) -> HwpError {
     HwpError::InvalidField(message.into())
 }
 
+fn is_inline_note(c: &Control) -> bool {
+    matches!(c, Control::Footnote(_) | Control::Endnote(_))
+}
+
 fn rebuild_hyperlink_char_offsets(p: &mut Paragraph) {
     p.authored_text_runs = None;
     p.para_text_terminal = None;
+    // 필드 마커만 아는 재계산은 각주·미주 자리를 지운다. 마커를 넣고 뺄 때
+    // shift_axis 가 이미 모든 raw 좌표를 옮겼으므로 그 결과를 그대로 쓴다.
+    if p.controls.iter().any(is_inline_note) {
+        return;
+    }
     let leading = p
         .controls
         .iter()

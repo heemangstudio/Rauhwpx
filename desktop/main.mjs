@@ -2217,6 +2217,7 @@ function browserWindowForEvent(event) {
 registerBrowserPasswordIpc({ ipcMain, browserHost, browserWindowForEvent });
 registerBrowserAdblockIpc({ ipcMain, adblock: browserAdblock, browserWindowForEvent });
 ipcMain.handle('desktop:browser-zoom', (event, payload) => browserHost.zoom(browserWindowForEvent(event), payload));
+ipcMain.handle('desktop:browser-pointer', (event, payload) => browserHost.pointer(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-attach', (event, payload) => browserHost.attach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-detach', (event, payload) => browserHost.detach(browserWindowForEvent(event), payload));
 ipcMain.handle('desktop:browser-state', (event, payload) => payload?.checkPaint === true

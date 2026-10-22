@@ -1365,6 +1365,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const unsubscribeBrowserSettings = bridge.onBrowserEvent((event) => {
     if (!settingsOpen || currentDestination !== 'browser') return;
     if (event.type === 'user-secrets-changed') browserPane.secretsChanged();
+    else if (event.type === 'site-recipes-changed') browserPane.recipesChanged();
     else if (['browser-account-changed', 'browser-policy-changed', 'browser-runtime-state', 'owned_browser_runtime'].includes(event.type)) browserPane.open();
   });
   let usageBusy = false;

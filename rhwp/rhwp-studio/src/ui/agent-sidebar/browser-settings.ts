@@ -15,6 +15,17 @@ interface Account { profileId?: string; id: string; origin: string; origins?: st
  * 사이트 목록의 한 줄. 키는 사이트(등록 도메인 출처, 예: https://coupang.com)이고, 하위 호스트만 막은 차단은 그 호스트가 키다.
  * always 는 모든 채팅의 사이트 사용, chat 은 지금 채팅의 사이트 사용, signedIn 은 사용자가 로그인한 흔적이 남은 사이트다.
  */
+/** 사이트 사용법 — 에이전트가 사이트(등록 도메인)마다 남긴 짧은 메모. */
+export interface SiteRecipe { key: string; site: string; text: string; author: string; updatedAt: number; }
+export function readSiteRecipes(value: unknown): SiteRecipe[] | null {
+  const list = (value as { recipes?: unknown })?.recipes;
+  if (!Array.isArray(list)) return null;
+  return list.flatMap((entry) => {
+    const item = entry as Partial<SiteRecipe>;
+    return typeof item?.key === 'string' && typeof item.site === 'string' && typeof item.text === 'string'
+      ? [{ key: item.key, site: item.site, text: item.text, author: String(item.author ?? 'agent'), updatedAt: Number(item.updatedAt) || 0 }] : [];
+  });
+}
 export interface SiteRow { key: string; label: string; source: string; always: boolean; chat: boolean; signedIn: boolean; allowedActions: string[]; blockedActions: string[]; }
 const ALL_ACTIONS = ['browse', 'read', 'download', 'research-import', 'website-change', 'account-use'];
 /** 차단 편집의 묶음 — 사용자가 고르는 단위. */
@@ -236,6 +247,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
   let accountKind: AccountKind = 'all'; let accountSearch = ''; let view: 'list' | 'form' | 'import' = 'list';
   let active = 'accounts'; let disposed = false; let generation = 0; let busy = false; let resetFailed = false; let resetConfirming = false;
   let secrets: SecretMeta[] | null = null; let alwaysGrants: string[] = [];
+  let recipes: SiteRecipe[] | null = null; let expandedRecipe: string | null = null;
   let accounts: Account[] = []; let secureStorage = false; let sites: SiteRow[] | null = null; let expandedSite: string | null = null; let configuration: Record<string, unknown> = {}; let status: Record<string, unknown> = {};
   let localAccounts: LocalPasswordAccount[] = []; let profiles: { id: string; name: string }[] = [];
   let profileId = ''; let localSupported = false; let localBusy = false; let localFailed = false; let localMessage = ''; let retryLocal: (() => void) | null = null;
@@ -381,6 +393,12 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const add = node('div', 'ag-browser-site-add'); const allow = button('허용', () => addSite(true)); const block = button('차단', () => addSite(false));
       for (const control of [allow, block]) control.disabled = busy || !options.isConnected();
       add.append(origin.root, allow, block); siteSection.append(add, siteError);
+      if (recipes?.length) {
+        const recipeSection = section('사이트 사용법');
+        const recipeList = node('div', 'ag-browser-recipes'); recipeList.setAttribute('role', 'list'); recipeList.setAttribute('aria-label', '사이트 사용법');
+        for (const recipe of recipes) recipeList.append(recipeRow(recipe));
+        recipeSection.append(recipeList);
+      }
       const always = alwaysGrants.filter(isChatPermissionCapability);
       if (always.length) {
         const alwaysSection = section('항상 허용한 권한');
@@ -467,6 +485,21 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (site.always || site.chat) action(actions, '해제', 'sites.revoke', { origin: site.key });
     if (site.signedIn) action(actions, '로그인 표시 지우기', 'sites.clearSignedIn', { origin: site.key });
     detail.append(blocks, actions); item.append(detail);
+    return item;
+  }
+  /** 사용법 한 줄: 로고 · 사이트 · 메모 앞부분. 누르면 메모 전체를 펼친다. */
+  function recipeRow(recipe: SiteRecipe): HTMLElement {
+    const item = node('div', 'ag-browser-recipe'); item.setAttribute('role', 'listitem'); item.dataset.site = recipe.key;
+    const open = expandedRecipe === recipe.key;
+    const head = node('button', 'ag-browser-recipe-row'); head.type = 'button'; head.dataset.focusKey = `recipe:${recipe.key}`;
+    head.setAttribute('aria-expanded', String(open)); head.title = recipe.text;
+    head.addEventListener('click', () => { expandedRecipe = open ? null : recipe.key; focusKey = `recipe:${recipe.key}`; render(); });
+    const copy = node('span', 'ag-browser-recipe-copy');
+    copy.append(node('span', 'ag-browser-site-name', recipe.site), node('span', 'ag-browser-recipe-text', recipe.text));
+    head.append(siteMark(recipe.key, recipe.site, 'row'), copy);
+    const remove = iconButton('trash', '사용법 삭제', () => void confirmDelete(`${recipe.site} 사용법`, undefined, () => mutate('recipes.delete', { site: recipe.key })), `recipe-delete:${recipe.key}`);
+    remove.disabled = busy || !options.isConnected();
+    item.append(head, remove);
     return item;
   }
   function restoreFocus(searchCaret: number | null) {
@@ -765,9 +798,10 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (!options.isConnected()) { render(); return; } const current = ++generation; message.textContent = '불러오는 중…';
     const results = await Promise.allSettled([options.request('accounts.list'), options.request('policy.list'), options.request('configuration.get'), options.request('status')]);
     // 비밀 값과 항상 허용 목록은 옛 허브에 없다 — 못 읽으면 그 칸만 감춘다.
-    const [secretList, permissionList] = await Promise.allSettled([options.request('secrets.list'), options.request('permissions.list')]);
+    const [secretList, permissionList, recipeList] = await Promise.allSettled([options.request('secrets.list'), options.request('permissions.list'), options.request('recipes.list')]);
     if (disposed || generation !== current) return;
     secrets = readSecrets(secretList);
+    recipes = recipeList.status === 'fulfilled' ? readSiteRecipes(recipeList.value) : null;
     alwaysGrants = permissionList.status === 'fulfilled' && Array.isArray((permissionList.value as { always?: unknown })?.always)
       ? ((permissionList.value as { always: unknown[] }).always.filter((entry): entry is string => typeof entry === 'string')) : [];
     const [a, p, c, s] = results;
@@ -785,6 +819,13 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     if (disposed || generation !== current || result.status !== 'fulfilled') return;
     secrets = readSecrets(result); if (view === 'list') render();
   }
+  /** 허브의 site-recipes-changed: 사용법 목록만 다시 읽는다. */
+  async function reloadRecipes() {
+    if (disposed || !options.isConnected() || busy) return;
+    const current = generation; const [result] = await Promise.allSettled([options.request('recipes.list')]);
+    if (disposed || generation !== current || result.status !== 'fulfilled') return;
+    recipes = readSiteRecipes(result.value); if (view === 'list' && active === 'permissions') render();
+  }
   render();
-  return { element, open() { void load(); }, secretsChanged() { void reloadSecrets(); }, close() { clearForm(); view = 'list'; generation++; render(); }, setConnected() { clearForm(); generation++; render(); }, dispose() { disposed = true; generation++; clearForm(); element.remove(); } };
+  return { element, open() { void load(); }, secretsChanged() { void reloadSecrets(); }, recipesChanged() { void reloadRecipes(); }, close() { clearForm(); view = 'list'; generation++; render(); }, setConnected() { clearForm(); generation++; render(); }, dispose() { disposed = true; generation++; clearForm(); element.remove(); } };
 }

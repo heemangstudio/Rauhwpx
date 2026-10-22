@@ -6,7 +6,9 @@ import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
 import { removeOwnedBrowserState } from './browser-cleanup.mjs';
 import { createFaviconCache, faviconCandidates, faviconOrigin } from './owned-browser-favicons.mjs';
+import { createBrowserHistory, HISTORY_LIST_LIMIT } from './browser-history.mjs';
 import { OUTLINE_HINT, outlineFromAria, renderOutline } from './owned-browser-outline.mjs';
+import { citationRecord, citationURL, compactText, findMatches, maskSameLength, pageCitationMetadata, pageReadableText, squash } from './owned-browser-reading.mjs';
 
 export { OwnedBrowserError } from './owned-browser-runtime.mjs';
 
@@ -19,7 +21,7 @@ const redactValues = (value, secrets) => {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactValues(entry, secrets)]));
   return value;
 };
-const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'fill-secret', 'viewport', 'upload']);
+const MUTATIONS = new Set(['navigate', 'click', 'type', 'press', 'select', 'scroll', 'close', 'input', 'fill-account', 'fill-secret', 'viewport', 'upload', 'fill-form', 'hover', 'drag', 'dialog']);
 // 허브가 입력 직전에 비밀 값을 꺼내는 함수. 인자 객체의 기호 키라 직렬화·로그에 실리지 않는다.
 const SECRET_FILL = Symbol('rhwp.secretFill');
 // 허브가 browser_upload 출처를 확인해 읽은 파일. 기호 키라 모델 인자로는 넣을 수 없다.
@@ -28,9 +30,9 @@ const UPLOAD_FILES = Symbol('rhwp.uploadFiles');
 const SECRET_INPUT_TYPES = new Set(['text', 'password', 'email', 'tel', 'url']);
 // 이 조작들은 결과가 자리 잡을 때까지 기다린 뒤 짧은 변화만 돌려준다.
 const SETTLING = new Set(['click', 'type', 'press', 'select']);
-const READS = new Set(['snapshot', 'frame', 'capture', 'wait']);
+const READS = new Set(['snapshot', 'frame', 'capture', 'wait', 'cite']);
 // 이 조작 동안 페이지가 보내는 같은 사이트 non-GET 은 에이전트의 사이트 변경이다(입력 창).
-const INPUT_WINDOW = new Set(['click', 'press', 'select', 'upload', 'fill-account', 'fill-secret']);
+const INPUT_WINDOW = new Set(['click', 'press', 'select', 'upload', 'fill-account', 'fill-secret', 'drag', 'dialog']);
 const nonGet = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(method);
 // GraphQL 읽기: JSON 본문의 query 가 mutation 으로 시작하지 않는다.
 const graphQLRead = (request) => {
@@ -168,6 +170,7 @@ export function createOwnedBrowserService(options = {}) {
   const guard = createBrowserNetworkGuard({ workspaceTargets: options.workspaceTargets ?? policy?.workspaceTargets ?? [], lookup: options.lookup });
   const isWorkspace = (origin) => { try { return guard.isWorkspace(origin); } catch { return false; } };
   const favicons = createFaviconCache({ dir: path.join(dataDir, 'browser', 'favicons'), resolve: guard.resolve, isWorkspace });
+  const history = createBrowserHistory({ file: path.join(dataDir, 'browser', 'history.json') });
   const tabs = new Map();
   const pageTabs = new WeakMap();
   // 이 허브가 페이지에 입력한 사용자 비밀. 사이트가 값을 저장해 다른 탭에 다시 보여도 모든 관찰에서 가린다.
@@ -282,7 +285,7 @@ export function createOwnedBrowserService(options = {}) {
   const userHolds = (tab) => tab.controller.held === true;
   const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: true, held: userHolds(tab) });
   const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
-  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null }, protectedFor(tab));
+  const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null, ...(tab.pendingDialog ? { dialog: { type: tab.pendingDialog.type, message: tab.lastDialog?.message ?? '', ...(tab.pendingDialog.owner === 'human' ? { owner: 'user' } : {}) } } : {}) }, protectedFor(tab));
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   // 사이트 아이콘은 사용자 화면용 이벤트와 목록에만 붙인다. 에이전트 결과·browser_status·tabs.json은 descriptor만 쓴다.
   const faviconFor = (tab) => tab.snapshot?.passwordProtected || tab.passwordShielded ? undefined : favicons.peek(faviconOrigin(tab.page?.url?.() ?? tab.url, isWorkspace)) ?? undefined;
@@ -404,6 +407,34 @@ export function createOwnedBrowserService(options = {}) {
     }
     return found;
   };
+  // 저장한 비밀번호가 있는 페이지, 로그인 진행, 작업 미리보기, Google 검색·확인 페이지는 남기지 않는다. 주소는 history 가 다듬는다.
+  const recordVisit = (tab, url) => {
+    if (closed || resetting || resetFailed || signIn || handoffPending || tab.passwordShielded || tab.snapshot?.passwordProtected) return;
+    const origin = webOrigin(url);
+    if (!origin || isWorkspace(origin) || googleResearchURL(url)) return;
+    void history.record({ url, title: tab.title, profileId: profileId() }).catch(() => {});
+  };
+  // 나중에 저장한 비밀번호가 보인 페이지는 방문 기록에서 뺀다.
+  const forgetVisit = (tab) => { const url = tab.page?.url?.() ?? tab.url; if (webOrigin(url)) void history.forget({ url, profileId: profileId() }).catch(() => {}); };
+  /** browser_status { history }: 이 프로필의 자주 간 사이트. 차단한 사이트는 빼고, 승인 없는 로그인 사이트는 주소 경로와 제목을 감춘다. */
+  const visitedSites = async (actor, query) => {
+    const sites = [], hidden = new Map();
+    for (const entry of await history.list({ profileId: profileId(), query, limit: HISTORY_LIST_LIMIT * 2 })) {
+      if (sites.length >= HISTORY_LIST_LIMIT) break;
+      const origin = webOrigin(entry.url);
+      if (!actor.isHuman && policy?.blockedActionsFor && (await policy.blockedActionsFor(origin)).includes('browse')) continue;
+      const decision = !actor.isHuman && policy?.check ? await policy.check({ actor, action: 'browse', url: entry.url, profileId: profileId() }).catch(() => null) : null;
+      const lastVisited = new Date(entry.lastVisitedAt).toISOString().slice(0, 10);
+      if (decision && !decision.allowed) {
+        const site = hidden.get(origin);
+        if (site) { site.visits += entry.visits; continue; }
+        const item = { title: '', url: `${origin}/`, visits: entry.visits, lastVisited, signedIn: true };
+        hidden.set(origin, item); sites.push(item); continue;
+      }
+      sites.push({ title: entry.title, url: entry.url, visits: entry.visits, lastVisited });
+    }
+    return redactValues(sites, filledSecrets);
+  };
   const discoverFavicon = async (tab, pageUrl, links) => {
     const origin = faviconOrigin(pageUrl, isWorkspace);
     if (!origin || closed || resetting || resetFailed || tab.snapshot?.passwordProtected || tab.passwordShielded) return;
@@ -470,9 +501,49 @@ export function createOwnedBrowserService(options = {}) {
     return result;
   };
   const dismissPendingDialog = async (tab) => {
-    const dialog = tab.pendingDialog;
+    const pending = tab.pendingDialog;
     tab.pendingDialog = null;
-    await dialog?.dismiss().catch(() => {});
+    await pending?.dialog.dismiss().catch(() => {});
+  };
+  // 사용자가 네이티브 창에서 답한 대화상자는 알림이 오지 않는다. 페이지가 다시 응답하면 닫힌 것으로 본다.
+  const dialogStillOpen = async (tab) => {
+    const pending = tab.pendingDialog;
+    if (!pending || !tab.page || tab.page.isClosed()) { tab.pendingDialog = null; return false; }
+    let timer;
+    const open = await Promise.race([tab.page.evaluate(() => 1).then(() => false, () => false), new Promise((resolve) => { timer = setTimeout(() => resolve(true), 300); })]).finally(() => clearTimeout(timer));
+    if (!open && tab.pendingDialog === pending) tab.pendingDialog = null;
+    return open;
+  };
+  const dialogInfo = (tab) => {
+    const pending = tab.pendingDialog;
+    if (!pending) return undefined;
+    const message = tab.lastDialog?.message ?? '';
+    return redactValues({ type: pending.type, message, ...(pending.defaultValue ? { defaultValue: pending.defaultValue } : {}), ...(pending.owner === 'human' ? { owner: 'user' } : {}) }, protectedFor(tab));
+  };
+  const dialogPending = (tab) => {
+    const dialog = dialogInfo(tab);
+    // 모델에는 코드와 문구만 간다. 대화상자의 종류·문구와 browser_dialog 에 넣을 세대를 문구에 싣는다.
+    const detail = dialog ? ` Dialog ${dialog.type}: ${JSON.stringify(text(dialog.message, 300))}${dialog.defaultValue ? ` (default ${JSON.stringify(dialog.defaultValue)})` : ''}.` : '';
+    const failure = dialog?.owner === 'user'
+      ? error('BROWSER_DIALOG_PENDING', `The user is answering a page dialog in this tab.${detail} Wait for them, then observe the page again.`, true)
+      : error('BROWSER_DIALOG_PENDING', `A page dialog is open.${detail} Answer it with browser_dialog before other actions.`, true);
+    failure.dialog = dialog; failure.navigationEpoch = tab.navigationEpoch; failure.controllerEpoch = tab.controllerEpoch;
+    return failure;
+  };
+  /**
+   * 조작이 대화상자를 열면 Input 명령이 대화상자가 닫힐 때까지 돌아오지 않는다. 조작과 대화상자 열림을 겨루어
+   * 대화상자가 먼저면 조작을 기다리지 않고 돌아온다. 남은 조작은 browser_dialog 가 답한 뒤 마무리한다.
+   */
+  const raceDialog = async (tab, work) => {
+    let signal; const opened = new Promise((resolve) => { signal = resolve; });
+    tab.dialogSignal = () => { if (tab.pendingDialog) signal(); };
+    const running = Promise.resolve().then(work);
+    try {
+      const outcome = await Promise.race([running.then((value) => ({ value })), opened.then(() => null)]);
+      if (outcome) return outcome.value;
+      running.catch(() => {}); tab.dialogAction = running;
+      return undefined;
+    } finally { tab.dialogSignal = null; }
   };
   const releaseInput = async (tab) => {
     await dismissPendingDialog(tab);
@@ -566,12 +637,19 @@ export function createOwnedBrowserService(options = {}) {
     page.on('download', (download) => { void onDownload(tab, download); });
     page.on('dialog', (dialog) => {
       if (tab.page !== page) { void dialog.dismiss().catch(() => {}); return; }
-      tab.pendingDialog = dialog;
-      tab.dialogCount = (tab.dialogCount ?? 0) + 1; tab.lastDialog = { type: dialog.type(), message: text(dialog.message(), 300) };
-      // 네이티브 사용자 확인은 창의 비동기 대화상자로 처리한다. 에이전트는 승인하지 않는다.
+      const type = dialog.type();
+      tab.dialogCount = (tab.dialogCount ?? 0) + 1; tab.lastDialog = { type, message: text(dialog.message(), 300) };
+      // 네이티브 사용자 확인은 창의 비동기 대화상자로 처리한다. 에이전트는 사용자의 대화상자에 답하지 않는다.
       const human = pageActor(tab).isHuman === true;
-      if (selectedAdapter() && human && !closed) return;
-      void dismissPendingDialog(tab);
+      if (human) {
+        if (selectedAdapter() && !closed) { tab.pendingDialog = { dialog, type, owner: 'human', at: Date.now() }; return; }
+        void dialog.dismiss().catch(() => {}); return;
+      }
+      // 알림(alert)은 고를 것이 없어 바로 닫고 문구만 결과로 돌려준다. 확인·입력·떠나기 확인은 browser_dialog 를 기다린다.
+      if (type === 'alert') { void dialog.dismiss().catch(() => {}); tab.dialogSignal?.(); return; }
+      tab.pendingDialog = { dialog, type, owner: 'agent', at: Date.now(), defaultValue: text(dialog.defaultValue?.() ?? '', 300) };
+      publish(tab);
+      tab.dialogSignal?.();
     });
     page.on('filechooser', (chooser) => offerChooser(tab, chooser));
     page.on('framenavigated', (frame) => {
@@ -588,10 +666,13 @@ export function createOwnedBrowserService(options = {}) {
     page.on('domcontentloaded', () => {
       if (tab.page !== page) return;
       const epoch = tab.navigationEpoch;
+      // 방문 기록은 사용자가 연 페이지만 남긴다. 에이전트가 연 페이지는 사용자가 자주 가는 곳이 아니다.
+      const human = pageActor(tab).isHuman === true;
       tab.status = 'ready'; publish(tab);
       void page.title().then((title) => {
         if (tab.page !== page || tab.navigationEpoch !== epoch) return;
         tab.title = text(title, 500); publish(tab); void persist();
+        if (human) recordVisit(tab, page.url());
       }).catch(() => {});
       if (!selectedAdapter()) void readIconLinks(page).catch(() => []).then((links) => tab.page === page && tab.navigationEpoch === epoch ? discoverFavicon(tab, page.url(), links) : undefined);
     });
@@ -845,7 +926,7 @@ export function createOwnedBrowserService(options = {}) {
       await runtime?.close(); runtime = null;
       const nativeReset = await nativeAdapter?.reset?.();
       tabs.clear(); handoffProfile = false; state = 'resetting';
-      await favicons.clear();
+      await favicons.clear(); await history.clear();
       await removeOwnedBrowserState({ dataDir, nativeStorageCleared: nativeReset?.nativeStorageCleared === true });
     } else if (phase === 'after') { resetting = false; resetFailed = false; state = 'idle'; emit('owned_browser_runtime', { runtime: runtimeInfo(), tabs: [] }); }
     else { resetting = false; resetFailed = true; state = 'failed'; emit('owned_browser_runtime', { runtime: runtimeInfo() }); }
@@ -918,6 +999,7 @@ export function createOwnedBrowserService(options = {}) {
         if (!accept()) throw error('BROWSER_ACTION_TIMEOUT', 'The browser wait timed out before its observation completed.', true);
         const { result, rendered } = observation(tab, { snapshotId: observed.snapshotId, navigationEpoch, url: observed.url, title: observed.title }, observed.tree, view, observed.truncated === true);
         tab.snapshot = { snapshotId: observed.snapshotId, url: observed.url, title: observed.title, passwordProtected: observed.passwordProtected, viewport: observed.viewport, native: true, elements: observed.elements, handles: new Map(observed.elements.map((element) => [element.ref, { ...element, native: true }])), refs: rendered.refs, lines: rendered.all };
+        if (observed.passwordProtected) forgetVisit(tab);
         if (view.scope && !rendered.scoped) throw scopeMissing();
         return { ...result, ...(observed.passwordProtected ? { passwordProtected: true } : {}), ...(view.text ? { text: observed.text ?? '' } : {}) };
       }
@@ -1163,10 +1245,11 @@ export function createOwnedBrowserService(options = {}) {
       try {
         // 아무 일도 없으면 200ms 조용한 뒤 끝낸다. 요청·탐색이 시작되면 0.5초까지 더 지켜본다.
         const watchStart = Date.now(); activeAt = Math.max(activeAt, watchStart);
-        while (Date.now() - watchStart < 500 && (navigation || pending.size || popup || tab.navigationEpoch !== startEpoch || Date.now() - activeAt < 200)) await pause(50);
+        while (Date.now() - watchStart < 500 && !tab.pendingDialog && (navigation || pending.size || popup || tab.navigationEpoch !== startEpoch || Date.now() - activeAt < 200)) await pause(50);
         watching = false;
         const deadline = Date.now() + 5000;
-        const live = () => Date.now() < deadline && tab.page === page && !page.isClosed();
+        // 열린 대화상자는 페이지를 멈춘다. 기다리지 않고 대화상자를 돌려준다.
+        const live = () => Date.now() < deadline && tab.page === page && !page.isClosed() && !tab.pendingDialog;
         if (navigation || tab.navigationEpoch !== startEpoch) {
           while (live() && tab.navigationEpoch === startEpoch && navigation !== 'done') await pause(50);
           if (live() && tab.navigationEpoch !== startEpoch) await page.waitForLoadState('load', { timeout: Math.max(1, deadline - Date.now()) }).catch(() => {});
@@ -1174,8 +1257,8 @@ export function createOwnedBrowserService(options = {}) {
         let opened;
         while (popup && !(opened = [...tabs.values()].find((entry) => entry.page === popup)) && live() && !popup.isClosed()) await pause(50);
         const navigated = tab.navigationEpoch !== startEpoch;
-        if (navigated && tab.page === page && !page.isClosed() && !(selectedAdapter() && tab.nativeTargetId)) { const title = await page.title().catch(() => null); if (typeof title === 'string' && tab.page === page) tab.title = text(title, 500); }
-        const dialog = (tab.dialogCount ?? 0) !== dialogs && tab.lastDialog ? redactValues(tab.lastDialog, protectedFor(tab)) : undefined;
+        if (navigated && !tab.pendingDialog && tab.page === page && !page.isClosed() && !(selectedAdapter() && tab.nativeTargetId)) { const title = await page.title().catch(() => null); if (typeof title === 'string' && tab.page === page) tab.title = text(title, 500); }
+        const dialog = tab.pendingDialog?.owner === 'agent' ? { ...dialogInfo(tab), pending: true } : (tab.dialogCount ?? 0) !== dialogs && tab.lastDialog ? redactValues(tab.lastDialog, protectedFor(tab)) : undefined;
         const newTab = opened ? (({ tabId, url, title }) => ({ tabId, url, ...(title ? { title } : {}) }))(descriptor(opened)) : undefined;
         return { navigated, ...(newTab ? { newTab } : {}), ...(dialog ? { dialog } : {}) };
       } finally { stop(); }
@@ -1221,12 +1304,423 @@ export function createOwnedBrowserService(options = {}) {
     } finally { tab.agentUpload = false; watch.stop(); }
   };
 
+  // 저장된 비밀번호가 보호하는 페이지는 일반 페이지 평가를 쓸 수 없다. 네이티브 관찰·입력 도구만 쓴다.
+  const protectedPage = (tab) => tab.snapshot?.native === true || tab.passwordShielded === true;
+  const passwordProtected = (hint) => error('BROWSER_PASSWORD_PROTECTED', `Saved passwords protect this page. ${hint}`);
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
+  const between = (min, max) => min + Math.random() * (max - min);
+  // 사용자가 보는 탭이면 화면이 에이전트 커서를 그린다. 페이지 DOM 에는 아무것도 넣지 않는다.
+  const pointerEvent = (actor, tab, point, phase, durationMs = 0) => {
+    if (actor.isHuman) return;
+    emit('owned_browser_pointer', { sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), x: Math.round(point.x), y: Math.round(point.y), phase, durationMs, runtime: runtimeInfo() });
+  };
+  // 요소를 화면에 들이고 상자를 새로 읽어 가운데가 아닌 안쪽 한 점을 고른다.
+  const aimAt = async (handle, { scroll = true } = {}) => {
+    if (scroll) await handle.scrollIntoViewIfNeeded({ timeout: 5_000 });
+    const box = await handle.boundingBox();
+    if (!box || box.width < 1 || box.height < 1) throw error('BROWSER_TARGET_DETACHED', 'The target element is not visible. Take a new snapshot before retrying.', true);
+    const spread = (size) => (size < 8 ? size / 2 : size * between(0.3, 0.7));
+    const position = { x: spread(box.width), y: spread(box.height) };
+    return { box, position, point: { x: box.x + position.x, y: box.y + position.y } };
+  };
+  // 포인터가 닿으며 요소가 커지거나 줄 수 있다(호버 메뉴). 누르기 직전 상자 안으로 점을 다시 맞춘다.
+  const refit = async (handle, position) => {
+    const box = await handle.boundingBox();
+    if (!box) throw error('BROWSER_TARGET_DETACHED', 'The target element is gone. Take a new snapshot before retrying.', true);
+    const inside = (value, size) => (size < 8 ? size / 2 : Math.min(size - 3, Math.max(3, value)));
+    return { x: inside(position.x, box.width), y: inside(position.y, box.height) };
+  };
+  // 사람 손처럼 가속·감속하는 경로로 포인터를 옮긴다(8–20 걸음, 120–250ms). drag 는 단추를 누른 채 조금 더 천천히 옮긴다.
+  const glide = async (actor, tab, to, { dragging = false } = {}) => {
+    const page = requirePage(tab);
+    const from = tab.pointer ?? { x: Math.max(0, to.x + between(-160, 160)), y: Math.max(0, to.y + between(-100, 100)) };
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.round(Math.min(20, Math.max(8, distance / 40)));
+    const duration = Math.round(Math.min(dragging ? 400 : 250, (dragging ? 200 : 120) + distance / 5));
+    pointerEvent(actor, tab, to, 'move', duration);
+    for (let step = 1; step <= steps; step++) {
+      const t = ease(step / steps);
+      await page.mouse.move(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+      await pause(duration / steps);
+    }
+    tab.pointer = { x: to.x, y: to.y };
+  };
+  // 누르기 전에 대상이 보이고 멈춰 있고 그 점에서 이벤트를 받는지(가려지지 않았는지) 확인한다.
+  const reachable = (handle) => handle.hover({ trial: true, timeout: 5_000 });
+  const pointerClick = async (actor, tab, handle, { button = 'left' } = {}) => {
+    await reachable(handle);
+    const { position, point } = await aimAt(handle);
+    await glide(actor, tab, point);
+    pointerEvent(actor, tab, point, 'click');
+    await pause(40);
+    await handle.click({ timeout: 10_000, button, position: await refit(handle, position), delay: Math.round(between(40, 90)) });
+  };
+  const pointerHover = async (actor, tab, handle) => {
+    await reachable(handle);
+    const { position, point } = await aimAt(handle);
+    await glide(actor, tab, point);
+    await handle.hover({ timeout: 10_000, position: await refit(handle, position) });
+    return {};
+  };
+  /**
+   * 끌기: 출발점으로 옮겨 누르고, 누른 채 목표로 옮겨 놓는다. HTML 끌어 놓기 요소가 dragstart 를 받지 못했으면
+   * 같은 순서의 합성 이벤트(dragstart·drag·dragenter·dragover·drop·dragend)를 한 DataTransfer 로 보낸다.
+   */
+  const pointerDrag = async (actor, tab, handle, targetHandle, args) => {
+    const page = requirePage(tab);
+    await reachable(handle);
+    const source = await aimAt(handle);
+    await glide(actor, tab, source.point);
+    const grip = await refit(handle, source.position);
+    await handle.hover({ timeout: 10_000, position: grip });
+    // 옮기는 사이 배치가 바뀌었을 수 있다. 누르기 직전의 상자로 출발점과 목표를 다시 잡는다.
+    const fresh = await handle.boundingBox();
+    if (!fresh) throw error('BROWSER_TARGET_DETACHED', 'The target element is gone. Take a new snapshot before retrying.', true);
+    const start = { x: fresh.x + grip.x, y: fresh.y + grip.y };
+    let to;
+    if (targetHandle) {
+      const target = await aimAt(targetHandle, { scroll: false });
+      const viewport = await viewportInfo(tab);
+      if (target.point.x < 0 || target.point.y < 0 || target.point.x > viewport.width || target.point.y > viewport.height) throw error('BROWSER_DRAG_OFFSCREEN', 'The drop target is outside the visible page. Scroll so both elements are visible, then take a new snapshot.', true);
+      to = target.point;
+    } else to = { x: start.x + (Number(args.offsetX) || 0), y: start.y + (Number(args.offsetY) || 0) };
+    const html5 = await handle.evaluate((el) => {
+      const node = el.closest('[draggable="true"]');
+      if (!node) return false;
+      node.__rhwpDragStarted = false;
+      node.addEventListener('dragstart', () => { node.__rhwpDragStarted = true; }, { once: true, capture: true });
+      return true;
+    }).catch(() => false);
+    pointerEvent(actor, tab, start, 'down');
+    await page.mouse.down();
+    try {
+      // 끌기 문턱을 넘는 첫 움직임 뒤에 목표까지 옮긴다.
+      await page.mouse.move(start.x + 4, start.y + 4);
+      tab.pointer = { x: start.x + 4, y: start.y + 4 };
+      await glide(actor, tab, to, { dragging: true });
+    } finally {
+      await page.mouse.up();
+      pointerEvent(actor, tab, to, 'up');
+    }
+    if (!html5) return { dragged: { mode: 'pointer' } };
+    const started = await handle.evaluate((el) => el.closest('[draggable="true"]')?.__rhwpDragStarted === true).catch(() => true);
+    if (started) return { dragged: { mode: 'html5' } };
+    const dropped = await handle.evaluate((el, { target, from, to: point }) => {
+      const origin = el.closest('[draggable="true"]') ?? el;
+      const destination = target ?? document.elementFromPoint(point.x, point.y);
+      if (!destination) return false;
+      const data = new DataTransfer();
+      const fire = (node, type, at) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: at.x, clientY: at.y, dataTransfer: data }));
+      fire(origin, 'dragstart', from); fire(origin, 'drag', from);
+      fire(destination, 'dragenter', point); fire(destination, 'dragover', point); fire(destination, 'drop', point);
+      fire(origin, 'dragend', point);
+      return true;
+    }, { target: targetHandle, from: start, to });
+    if (!dropped) throw error('BROWSER_DRAG_FAILED', 'Nothing accepted the drop at the target point. Take a new snapshot before retrying.', true);
+    return { dragged: { mode: 'synthetic' } };
+  };
+  const pointerAction = async (actor, action, tab, args) => {
+    if (protectedPage(tab)) throw passwordProtected('Use browser_click instead.');
+    const handle = await elementFor(tab, args);
+    let targetHandle = null;
+    if (action === 'drag') {
+      if (args.targetRef) targetHandle = await elementFor(tab, { ...args, ref: args.targetRef });
+      else if (!Number(args.offsetX) && !Number(args.offsetY)) throw error('BROWSER_DRAG_INVALID', 'Pass targetRef or a nonzero offsetX/offsetY.');
+    }
+    const watch = watchConsequences(tab);
+    try {
+      const outcome = await raceDialog(tab, () => (action === 'hover' ? pointerHover(actor, tab, handle) : pointerDrag(actor, tab, handle, targetHandle, args)));
+      return { completed: true, consequences: { ...(await watch.settle()), ...(outcome ?? {}) } };
+    } finally { watch.stop(); }
+  };
+
+  // 네이티브 <select> 의 선택지를 라벨, 값, 대소문자 무시 라벨 순서로 고른다.
+  const chooseOption = async (handle, wanted) => {
+    const options = await handle.evaluate((el) => (el instanceof HTMLSelectElement ? [...el.options].map((option) => [option.label.trim(), option.value, option.disabled]) : null));
+    if (!options) throw error('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
+    const value = String(wanted ?? '').trim();
+    const choice = [([label]) => label === value, ([, option]) => option === value, ([label]) => label.toLowerCase() === value.toLowerCase()].map((match) => options.findIndex((option) => !option[2] && match(option))).find((index) => index >= 0);
+    if (choice === undefined) throw error('BROWSER_OPTION_NOT_FOUND', 'No enabled option has this label or value. Snapshot the list box with scope to see its options.');
+    return choice;
+  };
+  /**
+   * browser_fill_form: 한 관찰의 여러 칸을 한 번에 채운다. 칸마다 결과를 돌려주고 한 칸의 실패로 멈추지 않는다.
+   * 비밀번호·일회용 코드 칸은 browser_type 과 같이 거절한다. 제출은 submit ref 를 줄 때만 하고, non-GET 폼이면 사이트 사용이 필요하다.
+   */
+  // 저장된 비밀번호가 보호하는 페이지: 데스크톱의 격리된 입력으로 글자 칸과 목록만 채운다.
+  const fillProtectedForm = async (actor, tab, args, fields) => {
+    const adapter = selectedAdapter();
+    if (!tab.snapshot?.native || !adapter?.passwordAction) throw passwordProtected('Fill fields one by one with browser_type.');
+    const binding = { ...nativePasswordBinding(tab), snapshotId: args.snapshotId };
+    const watch = watchConsequences(tab);
+    try {
+      const results = [];
+      for (const field of fields) {
+        const ref = String(field?.ref ?? '');
+        try {
+          epochs(tab, args, true); assertController(actor, tab);
+          const element = requireRef(tab, { ...args, ref });
+          if (!actor.isHuman) await assertTypingTarget(tab, { ...args, ref });
+          if (typeof field.value !== 'string') throw error('BROWSER_FORM_INVALID', 'Saved passwords protect this page; set checkboxes with browser_click.');
+          if (element.tag === 'select') await adapter.passwordAction({ ...binding, action: 'select', ref, option: text(field.value, 500) });
+          else if (element.tag === 'textarea' || element.tag === 'input' && SECRET_INPUT_TYPES.has(element.inputType ?? 'text')) await adapter.passwordAction({ ...binding, action: 'type', ref, text: text(field.value, 16_000) });
+          else throw error('BROWSER_NOT_EDITABLE', 'Saved passwords protect this page; only text fields and list boxes can be filled here.');
+          results.push({ ref, ok: true });
+        } catch (failure) {
+          const mapped = failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure);
+          if (['BROWSER_STALE_NAVIGATION', 'BROWSER_STALE_CONTROL', 'BROWSER_STALE_REFERENCE', 'BROWSER_USER_CONTROL'].includes(mapped.code)) throw mapped;
+          results.push({ ref, ok: false, error: { code: mapped.code, message: redactValues(mapped.message, protectedFor(tab)) } });
+        }
+      }
+      if (args.submit) {
+        const target = { ...args, ref: String(args.submit) };
+        requireRef(tab, target);
+        if (!actor.isHuman && await raisesChange(tab, 'click', target)) await assertPolicy(actor, 'click', requirePage(tab).url(), tab, { intent: 'website-change' });
+        await raceDialog(tab, () => adapter.passwordAction({ ...binding, action: 'click', ref: target.ref }));
+      }
+      return { completed: true, consequences: { ...(await watch.settle()), fields: results, ...(args.submit ? { submitted: true } : {}) } };
+    } finally { watch.stop(); }
+  };
+  const fillForm = async (actor, tab, args) => {
+    const fields = Array.isArray(args.fields) ? args.fields : [];
+    if (!fields.length || fields.length > 50) throw error('BROWSER_FORM_INVALID', 'Pass between 1 and 50 fields.');
+    if (protectedPage(tab)) return fillProtectedForm(actor, tab, args, fields);
+    const page = requirePage(tab);
+    const fatal = new Set(['BROWSER_STALE_NAVIGATION', 'BROWSER_STALE_CONTROL', 'BROWSER_STALE_REFERENCE', 'BROWSER_USER_CONTROL', 'BROWSER_DIALOG_PENDING', 'BROWSER_RECONNECT_REQUIRED']);
+    const watch = watchConsequences(tab);
+    try {
+      const results = [];
+      for (const field of fields) {
+        const ref = String(field?.ref ?? '');
+        try {
+          epochs(tab, args, true); assertController(actor, tab);
+          if (tab.pendingDialog) throw dialogPending(tab);
+          const target = { ...args, ref };
+          if (!actor.isHuman) await assertTypingTarget(tab, target);
+          const handle = await elementFor(tab, target);
+          const kind = await handle.evaluate((el) => ({ tag: el.tagName.toLowerCase(), type: (el.getAttribute('type') || 'text').trim().toLowerCase(), editable: el.isContentEditable === true }));
+          const value = field.value;
+          if (kind.tag === 'input' && ['checkbox', 'radio'].includes(kind.type)) {
+            const checked = value === true || value === 'true' ? true : value === false || value === 'false' ? false : null;
+            if (checked === null) throw error('BROWSER_FORM_INVALID', 'Checkboxes and radios take true or false.');
+            if (kind.type === 'radio' && !checked) throw error('BROWSER_FORM_INVALID', 'Choose another radio in the group instead of clearing this one.');
+            await handle.setChecked(checked, { timeout: 5_000 });
+            results.push({ ref, ok: true, checked });
+            continue;
+          }
+          if (typeof value !== 'string') throw error('BROWSER_FORM_INVALID', 'Text fields and list boxes take a string value.');
+          if (kind.tag === 'select') { await handle.selectOption({ index: await chooseOption(handle, value) }, { timeout: 5_000 }); results.push({ ref, ok: true }); continue; }
+          if (kind.tag === 'input' && kind.type === 'file') throw error('BROWSER_UPLOAD_REQUIRED', 'Attach files with browser_upload.');
+          if (kind.tag === 'input' && ['submit', 'button', 'reset', 'image', 'hidden'].includes(kind.type)) throw error('BROWSER_NOT_EDITABLE', 'This element is not a form field. Pass it as submit or click it.');
+          if (kind.tag === 'input' && kind.type === 'range') {
+            await handle.evaluate((el, next) => { el.value = next; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, text(value, 100));
+          } else if (kind.tag === 'input' || kind.tag === 'textarea' || kind.editable) await handle.fill(text(value, 16_000), { timeout: 5_000 });
+          else throw error('BROWSER_NOT_EDITABLE', 'The target is not an editable field. Choose a form field from the snapshot.');
+          results.push({ ref, ok: true });
+        } catch (failure) {
+          const mapped = failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure);
+          if (fatal.has(mapped.code)) throw mapped;
+          results.push({ ref, ok: false, error: { code: mapped.code, message: redactValues(mapped.message, protectedFor(tab)) } });
+        }
+      }
+      let submitted = false;
+      if (args.submit) {
+        const target = { ...args, ref: String(args.submit) };
+        epochs(tab, args, true); assertController(actor, tab);
+        if (!actor.isHuman && await raisesChange(tab, 'click', target)) await assertPolicy(actor, 'click', page.url(), tab, { intent: 'website-change' });
+        const handle = await elementFor(tab, target);
+        await raceDialog(tab, () => (actor.isHuman ? handle.click({ timeout: 10_000 }) : pointerClick(actor, tab, handle)));
+        submitted = true;
+      }
+      return { completed: true, consequences: { ...(await watch.settle()), fields: results, ...(submitted ? { submitted } : {}) } };
+    } finally { watch.stop(); }
+  };
+
+  /** browser_dialog: 에이전트 조작이 연 확인·입력·떠나기 확인 대화상자에 답한다. 대화상자를 연 조작은 그 뒤에 마무리된다. */
+  const answerDialog = async (actor, tab, args) => {
+    const pending = tab.pendingDialog;
+    if (!pending || !(await dialogStillOpen(tab))) throw error('BROWSER_DIALOG_NOT_FOUND', 'No page dialog is open in this tab.');
+    if (pending.owner === 'human' && !actor.isHuman) throw error('BROWSER_USER_CONTROL', 'The user is answering this page dialog. Wait for them, then observe the page again.');
+    const accept = args.accept === true;
+    const promptText = args.promptText === undefined || args.promptText === null ? undefined : text(args.promptText, 2_000);
+    if (promptText !== undefined && (pending.type !== 'prompt' || !accept)) throw error('BROWSER_DIALOG_INVALID', 'promptText applies only when accepting a prompt dialog.');
+    if (promptText !== undefined && protectedPage(tab)) throw passwordProtected('Prompt text cannot be entered here; ask the user.');
+    // 떠나기 확인을 승인하면 페이지가 저장하지 않은 내용을 잃는다. 사용자 탭에서는 사이트 사용이 있어야 한다.
+    if (accept && pending.type === 'beforeunload' && !actor.isHuman && tab.scope === 'global') await assertPolicy(actor, 'dialog', requirePage(tab).url(), tab, { intent: 'website-change' });
+    const watch = watchConsequences(tab);
+    try {
+      tab.pendingDialog = null;
+      try { if (accept) await pending.dialog.accept(promptText); else await pending.dialog.dismiss(); }
+      catch { throw error('BROWSER_DIALOG_NOT_FOUND', 'The page dialog already closed. Observe the page again.', true); }
+      const leftover = tab.dialogAction; tab.dialogAction = null;
+      if (leftover) await Promise.race([leftover.catch(() => {}), pause(5_000)]);
+      return { completed: true, consequences: { ...(await watch.settle()), answered: { type: pending.type, accepted: accept } } };
+    } finally { watch.stop(); }
+  };
+
+  /**
+   * browser_snapshot find: 지금 탭(같은 출처 iframe 포함)의 보이는 글에서 찾는다. 일치 수와 앞뒤 문맥, 그리고 일치한 줄의 ref 개요를 돌려준다.
+   * scrollTo 는 n 번째 일치를 화면 가운데로 옮기고 선택해 이어지는 관찰·캡처에 보이게 한다.
+   */
+  const pageTextWalker = (options) => {
+    const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION']);
+    const blockOf = (node) => { let el = node.parentElement; while (el && getComputedStyle(el).display.startsWith('inline')) el = el.parentElement; return el; };
+    const visible = new Map();
+    const shown = (el) => { if (!visible.has(el)) visible.set(el, el.checkVisibility ? el.checkVisibility() : true); return visible.get(el); };
+    const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT);
+    const pieces = []; let total = 0; let lastBlock;
+    for (let node = walker.nextNode(); node && total < 2_000_000; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (!parent || SKIP.has(parent.tagName) || parent.closest('[data-rhwp-private-field]') || !node.nodeValue || !shown(parent)) continue;
+      const block = blockOf(node);
+      const gap = pieces.length && block !== lastBlock ? 1 : 0;
+      pieces.push({ node, start: total + gap, gap }); total += gap + node.nodeValue.length; lastBlock = block;
+    }
+    if (options?.offset === undefined) return pieces.map((piece) => (piece.gap ? '\n' : '') + piece.node.nodeValue).join('');
+    const locate = (offset) => { const piece = pieces.findLast((entry) => entry.start <= offset) ?? pieces[0]; return [piece.node, Math.min(piece.node.nodeValue.length, Math.max(0, offset - piece.start))]; };
+    const range = document.createRange();
+    range.setStart(...locate(options.offset)); range.setEnd(...locate(options.offset + options.length));
+    const host = range.startContainer.parentElement;
+    host?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const selection = getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  };
+  const findInPage = async (actor, tab, args) => {
+    const page = requirePage(tab);
+    const query = squash(args.find);
+    // 찾기 전에 비공개 칸의 값을 가릴 목록에 넣는다. 처음 찾기에서도 비밀 값으로 일치 수를 떠볼 수 없다.
+    tab.protectedValues ??= new Set();
+    for (const frame of page.frames()) {
+      const fields = await frame.locator(SENSITIVE).elementHandles().catch(() => []);
+      for (const field of fields) { const value = await field.inputValue().catch(() => ''); if (value) tab.protectedValues.add(value); void field.dispose().catch(() => {}); }
+    }
+    let origin = 'null'; try { origin = new URL(page.url()).origin; } catch {}
+    const frames = page.frames().filter((frame) => { if (frame === page.mainFrame()) return true; try { return new URL(frame.url()).origin === origin; } catch { return false; } });
+    const secrets = protectedFor(tab);
+    const found = []; let count = 0;
+    for (const frame of frames) {
+      const raw = await frame.evaluate(pageTextWalker, {}).catch(() => null);
+      if (typeof raw !== 'string') continue;
+      // 가린 값은 같은 길이로 바꾼 뒤 찾는다. 비밀 값으로 일치 수를 떠볼 수 없다.
+      const result = findMatches(maskSameLength(raw, secrets), query, { limit: 10 });
+      for (const [index, offset] of result.offsets.entries()) found.push({ frame, offset, ...(index < 10 ? { excerpt: result.matches[index].text } : {}) });
+      count += result.count;
+    }
+    const matches = found.filter((entry) => entry.excerpt).slice(0, 10).map((entry, index) => ({ index: index + 1, text: entry.excerpt, ...(entry.frame !== page.mainFrame() ? { frame: 'iframe' } : {}) }));
+    let scrolledTo;
+    if (args.scrollTo !== undefined) {
+      const wanted = found[Number(args.scrollTo) - 1];
+      if (!wanted) throw error('BROWSER_FIND_NOT_FOUND', `Match ${args.scrollTo} does not exist; the page has ${count}.`);
+      if (!actor.isHuman && userHolds(tab)) throw error('BROWSER_USER_CONTROL', 'The user is controlling this tab. Read without scrollTo, or wait for them to return control.');
+      await wanted.frame.evaluate(pageTextWalker, { offset: wanted.offset, length: query.length });
+      scrolledTo = Number(args.scrollTo);
+    }
+    const outline = await snapshot(tab, undefined, { scope: args.scope, find: query, text: args.text === true });
+    return { snapshot: outline, found: { count, ...(count ? { matches } : {}), ...(scrolledTo ? { scrolledTo } : {}) } };
+  };
+
+  /**
+   * 인용 근거 그림: 인용한 단락(ref)이나 인용문 글자 범위를 화면 안으로 굴린 뒤 그 상자만 찍는다.
+   * 인용문은 앞·뒤 조각을 찾아 그 사이 범위를 잡는다 (블록 경계의 줄바꿈이 전체 일치를 막는다).
+   * 찍기는 screenshot 을 거쳐 비밀번호 화면 차단·민감 칸 가림을 그대로 받는다.
+   */
+  const citeImage = async (tab, handle, quote) => {
+    const page = requirePage(tab);
+    let box;
+    if (handle) {
+      await handle.scrollIntoViewIfNeeded({ timeout: 3_000 }).catch(() => {});
+      box = await handle.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; });
+    } else {
+      box = await page.evaluate((wanted) => {
+        const selection = getSelection();
+        const saved = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+        const find = (needle, from) => {
+          selection.removeAllRanges();
+          if (from) { const at = document.createRange(); at.setStart(from.startContainer, from.startOffset); at.collapse(true); selection.addRange(at); }
+          else window.scrollTo(0, 0);
+          return window.find(needle, false, false, !from, false, false, false) && selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+        };
+        try {
+          let range = find(wanted);
+          if (!range) {
+            const head = find(wanted.slice(0, 60).trim());
+            const tail = head && find(wanted.slice(-60).trim(), head);
+            if (!head) return null;
+            range = document.createRange();
+            range.setStart(head.startContainer, head.startOffset);
+            if (tail) range.setEnd(tail.endContainer, tail.endOffset); else range.setEnd(head.endContainer, head.endOffset);
+          }
+          const anchor = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+          const tall = range.getBoundingClientRect().height > innerHeight * 0.8;
+          anchor?.scrollIntoView({ block: tall ? 'start' : 'center', inline: 'nearest' });
+          const r = range.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        } finally {
+          selection.removeAllRanges();
+          if (saved) selection.addRange(saved);
+        }
+      }, quote);
+    }
+    if (!box || box.width < 1 || box.height < 1) throw error('BROWSER_QUOTE_NOT_VISIBLE', 'The quoted text has no visible box on the page.');
+    const viewport = await viewportInfo(tab);
+    const pad = 8;
+    const x = Math.max(0, Math.floor(box.x - pad)), y = Math.max(0, Math.floor(box.y - pad));
+    const width = Math.min(viewport.width - x, Math.ceil(box.width + pad * 2)), height = Math.min(viewport.height - y, Math.ceil(box.height + pad * 2));
+    if (width < 1 || height < 1) throw error('BROWSER_QUOTE_NOT_VISIBLE', 'The quoted text is outside the visible page.');
+    const rect = { x, y, width, height };
+    return { mimeType: 'image/jpeg', data: await screenshot(tab, rect), width, height };
+  };
+
+  /** browser_cite: 지금 탭의 글 한 단락(ref)이나 정확한 인용문을 출처 정보와 함께 인용 기록으로 돌려준다. */
+  const cite = async (tab, args) => {
+    if (protectedPage(tab)) throw passwordProtected('Quote public pages only.');
+    const page = requirePage(tab);
+    const secrets = protectedFor(tab);
+    let quote;
+    let handle;
+    if (args.ref) {
+      handle = await elementFor(tab, args);
+      const picked = await handle.evaluate((el, selector) => ({ field: el.matches('input,textarea,select,[contenteditable="true"]') || el.matches(selector) || !!el.querySelector(selector), text: el.innerText ?? el.textContent ?? '' }), SENSITIVE);
+      if (picked.field) throw error('BROWSER_CITE_INVALID', 'Choose page text, not a form field.');
+      quote = squash(redactValues(picked.text, secrets));
+    } else {
+      const wanted = squash(args.quote);
+      if (!wanted) throw error('BROWSER_CITE_INVALID', 'Pass a snapshot ref or the exact quote.');
+      const body = squash(maskSameLength(await page.locator('body').innerText({ timeout: 3_000 }), secrets));
+      let at = body.indexOf(wanted);
+      if (at < 0) at = body.toLowerCase().indexOf(wanted.toLowerCase());
+      if (at < 0) throw error('BROWSER_QUOTE_NOT_FOUND', 'This text is not on the current page. Locate it with browser_snapshot find and quote it exactly.');
+      quote = body.slice(at, at + wanted.length);
+    }
+    if (!quote) throw error('BROWSER_CITE_INVALID', 'The chosen element has no text.');
+    const truncated = quote.length > 4_000;
+    if (truncated) quote = `${quote.slice(0, 3_999)}…`;
+    const metadata = await page.evaluate(pageCitationMetadata).catch(() => ({}));
+    const record = citationRecord({ quote, pageUrl: page.url(), pageTitle: tab.title, metadata });
+    const citation = redactValues({ ...record, ...(truncated ? { truncated } : {}) }, secrets);
+    if (args.capture !== true) return { citation };
+    // 그림을 못 찍어도 인용 기록은 돌려준다. 비밀번호 화면 차단은 그대로 오류다.
+    try { return { citation, image: await citeImage(tab, handle, handle ? null : quote.replace(/…$/, '')) }; }
+    catch (failure) {
+      if (failure.code === 'BROWSER_PASSWORD_CAPTURE_PROTECTED') throw failure;
+      return { citation, imageError: { code: failure.code?.startsWith('BROWSER_') ? failure.code : 'BROWSER_CAPTURE_IMAGE_FAILED', message: failure.code?.startsWith('BROWSER_') ? failure.message : 'The passage could not be captured.' } };
+    }
+  };
+
   const operate = async (actor, action, tab, args, signal) => {
     if (action === 'close') { await releaseInput(tab); await tab.page?.close(); tab.status = 'closed'; tabs.delete(tab.tabId); await persist(); return { completed: true }; }
     const page = requirePage(tab);
+    // find 는 개요 줄과 함께 보이는 글 전체(같은 출처 iframe 포함)의 일치 수·문맥을 돌려주고, scrollTo 로 n 번째 일치를 화면에 보인다.
+    if (action === 'snapshot' && args.find && !protectedPage(tab)) return findInPage(actor, tab, args);
+    if (action === 'snapshot' && args.scrollTo !== undefined) throw error('BROWSER_FIND_INVALID', 'scrollTo needs find.');
     if (action === 'snapshot') return { snapshot: await snapshot(tab, undefined, { scope: args.scope, find: args.find, text: args.text === true }) };
     if (action === 'frame') return { frame: await frame(tab, actor) };
     if (action === 'capture') return { capture: await capture(actor, tab, args) };
+    if (action === 'cite') return cite(tab, args);
+    if (action === 'dialog') return answerDialog(actor, tab, args);
+    if (action === 'fill-form') return fillForm(actor, tab, args);
+    if (action === 'hover' || action === 'drag') return pointerAction(actor, action, tab, args);
     if (tab.snapshot?.native && selectedAdapter()?.passwordAction && ['click', 'type', 'press', 'select', 'scroll'].includes(action)) {
       if (action === 'press') assertAgentKey(actor, args.key);
       const ref = args.ref ?? (action === 'press' ? tab.snapshot.elements.find((element) => element.tag === 'input')?.ref : undefined);
@@ -1234,13 +1728,16 @@ export function createOwnedBrowserService(options = {}) {
       const parameters = { ...nativePasswordBinding(tab), action, ref, snapshotId: args.snapshotId ?? tab.snapshot.snapshotId, text: text(args.text, 16_000), key: text(args.key, 80), option: text(args.option, 500), deltaX: bounded(args.deltaX, -2000, 2000, 0), deltaY: bounded(args.deltaY, -2000, 2000, 600) };
       const watch = SETTLING.has(action) ? watchConsequences(tab) : null;
       try {
-        const result = await selectedAdapter().passwordAction(parameters);
-        if (action === 'type' && args.submit === true) {
-          epochs(tab, args, true); assertController(actor, tab);
-          await assertPolicy(actor, 'press', page.url(), tab, args);
-          await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
-        }
-        return watch ? { ...result, consequences: await watch.settle() } : result;
+        const result = await raceDialog(tab, async () => {
+          const value = await selectedAdapter().passwordAction(parameters);
+          if (action === 'type' && args.submit === true) {
+            epochs(tab, args, true); assertController(actor, tab);
+            await assertPolicy(actor, 'press', page.url(), tab, args);
+            await selectedAdapter().passwordAction({ ...parameters, action: 'press', key: 'Enter' });
+          }
+          return value;
+        });
+        return watch ? { ...result, consequences: await watch.settle() } : result ?? { completed: true };
       } finally { watch?.stop(); }
     }
     if (action === 'wait') return waitForCondition(actor, tab, args, signal);
@@ -1261,27 +1758,24 @@ export function createOwnedBrowserService(options = {}) {
       const handle = args.ref || action !== 'press' ? await elementFor(tab, args) : null;
       if (action === 'type' && ((await handle.getAttribute('type'))?.toLowerCase() === 'password' || ['current-password', 'new-password'].includes(await handle.getAttribute('autocomplete')))) throw error('BROWSER_SECRET_CHANNEL_REQUIRED', 'Use the saved-account broker to fill password fields.');
       if (action === 'type' && (await handle.getAttribute('autocomplete'))?.trim().toLowerCase() === 'one-time-code') throw error('BROWSER_USER_CODE_REQUIRED', "The user must enter this one-time code. Call browser_request_account with kind 'code'.");
-      let choice;
-      if (action === 'select') {
-        const options = await handle.evaluate((el) => el instanceof HTMLSelectElement ? [...el.options].map((option) => [option.label.trim(), option.value, option.disabled]) : null);
-        if (!options) throw error('BROWSER_NOT_SELECTABLE', 'The target is not a native list box. Click custom menus instead.');
-        const wanted = String(args.option ?? '').trim();
-        choice = [([label]) => label === wanted, ([, value]) => value === wanted, ([label]) => label.toLowerCase() === wanted.toLowerCase()].map((match) => options.findIndex((option) => !option[2] && match(option))).find((index) => index >= 0);
-        if (choice === undefined) throw error('BROWSER_OPTION_NOT_FOUND', 'No enabled option has this label or value. Snapshot the list box with scope to see its options.');
-      }
+      const choice = action === 'select' ? await chooseOption(handle, args.option) : undefined;
       const watch = watchConsequences(tab);
       try {
-        if (action === 'click') await handle.click({ timeout: 10_000, button: args.button === 'right' ? 'right' : 'left' });
-        else if (action === 'select') await handle.selectOption({ index: choice }, { timeout: 10_000 });
-        else if (action === 'press') { if (handle) await handle.press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); }
-        else {
-          await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
-          if (args.submit === true) {
-            epochs(tab, args, true); assertController(actor, tab);
-            await assertPolicy(actor, 'press', page.url(), tab, args);
-            await (await elementFor(tab, args)).press('Enter', { timeout: 10_000 });
+        // 대화상자를 여는 조작은 대화상자가 닫힐 때까지 끝나지 않는다. 대화상자가 먼저 열리면 그것을 돌려준다.
+        await raceDialog(tab, async () => {
+          const button = args.button === 'right' ? 'right' : 'left';
+          if (action === 'click') await (actor.isHuman ? handle.click({ timeout: 10_000, button }) : pointerClick(actor, tab, handle, { button }));
+          else if (action === 'select') await handle.selectOption({ index: choice }, { timeout: 10_000 });
+          else if (action === 'press') { if (handle) await handle.press(text(args.key, 80)); else await page.keyboard.press(text(args.key, 80)); }
+          else {
+            await handle.fill(text(args.text, 16_000), { timeout: 10_000 });
+            if (args.submit === true) {
+              epochs(tab, args, true); assertController(actor, tab);
+              await assertPolicy(actor, 'press', page.url(), tab, args);
+              await (await elementFor(tab, args)).press('Enter', { timeout: 10_000 });
+            }
           }
-        }
+        });
         return { completed: true, consequences: await watch.settle() };
       } finally { watch.stop(); }
     }
@@ -1316,7 +1810,7 @@ export function createOwnedBrowserService(options = {}) {
           grant = { site: decision?.key ?? decision?.site, scope: decision?.source === 'chat' ? 'chat' : 'always', grantedAt: Date.now() };
         }
         const result = await selectedAdapter().passwordFill({ ...nativePasswordBinding(tab), accountId: args.accountId, snapshotId: args.snapshotId, usernameRef: args.usernameRef, passwordRef: args.passwordRef, ...(grant ? { grant } : {}) });
-        tab.snapshot.passwordProtected = true;
+        tab.snapshot.passwordProtected = true; forgetVisit(tab);
         // 사용자의 저장된 로그인으로 들어가는 사이트다. 이 사이트의 쿠키는 이제 손님 쿠키가 아니다.
         touchSite(page.url(), 'identity');
         return result;
@@ -1400,7 +1894,7 @@ export function createOwnedBrowserService(options = {}) {
       const watch = watchConsequences(tab);
       try {
         await selectedAdapter().secretFill({ ...nativePasswordBinding(tab), snapshotId: args.snapshotId, ref: args.ref, origins: allowed, value });
-        tab.snapshot.passwordProtected = true;
+        tab.snapshot.passwordProtected = true; forgetVisit(tab);
         await submit(() => selectedAdapter().passwordAction({ ...nativePasswordBinding(tab), action: 'press', key: 'Enter', ref: args.ref, snapshotId: args.snapshotId }));
         return { completed: true, consequences: await watch.settle() };
       } finally { watch.stop(); }
@@ -1450,6 +1944,7 @@ export function createOwnedBrowserService(options = {}) {
         const current = tab.nativeTargetId && native.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
         if (tab.page && !tab.page.isClosed() && tab.status === 'loading' && current?.loading === false && !current.crashed && !current.error) tab.status = 'ready';
         if (current) tab.passwordShielded = current.passwordProtected === true;
+        if (tab.passwordShielded) forgetVisit(tab);
       }
     }
     const visible = [];
@@ -1522,7 +2017,67 @@ export function createOwnedBrowserService(options = {}) {
       return changing(formmethod || await form.getAttribute('method') || 'get');
     } finally { await form.dispose(); }
   };
+  // 연구 탭을 조용히 닫는다(browser_open urls 가 연 탭). 사용자 화면에는 닫힌 탭으로 알린다.
+  const closeQuietly = (tab) => enqueue(tab, async () => {
+    if (tabs.get(tab.tabId) !== tab) return;
+    await releaseInput(tab); await tab.page?.close().catch(() => {});
+    tab.status = 'closed'; tabs.delete(tab.tabId); publish(tab); await persist();
+  });
+  const READ_MANY_LIMIT = 6;
+  /**
+   * browser_open urls: 주소 여러 개를 연구 탭으로 동시에 열어(이 에이전트의 남은 탭 수만큼) 읽을 글을 짧게 돌려주고, keep 이 아니면 닫는다.
+   * 주소마다 browser_open 과 같은 정책을 거치고, 실패는 그 주소의 결과로만 남는다.
+   */
+  const readMany = async (actor, args) => {
+    if (actor.isHuman) throw error('BROWSER_ACTION_INVALID', 'Reading many pages is an agent research tool.');
+    const urls = [...new Set((Array.isArray(args.urls) ? args.urls : []).filter((url) => typeof url === 'string'))];
+    if (!urls.length || urls.length > READ_MANY_LIMIT) throw error('BROWSER_READ_INVALID', `Pass between 1 and ${READ_MANY_LIMIT} URLs.`);
+    const maxChars = Math.floor(bounded(args.maxChars, 500, 8_000, 3_000));
+    const mine = [...tabs.values()].filter((tab) => sameScope(actor, tab)).length;
+    const slots = Math.min(limits.maxTabsPerAgent - mine, limits.maxTabs - tabs.size);
+    if (slots < 1) throw error('BROWSER_TAB_LIMIT', 'Close an unused browser tab before reading more pages.');
+    if (args.keep === true && urls.length > slots) throw error('BROWSER_TAB_LIMIT', `Only ${slots} more tabs fit. Read fewer pages with keep, or close tabs.`);
+    const readOne = async (url) => {
+      let tab;
+      try {
+        const opened = await performRequest(actor, 'open', { url, ...(args.intent ? { intent: args.intent } : {}) });
+        tab = opened.tab && tabs.get(opened.tab.tabId);
+        if (!opened.ok || !tab) return { url, ok: false, error: { code: opened.code ?? 'BROWSER_ACTION_FAILED', message: opened.message ?? 'The page could not be opened.' } };
+        const page = requirePage(tab);
+        await page.waitForLoadState('load', { timeout: 8_000 }).catch(() => {});
+        let timer;
+        const read = await Promise.race([enqueue(tab, async () => {
+          await assertPolicy(actor, 'snapshot', page.url(), tab);
+          if (tab.pendingDialog) throw dialogPending(tab);
+          if (protectedPage(tab)) throw passwordProtected('Open it with browser_open and use browser_snapshot.');
+          return page.evaluate(pageReadableText);
+        }), new Promise((_, reject) => { timer = setTimeout(() => reject(error('BROWSER_ACTION_TIMEOUT', 'The page did not become readable in time.', true)), 10_000); })]).finally(() => clearTimeout(timer));
+        const secrets = protectedFor(tab);
+        const compact = compactText(redactValues(read.text, secrets), { find: args.find, maxChars });
+        return { url: citationURL(page.url()) ?? publicURL(page.url()), title: redactValues(text(read.title || tab.title, 300), secrets), ok: true, ...compact,
+          ...(args.keep === true ? { tabId: tab.tabId, navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch } : {}) };
+      } catch (failure) {
+        const mapped = failure instanceof OwnedBrowserError || failure.code?.startsWith('BROWSER_') ? failure : browserActionFailure(failure);
+        return { url, ok: false, error: { code: mapped.code, message: mapped.message, ...(mapped.site ? { site: mapped.site } : {}), ...(mapped.request ? { request: mapped.request } : {}) } };
+      } finally {
+        if (tab && args.keep !== true) await closeQuietly(tab).catch(() => {});
+      }
+    };
+    const pages = new Array(urls.length); let next = 0;
+    await Promise.all(Array.from({ length: Math.min(slots, urls.length) }, async () => { while (next < urls.length) { const index = next++; pages[index] = await readOne(urls[index]); } }));
+    return { ok: true, action: 'read-many', pages };
+  };
   const performRequest = async (actor, action, args = {}) => {
+    // browser_open 의 urls 는 여러 쪽을 함께 읽는다(감시도 'read-many' 로 부른다).
+    if (action === 'read-many' || action === 'open' && Array.isArray(args.urls)) return readMany(actor, args);
+    // browser_type 의 key 는 글자 입력 대신 키 하나를 누른다.
+    if (action === 'type' && typeof args.key === 'string' && args.text === undefined) action = 'press';
+    // browser_click 의 hover·dragTo·dragBy 는 포인터 조작이다. 누르기와 달리 폼 제출 판정을 받지 않는다.
+    if (action === 'click' && (args.hover === true || args.dragTo || args.dragBy)) {
+      const { hover, dragTo, dragBy, ...rest } = args;
+      if (hover === true) { action = 'hover'; args = rest; }
+      else { action = 'drag'; args = { ...rest, ...(dragTo ? { targetRef: dragTo } : {}), ...(dragBy ? { offsetX: dragBy.x, offsetY: dragBy.y } : {}) }; }
+    }
     validateActor(actor);
     if ((resetting || resetFailed) && !['status', 'reset-browser'].includes(action)) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before using the browser.', true);
     if (action === 'reset-browser') {
@@ -1536,7 +2091,7 @@ export function createOwnedBrowserService(options = {}) {
     if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
     // 다시 시작한 뒤 첫 에이전트 관찰 전에 예전에 입력한 값을 가릴 목록에 다시 넣는다.
     if (!actor.isHuman) await loadProtected();
-    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys }
+    if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), ...(typeof args.history === 'string' ? { history: await visitedSites(actor, args.history) } : {}), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys }
       // 데스크톱 내장 브라우저는 관리형 Chromium 설치와 무관하다. 첫 탭을 열 때 시작된다.
       : selectedAdapter() ? { state: 'ready', installed: true, message: 'The desktop browser starts with the first tab.', passkeys }
       : await inspectOwnedBrowserRuntime({ dataDir }) }; }
@@ -1660,8 +2215,8 @@ export function createOwnedBrowserService(options = {}) {
       publish(tab); await persist(); return !actor.isHuman && challengeFor(tab) ? challengeResult(action, tab) : { ok: true, action, runtime: runtimeInfo(), tab: descriptor(tab) };
     }
     const tab = ownedTab(actor, args.tabId);
-    // 사용자가 조작 중인 탭의 대화상자는 에이전트 읽기로 닫지 않는다.
-    if (!actor.isHuman && !userHolds(tab)) await dismissPendingDialog(tab);
+    // 열린 대화상자는 페이지를 멈춘다. 에이전트의 다른 조작은 기다리지 않고 대화상자를 알린다(답은 browser_dialog).
+    if (!actor.isHuman && tab.pendingDialog && !['dialog', 'close'].includes(action) && await dialogStillOpen(tab)) throw dialogPending(tab);
     tab.lastActivityAt = Date.now();
     if (tab.sleeping && !['close', 'reconnect', 'sleep'].includes(action)) await wakeTab(actor, tab);
     if (action === 'sleep') {
@@ -1751,7 +2306,8 @@ export function createOwnedBrowserService(options = {}) {
     const requiresControl = mutating && !(action === 'close' && actor.isHuman);
     // 사용자가 잡은 탭은 에포크보다 먼저 확인해 에이전트 변경을 바로 거절한다(assertController).
     if (requiresControl) assertController(actor, tab);
-    epochs(tab, args, mutating);
+    // 대화상자 답은 열린 대화상자 자체가 대상이라 세대를 요구하지 않는다(주면 확인한다).
+    epochs(tab, args, mutating && action !== 'dialog');
     // 사용자가 잡은 탭의 에이전트 읽기는 대기열 밖에서 관찰만 한다. 사용자 입력을 기다리게 하지 않는다.
     const observeOnly = !actor.isHuman && !mutating && userHolds(tab);
     const queuedControlEpoch = tab.controllerEpoch;
@@ -1762,7 +2318,7 @@ export function createOwnedBrowserService(options = {}) {
     const run = async () => {
       signal?.throwIfAborted();
       if (requiresControl) assertController(actor, tab);
-      epochs(tab, args, mutating);
+      epochs(tab, args, mutating && action !== 'dialog');
       if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Browser cleanup invalidated the pending action.');
       // 비밀번호 칸과 일회용 코드 칸은 사이트 사용보다 먼저 알린다. 둘 다 권한이 아니라 입력 경로의 문제다.
       if (!actor.isHuman && action === 'type') await assertTypingTarget(tab, args);
@@ -1772,7 +2328,7 @@ export function createOwnedBrowserService(options = {}) {
       if (action === 'press') assertAgentKey(actor, args.key);
       if (!actor.isHuman && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       if (requiresControl) assertController(actor, tab);
-      epochs(tab, args, mutating);
+      epochs(tab, args, mutating && action !== 'dialog');
       if (!actor.isHuman && SETTLING.has(action)) {
         if (await raisesChange(tab, action, args)) await assertPolicy(actor, action, requirePage(tab).url(), tab, { intent: 'website-change' });
       }
@@ -1786,7 +2342,7 @@ export function createOwnedBrowserService(options = {}) {
       if (tracksDenials) {
         tab.blocked = null; tab.dropped = null; tab.navHops = []; tab.changePermitted = false;
         // 입력 창: 이 조작이 일으킨 같은 사이트 non-GET 은 사이트 변경이다. 새 문서가 열리면 끝난다.
-        if (INPUT_WINDOW.has(action) || (action === 'type' && args.submit === true)) tab.inputWindow = { documentEpoch: tab.documentEpoch ?? 0, threadId: actor.threadId, agentId: actor.agentId };
+        if (INPUT_WINDOW.has(action) || (action === 'type' && args.submit === true) || (action === 'fill-form' && !!args.submit)) tab.inputWindow = { documentEpoch: tab.documentEpoch ?? 0, threadId: actor.threadId, agentId: actor.agentId };
       }
       const downloadMark = tab.lastDownloadDenial;
       try {
@@ -1839,7 +2395,8 @@ export function createOwnedBrowserService(options = {}) {
         throw mapped;
       } finally { if (!observeOnly) tab.activeActor = null; }
     };
-    const queued = observeOnly ? run() : enqueue(tab, run);
+    // 대화상자 답은 대기열을 기다리지 않는다. 앞선 조작이 그 대화상자에 막혀 있을 수 있다.
+    const queued = observeOnly || action === 'dialog' ? run() : enqueue(tab, run);
     if (!abort) return queued;
     // 기한이 지나면 대기열의 작업도 중단해 다음 조작을 막지 않는다.
     return Promise.race([queued, new Promise((_, reject) => {
@@ -1955,6 +2512,6 @@ export function createOwnedBrowserService(options = {}) {
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); await favicons.clear(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await history.flush(); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); await favicons.clear(); state = 'closed'; },
   };
 }

@@ -227,6 +227,7 @@ test('executor: document-write helper covers every mutating tool', () => {
     'insert_chart',
     'insert_equation',
     'insert_footnote',
+    'insert_hyperlink',
     'insert_image',
     'insert_page_break',
     'insert_shape',

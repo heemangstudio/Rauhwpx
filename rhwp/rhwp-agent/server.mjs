@@ -70,9 +70,12 @@ import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore, defaultGeneratedArtifactRoot } from './artifact-store.mjs';
 import { createOwnedBrowserService, createIpcNativeBrowserAdapter } from './owned-browser-service.mjs';
+import { browserEventReachesSession } from './browser-event-scope.mjs';
 import { browserOrigin, createBrowserPolicy } from './browser-policy.mjs';
 import { createBrowserCredentialBroker } from './browser-credentials.mjs';
 import { browserContinuationText, createBrowserRequests, denialPayload } from './browser-requests.mjs';
+import { createBrowserWatchService, watchNoticeText } from './browser-watch.mjs';
+import { attachRecipeHint, createBrowserRecipeStore, recipeSite, wrapRecipe } from './browser-recipes.mjs';
 import { createBrowserOsSecretStore } from './browser-os-secret-store.mjs';
 import { createBrowserDownloads } from './browser-downloads.mjs';
 import { resolveBrowserUploadFiles } from './browser-upload-sources.mjs';
@@ -669,6 +672,9 @@ const browserPolicy = createBrowserPolicy({ dataDir: OWNED_BROWSER_DATA_DIR, onC
   broadcastBrowserEvent({ type: 'policy-changed', policy });
 } });
 await browserPolicy.ready();
+// 사이트 사용법 메모. 읽지 못해도 허브는 뜨고, 메모 도구만 실패한다.
+const browserRecipes = createBrowserRecipeStore({ dataDir: OWNED_BROWSER_DATA_DIR, onChange: () => broadcastBrowserEvent({ type: 'site-recipes-changed' }) });
+browserRecipes.ready().catch((error) => log(`site recipes unavailable: ${error?.code ?? error?.message ?? error}`));
 const browserSecretStore = await createBrowserOsSecretStore({
   ipcStore: secretStore, dataDir: OWNED_BROWSER_DATA_DIR, allowOsKeyring: process.env.RHWP_BROWSER_OS_KEYRING !== '0',
 });
@@ -742,6 +748,19 @@ const ownedBrowser = createOwnedBrowserService({
 });
 await ownedBrowser.restore();
 await applyBrowserConfiguration(initialBrowserConfiguration);
+// 페이지 감시: 채팅의 에이전트로 다시 읽고, 바뀌면 그 채팅에 알린다. RHWP_BROWSER_WATCH_MINUTE_MS 는 시험용으로 "1분" 을 줄인다.
+const browserWatches = createBrowserWatchService({
+  dataDir: OWNED_BROWSER_DATA_DIR, ownedBrowser, log,
+  minuteMs: Number(process.env.RHWP_BROWSER_WATCH_MINUTE_MS) > 0 ? Number(process.env.RHWP_BROWSER_WATCH_MINUTE_MS) : 60_000,
+  onNotice: (notice) => {
+    for (const record of sessions.values()) {
+      if (record.agentSession?.threadId !== notice.threadId) continue;
+      record.pendingWatchNotes = [...(record.pendingWatchNotes ?? []), notice].slice(-5);
+    }
+    broadcastBrowserEvent({ type: 'owned_browser_watch_notice', notice });
+  },
+  onChange: (threadId) => broadcastBrowserEvent({ type: 'owned_browser_watches', threadId, watches: browserWatches.list(threadId) }),
+});
 
 // 사이트 아이콘을 처음 받아 올 수 있는 출처: 사용자에게 보여 준 대기 중 요청과 저장한 비밀 값의 출처.
 async function browserRequestOrigins() {
@@ -756,7 +775,7 @@ async function browserRequestOrigins() {
 function broadcastBrowserEvent(event) {
   // 연결된 Studio 는 같은 허브 소유자의 인증된 UI다. provider 소켓으로는 보내지 않는다.
   for (const record of sessions.values()) {
-    if (event.type === 'owned_browser_activity' && event.sessionId !== record.sessionId) continue;
+    if (!browserEventReachesSession(event, record.sessionId)) continue;
     sendJson(record.studioSocket, { v: 1, type: 'browser-event', event });
   }
 }
@@ -785,6 +804,30 @@ function browserArgsFingerprint(tool, value) {
       ? Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]))
       : input;
   return JSON.stringify(canonical(parsed));
+}
+
+/**
+ * browser_cite capture: 인용 근거 그림을 이 채팅의 참고 자료로 저장한다. insert_image 가
+ * referenceFileId 로 그대로 읽고, 채팅 범위라 다른 채팅에서는 보이지 않는다.
+ * 저장에 실패해도 인용 기록과 그림 미리보기는 돌려준다.
+ */
+async function storeCitationImage(actor, result) {
+  const image = result?.image;
+  if (typeof image?.data !== 'string' || !result.citation || !actor.threadId) return;
+  try {
+    let site = typeof result.citation.siteName === 'string' ? result.citation.siteName : '';
+    if (!site) try { site = new URL(result.citation.url).hostname; } catch { site = ''; }
+    const file = await referenceStore.addBuffer({
+      bytes: Buffer.from(image.data, 'base64'),
+      name: `${site || '웹'} 인용.jpg`,
+      mimeType: image.mimeType ?? 'image/jpeg',
+      scope: 'chat',
+      scopeId: actor.threadId,
+    });
+    result.citation.imageFileId = file.id;
+  } catch (error) {
+    result.imageError = { code: 'CITATION_IMAGE_STORE_FAILED', message: String(error?.message ?? error).slice(0, 300) };
+  }
 }
 
 async function browserActorForMcp(record, sock, tool, args) {
@@ -884,6 +927,7 @@ function expireChatRequests(record, reason, predicate) {
 function endChatScope(threadId) {
   if (!threadId) return;
   userSecrets.endChat(threadId);
+  void browserWatches.endThread(threadId).catch((error) => log(`chat watch cleanup failed: ${error?.message ?? error}`));
   void browserPolicy.endThread(threadId).catch((error) => log(`chat site grants cleanup failed: ${error?.code ?? error?.message ?? error}`));
 }
 
@@ -1116,12 +1160,28 @@ async function handleBrowserRequest(record, sock, msg) {
         for (const entry of sessions.values()) expireChatRequests(entry, 'secret-removed', (item) => item.kind === 'secret' && item.request.secretId === secretId);
         break;
       }
+      case 'recipes.list': result = { recipes: await browserRecipes.list() }; break;
+      case 'recipes.write': result = { recipe: await browserRecipes.write({ site: String(args.site ?? ''), text: String(args.text ?? ''), author: 'user', secrets: [...filledSecretValues] }) }; break;
+      case 'recipes.delete': result = await browserRecipes.remove(String(args.site ?? '')); break;
       case 'permissions.list': result = { always: chatPermissionPolicy.list() }; break;
       case 'permissions.revoke': result = { always: await revokeAlwaysChatPermission(args.capability) }; break;
       case 'sessions.imported': result = await ownedBrowser.acceptImportedSessions(Array.isArray(args.domains) ? args.domains.slice(0, 500) : []); break;
       case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
       case 'accounts.forget': result = await credentialBroker.forgetAccount({ ...args, actor }); break;
       case 'configuration.get': result = await credentialBroker.getConfiguration(); break;
+      // 페이지 감시: 이 채팅의 목록·취소, 받은 알림 확인, 보관·삭제한 채팅의 감시 정리.
+      case 'watch.list': {
+        const threadId = typeof args.threadId === 'string' && args.threadId ? args.threadId : actor.threadId;
+        result = { threadId, watches: threadId ? browserWatches.list(threadId) : [] };
+        break;
+      }
+      case 'watch.cancel': result = await browserWatches.cancel(String(args.watchId ?? '')); break;
+      case 'watch.ack': result = await browserWatches.ack(Array.isArray(args.noticeIds) ? args.noticeIds.slice(0, 100) : []); break;
+      case 'watch.endThread': {
+        if (typeof args.threadId !== 'string' || !args.threadId || args.threadId.length > 256) throw workflowError('INVALID_ARGS', 'threadId is required');
+        result = await browserWatches.endThread(args.threadId);
+        break;
+      }
       case 'configuration.update': result = await applyBrowserConfiguration(await credentialBroker.updateConfiguration({ ...args, actor })); break;
       default: {
         result = await ownedBrowser.request(actor, String(msg.action ?? ''), args);
@@ -1294,6 +1354,22 @@ async function fillUserSecret(record, actor, args) {
     if (filled && typeof error?.message === 'string') error.message = scrubSecretValues(error.message, [filled]);
     throw error;
   }
+}
+
+// ─── 사이트 사용법 ───────────────────────────────────
+
+/** browser_recipe: 읽기는 누구나, 쓰기·지우기는 루트 대화만 한다. 메모는 믿지 않는 글로 감싸 돌려준다. */
+async function browserRecipeTool(actor, args) {
+  if (args.action !== 'read' && actor.agentId !== `${actor.threadId}:root`) {
+    throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may change site recipes; report the steps to it instead.');
+  }
+  if (args.action === 'delete') return { ok: true, action: 'delete', ...await browserRecipes.remove(args.site) };
+  if (args.action === 'write') {
+    const recipe = await browserRecipes.write({ site: args.site, text: args.text, author: 'agent', secrets: [...filledSecretValues] });
+    return { ok: true, action: 'write', site: recipe.site, chars: recipe.text.length };
+  }
+  const recipe = await browserRecipes.read(args.site);
+  return recipe ? { ok: true, action: 'read', site: recipe.site, recipe: wrapRecipe(recipe) } : { ok: true, action: 'read', site: recipeSite(args.site).site, recipe: null };
 }
 
 // ─── 항상 허용한 채팅 권한 ───────────────────────────────────
@@ -4546,6 +4622,14 @@ function addRequestNotesContext(record, activeSession, prompt) {
   return `${['<expired_requests trust="application-state">', ...notes.map((note) => note.text), '</expired_requests>'].join('\n')}\n\n${prompt}`;
 }
 
+/** 살아 있는 세션의 채팅에 온 페이지 감시 알림 — 다음 사용자 턴에 한 번 싣는다. 페이지 글은 믿지 않는 웹 내용이다. */
+function addWatchNotesContext(record, activeSession, prompt) {
+  const notes = (record.pendingWatchNotes ?? []).filter((note) => note.threadId === activeSession.threadId);
+  record.pendingWatchNotes = (record.pendingWatchNotes ?? []).filter((note) => note.threadId !== activeSession.threadId);
+  if (!notes.length) return prompt;
+  return `${['<page_watch_notices trust="untrusted-web">', ...notes.map(watchNoticeText), '</page_watch_notices>'].join('\n')}\n\n${prompt}`;
+}
+
 function addEditReportContext(record, activeSession, prompt) {
   const report = record.pendingEditReport;
   record.pendingEditReport = null;
@@ -4765,7 +4849,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         addTemplateContext(
           record,
           activeSession,
-          addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, referencedPrompt))),
+          addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, addWatchNotesContext(record, activeSession, referencedPrompt)))),
         ),
       );
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
@@ -7781,6 +7865,12 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       if (definition.category === 'browser' || tool === 'browser_request_account' || tool === 'request_secret') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
+          if (tool === 'browser_watch') {
+            // 감시는 채팅에 묶인다 — 하위 에이전트가 만들어도 채팅이 주인이다.
+            if (args.action === 'list') return { ok: true, action: 'list', watches: browserWatches.list(actor.threadId) };
+            if (args.action === 'cancel') return browserWatches.cancel(args.watchId, { threadId: actor.threadId });
+            return browserWatches.create(actor, args);
+          }
           if (tool === 'request_secret') {
             if (actor.agentId !== `${actor.threadId}:root`) {
               throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may ask the user for a secret');
@@ -7801,7 +7891,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             }
             return browserRequestsFor(record).requestSiteAccess(actor, args);
           }
+          if (tool === 'browser_recipe') return browserRecipeTool(actor, args);
           const result = browserMcpResult(await ownedBrowser.request(actor, tool.slice('browser_'.length).replaceAll('_', '-'), args));
+          if (tool === 'browser_open' || tool === 'browser_navigate') attachRecipeHint(browserRecipes, record.recipeHints ??= new Set(), result, args);
+          if (tool === 'browser_cite') await storeCitationImage(actor, result);
           if (tool === 'browser_status') {
             // 로그인은 활성 런타임의 저장소만, 비밀은 값 없이 보인다. usable 은 지금 이 채팅이 쓸 수 있는지다.
             result.secrets = await browserRequestsFor(record).statusSecrets(actor);
@@ -9139,6 +9232,10 @@ httpServer.on('upgrade', (req, socket, head) => {
       for (const request of pendingChatRequestsSnapshot(record)) {
         sendJson(ws, { v: 1, type: 'chat-permission-requested', request, replayed: true });
       }
+      // Studio 가 받았다고 하지 않은 페이지 감시 알림 — 채팅 기록에 넣은 뒤 watch.ack 로 지운다.
+      for (const notice of browserWatches.pendingNotices()) {
+        sendJson(ws, { v: 1, type: 'browser-event', event: { type: 'owned_browser_watch_notice', notice, replayed: true } });
+      }
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
@@ -9322,6 +9419,7 @@ function prepareShutdown(signal) {
     // 세션을 정리하면 도는 턴마다 turn-end 가 나간다. 그 끝이 프로바이더 실패가 아니라 허브가 내려가며
     // 끊은 턴임을 Studio 가 알도록 먼저 알린다(S3 의 허브 재시작 줄). 옛 Studio 는 모르는 프레임을 무시한다.
     for (const sock of studioWss.clients) sendJson(sock, { v: 1, type: 'hub-shutdown' });
+    await browserWatches.close().catch(() => {});
     const browserClosed = await ownedBrowser.close().catch(() => false);
     await credentialBroker.close?.();
     await browserDownloads.close?.();

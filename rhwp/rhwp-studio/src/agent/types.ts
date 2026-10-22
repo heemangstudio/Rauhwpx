@@ -1451,6 +1451,8 @@ export type ObjectOp =
       afterObjects?: boolean;
       /** 떠 있는 배치 — 삽입 직후 setPictureProperties 로 적용하는 속성 */
       floating?: Record<string, unknown>;
+      /** 그림 아래 캡션 한 줄 ("그림 N" 자동 번호 뒤에 붙는다, 본문 그림만) */
+      caption?: string;
       anchor?: ObjectAnchor;
     }
   | {
@@ -1681,6 +1683,8 @@ export type ObjectOp =
       type: 'engineBatch';
       sectionIdx: number;
       methods: string[];
+      /** 검토 목록에 메서드 이름 대신 보일 한 줄 (전용 도구가 엔진 배치로 스테이징할 때) */
+      label?: string;
       /** 배치가 바꾼 본문 문단 구간 (적용 후 좌표, 포함) — 비면 구역 전체 쪽을 표시한다 */
       touched: EngineBatchSpan[];
       /**

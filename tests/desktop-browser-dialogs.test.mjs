@@ -38,7 +38,7 @@ test('native website dialogs leave the editor responsive and preserve human choi
     });
     assert.deepEqual(report.agent, { startupAlertContinued: true, alertContinued: true, confirmCancelled: true, editorResponsive: true });
     assert.deepEqual(report.human, { hiddenStartupAlertParented: true, pendingUntilChoice: true, confirmAccepted: true, editorResponsive: true });
-    assert.deepEqual(report.shared, { agentCancelledOwnDialog: true, takeoverCancelledPendingDialog: true });
+    assert.deepEqual(report.shared, { agentAnsweredOwnDialog: true, userDialogLeftToUser: true });
     assert.deepEqual(report.presentation, { dockFloatPopoutReparked: true, hiddenDialogsResponsive: true, draftRetained: true });
     assert.deepEqual(report.ownership, { staleEditorRejected: true, newerPresentationRetained: true });
     assert.deepEqual(report.privacy, { protectedTextAbsent: true, promptUnsupported: true });

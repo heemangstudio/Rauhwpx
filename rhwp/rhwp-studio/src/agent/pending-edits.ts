@@ -937,7 +937,9 @@ export class PendingEditManager {
    * 배치 전후 문단 지문을 비교해 바뀐 구간을 표시하고, 그 뒤 문단을 가리키는 다른
    * pending op 좌표를 민다.
    */
-  addEngineBatch<T>(agent: AgentName, methods: string[], run: () => T): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
+  addEngineBatch<T>(
+    agent: AgentName, methods: string[], run: () => T, label?: string,
+  ): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
     const wasm = this.deps.wasm;
     const digestsBefore = this.bodyDigests();
     this.beginMutation();
@@ -967,6 +969,7 @@ export class PendingEditManager {
     }
     const obj: ObjectOp = {
       type: 'engineBatch', sectionIdx: touched[0]?.sectionIdx ?? 0, methods, touched, shifts,
+      ...(label ? { label } : {}),
     };
     const set = this.ensureOpenSet(agent);
     const op: PendingOp = { kind: 'object', id: this.nextId('op'), agent: set.agent, obj,
@@ -2206,6 +2209,16 @@ export class PendingEditManager {
             }
           }
           if (!placed) throw new AgentToolError('RPC_ERROR', 'setPictureProperties failed');
+        }
+        if (obj.caption && !path) {
+          // 한컴 기본 캡션("그림 N", 아래)을 만든 뒤 번호 뒤 자리에 글을 넣는다. 실패하면 호출자가
+          // 삽입 전 스냅샷으로 되돌린다.
+          const made = wasm.setPictureProperties(obj.sectionIdx, res.paraIdx, res.controlIdx, { hasCaption: true, captionDirection: 'Bottom' }) as { ok: boolean; captionCharOffset?: number };
+          if (made?.ok !== true) throw new AgentToolError('RPC_ERROR', 'picture caption failed');
+          const at = typeof made.captionCharOffset === 'number' ? made.captionCharOffset : 0;
+          if (JSON.parse(wasm.insertTextInCell(obj.sectionIdx, res.paraIdx, res.controlIdx, 0, 0, at, obj.caption))?.ok !== true) {
+            throw new AgentToolError('RPC_ERROR', 'picture caption text failed');
+          }
         }
         // 셀 폭 캡 등 엔진이 정한 실제 크기를 드리프트 판별자로 기록한다
         try {

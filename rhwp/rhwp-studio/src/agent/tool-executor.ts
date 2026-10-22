@@ -47,6 +47,7 @@ import {
   type EngineEditOperation,
 } from './engine-edit.ts';
 import { inferExportFormat } from '../command/save-target.ts';
+import { applyHyperlinkFormat, webHyperlinkUrl } from '../core/hyperlink.ts';
 import {
   PAGE_MARGIN_PRESET_IDS,
   PAPER_SIZES,
@@ -413,6 +414,7 @@ export const DOCUMENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'replace_all',
   'insert_footnote',
   'edit_footnote',
+  'insert_hyperlink',
   'set_bookmark',
   'apply_engine_edits',
   'prepare_engine_edit_session',
@@ -1427,6 +1429,7 @@ export class AgentToolExecutor {
       case 'list_footnotes': return this.listFootnotes();
       case 'insert_footnote': return this.insertFootnote(args, agent);
       case 'edit_footnote': return this.editFootnote(args, agent);
+      case 'insert_hyperlink': return this.insertHyperlink(args, agent);
       case 'list_bookmarks': return this.listBookmarks();
       case 'set_bookmark': return this.setBookmark(args, agent);
       case 'apply_engine_edits': return this.applyEngineEdits(args, agent);
@@ -4002,6 +4005,103 @@ export class AgentToolExecutor {
     const obj: ObjectOp = { type: 'setNoteText', sectionIdx, paraIdx, controlIdx, text };
     const r = this.stageObjectOp(agent, obj, sectionIdx, paraIdx);
     return { revision: this.revision, changeSetId: r.changeSetId };
+  }
+
+  /**
+   * 본문 문단의 웹 하이퍼링크 — 글자 삽입, 링크 필드, 링크 서식, 출처 각주를 엔진 배치 하나로
+   * 스테이징한다. 배치 직전 스냅샷으로 되돌리므로 거절하면 넷이 함께 사라지고, 승인하면 실행
+   * 취소 한 번에 묶인다. 인용 출처 각주는 링크 바로 뒤에 단다.
+   */
+  private insertHyperlink(args: Record<string, unknown>, agent: AgentName): unknown {
+    this.requireDocLoaded();
+    this.requireRevision(args);
+    const sectionIdx = reqInt(args, 'sectionIdx');
+    const paraIdx = reqInt(args, 'paraIdx');
+    const charOffset = reqInt(args, 'charOffset');
+    const url = webHyperlinkUrl(reqString(args, 'url'));
+    if (!url) {
+      throw new AgentToolError('INVALID_ARGS', 'url must be an absolute http:// or https:// address without spaces or credentials');
+    }
+    const optText = (key: string): string | undefined =>
+      args[key] === undefined || args[key] === null ? undefined : reqString(args, key);
+    const text = optText('text');
+    const linkText = optText('linkText');
+    const footnote = optText('footnote')?.replace(/\r\n?/g, '\n');
+    const length = optIndex(args, 'length');
+    const paraLen = this.validateAddress(sectionIdx, paraIdx, charOffset);
+    let linkStart = charOffset;
+    let linkEnd: number;
+    if (text !== undefined) {
+      if (length !== undefined) throw new AgentToolError('INVALID_ARGS', 'pass either text or length, not both');
+      if (!text.trim() || /[\x00-\x1f\x7f\u2028\u2029]/.test(text)) {
+        throw new AgentToolError('INVALID_ARGS', 'text must be one non-empty line (no newlines, tabs or control characters)');
+      }
+      if (text.length > 2000) throw new AgentToolError('INVALID_ARGS', `text must be at most 2000 chars (got ${text.length})`);
+      const at = linkText === undefined ? 0 : text.indexOf(linkText);
+      if (linkText !== undefined && (!linkText.trim() || at < 0)) {
+        throw new AgentToolError('INVALID_ARGS', 'linkText must be a non-empty part of text');
+      }
+      linkStart = charOffset + [...text.slice(0, at)].length;
+      linkEnd = linkStart + [...(linkText ?? text)].length;
+    } else {
+      if (linkText !== undefined) throw new AgentToolError('INVALID_ARGS', 'linkText needs text; without text pass length');
+      if (length === undefined || length < 1) {
+        throw new AgentToolError('INVALID_ARGS', 'length (>= 1) is required when text is omitted');
+      }
+      linkEnd = charOffset + length;
+      if (linkEnd > paraLen) {
+        throw new AgentToolError('INVALID_ARGS', `charOffset+length ${linkEnd} exceeds paragraph length ${paraLen}`);
+      }
+    }
+    if (footnote !== undefined) {
+      if (footnote.length < 1 || footnote.length > 2000) {
+        throw new AgentToolError('INVALID_ARGS', `footnote must be 1..2000 chars (got ${footnote.length})`);
+      }
+      if (footnote.includes('\n')) throw new AgentToolError('INVALID_ARGS', 'footnote must be a single paragraph (no newlines)');
+    }
+    const { wasm } = this.deps;
+    const target = { section: sectionIdx, para: paraIdx, cellPath: [] as [number, number, number][] };
+    // 새 글자를 기존 링크 안에 넣으면 그 링크가 늘어난다 — 겹침으로 본다. 경계는 링크 밖이다.
+    const overlap = wasm.getHyperlinkContext(target).links.find((l) => text !== undefined
+      ? l.start < charOffset && charOffset < l.end
+      : linkStart < l.end && l.start < linkEnd);
+    if (overlap) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `overlaps existing hyperlink [${overlap.start}, ${overlap.end}) "${overlap.text}" → ${overlap.uri}`,
+      );
+    }
+    const linked = text !== undefined ? (linkText ?? text) : wasm.getTextRange(sectionIdx, paraIdx, linkStart, linkEnd - linkStart);
+    const methods = [...(text !== undefined ? ['insertText'] : []), 'insertHyperlink', ...(footnote !== undefined ? ['insertFootnote'] : [])];
+    let staged: { changeSetId: string; result: { fieldId: number; note?: { number: number; controlIdx: number } } };
+    try {
+      staged = this.deps.pending.addEngineBatch(agent, methods, () => {
+        if (text !== undefined) wasm.insertText(sectionIdx, paraIdx, charOffset, text);
+        const fieldId = wasm.insertHyperlink(target, linkStart, linkEnd, url);
+        applyHyperlinkFormat(wasm, target, linkStart, linkEnd, '#0000ff');
+        if (footnote === undefined) return { fieldId };
+        const res = wasm.insertFootnote(sectionIdx, paraIdx, linkEnd);
+        if (!res.ok) throw new AgentToolError('HYPERLINK_FAILED', 'insertFootnote failed');
+        // 새 각주 문단은 번호 자리 공백 둘("  ")로 시작한다 — 손으로 넣을 때처럼 번호 뒤에 쓴다.
+        const fresh = wasm.getFootnoteInfo(sectionIdx, res.paraIdx, res.controlIdx);
+        const at = fresh?.ok === true && fresh.texts[0] === '  ' ? 2 : 0;
+        if (wasm.insertTextInFootnote(sectionIdx, res.paraIdx, res.controlIdx, 0, at, footnote)?.ok !== true) {
+          throw new AgentToolError('HYPERLINK_FAILED', 'insertTextInFootnote failed');
+        }
+        return { fieldId, note: { number: res.footnoteNumber, controlIdx: res.controlIdx } };
+      }, `하이퍼링크 · ${linked}${footnote !== undefined ? ' · 출처 각주' : ''}`);
+    } catch (error) {
+      if (error instanceof AgentToolError) throw error;
+      // 엔진 계약 위반(다른 필드와 겹침, 그림·표가 든 문단 등)은 문서를 바꾸지 않고 여기로 온다.
+      throw new AgentToolError('HYPERLINK_FAILED', error instanceof Error ? error.message : String(error));
+    }
+    const { fieldId, note } = staged.result;
+    return {
+      revision: this.revision,
+      changeSetId: staged.changeSetId,
+      link: { fieldId, start: linkStart, end: linkEnd },
+      ...(note ? { footnote: { number: note.number, paraIdx, controlIdx: note.controlIdx } } : {}),
+    };
   }
 
   private listBookmarks(): unknown {
@@ -7435,6 +7535,13 @@ export class AgentToolExecutor {
       }
     }
     const description = typeof args['description'] === 'string' ? args['description'] : '';
+    const caption = args['caption'] ?? undefined;
+    if (caption !== undefined) {
+      if (typeof caption !== 'string' || !caption.trim() || caption.length > 500 || /[\x00-\x1f\x7f\u2028\u2029]/.test(caption)) {
+        throw new AgentToolError('INVALID_ARGS', 'caption must be one non-empty line of at most 500 chars');
+      }
+      if (cell) throw new AgentToolError('INVALID_ARGS', 'caption is supported for body images only');
+    }
     const obj: ObjectOp = {
       type: 'insertImage', sectionIdx, paraIdx, charOffset,
       ...(cell ? { cell } : {}),
@@ -7442,6 +7549,7 @@ export class AgentToolExecutor {
       widthHu, heightHu, naturalWidthPx, naturalHeightPx, description,
       ...(afterObjects ? { afterObjects } : {}),
       ...(floating ? { floating } : {}),
+      ...(caption !== undefined ? { caption } : {}),
     };
     const r = this.stageObjectOp(agent, obj, sectionIdx, paraIdx);
     const staged = r.obj as Extract<ObjectOp, { type: 'insertImage' }>;

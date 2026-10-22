@@ -27,16 +27,16 @@ export async function removeOwnedBrowserState({ dataDir, nativeStorageCleared = 
     if (!info.isDirectory() || info.isSymbolicLink()
       || (process.platform !== 'win32' && info.uid !== process.getuid())) throw failure('Browser profile storage is not owned by this app.');
     // Keep installed Chromium and runtime configuration. Only these fixed paths
-    // hold profile, history, unfinished transfer, site icon, or tab restoration data.
+    // hold profile, visit history, unfinished transfer, site icon, or tab restoration data.
     const entries = [];
-    const tabPartials = (await fs.readdir(browserRoot)).filter((name) => /^tabs\.json\.[a-f0-9]{16}\.part$/.test(name));
-    for (const name of ['profile', 'native-profile', 'transfers', 'favicons', 'tabs.json', ...tabPartials]) {
+    const filePartials = (await fs.readdir(browserRoot)).filter((name) => /^(?:tabs|history)\.json\.[a-f0-9]{16}\.part$/.test(name));
+    for (const name of ['profile', 'native-profile', 'transfers', 'favicons', 'tabs.json', 'history.json', ...filePartials]) {
       const location = path.join(browserRoot, name);
       let entry;
       try { entry = await fs.lstat(location); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (!entry) continue;
-      if (entry.isSymbolicLink() || (name.startsWith('tabs.json') ? !entry.isFile() : !entry.isDirectory())
+      if (entry.isSymbolicLink() || (/^(?:tabs|history)\.json/.test(name) ? !entry.isFile() : !entry.isDirectory())
         || (process.platform !== 'win32' && entry.uid !== process.getuid())) throw failure('Browser profile storage is not owned by this app.');
       // A live Electron session keeps Windows database handles open after clearData.
       if (name === 'native-profile' && process.platform === 'win32' && nativeStorageCleared === true) continue;

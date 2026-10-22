@@ -24,9 +24,13 @@ Navigate an existing tab for the next destination. Open another tab only when th
 - Read semantic text and element names first. Capture an image when visual layout or requested evidence needs it. Captures create research evidence; avoid them for routine button selection.
 - Reuse an unchanged observation for reading. Refresh before acting if a page or control change could have invalidated it. A new snapshot replaces all earlier refs, even on the same URL.
 - Prefer a known destination URL or a relevant result already on the page. Avoid intermediate pages and repeated inventory checks.
-- Calls on the same tab are sequential. Hama exposes individual actions, so do not invent a browser batch, JavaScript evaluation, coordinate-click, or cookie tool.
-- `browser_type` fills ordinary text. For an intended search submission, use `submit: true` with `intent: search` to fill and press Enter in one call. Other flows can use an observed submit button or `browser_press`. Declare `website-change` intent when an action changes something the page cannot show as a form.
-- Use `browser_select` for native list boxes. Use bounded `browser_wait` only for content that arrives after an action settled. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
+- Calls on the same tab are sequential. Do not invent JavaScript evaluation, coordinate-click, or cookie tools.
+- Fill a whole form with one `browser_fill_form` call instead of one `browser_type` per field. Read several known URLs with one `browser_open` `urls` call instead of opening and snapshotting each. Locate text with `browser_snapshot` `find` before `text: true`.
+- A confirm or prompt left open by your action blocks the tab (`BROWSER_DIALOG_PENDING`); answer it with `browser_dialog`. Use `browser_click` with `hover: true` for hover menus and `dragTo`/`dragBy` for drag-and-drop and sliders.
+- When a result shows `recipe`, follow that site note before exploring menus. After you work out a multi-step flow on a site, save it with `browser_recipe` (steps only, no values).
+- To quote a page into the document, call `browser_cite` (by ref or exact quote), then `insert_hyperlink` with the quote, its `url` and its `footnote`.
+- `browser_type` fills ordinary text. For an intended search submission, use `submit: true` with `intent: search` to fill and press Enter in one call. Other flows can use an observed submit button or `browser_type` with `key`. Declare `website-change` intent when an action changes something the page cannot show as a form.
+- Use `browser_fill_form` for native list boxes. Use bounded `browser_wait` only for content that arrives after an action settled. It returns a fresh snapshot; use that observation directly. Avoid fixed sleeps, duplicate snapshots, and repeated polling without new evidence.
 
 ## Site access
 

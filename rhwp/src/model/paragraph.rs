@@ -2420,9 +2420,23 @@ impl Paragraph {
         let chars: Vec<char> = self.text.chars().collect();
         let mut positions = Vec::with_capacity(total_controls);
 
+        // 필드 끝 마커도 갭에서 8 단위를 차지하지만 컨트롤 목록에는 없다. 갭마다 그 수를
+        // 빼야 링크 뒤 각주·개체가 앞 갭으로 당겨지지 않는다 (직렬화기와 같은 셈).
+        let mut field_ends_at = vec![0usize; chars.len() + 1];
+        for idx in self
+            .field_ranges
+            .iter()
+            .map(|r| r.end_char_idx)
+            .chain(self.orphan_field_ends.iter().map(|o| o.char_idx))
+        {
+            if let Some(n) = field_ends_at.get_mut(idx) {
+                *n += 1;
+            }
+        }
+
         // 첫 문자 이전의 갭: 확장 컨트롤이 텍스트 시작 전에 있는 경우
         let gap_before = offsets[0] as usize;
-        let n_ctrls_before = gap_before / 8;
+        let n_ctrls_before = (gap_before / 8).saturating_sub(field_ends_at[0]);
         for _ in 0..n_ctrls_before {
             if positions.len() >= total_controls {
                 break;
@@ -2444,7 +2458,7 @@ impl Paragraph {
             };
             if next_off > current_off + char_width {
                 let gap = next_off - current_off - char_width;
-                let n_ctrls = gap / 8;
+                let n_ctrls = (gap / 8).saturating_sub(field_ends_at[i + 1]);
                 for _ in 0..n_ctrls {
                     if positions.len() >= total_controls {
                         break;
