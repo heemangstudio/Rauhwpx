@@ -213,7 +213,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
 
   /** 원본 위에 영역 조각 층을 깔고 머리에 영역 도구를 단다. */
   function mountClipLayer(projectId: string, source: ProjectFileItem): ClipLayer {
-    const tool = button('ag-pp-text-button ag-pp-clip-tool', '영역 그리기', { icon: 'clip', text: '영역' });
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '참고 영역 그리기', { icon: 'clip', text: '참고' });
     tool.setAttribute('aria-pressed', 'false');
     const layer = createClipLayer({
       projectId,
