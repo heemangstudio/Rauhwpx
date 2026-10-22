@@ -438,18 +438,22 @@ fn serialize_paragraph_with_msb(
 
     // PARA_TEXT를 먼저 직렬화하여 실제 char_count를 계산한다.
     // char_count가 PARA_TEXT code unit 수와 불일치하면 한컴이 파일 손상으로 판단한다.
-    let has_content = !para.text.is_empty() || !para.controls.is_empty();
+    // 앞 문단에서 시작한 필드의 끝(고아 FIELD_END)만 든 문단도 PARA_TEXT 가 있어야 한다.
+    // 빠뜨리면 char_count 는 FIELD_END 를 센 채 텍스트 레코드가 없어 한글이 문서를
+    // 열지 못했다 (여러 문단에 걸친 누름틀).
+    let has_content =
+        !para.text.is_empty() || !para.controls.is_empty() || !para.orphan_field_ends.is_empty();
     let text_data = if has_content || (para.has_para_text && para.char_count > 1) {
         Some(serialize_para_text(para))
     } else {
         None
     };
 
-    // char_count 재계산: PARA_TEXT가 있으면 code unit 수, 없으면 모델 값 사용
+    // char_count 재계산: PARA_TEXT가 있으면 code unit 수. 없으면 문단 끝 표지 하나뿐이다.
     let actual_char_count = if let Some(ref td) = text_data {
         (td.len() / 2) as u32
     } else {
-        para.char_count
+        para.char_count.min(1)
     };
 
     // [#6956] 형광펜 표지는 PARA_RANGE_TAG 종류 2 로 되돌린다 — 헤더 count 와 같은 목록.
@@ -548,7 +552,11 @@ fn serialize_paragraph_to_stream(
     };
 
     let actual_control_mask = compute_control_mask(para);
-    let has_content = !para.text.is_empty() || !para.controls.is_empty();
+    // 앞 문단에서 시작한 필드의 끝(고아 FIELD_END)만 든 문단도 PARA_TEXT 가 있어야 한다.
+    // 빠뜨리면 char_count 는 FIELD_END 를 센 채 텍스트 레코드가 없어 한글이 문서를
+    // 열지 못했다 (여러 문단에 걸친 누름틀).
+    let has_content =
+        !para.text.is_empty() || !para.controls.is_empty() || !para.orphan_field_ends.is_empty();
     let text_data = if has_content || (para.has_para_text && para.char_count > 1) {
         Some(serialize_para_text_limited(para, output.remaining())?)
     } else {
@@ -558,7 +566,7 @@ fn serialize_paragraph_to_stream(
         u32::try_from(data.len() / 2)
             .map_err(|_| "HWP paragraph character count exceeds u32".to_string())?
     } else {
-        para.char_count
+        para.char_count.min(1)
     };
 
     let range_tags = para.effective_markpen_range_tags();
@@ -1030,8 +1038,8 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
         let (char_code, _) = control_char_code_and_id(ctrl);
         mask |= 1u32 << char_code;
     }
-    // FIELD_END (0x0004): field_ranges가 있으면 비트 4 설정
-    if !para.field_ranges.is_empty() {
+    // FIELD_END (0x0004): field_ranges 또는 앞 문단에서 시작한 필드의 끝이 있으면 비트 4 설정
+    if !para.field_ranges.is_empty() || !para.orphan_field_ends.is_empty() {
         mask |= 1u32 << 0x0004;
     }
     // TAB (0x0009): text에 탭이 있으면 비트 9 설정
@@ -1155,7 +1163,8 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
     let field_end_units = para
         .field_ranges
         .len()
-        .checked_mul(8)
+        .checked_add(para.orphan_field_ends.len())
+        .and_then(|count| count.checked_mul(8))
         .ok_or_else(|| "HWP paragraph text size overflow".to_string())?;
     // This is a safe upper bound. Auto-number placeholders are counted once as
     // source text and again as a control, so actual output can be two bytes
@@ -1254,12 +1263,32 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
         *tail = Some(entry_index);
     }
 
+    // 앞 문단에서 시작한 필드의 끝(고아 FIELD_END). 짝 필드의 ctrl_id 를 모르면(0) 마커를
+    // 지어내지 않는다. 종전에는 아예 쓰지 않아, 여러 문단에 걸친 필드가 든 구역을 다시
+    // 쓰면 필드가 닫히지 않은 채 남아 한글이 문서를 열지 못했다.
+    let orphan_marker = |ofe: &crate::model::paragraph::OrphanFieldEnd| {
+        (ofe.begin_ctrl_id != 0).then_some(FieldEndMarker {
+            ctrl_id: ofe.begin_ctrl_id,
+            memo_index: 0,
+        })
+    };
     for (i, ch) in para.text.chars().enumerate() {
         let offset = if i < para.char_offsets.len() {
             u64::from(para.char_offsets[i])
         } else {
             prev_end
         };
+        for marker in para
+            .orphan_field_ends
+            .iter()
+            .filter(|ofe| ofe.char_idx == i)
+            .filter_map(orphan_marker)
+        {
+            push_field_end_ctrl_bytes(&mut bytes, marker);
+            prev_end = prev_end
+                .checked_add(8)
+                .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
+        }
 
         // [Task #1050] AutoNumber placeholder 검출:
         // char_offsets[i] == prev_end 이고 ch == ' ' 이고 다음 char_offset 이 prev_end + 8 +
@@ -1359,6 +1388,25 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
                 .checked_add(8)
                 .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
             mid_end_emitted[idx] = true;
+        }
+
+        // 앞선 컨트롤(secd/cold 등)을 갭에 채운 뒤에야 placeholder 위치에 닿는 경우가
+        // 있다 (HWPX 출처 문단: 자동번호가 secd·cold 뒤에 온다). 위 판정은 갭을 채우기
+        // 전 prev_end 로 했으므로 여기서 다시 본다. 놓치면 공백을 리터럴로 쓰고 자동번호를
+        // 문단 끝에 내보내 번호가 문단 끝으로 옮겨지고 공백이 하나 늘었다.
+        if ch == ' '
+            && offset == prev_end
+            && ctrl_idx < para.controls.len()
+            && control_char_code_and_id(&para.controls[ctrl_idx]).0 == 0x0012
+            && next_offset.map_or(is_last_text_char, |n| n >= offset.saturating_add(8))
+        {
+            let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
+            push_extended_ctrl_bytes(&mut bytes, ctrl_code, ctrl_id);
+            ctrl_idx += 1;
+            prev_end = offset
+                .checked_add(8)
+                .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
+            continue;
         }
 
         // 텍스트 문자 쓰기
@@ -1464,6 +1512,14 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
         if !emitted {
             push_field_end_ctrl_bytes(&mut bytes, marker);
         }
+    }
+    for marker in para
+        .orphan_field_ends
+        .iter()
+        .filter(|ofe| ofe.char_idx >= text_len)
+        .filter_map(orphan_marker)
+    {
+        push_field_end_ctrl_bytes(&mut bytes, marker);
     }
 
     // 문단 끝 마커
@@ -1718,7 +1774,8 @@ fn control_char_code_and_id(ctrl: &Control) -> (u16, u32) {
         Control::PageHide(_) => (0x0015, tags::CTRL_PAGE_HIDE),
         Control::Bookmark(_) => (0x0016, tags::CTRL_BOOKMARK),
         Control::Hyperlink(_) => (0x000B, 0),
-        Control::Ruby(_) => (0x000B, 0),
+        // 덧말은 한컴 저장본과 같이 글자 겹침 계열(0x0017) 확장 문자 + 'tdut'.
+        Control::Ruby(_) => (0x0017, tags::CTRL_CHAR_OVERLAP),
         Control::CharOverlap(_) => (0x0017, tags::CTRL_TCPS),
         Control::Field(f) => (0x0003, f.ctrl_id),
         Control::Equation(_) => (0x000B, tags::CTRL_EQUATION),

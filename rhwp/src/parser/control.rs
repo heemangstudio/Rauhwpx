@@ -45,33 +45,82 @@ pub fn parse_control(ctrl_id: u32, ctrl_data: &[u8], child_records: &[Record]) -
         tags::CTRL_PAGE_HIDE => parse_page_hide(ctrl_data),
         tags::CTRL_BOOKMARK => parse_bookmark(ctrl_data),
         tags::CTRL_TCPS => parse_char_overlap(ctrl_data),
+        // 덧말: 알려진 배치와 정확히 맞을 때만 모델로 읽는다. 아니면 아래처럼 원본 그대로
+        // 보존한다 — 종전에는 늘 미지원 컨트롤로 남아 HWPX 로 저장하면 덧말과 기준 글이
+        // 사라졌다.
+        tags::CTRL_CHAR_OVERLAP if child_records.is_empty() => match parse_ruby(ctrl_data) {
+            Some(ruby) => Control::Ruby(ruby),
+            None => opaque_control(ctrl_id, ctrl_data, child_records),
+        },
         tags::CTRL_EQUATION => parse_equation_control(ctrl_data, child_records),
         tags::CTRL_FORM => parse_form_control(ctrl_data, child_records),
         id if tags::is_field_ctrl_id(id) => parse_field_control(id, ctrl_data),
-        _ => {
-            // Unsupported controls are opaque, not disposable.  The first child is a
-            // direct child in a valid HWP record tree, so its level minus one is the
-            // CTRL_HEADER base level.  Normalizing to relative levels lets copied or
-            // nested paragraphs serialize the subtree at their new location.
-            let base_level = child_records
-                .first()
-                .map(|record| record.level.saturating_sub(1))
-                .unwrap_or(0);
-            let raw_child_records = child_records
-                .iter()
-                .map(|record| crate::model::document::RawRecord {
-                    tag_id: record.tag_id,
-                    level: record.level.saturating_sub(base_level),
-                    data: record.data.clone(),
-                })
-                .collect();
-            Control::Unknown(UnknownControl {
-                ctrl_id,
-                raw_ctrl_data: ctrl_data.to_vec(),
-                raw_child_records,
-            })
-        }
+        _ => opaque_control(ctrl_id, ctrl_data, child_records),
     }
+}
+
+/// 덧말 'tdut' 본문: 기준 글·덧말(u16 길이 + UTF-16) 뒤에 위치·크기 비율·옵션·스타일·
+/// 정렬 u32 5개. 모델이 표현할 수 없는 값(양쪽/배분 정렬 등)이면 None.
+fn parse_ruby(data: &[u8]) -> Option<crate::model::control::Ruby> {
+    let mut r = ByteReader::new(data);
+    let mut read_text = |r: &mut ByteReader| -> Option<String> {
+        let len = r.read_u16().ok()? as usize;
+        let mut units = Vec::with_capacity(len);
+        for _ in 0..len {
+            units.push(r.read_u16().ok()?);
+        }
+        String::from_utf16(&units).ok()
+    };
+    let main_text = read_text(&mut r)?;
+    let ruby_text = read_text(&mut r)?;
+    if r.remaining() != 20 {
+        return None;
+    }
+    let pos_type = r.read_u32().ok()?;
+    let sz_ratio = r.read_u32().ok()?;
+    let option = r.read_u32().ok()?;
+    let style_id_ref = r.read_u32().ok()?;
+    let align = r.read_u32().ok()?;
+    if pos_type > 1
+        || sz_ratio > 255
+        || style_id_ref > u32::from(u16::MAX)
+        || !(1..=3).contains(&align)
+    {
+        return None;
+    }
+    Some(crate::model::control::Ruby {
+        main_text,
+        ruby_text,
+        pos_type: pos_type as u8,
+        align: (align - 1) as u8,
+        sz_ratio: sz_ratio as u8,
+        option,
+        style_id_ref: style_id_ref as u16,
+    })
+}
+
+fn opaque_control(ctrl_id: u32, ctrl_data: &[u8], child_records: &[Record]) -> Control {
+    // Unsupported controls are opaque, not disposable.  The first child is a
+    // direct child in a valid HWP record tree, so its level minus one is the
+    // CTRL_HEADER base level.  Normalizing to relative levels lets copied or
+    // nested paragraphs serialize the subtree at their new location.
+    let base_level = child_records
+        .first()
+        .map(|record| record.level.saturating_sub(1))
+        .unwrap_or(0);
+    let raw_child_records = child_records
+        .iter()
+        .map(|record| crate::model::document::RawRecord {
+            tag_id: record.tag_id,
+            level: record.level.saturating_sub(base_level),
+            data: record.data.clone(),
+        })
+        .collect();
+    Control::Unknown(UnknownControl {
+        ctrl_id,
+        raw_ctrl_data: ctrl_data.to_vec(),
+        raw_child_records,
+    })
 }
 
 // ============================================================
@@ -159,6 +208,7 @@ fn parse_field_control(ctrl_id: u32, ctrl_data: &[u8]) -> Control {
         memo_text_direction: None,
         raw_parameters_xml: None,
         hyperlink_format: None,
+        initial_text: None,
     })
 }
 
@@ -187,10 +237,12 @@ fn parse_table_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
         }
     }
 
-    // HWPTAG_TABLE 레코드 위치 찾기
+    // HWPTAG_TABLE 레코드 위치 찾기 — 이 표의 직접 자식만 본다. 캡션 안에 표가 있으면
+    // 그 표의 TABLE 레코드가 먼저 나와, 캡션을 그 앞에서 잘라 캡션 속 표가 0×0 이 됐다.
+    let direct_level = child_records.first().map(|r| r.level);
     let table_record_idx = child_records
         .iter()
-        .position(|r| r.tag_id == tags::HWPTAG_TABLE);
+        .position(|r| r.tag_id == tags::HWPTAG_TABLE && Some(r.level) == direct_level);
 
     // HWPTAG_TABLE 이전에 LIST_HEADER가 있으면 캡션
     if let Some(table_idx) = table_record_idx {

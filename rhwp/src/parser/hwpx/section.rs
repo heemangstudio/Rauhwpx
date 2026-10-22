@@ -4323,6 +4323,8 @@ fn parse_shape_object(
     // [Task #1067] polygon / curve 의 가변 꼭짓점 `<hc:pt x=... y=.../>` 누적.
     // 기존 pt0/pt1/pt2/pt3 (rect 의 4 꼭짓점) 와 별개.
     let mut polygon_points: Vec<crate::model::Point> = Vec::new();
+    // `<hp:seg type="CURVE|LINE">` 세그먼트 종류 (0: 직선, 1: 곡선 — HWP5 와 같은 값).
+    let mut curve_segment_types: Vec<u8> = Vec::new();
     // [Task #1598] ellipse / arc 전용 지오메트리 (`<hc:center>`/`<hc:ax1>`/...).
     // 미적재 시 한글이 타원/호를 다르게 렌더 → 누적 레이아웃 변동 → 페이지 붕괴(#1589 잔여).
     let mut e_center = crate::model::Point::default();
@@ -4446,8 +4448,12 @@ fn parse_shape_object(
                         let mut y1: i32 = 0;
                         let mut x2: i32 = 0;
                         let mut y2: i32 = 0;
+                        let mut segment_type = 1u8;
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
+                                b"type" => {
+                                    segment_type = u8::from(attr_str(&attr) != "LINE");
+                                }
                                 b"x1" => x1 = parse_i32(&attr),
                                 b"y1" => y1 = parse_i32(&attr),
                                 b"x2" => x2 = parse_i32(&attr),
@@ -4459,6 +4465,7 @@ fn parse_shape_object(
                             polygon_points.push(crate::model::Point { x: x1, y: y1 });
                         }
                         polygon_points.push(crate::model::Point { x: x2, y: y2 });
+                        curve_segment_types.push(segment_type);
                     }
                     b"startPt" => {
                         for attr in ce.attributes().flatten() {
@@ -4628,9 +4635,13 @@ fn parse_shape_object(
         b"curve" => ShapeObject::Curve(CurveShape {
             common,
             drawing,
-            // CurveShape 도 동일 패턴 — 누락 시 곡선 미표시. segment_types 는 별개로 추후 task.
+            // CurveShape 도 동일 패턴 — 누락 시 곡선 미표시.
+            segment_types: if curve_segment_types.len() + 1 == polygon_points.len() {
+                curve_segment_types
+            } else {
+                Vec::new()
+            },
             points: polygon_points,
-            ..Default::default()
         }),
         _ => ShapeObject::Rectangle(RectangleShape {
             common,
@@ -5073,23 +5084,7 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
     // 정답지 (samples/form-01.hwp) reverse engineering: ClickHere CTRL_HEADER 의 ctrl_id 가
     // "%clk" (FIELD_CLICKHERE). HWPX parser 가 이전엔 ctrl_id 미설정 → serializer 가
     // 0x00000000 작성 → 한컴이 무효 컨트롤로 인식 (JS 핸들러 reference 끊김).
-    f.ctrl_id = match f.field_type {
-        FieldType::Date => tags::FIELD_DATE,
-        FieldType::DocDate => tags::FIELD_DOCDATE,
-        FieldType::Path => tags::FIELD_PATH,
-        FieldType::Bookmark => tags::FIELD_BOOKMARK,
-        FieldType::MailMerge => tags::FIELD_MAILMERGE,
-        FieldType::CrossRef => tags::FIELD_CROSSREF,
-        FieldType::Formula => tags::FIELD_FORMULA,
-        FieldType::ClickHere => tags::FIELD_CLICKHERE,
-        FieldType::Summary => tags::FIELD_SUMMARY,
-        FieldType::UserInfo => tags::FIELD_USERINFO,
-        FieldType::Hyperlink => tags::FIELD_HYPERLINK,
-        FieldType::Memo => tags::FIELD_MEMO,
-        FieldType::PrivateInfoSecurity => tags::FIELD_PRIVATE_INFO,
-        FieldType::TableOfContents => tags::FIELD_TOC,
-        FieldType::Unknown => 0,
-    };
+    f.ctrl_id = tags::field_type_ctrl_id(f.field_type);
     // ClickHere 의 extra_properties 정답지 관찰값: 0x09
     if matches!(f.field_type, FieldType::ClickHere) {
         f.extra_properties = 0x09;

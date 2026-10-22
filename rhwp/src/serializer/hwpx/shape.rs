@@ -233,8 +233,10 @@ pub fn write_line<W: Write>(
             ],
         )?;
     } else {
-        empty_tag(w, "hp:startPt", &[("x", &sx), ("y", &sy)])?;
-        empty_tag(w, "hp:endPt", &[("x", &ex), ("y", &ey)])?;
+        // 직선의 좌표는 한컴 core 네임스페이스(hc:)다. hp: 로 쓰면 한글이 문서 열기를
+        // 거부한다(선이 든 HWP 를 HWPX 로 저장한 파일 전체). connectLine 만 hp: 를 쓴다.
+        empty_tag(w, "hc:startPt", &[("x", &sx), ("y", &sy)])?;
+        empty_tag(w, "hc:endPt", &[("x", &ex), ("y", &ey)])?;
     }
 
     // connectLine 제어점 (꺾인/곡선 커넥터의 경로).
@@ -1449,18 +1451,18 @@ mod tests {
 
     #[test]
     fn line_emits_start_end_attrs() {
-        // [Issue #1943] 좌표는 hp:startPt/hp:endPt 자식으로 방출한다 (파서가 읽는
-        // 유일 경로). 종전 startX/Y attr 은 파서가 무시하는 dead 출력이었다.
+        // [Issue #1943] 좌표는 startPt/endPt 자식으로 방출한다 (파서가 읽는 유일 경로).
+        // 직선은 한컴 저장본과 같이 hc: 네임스페이스여야 한글이 문서를 연다.
         let mut line = LineShape::default();
         line.start = Point { x: 100, y: 200 };
         line.end = Point { x: 300, y: 400 };
         let xml = serialize_line(&line);
         assert!(
-            xml.contains(r#"<hp:startPt x="100" y="200""#),
+            xml.contains(r#"<hc:startPt x="100" y="200""#),
             "startPt 자식 방출: {xml}"
         );
         assert!(
-            xml.contains(r#"<hp:endPt x="300" y="400""#),
+            xml.contains(r#"<hc:endPt x="300" y="400""#),
             "endPt 자식 방출: {xml}"
         );
         // 컴포넌트 블록·lineShape 보존 (#1943 (B)).

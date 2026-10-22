@@ -1858,7 +1858,10 @@ fn parse_field_control_char(
             }
             i += 3;
             char_offsets.push(utf16_len);
-            utf16_len += 1;
+            // AutoNumber(ch=18)은 HWP5 와 같이 확장 컨트롤 8 code unit 을 차지하게 둔다.
+            // 1 로 두면 직렬화기가 공백을 placeholder 로 알아보지 못해 리터럴 공백과
+            // 자동번호를 따로 써서, 저장할 때마다 번호 앞 공백이 하나 늘었다.
+            utf16_len += if ch == 18 { 8 } else { 1 };
             // AutoNumber(ch=18)은 HWP5 패턴("  ")과 일치하도록 공백으로 저장
             if ch == 18 {
                 text_string.push(' ');
@@ -3684,7 +3687,7 @@ pub(crate) fn parse_hwp3_validated(data: &[u8]) -> Result<Document, Hwp3Error> {
     // 같은 디렉터리의 외부 파일을 로드할 수 있도록 공통 Link 경로 전달을 적용한다.
     super::populate_link_image_paths(&mut doc);
 
-    crate::parser::assign_auto_numbers(&mut doc);
+    crate::parser::assign_auto_numbers_on_load(&mut doc);
     fixup_hwp3_notes(&mut doc, &doc_info);
     fixup_hwp3_outline_fields(&mut doc);
     fixup_hwp3_picture_numbers(&mut doc);

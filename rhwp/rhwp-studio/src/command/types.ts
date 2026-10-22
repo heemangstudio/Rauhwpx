@@ -122,6 +122,8 @@ export interface CommandServices {
   isManagedWorktree?: () => boolean;
   /** 내보내기 전 현재 내용을 보존하되 저장 기준점은 바꾸지 않는다. */
   persistManagedWorktree?: () => Promise<void>;
+  /** 저장 확인에서 "저장 안 함"을 골랐다. 다시 열 때 버린 편집이 돌아오지 않게 보관한 편집을 놓는다. */
+  discardUnsavedWork?: () => Promise<void>;
   /** 에디터 편집 모드 변경 */
   setEditMode: (mode: EditorEditMode) => void;
   /**

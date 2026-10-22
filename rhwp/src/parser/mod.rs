@@ -381,7 +381,7 @@ fn parse_hwp_with_cfb(
     };
 
     // 자동 번호 할당 (문서 전체에서 순차적으로)
-    assign_auto_numbers(&mut doc);
+    assign_auto_numbers_on_load(&mut doc);
 
     // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
     apply_hwp3_origin_fixup(&mut doc);
@@ -737,7 +737,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
         },
     };
 
-    assign_auto_numbers(&mut doc);
+    assign_auto_numbers_on_load(&mut doc);
 
     // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
     // [Task #1001] 변환본 식별 시 doc.is_hwp3_variant = true 설정
@@ -897,6 +897,21 @@ pub(crate) fn populate_link_image_paths(doc: &mut Document) {
 
 /// 문서 내 모든 AutoNumber 컨트롤에 번호를 할당한다.
 /// NewNumber 컨트롤을 만나면 해당 종류의 카운터를 리셋한다.
+thread_local! {
+    /// 로드 중에만 켜진다: 파일에 저장된 자동번호 값을 덮어쓰지 않는다.
+    static KEEP_STORED_AUTO_NUMBERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 로드 때의 자동번호 매김. 화면용 `assigned_number` 만 계산하고 파일에 저장된 `number` 는
+/// 그대로 둔다 — 덮어쓰면 저장 때 그 값이 바뀌어 한글에서 미주 번호 "문11）" 이 "문1）" 로
+/// 바뀌었다(eq-002.hwp → HWPX). 편집 뒤 다시 매길 때는 [`assign_auto_numbers`] 가
+/// 종전대로 둘 다 갱신한다.
+pub(crate) fn assign_auto_numbers_on_load(doc: &mut Document) {
+    KEEP_STORED_AUTO_NUMBERS.with(|keep| keep.set(true));
+    assign_auto_numbers(doc);
+    KEEP_STORED_AUTO_NUMBERS.with(|keep| keep.set(false));
+}
+
 pub(crate) fn assign_auto_numbers(doc: &mut Document) {
     use crate::model::control::AutoNumberType;
 
@@ -988,7 +1003,10 @@ fn assign_auto_numbers_in_controls(
                 let idx = counter_index(an.number_type);
                 counters[idx] += 1;
                 an.assigned_number = counters[idx];
-                an.number = counters[idx];
+                // 로드 때는 파일에 저장된 번호를 지킨다 (값이 없는 0 만 채운다).
+                if an.number == 0 || !KEEP_STORED_AUTO_NUMBERS.with(|keep| keep.get()) {
+                    an.number = counters[idx];
+                }
             }
             Control::Table(table) => {
                 // 표 내부 셀의 문단도 처리

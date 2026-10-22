@@ -109,8 +109,12 @@ pub fn serialize_control(
                 } else {
                     f.field_id
                 };
+            // HWPX·HWP3 출처 필드는 ctrl_id 가 0 일 수 있다. 0 으로 쓰면 재로드 시 필드가
+            // 미지원 컨트롤로 바뀌어 메모·개요 필드가 사라지므로 타입에서 ctrl_id 를 얻는다.
             let ctrl_id = if matches!(f.field_type, FieldType::Memo) {
                 tags::FIELD_UNKNOWN
+            } else if f.ctrl_id == 0 {
+                tags::field_type_ctrl_id(f.field_type)
             } else {
                 f.ctrl_id
             };
@@ -191,9 +195,19 @@ pub fn serialize_control(
                 }));
             }
         }
-        // HWP3 legacy hyperlink and HWPX Ruby have no fully validated HWP5 lowering
-        // here. Verification reports their loss explicitly instead of claiming success.
-        Control::Hyperlink(_) | Control::Ruby(_) => {}
+        // 덧말 'tdut' (한컴 저장본 정답지): 기준 글 길이(u16)+UTF-16, 덧말 길이(u16)+UTF-16,
+        // 위치·크기 비율·옵션·스타일·정렬 u32 5개. 종전에는 아무것도 쓰지 않아 HWPX 의
+        // 덧말을 HWP 로 저장하면 기준 글까지 문서에서 사라졌다.
+        Control::Ruby(ruby) => {
+            records.push(make_ctrl_record(
+                tags::CTRL_CHAR_OVERLAP,
+                level,
+                &serialize_ruby(ruby),
+            ));
+        }
+        // HWP3 legacy hyperlink has no fully validated HWP5 lowering here.
+        // Verification reports its loss explicitly instead of claiming success.
+        Control::Hyperlink(_) => {}
     }
 
     // CTRL_DATA 레코드 복원: 일반 컨트롤은 CTRL_HEADER 바로 다음에 삽입한다.
@@ -317,6 +331,20 @@ fn serialize_section_def(sd: &SectionDef, level: u16, records: &mut Vec<Record>)
             data: serialize_page_border_fill(pbf),
         });
     }
+    // 한글은 구역마다 양쪽/짝수/홀수 PAGE_BORDER_FILL 3개를 기대한다. BOTH 하나만 가진
+    // HWPX·새 문서를 HWP 로 저장하면 1개만 써서 한글이 문서 열기를 거부했다. 비어 있는
+    // 슬롯은 한컴 저장본과 같이 속성·간격 0, 테두리/배경 1 로 채운다.
+    for _ in sd.extra_page_border_fills.len()..2 {
+        records.push(Record {
+            tag_id: tags::HWPTAG_PAGE_BORDER_FILL,
+            level: level + 1,
+            size: 0,
+            data: serialize_page_border_fill(&PageBorderFill {
+                border_fill_id: 1,
+                ..Default::default()
+            }),
+        });
+    }
 
     // 기타 자식 레코드 복원 (바탕쪽 LIST_HEADER + 문단 등)
     for raw in &sd.extra_child_records {
@@ -423,6 +451,24 @@ fn serialize_page_border_fill(pbf: &PageBorderFill) -> Vec<u8> {
     w.write_i16(pbf.spacing_top).unwrap();
     w.write_i16(pbf.spacing_bottom).unwrap();
     w.write_u16(pbf.border_fill_id).unwrap();
+    w.into_bytes()
+}
+
+/// 덧말 'tdut' CTRL_HEADER 본문 (ctrl_id 뒤). 정렬은 HWP5 값(1 왼쪽, 2 오른쪽, 3 가운데)이다.
+pub(crate) fn serialize_ruby(ruby: &Ruby) -> Vec<u8> {
+    let mut w = ByteWriter::new();
+    for text in [&ruby.main_text, &ruby.ruby_text] {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        w.write_u16(units.len() as u16).unwrap();
+        for unit in units {
+            w.write_u16(unit).unwrap();
+        }
+    }
+    w.write_u32(u32::from(ruby.pos_type)).unwrap();
+    w.write_u32(u32::from(ruby.sz_ratio)).unwrap();
+    w.write_u32(ruby.option).unwrap();
+    w.write_u32(u32::from(ruby.style_id_ref)).unwrap();
+    w.write_u32(u32::from(ruby.align) + 1).unwrap();
     w.into_bytes()
 }
 

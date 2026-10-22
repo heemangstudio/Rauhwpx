@@ -610,22 +610,18 @@ fn authored_empty_children_project_only_explicitly_collapsed_page_number_slots()
     }
 }
 
+/// 빈 hp:t 자리를 되살릴 수 없으면 위치를 추측하지 않고 빈 hp:t 없이 저장한다.
+/// 빈 hp:t 는 내용이 없으므로, 문서 전체 저장을 거부하는 것보다 낫다.
 #[test]
-fn authored_empty_child_restore_rejects_unaccounted_topology_change() {
+fn authored_empty_child_restore_saves_without_unaccounted_empty_children() {
     let mut para = runs("<hp:run charPrIDRef=\"2\"><hp:t>A</hp:t><hp:t/></hp:run>");
     para.authored_text_runs.as_mut().unwrap()[0].child_count += 1;
-    let section = Section {
-        paragraphs: vec![Paragraph::default(), para],
-        ..Default::default()
-    };
-    let error = write_section(
-        &section,
-        &Document::default(),
-        0,
-        &mut SerializeContext::default(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("자식 구조"), "{error}");
+    let xml = save(para);
+    assert!(xml.contains("<hp:t>A</hp:t>"), "{xml}");
+    assert!(
+        !xml.contains("<hp:t/>") && !xml.contains("<hp:t></hp:t>"),
+        "{xml}"
+    );
 }
 
 #[test]
@@ -766,8 +762,9 @@ fn grouped_page_number_controls_keep_body_and_nested_cell_utf16_axes_on_resave()
     }
 }
 
+/// 접힌 pageNum 자식 매핑이 없으면 빈 hp:t 를 되살리지 않고 저장한다.
 #[test]
-fn authored_restoration_rejects_missing_whole_child_collapse_mapping() {
+fn authored_restoration_without_collapse_mapping_saves_without_empty_children() {
     let mut para = runs(concat!(
         "<hp:run charPrIDRef=\"0\"><hp:ctrl><hp:pageNum/></hp:ctrl></hp:run>",
         "<hp:run charPrIDRef=\"1\"><hp:ctrl><hp:pageNum/></hp:ctrl><hp:t/></hp:run>"
@@ -775,18 +772,12 @@ fn authored_restoration_rejects_missing_whole_child_collapse_mapping() {
     para.authored_text_runs.as_mut().unwrap()[1]
         .page_number_children
         .clear();
-    let section = Section {
-        paragraphs: vec![Paragraph::default(), para],
-        ..Default::default()
-    };
-    let error = write_section(
-        &section,
-        &Document::default(),
-        0,
-        &mut SerializeContext::default(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("자식 구조"), "{error}");
+    let xml = save(para);
+    assert_eq!(xml.matches("<hp:pageNum").count(), 1, "{xml}");
+    assert!(
+        !xml.contains("<hp:t/>") && !xml.contains("<hp:t></hp:t>"),
+        "{xml}"
+    );
 }
 
 #[test]

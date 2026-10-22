@@ -931,6 +931,11 @@ const commandServices: CommandServices = {
     if (!attachedSession.versions) throw new Error('워크트리 저장 서비스를 사용할 수 없습니다.');
     await attachedSession.versions.persistWorktree();
   },
+  discardUnsavedWork: async () => {
+    // 관리되는 작업 사본은 그 자체가 저장 위치라 놓지 않는다. 원본 파일의 작업 공간만 되돌린다.
+    if (isManagedWorktree()) return;
+    await attachedSession.versions?.discardUnsavedWorktree();
+  },
   setEditMode,
   opensDocumentsInNewSession: () => shouldOpenInNewSession(),
   getPendingAgentEdits: () => {

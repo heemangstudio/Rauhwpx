@@ -225,6 +225,86 @@ test('linked worktrees checkpoint creation, persist local edits and protect occu
   } finally { await page.close(); }
 });
 
+test('edits discarded at the save prompt are not reopened from the primary worktree', { timeout: 45_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'), import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'), import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'),
+      ]);
+      const wasm = new WasmBridge(); await wasm.initialize();
+      const diskBytes = new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer());
+      wasm.loadDocument(diskBytes.slice(), 'shift-return.hwp');
+      const eventBus = new EventBus(); const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty, getDocumentId: () => 'discard-primary',
+        getInputHandler: () => ({ canRedo: () => false }) as never,
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined, isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }), requestCheckpointTitle: async () => null,
+        },
+        worktreeHost: {
+          ensureOwnership: async () => true, canMutate: () => true,
+          getStatus: () => ({ isOpen: true, busy: false }),
+          open: async () => {}, close: async () => {}, remove: async () => false, merge: async () => {},
+        },
+      });
+      const primary = async () => (await store.findWorktreeByDocumentId(versions.documentId('discard-primary')))!;
+      // main.ts openDocumentBytes opens the primary worktree instead of the file when this holds.
+      const reopensKeptEdits = (worktree: { blobId: unknown; savedFingerprint: unknown }) => (
+        String(worktree.blobId) !== String(worktree.savedFingerprint)
+      );
+      const reopenedText = async () => {
+        const worktree = await primary();
+        const probe = new WasmBridge(); await probe.initialize();
+        probe.loadDocument((await store.getBlob(worktree.blobId))!.bytes, 'shift-return.hwp');
+        try { return probe.getTextRange(0, 0, 0, probe.getParagraphLength(0, 0)); } finally { probe.dispose(); }
+      };
+      const type = (text: string) => {
+        wasm.insertText(0, 0, 0, text);
+        dirty.markDirty('typing'); eventBus.emit('document-mutated');
+      };
+      try {
+        await controller.documentLoaded({ fromDisk: true });
+        await controller.enable();
+        type('DISCARDME ');
+        await controller.persistWorktree();
+        const keptBeforeDiscard = reopensKeptEdits(await primary());
+
+        // 저장 확인의 "저장 안 함" 뒤 창이 닫힌다: 닫기 전 기록과 pagehide 기록이 차례로 돈다.
+        await controller.discardUnsavedWorktree();
+        await controller.flushScheduledPersist();
+        await controller.persistWorktree();
+        const keptAfterDiscard = reopensKeptEdits(await primary());
+
+        // 같은 파일을 다시 연다: 보관한 편집이 없으면 디스크 바이트를 열고 작업 공간을 그 내용으로 맞춘다.
+        wasm.loadDocument(diskBytes.slice(), 'shift-return.hwp');
+        dirty.markClean('disk-open');
+        await controller.documentLoaded({ fromDisk: true });
+        const textAfterDiscard = await reopenedText();
+
+        // 버린 뒤 새로 한 편집은 다시 보관한다.
+        type('LATER ');
+        await controller.persistWorktree();
+        const keptLaterEdit = reopensKeptEdits(await primary());
+        const laterText = await reopenedText();
+        return { keptBeforeDiscard, keptAfterDiscard, textAfterDiscard, keptLaterEdit, laterText };
+      } finally { controller.dispose(); await store.close(); wasm.dispose(); }
+    });
+    assert.equal(result.keptBeforeDiscard, true, 'unsaved edits are kept in the primary worktree');
+    assert.equal(result.keptAfterDiscard, false, 'reopening the file must load the disk bytes, not the discarded edit');
+    assert.ok(!result.textAfterDiscard.includes('DISCARDME'), result.textAfterDiscard);
+    assert.equal(result.keptLaterEdit, true, 'a new edit after the discard is kept again');
+    assert.ok(result.laterText.startsWith('LATER '), result.laterText);
+  } finally { await page.close(); }
+});
+
 
 test('occupied branch undo locks editing and verifies fallback compensation when redo is lost', { timeout: 45_000 }, async () => {
   assert.ok(browser);

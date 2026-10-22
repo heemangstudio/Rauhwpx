@@ -296,6 +296,9 @@ pub struct Field {
     /// 링크 색/밑줄을 적용하기 전의 서식. 한컴 필드 Command에 섞지 않고
     /// 별도 컨테이너 메타데이터로 보존한다. 없으면 해제 시 현재 서식을 유지한다.
     pub hyperlink_format: Option<Box<super::hyperlink_format::OriginalFormat>>,
+    /// 로드 때 비운 손대지 않은 누름틀의 원래 값(안내문과 한컴이 붙인 뒤 공백). 저장할 때
+    /// 그대로 되돌린다. `None` 이면 비운 적이 없다.
+    pub initial_text: Option<String>,
 }
 
 impl Field {

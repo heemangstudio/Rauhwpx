@@ -69,6 +69,8 @@ pub struct AdapterReport {
     pub bin_data_metadata_normalized: u32,
     /// HWPX OLE Storage 포함 문서의 HWP5 BinData 순서/참조 materialize 횟수
     pub bin_data_order_materialized: u32,
+    /// HWPX manifest 번호(image14 등)를 HWP5 BinData 1-based 위치로 바꾼 횟수
+    pub bin_data_ids_positionalized: u32,
     /// `Control::SectionDef` 컨트롤 삽입 횟수 (Stage 4 — 섹션 개수)
     pub section_def_controls_inserted: u32,
     /// HWPX `hp:pic@href` 를 HWP CTRL_DATA ParameterSet 으로 materialize한 횟수
@@ -110,6 +112,8 @@ pub struct AdapterReport {
     /// 보강되지만 그림은 빠져 있었다(전 코퍼스 실측 80/80 이 개체 종류와 무관하게
     /// 이 비트를 요구).
     pub picture_caption_common_attr_materialized: u32,
+    /// 캡션이 있는 도형(선·사각형·타원·다각형·호·곡선·묶음·차트) CTRL_HEADER bit 29 보강 횟수
+    pub shape_caption_common_attr_materialized: u32,
 }
 
 impl AdapterReport {
@@ -141,6 +145,7 @@ impl AdapterReport {
                 + self.doc_properties_section_count_normalized
                 + self.bin_data_metadata_normalized
                 + self.bin_data_order_materialized
+                + self.bin_data_ids_positionalized
                 + self.section_def_controls_inserted
                 + self.picture_href_ctrl_data_materialized
                 + self.table_layout_ctrl_data_materialized
@@ -159,7 +164,8 @@ impl AdapterReport {
                 + self.header_footer_fwspace_control_materialized
                 + self.master_page_autonum_placeholder_removed
                 + self.master_page_line_rendering_size_ratio_materialized
-                + self.picture_caption_common_attr_materialized)
+                + self.picture_caption_common_attr_materialized
+                + self.shape_caption_common_attr_materialized)
                 > 0
     }
 }
@@ -195,6 +201,7 @@ pub fn convert_hwpx_to_hwp_ir(doc: &mut Document) -> AdapterReport {
 
     normalize_file_header_for_hwp(doc, &mut report);
     normalize_doc_properties_for_hwp(doc, &mut report);
+    positionalize_hwpx_bin_data_ids(doc, &mut report);
     materialize_hwp5_bin_data_order(doc, &mut report);
     normalize_bin_data_for_hwp(doc, &mut report);
 
@@ -375,6 +382,59 @@ fn normalize_bin_data_for_hwp(doc: &mut Document, report: &mut AdapterReport) {
 /// 순서로 적히는 경우가 있다. HWP5의 `bin_data_id`는 `BIN_DATA` 레코드 순번을 가리키므로,
 /// 한컴 정답지처럼 본문 컨트롤에서 먼저 등장하는 그림/OLE를 앞에 두고 DocInfo 전용 배경
 /// 이미지는 뒤로 보내야 한다. 이때 모든 참조 ID와 `BinDataContent.id`도 함께 remap한다.
+/// HWPX 그림은 manifest 번호(`image14` → 14)를 참조하지만 HWP5 그림 참조는 DocInfo
+/// BinData 의 1-based 위치다. 그림을 지운 HWPX 처럼 번호에 구멍이 있거나 1 에서
+/// 시작하지 않으면, HWP 로 저장한 문서에서 한글은 없는 위치를 찾아 그림을 비운다.
+/// 번호를 위치로 바꾸고 모든 참조(그림·채우기·테두리)를 함께 고친다.
+fn positionalize_hwpx_bin_data_ids(doc: &mut Document, report: &mut AdapterReport) {
+    let list = &doc.doc_info.bin_data_list;
+    if list.is_empty()
+        || list
+            .iter()
+            .enumerate()
+            .all(|(index, bin_data)| bin_data.storage_id as usize == index + 1)
+    {
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    if list
+        .iter()
+        .any(|bin_data| bin_data.storage_id == 0 || !seen.insert(bin_data.storage_id))
+    {
+        return;
+    }
+    let is_chart =
+        |content: &BinDataContent| content.extension == "ooxml_chart" && content.id > 60000;
+    // 차트 보조 항목 외의 모든 내용이 목록의 번호와 짝지어져야 안전하게 바꿀 수 있다.
+    if doc
+        .bin_data_content
+        .iter()
+        .any(|content| !is_chart(content) && !seen.contains(&content.id))
+    {
+        return;
+    }
+    let max_id = list
+        .iter()
+        .map(|bin_data| bin_data.storage_id)
+        .max()
+        .unwrap_or(0);
+    let mut remap = vec![0u16; max_id as usize + 1];
+    for (index, bin_data) in list.iter().enumerate() {
+        remap[bin_data.storage_id as usize] = (index + 1) as u16;
+    }
+    for bin_data in &mut doc.doc_info.bin_data_list {
+        bin_data.storage_id = remap[bin_data.storage_id as usize];
+    }
+    for content in &mut doc.bin_data_content {
+        if !is_chart(content) {
+            content.id = remap[content.id as usize];
+        }
+    }
+    remap_bin_refs_in_doc(doc, &remap);
+    doc.doc_info.raw_stream_dirty = true;
+    report.bin_data_ids_positionalized += 1;
+}
+
 fn materialize_hwp5_bin_data_order(doc: &mut Document, report: &mut AdapterReport) {
     let bin_count = doc.doc_info.bin_data_list.len();
     if bin_count <= 1
@@ -1405,6 +1465,7 @@ fn adapt_shape_with_context(
         }
     }
 
+    materialize_shape_caption_common_attr(shape, report);
     if let Some(drawing) = shape.drawing_mut() {
         if let Some(text_box) = &mut drawing.text_box {
             materialize_text_box_hwp5_envelope(text_box, report);
@@ -1862,6 +1923,34 @@ fn materialize_picture_caption_common_attr(pic: &mut Picture, report: &mut Adapt
     if pic.caption.is_some() && pic.common.attr & HWP5_GSO_CAPTION_COMMON_ATTR_BIT == 0 {
         pic.common.attr |= HWP5_GSO_CAPTION_COMMON_ATTR_BIT;
         report.picture_caption_common_attr_materialized += 1;
+    }
+}
+
+/// 캡션이 있는 도형 CTRL_HEADER 의 한컴 캡션 비트(bit 29) 보강.
+///
+/// 직렬화기는 선·사각형·타원·다각형·호·곡선·묶음·차트의 캡션 레코드를 쓴다
+/// (`serializer/control.rs` `emit_caption`). 캡션 레코드가 있는데 bit 29 가 꺼져 있으면
+/// 한글이 문서 열기를 거부했다 (3-10월_교육_통합_2022.hwpx: `<보기>` 캡션 사각형).
+/// 그림과 같이 비트만 OR 한다. 캡션 레코드를 쓰지 않는 OLE 등은 건드리지 않는다.
+fn materialize_shape_caption_common_attr(shape: &mut ShapeObject, report: &mut AdapterReport) {
+    const HWP5_GSO_CAPTION_COMMON_ATTR_BIT: u32 = 0x2000_0000;
+    let has_written_caption = match shape {
+        ShapeObject::Line(_)
+        | ShapeObject::Rectangle(_)
+        | ShapeObject::Ellipse(_)
+        | ShapeObject::Polygon(_)
+        | ShapeObject::Arc(_)
+        | ShapeObject::Curve(_) => shape
+            .drawing()
+            .is_some_and(|drawing| drawing.caption.is_some()),
+        ShapeObject::Group(group) => group.caption.is_some(),
+        ShapeObject::Chart(chart) => chart.caption.is_some(),
+        _ => false,
+    };
+    let common = shape.common_mut();
+    if has_written_caption && common.attr & HWP5_GSO_CAPTION_COMMON_ATTR_BIT == 0 {
+        common.attr |= HWP5_GSO_CAPTION_COMMON_ATTR_BIT;
+        report.shape_caption_common_attr_materialized += 1;
     }
 }
 

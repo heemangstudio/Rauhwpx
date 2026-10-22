@@ -44,6 +44,7 @@ import {
   VersionGraphStore,
   branchName,
   commitId,
+  contentFingerprint,
   createPortableHistoryArchive,
   detectPortableDocumentFormat,
   documentId,
@@ -409,6 +410,8 @@ export class DocumentVersionController implements VersionManagerController {
   #repository: VersionRepository | null = null;
   /** 저장된 내용. 비교 스냅샷은 버전 기록을 켤 때에만 만든다. */
   #savedBaseline: { documentId: string; content: VersionContent } | null = null;
+  /** 저장 확인에서 버린 내용. 창을 닫을 때의 기록이 이 내용을 원본 작업 공간에 다시 보관하지 않게 한다. */
+  #discardedContent: { documentId: string; fingerprint: string } | null = null;
   #refs: VersionRef[] = [];
   #commits: VersionCommit[] = [];
   #shelves: VersionShelf[] = [];
@@ -855,6 +858,35 @@ export class DocumentVersionController implements VersionManagerController {
     }, delay);
   }
 
+  /**
+   * 저장 확인에서 "저장 안 함"을 골랐다. 원본 작업 공간이 지금 편집을 보관하지 않게 디스크에 저장된 내용으로
+   * 되돌린다. 그러지 않으면 창을 닫거나 다른 문서를 연 뒤 같은 파일을 다시 열 때, 버린 편집이 디스크 내용
+   * 대신 열리고 다음 저장에 파일로 들어간다. 이 뒤에 새로 편집하면 다시 평소처럼 보관한다.
+   */
+  async discardUnsavedWorktree(): Promise<void> {
+    this.#cancelScheduledPersist();
+    await this.#enqueue(async () => {
+      const worktree = this.#worktree;
+      const id = this.#getDocumentId();
+      if (!worktree?.primary || !id || worktree.documentId !== id || !this.#wasm.hasLoadedDocument()) return;
+      if (this.#worktreeHost?.canMutate() === false) return;
+      const discarded = this.#snapshotCache.content(this.#wasm, id, this.#editorRevision);
+      this.#discardedContent = { documentId: id, fingerprint: String(discarded.fingerprint) };
+      const current = await this.#store.getWorktree(worktree.id);
+      if (!current || this.#getDocumentId() !== id) return;
+      if (String(current.blobId) === String(current.savedFingerprint)) return;
+      const baseline = this.#savedBaseline?.documentId === id ? this.#savedBaseline.content : null;
+      // 저장된 바이트를 모르면(보관된 편집으로 연 문서) 지금 보관한 내용을 보관할 것이 없는 상태로 둔다.
+      // 다시 열면 원본 파일을 연다.
+      this.#worktree = await this.#store.saveWorktree(baseline
+        ? {
+          id: current.id, expectedRevision: current.revision, bytes: baseline.bytes,
+          fingerprint: baseline.fingerprint, savedFingerprint: baseline.fingerprint,
+        }
+        : { id: current.id, expectedRevision: current.revision, savedFingerprint: contentFingerprint(String(current.blobId)) });
+    });
+  }
+
   async #persistWorktree(saved = false): Promise<void> {
     const worktree = this.#worktree;
     if (!worktree || worktree.documentId !== this.#getDocumentId()) return;
@@ -862,6 +894,12 @@ export class DocumentVersionController implements VersionManagerController {
     const workspace = this.#captureWorkspaceToken();
     const revision = this.#editorRevision;
     const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), revision);
+    const discarded = this.#discardedContent;
+    if (discarded) {
+      if (!saved && worktree.primary && discarded.documentId === this.#getDocumentId()
+        && discarded.fingerprint === String(content.fingerprint)) return;
+      this.#discardedContent = null;
+    }
     const branch = this.#requireActiveBranch();
     const current = await this.#store.getWorktree(worktree.id);
     if (!current) throw new VersionError('STALE_WORKSPACE', '워크트리가 삭제되었습니다.');
