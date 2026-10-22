@@ -8235,7 +8235,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /**
    * 채팅을 보관함으로 옮긴다 — 기록은 그대로 두고 목록에서만 뺀다. 삭제처럼 작업 중인
-   * 채팅은 옮기지 않고, 지금 채팅이면 먼저 새 채팅으로 빠져나온다.
+   * 채팅은 옮기지 않고, 지금 채팅이면 같은 문서의 새 채팅 초안으로 옮겨 간다.
    */
   async function archiveThreadWithConfirm(thread: ThreadSummary): Promise<boolean> {
     if (getChatStatus(thread.id) === 'working') {
@@ -8259,7 +8259,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 확인을 기다리는 사이 작업이 시작됐을 수 있다.
     if (getChatStatus(thread.id) === 'working') return false;
     // startNewChat 이 현재 채팅을 저장하므로, 보관은 빠져나온 뒤에 한다.
-    if (thread.id === currentThread.id) startNewChat({ silent: true });
+    if (thread.id === currentThread.id) {
+      startNewChat();
+      // 초안을 버려도 보관한 채팅으로 돌아가지 않는다.
+      draftReturnThreadId = null;
+    }
     archiveThread(thread.id);
     rebuildThreadsList();
     return true;
