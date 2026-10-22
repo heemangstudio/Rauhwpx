@@ -2544,7 +2544,24 @@ button.ag-skill-copy {
   overflow-wrap: anywhere;
 }
 
-/* Skill invocation은 문장 안의 slash text가 아니라 독립된 블록이다. */
+/* 본문 첫머리의 스킬은 한 줄 높이 글자처럼 줄에 얹힌다. */
+.ag-msg-user-text > .ag-msg-skill {
+  height: 1lh;
+  min-height: 0;
+  margin-right: 6px;
+  padding: 0 8px;
+  gap: 4px;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.ag-msg-user-text > .ag-msg-skill .ag-skill-token-icon,
+.ag-msg-user-text > .ag-msg-skill .ag-skill-token-icon .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 본문 없이 보낸 스킬은 말풍선 없이 홀로 선다. */
 .ag-msg-user.ag-has-skill {
   display: flex;
   flex-wrap: wrap;
@@ -2554,13 +2571,6 @@ button.ag-skill-copy {
   padding: 0;
   border: 0;
   background: transparent;
-}
-
-.ag-msg-user.ag-has-skill .ag-msg-user-text {
-  padding: 10px 16px;
-  border: 0;
-  border-radius: var(--ag-r-bubble);
-  background: var(--ag-bubble-bg);
 }
 
 .ag-msg-user.ag-has-skill .ag-msg-selection,
@@ -6540,8 +6550,83 @@ button.ag-skill-copy {
   opacity: 0.28;
 }
 
+/* 입력칸과 그 첫 줄 위에 뜬 칩 줄. 칩은 글자 한 줄 높이라 본문처럼 읽힌다. */
+.ag-composer-text {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ag-composer-lead {
+  --ag-lead-top: 6px;
+
+  position: absolute;
+  top: var(--ag-lead-top);
+  right: 2px;
+  left: 2px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-secondary);
+  pointer-events: none;
+}
+
+.ag-composer-lead:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+.ag-composer-lead > * {
+  height: 1lh;
+  min-height: 0;
+  pointer-events: auto;
+}
+
+.ag-composer-text.ag-has-lead .ag-input {
+  padding-top: calc(6px + var(--ag-lead-offset, 0px));
+  text-indent: var(--ag-lead-indent, 0px);
+}
+
 .ag-composer-skill {
-  margin: 4px 0 5px;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.ag-composer-skill .ag-skill-token-icon,
+.ag-composer-skill .ag-skill-token-icon .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-composer-skill .ag-skill-token-clear {
+  width: 16px;
+  height: 16px;
+  margin: 0 -4px 0 0;
+}
+
+.ag-composer-lead > .ag-mention-draft {
+  padding: 0 4px 0 8px;
+}
+
+.ag-composer-lead > .ag-mention-draft .ag-reference-upload-remove {
+  width: 16px;
+  height: 16px;
+  padding: 2px;
+}
+
+.ag-root .ag-composer.ag-resting .ag-composer-text .ag-input {
+  padding-top: calc((30px - 1lh) / 2);
+}
+
+.ag-root .ag-composer.ag-resting .ag-composer-lead {
+  --ag-lead-top: calc((30px - 1lh) / 2);
+
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .ag-msg-skill {

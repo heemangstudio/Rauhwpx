@@ -4169,7 +4169,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   composerSkillClear.setAttribute('aria-label', '스킬 호출 해제');
   composerSkillClear.appendChild(createIcon('close'));
   composerSkill.append(composerSkillIcon, composerSkillName, composerSkillClear);
-  composerField.append(caret, composerSkill, input, sendHint, send);
+  // 스킬·멘션 칩은 입력칸 첫 줄 위에 떠서 글자처럼 흐른다. 첫 줄은 칩 끝에서
+  // 시작하고 다음 줄은 왼쪽 끝으로 돌아간다 (layoutComposerLead).
+  const composerLead = el('span', 'ag-composer-lead');
+  composerLead.append(composerSkill);
+  const composerText = el('div', 'ag-composer-text');
+  composerText.append(composerLead, input);
+  composerField.append(caret, composerText, sendHint, send);
+  input.addEventListener('scroll', () => {
+    composerLead.style.transform = input.scrollTop ? `translateY(${-input.scrollTop}px)` : '';
+  });
   const templateChip = el('div', 'ag-template-chip');
   templateChip.hidden = true;
   const templateChipName = el('span', 'ag-template-chip-name');
@@ -4604,9 +4613,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     client: bridge.projects ?? null,
     ...(listMentionDocuments ? { listDocuments: listMentionDocuments } : {}),
     textarea: input,
-    row: referenceLibrary.quickUploads,
-    onChange: () => updateComposer(),
+    row: composerLead,
+    onChange: () => {
+      resizeComposerInput();
+      updateComposer();
+    },
   });
+  // 폭이 바뀌면 칩 줄바꿈이 달라진다. 높이 변화는 resizeComposerInput 자신이 만든다.
+  let composerTextWidth = 0;
+  const composerTextObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+      const width = composerText.clientWidth;
+      if (width === composerTextWidth) return;
+      composerTextWidth = width;
+      if (composerText.classList.contains('ag-has-lead')) resizeComposerInput();
+    })
+    : null;
+  composerTextObserver?.observe(composerText);
   // 보드·그래프 같은 다른 화면이 올려 보내는 열기 요청.
   root.addEventListener('ag-project-open', (event) => {
     const itemId = (event as CustomEvent<{ itemId?: string }>).detail?.itemId;
@@ -6280,9 +6303,29 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   input.addEventListener('compositionstart', () => { composerInputComposing = true; });
   input.addEventListener('compositionend', () => { composerInputComposing = false; });
 
+  /** 첫 줄을 마지막 칩 뒤에서 시작시킨다. 남은 폭이 좁으면 칩 아래 줄에서 시작한다. */
+  function layoutComposerLead(): void {
+    const chips = Array.from(composerLead.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement && !child.hidden);
+    composerText.classList.toggle('ag-has-lead', chips.length > 0);
+    const last = chips.at(-1);
+    if (!last || composerText.getClientRects().length === 0) {
+      composerText.style.removeProperty('--ag-lead-indent');
+      composerText.style.removeProperty('--ag-lead-offset');
+      return;
+    }
+    const gap = 6;
+    const end = last.offsetLeft + last.offsetWidth + gap;
+    const fitsOnRow = composerLead.clientWidth - end >= 64;
+    const offset = fitsOnRow ? last.offsetTop : composerLead.offsetHeight + 4;
+    composerText.style.setProperty('--ag-lead-indent', `${fitsOnRow ? end : 0}px`);
+    composerText.style.setProperty('--ag-lead-offset', `${offset}px`);
+  }
+
   function resizeComposerInput(): void {
     // 값을 코드로 바꾼 뒤에도 이 경로를 지나므로 보내기 버튼의 쉼 상태를 함께 맞춘다.
     syncSendIdle();
+    layoutComposerLead();
     const from = Number.parseFloat(input.style.height);
     if (composerInputTransitionTimer !== null) {
       window.clearTimeout(composerInputTransitionTimer);
@@ -7490,16 +7533,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       && (message.attachments?.length || message.mentions?.length)) {
       bubble.classList.add('ag-attachment-only');
     }
+    // 스킬은 본문 첫머리에 글자처럼 붙는다. 본문 없이 보낸 스킬만 홀로 선다.
+    let skill: HTMLElement | null = null;
     if (message.skillName) {
-      bubble.classList.add('ag-has-skill');
-      const skill = el('span', 'ag-skill-token ag-msg-skill');
+      skill = el('span', 'ag-skill-token ag-msg-skill');
       skill.dataset.agent = message.agent ?? currentThread.agent;
       const icon = el('span', 'ag-skill-token-icon');
       icon.appendChild(createIcon(skillGlyphForSkill({ name: message.skillName, icon: message.skillIcon })));
       skill.append(icon, el('span', 'ag-skill-token-name', skillDisplayName(message.skillName)));
       skill.title = `/${message.skillName}`;
       skill.setAttribute('aria-label', `사용한 스킬: ${skillDisplayName(message.skillName)}`);
-      bubble.appendChild(skill);
+      if (!message.text) {
+        bubble.classList.add('ag-has-skill');
+        bubble.appendChild(skill);
+      }
     }
     if (message.selection) {
       const quote = el('div', 'ag-msg-selection');
@@ -7510,7 +7557,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       );
       bubble.appendChild(quote);
     }
-    if (message.text) bubble.appendChild(el('div', 'ag-msg-user-text', message.text));
+    if (message.text) {
+      const text = el('div', 'ag-msg-user-text');
+      if (skill) text.append(skill);
+      text.append(message.text);
+      bubble.appendChild(text);
+    }
     if (message.attachments?.length) {
       const row = el('div', 'ag-msg-attachments');
       for (const attachment of message.attachments) {
@@ -13620,6 +13672,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (messagesResizeFrame !== null) window.cancelAnimationFrame(messagesResizeFrame);
       cancelScheduledSidebarWidthMin();
       dockResizeObserver?.disconnect();
+      composerTextObserver?.disconnect();
       composerStackResizeObserver?.disconnect();
       cancelAnimationFrame(composerStackFrame);
       rootResizeObserver?.disconnect();
