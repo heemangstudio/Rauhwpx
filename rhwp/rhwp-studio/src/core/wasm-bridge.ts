@@ -355,6 +355,7 @@ interface PreparedWasmDocumentValue {
   fileName: string;
   documentDigest: string;
   info: DocumentInfo;
+  openedFromFile: boolean;
 }
 
 class PreparedWasmDocumentState implements PreparedWasmDocument {
@@ -363,6 +364,7 @@ class PreparedWasmDocumentState implements PreparedWasmDocument {
     readonly fileName: string,
     readonly documentDigest: string,
     readonly info: DocumentInfo,
+    readonly openedFromFile: boolean,
   ) {}
 
   take(): PreparedWasmDocumentValue {
@@ -374,6 +376,7 @@ class PreparedWasmDocumentState implements PreparedWasmDocument {
       fileName: this.fileName,
       documentDigest: this.documentDigest,
       info: this.info,
+      openedFromFile: this.openedFromFile,
     };
   }
 
@@ -432,6 +435,8 @@ export class WasmBridge {
   private engineFileName: string | null = null;
   private _currentFileHandle: FileSystemFileHandleLike | null = null;
   private _documentDigest: string | null = null;
+  /** 파일 바이트로 연 문서인가 — 새 문서·템플릿으로 만든 문서는 false (같은 바이트라 digest 가 정체성이 아니다). */
+  private _openedFromFile = false;
   /** [#3313] 외부 연결 그림 비동기 주입 완료 훅 — 주입 성공(>0)시에만 호출된다.
    * 첫 렌더 이후에 fetch 가 끝나면 뷰가 재갱신 없이는 이미지를 표시하지 못하므로,
    * main 쪽에서 뷰 갱신을 배선한다 (dirty 마킹 없는 뷰 전용 경로여야 함). */
@@ -573,6 +578,7 @@ export class WasmBridge {
     this.engineFileName = null;
     this._currentFileHandle = null;
     this._documentDigest = null;
+    this._openedFromFile = false;
   }
 
   loadDocument(data: Uint8Array, fileName?: string): DocumentInfo {
@@ -585,7 +591,7 @@ export class WasmBridge {
    * adopt or dispose the returned value. Portable-history import uses this to
    * validate once, then hand the same WASM document to the normal load path.
    */
-  prepareDocument(data: Uint8Array, fileName?: string): PreparedWasmDocument {
+  prepareDocument(data: Uint8Array, fileName?: string, { openedFromFile = true }: { openedFromFile?: boolean } = {}): PreparedWasmDocument {
     const nextFileName = fileName ?? FALLBACK_DOCUMENT_FILE_NAME;
     const nextDocumentDigest = `blake3:${blake3Hex(data)}`;
     let nextDoc: HwpDocument | null = null;
@@ -600,6 +606,7 @@ export class WasmBridge {
         nextFileName,
         nextDocumentDigest,
         info,
+        openedFromFile,
       );
     } catch (error) {
       if (nextDoc) {
@@ -632,6 +639,7 @@ export class WasmBridge {
     this.engineFileName = next.fileName;
     this._currentFileHandle = null;
     this._documentDigest = next.documentDigest;
+    this._openedFromFile = next.openedFromFile;
     console.log(`[WasmBridge] 문서 로드: ${next.info.pageCount}페이지`);
     void this.populateExternalImagesFromDevServer(next.document, this.documentGeneration);
     // 알림은 문서 교체의 rollback 구간 밖에서 보낸다.
@@ -664,6 +672,7 @@ export class WasmBridge {
       this.doc = nextDoc;
       this._fileName = nextFileName;
       this._documentDigest = nextDocumentDigest;
+      this._openedFromFile = true;
       this.doc.convertToEditable();
       this.ensureParagraphStableIds();
       this.doc.setFileName(this._fileName);
@@ -690,6 +699,7 @@ export class WasmBridge {
       this.engineFileName = null;
       this._currentFileHandle = null;
       this._documentDigest = null;
+      this._openedFromFile = false;
       this.onFileNameChanged?.(this._fileName);
       throw error;
     }
@@ -778,7 +788,7 @@ export class WasmBridge {
    * 열린 문서·세션 상태가 그대로다. 호출 쪽은 adoptPreparedDocument 로 들이거나 dispose 한다.
    */
   prepareNewDocument(source?: Uint8Array): PreparedWasmDocument {
-    return this.prepareDocument(this.newDocumentBytes(source), NEW_DOCUMENT_FILE_NAME);
+    return this.prepareDocument(this.newDocumentBytes(source), NEW_DOCUMENT_FILE_NAME, { openedFromFile: false });
   }
 
   /**
@@ -815,6 +825,11 @@ export class WasmBridge {
 
   get documentDigest(): string | null {
     return this._documentDigest;
+  }
+
+  /** 파일 바이트로 연 문서인가. 새 문서·템플릿 문서는 저장한 뒤에도 false 다(digest 가 빈 문서의 것이다). */
+  get openedFromFile(): boolean {
+    return this._openedFromFile;
   }
 
   /** 연 바이트가 원본 파일과 다를 때(자동 저장본 복구) 원본 파일의 digest 를 기준으로 삼는다. */

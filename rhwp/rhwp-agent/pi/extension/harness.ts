@@ -17,6 +17,7 @@ export const READ_ONLY_CATEGORIES = Object.freeze([
   'reference-read',
   'template-read',
   'instruction-read',
+  'memory-read',
 ]);
 
 export function isReadOnlyCategory(category: string | undefined): boolean {

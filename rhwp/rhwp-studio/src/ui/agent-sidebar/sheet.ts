@@ -63,15 +63,42 @@ function resolveHost(anchor?: Element | null): { host: HTMLElement; docked: bool
 
 function focusables(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
   )].filter((node) => node.offsetParent !== null || node === document.activeElement);
 }
 
-export function showSheet(options: SheetOptions): Promise<boolean> {
-  return openSheet(options).then((result) => result.confirmed);
+/** 시트 틀을 만들 때의 공용 선택. 확인 시트와 내용 시트(문서 기억 등)가 같이 쓴다. */
+export interface SheetFrameOptions {
+  title: string;
+  signal?: AbortSignal;
+  center?: boolean;
+  anchor?: Element | null;
+  /** 확인 시트는 alertdialog, 목록·편집 시트는 dialog. */
+  role?: 'alertdialog' | 'dialog';
+  /** .ag-sheet 에 더 붙일 클래스. */
+  className?: string;
+  /** 이 요소 위에서 누르면 끌어 닫기를 시작하지 않는다. */
+  dragIgnore?: string;
+  /** Esc 를 시트보다 먼저 받는다. true 면 시트를 닫지 않는다(그 자리의 편집 취소 등). */
+  onEscape?: () => boolean;
 }
 
-export function openSheet(options: SheetOptions): Promise<SheetResult> {
+export interface SheetFrame {
+  layer: HTMLElement;
+  sheet: HTMLElement;
+  /** 제목 줄 — 제목 옆에 단추를 붙일 자리. */
+  header: HTMLElement;
+  id: string;
+  docked: boolean;
+  /**
+   * 틀을 띄운다. 내용은 그 전에 sheet 에 붙여 둔다. onSettle 은 닫힐 때 한 번 불린다.
+   * 돌려준 finish 로 닫는다 — true 는 확인, false 는 취소다.
+   */
+  present(initialFocus: () => HTMLElement | null, onSettle: (result: boolean) => void): (result: boolean) => void;
+}
+
+/** 사이드바 안에서는 아래 시트, 밖에서는 가운데 카드인 시트 틀. Esc·배경·끌기 닫기와 초점 가두기를 맡는다. */
+export function createSheetFrame(options: SheetFrameOptions): SheetFrame {
   const { host, docked } = options.center ? { host: document.body, docked: false } : resolveHost(options.anchor);
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   openCount += 1;
@@ -86,8 +113,8 @@ export function openSheet(options: SheetOptions): Promise<SheetResult> {
   backdrop.className = 'ag-sheet-backdrop';
 
   const sheet = document.createElement('section');
-  sheet.className = 'ag-sheet';
-  sheet.setAttribute('role', 'alertdialog');
+  sheet.className = options.className ? `ag-sheet ${options.className}` : 'ag-sheet';
+  sheet.setAttribute('role', options.role ?? 'alertdialog');
   sheet.setAttribute('aria-modal', 'true');
   sheet.setAttribute('aria-labelledby', `${id}-title`);
   sheet.tabIndex = -1;
@@ -101,6 +128,136 @@ export function openSheet(options: SheetOptions): Promise<SheetResult> {
   title.id = `${id}-title`;
   title.textContent = options.title;
   sheet.append(grabber, title);
+  layer.append(backdrop, sheet);
+
+  const present: SheetFrame['present'] = (initialFocus, onSettle) => {
+    host.appendChild(layer);
+    let settled = false;
+
+    const finish = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      liveSheets.delete(dismiss);
+      document.removeEventListener('keydown', onKeyDown, true);
+      layer.classList.remove('ag-sheet-open');
+      layer.classList.add('ag-sheet-closing');
+      sheet.style.removeProperty('transform');
+      // 시트 자신의 transform 전이가 끝날 때만 걷는다. 안쪽 버튼의 배경색 전이가
+      // 거품처럼 올라와 슬라이드 중간에 층을 지우지 않게 한다. transitioncancel 은
+      // 듣지 않는다. 여는 전이를 닫는 전이가 대체할 때도 cancel 이 오기 때문이며,
+      // 실제로 전이가 사라진 경우는 대체 타이머가 거둔다.
+      let fallback: number | null = null;
+      const onSheetTransitionEnd = (event: TransitionEvent): void => {
+        if (event.target !== sheet || event.propertyName !== 'transform') return;
+        remove();
+      };
+      const remove = (): void => {
+        sheet.removeEventListener('transitionend', onSheetTransitionEnd);
+        if (fallback !== null) window.clearTimeout(fallback);
+        fallback = null;
+        layer.remove();
+      };
+      if (reducedMotion()) remove();
+      else {
+        sheet.addEventListener('transitionend', onSheetTransitionEnd);
+        fallback = window.setTimeout(remove, 480);
+      }
+      // 포커스가 시트 밖으로 이미 옮겨 갔으면(사이드바 접기 단추 등) 그대로 둔다.
+      const active = document.activeElement;
+      const focusInSheet = !active || active === document.body || layer.contains(active);
+      if (focusInSheet && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      onSettle(result);
+    };
+    const dismiss = (): void => finish(false);
+    liveSheets.add(dismiss);
+    options.signal?.addEventListener('abort', dismiss, { once: true });
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        if (options.onEscape?.()) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const items = focusables(sheet);
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !sheet.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !sheet.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    backdrop.addEventListener('click', () => finish(false));
+    document.addEventListener('keydown', onKeyDown, true);
+
+    // 아래로 끌어 닫기 — 도킹된 시트에서만.
+    if (docked) {
+      const ignore = options.dragIgnore ?? 'button, label';
+      let startY = 0;
+      let startT = 0;
+      let dragging = false;
+      let offset = 0;
+      sheet.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || (event.target as Element).closest(ignore)) return;
+        dragging = true;
+        startY = event.clientY;
+        startT = performance.now();
+        offset = 0;
+        sheet.setPointerCapture(event.pointerId);
+        sheet.classList.add('ag-sheet-dragging');
+      });
+      sheet.addEventListener('pointermove', (event) => {
+        if (!dragging) return;
+        offset = Math.max(0, event.clientY - startY);
+        sheet.style.transform = `translateY(${offset}px)`;
+      });
+      const end = (event: PointerEvent) => {
+        if (!dragging) return;
+        dragging = false;
+        sheet.classList.remove('ag-sheet-dragging');
+        if (sheet.hasPointerCapture(event.pointerId)) sheet.releasePointerCapture(event.pointerId);
+        const velocity = offset / Math.max(1, performance.now() - startT);
+        if (offset > DISMISS_DISTANCE_PX || velocity > DISMISS_VELOCITY) finish(false);
+        else sheet.style.removeProperty('transform');
+      };
+      sheet.addEventListener('pointerup', end);
+      sheet.addEventListener('pointercancel', end);
+    }
+
+    requestAnimationFrame(() => {
+      layer.classList.add('ag-sheet-open');
+      (initialFocus() ?? sheet).focus({ preventScroll: true });
+    });
+    return finish;
+  };
+
+  return { layer, sheet, header: title, id, docked, present };
+}
+
+export function showSheet(options: SheetOptions): Promise<boolean> {
+  return openSheet(options).then((result) => result.confirmed);
+}
+
+export function openSheet(options: SheetOptions): Promise<SheetResult> {
+  const frame = createSheetFrame({
+    title: options.title,
+    signal: options.signal,
+    center: options.center,
+    anchor: options.anchor,
+  });
+  const { sheet, id } = frame;
 
   if (options.message) {
     const message = document.createElement('p');
@@ -147,114 +304,13 @@ export function openSheet(options: SheetOptions): Promise<SheetResult> {
   actions.append(cancel, confirm);
   sheet.append(actions);
 
-  layer.append(backdrop, sheet);
-  host.appendChild(layer);
-
   return new Promise<SheetResult>((resolve) => {
-    let settled = false;
-
-    const finish = (result: boolean): void => {
-      if (settled) return;
-      settled = true;
-      liveSheets.delete(dismiss);
-      document.removeEventListener('keydown', onKeyDown, true);
-      layer.classList.remove('ag-sheet-open');
-      layer.classList.add('ag-sheet-closing');
-      sheet.style.removeProperty('transform');
-      // 시트 자신의 transform 전이가 끝날 때만 걷는다. 안쪽 버튼의 배경색 전이가
-      // 거품처럼 올라와 슬라이드 중간에 층을 지우지 않게 한다. transitioncancel 은
-      // 듣지 않는다. 여는 전이를 닫는 전이가 대체할 때도 cancel 이 오기 때문이며,
-      // 실제로 전이가 사라진 경우는 대체 타이머가 거둔다.
-      let fallback: number | null = null;
-      const onSheetTransitionEnd = (event: TransitionEvent): void => {
-        if (event.target !== sheet || event.propertyName !== 'transform') return;
-        remove();
-      };
-      const remove = (): void => {
-        sheet.removeEventListener('transitionend', onSheetTransitionEnd);
-        if (fallback !== null) window.clearTimeout(fallback);
-        fallback = null;
-        layer.remove();
-      };
-      if (reducedMotion()) remove();
-      else {
-        sheet.addEventListener('transitionend', onSheetTransitionEnd);
-        fallback = window.setTimeout(remove, 480);
-      }
-      // 포커스가 시트 밖으로 이미 옮겨 갔으면(사이드바 접기 단추 등) 그대로 둔다.
-      const active = document.activeElement;
-      const focusInSheet = !active || active === document.body || layer.contains(active);
-      if (focusInSheet && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
-      resolve({ confirmed: result, choice: result ? choice : null });
-    };
-    const dismiss = (): void => finish(false);
-    liveSheets.add(dismiss);
-    options.signal?.addEventListener('abort', dismiss, { once: true });
-
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        finish(false);
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const items = focusables(sheet);
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !sheet.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || !sheet.contains(active))) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
+    const finish = frame.present(
+      () => (options.destructive || options.focusCancel ? cancel : confirm),
+      (result) => resolve({ confirmed: result, choice: result ? choice : null }),
+    );
     cancel.addEventListener('click', () => finish(false));
     confirm.addEventListener('click', () => finish(true));
-    backdrop.addEventListener('click', () => finish(false));
-    document.addEventListener('keydown', onKeyDown, true);
-
-    // 아래로 끌어 닫기 — 도킹된 시트에서만.
-    if (docked) {
-      let startY = 0;
-      let startT = 0;
-      let dragging = false;
-      let offset = 0;
-      sheet.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0 || (event.target as Element).closest('button, label')) return;
-        dragging = true;
-        startY = event.clientY;
-        startT = performance.now();
-        offset = 0;
-        sheet.setPointerCapture(event.pointerId);
-        sheet.classList.add('ag-sheet-dragging');
-      });
-      sheet.addEventListener('pointermove', (event) => {
-        if (!dragging) return;
-        offset = Math.max(0, event.clientY - startY);
-        sheet.style.transform = `translateY(${offset}px)`;
-      });
-      const end = (event: PointerEvent) => {
-        if (!dragging) return;
-        dragging = false;
-        sheet.classList.remove('ag-sheet-dragging');
-        if (sheet.hasPointerCapture(event.pointerId)) sheet.releasePointerCapture(event.pointerId);
-        const velocity = offset / Math.max(1, performance.now() - startT);
-        if (offset > DISMISS_DISTANCE_PX || velocity > DISMISS_VELOCITY) finish(false);
-        else sheet.style.removeProperty('transform');
-      };
-      sheet.addEventListener('pointerup', end);
-      sheet.addEventListener('pointercancel', end);
-    }
-
-    requestAnimationFrame(() => {
-      layer.classList.add('ag-sheet-open');
-      (options.destructive || options.focusCancel ? cancel : confirm).focus({ preventScroll: true });
-    });
   });
 }
 

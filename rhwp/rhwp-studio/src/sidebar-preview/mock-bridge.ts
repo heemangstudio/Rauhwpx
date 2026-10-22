@@ -15,6 +15,7 @@ import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
 import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
+import { createMockDocumentMemory } from './mock-document-memory.ts';
 
 export const scenarios = [
   'chat',
@@ -433,6 +434,7 @@ export function createMockBridge(
   const staged = new Map<string, T.StagedReference>();
   const emit = (event: T.SidebarEvent) =>
     listeners.forEach((listener) => listener(event));
+  const documentMemory = createMockDocumentMemory(emit, () => chatDocumentId);
   /** 선물 프록시의 Claude 모델. 허브처럼 내 키의 모델과 따로 두고 처음에는 Sonnet·Haiku·Opus 를 고른다. */
   const giftCatalog = [
     { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', prompt: 0.000003, completion: 0.000015 },
@@ -1932,6 +1934,7 @@ export function createMockBridge(
       request((requestId) =>
         emit({ type: 'writing-style-status', requestId, status: data.writing }),
       ),
+    ...documentMemory,
     requestAgentInstructions: async () => data.instructions,
     saveAgentInstructions: async (content, expectedRevision) => {
       if (expectedRevision !== data.instructions.revision)

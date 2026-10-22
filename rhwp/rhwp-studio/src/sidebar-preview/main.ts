@@ -803,6 +803,11 @@ if (params.get('fullscreen') === '1') await enterFocusMode();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
 if (params.get('page') === 'versions') sidebar.openVersions();
+// `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
+if (params.has('memory')) {
+  await sidebar.startupChatSettled();
+  sidebar.openDocumentMemory();
+}
 const projectTab = params.get('project');
 if (projectTab === 'board' || projectTab === 'graph' || projectTab === 'files') {
   await waitForThreadsPersistence();
