@@ -50,6 +50,7 @@ The flag is mandatory because this check spends provider quota. Results and scre
 - Windows CLI launching, setup hardening, Claude login, text coalescing and terminal replay: **78 passed, 1 skipped**.
 - Three question-cancellation/correlation tests that hit temporary-directory cleanup failures in the concurrent suite passed when rerun alone.
 - `npm --prefix rhwp/rhwp-agent run typecheck:acp`, JavaScript syntax checks and `git diff --check`: passed.
+- Studio unit suite: **2,853 passed, 5 failed, 7 skipped**. Four failures were extension-fixture syntax errors and one was an existing nested-textbox interaction contract; these areas were not changed. This suite is not claimed green.
 - Full hub suite: **1,488 passed, 48 failed, 66 skipped**. It remains red on this laptop. Failures include denied symlink creation, Windows temporary-directory cleanup, POSIX-only assumptions and other live-hub fixtures. The initial broad run had 103 failures; correcting the fake CLI's `Program Files` shebang removed many launcher failures. This report does not claim the full suite is green.
 
 The test helpers now launch Vite directly through Node and resolve fake CLI Node shebangs through PATH. This avoids the Windows npm wrapper and shebang path failures observed while starting the tests.
