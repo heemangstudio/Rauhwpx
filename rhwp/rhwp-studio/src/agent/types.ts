@@ -16,6 +16,7 @@ import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { TasteUndoHistory } from './taste-signals.ts';
 import type { ForeignDocumentAccess } from './foreign-documents.ts';
 import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
@@ -1369,6 +1370,8 @@ export interface AgentBridgeDeps {
    * 검토 set 의 승인·거절과 턴 끝을 알린다. 없으면 체크포인트를 남기지 않는다.
    */
   turnCheckpoints?: TurnCheckpointPort;
+  /** 이 문서의 실행 취소 기록 — 에이전트 적용을 실행 취소했는지 취향 신호가 본다. */
+  undoHistory?: () => TasteUndoHistory | null;
   /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
@@ -1936,6 +1939,28 @@ export type PendingEditsChangeEvent =
       /** 거절/무효화로 되돌리지 못해 문서에 남은 op 인가 (승인은 false — 전부 반영됨) */
       leftInDocument?: boolean;
     };
+
+/**
+ * 취향 학습 신호 — 사용자가 에이전트의 글을 어떻게 다뤘는가 (chat-review-signal 프레임).
+ * accepted·rejected 는 검토 결과, rewritten 은 사용자가 고쳐 쓴 에이전트 글, undone 은 되돌린 턴,
+ * history 는 버전 기록에서 찾은 짝이다. 글은 모두 600자 이하로 잘라 보낸다.
+ */
+export type ReviewSignalKind = 'accepted' | 'rejected' | 'rewritten' | 'undone' | 'history';
+
+export interface ReviewSignal {
+  kind: ReviewSignalKind;
+  /** ISO 시각 */
+  at: string;
+  /** 에이전트가 바꾼 원래 문서 글 */
+  before?: string;
+  /** 에이전트가 제안하거나 쓴 글 */
+  after?: string;
+  /** rewritten·history: 사용자가 에이전트 글을 고친 결과 */
+  userText?: string;
+  /** 본문 문단 번호 (셀 안 문단은 생략) */
+  paraIdx?: number;
+  turnId?: string;
+}
 
 // ── 연구 프로젝트 ──────────────────────────────────────────
 // 허브 project-store 의 스냅샷·편집 연산·설정과 같은 모양이다 (/tmp/rp/CONTRACT.md).

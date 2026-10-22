@@ -114,6 +114,7 @@ import { contextualPrompt, mentionedDocumentsBlock, normalizeDocumentMentions, n
 import { createProjectIngest } from './project-ingest.mjs';
 import { createHomeSearch } from './home-search.mjs';
 import { createProjectLibrarian } from './project-librarian.mjs';
+import { createTasteSignalBuffer } from './taste-signals.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -511,6 +512,15 @@ const projectStore = await new ProjectStore({
 }).init();
 // 홈 폴더 검색은 데스크톱 앱이 RHWP_HOME_ACCESS=1 로 허브를 띄웠을 때만 쓸 수 있다.
 const HOME_ACCESS = process.env.RHWP_HOME_ACCESS === '1';
+// 취향 학습 신호 (chat-review-signal) — 문서별 메모리 버퍼, 파일에 남기지 않는다.
+const tasteSignals = createTasteSignalBuffer();
+// 진단용: RHWP_TASTE_SIGNALS_LOG=1 이면 받은 신호와 버퍼 크기를 허브 로그에 남긴다.
+if (process.env.RHWP_TASTE_SIGNALS_LOG === '1') {
+  tasteSignals.onReviewSignals((documentId, info) => {
+    log(`taste-signals doc=${documentId} +${info.count} [${info.kinds.join(',')}] buffered=${info.buffered} ${JSON.stringify(tasteSignals.peekSignals(documentId).slice(-info.count))}`);
+  });
+}
+
 const homeSearch = createHomeSearch({
   home: os.homedir(),
   settings: () => projectSettings.get(),
@@ -6148,6 +6158,10 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-edit-report': {
       queueEditReport(record, msg);
+      return;
+    }
+    case 'chat-review-signal': {
+      tasteSignals.ingest(msg);
       return;
     }
     case 'chat-plan-execution-result': {
