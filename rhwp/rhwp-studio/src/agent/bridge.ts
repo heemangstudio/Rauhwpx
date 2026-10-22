@@ -43,6 +43,7 @@ import {
   type TurnFailureCollector,
 } from './provider-failure.ts';
 import { isPlanApprovalText } from './plan-approval-text.ts';
+import { missingAnchorIds, readDocumentMemoryResult } from './document-memory.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import { currentAgentEditLock, onAgentEditLockChange } from './agent-prefs.ts';
@@ -92,6 +93,11 @@ import type {
   AgentViewHost,
   AgentInstructionsDraft,
   AgentInstructionsStatus,
+  DocumentMemory,
+  DocumentMemoryChange,
+  DocumentMemoryEntry,
+  DocumentMemoryOp,
+  DocumentMemoryResult,
   AgentEditingLease,
   AgentName,
   AgentAuthMethod,
@@ -540,6 +546,15 @@ export interface AgentBridge {
   saveAgentInstructions(content: string, expectedRevision: number): Promise<AgentInstructionsStatus | null>;
   confirmAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<AgentInstructionsStatus | null>;
   rejectAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<boolean>;
+  /** 문서 기억 — documentId 를 생략하면 이 채팅의 문서. 연결이 없으면 null, 허브가 거절하면 ok:false. */
+  listDocumentMemory(documentId?: string | null): Promise<DocumentMemoryResult | null>;
+  applyDocumentMemory(
+    ops: DocumentMemoryOp[],
+    options?: { expectedRevision?: number; documentId?: string | null },
+  ): Promise<DocumentMemoryResult | null>;
+  revertDocumentMemory(changes: DocumentMemoryChange[], documentId?: string | null): Promise<DocumentMemoryResult | null>;
+  /** 글에 매인 항목 가운데 인용이 지금 문서에서 사라진 것의 id. */
+  missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[];
   requestWritingStyleCatalog(refresh?: boolean): Promise<WritingStyleCatalog | null>;
   calibrateWritingStyle(input: {
     language: WritingStyleLanguage;
@@ -1706,7 +1721,16 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 캔버스가 알린 활성 쪽 (캐럿 쪽이 보이면 그 쪽, 아니면 뷰포트 쪽). */
   private activePageIndex: number | null = null;
   private threadId = '';
-  private documentId: string | null = null;
+  private chatDocumentId: string | null = null;
+  /** 이 채팅의 문서. 바뀌면 그 문서의 기억을 바로 읽어 둔다 — 첫 메시지도 앵커를 확인해 싣는다. */
+  private get documentId(): string | null {
+    return this.chatDocumentId;
+  }
+  private set documentId(value: string | null) {
+    if (value === this.chatDocumentId) return;
+    this.chatDocumentId = value;
+    if (value) queueMicrotask(() => this.loadDocumentMemory());
+  }
   private documentName: string | null = null;
   /** 문서 세션이 알려 준 작업 공간 묶음. 이 채팅 문서의 것일 때만 허브에 싣는다. */
   private projectWorktreeBinding: ProjectWorktreeBinding | null = null;
@@ -1719,8 +1743,19 @@ export class AgentBridgeImpl implements AgentBridge {
   private templateCatalog: TemplateCatalog = { revision: 0, templates: [] };
   private activeTemplate: DocumentTemplate | null = null;
   private activeTemplateId: string | null = null;
+  /** 이 채팅 문서의 기억 한 벌 — 메시지를 보낼 때 앵커를 확인한다. 바뀌면 허브가 알린다. */
+  private documentMemory: { documentId: string; memory: DocumentMemory } | null = null;
+  private documentMemoryLoading: string | null = null;
+  /** 앵커 검색과 원본 digest·파일 이름을 읽는 이 채팅의 문서 엔진. */
+  private documentEngine: Pick<
+    AgentBridgeDeps['wasm'],
+    'searchText' | 'documentDigest' | 'fileName' | 'openedFromFile' | 'documentInstance' | 'documentGeneration'
+  > | null = null;
+  /** 인용별 검색 결과. 문서 인스턴스·세대·revision 이 그대로인 동안만 쓴다 — 바뀌면 통째로 버린다. */
+  private anchorSearchCache: { documentState: string; found: Map<string, boolean> } | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
+    this.documentEngine = deps.wasm;
     this.versionCommit = deps.commitVersion;
     this.linkDocument = deps.linkDocument;
     this.detachDocument = deps.detachDocument;
@@ -2861,6 +2896,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
         this.reconnectAttempt = 0;
         this.awaitingWelcome = false;
+        // 끊긴 동안 기억이 바뀌었을 수 있다 — 세션 문서가 정해진 뒤 다시 읽는다.
+        queueMicrotask(() => this.loadDocumentMemory(true));
         // 허브 프로세스가 바뀌었는지는 앞 welcome 의 id 와 견준다 — 아래 일찍 돌아가는 갈래에서도 갱신한다.
         const previousHubInstanceId = this.hubInstanceId ?? null;
         this.hubShuttingDown = false;
@@ -3225,6 +3262,7 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = msg.documentName;
         this.syncChatPermissions(msg);
         this.syncProjectWorktreeContext();
+        this.loadDocumentMemory();
         if (this.projectBindPending) {
           this.projectBindPending = false;
           this.sendProjectBind();
@@ -3420,6 +3458,21 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.draftId === 'string' && outcome) {
           this.emit({ type: 'agent-instructions-draft-cleared', draftId: msg.draftId, outcome });
         }
+        break;
+      }
+      case 'document-memory-result': {
+        if (typeof msg.requestId !== 'string') break;
+        const result = readDocumentMemoryResult(msg);
+        this.requests.settle(msg.requestId, result);
+        break;
+      }
+      case 'document-memory-changed': {
+        if (typeof msg.documentId !== 'string' || typeof msg.key !== 'string' || !Number.isSafeInteger(msg.revision)) break;
+        const cached = this.documentMemory;
+        const mine = msg.documentId === this.documentId || cached?.memory.key === msg.key;
+        if (!mine) break;
+        if (!cached || cached.memory.revision !== msg.revision) this.loadDocumentMemory(true);
+        this.emit({ type: 'document-memory-changed', documentId: msg.documentId, key: msg.key, revision: msg.revision });
         break;
       }
       case 'agent-instructions-error': {
@@ -4753,6 +4806,7 @@ export class AgentBridgeImpl implements AgentBridge {
       type: 'chat-start',
       ...pending,
       ...this.projectRepositoryFields(pending.documentId),
+      ...this.documentSourceFields(pending.documentId),
     });
   }
 
@@ -4786,6 +4840,19 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       : null;
     this.projects?.worktrees?.set(visible);
+  }
+
+  /**
+   * 지금 문서의 원본 digest·파일 이름 — 허브가 다시 발급된 documentId 에 같은 기억을 복사해 준다.
+   * 파일에서 연 문서만 싣는다. 새 문서·템플릿 문서는 바이트와 이름이 서로 같아 정체성이 아니다.
+   */
+  private documentSourceFields(documentId: string | null): Record<string, unknown> {
+    if (!documentId || documentId !== this.documentId || this.documentEngine?.openedFromFile !== true) return {};
+    const { digest, fileName } = this.documentSourceIdentity();
+    return {
+      ...(digest ? { documentDigest: digest } : {}),
+      ...(fileName ? { documentFileName: fileName } : {}),
+    };
   }
 
   private projectRepositoryFields(documentId: string | null): Record<string, unknown> {
@@ -4842,6 +4909,7 @@ export class AgentBridgeImpl implements AgentBridge {
     }
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
+    const anchorCheck = this.memoryAnchorCheckFor(message.context.documentId);
     const notice = this.restoredNoticeFor(message);
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
@@ -4857,6 +4925,8 @@ export class AgentBridgeImpl implements AgentBridge {
       ...(message.documentMentions?.length ? { documentMentions: message.documentMentions } : {}),
       ...(message.requireAcceptance ? { requireAcceptance: true } : {}),
       ...(built ? { documentSnapshot: built.snapshot } : {}),
+      ...(anchorCheck ? { memoryAnchorRevision: anchorCheck.revision } : {}),
+      ...(anchorCheck?.missing.length ? { memoryMissingAnchors: anchorCheck.missing } : {}),
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
@@ -5405,6 +5475,106 @@ export class AgentBridgeImpl implements AgentBridge {
       },
       'agent-instructions-reject',
     ).then((result) => result === true);
+  }
+
+  listDocumentMemory(documentId: string | null = this.documentId): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({ op: 'list' }, documentId);
+  }
+
+  applyDocumentMemory(
+    ops: DocumentMemoryOp[],
+    options: { expectedRevision?: number; documentId?: string | null } = {},
+  ): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({
+      op: 'apply',
+      ops,
+      ...(options.expectedRevision !== undefined ? { expectedRevision: options.expectedRevision } : {}),
+    }, options.documentId === undefined ? this.documentId : options.documentId);
+  }
+
+  revertDocumentMemory(
+    changes: DocumentMemoryChange[],
+    documentId: string | null = this.documentId,
+  ): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({ op: 'revert', changes }, documentId);
+  }
+
+  missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[] {
+    const engine = this.documentEngine;
+    if (!engine) return [];
+    // 검색은 문서 전체(표 칸 포함)의 일치를 모두 모은다 — 같은 문서 상태에서는 인용마다 한 번만 찾는다.
+    const documentState = `${engine.documentInstance}:${engine.documentGeneration}:${this.revision.revision}`;
+    if (this.anchorSearchCache?.documentState !== documentState) {
+      this.anchorSearchCache = { documentState, found: new Map() };
+    }
+    const cache = this.anchorSearchCache.found;
+    return missingAnchorIds(entries, (quote) => {
+      const known = cache.get(quote);
+      if (known !== undefined) return known;
+      const found = engine.searchText(quote, 0, 0, 0, true, true).found === true;
+      cache.set(quote, found);
+      return found;
+    });
+  }
+
+  /** 지금 문서 원본의 digest·파일 이름 — 허브가 다시 발급된 documentId 를 같은 기억에 다시 묶는다. */
+  private documentSourceIdentity(): { digest: string | null; fileName: string | null } {
+    const engine = this.documentEngine;
+    return { digest: engine?.documentDigest ?? null, fileName: engine?.fileName ?? null };
+  }
+
+  private documentMemoryRequest(
+    payload: Record<string, unknown>,
+    documentId: string | null,
+  ): Promise<DocumentMemoryResult | null> {
+    if (!documentId) return Promise.resolve(null);
+    return this.request<DocumentMemoryResult>(
+      {
+        type: 'document-memory-request',
+        ...payload,
+        documentId,
+        ...this.documentMemoryIdentityFields(documentId),
+      },
+      'document-memory',
+    ).then((result) => {
+      // 지금 문서의 결과면 앵커 확인에 쓰는 한 벌도 바꾼다.
+      if (result?.memory && documentId === this.documentId) this.documentMemory = { documentId, memory: result.memory };
+      return result;
+    });
+  }
+
+  /** 허브가 기억 키를 고르는 데 쓰는 정체성: 작업 공간 저장소와, 지금 문서면 원본 digest·파일 이름. */
+  private documentMemoryIdentityFields(documentId: string | null): Record<string, unknown> {
+    const binding = this.projectWorktreeBinding;
+    return {
+      ...(documentId && binding?.documentId === documentId ? { repositoryId: binding.repositoryId } : {}),
+      ...this.documentSourceFields(documentId),
+    };
+  }
+
+  /** 이 채팅 문서의 기억을 (다시) 읽어 둔다. force 가 아니면 이미 그 문서의 것이 있을 때 건너뛴다. */
+  private loadDocumentMemory(force = false): void {
+    const documentId = this.documentId;
+    if (!documentId || !this.documentEngine || this.state !== 'connected' || this.awaitingWelcome) return;
+    if (!force && (this.documentMemory?.documentId === documentId || this.documentMemoryLoading === documentId)) return;
+    this.documentMemoryLoading = documentId;
+    void this.listDocumentMemory(documentId).finally(() => {
+      if (this.documentMemoryLoading === documentId) this.documentMemoryLoading = null;
+    });
+  }
+
+  /**
+   * 보낼 메시지에 실을 앵커 확인 — 확인한 기억 리비전과 문서에서 사라진 앵커의 기억 id. 그 문서의 기억을
+   * 아직 모르면 null 이고, 허브는 확인되지 않은 매인 항목을 이번 턴에 싣지 않는다.
+   */
+  private memoryAnchorCheckFor(documentId: string | null): { revision: number; missing: string[] } | null {
+    const cached = this.documentMemory;
+    if (!documentId || cached?.documentId !== documentId) {
+      this.loadDocumentMemory();
+      return null;
+    }
+    const anchored = cached.memory.entries.filter((entry) => entry.anchor);
+    return { revision: cached.memory.revision, missing: anchored.length ? this.missingDocumentMemoryAnchors(anchored) : [] };
   }
 
   requestWritingStyleCatalog(refresh = false): Promise<WritingStyleCatalog | null> {

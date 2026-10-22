@@ -42,6 +42,8 @@ import { SkillRegistry } from './skills.mjs';
 import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
 import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
+import { DocumentMemoryStore } from './document-memory-store.mjs';
+import { createDocumentMemoryHub, newSessionDocumentMemory } from './document-memory-hub.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
 import {
@@ -339,6 +341,12 @@ if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') 
 }
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
+// 문서 기억은 문서마다 따로 둔다 (RHWP_DOCUMENT_MEMORY_DIR). 읽는 문서만 메모리에 올린다.
+const documentMemoryHub = createDocumentMemoryHub({
+  store: new DocumentMemoryStore(),
+  log,
+  broadcast: (frame) => broadcastToStudios(frame),
+});
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
 const PI_ROOT = defaultPiRoot();
 const openRouter = createOpenRouter({ cacheDir: PI_ROOT });
@@ -622,6 +630,8 @@ const sessions = new HubSessionRegistry({
       untrustedNativeSessions: new Set(),
       styleCalibration: null,
       pendingInstructionDraft: null,
+      // documentId → Studio 가 알린 원본 digest·파일 이름. 다시 발급된 documentId 를 같은 문서 기억에 묶는다.
+      documentSources: new Map(),
       auxiliaryProcesses: new Set(),
       auxiliaryProcessCleanups: new Map(),
       checkpointTitleControllers: new Set(),
@@ -1018,7 +1028,7 @@ function drainChatContinuation(record) {
   // 사용자 메시지가 아니므로 다른 요청과 사용자가 잡고 있는 탭은 그대로 둔다.
   beginAgentTurn(record, activeSession, { userTurn: false });
   try {
-    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text));
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -3068,6 +3078,7 @@ function drainTemplateCompletion(record) {
   try {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(
       buildCopyLayoutCompletionPrompt(entry.result),
+      documentMemoryHub.takeBlock(activeSession),
     ));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
@@ -3134,7 +3145,7 @@ function drainPlanningDocumentSaved(record) {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addActiveDocumentContext(
       activeSession,
       addTemplateContext(record, activeSession, prompt),
-    )));
+    ), documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -3528,6 +3539,8 @@ function sendCompactionEvents(record, events, turnId) {
   for (const event of events) {
     // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
     // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
+    // 압축된 기록에는 앞서 실은 문서 기억이 남지 않을 수 있다 — 다음 턴에 다시 싣는다.
+    if (event.phase === 'completed') documentMemoryHub.forgetDelivery(activeSession);
     if (event.phase === 'completed' && activeSession?.contextUsage) {
       activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
         ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
@@ -3695,7 +3708,10 @@ function makeBackendEventHandler(record, generation) {
         activeSession.resumed = false;
         // 이 턴이 실패했다면 다음 턴은 전체 기록으로 새 세션을 연다.
         if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
+        // 이어 받지 못한 세션은 앞서 실은 기억을 모른다 — 이번 글이 실었는지도 확신할 수 없어 다음 턴에 다시 싣는다.
+        documentMemoryHub.forgetDelivery(activeSession);
       }
+      documentMemoryHub.settleDelivery(activeSession, succeeded);
       // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
       const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
       if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
@@ -3859,8 +3875,8 @@ function prepareTurnHandoff(activeSession, history, plainText, usedTokens) {
  * 공급자가 아직 보지 못한 대화를 프롬프트 앞에 붙인다. 기록은 여기서 비우지 않는다 —
  * 턴이 성공적으로 끝났을 때만 비운다 (실패한 첫 턴 뒤에도 다음 턴이 같은 기록을 싣는다).
  */
-function handoffPromptText(delivery, turnPrompt) {
-  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt);
+function handoffPromptText(delivery, turnPrompt, documentMemoryBlock = '') {
+  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt, documentMemoryBlock);
 }
 
 /** Codex 가 네이티브로 주입할 조각. 인라인으로 보내는 공급자는 무시한다. */
@@ -4313,6 +4329,7 @@ async function linkChatDocument(record, sock, msg) {
   linked();
   await sendProjectBound(record);
   resumeLibrarianFor(projectId);
+  await documentMemoryHub.prepare(record, activeSession);
 }
 
 /**
@@ -4386,6 +4403,7 @@ async function detachChatDocument(record, sock, msg) {
   }
   sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
   await sendProjectBound(record);
+  await documentMemoryHub.prepare(record, activeSession);
 }
 
 /** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
@@ -4519,8 +4537,8 @@ async function librarianRoutes(projectId) {
   };
 }
 
-function addAgentInstructionsContext(prompt) {
-  return `${agentInstructionsStore.promptBlock()}\n\n${prompt}`;
+function addAgentInstructionsContext(prompt, documentMemoryBlock = '') {
+  return [agentInstructionsStore.promptBlock(), documentMemoryBlock, prompt].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -4748,6 +4766,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
+      await documentMemoryHub.prepare(record, activeSession);
       const referencedPrompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), {
         required: msg.requireAcceptance === true,
         documentMentions: normalizeDocumentMentions(msg.documentMentions),
@@ -4767,9 +4786,11 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
           addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, referencedPrompt))),
         ),
       );
-      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
-      const plainText = addAgentInstructionsContext(turnPrompt);
       const replaceSession = activeSession.replaceSessionPending === true;
+      // 새 공급자 세션은 앞서 실은 기억을 모른다 — 세션 교체와 재개 실패 대체 글에는 늘 싣는다.
+      const memoryBlock = documentMemoryHub.takeBlock(activeSession, { force: replaceSession });
+      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
+      const plainText = addAgentInstructionsContext(turnPrompt, memoryBlock);
       const resumedNative = activeSession.resumed && !replaceSession;
       // 새 세션(재개 실패·세션 교체)에는 전체 기록을 쓰고 사용량은 0 으로 본다.
       const full = prepareTurnHandoff(activeSession, activeSession.fallbackHistory, plainText, 0);
@@ -4785,7 +4806,9 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       const withResumeFallback = resumedNative && !activeSession.nativeTurnSucceeded;
       const options = {
         ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
-        ...(withResumeFallback ? { resumeFallbackText: handoffPromptText(full, turnPrompt) } : {}),
+        ...(withResumeFallback ? {
+          resumeFallbackText: handoffPromptText(full, turnPrompt, documentMemoryHub.takeBlock(activeSession, { force: true })),
+        } : {}),
         ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
         ...(replaceSession ? { replaceSession: true } : {}),
       };
@@ -4804,7 +4827,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         fallback: withResumeFallback && Boolean(full),
         userText,
       };
-      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
+      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt, memoryBlock), options);
       // Current providers accept synchronously; a future asynchronous backend
       // may reject its dispatch promise before acknowledging the message.
       if (dispatched?.then) await dispatched;
@@ -5222,6 +5245,7 @@ async function startSession(
     handoffDelivery: null,
     replaceSessionPending: false,
     reportResumeLost: untrustedCursor,
+    documentMemory: newSessionDocumentMemory(),
     contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
     compaction: null,
     manualCompaction: null,
@@ -5386,7 +5410,7 @@ async function approveImplementationPlan(record, sock, msg) {
       record,
       activeSession,
       addEditReportContext(record, activeSession, approvedPrompt),
-    )));
+    ), documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     if (record.agentSession === activeSession) {
       if (activeSession.planning.phase === 'switching') {
@@ -5443,7 +5467,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      )));
+      ), documentMemoryHub.takeBlock(activeSession)));
       return;
     }
     if (feedback) {
@@ -5460,7 +5484,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      )));
+      ), documentMemoryHub.takeBlock(activeSession)));
     }
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -5590,6 +5614,7 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       const previousRepository = record.projectRepository ?? null;
+      documentMemoryHub.noteSource(record, msg.documentId, { digest: msg.documentDigest, fileName: msg.documentFileName });
       try {
         // 버전 저장소가 있는 문서는 모든 작업 공간이 한 프로젝트를 함께 쓴다.
         const repositoryChanged = applyRecordRepository(record, msg.documentId, msg);
@@ -5651,6 +5676,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         await sendProjectBound(record);
         resumeLibrarianFor(record.boundProjectId);
+        void documentMemoryHub.prepare(record, s);
       } catch (e) {
         // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
         if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
@@ -5855,6 +5881,10 @@ async function handleStudioMessage(record, sock, msg) {
           message: msg, socket: sock, session: record.agentSession, turnId: null,
         });
       }
+      // Studio 가 이 문서·기억 리비전에서 확인한 앵커 — 허브가 여는 다음 턴들도 이 확인을 쓴다.
+      documentMemoryHub.noteMissingAnchors(record.agentSession, msg.memoryMissingAnchors, {
+        documentId: msg.documentId, revision: msg.memoryAnchorRevision,
+      });
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
         try {
           const templateId = msg.activeTemplateId == null ? null : String(msg.activeTemplateId);
@@ -5907,6 +5937,12 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'templates-list': {
       sendJson(sock, { v: 1, type: 'templates-catalog', ...templateStore.list() });
+      return;
+    }
+    case 'document-memory-request': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void documentMemoryHub.studioRequest(record, msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'document-memory-result', requestId: msg.requestId, ...reply }));
       return;
     }
     case 'agent-instructions-request': {
@@ -7508,6 +7544,17 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       if (tool === 'read_agent_instructions') {
         sendResult(agentInstructionsStore.snapshot());
+        return;
+      }
+      if (tool === 'read_document_memory' || tool === 'update_document_memory') {
+        if (tool === 'update_document_memory'
+          && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
+          sendError(workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may change document memory'));
+          return;
+        }
+        void documentMemoryHub.runTool(record, record.agentSession, tool, args)
+          .then(sendResult)
+          .catch((error) => sendError(error, 'DOCUMENT_MEMORY_FAILED'));
         return;
       }
       if (tool === 'update_agent_instructions') {

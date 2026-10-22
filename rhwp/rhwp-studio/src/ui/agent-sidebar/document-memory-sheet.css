@@ -1,0 +1,281 @@
+/* ─── 문서 기억 시트 ─────────────────────────────────────
+   확인 시트(sheet.css)의 틀 안에 목록과 더하기 줄을 둔다. 목록만 스크롤되고
+   제목과 더하기 줄은 제자리에 있다. 모서리는 8(줄·입력)과 6(종류 단추)만 쓴다. */
+
+.ag-memory-sheet {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 56px);
+  padding-bottom: 16px;
+}
+
+.ag-sheet-layer[data-placement='center'] .ag-memory-sheet {
+  max-width: 440px;
+  max-height: min(640px, calc(100vh - 48px));
+  padding: 20px 20px 16px;
+}
+
+.ag-memory-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 줄의 지우기 단추와 오른쪽 끝을 맞춘다. */
+.ag-memory-close {
+  margin-right: -6px;
+}
+
+.ag-memory-header .ag-sheet-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.ag-memory-close,
+.ag-memory-remove {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--n-ink-tertiary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-close svg,
+.ag-memory-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ag-memory-close:hover,
+.ag-memory-remove:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-memory-close:active,
+.ag-memory-remove:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
+}
+
+.ag-memory-close:focus-visible,
+.ag-memory-remove:focus-visible,
+.ag-memory-text:focus-visible,
+.ag-memory-kind-btn:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-memory-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 12px -8px 0;
+  padding: 0 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.ag-memory-group + .ag-memory-group {
+  margin-top: 12px;
+}
+
+.ag-memory-kind {
+  margin: 0 0 2px;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-tight);
+  color: var(--n-ink-tertiary);
+}
+
+.ag-memory-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-memory-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 0 -8px;
+  padding: 2px 2px 2px 8px;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-row:hover {
+  background: var(--n-ink-fill-hover);
+}
+
+.ag-memory-row[data-editing='true'] {
+  background: transparent;
+}
+
+.ag-memory-row[data-pending='true'] {
+  opacity: 0.5;
+}
+
+.ag-memory-row-body {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.ag-memory-text,
+.ag-memory-edit {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-secondary);
+  letter-spacing: var(--ag-track-tight);
+  color: var(--n-ink);
+  overflow-wrap: anywhere;
+}
+
+.ag-memory-text {
+  border-radius: var(--ag-r-code);
+  cursor: text;
+}
+
+.ag-memory-edit {
+  margin: -3px -6px;
+  width: calc(100% + 12px);
+  padding: 2px 5px;
+  border: 1px solid var(--n-ink-hairline-strong);
+  border-radius: var(--ag-r-row);
+  background: var(--n-surface-raised);
+  resize: none;
+  overflow: hidden;
+  outline: none;
+}
+
+.ag-memory-edit:focus {
+  border-color: var(--ag-focus-ring-color);
+}
+
+.ag-memory-anchor {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 1px;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+  color: var(--n-ink-secondary);
+}
+
+.ag-memory-quote {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-memory-stale {
+  flex: none;
+  color: var(--n-ink-tertiary);
+}
+
+.ag-memory-row[data-stale='true'] .ag-memory-quote {
+  color: var(--n-ink-tertiary);
+}
+
+.ag-memory-empty {
+  flex: none;
+  margin: 12px 0 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.ag-memory-add {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-top: 12px;
+  padding: 3px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-row);
+  background: var(--n-surface-raised);
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-add:focus-within {
+  border-color: var(--n-ink-hairline-strong);
+}
+
+.ag-memory-add[data-pending='true'] {
+  opacity: 0.6;
+}
+
+.ag-memory-kind-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-hover);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-kind-btn:hover {
+  background: var(--n-ink-fill-pressed);
+}
+
+.ag-memory-kind-btn svg {
+  width: 12px;
+  height: 12px;
+  color: var(--n-ink-tertiary);
+}
+
+.ag-memory-add-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  letter-spacing: var(--ag-track-tight);
+  color: var(--n-ink);
+  outline: none;
+}
+
+.ag-memory-add-input::placeholder {
+  color: var(--n-ink-tertiary);
+}
+
+.ag-memory-error {
+  flex: none;
+  margin: 8px 0 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--ag-err, var(--ui-danger));
+}
+
+.ag-memory-error[hidden],
+.ag-memory-empty[hidden],
+.ag-memory-list[hidden] {
+  display: none;
+}

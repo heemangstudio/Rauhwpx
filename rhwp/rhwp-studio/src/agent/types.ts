@@ -336,6 +336,69 @@ export interface AgentInstructionsDraft {
   confirmationToken: string;
 }
 
+/** 문서 기억 항목의 종류 — 결정·용어·보호·문체·사실. */
+export type DocumentMemoryKind = 'decision' | 'term' | 'protect' | 'style' | 'fact';
+
+/** 문서 하나에 붙는 지속 메모. 허브(document-memory-store.mjs)가 정본이다. */
+export interface DocumentMemoryEntry {
+  id: string;
+  kind: DocumentMemoryKind;
+  /** 문서 안에서 하나뿐인 주제 키 (예: '문체.종결'). */
+  subject: string;
+  text: string;
+  /** 문서의 특정 글에 매인 메모. 그 글이 문서에서 사라지면 에이전트에게 보내지 않는다. */
+  anchor?: { quote: string; paraIdx?: number };
+  /** explicit: 사용자 요청으로 에이전트가 기록 · learned: 자동 학습 · user: 문서 기억 시트에서 고침. */
+  origin: 'explicit' | 'learned' | 'user';
+  /** kind 'copy' 는 같은 바이트의 다른 문서에서 복사해 온 기억이다. */
+  source?: { threadId?: string; turnId?: string; kind?: 'turn' | 'signal' | 'history' | 'copy' };
+  evidence: number;
+  userCandidate?: boolean;
+  promoted?: boolean;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string;
+}
+
+export interface DocumentMemory {
+  key: string;
+  revision: number;
+  entries: DocumentMemoryEntry[];
+}
+
+export type DocumentMemoryOp =
+  /** subject 를 생략하면 허브가 종류와 글로 만든다. 같은 주제가 있으면 그 항목을 고친다. */
+  | { op: 'add'; kind: DocumentMemoryKind; subject?: string; text: string; anchor?: DocumentMemoryEntry['anchor']; userCandidate?: boolean }
+  | {
+    op: 'update';
+    id: string;
+    kind?: DocumentMemoryKind;
+    subject?: string;
+    text?: string;
+    /** null 이면 매인 글을 뗀다. */
+    anchor?: DocumentMemoryEntry['anchor'] | null;
+    userCandidate?: boolean;
+  }
+  | { op: 'remove'; id: string };
+
+/** apply 한 번의 결과 하나. revert 가 그대로 받는다. */
+export interface DocumentMemoryChange {
+  op: 'add' | 'update' | 'remove';
+  entryId: string;
+  entry?: DocumentMemoryEntry;
+  prev?: DocumentMemoryEntry;
+}
+
+export interface DocumentMemoryResult {
+  ok: boolean;
+  memory?: DocumentMemory;
+  changes?: DocumentMemoryChange[];
+  /** revert 만 채운다. */
+  reverted?: string[];
+  skipped?: string[];
+  error?: { code: string; message: string };
+}
+
 export interface StructuredPlanStep {
   id?: string;
   title: string;
@@ -1148,6 +1211,8 @@ export type SidebarEvent =
   | { type: 'agent-instructions-draft'; draft: AgentInstructionsDraft }
   | { type: 'agent-instructions-draft-cleared'; draftId: string; outcome: 'confirmed' | 'rejected' | 'expired' | 'replaced' | 'stale' }
   | { type: 'agent-instructions-error'; code: string; message: string; status?: AgentInstructionsStatus }
+  /** 이 문서(또는 같은 기억을 나누는 작업 공간 사본)의 문서 기억이 바뀌었다 — 도구·시트·학습·되돌리기 모두. */
+  | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
   | { type: 'chat-template-changed'; template: DocumentTemplate | null; reason?: string }
   | { type: 'permission-changed'; permissionProfile: PermissionProfile }
   | { type: 'service-tier-changed'; serviceTier: ServiceTier }
