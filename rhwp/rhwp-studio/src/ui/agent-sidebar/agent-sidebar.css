@@ -6202,6 +6202,10 @@ button.ag-skill-copy {
   opacity: 1;
 }
 
+.ag-composer.ag-range-dragging::after {
+  content: '놓아서 메시지에 첨부';
+}
+
 
 
 

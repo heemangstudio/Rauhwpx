@@ -354,7 +354,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       const match = raw !== null && (chunk || quote) ? locateInText(raw, { chunk, quote }) : null;
       // 읽은 앞부분에서 조각을 못 찾으면 허브 쪽 글자에서 강조한다.
       if (raw !== null && (match || !chunk)) {
-        const csv = renderCsvTable(raw, { delimiter: csvDelimiterOf(item), match, partial });
+        const csv = renderCsvTable(raw, { delimiter: csvDelimiterOf(item), match, partial, name: item.title });
         if (csv) {
           root.dataset.kind = 'table';
           if (csv.truncated) meta.textContent = `처음 ${csv.rows.toLocaleString('ko-KR')}행`;

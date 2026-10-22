@@ -260,7 +260,7 @@ import {
 } from './project/project-host.ts';
 import type { MentionDocument } from './mention-picker.ts';
 import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
-import { readProjectItemDrag, transferHasProjectItem } from './project/project-drag.ts';
+import { csvRangeFile, readCsvRangeDrag, readProjectItemDrag, transferHasCsvRange, transferHasProjectItem } from './project/project-drag.ts';
 import { createFollowUpStrip } from './follow-up-strip.ts';
 import {
   createFollowUpController,
@@ -4668,21 +4668,37 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   input.addEventListener('paste', onAttachmentPaste);
 
   // 자료 카드·자료 탭·PDF 영역을 입력창에 끌어 놓으면 @ 멘션과 같은 칩이 된다.
+  // CSV 표에서 고른 칸 범위는 그 범위만 담은 파일로 첨부한다.
   const canDropMention = (event: DragEvent): boolean => (
     transferHasProjectItem(event.dataTransfer) && composerMentions !== null && !input.disabled
   );
+  const canDropCsvRange = (event: DragEvent): boolean => (
+    transferHasCsvRange(event.dataTransfer) && canStageComposerAttachments()
+  );
   const onMentionDragOver = (event: DragEvent): void => {
-    if (!canDropMention(event)) return;
+    const range = canDropCsvRange(event);
+    if (!range && !canDropMention(event)) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     composer.classList.add('ag-mention-dragging');
+    composer.classList.toggle('ag-range-dragging', range);
   };
   const onMentionDragLeave = (event: DragEvent): void => {
     if (composer.contains(event.relatedTarget as Node | null)) return;
-    composer.classList.remove('ag-mention-dragging');
+    composer.classList.remove('ag-mention-dragging', 'ag-range-dragging');
   };
   const onMentionDrop = (event: DragEvent): void => {
+    if (transferHasCsvRange(event.dataTransfer)) {
+      event.preventDefault();
+      event.stopPropagation();
+      composer.classList.remove('ag-mention-dragging', 'ag-range-dragging');
+      const range = readCsvRangeDrag(event.dataTransfer);
+      if (!range || !canStageComposerAttachments()) return;
+      referenceLibrary.stageDraftFiles([csvRangeFile(range)]);
+      input.focus();
+      return;
+    }
     if (!transferHasProjectItem(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();

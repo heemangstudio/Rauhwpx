@@ -11,6 +11,39 @@ export interface ProjectItemDrag {
   title: string;
 }
 
+/** CSV·TSV 읽기 보기에서 고른 칸 범위. 입력창에 놓으면 그 범위만 담은 파일로 첨부한다. */
+export const CSV_RANGE_MIME = 'application/x-rauhwpx-csv-range';
+
+export interface CsvRangeDrag {
+  /** 첨부 파일 이름 (확장자 포함). */
+  name: string;
+  /** 머리글을 포함한 범위 원문. */
+  text: string;
+  delimiter: ',' | '\t';
+}
+
+export function transferHasCsvRange(data: DataTransfer | null): boolean {
+  return Boolean(data && Array.from(data.types).includes(CSV_RANGE_MIME));
+}
+
+export function readCsvRangeDrag(data: DataTransfer | null): CsvRangeDrag | null {
+  const raw = data?.getData(CSV_RANGE_MIME);
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<CsvRangeDrag>;
+    if (typeof value.name !== 'string' || !value.name || typeof value.text !== 'string') return null;
+    return { name: value.name, text: value.text, delimiter: value.delimiter === '\t' ? '\t' : ',' };
+  } catch {
+    return null;
+  }
+}
+
+/** 놓인 범위를 입력창 첨부로 올릴 파일로 바꾼다. */
+export function csvRangeFile(range: CsvRangeDrag): File {
+  const type = range.delimiter === '\t' ? 'text/tab-separated-values' : 'text/csv';
+  return new File([range.text], range.name, { type });
+}
+
 export function transferHasProjectItem(data: DataTransfer | null): boolean {
   return Boolean(data && Array.from(data.types).includes(PROJECT_ITEM_MIME));
 }

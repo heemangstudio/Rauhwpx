@@ -262,6 +262,14 @@
   overflow: hidden;
 }
 
+.ag-pp-csv-frame {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
 /*
  * 폭을 끄는 동안 루트에 걸리는 폭 변수를 여기서 끊어, 수만 칸이 프레임마다 다시 스타일을 타지 않게 한다.
  * 표 안에서는 이 변수들을 쓰지 않는다.
@@ -275,6 +283,7 @@
   overflow: auto;
   overscroll-behavior: contain;
   contain: strict;
+  outline: none;
 }
 
 /* 표 폭은 내용으로만 정한다. 상자 폭을 따르면 폭을 바꿀 때마다 모든 칸을 다시 짠다. */
@@ -284,6 +293,8 @@
   border-spacing: 0;
   font-size: var(--ag-fs-secondary);
   line-height: var(--ag-lh-tight);
+  cursor: cell;
+  user-select: none;
 }
 
 .ag-pp-csv-table th,
@@ -338,4 +349,28 @@
 .ag-pp-csv-table .ag-pp-csv-hit,
 .ag-pp-csv-table tbody tr:hover .ag-pp-csv-hit {
   background: linear-gradient(var(--ag-cite-hit), var(--ag-cite-hit)), var(--ag-bg);
+}
+
+/* 끌어 고른 칸 범위. 고른 칸 위에서는 다시 끌어 입력창으로 옮길 수 있다. */
+.ag-pp-csv-table .ag-pp-csv-sel,
+.ag-pp-csv-table tbody tr:hover .ag-pp-csv-sel {
+  background: linear-gradient(color-mix(in srgb, var(--ag-accent) 22%, transparent), color-mix(in srgb, var(--ag-accent) 22%, transparent)), var(--ag-bg);
+  cursor: grab;
+}
+
+.ag-pp-csv-range {
+  position: absolute;
+  z-index: 3;
+  right: 16px;
+  bottom: 16px;
+  padding: 6px 10px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 8px;
+  background: var(--ag-bg);
+  box-shadow: var(--ag-elev-composer);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  user-select: none;
 }
