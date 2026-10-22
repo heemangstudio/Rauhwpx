@@ -40,6 +40,7 @@ export const scenarios = [
   'writer-busy',
   'interrupted',
   'compaction',
+  'memory',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -1469,6 +1470,12 @@ export function createMockBridge(
           for (const call of toolScenarioCalls()) {
             stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
           }
+        }
+        if (reply === 'memory') {
+          // ?scenario=memory — 에이전트가 문서 기억을 저장하고, 그 도구 행 뒤에 "기억에 저장됨" 구분선이 그어진다.
+          toolPair(`memory-${turnGeneration}`, 'update_document_memory',
+            { ops: [{ op: 'add', kind: 'style', subject: '문체', text: '보고서 본문은 "~한다" 체로 쓴다.' }] },
+            { ok: true, revision: 1 });
         }
         if (reply === 'writer-busy') {
           const call = writerBusyCall();

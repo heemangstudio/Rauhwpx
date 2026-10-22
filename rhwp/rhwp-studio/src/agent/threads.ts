@@ -190,7 +190,8 @@ export type ThreadTurnOutcome = 'interrupted' | 'failed';
 /**
  * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
  * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리,
- * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서, 또는 기록에서 배우기가(turnId 없음) 문서 기억을 바꾼 자리.
+ * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서, 또는 기록에서 배우기가(turnId 없음) 문서 기억을 바꾼 자리,
+ * memory = 에이전트의 update_document_memory 호출이 성공한 자리.
  */
 export type ThreadMarkerMessage =
   | (ThreadMessageBase & {
@@ -209,6 +210,14 @@ export type ThreadMarkerMessage =
       trigger: CompactionTrigger;
       beforeTokens?: number;
       afterTokens?: number;
+      planId?: never;
+    })
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'memory';
+      /** 그 도구 호출의 callId — 같은 호출에 두 번 긋지 않는다. */
+      callId: string;
       planId?: never;
     })
   | (ThreadMessageBase & {
@@ -1113,6 +1122,10 @@ function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMe
       ...(beforeTokens !== undefined ? { beforeTokens } : {}),
       ...(afterTokens !== undefined ? { afterTokens } : {}),
     };
+  }
+  if (message.marker === 'memory') {
+    const callId = nonEmptyString(message.callId);
+    return callId ? { role: 'system', kind: 'marker', marker: 'memory', callId, text: message.text } : null;
   }
   if (message.marker === 'taste') {
     const learnId = nonEmptyString(message.learnId);
@@ -2422,6 +2435,16 @@ export function addCompactionMarker(
     ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
     ...(compaction.afterTokens !== undefined ? { afterTokens: compaction.afterTokens } : {}),
   };
+  thread.messages.push(marker);
+  return marker;
+}
+
+/** 문서 기억 저장 구분선을 더한다. 같은 호출의 구분선이 이미 있으면 null. */
+export function addMemoryMarker(thread: ChatThread, callId: string): ThreadMarkerMessage | null {
+  const exists = thread.messages.some((message) => message.kind === 'marker'
+    && message.marker === 'memory' && message.callId === callId);
+  if (exists) return null;
+  const marker: ThreadMarkerMessage = { role: 'system', kind: 'marker', marker: 'memory', callId, text: '' };
   thread.messages.push(marker);
   return marker;
 }
