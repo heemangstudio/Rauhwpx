@@ -26,6 +26,23 @@ export interface CsvTableView {
   truncated: boolean;
   /** 강조한 첫 칸. */
   hit: HTMLElement | null;
+  /** 칸 범위 고르기. */
+  range: CsvRangeSelection;
+}
+
+export interface CsvRangeSnapshot {
+  /** `B3:E7` 처럼 쓴 범위. */
+  ref: string;
+  /** 머리글 행을 맨 위에 둔 Markdown 표. */
+  markdown: string;
+}
+
+export interface CsvRangeSelection {
+  current(): CsvRangeSnapshot | null;
+  /** 고른 범위가 바뀔 때마다 부른다. 지우면 null. */
+  onChange(listener: (range: CsvRangeSnapshot | null) => void): void;
+  /** 범위 이름표 뒤에 상태를 덧붙인다. 범위가 바뀌면 지워진다. */
+  note(text: string | null): void;
 }
 
 export function renderCsvTable(
@@ -79,13 +96,14 @@ export function renderCsvTable(
   grid.append(body);
   wrap.append(grid);
   frame.append(wrap);
-  attachRangeSelection({ frame, wrap, grid, table, limit, name: name ?? '' });
+  const range = attachRangeSelection({ frame, wrap, grid, table, limit, name: name ?? '' });
   return {
     element: frame,
     scroller: wrap,
     rows: limit - (table.header ? 1 : 0),
     truncated: table.truncated || limit < table.rows.length,
     hit: firstHit,
+    range,
   };
 }
 
@@ -119,6 +137,24 @@ function quoteField(value: string, delimiter: string): string {
   return value.includes(delimiter) || /["\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
+function markdownCell(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+}
+
+/** 범위를 Markdown 표로 쓴다. 머리글이 없는 표는 열 이름(A, B, …)을 머리글로 둔다. */
+function rangeMarkdown(table: CsvTable, range: CellRange): string {
+  const columns: number[] = [];
+  for (let column = range.left; column <= range.right; column += 1) columns.push(column);
+  const line = (cells: string[]) => `| ${cells.join(' | ')} |`;
+  const head = table.header ? columns.map((column) => markdownCell(table.rows[0][column].text)) : columns.map(columnName);
+  const align = columns.map((column) => (table.numeric[column] ? '---:' : '---'));
+  const body: string[] = [];
+  for (let row = Math.max(range.top, table.header ? 1 : 0); row <= range.bottom; row += 1) {
+    body.push(line(columns.map((column) => markdownCell(table.rows[row][column].text))));
+  }
+  return [line(head), line(align), ...body].join('\n');
+}
+
 /** 범위를 원문 형식으로 다시 쓴다. 머리글 행이 범위 밖이면 고른 열의 머리글을 맨 위에 붙인다. */
 function rangeText(table: CsvTable, range: CellRange, delimiter: ',' | '\t'): string {
   const rows: number[] = [];
@@ -144,7 +180,7 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
   table: CsvTable;
   limit: number;
   name: string;
-}): void {
+}): CsvRangeSelection {
   const delimiter: ',' | '\t' = table.delimiter === '\t' ? '\t' : ',';
   const lastRow = limit - 1;
   const chip = el('div', 'ag-pp-csv-range');
@@ -158,6 +194,8 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
   let range: CellRange | null = null;
   let selecting: number | null = null;
   let wholeColumns = false;
+  let status: string | null = null;
+  const listeners: Array<(range: CsvRangeSnapshot | null) => void> = [];
 
   const cellAt = (target: EventTarget | null): CellPoint | null => {
     const cell = target instanceof Element ? target.closest('td, th') : null;
@@ -178,18 +216,26 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
       for (let column = area.left; column <= area.right; column += 1) cellNode(row, column)?.classList.toggle('ag-pp-csv-sel', on);
     }
   };
+  const refOf = (area: CellRange) => `${columnName(area.left)}${area.top + 1}:${columnName(area.right)}${area.bottom + 1}`;
   const label = (area: CellRange) => {
     const rows = area.bottom - area.top + 1;
     const columns = area.right - area.left + 1;
-    return `${columnName(area.left)}${area.top + 1}:${columnName(area.right)}${area.bottom + 1} · ${rows.toLocaleString('ko-KR')}×${columns}`;
+    return `${refOf(area)} · ${status ?? `${rows.toLocaleString('ko-KR')}×${columns}`}`;
   };
+  const snapshot = (): CsvRangeSnapshot | null => (range ? { ref: refOf(range), markdown: rangeMarkdown(table, range) } : null);
   const select = (next: CellRange | null) => {
+    const same = range && next && range.top === next.top && range.bottom === next.bottom
+      && range.left === next.left && range.right === next.right;
+    if (same || (!range && !next)) return;
     // 바뀐 칸만 고치려고 이전 범위를 지운 뒤 새 범위를 칠한다. 둘 다 그린 행 안에 있다.
     paint(range, false);
     range = next;
     paint(range, true);
+    status = null;
     chip.hidden = !range;
     if (range) chip.textContent = label(range);
+    const current = snapshot();
+    for (const listener of listeners) listener(current);
   };
   const extend = (focus: CellPoint) => {
     if (!anchor) return;
@@ -270,4 +316,13 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
     // 다른 표 앱에 붙여 넣기 좋게 탭으로 나눈다.
     event.clipboardData.setData('text/plain', range ? rangeText(table, range, '\t') : item.text);
   });
+
+  return {
+    current: snapshot,
+    onChange(listener) { listeners.push(listener); },
+    note(text) {
+      status = text;
+      if (range) chip.textContent = label(range);
+    },
+  };
 }

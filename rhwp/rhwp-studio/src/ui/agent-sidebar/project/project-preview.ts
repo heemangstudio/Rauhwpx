@@ -35,7 +35,7 @@ import {
 import { button, el, itemIconName, projectIcon } from './project-ui.ts';
 import { locateInText } from './passage-locate.ts';
 import { csvDelimiterOf, decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
-import { renderCsvTable, revealCsvCell } from './csv-table.ts';
+import { renderCsvTable, revealCsvCell, type CsvTableView } from './csv-table.ts';
 import { createPdfViewer, type PdfViewer } from './pdf-viewer.ts';
 
 /** CSV·TSV 표를 짜려고 읽는 원본 앞부분. 그리는 1,000행보다 넉넉하다. */
@@ -244,6 +244,34 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     return layer;
   }
 
+  /** CSV 표 머리에 영역 도구를 단다. 고른 칸 범위를 원본으로 이어진 노트(Markdown 표)로 남긴다. */
+  function mountCsvCapture(projectId: string, source: ProjectFileItem, csv: CsvTableView): void {
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위를 노트로 저장', { icon: 'clip', text: '영역' });
+    tool.disabled = true;
+    // 같은 범위는 한 번만 남긴다. 범위를 바꾸면 다시 켜진다.
+    let saved = false;
+    csv.range.onChange((range) => {
+      saved = false;
+      tool.disabled = !range;
+    });
+    tool.addEventListener('click', () => {
+      const range = csv.range.current();
+      if (!range || saved) return;
+      saved = true;
+      const label = source.title.replace(/\.(csv|tsv|txt)$/i, '');
+      const body = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] · ${range.ref}\n\n${range.markdown}\n`;
+      tool.disabled = true;
+      void saveOps(projectId, [{ op: 'note', body, name: `${label} ${range.ref}`, column: source.column ?? undefined }])
+        .then(() => csv.range.note('노트로 저장함'))
+        .catch(() => {
+          saved = false;
+          csv.range.note('저장하지 못함');
+        })
+        .finally(() => { tool.disabled = saved || !csv.range.current(); });
+    });
+    tools.prepend(tool);
+  }
+
   async function showPdf(
     projectId: string,
     item: ProjectFileItem,
@@ -360,6 +388,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
           if (csv.truncated) meta.textContent = `처음 ${csv.rows.toLocaleString('ko-KR')}행`;
           body.replaceChildren(csv.element);
           body.removeAttribute('aria-busy');
+          mountCsvCapture(projectId, item, csv);
           revealCsvCell(csv);
           return;
         }
