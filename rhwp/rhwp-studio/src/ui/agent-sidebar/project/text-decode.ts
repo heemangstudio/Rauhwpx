@@ -36,15 +36,25 @@ function guessUtf16(bytes: Uint8Array): 'utf-16le' | 'utf-16be' | null {
   return null;
 }
 
-export type TextFormat = 'markdown' | 'json' | 'plain';
+export type TextFormat = 'markdown' | 'json' | 'csv' | 'plain';
+
+type NamedText = { originalName?: string; title?: string; mimeType?: string };
 
 /** 파일 이름과 MIME 으로 읽기 보기의 형식을 고른다. */
-export function textFormatOf(item: { originalName?: string; title?: string; mimeType?: string }): TextFormat {
+export function textFormatOf(item: NamedText): TextFormat {
   const name = (item.originalName || item.title || '').toLowerCase();
   const mime = (item.mimeType ?? '').toLowerCase();
   if (/\.(md|markdown)$/.test(name) || mime.includes('markdown')) return 'markdown';
   if (/\.json$/.test(name) || mime.includes('json')) return 'json';
+  if (/\.(csv|tsv)$/.test(name) || mime.startsWith('text/csv') || mime.startsWith('text/tab-separated-values')) return 'csv';
   return 'plain';
+}
+
+/** TSV 는 탭으로 나눈다. CSV 는 undefined 를 돌려 앞부분으로 구분자를 고르게 한다. */
+export function csvDelimiterOf(item: NamedText): '\t' | undefined {
+  const name = (item.originalName || item.title || '').toLowerCase();
+  const mime = (item.mimeType ?? '').toLowerCase();
+  return name.endsWith('.tsv') || mime.startsWith('text/tab-separated-values') ? '\t' : undefined;
 }
 
 /** 한 줄로 이어 붙은 JSON 을 들여 쓴다. 읽지 못하면 그대로 둔다. */

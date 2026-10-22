@@ -250,9 +250,185 @@
   color: var(--ag-text);
 }
 
+.ag-pp-clip-tool.ag-pp-csv-quiet:not(:hover) {
+  opacity: 0.6;
+}
+
 /* JSON 같은 구조 텍스트는 고정폭으로 들여쓰기를 살린다. */
 .ag-pp-reader-code {
   font-family: var(--ag-mono);
   font-size: var(--ag-fs-mono);
   word-break: normal;
+}
+
+/* CSV·TSV 표. 표 상자가 두 방향으로 스크롤하고 머리글은 위에 붙어 있다. */
+.ag-pp[data-kind='table'] .ag-pp-body {
+  overflow: hidden;
+}
+
+.ag-pp-csv-frame {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/*
+ * 폭을 끄는 동안 루트에 걸리는 폭 변수를 여기서 끊어, 수만 칸이 프레임마다 다시 스타일을 타지 않게 한다.
+ * 표 안에서는 이 변수들을 쓰지 않는다.
+ */
+.ag-pp-csv {
+  --ag-review-w: initial;
+  --ag-root-width: initial;
+  --ag-rail-w: initial;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  contain: strict;
+  outline: none;
+}
+
+/* 표 폭은 내용으로만 정한다. 상자 폭을 따르면 폭을 바꿀 때마다 모든 칸을 다시 짠다. */
+.ag-pp-csv-table {
+  width: max-content;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+  cursor: cell;
+  user-select: none;
+}
+
+.ag-pp-csv-table th,
+.ag-pp-csv-table td {
+  max-width: 20em;
+  padding: 7px 12px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--ag-border);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-pp-csv-table :is(th, td):first-child {
+  padding-left: 20px;
+}
+
+.ag-pp-csv-table :is(th, td):last-child {
+  padding-right: 20px;
+}
+
+.ag-pp-csv-table th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--ag-bg);
+  color: var(--ag-text-secondary);
+  font-weight: var(--ag-fw-medium);
+}
+
+/* 첫 열(행 이름)은 옆으로 스크롤해도 왼쪽에 남는다. */
+.ag-pp-csv-table :is(th, td):first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  background: var(--ag-bg);
+}
+
+.ag-pp-csv-table th:first-child {
+  z-index: 2;
+}
+
+.ag-pp-csv-table tbody tr:hover td {
+  background: linear-gradient(var(--ag-hover), var(--ag-hover)), var(--ag-bg);
+}
+
+.ag-pp-csv-table .ag-pp-csv-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ag-pp-csv-table .ag-pp-csv-hit,
+.ag-pp-csv-table tbody tr:hover .ag-pp-csv-hit {
+  background: linear-gradient(var(--ag-cite-hit), var(--ag-cite-hit)), var(--ag-bg);
+}
+
+/* 끌어 고른 칸 범위. 고른 칸 위에서는 다시 끌어 입력창으로 옮길 수 있다. */
+.ag-pp-csv-table .ag-pp-csv-sel,
+.ag-pp-csv-table tbody tr:hover .ag-pp-csv-sel {
+  background: linear-gradient(color-mix(in srgb, var(--ag-accent) 22%, transparent), color-mix(in srgb, var(--ag-accent) 22%, transparent)), var(--ag-bg);
+  cursor: grab;
+}
+
+.ag-pp-csv-range {
+  position: absolute;
+  z-index: 3;
+  right: 16px;
+  bottom: 16px;
+  padding: 6px 10px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: 8px;
+  background: var(--ag-bg);
+  box-shadow: var(--ag-elev-composer);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  user-select: none;
+}
+
+/* 영역 도구를 누르면 표 위 오른쪽에 뜨는 메모 상자. */
+.ag-pp-capture {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(320px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-bg);
+  box-shadow: var(--ag-elev-popover);
+}
+
+.ag-pp-capture[hidden] {
+  display: none;
+}
+
+.ag-pp-capture-ref {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-pp-capture-comment {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-row);
+  background: var(--ag-raised);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
+  outline: none;
+  resize: vertical;
+}
+
+.ag-pp-capture-comment:focus-visible {
+  border-color: var(--ag-border-strong);
+}
+
+.ag-pp-capture-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }

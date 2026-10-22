@@ -260,7 +260,7 @@ import {
 } from './project/project-host.ts';
 import type { MentionDocument } from './mention-picker.ts';
 import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
-import { readProjectItemDrag, transferHasProjectItem } from './project/project-drag.ts';
+import { csvRangeFile, readCsvRangeDrag, readProjectItemDrag, transferHasCsvRange, transferHasProjectItem } from './project/project-drag.ts';
 import { createFollowUpStrip } from './follow-up-strip.ts';
 import {
   createFollowUpController,
@@ -4699,22 +4699,61 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   root.addEventListener('drop', onAttachmentDrop);
   input.addEventListener('paste', onAttachmentPaste);
 
+  /**
+   * 방금 만든 프로젝트 항목을 열린 채팅 입력창에 멘션으로 붙인다. 저장소는 허브가 확인한
+   * 스냅샷을 조금 늦게 받으므로, 항목이 스냅샷에 나타날 때까지 잠시 기다린다.
+   */
+  function attachProjectItemToChat(projectId: string, itemId: string): Promise<boolean> {
+    const tryAdd = () => !input.disabled && (composerMentions?.addItem(projectId, itemId) ?? false);
+    if (tryAdd()) return Promise.resolve(true);
+    const store = bridge.projects?.store;
+    if (!store) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let unsubscribe = () => {};
+      const finish = (attached: boolean) => {
+        window.clearTimeout(timer);
+        unsubscribe();
+        resolve(attached);
+      };
+      const timer = window.setTimeout(() => finish(false), 5_000);
+      unsubscribe = store.subscribe(() => {
+        if (tryAdd()) finish(true);
+      });
+    });
+  }
+
   // 자료 카드·자료 탭·PDF 영역을 입력창에 끌어 놓으면 @ 멘션과 같은 칩이 된다.
+  // CSV 표에서 고른 칸 범위는 그 범위만 담은 파일로 첨부한다.
   const canDropMention = (event: DragEvent): boolean => (
     transferHasProjectItem(event.dataTransfer) && composerMentions !== null && !input.disabled
   );
+  const canDropCsvRange = (event: DragEvent): boolean => (
+    transferHasCsvRange(event.dataTransfer) && canStageComposerAttachments()
+  );
   const onMentionDragOver = (event: DragEvent): void => {
-    if (!canDropMention(event)) return;
+    const range = canDropCsvRange(event);
+    if (!range && !canDropMention(event)) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     composer.classList.add('ag-mention-dragging');
+    composer.classList.toggle('ag-range-dragging', range);
   };
   const onMentionDragLeave = (event: DragEvent): void => {
     if (composer.contains(event.relatedTarget as Node | null)) return;
-    composer.classList.remove('ag-mention-dragging');
+    composer.classList.remove('ag-mention-dragging', 'ag-range-dragging');
   };
   const onMentionDrop = (event: DragEvent): void => {
+    if (transferHasCsvRange(event.dataTransfer)) {
+      event.preventDefault();
+      event.stopPropagation();
+      composer.classList.remove('ag-mention-dragging', 'ag-range-dragging');
+      const range = readCsvRangeDrag(event.dataTransfer);
+      if (!range || !canStageComposerAttachments()) return;
+      referenceLibrary.stageDraftFiles([csvRangeFile(range)]);
+      input.focus();
+      return;
+    }
     if (!transferHasProjectItem(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -5155,6 +5194,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             const member = bridge.projects?.store.get()?.members.find((row) => row.documentId === documentId);
             void moveToDocument({ documentId, fileName: member?.name ?? null });
           },
+          attachToChat: (projectId, itemId) => attachProjectItemToChat(projectId, itemId),
         });
         host.append(workbenchDocuments.element);
         syncWorkbenchResources();

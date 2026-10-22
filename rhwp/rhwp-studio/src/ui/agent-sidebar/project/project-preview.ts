@@ -8,7 +8,7 @@
  *   테두리로 보여 주고, 영역 도구로 새 조각을 그린다.
  * - 노트: 채팅과 같은 Markdown 렌더러로 그리고, 바로 고쳐 `note` 연산으로 저장한다.
  * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다. Markdown 파일은
- *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다.
+ *   강조할 조각이 없으면 노트처럼 그리고, JSON 은 들여 쓴다. CSV·TSV 는 표로 그리고 인용 칸을 강조한다.
  * 어떤 경우에도 원문 HTML 을 해석하지 않는다.
  */
 
@@ -34,8 +34,12 @@ import {
 } from '../wikilinks.ts';
 import { button, el, itemIconName, projectIcon } from './project-ui.ts';
 import { locateInText } from './passage-locate.ts';
-import { decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
+import { csvDelimiterOf, decodeTextBytes, prettyJson, textFormatOf } from './text-decode.ts';
+import { renderCsvTable, revealCsvCell, type CsvTableView } from './csv-table.ts';
 import { createPdfViewer, type PdfViewer } from './pdf-viewer.ts';
+
+/** CSV·TSV 표를 짜려고 읽는 원본 앞부분. 그리는 1,000행보다 넉넉하다. */
+const CSV_BYTES = 4 * 1024 * 1024;
 
 export interface ProjectPreviewRequest {
   itemId: string;
@@ -59,6 +63,8 @@ export interface ProjectPreviewDeps {
   managedClose?: boolean;
   /** `d…` 문서 노드를 열 때. 없으면 미리보기가 안내만 한다. */
   openDocument?: (documentId: string) => void;
+  /** 새로 만든 항목을 열린 채팅 입력창에 멘션으로 붙인다. 붙였으면 true. */
+  attachToChat?: (projectId: string, itemId: string) => Promise<boolean>;
 }
 
 export interface ProjectPreview {
@@ -207,7 +213,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
 
   /** 원본 위에 영역 조각 층을 깔고 머리에 영역 도구를 단다. */
   function mountClipLayer(projectId: string, source: ProjectFileItem): ClipLayer {
-    const tool = button('ag-pp-text-button ag-pp-clip-tool', '영역 그리기', { icon: 'clip', text: '영역' });
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '참고 영역 그리기', { icon: 'clip', text: '참고' });
     tool.setAttribute('aria-pressed', 'false');
     const layer = createClipLayer({
       projectId,
@@ -238,6 +244,104 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     tools.prepend(tool);
     clipLayer = layer;
     return layer;
+  }
+
+  /**
+   * CSV 표 머리에 참고 도구를 단다. 칸을 고르면 도구가 켜지고, 누르면 메모를 달 수 있는 상자가 뜨고,
+   * 저장하면 원본으로 이어진 노트(메모 + Markdown 표)를 남겨 열린 채팅 입력창에 멘션으로 붙인다.
+   */
+  function mountCsvCapture(projectId: string, source: ProjectFileItem, csv: CsvTableView): void {
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '고른 범위를 참고로 저장', { icon: 'clip', text: '참고' });
+    tool.disabled = true;
+    tool.setAttribute('aria-expanded', 'false');
+    const box = el('form', 'ag-pp-capture');
+    box.hidden = true;
+    const heading = el('div', 'ag-pp-capture-ref');
+    const comment = el('textarea', 'ag-pp-capture-comment');
+    comment.rows = 3;
+    comment.placeholder = '메모';
+    comment.setAttribute('aria-label', '범위 메모');
+    const actions = el('div', 'ag-pp-capture-actions');
+    const cancel = button('ag-pp-text-button', '취소', { text: '취소' });
+    const save = button('ag-pp-text-button ag-pp-primary', '저장하고 채팅에 첨부', { text: '저장' });
+    save.type = 'submit';
+    actions.append(cancel, save);
+    box.append(heading, comment, actions);
+    csv.element.append(box);
+
+    // 같은 범위는 한 번만 남긴다. 범위를 바꾸면 다시 켜진다.
+    let saved = false;
+    let saving = false;
+    const sync = () => {
+      const range = csv.range.current();
+      tool.disabled = saved || !range;
+      // 한 칸만 누른 것은 범위를 고른 것으로 보지 않아 흐리게 두지만, 눌러 저장할 수는 있다.
+      tool.classList.toggle('ag-pp-csv-quiet', !tool.disabled && range!.cells === 1);
+    };
+    const close = (restoreFocus: boolean) => {
+      if (box.hidden) return;
+      box.hidden = true;
+      tool.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) csv.scroller.focus({ preventScroll: true });
+    };
+    csv.range.onChange((range) => {
+      saved = false;
+      sync();
+      if (!range) close(false);
+      else heading.textContent = range.ref;
+    });
+    tool.addEventListener('click', () => {
+      const range = csv.range.current();
+      if (!range || saved) return;
+      if (!box.hidden) {
+        close(true);
+        return;
+      }
+      heading.textContent = range.ref;
+      box.hidden = false;
+      tool.setAttribute('aria-expanded', 'true');
+      comment.focus();
+    });
+    cancel.addEventListener('click', () => close(true));
+    box.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        close(true);
+      } else if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        box.requestSubmit();
+      }
+    });
+    box.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const range = csv.range.current();
+      if (!range || saved || saving) return;
+      saving = true;
+      save.disabled = true;
+      const label = source.title.replace(/\.(csv|tsv|txt)$/i, '');
+      const link = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] · ${range.ref}`;
+      const note = comment.value.trim();
+      const body = `${link}\n\n${note ? `${note}\n\n` : ''}${range.markdown}\n`;
+      void saveOps(projectId, [{ op: 'note', body, name: `${label} ${range.ref}`, column: source.column ?? undefined }])
+        .then(async (result) => {
+          saved = true;
+          comment.value = '';
+          close(true);
+          csv.range.note('노트로 저장함');
+          const noteId = (result as ProjectOpsResult | undefined)?.created?.[0];
+          const attached = Boolean(noteId && await deps.attachToChat?.(projectId, noteId));
+          // 기다리는 사이 다른 범위를 골랐으면 그 이름표는 건드리지 않는다.
+          if (attached && csv.range.current()?.ref === range.ref) csv.range.note('채팅에 첨부함');
+        })
+        .catch(() => csv.range.note('저장하지 못함'))
+        .finally(() => {
+          saving = false;
+          save.disabled = false;
+          sync();
+        });
+    });
+    tools.prepend(tool);
   }
 
   async function showPdf(
@@ -332,11 +436,40 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     busy();
     // 텍스트 파일은 허브가 못 읽은 인코딩(EUC-KR, UTF-16)도 원본 바이트에서 직접 푼다.
     const plainFile = item.fileKind === 'text';
+    const format = plainFile ? textFormatOf(item) : 'plain';
     let chunk: ProjectChunk | null = null;
+    // CSV·TSV 는 허브의 쪽 글자(다듬고 조각으로 이은 앞부분)가 아니라 원본 바이트로 표를 짠다.
+    if (format === 'csv') {
+      if (item.status === 'ready') chunk = await chunkFor(projectId, item.id, anchor);
+      let raw: string | null = null;
+      let partial = false;
+      try {
+        const blob = await deps.service.fileBlob(projectId, item.id);
+        partial = blob.size > CSV_BYTES;
+        raw = decodeTextBytes(new Uint8Array(await (partial ? blob.slice(0, CSV_BYTES) : blob).arrayBuffer()), { partial });
+      } catch {
+        // 원본을 못 받으면 아래 글자 보기로 넘어간다.
+      }
+      if (token !== generation) return;
+      const match = raw !== null && (chunk || quote) ? locateInText(raw, { chunk, quote }) : null;
+      // 읽은 앞부분에서 조각을 못 찾으면 허브 쪽 글자에서 강조한다.
+      if (raw !== null && (match || !chunk)) {
+        const csv = renderCsvTable(raw, { delimiter: csvDelimiterOf(item), match, partial, name: item.title });
+        if (csv) {
+          root.dataset.kind = 'table';
+          if (csv.truncated) meta.textContent = `처음 ${csv.rows.toLocaleString('ko-KR')}행`;
+          body.replaceChildren(csv.element);
+          body.removeAttribute('aria-busy');
+          mountCsvCapture(projectId, item, csv);
+          revealCsvCell(csv);
+          return;
+        }
+      }
+    }
     let text: { page: number | null; text: string } | null = null;
     if (item.status === 'ready') {
       try {
-        chunk = await chunkFor(projectId, item.id, anchor);
+        if (format !== 'csv') chunk = await chunkFor(projectId, item.id, anchor);
         const page = chunk?.page ?? (anchor?.kind === 'page' ? anchor.n : undefined);
         text = await deps.service.fileText(projectId, item.id, page ?? undefined);
       } catch (error) {
@@ -354,7 +487,6 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     }
     if (text.page) meta.textContent = `p.${text.page}`;
     const match = chunk || quote ? locateInText(text.text, { chunk, quote }) : null;
-    const format = plainFile ? textFormatOf(item) : 'plain';
     if (!match && format === 'markdown') {
       const view = el('div', 'ag-pp-note ag-msg ag-msg-assistant');
       renderChatMarkdown(view, text.text, { citations });

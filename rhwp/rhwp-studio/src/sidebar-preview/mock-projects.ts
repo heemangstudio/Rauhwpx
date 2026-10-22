@@ -49,6 +49,7 @@ interface FileSeed {
   failed?: boolean;
   pinned?: boolean;
   agent?: boolean;
+  mime?: string;
 }
 
 interface NoteSeed {
@@ -98,6 +99,8 @@ const FILES: FileSeed[] = [
   { id: 'fs2e3h', title: '방문간호 인터뷰 정리.md', column: 'review', kind: 'text', tags: ['인터뷰'], size: 640 },
   { id: 'ft3f4i', title: '동 주민센터 공문.txt', column: 'inbox', kind: 'text', size: 171, failed: true },
   { id: 'fu4g5j', title: '설문 코드북.json', column: 'hold', kind: 'text', tags: ['통계'], size: 420 },
+  { id: 'fv5h6k', title: '시도별 방문간호 이용 현황.csv', column: 'review', kind: 'text', tags: ['통계'], size: 1_180, mime: 'text/csv' },
+  { id: 'fw6i7l', title: '설문 응답 요약.tsv', column: 'inbox', kind: 'text', tags: ['통계'], size: 460, mime: 'text/tab-separated-values' },
 ];
 
 /** 텍스트 파일 원본. 공문은 허브가 읽지 못하는 EUC-KR 이다. */
@@ -127,6 +130,37 @@ const TEXT_SOURCES: Record<string, string | Uint8Array<ArrayBuffer>> = {
     { code: 'Q2', label: '첫 방문까지 걸린 날짜', unit: '일' },
     { code: 'Q3', label: '가장 필요했던 도움', values: { 1: '식사', 2: '복약', 3: '이동', 4: '말벗' } },
   ] }),
+  // 따옴표 안의 쉼표·줄바꿈·겹따옴표와 천 단위 쉼표가 섞인 실제 내보내기 모양.
+  fv5h6k: [
+    '시도,이용자 수,방문 횟수,1인당 평균 방문,첫 방문까지(일),비고',
+    '서울특별시,"12,480","86,412",6.9,3.1,',
+    '부산광역시,5320,35104,6.6,4.2,"퇴원 연계 시범사업 지역',
+    '(2025년 7월부터)"',
+    '대구광역시,3870,24768,6.4,4.8,',
+    '인천광역시,4110,27537,6.7,5.5,"인력 부족, 대기 2주"',
+    '광주광역시,2050,13940,6.8,3.9,',
+    '대전광역시,2210,14586,6.6,4.0,',
+    '울산광역시,1180,7552,6.4,4.6,',
+    '세종특별자치시,640,4288,6.7,2.8,"""찾아가는 간호"" 사업 포함"',
+    '경기도,"14,920","101,456",6.8,4.4,북부·남부 합계',
+    '강원특별자치도,2460,15252,6.2,7.1,산간 지역 이동 시간 김',
+    '충청북도,2030,12992,6.4,5.9,',
+    '충청남도,2580,16770,6.5,6.3,',
+    '전북특별자치도,2340,14742,6.3,6.8,',
+    '전라남도,2890,17340,6.0,8.2,"섬 지역 포함, 방문 주기 불규칙"',
+    '경상북도,3150,19215,6.1,7.6,',
+    '경상남도,3720,23808,6.4,5.7,',
+    '제주특별자치도,890,5874,6.6,3.5,',
+    '',
+  ].join('\r\n'),
+  fw6i7l: [
+    '문항\t응답 수\t예\t아니요\t비율(%)',
+    'Q1 최근 퇴원 여부\t1204\t487\t717\t40.4',
+    'Q4 방문 일정 안내를 받음\t1204\t652\t552\t54.2',
+    'Q5 보호자 낮 시간 부재\t1198\t533\t665\t44.5',
+    'Q7 식사 거른 날 있음\t1201\t298\t903\t24.8',
+    'Q9 복약 안내 이해\t1190\t861\t329\t72.4',
+  ].join('\n'),
 };
 
 const NOTES: NoteSeed[] = [
@@ -209,7 +243,7 @@ export function sampleProject(now = Date.now()): ProjectSnapshot {
       scope: 'project',
       originalName: seed.web ? `${seed.title}.html`
         : seed.kind === 'text' && /\.[a-z]+$/.test(seed.title) ? seed.title : `${seed.title.replace(/\.[a-z]+$/, '')}.${EXTENSION[seed.kind]}`,
-      mimeType: MIME[seed.kind],
+      mimeType: seed.mime ?? MIME[seed.kind],
       size: seed.size ?? 100_000,
       fileKind: seed.kind,
       status: seed.failed ? 'failed' : 'ready',

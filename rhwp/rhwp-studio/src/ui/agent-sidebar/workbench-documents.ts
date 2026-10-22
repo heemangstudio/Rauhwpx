@@ -8,13 +8,16 @@ import type { ProjectFileItem, ProjectItem, ProjectNoteItem, ProjectSnapshot } f
 import { loadPdfjs, pdfDocumentParams } from '../../agent/pdf-render.ts';
 import { createProjectPreview, type ProjectPreview, type ProjectPreviewRequest } from './project/project-preview.ts';
 import { button, el, itemIconName, projectIcon } from './project/project-ui.ts';
-import { decodeTextBytes, prettyJson, textFormatOf, type TextFormat } from './project/text-decode.ts';
+import { csvDelimiterOf, decodeTextBytes, prettyJson, textFormatOf, type TextFormat } from './project/text-decode.ts';
+import { parseCsv, type CsvDelimiter } from './project/csv-parse.ts';
 import { makeProjectItemDraggable, type ProjectItemDrag } from './project/project-drag.ts';
 
 export interface WorkbenchDocumentsDeps {
   client: ProjectClient | null;
   bridge?: SidebarBridge;
   openDocument?: (documentId: string) => void;
+  /** 미리보기에서 만든 항목을 열린 채팅 입력창에 붙인다. */
+  attachToChat?: (projectId: string, itemId: string) => Promise<boolean>;
   onChange?: () => void;
 }
 
@@ -50,6 +53,9 @@ const MAX_TABS = 8;
 const EXCERPT_BYTES = 16_384;
 const EXCERPT_CHARS = 1_400;
 const EXCERPT_LINES = 48;
+/** 표 표지에 그리는 행·열. */
+const SHEET_ROWS = 32;
+const SHEET_COLUMNS = 6;
 
 /** 표지를 그릴 수 있는 자료. 알 수 없는 형식과 글자를 못 뽑은 문서는 표지 자리만 둔다. */
 function hasCover(item: ProjectFileItem | ProjectNoteItem): boolean {
@@ -67,6 +73,27 @@ function plainMarkdownLine(line: string): string {
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/(\*\*|__|`)/g, '')
     .replace(/^>\s?/, '');
+}
+
+/** CSV·TSV 앞부분을 작은 표로 그린 표지. 표로 볼 수 없으면 null. */
+function tableSheet(source: string, delimiter: CsvDelimiter | undefined, partial: boolean): HTMLElement | null {
+  const table = parseCsv(source, { delimiter, partial, maxRows: SHEET_ROWS, maxColumns: SHEET_COLUMNS });
+  if (!table.tabular) return null;
+  const sheet = el('span', 'ag-wdocs-sheet ag-wdocs-sheet-table');
+  const page = el('span', 'ag-wdocs-sheet-page');
+  const grid = el('span', 'ag-wdocs-sheet-grid');
+  grid.style.gridTemplateColumns = `repeat(${table.columns}, max-content)`;
+  table.rows.forEach((row, index) => {
+    const head = table.header && index === 0;
+    row.forEach((cell, column) => {
+      const node = el('span', `ag-wdocs-sheet-cell${head ? ' ag-wdocs-sheet-head' : ''}`, cell.text.replace(/\s+/g, ' '));
+      if (!head && table.numeric[column]) node.classList.add('ag-wdocs-sheet-num');
+      grid.append(node);
+    });
+  });
+  page.append(grid);
+  sheet.append(page);
+  return sheet;
 }
 
 /** 첫 줄들을 종이 한 장처럼 그린 표지. 실제 크기로 짜고 CSS 로 줄인다. */
@@ -222,9 +249,11 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       let canvas: HTMLCanvasElement | null = null;
       try {
         if (item.kind === 'note' || (item.fileKind !== 'pdf' && item.fileKind !== 'image')) {
-          const excerpt = await coverText(owner, scope, item);
-          if (excerpt === null || !valid()) return;
-          const sheet = textSheet(excerpt, item.kind === 'note' ? 'markdown' : item.fileKind === 'text' ? textFormatOf(item) : 'plain');
+          const cover = await coverText(owner, scope, item);
+          if (cover === null || !valid()) return;
+          const format = item.kind === 'note' ? 'markdown' : item.fileKind === 'text' ? textFormatOf(item) : 'plain';
+          const sheet = (format === 'csv' && item.kind === 'file' ? tableSheet(cover.text, csvDelimiterOf(item), cover.partial) : null)
+            ?? textSheet(cover.text, format);
           if (sheet) frame.replaceChildren(sheet);
           return;
         }
@@ -290,15 +319,16 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
   }
 
   /** 표지에 쓸 앞부분 글자. 텍스트 파일은 원본 바이트를 직접 풀어 인코딩을 가린다. */
-  async function coverText(owner: ProjectClient, scope: string, item: ProjectFileItem | ProjectNoteItem): Promise<string | null> {
-    if (item.kind === 'note') return (await owner.service.note(scope, item.id)).body;
+  async function coverText(owner: ProjectClient, scope: string, item: ProjectFileItem | ProjectNoteItem): Promise<{ text: string; partial: boolean } | null> {
+    if (item.kind === 'note') return { text: (await owner.service.note(scope, item.id)).body, partial: false };
     if (item.fileKind === 'text') {
       const blob = await owner.service.fileBlob(scope, item.id);
       const whole = blob.size <= EXCERPT_BYTES;
       const bytes = new Uint8Array(await (whole ? blob : blob.slice(0, EXCERPT_BYTES)).arrayBuffer());
-      return decodeTextBytes(bytes, { partial: !whole });
+      const text = decodeTextBytes(bytes, { partial: !whole });
+      return text === null ? null : { text, partial: !whole };
     }
-    return (await owner.service.fileText(scope, item.id, 1)).text;
+    return { text: (await owner.service.fileText(scope, item.id, 1)).text, partial: false };
   }
 
   function renderLibrary(): void {
@@ -322,12 +352,15 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       const cover = el('span', 'ag-wdocs-cover');
       cover.setAttribute('aria-hidden', 'true');
       const paper = el('span', 'ag-wdocs-paper');
-      paper.append(projectIcon(itemIconName(item)), el('span', '', item.kind === 'file' ? item.fileKind.toUpperCase() : 'NOTE'));
+      const kindLabel = item.kind !== 'file' ? 'NOTE'
+        : item.fileKind === 'text' && textFormatOf(item) === 'csv' ? csvDelimiterOf(item) ? 'TSV' : 'CSV'
+        : item.fileKind.toUpperCase();
+      paper.append(projectIcon(itemIconName(item)), el('span', '', kindLabel));
       cover.append(paper);
       const text = el('span', 'ag-wdocs-card-text');
       const name = el('span', 'ag-wdocs-card-title', item.title);
       const detail = item.kind === 'file'
-        ? item.status === 'processing' ? '처리 중' : `${item.pageCount ? `${item.pageCount}쪽 · ` : ''}${item.fileKind.toUpperCase()}`
+        ? item.status === 'processing' ? '처리 중' : `${item.pageCount ? `${item.pageCount}쪽 · ` : ''}${kindLabel}`
         : '노트';
       const extraction = item.kind === 'file' && item.extractionStatus && item.extractionStatus !== 'ready' ? item.extractionStatus === 'failed' ? ' · 글자 추출 실패' : ' · 글자 추출 중' : '';
       text.append(name, el('span', 'ag-wdocs-card-meta', detail + extraction));
@@ -389,6 +422,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       onOpen: request => { void open(request); },
       onDirtyChange: sync,
       openDocument: deps.openDocument,
+      attachToChat: deps.attachToChat,
     });
     tab.preview.setVisible(true);
     tab.panel.replaceChildren(tab.preview.element);

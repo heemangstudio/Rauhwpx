@@ -134,3 +134,9 @@
 .ag-wdocs-download-group { display: flex; flex-direction: column; min-width: 0; gap: 6px; }
 .ag-wdocs-download-group .ag-wdocs-card { width: 100%; flex: 1; }
 .ag-wdocs-list .ag-wdocs-download-group { grid-column: 1 / -1; }
+/* CSV·TSV 표지: 앞부분을 머리글이 있는 작은 표로 그린다. */
+.ag-wdocs-sheet-table .ag-wdocs-sheet-page { padding: 18px 14px; white-space: nowrap; }
+.ag-wdocs-sheet-grid { display: grid; flex: none; border-top: 1px solid color-mix(in srgb, var(--ag-document-ink) 22%, transparent); font-size: 9px; line-height: 1.5; }
+.ag-wdocs-sheet-cell { max-width: 16em; overflow: hidden; padding: 2px 6px; border-bottom: 1px solid color-mix(in srgb, var(--ag-document-ink) 12%, transparent); text-overflow: ellipsis; }
+.ag-wdocs-sheet-head { border-bottom-color: color-mix(in srgb, var(--ag-document-ink) 32%, transparent); color: var(--ag-document-heading); font-weight: 700; }
+.ag-wdocs-sheet-num { font-variant-numeric: tabular-nums; text-align: right; }
