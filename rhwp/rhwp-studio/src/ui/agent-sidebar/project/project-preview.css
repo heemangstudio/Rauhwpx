@@ -250,6 +250,10 @@
   color: var(--ag-text);
 }
 
+.ag-pp-clip-tool.ag-pp-csv-quiet:not(:hover) {
+  opacity: 0.6;
+}
+
 /* JSON 같은 구조 텍스트는 고정폭으로 들여쓰기를 살린다. */
 .ag-pp-reader-code {
   font-family: var(--ag-mono);

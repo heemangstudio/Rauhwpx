@@ -273,7 +273,10 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     let saved = false;
     let saving = false;
     const sync = () => {
-      tool.disabled = saved || !csv.range.current();
+      const range = csv.range.current();
+      tool.disabled = saved || !range;
+      // 한 칸만 누른 것은 범위를 고른 것으로 보지 않아 흐리게 두지만, 눌러 저장할 수는 있다.
+      tool.classList.toggle('ag-pp-csv-quiet', !tool.disabled && range!.cells === 1);
     };
     const close = (restoreFocus: boolean) => {
       if (box.hidden) return;

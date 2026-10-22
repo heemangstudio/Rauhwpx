@@ -35,6 +35,8 @@ export interface CsvRangeSnapshot {
   ref: string;
   /** 머리글 행을 맨 위에 둔 Markdown 표. */
   markdown: string;
+  /** 고른 칸 수. */
+  cells: number;
 }
 
 export interface CsvRangeSelection {
@@ -222,7 +224,11 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
     const columns = area.right - area.left + 1;
     return `${refOf(area)} · ${status ?? `${rows.toLocaleString('ko-KR')}×${columns}`}`;
   };
-  const snapshot = (): CsvRangeSnapshot | null => (range ? { ref: refOf(range), markdown: rangeMarkdown(table, range) } : null);
+  const snapshot = (): CsvRangeSnapshot | null => (range ? {
+    ref: refOf(range),
+    markdown: rangeMarkdown(table, range),
+    cells: (range.bottom - range.top + 1) * (range.right - range.left + 1),
+  } : null);
   const select = (next: CellRange | null) => {
     const same = range && next && range.top === next.top && range.bottom === next.bottom
       && range.left === next.left && range.right === next.right;
@@ -256,8 +262,9 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
   wrap.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     const point = cellAt(event.target);
-    // 고른 범위를 누르면 끌기로 넘긴다. 그 밖을 누르면 새로 고른다.
-    wrap.draggable = Boolean(point && range && inRange(point, range));
+    // 두 칸 이상 고른 범위를 누르면 끌기로 넘긴다. 한 칸이거나 그 밖을 누르면 새로 고른다.
+    const multi = Boolean(range && (range.bottom > range.top || range.right > range.left));
+    wrap.draggable = Boolean(point && multi && inRange(point, range));
     if (!point || wrap.draggable) return;
     event.preventDefault();
     wrap.focus({ preventScroll: true });
