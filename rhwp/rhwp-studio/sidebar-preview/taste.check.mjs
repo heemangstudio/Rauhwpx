@@ -1,5 +1,6 @@
 // Rau-0.1 구분선: 접힌 이름, 펼치기, 항목 되돌리기(허브 요청·저장), 그새 바뀐 항목, 같은 턴의 늦은 학습,
 // 다른 채팅으로 온 학습, 모두 보기(문서 기억 시트의 이름표), 지시에 추가 제안, 설정의 대화에서 배우기와 학습기 공급자.
+// 기록에서 배운 구분선: 보이는 채팅의 끝, 다른 문서는 그 문서의 최근 채팅, 채팅 없는 문서는 아무 데도, 턴이 돌면 그 뒤.
 import assert from 'node:assert/strict';
 
 const CHAT = 'preview-chat-taste';
@@ -45,7 +46,7 @@ export async function checkTaste({ page, open, screenshot }) {
   await page.click('.ag-taste-row[data-entry-id="mem_taste000001"] .ag-taste-undo');
   await page.waitForSelector('.ag-taste-row[data-entry-id="mem_taste000001"][data-state="undone"]');
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.taste.undos.map((call) => ({ ...call }))), [
-    { learnId: 'learn_preview1', documentId: 'preview-proposal', key: 'mem-preview-proposal', entryId: 'mem_taste000001', changes: 4 },
+    { learnId: 'learn_preview1', learnIds: ['learn_preview1'], documentId: 'preview-proposal', key: 'mem-preview-proposal', entryId: 'mem_taste000001', changes: 4 },
   ]);
   // 허브가 그새 바뀌었다고 답한 항목은 되돌릴 수 없는 줄이 된다.
   await page.evaluate(() => window.sidebarPreview.taste.skipUndo('mem_taste000004'));
@@ -149,4 +150,75 @@ export async function checkTaste({ page, open, screenshot }) {
   await page.waitForFunction(() => document.querySelector('.ag-marker-taste')?.getAttribute('aria-label') === 'Rau-0.1 6가지 배움');
   assert.equal(await page.$$eval('.ag-taste', (nodes) => nodes.length), 1);
   assert.equal(await page.$eval('.ag-taste-action + .ag-taste-action', (node) => node.hidden), false, 'the merged divider offers the new proposal');
+}
+
+const historyLearned = (documentId, learnId, text) => ({
+  documentId, key: `mem-${documentId}`, learnId, changes: [{ op: 'add', entryId: `mem_${learnId}` }],
+  items: [{ op: 'add', entryId: `mem_${learnId}`, text, origin: 'learned' }],
+});
+
+export async function checkTasteHistory({ page, open, screenshot }) {
+  await open('reset=1&taste=sample&chats=sample');
+  await page.waitForFunction((id) => window.sidebarPreview.sidebar.currentThreadId() === id && document.querySelector('.ag-taste'), {}, CHAT);
+  const stored = (threadId) => storedMarkers(page, threadId);
+  const threadCount = () => page.evaluate(() => window.sidebarPreview.threadStore.listThreads().length);
+  const emit = (learned) => page.evaluate((value) => window.sidebarPreview.emitTasteHistoryLearned(value), learned);
+
+  // 보이는 채팅이 그 문서의 것이면 그 채팅의 끝에 놓인다 (턴에 묶이지 않는다). 같은 학습은 한 번만.
+  // 들어오는 순간 압축·전환 구분선처럼 움직인다 (ag-marker-live 는 애니메이션이 끝나면 빠진다).
+  await page.evaluate(() => {
+    window.__liveDividers = [];
+    new MutationObserver((records) => records.flatMap((record) => [...record.addedNodes])
+      .filter((node) => node instanceof HTMLElement && node.matches('.ag-taste'))
+      .forEach((node) => window.__liveDividers.push([node.dataset.learnId, node.querySelector('.ag-marker-taste').classList.contains('ag-marker-live')])))
+      .observe(document.body, { childList: true, subtree: true });
+  });
+  await emit(historyLearned('preview-proposal', 'learn_history_visible', '보고 문장은 짧게 끊어 씀'));
+  await emit(historyLearned('preview-proposal', 'learn_history_visible', '보고 문장은 짧게 끊어 씀'));
+  const divider = await page.waitForSelector('.ag-taste[data-learn-id="learn_history_visible"]');
+  assert.equal(await page.$$eval('.ag-taste', (nodes) => nodes.length), 2);
+  assert.deepEqual(await page.evaluate(() => window.__liveDividers), [['learn_history_visible', true]], 'animates in once');
+  assert.equal(await divider.evaluate((node) => { let next = node.nextElementSibling; while (next && !next.matches('.ag-msg')) next = next.nextElementSibling; return next === null; }), true, 'at the end');
+  assert.deepEqual((await stored(CHAT)).at(-1), { learnIds: ['learn_history_visible'], items: 1, undone: [], stale: [] });
+  assert.equal(await page.evaluate((id) => window.sidebarPreview.threadStore.getThread(id).messages.at(-1).turnId, CHAT), null);
+  if (screenshot) await screenshot('taste-history-collapsed');
+  await divider.evaluate((node) => node.querySelector('.ag-marker-taste').click());
+  if (screenshot) await screenshot('taste-history-expanded');
+  await divider.evaluate((node) => node.querySelector('.ag-taste-undo').click());
+  await page.waitForSelector('.ag-taste[data-learn-id="learn_history_visible"] .ag-taste-row[data-state="undone"]');
+  assert.deepEqual(await page.evaluate(() => ({ ...window.sidebarPreview.taste.undos.at(-1) })), {
+    learnId: 'learn_history_visible', learnIds: ['learn_history_visible'], documentId: 'preview-proposal',
+    key: 'mem-preview-proposal', entryId: 'mem_learn_history_visible', changes: 1,
+  });
+  assert.equal(await page.$$eval('.rhwp-toast-message', (nodes) => nodes.some((node) => node.textContent?.startsWith('Rau-0.1'))), false, 'no toast');
+
+  // 뒤에 있는 문서의 학습은 그 문서의 최근 채팅에만 남는다 — 보이는 채팅(다른 문서)에는 오지 않는다.
+  await emit(historyLearned('preview-notes', 'learn_history_notes', '회의록은 개조식'));
+  await page.waitForFunction(() => window.sidebarPreview.threadStore.getThread('preview-chat-minutes')?.messages.at(-1)?.learnId === 'learn_history_notes');
+  assert.equal(await page.$('.ag-taste[data-learn-id="learn_history_notes"]'), null);
+  assert.deepEqual(await stored('preview-chat-attendees'), []);
+
+  // 채팅이 없는 문서는 구분선도 채팅도 만들지 않는다.
+  const before = await threadCount();
+  await emit(historyLearned('preview-orphan', 'learn_history_orphan', '표는 가운데 정렬'));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await threadCount(), before);
+  assert.equal(await page.$('.ag-taste[data-learn-id="learn_history_orphan"]'), null);
+
+  // 턴이 도는 동안 온 학습은 그 턴의 출력을 가르지 않고 턴이 끝난 뒤 끝에 놓인다.
+  await page.evaluate(() => window.sidebarPreview.setHold(true));
+  await page.focus('.ag-input');
+  await page.type('.ag-input', '결론 문단도 한다체로 바꿔 주세요.');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.sidebarPreview.snapshot().running);
+  await emit(historyLearned('preview-proposal', 'learn_history_turn', '결론은 두 문장 안'));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await page.$('.ag-taste[data-learn-id="learn_history_turn"]'), null, 'held while the turn runs');
+  assert.equal((await stored(CHAT)).some((marker) => marker.learnIds.includes('learn_history_turn')), false);
+  await page.evaluate(() => window.sidebarPreview.finishTurn());
+  const late = await page.waitForSelector('.ag-taste[data-learn-id="learn_history_turn"]');
+  assert.equal(await late.evaluate((node) => { let next = node.nextElementSibling; while (next && !next.matches('.ag-msg')) next = next.nextElementSibling; return next === null; }), true, 'after the turn');
+  const order = await page.evaluate((id) => window.sidebarPreview.threadStore.getThread(id).messages.map((message) => message.role === 'user' ? 'user' : message.marker ?? message.kind ?? message.role), CHAT);
+  assert(order.lastIndexOf('taste') > order.lastIndexOf('user'), `stored after the turn: ${order.join(',')}`);
+  assert.equal(order.at(-1), 'taste');
 }

@@ -21,6 +21,7 @@ import type {
   ServiceTier,
   StructuredPlan,
   TasteLearnItem,
+  TasteHistoryLearned,
   TasteLearned,
   UserQuestion,
   UserQuestionAnswer,
@@ -188,7 +189,7 @@ export type ThreadTurnOutcome = 'interrupted' | 'failed';
 /**
  * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
  * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리,
- * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서 문서 기억을 바꾼 자리.
+ * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서, 또는 기록에서 배우기가(turnId 없음) 문서 기억을 바꾼 자리.
  */
 export type ThreadMarkerMessage =
   | (ThreadMessageBase & {
@@ -2472,6 +2473,24 @@ function tasteMarkerIndex(messages: readonly ThreadMessage[], turnId: string | n
   let index = start + 1;
   while (index < messages.length && messages[index]!.role !== 'user' && !isTurnMarker(messages[index])) index += 1;
   return index;
+}
+
+/**
+ * 기록에서 배운 것(Rau-0.1)을 남길 채팅. 보이는 채팅이 그 문서의 것이면 그 채팅, 아니면 그 문서에서 가장
+ * 최근에 움직인 채팅. 그 문서의 채팅이 없으면 null — 구분선 하나 때문에 채팅을 만들지 않는다.
+ */
+export function tasteHistoryThreadId(documentId: string, visibleThreadId: string | null): string | null {
+  const visible = visibleThreadId ? storedThread(visibleThreadId) : undefined;
+  if (visible && visible.messages.length > 0 && visible.documentId === documentId) return visible.id;
+  return listedThreads().find((thread) => thread.documentId === documentId)?.id ?? null;
+}
+
+/** 화면에 없는 채팅의 저장본 끝에 기록에서 배운 구분선을 남긴다. 남겼으면 true (같은 학습은 한 번만). */
+export function addStoredTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): boolean {
+  const thread = getThread(threadId);
+  if (!thread || !addTasteMarker(thread, { ...learned, turnId: null })) return false;
+  upsertThread(thread);
+  return true;
 }
 
 /** 되돌리기 결과를 구분선에 남긴다. 바뀌었으면 true. */

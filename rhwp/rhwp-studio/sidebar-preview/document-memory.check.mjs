@@ -1,5 +1,6 @@
 // 문서 기억 시트: 고치기·지우기·더하기가 허브(모의 저장소)에 닿고 목록이 따라오는지,
-// 문서에서 사라진 인용이 표시되는지, 다른 곳의 기록이 고치던 줄을 덮지 않는지.
+// 문서에서 사라진 인용이 표시되는지, 다른 곳의 기록이 고치던 줄을 덮지 않는지, 기록에서 배우기의
+// 바쁜 표시·뒤 채팅의 구분선(알림 없음)·배운 항목·'배울 기록이 없습니다.'.
 import assert from 'node:assert/strict';
 
 const DOCUMENT = 'preview-proposal';
@@ -30,7 +31,8 @@ async function waitForRows(page, predicate, label) {
 }
 
 export async function checkDocumentMemory({ page, open, screenshot }) {
-  await open('reset=1&memory=sample');
+  // taste=sample: 시트 뒤에 이 문서의 채팅이 보인다 — 기록에서 배운 구분선이 그 끝에 남는다.
+  await open('reset=1&memory=sample&taste=sample');
   await page.waitForSelector('.ag-memory-sheet', { visible: true });
   await page.waitForFunction(() => !document.querySelector('.ag-memory-sheet').dataset.loading);
   const initial = await rowTexts(page);
@@ -123,4 +125,45 @@ export async function checkDocumentMemory({ page, open, screenshot }) {
   await menuItem.asElement().click();
   await page.waitForSelector('.ag-memory-sheet', { visible: true });
   await waitForRows(page, () => document.querySelectorAll('.ag-memory-row').length === 5, 'reopened sheet lists every entry');
+
+  // 기록에서 배우기: 도는 동안 조용히 바쁘고, 배운 항목은 Rau-0.1 이름표를 달고 들어온다. 결과는 알림이 아니라
+  // 뒤 채팅의 끝에 구분선으로 남는다.
+  await page.click('.ag-memory-learn');
+  await page.waitForSelector('.ag-memory-learn[aria-busy="true"]', { timeout: 2_000 });
+  if (screenshot) await screenshot('document-memory-learning');
+  await waitForRows(page, () => [...document.querySelectorAll('.ag-memory-row')]
+    .some((row) => row.querySelector('.ag-memory-text')?.textContent === '보고 문장은 짧게 끊어 씀'
+      && row.querySelector('.ag-memory-origin')?.textContent === 'Rau-0.1'), 'learned entry listed with the Rau-0.1 badge');
+  const divider = await page.waitForSelector('.ag-taste[data-learn-id^="learn-history-"]', { timeout: 5_000 });
+  assert.equal(await divider.evaluate((node) => node.querySelector('.ag-marker-taste').getAttribute('aria-label')), 'Rau-0.1 1가지 배움');
+  assert.equal(await divider.evaluate((node) => { let next = node.nextElementSibling; while (next && !next.matches('.ag-msg')) next = next.nextElementSibling; return next === null; }), true,
+    'the divider sits at the end of the chat');
+  assert.equal(await page.$$eval('.rhwp-toast-message', (nodes) => nodes.some((node) => node.textContent?.startsWith('Rau-0.1'))), false, 'no toast');
+  assert.equal(await page.$('.ag-memory-learn[aria-busy]'), null, 'busy state clears');
+  if (screenshot) await screenshot('document-memory-learned');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.ag-memory-sheet'));
+
+  // 구분선의 되돌리기는 그 문서와 학습 id 를 보낸다 — 허브는 문서에서 기억 키를 다시 구하고 학습 id 로 변경 목록을 찾는다.
+  const learnId = await divider.evaluate((node) => node.dataset.learnId);
+  await divider.evaluate((node) => node.querySelector('.ag-marker-taste').click());
+  const undosBefore = await page.evaluate(() => window.sidebarPreview.taste.undos.length);
+  await divider.evaluate((node) => node.querySelector('.ag-taste-undo').click());
+  await page.waitForFunction((count) => window.sidebarPreview.taste.undos.length > count, { timeout: 2_000 }, undosBefore);
+  const undo = await page.evaluate(() => ({ ...window.sidebarPreview.taste.undos.at(-1) }));
+  assert.equal(undo.documentId, DOCUMENT);
+  assert.equal(undo.learnId, learnId);
+  assert.deepEqual(undo.learnIds, [learnId]);
+  await page.waitForSelector(`.ag-taste[data-learn-id="${learnId}"] .ag-taste-row[data-state="undone"]`);
+
+  await page.click('.ag-document-name', { button: 'right' });
+  const reopen = await page.waitForFunction(() => [...document.querySelectorAll('.context-menu .md-item')]
+    .find((item) => item.textContent?.includes('문서 기억')));
+  await reopen.asElement().click();
+  await page.waitForSelector('.ag-memory-sheet', { visible: true });
+  await page.waitForFunction(() => !document.querySelector('.ag-memory-sheet').dataset.loading);
+  await page.$eval('.ag-memory-learn', (button) => button.click());
+  await page.waitForFunction(() => document.querySelector('.ag-memory-note')?.textContent === '배울 기록이 없습니다.'
+    && !document.querySelector('.ag-memory-note').hidden, { timeout: 5_000 });
+  assert.equal(await page.$$eval('.ag-taste[data-learn-id^="learn-history-"]', (nodes) => nodes.length), 1, 'nothing learned adds no divider');
 }

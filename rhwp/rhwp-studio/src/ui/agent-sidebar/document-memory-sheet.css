@@ -22,6 +22,55 @@
   flex: none;
 }
 
+/* 기록에서 배우기 — 제목 옆의 조용한 글자 단추. 도는 동안 숨 쉬듯 흐려진다. */
+.ag-memory-learn {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-learn:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-memory-learn:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
+}
+
+.ag-memory-learn:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-memory-learn[aria-busy='true'] {
+  background: transparent;
+  color: var(--n-ink-tertiary);
+  pointer-events: none;
+  animation: ag-memory-learn-busy 1.4s var(--ag-ease-out) infinite alternate;
+}
+
+@keyframes ag-memory-learn-busy {
+  from { opacity: 1; }
+  to { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-memory-learn[aria-busy='true'] {
+    animation: none;
+  }
+}
+
 /* 줄의 지우기 단추와 오른쪽 끝을 맞춘다. */
 .ag-memory-close {
   margin-right: -6px;
@@ -283,7 +332,16 @@
   color: var(--ag-err, var(--ui-danger));
 }
 
+.ag-memory-note {
+  flex: none;
+  margin: 8px 0 0;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
 .ag-memory-error[hidden],
+.ag-memory-note[hidden],
 .ag-memory-empty[hidden],
 .ag-memory-list[hidden] {
   display: none;

@@ -125,6 +125,7 @@ import {
   noteTasteTurnEvent,
   tasteOwnOpenRouter,
 } from './taste-learner.mjs';
+import { createTasteHistoryHandler } from './taste-history.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -552,6 +553,19 @@ const tasteLearner = createTasteLearner({
   log,
 });
 tasteSignals.onReviewSignals((documentId, info) => tasteLearner.signalsArrived(documentId, info));
+// 기록에서 배우기 (taste-history-learn) — Studio 가 찾은 짝을 학습기에 넘긴다. 문서마다 한 번에 하나.
+const tasteHistory = createTasteHistoryHandler({
+  learner: tasteLearner,
+  available: () => TASTE_LEARNER_AVAILABLE,
+  enabled: () => tasteSettings.get().enabled,
+  threadId: (record) => record.agentSession?.threadId ?? null,
+  resolveKey: (record, documentId, msg) => {
+    documentMemoryHub.noteSource(record, documentId, { digest: msg.documentDigest, fileName: msg.documentFileName });
+    const repositoryId = typeof msg.repositoryId === 'string' && msg.repositoryId ? msg.repositoryId : undefined;
+    return documentMemoryHub.keyFor(record, documentId, { repositoryId });
+  },
+  log,
+});
 
 const homeSearch = createHomeSearch({
   home: os.homedir(),
@@ -6166,6 +6180,12 @@ async function handleStudioMessage(record, sock, msg) {
       }));
       return;
     }
+    case 'taste-history-learn': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void tasteHistory.handle(record, msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'taste-history-result', requestId: msg.requestId, ...reply }));
+      return;
+    }
     case 'taste-undo': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const learnId = typeof msg.learnId === 'string' ? msg.learnId : null;
@@ -9351,6 +9371,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         changedBy: 'system',
       });
       sendInstructionDraft(record, ws);
+      // 대화에서 배우기 — Studio 는 이 값을 들은 뒤에만 기록에서 배우기의 출처 기록을 남긴다.
+      sendJson(ws, { v: 1, type: 'taste-settings', ok: true, settings: tasteSettings.get() });
       const activeSession = record.agentSession;
       if (activeSession?.planning.latestPlan && activeSession.planning.phase === 'awaiting-approval') {
         sendJson(ws, {

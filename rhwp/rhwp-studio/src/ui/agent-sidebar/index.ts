@@ -50,6 +50,7 @@ import type {
   TemplateCatalog,
   UserQuestionInteraction,
   StagedReference,
+  TasteHistoryLearned,
 } from '../../agent/types.ts';
 import {
   defaultModelForAgent,
@@ -120,8 +121,10 @@ import {
   addCompactionMarker,
   addHandoffMarker,
   addTasteMarker,
+  addStoredTasteHistoryMarker,
   findTasteMarker,
   settleTasteUndo,
+  tasteHistoryThreadId,
   attachmentOnlyMarker,
   captureTurnWatermark,
   createThreadMessageId,
@@ -430,6 +433,11 @@ export interface AgentSidebarDeps {
    */
   startActive?: boolean;
   /**
+   * 기록에서 배운 것(Rau-0.1)의 구분선을 남길 채팅을 창 전체에서 고르고 그 채팅을 띄운 사이드바에 넘긴다.
+   * 없으면 이 사이드바가 제 채팅과 저장된 채팅에서 고른다.
+   */
+  routeTasteHistory?: (learned: TasteHistoryLearned) => void;
+  /**
    * 다른 문서의 채팅을 연다. 편집기가 문서 세션을 관리할 때 넘긴다. 있으면
    * 사이드바는 지금 도는 작업을 멈추지 않고 현재 채팅만 저장한 뒤 편집기에 맡긴다.
    * 편집기는 이 사이드바를 내리고 그 문서 세션의 사이드바를 올릴 수 있다.
@@ -524,6 +532,8 @@ export interface AgentSidebarHandle {
   startDraftChat(): void;
   /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
   currentThreadId(): string | null;
+  /** 기록에서 배운 구분선을 그 채팅의 끝에 남긴다. 보이는 채팅에서 턴이 돌면 턴이 끝난 뒤에. */
+  addTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): void;
   /** 보이는 채팅에 아직 문서가 없다 (초안 포함). 문서를 이을 수 있다. */
   isUnlinkedChat(): boolean;
   /**
@@ -1076,6 +1086,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!composerUpdating) scheduleComposerUpdate();
   }, { immediate: (lock) => lock === 'replaced' });
   let turnRunning = bridge.isTurnRunning();
+  /** 턴이 도는 동안 온 기록 학습 — 턴의 출력을 가르지 않게 그 턴이 끝난 뒤 끝에 놓는다. */
+  const deferredHistoryMarkers: Array<{ threadId: string; learned: TasteHistoryLearned }> = [];
   let mergeResolverLocked = false;
   /** 사용자 말풍선의 "이 작업 전으로 되돌리기" 버튼 */
   const restoreActions = deps.turnRestore
@@ -9428,6 +9440,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (ended) queueMicrotask(() => {
       if (root.dataset.disposed !== 'true' && documentLinkThreadId === null && documentDetach === null) adoptStoredThreadLink();
     });
+    if (!running && deferredHistoryMarkers.length) queueMicrotask(flushDeferredHistoryMarkers);
     updateTurnPending();
     updateComposer();
     rebuildReview();
@@ -11553,6 +11566,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (interruption !== null && ownedByShownChat) showLiveInterruption(settledMarker, interruption);
         // 턴의 도구·작업 기록은 턴 끝에서 바로 남긴다.
         flushTranscriptPersist();
+        // 턴 동안 미룬 기록 학습은 그 턴 뒤, 대기 메시지보다 앞에 놓는다.
+        flushDeferredHistoryMarkers();
         // 대기 메시지: 정상 종료면 맨 앞 하나를 보내고, 미심쩍은 끝이면 붙잡는다. 같은 errorSeen 을 읽은 뒤 비운다.
         const drainedFollowUp = followUps.turnEnded(event, turnOwnerThreadId === currentThread.id, interruption);
         // 끊긴 턴의 대기열은 그 이유를 단다 — 더 구체적인 설명이 이긴다(U1 hold).
@@ -11934,7 +11949,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     viewNow()?.setUndoPending(entryId, true);
     const result = await bridge.undoTaste({
       learnId: marker.learnId,
-      learnIds: marker.learnIds ?? [],
+      learnIds: [marker.learnId, ...(marker.learnIds ?? [])],
       documentId: marker.documentId,
       key: marker.key,
       changes: marker.changes,
@@ -11952,6 +11967,40 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     view?.setUndoPending(entryId, false);
     if (view && settled) view.update(settled);
     if (!result?.ok) showToast({ message: '되돌리지 못했습니다.', durationMs: 3200 });
+  }
+
+  /** 기록에서 배우기의 결과. 턴에 묶이지 않으므로 고른 채팅의 끝에 구분선으로 남는다. */
+  function handleTasteHistoryLearned(e: Extract<SidebarEvent, { type: 'taste-history-learned' }>): void {
+    const learned: TasteHistoryLearned = {
+      documentId: e.documentId, key: e.key, learnId: e.learnId, items: e.items, changes: e.changes,
+    };
+    if (deps.routeTasteHistory) {
+      deps.routeTasteHistory(learned);
+      return;
+    }
+    const threadId = tasteHistoryThreadId(learned.documentId, active && !draftChat ? currentThread.id : null);
+    if (threadId) addTasteHistoryMarker(threadId, learned);
+  }
+
+  function addTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): void {
+    if (threadId !== currentThread.id) {
+      addStoredTasteHistoryMarker(threadId, learned);
+      return;
+    }
+    if (agentWorking()) {
+      deferredHistoryMarkers.push({ threadId, learned });
+      return;
+    }
+    const marker = addTasteMarker(currentThread, { ...learned, turnId: null });
+    if (!marker) return;
+    persistCurrentThread();
+    const node = renderTasteMarker(marker, { live: true });
+    withAutoScroll(() => placeTasteMarkerNode(node, marker));
+  }
+
+  function flushDeferredHistoryMarkers(): void {
+    if (agentWorking() || root.dataset.disposed === 'true') return;
+    for (const { threadId, learned } of deferredHistoryMarkers.splice(0)) addTasteHistoryMarker(threadId, learned);
   }
 
   /** 설정 → AI 를 열고 지시의 변경안 카드로 옮긴다. */
@@ -12291,6 +12340,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'taste-learned':
         handleTasteLearned(e);
+        break;
+      case 'taste-history-learned':
+        handleTasteHistoryLearned(e);
         break;
       case 'agent-instructions-draft':
         pendingInstructionDrafts.add(e.draft.id);
@@ -13645,6 +13697,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     currentThreadId(): string | null {
       return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
+    },
+    addTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): void {
+      if (root.dataset.disposed === 'true') return;
+      addTasteHistoryMarker(threadId, learned);
     },
     isUnlinkedChat: () => root.dataset.disposed !== 'true' && chatIsUnlinked(),
     hasActiveUnlinkedChat: () => root.dataset.disposed !== 'true' && chatIsUnlinked()

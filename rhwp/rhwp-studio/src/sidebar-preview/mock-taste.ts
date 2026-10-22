@@ -13,7 +13,7 @@ const settings: T.TasteSettings = { enabled: true, provider: 'auto', model: null
 const sinks = new Set<(event: T.SidebarEvent) => void>();
 const skipped = new Set<string>();
 /** 받은 되돌리기 요청 — 미리보기 확인이 읽는다. */
-export const tasteUndos: Array<{ learnId: string; documentId: string; key: string; entryId: string | null; changes: number }> = [];
+export const tasteUndos: Array<{ learnId: string; learnIds?: string[]; documentId: string; key: string; entryId: string | null; changes: number }> = [];
 
 /** 이 항목의 되돌리기는 그새 바뀐 것으로 답한다. */
 export function skipTasteUndo(entryId: string): void {
@@ -60,8 +60,8 @@ export function createMockTaste(emit: (event: T.SidebarEvent) => void): MockTast
       setTimeout(() => sinks.forEach((sink) => sink(event)), 0);
       return settle({ ...settings });
     },
-    undoTaste: ({ learnId, documentId, key, changes, entryId }) => {
-      tasteUndos.push({ learnId, documentId, key, entryId: entryId ?? null, changes: changes.length });
+    undoTaste: ({ learnId, learnIds, documentId, key, changes, entryId }) => {
+      tasteUndos.push({ learnId, ...(learnIds?.length ? { learnIds: [...learnIds] } : {}), documentId, key, entryId: entryId ?? null, changes: changes.length });
       const ids = entryId
         ? [entryId]
         : changes.flatMap((change) => {
