@@ -15,6 +15,7 @@ import type { MemoNoteInfo, MemoNotePath, MemoNoteRect } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { commitMemoDelete, commitMemoEdit, commitMemoInsert } from '@/core/memo-edits';
 import type { InputHandler } from '@/engine/input-handler';
+import { showToast } from '@/ui/toast';
 import type { ViewportManager } from './viewport-manager';
 import type { VirtualScroll } from './virtual-scroll';
 
@@ -32,7 +33,16 @@ export interface MemoOverlayDeps {
   getInputHandler(): InputHandler | null;
   /** 새 메모 작성자 (사용자 이름). 없으면 빈 문자열. */
   getAuthor?(): string;
+  /**
+   * 풍선 편집 중 누른 키가 앱 단축키(저장·열기 등 파일 명령)이면 그 명령 실행 함수를,
+   * 아니면 null 을 돌려준다. 풍선은 먼저 확정되고 나서 명령이 실행된다.
+   */
+  matchAppShortcut?(e: KeyboardEvent): (() => void) | null;
 }
+
+/** 풍선 안에서 글 편집으로 쓰는 Ctrl 조합 — 앱 단축키로 넘기지 않는다. */
+const TEXT_EDITING_CHORD_KEYS = new Set(['a', 'c', 'v', 'x', 'z', 'y', 'enter', 'backspace', 'delete',
+  'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'home', 'end']);
 
 /** 아직 문서에 넣지 않은 새 메모 — 내용을 쓰고 확정해야 하나의 실행 취소 단위로 들어간다. */
 interface MemoDraft {
@@ -118,6 +128,9 @@ export class MemoOverlay {
     });
     this.layer.addEventListener('keydown', (e) => e.stopPropagation());
     document.addEventListener('mousedown', this.closeMenuOnOutside, true);
+    // 창·탭을 닫을 때 쓰던 풍선을 먼저 확정해 문서 수정 표시(이탈 확인)에 들어가게 한다.
+    // 캡처 단계라 DocumentDirtyState 의 beforeunload 처리보다 먼저 돈다.
+    window.addEventListener('beforeunload', this.commitLiveEdit, true);
   }
 
   dispose(): void {
@@ -125,8 +138,15 @@ export class MemoOverlay {
     this.unsubscribers = [];
     if (this.renderTimer) clearTimeout(this.renderTimer);
     document.removeEventListener('mousedown', this.closeMenuOnOutside, true);
+    window.removeEventListener('beforeunload', this.commitLiveEdit, true);
     this.layer.remove();
   }
+
+  /** 편집 중인 풍선이 있으면 확정한다 (빈 새 메모는 버린다). */
+  commitLiveEdit = (): void => {
+    if (!this.isEditingLive()) return;
+    (document.activeElement as HTMLElement | null)?.blur();
+  };
 
   isVisible(): boolean {
     return this.visible;
@@ -442,6 +462,17 @@ export class MemoOverlay {
     };
     body.addEventListener('keydown', (e) => {
       e.stopPropagation();
+      const run = (e.ctrlKey || e.metaKey) && !e.isComposing
+        && !TEXT_EDITING_CHORD_KEYS.has(e.key.toLowerCase())
+        ? this.deps.matchAppShortcut?.(e) ?? null
+        : null;
+      if (run) {
+        // Ctrl+S 같은 앱 단축키: 쓰던 메모를 문서에 넣은 뒤 명령을 실행한다.
+        e.preventDefault();
+        finish(true);
+        run();
+        return;
+      }
       if (e.key === 'Escape') {
         e.preventDefault();
         finish(false);
@@ -475,7 +506,14 @@ export class MemoOverlay {
 
   private commitDraft(draft: MemoDraft, text: string): void {
     const ih = this.deps.getInputHandler();
-    if (ih) commitMemoInsert(ih, draft.path, draft.start, draft.end, text, this.deps.getAuthor?.());
+    if (!ih) return;
+    try {
+      commitMemoInsert(ih, draft.path, draft.start, draft.end, text, this.deps.getAuthor?.());
+    } catch (error) {
+      // 넣기 명령이 미리 막지만, 그 사이 문서가 바뀌어 실패해도 죽은 풍선을 남기지 않는다.
+      const reason = error instanceof Error ? error.message : String(error);
+      showToast({ message: `메모를 넣지 못했습니다: ${reason}` });
+    }
   }
 
   /** 메모 하나를 지운다 (실행 취소 가능). */

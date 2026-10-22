@@ -12,7 +12,7 @@ import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, MemoNoteInfo, MemoNotePath, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, MemoBatchUndo, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -4113,10 +4113,17 @@ export class AgentToolExecutor {
    * 문단 밖(필드 컨트롤 안)이라 문단 보관본으로는 되돌릴 수 없고, 지운 메모를 되살리려면
    * 작성자·시각·서식까지 그대로여야 한다.
    */
-  private stageMemoWrite<T>(agent: AgentName, method: string, run: () => T, memoFieldIds: (result: T) => number[]) {
+  private stageMemoWrite<T>(
+    agent: AgentName, method: string, run: () => T, memoFieldIds: (result: T) => number[],
+    memoUndo?: (result: T) => MemoBatchUndo | undefined,
+  ) {
     const previousRevision = this.revision;
-    const staged = this.deps.pending.addEngineBatch(agent, [method], run, { memoFieldIds });
+    const staged = this.deps.pending.addEngineBatch(agent, [method], run, { memoFieldIds, memoUndo });
     return { previousRevision, revision: this.revision, changeSetId: staged.changeSetId, result: staged.result };
+  }
+
+  private memoTextOf(fieldId: number): string | undefined {
+    return this.deps.wasm.getMemoNoteList().find((memo) => memo.fieldId === fieldId)?.text;
   }
 
   private memoText(args: Record<string, unknown>): string {
@@ -4162,6 +4169,7 @@ export class AgentToolExecutor {
       agent, 'insertMemoNote',
       () => this.deps.wasm.insertMemoNote(path, startOffset, endOffset, text, author),
       (fieldId) => [fieldId],
+      (fieldId) => ({ op: 'insert', fieldId, appliedText: this.memoTextOf(fieldId) ?? text }),
     );
     return { previousRevision: staged.previousRevision, revision: staged.revision, changeSetId: staged.changeSetId, fieldId: staged.result };
   }
@@ -4171,8 +4179,10 @@ export class AgentToolExecutor {
     const text = this.memoText(args);
     const current = this.deps.wasm.getMemoNoteList().find((memo) => memo.fieldId === fieldId);
     if (current?.text === text) return { revision: this.revision, fieldId, changed: false };
+    const previousText = current?.text ?? '';
     const staged = this.stageMemoWrite(
       agent, 'setMemoNoteText', () => this.deps.wasm.setMemoNoteText(fieldId, text), () => [fieldId],
+      () => ({ op: 'edit', fieldId, previousText, appliedText: this.memoTextOf(fieldId) ?? text }),
     );
     return { previousRevision: staged.previousRevision, revision: staged.revision, changeSetId: staged.changeSetId, fieldId, changed: true };
   }

@@ -9,7 +9,7 @@ import { commandServices, startEditEngine } from './support/edit-history-env.ts'
 const env = await startEditEngine();
 test.after(() => env.close());
 
-const [edits, { memoCommands }] = await Promise.all([
+const [edits, { memoCommands, memoContextMenuItems, setMemoOverlay }] = await Promise.all([
   env.load('/src/core/memo-edits.ts'),
   env.load('/src/command/commands/memo.ts'),
 ]);
@@ -120,4 +120,55 @@ test('모든 메모 지우기는 한 칸으로 되돌아간다', () => {
   assert.equal(memos(reload(wasm.exportHwp(), 'saved.hwp')).length, 0, '저장본에도 메모가 없다');
   host.handleUndo();
   assert.equal(memos(wasm).length, 9);
+});
+
+function caretInto(host: any, memo: any) {
+  host.cursor.moveTo({ sectionIndex: 0, paragraphIndex: memo.anchor.paraIdx, charOffset: memo.anchor.startCharIdx + 1 });
+}
+
+test('우클릭 메뉴는 그 메모를 항목에 싣고, 메뉴를 닫은 뒤 팔레트의 지우기는 캐럿의 메모를 지운다', () => {
+  const { wasm, host } = open();
+  const [a, b] = memos(wasm) as any[];
+  const services = commandServices(host);
+  // 메모 A 앵커를 우클릭해 메뉴를 만들고, 고르지 않고 닫는다.
+  const items = memoContextMenuItems(a.fieldId);
+  assert.deepEqual(items.map((item: any) => [item.commandId, item.params]), [
+    ['memo:edit', { fieldId: a.fieldId }],
+    ['memo:delete', { fieldId: a.fieldId }],
+  ]);
+  // 캐럿을 메모 B 앵커에 두고 팔레트에서 메모 지우기.
+  caretInto(host, b);
+  const del = memoCommands.find((c: any) => c.id === 'memo:delete');
+  del.execute(services);
+  assert.ok(memos(wasm).some((m) => m.fieldId === a.fieldId), 'A 는 남는다');
+  assert.ok(memos(wasm).every((m) => m.fieldId !== b.fieldId), 'B 가 지워진다');
+  // 메뉴 항목으로 고르면 우클릭한 A 가 지워진다.
+  del.execute(services, items[1].params);
+  assert.ok(memos(wasm).every((m) => m.fieldId !== a.fieldId));
+});
+
+test('메모가 달린 낱말에서 메모 넣기는 새 풍선 대신 그 메모를 고친다', () => {
+  const { wasm, host } = open();
+  const [a] = memos(wasm) as any[];
+  const calls: string[] = [];
+  setMemoOverlay({
+    openDraft: () => calls.push('draft'),
+    openEditor: (id: number) => calls.push(`edit:${id}`),
+  });
+  try {
+    caretInto(host, a);
+    host.canEditHyperlink = () => true;
+    memoCommands.find((c: any) => c.id === 'insert:memo-note').execute(commandServices(host));
+    assert.deepEqual(calls, [`edit:${a.fieldId}`]);
+  } finally {
+    setMemoOverlay(null);
+  }
+});
+
+test('겹치는 범위는 넣기 전에 사유를 알려 준다', () => {
+  const { wasm } = open();
+  const [a] = memos(wasm) as any[];
+  const path = { sectionIdx: 0, paraIdx: a.anchor.paraIdx };
+  assert.match(wasm.checkMemoNoteRange(path, a.anchor.startCharIdx, a.anchor.startCharIdx + 2), /겹치는/);
+  assert.equal(wasm.checkMemoNoteRange(path, 0, 2), '', '앵커 앞 글자에는 달 수 있다');
 });

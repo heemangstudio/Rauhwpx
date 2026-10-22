@@ -6,6 +6,7 @@
  * 없이 사라진다. 모든 쓰기는 executeOperation({kind:'snapshot'}) 이다.
  */
 import type { CommandDef, CommandServices } from '../types';
+import type { ContextMenuItem } from '@/ui/context-menu';
 import type { MemoNotePath } from '@/core/types';
 import { hyperlinkRange, hyperlinkTarget } from '@/core/hyperlink';
 import { userSettings } from '@/core/user-settings';
@@ -15,8 +16,6 @@ import type { MemoOverlay } from '@/view/memo-overlay';
 import { showToast } from '@/ui/toast';
 
 let memoOverlay: MemoOverlay | null = null;
-/** 우클릭한 메모 앵커 — 다음 memo:edit/memo:delete 한 번에 쓴다. */
-let contextMemoFieldId: number | null = null;
 
 export function setMemoOverlay(overlay: MemoOverlay | null): void {
   memoOverlay = overlay;
@@ -26,9 +25,15 @@ export function getMemoOverlay(): MemoOverlay | null {
   return memoOverlay;
 }
 
-/** 컨텍스트 메뉴가 연 메모 (null 이면 캐럿 위치 메모). */
-export function setContextMemoFieldId(fieldId: number | null): void {
-  contextMemoFieldId = fieldId;
+/**
+ * 메모 앵커 우클릭 메뉴 항목. 우클릭한 메모를 항목 매개변수로 싣는다 — 모듈 상태에 두면
+ * 메뉴를 그냥 닫은 뒤 팔레트에서 실행한 고치기/지우기가 엉뚱한 메모에 적용된다.
+ */
+export function memoContextMenuItems(fieldId: number): ContextMenuItem[] {
+  return [
+    { type: 'command', commandId: 'memo:edit', label: '메모 고치기', params: { fieldId } },
+    { type: 'command', commandId: 'memo:delete', label: '메모 지우기', params: { fieldId } },
+  ];
 }
 
 function syncToggle(cmdId: string, on: boolean): void {
@@ -75,9 +80,7 @@ export function memoAtCursor(services: CommandServices): number | null {
 function targetMemo(services: CommandServices, params?: Record<string, unknown>): number | null {
   const explicit = params?.fieldId;
   if (typeof explicit === 'number') return explicit;
-  const fromContext = contextMemoFieldId;
-  contextMemoFieldId = null;
-  return fromContext ?? memoAtCursor(services);
+  return memoAtCursor(services);
 }
 
 const canEditMemo = (ctx: Parameters<NonNullable<CommandDef['canExecute']>>[0]) =>
@@ -99,7 +102,14 @@ export const memoCommands: CommandDef[] = [
         const selection = ih.hasSelection() ? structuredClone(ih.getSelection()) : null;
         const range = hyperlinkRange(ih.getCursorPosition(), selection);
         let { start, end } = range;
+        const path = memoPathFromTarget(range.target);
         if (start === end) {
+          // 이미 메모가 달린 글자에서는 새 풍선 대신 그 메모를 고친다.
+          const existing = services.wasm.getMemoNoteAt(path, start);
+          if (existing !== null) {
+            memoOverlay.openEditor(existing);
+            return;
+          }
           // 선택이 없으면 캐럿이 놓인 낱말에 단다 (한컴과 같은 동작).
           const text = services.wasm.getHyperlinkContext(range.target).text;
           const word = findWordSelectionRange(text, start);
@@ -107,7 +117,11 @@ export const memoCommands: CommandDef[] = [
           start = word.start;
           end = word.end;
         }
-        memoOverlay.openDraft(memoPathFromTarget(range.target), start, end);
+        // 다른 메모·하이퍼링크·누름틀과 겹치면 풍선을 열기 전에 알린다 — 확정할 때 실패하면
+        // 쓴 내용이 버려진다.
+        const reason = services.wasm.checkMemoNoteRange(path, start, end);
+        if (reason) throw new Error(reason);
+        memoOverlay.openDraft(path, start, end);
       } catch (error) {
         showToast({ message: error instanceof Error ? error.message : String(error) });
       }

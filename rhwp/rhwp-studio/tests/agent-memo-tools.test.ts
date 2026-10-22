@@ -135,3 +135,35 @@ test('in 전체 mode set_memo commits right away', async () => {
   assert.deepEqual(pending.pendingMemoFieldIds(), []);
   assert.ok(texts(wasm).includes('바로 들어간 메모'));
 });
+
+test('rejecting set_memo insert/edit after an unrelated user edit still undoes the agent memo', async () => {
+  const { wasm, pending, call } = setup();
+  const before = wasm.getMemoNoteList();
+  const [first, second] = before;
+  pending.beginTurn('claude');
+  const paraIdx = plainParagraph(wasm);
+  const inserted = await call('set_memo', { op: 'insert', sectionIdx: 0, paraIdx, startOffset: 0, endOffset: 3, text: 'AGENT NEW' });
+  await call('set_memo', { op: 'edit', fieldId: first.fieldId, text: 'AGENT TEXT' });
+  pending.endTurn('review');
+  // 검토 대기 중 사용자가 다른 메모를 풍선에서 고친다 (스냅샷 복원이 막힌다).
+  wasm.setMemoNoteText(second.fieldId, 'USER TEXT');
+  (pending as any).deps.eventBus.emit('document-mutated', 'input-handler-edit');
+  pending.reject(pending.getChangeSets()[0].id);
+  const after = wasm.getMemoNoteList();
+  assert.equal(after.find((m: any) => m.fieldId === inserted.fieldId), undefined, 'agent memo removed');
+  assert.equal(after.find((m: any) => m.fieldId === first.fieldId)?.text, first.text, 'agent edit undone');
+  assert.equal(after.find((m: any) => m.fieldId === second.fieldId)?.text, 'USER TEXT', 'user edit kept');
+  assert.equal(after.length, before.length);
+});
+
+test('rejecting set_memo edit leaves the memo when the user rewrote that same memo', async () => {
+  const { wasm, pending, call } = setup();
+  const [first] = wasm.getMemoNoteList();
+  pending.beginTurn('claude');
+  await call('set_memo', { op: 'edit', fieldId: first.fieldId, text: 'AGENT TEXT' });
+  pending.endTurn('review');
+  wasm.setMemoNoteText(first.fieldId, 'USER REWROTE');
+  (pending as any).deps.eventBus.emit('document-mutated', 'input-handler-edit');
+  pending.reject(pending.getChangeSets()[0].id);
+  assert.equal(wasm.getMemoNoteList().find((m: any) => m.fieldId === first.fieldId)?.text, 'USER REWROTE');
+});

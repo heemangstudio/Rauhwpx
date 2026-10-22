@@ -7,6 +7,8 @@ export interface ContextMenuItem {
   type: 'command' | 'separator';
   commandId?: string;
   label?: string;
+  /** 명령에 넘길 매개변수 (예: 우클릭한 메모의 fieldId). */
+  params?: Record<string, unknown>;
 }
 
 /**
@@ -70,7 +72,7 @@ export class ContextMenu {
       row.addEventListener('click', (e) => {
         e.stopPropagation();
         if (row.classList.contains('disabled')) return;
-        this.dispatcher.dispatch(cmdId);
+        this.dispatcher.dispatch(cmdId, item.params);
         this.hide();
       });
 

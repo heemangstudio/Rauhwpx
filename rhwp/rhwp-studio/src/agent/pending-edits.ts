@@ -4,7 +4,7 @@ import type { DocumentPosition, CharProperties, CharShapeRun, SelectionRect } fr
 import { replacementCharShapes } from './replacement-format.ts';
 import { PreparedSnapshotCommand } from '../engine/prepared-snapshot-command.ts';
 import type {
-  AgentEditorHost, AgentName, CellAddr, CharFormatProps, DocPoint, DocRange, EngineBatchSpan,
+  AgentEditorHost, AgentName, CellAddr, CharFormatProps, DocPoint, DocRange, EngineBatchSpan, MemoBatchUndo,
   ObjectAnchor, ObjectOp, ParagraphCaptureRef, PendingAppliedAt, PendingChangeSet,
   PendingDrop, PendingDropCause, PendingEditsChangeEvent, PendingOp,
 } from './types.ts';
@@ -941,7 +941,7 @@ export class PendingEditManager {
     agent: AgentName,
     methods: string[],
     run: () => T,
-    opts?: { memoFieldIds?: (result: T) => number[] },
+    opts?: { memoFieldIds?: (result: T) => number[]; memoUndo?: (result: T) => MemoBatchUndo | undefined },
   ): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
     const wasm = this.deps.wasm;
     const digestsBefore = this.bodyDigests();
@@ -971,9 +971,11 @@ export class PendingEditManager {
       }
     }
     const memoFieldIds = opts?.memoFieldIds?.(result) ?? [];
+    const memoUndo = opts?.memoUndo?.(result);
     const obj: ObjectOp = {
       type: 'engineBatch', sectionIdx: touched[0]?.sectionIdx ?? 0, methods, touched, shifts,
       ...(memoFieldIds.length > 0 ? { memoFieldIds } : {}),
+      ...(memoUndo ? { memoUndo } : {}),
     };
     const set = this.ensureOpenSet(agent);
     const op: PendingOp = { kind: 'object', id: this.nextId('op'), agent: set.agent, obj,
@@ -2687,6 +2689,20 @@ export class PendingEditManager {
             return true;
           }
           return wasm.renameBookmark(obj.sectionIdx, obj.paraIdx, obj.prev.ctrlIdx, obj.prev.name)?.ok === true;
+        }
+        case 'engineBatch': {
+          // 일반 엔진 배치는 역연산이 없다. 메모 넣기·고치기는 메모가 적용 직후 그대로일 때
+          // 지우기·이전 본문으로 되돌린다 (이전 본문은 평문으로 돌아간다).
+          const undo = obj.memoUndo;
+          if (!undo) return false;
+          const memo = wasm.getMemoNoteList().find((m) => m.fieldId === undo.fieldId);
+          if (!memo || memo.text !== undo.appliedText) return false;
+          if (undo.op === 'insert') {
+            wasm.deleteMemoNote(undo.fieldId);
+            return true;
+          }
+          wasm.setMemoNoteText(undo.fieldId, undo.previousText);
+          return true;
         }
         default:
           return false; // 역연산이 없다 — 문단 보관본/스냅샷으로만 되돌린다

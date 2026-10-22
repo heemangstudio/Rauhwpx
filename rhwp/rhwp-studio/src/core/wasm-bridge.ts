@@ -4040,6 +4040,12 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).getMemoNoteAnchorRects(fieldId));
   }
 
+  /** 범위 [start, end) 에 새 메모를 달 수 있으면 빈 문자열, 아니면 사유. */
+  checkMemoNoteRange(path: MemoNotePath, start: number, end: number): string {
+    if (!this.doc) return '문서가 로드되지 않았습니다';
+    return (this.doc as any).checkMemoNoteRange(JSON.stringify(path), start, end);
+  }
+
   /** 범위 [start, end) 에 메모를 단다. 새 메모의 fieldId 를 돌려준다. */
   insertMemoNote(path: MemoNotePath, start: number, end: number, text: string, author?: string): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');

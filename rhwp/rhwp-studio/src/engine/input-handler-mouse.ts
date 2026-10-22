@@ -3,7 +3,7 @@
 
 import type { ContextMenuItem } from '@/ui/context-menu';
 import { hyperlinkAtPointer, hoverHyperlink, rememberHyperlinkClick, followHyperlinkClick, memoAtPointer } from './input-handler-hyperlink';
-import { setContextMemoFieldId } from '@/command/commands/memo';
+import { memoContextMenuItems } from '@/command/commands/memo';
 import { hoverHitTest, runHoverFrame } from './hover-hit-test';
 import type { CellPathLike, DocumentPosition, ObjectRef } from '@/core/types';
 import * as _connector from './input-handler-connector';
@@ -1747,14 +1747,8 @@ export function onContextMenu(this: any, e: MouseEvent): void {
 
   // 메모 앵커 위 우클릭이면 메모 고치기/지우기를 더한다.
   const memoFieldId = memoAtPointer(this, e);
-  setContextMemoFieldId(memoFieldId);
   if (memoFieldId !== null) {
-    items = [
-      ...items,
-      { type: 'separator' },
-      { type: 'command', commandId: 'memo:edit', label: '메모 고치기' },
-      { type: 'command', commandId: 'memo:delete', label: '메모 지우기' },
-    ];
+    items = [...items, { type: 'separator' }, ...memoContextMenuItems(memoFieldId)];
   }
 
   // 누름틀 필드 내부이면 필드 메뉴 항목 추가

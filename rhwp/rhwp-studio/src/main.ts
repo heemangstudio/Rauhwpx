@@ -1726,6 +1726,10 @@ async function initialize(): Promise<void> {
       virtualScroll: canvasView.getVirtualScroll(),
       viewportManager: canvasView.getViewportManager(),
       getInputHandler: () => inputHandler,
+      matchAppShortcut: (e) => {
+        const commandId = matchShortcut(e, defaultShortcuts);
+        return commandId?.startsWith('file:') ? () => { dispatcher.dispatch(commandId); } : null;
+      },
     });
     memoOverlay.setVisible(userSettings.getViewSettings().showMemos);
     syncMemoViewToggle(userSettings.getViewSettings().showMemos);
