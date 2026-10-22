@@ -182,6 +182,15 @@
   white-space: nowrap;
 }
 
+.ag-memory-origin {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--ag-r-code);
+  background: var(--n-ink-hairline);
+  color: var(--n-ink-tertiary);
+  font-variant-numeric: var(--ag-numeric);
+}
+
 .ag-memory-stale {
   flex: none;
   color: var(--n-ink-tertiary);

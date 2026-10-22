@@ -86,5 +86,20 @@ if (chatsParam === 'sample' || chatsParam === 'engine-trap' || chatsParam === 'l
   const { reloadThreadsFromStorage } = await import('../agent/threads.ts');
   await reloadThreadsFromStorage();
 }
+// `taste=sample` adds a 사업 제안서 chat with a Rau-0.1 divider, newest so it opens first.
+if (url.searchParams.get('taste') === 'sample') {
+  const { sampleTasteChat } = await import('./fixtures.ts');
+  const key = 'rhwp-agent-threads';
+  const seeded = sampleTasteChat(Date.now());
+  let pending: unknown[] = [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? '[]');
+    if (Array.isArray(parsed)) pending = parsed;
+  } catch { /* Unreadable legacy data is replaced by the sample. */ }
+  const kept = pending.filter((row) => String((row as { id?: unknown } | null)?.id) !== seeded.id);
+  localStorage.setItem(key, JSON.stringify([...kept, seeded]));
+  const { reloadThreadsFromStorage } = await import('../agent/threads.ts');
+  await reloadThreadsFromStorage();
+}
 await import('./main.ts');
 export {};

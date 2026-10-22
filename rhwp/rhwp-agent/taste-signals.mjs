@@ -110,11 +110,19 @@ export function createTasteSignalBuffer({ perDocument = MAX_SIGNALS_PER_DOCUMENT
 
   return {
     ingest,
-    /** 쌓인 신호를 꺼내고 비운다 (오래된 것부터). */
-    takeSignals(documentId) {
+    /** 쌓인 신호를 꺼내고 비운다 (오래된 것부터). filter 를 주면 맞는 것만 꺼내고 나머지는 남긴다. */
+    takeSignals(documentId, filter) {
       const buffer = buffers.get(documentId);
-      buffers.delete(documentId);
-      return buffer ? buffer.map((signal) => ({ ...signal })) : [];
+      if (!buffer) return [];
+      if (typeof filter !== 'function') {
+        buffers.delete(documentId);
+        return buffer.map((signal) => ({ ...signal }));
+      }
+      const taken = buffer.filter((signal) => filter(signal));
+      const kept = buffer.filter((signal) => !taken.includes(signal));
+      if (kept.length > 0) buffers.set(documentId, kept);
+      else buffers.delete(documentId);
+      return taken.map((signal) => ({ ...signal }));
     },
     /** 쌓인 신호를 비우지 않고 본다. */
     peekSignals(documentId) {
