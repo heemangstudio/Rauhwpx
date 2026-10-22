@@ -2813,7 +2813,7 @@ fn memo_field_parameters(field: &Field) -> String {
         });
     let created = command
         .as_ref()
-        .and_then(|c| c.created_at_iso())
+        .and_then(|c| c.hancom_create_date_time())
         .unwrap_or_default();
     format!(
         r#"<hp:parameters cnt="7" name=""><hp:integerParam name="Prop">0</hp:integerParam><hp:stringParam name="Command">{}</hp:stringParam><hp:stringParam name="ID">memo{}</hp:stringParam><hp:integerParam name="Number">{}</hp:integerParam><hp:stringParam name="Author">{}</hp:stringParam><hp:stringParam name="MemoShapeIDRef">{}</hp:stringParam><hp:stringParam name="CreateDateTime">{}</hp:stringParam></hp:parameters>"#,

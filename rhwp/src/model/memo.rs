@@ -76,7 +76,46 @@ impl MemoCommand {
     pub fn created_at_iso(&self) -> Option<String> {
         filetime_to_iso(self.filetime())
     }
+
+    /// HWPX `CreateDateTime` 파라미터 값. 한컴은 명령 FILETIME(UTC) 을 현지 벽시계 시각으로
+    /// 바꾼 뒤 `Z` 를 붙여 쓴다 (samples/hwpx/aift.hwpx: 12:36:44 UTC → `21:36:44Z`).
+    /// 오프셋은 [`hancom_local_offset_minutes`] 를 쓴다.
+    pub fn hancom_create_date_time(&self) -> Option<String> {
+        let filetime = self.filetime();
+        if filetime == 0 {
+            return None;
+        }
+        let unix_ms = (filetime / 10_000).checked_sub(FILETIME_UNIX_EPOCH_SECS * 1000)? as f64;
+        let offset_ticks = hancom_local_offset_minutes(unix_ms) * 60 * 10_000_000;
+        let local = if offset_ticks >= 0 {
+            filetime.checked_add(offset_ticks as u64)?
+        } else {
+            filetime.checked_sub(offset_ticks.unsigned_abs())?
+        };
+        filetime_to_iso(local)
+    }
 }
+
+/// 한컴식 `CreateDateTime` 에 쓸 현지 UTC 오프셋(분). 브라우저(wasm)에서는 그 시각의
+/// 현지 오프셋을, 시간대 정보가 없는 네이티브에서는 한컴 문서의 대부분이 쓰는 KST(+9h)를 쓴다.
+pub fn hancom_local_offset_minutes(unix_ms: f64) -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let offset =
+            js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(unix_ms)).get_timezone_offset();
+        if offset.is_finite() {
+            return -(offset as i64);
+        }
+        KST_OFFSET_MINUTES
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = unix_ms;
+        KST_OFFSET_MINUTES
+    }
+}
+
+const KST_OFFSET_MINUTES: i64 = 9 * 60;
 
 impl std::fmt::Display for MemoCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -543,10 +582,14 @@ mod tests {
         assert_eq!(command.number, 1);
         assert_eq!(command.author, "user");
         assert_eq!(command.to_string(), raw);
-        // aift.hwpx CreateDateTime 은 현지(KST) 시각을 Z 로 적는다: 21:36:44 KST = 12:36:44Z
         assert_eq!(
             command.created_at_iso().as_deref(),
             Some("2026-04-14T12:36:44Z")
+        );
+        // aift.hwpx CreateDateTime 은 같은 명령을 현지(KST) 시각에 Z 를 붙여 적는다.
+        assert_eq!(
+            command.hancom_create_date_time().as_deref(),
+            Some("2026-04-14T21:36:44Z")
         );
     }
 

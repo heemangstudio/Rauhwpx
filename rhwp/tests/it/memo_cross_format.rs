@@ -137,3 +137,33 @@ fn hwp_source_memo_writes_hancom_hwpx_memo_markup() {
         "no invented linesegs in memo body: {memo}"
     );
 }
+
+/// HWP → HWPX 의 CreateDateTime 은 한컴과 같은 값이어야 한다. 한컴은 명령 FILETIME(UTC)을
+/// 현지(KST) 시각으로 바꿔 `Z` 를 붙여 쓴다 — aift.hwp 와 한컴이 저장한 aift.hwpx 는 명령
+/// 시각이 같고 CreateDateTime 은 +9h 이다.
+#[test]
+fn hwp_to_hwpx_create_date_time_matches_hancom() {
+    fn create_date_times(bytes: Vec<u8>) -> Vec<String> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut out = Vec::new();
+        for index in 0.. {
+            let Ok(mut entry) = zip.by_name(&format!("Contents/section{index}.xml")) else {
+                break;
+            };
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut s).unwrap();
+            let key = r#"<hp:stringParam name="CreateDateTime">"#;
+            for (at, _) in s.match_indices(key) {
+                let rest = &s[at + key.len()..];
+                out.push(rest[..rest.find('<').unwrap()].to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+    let hancom = create_date_times(std::fs::read("samples/hwpx/aift.hwpx").unwrap());
+    assert_eq!(hancom.len(), 2, "fixture memos");
+    let mut doc = load_doc("samples/aift.hwp");
+    doc.insert_text_native(0, 0, 0, "X").unwrap();
+    assert_eq!(create_date_times(doc.export_hwpx_native().unwrap()), hancom);
+}

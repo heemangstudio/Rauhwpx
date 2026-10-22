@@ -6425,6 +6425,24 @@ impl HwpDocument {
         serde_json::to_string(&rects).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// 범위 `[start, end)` 에 새 메모를 달 수 있으면 빈 문자열, 아니면 사용자에게 보일 사유.
+    #[wasm_bindgen(js_name = checkMemoNoteRange)]
+    pub fn check_memo_note_range_js(
+        &self,
+        path_json: &str,
+        start: u32,
+        end: u32,
+    ) -> Result<String, JsValue> {
+        let path = crate::document_core::queries::memo_query::MemoNotePath::parse(path_json)?;
+        Ok(self
+            .check_memo_note_range(&path, start as usize, end as usize)
+            .err()
+            .map_or_else(String::new, |error| match error {
+                HwpError::InvalidField(message) => message,
+                other => other.to_string(),
+            }))
+    }
+
     /// 범위 `[start, end)` 에 메모를 단다. 새 메모의 fieldId 를 반환한다.
     #[wasm_bindgen(js_name = insertMemoNote)]
     pub fn insert_memo_note_js(

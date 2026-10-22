@@ -118,18 +118,47 @@ pub(crate) fn normalize_memo_indexes(doc: &Document) -> Cow<'_, Document> {
 
 /// HWP 저장: 마지막 구역의 원본 스트림(그 안의 메모 꼬리)을 다시 써야 하는지.
 ///
-/// 메모가 있는 문서에서 어느 구역이든 IR 로 다시 쓰이면 메모 필드·본문이 바뀌었을 수
-/// 있으므로, 문서 전체 메모를 담는 마지막 구역도 IR 에서 다시 쓴다.
+/// 어느 구역이든 IR 로 다시 쓰이면 메모 필드·본문이 바뀌었을 수 있으므로, 문서 전체
+/// 메모를 담는 마지막 구역도 IR 에서 다시 쓴다. 지금 메모가 남아 있을 때뿐 아니라,
+/// 편집으로 마지막 메모가 지워져도 원본 꼬리에 옛 메모 본문이 남아 있으면 다시 쓴다
+/// (그대로 두면 지운 메모 내용이 파일에 남는다).
 pub(crate) fn hwp_must_rewrite_last_section(doc: &Document) -> bool {
     let Some(last) = doc.sections.last() else {
         return false;
     };
-    last.raw_stream.is_some()
-        && doc
-            .sections
-            .iter()
-            .any(|section| section.raw_stream.is_none())
-        && crate::model::memo::document_has_memos(doc)
+    let Some(raw) = last.raw_stream.as_deref() else {
+        return false;
+    };
+    doc.sections
+        .iter()
+        .any(|section| section.raw_stream.is_none())
+        && (crate::model::memo::document_has_memos(doc) || raw_stream_has_memo_list(raw))
+}
+
+/// 구역 원본 스트림에 `MEMO_LIST` 레코드가 있는지 (레코드 헤더만 훑는다).
+fn raw_stream_has_memo_list(data: &[u8]) -> bool {
+    use crate::parser::tags::HWPTAG_MEMO_LIST;
+    let mut pos = 0usize;
+    while let Some(header) = data.get(pos..pos + 4) {
+        let header = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        pos += 4;
+        if (header & 0x3FF) as u16 == HWPTAG_MEMO_LIST {
+            return true;
+        }
+        let mut size = (header >> 20) as usize;
+        if size == 0xFFF {
+            let Some(ext) = data.get(pos..pos + 4) else {
+                return false;
+            };
+            size = u32::from_le_bytes([ext[0], ext[1], ext[2], ext[3]]) as usize;
+            pos += 4;
+        }
+        let Some(next) = pos.checked_add(size) else {
+            return false;
+        };
+        pos = next;
+    }
+    false
 }
 
 /// HWP 마지막 구역 끝에 쓸 메모 묶음: 문서 순서 메모 필드 본문 + 앵커 없는 메모 본문.
@@ -246,5 +275,28 @@ mod tests {
         let mut plain = doc_with(&[]);
         plain.sections[0].raw_stream = None;
         assert!(!hwp_must_rewrite_last_section(&plain));
+    }
+
+    #[test]
+    fn last_section_with_stale_memo_tail_is_rewritten_after_last_memo_is_removed() {
+        use crate::parser::tags::{HWPTAG_MEMO_LIST, HWPTAG_PARA_HEADER};
+        let record = |tag: u16, level: u32, data: &[u8]| {
+            let header = tag as u32 | (level << 10) | ((data.len() as u32) << 20);
+            let mut out = header.to_le_bytes().to_vec();
+            out.extend_from_slice(data);
+            out
+        };
+        let mut tail = record(HWPTAG_PARA_HEADER, 0, &[0; 22]);
+        tail.extend(record(HWPTAG_MEMO_LIST, 1, &1u32.to_le_bytes()));
+        let mut doc = doc_with(&[]);
+        doc.sections[1].raw_stream = Some(tail);
+        assert!(!hwp_must_rewrite_last_section(&doc), "nothing edited");
+        doc.sections[0].raw_stream = None;
+        assert!(
+            hwp_must_rewrite_last_section(&doc),
+            "stale memo body in the last section must not survive"
+        );
+        doc.sections[1].raw_stream = Some(record(HWPTAG_PARA_HEADER, 0, &[0; 22]));
+        assert!(!hwp_must_rewrite_last_section(&doc), "no memo tail");
     }
 }

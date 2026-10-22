@@ -196,3 +196,28 @@ fn pasted_copy_of_a_memo_gets_its_own_index() {
         "the copy carries the same body"
     );
 }
+
+#[test]
+fn removing_the_last_memo_by_a_plain_edit_drops_its_body_from_the_hwp() {
+    // 메모 1개가 마지막이 아닌 구역(표 안)에 있는 문서. 메모 API 를 거치지 않고 앵커가 든
+    // 문단을 지우면 메모가 0개가 되는데, 마지막 구역 원본 꼬리를 그대로 쓰면 지운 메모
+    // 본문이 파일에 남는다.
+    let mut doc = load_doc("samples/task2287/1342000_edu_curriculum_map.hwp");
+    let memos = doc.memo_note_list();
+    assert_eq!(memos.len(), 1);
+    let anchor = memos[0].anchor.clone().expect("anchor");
+    assert!(anchor.section_idx + 1 < doc.document().sections.len());
+    doc.delete_paragraph_native(anchor.section_idx, anchor.para_idx)
+        .unwrap();
+    assert!(doc.memo_note_list().is_empty());
+
+    let reloaded = save_and_reload_hwp(&doc);
+    let after = reloaded.document();
+    assert_eq!(
+        memo_list_records_per_section(after).iter().sum::<usize>(),
+        0,
+        "deleted memo body left in the saved file"
+    );
+    assert!(after.orphan_memo_lists.is_empty());
+    assert!(reloaded.memo_note_list().is_empty());
+}

@@ -225,3 +225,83 @@ fn body_of(doc: &HwpDocument, field_id: u32) -> Vec<rhwp::model::paragraph::Para
     }
     out
 }
+
+/// 메모 앵커 글자를 모두 지운 뒤 같은 자리에 새 글자를 치면, 저장본에서도 메모가 새 글자에
+/// 달려 있어야 한다 (앵커가 뒤로 밀린 빈 범위가 되거나, HWPX 에서 fieldEnd 가 fieldBegin
+/// 보다 먼저 쓰이면 안 된다).
+fn assert_retyped_anchor_survives(label: &str, mut doc: HwpDocument, memo: MemoNoteInfo) {
+    let a = memo.anchor.clone().unwrap();
+    doc.delete_text_native(
+        a.section_idx,
+        a.para_idx,
+        a.start_char_idx,
+        a.end_char_idx - a.start_char_idx,
+    )
+    .unwrap();
+    doc.insert_text_native(a.section_idx, a.para_idx, a.start_char_idx, "NEW")
+        .unwrap();
+    let anchor_of = |list: Vec<MemoNoteInfo>| {
+        let m = list
+            .into_iter()
+            .find(|m| m.text == memo.text)
+            .expect("retyped memo");
+        let anchor = m.anchor.expect("anchor");
+        (
+            m.anchor_text,
+            anchor.section_idx,
+            anchor.para_idx,
+            anchor.start_char_idx,
+            anchor.end_char_idx,
+        )
+    };
+    let want = (
+        "NEW".to_string(),
+        a.section_idx,
+        a.para_idx,
+        a.start_char_idx,
+        a.start_char_idx + 3,
+    );
+    assert_eq!(anchor_of(doc.memo_note_list()), want, "{label}: in memory");
+    for (format, reloaded) in ["hwp", "hwpx"].iter().zip(reload_both(&doc)) {
+        assert_eq!(
+            anchor_of(reloaded.memo_note_list()),
+            want,
+            "{label}: {format} reload"
+        );
+    }
+}
+
+#[test]
+fn retyping_deleted_anchor_text_keeps_the_memo_on_the_new_text() {
+    // 문단 끝 앵커 (한컴 저장본 메모)
+    let doc = load_doc("samples/basic/NewYear_s_Day.hwp");
+    let memo = doc.memo_note_list().remove(0);
+    let a = memo.anchor.as_ref().unwrap();
+    assert_eq!(
+        a.end_char_idx,
+        doc.document().sections[a.section_idx].paragraphs[a.para_idx]
+            .text
+            .chars()
+            .count(),
+        "fixture: anchor ends the paragraph"
+    );
+    assert_retyped_anchor_survives("paragraph end", doc, memo);
+
+    // 문단 중간 앵커 (새로 단 메모)
+    let mut doc = load_doc("samples/basic/request.hwp");
+    let (s, p) = plain_body_paragraph(&doc, 8);
+    let path = MemoNotePath {
+        section_idx: s,
+        para_idx: p,
+        cell_path: None,
+    };
+    let id = doc
+        .insert_memo_note(&path, 2, 5, "MID", Some("me"))
+        .unwrap();
+    let memo = doc
+        .memo_note_list()
+        .into_iter()
+        .find(|m| m.field_id == id)
+        .unwrap();
+    assert_retyped_anchor_survives("mid paragraph", doc, memo);
+}

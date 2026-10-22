@@ -428,6 +428,32 @@ impl DocumentCore {
         }
     }
 
+    /// 범위 `[start, end)` 에 새 메모를 달 수 있는지 미리 본다 (문서는 바꾸지 않는다).
+    /// 편집기가 새 메모 풍선을 열기 전에 불러, 확정할 때에야 실패해 입력이 버려지지 않게 한다.
+    pub fn check_memo_note_range(
+        &self,
+        path: &MemoNotePath,
+        start: usize,
+        end: usize,
+    ) -> Result<(), HwpError> {
+        let target = path.target();
+        self.validate_hyperlink_paragraph(&target)?;
+        let para = self.hyperlink_paragraph(&target)?;
+        let len = para.text.chars().count();
+        if start >= end || end > len {
+            return Err(invalid("메모는 문단 안의 비어 있지 않은 범위가 필요합니다"));
+        }
+        if para.field_ranges.iter().any(|r| {
+            (start < r.end_char_idx && r.start_char_idx < end)
+                || (r.start_char_idx == r.end_char_idx
+                    && start <= r.start_char_idx
+                    && r.start_char_idx < end)
+        }) {
+            return Err(invalid("기존 필드와 겹치는 범위에는 메모를 달 수 없습니다"));
+        }
+        Ok(())
+    }
+
     /// 범위 `[start, end)` 에 메모를 단다. 새 메모의 fieldId 를 돌려준다.
     pub fn insert_memo_note(
         &mut self,
@@ -437,21 +463,9 @@ impl DocumentCore {
         text: &str,
         author: Option<&str>,
     ) -> Result<u32, HwpError> {
+        self.check_memo_note_range(path, start, end)?;
         let target = path.target();
-        self.validate_hyperlink_paragraph(&target)?;
         let mut candidate = self.hyperlink_paragraph(&target)?.clone();
-        let len = candidate.text.chars().count();
-        if start >= end || end > len {
-            return Err(invalid("메모는 문단 안의 비어 있지 않은 범위가 필요합니다"));
-        }
-        if candidate.field_ranges.iter().any(|r| {
-            (start < r.end_char_idx && r.start_char_idx < end)
-                || (r.start_char_idx == r.end_char_idx
-                    && start <= r.start_char_idx
-                    && r.start_char_idx < end)
-        }) {
-            return Err(invalid("기존 필드와 겹치는 범위에는 메모를 달 수 없습니다"));
-        }
         let field_id = self.next_field_id()?;
         let memo_index = self.next_memo_index();
         let command = MemoCommand::new(
