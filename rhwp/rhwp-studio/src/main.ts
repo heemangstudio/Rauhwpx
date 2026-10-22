@@ -2374,6 +2374,7 @@ function installChatAgent(
     // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
     claimDocumentWrite: () => chat !== undefined && claimDocumentWriter(session, chat),
     turnCheckpoints: session.turnCheckpoints,
+    undoHistory: () => session.editorState.history,
     foreignDocuments: foreignDocumentsFor(session),
     // 문서 없는 채팅의 open_document·create_document — 이 채팅의 문서 세션에 열고 잇는다.
     linkDocument: (request) => (chat ? linkChatDocument(chat, request) : Promise.reject(linkError('LINK_UNAVAILABLE'))),
@@ -2407,8 +2408,14 @@ function installChatAgent(
     interruptionScope: () => interruptionScope,
     ownsWindowSession: claimBootReconcile(hubSession),
     turnRestore: {
-      noteTurnStart: (threadId, key) => session.turnCheckpoints.noteTurnStart(threadId, key),
-      rebindTurn: (threadId, fromKey, toKey) => session.turnCheckpoints.rebindTurn(threadId, fromKey, toKey),
+      noteTurnStart: (threadId, key) => {
+        session.turnCheckpoints.noteTurnStart(threadId, key);
+        bridge.noteTurnKey(threadId, key);
+      },
+      rebindTurn: (threadId, fromKey, toKey) => {
+        session.turnCheckpoints.rebindTurn(threadId, fromKey, toKey);
+        bridge.noteTurnKeyRebound(threadId, fromKey, toKey);
+      },
       status: (threadId, key) => session.turnCheckpoints.status(threadId, key),
       check: (threadId, key) => checkTurnRestore(session.turnCheckpoints, threadId, key, restoreGates),
       restore: (threadId, key) => {
@@ -2417,6 +2424,7 @@ function installChatAgent(
         // 되돌리기를 실행 취소하면 안내도 거둔다.
         if (result.ok) {
           bridge.noteDocumentRestored(threadId, () => session.turnCheckpoints.restoreStillApplies(threadId, key));
+          bridge.noteTurnRestored(threadId, key);
         }
         return result;
       },

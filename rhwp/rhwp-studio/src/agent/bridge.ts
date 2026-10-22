@@ -35,6 +35,7 @@ import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
 import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import { ReviewSignalOutbox, TasteSignalCollector, wasmParagraphReader } from './taste-signals.ts';
 import {
   createTurnFailureCollector,
   isProviderHubErrorCode,
@@ -312,7 +313,8 @@ export type ChatCompactResult =
   | { ok: false; code: string; message: string };
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
 type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
-  | 'holdsDocumentWrites' | 'noteDocumentRestored' | 'flashJumpTarget';
+  | 'holdsDocumentWrites' | 'noteDocumentRestored' | 'noteTurnKey' | 'noteTurnKeyRebound' | 'noteTurnRestored'
+  | 'flashJumpTarget';
 
 /** Frontend consumers only need the pending-edit review surface. */
 export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
@@ -431,6 +433,12 @@ export interface AgentBridge {
    * (없으면 지금 스레드)다. stillApplies 가 false 를 돌려주면(되돌리기를 실행 취소했다) 안내를 버린다.
    */
   noteDocumentRestored(threadId?: string, stillApplies?: () => boolean): void;
+  /** 요청 말풍선(turnKey)이 방금 시작된 턴에 묶였다 — 취향 신호가 되돌린 턴을 찾는 데 쓴다. */
+  noteTurnKey(threadId: string, key: string | null): void;
+  /** 허브가 요청 말풍선의 turnKey 를 바꿨다. */
+  noteTurnKeyRebound(threadId: string, fromKey: string, toKey: string | null): void;
+  /** "이 작업 전으로 되돌리기"가 그 요청의 턴을 되돌렸다. */
+  noteTurnRestored(threadId: string, key: string): void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -1574,6 +1582,9 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly turnCheckpoints?: TurnCheckpointPort;
   /** 턴 체크포인트에 알린 마지막 검토 set 목록 — 사라진 set 을 거절·폐기로 알린다. */
   private checkpointSetIds = new Set<string>();
+  /** 취향 학습 신호 — 승인·거절·고쳐 쓰기·되돌리기를 모아 chat-review-signal 로 보낸다. */
+  private readonly tasteSignals: TasteSignalCollector;
+  private readonly reviewSignals: ReviewSignalOutbox;
   /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 그 스레드의 다음 사용자 메시지 앞에 붙는다. */
   private restoredNotice: RestoredNotice | null = null;
   /** 안내를 싣고 나갔지만 아직 턴이 열리지 않은 메시지 — 허브가 거절하면 안내를 다시 건다. */
@@ -1876,6 +1887,21 @@ export class AgentBridgeImpl implements AgentBridge {
       this.settleCheckpointSets(e);
       this.scheduleBusyCheck();
     });
+    this.reviewSignals = new ReviewSignalOutbox({
+      send: (frame) => this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-review-signal', ...frame }),
+      canSend: () => this.state === 'connected' && !this.awaitingWelcome,
+      documentId: () => this.documentId,
+    });
+    this.tasteSignals = new TasteSignalCollector({
+      pending: this.pendingEdits,
+      eventBus: deps.eventBus,
+      reader: wasmParagraphReader(deps.wasm),
+      caret: () => (this.view ? this.editor.getCursorPosition() : null),
+      turnContext: () => ({ threadId: this.turnThreadId ?? this.threadId, turnId: this.activeProviderTurnId }),
+      documentInstance: () => deps.wasm.documentInstance,
+      history: () => deps.undoHistory?.() ?? null,
+      emit: (signals, context) => this.reviewSignals.push({ ...context, documentId: this.documentId }, signals),
+    });
     this.ownPendingReview = deps.foreignDocuments?.ownPendingReview;
     this.executor = new AgentToolExecutor({
       wasm: deps.wasm,
@@ -1980,6 +2006,18 @@ export class AgentBridgeImpl implements AgentBridge {
   noteDocumentRestored(threadId: string = this.threadId, stillApplies?: () => boolean): void {
     this.restoredNotice = { threadId, ...(stillApplies ? { stillApplies } : {}) };
     this.restoredNoticeInFlight = null;
+  }
+
+  noteTurnKey(threadId: string, key: string | null): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnKey(threadId, key);
+  }
+
+  noteTurnKeyRebound(threadId: string, fromKey: string, toKey: string | null): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnKeyRebound(threadId, fromKey, toKey);
+  }
+
+  noteTurnRestored(threadId: string, key: string): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnRestored(threadId, key);
   }
 
   holdsDocumentWrites(): boolean {
@@ -2954,6 +2992,7 @@ export class AgentBridgeImpl implements AgentBridge {
         this.awaitingWelcome = false;
         // 끊긴 동안 기억이 바뀌었을 수 있다 — 세션 문서가 정해진 뒤 다시 읽는다.
         queueMicrotask(() => this.loadDocumentMemory(true));
+        this.reviewSignals?.noteConnected();
         // 허브 프로세스가 바뀌었는지는 앞 welcome 의 id 와 견준다 — 아래 일찍 돌아가는 갈래에서도 갱신한다.
         const previousHubInstanceId = this.hubInstanceId ?? null;
         this.hubShuttingDown = false;
@@ -4068,6 +4107,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 보낸 메시지가 연 턴만 '다시 시도' 로 같은 요청을 다시 보낼 수 있다 — 허브가 연 턴은 아니다.
         this.turnFailures().beginTurn(typeof event.turnId === 'string' ? event.turnId : null, this.messageAwaitingTurn);
         this.turnWroteDocument = false;
+        // 앞 턴의 글을 고친 흔적은 지금 내고, 새 턴의 글부터 다시 지켜본다.
+        this.tasteSignals?.noteTurnStart();
         // 끝을 듣지 못한 앞 턴이 다른 스레드의 것이면 그 기록을 닫는다 (같은 스레드는 저장소가 닫는다).
         if (this.turnThreadId !== null && this.turnThreadId !== this.threadId) this.endTurnCheckpoint(this.turnThreadId);
         this.turnThreadId = this.threadId;
@@ -6023,6 +6064,9 @@ export class AgentBridgeImpl implements AgentBridge {
       && (this.activeAgent !== null || this.pendingChatStart !== null || this.turnRunning)) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
     }
+    // 소켓이 아직 열려 있을 때 고친 문단과 모아 둔 취향 신호를 보낸다.
+    this.tasteSignals?.flush();
+    this.reviewSignals?.flush();
     this.disposed = true;
     this.unsubscribeEditLock();
     if (this.documentWriteHoldTimer !== null) clearTimeout(this.documentWriteHoldTimer);
@@ -6066,6 +6110,8 @@ export class AgentBridgeImpl implements AgentBridge {
     this.checkpointSetIds.clear();
     this.pendingChangeUnsub?.();
     this.pendingChangeUnsub = null;
+    this.tasteSignals?.dispose();
+    this.reviewSignals?.dispose();
     for (const off of this.documentNotifyUnsubs) off();
     this.documentNotifyUnsubs = [];
     this.editFollow.dispose();
