@@ -484,6 +484,7 @@ class AgentHubOwner {
         RHWP_RUNTIME_DIR: runtimeDir,
         RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
+        RHWP_DOCUMENT_MEMORY_DIR: join(app.getPath('userData'), 'document-memory'),
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
         RHWP_SECRET_BROKER: 'ipc',

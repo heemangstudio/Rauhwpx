@@ -14,12 +14,14 @@ const ROOT_ONLY_TOOLS = new Set([
   'update_todos',
   'register_copy_layout_template',
   'update_agent_instructions',
+  'update_document_memory',
   'commit_product_skill',
   'browser_request_account',
   'request_secret',
 ]);
 const CHILD_DOCUMENT_CATEGORIES = new Set([
   'instruction-read',
+  'memory-read',
   'document-read',
   'document-write',
   'reference-read',

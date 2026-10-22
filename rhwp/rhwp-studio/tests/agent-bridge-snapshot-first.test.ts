@@ -559,7 +559,7 @@ for (const action of ['approve', 'request-changes'] as const) {
     if (action === 'approve') f.bridge.approvePlan('plan-1');
     else f.bridge.requestPlanChanges('plan-1', '표 하나를 더 넣어 주세요');
     const order = f.socket.sent
-      .filter((frame) => frame.type !== 'chat-start' && frame.type !== 'project-bind')
+      .filter((frame) => frame.type !== 'chat-start' && frame.type !== 'project-bind' && frame.type !== 'document-memory-request')
       .map((frame) => frame.type === 'chat-template-set' ? `template:${frame.templateId}` : frame.type);
     assert.deepEqual(order, ['template:template-1', action === 'approve' ? 'chat-plan-approve' : 'chat-plan-request-changes']);
     // 허브가 받았다고 답하면 다음 승인은 다시 보내지 않는다.
@@ -585,7 +585,7 @@ test('a stop between the socket opening and the welcome is the user’s stop, no
   assert.equal(f.bridge.isTurnRunning(), false, '허브가 아직 모르는 멈춤은 여기서 턴을 닫는다');
   next.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session() });
   await settle();
-  assert.deepEqual(next.sent.filter((frame) => frame.type !== 'project-bind').map((frame) => frame.type), ['chat-stop']);
+  assert.deepEqual(next.sent.filter((frame) => frame.type !== 'project-bind' && frame.type !== 'document-memory-request').map((frame) => frame.type), ['chat-stop']);
   assert.deepEqual(
     f.events.filter((event) => event.type === 'agent').map((event) => event.event),
     [],
@@ -658,7 +658,7 @@ test('reload: the sidebar reopening the live chat before a late welcome adopts i
   f.socket.open();
   f.socket.receive({ type: 'welcome', protocol: 5, hubInstanceId: 'hub-1', session: session({ pendingUserQuestion: question() }) });
   await settle();
-  assert.deepEqual(f.socket.sent.filter((frame) => frame.type !== 'project-bind').map((frame) => frame.type), [], 'neither chat-stop nor chat-start kills the running turn');
+  assert.deepEqual(f.socket.sent.filter((frame) => frame.type !== 'project-bind' && frame.type !== 'document-memory-request').map((frame) => frame.type), [], 'neither chat-stop nor chat-start kills the running turn');
   assert.equal(f.bridge.isTurnRunning(), true);
   assert.equal(f.bridge.getPendingUserQuestion()?.interactionId, 'question-1', 'its question stays open');
   f.bridge.dispose();

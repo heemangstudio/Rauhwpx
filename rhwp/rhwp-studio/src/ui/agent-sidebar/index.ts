@@ -12,6 +12,7 @@ import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
+import { openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
 import { installSelectMenus } from './select-menu.ts';
 import { saveArchiveConfirmChoice, shouldConfirmArchive } from './archive-confirm.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
@@ -491,6 +492,8 @@ export interface DocumentDetachStart {
 export interface AgentSidebarHandle {
   root: HTMLElement;
   openVersions(): void;
+  /** 이 채팅 문서의 문서 기억 시트를 연다. 문서가 없으면 아무것도 하지 않는다. */
+  openDocumentMemory(): void;
   openWorkbench(view: WorkbenchView): void;
   /** 집중 보기로 들어가 프로젝트 칸을 연다. target 이 있으면 그 항목의 미리보기까지 연다. */
   openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void;
@@ -2229,6 +2232,37 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   bindDocumentRename(documentName);
 
+  /** 이 채팅 문서의 문서 기억 시트. 하나만 띄운다. */
+  let documentMemorySheet: DocumentMemorySheetHandle | null = null;
+  /** 문서 기억 시트를 이 채팅의 문서로 연다. 문서가 없으면 아무것도 하지 않는다. */
+  function openDocumentMemory(): void {
+    if (root.dataset.disposed === 'true') return;
+    const documentId = getDocumentContext?.()?.documentId ?? currentThread.documentId;
+    if (!documentId) return;
+    documentMemorySheet?.close();
+    const sheet = openDocumentMemorySheet({ bridge, documentId, anchor: root });
+    documentMemorySheet = sheet;
+    void sheet.closed.then(() => {
+      if (documentMemorySheet === sheet) documentMemorySheet = null;
+    });
+  }
+
+  /** 머리의 문서 이름을 우클릭하면 그 문서의 메뉴를 연다. */
+  function bindDocumentNameMenu(target: HTMLElement): void {
+    target.addEventListener('contextmenu', (event) => {
+      if (isRenaming(target)) return;
+      const documentId = getDocumentContext?.()?.documentId ?? currentThread.documentId;
+      if (!documentId || !getDocumentContext?.()?.documentName) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void showContextMenu([{ id: 'memory', label: '문서 기억' }], contextMenuAnchor(event, target))
+        .then((choice) => {
+          if (choice === 'memory') openDocumentMemory();
+        });
+    });
+  }
+  bindDocumentNameMenu(documentName);
+
   const headerActions = el('div', 'ag-header-actions');
   threadsBtn.classList.add('ag-header-icon-btn');
 
@@ -3036,6 +3070,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   bindChatTitleRename(workspaceChatTitle);
   bindChatTitleRename(chatTitle);
   bindDocumentRename(workspaceDocumentName);
+  bindDocumentNameMenu(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
   const workspaceTitle = el('div', 'ag-workspace-title');
@@ -8864,11 +8899,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const isCurrent = threadMatchesDocument(sample, currentDocumentId, currentDocKey);
     const choice = await showContextMenu([
       { id: 'open', label: '문서 열기', enabled: !isCurrent && canFollowThreadDocument(sample) },
+      { id: 'memory', label: '문서 기억', enabled: isCurrent },
       { type: 'separator' },
       { id: 'archive', label: '채팅 기록 삭제', danger: true },
     ], anchor);
     if (choice === 'open') {
       void moveToDocument({ documentId: sample.documentId, fileName: sample.docKey });
+    } else if (choice === 'memory') {
+      openDocumentMemory();
     } else if (choice === 'archive') {
       void archiveDocumentGroup(sample);
     }
@@ -13681,6 +13719,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setCollapsed(false);
       openConfiguredVersionControl();
     },
+    openDocumentMemory,
     openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void {
       if (root.dataset.disposed === 'true' || !projectHost) return;
       projectHost.open(target, tab);

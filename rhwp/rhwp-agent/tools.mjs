@@ -575,6 +575,8 @@ const EQUATION_SYNTAX = 'Syntax: 한컴 수식, NOT LaTeX: {a} over {b} · sqrt 
 export const TOOL_CATEGORIES = Object.freeze([
   'instruction-read',
   'instruction-write',
+  'memory-read',
+  'memory-write',
   'document-read',
   'document-write',
   'reference-read',
@@ -601,11 +603,11 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'} category
+ * @param {'instruction-read'|'instruction-write'|'memory-read'|'memory-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'} category
  */
 export function toolAnnotations(category) {
   return {
-    readOnlyHint: category === 'instruction-read' || category === 'document-read' || category === 'reference-read'
+    readOnlyHint: category === 'instruction-read' || category === 'memory-read' || category === 'document-read' || category === 'reference-read'
       || category === 'template-read' || category === 'project-read',
     destructiveHint: category === 'download-write',
     openWorldHint: category === 'browser' || category === 'download-write' || category === 'project-ingest',
@@ -670,6 +672,26 @@ const BASE_TOOL_DEFINITIONS = [
       content: z.string().max(30_000).describe('Replacement AGENTS.md content'),
       expectedRevision: z.number().int().min(1).describe('From read_agent_instructions'),
       reason: z.string().min(1).optional(),
+    },
+  },
+  {
+    name: 'read_document_memory',
+    description: 'Read this document\'s memory notes and revision.',
+    shape: {},
+  },
+  {
+    name: 'update_document_memory',
+    description: 'Add, update or remove this document\'s memory notes: short 개조식 lines such as "본문은 한다체 사용". Allowed in every mode, also 채팅 and 플랜; it never changes the document. One note per subject; adding an existing subject updates it. anchor ties a note to a quote that must stay in the document. Never one-off task details.',
+    shape: {
+      ops: z.array(z.object({
+        op: z.enum(['add', 'update', 'remove']),
+        id: z.string().max(64).optional(),
+        kind: z.enum(['decision', 'term', 'protect', 'style', 'fact']).optional(),
+        subject: z.string().max(60).optional().describe('e.g. 문체.종결, 용어.고객'),
+        text: z.string().max(300).optional(),
+        anchor: z.object({ quote: z.string().max(120), paraIdx: z.number().int().optional() }).nullable().optional(),
+      }).strict()).min(1).max(40),
+      expectedRevision: z.number().int().min(0),
     },
   },
   {
@@ -2002,10 +2024,12 @@ const BASE_TOOL_DEFINITIONS = [
   },
 ];
 
-/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'>>} */
+/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'memory-read'|'memory-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
   update_agent_instructions: 'instruction-write',
+  read_document_memory: 'memory-read',
+  update_document_memory: 'memory-write',
   read_product_skill: 'document-read',
   commit_product_skill: 'instruction-write',
   list_harness_skills: 'instruction-read',
@@ -2134,11 +2158,11 @@ const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'proj
 
 // 문서 연결: open_document·detach_document 는 모든 채팅 단계에, create_document 는 문서를 쓸 수 있는 단계(direct·implementing)에만 보인다.
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['memory-read', 'memory-write', 'browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['memory-read', 'memory-write', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['memory-read', 'memory-write', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['memory-read', 'memory-write', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  implementing: Object.freeze(['memory-read', 'memory-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',
@@ -2152,6 +2176,7 @@ export const TOOL_PROFILES = Object.freeze({
     'browser',
     'download-write',
     'instruction-read',
+    'memory-read',
     'document-read',
     'reference-read',
     'template-read',

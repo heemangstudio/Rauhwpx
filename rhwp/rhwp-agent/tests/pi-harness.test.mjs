@@ -252,7 +252,7 @@ test('context hygiene drops images the model already saw and keeps tool-call pai
 
 test('reads run in parallel, everything else in order', () => {
   for (const def of DEFINITIONS) {
-    const expected = ['document-read', 'reference-read', 'template-read', 'instruction-read'].includes(def.category)
+    const expected = ['document-read', 'reference-read', 'template-read', 'instruction-read', 'memory-read'].includes(def.category)
       ? 'parallel'
       : 'sequential';
     assert.equal(toolExecutionModeFor(def.category), expected, def.name);

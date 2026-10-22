@@ -536,6 +536,8 @@ const SPECS: Record<string, ToolSpec> = {
   // 지시·스킬·참고 자료
   read_agent_instructions: { category: 'read', label: '지시 읽기' },
   update_agent_instructions: { category: 'other', label: '지시 변경 제안' },
+  read_document_memory: { category: 'read', label: '기억 읽기' },
+  update_document_memory: { category: 'other', label: '기억 기록' },
   read_product_skill: { category: 'read', label: '스킬 읽기', summary: (a) => join([str(a['name']), str(a['resourcePath']) !== 'SKILL.md' ? str(a['resourcePath']) : '']) },
   commit_product_skill: { category: 'other', label: '스킬 변경', summary: (a) => join([str(a['name']), str(a['action'])]) },
   list_harness_skills: { category: 'read', label: '하네스 스킬 목록' },
