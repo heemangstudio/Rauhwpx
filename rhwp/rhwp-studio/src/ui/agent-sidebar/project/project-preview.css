@@ -262,15 +262,24 @@
   overflow: hidden;
 }
 
+/*
+ * 폭을 끄는 동안 루트에 걸리는 폭 변수를 여기서 끊어, 수만 칸이 프레임마다 다시 스타일을 타지 않게 한다.
+ * 표 안에서는 이 변수들을 쓰지 않는다.
+ */
 .ag-pp-csv {
+  --ag-review-w: initial;
+  --ag-root-width: initial;
+  --ag-rail-w: initial;
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  contain: strict;
 }
 
+/* 표 폭은 내용으로만 정한다. 상자 폭을 따르면 폭을 바꿀 때마다 모든 칸을 다시 짠다. */
 .ag-pp-csv-table {
-  min-width: 100%;
+  width: max-content;
   border-collapse: separate;
   border-spacing: 0;
   font-size: var(--ag-fs-secondary);
