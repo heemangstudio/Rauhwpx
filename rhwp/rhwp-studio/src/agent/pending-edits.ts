@@ -937,7 +937,12 @@ export class PendingEditManager {
    * 배치 전후 문단 지문을 비교해 바뀐 구간을 표시하고, 그 뒤 문단을 가리키는 다른
    * pending op 좌표를 민다.
    */
-  addEngineBatch<T>(agent: AgentName, methods: string[], run: () => T): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
+  addEngineBatch<T>(
+    agent: AgentName,
+    methods: string[],
+    run: () => T,
+    opts?: { memoFieldIds?: (result: T) => number[] },
+  ): { changeSetId: string; result: T; touched: EngineBatchSpan[] } {
     const wasm = this.deps.wasm;
     const digestsBefore = this.bodyDigests();
     this.beginMutation();
@@ -965,8 +970,10 @@ export class PendingEditManager {
         for (const shift of diff.shifts) shifts.push({ sectionIdx, ...shift });
       }
     }
+    const memoFieldIds = opts?.memoFieldIds?.(result) ?? [];
     const obj: ObjectOp = {
       type: 'engineBatch', sectionIdx: touched[0]?.sectionIdx ?? 0, methods, touched, shifts,
+      ...(memoFieldIds.length > 0 ? { memoFieldIds } : {}),
     };
     const set = this.ensureOpenSet(agent);
     const op: PendingOp = { kind: 'object', id: this.nextId('op'), agent: set.agent, obj,
@@ -1416,6 +1423,18 @@ export class PendingEditManager {
       drops,
       leftInDocument,
     });
+  }
+
+  /** 검토를 기다리는 메모 쓰기(set_memo insert/edit)의 fieldId — 메모 풍선에 대기 표시를 한다. */
+  pendingMemoFieldIds(): number[] {
+    const ids: number[] = [];
+    for (const set of this.sets) {
+      if (this.directApply && set === this.open) continue;
+      for (const op of set.ops) {
+        if (op.kind === 'object' && op.obj.type === 'engineBatch') ids.push(...(op.obj.memoFieldIds ?? []));
+      }
+    }
+    return ids;
   }
 
   onChange(cb: (e: PendingEditsChangeEvent) => void): () => void {

@@ -2271,6 +2271,11 @@ async function mergeWorktreeSession(requested: VersionWorktree): Promise<void> {
 
 type ChatPendingChange = Parameters<Parameters<ChatSession['bridge']['pendingEdits']['onChange']>[0]>[0];
 
+/** 이 문서의 채팅들이 검토를 기다리는 메모를 메모 풍선에 표시한다. */
+function syncPendingMemos(session: DocumentSession): void {
+  getMemoOverlay()?.setPendingFieldIds(session.chats.flatMap((chat) => chat.bridge.pendingEdits.pendingMemoFieldIds()));
+}
+
 /** 문서마다 그 문서 채팅들의 이벤트를 모아 듣는 곳 (나중에 생긴 채팅도 포함). */
 const documentTaps = new WeakMap<DocumentSession, {
   events: Set<(event: AttentionEvent) => void>;
@@ -2537,6 +2542,7 @@ function installChatAgent(
     bridge.pendingEdits.onChange((event) => {
       for (const listener of taps.pending) listener(event);
       notifyChatModeLock(session, created);
+      if (session === attachedSession) syncPendingMemos(session);
     }),
   );
   notifyChatModeLock(session, created);
@@ -3515,6 +3521,7 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
       next.wasm.refreshLayout();
       totalSections = info.sectionCount ?? 1;
       await canvasView.loadDocument(next.viewState);
+      syncPendingMemos(next);
       getMemoOverlay()?.scheduleRender();
       viewReady = true;
     }

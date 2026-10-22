@@ -1686,6 +1686,8 @@ export type ObjectOp =
        * delta 만큼 밀었고, 스냅샷 복원 뒤 거꾸로 되민다.
        */
       shifts: Array<{ sectionIdx: number; from: number; delta: number }>;
+      /** 메모 도구(set_memo insert/edit)가 만든 배치면 그 메모 — 풍선에 검토 대기 표시 */
+      memoFieldIds?: number[];
     };
 
 export interface EngineBatchSpan {

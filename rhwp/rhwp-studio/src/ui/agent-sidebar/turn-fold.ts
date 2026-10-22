@@ -82,6 +82,7 @@ const CATEGORIES = {
   footnoteEdit: counted('edit', (n) => `각주 ${n}개 수정`),
   fieldSet: counted('edit', (n) => `필드 ${n}개 입력`),
   bookmarkEdit: counted('edit', (n) => `책갈피 ${n}개 수정`),
+  memoEdit: counted('edit', (n) => `메모 ${n}개 수정`),
   headerFooter: plain('edit', '머리말·꼬리말 수정'),
   pageSetup: plain('edit', '쪽 설정 변경'),
   templateInsert: counted('edit', (n) => `서식 틀 내용 ${n}곳 가져옴`),
@@ -145,6 +146,7 @@ export const TURN_SUMMARY_IGNORED_TOOLS: ReadonlySet<string> = new Set([
 
 const DOCUMENT_READ_TOOLS = new Set([
   'get_document_info', 'get_outline', 'get_fields', 'list_styles', 'list_numberings', 'list_footnotes', 'list_bookmarks',
+  'list_memos',
 ]);
 const REFERENCE_READ_TOOLS = new Set(['list_reference_files', 'read_reference_chunk', 'read_reference_image', 'project_read']);
 const COPY_LAYOUT_TOOLS = new Set([
@@ -329,6 +331,8 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
       return [{ category: 'fieldSet', keys: [str(a['name']) || unique] }];
     case 'set_bookmark':
       return [{ category: 'bookmarkEdit', keys: [str(a['name']) || unique] }];
+    case 'set_memo':
+      return [{ category: 'memoEdit', keys: [index(a['fieldId']) !== null ? `memo|${index(a['fieldId'])}` : unique] }];
     case 'apply_engine_edits': {
       const operations = Array.isArray(a['operations']) ? a['operations'].length : 0;
       return [{ category: 'engineEdit', keys: Array.from({ length: Math.max(1, operations) }, (_, i) => `${unique}:${i}`) }];

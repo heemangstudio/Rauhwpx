@@ -360,6 +360,7 @@ const SPECS: Record<string, ToolSpec> = {
   get_outline: { category: 'read', label: '개요 읽기' },
   list_footnotes: { category: 'read', label: '각주 목록 읽기' },
   list_bookmarks: { category: 'read', label: '책갈피 목록 읽기' },
+  list_memos: { category: 'read', label: '메모 목록 읽기' },
   materialize_document_snapshot: { category: 'read', label: '문서 사본 만들기' },
   read_batch: {
     category: 'read',
@@ -420,6 +421,11 @@ const SPECS: Record<string, ToolSpec> = {
     category: 'edit',
     label: (a) => str(a['op']) === 'delete' ? '책갈피 삭제' : str(a['op']) === 'rename' ? '책갈피 이름 변경' : '책갈피 추가',
     summary: (a) => str(a['newName']) ? `${quote(str(a['name']))} → ${quote(str(a['newName']))}` : join([quote(str(a['name'])), para(a)]),
+  },
+  set_memo: {
+    category: 'edit',
+    label: (a) => str(a['op']) === 'delete' ? '메모 지우기' : str(a['op']) === 'edit' ? '메모 고치기' : '메모 넣기',
+    summary: (a) => join([str(a['op']) === 'insert' ? para(a) : '', quote(str(a['text']))]),
   },
   edit_header_footer: {
     category: 'edit',
@@ -1001,6 +1007,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
       return countText(count(result['numberings']), '번호', '번호 없음');
     case 'list_bookmarks':
       return countText(count(result['bookmarks']), '책갈피', '책갈피 없음');
+    case 'list_memos':
+      return countText(count(result['memos']), '메모', '메모 없음');
     case 'list_footnotes':
       return countText(count(result['notes']), '각주', '각주 없음');
     case 'get_fields':

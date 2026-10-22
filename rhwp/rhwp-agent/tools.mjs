@@ -64,6 +64,7 @@ export const BATCHABLE_READ_TOOL_NAMES = Object.freeze([
   'get_outline',
   'list_footnotes',
   'list_bookmarks',
+  'list_memos',
   'preview_equation',
   'verify_changes',
 ]);
@@ -921,7 +922,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'get_fields',
-    description: `List form fields: fieldId, fieldType, name, guide, value and location.`,
+    description: `List form fields: fieldId, fieldType, name, guide, value and location. Memos have fieldType "memo"; bodies via list_memos.`,
     shape: {},
   },
   {
@@ -1661,6 +1662,35 @@ const BASE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'list_memos',
+    description: `List memos (balloon comments): fieldId, author, createdAt, text, anchorText, anchor {sectionIdx, paraIdx, startOffset, endOffset, cell/cellPath} (null outside body and tables).`,
+    shape: {},
+  },
+  {
+    name: 'set_memo',
+    description: `Insert (sectionIdx/paraIdx/startOffset/endOffset, cell/cellPath in tables, text), edit (fieldId, text) or delete (fieldId; anchor text stays) a memo. text is plain; "\\n" splits body paragraphs. ${WRITE_POINTER}`,
+    shape: {
+      expectedRevision: z.number().int(),
+      render: renderParam(),
+      op: z.enum(['insert', 'edit', 'delete']),
+      fieldId: z.number().int().optional(),
+      sectionIdx: z.number().int().optional(),
+      paraIdx: z.number().int().optional(),
+      startOffset: z.number().int().optional(),
+      endOffset: z.number().int().optional(),
+      cell: cellParam(),
+      cellPath: cellPathParam(),
+      text: z.string().min(1).optional(),
+    },
+    validate: (args) => {
+      const required = args.op === 'insert' ? ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset', 'text']
+        : args.op === 'edit' ? ['fieldId', 'text'] : ['fieldId'];
+      for (const key of required) {
+        if (args[key] === undefined) throw Object.assign(new Error(`op "${args.op}" requires ${key}`), { code: 'INVALID_ARGS' });
+      }
+    },
+  },
+  {
     name: 'set_field_value',
     description: `Set a form field's value by field name. ${WRITE_POINTER}`,
     shape: {
@@ -2016,6 +2046,8 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   edit_footnote: 'document-write',
   list_bookmarks: 'document-read',
   set_bookmark: 'document-write',
+  list_memos: 'document-read',
+  set_memo: 'document-write',
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
   request_permission: 'user-interaction',
