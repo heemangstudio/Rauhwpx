@@ -49,6 +49,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('context-compacting', 'Context', 'Manual compaction running', 'Inspect the 콘텍스트 압축 중… indicator and locked controls.', { scenario: 'chat', play: '1', context: '92', compact: '1', hold: '1' }),
   scene('context-compacted', 'Context', 'Compaction divider', 'Inspect the divider and the meter after a manual compaction.', { scenario: 'chat', play: '1', context: '92', compact: '1' }),
   scene('context-auto', 'Context', 'Automatic compaction', 'Inspect the divider placed inside a running turn.', { scenario: 'compaction', play: '1' }),
+  scene('memory-saved', 'Context', 'Memory saved', 'Inspect the divider after an update_document_memory call.', { scenario: 'memory', play: '1' }),
   scene('context-handoff', 'Context', 'Provider handoff', 'Inspect the divider where the chat moves from Claude to Codex.', { scenario: 'chat', play: '1', handoff: '1' }),
   scene('panel-skills', 'Panels and menus', 'Skills library', 'Inspect search, enable toggles, editing, and creation.', { surface: 'skills' }),
   scene('panel-references', 'Panels and menus', 'Reference library', 'Inspect file search, attachment controls, and reference details.', { surface: 'references' }),

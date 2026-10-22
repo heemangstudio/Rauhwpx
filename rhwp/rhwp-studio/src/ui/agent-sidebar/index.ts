@@ -119,6 +119,7 @@ import {
   renameThread,
   setThreadTitle,
   addCompactionMarker,
+  addMemoryMarker,
   addHandoffMarker,
   addTasteMarker,
   addStoredTasteHistoryMarker,
@@ -11489,7 +11490,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         if (event.parentTaskId && fleetView.routeToolResult(event)) break;
         recordActivityToolResult(event);
-        resolveToolRow(event);
+        {
+          const savedMemory = event.ok && baseToolName(toolRows.get(event.callId)?.name ?? '') === 'update_document_memory';
+          resolveToolRow(event);
+          if (savedMemory) addMemorySavedMarker(event);
+        }
         break;
       case 'task-start':
         fleetView.taskStart(event);
@@ -11737,6 +11742,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateComposer();
   }
 
+  /** 에이전트가 문서 기억을 저장한 도구 행 바로 뒤에 "기억에 저장됨" 구분선을 긋는다. 압축 구분선과 같은 자리 잡기다. */
+  function addMemorySavedMarker(event: Extract<AgentStreamEvent, { type: 'tool-result' }>): void {
+    if (eventThreadId() === currentThread.id) {
+      flushPendingAssistantRender();
+      flushAssistantBuffer({ kind: 'progress' });
+      compactStreamIntoActivity(event.agent);
+      closeCurrentActivityGroup();
+      streamBubble = null;
+    }
+    updateEventThread((thread) => {
+      const marker = addMemoryMarker(thread, event.callId);
+      if (!marker) return false;
+      if (thread === currentThread) withAutoScroll(() => appendConversation(renderThreadMarker(marker, { live: true })));
+      return true;
+    });
+  }
+
   function compactUnavailableReason(): string | null {
     if (connState !== 'connected') return '허브에 연결되지 않았습니다';
     if (activeCompaction !== null) return '압축하는 중입니다';
@@ -11816,6 +11838,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function threadMarkerLabel(message: ThreadMarkerMessage): string {
     if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
     if (message.marker === 'taste') return tasteMarkerLabel(message.items.length);
+    if (message.marker === 'memory') return '기억에 저장됨';
     return message.beforeTokens !== undefined && message.afterTokens !== undefined
       ? `콘텍스트 압축됨 · ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
       : '콘텍스트 압축됨';
@@ -11833,7 +11856,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     row.setAttribute('role', 'separator');
     row.setAttribute('aria-label', label);
     if (message.marker === 'compaction') row.dataset.compactionId = message.compactionId;
-    let icon: Element = message.marker === 'handoff' ? createProviderIcon(message.to) : createIcon('contract');
+    let icon: Element = message.marker === 'handoff' ? createProviderIcon(message.to)
+      : createIcon(message.marker === 'memory' ? 'book' : 'contract');
     icon.classList.add('ag-marker-icon');
     const text = el('span', 'ag-marker-label', label);
     text.setAttribute('aria-hidden', 'true');

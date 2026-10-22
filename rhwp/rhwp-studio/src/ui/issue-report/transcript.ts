@@ -29,6 +29,7 @@ function messageBlock(message: ThreadMessage): string | null {
       case 'marker':
         if (message.marker === 'handoff') return `— ${message.from} → ${message.to} —`;
         if (message.marker === 'taste') return `— ${tasteMarkerLabel(message.items.length)} —`;
+        if (message.marker === 'memory') return '— 기억에 저장됨 —';
         return '— 대화 압축 —';
       case 'turn':
         return message.endedAt !== null && message.outcome && message.outcome !== 'completed'
