@@ -172,6 +172,10 @@ export class PageRenderer {
     context: PageRenderContext = {},
     pageInfo?: PageInfo,
   ): PageRenderResult {
+    if (this.wasm.engineKind === 'heemang') {
+      this.wasm.viewer!.renderPageToCanvas(pageIdx, canvas, renderScale);
+      return { needsTextEditStaticLayerVerification: false };
+    }
     if (pageInfo) this.pageInfoByPage.set(pageIdx, pageInfo);
     if (this.backend === 'canvaskit') {
       this.layerSummaryCache.delete(pageIdx);

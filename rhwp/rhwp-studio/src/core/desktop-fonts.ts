@@ -1,3 +1,4 @@
+import { provideEngineFont } from './engine-support.ts';
 /**
  * 사용자 PC 글꼴 연결 (데스크톱 앱·브라우저 공용).
  *
@@ -1057,6 +1058,7 @@ function registerFaceMetrics(
   italic: boolean,
   variations?: Readonly<Record<string, number>>,
 ): MetricsRegistration {
+  provideEngineFont(faceKey, bytes);
   const api = metricsApi();
   if (!api) return { status: 'unavailable' };
   const merged = pendingMetricAliases(faceKey, aliases);
@@ -1852,7 +1854,10 @@ async function registerDesktopHftOutlines(fontsUsed: readonly string[]): Promise
     bytes.catch(() => {});
     const read = previous
       .then(() => bytes)
-      .then(source => registerHftOutlines(source))
+      .then(source => {
+        provideEngineFont(face.path, source);
+        return registerHftOutlines(source);
+      })
       .catch((error) => {
         console.warn(`[HFT] ${face.path} 를 읽지 못했습니다:`, error);
         return false;

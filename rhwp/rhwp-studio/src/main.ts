@@ -1,3 +1,5 @@
+import { EngineNotSupportedError } from './core/engine-support';
+import { installHeemangReader } from './view/heemang-reader';
 import {
   installLicenseGate,
   mountLicenseRegisterButton,
@@ -447,7 +449,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || licenseReadOnly || session.wasm.readOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -1114,12 +1116,14 @@ function updatePaperStatus(): void {
 }
 
 function schedulePaperStatus(): void {
+  if (wasm.readOnly) return;
   if (!paperStatusFrame) paperStatusFrame = requestAnimationFrame(updatePaperStatus);
 }
 
 function updateCharacterStatus(): void {
   characterStatusFrame = 0;
   const indicator = sbCount();
+  if (wasm.readOnly) { indicator.textContent = ''; return; }
   if (!inputHandler) {
     indicator.textContent = '0글자';
     indicator.title = '문서 글자 수';
@@ -1590,7 +1594,10 @@ async function initialize(): Promise<void> {
       // 가져온 개발 글꼴을 첫 문서 조판 전에 WASM 메트릭에도 등록한다.
       syncImportedFontMetrics();
     }
-    const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
+    if (wasm.engineKind === 'heemang' && resolveRenderBackendRequest(window.location.search).backend === 'canvaskit') {
+      throw new EngineNotSupportedError('CanvasKit');
+    }
+    const renderBackendRequest = resolveRenderBackendRequest(wasm.engineKind === 'heemang' ? '?renderer=canvas2d' : window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;
     const canvaskitSurfaceRequest = resolveCanvasKitSurfaceRequest(window.location.search);
@@ -1671,7 +1678,7 @@ async function initialize(): Promise<void> {
     };
 
     // 눈금자 초기화
-    ruler = new Ruler(
+    if (wasm.engineKind !== 'heemang') ruler = new Ruler(
       document.getElementById('h-ruler') as HTMLCanvasElement,
       document.getElementById('v-ruler') as HTMLCanvasElement,
       container,
@@ -1688,6 +1695,7 @@ async function initialize(): Promise<void> {
       // 처음 붙은 문서 세션과 같은 히스토리를 쓴다 — 세션 단위 기록(턴 체크포인트)이 같은 것을 본다.
       attachedSession.editorState.history,
     );
+    installHeemangReader(container, wasm, eventBus, canvasView, error => showToast({ message: error.message, durationMs: 3000 }));
     inputHandler.setEditMode(editMode);
     inputHandler.setReadOnly(sessionReadOnly());
     inputHandler.setUserEditingLocked(agentEditingLease.active);
@@ -3515,10 +3523,10 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
   if (next.editMode !== editMode) setEditMode(next.editMode);
   if (viewReady) {
     try {
-      inputHandler.activateWithCaretPosition(next.editorState.cursor);
+      if (!next.wasm.readOnly) inputHandler.activateWithCaretPosition(next.editorState.cursor);
       prepareCanvasKitLocalFonts(fontsUsed);
       toolbar?.initFontDropdown(fontsUsed);
-      toolbar?.initStyleDropdown();
+      if (!wasm.readOnly) toolbar?.initStyleDropdown();
       documentHome?.hide();
     } catch (error) {
       console.error('[sessions] 편집 상태를 이어 붙이지 못했습니다:', error);
@@ -4776,6 +4784,7 @@ function setupEventListeners(): void {
 }
 
 function applyEditorSettingsPreview(settings: EditorScalarSettings): void {
+  if (wasm.engineKind === 'heemang') throw new EngineNotSupportedError('엔진 보기 설정');
   wasm.setShowControlCodes(settings.view.showControlCodes);
   wasm.setShowParagraphMarks(settings.view.showParagraphMarks);
   syncTextMarkMenu(settings.view.showControlCodes, settings.view.showParagraphMarks);
@@ -4799,6 +4808,7 @@ function commitEditorSettingsRuntime(settings: EditorScalarSettings): void {
 
 /** 문서마다 따로 가진 보기 설정(조판 부호·문단 부호·잘라 보기)을 사용자 설정에 맞춘다. */
 function applyTextMarkSettingsTo(target: WasmBridge): void {
+  if (target.readOnly) return;
   const settings = userSettings.getEditorScalarSettings();
   target.setShowControlCodes(settings.view.showControlCodes);
   target.setShowParagraphMarks(settings.view.showParagraphMarks);
@@ -4807,6 +4817,7 @@ function applyTextMarkSettingsTo(target: WasmBridge): void {
 
 /** 문서 초기화 공통 시퀀스 (loadFile, createNewDocument 양쪽에서 사용) */
 function applySavedTextMarkSettings(): void {
+  if (wasm.readOnly) return;
   applyEditorSettingsPreview(userSettings.getEditorScalarSettings());
 }
 
@@ -4870,11 +4881,15 @@ async function initializeDocument(
         void desktopFonts.then(applyLateFontReports);
       }
     }
+    if (wasm.viewer) {
+      await wasm.viewer.prepareFonts(docInfo.fontsUsed, extensionViewerSettings);
+      docInfo = wasm.getDocumentInfo();
+    }
     await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
     statusSectionIndex = 0;
     sbSection().textContent = `구역: 1 / ${totalSections}`;
-    schedulePaperStatus();
+    if (!wasm.readOnly) schedulePaperStatus();
     applySavedTextMarkSettings();
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     await canvasView?.loadDocument();
@@ -4883,7 +4898,7 @@ async function initializeDocument(
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(!sessionReadOnly() && !agentEditingLease.active);
     toolbar?.initFontDropdown(docInfo.fontsUsed);
-    toolbar?.initStyleDropdown();
+    if (!wasm.readOnly) toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
     documentHome?.hide();
     if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
@@ -4895,7 +4910,7 @@ async function initializeDocument(
     // 글자가 대량으로 겹치므로, 모달을 띄우지 않고 항상 '그대로 보기'로 연다.
     // reflow 근본 수정 후 모달/자동 보정 재도입을 검토한다.
     try {
-      if (wasm.getSourceFormat() === 'hwpx') {
+      if (!wasm.readOnly && wasm.getSourceFormat() === 'hwpx') {
         const report = wasm.getValidationWarnings();
         if (report.count > 0) {
           console.log(`[validation] ${report.count} warnings — 그대로 보기 (#2527)`, report.summary);
@@ -4914,11 +4929,11 @@ async function initializeDocument(
 
     // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
     await updateLoadProgress(96, '편집 상태 초기화 중...', { paint: true });
-    inputHandler?.activateWithCaretPosition();
+    if (!wasm.readOnly) inputHandler?.activateWithCaretPosition();
     eventBus.emit('document-context-changed');
-    scheduleCharacterStatus(true);
+    if (!wasm.readOnly) scheduleCharacterStatus(true);
     // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
-    msg.textContent = documentReadOnly ? '읽기 전용' : '';
+    msg.textContent = wasm.readOnly ? 'HeemangEngine · 읽기 전용' : documentReadOnly ? '읽기 전용' : '';
     updateFontStatusButton();
 
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 clean 이다. 복구한 자동 저장본만 dirty 로 연다.
@@ -4926,7 +4941,7 @@ async function initializeDocument(
     if (options.initialDirtyReason) documentState.markDirty(options.initialDirtyReason);
     else documentState.markClean('document-initialized');
     try {
-      await attachedSession.versions?.documentLoaded({
+      if (!wasm.readOnly) await attachedSession.versions?.documentLoaded({
         fromDisk: options.fromDisk,
         autoEnable: options.autoEnableVersions,
       });
@@ -5348,7 +5363,7 @@ async function loadBytesNow(
   // 원본 파일에 연결되지 않고, 같은 문서 ID 로 열려 그 워크트리로 돌아간다. 파일 핸들 없이 연
   // 작업 공간 스냅숏도 디스크 파일과 이어지지 않는다.
   const fileBacked = !isManagedWorktree(target) && !(options.worktreeSnapshot && !fileHandle);
-  await autosaveManager.beginDocument(
+  if (!wasm.readOnly) await autosaveManager.beginDocument(
     {
       fileName: wasm.fileName,
       sourceFormat: wasm.getSourceFormat(),
@@ -6240,7 +6255,7 @@ async function createNewDocumentNow(template?: Uint8Array, restoredDocumentId?: 
     await releaseReplacedNativeFileHandle(previousFileHandle, wasm.currentFileHandle)
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
     prepareCanvasRendererDocument();
-    await autosaveManager.beginDocument(
+    if (!wasm.readOnly) await autosaveManager.beginDocument(
       { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat(), documentId: identity.documentId },
       { discardPreviousDraft: true, base: null },
     );
