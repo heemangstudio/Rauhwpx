@@ -198,3 +198,80 @@ test('파일 handle 로 저장한 경우에만 그 handle 을 문서와 연결�
   assert.equal(downloads, 1);
   assert.equal(download.events.some((event) => event.startsWith('handle-saved')), false);
 });
+
+// Heemang 저장도 실제 명령·파일 쓰기 순서와 실패 시 dirty 보존을 지킨다.
+function heemangSaveHarness(options: { failClose?: boolean; withHandle?: boolean; duringWrite?: boolean } = {}) {
+  const h = saveHarness({
+    flushDeferredPaginationIfNeeded() { throw new Error('legacy input must stay inactive'); },
+  }, 'doc.hwpx', options.failClose, options.withHandle ?? true);
+  Object.assign(h.services.wasm, {
+    engineKind: 'heemang',
+    viewer: {
+      getSourceFormat: () => 'hwpx',
+      serialize(markSaved: boolean) {
+        assert.equal(markSaved, false);
+        h.events.push('serialize');
+        return new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+      },
+      markSaved() { h.events.push('markSaved'); return true; },
+    },
+    exportHwpx() { throw new Error('legacy exporter must not run'); },
+  });
+  if (options.duringWrite) {
+    const handle = h.services.wasm.currentFileHandle!;
+    const create = handle.createWritable;
+    handle.createWritable = async () => {
+      const stream = await create();
+      return { ...stream, async write(blob: Blob) {
+        await stream.write(blob);
+        h.documentState.markDirty('typing-during-save');
+      } };
+    };
+  }
+  return h;
+}
+
+test('Heemang은 같은 형식 바이트를 쓴 뒤에만 엔진과 shell을 saved로 맞춘다', async () => {
+  const h = heemangSaveHarness();
+  const revision = h.documentState.captureRevision();
+  assert.equal(await fileCommands.saveCurrentDocument(h.services as never), 'saved');
+  assert.deepEqual(h.events, ['serialize', 'write:4', 'close', 'markSaved', 'document-saved', 'handle-saved']);
+  assert.equal(h.documentState.isDirty(), false);
+  assert.equal(h.documentState.captureRevision(), revision, '저장은 편집 세대를 올리지 않는다');
+});
+
+test('Heemang 쓰기 실패와 쓰기 중 새 편집은 saved로 표시하지 않는다', async () => {
+  for (const options of [{ failClose: true }, { duringWrite: true }]) {
+    const h = heemangSaveHarness(options);
+    let result: unknown;
+    assert.equal(await countDownloads(async () => { result = await fileCommands.saveCurrentDocument(h.services as never); }), 0);
+    assert.equal(result, options.failClose ? 'failed' : 'saved');
+    assert.equal(h.events.includes('markSaved'), false);
+    assert.equal(h.documentState.isDirty(), true);
+  }
+});
+
+test('Heemang 다운로드를 요청한 뒤에만 saved로 표시한다', async () => {
+  const h = heemangSaveHarness({ withHandle: false });
+  assert.equal(await countDownloads(async () => {
+    assert.equal(await fileCommands.saveCurrentDocument(h.services as never), 'saved');
+  }), 1);
+  assert.ok(h.events.includes('markSaved'));
+  assert.equal(h.documentState.isDirty(), false);
+});
+
+test('Heemang picker 취소와 다른 형식 저장은 파일이나 dirty 상태를 바꾸지 않는다', async () => {
+  const cancelled = heemangSaveHarness({ withHandle: false });
+  Object.assign(cancelled.services, { pickSaveHandle: async () => null });
+  assert.equal(await fileCommands.saveCurrentDocument(cancelled.services as never), 'cancelled');
+  assert.deepEqual(cancelled.events, ['serialize']);
+  assert.equal(cancelled.documentState.isDirty(), true);
+
+  const converted = heemangSaveHarness();
+  converted.services.wasm.currentFileHandle!.name = 'doc.hwp';
+  await countDownloads(async () => {
+    assert.equal(await fileCommands.saveCurrentDocument(converted.services as never), 'failed');
+  });
+  assert.deepEqual(converted.events, []);
+  assert.equal(converted.documentState.isDirty(), true);
+});

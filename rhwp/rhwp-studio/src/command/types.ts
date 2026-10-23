@@ -13,6 +13,8 @@ export type EditorEditMode = 'normal' | 'form';
 
 /** 커맨드 실행 가능 여부 판단용 에디터 상태 스냅샷 */
 export interface EditorContext {
+  /** 세션 엔진. Heemang의 첫 편집 범위를 명시적으로 제한한다. */
+  engineKind?: 'rhwp' | 'heemang';
   /** 문서가 로드되어 있는가? */
   hasDocument: boolean;
   /** 선택 영역이 있는가? */

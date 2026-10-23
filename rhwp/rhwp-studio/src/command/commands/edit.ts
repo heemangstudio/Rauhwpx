@@ -33,7 +33,8 @@ export const editCommands: CommandDef[] = [
     shortcutLabel: 'Ctrl+Z',
     canExecute: (ctx) => ctx.hasDocument && ctx.canUndo,
     execute(services) {
-      services.getInputHandler()?.performUndo();
+      if (services.wasm.engineKind === 'heemang') services.eventBus.emit('heemang-history-action', 'undo');
+      else services.getInputHandler()?.performUndo();
     },
   },
   {
@@ -43,7 +44,8 @@ export const editCommands: CommandDef[] = [
     shortcutLabel: 'Ctrl+Shift+Z',
     canExecute: (ctx) => ctx.hasDocument && ctx.canRedo,
     execute(services) {
-      services.getInputHandler()?.performRedo();
+      if (services.wasm.engineKind === 'heemang') services.eventBus.emit('heemang-history-action', 'redo');
+      else services.getInputHandler()?.performRedo();
     },
   },
   {

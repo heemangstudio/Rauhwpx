@@ -16,7 +16,7 @@ binary if it is outside PATH. Copy the four generated files from
 Canvas2D player in `src/view/heemang-player.ts` ports `crates/hm-wasm/js/player.mjs`.
 The accompanying LICENSE applies to the engine and reference player.
 
-Open Studio with `?engine=heemang` for a read-only document session. Omitting
+Open Studio with `?engine=heemang` for an opt-in document session. Omitting
 that parameter keeps rhwp. The engine is fixed when each WasmBridge is created.
 
 The adapter registers fonts through `addFontFile`, so only requested tables and
@@ -37,10 +37,19 @@ FontMap and hftinfo first, then loads only the families chosen from
 host streams font files but has no DAT-table endpoint; the explicit dev manifest
 supplies those files during local verification.
 
-Editing, clipboard, save/export/print, search UI, versions/merge, engine-specific
-view settings and CanvasKit remain unavailable in Heemang sessions. They throw
-`EngineNotSupportedError` with code `ENGINE_NOT_SUPPORTED`, or are disabled by
-the existing read-only UI. Live first-page thumbnails use this session's painter.
-Cross-list selections are rejected because hm-wasm select currently covers one
-paragraph list. Rulers and margin guides are suppressed because pages() does not
-expose margins. The adapter keeps registered fonts for the browser session.
+HWP5/HWPX sessions support plain typing and buffered Korean IME commit/cancel,
+selection replacement/deletion, tabs, nonempty paragraph splits and joins in body
+text and table cells. The native engine owns grouped undo/redo; the adapter keeps
+caret/selection metadata and invalidates cached pages after each action. Same-format
+save uses native serialization and acknowledges saved state after successful output.
+Untouched saves preserve exact input bytes and do not change revisions.
+
+Enter operations that create empty paragraphs currently throw
+`EngineNotSupportedError` before mutation because native empty-paragraph pagination
+can overlap caret positions without adding pages. Cross-list editing, HWP3 writing,
+formatting, rich clipboard, cross-format save, print, search UI, versions/merge,
+autosave, engine-specific view settings and CanvasKit remain unavailable. See
+`output/heemang-editing/engine-requests.md` for the exact engine requests. Live
+first-page thumbnails use this session's painter. Cross-list selections are rejected
+because hm-wasm select currently covers one paragraph list. Rulers and margin guides
+remain suppressed in the adapter. Registered fonts live for the browser session.

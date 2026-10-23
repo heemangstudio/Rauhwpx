@@ -63,6 +63,23 @@ function isBlockedByDocumentEditLock(commandId: string, ctx: EditorContext): boo
     && !commandId.startsWith('help:');
 }
 
+// 첫 편집 범위 밖의 명령은 구 엔진 API에 닿기 전에 막는다.
+const HEEMANG_COMMANDS = new Set([
+  'file:open', 'file:open-recent', 'file:clear-recent', 'file:about',
+  'file:save', 'file:save-as', 'edit:undo', 'edit:redo',
+]);
+
+function isBlockedByEngine(commandId: string, ctx: EditorContext): boolean {
+  if (ctx.engineKind !== 'heemang') return false;
+  if (commandId === 'file:save-as-hwp') return ctx.sourceFormat !== 'hwp';
+  if (commandId === 'file:save-as-hwpx') return ctx.sourceFormat !== 'hwpx';
+  return !HEEMANG_COMMANDS.has(commandId)
+    && !commandId.startsWith('view:zoom-')
+    && !commandId.startsWith('view:theme-')
+    && !commandId.startsWith('view:toolbox-')
+    && !commandId.startsWith('help:');
+}
+
 /** 통합 커맨드 디스패처: 메뉴/툴바/키보드 모든 입력의 단일 실행 경로 */
 export class CommandDispatcher {
   private registry: CommandRegistry;
@@ -92,7 +109,8 @@ export class CommandDispatcher {
 
     const ctx = this.services.getContext();
     if (
-      isBlockedInFormMode(commandId, ctx)
+      isBlockedByEngine(commandId, ctx)
+      || isBlockedInFormMode(commandId, ctx)
       || isBlockedByDocumentEditLock(commandId, ctx)
     ) {
       return false;
@@ -122,7 +140,8 @@ export class CommandDispatcher {
     if (!def) return false;
     const ctx = context ?? this.services.getContext();
     if (
-      isBlockedInFormMode(commandId, ctx)
+      isBlockedByEngine(commandId, ctx)
+      || isBlockedInFormMode(commandId, ctx)
       || isBlockedByDocumentEditLock(commandId, ctx)
     ) return false;
     if (!def.canExecute) return true;

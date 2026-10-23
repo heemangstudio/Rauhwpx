@@ -1,4 +1,5 @@
-import type { Address, Caret, Doc, DocState, Engine, FontFileSource, FontRequests, Located, LocateRequest, NavigateRequest, PageInfo as HmPage, ParagraphInfo, Rect, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
+import type { Address, Affinity, Caret, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, NavigateRequest, PageInfo as HmPage, ParagraphInfo, Receipt, Rect, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
+import { copyAddress, copySelection, editingText, orderedSelection, replacementOps, sameAddress, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
 import { getSystemFontHost, loadDesktopFontIndex, type RuntimeFontMetricsApi } from './desktop-fonts';
@@ -8,6 +9,12 @@ import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+
+export type { Address, Affinity, Caret, Located, LocateRequest, Motion, NavigateRequest, ParagraphInfo, Receipt, Rect, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
+export type { TextSelection } from './heemang-editing';
+export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' };
+export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt }
+type SelectionHistory = { before: TextSelection; after: TextSelection; beforeId: number; afterId: number };
 
 const PX_PER_HU = 96 / 7200;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
@@ -124,10 +131,10 @@ async function initializeRuntime() {
   return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources };
 }
 
-/** Phase 1: 한 문서를 소유하며, 편집·저장 API는 노출하지 않는다. */
+/** 문서와 엔진 undo를 소유한다. UI history에는 선택 정보만 둔다. */
 export class HeemangAdapter {
   readonly engineKind = 'heemang' as const;
-  readonly readOnly = true;
+  get readOnly(): boolean { return !this.doc || !this.editable; }
   private engine!: Engine;
   private player!: Player;
   private memory!: WebAssembly.Memory;
@@ -157,6 +164,14 @@ export class HeemangAdapter {
   private _fileName = '';
   private sourceFormat = 'hwpx';
   private _digest: string | null = null;
+  private editable = false;
+  private savedBytes: Uint8Array | null = null;
+  private contentId = 0;
+  private savedContentId = 0;
+  private nextContentId = 0;
+  private readonly edits: SelectionHistory[] = [];
+  private readonly redos: SelectionHistory[] = [];
+  private serialized: { instance: number; epoch: number; bytes: Uint8Array; digest: string } | null = null;
   documentGeneration = 0;
   documentInstance = nextDocumentInstance();
   currentFileHandle: FileSystemFileHandleLike | null = null;
@@ -227,10 +242,14 @@ export class HeemangAdapter {
   get fileName(): string { return this._fileName; }
   set fileName(name: string) { this._fileName = name; this.onFileNameChanged?.(name); }
   get documentDigest(): string | null { return this._digest; }
-  adoptSourceDigest(digest: string): void { this._digest = digest; }
+  adoptSourceDigest(digest: string): void { if (this.doc) this._digest = digest; }
   hasLoadedDocument(): boolean { return this.doc !== null; }
   get pageCount(): number { return this.doc && this.fontsPrepared ? this.state().pageCount : 0; }
-  state(): DocState { return JSON.parse(this.document().state()); }
+  state(): DocState {
+    const state: DocState = JSON.parse(this.document().state());
+    // 엔진 epoch는 undo에서도 증가한다. 저장한 history 위치로 돌아오면 clean이다.
+    return { ...state, dirty: this.contentId !== this.savedContentId };
+  }
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
@@ -245,6 +264,11 @@ export class HeemangAdapter {
     this.packets.clear();
     this.currentFileHandle = null;
     this._digest = null;
+    this.editable = false;
+    this.savedBytes = null;
+    this.serialized = null;
+    this.contentId = this.savedContentId = this.nextContentId = 0;
+    this.edits.length = this.redos.length = 0;
     this.documentGeneration = nextDocumentGeneration();
     this.documentInstance = nextDocumentInstance();
   }
@@ -256,6 +280,8 @@ export class HeemangAdapter {
     this.doc = next;
     // open이 검증한 ZIP은 HWPX, CFB·HWP3는 HWP다. 여기서 state를 읽으면 조판된다.
     this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
+    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.savedBytes = bytes.slice();
     this._digest = `blake3:${blake3Hex(bytes)}`;
     this.fileName = name;
     try { return this.getDocumentInfo(); }
@@ -340,14 +366,128 @@ export class HeemangAdapter {
     return JSON.parse(this.document().select(JSON.stringify(request)));
   }
   navigate(request: NavigateRequest): Located | null { return JSON.parse(this.document().navigate(JSON.stringify(request))); }
+
+  replaceText(range: TextSelection, text: string): EditResult | null {
+    const normalized = editingText(text);
+    if (normalized.includes('\n')) this.requireNonemptySplit(range, normalized);
+    return this.edit(replacementOps(range, normalized), range);
+  }
+
+  split(range: TextSelection): EditResult | null {
+    this.requireNonemptySplit(range, '\n');
+    const ordered = orderedSelection(range);
+    return this.edit([...replacementOps(ordered, ''), { op: 'split', at: ordered.from }], range);
+  }
+
+  private requireNonemptySplit(range: TextSelection, text: string): void {
+    this.requireEditable();
+    const { from, to } = orderedSelection(range);
+    const first = this.paragraphs(from.section, from.steps, from.para, 1)[0];
+    const last = this.paragraphs(to.section, to.steps, to.para, 1)[0];
+    // hm-wasm은 추가된 빈 문단의 페이지 넘김을 보장하지 못한다. 숨은 편집을 만들지 않는다.
+    if (text.includes('\n\n') || (text.startsWith('\n') && first?.caret[0] === from.offset)
+      || (text.endsWith('\n') && last?.caret[1] === to.offset)) {
+      throw new EngineNotSupportedError('빈 문단을 만드는 Enter 조판');
+    }
+  }
+
+  deleteBackward(range: TextSelection): EditResult | null { return this.deleteDirection(range, 'left'); }
+  deleteForward(range: TextSelection): EditResult | null { return this.deleteDirection(range, 'right'); }
+
+  private deleteDirection(range: TextSelection, motion: 'left' | 'right'): EditResult | null {
+    const ordered = orderedSelection(range);
+    if (!sameAddress(ordered.from, ordered.to)) return this.edit(replacementOps(ordered, ''), range);
+    this.requireEditable();
+    // 엔진의 grapheme/control 경계를 따른다. 문단 끝에서는 인접 문단과 join한다.
+    const next = this.navigate({ position: ordered.from, motion });
+    if (!next || sameAddress(next.position, ordered.from)) return null;
+    return this.edit(replacementOps({ from: ordered.from, to: next.position }, ''), range);
+  }
+
+  private requireEditable(): void {
+    this.document();
+    if (this.readOnly) throw new EngineNotSupportedError('이 형식의 편집 및 저장');
+  }
+
+  private edit(ops: EditOp[], before: TextSelection): EditResult | null {
+    this.requireEditable();
+    if (!ops.length) return null;
+    const selection = copySelection(before);
+    const epoch = this.state().contentEpoch;
+    const receipt: Receipt = JSON.parse(this.document().transact(JSON.stringify({ expectedEpoch: epoch, ops })));
+    if (receipt.contentEpoch === epoch) return null;
+    const at = receipt.caret!;
+    const after = { from: copyAddress(at), to: copyAddress(at) };
+    this.edits.push({ before: selection, after, beforeId: this.contentId, afterId: ++this.nextContentId });
+    this.contentId = this.nextContentId;
+    this.redos.length = 0;
+    this.refreshLayout();
+    return this.editResult(receipt, after);
+  }
+
+  undoEdit(): EditResult | null { return this.historyEdit(false); }
+  redoEdit(): EditResult | null { return this.historyEdit(true); }
+  canUndo(): boolean { return this.doc !== null && this.edits.length > 0; }
+  canRedo(): boolean { return this.doc !== null && this.redos.length > 0; }
+
+  private historyEdit(redo: boolean): EditResult | null {
+    this.requireEditable();
+    const source = redo ? this.redos : this.edits;
+    const entry = source.at(-1);
+    if (!entry) return null;
+    const receipt: Receipt | null = JSON.parse(redo ? this.document().redo() : this.document().undo());
+    if (!receipt) return null;
+    source.pop();
+    (redo ? this.edits : this.redos).push(entry);
+    this.contentId = redo ? entry.afterId : entry.beforeId;
+    this.refreshLayout();
+    return this.editResult(receipt, redo ? entry.after : entry.before);
+  }
+
+  private editResult(receipt: Receipt, selection: TextSelection): EditResult {
+    const locate = (position: Address, affinity: Affinity = 'downstream'): Located => {
+      const caret = this.locate({ kind: 'caret', position, affinity }) as Caret | null;
+      if (!caret) throw new EngineNotSupportedError('편집 위치의 caret 조회');
+      return { position: copyAddress(position), affinity, caret };
+    };
+    return { receipt, caret: locate(selection.to, selection.toAffinity), anchor: sameAddress(selection.from, selection.to) ? null : locate(selection.from, selection.fromAffinity) };
+  }
+
+  /** 같은 형식만 직렬화한다. 실제 파일 쓰기 성공 후 markSaved를 호출한다. */
+  serialize(markSaved = false): Uint8Array {
+    this.requireEditable();
+    const epoch = this.state().contentEpoch;
+    const native = this.document().serialize(false).slice();
+    // undo로 저장한 내용에 돌아와도 엔진은 새 line segment를 쓸 수 있다.
+    const saved = epoch > 0 && this.contentId === this.savedContentId ? this.savedBytes : null;
+    const bytes = saved && (saved.length !== native.length || saved.some((b, i) => b !== native[i]))
+      ? saved.slice() : native;
+    this.serialized = { instance: this.documentInstance, epoch, bytes: bytes.slice(), digest: `blake3:${blake3Hex(bytes)}` };
+    if (markSaved) this.markSaved();
+    return bytes;
+  }
+
+  /** 비동기 파일 쓰기 중 새 편집이 생겼으면 saved로 바꾸지 않는다. */
+  markSaved(): boolean {
+    const saved = this.serialized;
+    if (!saved || !this.doc || saved.instance !== this.documentInstance || saved.epoch !== this.state().contentEpoch) return false;
+    // hm-wasm에는 독립된 markSaved가 없다. 성공했을 때만 저장 위치를 옮긴다.
+    this.document().serialize(true);
+    this.savedBytes = saved.bytes;
+    this.savedContentId = this.contentId;
+    this._digest = saved.digest;
+    this.serialized = null;
+    return true;
+  }
+
   paragraphs(section: number, steps: Address['steps'] = [], from = 0, count = 1024): ParagraphInfo[] {
     return JSON.parse(this.document().query(JSON.stringify({ kind: 'paragraphs', list: { section, steps }, from, count })));
   }
-  getParagraphText(section: number, para: number): string { return this.paragraphs(section, [], para, 1)[0]?.text ?? ''; }
-  getParagraphCount(section: number): number {
+  getParagraphText(section: number, para: number, steps: Address['steps'] = []): string { return this.paragraphs(section, steps, para, 1)[0]?.text ?? ''; }
+  getParagraphCount(section: number, steps: Address['steps'] = []): number {
     let count = 0;
     while (true) {
-      const page = this.paragraphs(section, [], count);
+      const page = this.paragraphs(section, steps, count);
       count += page.length;
       if (page.length < 1024) return count;
     }

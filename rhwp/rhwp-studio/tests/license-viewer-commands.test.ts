@@ -28,3 +28,12 @@ test('a license read-only window opens and compares documents but cannot edit or
 test('a template preview window stays fixed on its document', () => {
   assert.deepEqual(dispatcherFor({ readOnly: true, readOnlyCanOpen: false }), ['edit:find', 'view:zoom-in']);
 });
+
+test('Heemang은 저장과 hm history만 열고 기존 편집·비교 명령은 차단한다', () => {
+  assert.deepEqual(dispatcherFor({ engineKind: 'heemang', readOnly: false }),
+    ['file:open', 'file:open-recent', 'view:zoom-in', 'file:save', 'edit:undo']);
+  assert.deepEqual(dispatcherFor({ engineKind: 'heemang', readOnly: true, readOnlyCanOpen: true }),
+    ['file:open', 'file:open-recent', 'view:zoom-in']);
+  assert.deepEqual(dispatcherFor({ engineKind: 'heemang', userEditingLocked: true }),
+    ['file:open', 'file:open-recent', 'view:zoom-in']);
+});
