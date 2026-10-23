@@ -776,8 +776,8 @@ function getContext(): EditorContext {
   if (engineTrap()) return trappedEditorContext();
   const userEditingLocked = wasm.engineKind === 'heemang' ? pendingUserEditingLocked() : agentEditingLease.active;
   const legacyInput = wasm.engineKind === 'heemang' ? null : inputHandler;
-  const history = wasm.engineKind === 'heemang' && wasm.hasLoadedDocument() ? wasm.viewer!.state() : null;
   const hasDoc = wasm.pageCount > 0;
+  const history = wasm.engineKind === 'heemang' && hasDoc ? wasm.viewer!.state() : null;
   const canEditFormField = legacyInput?.canEditCurrentFormField() ?? false;
   const isFormMode = editMode === 'form';
   const selectedObject = legacyInput?.getSelectedPictureRef() ?? null;
