@@ -63,7 +63,16 @@ function isBlockedByDocumentEditLock(commandId: string, ctx: EditorContext): boo
     && !commandId.startsWith('help:');
 }
 
-// 첫 편집 범위 밖의 명령은 구 엔진 API에 닿기 전에 막는다.
+/** wire 선택을 소유한 reader로 보내며 구 엔진의 canExecute/입력 핸들러를 부르지 않는다. */
+const HEEMANG_EDIT_COMMANDS = new Set([
+    'edit:copy', 'edit:cut', 'edit:paste', 'edit:delete', 'edit:select-all',
+    'edit:find', 'edit:find-replace', 'edit:find-again',
+  ]);
+function isHeemangEditingCommand(id: string): boolean {
+  return id.startsWith('format:') || id.startsWith('table:') || HEEMANG_EDIT_COMMANDS.has(id);
+}
+
+// 지원하지 않는 명령은 구 엔진 API에 닿기 전에 막는다.
 const HEEMANG_COMMANDS = new Set([
   'file:open', 'file:open-recent', 'file:clear-recent', 'file:about',
   'file:save', 'file:save-as', 'edit:undo', 'edit:redo',
@@ -73,7 +82,7 @@ function isBlockedByEngine(commandId: string, ctx: EditorContext): boolean {
   if (ctx.engineKind !== 'heemang') return false;
   if (commandId === 'file:save-as-hwp') return ctx.sourceFormat !== 'hwp';
   if (commandId === 'file:save-as-hwpx') return ctx.sourceFormat !== 'hwpx';
-  return !HEEMANG_COMMANDS.has(commandId)
+  return !isHeemangEditingCommand(commandId) && !HEEMANG_COMMANDS.has(commandId)
     && !commandId.startsWith('view:zoom-')
     && !commandId.startsWith('view:theme-')
     && !commandId.startsWith('view:toolbox-')
@@ -115,6 +124,11 @@ export class CommandDispatcher {
     ) {
       return false;
     }
+    if (ctx.engineKind === 'heemang' && isHeemangEditingCommand(commandId)) {
+      if (!ctx.hasDocument) return false;
+      this.eventBus.emit('heemang-command', { id: commandId, params });
+      return true;
+    }
     if (def.canExecute && !def.canExecute(ctx)) {
       // canExecute 실패 — 비활성 상태
       return false;
@@ -144,6 +158,7 @@ export class CommandDispatcher {
       || isBlockedInFormMode(commandId, ctx)
       || isBlockedByDocumentEditLock(commandId, ctx)
     ) return false;
+    if (ctx.engineKind === 'heemang' && isHeemangEditingCommand(commandId)) return ctx.hasDocument;
     if (!def.canExecute) return true;
     return def.canExecute(ctx);
   }

@@ -1,0 +1,437 @@
+[
+  {
+    "document": "lang_exam.hwp",
+    "firstChangesAtSameNativeAddress": [
+      {
+        "page": 1,
+        "list": {
+          "section": 0,
+          "steps": []
+        },
+        "para": 37,
+        "line": 0,
+        "before": {
+          "y": 36604,
+          "height": 22582,
+          "baseline": 19195
+        },
+        "reopened": {
+          "y": 36604,
+          "height": 21890,
+          "baseline": 18607
+        },
+        "deltaHU": {
+          "y": 0,
+          "height": -692,
+          "baseline": -588
+        },
+        "deltaPx": {
+          "y": 0.0,
+          "height": -9.226666666666667,
+          "baseline": -7.84
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 1,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 37,
+              "control": 0,
+              "index": 0
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 36894,
+          "height": 100,
+          "baseline": 85
+        },
+        "reopened": {
+          "y": 36306,
+          "height": 100,
+          "baseline": 85
+        },
+        "deltaHU": {
+          "y": -588,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -7.84,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 1,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 37,
+              "control": 0,
+              "index": 1
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 36716,
+          "height": 1100,
+          "baseline": 935
+        },
+        "reopened": {
+          "y": 36128,
+          "height": 1100,
+          "baseline": 935
+        },
+        "deltaHU": {
+          "y": -588,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -7.84,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 1,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 37,
+              "control": 0,
+              "index": 2
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 36894,
+          "height": 100,
+          "baseline": 85
+        },
+        "reopened": {
+          "y": 36306,
+          "height": 100,
+          "baseline": 85
+        },
+        "deltaHU": {
+          "y": -588,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -7.84,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      }
+    ]
+  },
+  {
+    "document": "nikl_plan.hwp",
+    "firstChangesAtSameNativeAddress": [
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": []
+        },
+        "para": 4,
+        "line": 0,
+        "before": {
+          "y": 17326,
+          "height": 11781,
+          "baseline": 10014
+        },
+        "reopened": {
+          "y": 17326,
+          "height": 11436,
+          "baseline": 9721
+        },
+        "deltaHU": {
+          "y": 0,
+          "height": -345,
+          "baseline": -293
+        },
+        "deltaPx": {
+          "y": 0.0,
+          "height": -4.6,
+          "baseline": -3.9066666666666667
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 4,
+              "control": 0,
+              "index": 0
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 18033,
+          "height": 100,
+          "baseline": 85
+        },
+        "reopened": {
+          "y": 17740,
+          "height": 100,
+          "baseline": 85
+        },
+        "deltaHU": {
+          "y": -293,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -3.9066666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 4,
+              "control": 0,
+              "index": 1
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 18898,
+          "height": 3200,
+          "baseline": 2720
+        },
+        "reopened": {
+          "y": 18605,
+          "height": 3200,
+          "baseline": 2720
+        },
+        "deltaHU": {
+          "y": -293,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -3.9066666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 4,
+              "control": 0,
+              "index": 1
+            }
+          ]
+        },
+        "para": 0,
+        "line": 1,
+        "before": {
+          "y": 24658,
+          "height": 3200,
+          "baseline": 2720
+        },
+        "reopened": {
+          "y": 24365,
+          "height": 3200,
+          "baseline": 2720
+        },
+        "deltaHU": {
+          "y": -293,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -3.9066666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      }
+    ]
+  },
+  {
+    "document": "fdi_q1.hwpx",
+    "firstChangesAtSameNativeAddress": [
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 10,
+              "control": 0,
+              "index": 0
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 43397,
+          "height": 1000,
+          "baseline": 850
+        },
+        "reopened": {
+          "y": 38589,
+          "height": 1000,
+          "baseline": 850
+        },
+        "deltaHU": {
+          "y": -4808,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -64.10666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 10,
+              "control": 0,
+              "index": 1
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 42757,
+          "height": 1000,
+          "baseline": 500
+        },
+        "reopened": {
+          "y": 37949,
+          "height": 1000,
+          "baseline": 500
+        },
+        "deltaHU": {
+          "y": -4808,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -64.10666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 10,
+              "control": 0,
+              "index": 2
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 42757,
+          "height": 1000,
+          "baseline": 500
+        },
+        "reopened": {
+          "y": 37949,
+          "height": 1000,
+          "baseline": 500
+        },
+        "deltaHU": {
+          "y": -4808,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -64.10666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      },
+      {
+        "page": 0,
+        "list": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 10,
+              "control": 0,
+              "index": 3
+            }
+          ]
+        },
+        "para": 0,
+        "line": 0,
+        "before": {
+          "y": 42757,
+          "height": 1000,
+          "baseline": 850
+        },
+        "reopened": {
+          "y": 37949,
+          "height": 1000,
+          "baseline": 850
+        },
+        "deltaHU": {
+          "y": -4808,
+          "height": 0,
+          "baseline": 0
+        },
+        "deltaPx": {
+          "y": -64.10666666666667,
+          "height": 0.0,
+          "baseline": 0.0
+        },
+        "stopsEqual": true
+      }
+    ]
+  }
+]

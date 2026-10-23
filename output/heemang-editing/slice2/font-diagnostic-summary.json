@@ -1,0 +1,1278 @@
+{
+  "mode": "diagnostic, not gate pass",
+  "run": "output/heemang-editing/slice2/2026-10-23T07-29-39-433Z",
+  "sourceOperations": [
+    "body toolbar bold explicit on/off",
+    "body full character dialog",
+    "body paragraph dialog",
+    "body toolbar size and line spacing",
+    "body dialog cancellation",
+    "cell toolbar bold explicit on/off",
+    "cell full character dialog",
+    "cell paragraph dialog",
+    "cell toolbar size and line spacing",
+    "cell dialog cancellation",
+    "body find and replace",
+    "cell find and replace",
+    "replace all across body and table cell"
+  ],
+  "beforePrepare": {
+    "state": {
+      "instance": 1,
+      "contentEpoch": 53,
+      "layoutEpoch": 55,
+      "fontGeneration": 89,
+      "format": "hwp5",
+      "pageCount": 35,
+      "dirty": true,
+      "undo": 27,
+      "redo": 0
+    },
+    "fontRequests": {
+      "faces": [
+        {
+          "name": "맑은 고딕",
+          "candidates": [
+            "맑은 고딕",
+            "Malgun Gothic"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "바탕",
+          "candidates": [
+            "바탕",
+            "한컴바탕",
+            "함초롬바탕",
+            "Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "함초롬돋움",
+          "candidates": [
+            "함초롬돋움",
+            "HCR Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "함초롬바탕",
+          "candidates": [
+            "함초롬바탕",
+            "HCR Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "휴먼고딕",
+          "candidates": [
+            "휴먼고딕"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼명조",
+          "candidates": [
+            "휴먼명조"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼옛체",
+          "candidates": [
+            "휴먼옛체",
+            "Yet R"
+          ],
+          "standIns": [
+            "Gungsuh",
+            "궁서",
+            "GungsuhChe",
+            "궁서체",
+            "AppleMyungjo",
+            "Haeseo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "HY중고딕",
+          "candidates": [
+            "HY중고딕",
+            "한컴돋움",
+            "함초롬돋움",
+            "HYGothic-Medium"
+          ],
+          "standIns": [
+            "한양중고딕",
+            "중고딕",
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "HY헤드라인M",
+          "candidates": [
+            "HY헤드라인M",
+            "HYHeadLine-Medium"
+          ],
+          "standIns": [
+            "HY헤드라인M",
+            "HY동녘M",
+            "백묵 헤드라인"
+          ]
+        },
+        {
+          "name": "한양중고딕",
+          "candidates": [
+            "한양중고딕",
+            "HY Junggothic"
+          ],
+          "standIns": [
+            "HY중고딕",
+            "중고딕",
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "한컴돋움",
+          "candidates": [
+            "한컴돋움",
+            "Haansoft Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "Times New Roman",
+          "candidates": [
+            "Times New Roman"
+          ],
+          "standIns": [
+            "Times New Roman",
+            "TF Roman",
+            "Times",
+            "Lucida Bright",
+            "TimesRoman"
+          ]
+        },
+        {
+          "name": "HCI Hollyhock",
+          "candidates": [
+            "HCI Hollyhock"
+          ],
+          "standIns": [
+            "한양중고딕"
+          ]
+        },
+        {
+          "name": "HCI Poppy",
+          "candidates": [
+            "HCI Poppy"
+          ],
+          "standIns": [
+            "Palatino Linotype"
+          ]
+        },
+        {
+          "name": "한양신명조",
+          "candidates": [
+            "한양신명조",
+            "함초롬바탕",
+            "한컴바탕",
+            "HY Sinmyeongjo"
+          ],
+          "standIns": [
+            "HY신명조",
+            "신명조",
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "굴림",
+          "candidates": [
+            "굴림",
+            "한컴돋움",
+            "함초롬돋움",
+            "Gulim"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        }
+      ],
+      "classDefaults": [
+        [
+          "함초롬돋움",
+          "HCR Dotum"
+        ],
+        [
+          "함초롬바탕",
+          "HCR Batang",
+          "한컴바탕",
+          "바탕",
+          "Batang",
+          "Noto Serif KR",
+          "AppleMyungjo",
+          "Times New Roman"
+        ],
+        [
+          "함초롬돋움",
+          "HCR Dotum",
+          "한컴돋움",
+          "맑은 고딕",
+          "Malgun Gothic",
+          "돋움",
+          "Dotum",
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Arial"
+        ]
+      ],
+      "fallbacks": []
+    },
+    "fontsUsed": [
+      "맑은 고딕",
+      "바탕",
+      "함초롬돋움",
+      "함초롬바탕",
+      "휴먼고딕",
+      "휴먼명조",
+      "휴먼옛체",
+      "HY중고딕",
+      "HY헤드라인M",
+      "한양중고딕",
+      "한컴돋움",
+      "Times New Roman",
+      "HCI Hollyhock",
+      "HCI Poppy",
+      "한양신명조",
+      "굴림"
+    ],
+    "semantic": "690df379d4bb544b72870a80cfaaef13db9d782b2b6027001c0d7aed92fea6df",
+    "render": "0762fa054a62c707b07f7f5d51ba6707bf8dd4a90c986e031027eb20fe404bb0",
+    "text": "3d6ce114778ba672a75a6be503b770142e28a32be635ae6a662c247e37515c62",
+    "bytes": "6cf0a6daaf1755812c70bf8a5ded7f6fe81a8b750fd069a03335d4d3e287c13f",
+    "byteLength": 268800,
+    "shellRevision": 53,
+    "evidence": "056-font-diagnostic-before.json.gz"
+  },
+  "afterPrepare": {
+    "state": {
+      "instance": 1,
+      "contentEpoch": 53,
+      "layoutEpoch": 55,
+      "fontGeneration": 89,
+      "format": "hwp5",
+      "pageCount": 35,
+      "dirty": true,
+      "undo": 27,
+      "redo": 0
+    },
+    "fontRequests": {
+      "faces": [
+        {
+          "name": "맑은 고딕",
+          "candidates": [
+            "맑은 고딕",
+            "Malgun Gothic"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "바탕",
+          "candidates": [
+            "바탕",
+            "한컴바탕",
+            "함초롬바탕",
+            "Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "함초롬돋움",
+          "candidates": [
+            "함초롬돋움",
+            "HCR Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "함초롬바탕",
+          "candidates": [
+            "함초롬바탕",
+            "HCR Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "휴먼고딕",
+          "candidates": [
+            "휴먼고딕"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼명조",
+          "candidates": [
+            "휴먼명조"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼옛체",
+          "candidates": [
+            "휴먼옛체",
+            "Yet R"
+          ],
+          "standIns": [
+            "Gungsuh",
+            "궁서",
+            "GungsuhChe",
+            "궁서체",
+            "AppleMyungjo",
+            "Haeseo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "HY중고딕",
+          "candidates": [
+            "HY중고딕",
+            "한컴돋움",
+            "함초롬돋움",
+            "HYGothic-Medium"
+          ],
+          "standIns": [
+            "한양중고딕",
+            "중고딕",
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "HY헤드라인M",
+          "candidates": [
+            "HY헤드라인M",
+            "HYHeadLine-Medium"
+          ],
+          "standIns": [
+            "HY헤드라인M",
+            "HY동녘M",
+            "백묵 헤드라인"
+          ]
+        },
+        {
+          "name": "한양중고딕",
+          "candidates": [
+            "한양중고딕",
+            "HY Junggothic"
+          ],
+          "standIns": [
+            "HY중고딕",
+            "중고딕",
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "한컴돋움",
+          "candidates": [
+            "한컴돋움",
+            "Haansoft Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "Times New Roman",
+          "candidates": [
+            "Times New Roman"
+          ],
+          "standIns": [
+            "Times New Roman",
+            "TF Roman",
+            "Times",
+            "Lucida Bright",
+            "TimesRoman"
+          ]
+        },
+        {
+          "name": "HCI Hollyhock",
+          "candidates": [
+            "HCI Hollyhock"
+          ],
+          "standIns": [
+            "한양중고딕"
+          ]
+        },
+        {
+          "name": "HCI Poppy",
+          "candidates": [
+            "HCI Poppy"
+          ],
+          "standIns": [
+            "Palatino Linotype"
+          ]
+        },
+        {
+          "name": "한양신명조",
+          "candidates": [
+            "한양신명조",
+            "함초롬바탕",
+            "한컴바탕",
+            "HY Sinmyeongjo"
+          ],
+          "standIns": [
+            "HY신명조",
+            "신명조",
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "굴림",
+          "candidates": [
+            "굴림",
+            "한컴돋움",
+            "함초롬돋움",
+            "Gulim"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        }
+      ],
+      "classDefaults": [
+        [
+          "함초롬돋움",
+          "HCR Dotum"
+        ],
+        [
+          "함초롬바탕",
+          "HCR Batang",
+          "한컴바탕",
+          "바탕",
+          "Batang",
+          "Noto Serif KR",
+          "AppleMyungjo",
+          "Times New Roman"
+        ],
+        [
+          "함초롬돋움",
+          "HCR Dotum",
+          "한컴돋움",
+          "맑은 고딕",
+          "Malgun Gothic",
+          "돋움",
+          "Dotum",
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Arial"
+        ]
+      ],
+      "fallbacks": []
+    },
+    "fontsUsed": [
+      "맑은 고딕",
+      "바탕",
+      "함초롬돋움",
+      "함초롬바탕",
+      "휴먼고딕",
+      "휴먼명조",
+      "휴먼옛체",
+      "HY중고딕",
+      "HY헤드라인M",
+      "한양중고딕",
+      "한컴돋움",
+      "Times New Roman",
+      "HCI Hollyhock",
+      "HCI Poppy",
+      "한양신명조",
+      "굴림"
+    ],
+    "semantic": "690df379d4bb544b72870a80cfaaef13db9d782b2b6027001c0d7aed92fea6df",
+    "render": "0762fa054a62c707b07f7f5d51ba6707bf8dd4a90c986e031027eb20fe404bb0",
+    "text": "3d6ce114778ba672a75a6be503b770142e28a32be635ae6a662c247e37515c62",
+    "bytes": "6cf0a6daaf1755812c70bf8a5ded7f6fe81a8b750fd069a03335d4d3e287c13f",
+    "byteLength": 268800,
+    "shellRevision": 53,
+    "evidence": "057-font-diagnostic-after.json.gz"
+  },
+  "reopened": {
+    "state": {
+      "instance": 2,
+      "contentEpoch": 0,
+      "layoutEpoch": 1,
+      "fontGeneration": 98,
+      "format": "hwp5",
+      "pageCount": 35,
+      "dirty": false,
+      "undo": 0,
+      "redo": 0
+    },
+    "fontRequests": {
+      "faces": [
+        {
+          "name": "맑은 고딕",
+          "candidates": [
+            "맑은 고딕",
+            "Malgun Gothic"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "바탕",
+          "candidates": [
+            "바탕",
+            "한컴바탕",
+            "함초롬바탕",
+            "Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "함초롬돋움",
+          "candidates": [
+            "함초롬돋움",
+            "HCR Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "함초롬바탕",
+          "candidates": [
+            "함초롬바탕",
+            "HCR Batang"
+          ],
+          "standIns": [
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "휴먼고딕",
+          "candidates": [
+            "휴먼고딕"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼명조",
+          "candidates": [
+            "휴먼명조"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "휴먼옛체",
+          "candidates": [
+            "휴먼옛체",
+            "Yet R"
+          ],
+          "standIns": [
+            "Gungsuh",
+            "궁서",
+            "GungsuhChe",
+            "궁서체",
+            "AppleMyungjo",
+            "Haeseo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "HY중고딕",
+          "candidates": [
+            "HY중고딕",
+            "한컴돋움",
+            "함초롬돋움",
+            "HYGothic-Medium"
+          ],
+          "standIns": [
+            "한양중고딕",
+            "중고딕",
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "HY헤드라인M",
+          "candidates": [
+            "HY헤드라인M",
+            "HYHeadLine-Medium"
+          ],
+          "standIns": [
+            "HY헤드라인M",
+            "HY동녘M",
+            "백묵 헤드라인"
+          ]
+        },
+        {
+          "name": "한양중고딕",
+          "candidates": [
+            "한양중고딕",
+            "HY Junggothic"
+          ],
+          "standIns": [
+            "HY중고딕",
+            "중고딕",
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "한컴돋움",
+          "candidates": [
+            "한컴돋움",
+            "Haansoft Dotum"
+          ],
+          "standIns": [
+            "Dotum",
+            "돋움",
+            "DotumChe",
+            "돋움체",
+            "AppleGothic",
+            "Baekmuk Dotum",
+            "백묵 돋움",
+            "Gothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "Hancom Gothic",
+            "한컴 고딕",
+            "Han Santteut Dotum",
+            "한컴산뜻돋움",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        },
+        {
+          "name": "Times New Roman",
+          "candidates": [
+            "Times New Roman"
+          ],
+          "standIns": [
+            "Times New Roman",
+            "TF Roman",
+            "Times",
+            "Lucida Bright",
+            "TimesRoman"
+          ]
+        },
+        {
+          "name": "HCI Hollyhock",
+          "candidates": [
+            "HCI Hollyhock"
+          ],
+          "standIns": [
+            "한양중고딕"
+          ]
+        },
+        {
+          "name": "HCI Poppy",
+          "candidates": [
+            "HCI Poppy"
+          ],
+          "standIns": [
+            "Palatino Linotype"
+          ]
+        },
+        {
+          "name": "한양신명조",
+          "candidates": [
+            "한양신명조",
+            "함초롬바탕",
+            "한컴바탕",
+            "HY Sinmyeongjo"
+          ],
+          "standIns": [
+            "HY신명조",
+            "신명조",
+            "Batang",
+            "바탕",
+            "BatangChe",
+            "바탕체",
+            "AppleMyungjo",
+            "Baekmuk Batang",
+            "백묵 바탕",
+            "Myeongjo",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Batang",
+            "함초롬바탕",
+            "FZSong_SuperFont",
+            "한컴바탕확장"
+          ]
+        },
+        {
+          "name": "굴림",
+          "candidates": [
+            "굴림",
+            "한컴돋움",
+            "함초롬돋움",
+            "Gulim"
+          ],
+          "standIns": [
+            "Gulim",
+            "굴림",
+            "GulimChe",
+            "굴림체",
+            "AppleGothic",
+            "Baekmuk Gulim",
+            "백묵 굴림",
+            "RoundedGothic",
+            "Haansoft Dotum",
+            "한컴 돋움",
+            "Haansoft Batang",
+            "한컴바탕",
+            "HCR Dotum",
+            "함초롬돋움"
+          ]
+        }
+      ],
+      "classDefaults": [
+        [
+          "함초롬돋움",
+          "HCR Dotum"
+        ],
+        [
+          "함초롬바탕",
+          "HCR Batang",
+          "한컴바탕",
+          "바탕",
+          "Batang",
+          "Noto Serif KR",
+          "AppleMyungjo",
+          "Times New Roman"
+        ],
+        [
+          "함초롬돋움",
+          "HCR Dotum",
+          "한컴돋움",
+          "맑은 고딕",
+          "Malgun Gothic",
+          "돋움",
+          "Dotum",
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Arial"
+        ]
+      ],
+      "fallbacks": []
+    },
+    "fontsUsed": [
+      "맑은 고딕",
+      "바탕",
+      "함초롬돋움",
+      "함초롬바탕",
+      "휴먼고딕",
+      "휴먼명조",
+      "휴먼옛체",
+      "HY중고딕",
+      "HY헤드라인M",
+      "한양중고딕",
+      "한컴돋움",
+      "Times New Roman",
+      "HCI Hollyhock",
+      "HCI Poppy",
+      "한양신명조",
+      "굴림"
+    ],
+    "semantic": "79e33a06a645a4d7617fcdfa23fd38fa8a78920bddf5f54c201433ba82e8ce9e",
+    "render": "640cb902f1d897e17f23f070e7fb01aba4512300a70f731c87e651fcafa5bc21",
+    "text": "3d6ce114778ba672a75a6be503b770142e28a32be635ae6a662c247e37515c62",
+    "bytes": "6cf0a6daaf1755812c70bf8a5ded7f6fe81a8b750fd069a03335d4d3e287c13f",
+    "byteLength": 268800,
+    "shellRevision": 53,
+    "evidence": "060-reopened.json.gz"
+  },
+  "geometryChangedOnPrepare": false,
+  "geometryAfterPrepareMatchesReopened": false,
+  "changedLinesOnPrepare": [],
+  "styleSurvival": true,
+  "firstFailure": "AssertionError [ERR_ASSERTION]: Reopened native geometry/styles differ after normalizing runtime face/glyph IDs"
+}

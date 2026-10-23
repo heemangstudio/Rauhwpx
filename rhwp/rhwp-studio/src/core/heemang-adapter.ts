@@ -1,5 +1,5 @@
-import type { Address, Affinity, Caret, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, NavigateRequest, PageInfo as HmPage, ParagraphInfo, Receipt, Rect, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
-import { copyAddress, copySelection, editingText, orderedSelection, replacementOps, sameAddress, type TextSelection } from './heemang-editing';
+import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
+import { copyAddress, copySelection, editingText, formattingPatch, orderedSelection, replacementOps, sameAddress, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
 import { getSystemFontHost, loadDesktopFontIndex, type RuntimeFontMetricsApi } from './desktop-fonts';
@@ -10,15 +10,19 @@ import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
 
-export type { Address, Affinity, Caret, Located, LocateRequest, Motion, NavigateRequest, ParagraphInfo, Receipt, Rect, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
+export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection } from './heemang-editing';
 export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' };
 export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt }
+export interface CutResult { clipboard: Copied; edit: EditResult | null }
+export interface ReplaceAllResult { count: number; edit: EditResult | null }
 type SelectionHistory = { before: TextSelection; after: TextSelection; beforeId: number; afterId: number };
 
 const PX_PER_HU = 96 / 7200;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
 let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
+// native clipboard는 같은 Engine의 문서들이 공유한다.
+let internalClipboard: { engine: Engine; text: string } | null = null;
 
 type FontAsset = { name: string; url: string; size: number; families: string[]; host?: boolean };
 const normalize = (name: string) => name.toLowerCase().replace(/\s/g, '');
@@ -373,6 +377,98 @@ export class HeemangAdapter {
     return this.edit(replacementOps(range, normalized), range);
   }
 
+  formatCharacters(range: TextSelection, patch: CharPatch): EditResult | null {
+    this.requireEditable();
+    const { from, to } = orderedSelection(range);
+    if (sameAddress(from, to)) throw new EngineNotSupportedError('캐럿 위치의 입력 서식');
+    const validated = formattingPatch(patch, false) as CharPatch;
+    if (!Object.keys(validated).length) return null;
+    this.checkSelection(range);
+    return this.edit([{ op: 'formatChars', from, to, patch: validated }], range, true);
+  }
+
+  formatParagraphs(range: TextSelection, patch: ParaPatch): EditResult | null {
+    this.requireEditable();
+    const { from, to } = orderedSelection(range);
+    const validated = formattingPatch(patch, true) as ParaPatch;
+    if (!Object.keys(validated).length) return null;
+    this.checkSelection(range);
+    return this.edit([{ op: 'formatParas', from, to, patch: validated }], range, true);
+  }
+
+  copyText(range: TextSelection): Copied {
+    const { from, to } = orderedSelection(range);
+    this.checkSelection(range);
+    if (sameAddress(from, to)) return { text: '', html: '' };
+    // native 조각은 개체/표를 버린다. cut에서 원본만 지워지는 선택은 받지 않는다.
+    for (let para = from.para; para <= to.para; para++) {
+      const p = this.paragraphs(from.section, from.steps, para, 1)[0];
+      const start = para === from.para ? from.offset : 0;
+      const end = para === to.para ? to.offset : p.length;
+      // plain_text가 생략한 단위와 soft break는 native clipboard가 복원하지 못한다.
+      // wire 지도 query가 없으므로 이런 문단의 부분 선택도 보수적으로 거절한다.
+      const textUnits = [...p.text].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
+      if (/[\n\u00a0\u2007]/.test(p.text) || textUnits + p.controls.length * 8 !== p.length - 1) {
+        throw new EngineNotSupportedError('줄바꿈이나 특수 제어 문자를 포함한 클립보드 문단');
+      }
+      if (p.controls.some(control => control.offset < end && control.offset + 8 > start)) {
+        throw new EngineNotSupportedError('개체를 포함한 클립보드 선택');
+      }
+    }
+    const copied: Copied = JSON.parse(this.document().copy(JSON.stringify({ from, to })));
+    internalClipboard = { engine: this.engine, text: copied.text };
+    return copied;
+  }
+
+  cutText(range: TextSelection): CutResult {
+    this.requireEditable();
+    const clipboard = this.copyText(range);
+    return { clipboard, edit: this.edit(replacementOps(range, ''), range) };
+  }
+
+  pasteText(range: TextSelection, text: string, internal = false): EditResult | null {
+    this.requireEditable();
+    const { from, to } = orderedSelection(range);
+    if (!internal) return this.replaceText(range, text);
+    if (!sameAddress(from, to)) throw new EngineNotSupportedError('내부 클립보드로 선택 영역 바꾸기');
+    const normalized = editingText(text);
+    if (!this.hasInternalClipboard() || internalClipboard!.text !== normalized) {
+      throw new EngineNotSupportedError('일치하는 내부 클립보드 조각');
+    }
+    if (!normalized) return null;
+    if (normalized.includes('\n')) this.requireNonemptySplit(range, normalized);
+    return this.applyEdit(range, (doc, epoch) => JSON.parse(doc.paste(JSON.stringify({ at: from, expectedEpoch: epoch, text: normalized }))));
+  }
+
+  search(text: string, caseSensitive = false, from?: Address, backward = false): SearchResult {
+    // 기본 1000건 제한으로 replaceAll 일부만 바뀌는 일을 막는다.
+    return JSON.parse(this.document().search(JSON.stringify({ text: editingText(text), caseSensitive, limit: 0xffffffff, from, backward })));
+  }
+
+  replaceMatch(match: Match, text: string, expectedEpoch: number): EditResult | null {
+    this.requireEditable();
+    this.checkEpoch(expectedEpoch);
+    return this.replaceText(match, text);
+  }
+
+  replaceAll(text: string, replacement: string, caseSensitive = false, before?: TextSelection): ReplaceAllResult {
+    this.requireEditable();
+    if (before) { orderedSelection(before); this.checkSelection(before); }
+    const normalized = editingText(replacement);
+    const found = this.search(text, caseSensitive);
+    if (!found.matches.length) return { count: 0, edit: null };
+    if (normalized.startsWith('\n') && normalized.endsWith('\n')
+      && found.matches.some((match, i) => i > 0 && sameAddress(found.matches[i - 1].to, match.from))) {
+      throw new EngineNotSupportedError('빈 문단을 만드는 Enter 조판');
+    }
+    const ops = found.matches.slice().reverse().flatMap(match => {
+      if (normalized.includes('\n')) this.requireNonemptySplit(match, normalized);
+      return replacementOps(match, normalized);
+    });
+    this.checkEpoch(found.contentEpoch);
+    return { count: found.matches.length, edit: this.edit(ops, before ?? found.matches[0]) };
+  }
+
   split(range: TextSelection): EditResult | null {
     this.requireNonemptySplit(range, '\n');
     const ordered = orderedSelection(range);
@@ -409,20 +505,62 @@ export class HeemangAdapter {
     if (this.readOnly) throw new EngineNotSupportedError('이 형식의 편집 및 저장');
   }
 
-  private edit(ops: EditOp[], before: TextSelection): EditResult | null {
+  private checkEpoch(expected: number): void {
+    if (!Number.isInteger(expected) || expected !== this.state().contentEpoch) {
+      throw Object.assign(new Error('검색 후 문서가 변경되었습니다'), { code: 'STALE_EPOCH' });
+    }
+  }
+
+  private checkSelection(range: TextSelection): void {
+    for (const at of [range.from, range.to]) {
+      const p = this.paragraphs(at.section, at.steps, at.para, 1)[0];
+      if (!p || at.offset < p.caret[0] || at.offset > p.caret[1]) {
+        throw Object.assign(new RangeError('잘못된 문서 위치입니다'), { code: 'BAD_ADDRESS' });
+      }
+    }
+  }
+
+  /** 서식/붙여넣기의 사전 shape 생성과 편집 후 caret 조회 실패까지 되돌린다. */
+  private checkpointed<T>(run: (doc: Doc, epoch: number) => T): T {
+    const doc = this.document();
+    const epoch = this.state().contentEpoch;
+    const checkpoint = doc.checkpoint();
+    try {
+      return run(doc, epoch);
+    } catch (error) {
+      const restored: Receipt = JSON.parse(doc.restore(checkpoint));
+      // 내용은 같아도 restore는 native epoch를 올린다. 유효한 저장 후보는 유지한다.
+      if (this.serialized?.epoch === epoch) this.serialized = { ...this.serialized, epoch: restored.contentEpoch };
+      this.refreshLayout();
+      throw error;
+    } finally {
+      doc.releaseCheckpoint(checkpoint);
+    }
+  }
+
+  private edit(ops: EditOp[], before: TextSelection, preserveSelection = false): EditResult | null {
     this.requireEditable();
     if (!ops.length) return null;
+    return this.applyEdit(before, (doc, epoch) => JSON.parse(doc.transact(JSON.stringify({ expectedEpoch: epoch, ops }))), preserveSelection);
+  }
+
+  private applyEdit(before: TextSelection, mutate: (doc: Doc, epoch: number) => Receipt, preserveSelection = false): EditResult | null {
     const selection = copySelection(before);
-    const epoch = this.state().contentEpoch;
-    const receipt: Receipt = JSON.parse(this.document().transact(JSON.stringify({ expectedEpoch: epoch, ops })));
-    if (receipt.contentEpoch === epoch) return null;
-    const at = receipt.caret!;
-    const after = { from: copyAddress(at), to: copyAddress(at) };
+    const changed = this.checkpointed((doc, epoch) => {
+      const receipt = mutate(doc, epoch);
+      if (receipt.contentEpoch === epoch) return null;
+      if (!preserveSelection && !receipt.caret) throw new EngineNotSupportedError('편집 결과의 caret');
+      const after = preserveSelection ? copySelection(selection)
+        : { from: copyAddress(receipt.caret!), to: copyAddress(receipt.caret!) };
+      return { after, result: this.editResult(receipt, after) };
+    });
+    if (!changed) return null;
+    const { after, result } = changed;
     this.edits.push({ before: selection, after, beforeId: this.contentId, afterId: ++this.nextContentId });
     this.contentId = this.nextContentId;
     this.redos.length = 0;
     this.refreshLayout();
-    return this.editResult(receipt, after);
+    return result;
   }
 
   undoEdit(): EditResult | null { return this.historyEdit(false); }
@@ -435,13 +573,16 @@ export class HeemangAdapter {
     const source = redo ? this.redos : this.edits;
     const entry = source.at(-1);
     if (!entry) return null;
-    const receipt: Receipt | null = JSON.parse(redo ? this.document().redo() : this.document().undo());
-    if (!receipt) return null;
+    const result = this.checkpointed(doc => {
+      const receipt: Receipt | null = JSON.parse(redo ? doc.redo() : doc.undo());
+      return receipt ? this.editResult(receipt, redo ? entry.after : entry.before) : null;
+    });
+    if (!result) return null;
     source.pop();
     (redo ? this.edits : this.redos).push(entry);
     this.contentId = redo ? entry.afterId : entry.beforeId;
     this.refreshLayout();
-    return this.editResult(receipt, redo ? entry.after : entry.before);
+    return result;
   }
 
   private editResult(receipt: Receipt, selection: TextSelection): EditResult {
@@ -494,7 +635,7 @@ export class HeemangAdapter {
   }
   isSubsecondHotpatchEnabled(): boolean { return false; }
   hasTableTransposeClipboard(): boolean { return false; }
-  hasInternalClipboard(): boolean { return false; }
+  hasInternalClipboard(): boolean { return internalClipboard !== null && internalClipboard.engine === this.engine; }
   hasHmlExportCapability(): boolean { return false; }
   getShowControlCodes(): boolean { return false; }
   getShowParagraphMarks(): boolean { return false; }

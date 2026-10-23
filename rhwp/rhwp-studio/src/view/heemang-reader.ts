@@ -1,8 +1,14 @@
-import type { Located, Motion, Rect, TextSelection, EditResult } from '../core/heemang-adapter';
+import type { Located, Motion, Rect, TextSelection, EditResult, Match, CharPatch, ParaPatch, Copied } from '../core/heemang-adapter';
 import type { StudioEngine } from '../core/wasm-bridge';
 import type { CanvasView } from './canvas-view';
 import type { EventBus } from '../core/event-bus';
 import { EngineNotSupportedError } from '../core/engine-support';
+import { copySelection, orderedSelection, sameAddress } from '../core/heemang-editing';
+import { showHeemangCharacterFormat, showHeemangParagraphFormat, showHeemangFind } from '../ui/heemang-edit-dialogs';
+
+// 네이티브 조각은 runtime Engine이 공유한다. OS의 일반 텍스트와 조각을 혼동하지 않는다.
+let clipboard: (Copied & { token: string }) | null = null;
+const clipboardType = 'application/x-heemang-fragment';
 
 /** Heemang 세션의 wire 주소를 유지하는 입력·선택 경로. */
 export function installHeemangReader(container: HTMLElement, engine: StudioEngine, bus: EventBus, view: CanvasView, report: (error: Error) => void, canEdit: () => boolean = () => true): void {
@@ -10,11 +16,14 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   let anchor: Located | null = null;
   let rectangles: Rect[] = [];
   let dragging = false;
+  let pasteAsPlainText = false;
   let preferredX: number | undefined;
   let frame = 0;
   let documentInstance = engine.documentInstance;
   const overlays = new Set<HTMLElement>();
   const active = () => engine.engineKind === 'heemang' && engine.hasLoadedDocument();
+  let findDialog: ReturnType<typeof showHeemangFind> | null = null;
+  let findHit: { match: Match; epoch: number; query: string; caseSensitive: boolean } | null = null;
   let composition: { selection: TextSelection; text: string } | null = null;
   const input = document.createElement('textarea');
   input.dataset.heemangInput = 'true';
@@ -79,6 +88,9 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
       rectangles = [];
       dragging = false;
       composition = null;
+      findDialog?.hide();
+      findDialog = null;
+      findHit = null;
       input.value = '';
     }
     input.disabled = !writable();
@@ -126,6 +138,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   }
   function updateSelection() {
     if (!caret) return;
+    bus.emit('heemang-selection-changed');
     rectangles = anchor ? engine.viewer!.select({ from: anchor.position, to: caret.position }) : [];
     bus.emit('cursor-rect-updated', { pageIndex: caret.caret.page, x: caret.caret.x / 75, y: caret.caret.y / 75, height: caret.caret.height / 75 });
     draw();
@@ -157,7 +170,9 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
       ev.stopImmediatePropagation();
       cancelComposition();
       focusInput();
-      anchor = ev.shiftKey && caret ? anchor ?? caret : hit;
+      const nextAnchor = ev.shiftKey && caret ? anchor ?? caret : hit;
+      engine.viewer!.select({ from: nextAnchor.position, to: hit.position });
+      anchor = nextAnchor;
       caret = hit;
       preferredX = undefined;
       dragging = true;
@@ -169,6 +184,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     attempt(() => {
       const hit = point(ev);
       if (!hit) return;
+      if (anchor) engine.viewer!.select({ from: anchor.position, to: hit.position });
       caret = hit;
       updateSelection();
     });
@@ -184,8 +200,11 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   }
   container.addEventListener('keydown', ev => {
     if (!active() || (ev.target !== container && ev.target !== input)) return;
+    pasteAsPlainText = (ev.metaKey || ev.ctrlKey) && ev.shiftKey && ev.key.toLowerCase() === 'v';
     // 메뉴 저장 단축키는 기존 dispatcher로 전달한다.
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 's') return;
+    // 문서 서식/검색 단축키는 dispatcher가 동일한 wire 선택으로 처리한다.
+    if ((ev.metaKey || ev.ctrlKey || ev.altKey) && !['z', 'y', 'c', 'x', 'v'].includes(ev.key.toLowerCase()) && !ev.key.startsWith('Arrow')) return;
     ev.stopImmediatePropagation();
     if (ev.key === 'Escape' && composition) {
       ev.preventDefault();
@@ -271,7 +290,211 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     if (!composition) input.value = '';
   });
   input.addEventListener('blur', cancelComposition);
-  input.addEventListener('paste', ev => { ev.preventDefault(); report(new EngineNotSupportedError('클립보드 붙여넣기')); });
+  container.addEventListener('copy', ev => transferClipboard(ev, false));
+  container.addEventListener('cut', ev => transferClipboard(ev, true));
+  container.addEventListener('paste', ev => {
+    if (!active()) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    if (!writable() || !ev.clipboardData) return;
+    const data = ev.clipboardData;
+    attempt(() => {
+      if (!data.types.includes('text/plain')) throw new EngineNotSupportedError('텍스트가 아닌 클립보드');
+      paste(data.getData('text/plain'), data.getData('text/html'), data.getData(clipboardType), pasteAsPlainText);
+    });
+    pasteAsPlainText = false;
+  });
+
+  function copy(range: TextSelection): Copied {
+    const copied = engine.viewer!.copyText(range);
+    if (copied.text || copied.html) clipboard = { ...copied, token: crypto.randomUUID() };
+    return copied;
+  }
+  function transferClipboard(ev: ClipboardEvent, cut: boolean) {
+    if (!active()) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    const range = selection();
+    if (!range || !ev.clipboardData || (cut && !writable())) return;
+    attempt(() => {
+      const copied = copy(range);
+      if (!copied.text && !copied.html) return;
+      ev.clipboardData!.setData('text/plain', copied.text);
+      ev.clipboardData!.setData('text/html', `${copied.html}<!--heemang:${clipboard!.token}-->`);
+      ev.clipboardData!.setData(clipboardType, clipboard!.token);
+      if (cut) applyEdit(() => engine.viewer!.cutText(range).edit);
+    });
+  }
+  function paste(text: string, html = '', token = '', plain = false) {
+    const range = selection();
+    if (!range || !writable() || (!text && !html)) return;
+    const internal = !plain && !!clipboard && clipboard.text === text
+      && (token === clipboard.token || html.includes(`<!--heemang:${clipboard.token}-->`));
+    if (html && !internal && !plain) throw new EngineNotSupportedError('HTML 클립보드 가져오기');
+    applyEdit(() => engine.viewer!.pasteText(range, text, internal));
+    focusInput();
+  }
+  async function systemClipboard(cut: boolean) {
+    const range = selection();
+    if (!range || (cut && !writable())) return;
+    const instance = engine.documentInstance, epoch = engine.viewer!.state().contentEpoch;
+    const copied = copy(range);
+    if (!copied.text && !copied.html) return;
+    const token = clipboard!.token;
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/plain': new Blob([copied.text], { type: 'text/plain' }),
+      'text/html': new Blob([`${copied.html}<!--heemang:${clipboard!.token}-->`], { type: 'text/html' }),
+    })]);
+    if (cut) {
+      ensureCurrent(instance, epoch);
+      if (clipboard?.token !== token) throw new Error('클립보드를 쓰는 동안 복사 내용이 변경되었습니다');
+      const current = selection();
+      if (!current || !sameAddress(range.from, current.from) || !sameAddress(range.to, current.to)) throw new Error('클립보드를 쓰는 동안 선택이 변경되었습니다');
+      applyEdit(() => engine.viewer!.cutText(range).edit);
+    }
+    focusInput();
+  }
+  async function systemPaste() {
+    const instance = engine.documentInstance, epoch = engine.viewer!.state().contentEpoch;
+    const range = selection();
+    const items = await navigator.clipboard.read();
+    let text = '', html = '', hasText = false;
+    for (const item of items) {
+      if (item.types.includes('text/plain')) { hasText = true; text = await (await item.getType('text/plain')).text(); }
+      if (item.types.includes('text/html')) html = await (await item.getType('text/html')).text();
+      if (text || html) break;
+    }
+    ensureCurrent(instance, epoch);
+    if (!hasText) throw new EngineNotSupportedError('텍스트가 아닌 클립보드');
+    const current = selection();
+    if (!range || !current || !sameAddress(range.from, current.from) || !sameAddress(range.to, current.to)) throw new Error('클립보드를 읽는 동안 선택이 변경되었습니다');
+    paste(text, html);
+  }
+  function ensureCurrent(instance: number, epoch: number) {
+    if (!writable() || engine.documentInstance !== instance || engine.viewer!.state().contentEpoch !== epoch) throw new Error('작업 중 문서가 변경되었습니다');
+  }
+  function showSelection(range: TextSelection) {
+    const v = engine.viewer!;
+    const rects = v.select(range);
+    const locate = (position: TextSelection['from']): Located => {
+      const geometry = v.locate({ kind: 'caret', position });
+      if (!geometry || !('page' in geometry)) throw new EngineNotSupportedError('검색 위치의 caret 조회');
+      return { position, affinity: 'downstream', caret: geometry };
+    };
+    const from = locate(range.from), to = locate(range.to);
+    anchor = sameAddress(range.from, range.to) ? null : from;
+    caret = to;
+    rectangles = rects;
+    updateSelection();
+    revealCaret();
+  }
+  function search(query: string, caseSensitive: boolean, backward: boolean): boolean {
+    if (!active()) return false;
+    const range = selection();
+    const ordered = range ? orderedSelection(range) : null;
+    // native from은 매치 시작을 엄격히 비교한다. 선택 시작을 써야 인접 매치를 건너뛰지 않는다.
+    const found = engine.viewer!.search(query, caseSensitive, ordered?.from, backward);
+    let match = backward ? found.matches.at(-1) : found.matches[0];
+    if (!backward && ordered && sameAddress(ordered.from, ordered.to)) {
+      match = engine.viewer!.search(query, caseSensitive).matches.find(m => sameAddress(m.from, ordered.from)) ?? match;
+    }
+    if (!match) { findHit = null; return false; }
+    showSelection(match);
+    findHit = { match, epoch: found.contentEpoch, query, caseSensitive };
+    return true;
+  }
+  function openFind(mode: 'find' | 'replace') {
+    if (findDialog) { findDialog.setMode(mode); findDialog.focus(); return; }
+    findDialog = showHeemangFind({
+      find: search,
+      replace(query, replacement, caseSensitive) {
+        const range = selection();
+        if (!range || !findHit || findHit.query !== query || findHit.caseSensitive !== caseSensitive
+          || findHit.epoch !== engine.viewer!.state().contentEpoch
+          || !sameAddress(orderedSelection(range).from, findHit.match.from) || !sameAddress(orderedSelection(range).to, findHit.match.to)) {
+          findHit = null;
+          return search(query, caseSensitive, false);
+        }
+        if (!writable()) throw new EngineNotSupportedError('읽기 전용 문서 바꾸기');
+        const hit = findHit;
+        applyEdit(() => engine.viewer!.replaceMatch(hit.match, replacement, hit.epoch));
+        findHit = null;
+        search(query, caseSensitive, false);
+        return true;
+      },
+      replaceAll(query, replacement, caseSensitive) {
+        if (!writable()) throw new EngineNotSupportedError('읽기 전용 문서 바꾸기');
+        const result = engine.viewer!.replaceAll(query, replacement, caseSensitive, selection() ?? undefined);
+        applyEdit(() => result.edit);
+        findHit = null;
+        return result.count;
+      },
+      close() { findDialog = null; focusInput(); },
+    }, mode);
+  }
+  function characterFormat(field?: 'bold' | 'italic' | 'underline') {
+    const range = selection();
+    if (!range) throw new EngineNotSupportedError('선택 없는 글자 서식');
+    if (sameAddress(range.from, range.to)) throw new EngineNotSupportedError('캐럿에서 다음 입력의 글자 서식');
+    const saved = copySelection(range), instance = engine.documentInstance, epoch = engine.viewer!.state().contentEpoch;
+    showHeemangCharacterFormat(patch => { ensureCurrent(instance, epoch); applyEdit(() => engine.viewer!.formatCharacters(saved, patch)); }, focusInput, field);
+  }
+  function paragraphFormat() {
+    const range = selection();
+    if (!range) throw new EngineNotSupportedError('선택 없는 문단 서식');
+    const saved = copySelection(range), instance = engine.documentInstance, epoch = engine.viewer!.state().contentEpoch;
+    showHeemangParagraphFormat(patch => { ensureCurrent(instance, epoch); applyEdit(() => engine.viewer!.formatParagraphs(saved, patch)); }, focusInput);
+  }
+  bus.on('format-char', value => {
+    if (!writable()) return;
+    attempt(() => {
+      const range = selection();
+      if (!range) throw new EngineNotSupportedError('선택 없는 글자 서식');
+      const props = value as Record<string, unknown>;
+      const patch: CharPatch = {};
+      for (const [key, val] of Object.entries(props)) {
+        if (key === 'fontSize') patch.size = val as number;
+        else if (key === 'textColor' && typeof val === 'string' && /^#[0-9a-f]{6}$/i.test(val)) {
+          const hex = val.slice(1); patch.color = parseInt(hex.slice(0, 2), 16) | parseInt(hex.slice(2, 4), 16) << 8 | parseInt(hex.slice(4, 6), 16) << 16;
+        } else throw new EngineNotSupportedError(key);
+      }
+      applyEdit(() => engine.viewer!.formatCharacters(range, patch));
+      focusInput();
+    });
+  });
+  bus.on('heemang-command', payload => {
+    if (!active()) return;
+    const { id, params } = payload as { id: string; params?: Record<string, unknown> };
+    if (!writable() && !['edit:copy', 'edit:find', 'edit:find-again', 'edit:select-all'].includes(id)) return;
+    cancelComposition();
+    attempt(() => {
+      const range = selection();
+      if (id === 'edit:find' || id === 'edit:find-replace') { openFind(id === 'edit:find' ? 'find' : 'replace'); return; }
+      if (id === 'edit:find-again') { if (findDialog) findDialog.findNext(); else openFind('find'); return; }
+      if (id === 'edit:copy' || id === 'edit:cut') { void systemClipboard(id === 'edit:cut').catch(error => attempt(() => { throw error; })); return; }
+      if (id === 'edit:paste') { void systemPaste().catch(error => attempt(() => { throw error; })); return; }
+      if (id === 'edit:select-all') {
+        if (!range) return;
+        const from = { ...range.from, para: 0 };
+        const first = engine.viewer!.paragraphs(from.section, from.steps, 0, 1)[0];
+        const count = engine.viewer!.getParagraphCount(from.section, from.steps);
+        const last = engine.viewer!.paragraphs(from.section, from.steps, count - 1, 1)[0];
+        if (first && last) showSelection({ from: { ...from, offset: first.caret[0] }, to: { ...from, para: count - 1, offset: last.caret[1] } });
+        return;
+      }
+      if (id === 'format:char-shape') { characterFormat(); return; }
+      if (id === 'format:para-shape') { paragraphFormat(); return; }
+      if (['format:bold', 'format:italic', 'format:underline'].includes(id)) { characterFormat(id.slice(7) as 'bold' | 'italic' | 'underline'); return; }
+      if (id === 'edit:delete' && range) { applyEdit(() => engine.viewer!.deleteForward(range)); return; }
+      if (id.startsWith('format:align-') && range) {
+        const align = id.slice(13) === 'split' ? 'divide' : id.slice(13);
+        applyEdit(() => engine.viewer!.formatParagraphs(range, { align: align as ParaPatch['align'] })); focusInput(); return;
+      }
+      if (id === 'format:line-spacing' && range) { applyEdit(() => engine.viewer!.formatParagraphs(range, { lineSpacing: params?.value as number })); focusInput(); return; }
+      if (id === 'format:text-color' && range) { bus.emit('format-char', { textColor: params?.color }); return; }
+      throw new EngineNotSupportedError(id);
+    });
+  });
   bus.on('heemang-history-action', action => {
     if (!writable()) return;
     cancelComposition();

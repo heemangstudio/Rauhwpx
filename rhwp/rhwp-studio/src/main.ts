@@ -864,7 +864,7 @@ function setDocumentReadOnly(readOnly: boolean): void {
   document.documentElement.dataset.documentReadOnly = sessionReadOnly() ? 'true' : 'false';
   inputHandler?.setReadOnly(sessionReadOnly() || wasm.engineKind === 'heemang');
   // 멈춘 엔진에는 쪽 수를 묻지 않는다 (버전 기록이 작업 공간 점유를 다시 맞출 때도 여기를 지난다).
-  toolbar?.setEnabled(wasm.engineKind !== 'heemang' && !engineTrap() && wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
+  toolbar?.setEnabled(!engineTrap() && wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   eventBus.emit('command-state-changed');
 }
 
@@ -886,7 +886,7 @@ function setAgentEditingLease(lease: AgentEditingLease): void {
     statusLabel.textContent = lease.waitingForUser ? `${AGENT_LABEL[lease.agent]}가 답변을 기다리고 있어요` : '편집 중';
   }
   inputHandler?.setUserEditingLocked(agentEditingLease.active);
-  toolbar?.setEnabled(wasm.engineKind !== 'heemang' && wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
+  toolbar?.setEnabled(wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   scheduleCharacterStatus();
   eventBus.emit('command-state-changed');
 }
@@ -4919,7 +4919,7 @@ async function initializeDocument(
     prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');
-    toolbar?.setEnabled(wasm.engineKind !== 'heemang' && !sessionReadOnly() && !agentEditingLease.active);
+    toolbar?.setEnabled(!sessionReadOnly() && !agentEditingLease.active);
     if (wasm.engineKind !== 'heemang') toolbar?.initFontDropdown(docInfo.fontsUsed);
     if (wasm.engineKind !== 'heemang') toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');

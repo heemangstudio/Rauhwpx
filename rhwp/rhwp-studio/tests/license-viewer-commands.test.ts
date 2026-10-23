@@ -37,3 +37,34 @@ test('Heemang은 저장과 hm history만 열고 기존 편집·비교 명령은 
   assert.deepEqual(dispatcherFor({ engineKind: 'heemang', userEditingLocked: true }),
     ['file:open', 'file:open-recent', 'view:zoom-in']);
 });
+
+
+test('Heemang wire commands bypass legacy handlers while preserving edit locks and default-engine routing', () => {
+  const bus = new EventBus();
+  const routed: unknown[] = [];
+  bus.on('heemang-command', event => routed.push(event));
+  let legacyCalls = 0;
+  let context = { engineKind: 'heemang', hasDocument: true, readOnly: false, userEditingLocked: false };
+  const dispatcher = new CommandDispatcher(
+    { get: () => ({ canExecute() { legacyCalls++; return false; }, execute() { legacyCalls++; } }) } as any,
+    { getContext: () => context } as any, bus,
+  );
+  for (const id of ['format:bold', 'format:apply-style', 'table:cell-merge', 'edit:cut', 'edit:find']) {
+    assert.equal(dispatcher.isEnabled(id), true);
+    assert.equal(dispatcher.dispatch(id, { value: 150 }), true);
+  }
+  assert.equal(legacyCalls, 0);
+  assert.equal(routed.length, 5);
+  assert.deepEqual(routed[0], { id: 'format:bold', params: { value: 150 } });
+  context = { ...context, userEditingLocked: true };
+  assert.equal(dispatcher.dispatch('format:bold'), false);
+  assert.equal(dispatcher.dispatch('table:cell-merge'), false);
+  assert.equal(dispatcher.dispatch('edit:cut'), false);
+  context = { ...context, userEditingLocked: false, readOnly: true };
+  assert.equal(dispatcher.dispatch('format:bold'), false);
+  assert.equal(dispatcher.dispatch('edit:find'), true);
+  context = { ...context, engineKind: 'rhwp', readOnly: false };
+  assert.equal(dispatcher.dispatch('format:bold'), false);
+  assert.equal(legacyCalls, 1);
+  assert.equal(routed.length, 6);
+});
