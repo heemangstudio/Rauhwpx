@@ -688,6 +688,81 @@ test('find next and previous use native wire positions and wrap from the current
   assert.deepEqual(a.search('qZ', true, all[0].from, true).matches, [all[1]]);
 });
 
+test('native page metadata follows topology, undo/redo and reopened document identity', async t => {
+  const a = await open(t);
+  const values = (p: ReturnType<typeof a.getPageInfo>) => ({
+    pageIndex: p.pageIndex, pageNumber: p.pageNumber, sectionIndex: p.sectionIndex,
+    width: p.width, height: p.height,
+  });
+  const pages = () => {
+    const all = a.getAllPageInfo();
+    const native = JSON.parse((a as any).doc.pages());
+    assert.deepEqual(all.map(values), native.map(p => ({
+      pageIndex: p.index, pageNumber: p.number, sectionIndex: p.section,
+      width: p.width * (96 / 7200), height: p.height * (96 / 7200),
+    })));
+    for (let i = 0; i < all.length; i++) assert.deepEqual(values(a.getPageInfo(i)), values(all[i]));
+    assert.throws(() => a.getPageInfo(all.length), RangeError);
+    return all.map(values);
+  };
+  const initialState = a.state();
+  const initial = pages();
+  const first = a.getPageInfo(0);
+  const all = a.getAllPageInfo();
+  for (const p of [first, all[0]]) {
+    for (const key of ['marginLeft', 'marginRight', 'marginTop', 'marginBottom', 'marginHeader', 'marginFooter'] as const) {
+      assert.throws(() => p[key], { code: 'ENGINE_NOT_SUPPORTED' });
+    }
+    p.width = -1;
+  }
+  all.length = 0;
+  assert.deepEqual(pages(), initial); // 호출자가 결과를 바꿔도 캐시에 섞이지 않는다.
+  for (const index of [-1, 0.5, NaN]) assert.throws(() => a.getPageInfo(index), RangeError);
+
+  a.replaceText(selection(body), Array(160).fill('line').join('\n'));
+  const expanded = pages();
+  assert.ok(expanded.length > initial.length);
+  const saved = a.serialize(false);
+  a.undoEdit();
+  assert.deepEqual(pages(), initial);
+  a.redoEdit();
+  assert.deepEqual(pages(), expanded);
+
+  a.loadDocument(hwpx());
+  assert.deepEqual(pages(), initial);
+  const reopenedState = a.state();
+  assert.equal(reopenedState.layoutEpoch, initialState.layoutEpoch);
+  assert.equal(reopenedState.fontGeneration, initialState.fontGeneration);
+  a.loadDocument(saved);
+  // 서로 다른 문서가 같은 초기 epoch를 가져도 이전 쪽 목록을 돌려주면 안 된다.
+  assert.equal(a.state().layoutEpoch, reopenedState.layoutEpoch);
+  assert.deepEqual(pages(), expanded);
+  a.releaseDocument();
+  assert.throws(() => a.getAllPageInfo(), /문서가 로드되지 않았습니다/);
+});
+
+test('native checkpoint rollback discards page metadata read during the failed edit', async t => {
+  const a = await open(t);
+  const before = a.getAllPageInfo().map(p => p.pageIndex);
+  const state = a.state();
+  const bytes = a.serialize(false);
+  const doc = (a as any).doc, locate = doc.locate.bind(doc);
+  doc.locate = () => {
+    // caret 조회 전에 성공한 native 편집의 임시 조판 결과를 캐시에 넣는다.
+    assert.ok(a.getAllPageInfo().length > before.length);
+    return 'null';
+  };
+  try {
+    assert.throws(() => a.replaceText(selection(body), Array(160).fill('line').join('\n')), { code: 'ENGINE_NOT_SUPPORTED' });
+  } finally {
+    doc.locate = locate;
+  }
+  assertRestored(a, state);
+  assert.deepEqual(a.getAllPageInfo().map(p => p.pageIndex), before);
+  assert.throws(() => a.getPageInfo(before.length), RangeError);
+  assert.deepEqual(a.serialize(false), bytes);
+});
+
 test('receipt page invalidation keeps unchanged packets and refreshes the edited page', async t => {
   const a = await open(t);
   const inserted = a.replaceText(selection(body), Array(160).fill('line').join('\n'))!;

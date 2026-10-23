@@ -164,6 +164,7 @@ export class HeemangAdapter {
   private readonly webFonts = new Map<string, Promise<void>>();
   private doc: Doc | null = null;
   private packets = new Map<number, PagePacket>();
+  private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
   private _fileName = '';
   private sourceFormat = 'hwpx';
   private _digest: string | null = null;
@@ -258,6 +259,7 @@ export class HeemangAdapter {
     this.doc = null;
     this.fontsPrepared = false;
     this.packets.clear();
+    this.pageMetadata = null;
     this.currentFileHandle = null;
     this._digest = null;
     this.editable = false;
@@ -293,9 +295,19 @@ export class HeemangAdapter {
     };
   }
   getSectionCount(): number { return Math.max(-1, ...this.hmPages().map(p => p.section)) + 1; }
-  private hmPages(): HmPage[] { return JSON.parse(this.document().pages()); }
-  getAllPageInfo(): PageInfo[] {
-    return this.hmPages().map(p => ({
+  private hmPages(): HmPage[] {
+    const doc = this.document();
+    // state는 대기 중인 조판과 공유 엔진의 글꼴 변경을 먼저 반영한다.
+    const { layoutEpoch, fontGeneration } = this.state();
+    const cached = this.pageMetadata;
+    if (cached?.doc === doc && cached.layoutEpoch === layoutEpoch && cached.fontGeneration === fontGeneration) return cached.pages;
+    const pages: HmPage[] = JSON.parse(doc.pages());
+    this.pageMetadata = { doc, layoutEpoch, fontGeneration, pages };
+    return pages;
+  }
+  getAllPageInfo(): PageInfo[] { return this.hmPages().map(p => this.pageInfo(p)); }
+  private pageInfo(p: HmPage): PageInfo {
+    return {
       pageIndex: p.index, pageNumber: p.number, sectionIndex: p.section,
       width: p.width * PX_PER_HU, height: p.height * PX_PER_HU,
       // hm-wasm/1은 여백을 제공하지 않는다. 0으로 꾸미지 않고, 소비자가 읽으면 거절한다.
@@ -305,14 +317,14 @@ export class HeemangAdapter {
       get marginBottom() { return unsupportedMargin(); },
       get marginHeader() { return unsupportedMargin(); },
       get marginFooter() { return unsupportedMargin(); },
-    }));
+    };
   }
   getPageInfo(index: number): PageInfo {
-    const page = this.getAllPageInfo()[index];
+    const page = this.hmPages()[index];
     if (!page) throw new RangeError(`No page ${index}`);
-    return page;
+    return this.pageInfo(page);
   }
-  refreshLayout(): void { this.packets.clear(); }
+  refreshLayout(): void { this.packets.clear(); this.pageMetadata = null; }
 
   private invalidate(receipt: Receipt): void {
     if (receipt.changedPages === null) { this.packets.clear(); return; }
