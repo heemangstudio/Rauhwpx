@@ -110,10 +110,18 @@ export class Doc {
     fontNames(): string;
     /**
      * What fonts the document draws with (`FontRequests`): per face name
-     * its candidate families in the order the engine tries them and its
-     * font-map stand-ins, and the class default lists. Register the first
-     * candidate available, the first stand-in available, and the first
-     * family available of each default list. Doesn't lay the document out.
+     * its text, paragraph heads and equations use, its candidate families
+     * in the order the engine tries them and its font-map stand-ins; the
+     * class default lists; and `fallbacks`, the unregistered families the
+     * engine looks in, in order, for characters the registered faces lack.
+     *
+     * Register the first available candidate of each face and the first
+     * available family of the first default list (Hancom's default face;
+     * failing that, of the others), then ask again and register the
+     * available fallbacks before the first layout. Doesn't lay the
+     * document out. Once laid out, the faces also include every name the
+     * layout asked for and the fallbacks what it looked for; registering
+     * what is new and available lays it out again.
      */
     fontRequests(): string;
     /**
@@ -228,8 +236,22 @@ export class Engine {
     /**
      * Registers a TTF, OTF, TTC or HFT file; returns the faces added.
      * Documents lay out again with it on their next request.
+     *
+     * The engine keeps of a TrueType face its metrics and the outlines of
+     * the characters in the documents opened so far, not the file. Other
+     * outlines come empty (`em` 0 in `glyphOutlines`) and name the file in
+     * [`Engine::outline_requests`]; registering the same label again fills
+     * them in and bumps the font generation, without a new layout unless
+     * one measured a missing outline.
      */
     addFont(label: string, bytes: Uint8Array): number;
+    /**
+     * Registers a font file the host holds, like [`Engine::add_font`],
+     * reading through `file.read(offset, length)` (a `Uint8Array`) only
+     * the parts the engine keeps, so the file never enters the engine's
+     * memory whole.
+     */
+    addFontFile(label: string, file: any): number;
     /**
      * Registers Hancom's font mapping table (`FontMap.dat`).
      */
@@ -251,9 +273,24 @@ export class Engine {
     glyphOutlines(pairs: Uint32Array): Uint8Array;
     constructor();
     /**
-     * Opens HWP 5 or HWPX bytes and lays them out.
+     * Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
      */
     open(bytes: Uint8Array): Doc;
+    /**
+     * Labels of registered font files with outlines asked for but not
+     * kept, as a JSON `string[]`: register each again with its bytes.
+     */
+    outlineRequests(): string;
+    /**
+     * Unregisters the font files registered under the labels of a JSON
+     * `string[]`; returns the faces removed. Documents lay out again on
+     * their next request.
+     */
+    unregisterFonts(labels: string): number;
+    /**
+     * Bytes of font data the engine holds.
+     */
+    readonly fontBytes: number;
     readonly fontGeneration: number;
 }
 
@@ -279,6 +316,11 @@ export function capabilities(): string;
  * `string[]`, for a host's font catalog; empty when unreadable.
  */
 export function familyNames(bytes: Uint8Array): string;
+
+/**
+ * [`family_names`] of a file the host holds, reading only its tables.
+ */
+export function fileFamilyNames(file: any): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -318,21 +360,26 @@ export interface InitOutput {
     readonly doc_undo: (a: number) => [number, number, number, number];
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;
     readonly engine_addFont: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly engine_addFontFile: (a: number, b: number, c: number, d: any) => number;
     readonly engine_addFontMap: (a: number, b: number, c: number) => number;
     readonly engine_addHftInfo: (a: number, b: number, c: number) => number;
     readonly engine_create: (a: number, b: number, c: number) => [number, number, number];
+    readonly engine_fontBytes: (a: number) => number;
     readonly engine_fontGeneration: (a: number) => number;
     readonly engine_glyphOutlines: (a: number, b: number, c: number) => [number, number];
     readonly engine_new: () => number;
     readonly engine_open: (a: number, b: number, c: number) => [number, number, number];
+    readonly engine_outlineRequests: (a: number) => [number, number];
+    readonly engine_unregisterFonts: (a: number, b: number, c: number) => [number, number, number];
     readonly engineerror_code: (a: number) => [number, number];
     readonly engineerror_message: (a: number) => [number, number];
     readonly engineerror_toString: (a: number) => [number, number];
     readonly familyNames: (a: number, b: number) => [number, number];
+    readonly fileFamilyNames: (a: any) => [number, number];
+    readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_start: () => void;
 }

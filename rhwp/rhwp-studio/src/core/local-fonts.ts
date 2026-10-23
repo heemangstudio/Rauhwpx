@@ -909,7 +909,7 @@ export async function registerLocalFontFace(
     record.aliases = normalizeFontNames([...record.aliases, ...options.extraAliases]);
   }
   record.source = options.source;
-  if (options.sourcePath) record.sourcePath = options.sourcePath;
+  if (options.sourcePath || options.fileName) record.sourcePath = options.sourcePath || options.fileName;
   if (options.desktopFaceId) record.desktopFaceId = options.desktopFaceId;
 
   const faceKey = localFontFaceKey(record);

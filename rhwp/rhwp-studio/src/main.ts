@@ -5041,7 +5041,7 @@ async function loadFile(
         name: file.name,
       };
     await updateLoadProgress(15, '파일 읽기 완료');
-    return openDocumentBytes({
+    return await openDocumentBytes({
       bytes: selected.bytes,
       fileName: selected.name,
       fileHandle: options.fileHandle ?? null,

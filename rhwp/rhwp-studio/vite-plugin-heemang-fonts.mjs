@@ -1,7 +1,7 @@
 // 개발자가 명시한 글꼴·한컴 변환표만 이 개발 서버에서 읽는다.
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import { basename, isAbsolute, resolve } from 'node:path';
-import { initSync, familyNames } from './vendor/hm-wasm/hm_wasm.js';
+import { initSync, fileFamilyNames } from './vendor/hm-wasm/hm_wasm.js';
 
 export function heemangFontsPlugin(studioDir) {
   const manifest = process.env.RHWP_HEEMANG_FONT_ASSETS;
@@ -11,10 +11,22 @@ export function heemangFontsPlugin(studioDir) {
   // hftinfo와 FontMap은 HFT 파일보다 먼저 등록한다.
   paths.sort((a, b) => Number(!/\.dat$/i.test(a)) - Number(!/\.dat$/i.test(b)));
   initSync({ module: readFileSync(resolve(studioDir, 'vendor/hm-wasm/hm_wasm_bg.wasm')) });
-  const assets = paths.map((p, i) => ({
-    name: basename(p), url: `/__heemang-fonts/${i}`,
-    families: /\.dat$/i.test(p) ? [] : JSON.parse(familyNames(readFileSync(p))),
-  }));
+  const assets = paths.map((p, i) => {
+    const fd = openSync(p, 'r');
+    try {
+      const size = fstatSync(fd).size;
+      const file = { size, read(offset, length) {
+        const bytes = Buffer.alloc(length);
+        return bytes.subarray(0, readSync(fd, bytes, 0, length, offset));
+      } };
+      return {
+        name: basename(p), url: `/__heemang-fonts/${i}`, size,
+        families: /\.dat$/i.test(p) ? [] : JSON.parse(fileFamilyNames(file)),
+      };
+    } finally {
+      closeSync(fd);
+    }
+  });
   return {
     name: 'heemang-fonts',
     config: () => ({ define: { 'import.meta.env.VITE_HEEMANG_FONT_ASSETS': JSON.stringify('1') } }),

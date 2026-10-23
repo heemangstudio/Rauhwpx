@@ -164,10 +164,18 @@ export class Doc {
     }
     /**
      * What fonts the document draws with (`FontRequests`): per face name
-     * its candidate families in the order the engine tries them and its
-     * font-map stand-ins, and the class default lists. Register the first
-     * candidate available, the first stand-in available, and the first
-     * family available of each default list. Doesn't lay the document out.
+     * its text, paragraph heads and equations use, its candidate families
+     * in the order the engine tries them and its font-map stand-ins; the
+     * class default lists; and `fallbacks`, the unregistered families the
+     * engine looks in, in order, for characters the registered faces lack.
+     *
+     * Register the first available candidate of each face and the first
+     * available family of the first default list (Hancom's default face;
+     * failing that, of the others), then ask again and register the
+     * available fallbacks before the first layout. Doesn't lay the
+     * document out. Once laid out, the faces also include every name the
+     * layout asked for and the fallbacks what it looked for; registering
+     * what is new and available lays it out again.
      * @returns {string}
      */
     fontRequests() {
@@ -651,6 +659,13 @@ export class Engine {
     /**
      * Registers a TTF, OTF, TTC or HFT file; returns the faces added.
      * Documents lay out again with it on their next request.
+     *
+     * The engine keeps of a TrueType face its metrics and the outlines of
+     * the characters in the documents opened so far, not the file. Other
+     * outlines come empty (`em` 0 in `glyphOutlines`) and name the file in
+     * [`Engine::outline_requests`]; registering the same label again fills
+     * them in and bumps the font generation, without a new layout unless
+     * one measured a missing outline.
      * @param {string} label
      * @param {Uint8Array} bytes
      * @returns {number}
@@ -661,6 +676,21 @@ export class Engine {
         const ptr1 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.engine_addFont(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret >>> 0;
+    }
+    /**
+     * Registers a font file the host holds, like [`Engine::add_font`],
+     * reading through `file.read(offset, length)` (a `Uint8Array`) only
+     * the parts the engine keeps, so the file never enters the engine's
+     * memory whole.
+     * @param {string} label
+     * @param {any} file
+     * @returns {number}
+     */
+    addFontFile(label, file) {
+        const ptr0 = passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_addFontFile(this.__wbg_ptr, ptr0, len0, file);
         return ret >>> 0;
     }
     /**
@@ -702,6 +732,14 @@ export class Engine {
         return Doc.__wrap(ret[0]);
     }
     /**
+     * Bytes of font data the engine holds.
+     * @returns {number}
+     */
+    get fontBytes() {
+        const ret = wasm.engine_fontBytes(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @returns {number}
      */
     get fontGeneration() {
@@ -729,7 +767,7 @@ export class Engine {
         return this;
     }
     /**
-     * Opens HWP 5 or HWPX bytes and lays them out.
+     * Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
      * @param {Uint8Array} bytes
      * @returns {Doc}
      */
@@ -741,6 +779,39 @@ export class Engine {
             throw takeFromExternrefTable0(ret[1]);
         }
         return Doc.__wrap(ret[0]);
+    }
+    /**
+     * Labels of registered font files with outlines asked for but not
+     * kept, as a JSON `string[]`: register each again with its bytes.
+     * @returns {string}
+     */
+    outlineRequests() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.engine_outlineRequests(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Unregisters the font files registered under the labels of a JSON
+     * `string[]`; returns the faces removed. Documents lay out again on
+     * their next request.
+     * @param {string} labels
+     * @returns {number}
+     */
+    unregisterFonts(labels) {
+        const ptr0 = passStringToWasm0(labels, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_unregisterFonts(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
 }
 if (Symbol.dispose) Engine.prototype[Symbol.dispose] = Engine.prototype.free;
@@ -850,6 +921,24 @@ export function familyNames(bytes) {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
+
+/**
+ * [`family_names`] of a file the host holds, reading only its tables.
+ * @param {any} file
+ * @returns {string}
+ */
+export function fileFamilyNames(file) {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.fileFamilyNames(file);
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -858,6 +947,17 @@ function __wbg_get_imports() {
         },
         __wbg_engineerror_new: function(arg0) {
             const ret = EngineError.__wrap(arg0);
+            return ret;
+        },
+        __wbg_read_c55db76f6b46a767: function(arg0, arg1, arg2, arg3) {
+            const ret = arg1.read(arg2, arg3);
+            const ptr1 = passArray8ToWasm0(ret, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbg_size_101b30e504ca589b: function(arg0) {
+            const ret = arg0.size;
             return ret;
         },
         __wbindgen_init_externref_table: function() {
@@ -894,6 +994,14 @@ function getArrayF64FromWasm0(ptr, len) {
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+let cachedDataViewMemory0 = null;
+function getDataViewMemory0() {
+    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
+        cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
+    }
+    return cachedDataViewMemory0;
 }
 
 let cachedFloat64ArrayMemory0 = null;
@@ -1015,6 +1123,7 @@ function __wbg_finalize_init(instance, module) {
     wasmInstance = instance;
     wasm = instance.exports;
     wasmModule = module;
+    cachedDataViewMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;

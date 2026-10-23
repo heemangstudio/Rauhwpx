@@ -1,4 +1,4 @@
-import { provideEngineFont } from './engine-support.ts';
+import { provideEngineFont, type EngineFontReader } from './engine-support.ts';
 /**
  * 사용자 PC 글꼴 연결 (데스크톱 앱·브라우저 공용).
  *
@@ -1057,8 +1057,13 @@ function registerFaceMetrics(
   bold: boolean,
   italic: boolean,
   variations?: Readonly<Record<string, number>>,
+  reader: EngineFontReader = () => readSessionLocalFontBytes(faceKey),
+  engineLabel?: string,
 ): MetricsRegistration {
-  provideEngineFont(faceKey, bytes);
+  const record = getSessionLocalFontFace(faceKey)?.record;
+  const label = engineLabel || record?.sourcePath || record?.postscriptName || faceKey;
+  // 호스트가 TTC를 개별 SFNT로 풀어 주므로 서로 다른 face를 같은 파일의 재충전으로 덮지 않는다.
+  provideEngineFont(/\.(ttc|otc)$/i.test(label) ? `${label}#${faceKey}` : label, bytes, reader);
   const api = metricsApi();
   if (!api) return { status: 'unavailable' };
   const merged = pendingMetricAliases(faceKey, aliases);
@@ -1743,7 +1748,10 @@ export async function prepareLocalFontAccessMetrics(
       plan.bytes += bytes.byteLength;
       const bold = entry.slot === 'bold' || entry.slot === 'bold-italic';
       const italic = entry.slot === 'italic' || entry.slot === 'bold-italic';
-      const metrics = registerFaceMetrics(entry.faceKey, bytes, localAccessAliases(plan, entry.record), bold, italic);
+      const record = entry.record;
+      const metrics = registerFaceMetrics(entry.faceKey, bytes, localAccessAliases(plan, record), bold, italic, undefined,
+        async () => (await readLocalFontAccessBytes([record])).values().next().value ?? null,
+        record.sourcePath ?? record.postscriptName);
       if (metrics.status === 'registered') metricsRegistered += 1;
       entry.report.status = metrics.status === 'rejected' ? 'failed' : 'loaded';
       entry.report.metrics = metrics.status === 'unchanged' ? 'registered' : metrics.status;
@@ -1855,7 +1863,7 @@ async function registerDesktopHftOutlines(fontsUsed: readonly string[]): Promise
     const read = previous
       .then(() => bytes)
       .then(source => {
-        provideEngineFont(face.path, source);
+        provideEngineFont(face.path, source, () => readDesktopFace(host, face.id));
         return registerHftOutlines(source);
       })
       .catch((error) => {
