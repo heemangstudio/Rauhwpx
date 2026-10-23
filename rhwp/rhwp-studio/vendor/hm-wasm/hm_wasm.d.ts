@@ -38,7 +38,18 @@ export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
     format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
-export interface PageInfo { index: number; section: number; width: number; height: number; number: number }
+export interface Area { x: number; y: number; width: number; height: number }
+/** A picture to decode with the browser and draw in place of a patch. */
+export interface PictureSource {
+    key: string; mime: string; width: number; height: number;
+    matrix: [number, number, number, number, number, number];
+    clip: [number, number][] | null;
+}
+export interface Margins { left: number; right: number; top: number; bottom: number; header: number; footer: number; gutter: number }
+export interface PageInfo {
+    index: number; section: number; width: number; height: number; number: number; landscape: boolean;
+    margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
+}
 export interface Capabilities {
     contract: number; packet: number; open: string[]; serialize: string[];
     scopes: string[]; ops: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
@@ -55,7 +66,9 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
-export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][] }
+export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
+/** A font file the host holds, read in pieces (`Engine.addFontFile`). */
+export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
 export interface Copied { text: string; html: string }
@@ -66,6 +79,20 @@ export type ErrorCode =
 | "COMPOSING" | "STALE_HANDLE";
 
 
+
+/**
+ * BLAKE3 of bytes fed in pieces, for the host's document digests.
+ */
+export class Blake3Hasher {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The hash as lowercase hex; the hasher can go on taking bytes.
+     */
+    finalizeHex(): string;
+    constructor();
+    update(bytes: Uint8Array): void;
+}
 
 /**
  * An open document.
@@ -153,6 +180,11 @@ export class Doc {
      */
     pagePng(i: number, dpi: number): Uint8Array;
     /**
+     * Page `i` as an SVG document: text and rules as vectors, pictures
+     * and brushes as PNG patches at `dpi`.
+     */
+    pageSvg(i: number, dpi: number): string;
+    /**
      * `PageInfo[]` as JSON, sizes in HU.
      */
     pages(): string;
@@ -167,6 +199,26 @@ export class Doc {
      * height, then straight RGBA rows; empty when it draws nothing.
      */
     patch(i: number, item: number, dpi: number): Uint8Array;
+    /**
+     * Pages `from..to` as one PDF for printing or export: text and rules
+     * as vectors, pictures and brushes as images at `dpi`.
+     */
+    pdf(from: number, to: number, dpi: number): Uint8Array;
+    /**
+     * The bytes of the picture [`Doc::picture_source`] describes: the file
+     * as stored, or straight RGBA rows for `image/x-rgba`.
+     */
+    pictureBytes(i: number, item: number): Uint8Array;
+    /**
+     * Patch op `item` of page `i` as a picture the host decodes and
+     * scales itself (`PictureSource`), or `null` when the patch has to be
+     * rendered by [`Doc::patch`]. JPEG, PNG, GIF and BMP files come as
+     * stored; other raster formats as straight RGBA rows
+     * (`image/x-rgba`). Hosts decode such pictures off the critical path,
+     * so a first paint need not wait for the engine to decode and
+     * resample them.
+     */
+    pictureSource(i: number, item: number): string;
     /**
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list.
@@ -251,7 +303,7 @@ export class Engine {
      * the parts the engine keeps, so the file never enters the engine's
      * memory whole.
      */
-    addFontFile(label: string, file: any): number;
+    addFontFile(label: string, file: FontFileSource): number;
     /**
      * Registers Hancom's font mapping table (`FontMap.dat`).
      */
@@ -320,15 +372,19 @@ export function familyNames(bytes: Uint8Array): string;
 /**
  * [`family_names`] of a file the host holds, reading only its tables.
  */
-export function fileFamilyNames(file: any): string;
+export function fileFamilyNames(file: FontFileSource): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_blake3hasher_free: (a: number, b: number) => void;
     readonly __wbg_doc_free: (a: number, b: number) => void;
     readonly __wbg_engine_free: (a: number, b: number) => void;
     readonly __wbg_engineerror_free: (a: number, b: number) => void;
+    readonly blake3hasher_finalizeHex: (a: number) => [number, number];
+    readonly blake3hasher_new: () => number;
+    readonly blake3hasher_update: (a: number, b: number, c: number) => void;
     readonly capabilities: () => [number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];
@@ -344,9 +400,13 @@ export interface InitOutput {
     readonly doc_objects: (a: number, b: number) => [number, number, number, number];
     readonly doc_page: (a: number, b: number) => [number, number, number, number];
     readonly doc_pagePng: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pages: (a: number) => [number, number, number, number];
     readonly doc_paste: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_patch: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly doc_pdf: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly doc_pictureBytes: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_pictureSource: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_query: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_redo: (a: number) => [number, number, number, number];
     readonly doc_releaseCheckpoint: (a: number, b: number) => [number, number, number];

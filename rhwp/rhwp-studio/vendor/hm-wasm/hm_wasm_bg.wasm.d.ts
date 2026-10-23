@@ -1,9 +1,13 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_blake3hasher_free: (a: number, b: number) => void;
 export const __wbg_doc_free: (a: number, b: number) => void;
 export const __wbg_engine_free: (a: number, b: number) => void;
 export const __wbg_engineerror_free: (a: number, b: number) => void;
+export const blake3hasher_finalizeHex: (a: number) => [number, number];
+export const blake3hasher_new: () => number;
+export const blake3hasher_update: (a: number, b: number, c: number) => void;
 export const capabilities: () => [number, number];
 export const doc_cancelComposition: (a: number) => [number, number, number, number];
 export const doc_checkpoint: (a: number) => [number, number, number];
@@ -19,9 +23,13 @@ export const doc_navigate: (a: number, b: number, c: number) => [number, number,
 export const doc_objects: (a: number, b: number) => [number, number, number, number];
 export const doc_page: (a: number, b: number) => [number, number, number, number];
 export const doc_pagePng: (a: number, b: number, c: number) => [number, number, number, number];
+export const doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_pages: (a: number) => [number, number, number, number];
 export const doc_paste: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_patch: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const doc_pdf: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const doc_pictureBytes: (a: number, b: number, c: number) => [number, number, number, number];
+export const doc_pictureSource: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_query: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_redo: (a: number) => [number, number, number, number];
 export const doc_releaseCheckpoint: (a: number, b: number) => [number, number, number];

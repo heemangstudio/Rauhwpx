@@ -1,28 +1,27 @@
-import type { Address, Caret, Doc, DocState, Engine, FontRequests, Located, LocateRequest, NavigateRequest, PageInfo as HmPage, ParagraphInfo, Rect, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
+import type { Address, Caret, Doc, DocState, Engine, FontFileSource, FontRequests, Located, LocateRequest, NavigateRequest, PageInfo as HmPage, ParagraphInfo, Rect, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
 import { getSystemFontHost, loadDesktopFontIndex, type RuntimeFontMetricsApi } from './desktop-fonts';
-import { blake3Hex } from './content-hash';
+import { blake3Hex, setBlake3WasmApi } from './content-hash';
 import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, receiveEngineFonts, type EngineFontReader } from './engine-support';
 import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader';
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
-import { Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
 
 const PX_PER_HU = 96 / 7200;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
 let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 
-// 현재 생성된 d.ts에는 런타임의 fallbacks가 빠져 있다.
-type RequestedFonts = FontRequests & { fallbacks?: string[] };
 type FontAsset = { name: string; url: string; size: number; families: string[]; host?: boolean };
 const normalize = (name: string) => name.toLowerCase().replace(/\s/g, '');
 const copyKey = (name: string, size: number) => `${name.split(/[\\/]/).pop()!.toLowerCase()}:${size}`;
-const fontFile = (b: Uint8Array) => ({ size: b.length, read: (o: number, n: number) => b.subarray(o, o + n) });
+const fontFile = (b: Uint8Array): FontFileSource => ({ size: b.length, read: (o: number, n: number) => b.subarray(o, o + n) });
 
 async function initializeRuntime() {
-  const { default: init, Engine, fileFamilyNames, capabilities } = await import('../../vendor/hm-wasm/hm_wasm');
+  const { default: init, Blake3Hasher, Engine, fileFamilyNames, capabilities } = await import('../../vendor/hm-wasm/hm_wasm');
   const { memory } = await init();
+  setBlake3WasmApi(() => new Blake3Hasher());
   const contract = JSON.parse(capabilities()) as { contract: number; packet: number };
   if (contract.contract !== 1 || contract.packet !== 1) throw new EngineNotSupportedError('hm-wasm 계약 버전');
   const engine = new Engine();
@@ -67,7 +66,7 @@ async function initializeRuntime() {
   }
   const hasFamily = (name: string) => families.has(normalize(name));
   const hasAvailableFamily = (name: string) => hasFamily(name) || assets.some(a => a.families.some(f => normalize(f) === normalize(name)));
-  const loadFonts = async (requests: RequestedFonts) => {
+  const loadFonts = async (requests: FontRequests) => {
     // 일반 실행에서도 호스트 색인에서 엔진이 고른 대체 서체를 직접 연결한다.
     const host = getSystemFontHost();
     if (host) {
@@ -136,11 +135,22 @@ export class HeemangAdapter {
   private register!: (label: string, bytes: Uint8Array) => void;
   private hasFamily!: (name: string) => boolean;
   private hasAvailableFamily!: (name: string) => boolean;
-  private loadFonts!: (requests: RequestedFonts) => Promise<void>;
+  private loadFonts!: (requests: FontRequests) => Promise<void>;
   private refillOutlines!: () => Promise<boolean>;
   private sources!: Map<string, EngineFontReader>;
   private fontsPrepared = false;
-  private readonly canvasPaints = new WeakMap<HTMLCanvasElement, object>();
+  private readonly canvasPaints = new Map<HTMLCanvasElement, { index: number; scale: number }>();
+  private pictureFrame = 0;
+  private readonly pictures = new Pictures(() => {
+    if (this.pictureFrame) return;
+    this.pictureFrame = requestAnimationFrame(() => {
+      this.pictureFrame = 0;
+      for (const [canvas, { index, scale }] of this.canvasPaints) {
+        if (!canvas.isConnected) { this.canvasPaints.delete(canvas); continue; }
+        this.renderPageToCanvas(index, canvas, scale);
+      }
+    });
+  });
   private readonly webFonts = new Map<string, Promise<void>>();
   private doc: Doc | null = null;
   private packets = new Map<number, PagePacket>();
@@ -166,7 +176,7 @@ export class HeemangAdapter {
   async prepareFonts(names: string[], options: WebFontLoadOptions): Promise<void> {
     const doc = this.document();
     const current = () => this.doc === doc;
-    const requests = () => JSON.parse(doc.fontRequests()) as RequestedFonts;
+    const requests = () => JSON.parse(doc.fontRequests()) as FontRequests;
     await this.loadFonts(requests());
     if (!current()) return;
     // 등록한 face에 없는 문자의 fallback도 첫 레이아웃 전에 연결한다.
@@ -224,6 +234,10 @@ export class HeemangAdapter {
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
+    if (this.pictureFrame) cancelAnimationFrame(this.pictureFrame);
+    this.pictureFrame = 0;
+    this.pictures.clear();
+    this.canvasPaints.clear();
     this.doc?.close();
     this.doc?.free();
     this.doc = null;
@@ -297,7 +311,8 @@ export class HeemangAdapter {
 
   renderPageToCanvas(index: number, canvas: HTMLCanvasElement, scale: number, refill = true): void {
     const doc = this.document();
-    const paint = {};
+    const paint = { index, scale };
+    for (const old of this.canvasPaints.keys()) if (!old.isConnected) this.canvasPaints.delete(old);
     this.canvasPaints.set(canvas, paint);
     const packet = this.page(index);
     canvas.width = Math.ceil(packet.width * PX_PER_HU * scale);
@@ -308,7 +323,8 @@ export class HeemangAdapter {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     this.player.paint(ctx, packet, 96 * scale, (item, dpi) =>
-      patchImage(doc.patch(index, item, dpi).slice(), (w, h) => new OffscreenCanvas(w, h)));
+      patchImage(doc.patch(index, item, dpi).slice(), (w, h) => new OffscreenCanvas(w, h)),
+      item => this.pictures.get(doc, index, item));
     if (!refill) return;
     void this.refillOutlines().then(refilled => {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;

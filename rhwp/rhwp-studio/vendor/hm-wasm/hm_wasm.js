@@ -1,6 +1,53 @@
 /* @ts-self-types="./hm_wasm.d.ts" */
 
 /**
+ * BLAKE3 of bytes fed in pieces, for the host's document digests.
+ */
+export class Blake3Hasher {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        Blake3HasherFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_blake3hasher_free(ptr, 0);
+    }
+    /**
+     * The hash as lowercase hex; the hasher can go on taking bytes.
+     * @returns {string}
+     */
+    finalizeHex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.blake3hasher_finalizeHex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    constructor() {
+        const ret = wasm.blake3hasher_new();
+        this.__wbg_ptr = ret;
+        Blake3HasherFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @param {Uint8Array} bytes
+     */
+    update(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.blake3hasher_update(this.__wbg_ptr, ptr0, len0);
+    }
+}
+if (Symbol.dispose) Blake3Hasher.prototype[Symbol.dispose] = Blake3Hasher.prototype.free;
+
+/**
  * An open document.
  */
 export class Doc {
@@ -316,6 +363,31 @@ export class Doc {
         return v1;
     }
     /**
+     * Page `i` as an SVG document: text and rules as vectors, pictures
+     * and brushes as PNG patches at `dpi`.
+     * @param {number} i
+     * @param {number} dpi
+     * @returns {string}
+     */
+    pageSvg(i, dpi) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_pageSvg(this.__wbg_ptr, i, dpi);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * `PageInfo[]` as JSON, sizes in HU.
      * @returns {string}
      */
@@ -380,6 +452,69 @@ export class Doc {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Pages `from..to` as one PDF for printing or export: text and rules
+     * as vectors, pictures and brushes as images at `dpi`.
+     * @param {number} from
+     * @param {number} to
+     * @param {number} dpi
+     * @returns {Uint8Array}
+     */
+    pdf(from, to, dpi) {
+        const ret = wasm.doc_pdf(this.__wbg_ptr, from, to, dpi);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * The bytes of the picture [`Doc::picture_source`] describes: the file
+     * as stored, or straight RGBA rows for `image/x-rgba`.
+     * @param {number} i
+     * @param {number} item
+     * @returns {Uint8Array}
+     */
+    pictureBytes(i, item) {
+        const ret = wasm.doc_pictureBytes(this.__wbg_ptr, i, item);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Patch op `item` of page `i` as a picture the host decodes and
+     * scales itself (`PictureSource`), or `null` when the patch has to be
+     * rendered by [`Doc::patch`]. JPEG, PNG, GIF and BMP files come as
+     * stored; other raster formats as straight RGBA rows
+     * (`image/x-rgba`). Hosts decode such pictures off the critical path,
+     * so a first paint need not wait for the engine to decode and
+     * resample them.
+     * @param {number} i
+     * @param {number} item
+     * @returns {string}
+     */
+    pictureSource(i, item) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_pictureSource(this.__wbg_ptr, i, item);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Bounded reads of the document (`QueryRequest`), as JSON:
@@ -684,7 +819,7 @@ export class Engine {
      * the parts the engine keeps, so the file never enters the engine's
      * memory whole.
      * @param {string} label
-     * @param {any} file
+     * @param {FontFileSource} file
      * @returns {number}
      */
     addFontFile(label, file) {
@@ -924,7 +1059,7 @@ export function familyNames(bytes) {
 
 /**
  * [`family_names`] of a file the host holds, reading only its tables.
- * @param {any} file
+ * @param {FontFileSource} file
  * @returns {string}
  */
 export function fileFamilyNames(file) {
@@ -976,6 +1111,9 @@ function __wbg_get_imports() {
     };
 }
 
+const Blake3HasherFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_blake3hasher_free(ptr, 1));
 const DocFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_doc_free(ptr, 1));

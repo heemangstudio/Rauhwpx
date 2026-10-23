@@ -1,13 +1,13 @@
 # hm-wasm
 
 Generated browser bindings and WASM from HeemangEngine commit
-`82e03fe0586893ef94143495ab4ebc1eb1c6accf`, built on 2026-10-23.
+`280497a916a7590fce1bfa7ac5ce8ad1b39516e9`, built on 2026-10-23.
 The source checkout had the same HEAD before and after the build. Contract and
 page-packet versions are both 1. The package is committed so Studio does not
 need the HeemangEngine checkout to run or build.
 
-`hm_wasm_bg.wasm`: 3,747,852 bytes, SHA-256
-`0a840ab5283b3896e0d4fd495f25b8b637854690390bfe1408cbe6ab35aa3ea9`.
+`hm_wasm_bg.wasm`: 3,853,822 bytes, SHA-256
+`cb404ef58bca9bb05c3d2ac66a2009e3a53f3514d297e6f1af7ac06de314460b`.
 
 To refresh, run `CARGO_BUILD_JOBS=3 ./build.sh` in HeemangEngine's
 `crates/hm-wasm`. It requires wasm-bindgen 0.2.125; set `WASM_BINDGEN` to its
@@ -22,7 +22,10 @@ that parameter keeps rhwp. The engine is fixed when each WasmBridge is created.
 The adapter registers fonts through `addFontFile`, so only requested tables and
 outlines enter WASM. It uses catalog families to select the first available
 face candidate and default, then rechecks character fallbacks before layout.
-Missing outlines trigger a file refetch and repaint. Local files satisfy requests
+Missing outlines trigger a file refetch and repaint. BLAKE3 uses the WASM hasher.
+Plain pictures use browser-decoded bitmaps shared across pages; other items and
+failed decodes use engine patches. Decoded bitmaps repaint attached pages and
+are closed when the document is released. Local files satisfy requests
 before bundled WOFF/WOFF2 sources are considered. No proprietary fonts or Hancom
 tables are included here.
 

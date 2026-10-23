@@ -1,4 +1,4 @@
-import type { Engine } from '../../vendor/hm-wasm/hm_wasm';
+import type { Doc, Engine, PictureSource } from '../../vendor/hm-wasm/hm_wasm';
 
 type GlyphRun = { face: number; size: number; ratio: number; color: number; flags: number; baseline: number; glyphs: number[][] };
 type Op =
@@ -190,6 +190,67 @@ const DASHES = [null, [8, 4], [1, 2], [8, 3, 1, 3], [8, 3, 1, 3, 1, 3], [16, 6],
 export const css = (colorref: number) =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;
 
+export type Picture = { source: PictureSource; bitmap: ImageBitmap | null };
+type PictureEntry = { bitmap: ImageBitmap | null; failed: boolean; timer?: ReturnType<typeof setTimeout> };
+
+/** Browser-decoded pictures shared by a document's pages. Clear before switching documents. */
+export class Pictures {
+  private entries = new Map<string, PictureEntry>();
+  private ready: () => void;
+  constructor(ready: () => void) { this.ready = ready; }
+
+  get(doc: Pick<Doc, 'pictureSource' | 'pictureBytes'>, page: number, item: number): Picture | null {
+    let source: PictureSource | null;
+    try {
+      source = JSON.parse(doc.pictureSource(page, item));
+    } catch {
+      return null;
+    }
+    if (!source) return null;
+    let entry = this.entries.get(source.key);
+    if (!entry) {
+      const pending: PictureEntry = { bitmap: null, failed: false };
+      entry = pending;
+      this.entries.set(source.key, pending);
+      // Defer byte extraction and decoding until after the first paint.
+      pending.timer = setTimeout(async () => {
+        pending.timer = undefined;
+        try {
+          // Font registration may have moved a different picture into this item.
+          const current = JSON.parse(doc.pictureSource(page, item)) as PictureSource | null;
+          if (current?.key !== source.key) {
+            this.entries.delete(source.key);
+            this.ready();
+            return;
+          }
+          const bytes = doc.pictureBytes(page, item);
+          const bitmap = source.mime === 'image/x-rgba'
+            ? await createImageBitmap(new ImageData(new Uint8ClampedArray(bytes), source.width, source.height))
+            : await createImageBitmap(new Blob([bytes.slice()], { type: source.mime }), { imageOrientation: 'none' });
+          if (this.entries.get(source.key) !== pending) {
+            bitmap.close();
+            return;
+          }
+          pending.bitmap = bitmap;
+        } catch {
+          if (this.entries.get(source.key) !== pending) return;
+          pending.failed = true;
+        }
+        this.ready();
+      }, 0);
+    }
+    return entry.failed ? null : { source, bitmap: entry.bitmap };
+  }
+
+  clear() {
+    for (const entry of this.entries.values()) {
+      if (entry.timer !== undefined) clearTimeout(entry.timer);
+      entry.bitmap?.close();
+    }
+    this.entries.clear();
+  }
+}
+
 /**
  * Paints decoded packets. `engine` supplies glyph outlines; `patch(page,
  * item, dpi)` returns pixel patches (`Doc.patch`).
@@ -257,9 +318,10 @@ export class Player {
 
   /**
    * Paints a packet on `ctx` at `dpi`, the canvas already sized and
-   * cleared. `patch(item, dpi)` returns ImageData-ready bytes or null.
+   * cleared. `patch(item, dpi)` returns a patch image or null;
+   * `picture(item)` optionally supplies a browser-decoded picture.
    */
-  paint(ctx: CanvasRenderingContext2D, packet: PagePacket, dpi: number, patch: (item: number, dpi: number) => CanvasImageSource | null) {
+  paint(ctx: CanvasRenderingContext2D, packet: PagePacket, dpi: number, patch: (item: number, dpi: number) => CanvasImageSource | null, picture?: (item: number) => Picture | null) {
     this.load(packet);
     const s = dpi / 7200;
     const px = (v: number) => v * s;
@@ -333,6 +395,23 @@ export class Player {
           break;
         }
         case 'patch': {
+          const pic = picture?.(op.item);
+          if (pic) {
+            if (!pic.bitmap) break;
+            const [a, b, c, d, e, f] = pic.source.matrix;
+            ctx.save();
+            if (pic.source.clip) {
+              ctx.beginPath();
+              pic.source.clip.forEach(([x, y], k) => k ? ctx.lineTo(px(x), px(y)) : ctx.moveTo(px(x), px(y)));
+              ctx.closePath();
+              ctx.clip();
+            }
+            ctx.imageSmoothingQuality = 'high';
+            ctx.setTransform(s * a, s * d, s * b, s * e, s * c, s * f);
+            ctx.drawImage(pic.bitmap, 0, 0, 1, 1);
+            ctx.restore();
+            break;
+          }
           const img = patch && patch(op.item, dpi);
           if (img) ctx.drawImage(img, px(op.x), px(op.y), px(op.w), px(op.h));
           break;

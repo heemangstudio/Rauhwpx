@@ -10,6 +10,7 @@ let env: any;
 const stubs = new Map([
   ['/vendor/hm-wasm/hm_wasm.js', `const e = () => globalThis.heemangFontTest();
     export default async function init() { return { memory: new WebAssembly.Memory({initial:1}) }; }
+    export class Blake3Hasher {}
     export const capabilities = () => '{"contract":1,"packet":1}';
     export const fileFamilyNames = file => { e().probes++; return JSON.stringify(e().families.get(file.read(0,1)[0]) ?? []); };
     export class Engine {
@@ -26,10 +27,11 @@ const stubs = new Map([
     function assertFile(file) { if (file.size < 1 || !(file.read(0,1) instanceof Uint8Array)) throw Error('invalid FontFile'); }`],
   ['/core/desktop-fonts.ts', `export const getSystemFontHost = () => globalThis.heemangFontTest().host;
     export const loadDesktopFontIndex = async () => globalThis.heemangFontTest().index;`],
-  ['/core/content-hash.ts', `export const blake3Hex = () => 'digest';`],
+  ['/core/content-hash.ts', `export const blake3Hex = () => 'digest'; export const setBlake3WasmApi = () => {};`],
   ['/core/font-loader.ts', `export const resolveCanvasKitFontPlan = () => { globalThis.heemangFontTest().plans++; return {sources: []}; };`],
   ['/fonts/font-index-core.mjs', `export const streamWebFontDecoders = () => null; export const decodeWebFont = b => b;`],
-  ['/view/heemang-player.ts', `export class Player {
+  ['/view/heemang-player.ts', `export class Pictures { constructor(ready) { globalThis.heemangFontTest().pictureReady = ready; } get() { return null; } clear() {} }
+    export class Player {
       paint(ctx) { const e = globalThis.heemangFontTest(); e.paints.push(ctx); e.onPaint?.(); }
     }
     export const decodePacket = () => ({width:7200,height:7200,fontGeneration:0,layoutEpoch:0});
@@ -151,4 +153,34 @@ test('font preparation does not lay out or mark a replacement document prepared 
   wait.resolve(); await preparing;
   assert.equal(env.events.includes('layout'),false);
   assert.equal(adapter.getDocumentInfo().pageCount,0);
+});
+
+
+test('picture arrivals coalesce repaint, drop detached canvases and cancel repaint on document replacement', async () => {
+  const originalRequest = globalThis.requestAnimationFrame;
+  const originalCancel = globalThis.cancelAnimationFrame;
+  const frames = new Map<number, FrameRequestCallback>();
+  let frame = 0;
+  globalThis.requestAnimationFrame = callback => { frames.set(++frame, callback); return frame; };
+  globalThis.cancelAnimationFrame = id => { frames.delete(id); };
+  try {
+    const { HeemangAdapter } = await setup([], () => req([], []));
+    const adapter = new HeemangAdapter(); await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    const a = canvas(), b = canvas();
+    adapter.renderPageToCanvas(0,a,1); adapter.renderPageToCanvas(1,b,0.8);
+    b.isConnected = false;
+    env.pictureReady(); env.pictureReady();
+    assert.equal(frames.size,1);
+    const [id, callback] = [...frames][0]; frames.delete(id); callback(0);
+    assert.equal(env.paints.length,3);
+    assert.equal(a.width,96);
+    env.pictureReady();
+    assert.equal(frames.size,1);
+    adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    assert.equal(frames.size,0);
+    assert.equal(env.paints.length,3);
+  } finally {
+    globalThis.requestAnimationFrame = originalRequest;
+    globalThis.cancelAnimationFrame = originalCancel;
+  }
 });
