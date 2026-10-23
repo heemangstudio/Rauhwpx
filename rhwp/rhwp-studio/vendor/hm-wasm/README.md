@@ -1,13 +1,13 @@
 # hm-wasm
 
 Generated browser bindings and WASM from HeemangEngine commit
-`280497a916a7590fce1bfa7ac5ce8ad1b39516e9`, built on 2026-10-23.
-The source checkout had the same HEAD before and after the build. Contract and
+`2008f209e97a70bd586644b8b8596ca32ef5274f`, built on 2026-10-23.
+Built from a git archive of main in an isolated output directory; the source checkout was read-only. Contract and
 page-packet versions are both 1. The package is committed so Studio does not
 need the HeemangEngine checkout to run or build.
 
-`hm_wasm_bg.wasm`: 3,853,822 bytes, SHA-256
-`cb404ef58bca9bb05c3d2ac66a2009e3a53f3514d297e6f1af7ac06de314460b`.
+`hm_wasm_bg.wasm`: 4,121,888 bytes, SHA-256
+`412a55db1e1a3f69df7a49c693e008d7e800875427e1ab25de10432be79e6df3`.
 
 To refresh, run `CARGO_BUILD_JOBS=3 ./build.sh` in HeemangEngine's
 `crates/hm-wasm`. It requires wasm-bindgen 0.2.125; set `WASM_BINDGEN` to its
@@ -37,19 +37,19 @@ FontMap and hftinfo first, then loads only the families chosen from
 host streams font files but has no DAT-table endpoint; the explicit dev manifest
 supplies those files during local verification.
 
-HWP5/HWPX sessions support plain typing and buffered Korean IME commit/cancel,
-selection replacement/deletion, tabs, nonempty paragraph splits and joins in body
-text and table cells. The native engine owns grouped undo/redo; the adapter keeps
-caret/selection metadata and invalidates cached pages after each action. Same-format
-save uses native serialization and acknowledges saved state after successful output.
-Untouched saves preserve exact input bytes and do not change revisions.
+HWP5/HWPX sessions support typing, buffered Korean IME commit/cancel, empty
+paragraphs, joins, character/paragraph formatting, search and same-format save.
+Native receipts invalidate only changed pages, restore directed text selections
+and identify undo history. Native dirty state follows the saved history position;
+`markSaved(expectedEpoch)` acknowledges a successful write without serializing again.
+A narrow selection fallback remains for format redo and rich-paste undo, where this
+engine revision omits native selection metadata.
 
-Enter operations that create empty paragraphs currently throw
-`EngineNotSupportedError` before mutation because native empty-paragraph pagination
-can overlap caret positions without adding pages. Cross-list editing, HWP3 writing,
-formatting, rich clipboard, cross-format save, print, search UI, versions/merge,
-autosave, engine-specific view settings and CanvasKit remain unavailable. See
-`output/heemang-editing/engine-requests.md` for the exact engine requests. Live
-first-page thumbnails use this session's painter. Cross-list selections are rejected
-because hm-wasm select currently covers one paragraph list. Rulers and margin guides
-remain suppressed in the adapter. Registered fonts live for the browser session.
+`selectRange` normalizes body/table endpoints to whole controls and cross-cell
+endpoints to tagged cell blocks, including merged cells. Studio supports cell-block
+delete, formatting and TSV/HTML copy; cell copy does not create an internal rich
+fragment. Whole-object clipboard, HWP3 writing, extended font/style/list/table
+structure editing, HTML import and cross-format saves remain unavailable. See
+`output/heemang-editing/engine-requests.md` for remaining engine requests and
+`output/heemang-editing/slice3/` for measured verification. Rulers and margin guides
+remain suppressed. Registered fonts live for the browser session.

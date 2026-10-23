@@ -19,7 +19,21 @@ export type LocateRequest =
 | { kind: "point"; page: number; x: number; y: number }
 | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
-export interface SelectRequest { from: Address; to: Address; page?: number }
+/** A table control in a paragraph list. */
+export interface TableAddress { section: number; steps?: Step[]; para: number; control: number }
+export interface CellRef { row: number; column: number }
+/**
+ * Ends in different lists select by their nearest common list (an end inside
+ * a control takes the whole control), or, in two cells of one table, the block
+ * of cells between them.
+ */
+export type SelectRequest =
+| { from: Address; to: Address; page?: number }
+| { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef; page?: number };
+export type SelectedRange =
+| { kind: "text"; from: Address; to: Address }
+| { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef; cells: { row: number; column: number; rowSpan: number; columnSpan: number; list: ListAddress }[] };
+export interface Selected { range: SelectedRange; rects: Rect[] }
 export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 export interface CharPatch { bold?: boolean; italic?: boolean; underline?: boolean; size?: number; color?: number }
@@ -32,8 +46,19 @@ export type EditOp =
 | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
 | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
 | { op: "pageBreak"; at: Address; on: boolean };
-export interface TransactRequest { expectedEpoch?: number; ops: EditOp[] }
-export interface Receipt { contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number }
+/** A directed selection the host keeps with an undo step. */
+export interface Selection { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
+export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection }
+/**
+ * \`changedPages\`: pages (zero-based, as now laid out, plus pages that no
+ * longer exist) to paint again; null for all. \`selection\`: after a
+ * transaction, the collapsed caret; after undo, the selection from before the
+ * step; after redo, the one after it. \`historyId\` names the history position.
+ */
+export interface Receipt {
+    contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number;
+    changedPages: number[] | null; selection?: Selection; historyId: number;
+}
 export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
     format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
@@ -161,6 +186,12 @@ export class Doc {
      */
     locate(request: string): string;
     /**
+     * Marks the document saved as it was at `expectedEpoch` (after the
+     * host wrote what `serialize(false)` gave it); `STALE_EPOCH` when it
+     * changed since. Changes nothing else.
+     */
+    markSaved(expected_epoch: number): void;
+    /**
      * The caret after a movement (`Located`), `null` when the position is
      * on no page.
      */
@@ -248,11 +279,24 @@ export class Doc {
      */
     select(request: string): string;
     /**
+     * Like [`Doc::select`], with the selection as normalized
+     * (`Selected`): the text range in the common list, or the block of
+     * cells with each cell's list.
+     */
+    selectRange(request: string): string;
+    /**
      * The document in its own format, edited paragraphs carrying line
      * segments from our layout. `markSaved` clears the dirty state; the
      * content epoch never changes.
      */
     serialize(mark_saved: boolean): Uint8Array;
+    /**
+     * The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+     * own format as [`Doc::serialize`] writes it, in the other as a new
+     * file encoded from the model alone. The open document keeps its
+     * format; `markSaved` clears the dirty state.
+     */
+    serializeAs(format: string, mark_saved: boolean): Uint8Array;
     /**
      * `DocState` as JSON.
      */
@@ -396,6 +440,7 @@ export interface InitOutput {
     readonly doc_fontRequests: (a: number) => [number, number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
     readonly doc_locate: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_markSaved: (a: number, b: number) => [number, number];
     readonly doc_navigate: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_objects: (a: number, b: number) => [number, number, number, number];
     readonly doc_page: (a: number, b: number) => [number, number, number, number];
@@ -413,7 +458,9 @@ export interface InitOutput {
     readonly doc_restore: (a: number, b: number) => [number, number, number, number];
     readonly doc_search: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_select: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_selectRange: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_serialize: (a: number, b: number) => [number, number, number, number];
+    readonly doc_serializeAs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_state: (a: number) => [number, number, number, number];
     readonly doc_substitutions: (a: number) => [number, number, number, number];
     readonly doc_transact: (a: number, b: number, c: number) => [number, number, number, number];

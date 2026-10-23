@@ -1,5 +1,5 @@
-import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
-import { copyAddress, copySelection, editingText, formattingPatch, orderedSelection, replacementOps, sameAddress, type TextSelection } from './heemang-editing';
+import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Selection } from '../../vendor/hm-wasm/hm_wasm';
+import { copyAddress, copySelection, editingText, formattingPatch, replacementOps, sameAddress, isCellSelection, type EditingSelection, type CellSelection, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
 import { getSystemFontHost, loadDesktopFontIndex, type RuntimeFontMetricsApi } from './desktop-fonts';
@@ -10,13 +10,12 @@ import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
 
-export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
-export type { TextSelection } from './heemang-editing';
+export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
+export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
 export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' };
-export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt }
+export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt; selection?: EditingSelection }
 export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
-type SelectionHistory = { before: TextSelection; after: TextSelection; beforeId: number; afterId: number };
 
 const PX_PER_HU = 96 / 7200;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
@@ -135,7 +134,7 @@ async function initializeRuntime() {
   return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources };
 }
 
-/** 문서와 엔진 undo를 소유한다. UI history에는 선택 정보만 둔다. */
+/** 문서와 엔진의 편집·선택 이력을 연결한다. */
 export class HeemangAdapter {
   readonly engineKind = 'heemang' as const;
   get readOnly(): boolean { return !this.doc || !this.editable; }
@@ -169,13 +168,10 @@ export class HeemangAdapter {
   private sourceFormat = 'hwpx';
   private _digest: string | null = null;
   private editable = false;
-  private savedBytes: Uint8Array | null = null;
-  private contentId = 0;
-  private savedContentId = 0;
-  private nextContentId = 0;
-  private readonly edits: SelectionHistory[] = [];
-  private readonly redos: SelectionHistory[] = [];
-  private serialized: { instance: number; epoch: number; bytes: Uint8Array; digest: string } | null = null;
+  // native가 아직 선택을 반환하지 않는 서식·rich paste 경로만 보완한다.
+  private readonly selectionFallbacks = new Map<number, { before: EditingSelection; after: EditingSelection }>();
+  private historyId = 0;
+  private serialized: { instance: number; epoch: number; digest: string } | null = null;
   documentGeneration = 0;
   documentInstance = nextDocumentInstance();
   currentFileHandle: FileSystemFileHandleLike | null = null;
@@ -249,11 +245,7 @@ export class HeemangAdapter {
   adoptSourceDigest(digest: string): void { if (this.doc) this._digest = digest; }
   hasLoadedDocument(): boolean { return this.doc !== null; }
   get pageCount(): number { return this.doc && this.fontsPrepared ? this.state().pageCount : 0; }
-  state(): DocState {
-    const state: DocState = JSON.parse(this.document().state());
-    // 엔진 epoch는 undo에서도 증가한다. 저장한 history 위치로 돌아오면 clean이다.
-    return { ...state, dirty: this.contentId !== this.savedContentId };
-  }
+  state(): DocState { return JSON.parse(this.document().state()); }
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
@@ -269,10 +261,9 @@ export class HeemangAdapter {
     this.currentFileHandle = null;
     this._digest = null;
     this.editable = false;
-    this.savedBytes = null;
     this.serialized = null;
-    this.contentId = this.savedContentId = this.nextContentId = 0;
-    this.edits.length = this.redos.length = 0;
+    this.historyId = 0;
+    this.selectionFallbacks.clear();
     this.documentGeneration = nextDocumentGeneration();
     this.documentInstance = nextDocumentInstance();
   }
@@ -285,7 +276,6 @@ export class HeemangAdapter {
     // open이 검증한 ZIP은 HWPX, CFB·HWP3는 HWP다. 여기서 state를 읽으면 조판된다.
     this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
     this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
-    this.savedBytes = bytes.slice();
     this._digest = `blake3:${blake3Hex(bytes)}`;
     this.fileName = name;
     try { return this.getDocumentInfo(); }
@@ -323,6 +313,16 @@ export class HeemangAdapter {
     return page;
   }
   refreshLayout(): void { this.packets.clear(); }
+
+  private invalidate(receipt: Receipt): void {
+    if (receipt.changedPages === null) { this.packets.clear(); return; }
+    for (const index of receipt.changedPages) this.packets.delete(index);
+    // 전역 epoch가 바뀌어도 엔진이 보장한 나머지 쪽의 packet은 재사용한다.
+    for (const packet of this.packets.values()) {
+      packet.contentEpoch = receipt.contentEpoch;
+      packet.layoutEpoch = receipt.layoutEpoch;
+    }
+  }
 
   page(index: number): PagePacket {
     const state = this.state();
@@ -363,50 +363,98 @@ export class HeemangAdapter {
   }
 
   locate(request: LocateRequest): Located | Caret | null { return JSON.parse(this.document().locate(JSON.stringify(request))); }
-  select(request: SelectRequest): Rect[] {
-    if (JSON.stringify([request.from.section, request.from.steps ?? []]) !== JSON.stringify([request.to.section, request.to.steps ?? []])) {
-      throw new EngineNotSupportedError('서로 다른 문단 목록 사이의 선택');
+  select(request: SelectRequest): Rect[] { return JSON.parse(this.document().select(JSON.stringify(request))); }
+  selectRange(request: SelectRequest): Selected { return JSON.parse(this.document().selectRange(JSON.stringify(request))); }
+
+  /** 다른 목록의 wire 경계와 셀 병합은 엔진에서만 계산한다. */
+  private normalized(range: EditingSelection): Selected['range'] {
+    if (!isCellSelection(range)) {
+      if (range.from.section !== range.to.section) throw new EngineNotSupportedError('서로 다른 구역 사이의 선택');
+      this.checkSelection(range);
     }
-    return JSON.parse(this.document().select(JSON.stringify(request)));
+    return this.selectRange(range).range;
+  }
+  private spans(range: EditingSelection, includeTables = false): TextSelection[] {
+    const selected = this.normalized(range);
+    if (selected.kind === 'cells' && !selected.cells.length) throw Object.assign(new RangeError('잘못된 셀 선택입니다'), { code: 'BAD_ADDRESS' });
+    const wholeList = (list: { section: number; steps?: Address['steps'] }): TextSelection => {
+      const count = this.getParagraphCount(list.section, list.steps);
+      const first = this.paragraphs(list.section, list.steps, 0, 1)[0];
+      const last = this.paragraphs(list.section, list.steps, count - 1, 1)[0];
+      return { from: { ...list, para: 0, offset: first.caret[0] }, to: { ...list, para: count - 1, offset: last.caret[1] } };
+    };
+    const spans = selected.kind === 'text' ? [{ from: selected.from, to: selected.to }]
+      : selected.cells.map(({ list }) => wholeList(list));
+    // 본문의 표 제어 문자에만 서식을 주면 셀 내용은 바뀌지 않는다.
+    // 완전히 선택된 표의 목록을 query로 읽어 같은 native 이력에 포함한다.
+    if (includeTables) for (const { from, to } of spans) {
+      for (const para of this.paragraphs(from.section, from.steps, from.para, to.para - from.para + 1)) {
+        const start = para.index === from.para ? from.offset : 0;
+        const end = para.index === to.para ? to.offset : para.length;
+        for (const control of para.controls) {
+          if (control.kind !== 'table' || control.offset < start || control.offset + 8 > end) continue;
+          for (let index = 0; index < control.lists; index++) spans.push(wholeList({
+            section: from.section, steps: [...(from.steps ?? []), { para: para.index, control: control.index, index }],
+          }));
+        }
+      }
+    }
+    return spans;
+  }
+  private textRange(range: EditingSelection): TextSelection {
+    const selected = this.normalized(range);
+    if (selected.kind !== 'text') throw new EngineNotSupportedError('셀 블록을 입력 텍스트로 바꾸기');
+    return { from: selected.from, to: selected.to };
   }
   navigate(request: NavigateRequest): Located | null { return JSON.parse(this.document().navigate(JSON.stringify(request))); }
 
-  replaceText(range: TextSelection, text: string): EditResult | null {
+  replaceText(range: EditingSelection, text: string): EditResult | null {
     const normalized = editingText(text);
-    if (normalized.includes('\n')) this.requireNonemptySplit(range, normalized);
-    return this.edit(replacementOps(range, normalized), range);
+    if (normalized) return this.edit(replacementOps(this.textRange(range), normalized), range);
+    const ops = this.spans(range).slice().reverse().flatMap(span => replacementOps(span, ''));
+    return this.edit(ops, range);
   }
 
-  formatCharacters(range: TextSelection, patch: CharPatch): EditResult | null {
+  formatCharacters(range: EditingSelection, patch: CharPatch): EditResult | null {
     this.requireEditable();
-    const { from, to } = orderedSelection(range);
-    if (sameAddress(from, to)) throw new EngineNotSupportedError('캐럿 위치의 입력 서식');
+    const spans = this.spans(range, true);
+    if (spans.length === 1 && sameAddress(spans[0].from, spans[0].to) && !isCellSelection(range)) throw new EngineNotSupportedError('캐럿 위치의 입력 서식');
     const validated = formattingPatch(patch, false) as CharPatch;
     if (!Object.keys(validated).length) return null;
-    this.checkSelection(range);
-    return this.edit([{ op: 'formatChars', from, to, patch: validated }], range, true);
+    return this.edit(spans.map(({ from, to }) => ({ op: 'formatChars', from, to, patch: validated })), range, true);
   }
 
-  formatParagraphs(range: TextSelection, patch: ParaPatch): EditResult | null {
+  formatParagraphs(range: EditingSelection, patch: ParaPatch): EditResult | null {
     this.requireEditable();
-    const { from, to } = orderedSelection(range);
     const validated = formattingPatch(patch, true) as ParaPatch;
     if (!Object.keys(validated).length) return null;
-    this.checkSelection(range);
-    return this.edit([{ op: 'formatParas', from, to, patch: validated }], range, true);
+    return this.edit(this.spans(range, true).map(({ from, to }) => ({ op: 'formatParas', from, to, patch: validated })), range, true);
   }
 
-  copyText(range: TextSelection): Copied {
-    const { from, to } = orderedSelection(range);
-    this.checkSelection(range);
+  copyText(range: EditingSelection): Copied {
+    const selected = this.normalized(range);
+    if (selected.kind === 'cells') {
+      // native copy는 두 셀의 주소로 블록을 인식한다. 셀 목록은 엔진이 정규화했다.
+      if (!selected.cells.length) throw Object.assign(new RangeError('잘못된 셀 선택입니다'), { code: 'BAD_ADDRESS' });
+      const first = selected.cells[0], last = selected.cells.at(-1)!;
+      const at = (list: typeof first.list): Address => ({ ...list, para: 0, offset: this.paragraphs(list.section, list.steps, 0, 1)[0].caret[0] });
+      const from = at(first.list), to = at(last.list);
+      if (selected.cells.length === 1) {
+        to.para = this.getParagraphCount(to.section, to.steps) - 1;
+        to.offset = this.paragraphs(to.section, to.steps, to.para, 1)[0].caret[1];
+      }
+      const copied: Copied = JSON.parse(this.document().copy(JSON.stringify({ from, to })));
+      if (selected.cells.length === 1) copied.html = `<table><tr><td>${copied.html}</td></tr></table>`;
+      internalClipboard = null; // 셀 블록은 TSV/HTML만 제공하며 rich fragment는 만들지 않는다.
+      return copied;
+    }
+    const { from, to } = selected;
+    this.checkSelection({ from, to });
     if (sameAddress(from, to)) return { text: '', html: '' };
-    // native 조각은 개체/표를 버린다. cut에서 원본만 지워지는 선택은 받지 않는다.
     for (let para = from.para; para <= to.para; para++) {
       const p = this.paragraphs(from.section, from.steps, para, 1)[0];
       const start = para === from.para ? from.offset : 0;
       const end = para === to.para ? to.offset : p.length;
-      // plain_text가 생략한 단위와 soft break는 native clipboard가 복원하지 못한다.
-      // wire 지도 query가 없으므로 이런 문단의 부분 선택도 보수적으로 거절한다.
       const textUnits = [...p.text].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
       if (/[\n\u00a0\u2007]/.test(p.text) || textUnits + p.controls.length * 8 !== p.length - 1) {
         throw new EngineNotSupportedError('줄바꿈이나 특수 제어 문자를 포함한 클립보드 문단');
@@ -420,23 +468,20 @@ export class HeemangAdapter {
     return copied;
   }
 
-  cutText(range: TextSelection): CutResult {
+  cutText(range: EditingSelection): CutResult {
     this.requireEditable();
     const clipboard = this.copyText(range);
-    return { clipboard, edit: this.edit(replacementOps(range, ''), range) };
+    return { clipboard, edit: this.replaceText(range, '') };
   }
 
-  pasteText(range: TextSelection, text: string, internal = false): EditResult | null {
+  pasteText(range: EditingSelection, text: string, internal = false): EditResult | null {
     this.requireEditable();
-    const { from, to } = orderedSelection(range);
     if (!internal) return this.replaceText(range, text);
+    const { from, to } = this.textRange(range);
     if (!sameAddress(from, to)) throw new EngineNotSupportedError('내부 클립보드로 선택 영역 바꾸기');
     const normalized = editingText(text);
-    if (!this.hasInternalClipboard() || internalClipboard!.text !== normalized) {
-      throw new EngineNotSupportedError('일치하는 내부 클립보드 조각');
-    }
+    if (!this.hasInternalClipboard() || internalClipboard!.text !== normalized) throw new EngineNotSupportedError('일치하는 내부 클립보드 조각');
     if (!normalized) return null;
-    if (normalized.includes('\n')) this.requireNonemptySplit(range, normalized);
     return this.applyEdit(range, (doc, epoch) => JSON.parse(doc.paste(JSON.stringify({ at: from, expectedEpoch: epoch, text: normalized }))));
   }
 
@@ -451,47 +496,28 @@ export class HeemangAdapter {
     return this.replaceText(match, text);
   }
 
-  replaceAll(text: string, replacement: string, caseSensitive = false, before?: TextSelection): ReplaceAllResult {
+  replaceAll(text: string, replacement: string, caseSensitive = false, before?: EditingSelection): ReplaceAllResult {
     this.requireEditable();
-    if (before) { orderedSelection(before); this.checkSelection(before); }
+    if (before) this.normalized(before);
     const normalized = editingText(replacement);
     const found = this.search(text, caseSensitive);
     if (!found.matches.length) return { count: 0, edit: null };
-    if (normalized.startsWith('\n') && normalized.endsWith('\n')
-      && found.matches.some((match, i) => i > 0 && sameAddress(found.matches[i - 1].to, match.from))) {
-      throw new EngineNotSupportedError('빈 문단을 만드는 Enter 조판');
-    }
-    const ops = found.matches.slice().reverse().flatMap(match => {
-      if (normalized.includes('\n')) this.requireNonemptySplit(match, normalized);
-      return replacementOps(match, normalized);
-    });
+    const ops = found.matches.slice().reverse().flatMap(match => replacementOps(match, normalized));
     this.checkEpoch(found.contentEpoch);
     return { count: found.matches.length, edit: this.edit(ops, before ?? found.matches[0]) };
   }
 
-  split(range: TextSelection): EditResult | null {
-    this.requireNonemptySplit(range, '\n');
-    const ordered = orderedSelection(range);
+  split(range: EditingSelection): EditResult | null {
+    const ordered = this.textRange(range);
     return this.edit([...replacementOps(ordered, ''), { op: 'split', at: ordered.from }], range);
   }
 
-  private requireNonemptySplit(range: TextSelection, text: string): void {
-    this.requireEditable();
-    const { from, to } = orderedSelection(range);
-    const first = this.paragraphs(from.section, from.steps, from.para, 1)[0];
-    const last = this.paragraphs(to.section, to.steps, to.para, 1)[0];
-    // hm-wasm은 추가된 빈 문단의 페이지 넘김을 보장하지 못한다. 숨은 편집을 만들지 않는다.
-    if (text.includes('\n\n') || (text.startsWith('\n') && first?.caret[0] === from.offset)
-      || (text.endsWith('\n') && last?.caret[1] === to.offset)) {
-      throw new EngineNotSupportedError('빈 문단을 만드는 Enter 조판');
-    }
-  }
+  deleteBackward(range: EditingSelection): EditResult | null { return this.deleteDirection(range, 'left'); }
+  deleteForward(range: EditingSelection): EditResult | null { return this.deleteDirection(range, 'right'); }
 
-  deleteBackward(range: TextSelection): EditResult | null { return this.deleteDirection(range, 'left'); }
-  deleteForward(range: TextSelection): EditResult | null { return this.deleteDirection(range, 'right'); }
-
-  private deleteDirection(range: TextSelection, motion: 'left' | 'right'): EditResult | null {
-    const ordered = orderedSelection(range);
+  private deleteDirection(range: EditingSelection, motion: 'left' | 'right'): EditResult | null {
+    if (isCellSelection(range)) return this.replaceText(range, '');
+    const ordered = this.textRange(range);
     if (!sameAddress(ordered.from, ordered.to)) return this.edit(replacementOps(ordered, ''), range);
     this.requireEditable();
     // 엔진의 grapheme/control 경계를 따른다. 문단 끝에서는 인접 문단과 join한다.
@@ -513,6 +539,8 @@ export class HeemangAdapter {
 
   private checkSelection(range: TextSelection): void {
     for (const at of [range.from, range.to]) {
+      const values = [at.section, at.para, at.offset, ...(at.steps ?? []).flatMap(s => [s.para, s.control, s.index])];
+      if (values.some(n => !Number.isInteger(n) || n < 0 || n > 0xffffffff)) throw Object.assign(new RangeError('잘못된 문서 위치입니다'), { code: 'BAD_ADDRESS' });
       const p = this.paragraphs(at.section, at.steps, at.para, 1)[0];
       if (!p || at.offset < p.caret[0] || at.offset > p.caret[1]) {
         throw Object.assign(new RangeError('잘못된 문서 위치입니다'), { code: 'BAD_ADDRESS' });
@@ -538,72 +566,86 @@ export class HeemangAdapter {
     }
   }
 
-  private edit(ops: EditOp[], before: TextSelection, preserveSelection = false): EditResult | null {
-    this.requireEditable();
-    if (!ops.length) return null;
-    return this.applyEdit(before, (doc, epoch) => JSON.parse(doc.transact(JSON.stringify({ expectedEpoch: epoch, ops }))), preserveSelection);
+  private nativeSelection(range: EditingSelection): Selection | CellSelection {
+    return isCellSelection(range) ? copySelection(range) : {
+      anchor: copyAddress(range.from), focus: copyAddress(range.to),
+      anchorAffinity: range.fromAffinity ?? 'downstream', focusAffinity: range.toAffinity ?? 'downstream',
+    };
   }
 
-  private applyEdit(before: TextSelection, mutate: (doc: Doc, epoch: number) => Receipt, preserveSelection = false): EditResult | null {
-    const selection = copySelection(before);
+  private edit(ops: EditOp[], before: EditingSelection, preserveSelection = false): EditResult | null {
+    this.requireEditable();
+    if (!ops.length) return null;
+    return this.applyEdit(before, (doc, epoch) => JSON.parse(doc.transact(JSON.stringify({ expectedEpoch: epoch, ops, selection: this.nativeSelection(before) }))), preserveSelection);
+  }
+
+  private applyEdit(before: EditingSelection, mutate: (doc: Doc, epoch: number) => Receipt, preserveSelection = false): EditResult | null {
     const changed = this.checkpointed((doc, epoch) => {
       const receipt = mutate(doc, epoch);
       if (receipt.contentEpoch === epoch) return null;
-      if (!preserveSelection && !receipt.caret) throw new EngineNotSupportedError('편집 결과의 caret');
-      const after = preserveSelection ? copySelection(selection)
-        : { from: copyAddress(receipt.caret!), to: copyAddress(receipt.caret!) };
-      return { after, result: this.editResult(receipt, after) };
+      const result = this.editResult(receipt, preserveSelection ? before : undefined);
+      return { receipt, result };
     });
     if (!changed) return null;
-    const { after, result } = changed;
-    this.edits.push({ before: selection, after, beforeId: this.contentId, afterId: ++this.nextContentId });
-    this.contentId = this.nextContentId;
-    this.redos.length = 0;
-    this.refreshLayout();
+    const { receipt, result } = changed;
+    // transact의 text selection은 native 이력에 있다. 아직 누락된 응답만 보관한다.
+    if (preserveSelection || !receipt.selection) {
+      this.selectionFallbacks.set(receipt.historyId, {
+        before: copySelection(before), after: preserveSelection ? copySelection(before) : {
+          from: copyAddress(result.anchor?.position ?? result.caret.position), to: copyAddress(result.caret.position),
+          fromAffinity: result.anchor?.affinity ?? result.caret.affinity, toAffinity: result.caret.affinity,
+        },
+      });
+    }
+    this.historyId = receipt.historyId;
+    this.invalidate(receipt);
     return result;
   }
 
   undoEdit(): EditResult | null { return this.historyEdit(false); }
   redoEdit(): EditResult | null { return this.historyEdit(true); }
-  canUndo(): boolean { return this.doc !== null && this.edits.length > 0; }
-  canRedo(): boolean { return this.doc !== null && this.redos.length > 0; }
+  canUndo(): boolean { return this.doc !== null && this.state().undo > 0; }
+  canRedo(): boolean { return this.doc !== null && this.state().redo > 0; }
 
   private historyEdit(redo: boolean): EditResult | null {
     this.requireEditable();
-    const source = redo ? this.redos : this.edits;
-    const entry = source.at(-1);
-    if (!entry) return null;
-    const result = this.checkpointed(doc => {
+    const changed = this.checkpointed(doc => {
       const receipt: Receipt | null = JSON.parse(redo ? doc.redo() : doc.undo());
-      return receipt ? this.editResult(receipt, redo ? entry.after : entry.before) : null;
+      return receipt ? { receipt, result: this.editResult(receipt, !receipt.selection
+        ? (redo ? this.selectionFallbacks.get(receipt.historyId)?.after : this.selectionFallbacks.get(this.historyId)?.before) : undefined) } : null;
     });
-    if (!result) return null;
-    source.pop();
-    (redo ? this.edits : this.redos).push(entry);
-    this.contentId = redo ? entry.afterId : entry.beforeId;
-    this.refreshLayout();
-    return result;
+    if (!changed) return null;
+    this.historyId = changed.receipt.historyId;
+    this.invalidate(changed.receipt);
+    return changed.result;
   }
 
-  private editResult(receipt: Receipt, selection: TextSelection): EditResult {
+  private editResult(receipt: Receipt, fallback?: EditingSelection): EditResult {
+    const native = receipt.selection as Selection | CellSelection | undefined;
+    const selection: EditingSelection | undefined = fallback ?? (native && ('kind' in native ? native : {
+      from: native.anchor, to: native.focus, fromAffinity: native.anchorAffinity, toAffinity: native.focusAffinity,
+    })) ?? (receipt.caret ? { from: receipt.caret, to: receipt.caret } : undefined);
+    if (!selection) throw new EngineNotSupportedError('편집 결과의 선택');
     const locate = (position: Address, affinity: Affinity = 'downstream'): Located => {
       const caret = this.locate({ kind: 'caret', position, affinity }) as Caret | null;
       if (!caret) throw new EngineNotSupportedError('편집 위치의 caret 조회');
       return { position: copyAddress(position), affinity, caret };
     };
-    return { receipt, caret: locate(selection.to, selection.toAffinity), anchor: sameAddress(selection.from, selection.to) ? null : locate(selection.from, selection.fromAffinity) };
+    if (isCellSelection(selection)) {
+      const range = this.normalized(selection);
+      if (range.kind !== 'cells' || !range.cells.length) throw new EngineNotSupportedError('셀 선택의 caret 조회');
+      const at = (list: typeof range.cells[number]['list']): Address => ({ ...list, para: 0, offset: this.paragraphs(list.section, list.steps, 0, 1)[0].caret[0] });
+      return { receipt, selection: copySelection(selection), caret: locate(at(range.cells.at(-1)!.list)), anchor: locate(at(range.cells[0].list)) };
+    }
+    return { receipt, caret: locate(selection.to, selection.toAffinity), anchor: sameAddress(selection.from, selection.to) && (selection.fromAffinity ?? 'downstream') === (selection.toAffinity ?? 'downstream') ? null : locate(selection.from, selection.fromAffinity) };
   }
 
   /** 같은 형식만 직렬화한다. 실제 파일 쓰기 성공 후 markSaved를 호출한다. */
   serialize(markSaved = false): Uint8Array {
     this.requireEditable();
     const epoch = this.state().contentEpoch;
-    const native = this.document().serialize(false).slice();
-    // undo로 저장한 내용에 돌아와도 엔진은 새 line segment를 쓸 수 있다.
-    const saved = epoch > 0 && this.contentId === this.savedContentId ? this.savedBytes : null;
-    const bytes = saved && (saved.length !== native.length || saved.some((b, i) => b !== native[i]))
-      ? saved.slice() : native;
-    this.serialized = { instance: this.documentInstance, epoch, bytes: bytes.slice(), digest: `blake3:${blake3Hex(bytes)}` };
+    const bytes = this.document().serialize(false).slice();
+    this.serialized = { instance: this.documentInstance, epoch, digest: `blake3:${blake3Hex(bytes)}` };
     if (markSaved) this.markSaved();
     return bytes;
   }
@@ -612,10 +654,7 @@ export class HeemangAdapter {
   markSaved(): boolean {
     const saved = this.serialized;
     if (!saved || !this.doc || saved.instance !== this.documentInstance || saved.epoch !== this.state().contentEpoch) return false;
-    // hm-wasm에는 독립된 markSaved가 없다. 성공했을 때만 저장 위치를 옮긴다.
-    this.document().serialize(true);
-    this.savedBytes = saved.bytes;
-    this.savedContentId = this.contentId;
+    this.document().markSaved(saved.epoch);
     this._digest = saved.digest;
     this.serialized = null;
     return true;

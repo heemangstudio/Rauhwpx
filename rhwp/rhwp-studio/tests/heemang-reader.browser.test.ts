@@ -40,7 +40,7 @@ async function fixture(origin) {
     canvas.style.cssText = 'position:absolute;top:0;left:0;width:400px;height:200px';
     container.append(canvas);
     document.body.append(container);
-    const log = { edits: [], copies: [], selections: [], errors: [], changed: 0, epoch: 0, text: 'original' };
+    const log = { edits: [], copies: [], selections: [], errors: [], changed: 0, changedReceipts: [], epoch: 0, text: 'original' };
     const listeners = new Map();
     const bus = {
       on(name, callback) {
@@ -50,35 +50,58 @@ async function fixture(origin) {
         return () => callbacks.splice(callbacks.indexOf(callback), 1);
       },
       emit(name, payload) {
-        if (name === 'document-changed') log.changed++;
+        if (name === 'document-changed') { log.changed++; log.changedReceipts.push(structuredClone(payload)); }
         for (const callback of listeners.get(name) ?? []) callback(payload);
       },
     };
-    const located = position => ({ position, affinity: 'downstream', caret: {
+    const located = position => ({ position, affinity: log.affinity ?? 'downstream', caret: {
       page: 0, x: position.offset * 750, y: 750, height: 1000,
     } });
     const edit = (kind, range, extra) => {
       log.edits.push(structuredClone({ kind, range, ...extra }));
       log.epoch++;
       log.text = kind;
-      return { caret: located(range.to), receipt: { contentEpoch: log.epoch } };
+      const cellRange = range.kind === 'cells';
+      const focus = cellRange ? { section: range.table.section,
+        steps: [...(range.table.steps ?? []), { para: range.table.para, control: range.table.control, index: 1 }],
+        para: 0, offset: 0 } : range.to;
+      return { caret: { ...located(focus), affinity: range.toAffinity ?? 'downstream' },
+        ...(kind === 'format' ? { selection: range, anchor: cellRange ? null
+          : { ...located(range.from), affinity: range.fromAffinity ?? 'downstream' } } : {}),
+        receipt: { contentEpoch: log.epoch, changedPages: [0] } };
     };
     const viewer = {
+      hasInternalClipboard: () => log.richFragment ?? true,
       state: () => ({ contentEpoch: log.epoch }),
       locate(request) {
         if (request.kind === 'caret') return located(request.position).caret;
         const x = request.x / 75;
-        return located({ section: 0, steps: [{ para: 0, control: 0, index: x < 200 ? 0 : 1 }],
-          para: 0, offset: Math.floor(x / 10) % 20 });
+        if (request.y / 75 > 100 || x >= 350) return located({ section: x >= 350 ? 1 : 0, para: 1, offset: Math.floor(x / 10) });
+        return { ...located({ section: 0, steps: [{ para: 0, control: 0, index: x < 200 ? 0 : 1 }],
+          para: 0, offset: Math.floor(x / 10) % 20 }),
+          object: { section: 0, para: 0, control: 0, kind: log.objectKind ?? 'table', layer: 'text',
+            page: 0, x: 0, y: 0, width: 30000, height: 7500 } };
+
       },
       navigate: request => located({ ...request.position,
         offset: request.position.offset + (request.motion === 'left' ? -1 : 1) }),
-      select(range) {
-        log.selections.push(structuredClone(range));
-        if (range.from.steps[0].index !== range.to.steps[0].index) {
-          throw new EngineNotSupportedError('서로 다른 문단 목록 사이의 선택');
+      selectRange(request) {
+        log.selections.push(structuredClone(request));
+        let range;
+        if (request.kind === 'cells') range = { ...request, cells: [] };
+        else {
+          if (request.from.section !== request.to.section) throw new EngineNotSupportedError('서로 다른 구역 사이의 선택');
+          const a = request.from.steps?.[0], b = request.to.steps?.[0];
+          if (a && b && a.index !== b.index) range = { kind: 'cells',
+            table: { section: 0, para: 0, control: 0 }, from: { row: 0, column: 0 }, to: { row: 0, column: 1 }, cells: [] };
+          else if (!!a !== !!b) range = { kind: 'text', from: { section: 0, para: 0, offset: 16 },
+            to: a ? request.to : request.from };
+          else {
+            const reverse = request.from.para > request.to.para || request.from.offset > request.to.offset;
+            range = { kind: 'text', from: reverse ? request.to : request.from, to: reverse ? request.from : request.to };
+          }
         }
-        return [{ page: 0, x: 750, y: 750, width: 1500, height: 1000 }];
+        return { range, rects: [{ page: 0, x: 750, y: 750, width: 1500, height: 1000 }] };
       },
       // Native search compares match starts strictly; an exhausted direction wraps.
       search(query, caseSensitive, from, backward = false) {
@@ -97,12 +120,15 @@ async function fixture(origin) {
       },
       copyText(range) {
         log.copies.push(structuredClone(range));
-        return { text: 'copied', html: '<b>copied</b>' };
+        return log.copyContent ?? { text: 'copied', html: '<b>copied</b>' };
       },
       cutText: range => ({ edit: edit('cut', range) }),
       replaceText: (range, text) => edit('replace', range, { text }),
       pasteText: (range, text, internal) => edit('paste', range, { text, internal }),
       formatCharacters: (range, patch) => edit('format', range, { patch }),
+      formatParagraphs: (range, patch) => edit('format', range, { patch }),
+      deleteForward: range => edit('delete', range),
+      deleteBackward: range => edit('delete', range),
     };
     const engine = { engineKind: 'heemang', documentInstance: 1, readOnly: false,
       hasLoadedDocument: () => true, getPageInfo: () => ({ width: 400, height: 200 }), viewer };
@@ -229,13 +255,13 @@ try {
       await page.mouse.move(30, 30);
       await page.mouse.down();
       await page.mouse.move(60, 30);
-      await page.mouse.move(250, 30);
+      await page.mouse.move(370, 30);
       await page.mouse.up();
       await page.keyboard.type('Z');
       const log = await page.evaluate(() => window.__readerFixture.log);
-      assert.equal(log.errors.length, 1, 'The native boundary rejects the cross-cell drag');
+      assert.equal(log.errors.length, 1, 'The native boundary rejects the cross-section drag');
       assert.equal(log.errors[0].name, 'EngineNotSupportedError');
-      assert(log.selections.some(range => range.from.steps[0].index !== range.to.steps[0].index));
+      assert(log.selections.some(range => range.from.section !== range.to.section));
       assert.equal(log.edits.length, 1);
       assert.equal(log.edits[0].kind, 'replace');
       assert.equal(log.edits[0].text, 'Z');
@@ -244,7 +270,170 @@ try {
       assert.equal(log.changed, 1, 'Typing uses the last valid same-cell selection');
     } finally { await page.close(); }
   }
-  console.log('PASS Fixture-backed cross-cell drag preserves the last valid edit range');
+  console.log('PASS Fixture-backed cross-section drag preserves the last valid edit range');
+
+  {
+    const page = await fixture(origin);
+    try {
+      await page.evaluate(() => { window.__readerFixture.log.objectKind = 'picture'; });
+      await page.mouse.click(30, 30);
+      await page.keyboard.type('Z');
+      const log = await page.evaluate(() => window.__readerFixture.log);
+      assert.deepEqual(log.edits, [], 'Floating image hits remain unsupported');
+      assert.equal(log.errors[0].name, 'EngineNotSupportedError');
+    } finally { await page.close(); }
+  }
+  console.log('PASS Fixture-backed object guard still rejects image editing');
+
+  for (const reverse of [false, true]) {
+    const page = await fixture(origin);
+    try {
+      await page.mouse.move(reverse ? 250 : 30, 30);
+      await page.mouse.down();
+      await page.mouse.move(reverse ? 30 : 250, 30);
+      await page.mouse.up();
+      const copied = await page.evaluate(() => {
+        const data = new DataTransfer();
+        document.querySelector('[data-heemang-input]').dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true }));
+        window.__readerFixture.bus.emit('format-char', { fontSize: 1200 });
+        return { text: data.getData('text/plain'), log: window.__readerFixture.log };
+      });
+      const cells = { kind: 'cells', table: { section: 0, para: 0, control: 0 },
+        from: { row: 0, column: 0 }, to: { row: 0, column: 1 } };
+      assert.equal(copied.text, 'copied');
+      assert.deepEqual(copied.log.copies[0], cells, 'Copy consumes the engine-normalized tagged cell block');
+      assert.deepEqual(copied.log.edits[0].range, cells, 'Formatting consumes the same cell block');
+      await page.keyboard.press('Delete');
+      const log = await page.evaluate(() => window.__readerFixture.log);
+      assert.deepEqual(log.edits[1].range, cells, 'Formatting preserves the block for the next Delete');
+      assert.equal(log.edits[1].kind, 'delete');
+      assert.equal(log.changed, 2);
+      assert.deepEqual(log.errors, []);
+    } finally { await page.close(); }
+  }
+  console.log('PASS Fixture-backed forward/reverse cell drag routes tagged blocks through copy, format and delete');
+
+  for (const cancellation of ['pointercancel', 'blur', 'released']) {
+    const page = await fixture(origin);
+    try {
+      await page.mouse.move(30, 30);
+      await page.mouse.down();
+      await page.mouse.move(250, 30);
+      await page.evaluate(cancellation => {
+        const container = document.querySelector('canvas').parentElement;
+        if (cancellation !== 'released') window.dispatchEvent(new Event(cancellation));
+        container.dispatchEvent(new PointerEvent('pointermove', {
+          clientX: 60, clientY: 30, buttons: cancellation === 'released' ? 0 : 1, bubbles: true,
+        }));
+        container.dispatchEvent(new PointerEvent('pointermove', {
+          clientX: 70, clientY: 30, buttons: 1, bubbles: true,
+        }));
+        const data = new DataTransfer();
+        document.querySelector('[data-heemang-input]').dispatchEvent(new ClipboardEvent('copy', {
+          clipboardData: data, bubbles: true,
+        }));
+      }, cancellation);
+      const log = await page.evaluate(() => window.__readerFixture.log);
+      assert.equal(log.copies[0].kind, 'cells', `${cancellation} keeps the last valid cell block`);
+      assert.deepEqual(log.errors, []);
+    } finally { await page.mouse.up(); await page.close(); }
+  }
+  console.log('PASS Fixture-backed cancelled or released drags preserve their cell block');
+
+  for (const reverse of [false, true]) {
+    const page = await fixture(origin);
+    try {
+      await page.evaluate(() => { window.__readerFixture.log.affinity = 'upstream'; });
+      await page.mouse.move(30, reverse ? 150 : 30);
+      await page.mouse.down();
+      await page.evaluate(() => { window.__readerFixture.log.affinity = 'downstream'; });
+      await page.mouse.move(60, reverse ? 30 : 150);
+      await page.mouse.up();
+      await page.evaluate(() => window.__readerFixture.bus.emit('format-char', { fontSize: 1200 }));
+      await page.keyboard.press('Delete');
+      const log = await page.evaluate(() => window.__readerFixture.log);
+      const range = log.edits[0].range;
+      assert.equal(!!range.from.steps?.length, !reverse, 'The original anchor list is preserved');
+      assert.equal(!!range.to.steps?.length, reverse, 'The original focus list is preserved');
+      assert.equal(range.fromAffinity, 'upstream');
+      assert.equal(range.toAffinity, 'downstream');
+      assert.deepEqual(log.edits[1].range, range, 'Native format receipts retain direction and affinity');
+      assert.equal(log.changed, 2);
+      assert.deepEqual(log.errors, []);
+    } finally { await page.close(); }
+  }
+  console.log('PASS Fixture-backed body/table selection preserves directed endpoints and affinities for engine normalization');
+
+  {
+    const page = await fixture(origin);
+    try {
+      await page.mouse.move(30, 30);
+      await page.mouse.down();
+      await page.mouse.move(250, 30);
+      await page.mouse.up();
+      await page.evaluate(() => window.__readerFixture.bus.emit('heemang-command', { id: 'edit:cut' }));
+      await page.waitForFunction(() => window.__readerFixture.writeStarted);
+      await page.mouse.click(30, 30);
+      await page.evaluate(() => window.__readerFixture.resolveWrite());
+      await page.waitForFunction(() => window.__readerFixture.log.errors.length > 0);
+      const log = await page.evaluate(() => window.__readerFixture.log);
+      assert.equal(log.copies[0].kind, 'cells');
+      assert.deepEqual(log.edits, [], 'Changing a cell block into a caret cancels the pending Cut');
+      assert.equal(log.changed, 0);
+    } finally { await page.close(); }
+  }
+  console.log('PASS Fixture-backed pending cell-block Cut rejects a changed selection kind');
+
+  for (const richFragment of [false, true]) {
+    for (const marker of ['token', 'html']) {
+      const page = await fixture(origin);
+      try {
+        const copiedText = richFragment ? 'copied' : 'first\tsecond\nthird\tfourth\n';
+        await page.mouse.move(30, 30);
+        await page.mouse.down();
+        await page.mouse.move(richFragment ? 60 : 250, 30);
+        await page.mouse.up();
+        await page.evaluate(({ richFragment, copiedText }) => {
+          const f = window.__readerFixture;
+          f.log.richFragment = richFragment;
+          f.log.copyContent = { text: copiedText, html: '<table><tr><td>first</td><td>second</td></tr></table>' };
+          const data = new DataTransfer();
+          document.querySelector('[data-heemang-input]').dispatchEvent(new ClipboardEvent('copy', {
+            clipboardData: data, bubbles: true, cancelable: true,
+          }));
+          f.copiedData = Object.fromEntries(data.types.map(type => [type, data.getData(type)]));
+        }, { richFragment, copiedText });
+        await page.mouse.click(60, 150);
+        const paste = async (text, stale = false) => page.evaluate(({ marker, text, stale }) => {
+          const data = new DataTransfer();
+          const copied = window.__readerFixture.copiedData;
+          data.setData('text/plain', text);
+          data.setData('text/html', marker === 'html'
+            ? (stale ? copied['text/html'].replace('heemang:', 'heemang:stale-') : copied['text/html'])
+            : '<b>copied</b>');
+          if (marker === 'token') data.setData('application/x-heemang-fragment',
+            stale ? 'stale' : copied['application/x-heemang-fragment']);
+          document.querySelector('[data-heemang-input]').dispatchEvent(new ClipboardEvent('paste', {
+            clipboardData: data, bubbles: true, cancelable: true,
+          }));
+        }, { marker, text, stale });
+        await paste(copiedText, true);
+        await paste('changed text');
+        let log = await page.evaluate(() => window.__readerFixture.log);
+        assert.deepEqual(log.edits, [], 'Stale tokens and mismatched text cannot authorize HTML');
+        assert.equal(log.errors.length, 2);
+        await paste(copiedText);
+        log = await page.evaluate(() => window.__readerFixture.log);
+        assert.equal(log.edits.length, 1);
+        assert.equal(log.edits[0].internal, richFragment,
+          'Own-copy trust is independent of native fragment availability');
+        assert.equal(log.edits[0].text, copiedText);
+        assert.deepEqual(log.edits[0].range.from, log.edits[0].range.to, 'Paste targets an ordinary caret');
+        assert.equal(log.changed, 1, 'One paste emits one logical edit');
+      } finally { await page.close(); }
+    }
+  }
+  console.log('PASS Fixture-backed own token/HTML copy uses rich fragments only when available and rejects stale/mismatched copies');
 
   {
     const page = await fixture(origin);
@@ -313,6 +502,9 @@ try {
       assert.equal(log.edits[1].kind, 'replace');
       assert.equal(log.edits[1].text, 'A');
       assert.equal(log.changed, 2, 'One supported text input emits one additional document change');
+      assert.deepEqual(log.changedReceipts, [
+        { contentEpoch: 1, changedPages: [0] }, { contentEpoch: 2, changedPages: [0] },
+      ], 'Each change carries the native repaint receipt');
       assert.deepEqual(log.errors, []);
     } finally { await page.close(); }
   }

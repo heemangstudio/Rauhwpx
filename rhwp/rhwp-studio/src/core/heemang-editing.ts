@@ -1,15 +1,39 @@
-import type { Address, Affinity, CharPatch, EditOp, ParaPatch } from '../../vendor/hm-wasm/hm_wasm';
+import type { Address, Affinity, CharPatch, EditOp, ParaPatch, SelectRequest } from '../../vendor/hm-wasm/hm_wasm';
 import { EngineNotSupportedError } from './engine-support';
 
 /** from은 선택의 anchor, to는 caret이다. 둘 다 엔진 wire offset을 쓴다. */
 export interface TextSelection { from: Address; to: Address; fromAffinity?: Affinity; toAffinity?: Affinity }
+export type CellSelection = Extract<SelectRequest, { kind: 'cells' }>;
+export type EditingSelection = TextSelection | CellSelection;
+
+export function isCellSelection(range: EditingSelection): range is CellSelection {
+  return 'kind' in range && range.kind === 'cells';
+}
 
 export function copyAddress(at: Address): Address {
   return { ...at, ...(at.steps ? { steps: at.steps.map(step => ({ ...step })) } : {}) };
 }
 
-export function copySelection(range: TextSelection): TextSelection {
+export function copySelection(range: TextSelection): TextSelection;
+export function copySelection(range: CellSelection): CellSelection;
+export function copySelection(range: EditingSelection): EditingSelection;
+export function copySelection(range: EditingSelection): EditingSelection {
+  if (isCellSelection(range)) return {
+    ...range, table: { ...range.table, ...(range.table.steps ? { steps: range.table.steps.map(step => ({ ...step })) } : {}) },
+    from: { ...range.from }, to: { ...range.to },
+  };
   return { ...range, from: copyAddress(range.from), to: copyAddress(range.to) };
+}
+
+export function sameSelection(a: EditingSelection, b: EditingSelection): boolean {
+  if (isCellSelection(a)) return isCellSelection(b)
+    && sameAddress({ ...a.table, offset: 0 }, { ...b.table, offset: 0 })
+    && a.table.control === b.table.control
+    && a.from.row === b.from.row && a.from.column === b.from.column
+    && a.to.row === b.to.row && a.to.column === b.to.column;
+  return !isCellSelection(b) && sameAddress(a.from, b.from) && sameAddress(a.to, b.to)
+    && (a.fromAffinity ?? 'downstream') === (b.fromAffinity ?? 'downstream')
+    && (a.toAffinity ?? 'downstream') === (b.toAffinity ?? 'downstream');
 }
 
 export function sameAddress(a: Address, b: Address): boolean {
@@ -34,7 +58,8 @@ export function orderedSelection(range: TextSelection): TextSelection {
     throw new EngineNotSupportedError('서로 다른 문단 목록 사이의 편집');
   }
   return range.from.para > range.to.para || (range.from.para === range.to.para && range.from.offset > range.to.offset)
-    ? { from: copyAddress(range.to), to: copyAddress(range.from) } : copySelection(range);
+    ? { ...range, from: copyAddress(range.to), to: copyAddress(range.from),
+      fromAffinity: range.toAffinity, toAffinity: range.fromAffinity } : copySelection(range);
 }
 
 /** 브라우저 줄바꿈을 정규화한다. 엔진이 버리는 제어 문자는 거절한다. */

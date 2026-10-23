@@ -3,7 +3,7 @@ import type { StudioEngine } from '../core/wasm-bridge';
 import type { CanvasView } from './canvas-view';
 import type { EventBus } from '../core/event-bus';
 import { EngineNotSupportedError } from '../core/engine-support';
-import { copySelection, orderedSelection, sameAddress } from '../core/heemang-editing';
+import { copySelection, isCellSelection, sameAddress, sameSelection, type CellSelection, type EditingSelection } from '../core/heemang-editing';
 import { showHeemangCharacterFormat, showHeemangParagraphFormat, showHeemangFind } from '../ui/heemang-edit-dialogs';
 
 // 네이티브 조각은 runtime Engine이 공유한다. OS의 일반 텍스트와 조각을 혼동하지 않는다.
@@ -14,6 +14,7 @@ const clipboardType = 'application/x-heemang-fragment';
 export function installHeemangReader(container: HTMLElement, engine: StudioEngine, bus: EventBus, view: CanvasView, report: (error: Error) => void, canEdit: () => boolean = () => true): void {
   let caret: Located | null = null;
   let anchor: Located | null = null;
+  let cells: CellSelection | null = null;
   let rectangles: Rect[] = [];
   let dragging = false;
   let pasteAsPlainText = false;
@@ -24,7 +25,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   const active = () => engine.engineKind === 'heemang' && engine.hasLoadedDocument();
   let findDialog: ReturnType<typeof showHeemangFind> | null = null;
   let findHit: { match: Match; epoch: number; query: string; caseSensitive: boolean } | null = null;
-  let composition: { selection: TextSelection; text: string } | null = null;
+  let composition: { selection: EditingSelection; text: string } | null = null;
   const input = document.createElement('textarea');
   input.dataset.heemangInput = 'true';
   input.dataset.rhwpEditorInput = 'true';
@@ -37,10 +38,11 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   });
   container.append(input);
   container.tabIndex = 0;
-  const selection = (): TextSelection | null => caret ? {
+  const textSelection = (): TextSelection | null => caret ? {
     from: anchor?.position ?? caret.position, to: caret.position,
     fromAffinity: anchor?.affinity ?? caret.affinity, toAffinity: caret.affinity,
   } : null;
+  const selection = (): EditingSelection | null => cells ?? textSelection();
   const writable = () => active() && !engine.readOnly && canEdit();
   function focusInput() {
     if (writable()) input.focus({ preventScroll: true });
@@ -54,14 +56,13 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   function applyEdit(action: () => EditResult | null) {
     const result = action();
     if (!result) return;
-    caret = result.caret;
-    anchor = result.anchor ?? null;
+    const nextCaret = result.caret, nextAnchor = result.anchor ?? null;
     preferredX = undefined;
     input.value = '';
     // 논리 변경은 한 번만 발행하며 renderer와 dirty/revision 구독자가 함께 받는다.
-    bus.emit('document-changed');
+    bus.emit('document-changed', result.receipt);
     bus.emit('command-state-changed');
-    updateSelection();
+    updateSelection(nextCaret, nextAnchor, result.selection);
     revealCaret();
   }
   function replace(text: string) {
@@ -85,6 +86,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     if (documentInstance !== engine.documentInstance) {
       documentInstance = engine.documentInstance;
       caret = anchor = null;
+      cells = null;
       rectangles = [];
       dragging = false;
       composition = null;
@@ -136,10 +138,21 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     if (frame) return;
     frame = requestAnimationFrame(() => { frame = 0; draw(); });
   }
-  function updateSelection() {
-    if (!caret) return;
+  function updateSelection(nextCaret = caret, nextAnchor = anchor, range?: EditingSelection) {
+    if (!nextCaret) return;
+    const request = range ?? {
+      from: nextAnchor?.position ?? nextCaret.position, to: nextCaret.position,
+      fromAffinity: nextAnchor?.affinity ?? nextCaret.affinity, toAffinity: nextCaret.affinity,
+    };
+    // 정규화가 실패하면 마지막 유효한 선택과 caret을 그대로 둔다.
+    const selected = engine.viewer!.selectRange(request);
+    caret = nextCaret;
+    anchor = nextAnchor;
+    cells = selected.range.kind === 'cells' ? {
+      kind: 'cells', table: selected.range.table, from: selected.range.from, to: selected.range.to,
+    } : null;
+    rectangles = selected.rects;
     bus.emit('heemang-selection-changed');
-    rectangles = anchor ? engine.viewer!.select({ from: anchor.position, to: caret.position }) : [];
     bus.emit('cursor-rect-updated', { pageIndex: caret.caret.page, x: caret.caret.x / 75, y: caret.caret.y / 75, height: caret.caret.height / 75 });
     draw();
   }
@@ -165,31 +178,36 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     attempt(() => {
       const hit = point(ev);
       if (!hit) return;
-      if (hit.object) throw new EngineNotSupportedError('개체 편집');
+      if (hit.object) {
+        const object = hit.object, depth = object.steps?.length ?? 0;
+        const step = hit.position.steps?.[depth];
+        const insideTable = object.kind === 'table' && step && step.control === object.control
+          && sameAddress({ section: hit.position.section, steps: hit.position.steps!.slice(0, depth), para: step.para, offset: 0 },
+            { ...object, offset: 0 });
+        if (!insideTable) throw new EngineNotSupportedError('개체 편집');
+      }
       ev.preventDefault();
       ev.stopImmediatePropagation();
       cancelComposition();
       focusInput();
       const nextAnchor = ev.shiftKey && caret ? anchor ?? caret : hit;
-      engine.viewer!.select({ from: nextAnchor.position, to: hit.position });
-      anchor = nextAnchor;
-      caret = hit;
+      updateSelection(hit, nextAnchor);
       preferredX = undefined;
       dragging = true;
-      updateSelection();
     });
   }, true);
   window.addEventListener('pointermove', ev => {
     if (!active() || !dragging) return;
+    if (!(ev.buttons & 1)) { dragging = false; return; }
     attempt(() => {
       const hit = point(ev);
       if (!hit) return;
-      if (anchor) engine.viewer!.select({ from: anchor.position, to: hit.position });
-      caret = hit;
-      updateSelection();
+      updateSelection(hit);
     });
   });
   window.addEventListener('pointerup', () => { dragging = false; });
+  window.addEventListener('pointercancel', () => { dragging = false; });
+  window.addEventListener('blur', () => { dragging = false; });
   for (const name of ['mousedown', 'dblclick', 'contextmenu'] as const) {
     container.addEventListener(name, ev => {
       if (!active()) return;
@@ -228,9 +246,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
         else preferredX = undefined;
         const next = engine.viewer!.navigate({ position: previous.position, affinity: previous.affinity, motion, preferredX, page: previous.caret.page });
         if (!next) return;
-        anchor = ev.shiftKey ? anchor ?? previous : null;
-        caret = next;
-        updateSelection();
+        updateSelection(next, ev.shiftKey ? anchor ?? previous : null);
         revealCaret();
       });
       return;
@@ -305,7 +321,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     pasteAsPlainText = false;
   });
 
-  function copy(range: TextSelection): Copied {
+  function copy(range: EditingSelection): Copied {
     const copied = engine.viewer!.copyText(range);
     if (copied.text || copied.html) clipboard = { ...copied, token: crypto.randomUUID() };
     return copied;
@@ -328,10 +344,10 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   function paste(text: string, html = '', token = '', plain = false) {
     const range = selection();
     if (!range || !writable() || (!text && !html)) return;
-    const internal = !plain && !!clipboard && clipboard.text === text
+    const ownCopy = !!clipboard && clipboard.text === text
       && (token === clipboard.token || html.includes(`<!--heemang:${clipboard.token}-->`));
-    if (html && !internal && !plain) throw new EngineNotSupportedError('HTML 클립보드 가져오기');
-    applyEdit(() => engine.viewer!.pasteText(range, text, internal));
+    if (html && !ownCopy && !plain) throw new EngineNotSupportedError('HTML 클립보드 가져오기');
+    applyEdit(() => engine.viewer!.pasteText(range, text, !plain && ownCopy && engine.viewer!.hasInternalClipboard()));
     focusInput();
   }
   async function systemClipboard(cut: boolean) {
@@ -349,7 +365,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
       ensureCurrent(instance, epoch);
       if (clipboard?.token !== token) throw new Error('클립보드를 쓰는 동안 복사 내용이 변경되었습니다');
       const current = selection();
-      if (!current || !sameAddress(range.from, current.from) || !sameAddress(range.to, current.to)) throw new Error('클립보드를 쓰는 동안 선택이 변경되었습니다');
+      if (!current || !sameSelection(range, current)) throw new Error('클립보드를 쓰는 동안 선택이 변경되었습니다');
       applyEdit(() => engine.viewer!.cutText(range).edit);
     }
     focusInput();
@@ -367,7 +383,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
     ensureCurrent(instance, epoch);
     if (!hasText) throw new EngineNotSupportedError('텍스트가 아닌 클립보드');
     const current = selection();
-    if (!range || !current || !sameAddress(range.from, current.from) || !sameAddress(range.to, current.to)) throw new Error('클립보드를 읽는 동안 선택이 변경되었습니다');
+    if (!range || !current || !sameSelection(range, current)) throw new Error('클립보드를 읽는 동안 선택이 변경되었습니다');
     paste(text, html);
   }
   function ensureCurrent(instance: number, epoch: number) {
@@ -375,23 +391,20 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   }
   function showSelection(range: TextSelection) {
     const v = engine.viewer!;
-    const rects = v.select(range);
-    const locate = (position: TextSelection['from']): Located => {
-      const geometry = v.locate({ kind: 'caret', position });
+    const locate = (position: TextSelection['from'], affinity: Located['affinity'] = 'downstream'): Located => {
+      const geometry = v.locate({ kind: 'caret', position, affinity });
       if (!geometry || !('page' in geometry)) throw new EngineNotSupportedError('검색 위치의 caret 조회');
-      return { position, affinity: 'downstream', caret: geometry };
+      return { position, affinity, caret: geometry };
     };
-    const from = locate(range.from), to = locate(range.to);
-    anchor = sameAddress(range.from, range.to) ? null : from;
-    caret = to;
-    rectangles = rects;
-    updateSelection();
+    const from = locate(range.from, range.fromAffinity), to = locate(range.to, range.toAffinity);
+    updateSelection(to, sameAddress(range.from, range.to) && from.affinity === to.affinity ? null : from);
     revealCaret();
   }
   function search(query: string, caseSensitive: boolean, backward: boolean): boolean {
     if (!active()) return false;
     const range = selection();
-    const ordered = range ? orderedSelection(range) : null;
+    const normalized = range ? engine.viewer!.selectRange(range).range : null;
+    const ordered = normalized?.kind === 'text' ? normalized : null;
     // native from은 매치 시작을 엄격히 비교한다. 선택 시작을 써야 인접 매치를 건너뛰지 않는다.
     const found = engine.viewer!.search(query, caseSensitive, ordered?.from, backward);
     let match = backward ? found.matches.at(-1) : found.matches[0];
@@ -409,9 +422,10 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
       find: search,
       replace(query, replacement, caseSensitive) {
         const range = selection();
-        if (!range || !findHit || findHit.query !== query || findHit.caseSensitive !== caseSensitive
+        const normalized = range ? engine.viewer!.selectRange(range).range : null;
+        if (!normalized || normalized.kind !== 'text' || !findHit || findHit.query !== query || findHit.caseSensitive !== caseSensitive
           || findHit.epoch !== engine.viewer!.state().contentEpoch
-          || !sameAddress(orderedSelection(range).from, findHit.match.from) || !sameAddress(orderedSelection(range).to, findHit.match.to)) {
+          || !sameAddress(normalized.from, findHit.match.from) || !sameAddress(normalized.to, findHit.match.to)) {
           findHit = null;
           return search(query, caseSensitive, false);
         }
@@ -435,7 +449,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   function characterFormat(field?: 'bold' | 'italic' | 'underline') {
     const range = selection();
     if (!range) throw new EngineNotSupportedError('선택 없는 글자 서식');
-    if (sameAddress(range.from, range.to)) throw new EngineNotSupportedError('캐럿에서 다음 입력의 글자 서식');
+    if (!isCellSelection(range) && sameAddress(range.from, range.to)) throw new EngineNotSupportedError('캐럿에서 다음 입력의 글자 서식');
     const saved = copySelection(range), instance = engine.documentInstance, epoch = engine.viewer!.state().contentEpoch;
     showHeemangCharacterFormat(patch => { ensureCurrent(instance, epoch); applyEdit(() => engine.viewer!.formatCharacters(saved, patch)); }, focusInput, field);
   }
@@ -474,8 +488,8 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
       if (id === 'edit:copy' || id === 'edit:cut') { void systemClipboard(id === 'edit:cut').catch(error => attempt(() => { throw error; })); return; }
       if (id === 'edit:paste') { void systemPaste().catch(error => attempt(() => { throw error; })); return; }
       if (id === 'edit:select-all') {
-        if (!range) return;
-        const from = { ...range.from, para: 0 };
+        if (!caret) return;
+        const from = { ...caret.position, para: 0 };
         const first = engine.viewer!.paragraphs(from.section, from.steps, 0, 1)[0];
         const count = engine.viewer!.getParagraphCount(from.section, from.steps);
         const last = engine.viewer!.paragraphs(from.section, from.steps, count - 1, 1)[0];
@@ -507,7 +521,7 @@ export function installHeemangReader(container: HTMLElement, engine: StudioEngin
   bus.on('document-context-changed', () => {
     if (!active() || documentInstance !== engine.documentInstance) scheduleDraw();
   });
-  bus.on('document-swapped', () => { caret = anchor = null; rectangles = []; scheduleDraw(); });
+  bus.on('document-swapped', () => { caret = anchor = null; cells = null; rectangles = []; dragging = false; scheduleDraw(); });
   bus.on('zoom-level-display', scheduleDraw);
   bus.on('document-layout-refreshed', revealCaret);
   container.addEventListener('scroll', scheduleDraw, { passive: true });

@@ -283,6 +283,18 @@ export class Doc {
         }
     }
     /**
+     * Marks the document saved as it was at `expectedEpoch` (after the
+     * host wrote what `serialize(false)` gave it); `STALE_EPOCH` when it
+     * changed since. Changes nothing else.
+     * @param {number} expected_epoch
+     */
+    markSaved(expected_epoch) {
+        const ret = wasm.doc_markSaved(this.__wbg_ptr, expected_epoch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * The caret after a movement (`Located`), `null` when the position is
      * on no page.
      * @param {string} request
@@ -653,6 +665,33 @@ export class Doc {
         }
     }
     /**
+     * Like [`Doc::select`], with the selection as normalized
+     * (`Selected`): the text range in the common list, or the block of
+     * cells with each cell's list.
+     * @param {string} request
+     * @returns {string}
+     */
+    selectRange(request) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(request, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.doc_selectRange(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * The document in its own format, edited paragraphs carrying line
      * segments from our layout. `markSaved` clears the dirty state; the
      * content epoch never changes.
@@ -667,6 +706,26 @@ export class Doc {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+     * own format as [`Doc::serialize`] writes it, in the other as a new
+     * file encoded from the model alone. The open document keeps its
+     * format; `markSaved` clears the dirty state.
+     * @param {string} format
+     * @param {boolean} mark_saved
+     * @returns {Uint8Array}
+     */
+    serializeAs(format, mark_saved) {
+        const ptr0 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.doc_serializeAs(this.__wbg_ptr, ptr0, len0, mark_saved);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * `DocState` as JSON.

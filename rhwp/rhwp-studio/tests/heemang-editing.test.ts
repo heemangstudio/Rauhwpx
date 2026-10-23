@@ -219,16 +219,22 @@ test('boundary and empty no-ops do not enter undo or increase the content epoch'
   assert.deepEqual(a.state(), before);
 });
 
-test('빈 문단을 만드는 Enter는 엔진 조판 수정 전까지 내용과 이력을 바꾸지 않는다', async t => {
+test('빈 문단 Enter와 연속 줄바꿈은 편집 이력과 실제 caret을 만든다', async t => {
   const a = await open(t);
   a.replaceText(selection(body), '한글');
-  const before = a.state();
-  for (const offset of [0, 2]) {
-    assert.throws(() => a.split(selection({ ...body, offset })), { code: 'ENGINE_NOT_SUPPORTED' });
-  }
-  assert.throws(() => a.replaceText(selection(body), '\n'), { code: 'ENGINE_NOT_SUPPORTED' });
-  assert.equal(a.getParagraphText(0, 1), '한글');
-  assert.deepEqual(a.state(), before);
+  const start = a.split(selection(body))!;
+  assert.equal(a.getParagraphText(0, 1), '');
+  assert.equal(a.getParagraphText(0, 2), '한글');
+  const end = a.split(selection({ ...body, para: 2, offset: 2 }))!;
+  assert.equal(a.getParagraphText(0, 3), '');
+  assert.ok(end.caret.caret.y > start.caret.caret.y);
+  a.undoEdit();
+  assert.equal(a.getParagraphCount(0), 3);
+  a.redoEdit();
+  assert.equal(a.getParagraphText(0, 3), '');
+  const inserted = a.replaceText(selection(end.caret.position), '\n\n')!;
+  assert.equal(inserted.caret.position.para, 5);
+  assert.equal(a.getParagraphText(0, 4), '');
 });
 
 test('failed native second operation rolls back content and engine history', async t => {
@@ -588,7 +594,7 @@ test('native transaction failures restore derived format tables as well as text 
   assert.equal(a.getParagraphText(0, 1), '');
 });
 
-test('an edit receipt missing its caret rolls back instead of recording a hidden action', async t => {
+test('an edit receipt missing both selection and caret rolls back instead of recording a hidden action', async t => {
   const a = await open(t);
   const before = a.state();
   const doc = (a as any).doc;
@@ -596,6 +602,7 @@ test('an edit receipt missing its caret rolls back instead of recording a hidden
   doc.transact = (request: string) => {
     const receipt = JSON.parse(transact(request));
     delete receipt.caret;
+    delete receipt.selection;
     return JSON.stringify(receipt);
   };
   assert.throws(() => a.pasteText(selection(body), 'hidden'), { code: 'ENGINE_NOT_SUPPORTED' });
@@ -605,12 +612,15 @@ test('an edit receipt missing its caret rolls back instead of recording a hidden
   doc.transact = transact;
 });
 
-test('multiline replaceAll protects empty-paragraph limits and remains a single undo action', async t => {
+test('multiline replaceAll creates empty paragraphs in a single undo action', async t => {
   const a = await open(t);
   a.replaceText(selection(body), 'x qZqZ y');
   const before = a.state();
-  assert.throws(() => a.replaceAll('qZ', '\n', true), { code: 'ENGINE_NOT_SUPPORTED' });
-  assert.deepEqual(a.state(), before);
+  const empty = a.replaceAll('qZ', '\n', true);
+  assert.equal(empty.count, 2);
+  assert.equal(empty.edit!.receipt.undo, before.undo + 1);
+  assert.deepEqual(a.paragraphs(0, [], 1).map(p => p.text), ['x ', '', ' y']);
+  a.undoEdit();
   assert.equal(a.getParagraphText(0, 1), 'x qZqZ y');
   const replaced = a.replaceAll('qZ', '한\n글', true);
   assert.equal(replaced.count, 2);
@@ -676,4 +686,96 @@ test('find next and previous use native wire positions and wrap from the current
   assert.deepEqual(a.search('qZ', true, all[1].from, true).matches, [all[0]]);
   assert.deepEqual(a.search('qZ', true, all[1].to).matches, [all[0]]);
   assert.deepEqual(a.search('qZ', true, all[0].from, true).matches, [all[1]]);
+});
+
+test('receipt page invalidation keeps unchanged packets and refreshes the edited page', async t => {
+  const a = await open(t);
+  const inserted = a.replaceText(selection(body), Array(160).fill('line').join('\n'))!;
+  const last = inserted.receipt.pageCount - 1;
+  assert.ok(last > 0);
+  const firstPacket = a.page(0), lastPacket = a.page(last);
+  const result = a.replaceText(selection(inserted.caret.position), 'changed')!;
+  assert.ok(result.receipt.changedPages!.includes(last));
+  assert.ok(!result.receipt.changedPages!.includes(0));
+  assert.equal(a.page(0), firstPacket);
+  assert.notEqual(a.page(last), lastPacket);
+  assert.equal(a.page(0).layoutEpoch, a.state().layoutEpoch);
+  a.undoEdit();
+  assert.equal(a.page(0), firstPacket);
+  assert.equal(a.getParagraphText(0, 160), 'line');
+});
+
+test('native saved identity needs one serialization and acknowledges only the written epoch', async t => {
+  const a = await open(t);
+  a.replaceText(selection(body), 'saved');
+  const doc = (a as any).doc, serialize = doc.serialize.bind(doc);
+  let calls = 0;
+  doc.serialize = (...args: [boolean]) => { calls++; return serialize(...args); };
+  a.serialize(false);
+  const before = a.state();
+  assert.equal(a.markSaved(), true);
+  assert.equal(calls, 1);
+  assert.deepEqual(a.state(), { ...before, dirty: false });
+  a.undoEdit();
+  assert.equal(a.state().dirty, true);
+  a.redoEdit();
+  assert.equal(a.state().dirty, false);
+});
+
+test('cell blocks delete and format atomically, copy single cells, and restore native selection history', async t => {
+  const a = await open(t);
+  const control = a.paragraphs(0)[0].controls.find(c => c.kind === 'table')!;
+  const table = { section: 0, para: 0, control: control.index };
+  const block = { kind: 'cells', table, from: { row: 0, column: 0 }, to: { row: 0, column: 1 } } as const;
+  const normalized = a.selectRange(block).range;
+  assert.equal(normalized.kind, 'cells');
+  if (normalized.kind !== 'cells') return;
+  assert.equal(normalized.cells.length, 2);
+  const text = normalized.cells.map(c => a.getParagraphText(0, 0, c.list.steps));
+  const copied = a.copyText(block);
+  assert.equal(copied.text, text.join('\t') + '\n');
+  assert.match(copied.html, /<table>/);
+  assert.equal(a.hasInternalClipboard(), false);
+  const single = { ...block, to: block.from };
+  assert.equal(a.copyText(single).text, text[0]);
+  assert.match(a.copyText(single).html, /<table>/);
+  const formatted = a.formatCharacters(block, { size: 1200 })!;
+  assert.deepEqual(formatted.selection, block);
+  a.deleteForward(block);
+  assert.deepEqual(normalized.cells.map(c => a.getParagraphText(0, 0, c.list.steps)), ['', '']);
+  const undone = a.undoEdit()!;
+  assert.deepEqual(undone.selection, block);
+  assert.deepEqual(normalized.cells.map(c => a.getParagraphText(0, 0, c.list.steps)), text);
+  a.undoEdit();
+  assert.deepEqual(a.redoEdit()!.selection, block);
+});
+
+test('opposite affinities at one wire address survive native undo as a directed selection', async t => {
+  const a = await open(t);
+  const range: TextSelection = { from: body, to: body, fromAffinity: 'upstream', toAffinity: 'downstream' };
+  a.replaceText(range, 'wrap');
+  const undo = a.undoEdit()!;
+  assert.deepEqual(undo.anchor!.position, body);
+  assert.equal(undo.anchor!.affinity, 'upstream');
+  assert.equal(undo.caret.affinity, 'downstream');
+});
+
+test('body-to-table formatting includes the whole table contents in one undo step', async t => {
+  const a = await open(t);
+  const control = a.paragraphs(0)[0].controls.find(c => c.kind === 'table')!;
+  const steps = [{ para: 0, control: control.index, index: 0 }];
+  const cell = a.paragraphs(0, steps, 0, 1)[0];
+  const cellText = { from: { section: 0, steps, para: 0, offset: cell.caret[0] },
+    to: { section: 0, steps, para: 0, offset: cell.caret[1] } };
+  const range: TextSelection = { from: body, to: cellText.from, fromAffinity: 'upstream', toAffinity: 'downstream' };
+  const original = a.copyText(cellText), before = a.state();
+  a.formatCharacters(range, { size: 1700 });
+  assert.equal(a.state().undo, before.undo + 1);
+  assert.match(a.copyText(cellText).html, /font-size:17pt/);
+  const undo = a.undoEdit()!;
+  assert.deepEqual(a.copyText(cellText), original);
+  assert.deepEqual(undo.anchor!.position, body);
+  assert.deepEqual(undo.caret.position, cellText.from);
+  a.redoEdit();
+  assert.match(a.copyText(cellText).html, /font-size:17pt/);
 });

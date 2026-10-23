@@ -168,8 +168,14 @@ export class CanvasView {
           && 'reason' in payload && payload.reason === 'text-edit';
         this.mutationRefreshQueue.invalidatePage(pageIndex, textOnly);
       }),
-      eventBus.on('document-changed', () => {
+      eventBus.on('document-changed', (receipt) => {
         this.pageRenderer.noteDocumentContentChanged();
+        if (this.wasm.engineKind === 'heemang' && receipt && typeof receipt === 'object'
+          && 'changedPages' in receipt && Array.isArray(receipt.changedPages)) {
+          this.lastMutationTime = performance.now();
+          for (const page of receipt.changedPages) this.mutationRefreshQueue.invalidatePage(page, false);
+          return;
+        }
         this.scheduleMutationRefresh();
       }),
       eventBus.on('document-view-changed', (source) => {

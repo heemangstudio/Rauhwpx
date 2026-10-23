@@ -1,0 +1,350 @@
+{
+  "runtime": "http://127.0.0.1:7700/?engine=heemang",
+  "source": "rhwp/tests/fixtures/editing_parity/mac-hancom-12.30.0/cell-mixed-text/source.hwpx",
+  "interaction": "File-input upload, native caret-derived pointer DOM events through production reader, ClipboardEvent/DataTransfer copy and paste, browser Meta+Z undo. Real adapter and WASM; OS clipboard not used.",
+  "calls": [
+    {
+      "name": "copyText",
+      "args": [
+        {
+          "kind": "cells",
+          "table": {
+            "section": 0,
+            "para": 0,
+            "control": 2
+          },
+          "from": {
+            "row": 0,
+            "column": 0
+          },
+          "to": {
+            "row": 0,
+            "column": 1
+          }
+        }
+      ],
+      "result": {
+        "text": "그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.\t\n",
+        "html": "<table><tr><td>그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.</td><td></td></tr></table>"
+      }
+    },
+    {
+      "name": "pasteText",
+      "args": [
+        {
+          "from": {
+            "section": 0,
+            "para": 1,
+            "offset": 0
+          },
+          "to": {
+            "section": 0,
+            "para": 1,
+            "offset": 0
+          },
+          "fromAffinity": "downstream",
+          "toAffinity": "downstream"
+        },
+        "그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.\t\n",
+        false
+      ],
+      "result": {
+        "receipt": {
+          "contentEpoch": 1,
+          "layoutEpoch": 3,
+          "pageCount": 1,
+          "caret": {
+            "section": 0,
+            "para": 2,
+            "offset": 0
+          },
+          "undo": 1,
+          "redo": 0,
+          "changedPages": [
+            0
+          ],
+          "selection": {
+            "anchor": {
+              "offset": 0,
+              "para": 2,
+              "section": 0
+            },
+            "anchorAffinity": "downstream",
+            "focus": {
+              "offset": 0,
+              "para": 2,
+              "section": 0
+            },
+            "focusAffinity": "downstream"
+          },
+          "historyId": 1
+        },
+        "caret": {
+          "position": {
+            "offset": 0,
+            "para": 2,
+            "section": 0
+          },
+          "affinity": "downstream",
+          "caret": {
+            "page": 0,
+            "x": 8504,
+            "y": 21050,
+            "height": 1000
+          }
+        },
+        "anchor": null
+      }
+    },
+    {
+      "name": "undoEdit",
+      "args": [],
+      "result": {
+        "receipt": {
+          "contentEpoch": 2,
+          "layoutEpoch": 4,
+          "pageCount": 1,
+          "undo": 0,
+          "redo": 1,
+          "changedPages": [
+            0
+          ],
+          "selection": {
+            "anchor": {
+              "offset": 0,
+              "para": 1,
+              "section": 0
+            },
+            "anchorAffinity": "downstream",
+            "focus": {
+              "offset": 0,
+              "para": 1,
+              "section": 0
+            },
+            "focusAffinity": "downstream"
+          },
+          "historyId": 0
+        },
+        "caret": {
+          "position": {
+            "offset": 0,
+            "para": 1,
+            "section": 0
+          },
+          "affinity": "downstream",
+          "caret": {
+            "page": 0,
+            "x": 8504,
+            "y": 17850,
+            "height": 1000
+          }
+        },
+        "anchor": null
+      }
+    }
+  ],
+  "changes": [
+    {
+      "contentEpoch": 1,
+      "layoutEpoch": 3,
+      "pageCount": 1,
+      "caret": {
+        "section": 0,
+        "para": 2,
+        "offset": 0
+      },
+      "undo": 1,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 2,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 0,
+          "para": 2,
+          "section": 0
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 1
+    },
+    {
+      "contentEpoch": 2,
+      "layoutEpoch": 4,
+      "pageCount": 1,
+      "undo": 0,
+      "redo": 1,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 1,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 0,
+          "para": 1,
+          "section": 0
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 0
+    }
+  ],
+  "errors": [
+    {
+      "name": "pasteText",
+      "message": "HeemangEngine에서 아직 지원하지 않는 기능입니다: 셀 블록을 입력 텍스트로 바꾸기"
+    }
+  ],
+  "copied": {
+    "text/plain": "그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.\t\n",
+    "text/html": "<table><tr><td>그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.</td><td></td></tr></table><!--heemang:63732d0d-fd33-4419-a2a6-1f986753cf62-->",
+    "application/x-heemang-fragment": "63732d0d-fd33-4419-a2a6-1f986753cf62"
+  },
+  "afterCopy": {
+    "instance": 1,
+    "contentEpoch": 0,
+    "layoutEpoch": 2,
+    "fontGeneration": 38,
+    "format": "hwpx",
+    "pageCount": 1,
+    "dirty": false,
+    "undo": 0,
+    "redo": 0
+  },
+  "afterRejectedBlock": {
+    "instance": 1,
+    "contentEpoch": 0,
+    "layoutEpoch": 2,
+    "fontGeneration": 38,
+    "format": "hwpx",
+    "pageCount": 1,
+    "dirty": false,
+    "undo": 0,
+    "redo": 0
+  },
+  "afterPaste": {
+    "instance": 1,
+    "contentEpoch": 1,
+    "layoutEpoch": 3,
+    "fontGeneration": 38,
+    "format": "hwpx",
+    "pageCount": 1,
+    "dirty": true,
+    "undo": 1,
+    "redo": 0
+  },
+  "pastedParas": [
+    {
+      "index": 0,
+      "text": "",
+      "length": 25,
+      "caret": [
+        16,
+        24
+      ],
+      "controls": [
+        {
+          "index": 0,
+          "offset": 0,
+          "kind": "section",
+          "lists": 0
+        },
+        {
+          "index": 1,
+          "offset": 8,
+          "kind": "columns",
+          "lists": 0
+        },
+        {
+          "index": 2,
+          "offset": 16,
+          "kind": "table",
+          "lists": 4
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "text": "그림 앞의 글입니다. Picture and text share this paragraph. 그림 뒤에도 글이 이어집니다.\t",
+      "length": 76,
+      "caret": [
+        0,
+        75
+      ],
+      "controls": []
+    },
+    {
+      "index": 2,
+      "text": "",
+      "length": 1,
+      "caret": [
+        0,
+        0
+      ],
+      "controls": []
+    }
+  ],
+  "afterUndo": {
+    "instance": 1,
+    "contentEpoch": 2,
+    "layoutEpoch": 4,
+    "fontGeneration": 38,
+    "format": "hwpx",
+    "pageCount": 1,
+    "dirty": false,
+    "undo": 0,
+    "redo": 1
+  },
+  "restoredParas": [
+    {
+      "index": 0,
+      "text": "",
+      "length": 25,
+      "caret": [
+        16,
+        24
+      ],
+      "controls": [
+        {
+          "index": 0,
+          "offset": 0,
+          "kind": "section",
+          "lists": 0
+        },
+        {
+          "index": 1,
+          "offset": 8,
+          "kind": "columns",
+          "lists": 0
+        },
+        {
+          "index": 2,
+          "offset": 16,
+          "kind": "table",
+          "lists": 4
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "text": "",
+      "length": 1,
+      "caret": [
+        0,
+        0
+      ],
+      "controls": []
+    }
+  ]
+}
