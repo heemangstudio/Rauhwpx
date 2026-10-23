@@ -413,8 +413,8 @@ export async function startHub({ hubPort, token, fixtureRoot, env = {}, logName 
 /** 외부 허브에 붙는 vite 개발 서버를 띄운다. */
 export async function startVite({ vitePort, hubPort, token, logName = 'rhwp-studio-bench-vite.log' }) {
   const vite = spawnLogged(
-    npmCmd,
-    ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'],
+    process.execPath,
+    [path.join(studioRoot, 'node_modules', 'vite', 'bin', 'vite.js'), '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'],
     studioRoot,
     {
       BROWSER: 'none',
