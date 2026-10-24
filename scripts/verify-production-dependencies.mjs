@@ -53,7 +53,7 @@ const keyring = verifyKeyringBinding(agent);
 const npm = artifact(agent, 'npm');
 const npmRequire = createRequire(path.join(npm.installed, 'package.json'));
 assert.equal(npmRequire('brace-expansion/package.json').version, '5.0.12');
-assert.equal(npmRequire('undici/package.json').version, '6.28.1');
+assert.equal(npmRequire('undici/package.json').version, '6.29.1');
 assert.equal(npmRequire('http-cache-semantics/package.json').version, npm.provenance.verification.packedHttpCacheSemantics);
 assert.equal(npmRequire('ip-address/package.json').version, npm.provenance.verification.packedIpAddress);
 const copies = braceCopies(path.join(agent, 'node_modules'));
