@@ -7,21 +7,8 @@
   max-width: 60%;
 }
 
-.ag-taste-key-row {
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.ag-taste-key-row .ag-settings-input {
-  flex: 1 1 160px;
+.ag-taste-auth-row .ag-settings-input {
+  flex: 1 1 auto;
   min-width: 0;
-  height: 30px;
-}
-
-.ag-taste-key-row .ag-settings-cliproxy-error {
-  flex-basis: 100%;
-}
-
-.ag-taste-key-row .ag-settings-cliproxy-error[hidden] {
-  display: none;
+  height: 32px;
 }

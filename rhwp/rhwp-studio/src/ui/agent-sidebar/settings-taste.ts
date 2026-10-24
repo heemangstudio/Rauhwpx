@@ -1,7 +1,7 @@
 // 설정 → AI 의 Rau-0.1 (취향 학습). 대화에서 배우기 스위치와 학습기의 공급자·모델·추론 강도.
 // 허브가 정본이다. 알림·Git 전환처럼 바꾸는 즉시 저장하고 적용 초안을 거치지 않는다.
-// 공급자 고르기는 정리 도우미(settings-project.ts)와 같은 방식이다. OpenRouter 는 내 키로만 돌므로, 키가 없으면
-// Pi 설정과 같은 경로(connectOpenRouterKey)로 저장하는 키 칸을 이 자리에 보인다 — 앱 전체의 키는 하나다.
+// 공급자 고르기는 정리 도우미(settings-project.ts)와 같은 방식이다. OpenRouter 는 Pi 에이전트의 OpenRouter 자격으로만
+// 돈다. 없으면 Pi 설정과 같은 연결 줄(브라우저로 로그인 / 또는 / 키)을 보이고, 두 길 모두 Pi 설정의 처리기를 그대로 쓴다.
 import './settings-taste.css';
 
 import type { SidebarBridge } from '../../agent/bridge.ts';
@@ -64,6 +64,12 @@ export interface TasteSettingsSectionDeps {
   piStatus(): PiStatus | null;
   /** Pi 설정의 키 칸과 같은 저장 경로. 성공하면 true. */
   connectOpenRouterKey(key: string): Promise<boolean>;
+  /** Pi 설정의 브라우저로 로그인과 같은 흐름. 끝나면 이 자리로 돌아온다. */
+  loginOpenRouter(): void;
+  /** Pi 설정의 로그인·키 저장이 도는 중이거나 허브에 붙지 않았다. */
+  authBlocked(): boolean;
+  /** Pi 설정이 보이는 마지막 키 오류. */
+  authError(): string;
   isDisposed(): boolean;
 }
 
@@ -98,20 +104,21 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   const model = selectRow('model', '모델');
   const effort = selectRow('effort', '추론');
 
-  const keyRow = el('form', 'ag-settings-control-row ag-taste-key-row');
+  // Pi 설정의 연결 줄(piAuthRow)과 같은 모양: 브라우저로 로그인 / 또는 / 키(Enter 로 연결).
+  const authRow = el('div', 'ag-settings-control-row ag-pi-auth-row ag-taste-auth-row');
+  const login = el('button', 'ag-settings-btn ag-pi-oauth', '브라우저로 로그인');
+  login.type = 'button';
   const keyInput = el('input', 'ag-settings-input');
   keyInput.type = 'password';
   keyInput.placeholder = 'OpenRouter 키';
   keyInput.autocomplete = 'new-password';
   keyInput.spellcheck = false;
   keyInput.setAttribute('aria-label', 'OpenRouter 키');
-  const keySubmit = el('button', 'ag-settings-primary', '연결');
-  keySubmit.type = 'submit';
-  const keyError = el('span', 'ag-settings-cliproxy-error', '키 확인 실패');
-  keyError.hidden = true;
-  keyRow.append(keyInput, keySubmit, keyError);
+  authRow.append(login, el('span', 'ag-pi-auth-or', '또는'), keyInput);
+  const authError = el('p', 'ag-settings-cliproxy-error ag-taste-auth-error');
+  authError.hidden = true;
 
-  body.append(learning, provider.root, model.root, effort.root, keyRow);
+  body.append(learning, provider.root, model.root, effort.root, authRow, authError);
 
   // 허브가 답하기 전에는 기본값(켜짐, 자동)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;
@@ -122,6 +129,7 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   let catalogState: 'idle' | 'loading' | 'done' = 'idle';
   let catalogKey: string | null = null;
   let keyBusy = false;
+  let keyFailed = false;
 
   const hasOwnKey = () => deps.piStatus()?.keyConfigured === true;
 
@@ -176,7 +184,8 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     const agent = shown.provider === 'auto' ? null : shown.provider;
     model.root.hidden = agent === null;
     effort.root.hidden = agent === null;
-    keyRow.hidden = agent !== 'pi' || deps.piStatus() === null || hasOwnKey();
+    authRow.hidden = agent !== 'pi' || deps.piStatus() === null || hasOwnKey();
+    authError.hidden = authRow.hidden || !keyFailed;
     if (!agent) return;
     if (agent === 'pi') loadCatalog();
     const currentModel = shown.model ?? TASTE_DEFAULT_ROUTES[agent].model;
@@ -186,8 +195,9 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     effort.root.hidden = efforts.length === 0;
     fill(effort.select, efforts, effortFor(agent, currentModel, shown.effort) ?? '');
     effort.select.disabled = off;
-    keyInput.disabled = off || keyBusy;
-    keySubmit.disabled = off || keyBusy;
+    const blocked = off || keyBusy || deps.authBlocked();
+    login.disabled = blocked;
+    keyInput.disabled = blocked;
   }
 
   function accept(next: TasteSettings | null): void {
@@ -231,19 +241,22 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     void save({ model: next, effort: effortFor(agent, next, shown.effort) });
   });
   effort.select.addEventListener('change', () => void save({ effort: effort.select.value || null }));
-  keyRow.addEventListener('submit', async (event) => {
+  login.addEventListener('click', () => deps.loginOpenRouter());
+  keyInput.addEventListener('keydown', async (event) => {
+    if (event.key !== 'Enter' || event.isComposing) return;
     event.preventDefault();
     const key = keyInput.value.trim();
     if (!key || keyBusy) return;
     keyBusy = true;
-    keyError.hidden = true;
     render();
     const ok = await deps.connectOpenRouterKey(key);
     if (deps.isDisposed()) return;
     keyBusy = false;
+    keyFailed = !ok;
+    authError.textContent = ok ? '' : deps.authError() || '키 확인 실패';
     if (ok) keyInput.value = '';
-    keyError.hidden = ok;
     render();
+    if (!ok) keyInput.focus();
   });
 
   render();

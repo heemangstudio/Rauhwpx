@@ -480,7 +480,8 @@ export function createMockBridge(
     const ownFirst = data.pi.keyConfigured && giftOrder === 'after';
     data.pi.credential = giftActive() && !ownFirst ? 'gift' : data.pi.keyConfigured ? 'own' : 'none';
     data.pi.giftOrder = giftOrder;
-    if (data.pi.credential !== 'gift') return data.pi;
+    // 허브처럼 매번 새 상태를 보낸다 — 받은 쪽이 들고 있는 이전 상태가 몰래 바뀌지 않게.
+    if (data.pi.credential !== 'gift') return { ...data.pi };
     return {
       ...data.pi,
       models: giftModels,
@@ -633,6 +634,8 @@ export function createMockBridge(
   const terminalMenu = () => `\x1b[2J\x1b[H\x1b[36m◆  ${terminalRun?.agent ?? 'CLI'} 로그인\x1b[0m\r\n\r\n`
     + terminalOptions.map((name, index) => `  ${index === terminalRun?.choice ? '❯' : ' '} ${name}`).join('\r\n')
     + '\r\n\r\n  Enter 키로 선택하세요.';
+  /** 받은 로그인 요청 — 미리보기 확인이 읽는다. */
+  const agentAuthCalls: Array<{ provider: T.AgentName; method: string }> = [];
   const authenticate = (provider: T.AgentName) => {
     if (provider === 'pi') {
       data.pi.keyConfigured = true;
@@ -1039,6 +1042,7 @@ export function createMockBridge(
       return data.setups;
     },
     authenticateAgent: async (provider, method) => {
+      agentAuthCalls.push({ provider, method });
       if (provider !== 'pi' && method === 'oauth') {
         terminalRun = { id: crypto.randomUUID(), agent: provider, step: 0, choice: 0 };
         const id = terminalRun.id;
@@ -1063,7 +1067,8 @@ export function createMockBridge(
       return {
         agent: provider,
         authRunId: crypto.randomUUID(),
-        authUrl: null,
+        // 허브처럼 Pi 브라우저 로그인은 OpenRouter PKCE 주소를 시작 응답에 싣는다 (미리보기는 열지 않는다).
+        authUrl: provider === 'pi' && method === 'oauth' ? 'https://openrouter.ai/auth?code_challenge_method=S256&state=preview' : null,
       };
     },
     resumeSetupTerminal: (agent, authRunId) => {
@@ -2241,6 +2246,7 @@ export function createMockBridge(
     setHubDown: (value: boolean) => { hubDown = value; },
     setServices,
     setPiOwnKey,
+    agentAuthCalls,
     setUpdateAvailable,
     /** 에이전트가 브라우저 도구를 부른 것처럼 요청한다. 미리보기 탭과 조작권 흐름을 확인할 때 쓴다. */
     browserAsAgent: previewBrowser.requestAsAgent,

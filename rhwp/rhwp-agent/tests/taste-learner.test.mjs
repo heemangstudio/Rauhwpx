@@ -7,6 +7,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DocumentMemoryStore } from '../document-memory-store.mjs';
+import { createPiManager } from '../pi-manager.mjs';
+import { createMemorySecretStore } from '../secret-store.mjs';
 import { createTasteSignalBuffer } from '../taste-signals.mjs';
 import {
   RAU_TASTE_NAME,
@@ -17,6 +19,7 @@ import {
   newTasteTurn,
   noteTasteTurnEvent,
   tasteCandidates,
+  tasteOwnOpenRouter,
 } from '../taste-learner.mjs';
 
 const at = '2026-10-22T00:00:00.000Z';
@@ -692,4 +695,32 @@ test('a one-off request never overwrites a confirmed note; general phrasing or r
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['여기는 한다체로 써 줘'], signals: [{ kind: 'accepted' }] }), []);
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['본문은 한다체로 써 줘'] }), swap);
   assert.deepEqual(guardTasteOps(swap, [{ ...once[0], origin: 'user' }], { userTexts: ['본문은 한다체로 써 줘'] }), []);
+});
+
+test('the chosen OpenRouter route uses the Pi agent\'s own auth, whether pasted or from the browser login', async (t) => {
+  const rootDir = tempDir(t);
+  const openRouter = {
+    async validateKey() { return { valid: true, label: 'rhwp', limit: null, usage: 0, isFreeTier: false }; },
+    async catalog() { return []; },
+    async credits() { return null; },
+    clearCache() {},
+  };
+  const manager = await createPiManager({
+    rootDir,
+    openRouter,
+    secretStore: createMemorySecretStore(),
+    // OpenRouter PKCE 키 교환만 흉내 낸다 — 네트워크는 쓰지 않는다.
+    fetchImpl: async () => ({ ok: true, json: async () => ({ key: 'sk-or-v1-from-oauth' }) }),
+  }).init();
+  const own = tasteOwnOpenRouter(manager);
+  const chosen = { provider: 'pi' };
+  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, false, 'no auth yet');
+
+  const started = manager.beginOAuth('http://127.0.0.1:5175/oauth/openrouter/callback');
+  await manager.completeOAuth('one-time-code', started.state);
+  assert.equal(own.apiKey(), 'sk-or-v1-from-oauth');
+  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, true);
+
+  await manager.setApiKey('sk-or-v1-pasted');
+  assert.equal(own.apiKey(), 'sk-or-v1-pasted');
 });
