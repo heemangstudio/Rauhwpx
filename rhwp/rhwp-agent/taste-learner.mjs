@@ -244,6 +244,14 @@ export function tasteCandidates(routeInfo = {}, settings = {}) {
   });
 }
 
+/**
+ * 고른 OpenRouter 경로의 자격 — Pi 에이전트가 쓰는 바로 그 내 OpenRouter 키다. 붙여 넣은 키와 브라우저
+ * 로그인(PKCE, completeOAuth → setApiKey)이 같은 자리에 저장되므로 둘 다 여기로 온다. 선물 리스는 넘기지 않는다.
+ */
+export function tasteOwnOpenRouter(piManager) {
+  return { apiKey: () => piManager.ownApiKey() };
+}
+
 /** JSON text that cannot close the surrounding data tag. */
 function embedJson(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');

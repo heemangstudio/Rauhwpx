@@ -123,6 +123,7 @@ import {
   createTasteLearner,
   newTasteTurn,
   noteTasteTurnEvent,
+  tasteOwnOpenRouter,
 } from './taste-learner.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
@@ -4624,8 +4625,7 @@ async function tasteLearnerRoutes(context) {
     codexQuota: providerLimits.snapshot().codex,
     giftMode: piManager.access().mode === 'gift',
     resolveModel: { pi: resolvePiTitleModel },
-    // 고른 OpenRouter 경로가 쓰는 내 키 — 선물 리스는 넘기지 않는다.
-    ownOpenRouter: { apiKey: () => piManager.ownApiKey() },
+    ownOpenRouter: tasteOwnOpenRouter(piManager),
     deps,
   };
 }
