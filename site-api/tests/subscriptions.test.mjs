@@ -136,6 +136,8 @@ test('config: product ids default to uRshdR (one-time) and GLJFC9 (subscription)
   const defaults = resolveLicenseConfig({});
   assert.deepEqual(defaults.onetimeProductIds, ['uRshdR']);
   assert.deepEqual(defaults.subscriptionProductIds, ['GLJFC9']);
+  assert.deepEqual(defaults.signatureProductIds, ['8Xy27f']);
+  assert.equal(defaults.products.find((p) => p.id === '8Xy27f').expectedPrice, 29000);
   assert.deepEqual(resolveLicenseConfig({ GROBLE_CONTENT_ID: 'old1' }).onetimeProductIds, ['old1']);
   const env = resolveLicenseConfig({ GROBLE_CONTENT_ID: 'old1', GROBLE_ONETIME_PRODUCT_IDS: 'a, b', GROBLE_SUBSCRIPTION_PRODUCT_IDS: 'c' });
   assert.deepEqual(env.onetimeProductIds, ['a', 'b']);
