@@ -691,4 +691,74 @@ export class HeemangAdapter {
   getShowControlCodes(): boolean { return false; }
   getShowParagraphMarks(): boolean { return false; }
   getClipEnabled(): boolean { return true; }
+
+  // ─── 에이전트 도구 접근 (src/agent/heemang/) ─────────────────────────────
+  // 에이전트 도구는 이 구역으로만 엔진 문서에 닿는다. 편집기 선택과 입력 경로는 건드리지 않고,
+  // 편집 뒤 무효화와 이력 번호만 이 어댑터의 편집 경로와 같이 맞춘다.
+
+  /** 읽기용 문서. 문서를 바꾸는 호출은 아래 agent* 메서드로만 한다. */
+  agentDocument(): Doc { return this.document(); }
+
+  /**
+   * 에이전트 편집 한 번을 엔진 이력 한 단계로 적용한다. 바뀐 것이 없으면 null.
+   * selection 은 그 단계를 되돌리거나 다시 할 때 돌아갈 선택이다 (기본: 첫 편집 위치의 caret).
+   */
+  agentTransact(ops: readonly unknown[], selection?: Selection | null): Receipt | null {
+    this.requireEditable();
+    if (!ops.length) return null;
+    const doc = this.document();
+    const epoch = this.state().contentEpoch;
+    const at = selection === undefined ? this.agentEditSelection(ops) : selection;
+    const receipt: Receipt = JSON.parse(doc.transact(JSON.stringify({ expectedEpoch: epoch, ops, ...(at ? { selection: at } : {}) })));
+    if (receipt.contentEpoch === epoch) return null;
+    this.historyId = receipt.historyId;
+    this.invalidate(receipt);
+    return receipt;
+  }
+
+  agentCheckpoint(): number { return this.document().checkpoint(); }
+  agentReleaseCheckpoint(checkpoint: number): boolean { return this.doc?.releaseCheckpoint(checkpoint) ?? false; }
+
+  /** 체크포인트의 문서와 이력으로 돌아간다. */
+  agentRestore(checkpoint: number): Receipt {
+    const epoch = this.state().contentEpoch;
+    const receipt: Receipt = JSON.parse(this.document().restore(checkpoint));
+    // 내용이 같아도 restore 는 epoch 를 올린다 — checkpointed 와 같이 저장 후보를 유지한다.
+    if (this.serialized?.epoch === epoch) this.serialized = { ...this.serialized, epoch: receipt.contentEpoch };
+    this.historyId = receipt.historyId;
+    this.refreshLayout();
+    return receipt;
+  }
+
+  /**
+   * 검토용 이력 조작 (history·revertSteps·combineSteps). 이 엔진 빌드에 없으면
+   * EngineNotSupportedError. 문서를 바꾼 결과는 이 어댑터의 무효화를 거친다.
+   */
+  agentHistory(method: 'history' | 'revertSteps' | 'combineSteps', request?: unknown): string {
+    const doc = this.document() as Doc & Partial<Record<typeof method, (request?: string) => string>>;
+    const call = doc[method];
+    if (typeof call !== 'function') throw new EngineNotSupportedError(`엔진 이력 ${method}`);
+    if (method !== 'history') this.requireEditable();
+    const raw = call.call(doc, request === undefined ? undefined : JSON.stringify(request));
+    if (method === 'revertSteps') {
+      const result = JSON.parse(raw) as { receipt: Receipt };
+      this.historyId = result.receipt.historyId;
+      this.invalidate(result.receipt);
+    } else if (method === 'combineSteps') {
+      this.historyId = (JSON.parse(raw) as { historyId: number }).historyId;
+    }
+    return raw;
+  }
+
+  /** 에이전트 편집 단계의 되돌릴 선택 — 첫 op 위치의 caret. 위치가 없는 op 이면 null. */
+  private agentEditSelection(ops: readonly unknown[]): Selection | null {
+    const first = ops[0] as { at?: Address; from?: Address; table?: Omit<Address, 'offset'> } | undefined;
+    const at = first?.at ?? first?.from ?? (first?.table ? { ...first.table, offset: 0 } : null);
+    if (!at) return null;
+    // 표 같은 op 은 문단 첫 caret 에 둔다 — 구역·단 정의 컨트롤 안쪽 offset 은 caret 이 될 수 없다.
+    const para = this.paragraphs(at.section, at.steps, at.para, 1)[0];
+    const offset = para ? Math.min(Math.max(at.offset, para.caret[0]), para.caret[1]) : at.offset;
+    const caret = { ...copyAddress(at), offset };
+    return { anchor: caret, focus: copyAddress(caret), anchorAffinity: 'downstream', focusAffinity: 'downstream' };
+  }
 }
