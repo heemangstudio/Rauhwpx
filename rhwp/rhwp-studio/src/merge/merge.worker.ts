@@ -1,7 +1,5 @@
 /// <reference lib="webworker" />
 
-import init from '@wasm/rhwp.js';
-import * as wasmModule from '@wasm/rhwp.js';
 import type { MergeAnalysis, MergeValidationResult } from './domain.ts';
 import type { MergeWorkerRequest, MergeWorkerResponse } from './worker-protocol.ts';
 import type { MergeManifestEntrySeed } from '../versioning/types.ts';
@@ -41,33 +39,20 @@ interface StructuralMergeExports {
 }
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
-let wasmReady: Promise<void> | null = null;
 
 function post(message: MergeWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
 }
 
+/** 구조 병합은 아직 HeemangEngine 에 없다. 병합 창은 이 오류로 기존 버전 흐름에 머문다. */
+const STRUCTURAL_MERGE_UNAVAILABLE = 'HeemangEngine에서 아직 지원하지 않는 기능입니다: 문서 구조 병합';
+
 function wasmInitialized(): Promise<void> {
-  if (!wasmReady) {
-    const initializing = init().then(() => undefined);
-    wasmReady = initializing.catch((error) => {
-      wasmReady = null;
-      throw error;
-    });
-  }
-  return wasmReady;
+  return Promise.resolve();
 }
 
 async function exportsReady(): Promise<StructuralMergeExports> {
-  await wasmInitialized();
-  const exports = wasmModule as unknown as Partial<StructuralMergeExports>;
-  if (
-    typeof exports.structuralMergeAnalyze !== 'function'
-    || typeof exports.structuralMergeMaterialize !== 'function'
-  ) {
-    throw new Error('This RHWP WebAssembly build does not include the structural merge exports.');
-  }
-  return exports as StructuralMergeExports;
+  throw new Error(STRUCTURAL_MERGE_UNAVAILABLE);
 }
 
 function canonical(value: unknown): string {

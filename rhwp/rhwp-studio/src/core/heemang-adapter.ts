@@ -9,6 +9,7 @@ import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+import { guardHeemangEngineCalls } from './engine-trap';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
@@ -29,8 +30,9 @@ const copyKey = (name: string, size: number) => `${name.split(/[\\/]/).pop()!.to
 const fontFile = (b: Uint8Array): FontFileSource => ({ size: b.length, read: (o: number, n: number) => b.subarray(o, o + n) });
 
 async function initializeRuntime() {
-  const { default: init, Blake3Hasher, Engine, fileFamilyNames, capabilities } = await import('../../vendor/hm-wasm/hm_wasm');
+  const { default: init, Blake3Hasher, Doc, Engine, fileFamilyNames, capabilities, brotliDecompress } = await import('../../vendor/hm-wasm/hm_wasm');
   const { memory } = await init();
+  guardHeemangEngineCalls(Doc.prototype);
   setBlake3WasmApi(() => new Blake3Hasher());
   const contract = JSON.parse(capabilities()) as { contract: number; packet: number };
   if (contract.contract !== 1 || contract.packet !== 1) throw new EngineNotSupportedError('hm-wasm 계약 버전');
@@ -131,7 +133,12 @@ async function initializeRuntime() {
     await Promise.all(loads);
     return loads.length > 0;
   };
-  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources };
+  // Brotli DecompressionStream 이 없는 브라우저(Chrome 포함)는 엔진의 해제기로 WOFF2 를 읽는다.
+  const webFontDecoders = () => ({
+    brotli: (data: Uint8Array, outLength: number) => brotliDecompress(data, outLength),
+    ...streamWebFontDecoders(),
+  });
+  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources, webFontDecoders };
 }
 
 /** 문서와 엔진의 편집·선택 이력을 연결한다. */
@@ -148,6 +155,7 @@ export class HeemangAdapter {
   private loadFonts!: (requests: FontRequests) => Promise<void>;
   private refillOutlines!: () => Promise<boolean>;
   private sources!: Map<string, EngineFontReader>;
+  private webFontDecoders!: () => { brotli?: (data: Uint8Array, outLength: number) => Uint8Array | Promise<Uint8Array>; zlib?: (data: Uint8Array, outLength: number) => Promise<Uint8Array> };
   private fontsPrepared = false;
   private readonly canvasPaints = new Map<HTMLCanvasElement, { index: number; scale: number }>();
   private pictureFrame = 0;
@@ -205,7 +213,7 @@ export class HeemangAdapter {
       && (req.fallbacks ?? []).every(name => !this.hasAvailableFamily(name) || this.hasFamily(name));
     if (!satisfied) {
       const plan = resolveCanvasKitFontPlan(names.filter(name => !this.hasFamily(name)), options);
-      const decoder = streamWebFontDecoders();
+      const decoder = this.webFontDecoders();
       await Promise.all(plan.sources.map(source => {
         if (source.aliases.some(alias => this.hasFamily(alias))) return;
         let pending = this.webFonts.get(source.url);
@@ -692,73 +700,15 @@ export class HeemangAdapter {
   getShowParagraphMarks(): boolean { return false; }
   getClipEnabled(): boolean { return true; }
 
-  // ─── 에이전트 도구 접근 (src/agent/heemang/) ─────────────────────────────
-  // 에이전트 도구는 이 구역으로만 엔진 문서에 닿는다. 편집기 선택과 입력 경로는 건드리지 않고,
-  // 편집 뒤 무효화와 이력 번호만 이 어댑터의 편집 경로와 같이 맞춘다.
+  // ─── WasmBridge 위임부가 쓰는 저수준 접근 (src/core/hm/) ───────────────
 
-  /** 읽기용 문서. 문서를 바꾸는 호출은 아래 agent* 메서드로만 한다. */
-  agentDocument(): Doc { return this.document(); }
-
-  /**
-   * 에이전트 편집 한 번을 엔진 이력 한 단계로 적용한다. 바뀐 것이 없으면 null.
-   * selection 은 그 단계를 되돌리거나 다시 할 때 돌아갈 선택이다 (기본: 첫 편집 위치의 caret).
-   */
-  agentTransact(ops: readonly unknown[], selection?: Selection | null): Receipt | null {
-    this.requireEditable();
-    if (!ops.length) return null;
-    const doc = this.document();
-    const epoch = this.state().contentEpoch;
-    const at = selection === undefined ? this.agentEditSelection(ops) : selection;
-    const receipt: Receipt = JSON.parse(doc.transact(JSON.stringify({ expectedEpoch: epoch, ops, ...(at ? { selection: at } : {}) })));
-    if (receipt.contentEpoch === epoch) return null;
-    this.historyId = receipt.historyId;
-    this.invalidate(receipt);
-    return receipt;
-  }
-
-  agentCheckpoint(): number { return this.document().checkpoint(); }
-  agentReleaseCheckpoint(checkpoint: number): boolean { return this.doc?.releaseCheckpoint(checkpoint) ?? false; }
-
-  /** 체크포인트의 문서와 이력으로 돌아간다. */
-  agentRestore(checkpoint: number): Receipt {
-    const epoch = this.state().contentEpoch;
-    const receipt: Receipt = JSON.parse(this.document().restore(checkpoint));
-    // 내용이 같아도 restore 는 epoch 를 올린다 — checkpointed 와 같이 저장 후보를 유지한다.
-    if (this.serialized?.epoch === epoch) this.serialized = { ...this.serialized, epoch: receipt.contentEpoch };
-    this.historyId = receipt.historyId;
-    this.refreshLayout();
-    return receipt;
-  }
-
-  /**
-   * 검토용 이력 조작 (history·revertSteps·combineSteps). 이 엔진 빌드에 없으면
-   * EngineNotSupportedError. 문서를 바꾼 결과는 이 어댑터의 무효화를 거친다.
-   */
-  agentHistory(method: 'history' | 'revertSteps' | 'combineSteps', request?: unknown): string {
-    const doc = this.document() as Doc & Partial<Record<typeof method, (request?: string) => string>>;
-    const call = doc[method];
-    if (typeof call !== 'function') throw new EngineNotSupportedError(`엔진 이력 ${method}`);
-    if (method !== 'history') this.requireEditable();
-    const raw = call.call(doc, request === undefined ? undefined : JSON.stringify(request));
-    if (method === 'revertSteps') {
-      const result = JSON.parse(raw) as { receipt: Receipt };
-      this.historyId = result.receipt.historyId;
-      this.invalidate(result.receipt);
-    } else if (method === 'combineSteps') {
-      this.historyId = (JSON.parse(raw) as { historyId: number }).historyId;
-    }
-    return raw;
-  }
-
-  /** 에이전트 편집 단계의 되돌릴 선택 — 첫 op 위치의 caret. 위치가 없는 op 이면 null. */
-  private agentEditSelection(ops: readonly unknown[]): Selection | null {
-    const first = ops[0] as { at?: Address; from?: Address; table?: Omit<Address, 'offset'> } | undefined;
-    const at = first?.at ?? first?.from ?? (first?.table ? { ...first.table, offset: 0 } : null);
-    if (!at) return null;
-    // 표 같은 op 은 문단 첫 caret 에 둔다 — 구역·단 정의 컨트롤 안쪽 offset 은 caret 이 될 수 없다.
-    const para = this.paragraphs(at.section, at.steps, at.para, 1)[0];
-    const offset = para ? Math.min(Math.max(at.offset, para.caret[0]), para.caret[1]) : at.offset;
-    const caret = { ...copyAddress(at), offset };
-    return { anchor: caret, focus: copyAddress(caret), anchorAffinity: 'downstream', focusAffinity: 'downstream' };
-  }
+  /** 열린 엔진 문서. 없으면 던진다. */
+  hmDoc(): Doc { return this.document(); }
+  /** 문서들이 글꼴과 클립보드를 나눠 쓰는 엔진. */
+  hmEngine(): Engine { return this.engine; }
+  /** 브리지가 직접 낸 편집 영수증으로 바뀐 쪽의 packet만 버린다. */
+  applyReceipt(receipt: Receipt): void { this.invalidate(receipt); this.pageMetadata = null; }
+  /** 글꼴 준비 전에도 문서를 연 상태로 본다. 두 번째 브리지(버전·비교)는 공유 엔진의 글꼴로 조판한다. */
+  markFontsPrepared(): void { this.fontsPrepared = true; }
+  get fontsReady(): boolean { return this.fontsPrepared; }
 }

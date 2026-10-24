@@ -37,7 +37,6 @@ export class Toolbar {
   }
 
   private adjustLineSpacing(delta: number): void {
-    if (this.wasm.engineKind === 'heemang') { this.dispatcher.dispatch(delta > 0 ? 'format:line-spacing-increase' : 'format:line-spacing-decrease'); return; }
     const next = Math.max(5, Math.min(500, (Number(this.lsSelect.value) || 160) + delta));
     this.ensureLsOption(next);
     this.lsSelect.value = String(next);
@@ -45,7 +44,6 @@ export class Toolbar {
   }
 
   private adjustFontSize(delta: number): void {
-    if (this.wasm.engineKind === 'heemang') { this.dispatcher.dispatch(delta > 0 ? 'format:font-size-increase' : 'format:font-size-decrease'); return; }
     const next = Math.max(1, Math.min(4096, (parseFloat(this.fontSize.value) || 10) + delta));
     this.fontSize.value = String(next);
     this.eventBus.emit('format-char', { fontSize: Math.round(next * 100) } as CharProperties);
@@ -126,13 +124,6 @@ export class Toolbar {
     this.setupBulletPopup();
     this.setupStyleDropdown();
 
-    eventBus.on('heemang-selection-changed', () => {
-      // 현재 서식 query가 생길 때까지 이전 세션의 값을 현재 값으로 표시하지 않는다.
-      for (const button of [this.btnBold, this.btnItalic, this.btnUnderline, this.btnStrike, this.charfxBtn]) this.setActive(button, false);
-      this.fontSize.value = '';
-      this.fontName.selectedIndex = this.styleName.selectedIndex = this.lsSelect.selectedIndex = -1;
-      this.lastFontFamilies = undefined;
-    });
     eventBus.on('cursor-format-changed', (props) => {
       this.updateState(props as CharProperties);
     });
@@ -321,10 +312,6 @@ export class Toolbar {
     this.fontName.addEventListener('change', () => {
       const name = this.fontName.value;
       if (!name) return;
-      if (this.wasm.engineKind === 'heemang') {
-        this.eventBus.emit('format-char', { fontName: name });
-        return;
-      }
 
       // 대표 글꼴 세트 선택인지 확인
       const fontSet = this.findFontSetByName(name);
@@ -407,10 +394,7 @@ export class Toolbar {
     this.colorPicker.addEventListener('input', () => {
       const color = this.colorPicker.value;
       this.colorBar.style.background = color;
-      if (this.wasm.engineKind !== 'heemang') this.eventBus.emit('format-char', { textColor: color } as CharProperties);
-    });
-    this.colorPicker.addEventListener('change', () => {
-      if (this.wasm.engineKind === 'heemang') this.eventBus.emit('format-char', { textColor: this.colorPicker.value } as CharProperties);
+      this.eventBus.emit('format-char', { textColor: color } as CharProperties);
     });
   }
 
@@ -649,7 +633,6 @@ export class Toolbar {
 
   /** 문서 로드 시 스타일 목록으로 드롭다운을 채운다 */
   initStyleDropdown(): void {
-    if (this.wasm.engineKind === 'heemang') { this.styleName.replaceChildren(); this.styleDropdownInitialized = false; return; }
     try {
       const styles = this.wasm.getStyleList();
       this.styleName.replaceChildren();

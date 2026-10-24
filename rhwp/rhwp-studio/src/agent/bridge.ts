@@ -29,7 +29,6 @@ import {
 } from './tool-executor.ts';
 import { readFileSourceResponse, type FileDocumentSource, type ForeignDocumentBytes } from './foreign-documents.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
-import { agentEngineFor } from './heemang/index.ts';
 import { PendingOverlayRenderer, type JumpFlashTarget } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
@@ -1800,22 +1799,20 @@ export class AgentBridgeImpl implements AgentBridge {
       // 사용자가 보고 있는 문서만 커서·선택이 있다.
       getUserSelectionContext: () => (this.view ? this.editor.getUserSelectionContext?.() ?? null : null),
     };
-    // HeemangEngine 문서면 에이전트 도구용 엔진으로 감싼다 (agent/heemang/).
-    const wasm = agentEngineFor(deps.wasm);
     // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
     // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
     this.revision = new RevisionTracker(deps.eventBus, {
-      documentInstance: () => wasm.documentInstance,
+      documentInstance: () => deps.wasm.documentInstance,
       initialRevision: timeSeededRevision(),
     });
     this.overlay = new PendingOverlayRenderer({
       getCaretPosition: () => (this.view ? this.editor.getCursorPosition() : null),
       canvasView: this.view?.canvasView ?? null,
-      wasm,
+      wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
     this.pendingEdits = new PendingEditManager({
-      wasm,
+      wasm: deps.wasm,
       eventBus: deps.eventBus,
       editor: this.editorHost,
       overlay: this.overlay,
@@ -1823,7 +1820,7 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     this.editFollow = new AgentEditFollow({
       canvasView: this.view?.canvasView ?? null,
-      wasm,
+      wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
     // 검토 대기/승인/거절/무효화 뒤에는 대기 중인 편집 위치 이동을 버린다.
@@ -1841,7 +1838,7 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     this.ownPendingReview = deps.foreignDocuments?.ownPendingReview;
     this.executor = new AgentToolExecutor({
-      wasm,
+      wasm: deps.wasm,
       editor: this.editorHost,
       documentState: deps.documentState,
       revision: this.revision,
@@ -1849,7 +1846,7 @@ export class AgentBridgeImpl implements AgentBridge {
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
       loadFileSource: (source) => this.downloadFileSource(source),
       foreignDocuments: deps.foreignDocuments,
-      getDocumentSourcePath: () => getNativeFileSourcePath(wasm.currentFileHandle),
+      getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
       getDocumentWorktree: deps.getDocumentWorktree,
       loadProjectFile: async (projectId, itemId) => (
@@ -1866,9 +1863,9 @@ export class AgentBridgeImpl implements AgentBridge {
       read: (args) => this.executor.structureSnapshot(args),
       documentUnchangedSince: (revision) => this.executor.documentUnchangedSince(revision),
       revision: () => this.revision.revision,
-      pageCount: () => wasm.pageCount,
+      pageCount: () => deps.wasm.pageCount,
       activePage: () => this.activePageIndex,
-      documentInstance: () => wasm.documentInstance,
+      documentInstance: () => deps.wasm.documentInstance,
     });
 
     this.options = opts;

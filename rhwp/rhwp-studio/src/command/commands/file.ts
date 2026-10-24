@@ -1,4 +1,3 @@
-import { EngineNotSupportedError } from '@/core/engine-support';
 import type { CommandDef, CommandServices } from '../types';
 import { PageSetupDialog } from '@/ui/page-setup-dialog';
 import { AboutDialog } from '@/ui/about-dialog';
@@ -309,7 +308,6 @@ function flushDeferredPaginationBeforeExplicitOutput(
   services: CommandServices,
   reason: string,
 ): void {
-  if (services.wasm.engineKind === 'heemang') return;
   const inputHandler = services.getInputHandler();
   if (!inputHandler) return;
   inputHandler.flushDeferredPaginationIfNeeded(reason);
@@ -320,10 +318,6 @@ function flushDeferredPaginationBeforeExplicitOutput(
 
 async function chooseSaveAsFormat(services: CommandServices): Promise<SaveFormat | null> {
   const sourceFormat = services.wasm.getSourceFormat();
-  if (services.wasm.engineKind === 'heemang') {
-    if (sourceFormat !== 'hwp' && sourceFormat !== 'hwpx') throw new EngineNotSupportedError('원본 형식 저장');
-    return sourceFormat;
-  }
   if (sourceFormat === 'hml') {
     const context = getHmlSaveContext(services);
     return showHmlSaveFormatDialog(
@@ -401,7 +395,7 @@ function completeHandleSave(
   services.wasm.currentFileHandle = result.handle;
   services.wasm.fileName = result.fileName;
   // 쓰는 동안 들어온 편집은 파일에 없다. 그 편집이 있으면 dirty 를 유지한다.
-  markOutputSaved(services, revision, reason);
+  services.documentState.markCleanIfUnchanged(revision, reason);
   services.eventBus.emit('document-context-changed');
   services.eventBus.emit('document-saved', {
     reason,
@@ -423,16 +417,6 @@ function completeHandleSave(
       savedBytes: saved?.bytes ?? null,
     });
   }
-}
-
-function markOutputSaved(
-  services: Pick<CommandServices, 'wasm' | 'documentState'>,
-  revision: number,
-  reason: 'save' | 'save-as',
-): void {
-  if (services.documentState.captureRevision() !== revision) return;
-  if (services.wasm.engineKind === 'heemang' && !services.wasm.viewer!.markSaved()) return;
-  services.documentState.markCleanIfUnchanged(revision, reason);
 }
 
 interface SavedFileContent {
@@ -525,8 +509,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
     downloadBlob(blob, downloadName);
     if (managed) return 'saved';
     services.wasm.fileName = downloadName;
-    if (services.wasm.engineKind === 'heemang') services.wasm.currentFileHandle = null;
-    markOutputSaved(services, revision, 'save-as');
+    services.documentState.markCleanIfUnchanged(revision, 'save-as');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
       reason: 'save-as',
@@ -542,7 +525,6 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
 
 async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
-    if (services.wasm.engineKind === 'heemang') throw new EngineNotSupportedError('버전 기록 저장');
     assertCanSaveDocument(services);
     if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
     assertCanSaveDocument(services);
@@ -653,11 +635,6 @@ function reportSaveError(scope: string, error: unknown): void {
 }
 
 function assertCanSaveDocument(services: CommandServices): void {
-  if (services.wasm.engineKind === 'heemang' && (services.isManagedWorktree?.()
-    || isPortableHistoryFileName(services.wasm.fileName)
-    || isPortableHistoryFileName(services.wasm.currentFileHandle?.name ?? ''))) {
-    throw new EngineNotSupportedError('버전 기록 저장');
-  }
   if (services.canSaveDocument?.() === false) {
     throw new Error('읽기 전용 문서는 저장할 수 없습니다. 편집 중인 창에서 저장하세요.');
   }
@@ -673,7 +650,6 @@ export async function saveToCurrentFileQuietly(
   services: Pick<CommandServices, 'wasm' | 'documentState' | 'eventBus'>,
   validateTarget?: CommandServices['validateSaveHandle'],
 ): Promise<'saved' | 'skipped' | 'failed'> {
-  if (services.wasm.engineKind === 'heemang') return 'skipped';
   const handle = services.wasm.currentFileHandle;
   if (!handle || services.wasm.isNewDocument) return 'skipped';
   if (isPortableHistoryFileName(services.wasm.fileName) || isPortableHistoryFileName(handle.name ?? '')) return 'skipped';
@@ -782,7 +758,7 @@ async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCu
     const downloadName = await fallbackNameForCurrentSave(services, target);
     if (!downloadName) return 'cancelled';
     downloadBlob(blob, downloadName);
-    markOutputSaved(services, revision, 'save');
+    services.documentState.markCleanIfUnchanged(revision, 'save');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
       reason: 'save',
