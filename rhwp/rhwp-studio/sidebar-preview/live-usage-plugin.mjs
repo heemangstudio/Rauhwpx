@@ -58,7 +58,8 @@ export function liveUsagePlugin(hubUrl = process.env.RHWP_SIDEBAR_LIVE_HUB) {
     const ws = await connect();
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(requestId); reject(new Error('Live usage request timed out.')); }, 60000);
+      const timeout = frame.type === 'token-usage-request' ? 120000 : 60000;
+      const timer = setTimeout(() => { pending.delete(requestId); reject(new Error('Live usage request timed out.')); }, timeout);
       pending.set(requestId, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
@@ -70,6 +71,7 @@ export function liveUsagePlugin(hubUrl = process.env.RHWP_SIDEBAR_LIVE_HUB) {
     name: 'sidebar-live-usage',
     configureServer(server) {
       server.middlewares.use('/__sidebar-live-usage', (req, res) => {
+        let actionType = 'usage-request';
         void (async () => {
           const origin = `http://${req.headers.host}`;
           if (req.method !== 'POST' || req.headers['x-sidebar-audit'] !== '1'
@@ -84,8 +86,12 @@ export function liveUsagePlugin(hubUrl = process.env.RHWP_SIDEBAR_LIVE_HUB) {
             if (body.length > 4096) throw new Error('Invalid usage request.');
           }
           const input = JSON.parse(body);
+          actionType = input.type;
           let frame;
           if (input.type === 'usage-request') frame = { type: input.type, refresh: input.refresh === true };
+          else if (input.type === 'token-usage-request' && [7, 30, 90].includes(input.days)) frame = {
+            type: input.type, days: input.days, refresh: input.refresh === true,
+          };
           else if (input.type === 'codex-reset-consume') frame = {
             type: input.type, idempotencyKey: input.idempotencyKey, accountKey: input.accountKey,
           };
@@ -95,7 +101,9 @@ export function liveUsagePlugin(hubUrl = process.env.RHWP_SIDEBAR_LIVE_HUB) {
           res.end(JSON.stringify(result));
         })().catch((error) => {
           if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify({ type: 'usage-error', message: error.message }));
+          const type = actionType === 'token-usage-request' ? 'token-usage-error'
+            : actionType === 'codex-reset-consume' ? 'codex-reset-error' : 'usage-error';
+          res.end(JSON.stringify({ type, message: error.message }));
         });
       });
       server.httpServer?.once('close', () => {

@@ -11,7 +11,7 @@ import {
 import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
-import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
+import { requestLiveUsage, requestLiveTokenUsage, consumeLiveCodexReset } from './live-usage.ts';
 import { previewTokenUsage } from './mock-token-usage.ts';
 import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
@@ -1118,6 +1118,7 @@ export function createMockBridge(
     },
     // `?tokens=empty|partial|fail|slow` — 토큰 보기의 빈 기록, 일부 실패, 응답 없음, 긴 첫 조회.
     requestTokenUsage: async (days, refresh) => {
+      if (liveUsage) return requestLiveTokenUsage(days, refresh);
       const mode = new URLSearchParams(location.search).get('tokens');
       const wait = mode === 'slow' && !tokenUsageScanned ? 60_000 : refresh ? 700 : tokenUsageScanned ? 160 : 900;
       tokenUsageScanned = true;
