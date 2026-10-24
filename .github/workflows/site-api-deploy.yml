@@ -3,7 +3,7 @@ name: Deploy site-api to Railway
 # A merge to main that touches site-api/ tests it, uploads it to the Railway
 # service `rau-credits` (project token in the RAILWAY_TOKEN repo secret), then
 # checks the live license endpoints are configured. It first waits for the email images
-# that the same merge deploys to GitHub Pages.
+# that the same merge deploys to the website.
 on:
   push:
     branches:
@@ -51,11 +51,11 @@ jobs:
             exit 1
           fi
 
-      # Emails link images on GitHub Pages (website/assets/email/), which pages.yml deploys from
+      # Emails link images on the website (website/assets/email/), which website-deploy.yml deploys from
       # the same merge in parallel. Hold the server deploy until every image is live with this
       # commit's bytes, so no email goes out pointing at a missing or stale image. The query
-      # string skips the Pages CDN cache (max-age=600).
-      - name: Wait for the email images on GitHub Pages
+      # string skips any cached copy (max-age=600).
+      - name: Wait for the email images on the website
         run: |
           set -eu
           for file in website/assets/email/*.png; do
@@ -69,7 +69,7 @@ jobs:
               sleep 15
             done
             if [ "$got" != "$want" ]; then
-              echo "::error::$url did not match website/assets/email/$(basename "$file") after 15 minutes. Check the 'Deploy website to GitHub Pages' run, then re-run this workflow."
+              echo "::error::$url did not match website/assets/email/$(basename "$file") after 15 minutes. Check the 'Deploy website to Railway' run, then re-run this workflow."
               exit 1
             fi
             echo "$url is live"

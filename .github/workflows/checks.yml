@@ -2,7 +2,7 @@ name: Repository checks
 
 # Each job runs only when its paths changed (scripts/ci-changes.mjs).
 # Browser flows and production dependency audits run nightly (nightly.yml).
-# Website checks run before the Pages deploy (pages.yml); publish docs are checked at release.
+# Website checks run before the website deploy (website-deploy.yml); publish docs are checked at release.
 on:
   pull_request:
   workflow_dispatch:

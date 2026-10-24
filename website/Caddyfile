@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+}
+
+:{$PORT:8080} {
+	@www host www.heemangstudios.com
+	redir @www https://heemangstudios.com{uri} permanent
+
+	root * /srv
+	encode zstd gzip
+
+	# Serve /pricing from pricing.html, as GitHub Pages did.
+	try_files {path} {path}.html {path}/index.html
+	file_server
+
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=600"
+
+	handle_errors 404 {
+		rewrite * /404.html
+		file_server
+	}
+}

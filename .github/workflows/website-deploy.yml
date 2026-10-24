@@ -1,0 +1,69 @@
+name: Deploy website to Railway
+
+# A merge to main that touches website/ checks it, then uploads it to the Railway
+# service `website` (project rau-credits, token in the RAILWAY_TOKEN repo secret),
+# which serves heemangstudios.com with Caddy.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - website/**
+      - .github/workflows/website-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - name: Check out website source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check local links and assets
+        run: python3 website/check.py
+
+      - name: Require the Railway project token
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN is not set. Create a project token in Railway (project rau-credits > Settings > Tokens, environment production) and add it as a repository secret."
+            exit 1
+          fi
+
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g @railway/cli@5.68.0
+          railway up website --path-as-root --service website --environment production --ci \
+            --message "main ${GITHUB_SHA::12}"
+
+      - name: Verify the live site
+        run: |
+          set -eu
+          # The old deployment serves until the new one is up. Wait for this commit's homepage.
+          want=$(sha256sum website/index.html | cut -d' ' -f1)
+          got=missing
+          for i in $(seq 1 40); do
+            got=$(curl -fsS "https://heemangstudios.com/?v=${GITHUB_SHA::12}" | sha256sum | cut -d' ' -f1 || true)
+            if [ "$got" = "$want" ]; then break; fi
+            echo "homepage not live with this commit yet, waiting"
+            sleep 15
+          done
+          if [ "$got" != "$want" ]; then
+            echo "::error::https://heemangstudios.com/ did not serve this commit's index.html after 10 minutes."
+            exit 1
+          fi
+          curl -fsS -o /dev/null https://heemangstudios.com/pricing

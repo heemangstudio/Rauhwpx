@@ -2,7 +2,7 @@
  * Shared layout for every outgoing email: banner, content card, CTA button, footer.
  * Table layout + inline CSS so it survives Gmail, Apple Mail and Outlook.
  * Image URLs must be https PNGs (Gmail drops SVG and data: URIs) or a `cid:` reference.
- * The PNGs live in website/assets/email/ and are served by GitHub Pages.
+ * The PNGs live in website/assets/email/ and are served by the website (heemangstudios.com).
  */
 
 export const EMAIL_ASSET_BASE = 'https://heemangstudios.com/assets/email/';
