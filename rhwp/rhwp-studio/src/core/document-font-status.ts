@@ -187,6 +187,3 @@ export function analyzeDocumentFonts(
   };
 }
 
-export function shouldPromptLocalFontAccess(report: DocumentFontStatusReport): boolean {
-  return report.shouldPromptLocalAccess;
-}
