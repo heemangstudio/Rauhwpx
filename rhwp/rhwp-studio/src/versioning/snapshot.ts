@@ -290,33 +290,3 @@ export function analyzeVersionDiff(
   }
   return { stats, titleSummary: { totals, items } };
 }
-
-export function calculateVersionStats(
-  before: CompareDocumentSnapshot | null,
-  after: CompareDocumentSnapshot,
-): VersionStats {
-  return analyzeVersionDiff(before, after).stats;
-}
-
-export function compactVersionDiff(
-  before: CompareDocumentSnapshot | null,
-  after: CompareDocumentSnapshot,
-): string[] {
-  if (!before) return ['문서 버전 기록 시작'];
-  return compareSnapshots(before, after, VERSION_COMPARE_OPTIONS).diffItems
-    .slice(0, 12)
-    .map((item) => {
-      const location = item.path.paragraph === undefined
-        ? `구역 ${item.path.section + 1}`
-        : `구역 ${item.path.section + 1}, 문단 ${item.path.paragraph + 1}`;
-      const preview = item.rightPreview || item.leftPreview;
-      return `${item.severity} ${item.kind} · ${location} · ${item.title}${preview ? ` · ${preview}` : ''}`;
-    });
-}
-
-export function buildCheckpointTitleSummary(
-  before: CompareDocumentSnapshot | null,
-  after: CompareDocumentSnapshot,
-): CheckpointTitleSummary {
-  return analyzeVersionDiff(before, after).titleSummary;
-}

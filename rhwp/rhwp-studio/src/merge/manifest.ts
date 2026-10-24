@@ -9,7 +9,6 @@ import {
   type VersionMergeManifest,
 } from '../versioning/types.ts';
 
-export const MERGE_ANALYSIS_VERSION = 1;
 export const MERGE_MANIFEST_VERSION = 3;
 
 function propertyHash(value: unknown): `blake3:${string}` {

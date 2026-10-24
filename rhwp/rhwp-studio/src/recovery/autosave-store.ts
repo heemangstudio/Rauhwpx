@@ -654,13 +654,7 @@ export async function deleteAutosaveDraftBase(id: string): Promise<void> {
   );
 }
 
-/** 복구 가능한(죽은 이전 세션 소유) draft만 지운다. */
-export async function clearRecoverableAutosaveDrafts(options: RecoverableAutosaveOptions = {}) {
-  const drafts = await listRecoverableAutosaveDrafts(options);
-  await Promise.all(drafts.map((draft) => deleteAutosaveDraft(draft.id)));
-}
-
-/** 명시적인 전체 초기화 API. 일반 복구 UI는 clearRecoverableAutosaveDrafts를 사용한다. */
+/** 명시적인 전체 초기화 API. */
 export async function clearAutosaveDrafts(): Promise<void> {
   memory.clear();
   memoryBases.clear();
