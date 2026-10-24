@@ -9,6 +9,7 @@ import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+import { guardHeemangEngineCalls } from './engine-trap';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
@@ -29,8 +30,9 @@ const copyKey = (name: string, size: number) => `${name.split(/[\\/]/).pop()!.to
 const fontFile = (b: Uint8Array): FontFileSource => ({ size: b.length, read: (o: number, n: number) => b.subarray(o, o + n) });
 
 async function initializeRuntime() {
-  const { default: init, Blake3Hasher, Engine, fileFamilyNames, capabilities } = await import('../../vendor/hm-wasm/hm_wasm');
+  const { default: init, Blake3Hasher, Doc, Engine, fileFamilyNames, capabilities, brotliDecompress } = await import('../../vendor/hm-wasm/hm_wasm');
   const { memory } = await init();
+  guardHeemangEngineCalls(Doc.prototype);
   setBlake3WasmApi(() => new Blake3Hasher());
   const contract = JSON.parse(capabilities()) as { contract: number; packet: number };
   if (contract.contract !== 1 || contract.packet !== 1) throw new EngineNotSupportedError('hm-wasm 계약 버전');
@@ -131,7 +133,12 @@ async function initializeRuntime() {
     await Promise.all(loads);
     return loads.length > 0;
   };
-  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources };
+  // Brotli DecompressionStream 이 없는 브라우저(Chrome 포함)는 엔진의 해제기로 WOFF2 를 읽는다.
+  const webFontDecoders = () => ({
+    brotli: (data: Uint8Array, outLength: number) => brotliDecompress(data, outLength),
+    ...streamWebFontDecoders(),
+  });
+  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources, webFontDecoders };
 }
 
 /** 문서와 엔진의 편집·선택 이력을 연결한다. */
@@ -148,6 +155,7 @@ export class HeemangAdapter {
   private loadFonts!: (requests: FontRequests) => Promise<void>;
   private refillOutlines!: () => Promise<boolean>;
   private sources!: Map<string, EngineFontReader>;
+  private webFontDecoders!: () => { brotli?: (data: Uint8Array, outLength: number) => Uint8Array | Promise<Uint8Array>; zlib?: (data: Uint8Array, outLength: number) => Promise<Uint8Array> };
   private fontsPrepared = false;
   private readonly canvasPaints = new Map<HTMLCanvasElement, { index: number; scale: number }>();
   private pictureFrame = 0;
@@ -205,7 +213,7 @@ export class HeemangAdapter {
       && (req.fallbacks ?? []).every(name => !this.hasAvailableFamily(name) || this.hasFamily(name));
     if (!satisfied) {
       const plan = resolveCanvasKitFontPlan(names.filter(name => !this.hasFamily(name)), options);
-      const decoder = streamWebFontDecoders();
+      const decoder = this.webFontDecoders();
       await Promise.all(plan.sources.map(source => {
         if (source.aliases.some(alias => this.hasFamily(alias))) return;
         let pending = this.webFonts.get(source.url);
@@ -691,4 +699,16 @@ export class HeemangAdapter {
   getShowControlCodes(): boolean { return false; }
   getShowParagraphMarks(): boolean { return false; }
   getClipEnabled(): boolean { return true; }
+
+  // ─── WasmBridge 위임부가 쓰는 저수준 접근 (src/core/hm/) ───────────────
+
+  /** 열린 엔진 문서. 없으면 던진다. */
+  hmDoc(): Doc { return this.document(); }
+  /** 문서들이 글꼴과 클립보드를 나눠 쓰는 엔진. */
+  hmEngine(): Engine { return this.engine; }
+  /** 브리지가 직접 낸 편집 영수증으로 바뀐 쪽의 packet만 버린다. */
+  applyReceipt(receipt: Receipt): void { this.invalidate(receipt); this.pageMetadata = null; }
+  /** 글꼴 준비 전에도 문서를 연 상태로 본다. 두 번째 브리지(버전·비교)는 공유 엔진의 글꼴로 조판한다. */
+  markFontsPrepared(): void { this.fontsPrepared = true; }
+  get fontsReady(): boolean { return this.fontsPrepared; }
 }

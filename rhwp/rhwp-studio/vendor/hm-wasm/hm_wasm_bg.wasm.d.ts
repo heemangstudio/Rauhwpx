@@ -8,6 +8,7 @@ export const __wbg_engineerror_free: (a: number, b: number) => void;
 export const blake3hasher_finalizeHex: (a: number) => [number, number];
 export const blake3hasher_new: () => number;
 export const blake3hasher_update: (a: number, b: number, c: number) => void;
+export const brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
 export const capabilities: () => [number, number];
 export const doc_cancelComposition: (a: number) => [number, number, number, number];
 export const doc_checkpoint: (a: number) => [number, number, number];

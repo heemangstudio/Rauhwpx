@@ -1107,6 +1107,26 @@ export class EngineError {
 if (Symbol.dispose) EngineError.prototype[Symbol.dispose] = EngineError.prototype.free;
 
 /**
+ * Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+ * most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+ * web fonts through this.
+ * @param {Uint8Array} bytes
+ * @param {number} max
+ * @returns {Uint8Array}
+ */
+export function brotliDecompress(bytes, max) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.brotliDecompress(ptr0, len0, max);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
  * What this build offers, as JSON (`Capabilities`).
  * @returns {string}
  */
