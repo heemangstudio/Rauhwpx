@@ -98,7 +98,7 @@ function renderInWorker(bytes: Uint8Array): Promise<ThumbnailWorkerResponse | nu
     target.addEventListener('message', onMessage);
     target.addEventListener('error', onError);
     const copy = bytes.slice();
-    target.postMessage({ id, bytes: copy } satisfies ThumbnailWorkerRequest, [copy.buffer]);
+    target.postMessage({ id, bytes: copy, baseUrl: location.href } satisfies ThumbnailWorkerRequest, [copy.buffer]);
   });
 }
 
