@@ -133,10 +133,10 @@ export class HeemangAgentCore {
   refreshLayout(): void { this.adapter.refreshLayout(); }
 
   capabilities(): Capabilities | null {
-    if (this.cachedCapabilities === undefined) {
+    if (!this.cachedCapabilities) {
       try { this.cachedCapabilities = this.readCapabilities(); } catch { this.cachedCapabilities = null; }
     }
-    return this.cachedCapabilities;
+    return this.cachedCapabilities ?? null;
   }
 
   /** 엔진 빌드가 그 편집 op 을 갖췄는지 확인한다. 없으면 ENGINE_NOT_SUPPORTED. */
