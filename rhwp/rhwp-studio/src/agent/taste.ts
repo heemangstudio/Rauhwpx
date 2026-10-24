@@ -5,7 +5,7 @@
  * 채팅의 구분선으로 남기고, 구분선에서 항목별로 되돌린다(taste-undo). 저장소 변경 목록(changes)은
  * 읽지 않고 그대로 들고 있다가 되돌릴 때 돌려보낸다.
  */
-import type { TasteLearnItem, TasteLearned, TasteSettings, TasteUndoResult } from './types.ts';
+import type { TasteLearnItem, TasteLearned, TasteProvider, TasteSettings, TasteUndoResult } from './types.ts';
 
 /** 사용자에게 보이는 취향 학습의 이름. 화면 문구는 모두 이 값을 쓴다. */
 export const RAU_TASTE_NAME = 'Rau-0.1';
@@ -64,8 +64,26 @@ export function readTasteUndoResult(msg: Record<string, unknown>): TasteUndoResu
   };
 }
 
+const TASTE_PROVIDERS: readonly TasteProvider[] = ['auto', 'claude', 'codex', 'pi'];
+
+/**
+ * 공급자를 고르고 모델·추론을 비웠을 때 학습기가 쓰는 값. 허브 taste-learner.mjs 의 TASTE_ROUTES 와 같다.
+ */
+export const TASTE_DEFAULT_ROUTES: Readonly<Record<Exclude<TasteProvider, 'auto'>, { model: string; effort: string }>> = {
+  claude: { model: 'claude-haiku-5-5', effort: 'medium' },
+  codex: { model: 'gpt-6-luna', effort: 'medium' },
+  pi: { model: 'deepseek/deepseek-v4.1-flash', effort: 'max' },
+};
+
+/** 학습기 한 번짜리 호출이 받는 추론 강도 (허브 TASTE_EFFORTS). */
+export const TASTE_EFFORTS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+/** 옛 허브는 enabled 만 보낸다 — 그때는 자동 경로다. */
 export function readTasteSettings(value: unknown): TasteSettings | null {
-  return isRecord(value) && typeof value.enabled === 'boolean' ? { enabled: value.enabled } : null;
+  if (!isRecord(value) || typeof value.enabled !== 'boolean') return null;
+  const provider = TASTE_PROVIDERS.find((entry) => entry === value.provider) ?? 'auto';
+  const text = (field: unknown) => (provider !== 'auto' && typeof field === 'string' && field ? field : null);
+  return { enabled: value.enabled, provider, model: text(value.model), effort: text(value.effort) };
 }
 
 /** 구분선 이름 — `Rau-0.1 3가지 배움`. */

@@ -9,7 +9,7 @@ import type { SidebarBridge } from '../agent/bridge.ts';
 import { RAU_TASTE_NAME } from '../agent/taste.ts';
 import type * as T from '../agent/types.ts';
 
-const settings: T.TasteSettings = { enabled: true };
+const settings: T.TasteSettings = { enabled: true, provider: 'auto', model: null, effort: null };
 const sinks = new Set<(event: T.SidebarEvent) => void>();
 const skipped = new Set<string>();
 /** 받은 되돌리기 요청 — 미리보기 확인이 읽는다. */
@@ -37,7 +37,16 @@ export function sampleTasteDraft(instructions: T.AgentInstructionsStatus): T.Age
   };
 }
 
-export type MockTaste = Pick<SidebarBridge, 'requestTasteSettings' | 'setTasteEnabled' | 'undoTaste'>;
+export type MockTaste = Pick<SidebarBridge, 'requestTasteSettings' | 'setTasteSettings' | 'undoTaste'>;
+
+/** 허브 TasteSettingsStore 처럼 바꿀 칸만 얹는다. 공급자를 바꾸면 모델·추론을 비우고, 자동은 늘 비운다. */
+function mergeSettings(patch: Partial<T.TasteSettings>): void {
+  const providerChanged = patch.provider !== undefined && patch.provider !== settings.provider;
+  Object.assign(settings, Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)));
+  if (providerChanged && patch.model === undefined) settings.model = null;
+  if (providerChanged && patch.effort === undefined) settings.effort = null;
+  if (settings.provider === 'auto') Object.assign(settings, { model: null, effort: null });
+}
 
 /** 모의 브리지 하나의 취향 학습 메서드. emit 은 이 브리지의 이벤트 구독자에게 보낸다. */
 export function createMockTaste(emit: (event: T.SidebarEvent) => void): MockTaste {
@@ -45,8 +54,8 @@ export function createMockTaste(emit: (event: T.SidebarEvent) => void): MockTast
   const settle = <V>(value: V) => new Promise<V>((done) => setTimeout(() => done(value), 30));
   return {
     requestTasteSettings: () => settle({ ...settings }),
-    setTasteEnabled: (enabled) => {
-      settings.enabled = enabled;
+    setTasteSettings: (patch) => {
+      mergeSettings(patch);
       const event: T.SidebarEvent = { type: 'taste-settings', settings: { ...settings } };
       setTimeout(() => sinks.forEach((sink) => sink(event)), 0);
       return settle({ ...settings });

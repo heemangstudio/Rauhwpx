@@ -59,7 +59,7 @@ import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
-import { RAU_TASTE_NAME } from '../../agent/taste.ts';
+import { createTasteSettingsSection } from './settings-taste.ts';
 import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
@@ -470,6 +470,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
+  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다. renderPi 가 부르므로 먼저 만든다.
+  const tasteSection = createTasteSettingsSection({
+    bridge,
+    piStatus: () => piStatus,
+    connectOpenRouterKey: (key) => connectOpenRouterKey(key),
+    isDisposed: () => disposed,
+  });
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
   /** 한 번 실패한 목록을 렌더마다 다시 부르지 않게 막는다. */
@@ -1318,34 +1325,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   syncNotificationsSection();
   // 자동 버그 수정 — 데스크톱만. 바꾸는 즉시 저장한다.
   const autofixSection = createAutofixSettingsSection();
-  // 취향 학습(Rau-0.1) — 허브가 정본이다. 알림·Git 전환처럼 바꾸는 즉시 저장하고 적용 초안을 거치지 않는다.
-  // 허브가 답하기 전에는 기본값(켜짐)을 보이고 잠가 둔다.
-  const tasteSection = createSection(RAU_TASTE_NAME);
-  const tasteLearning = createToggleRow('대화에서 배우기');
-  tasteLearning.input.checked = true;
-  tasteLearning.input.disabled = true;
-  tasteSection.body.append(tasteLearning.root);
-  let tasteRequest = 0;
-  const acceptTasteSettings = (settings: { enabled: boolean } | null) => {
-    tasteLearning.input.disabled = settings === null;
-    if (settings) tasteLearning.input.checked = settings.enabled;
-  };
-  const refreshTasteSettings = async () => {
-    const seq = ++tasteRequest;
-    const settings = await bridge.requestTasteSettings();
-    if (!disposed && seq === tasteRequest) acceptTasteSettings(settings);
-  };
-  tasteLearning.input.addEventListener('change', async () => {
-    const enabled = tasteLearning.input.checked;
-    const seq = ++tasteRequest;
-    tasteLearning.input.disabled = true;
-    const settings = await bridge.setTasteEnabled(enabled);
-    if (disposed || seq !== tasteRequest) return;
-    // 저장하지 못했으면 허브의 값으로 되돌린다.
-    if (settings) acceptTasteSettings(settings);
-    else void refreshTasteSettings();
-  });
-
   instructionsEditor.addEventListener('input', () => {
     instructionsDirty = instructionsEditor.value !== (agentInstructions?.content ?? '');
     instructionsMessage = '';
@@ -3139,6 +3118,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
+    tasteSection.render();
     piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
@@ -3270,27 +3250,38 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     void refreshProviders(true);
   }
 
-  async function submitPiKey(): Promise<void> {
-    const key = piKeyInput.input.value.trim();
-    if (!key || piBusy) return;
+  /** OpenRouter 키 저장 — Pi 설정의 키 칸과 Rau-0.1 의 키 칸이 함께 쓴다. 성공하면 true. */
+  async function connectOpenRouterKey(key: string): Promise<boolean> {
+    if (!key || piBusy) return false;
     piBusy = true;
     piMessage = '';
     renderPi();
     const status = await bridge.setPiKey(key);
-    if (disposed) return;
+    if (disposed) return false;
     piBusy = false;
-    piKeyInput.input.value = '';
     if (status) {
       piStatus = status;
       // 새 키로 목록을 다시 받아 본다.
       piCatalogTried = false;
       piStepOverride = null;
-      openPiModelCatalog();
     } else if (!piMessage) {
       piMessage = '키 확인 실패';
     }
     renderPi();
     syncPrefsInputs();
+    return status !== null;
+  }
+
+  async function submitPiKey(): Promise<void> {
+    const key = piKeyInput.input.value.trim();
+    if (!key || piBusy) return;
+    const connected = await connectOpenRouterKey(key);
+    if (disposed) return;
+    piKeyInput.input.value = '';
+    if (connected) {
+      openPiModelCatalog();
+      renderPi();
+    }
   }
 
   async function loadPiCatalog(refresh: boolean): Promise<void> {
@@ -3566,7 +3557,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       renderPi();
       void refreshProviders(false);
       void refreshAgentInstructions(false);
-      void refreshTasteSettings();
+      void tasteSection.refresh();
       void refreshUsage();
       void refreshPiStatus();
       void refreshSetupStatuses();
@@ -3601,8 +3592,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       switch (ev.type) {
         case 'taste-settings':
           // 다른 창에서 바꿨거나 요청의 답이다. 고르는 중인 값은 그 요청의 답이 덮는다.
-          tasteRequest += 1;
-          acceptTasteSettings(ev.settings);
+          tasteSection.accept(ev.settings);
           break;
         case 'connection':
           connectionState = ev.state;

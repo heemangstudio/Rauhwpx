@@ -1,0 +1,27 @@
+/* 설정 → AI 의 Rau-0.1. 줄은 설정의 컨트롤 줄(.ag-settings-control-row)과 같다. */
+
+.ag-taste-setting-row .ag-taste-setting-select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 140px;
+  max-width: 60%;
+}
+
+.ag-taste-key-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ag-taste-key-row .ag-settings-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  height: 30px;
+}
+
+.ag-taste-key-row .ag-settings-cliproxy-error {
+  flex-basis: 100%;
+}
+
+.ag-taste-key-row .ag-settings-cliproxy-error[hidden] {
+  display: none;
+}

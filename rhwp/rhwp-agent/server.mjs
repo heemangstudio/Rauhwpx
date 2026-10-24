@@ -4795,6 +4795,8 @@ async function tasteLearnerRoutes(context) {
     codexQuota: providerLimits.snapshot().codex,
     giftMode: piManager.access().mode === 'gift',
     resolveModel: { pi: resolvePiTitleModel },
+    // 고른 OpenRouter 경로가 쓰는 내 키 — 선물 리스는 넘기지 않는다.
+    ownOpenRouter: { apiKey: () => piManager.ownApiKey() },
     deps,
   };
 }
@@ -6386,7 +6388,10 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'taste-settings-set': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void tasteSettings.set({ enabled: msg.enabled }).then(() => {
+      const patch = Object.fromEntries(['enabled', 'provider', 'model', 'effort']
+        .filter((field) => msg[field] !== undefined)
+        .map((field) => [field, msg[field]]));
+      void tasteSettings.set(patch).then(() => {
         sendTasteSettings(sock, requestId);
         for (const other of sessions.values()) if (other !== record) sendTasteSettings(other.studioSocket, null);
       }).catch((error) => sendTasteSettings(sock, requestId, {
@@ -7086,7 +7091,11 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'pi-catalog-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void piManager.catalog(msg.refresh === true)
+      // own: 선물 모드에서도 내 키의 OpenRouter 카탈로그 (Rau-0.1 의 OpenRouter 모델 고르기).
+      const catalog = msg.own === true
+        ? piRouter.catalog(msg.refresh === true, piManager.ownApiKey())
+        : piManager.catalog(msg.refresh === true);
+      void catalog
         .then((models) => replyToStudio(record, sock, { v: 1, type: 'pi-catalog', requestId, models }))
         .catch((e) => sendPiError(record, sock, requestId, e, 'OPENROUTER_UNREACHABLE'));
       return;
