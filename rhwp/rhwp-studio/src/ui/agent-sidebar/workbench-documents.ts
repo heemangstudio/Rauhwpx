@@ -338,7 +338,7 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
     const resources = all.filter(item => !query || `${item.title} ${item.summary}`.toLocaleLowerCase().includes(query));
     // PDF 표지를 먼저 보여 주고 나머지 자료는 같은 목록에서 찾는다.
     resources.sort((a, b) => Number(b.kind === 'file' && b.fileKind === 'pdf') - Number(a.kind === 'file' && a.fileKind === 'pdf') || b.updatedAt - a.updatedAt);
-    count.textContent = project ? `${project.name} · ${all.length}개 자료` : '프로젝트의 자료를 이곳에서 열어 보세요.';
+    count.textContent = project ? `${project.name}, ${all.length}개 자료` : '프로젝트의 자료를 이곳에서 열어 보세요.';
     add.disabled = !client || !project;
     grid.classList.toggle('ag-wdocs-list', list);
     grid.replaceChildren();
@@ -360,9 +360,9 @@ export function createWorkbenchDocuments(deps: WorkbenchDocumentsDeps): Workbenc
       const text = el('span', 'ag-wdocs-card-text');
       const name = el('span', 'ag-wdocs-card-title', item.title);
       const detail = item.kind === 'file'
-        ? item.status === 'processing' ? '처리 중' : `${item.pageCount ? `${item.pageCount}쪽 · ` : ''}${kindLabel}`
+        ? item.status === 'processing' ? '처리 중' : `${item.pageCount ? `${item.pageCount}쪽, ` : ''}${kindLabel}`
         : '노트';
-      const extraction = item.kind === 'file' && item.extractionStatus && item.extractionStatus !== 'ready' ? item.extractionStatus === 'failed' ? ' · 글자 추출 실패' : ' · 글자 추출 중' : '';
+      const extraction = item.kind === 'file' && item.extractionStatus && item.extractionStatus !== 'ready' ? item.extractionStatus === 'failed' ? ', 글자 추출 실패' : ', 글자 추출 중' : '';
       text.append(name, el('span', 'ag-wdocs-card-meta', detail + extraction));
       card.append(cover, text);
       card.addEventListener('click', () => { void open({ itemId: item.id }); });

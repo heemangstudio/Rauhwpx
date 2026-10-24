@@ -257,7 +257,7 @@ export function failureQueueHold(
       const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
       return {
         reason: 'failed',
-        detail: future ? `사용 한도 · 리셋 ${formatResetAt(ctx.resetAt!, ctx.now, ctx.timeZone)}` : '사용 한도',
+        detail: future ? `사용 한도, 리셋 ${formatResetAt(ctx.resetAt!, ctx.now, ctx.timeZone)}` : '사용 한도',
       };
     }
     case 'provider_error':
@@ -482,9 +482,9 @@ export function createFailureDismissals(storage: () => Storage | null = () => {
   };
 }
 
-/** 저장된 알림 한 줄 — 이전 Studio 가 읽는 문구 (`제목 · 둘째 줄`). */
+/** 저장된 알림 한 줄 — 이전 Studio 가 읽는 문구 (`제목, 둘째 줄`). */
 export function failureSummaryText(view: Pick<FailureView, 'title' | 'line'>): string {
-  return view.line ? `${view.title} · ${view.line}` : view.title;
+  return view.line ? `${view.title}, ${view.line}` : view.title;
 }
 
 export interface FailureNoticeControllerDeps {

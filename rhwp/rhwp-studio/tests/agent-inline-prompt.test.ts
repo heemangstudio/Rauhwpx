@@ -145,8 +145,8 @@ test('buildInlineElementSelection: 표와 수식을 주소 및 내용과 함께 
       fontSize: 1100,
     },
   ]);
-  assert.equal(built.label, '표 1개 · 수식 1개');
-  assert.equal(built.excerpt, '2×2 표 · x^2 + y^2');
+  assert.equal(built.label, '표 1개, 수식 1개');
+  assert.equal(built.excerpt, '2×2 표, x^2 + y^2');
   assert.ok(built.contextBlock.includes('선택 셀: row 0..1, col 1..1'));
   assert.ok(built.contextBlock.includes('cell row 0 col 1'));
   assert.ok(built.contextBlock.includes('innerControlIdx 1'));

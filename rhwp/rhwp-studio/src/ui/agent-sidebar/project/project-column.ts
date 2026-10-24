@@ -223,19 +223,19 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
     if (state.state === 'paused') {
       librarian.hidden = false;
       librarian.dataset.state = 'paused';
-      librarianLabel.textContent = busy ? `정리 멈춤 · ${busy}` : '정리 멈춤';
+      librarianLabel.textContent = busy ? `정리 멈춤 ${busy}개` : '정리 멈춤';
       librarian.title = '정리 다시 시작';
       librarian.setAttribute('aria-label', `정리 도우미 멈춤${busy ? `, 대기 ${busy}개` : ''}. 다시 시작`);
     } else if (state.state === 'running' || busy > 0) {
       librarian.hidden = false;
       librarian.dataset.state = 'running';
-      librarianLabel.textContent = `정리 중 · ${busy}`;
+      librarianLabel.textContent = `정리 중 ${busy}개`;
       librarian.title = '정리 멈추기';
       librarian.setAttribute('aria-label', `정리 도우미 작업 중, ${busy}개. 멈추기`);
     } else if (failed > 0) {
       librarian.hidden = false;
       librarian.dataset.state = 'failed';
-      librarianLabel.textContent = `정리 실패 · ${failed}`;
+      librarianLabel.textContent = `정리 실패 ${failed}개`;
       librarian.title = '다시 정리';
       librarian.setAttribute('aria-label', `정리 실패 ${failed}개. 다시 정리`);
     }
@@ -372,7 +372,7 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
       const copy = el('div', 'ag-project-log-copy');
       copy.append(
         el('span', 'ag-project-log-summary', entry.summary),
-        el('span', 'ag-project-log-meta', `${actorLabel(entry.actor)} · ${formatRelative(entry.at)}`),
+        el('span', 'ag-project-log-meta', `${actorLabel(entry.actor)}, ${formatRelative(entry.at)}`),
       );
       const undo = el('button', 'ag-project-text-btn', '되돌리기');
       undo.type = 'button';
@@ -449,7 +449,7 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
       const copy = el('div', 'ag-project-log-copy');
       copy.append(
         el('span', 'ag-project-log-summary', item.title),
-        el('span', 'ag-project-log-meta', `${itemMeta(item)}${item.trashedAt ? ` · ${formatRelative(item.trashedAt)} 삭제` : ''}`),
+        el('span', 'ag-project-log-meta', `${itemMeta(item)}${item.trashedAt ? `, ${formatRelative(item.trashedAt)} 삭제` : ''}`),
       );
       const restore = el('button', 'ag-project-text-btn', '복원');
       restore.type = 'button';

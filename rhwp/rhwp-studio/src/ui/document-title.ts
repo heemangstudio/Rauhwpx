@@ -42,7 +42,7 @@ export function installDocumentTitle(
     if (nameText && worktreeChip) {
       if (!nameText.querySelector('.inline-rename-input') && nameText.textContent !== name) nameText.textContent = name;
       paintWorktreeChip(worktreeChip, loaded ? options.worktree?.() ?? null : null);
-      const title = loaded ? [bridge.fileName, worktreeChip.title].filter(Boolean).join(' · ') : '';
+      const title = loaded ? [bridge.fileName, worktreeChip.title].filter(Boolean).join(', ') : '';
       if (titleHost.title !== title) titleHost.title = title;
     } else {
       if (titleHost.textContent !== name) titleHost.textContent = name;

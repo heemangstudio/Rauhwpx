@@ -104,9 +104,9 @@ try {
       .getBoundingClientRect().height === 0);
     const [fold, ...rest] = await folds();
     assert.equal(rest.length, 0, '턴 하나에 접힘 줄 하나');
-    assert.match(fold.label, /^작업 \d+초 · /);
-    assert.equal(fold.errors, '· 오류 1', '실패한 호출은 오류로만 센다');
-    assert.match(fold.title, / · 오류 1$/);
+    assert.match(fold.label, /^작업 \d+초, /);
+    assert.equal(fold.errors, '오류 1', '실패한 호출은 오류로만 센다');
+    assert.match(fold.title, /, 오류 1$/);
     assert.deepEqual([fold.collapsed, fold.expanded, fold.inert, fold.height], [true, 'false', true, 0]);
     assert.ok(fold.work >= 1, `작업 노드가 본문으로 옮겨졌다 (${fold.work})`);
     // 최종 답변과 복사 단추는 접힘 밖, 줄 아래에 남는다.
@@ -235,8 +235,8 @@ try {
       await page.waitForFunction(() => document.querySelector('.ag-messages > .ag-turn-fold:not([hidden])'));
       return (await folds()).map((fold) => fold.title);
     };
-    assert.deepEqual(await labelOf('preview-chat-overview'), ['작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음']);
-    assert.deepEqual(await labelOf('preview-chat-attendees'), ['중단됨 · 1분 12초 · 표 1개 추가']);
+    assert.deepEqual(await labelOf('preview-chat-overview'), ['작업 2분 31초, 문단 2개 수정, 표 1개 읽음']);
+    assert.deepEqual(await labelOf('preview-chat-attendees'), ['중단됨, 1분 12초, 표 1개 추가']);
   });
 
   await step('(g) 도는 턴을 위로 올려 읽는 중에 턴이 끝나면 펼친 채로 두고 읽던 줄을 지킨다', async () => {
@@ -292,7 +292,7 @@ try {
     await page.waitForSelector('.ag-messages > .ag-turn-fold:not([hidden])');
     const [fold, ...rest] = await folds();
     assert.equal(rest.length, 0);
-    assert.match(fold.label, /^작업 \d+초 · 표 1개 수정 · 표 1개 읽음$/);
+    assert.match(fold.label, /^작업 \d+초, 표 1개 수정, 표 1개 읽음$/);
     assert.equal(fold.collapsed, true);
     // 다시 잡은 턴의 도구 작업도 접힌다. 이 턴은 최종 답변 없이 끝나 마지막 글(이정표)만 흐름에 남는다.
     assert.deepEqual(await page.evaluate(() => ({
@@ -331,7 +331,7 @@ try {
         todosInFold: todos.length > 0 && todos.every((node) => Boolean(node.closest('.ag-turn-fold-body'))),
         // 편집 턴 끝의 안내 줄은 답이 아니다 — 있어도 보고를 접지 않는다.
         checkNoteInFlow: [...messages.querySelectorAll(':scope > .ag-msg-assistant')]
-          .some((node) => node.textContent.includes('작업 완료 · 문서 확인')),
+          .some((node) => node.textContent.includes('작업을 마쳤습니다. 문서를 확인해 주세요.')),
       };
     }, REPORT);
     const expected = {

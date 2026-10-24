@@ -1115,7 +1115,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     for (const entry of recoveryEntries) {
       const row = el('div', 'ag-version-recovery-row');
       const details = el('div', 'ag-version-recovery-details');
-      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation} · ${formatTime(entry.createdAt)}`));
+      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation}, ${formatTime(entry.createdAt)}`));
       details.title = entry.headId.slice(0, 8);
       const recover = el('button', 'ag-versions-quiet', '복구');
       recover.type = 'button';
@@ -1211,7 +1211,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     }
     inspector.style.setProperty('--ag-version-lane-color', colorsFor(current).commit(selected.id));
     inspector.append(
-      el('span', 'ag-versions-inspector-kicker', `${selected.shortId} · ${reasonLabel(selected.reason)}`),
+      el('span', 'ag-versions-inspector-kicker', `${selected.shortId}, ${reasonLabel(selected.reason)}`),
       el('h3', 'ag-versions-inspector-title', selected.title),
       el('p', 'ag-versions-inspector-meta', [
         formatTime(selected.createdAt),
@@ -1302,7 +1302,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       chip.dataset.versionMutation = 'true';
       chip.style.setProperty('--ag-version-lane-color', colors.branch(branch.name));
       chip.setAttribute('aria-pressed', String(branch.isActive));
-      chip.title = branch.isActive ? `${branch.name} · 작업 중` : branch.name;
+      chip.title = branch.isActive ? `${branch.name}, 작업 중` : branch.name;
       chip.setAttribute('aria-label', `${branch.name} 브랜치로 전환`);
       const chipName = el('span', 'ag-versions-chip-name');
       chipName.append(createBranchIcon(), document.createTextNode(` ${branch.name}`));
@@ -1482,7 +1482,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         worktree.isOpen ? '열림' : '닫힘', worktree.dirty ? '커밋 전 변경 있음' : null,
         worktree.readOnly ? '읽기 전용' : null, worktree.busy ? '사용 중' : null].filter(Boolean);
       copy.append(el('strong', 'ag-versions-ref-title', worktree.branch),
-        el('span', 'ag-versions-ref-meta', statuses.join(' · ')));
+        el('span', 'ag-versions-ref-meta', statuses.join(', ')));
       if (worktree.mergeTarget && !worktree.primary) {
         copy.append(el('span', 'ag-versions-ref-meta', `${worktree.branch} → ${worktree.mergeTarget}`));
       }
@@ -1537,7 +1537,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       const copy = el('div', 'ag-versions-card-copy');
       copy.append(
         el('strong', 'ag-versions-card-title', item.title),
-        el('span', 'ag-versions-card-meta', `${formatTime(item.createdAt)} · ${formatBytes(item.byteLength)}`),
+        el('span', 'ag-versions-card-meta', `${formatTime(item.createdAt)}, ${formatBytes(item.byteLength)}`),
       );
       const actions = el('div', 'ag-versions-card-actions');
       const apply = el('button', 'ag-versions-secondary', '적용');
@@ -1679,7 +1679,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     const source = candidates.length === 1
       ? candidates[0].name
       : await promptVersionText({
-          title: `현재 브랜치로 병합 · → ${current.activeBranch ?? '현재'}`,
+          title: current.activeBranch ? `현재 브랜치(${current.activeBranch})로 병합` : '현재 브랜치로 병합',
           label: `소스 브랜치 (${candidates.map((branch) => branch.name).join(', ')})`,
           validate: (value) => candidates.some((branch) => branch.name === value)
             ? null

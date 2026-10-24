@@ -443,7 +443,7 @@ export function createRequestCardController(options: RequestCardOptions) {
     const actions = [...new Set((request.blocked ?? []).map((action) => blockedActionLabels[action] ?? action))];
     if (!actions.length) return null;
     const row = el('div', 'ag-request-blocked');
-    row.append(createIcon('shield'), el('span', '', `${actions.join(' · ')} 차단됨`));
+    row.append(createIcon('shield'), el('span', '', `${actions.join(', ')} 차단됨`));
     return row;
   }
 

@@ -282,15 +282,15 @@ function toBase64(bytes: Uint8Array): string {
 
 function errorCopy(code: string, fallback: string): string {
   switch (code) {
-    case 'INSUFFICIENT_SAMPLE': return '읽을 수 있는 글이 10쪽 미만입니다 · 원고 추가';
+    case 'INSUFFICIENT_SAMPLE': return '읽을 수 있는 글이 10쪽 미만입니다. 원고를 추가해 주세요.';
     case 'CODEX_UNAVAILABLE':
     case 'CLAUDE_UNAVAILABLE':
     case 'PI_UNAVAILABLE':
-    case 'PROVIDER_UNAVAILABLE': return '프로바이더 시작 실패 · 연결 확인 또는 다른 프로바이더 선택';
-    case 'MODEL_UNAVAILABLE': return '선택한 모델 사용 불가 · 다른 모델 선택';
-    case 'CALIBRATION_BUSY': return '다른 분석 진행 중 · 끝난 뒤 다시 시도';
-    case 'TIMEOUT': return '분석 중단됨 · 연결 확인 후 다시 시도';
-    default: return fallback || '분석 실패 · 파일과 모델 확인 후 다시 시도';
+    case 'PROVIDER_UNAVAILABLE': return '프로바이더를 시작하지 못했습니다. 연결을 확인하거나 다른 프로바이더를 선택해 주세요.';
+    case 'MODEL_UNAVAILABLE': return '선택한 모델을 사용할 수 없습니다. 다른 모델을 선택해 주세요.';
+    case 'CALIBRATION_BUSY': return '다른 분석이 진행 중입니다. 끝난 뒤 다시 시도해 주세요.';
+    case 'TIMEOUT': return '분석이 중단되었습니다. 연결을 확인한 뒤 다시 시도해 주세요.';
+    default: return fallback || '분석에 실패했습니다. 파일과 모델을 확인한 뒤 다시 시도해 주세요.';
   }
 }
 
@@ -409,14 +409,14 @@ export function createWritingStyleCalibration(
   corpusModes.setAttribute('role', 'radiogroup');
   corpusModes.setAttribute('aria-label', '기존 보정 자료 처리 방식');
   const corpusModeButtons = new Map<CorpusMode, HTMLButtonElement>();
-  for (const [value, label, detail] of [
-    ['append', '문서 추가', '현재 자료를 유지하고 새 글을 더합니다.'],
-    ['replace', '전체 교체', '현재 자료를 빼고 새 글만 다시 분석합니다.'],
+  for (const [value, label] of [
+    ['append', '문서 추가'],
+    ['replace', '전체 교체'],
   ] as const) {
     const button = el('button', 'ag-calibration-mode');
     button.type = 'button';
     button.setAttribute('role', 'radio');
-    button.append(el('strong', '', label), el('span', '', detail));
+    button.append(el('strong', '', label));
     button.addEventListener('click', () => setCorpusMode(value));
     corpusModeButtons.set(value, button);
     corpusModes.appendChild(button);
@@ -469,7 +469,7 @@ export function createWritingStyleCalibration(
   const dropzone = el('label', 'ag-calibration-dropzone') as HTMLLabelElement;
   dropzone.htmlFor = uploadInput.id;
   dropzone.tabIndex = 0;
-  dropzone.append(createUploadIcon(), el('strong', '', '파일을 놓거나 클릭하여 선택'), el('span', '', 'HWP · HWPX · PDF · DOCX · TXT · MD'));
+  dropzone.append(createUploadIcon(), el('strong', '', '파일을 놓거나 클릭하여 선택'), el('span', '', 'HWP, HWPX, PDF, DOCX, TXT, MD'));
   const fileSummary = el('div', 'ag-calibration-file-summary', '선택된 새 파일 없음');
   fileSummary.setAttribute('aria-live', 'polite');
   const fileList = el('ul', 'ag-calibration-file-list');
@@ -514,8 +514,7 @@ export function createWritingStyleCalibration(
 
   const resultIconWrap = el('div', 'ag-calibration-result-icon-wrap');
   resultIconWrap.appendChild(createCheckIcon());
-  const resultTitle = el('h2', 'ag-calibration-title', '목소리를 기억했습니다');
-  const resultMeta = el('p', 'ag-calibration-result-meta');
+  const resultTitle = el('h2', 'ag-calibration-title', '문체를 기억했습니다');
   const resultCorpus = el('section', 'ag-calibration-result-corpus');
   const resultCorpusHead = el('div', 'ag-calibration-corpus-head');
   resultCorpusHead.append(el('h3', 'ag-calibration-section-title', '보정에 쓰는 문서'), el('span', 'ag-calibration-corpus-meta'));
@@ -538,7 +537,7 @@ export function createWritingStyleCalibration(
   const addDocuments = el('button', 'ag-calibration-primary', '새 문서 추가');
   addDocuments.type = 'button';
   resultActions.append(done, addDocuments);
-  panels[3]!.append(resultIconWrap, resultTitle, resultMeta, resultCorpus, instructionLabel, instructionHint, resultError, resultActions);
+  panels[3]!.append(resultIconWrap, resultTitle, resultCorpus, instructionLabel, instructionHint, resultError, resultActions);
 
   dialog.append(chrome, body);
   overlay.appendChild(dialog);
@@ -623,7 +622,7 @@ export function createWritingStyleCalibration(
     const active = hasActiveCorpus();
     corpusSection.hidden = !active;
     if (active && activeStatus) {
-      corpusMeta.textContent = `${storedCorpusCount(activeStatus)}개 · 약 ${activeStatus.pageEstimate}쪽`;
+      corpusMeta.textContent = `${storedCorpusCount(activeStatus)}개, 약 ${activeStatus.pageEstimate}쪽`;
       renderCorpusList(corpusList, activeStatus);
     }
     if (!active) corpusMode = 'replace';
@@ -650,14 +649,14 @@ export function createWritingStyleCalibration(
     const health = providerStatus?.[agent];
     if (!health) return { available: false, pending: true, label: '확인 중', reason: `${AGENT_LABEL[agent]} 연결을 확인하고 있습니다.` };
     if (!health.available) {
-      return { available: false, pending: false, label: '사용 불가', reason: health.error || `${AGENT_LABEL[agent]} 실행 환경 없음 · 설정에서 확인` };
+      return { available: false, pending: false, label: '사용 불가', reason: health.error || `${AGENT_LABEL[agent]} 실행 환경이 없습니다. 설정에서 확인해 주세요.` };
     }
     if (agent === 'pi') {
       if (!piStatus) return { available: false, pending: true, label: '확인 중', reason: 'Pi 설정과 선택 모델을 확인하고 있습니다.' };
       if (!piStatus.setupComplete) return { available: false, pending: false, label: '설정 필요', reason: '설정 > Pi에서 OpenRouter 키와 모델 선택 필요' };
       if (modelsForAgent('pi').length === 0) return { available: false, pending: false, label: '모델 없음', reason: '설정 > Pi에서 분석 모델 선택 필요' };
     }
-    return { available: true, pending: false, label: health.version ? `연결됨 · ${health.version}` : '연결됨', reason: '' };
+    return { available: true, pending: false, label: health.version ? `연결됨, ${health.version}` : '연결됨', reason: '' };
   }
 
   function calibrationModels(agent: AgentName): Array<{ id: string; label: string }> {
@@ -678,7 +677,7 @@ export function createWritingStyleCalibration(
 
   function renderProviderSelection(): void {
     const label = modelSelect.selectedOptions[0]?.textContent ?? selectedModel;
-    providerSelection.replaceChildren(createProviderIcon(selectedAgent), document.createTextNode(`${AGENT_LABEL[selectedAgent]} · ${label}`));
+    providerSelection.replaceChildren(createProviderIcon(selectedAgent), document.createTextNode(`${AGENT_LABEL[selectedAgent]}, ${label}`));
   }
 
   function renderProviderCatalogue(): void {
@@ -746,7 +745,7 @@ export function createWritingStyleCalibration(
   function renderFiles(): void {
     fileList.replaceChildren();
     const total = selectedFiles.reduce((sum, file) => sum + file.size, 0);
-    fileSummary.textContent = selectedFiles.length ? `새 문서 ${selectedFiles.length}개 · ${formatBytes(total)}` : '선택된 새 파일 없음';
+    fileSummary.textContent = selectedFiles.length ? `새 문서 ${selectedFiles.length}개, ${formatBytes(total)}` : '선택된 새 파일 없음';
     selectedFiles.forEach((file, index) => {
       const item = el('li', 'ag-calibration-file-item');
       const copy = el('span', 'ag-calibration-file-copy');
@@ -860,7 +859,7 @@ export function createWritingStyleCalibration(
     progressActivity.textContent = activity;
     progressDetail.textContent = detail;
     const progressAgent = progress.agent ?? selectedAgent;
-    progressContext.textContent = `${AGENT_LABEL[progressAgent]} · ${labelForModel(progressAgent, progress.model ?? selectedModel)}`;
+    progressContext.textContent = `${AGENT_LABEL[progressAgent]}, ${labelForModel(progressAgent, progress.model ?? selectedModel)}`;
     activateNetwork(stage.index);
     appendActivity(activity, detail, stage.index);
 
@@ -880,12 +879,12 @@ export function createWritingStyleCalibration(
     progressConnection.hidden = connectionState === 'connected';
     progressConnection.textContent = connectionState === 'replaced'
       ? '다른 탭에서 연결 사용 중'
-      : '다시 연결 중 · 분석은 계속됩니다';
+      : '다시 연결 중입니다. 분석은 계속됩니다.';
   }
 
   function renderResultCorpus(status: WritingStyleStatus): void {
     const meta = resultCorpusHead.querySelector<HTMLElement>('.ag-calibration-corpus-meta');
-    if (meta) meta.textContent = `${displayCorpusCount(status)}개 · 약 ${status.pageEstimate}쪽`;
+    if (meta) meta.textContent = `${displayCorpusCount(status)}개, 약 ${status.pageEstimate}쪽`;
     renderCorpusList(resultCorpusList, status);
   }
 
@@ -905,7 +904,6 @@ export function createWritingStyleCalibration(
     addDocuments.disabled = false;
     replaceCorpus.disabled = false;
     done.textContent = '닫기';
-    resultMeta.textContent = `${displayCorpusCount(status)}개 파일 · 약 ${status.pageEstimate}쪽 · ${status.language === 'ko' ? '한국어' : 'English'}`;
     addDocuments.textContent = storedCorpusCount(status) > 0 ? '새 문서 추가' : '새 문서로 교체';
     renderResultCorpus(status);
     setStep(3);
@@ -981,7 +979,7 @@ export function createWritingStyleCalibration(
       calibrationBaselineUpdatedAt = activeStatus?.updatedAt ?? null;
       awaitingReconnectCompletion = false;
       submitting = false;
-      ackTimer = window.setTimeout(() => failRequest('요청 확인 실패 · 연결 후 다시 시도'), ACK_TIMEOUT_MS);
+      ackTimer = window.setTimeout(() => failRequest('요청을 확인하지 못했습니다. 연결한 뒤 다시 시도해 주세요.'), ACK_TIMEOUT_MS);
     } catch (error) {
       failRequest(error instanceof Error ? error.message : String(error));
     }

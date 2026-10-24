@@ -106,11 +106,11 @@ function pendingAddress(op: PendingOp): string {
     const obj = op.obj;
     const para = 'tableParaIdx' in obj ? obj.tableParaIdx : 'paraIdx' in obj ? obj.paraIdx
       : obj.type === 'engineBatch' ? obj.touched[0]?.paraStart ?? null : null;
-    const cell = 'cellIdx' in obj && typeof obj.cellIdx === 'number' ? ` · ${obj.cellIdx + 1}셀` : '';
+    const cell = 'cellIdx' in obj && typeof obj.cellIdx === 'number' ? `, ${obj.cellIdx + 1}셀` : '';
     return `${para === null ? '문서' : `${para + 1}문단`}${cell}`;
   }
   const range = op.range;
-  const cell = range.cell ? `${range.cell.cellIdx + 1}셀 · ` : '';
+  const cell = range.cell ? `${range.cell.cellIdx + 1}셀, ` : '';
   return `${cell}${range.startParaIdx + 1}문단${range.startParaIdx === range.endParaIdx ? '' : `–${range.endParaIdx + 1}문단`}`;
 }
 
@@ -139,45 +139,45 @@ function pendingObjectDetail(op: PendingOp): string {
       if (name === 'fontId') return '글꼴 변경';
       if (name === 'fontSize' && typeof value === 'number') return `글자 크기 ${value / 100}pt`;
       return `${names[name] ?? name} ${typeof value === 'boolean' ? value ? '적용' : '해제' : value}`;
-    }).join(' · ');
-    return `글자 서식${detail ? ` · ${detail}` : ''}`;
+    }).join(', ');
+    return `글자 서식${detail ? `: ${detail}` : ''}`;
   }
   if (op.kind !== 'object') return '';
   const obj = op.obj;
   switch (obj.type) {
-    case 'createTable': return `표 삽입 · ${obj.rows}행 × ${obj.cols}열`;
-    case 'insertImage': return `그림 삽입${obj.description ? ` · ${obj.description}` : ''}`;
-    case 'insertEquation': return `수식 삽입 · ${obj.script}`;
-    case 'insertShape': return `도형 삽입 · ${SHAPE_LABELS[obj.shape]}`;
+    case 'createTable': return `표 삽입: ${obj.rows}행 × ${obj.cols}열`;
+    case 'insertImage': return `그림 삽입${obj.description ? `: ${obj.description}` : ''}`;
+    case 'insertEquation': return `수식 삽입: ${obj.script}`;
+    case 'insertShape': return `도형 삽입: ${SHAPE_LABELS[obj.shape]}`;
     case 'editObject': return `${obj.kind === 'picture' ? '그림' : '도형'} 배치 변경`;
     case 'deleteObject': return `${obj.kind === 'picture' ? '그림' : '도형'} 삭제`;
     case 'tableStructure': return `표 ${({
       insert_row: '행 삽입', insert_col: '열 삽입', delete_row: '행 삭제',
       delete_col: '열 삭제', merge_cells: '셀 병합', split_cell: '셀 나누기',
     } as const)[obj.op]}`;
-    case 'deleteTable': return `표 삭제 · ${obj.dims.rowCount}행 × ${obj.dims.colCount}열`;
+    case 'deleteTable': return `표 삭제: ${obj.dims.rowCount}행 × ${obj.dims.colCount}열`;
     case 'setCellProps': return '셀 속성 변경';
     case 'setTableProps': return '표 속성 변경';
     case 'setColumnWidths': return '열 너비 변경';
     case 'fitToPage': return '표를 쪽 너비에 맞춤';
-    case 'setZoneProps': return '셀 테두리·배경 변경';
-    case 'applyFormula': return `표 계산식 · ${obj.formula}`;
-    case 'setCaption': return `표 캡션 · ${obj.text}`;
+    case 'setZoneProps': return '셀 테두리와 배경 변경';
+    case 'applyFormula': return `표 계산식: ${obj.formula}`;
+    case 'setCaption': return `표 캡션: ${obj.text}`;
     case 'paraFormat': return '문단 서식 변경';
     case 'applyStyle': return '문단 스타일 적용';
     case 'pageLayout': return '쪽 설정 변경';
-    case 'engineBatch': return obj.label ?? `엔진 편집 ${obj.methods.length}개 · ${[...new Set(obj.methods)].slice(0, 3).join(', ')}`;
+    case 'engineBatch': return obj.label ?? `엔진 편집 ${obj.methods.length}개: ${[...new Set(obj.methods)].slice(0, 3).join(', ')}`;
     case 'headerFooter': {
       const kind = obj.isHeader ? '머리말' : '꼬리말';
       const preview = obj.lines.filter((line) => line.length > 0).join(' / ');
-      return `${kind} ${obj.existedBefore ? '변경' : '삽입'}${preview ? ` · ${preview}` : ''}`;
+      return `${kind} ${obj.existedBefore ? '변경' : '삽입'}${preview ? `: ${preview}` : ''}`;
     }
-    case 'insertNote': return `${obj.noteKind === 'endnote' ? '미주' : '각주'} 삽입 · ${obj.text}`;
-    case 'setNoteText': return `각주/미주 변경 · ${obj.text}`;
+    case 'insertNote': return `${obj.noteKind === 'endnote' ? '미주' : '각주'} 삽입: ${obj.text}`;
+    case 'setNoteText': return `각주/미주 변경: ${obj.text}`;
     case 'bookmark': {
       const label = ({ add: '추가', delete: '삭제', rename: '이름 변경' } as const)[obj.op];
       const name = obj.name ?? obj.prev?.name;
-      return `책갈피 ${label}${name ? ` · ${name}` : ''}`;
+      return `책갈피 ${label}${name ? `: ${name}` : ''}`;
     }
     default: return '개체 변경';
   }
@@ -266,7 +266,7 @@ function summaryFields(value: string): Record<string, string> {
 function readableSize(value?: string): string | null {
   if (!value || value === '(없음)' || value === 'nobox') return null;
   const match = value.match(/^(\d+)x(\d+)$/);
-  return match ? `폭 ${match[1]} · 높이 ${match[2]}` : null;
+  return match ? `폭 ${match[1]}, 높이 ${match[2]}` : null;
 }
 
 function tableCellLines(encoded?: string): string[] {
@@ -527,7 +527,7 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       notice.append(retry);
       workingNotice.replaceChildren(notice);
     } else if (!workingItems.length) workingNotice.replaceChildren(state.dirty
-      ? emptyState('서식·설정 변경') : emptyState('모두 커밋됨', true));
+      ? emptyState('서식과 설정 변경') : emptyState('모두 커밋됨', true));
     else workingNotice.hidden = true;
     const focusedLine = workingList.contains(document.activeElement)
       ? (document.activeElement as HTMLElement).dataset.lineKey : undefined;

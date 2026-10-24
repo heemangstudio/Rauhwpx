@@ -265,7 +265,7 @@ export class CompareDialog {
       const mode =
         session.textCompareStrategyUsed === 'identity' ? '본문=id(Map)' : '본문=정렬(alignment)';
       this.resultMetaEl.textContent =
-        `${session.diffItems.length}개 차이 · ${mode} · "${this.leftFile.fileName}" vs "${this.rightFile.fileName}"`;
+        `${session.diffItems.length}개 차이, ${mode}, "${this.leftFile.fileName}" vs "${this.rightFile.fileName}"`;
       this.renderDiffList(session.diffItems);
       this.openTwoPaneBtn.disabled = session.diffItems.length === 0;
       if (session.diffItems.length > 0) {

@@ -187,7 +187,7 @@ export function createChatAttentionLedger(env: ChatAttentionEnvironment): ChatAt
         key: report.key,
         state,
         title: details ? title : ATTENTION_APP_NAME,
-        body: documentName ? `${phrase} · ${documentName}` : phrase,
+        body: documentName ? `${phrase} (${documentName})` : phrase,
         message: `${title} — ${phrase}`,
         channel,
       };

@@ -228,9 +228,9 @@ import {
 } from './tool-presentation.ts';
 import { createSettingsPanel } from './settings.ts';
 import {
-  normalizeSettingsDestination,
+  isSettingsDestination,
   type EditorSettingsRuntime,
-  type SettingsDestination,
+  type SettingsDestinationInput,
 } from './settings-contract.ts';
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
 import {
@@ -1398,10 +1398,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     isConnected: () => connState === 'connected',
     reconnected: (agent) => !authFailedAgents.has(agent) && setupStatuses?.[agent]?.authenticated === true,
     openLogin: (agent) => {
-      requestSettingsOpen('ai');
+      requestSettingsOpen('ai-connection');
       settingsPanel.beginAgentConnect(agent, { reauth: true });
     },
-    openSettings: () => requestSettingsOpen('ai'),
+    openSettings: () => requestSettingsOpen('ai-connection'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
@@ -3019,7 +3019,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const workspaceAgentContext = el(
     'span',
     'ag-workspace-agent-context',
-    `${AGENT_LABEL[selectedAgent]} · ${labelForModel(selectedAgent, selectedModel)}`,
+    `${AGENT_LABEL[selectedAgent]} ${labelForModel(selectedAgent, selectedModel)}`,
   );
   const environmentWrap = el('div', 'ag-environment-wrap');
   const environmentToggle = el('button', 'ag-workspace-icon-btn ag-environment-toggle');
@@ -3187,7 +3187,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function updateWorkspaceAgentContext(): void {
     workspaceAgentContext.textContent =
-      `${AGENT_LABEL[selectedAgent]} · ${labelForModel(selectedAgent, selectedModel)}`;
+      `${AGENT_LABEL[selectedAgent]} ${labelForModel(selectedAgent, selectedModel)}`;
   }
 
   workspaceThreadsBtn.addEventListener('click', () => {
@@ -3814,7 +3814,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   reconnectChipOpen.addEventListener('click', () => {
     const agent = reconnectChip.dataset.agent as AgentName | undefined;
     if (!agent) return;
-    requestSettingsOpen('ai');
+    requestSettingsOpen('ai-connection');
     settingsPanel.beginAgentConnect(agent, { reauth: authFailedAgents.has(agent) });
   });
   /** 로그인 창이 열렸던 프로바이더 — 그 뒤의 로그인 상태는 새 자격 증명이다. */
@@ -5548,7 +5548,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     versionsBadge.hidden = !dirty;
     versionsBadge.textContent = count > 99 ? '99+' : count > 0 ? String(count) : '';
     versionsBadge.classList.toggle('ag-dot-only', dirty && count === 0);
-    const label = dirty ? `버전 · 커밋 전 변경 ${count}` : '버전';
+    const label = dirty ? `버전, 커밋 전 변경 ${count}` : '버전';
     versionsBtn.setAttribute('aria-label', label);
     versionsBtn.title = label;
     versionManagerPage?.setChangeCount(dirty ? Math.max(count, 1) : 0);
@@ -5717,7 +5717,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const status: PlanTodoStatus = allDone ? 'completed'
       : current?.status === 'in-progress' && !running ? 'pending' : current?.status ?? 'pending';
     planRestoreMark.replaceChildren(todoMark(status));
-    planRestoreLabel.textContent = activePlanHistorical ? `계획 기록 · ${plan?.title ?? ''}`
+    planRestoreLabel.textContent = activePlanHistorical ? `계획 기록: ${plan?.title ?? ''}`
       : current ? current.title
         : allDone ? '모든 할 일을 마쳤습니다'
           : plan?.title || '계획';
@@ -6237,7 +6237,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   skillsBtn.addEventListener('click', () => setSkillsPanelOpen(true));
   skillsClose.addEventListener('click', () => { setSkillsPanelOpen(false); skillsBtn.focus(); });
 
-  function setSettingsPanelOpen(open: boolean, destination?: SettingsDestination): void {
+  function setSettingsPanelOpen(open: boolean, destination?: SettingsDestinationInput): void {
     // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
     if (open && !fullscreen && !settingsPanelOpen) {
       setFullscreen(true, {
@@ -6288,7 +6288,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  function requestSettingsOpen(destination?: SettingsDestination): void {
+  function requestSettingsOpen(destination?: SettingsDestinationInput): void {
     if (eventBus) {
       eventBus.emit('settings:open', destination ? { destination } : undefined);
       return;
@@ -6489,7 +6489,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     composerSkillIcon.replaceChildren();
     if (skill) composerSkillIcon.appendChild(createIcon(skillGlyphForSkill(skill)));
     composerSkill.dataset.agent = skill ? selectedAgent : '';
-    composerSkill.title = skill ? `/${skill.name} · ${skill.description}` : '';
+    composerSkill.title = skill ? `/${skill.name}: ${skill.description}` : '';
     input.setAttribute('aria-label', skill ? `/${skill.name} 스킬 뒤의 메시지 입력` : '에이전트 메시지 입력');
     if (remainder !== undefined) input.value = remainder;
     resizeComposerInput();
@@ -6510,7 +6510,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function renderActiveTemplate(): void {
     templateChip.hidden = activeTemplate === null;
     templateChipName.textContent = activeTemplate?.name ?? '';
-    templateChip.title = activeTemplate ? `${activeTemplate.originalName} · r${activeTemplate.revision}` : '';
+    templateChip.title = activeTemplate ? `${activeTemplate.originalName}, r${activeTemplate.revision}` : '';
   }
 
   function selectTemplate(template: DocumentTemplate | null, sync = true): void {
@@ -6550,7 +6550,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         .map(({ template }) => ({
           value: `/templates ${template.name}`,
           label: template.name,
-          detail: `${template.format.toUpperCase()} · ${template.pageCount}쪽 · r${template.revision}`,
+          detail: `${template.format.toUpperCase()}, ${template.pageCount}쪽, r${template.revision}`,
           templateId: template.id,
         }));
       slashIndex = Math.min(slashIndex, Math.max(0, slashOptions.length - 1));
@@ -6575,7 +6575,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : []),
       { value: '/compact', label: '/compact', detail: '콘텍스트 압축', local: 'compact' },
       { value: '/calibration', label: '/calibration', detail: '말투 맞추기', local: 'calibration' },
-      { value: '/settings', label: '/settings', detail: '설정 열기 (연결·기본값·사용량)', local: 'settings' },
+      { value: '/settings', label: '/settings', detail: '설정 열기 (연결, 기본값, 사용량)', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
       { value: '/skills', label: '/skills', detail: '스킬 라이브러리 열기', local: 'skills' },
     ];
@@ -6978,7 +6978,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         mentions,
         labels: [
           ...ordinary.map((file) => file.name),
-          ...(captures?.drafts ?? []).map((draft) => `${draft.label} · ${draft.comment.replace(/\s+/g, ' ').slice(0, 48)}`),
+          ...(captures?.drafts ?? []).map((draft) => `${draft.label}: ${draft.comment.replace(/\s+/g, ' ').slice(0, 48)}`),
           ...mentions.map((mention) => `@${mention.title}`),
         ],
         ...(captures?.context ? { context: captures.context } : {}),
@@ -7254,7 +7254,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const hasMentions = (composerMentions?.list().length ?? 0) > 0;
     if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts() && !captureInbox.hasDrafts() && !hasMentions) || (!queueing && connState !== 'connected')) return;
     if ((referenceLibrary.hasImageDrafts() || captureInbox.hasImages()) && !modelSupportsImages(selectedAgent, selectedModel)) {
-      systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
+      systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지를 지원하지 않습니다. 다른 모델을 선택하세요.`);
       return;
     }
     if (!activeComposerSkill && text.startsWith('//')) text = text.slice(1);
@@ -8048,8 +8048,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     heading.append(
       createIcon(failed > 0 ? 'close' : 'check'),
       el('span', '', failed > 0
-        ? `서브에이전트와 워크플로 · ${failed}개 오류`
-        : `서브에이전트와 워크플로 · ${message.tasks.length}개`),
+        ? `서브에이전트와 워크플로, ${failed}개 오류`
+        : `서브에이전트와 워크플로 ${message.tasks.length}개`),
       createChevron('ag-restored-task-chevron'),
     );
     const body = el('div', 'ag-restored-task-body');
@@ -8060,7 +8060,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const meta = [
         task.status === 'completed' ? '완료' : task.status === 'failed' ? '실패' : '중단됨',
         task.totalTokens === null ? '' : `${task.totalTokens.toLocaleString()} tokens`,
-      ].filter(Boolean).join(' · ');
+      ].filter(Boolean).join(', ');
       item.append(
         el('strong', 'ag-restored-task-title', title),
         el('span', 'ag-restored-task-meta', meta),
@@ -8530,7 +8530,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const docName = el('span', 'ag-threads-item-doc');
     setMiddleTruncatedText(docName, docGroupLabel(thread.docKey));
     const agent = el('span', 'ag-threads-item-agent');
-    agent.title = `${AGENT_LABEL[thread.agent]} · ${labelForModel(thread.agent, thread.model)}`;
+    agent.title = `${AGENT_LABEL[thread.agent]} ${labelForModel(thread.agent, thread.model)}`;
     agent.append(createProviderIcon(thread.agent), el('span', 'ag-sr-only', AGENT_LABEL[thread.agent]));
     // 같은 이름의 작업 트리 사본에 묶인 채팅은 어느 가지의 문서인지 함께 보인다.
     const worktree = worktreeIdentity(versionController?.getState(), thread.documentId);
@@ -9064,7 +9064,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setComposerSkill(null);
     composer.classList.add('ag-readonly');
     const note = el('div', 'ag-msg ag-msg-system ag-readonly-note',
-      `"${docLabel}" 문서의 채팅 · 그 문서에서 이어서 대화합니다.`);
+      `"${docLabel}" 문서의 채팅입니다. 그 문서에서 이어서 대화합니다.`);
     appendConversation(note);
     scrollConversationToEnd();
     updateComposer();
@@ -9827,7 +9827,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     effortSlider.setDisabled(selectionLooksLocked);
     const selectionHint = selectionLooksLocked
       ? '진행 중인 작업이 끝나면 바꿀 수 있습니다'
-      : '프로바이더 · 모델 · 추론 강도 변경 (다음 턴부터 적용)';
+      : '프로바이더, 모델, 추론 강도 변경 (다음 턴부터 적용)';
     providerTrigger.title = selectionHint;
     llmTrigger.title = selectionHint;
     effortTrigger.title = selectionHint;
@@ -10765,7 +10765,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   ): string {
     if (outcome.status === 'answered') return '답변 완료';
     if (outcome.status === 'cancelled') return '중단됨';
-    return interruption ? `만료됨 · ${INTERRUPTION_LABEL[interruption]}` : '만료됨';
+    return interruption ? `만료됨, ${INTERRUPTION_LABEL[interruption]}` : '만료됨';
   }
 
   /** 끊긴 턴 안의 만료된 질문 카드(이미 그려진 것)에 이유를 붙인다. */
@@ -11836,7 +11836,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       activeCompaction = { compactionId: event.compactionId, trigger: event.trigger, ...silent };
     }
     if (event.phase === 'failed') {
-      const failureText = event.message ? `콘텍스트 압축 실패 · ${event.message}` : '콘텍스트 압축 실패';
+      const failureText = event.message ? `콘텍스트 압축 실패: ${event.message}` : '콘텍스트 압축 실패';
       if ('silent' in silent) console.warn('[agent-sidebar] 문서를 뗀 뒤의 압축 실패:', failureText);
       else if (turnRunning) pendingCompactionFailure = failureText;
       else systemMessage(failureText);
@@ -11947,7 +11947,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function threadMarkerLabel(message: ThreadMarkerMessage): string {
     if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
     return message.beforeTokens !== undefined && message.afterTokens !== undefined
-      ? `콘텍스트 압축됨 · ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
+      ? `콘텍스트 압축됨, ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
       : '콘텍스트 압축됨';
   }
 
@@ -12662,7 +12662,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const phaseText = activePlanHistorical ? '계획 기록' : plan.execution
       ? ({ running: '실행 중', 'awaiting-review': '검토 대기', completed: '완료', blocked: '확인 필요', interrupted: '중단됨' })[plan.execution.status]
       : PLANNING_PHASE_LABEL[planningPhase];
-    const phase = el('span', 'ag-plan-phase', plan.revision && plan.revision > 1 ? `v${plan.revision} · ${phaseText}` : phaseText);
+    const phase = el('span', 'ag-plan-phase', plan.revision && plan.revision > 1 ? `v${plan.revision}, ${phaseText}` : phaseText);
     if (plan.changeSummary) phase.title = plan.changeSummary;
     kickerRow.append(phase);
     const planIdReadout = el('span', 'ag-plan-id', plan.planId);
@@ -12723,7 +12723,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           pill.target = '_blank';
           pill.rel = 'noopener noreferrer';
         }
-        const tip = [source.note?.trim(), [source.fileId, source.chunkId].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
+        const tip = [source.note?.trim(), [source.fileId, source.chunkId].filter(Boolean).join(', ')].filter(Boolean).join('\n');
         if (tip) pill.title = tip;
         sources.appendChild(pill);
       }
@@ -13292,7 +13292,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             from?: string;
             onOpen?: () => void;
           } | undefined;
-          const destination = normalizeSettingsDestination(request?.destination);
+          const requested = request?.destination;
+          const destination = isSettingsDestination(requested) ? requested : undefined;
           // 잠긴 동안에는 홈에서 연 설정만 잠긴 카드의 배경으로 띄운다.
           if (isLicenseViewerMode()) {
             if (request?.from !== 'home') return;

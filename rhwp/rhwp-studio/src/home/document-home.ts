@@ -475,7 +475,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       const add = el('span', 'dh-paper dh-paper-add');
       add.setAttribute('aria-hidden', 'true');
       add.append(icon(ICONS.upload, 18));
-      items.push(templateCard('템플릿 추가', 'HWP · HWPX', add, () => {
+      items.push(templateCard('템플릿 추가', 'HWP, HWPX', add, () => {
         if (deps.canAddTemplate?.() === false) return;
         templateInput.click();
       }));

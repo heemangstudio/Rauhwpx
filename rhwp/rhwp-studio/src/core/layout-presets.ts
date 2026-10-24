@@ -92,10 +92,10 @@ export function pageMarginsError(def: PageDef): string | null {
   const width = def.landscape ? def.height : def.width;
   const height = def.landscape ? def.width : def.height;
   if (def.marginLeft + def.marginRight + def.marginGutter >= width) {
-    return '왼쪽·오른쪽·제본 여백의 합이 용지 폭보다 작아야 합니다.';
+    return '왼쪽, 오른쪽, 제본 여백의 합이 용지 폭보다 작아야 합니다.';
   }
   if (def.marginTop + def.marginBottom + def.marginHeader + def.marginFooter >= height) {
-    return '위쪽·아래쪽·머리말·꼬리말 여백의 합이 용지 길이보다 작아야 합니다.';
+    return '위쪽, 아래쪽, 머리말, 꼬리말 여백의 합이 용지 길이보다 작아야 합니다.';
   }
   return null;
 }

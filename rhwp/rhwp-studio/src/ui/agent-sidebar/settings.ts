@@ -1,6 +1,7 @@
 import { createSetupTerminal } from './setup-terminal.ts';
 /** 설정 허브의 탐색과 AI·연결 목적지를 소유한다. 편집 설정은 전용 모듈이 맡는다. */
 import './settings.css';
+import { type SettingsNavIconId, withNavIcon } from './settings-nav-icons.ts';
 import { confirmSheet } from './sheet.ts';
 import { showToast } from '../toast.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
@@ -25,6 +26,7 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createBrowserSettingsPane } from './browser-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
+import { createUsageViews } from './token-usage-view.ts';
 import { createEditingSettings } from './settings-editing.ts';
 import { createThemeSettings } from './settings-theme.ts';
 import { createProjectSettingsPane } from './settings-project.ts';
@@ -34,17 +36,22 @@ import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from 
 import { isDesktopApp } from '../../desktop-integration.ts';
 import { webNotificationsGranted } from '../agent-attention.ts';
 import {
+  aiSettingsSection,
   normalizeSettingsDestination,
+  type AiSettingsSection,
   type DirtyExitChoice,
   type EditorSettingsRuntime,
   type SettingsDestination,
+  type SettingsDestinationInput,
 } from './settings-contract.ts';
+import { createChevron } from '../chevron.ts';
+import { createSleepyHippo } from './sleepy-hippo.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
+import { createSettingsSearch, type SettingsSearchTarget } from './settings-search.ts';
 import {
   formatResetAt,
   formatShortDate,
   formatTokens,
-  formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { ThreadSummary } from '../../agent/threads.ts';
@@ -52,6 +59,7 @@ import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
+import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
@@ -65,10 +73,8 @@ import type {
   PiCatalogModel,
   PiStatus,
   ProviderStatusMap,
-  ProviderUsage,
   SidebarEvent,
   UsageSummary,
-  UsageWindow,
   WritingStyleStatus,
   DocumentTemplate,
 } from '../../agent/types.ts';
@@ -184,21 +190,6 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-/** Provider usage cards use one compact token unit. */
-function formatCompactTokens(value: number): string {
-  return `${formatTokens(value).toLowerCase()} tok`;
-}
-
-function formatUsageWindow(label: string, window_: UsageWindow | null): string {
-  const prefix = label === 'Session' ? '세션: ' : '';
-  if (!window_) return `${prefix}—`;
-  return `${prefix}${window_.turns}회 / ${formatCompactTokens(window_.weightedTokens)}`;
-}
-
-function formatUsageUpdated(timestamp: number | null | undefined): string {
-  return timestamp ? `Updated ${formatUsageAge(timestamp)}` : '';
-}
-
 function createToggleRow(
   label: string,
   description?: string,
@@ -220,6 +211,46 @@ function createToggleRow(
   return { root, input };
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** 점선 화살표의 픽셀: 한 칸씩 띄운 몸통과 끝의 꺾쇠. 2배로 그린다. */
+const ARROW_DOTS: ReadonlyArray<readonly [number, number]> = [
+  [0, 3], [2, 3], [4, 3], [6, 3], [8, 3],
+  [9, 0], [10, 1], [11, 2], [12, 3], [11, 4], [10, 5], [9, 6],
+];
+
+/** 회색 점 위에 흰 점을 겹치고, 흰 점은 진행률만큼 왼쪽부터 드러낸다. */
+function dottedArrow(): { root: SVGSVGElement; fill(percent: number): void } {
+  const root = document.createElementNS(SVG_NS, 'svg');
+  root.setAttribute('class', 'ag-agent-setup-arrow');
+  root.setAttribute('viewBox', '0 0 13 7');
+  root.setAttribute('width', '26');
+  root.setAttribute('height', '14');
+  root.setAttribute('shape-rendering', 'crispEdges');
+  root.setAttribute('aria-hidden', 'true');
+  const layer = (className: string): SVGGElement => {
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', className);
+    for (const [x, y] of ARROW_DOTS) {
+      const dot = document.createElementNS(SVG_NS, 'rect');
+      dot.setAttribute('x', String(x));
+      dot.setAttribute('y', String(y));
+      dot.setAttribute('width', '1');
+      dot.setAttribute('height', '1');
+      group.appendChild(dot);
+    }
+    root.appendChild(group);
+    return group;
+  };
+  layer('ag-agent-setup-arrow-track');
+  const lit = layer('ag-agent-setup-arrow-fill');
+  return {
+    root,
+    fill(percent) {
+      lit.style.clipPath = `inset(0 ${(100 - Math.min(100, Math.max(0, percent))).toFixed(2)}% 0 0)`;
+    },
+  };
+}
+
 /** 편집 중 잠금 눈금의 이름 — 왼쪽 끝은 잠그지 않음, 오른쪽 끝은 작업 내내. */
 function editLockLabel(lock: AgentEditLock): string {
   if (lock === 'off') return '잠그지 않음';
@@ -228,6 +259,13 @@ function editLockLabel(lock: AgentEditLock): string {
 }
 
 const EDIT_LOCK_OPTIONS = AGENT_EDIT_LOCK_STEPS.map((lock) => ({ id: String(lock), label: editLockLabel(lock) }));
+
+/** 슬라이더 아래 눈금 숫자 — 단위는 오른쪽 이름이 알려 준다. */
+function editLockTick(lock: AgentEditLock): string {
+  if (lock === 'off') return '0';
+  if (lock === 'always') return '∞';
+  return String(lock);
+}
 
 function editLockFromId(id: string): AgentEditLock {
   return AGENT_EDIT_LOCK_STEPS.find((lock) => String(lock) === id) ?? AGENT_EDIT_LOCK_STEPS[0]!;
@@ -353,7 +391,7 @@ export interface SettingsPanelDeps {
 
 export interface SettingsPanel {
   element: HTMLElement;
-  open(destination?: SettingsDestination): void;
+  open(destination?: SettingsDestinationInput): void;
   close(): void;
   requestClose(): Promise<boolean>;
   isDirty(): boolean;
@@ -412,6 +450,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   } catch {
     // 세션 저장소가 없어도 기본 목적지로 계속 진행한다.
   }
+  // AI 아래 세부 탭(연결, 사용량, 사용자화)과 사이드 목록에서 펼친 상태.
+  let currentAiSection: AiSettingsSection = 'connection';
+  try {
+    currentAiSection = aiSettingsSection(`ai-${sessionStorage.getItem('rhwp-settings-ai-section')}`) ?? 'connection';
+  } catch {
+    // 세션 저장소가 없으면 연결부터 연다.
+  }
+  let aiGroupExpanded = currentDestination === 'ai';
   let templates: DocumentTemplate[] = [];
   let templatesBusy = false;
   let templatesMessage = '';
@@ -497,18 +543,60 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
   const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
     .rhwpDesktop?.license;
-  const destinations: ReadonlyArray<{ id: SettingsDestination; label: string }> = [
-    { id: 'editing', label: '편집' },
-    { id: 'theme', label: '테마' },
-    { id: 'ai', label: 'AI' },
-    { id: 'browser', label: '브라우저' },
-    { id: 'skills', label: '스킬' },
-    { id: 'project', label: '프로젝트' },
-    { id: 'archive', label: '보관함' },
-    ...(desktopLicense ? [{ id: 'license' as const, label: '라이선스' }] : []),
+  const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [
+    { id: 'editing', label: '편집', icon: 'editing' },
+    { id: 'theme', label: '테마', icon: 'theme' },
+    { id: 'ai', label: 'AI', icon: 'ai' },
+    { id: 'browser', label: '브라우저', icon: 'browser' },
+    { id: 'skills', label: '스킬', icon: 'skills' },
+    { id: 'project', label: '프로젝트', icon: 'project' },
+    { id: 'archive', label: '보관함', icon: 'archive' },
+    ...(desktopLicense ? [{ id: 'license' as const, label: '라이선스', icon: 'license' as const }] : []),
   ];
+  const aiSections: ReadonlyArray<{ id: AiSettingsSection; label: string; icon: SettingsNavIconId }> = [
+    { id: 'connection', label: '연결', icon: 'connection' },
+    { id: 'usage', label: '사용량', icon: 'usage' },
+    { id: 'custom', label: '사용자화', icon: 'customize' },
+  ];
+  const aiSectionButtons = new Map<AiSettingsSection, HTMLButtonElement>();
+  // AI 는 탭이 아니라 묶음 머리다. 누르면 아래에 세부 탭이 펼쳐진다.
+  const aiGroupHeader = el('button', 'ag-settings-nav-button ag-settings-nav-group');
+  aiGroupHeader.type = 'button';
+  aiGroupHeader.id = 'ag-settings-tab-ai';
+  aiGroupHeader.append(
+    withNavIcon(el('span', 'ag-settings-nav-group-label', 'AI'), 'ai'),
+    createChevron('ag-settings-nav-group-caret'),
+  );
+  const aiGroupList = el('div', 'ag-settings-nav-sublist');
+  aiGroupList.id = 'ag-settings-nav-ai-sections';
+  aiGroupList.setAttribute('role', 'group');
+  aiGroupList.setAttribute('aria-labelledby', aiGroupHeader.id);
+  aiGroupHeader.setAttribute('aria-controls', aiGroupList.id);
+  for (const section of aiSections) {
+    const sub = withNavIcon(el('button', 'ag-settings-nav-button ag-settings-nav-sub', section.label), section.icon);
+    sub.type = 'button';
+    sub.id = `ag-settings-tab-ai-${section.id}`;
+    sub.dataset.destination = 'ai';
+    sub.dataset.aiSection = section.id;
+    sub.setAttribute('role', 'tab');
+    sub.setAttribute('aria-controls', 'ag-settings-pane-ai');
+    aiGroupList.appendChild(sub);
+    aiSectionButtons.set(section.id, sub);
+  }
   for (const destination of destinations) {
-    const button = el('button', 'ag-settings-nav-button', destination.label);
+    const button = destination.id === 'ai'
+      ? aiGroupHeader
+      : withNavIcon(el('button', 'ag-settings-nav-button', destination.label), destination.icon);
+    if (destination.id === 'ai') {
+      const pane = el('section', 'ag-settings-pane');
+      pane.id = 'ag-settings-pane-ai';
+      pane.dataset.destination = 'ai';
+      pane.setAttribute('role', 'tabpanel');
+      navigation.append(aiGroupHeader, aiGroupList);
+      panes.set('ai', pane);
+      navButtons.set('ai', aiGroupHeader);
+      continue;
+    }
     button.type = 'button';
     button.id = `ag-settings-tab-${destination.id}`;
     button.dataset.destination = destination.id;
@@ -810,6 +898,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
   setupUpdate.type = 'button';
   setupVersionRow.append(el('span', 'ag-agent-setup-row-label', '버전'), setupVersionValue, setupUpdate);
+  // 업데이트하는 동안 지금 버전과 새 버전 사이의 점선 화살표. 진행한 만큼 회색 점이 흰색으로 찬다.
+  const setupVersionArrow = dottedArrow();
   setupStatusCard.append(setupAccountRow, setupVersionRow);
   const setupProgress = el('div', 'ag-agent-setup-progress');
   setupProgress.setAttribute('role', 'progressbar');
@@ -1028,7 +1118,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
 
   // ── 2. 기본 설정 ──────────────────────────────────────
-  const defaults = createSection('새 대화 기본값');
+  const defaults = createSection('기본 모델');
   defaults.root.classList.add('ag-settings-defaults');
   const agentField = createSelect('제공자', selectableAgents().map(
     (agent) => ({ id: agent, label: AGENT_LABEL[agent] }),
@@ -1071,6 +1161,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const editLockValue = el('span', 'ag-settings-edit-lock-value');
   const editLockSlider = createEffortSlider({
     ariaLabel: '에이전트 편집 중 문서 잠금',
+    tickLabel: (id) => editLockTick(editLockFromId(id)),
     onChange: (id) => stagePrefs({ editLock: editLockFromId(id) }),
     onPreview: (id) => { editLockValue.textContent = editLockLabel(editLockFromId(id)); },
   });
@@ -1078,7 +1169,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   editLockField.append(el('span', 'ag-settings-field-label', '잠금'), editLockSlider.root, editLockValue);
   editLockSection.body.append(editLockField);
 
-  const modelCatalogSection = createSection('사용할 모델');
+  const modelCatalogSection = createSection('모델');
   modelCatalogSection.root.classList.add('ag-settings-model-catalog-section');
   const modelCatalogCard = el('div', 'ag-settings-model-catalog-card');
   const modelCatalogTop = el('div', 'ag-settings-model-catalog-top');
@@ -1144,7 +1235,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const modelCatalogList = el('div', 'ag-settings-model-list');
   modelCatalogList.id = 'ag-settings-model-list';
   modelCatalogList.setAttribute('role', 'tabpanel');
-  modelCatalogList.setAttribute('aria-label', '사용할 모델 선택');
+  modelCatalogList.setAttribute('aria-label', '모델 선택');
   modelCatalogList.addEventListener('keydown', (event) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const rows = [...modelCatalogList.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
@@ -1164,12 +1255,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   // ── 4. 지시 ──────────────────────────────────────────
   const instructionsSection = createSection('지시');
   instructionsSection.root.classList.add('ag-settings-instructions-section');
-  const instructionsEditor = document.createElement('textarea');
-  instructionsEditor.className = 'ag-settings-instructions-editor';
-  instructionsEditor.rows = 11;
-  instructionsEditor.spellcheck = false;
-  instructionsEditor.placeholder = 'AGENTS.md를 불러오는 중…';
-  instructionsEditor.setAttribute('aria-label', '앱 전용 AGENTS.md 지시');
+  const instructionsEditor = createMarkdownEditor({
+    className: 'ag-settings-instructions-editor',
+    ariaLabel: '앱 전용 AGENTS.md 지시',
+    placeholder: 'AGENTS.md를 불러오는 중…',
+  });
   const instructionsStatus = el('p', 'ag-settings-instructions-status');
   instructionsStatus.hidden = true;
   const instructionsProposal = el('div', 'ag-settings-instructions-proposal');
@@ -1191,10 +1281,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     instructionsProposalPreview,
     instructionsProposalActions,
   );
-  const instructionsActions = el('div', 'ag-settings-actions');
-  const instructionsReload = el('button', 'ag-settings-btn', '다시 불러오기');
+  // 다시 불러오기는 머리줄 오른쪽의 작은 아이콘 버튼으로 둔다(사용량 머리줄의 새로고침과 같은 모양).
+  const instructionsReload = el('button', 'ag-settings-quota-refresh');
   instructionsReload.type = 'button';
-  instructionsActions.append(instructionsReload);
+  instructionsReload.title = '다시 불러오기';
+  instructionsReload.setAttribute('aria-label', '다시 불러오기');
+  instructionsReload.append(createIcon('refresh'));
+  instructionsSection.head.append(instructionsReload);
   const hancomGit = createToggleRow('한컴용 Git 사용하기');
   hancomGit.input.checked = userSettings.getUseHancomGit();
   hancomGit.input.addEventListener('change', () => {
@@ -1205,12 +1298,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   instructionsSection.body.append(
     instructionsProposal,
-    instructionsEditor,
+    instructionsEditor.root,
     instructionsStatus,
-    instructionsActions,
   );
   const gitSection = createSection('Git');
   gitSection.body.append(hancomGit.root);
+  // 바꾸는 즉시 적용되는 문서 설정이라 편집 탭의 적용 줄 위에 둔다.
+  editingSettings.element.insertBefore(
+    gitSection.root,
+    editingSettings.element.querySelector(':scope > .ag-settings-apply-footer'),
+  );
   // 백그라운드 채팅 알림 — 데스크톱은 늘, 웹은 이 사이트가 이미 알림을 허락받았을 때만 보인다.
   // 꺼도 채팅 목록의 점과 확인 필요 칩은 남는다. Git 전환처럼 바꾸는 즉시 적용한다.
   const desktopShell = isDesktopApp();
@@ -1376,61 +1473,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const usageFeedback = el('p', 'ag-settings-note');
   usageFeedback.setAttribute('role', 'status');
   quotaSection.body.append(usageFeedback, quotaCards.element);
-  const usageDisclosure = el('details', 'ag-settings-usage-disclosure');
-  const usageSummary = el('summary', '', '로컬 사용 기록 및 크레딧');
-  const usageTable = el('table', 'ag-settings-usage-table');
-  usageTable.setAttribute('aria-label', '로컬 사용 기록 및 크레딧');
-  const usageTableHead = el('thead', '');
-  const usageColumns = el('tr', '');
-  for (const label of ['제공자', '오늘', '주간']) {
-    const cell = el('th', '', label);
-    cell.scope = 'col';
-    usageColumns.append(cell);
-  }
-  usageTableHead.append(usageColumns);
-  usageTable.append(usageTableHead);
-  usageDisclosure.append(usageSummary, usageTable);
-  quotaSection.body.append(usageDisclosure);
-
-  function createUsageRow(agent: AgentName) {
-    const root = el('tbody', 'ag-settings-usage-block');
-    root.dataset.agent = agent;
-    const row = el('tr', '');
-    const provider = el('th', '');
-    provider.scope = 'row';
-    const toggle = el('button', 'ag-settings-usage-toggle');
-    toggle.type = 'button';
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.append(createProviderIcon(agent), document.createTextNode(AGENT_LABEL[agent]));
-    provider.append(toggle);
-    const day = el('td', 'ag-settings-usage-day');
-    const week = el('td', 'ag-settings-usage-day');
-    row.append(provider, day, week);
-    const expanded = el('tr', 'ag-settings-usage-expanded');
-    expanded.hidden = true;
-    const content = el('td', '');
-    content.colSpan = 3;
-    content.id = `ag-local-usage-${agent}`;
-    toggle.setAttribute('aria-controls', content.id);
-    const credits = el('div', 'ag-settings-row-detail');
-    const session = el('div', 'ag-settings-usage-session');
-    const models = el('div', 'ag-settings-usage-models');
-    const updated = el('div', 'ag-settings-usage-updated');
-    content.append(credits, session, models, updated);
-    expanded.append(content);
-    toggle.addEventListener('click', () => {
-      expanded.hidden = !expanded.hidden;
-      toggle.setAttribute('aria-expanded', String(!expanded.hidden));
-    });
-    root.append(row, expanded);
-    usageTable.append(root);
-    return { root, session, day, week, models, updated, credits };
-  }
-
-  const usageBlocks = new Map(PLAN_AGENTS.map(agent => [agent, createUsageRow(agent)]));
-  const piUsage = createUsageRow('pi');
-  const { root: piUsageBlock, credits: piUsageCredits, day: piUsageDay,
-    week: piUsageWeek, models: piUsageModels, updated: piUsageUpdated } = piUsage;
+  const usageViews = createUsageViews(bridge, { section: quotaSection.root, refreshLimits: () => void refreshUsage(true) });
+  quotaSection.head.append(usageViews.controls);
+  quotaSection.body.append(usageViews.element);
 
   const aiStatus = el('p', 'ag-settings-apply-status');
   aiStatus.hidden = true;
@@ -1441,15 +1486,36 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   aiApply.type = 'button';
   const aiFooter = el('div', 'ag-settings-apply-footer ag-settings-ai-footer');
   aiFooter.append(aiStatus, aiCancel, aiApply);
-  // 자주 바꾸고 결과가 큰 것부터: 기본값 → 연결 → 사용량 → 모델 목록 → 지시·보정·템플릿.
-  // 드물게 쓰는 원격 브라우저 키와 Git 전환은 접힌 고급 묶음에 둔다.
-  const advanced = el('details', 'ag-settings-advanced');
-  const advancedSummary = el('summary', 'ag-settings-advanced-summary', '고급');
-  advanced.append(advancedSummary, gitSection.root);
+  // 자주 바꾸고 결과가 큰 것부터 둔다. 세부 탭은 이 순서를 그대로 걸러 보여 준다.
   const aiContent = el('div', 'ag-settings-destination-content');
+  const aiSectionMembers: ReadonlyArray<readonly [AiSettingsSection, HTMLElement]> = [
+    ['connection', connection.root],
+    ['usage', quotaSection.root],
+    ['connection', defaults.root],
+    ['custom', editLockSection.root],
+    ['connection', modelCatalogSection.root],
+    ['custom', instructionsSection.root],
+    ['custom', calibration.root],
+    ['custom', templatesSection.root],
+    ['custom', notificationsSection.root],
+    ...(autofixSection ? [['connection', autofixSection.root] as const] : []),
+  ];
+  // 좁은 폭에서는 사이드 목록이 가로 탭 줄이 되므로 세부 탭을 본문 위에 따로 둔다.
+  const aiSubnav = el('div', 'ag-settings-segmented ag-settings-ai-subnav');
+  aiSubnav.setAttribute('role', 'tablist');
+  aiSubnav.setAttribute('aria-label', 'AI 설정');
+  const aiSubnavButtons = new Map<AiSettingsSection, HTMLButtonElement>();
+  for (const section of aiSections) {
+    const segment = el('button', 'ag-settings-segment', section.label);
+    segment.type = 'button';
+    segment.setAttribute('role', 'tab');
+    segment.addEventListener('click', () => selectAiSection(section.id));
+    aiSubnav.appendChild(segment);
+    aiSubnavButtons.set(section.id, segment);
+  }
   aiContent.append(
+    aiSubnav,
     defaults.root,
-    editLockSection.root,
     connection.root,
     quotaSection.root,
     modelCatalogSection.root,
@@ -1458,7 +1524,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     templatesSection.root,
     notificationsSection.root,
     ...(autofixSection ? [autofixSection.root] : []),
-    advanced,
+    editLockSection.root,
     aiFooter,
   );
   panes.get('ai')?.appendChild(aiContent);
@@ -1470,19 +1536,119 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   aiApply.addEventListener('click', () => void applyAiDraft());
   aiCancel.addEventListener('click', cancelAiDraft);
+  aiGroupHeader.addEventListener('click', () => {
+    if (aiGroupExpanded && currentDestination === 'ai') {
+      aiGroupExpanded = false;
+      renderDestinationState();
+      return;
+    }
+    aiGroupExpanded = true;
+    if (currentDestination === 'ai') renderDestinationState();
+    else void requestDestination('ai');
+  });
   for (const [destination, button] of navButtons) {
-    button.addEventListener('click', () => void requestDestination(destination));
-    button.addEventListener('keydown', (event) => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight'
-        && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-      event.preventDefault();
-      const shown = destinations.filter((item) => !navButtons.get(item.id)?.hidden);
-      const index = shown.findIndex((item) => item.id === destination);
-      const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
-      const next = shown[(index + delta + shown.length) % shown.length];
-      if (next) void requestDestination(next.id);
+    if (destination !== 'ai') button.addEventListener('click', () => void requestDestination(destination));
+  }
+  for (const [section, button] of aiSectionButtons) {
+    button.addEventListener('click', () => {
+      if (currentDestination === 'ai') selectAiSection(section);
+      else void requestDestination('ai', section);
     });
   }
+  // 왼쪽 목록 맨 위의 검색: 모든 탭의 머리말과 라벨을 찾아 그 자리로 데려간다.
+  const searchSelector = '.ag-settings-section-title, .ag-settings-group-title, .ag-settings-group-heading, .ag-settings-control-label, .ag-settings-field-label';
+  function collectSearchTargets(): SettingsSearchTarget[] {
+    const targets: SettingsSearchTarget[] = [];
+    for (const destination of destinations) {
+      const pane = panes.get(destination.id);
+      if (!pane) continue;
+      for (const label of pane.querySelectorAll<HTMLElement>(searchSelector)) {
+        const text = label.textContent?.trim();
+        // 프로젝트·보관한 채팅 이름은 설정이 아니다.
+        if (!text || label.closest('.ag-pset-storage')) continue;
+        let hidden = false;
+        for (let node: HTMLElement | null = label; node && node !== pane; node = node.parentElement) {
+          if (node.hidden) { hidden = true; break; }
+        }
+        if (hidden) continue;
+        const aiSection = destination.id === 'ai'
+          ? aiSectionMembers.find(([, member]) => member.contains(label))?.[0]
+          : undefined;
+        const sectionLabel = aiSection ? aiSections.find((section) => section.id === aiSection)?.label : undefined;
+        const icon = aiSection ? aiSections.find((section) => section.id === aiSection)?.icon : destination.icon;
+        targets.push({
+          label: text,
+          path: sectionLabel ? `${destination.label} › ${sectionLabel}` : destination.label,
+          icon,
+          element: label,
+        });
+      }
+    }
+    return targets;
+  }
+  async function openSearchTarget(target: SettingsSearchTarget): Promise<void> {
+    const pane = target.element.closest<HTMLElement>('.ag-settings-pane');
+    const destination = pane?.dataset.destination as SettingsDestination | undefined;
+    if (!destination) return;
+    const aiSection = destination === 'ai'
+      ? aiSectionMembers.find(([, member]) => member.contains(target.element))?.[0]
+      : undefined;
+    if (destination !== currentDestination) {
+      if (!await resolveDirtyExit()) return;
+      selectDestination(destination, aiSection);
+    } else if (aiSection && aiSection !== currentAiSection) {
+      selectAiSection(aiSection);
+    }
+    const spot = target.element.closest<HTMLElement>('.ag-settings-control-row, .ag-settings-field, .ag-settings-section, .ag-settings-group')
+      ?? target.element;
+    requestAnimationFrame(() => {
+      spot.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      // 찾은 머리말·라벨 글자만 하마 색으로 잠깐 밝힌다. 스크롤이 멈춘 뒤에 켜야 눈에 들어온다.
+      const hit = target.element;
+      hit.classList.remove('ag-settings-search-hit');
+      let started = false;
+      const flash = () => {
+        if (started) return;
+        started = true;
+        document.removeEventListener('scrollend', flash, true);
+        void hit.offsetWidth;
+        hit.classList.add('ag-settings-search-hit');
+        hit.addEventListener('animationend', () => hit.classList.remove('ag-settings-search-hit'), { once: true });
+      };
+      document.addEventListener('scrollend', flash, true);
+      // 이미 보이는 자리라 스크롤이 없으면 scrollend 가 오지 않는다.
+      setTimeout(flash, 700);
+    });
+  }
+  const settingsSearch = createSettingsSearch({
+    collect: collectSearchTargets,
+    open: (target) => void openSearchTarget(target),
+    onActiveChange: (active) => navigation.classList.toggle('ag-settings-searching', active),
+  });
+  navigation.prepend(settingsSearch.root);
+  element.addEventListener('keydown', (event) => {
+    if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    event.preventDefault();
+    settingsSearch.focus();
+  });
+  // 위아래 화살표는 보이는 목록 순서대로 옮긴다. 펼친 AI 묶음은 머리 대신 세부 탭이 자리를 차지한다.
+  navigation.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight'
+      && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    const items = [...navigation.querySelectorAll<HTMLButtonElement>('.ag-settings-nav-button')]
+      .filter((button) => !button.hidden && !button.closest('[hidden]'));
+    const index = items.indexOf(event.target as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+    const next = items[(index + delta + items.length) % items.length];
+    if (!next) return;
+    next.focus();
+    if (next === aiGroupHeader) return;
+    next.click();
+  });
   shellReady = true;
 
   setupKey.input.addEventListener('input', renderAgentSetup);
@@ -1539,14 +1705,17 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const selected = destination.id === currentDestination;
       const button = navButtons.get(destination.id);
       const pane = panes.get(destination.id);
-      button?.classList.toggle('ag-active', selected);
-      button?.setAttribute('aria-selected', String(selected));
-      button?.setAttribute('tabindex', selected ? '0' : '-1');
+      if (destination.id !== 'ai') {
+        button?.classList.toggle('ag-active', selected);
+        button?.setAttribute('aria-selected', String(selected));
+        button?.setAttribute('tabindex', selected ? '0' : '-1');
+      }
       if (pane) {
         pane.hidden = !selected;
         pane.inert = !selected;
       }
     }
+    renderAiSectionState();
     const dirty = isAiDirty();
     aiApply.disabled = !dirty || instructionsBusy || aiPrefsSaving;
     aiCancel.disabled = !dirty || instructionsBusy || aiPrefsSaving;
@@ -1561,7 +1730,49 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         : modelCatalogLoading.has(modelCatalogAgent));
   }
 
-  function selectDestination(destination: SettingsDestination): void {
+  function renderAiSectionState(): void {
+    const onAi = currentDestination === 'ai';
+    aiGroupHeader.setAttribute('aria-expanded', String(aiGroupExpanded));
+    aiGroupHeader.classList.toggle('ag-has-active', onAi);
+    // 접힌 채로 AI 에 있으면 머리가 고른 자리를 대신 보여 주고 키보드 초점도 받는다.
+    aiGroupHeader.classList.toggle('ag-active', onAi && !aiGroupExpanded);
+    aiGroupHeader.setAttribute('tabindex', onAi && !aiGroupExpanded ? '0' : '-1');
+    aiGroupList.hidden = !aiGroupExpanded;
+    for (const [section, button] of aiSectionButtons) {
+      const selected = onAi && section === currentAiSection;
+      button.classList.toggle('ag-active', selected);
+      button.setAttribute('aria-selected', String(selected));
+      button.setAttribute('tabindex', selected && aiGroupExpanded ? '0' : '-1');
+    }
+    for (const [section, segment] of aiSubnavButtons) {
+      const selected = section === currentAiSection;
+      segment.classList.toggle('ag-active', selected);
+      segment.setAttribute('aria-selected', String(selected));
+    }
+    for (const [section, member] of aiSectionMembers) member.classList.toggle('ag-settings-ai-off', section !== currentAiSection);
+    syncTokenUsage();
+    const pane = panes.get('ai');
+    pane?.setAttribute('aria-labelledby', aiGroupExpanded ? `ag-settings-tab-ai-${currentAiSection}` : aiGroupHeader.id);
+  }
+
+  function selectAiSection(section: AiSettingsSection): void {
+    const changed = section !== currentAiSection;
+    currentAiSection = section;
+    aiGroupExpanded = true;
+    try {
+      sessionStorage.setItem('rhwp-settings-ai-section', section);
+    } catch {
+      // 세션 저장소가 막혀도 설정 탐색은 계속 동작한다.
+    }
+    renderAiSectionState();
+    if (changed) panes.get('ai')?.scrollTo({ top: 0 });
+  }
+
+  function selectDestination(destination: SettingsDestination, aiSection?: AiSettingsSection): void {
+    if (destination === 'ai') {
+      aiGroupExpanded = true;
+      if (aiSection) selectAiSection(aiSection);
+    }
     currentDestination = destination;
     lastDestination = destination;
     try {
@@ -1629,7 +1840,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const result = persistPrefs(nextPrefs);
       if (!result.ok) {
         prefsDraft = nextPrefs;
-        aiStatus.textContent = `AI 기본값을 저장하지 못했습니다 · ${result.error}`;
+        aiStatus.textContent = `AI 기본값을 저장하지 못했습니다. ${result.error}`;
         aiStatus.hidden = false;
         renderDestinationState();
         return false;
@@ -1769,11 +1980,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
   }
 
-  async function requestDestination(destination: SettingsDestination): Promise<void> {
+  async function requestDestination(destination: SettingsDestination, aiSection?: AiSettingsSection): Promise<void> {
     if (destination === currentDestination) return;
     if (!await resolveDirtyExit()) return;
-    selectDestination(destination);
-    navButtons.get(destination)?.focus();
+    selectDestination(destination, aiSection);
+    if (destination === 'ai') aiSectionButtons.get(currentAiSection)?.focus();
+    else navButtons.get(destination)?.focus();
   }
 
   function templateSize(bytes: number): string {
@@ -1787,7 +1999,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const text = el('div', 'ag-template-row-text');
       text.append(
         el('span', 'ag-settings-row-name', template.name),
-        el('span', 'ag-settings-row-detail', `${template.format.toUpperCase()} · ${templateSize(template.size)} · ${template.pageCount}쪽 · r${template.revision}`),
+        el('span', 'ag-settings-row-detail', `${template.format.toUpperCase()}, ${templateSize(template.size)}, ${template.pageCount}쪽, r${template.revision}`),
       );
       const actions = el('div', 'ag-template-actions');
       const rename = el('button', 'ag-settings-btn', '이름 변경');
@@ -1976,7 +2188,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     modelCatalogCount.textContent = `${selected.size}개 선택`;
     modelCatalogStatus.textContent = modelCatalogLoading.has(agent) ? '목록을 불러오는 중…'
       : modelCatalogErrors.has(agent) ? '목록을 불러오지 못했습니다. 새로고침을 눌러 다시 시도하세요.'
-      : terms.length ? `${matches.length}개 결과` : `${entries.length}개 모델`;
+      : terms.length ? `${matches.length}개 결과` : '';
     modelCatalogRefresh.disabled = aiPrefsSaving || modelCatalogLoading.has(agent) || connectionState !== 'connected';
   }
 
@@ -2324,9 +2536,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   function paintSetupInstallProgress(): void {
     setupProgressFill.style.width = `${setupProgressPercent.toFixed(2)}%`;
+    setupVersionArrow.fill(setupProgressPercent);
     setupProgress.setAttribute('aria-valuenow', String(Math.round(setupProgressPercent)));
     setupProgress.setAttribute('aria-valuetext', `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`);
-    setupProgressLine.textContent = `${setupProgressLabel} · ${Math.floor(setupProgressPercent)}%`;
+    setupProgressLine.textContent = `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`;
   }
 
   function ensureSetupProgressCreep(): void {
@@ -2456,7 +2669,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupAccountLogout.disabled = setupBusy || connectionState !== 'connected';
     setupVersionRow.hidden = !(updateVersion || (showConnected && status?.version));
     setupVersionValue.replaceChildren(status?.version ?? '');
-    if (updateVersion) {
+    if (updateVersion && installing) {
+      setupVersionValue.append(setupVersionArrow.root, el('span', 'ag-agent-setup-row-next', updateVersion));
+    } else if (updateVersion) {
       setupVersionValue.append(el('span', 'ag-agent-setup-row-note', `새 버전 ${updateVersion}`));
     }
     setupUpdate.hidden = !updateVersion;
@@ -2472,7 +2687,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupProgress.hidden = setupProgressPercent <= 0;
     setupProgressLine.hidden = setupProgressPercent <= 0;
     setupProgressLine.textContent = setupProgressPercent > 0
-      ? `${setupProgressLabel} · ${Math.floor(setupProgressPercent)}%`
+      ? `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`
       : '';
     setupInstall.disabled = setupBusy || connectionState !== 'connected';
     const authBusyElsewhere = status?.authenticating === true && status.authOwnedByThisSession !== true;
@@ -2586,7 +2801,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     if (!started.authRunId) {
       setupBusy = false;
-      setupMessage = '로그인 보안 정보 수신 실패 · 다시 시도';
+      setupMessage = '로그인 보안 정보 수신 실패, 다시 시도';
       clearSetupAuthPrompt();
       renderAgentSetup();
       return;
@@ -2653,58 +2868,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return row;
   }
 
-  function buildModelRows(providerUsage: ProviderUsage | null, agent: AgentName): HTMLElement[] {
-    const entries = Object.entries(providerUsage?.byModel ?? {});
-    if (entries.length === 0) return [];
-    entries.sort((a, b) => b[1].weightedTokens - a[1].weightedTokens);
-    const rows: HTMLElement[] = [el('div', 'ag-settings-usage-models-title', 'Models')];
-    for (const [model, stats] of entries) {
-      const row = el('div', 'ag-settings-model-row');
-      const metrics = [
-        `${stats.turns}calls`,
-        formatCompactTokens(stats.weightedTokens),
-        ...(typeof stats.costUsd === 'number' && stats.costUsd > 0 ? [formatUsd(stats.costUsd)] : []),
-      ];
-      row.append(
-        el('span', 'ag-settings-model-name', labelForModel(agent, model)),
-        el('span', 'ag-settings-model-tokens', metrics.join(' | ')),
-      );
-      rows.push(row);
-    }
-    return rows;
-  }
-
-  function renderPiUsage(): void {
-    piUsageBlock.hidden = piStatus?.setupComplete !== true;
-    if (piUsageBlock.hidden) return;
-    const credits = usage?.openrouter ?? null;
-    piUsageCredits.textContent = credits
-      ? (credits.error ?? `Balance ${formatUsd(credits.balanceUsd)} | Added ${formatUsd(credits.totalCreditsUsd)}`)
-      : 'Checking balance…';
-    const providerUsage = usage?.providers?.pi ?? null;
-    piUsageDay.textContent = providerUsage
-      ? formatUsageWindow('Today', providerUsage.day)
-      : formatUsageWindow('Today', null);
-    piUsageWeek.textContent = providerUsage
-      ? formatUsageWindow('Week', providerUsage.week)
-      : formatUsageWindow('Week', null);
-    piUsageModels.replaceChildren(...buildModelRows(providerUsage, 'pi'));
-    piUsageUpdated.textContent = formatUsageUpdated(providerUsage?.updatedAt);
-  }
-
   function renderUsage(): void {
     quotaCards.render(usage);
-    renderPiUsage();
-    for (const agent of PLAN_AGENTS) {
-      const ui = usageBlocks.get(agent);
-      if (!ui) continue;
-      const providerUsage = usage?.providers?.[agent] ?? null;
-      ui.session.textContent = formatUsageWindow('Session', providerUsage?.session ?? null);
-      ui.day.textContent = formatUsageWindow('Today', providerUsage?.day ?? null);
-      ui.week.textContent = formatUsageWindow('Week', providerUsage?.week ?? null);
-      ui.models.replaceChildren(...buildModelRows(providerUsage, agent));
-      ui.updated.textContent = formatUsageUpdated(providerUsage?.updatedAt);
-    }
   }
 
   // ── pi 마법사 ─────────────────────────────────────────
@@ -2727,9 +2892,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (!piStatus) return connectionState === 'connected' ? '확인 중…' : '허브 연결 대기';
     const version = piStatus.version ?? '설치됨';
     if (!piStatus.installed) return '설치 안 됨';
-    if (!piHasCredential()) return `${version} · 키 필요`;
-    if (piStatus.models.length === 0) return `${version} · 모델 필요`;
-    return `${version} · 모델 ${piStatus.models.length}개`;
+    if (!piHasCredential()) return `${version}, 키 필요`;
+    if (piStatus.models.length === 0) return `${version}, 모델 필요`;
+    return `${version}, 모델 ${piStatus.models.length}개`;
   }
 
   function piEffortLabel(effort: string): string {
@@ -2777,7 +2942,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     row.classList.toggle('ag-active', picked);
     row.setAttribute('aria-pressed', String(picked));
     row.setAttribute('aria-label', `${model.name}, ${picked ? '선택됨' : '선택 안 됨'}`);
-    row.title = `${model.id} · ${model.provider}\n${formatTokens(model.contextLength)} 콘텍스트 · 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))} · 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ' · 추론' : ''}`;
+    row.title = `${model.id} (${model.provider})\n${formatTokens(model.contextLength)} 콘텍스트, 입력 ${formatUsd(pricePerMillion(model.pricing.prompt))}, 출력 ${formatUsd(pricePerMillion(model.pricing.completion))}${model.reasoning ? ', 추론' : ''}`;
     const text = el('span', 'ag-settings-model-row-text');
     text.append(el('span', 'ag-settings-model-row-name', model.name));
     const trailing = el('span', 'ag-settings-model-row-trailing');
@@ -2824,9 +2989,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     modelCatalogAgent = 'pi';
     modelCatalogSearch.value = '';
     closeAgentSetup();
-    selectDestination('ai');
+    // 이미 모델 목록을 보고 있으면(Codex 에서 Pi 탭으로 옮길 때) 스크롤 자리를 그대로 둔다.
+    const alreadyShown = currentDestination === 'ai' && currentAiSection === 'connection';
+    if (!alreadyShown) selectDestination('ai', 'connection');
     renderPi();
-    modelCatalogSection.root.scrollIntoView({ block: 'nearest' });
+    if (!alreadyShown) modelCatalogSection.root.scrollIntoView({ block: 'nearest' });
     modelCatalogSearch.focus({ preventScroll: true });
     if (piHasCredential() && !piCatalogTried) void loadPiCatalog(false);
   }
@@ -2837,10 +3004,26 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const focusedId = modelCatalogList.contains(document.activeElement)
       ? (document.activeElement as HTMLElement).dataset.modelId : null;
     const scrollTop = modelCatalogList.scrollTop;
-    const matches = filterPiCatalog(modelCatalogSearch.value);
-    const visible = matches.slice(0, PI_CATALOG_VISIBLE_MAX);
+    // OpenRouter 목록은 수백 개라 검색하지 않을 때는 고른 모델만 보여 준다.
+    const searching = modelCatalogSearch.value.trim().length > 0;
+    const matches = searching ? filterPiCatalog(modelCatalogSearch.value) : [];
+    const visible = searching
+      ? matches.slice(0, PI_CATALOG_VISIBLE_MAX)
+      : piDraft.map((draft) => piCatalog.find((model) => model.id === draft.id) ?? {
+        id: draft.id,
+        name: draft.name || draft.id,
+        provider: draft.id.split('/')[0] ?? '',
+        contextLength: 0,
+        pricing: { prompt: 0, completion: 0 },
+        reasoning: draft.reasoning,
+        supportsImages: false,
+      });
     modelCatalogList.replaceChildren();
-    if (!ready || piCatalogLoading || visible.length === 0) {
+    if (ready && !piCatalogLoading && !searching && visible.length === 0) {
+      const empty = el('div', 'ag-settings-model-empty ag-settings-model-empty-hippo');
+      empty.append(createSleepyHippo('ag-sleepy-hippo'), el('span', '', '검색해서 모델을 선택해주세요'));
+      modelCatalogList.append(empty);
+    } else if (!ready || piCatalogLoading || visible.length === 0) {
       modelCatalogList.append(el('div', 'ag-settings-model-empty', !ready ? 'Pi 연결 후 모델을 선택하세요.'
         : piCatalogLoading ? '모델을 불러오는 중…' : '검색 결과가 없습니다.'));
     } else {
@@ -2850,9 +3033,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (focusedId) [...modelCatalogList.querySelectorAll<HTMLButtonElement>('button')]
       .find((row) => row.dataset.modelId === focusedId)?.focus({ preventScroll: true });
     renderPiChips();
+    // 검색하지 않을 때는 목록이 곧 고른 모델이라 칩을 겹쳐 두지 않는다.
+    if (!searching) piChips.hidden = true;
     modelCatalogCount.textContent = `${piDraft.length}/${PI_MODEL_MAX} 선택`;
     modelCatalogStatus.textContent = piMessage || (ready
-      ? matches.length > visible.length ? `${matches.length}개 중 ${visible.length}개 · 검색으로 찾기` : `${matches.length}개 모델`
+      ? matches.length > visible.length ? `${matches.length}개 중 ${visible.length}개, 검색으로 찾기` : ''
       : 'OpenRouter');
     modelCatalogRefresh.disabled = !ready || !online || piBusy || setupBusy || piCatalogLoading;
     modelCatalogSearch.disabled = !ready;
@@ -2986,7 +3171,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       );
       piBarDeterminate(piProgressPercent);
       const label = PI_PROGRESS_LABEL[piProgressPhase] ?? '';
-      piProgress = `${label} · ${Math.floor(piProgressPercent)}%`;
+      piProgress = `${label} ${Math.floor(piProgressPercent)}%`;
       piProgressLine.textContent = piProgress;
     }, 100);
   }
@@ -3025,7 +3210,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (piBusy) return;
     piBusy = true;
     piMessage = '';
-    piProgress = `${PI_PROGRESS_LABEL.preparing} · 8%`;
+    piProgress = `${PI_PROGRESS_LABEL.preparing} 8%`;
     setPiInstallProgress(8, 'preparing');
     renderPi();
     const status = await bridge.installPi();
@@ -3124,9 +3309,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderProviders();
   }
 
+  function syncTokenUsage(): void {
+    usageViews.setActive(settingsOpen && !disposed && !document.hidden && currentDestination === 'ai' && currentAiSection === 'usage');
+  }
+
   function syncUsagePolling(): void {
     if (usagePoll) clearInterval(usagePoll);
     usagePoll = null;
+    syncTokenUsage();
     if (!settingsOpen || currentDestination !== 'ai' || document.hidden || disposed) return;
     void refreshUsage();
     usagePoll = setInterval(() => void refreshUsage(), 60_000);
@@ -3137,6 +3327,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (usageBusy || disposed) return;
     usageBusy = true;
     quotaCards.setRefreshing(true);
+    usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
     try {
@@ -3149,13 +3340,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       usageFeedback.hidden = !refresh;
     } catch (error) {
       if (!disposed) {
-        usageFeedback.textContent = `조회 실패 · 다시 시도 ${error instanceof Error ? error.message : ''}`;
+        usageFeedback.textContent = `조회 실패, 다시 시도 ${error instanceof Error ? error.message : ''}`;
         usageFeedback.hidden = false;
       }
     } finally {
       usageBusy = false;
       if (!disposed) {
         quotaCards.setRefreshing(false);
+        usageViews.setLimitsRefreshing(false);
       }
     }
   }
@@ -3173,8 +3365,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     agentInstructions = status;
     if (changedElsewhere && !force) {
       instructionsMessage = changedByAgent
-        ? '에이전트가 지시를 변경했습니다 · 초안 보존됨'
-        : '다른 창에서 지시가 변경됐습니다 · 초안 보존됨';
+        ? '에이전트가 지시를 변경했습니다. 초안은 보존됩니다.'
+        : '다른 창에서 지시가 변경됐습니다. 초안은 보존됩니다.';
     } else {
       instructionsEditor.value = status.content;
       instructionsDraftRevision = status.revision;
@@ -3200,7 +3392,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const expiryLabel = Number.isFinite(expiresAt)
         ? formatResetAt(expiresAt).replace('리셋', '만료')
         : '만료 시간 오류';
-      instructionsProposalMeta.textContent = `${proposal.requestedBy} 제안 · ${expiryLabel}`;
+      instructionsProposalMeta.textContent = `${proposal.requestedBy} 제안, ${expiryLabel}`;
       instructionsProposalReason.textContent = proposal.reason
         ? `이유: ${proposal.reason}`
         : '승인 전에는 AGENTS.md에 저장되지 않습니다.';
@@ -3245,9 +3437,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     instructionsBusy = false;
     if (status) {
       acceptAgentInstructions(status, 'user', true);
-      instructionsMessage = '저장됨 · 다음 턴부터 적용';
+      instructionsMessage = '저장됨, 다음 턴부터 적용';
     } else if (!instructionsMessage) {
-      instructionsMessage = '저장 실패 · 최신 지시를 다시 불러옵니다';
+      instructionsMessage = '저장 실패, 최신 지시를 다시 불러옵니다';
     }
     renderAgentInstructions();
     renderDestinationState();
@@ -3268,9 +3460,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (status) {
       pendingAgentInstructionsDraft = null;
       acceptAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`, true);
-      instructionsMessage = '변경안 적용됨 · 다음 턴부터 적용';
+      instructionsMessage = '변경안 적용됨, 다음 턴부터 적용';
     } else if (!instructionsMessage) {
-      instructionsMessage = '변경안 적용 실패 · 최신 지시를 다시 불러옵니다';
+      instructionsMessage = '변경안 적용 실패, 최신 지시를 다시 불러옵니다';
     }
     renderAgentInstructions();
   }
@@ -3306,7 +3498,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   return {
     element,
-    open(destination?: SettingsDestination): void {
+    open(requested?: SettingsDestinationInput): void {
+      const destination = normalizeSettingsDestination(requested);
       settingsOpen = true;
       if (!isAiDirty()) {
         prefs = loadAgentPrefs();
@@ -3319,7 +3512,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       syncNotificationsSection();
       editingSettings.open();
       themeSettings.open();
-      if (destination) selectDestination(destination);
+      if (destination) selectDestination(destination, aiSettingsSection(requested));
       else selectDestination(lastDestination);
       syncPrefsInputs();
       renderModelCatalog();
@@ -3545,22 +3738,22 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setPiInstallProgress(100, 'done', false);
           } else if (typeof ev.percent === 'number') {
             setPiInstallProgress(ev.percent, ev.state, typeof ev.receivedBytes !== 'number');
-            piProgress = `${piProgress} · ${Math.floor(ev.percent)}%`;
+            piProgress = `${piProgress} ${Math.floor(ev.percent)}%`;
             if (typeof ev.receivedBytes === 'number') {
               const total = typeof ev.totalBytes === 'number' && ev.totalBytes > 0 ? ev.totalBytes : null;
               piProgress = total
-                ? `${PI_PROGRESS_LABEL.downloading} · ${formatMb(ev.receivedBytes)} / ${formatMb(total)} · ${Math.floor(ev.percent)}%`
-                : `${PI_PROGRESS_LABEL.downloading} · ${formatMb(ev.receivedBytes)} · ${Math.floor(ev.percent)}%`;
+                ? `${PI_PROGRESS_LABEL.downloading} ${formatMb(ev.receivedBytes)} / ${formatMb(total)} (${Math.floor(ev.percent)}%)`
+                : `${PI_PROGRESS_LABEL.downloading} ${formatMb(ev.receivedBytes)} (${Math.floor(ev.percent)}%)`;
             }
           } else if (typeof ev.receivedBytes === 'number') {
             const total = typeof ev.totalBytes === 'number' && ev.totalBytes > 0 ? ev.totalBytes : null;
             if (total) {
               const percent = (ev.receivedBytes / total) * 100;
               piBarDeterminate(percent);
-              piProgress = `${PI_PROGRESS_LABEL['downloading']} · ${formatMb(ev.receivedBytes)} / ${formatMb(total)} (${Math.floor(percent)}%)`;
+              piProgress = `${PI_PROGRESS_LABEL['downloading']} ${formatMb(ev.receivedBytes)} / ${formatMb(total)} (${Math.floor(percent)}%)`;
             } else {
               piBarNudge();
-              piProgress = `${PI_PROGRESS_LABEL['downloading']} · ${formatMb(ev.receivedBytes)}`;
+              piProgress = `${PI_PROGRESS_LABEL['downloading']} ${formatMb(ev.receivedBytes)}`;
             }
           } else {
             // 숫자 없는 단계 — 신호가 도착할 때만 막대가 흐른다.
@@ -3595,6 +3788,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       syncUsagePolling();
       document.removeEventListener('visibilitychange', syncUsagePolling);
       quotaCards.dispose();
+      usageViews.dispose();
       if (piActivityPause) {
         clearTimeout(piActivityPause);
         piActivityPause = null;
@@ -3611,6 +3805,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);
       unsubscribeHancomGit();
       unsubscribeAttentionPrefs();
+      instructionsEditor.destroy();
       unsubscribeInitialSetup();
       licenseSection?.dispose();
       autofixSection?.dispose();

@@ -135,6 +135,9 @@ import type {
   PendingEditsChangeEvent,
   UsageModelBreakdown,
   UsageSummary,
+  TokenUsageAgent,
+  TokenUsageDays,
+  TokenUsageReport,
   UsageWindow,
   WritingStyleLanguage,
   WritingStyleCatalog,
@@ -446,6 +449,8 @@ export interface AgentBridge {
   disconnectAgent(agent: AgentName): Promise<AgentSetupStatusMap | null>;
   /** 누적 사용량 요약. 응답이 없으면 null. */
   requestUsage(refresh?: boolean): Promise<UsageSummary | null>;
+  /** 기간별 로컬 토큰 사용량. 첫 조회는 기록을 훑느라 오래 걸릴 수 있다. */
+  requestTokenUsage(days: TokenUsageDays, refresh?: boolean): Promise<TokenUsageReport | null>;
   consumeCodexReset(idempotencyKey: string, accountKey: string): Promise<CodexResetResult>;
   /** 요금제를 바꾸고 갱신된 요약을 돌려받는다. */
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null>;
@@ -1272,6 +1277,40 @@ function readOpenRouterCredits(value: unknown): OpenRouterCredits | undefined {
     totalUsageUsd: num(src['totalUsageUsd']),
     checkedAt: nullableNum(src['checkedAt']),
     error: typeof src['error'] === 'string' ? src['error'] : null,
+  };
+}
+
+function readTokenUsageReport(value: unknown): TokenUsageReport | null {
+  if (!value || typeof value !== 'object') return null;
+  const src = value as Record<string, unknown>;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const days = src['days'] === 7 || src['days'] === 90 ? src['days'] : 30;
+  const agents = ['claude', 'codex', 'pi'] as const;
+  const providers = (Array.isArray(src['providers']) ? src['providers'] : [])
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object'
+      && agents.includes((p as Record<string, unknown>)['agent'] as TokenUsageAgent))
+    .map((p) => ({
+      agent: p['agent'] as TokenUsageAgent,
+      tokens: count(p['tokens']),
+      inputTokens: count(p['inputTokens']),
+      outputTokens: count(p['outputTokens']),
+      cacheReadTokens: count(p['cacheReadTokens']),
+      cacheCreationTokens: count(p['cacheCreationTokens']),
+      sessions: count(p['sessions']),
+      costUsd: typeof p['costUsd'] === 'number' && Number.isFinite(p['costUsd']) ? p['costUsd'] : null,
+    }));
+  const daily = (Array.isArray(src['daily']) ? src['daily'] : [])
+    .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object' && typeof (d as Record<string, unknown>)['date'] === 'string')
+    .map((d) => ({ date: d['date'] as string, claude: count(d['claude']), codex: count(d['codex']), pi: count(d['pi']) }));
+  const errors = Array.isArray(src['errors']) ? src['errors'].filter((e): e is string => typeof e === 'string' && !!e) : [];
+  return {
+    days,
+    generatedAt: count(src['generatedAt']) || Date.now(),
+    totalTokens: count(src['totalTokens']),
+    sessions: count(src['sessions']),
+    providers,
+    daily,
+    ...(errors.length ? { errors } : {}),
   };
 }
 
@@ -3630,6 +3669,15 @@ export class AgentBridgeImpl implements AgentBridge {
         if (usage) this.emit({ type: 'usage-report', usage });
         break;
       }
+      case 'token-usage': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readTokenUsageReport(msg));
+        break;
+      }
+      case 'token-usage-error': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, null);
+        console.warn('[AgentBridge]', msg.type + ':', msg.code, msg.message);
+        break;
+      }
       case 'codex-reset-result': {
         const usage = readUsageSummary(msg.usage);
         const outcome = msg.outcome;
@@ -5645,6 +5693,14 @@ export class AgentBridgeImpl implements AgentBridge {
       { type: 'usage-request', ...(refresh ? { refresh: true } : {}) },
       'usage',
       60_000,
+    );
+  }
+
+  requestTokenUsage(days: TokenUsageDays, refresh = false): Promise<TokenUsageReport | null> {
+    return this.request<TokenUsageReport>(
+      { type: 'token-usage-request', days, ...(refresh ? { refresh: true } : {}) },
+      'token-usage',
+      120_000,
     );
   }
 

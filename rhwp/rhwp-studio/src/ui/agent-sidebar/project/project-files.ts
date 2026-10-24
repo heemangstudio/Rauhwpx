@@ -49,7 +49,7 @@ const KIND_FILTERS: ReadonlyArray<{ id: KindFilter; label: string }> = [
   { id: 'note', label: '노트' },
   { id: 'image', label: '이미지' },
   { id: 'clip', label: '영역' },
-  { id: 'sheet', label: '표·슬라이드' },
+  { id: 'sheet', label: '표와 슬라이드' },
   { id: 'web', label: '웹' },
 ];
 
@@ -94,7 +94,7 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
   searchWrap.append(projectIcon('search'));
   const search = el('input', 'ag-pfiles-search-input');
   search.type = 'search';
-  search.placeholder = '이름·태그 검색';
+  search.placeholder = '이름, 태그 검색';
   search.setAttribute('aria-label', '파일 이름과 태그 검색');
   searchWrap.append(search);
   const kind = el('select', 'ag-pfiles-select');
@@ -212,7 +212,7 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     const metaParts = [column, itemMeta(item)];
     const count = links.get(item.id) ?? 0;
     if (count) metaParts.push(`연결 ${count}`);
-    const meta = el('span', 'ag-pfile-meta', metaParts.filter(Boolean).join(' · '));
+    const meta = el('span', 'ag-pfile-meta', metaParts.filter(Boolean).join(', '));
     copy.append(title, meta);
     const tags = el('span', 'ag-pfile-tags');
     for (const name of item.tags.slice(0, 3)) {

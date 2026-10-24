@@ -167,7 +167,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
       if (prompt) return { title: prompt.title, detail: prompt.detail, readOnly: false, canDeactivate: true, showActivate: false };
       if (license?.graceEndsAt && license.licenseExpiresAt) {
         return {
-          title: '정품 라이선스 · 갱신 확인 필요',
+          title: '정품 라이선스, 갱신 확인 필요',
           detail: `${formatLicenseDate(license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${formatLicenseDate(license.graceEndsAt)}까지 쓸 수 있어요.`,
           readOnly: false,
           canDeactivate: true,
@@ -178,7 +178,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
       return {
         title: beta ? '베타 테스터 라이선스' : '정품 라이선스',
         detail: [license?.maskedKey ?? '', term, `마지막 확인 ${formatTime(license?.lastCheckAt ?? null)}`, status.offline ? '오프라인' : '']
-          .filter(Boolean).join(' · '),
+          .filter(Boolean).join(', '),
         readOnly: false,
         canDeactivate: true,
         showActivate: false,
@@ -186,7 +186,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
     }
     case 'expired':
       return {
-        title: '기간 끝 · 읽기 전용',
+        title: '기간 끝, 읽기 전용',
         detail: `${license?.licenseExpiresAt ? `${formatLicenseDate(license.licenseExpiresAt)}에 ` : ''}라이선스 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.`,
         readOnly: true,
         canDeactivate: true,
@@ -204,7 +204,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
       return { title: '읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
     case 'revoked':
       return {
-        title: '해지된 라이선스 · 읽기 전용',
+        title: '해지된 라이선스, 읽기 전용',
         detail: beta ? '베타 테스트 기간이 끝나 키가 해지되었어요.' : '환불 등으로 키가 해지되었어요. 새 키를 넣어 주세요.',
         readOnly: true,
         canDeactivate: false,
@@ -212,7 +212,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
       };
     case 'lease_expired':
       return {
-        title: '확인 필요 · 읽기 전용',
+        title: '확인 필요, 읽기 전용',
         detail: `${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못했어요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`,
         readOnly: true,
         canDeactivate: true,
@@ -220,7 +220,7 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
       };
     case 'needs_activation':
       return {
-        title: '다시 활성화 필요 · 읽기 전용',
+        title: '다시 활성화 필요, 읽기 전용',
         detail: license?.lastError ?? '이 기기에서 키를 다시 활성화해 주세요.',
         readOnly: true,
         canDeactivate: false,

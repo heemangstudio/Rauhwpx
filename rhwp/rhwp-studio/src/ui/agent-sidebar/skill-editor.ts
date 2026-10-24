@@ -78,14 +78,14 @@ export function createSkillEditor(options: {
       if (closed) return;
       if (!outcome.ok) {
         status.textContent = outcome.code === 'STALE'
-          ? '다른 곳에서 바뀌었습니다 · 내용 복사 후 다시 열기'
+          ? '다른 곳에서 바뀌었습니다. 내용을 복사한 뒤 다시 열어 주세요.'
           : outcome.message;
         return;
       }
       closed = true;
       options.saved(outcome.digest);
     } catch {
-      status.textContent = '저장 실패 · 다시 시도';
+      status.textContent = '저장하지 못했습니다. 다시 시도해 주세요.';
     } finally {
       busy = false;
       save.textContent = '저장';
@@ -115,7 +115,7 @@ export function createSkillEditor(options: {
   }).catch(() => {
     if (closed) return;
     root.setAttribute('aria-busy', 'false');
-    status.textContent = '불러오기 실패 · 다시 열기';
+    status.textContent = '불러오지 못했습니다. 다시 열어 주세요.';
   });
   return { root };
 }
@@ -209,7 +209,7 @@ export function createNewSkillEditor(options: {
       closed = true;
       options.saved(outcome);
     } catch {
-      commitError = '저장 실패 · 다시 시도';
+      commitError = '저장하지 못했습니다. 다시 시도해 주세요.';
       status.textContent = commitError;
     } finally {
       busy = false;

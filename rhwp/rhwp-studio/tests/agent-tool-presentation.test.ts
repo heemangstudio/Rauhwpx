@@ -32,14 +32,14 @@ test('접두어를 떼고 인자에서 한 줄 요약을 만든다', () => {
     anchor: { text: '사업 개요', position: 'after' }, text: '새 문단',
   }));
   assert.equal(insert.label, '텍스트 삽입');
-  assert.equal(insert.summary, '“사업 개요” 뒤 · “새 문단”');
+  assert.equal(insert.summary, '“사업 개요” 뒤, “새 문단”');
   const replace = presentToolCall('replace_range', JSON.stringify({
     sectionIdx: 1, startParaIdx: 2, startCharOffset: 0, endParaIdx: 4, endCharOffset: 3, text: '',
   }));
   assert.equal(replace.summary, '2구역 3–5문단 → 빈 텍스트');
   assert.equal(presentToolCall('render_page', '{"pageIndex":1}').summary, '2쪽');
   assert.equal(presentToolCall('edit_table', '{"op":"insert_row","paraIdx":4,"rowIdx":2}').label, '행 추가');
-  assert.equal(presentToolCall('set_table_props', '{"paraIdx":4,"tableProps":{"repeatHeader":true}}').summary, '5문단 표 · 제목 행 반복');
+  assert.equal(presentToolCall('set_table_props', '{"paraIdx":4,"tableProps":{"repeatHeader":true}}').summary, '5문단 표, 제목 행 반복');
   assert.equal(presentToolCall('insert_shape', '{"shape":"textBox","widthMm":60,"heightMm":20}').label, '글상자 삽입');
   assert.equal(presentToolCall('edit_object', '{"paraIdx":3,"controlIdx":0,"xMm":20,"yMm":30}').label, '개체 이동');
 });
@@ -48,19 +48,19 @@ test('권한 요청은 허용 대기와 허용 완료를 구분하고 요청 범
   const argsJson = JSON.stringify({ capability: 'local-execution', reason: '자료 파일을 정리합니다.' });
   const request = presentToolCall('mcp__rhwp__request_permission', argsJson);
   assert.equal(request.label, '권한 요청');
-  assert.equal(request.summary, '로컬 파일·명령 실행 · 자료 파일을 정리합니다.');
+  assert.equal(request.summary, '로컬 파일 및 명령 실행, 자료 파일을 정리합니다.');
   assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'pending' } }).text, '허용 대기');
   assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'granted' } }).text, '이 채팅에 허용됨');
 });
 
 test('paras 대상은 구간 하나면 문단 범위, 여럿이면 겹침을 합친 문단 수로 보인다', () => {
   const summary = (tool: string, args: unknown) => presentToolCall(tool, JSON.stringify(args)).summary;
-  assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단 · 밑줄 · 14pt');
-  assert.equal(summary('apply_para_format', { paras: [48, [51, 53], [52, 60]], alignment: 'justify' }), '문단 11개 · 양쪽 정렬');
-  assert.equal(summary('apply_style', { sectionIdx: 1, paras: [2, 7], styleId: 3 }), '2구역 문단 2개 · 스타일 3');
+  assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단, 밑줄, 14pt');
+  assert.equal(summary('apply_para_format', { paras: [48, [51, 53], [52, 60]], alignment: 'justify' }), '문단 11개, 양쪽 정렬');
+  assert.equal(summary('apply_style', { sectionIdx: 1, paras: [2, 7], styleId: 3 }), '2구역 문단 2개, 스타일 3');
   assert.equal(
     summary('apply_para_format', { cell: { paraIdx: 4, controlIdx: 0, cellIdx: 1 }, paras: [0, 1], alignment: 'center' }),
-    '표 안 문단 2개 · 가운데 정렬',
+    '표 안 문단 2개, 가운데 정렬',
   );
 });
 
@@ -75,8 +75,8 @@ test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다
   }));
   assert.equal(edits.label, '3곳 편집');
   assert.equal(edits.category, 'edit');
-  assert.equal(edits.summary, '텍스트 바꾸기 2 · 글자 서식');
-  assert.deepEqual(edits.items.map((item) => item.summary), ['“가” → “나”', '“다” → “라”', '“마” · 굵게']);
+  assert.equal(edits.summary, '텍스트 바꾸기 2, 글자 서식');
+  assert.deepEqual(edits.items.map((item) => item.summary), ['“가” → “나”', '“다” → “라”', '“마”, 굵게']);
   // find 단축과 옆의 occurrence/position 도 앵커와 같은 요약을 낸다
   const found = presentToolCall('apply_edits', JSON.stringify({
     edits: [
@@ -84,12 +84,12 @@ test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다
       { tool: 'insert_text', find: '세계', occurrence: 2, position: 'before', text: '!' },
     ],
   }));
-  assert.deepEqual(found.items.map((item) => item.summary), ['“컨셉” → “콘셉트”', '“세계” 앞 (2번째) · “!”']);
+  assert.deepEqual(found.items.map((item) => item.summary), ['“컨셉” → “콘셉트”', '“세계” 앞 (2번째), “!”']);
   // 평평한 항목 {tool, …인자} 와 문자열 앵커도 같은 요약을 낸다
   const flat = presentToolCall('apply_edits', JSON.stringify({
     edits: [{ tool: 'replace_range', anchor: '가', text: '나' }, { tool: 'apply_char_format', anchor: { text: '마' }, bold: true }],
   }));
-  assert.deepEqual(flat.items.map((item) => item.summary), ['“가” → “나”', '“마” · 굵게']);
+  assert.deepEqual(flat.items.map((item) => item.summary), ['“가” → “나”', '“마”, 굵게']);
 
   const reads = presentToolCall('read_batch', JSON.stringify({
     reads: [{ tool: 'get_structure' }, { tool: 'find_text', args: { query: '일정' } }],
@@ -109,7 +109,7 @@ test('결과 줄은 실행기 결과에서 숫자·쪽·경고·그림을 고른
       image: { data: 'AAAA', mimeType: 'image/png' },
     },
   });
-  assert.equal(outcome.text, '2개 편집 적용 · 2–3쪽 · 3→4쪽 · 경고 1');
+  assert.equal(outcome.text, '2개 편집 적용, 2–3쪽, 3→4쪽, 경고 1');
   assert.deepEqual(outcome.notices, ['표가 본문을 넘칩니다']);
   assert.equal(outcome.image, 'data:image/png;base64,AAAA');
   assert.equal(outcome.items?.length, 2);
@@ -118,7 +118,7 @@ test('결과 줄은 실행기 결과에서 숫자·쪽·경고·그림을 고른
     tool: 'apply_edits', argsJson, ok: false, preview: '',
     error: { code: 'INVALID_ARGS', message: 'edits[1] (delete_range) failed — the whole batch was rolled back' },
   });
-  assert.equal(failed.text, '인자 오류 · 2번째 항목');
+  assert.equal(failed.text, '인자 오류, 2번째 항목');
   assert.deepEqual(failed.items, [{ ok: true, text: '되돌림' }, { ok: false, text: '인자 오류' }]);
   // 실패한 항목을 모두 싣는 보고 — 짚인 항목마다 실패로 표시한다
   const failedBoth = presentToolResult({
@@ -128,7 +128,7 @@ test('결과 줄은 실행기 결과에서 숫자·쪽·경고·그림을 고른
       message: '2 of 2 edits failed — the whole batch was rolled back, nothing was applied. edits[0] (insert_text): a; edits[1] (delete_range): b. Fix these items and resend the whole batch.',
     },
   });
-  assert.equal(failedBoth.text, '인자 오류 · 2개 항목');
+  assert.equal(failedBoth.text, '인자 오류, 2개 항목');
   assert.deepEqual(failedBoth.items, [{ ok: false, text: '인자 오류' }, { ok: false, text: '인자 오류' }]);
 
   assert.equal(presentToolResult({
@@ -175,5 +175,5 @@ test('활동 제목은 턴을 편집·읽기 횟수로 요약한다', () => {
     { tool: 'find_text', argsJson: '{}' },
     { tool: 'render_page', argsJson: '{}' },
     { tool: 'Bash', argsJson: '{}' },
-  ]), '편집 2번 · 읽기 2번 · 확인 1번 · 도구 1번 · 오류 1');
+  ]), '편집 2번, 읽기 2번, 확인 1번, 도구 1번, 오류 1');
 });

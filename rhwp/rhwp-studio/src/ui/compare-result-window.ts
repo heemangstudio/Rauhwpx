@@ -43,7 +43,7 @@ export class CompareResultWindow {
       this.build();
       document.body.appendChild(this.wrap);
     }
-    this.titleEl.textContent = `문서 비교 상세 · ${session.left.name} ↔ ${session.right.name}`;
+    this.titleEl.textContent = `문서 비교 상세: ${session.left.name} ↔ ${session.right.name}`;
     this.leftDocumentPreview.setTitle(`왼쪽 문서: ${session.left.name}`);
     this.rightDocumentPreview.setTitle(`오른쪽 문서: ${session.right.name}`);
     void this.focusDiff(initialIndex);

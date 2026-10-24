@@ -222,7 +222,7 @@ function attachRangeSelection({ frame, wrap, grid, table, limit, name }: {
   const label = (area: CellRange) => {
     const rows = area.bottom - area.top + 1;
     const columns = area.right - area.left + 1;
-    return `${refOf(area)} · ${status ?? `${rows.toLocaleString('ko-KR')}×${columns}`}`;
+    return `${refOf(area)}, ${status ?? `${rows.toLocaleString('ko-KR')}×${columns}`}`;
   };
   const snapshot = (): CsvRangeSnapshot | null => (range ? {
     ref: refOf(range),

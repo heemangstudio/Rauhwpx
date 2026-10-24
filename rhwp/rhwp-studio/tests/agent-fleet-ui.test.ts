@@ -206,7 +206,7 @@ test('한 턴의 서브에이전트는 도크 팝업에 모이고 턴이 끝나�
   assert.equal(popup(view).hidden, false);
 
   view.taskEnd({ type: 'task-end', agent: 'claude', taskId: 't2', status: 'failed' } as never);
-  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 2 · 1 오류');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 2, 1 오류');
   assert.ok(one(card, 'ag-fleet-dot').className.includes('ag-err'));
   assert.ok(card.className.includes('ag-live') === false, '다 끝나면 카드가 live 를 벗는다');
   // 편대가 다 끝나도 턴이 끝나기 전에는 도크에 남는다 — 팝업은 접히고 알약이 결과를 말한다.
@@ -214,7 +214,7 @@ test('한 턴의 서브에이전트는 도크 팝업에 모이고 턴이 끝나�
   assert.equal(settledCards(conversation).length, 0);
   assert.equal(popup(view).hidden, true, '편대가 끝나면 팝업은 접혀 답변을 가리지 않는다');
   assert.equal((view.root as unknown as FakeNode).hidden, false, '알약은 남는다');
-  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2 · 1 오류');
+  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2, 1 오류');
   assert.ok(pill(view).className.includes('ag-err'));
   assert.ok(!pill(view).className.includes('ag-live'));
   assert.ok(one(pill(view), 'ag-fleet-dot').className.includes('ag-err'));
@@ -230,7 +230,7 @@ test('한 턴의 서브에이전트는 도크 팝업에 모이고 턴이 끝나�
   assert.equal(all(slots[0], 'ag-fleet')[0], card, '태어난 자리의 슬롯으로 들어간다');
   assert.ok(card.className.includes('ag-collapsed'), '정착한 카드는 접혀 한 줄 기록이 된다');
   assert.equal(one(card, 'ag-fleet-toggle').getAttribute('aria-expanded'), 'false');
-  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 2 · 1 오류');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 2, 1 오류');
   assert.equal((view.root as unknown as FakeNode).hidden, true, '할 일이 없으면 도크도 숨는다');
   view.reset();
 });
@@ -250,12 +250,12 @@ test('두 번 오는 task-end 는 빈 자리만 채우고 상태를 되돌리지
 
   const card = hostedCards(view)[0];
   assert.equal(all(card, 'ag-fleet-row').length, 1, '중복 행이 생기지 않는다');
-  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 1 · 완료');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 1, 완료');
   assert.equal(one(card, 'ag-fleet-sr').textContent, '완료');
   assert.equal(one(card, 'ag-fleet-activity').textContent, '표 3개를 확인했습니다');
-  assert.equal(one(card, 'ag-fleet-metrics').textContent, 'opus-4-5 · 5K tok · 6 도구');
+  assert.equal(one(card, 'ag-fleet-metrics').textContent, 'opus-4-5, 5K tok, 6 도구');
   assert.equal(one(card, 'ag-fleet-sum').textContent, 'Σ 5K');
-  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 1 · 완료');
+  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 1, 완료');
   assert.ok(pill(view).className.includes('ag-done'));
   view.reset();
 });
@@ -291,7 +291,7 @@ test('워크플로는 자기 카드에 단계 레일과 멤버 행을 그린다'
     taskKind: 'workflow', title: '초안 파이프라인', workflowName: '초안 파이프라인',
   }) as never);
   // 워크플로만 돌 때 알약은 워크플로라고 말한다.
-  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '워크플로 · 작업 중');
+  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '워크플로, 작업 중');
   view.taskStart(taskStart('a1') as never);
   assert.equal(hostedCards(view).length, 2, '워크플로는 서브에이전트 묶음과 카드를 나눠 쓴다');
   assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2');
@@ -307,16 +307,16 @@ test('워크플로는 자기 카드에 단계 레일과 멤버 행을 그린다'
     ],
   } as never);
 
-  assert.equal(one(card, 'ag-fleet-label').textContent, '워크플로 · 초안 파이프라인 · 2/2 정리');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '워크플로: 초안 파이프라인, 2/2 정리');
   assert.equal(all(card, 'ag-fleet-phase').length, 2);
   assert.equal(all(card, 'ag-fleet-member').length, 2);
   // 카드 Σ 는 멤버 합, 코디네이터 행은 자기 몫 — 같은 토큰을 두 번 세지 않는다.
   assert.equal(one(card, 'ag-fleet-sum').textContent, 'Σ 2K');
   const coordinator = all(card, 'ag-fleet-task')[0];
-  assert.equal(one(coordinator, 'ag-fleet-metrics').textContent, 'opus-4-5 · 3K tok · 2 도구');
+  assert.equal(one(coordinator, 'ag-fleet-metrics').textContent, 'opus-4-5, 3K tok, 2 도구');
   assert.equal(one(coordinator, 'ag-fleet-role').hidden, true, '워크플로 이름은 카드 머리만 말한다');
   const member = all(card, 'ag-fleet-member')[0];
-  assert.equal(one(member, 'ag-fleet-metrics').textContent, 'haiku-4-5 · 1K tok · 3 도구');
+  assert.equal(one(member, 'ag-fleet-metrics').textContent, 'haiku-4-5, 1K tok, 3 도구');
   assert.equal(one(member, 'ag-fleet-aside').textContent, '수집');
 
   // 같은 index 가 다시 와도 행을 새로 만들지 않는다.
@@ -326,11 +326,11 @@ test('워크플로는 자기 카드에 단계 레일과 멤버 행을 그린다'
   } as never);
   assert.equal(all(card, 'ag-fleet-member').length, 2);
   view.taskEnd({ type: 'task-end', agent: 'claude', taskId: 'w1', status: 'completed' } as never);
-  assert.equal(one(card, 'ag-fleet-label').textContent, '워크플로 · 초안 파이프라인 · 1 오류');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '워크플로: 초안 파이프라인, 1 오류');
   // a1 이 아직 돌고 있으니 알약의 시제는 작업 중이다 — 멤버 실패는 정착한 뒤에 오른다.
   assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2');
   view.taskEnd({ type: 'task-end', agent: 'claude', taskId: 'a1', status: 'completed' } as never);
-  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2 · 1 오류');
+  assert.equal(one(view.root, 'ag-fleet-dock-label').textContent, '서브에이전트 2, 1 오류');
   view.reset();
 });
 
@@ -407,7 +407,7 @@ test('턴이 끝나면 남은 행은 중단됨으로 확정되고 카드는 슬�
   const card = settledCards(conversation)[0];
   assert.equal(one(card, 'ag-fleet-sr').textContent, '중단됨');
   assert.ok(one(card, 'ag-fleet-row').className.includes('ag-stopped'));
-  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 1 · 중단됨');
+  assert.equal(one(card, 'ag-fleet-label').textContent, '서브에이전트 1, 중단됨');
   assert.equal(one(card, 'ag-tool-result').textContent, '(결과 없이 종료됨)');
   assert.equal(hostedCards(view).length, 0, '정착한 카드는 팝업을 떠난다');
   assert.equal(popup(view).hidden, true);

@@ -133,7 +133,7 @@ export function showShapePicker(anchorEl: HTMLElement, opts: ShapePickerOptions)
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'shape-picker-btn';
-      btn.title = `${group.title} · ${shape.label}`;
+      btn.title = `${shape.label} (${group.title})`;
       const icon = document.createElement('span');
       icon.className = 'shape-picker-icon';
       icon.setAttribute('aria-hidden', 'true');

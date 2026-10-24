@@ -126,7 +126,7 @@ export function createBrowserAccountForm(options: {
   const card = options.variant === 'card';
   const root = node('form', card ? 'ag-browser-account-form ag-request-form' : 'ag-browser-account-form');
   const origin = field('사이트 주소', 'url', options.account?.origin ?? ''); origin.input.required = true;
-  const origins = field('함께 사용할 사이트 · 쉼표로 구분', 'text', options.account?.origins?.filter(value => value !== options.account?.origin).join(', ') ?? '');
+  const origins = field('함께 사용할 사이트 (쉼표로 구분)', 'text', options.account?.origins?.filter(value => value !== options.account?.origin).join(', ') ?? '');
   if (options.requestId || options.account?.id) origins.input.readOnly = true;
   const label = field('계정 이름', 'text', options.account?.label ?? ''); label.input.required = true;
   const username = field('로그인 아이디', 'text', options.account?.stableIdentity && options.account.stableIdentity !== options.account.id ? options.account.stableIdentity : ''); username.input.required = true;
@@ -409,7 +409,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const adblock = createAdblockSettings(); if (adblock) body.append(adblock);
       const downloadsSection = section('다운로드');
       const downloads = (configuration.downloads ?? {}) as Record<string, unknown>; row('다운로드 저장소', String(downloads.directory ?? downloads.path ?? '앱의 다운로드 저장소'), downloadsSection);
-      const limit = field('파일당 다운로드 한도 · MB', 'number', String(Math.round(Number(downloads.maxFileBytes ?? 104857600) / 1048576)));
+      const limit = field('파일당 다운로드 한도 (MB)', 'number', String(Math.round(Number(downloads.maxFileBytes ?? 104857600) / 1048576)));
       limit.input.min = '1'; limit.input.max = '512'; limit.input.step = '1'; downloadsSection.append(limit.root);
       const searchSection = section('검색');
       const searchLabel = node('label', 'ag-settings-field'); searchLabel.append(node('span', 'ag-settings-field-label', '기본 검색 엔진'));
@@ -421,7 +421,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       const sleepTime = node('select', 'ag-settings-select'); sleepTime.setAttribute('aria-label', '탭 잠자기 시간');
       for (const [value, label] of [['0', '사용 안 함'], ['1', '1분'], ['5', '5분'], ['15', '15분'], ['30', '30분'], ['60', '1시간']]) { const option = node('option', '', label); option.value = value!; sleepTime.append(option); }
       sleepTime.value = String((configuration.performance as Record<string, unknown> | undefined)?.idleMinutes ?? 15); sleepLabel.append(sleepTime); memorySection.append(sleepLabel);
-      memorySection.append(node('p', 'ag-browser-empty', '잠든 탭은 다시 열면 깨어납니다. 작성 중인 폼과 재생·다운로드 중인 페이지는 유지합니다.'));
+      memorySection.append(node('p', 'ag-browser-empty', '잠든 탭은 다시 열면 깨어납니다. 작성 중인 폼, 재생 또는 다운로드 중인 페이지는 유지합니다.'));
       const displaySection = section('브라우저 표시');
       const preview = (configuration.preview ?? {}) as Record<string, unknown>;
       const mode = node('label', 'ag-settings-field'); mode.append(node('span', 'ag-settings-field-label', '브라우저 표시'));
@@ -457,7 +457,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     const blocked = BLOCK_GROUPS.filter(group => group.actions.some(value => site.blockedActions.includes(value))).map(group => group.label);
     for (const [state, on, text, title] of [
       ['always', site.always, '항상 허용', ''], ['chat', site.chat && !site.always, '이 채팅', ''],
-      ['signed-in', site.signedIn, '로그인됨', ''], ['blocked', blocked.length > 0, '차단', blocked.join(' · ')],
+      ['signed-in', site.signedIn, '로그인됨', ''], ['blocked', blocked.length > 0, '차단', blocked.join(', ')],
     ] as const) {
       if (!on) continue;
       const chip = node('span', 'ag-browser-site-state', text); chip.dataset.state = state; if (title) chip.title = title; states.append(chip);
@@ -578,7 +578,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
         const state = presence(account);
         choose.append(siteMark(account.origin, accountProvider(account), 'row', state), copy);
         if (account.hasPassword) glyphs.append(createIcon('key'));
-        glyphs.title = [sessionLabel(account), account.hasPassword ? '비밀번호 저장됨' : '', account.agentBlocked ? '에이전트 사용 안 함' : ''].filter(Boolean).join(' · ');
+        glyphs.title = [sessionLabel(account), account.hasPassword ? '비밀번호 저장됨' : '', account.agentBlocked ? '에이전트 사용 안 함' : ''].filter(Boolean).join(', ');
         choose.append(glyphs, node('span', 'ag-sr-only', glyphs.title));
       }
       glyphs.setAttribute('aria-hidden', 'true');
@@ -731,7 +731,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
     void localAction(async () => {
       const result = await localApi!.importProfile({ profileId }); await loadLocal();
       view = 'list'; accountKind = 'passwords'; selected = null; accountSearch = ''; focusKey = 'kind:passwords';
-      return `${result.imported}개 가져옴 · ${result.skipped}개 건너뜀${result.unsupported ? ` · ${result.unsupported}개 암호화 방식 지원 안 됨` : ''}`;
+      return `${result.imported}개 가져옴, ${result.skipped}개 건너뜀${result.unsupported ? `, ${result.unsupported}개 암호화 방식 지원 안 됨` : ''}`;
     }, '가져오지 못했습니다. Chrome과 키체인 접근 권한을 확인하고 다시 시도하세요.');
   }
   function loadCookieSites() {
@@ -772,7 +772,7 @@ export function createBrowserSettingsPane(options: { request: BrowserSettingsReq
       // 가져온 사이트는 사용자가 로그인한 사이트다. 허브가 로그인됨으로 표시한다.
       if (result.domains.length && options.isConnected()) await options.request('sessions.imported', { domains: result.domains }).catch(() => undefined);
       cookieSites = null; cookieChoice.clear(); importStep = 'choose'; view = 'list'; focusKey = 'add';
-      return `${result.domains.length}개 사이트 가져옴${result.skipped ? ` · ${result.skipped}개 건너뜀` : ''}`;
+      return `${result.domains.length}개 사이트 가져옴${result.skipped ? `, ${result.skipped}개 건너뜀` : ''}`;
     }, '로그인을 가져오지 못했습니다. Chrome과 키체인 접근 권한을 확인하고 다시 시도하세요.');
   }
   async function loadLocal() {

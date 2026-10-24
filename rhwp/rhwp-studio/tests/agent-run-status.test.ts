@@ -72,7 +72,7 @@ test('a turn that ends while nobody watches leaves a green dot and one notice', 
   assert.equal(getChatStatus('a'), 'finished');
   await settle();
   assert.deepEqual(s.notices.map((notice) => [notice.key, notice.state, notice.body]), [
-    ['turn-1:end', 'finished', '작업을 마쳤습니다 · 사업 제안서.hwpx'],
+    ['turn-1:end', 'finished', '작업을 마쳤습니다 (사업 제안서.hwpx)'],
   ]);
   assert.equal(s.ledger.count(), 1);
 });
@@ -105,7 +105,7 @@ test('a failure reason that follows turn-end in the same flow rides the notice',
   assert.equal(getChatStatus('a'), 'failed');
   assert.equal(getChatStatusLabel('a'), '로그인 필요');
   await settle();
-  assert.deepEqual(s.notices.map((notice) => notice.body), ['Claude 로그인이 필요해요 · 사업 제안서.hwpx']);
+  assert.deepEqual(s.notices.map((notice) => notice.body), ['Claude 로그인이 필요해요 (사업 제안서.hwpx)']);
   // 늦게 온 이유는 레일만 고치고 다시 알리지 않는다.
   s.controller.noteTurnFailure({ label: '사용 한도' });
   await settle();
@@ -121,7 +121,7 @@ test('an outside interruption reads 중단됨 and is not an error', async () => 
   assert.equal(getChatStatus('a'), 'failed');
   assert.equal(getChatStatusLabel('a'), '중단됨');
   await settle();
-  assert.deepEqual(s.notices.map((notice) => notice.body), ['작업이 중단됐습니다 · 사업 제안서.hwpx']);
+  assert.deepEqual(s.notices.map((notice) => notice.body), ['작업이 중단됐습니다 (사업 제안서.hwpx)']);
 });
 
 test('a failure of a turn the user watched leaves no mark', async () => {
@@ -175,7 +175,7 @@ test('questions and plan approval wait for input; answering returns to work', as
   assert.equal(getChatStatus('a'), 'needs-input', 'a plan awaiting approval outranks the finish');
   await settle();
   assert.equal(s.notices.at(-1)!.key, 'turn-1:input:plan:plan-1');
-  assert.equal(s.notices.at(-1)!.body, '계획 승인을 기다립니다 · 사업 제안서.hwpx');
+  assert.equal(s.notices.at(-1)!.body, '계획 승인을 기다립니다 (사업 제안서.hwpx)');
   // 승인하면 걷힌다 — 보지 않은 계획 턴의 완료가 남는다.
   s.facts.plan = null;
   s.controller.sync();

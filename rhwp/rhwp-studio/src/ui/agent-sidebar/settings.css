@@ -305,7 +305,7 @@
 
 /* 편집 중 잠금 — 슬라이더 오른쪽에 고른 눈금의 이름. 이름이 바뀌어도 슬라이더 폭이 흔들리지 않게 자리를 잡아 둔다. */
 .ag-settings-edit-lock-value {
-  flex: 0 0 76px;
+  flex: 0 0 82px;
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-secondary);
   text-align: right;
@@ -390,32 +390,6 @@
   background: var(--ag-surface);
   color: var(--ag-text);
   font: 11px/1.5 var(--font-mono, ui-monospace, monospace);
-}
-
-.ag-settings-instructions-editor {
-  width: 100%;
-  min-width: 0;
-  min-height: 180px;
-  box-sizing: border-box;
-  resize: vertical;
-  padding: 10px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-input-bg);
-  color: var(--ag-text);
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--ag-fs-mono);
-  line-height: 1.55;
-  tab-size: 2;
-}
-
-.ag-settings-instructions-editor:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
-.ag-settings-instructions-editor:disabled {
-  opacity: 0.62;
 }
 
 .ag-settings-instructions-status {
@@ -787,6 +761,20 @@
 .ag-agent-setup-row-note {
   margin-left: 8px;
   color: var(--ag-text-muted);
+}
+
+.ag-agent-setup-arrow {
+  margin: 0 8px;
+  vertical-align: middle;
+}
+.ag-agent-setup-arrow-track { fill: var(--ag-text-tertiary); }
+.ag-agent-setup-arrow-fill {
+  fill: var(--ag-text);
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 0.3s linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ag-agent-setup-arrow-fill { transition: none; }
 }
 
 .ag-agent-setup-row .ag-settings-btn {
@@ -1335,23 +1323,6 @@
   font-size: var(--ag-fs-secondary);
 }
 
-/* ── 사용량 ─────────────────────────────────────────── */
-
-.ag-settings-usage-block[hidden] {
-  /* display: flex 가 hidden 속성의 UA display:none 을 이기지 않도록. */
-  display: none;
-}
-
-.ag-settings-usage-block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-panel);
-  background: var(--ag-bg-2);
-}
-
 .ag-settings-usage-head {
   display: flex;
   align-items: center;
@@ -1436,24 +1407,6 @@
 
 .ag-settings-meter-warn .ag-settings-meter-value {
   color: color-mix(in srgb, var(--ag-err) 80%, var(--ag-text));
-}
-
-.ag-settings-usage-day {
-  font-size: var(--ag-fs-secondary);
-  color: var(--ag-text-secondary);
-}
-
-.ag-settings-usage-models {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.ag-settings-usage-models-title {
-  font-size: var(--ag-micro);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ag-text-muted);
 }
 
 .ag-settings-model-row {
@@ -1636,9 +1589,10 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 창이 넓으면 카드도 함께 넓어진다. 좁아지면 820px 아래로는 칸에 맞춰 줄어든다. */
 .ag-settings-destination-content {
   box-sizing: border-box;
-  width: min(100%, 820px);
+  width: min(100%, max(820px, 88%), 1040px);
   min-height: 100%;
   margin: 0 auto;
   padding: 32px 36px 96px;
@@ -2105,73 +2059,6 @@
 .ag-settings-quota-card > button + button { margin-left: 8px; }
 .ag-settings-quota-meter .ag-settings-usage-updated { grid-column: 2; grid-row: 1; margin: 0; max-width: 120px; text-align: right; }
 
-.ag-settings-usage-disclosure {
-  border-top: 1px solid var(--ag-border);
-  font-size: var(--ag-fs-secondary);
-}
-.ag-settings-usage-disclosure > summary {
-  padding: 12px 0;
-  color: var(--ag-text-secondary);
-  font-weight: var(--ag-fw-medium);
-  cursor: default;
-}
-.ag-settings-usage-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-variant-numeric: tabular-nums;
-}
-.ag-settings-usage-table th,
-.ag-settings-usage-table td {
-  padding: 7px 4px;
-  text-align: right;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--ag-border);
-}
-.ag-settings-usage-table th:first-child {
-  width: 30%;
-  text-align: left;
-}
-.ag-settings-usage-table thead th {
-  color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-}
-.ag-settings-usage-table .ag-settings-usage-block {
-  display: table-row-group;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.ag-settings-usage-table .ag-settings-usage-block[hidden],
-.ag-settings-usage-expanded[hidden] { display: none; }
-.ag-settings-usage-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 0;
-  border: 0;
-  background: transparent;
-  color: var(--ag-text);
-  font: inherit;
-  font-weight: var(--ag-fw-medium);
-  cursor: default;
-}
-.ag-settings-usage-toggle::after { content: '›'; color: var(--ag-text-secondary); }
-.ag-settings-usage-toggle[aria-expanded='true']::after { transform: rotate(90deg); }
-.ag-settings-usage-expanded > td {
-  padding: 8px 10px;
-  text-align: left;
-  background: var(--ag-bg-2);
-}
-.ag-settings-usage-expanded .ag-settings-usage-models { margin-top: 6px; }
-.ag-settings-usage-expanded .ag-settings-usage-session { color: var(--ag-text-secondary); }
-.ag-settings-usage-expanded :is(.ag-settings-row-detail, .ag-settings-usage-models, .ag-settings-usage-updated):empty { display: none; }
-@container settings-hub (max-width: 360px) {
-  .ag-settings-usage-table .ag-settings-usage-day { font-size: var(--ag-fs-meta); }
-  .ag-settings-usage-toggle { gap: 3px; font-size: var(--ag-fs-secondary); }
-}
-
 .ag-settings-quota-header-actions { display: flex; align-items: center; gap: 6px; }
 .ag-settings-quota-refresh {
   display: inline-flex;
@@ -2423,6 +2310,7 @@
     /* 좁은 설정에서는 탭이 가로줄의 폭을 나눈다. */
     flex: 1 1 auto;
     min-height: 30px;
+    padding-inline: 4px;
     border-radius: var(--ag-r-chip);
     font-size: var(--ag-fs-secondary);
   }
@@ -2434,6 +2322,15 @@
 
   .ag-settings-page .ag-settings-destination-content {
     padding: 20px 16px 88px;
+  }
+
+  /* 전체 화면에서는 탭 줄을 작업 공간 머리줄 아래로 내린다. */
+  .ag-fullscreen .ag-settings-page .ag-settings-nav {
+    margin-top: calc(var(--ag-workspace-bar-h, 48px) + 8px);
+  }
+
+  .ag-fullscreen .ag-settings-body {
+    margin-top: 0;
   }
 }
 
@@ -2734,27 +2631,7 @@
   background: var(--n-ink-fill-selected);
 }
 
-/* 로컬 기록은 사용량 카드의 마지막 줄에서 펼친다. */
-.ag-settings-page .ag-settings-usage-disclosure {
-  border-top: 0;
-}
-
-.ag-settings-page .ag-settings-usage-disclosure > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
-  padding: 0 var(--ag-set-inset);
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-  list-style: none;
-  transition: var(--ag-transition-color);
-}
-
-.ag-settings-page .ag-settings-usage-disclosure > summary::-webkit-details-marker { display: none; }
-
-.ag-settings-page :is(.ag-settings-usage-disclosure, .ag-settings-advanced) > summary::after {
+.ag-settings-page .ag-settings-advanced > summary::after {
   content: '';
   width: 6px;
   height: 6px;
@@ -2765,49 +2642,54 @@
   transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.ag-settings-page :is(.ag-settings-usage-disclosure, .ag-settings-advanced)[open] > summary::after {
+.ag-settings-page .ag-settings-advanced[open] > summary::after {
   margin-bottom: -3px;
   transform: rotate(-135deg);
 }
 
-.ag-settings-page .ag-settings-usage-disclosure > summary:hover {
-  background-color: var(--n-ink-fill-soft);
-  color: var(--n-ink);
-}
-
-.ag-settings-page .ag-settings-usage-disclosure[open] > .ag-settings-usage-table {
-  margin: 0 var(--ag-set-inset) 12px;
-  width: calc(100% - 2 * var(--ag-set-inset));
-}
-
-/* 새 대화 기본값: 라벨 왼쪽, 값 오른쪽의 선택 행. */
+/* 새 대화 기본값: 입력창의 모델 고르기 줄처럼 제공자, 모델, 추론 강도, 모드를 한 줄에 둔다. */
 .ag-settings-page .ag-settings-defaults .ag-settings-section-body {
-  display: block;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field {
   position: relative;
-  display: flex;
+  display: inline-flex;
+  /* 네 칸이 막대 폭을 똑같이 나눠 오른쪽에 빈자리를 남기지 않는다. */
+  flex: 1 1 0;
   align-items: center;
-  min-width: 0;
-  min-height: 48px;
+  justify-content: flex-start;
+  min-width: 120px;
+  min-height: 36px;
   gap: 8px;
-  padding: 0 calc(var(--ag-set-inset) + 18px) 0 var(--ag-set-inset);
+  padding: 0 26px 0 12px;
+  border-radius: var(--ag-r-row);
   background-color: transparent;
   cursor: default;
   transition: var(--ag-transition-color);
 }
 
+/* 카드 행 사이의 머리선은 한 줄 막대에는 그리지 않는다. */
+.ag-settings-page .ag-settings-defaults .ag-settings-section-body > .ag-settings-field:not([hidden]) {
+  background-image: none;
+}
+
 .ag-settings-page .ag-settings-defaults .ag-settings-provider-mark,
 .ag-settings-page .ag-settings-defaults .ag-settings-provider-mark .ag-provider-icon {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field:hover,
 .ag-settings-page .ag-settings-defaults .ag-settings-field:focus-within {
-  background-color: var(--n-ink-fill-soft);
+  background-color: var(--ag-hover);
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field:active {
@@ -2819,36 +2701,48 @@
   display: none;
 }
 
+/* 이름은 화면에서 감추고 읽기 프로그램에는 남긴다. 값만으로 무엇인지 알 수 있다. */
 .ag-settings-page .ag-settings-defaults .ag-settings-field-label {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--n-ink);
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-regular);
-  letter-spacing: var(--ag-track-tight);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
-/* 값은 글자 폭만큼만 차지해 제공자 표식이 값 바로 앞에 붙는다. */
 .ag-settings-page .ag-settings-defaults .ag-settings-select {
   appearance: none;
-  flex: 0 1 auto;
-  field-sizing: content;
-  width: auto;
-  max-width: 68%;
+  flex: 1 1 auto;
+  field-sizing: fixed;
+  width: 100%;
+  max-width: none;
   min-width: 0;
-  height: 44px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--n-ink-secondary);
+  color: var(--ag-text-secondary);
   font: inherit;
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-regular);
-  letter-spacing: var(--ag-track-tight);
+  letter-spacing: 0;
   text-overflow: ellipsis;
   outline: none;
   cursor: default;
+}
+
+/* 입력창처럼 제공자와 모델은 본문 색, 추론 강도와 모드는 한 단계 옅게. */
+.ag-settings-page .ag-settings-defaults .ag-settings-provider-field .ag-settings-select,
+.ag-settings-page .ag-settings-defaults .ag-settings-field:nth-child(2) .ag-settings-select {
+  color: var(--ag-text);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-settings-page .ag-settings-defaults .ag-settings-field:focus-within {
+  outline: var(--ag-focus-ring);
+  outline-offset: -1px;
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-select option {
@@ -2860,13 +2754,14 @@
   content: '';
   position: absolute;
   top: 50%;
-  right: calc(var(--ag-set-inset) + 2px);
+  right: 12px;
   width: 6px;
   height: 6px;
-  border-right: 1.5px solid var(--n-ink-tertiary);
-  border-bottom: 1.5px solid var(--n-ink-tertiary);
+  border-right: 1.25px solid var(--ag-text-tertiary);
+  border-bottom: 1.25px solid var(--ag-text-tertiary);
   transform: translateY(-70%) rotate(45deg);
   pointer-events: none;
+  transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 /* 고급: 드문 설정을 접어 두는 마지막 묶음. */
@@ -2908,8 +2803,7 @@
   order: 3;
 }
 
-.ag-settings-advanced > summary:focus-visible,
-.ag-settings-page .ag-settings-usage-disclosure > summary:focus-visible {
+.ag-settings-advanced > summary:focus-visible{
   outline: var(--ag-focus-ring);
   outline-offset: -2px;
 }
@@ -2936,7 +2830,7 @@
 @media (prefers-reduced-motion: reduce) {
   .ag-settings-page .ag-settings-defaults .ag-settings-field,
   .ag-settings-page .ag-settings-btn,
-  .ag-settings-page :is(.ag-settings-usage-disclosure, .ag-settings-advanced) > summary::after {
+  .ag-settings-page .ag-settings-advanced > summary::after {
     transition: none;
   }
 }
@@ -3134,7 +3028,18 @@
   color: var(--ag-primary-fg);
 }
 .ag-settings-model-empty { padding: 28px 15px; color: var(--ag-text-muted); font-size: var(--ag-fs-secondary); text-align: center; }
+.ag-settings-model-empty-hippo { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 36px 15px 32px; }
+.ag-sleepy-hippo { display: block; color: var(--ag-text-tertiary); }
+@media (prefers-reduced-motion: no-preference) {
+  .ag-sleepy-hippo .ag-sleepy-z-small { animation: ag-sleepy-z 2.4s steps(1, end) infinite; }
+  .ag-sleepy-hippo .ag-sleepy-z-large { animation: ag-sleepy-z 2.4s steps(1, end) 1.2s infinite; }
+}
+@keyframes ag-sleepy-z {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
 .ag-settings-model-status { min-height: 27px; padding: 6px 13px 7px; }
+.ag-settings-model-status:empty { display: none; }
 
 .ag-settings-model-tab:focus-visible,
 .ag-settings-model-refresh:focus-visible {
@@ -3441,7 +3346,6 @@
   text-align: left;
 }
 
-
 .ag-settings-page .ag-skill-new:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: -2px;
@@ -3479,102 +3383,346 @@
   outline: var(--ag-focus-ring);
   outline-offset: 2px;
 }
-/* Windows: 잠금 설정도 다른 설정 카드와 같은 여백·경계를 쓴다. */
-html.desktop-windows .ag-settings-page .ag-settings-edit-lock {
+/* 잠금 설정도 다른 설정 카드와 같은 여백·경계를 쓴다. */
+.ag-settings-page .ag-settings-edit-lock {
   min-height: 56px;
   gap: 16px;
   padding: 12px var(--ag-set-inset, 16px);
   justify-content: flex-start;
 }
-html.desktop-windows .ag-settings-edit-lock .ag-eslider {
+.ag-settings-edit-lock .ag-eslider {
   --ag-eslider-pad: 9px;
   flex: 0 1 240px;
   min-width: 96px;
   margin-left: auto;
   padding: 10px 0;
 }
-html.desktop-windows .ag-settings-edit-lock .ag-eslider-track {
+/* 트랙 아래 눈금 숫자 자리. 이름·값은 같은 만큼 올려 트랙과 한 줄에 맞춘다. */
+.ag-settings-edit-lock .ag-eslider.ag-has-ticks {
+  padding-bottom: 26px;
+}
+.ag-settings-edit-lock:has(.ag-has-ticks) > .ag-settings-field-label,
+.ag-settings-edit-lock:has(.ag-has-ticks) > .ag-settings-edit-lock-value {
+  padding-bottom: 16px;
+}
+.ag-settings-edit-lock .ag-eslider-track {
   height: 6px;
   background: var(--n-ink-fill-selected);
   box-shadow: inset 0 0 0 1px var(--ag-set-sep);
 }
-html.desktop-windows .ag-settings-edit-lock .ag-eslider-fill {
+.ag-settings-edit-lock .ag-eslider-fill {
   background: var(--ag-text-secondary);
 }
-html.desktop-windows .ag-settings-edit-lock .ag-eslider-dot { display: none; }
-html.desktop-windows .ag-settings-edit-lock .ag-eslider-thumb {
+.ag-settings-edit-lock .ag-eslider-dot { display: none; }
+.ag-settings-edit-lock .ag-eslider-thumb {
   width: 18px;
   height: 18px;
   border: 1px solid var(--ag-border-strong);
   box-shadow: 0 1px 3px rgb(0 0 0 / 14%);
 }
-html.desktop-windows .ag-settings-edit-lock-value { flex-basis: 82px; }
 @container settings-hub (max-width: 400px) {
-  html.desktop-windows .ag-settings-page .ag-settings-edit-lock { gap: 10px; }
-  html.desktop-windows .ag-settings-edit-lock .ag-eslider { flex-basis: 160px; }
+  .ag-settings-page .ag-settings-edit-lock { gap: 10px; }
+  .ag-settings-edit-lock .ag-eslider { flex-basis: 160px; }
 }
 
-/* Windows 설정 select 의 작은 메뉴. 기본 팝업 대신 열린다 (select-menu.ts). */
+/* 설정 select 의 떠 있는 메뉴 (select-menu.ts). 칩에서 자라 나오는 둥근 판 위로
+   강조 알약이 항목 사이를 미끄러진다. 기본값 막대는 모든 플랫폼, 나머지는 Windows 에서 쓴다. */
 .ag-select-menu {
+  --ag-select-menu-bg: var(--n-surface-raised);
+  --ag-select-menu-edge: var(--n-hairline);
+  --ag-select-menu-shadow:
+    0 1px 2px rgb(0 0 0 / 4%),
+    0 6px 14px -4px rgb(0 0 0 / 8%),
+    0 22px 44px -12px rgb(0 0 0 / 18%);
   position: fixed;
   z-index: 1000;
-  box-sizing: border-box;
-  max-width: min(320px, calc(100vw - 16px));
-  padding: 4px;
-  overflow-y: auto;
-  scrollbar-width: none;
-  border-radius: var(--ag-r-row, 8px);
-  background: var(--ag-raised);
-  box-shadow: var(--ag-elev-popover), 0 0 0 1px var(--ag-border);
-  color: var(--ag-text);
-  font-size: var(--ag-fs-secondary, 12px);
-  outline: none;
-  animation: ag-select-menu-in 60ms linear;
-  transform-origin: top right;
-}
-
-.ag-select-menu.ag-flip { transform-origin: bottom right; }
-
-.ag-select-menu-group {
-  padding: 6px 8px 2px;
-  color: var(--ag-text-muted);
-  font-size: 11px;
-  font-weight: var(--ag-fw-medium, 500);
-}
-
-.ag-select-menu-item {
   display: flex;
-  align-items: center;
-  height: 26px;
-  padding: 0 24px 0 8px;
-  position: relative;
-  border-radius: 5px;
-  white-space: nowrap;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-width: min(340px, calc(100vw - 16px));
   overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: default;
+  border: 1px solid var(--ag-select-menu-edge);
+  border-radius: 11px;
+  background: var(--ag-select-menu-bg);
+  box-shadow: var(--ag-select-menu-shadow);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary, 13px);
+  outline: none;
 }
 
-.ag-select-menu-item.ag-active { background: var(--ag-hover); }
-
-.ag-select-menu-item[aria-selected='true']::after {
-  content: '';
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  width: 8px;
-  height: 4px;
-  border-left: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-70%) rotate(-45deg);
+:root[data-theme-effective='dark'] .ag-select-menu {
+  --ag-select-menu-bg: color-mix(in oklab, var(--n-surface-raised) 94%, var(--n-text));
+  --ag-select-menu-edge: color-mix(in oklab, var(--n-text) 10%, transparent);
+  --ag-select-menu-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 4%),
+    0 1px 2px rgb(0 0 0 / 30%),
+    0 8px 18px -6px rgb(0 0 0 / 40%),
+    0 26px 52px -14px rgb(0 0 0 / 55%);
 }
 
-.ag-select-menu-item[aria-disabled='true'] { color: var(--ag-text-muted); }
+.ag-select-menu.ag-entering {
+  animation:
+    ag-select-menu-grow 200ms cubic-bezier(0.32, 1.28, 0.54, 1) both,
+    ag-select-menu-fade 140ms var(--ag-ease-out) both;
+}
 
-@keyframes ag-select-menu-in {
+.ag-select-menu.ag-entering .ag-select-menu-item {
+  animation: ag-select-menu-item-in 180ms var(--ag-ease-out) both;
+  animation-delay: calc(var(--ag-select-i, 8) * 14ms + 20ms);
+}
+
+.ag-select-menu.ag-flip.ag-entering .ag-select-menu-item { --ag-select-rise: 3px; }
+
+.ag-select-menu.ag-leaving {
+  pointer-events: none;
+  animation: ag-select-menu-shrink 110ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes ag-select-menu-grow {
+  from { transform: scale(0.9) translateY(-6px); }
+}
+
+.ag-select-menu.ag-flip.ag-entering { animation-name: ag-select-menu-grow-up, ag-select-menu-fade; }
+
+@keyframes ag-select-menu-grow-up {
+  from { transform: scale(0.9) translateY(6px); }
+}
+
+@keyframes ag-select-menu-fade {
   from { opacity: 0; }
 }
 
+@keyframes ag-select-menu-shrink {
+  to { opacity: 0; transform: scale(0.96); }
+}
+
+@keyframes ag-select-menu-item-in {
+  from { opacity: 0; transform: translateY(var(--ag-select-rise, -3px)); }
+}
+
+.ag-select-menu-list {
+  --ag-select-fade-top: 0px;
+  --ag-select-fade-bottom: 0px;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--ag-select-fade-top),
+    #000 calc(100% - var(--ag-select-fade-bottom)),
+    transparent
+  );
+}
+
+.ag-select-menu-list.ag-fade-top { --ag-select-fade-top: 18px; }
+.ag-select-menu-list.ag-fade-bottom { --ag-select-fade-bottom: 18px; }
+
+/* 강조 알약. 위치는 select-menu.ts 가 transform 으로 옮긴다. */
+.ag-select-menu-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  border-radius: 7px;
+  background: var(--n-ink-fill-hover);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 170ms cubic-bezier(0.25, 1, 0.4, 1),
+    height 170ms cubic-bezier(0.25, 1, 0.4, 1),
+    width 170ms cubic-bezier(0.25, 1, 0.4, 1),
+    background-color 90ms linear,
+    opacity 120ms var(--ag-ease-out);
+}
+
+:root[data-theme-effective='dark'] .ag-select-menu-pill {
+  background: color-mix(in oklab, var(--n-text) 9%, transparent);
+}
+
+.ag-select-menu-pill.ag-shown { opacity: 1; }
+.ag-select-menu-pill.ag-instant { transition: none; }
+.ag-select-menu-pill.ag-pressed { background: var(--n-ink-fill-pressed, var(--ag-pressed)); }
+
+.ag-select-menu-group + .ag-select-menu-group,
+.ag-select-menu-list > .ag-select-menu-item + .ag-select-menu-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--n-hairline);
+}
+
+.ag-select-menu-group-label {
+  padding: 4px 9px 2px;
+  color: var(--ag-text-tertiary);
+  font-size: 11px;
+  font-weight: var(--ag-fw-medium, 500);
+  letter-spacing: 0.01em;
+}
+
+.ag-select-menu-item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: var(--ag-text-secondary);
+  white-space: nowrap;
+  cursor: default;
+  transition: color 120ms var(--ag-ease-out);
+}
+
+.ag-select-menu-item.ag-active,
+.ag-select-menu-item[aria-selected='true'] { color: var(--ag-text); }
+.ag-select-menu-item[aria-selected='true'] { font-weight: var(--ag-fw-medium, 500); }
+
+.ag-select-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-select-menu-item .ag-provider-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+}
+
+.ag-select-menu-check {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-left: 10px;
+  margin-right: -2px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.72;
+}
+
+.ag-select-menu-item[aria-disabled='true'] {
+  color: var(--ag-text-disabled, var(--ag-text-muted));
+  font-weight: var(--ag-fw-regular, 400);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .ag-select-menu { animation: none; }
+  .ag-select-menu,
+  .ag-select-menu .ag-select-menu-item { animation: none !important; }
+  .ag-select-menu-pill { transition: none; }
+}
+
+/* 메뉴가 열린 동안 칩은 눌린 채로 메뉴와 이어져 보인다. */
+.ag-settings-page .ag-settings-defaults .ag-settings-field.ag-select-open {
+  background-color: var(--ag-hover);
+  outline: none;
+}
+
+.ag-settings-page .ag-settings-defaults .ag-settings-field.ag-select-open::after {
+  transform: translateY(-25%) rotate(225deg);
+}
+
+/* AI 묶음 — 머리를 누르면 연결, 사용량, 사용자화가 아래로 펼쳐지는 세로 트리. */
+.ag-root .ag-settings-page .ag-settings-nav-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+.ag-settings-nav-group-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ag-settings-nav-group-caret {
+  flex: none;
+  color: var(--n-ink-tertiary, var(--ag-text-tertiary));
+  transform: rotate(-90deg);
+  transition: transform var(--ag-dur-fast) var(--ag-ease-out);
+}
+.ag-settings-nav-group[aria-expanded="true"] .ag-settings-nav-group-caret {
+  transform: rotate(0deg);
+}
+.ag-root .ag-settings-page .ag-settings-nav-group.ag-has-active:not(.ag-active) {
+  color: var(--n-ink);
+}
+.ag-settings-nav-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 2px 18px;
+  padding-left: 8px;
+  border-left: 1px solid var(--ag-set-sep, var(--ag-border));
+}
+.ag-settings-nav-sublist[hidden] {
+  display: none;
+}
+.ag-root .ag-settings-page .ag-settings-nav-sub {
+  min-height: 30px;
+  padding-inline: 10px;
+}
+
+/* 고른 세부 탭에 속하지 않는 AI 섹션. 섹션이 스스로 정하는 hidden 과 따로 둔다. */
+.ag-settings-page .ag-settings-ai-off {
+  display: none !important;
+}
+
+/* 넓은 폭에서는 사이드 트리가 세부 탭을 맡는다. */
+.ag-settings-ai-subnav {
+  display: none;
+}
+
+/* 좁은 폭: 사이드 목록이 가로 탭 줄이 되므로 AI 머리는 탭처럼 보이고 세부 탭은 본문 위로 옮긴다. */
+@container settings-hub (max-width: 760px) {
+  .ag-settings-nav-sublist,
+  .ag-settings-nav-sublist[hidden] {
+    display: none;
+  }
+  .ag-root .ag-settings-page .ag-settings-nav-group {
+    justify-content: center;
+  }
+  .ag-settings-nav-group-caret {
+    display: none;
+  }
+  .ag-root .ag-settings-page .ag-settings-nav-group.ag-has-active {
+    background: var(--ag-set-card);
+    box-shadow: var(--n-elev-1);
+    color: var(--n-ink);
+  }
+  .ag-settings-ai-subnav {
+    display: flex;
+    width: 100%;
+    margin-bottom: 20px;
+  }
+  .ag-settings-ai-subnav .ag-settings-segment {
+    flex: 1 1 0;
+  }
+}
+
+/* Codex 보관한 리셋: 개수 왼쪽, 사용 단추 오른쪽의 한 줄. */
+.ag-settings-quota-reset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+.ag-settings-quota-reset-row:empty { display: none; }
+.ag-settings-quota-reset-row > .ag-settings-note { flex: 1 1 auto; min-width: 0; margin: 0; }
+.ag-settings-quota-reset-row > .ag-settings-btn {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: var(--ag-fs-secondary);
 }

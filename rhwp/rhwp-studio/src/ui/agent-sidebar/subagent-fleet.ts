@@ -352,7 +352,7 @@ export function createSubagentFleet(deps: SubagentFleetDeps): SubagentFleetView 
     // 카드 머리와 같은 수를 쓴다 — 알약과 카드가 다른 숫자를 말하면 오류처럼 보인다.
     // 아직 도는 행은 카드 안에서 휠이 가리킨다.
     const head = workflowsOnly ? '워크플로' : `서브에이전트 ${total}`;
-    return { state, label: live > 0 && !workflowsOnly ? head : `${head} · ${tail}` };
+    return { state, label: live > 0 && !workflowsOnly ? head : `${head}, ${tail}` };
   }
 
   function updateDock(): void {
@@ -537,7 +537,7 @@ export function createSubagentFleet(deps: SubagentFleetDeps): SubagentFleetView 
       tokens === null ? '— tok' : `${formatTokens(tokens)} tok`,
       `${toolCalls ?? 0} 도구`,
     ];
-    setText(row.metrics, parts.join(' · '));
+    setText(row.metrics, parts.join(', '));
   }
 
   /* ── 카드 ──────────────────────────────────────────── */
@@ -699,9 +699,9 @@ export function createSubagentFleet(deps: SubagentFleetDeps): SubagentFleetView 
 
     if (card.kind === 'workflow') {
       const task = card.tasks[0];
-      if (!task) return `워크플로 · ${tail}`;
+      if (!task) return `워크플로, ${tail}`;
       const name = task.workflowName || task.title;
-      if (!live) return `워크플로 · ${name} · ${tail}`;
+      if (!live) return `워크플로: ${name}, ${tail}`;
       const phaseIdx = currentPhaseIndex(task);
       const phase = phaseIdx === null
         ? null
@@ -710,12 +710,12 @@ export function createSubagentFleet(deps: SubagentFleetDeps): SubagentFleetView 
         const order = task.phases.findIndex((item) => item.index === phase.index) + 1;
         const title = phase.title.trim();
         const step = `${order}/${task.phases.length}`;
-        return `워크플로 · ${name} · ${title ? `${step} ${title}` : step}`;
+        return `워크플로: ${name}, ${title ? `${step} ${title}` : step}`;
       }
-      return `워크플로 · ${name} · ${tail}`;
+      return `워크플로: ${name}, ${tail}`;
     }
     const prefix = card.tasks.some((task) => task.background) ? '백그라운드 작업' : '서브에이전트';
-    return live ? `${prefix} ${card.tasks.length}` : `${prefix} ${card.tasks.length} · ${tail}`;
+    return live ? `${prefix} ${card.tasks.length}` : `${prefix} ${card.tasks.length}, ${tail}`;
   }
 
   function refreshCard(card: CardEntry): void {

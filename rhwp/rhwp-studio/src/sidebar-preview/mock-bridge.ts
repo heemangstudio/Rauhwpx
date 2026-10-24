@@ -12,6 +12,7 @@ import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
+import { previewTokenUsage } from './mock-token-usage.ts';
 import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
@@ -77,7 +78,7 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return { ...failure('auth_required', '401 No auth credentials found', 'http_401', false), agent: 'pi' };
     case 'pi-setup':
       // 허브가 Pi 설정이 끝나지 않은 채팅 시작을 거절한다 (chat-error PI_NOT_CONFIGURED).
-      return { ...failure('auth_required', 'Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).', 'PI_NOT_CONFIGURED', false), agent: 'pi' };
+      return { ...failure('auth_required', 'Pi 설정을 먼저 끝내 주세요 (설치, OpenRouter 키, 모델 선택).', 'PI_NOT_CONFIGURED', false), agent: 'pi' };
     case 'usage':
       return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
     case 'usage-soon':
@@ -488,6 +489,7 @@ export function createMockBridge(
     setPiModels(status.models);
     emit({ type: 'pi-status', status });
   };
+  let tokenUsageScanned = false;
   const later = (fn: () => void, delay = 20) => {
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -1113,6 +1115,15 @@ export function createMockBridge(
         throw new Error('연결이 일시적으로 끊겼어요.');
       }
       return data.usage;
+    },
+    // `?tokens=empty|partial|fail|slow` — 토큰 보기의 빈 기록, 일부 실패, 응답 없음, 긴 첫 조회.
+    requestTokenUsage: async (days, refresh) => {
+      const mode = new URLSearchParams(location.search).get('tokens');
+      const wait = mode === 'slow' && !tokenUsageScanned ? 60_000 : refresh ? 700 : tokenUsageScanned ? 160 : 900;
+      tokenUsageScanned = true;
+      await new Promise((resolve) => later(() => resolve(undefined), wait));
+      if (mode === 'fail') return null;
+      return previewTokenUsage(days, mode === 'empty' ? 'empty' : mode === 'partial' ? 'partial' : 'sample');
     },
     consumeCodexReset: async (_key, accountKey) => {
       if (liveUsage) {

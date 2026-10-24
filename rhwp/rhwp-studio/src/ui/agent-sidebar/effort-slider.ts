@@ -15,6 +15,8 @@ export interface EffortSliderOptions {
   /** 드래그 중 가장 가까운 눈금이 바뀔 때(라벨 미리보기용). */
   onPreview?: (id: string) => void;
   ariaLabel?: string;
+  /** 있으면 눈금마다 트랙 아래에 짧은 숫자를 단다. */
+  tickLabel?: (id: string) => string;
 }
 
 export interface EffortSlider {
@@ -64,6 +66,7 @@ export function createEffortSlider(config: EffortSliderOptions): EffortSlider {
 
   let options: AgentEffortOption[] = [];
   let dots: HTMLElement[] = [];
+  let ticks: HTMLElement[] = [];
   let index = 0; // 확정된 눈금
   let previewIndex = -1; // 드래그 중 가장 가까운 눈금
   let pos = 0; // 눈금 단위 연속 위치
@@ -140,6 +143,7 @@ export function createEffortSlider(config: EffortSliderOptions): EffortSlider {
   }
 
   function syncAria(i: number): void {
+    for (let t = 0; t < ticks.length; t += 1) ticks[t]!.classList.toggle('ag-current', t === i);
     root.setAttribute('aria-valuenow', String(i));
     root.setAttribute('aria-valuetext', options[i]?.label ?? '');
   }
@@ -234,7 +238,19 @@ export function createEffortSlider(config: EffortSliderOptions): EffortSlider {
         dot.style.setProperty('--df', String(i / denom()));
         return dot;
       });
-      track.replaceChildren(fill, ...dots, thumb);
+      const tickLabel = config.tickLabel;
+      ticks = tickLabel
+        ? options.map((o, i) => {
+            const tick = document.createElement('span');
+            tick.className = 'ag-eslider-tick';
+            tick.style.setProperty('--df', String(i / denom()));
+            tick.textContent = tickLabel(o.id);
+            tick.setAttribute('aria-hidden', 'true');
+            return tick;
+          })
+        : [];
+      track.replaceChildren(fill, ...dots, ...ticks, thumb);
+      root.classList.toggle('ag-has-ticks', ticks.length > 0);
       root.setAttribute('aria-valuemin', '0');
       root.setAttribute('aria-valuemax', String(Math.max(0, options.length - 1)));
       root.classList.toggle('ag-single', options.length < 2);

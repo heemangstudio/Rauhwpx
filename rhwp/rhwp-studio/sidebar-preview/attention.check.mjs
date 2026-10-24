@@ -382,7 +382,7 @@ export async function checkSystemNotices(page, origin, { details = false } = {})
 
 /** 설정 → AI → 알림 — 웹은 알림이 이미 허락됐을 때만 보이고, 끄면 장부가 조용해진다. */
 export async function checkAttentionSetting(page, origin, artifacts) {
-  await openPreview(page, origin, 'notifications=granted&page=settings&destination=ai');
+  await openPreview(page, origin, 'notifications=granted&page=settings&destination=ai-custom');
   await page.waitForFunction(() => [...document.querySelectorAll('.ag-settings-toggle-row')]
     .some((row) => row.textContent.includes('백그라운드 채팅 알림') && row.checkVisibility()));
   const toggle = await page.evaluateHandle(() => [...document.querySelectorAll('.ag-settings-toggle-row')]
@@ -402,7 +402,7 @@ export async function checkAttentionSetting(page, origin, artifacts) {
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('rhwp-agent-attention')).notifications), false);
 
   // 허락받지 않은 웹에서는 보이지 않는다.
-  await openPreview(page, origin, 'page=settings&destination=ai');
+  await openPreview(page, origin, 'page=settings&destination=ai-custom');
   await page.waitForSelector('.ag-settings-toggle-row');
   assert.equal(await page.evaluate(() => [...document.querySelectorAll('.ag-settings-toggle-row')]
     .some((row) => row.textContent.includes('백그라운드 채팅 알림') && row.checkVisibility())), false);

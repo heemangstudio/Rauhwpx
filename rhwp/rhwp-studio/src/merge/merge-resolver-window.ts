@@ -286,7 +286,7 @@ export class MergeResolverWindow {
     });
     filters.append(statusFilter, search);
     const tools = element('details', 'merge-conflict-tools');
-    tools.append(element('summary', '', '검색 · 일괄 선택'), globalActions, filters);
+    tools.append(element('summary', '', '검색과 일괄 선택'), globalActions, filters);
     top.append(tools);
     this.conflictListEl = element('div', 'merge-conflict-list');
     this.conflictListEl.setAttribute('role', 'tree');
@@ -515,7 +515,7 @@ export class MergeResolverWindow {
     // 의존 항목 하나는 이 변경 자신이므로 둘 이상 묶였을 때만 알린다.
     const linked = conflict.dependencyIds?.filter((dependency) => dependency !== conflict.id).length ?? 0;
     if (linked > 1) facts.push(`연결된 변경 ${linked}개`);
-    return facts.join(' · ');
+    return facts.join(', ');
   }
 
   private renderConflictEditor(conflict: MergeConflict): void {

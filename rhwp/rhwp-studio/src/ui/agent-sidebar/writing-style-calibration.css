@@ -394,15 +394,16 @@
 .ag-calibration-mode {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 6px 12px;
   border: 1px solid transparent;
   border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--n-ink-secondary);
   font: inherit;
-  text-align: left;
+  text-align: center;
   cursor: default;
   transition: var(--ag-transition-color);
 }
@@ -419,12 +420,6 @@
 
 .ag-calibration-mode strong {
   font-size: var(--ag-fs-secondary);
-}
-
-.ag-calibration-mode span {
-  color: var(--n-text-muted);
-  font-size: var(--ag-fs-meta);
-  line-height: 1.35;
 }
 
 .ag-calibration-provider-fieldset {
@@ -894,14 +889,8 @@
   height: 28px;
 }
 
-.ag-calibration-result-meta {
-  margin: 3px 0 18px;
-  color: var(--n-text-muted);
-  font-size: var(--ag-fs-meta);
-  font-variant-numeric: tabular-nums;
-}
-
 .ag-calibration-result-corpus {
+  margin-top: 21px;
   margin-bottom: 5px;
 }
 

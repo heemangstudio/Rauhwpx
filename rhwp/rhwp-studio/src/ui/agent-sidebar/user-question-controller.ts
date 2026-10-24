@@ -264,7 +264,7 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
         element('span', 'ag-question-option-number', String(index + 1)),
         element('span', 'ag-question-option-copy'),
       );
-      button.title = option.description ? `${option.label} · ${option.description}` : option.label;
+      button.title = option.description ? `${option.label}: ${option.description}` : option.label;
       const copy = button.lastElementChild!;
       copy.append(
         element('strong', 'ag-question-option-label', option.label),
@@ -392,7 +392,7 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     if (result.ok) return;
     submitting = false;
     responseId = null;
-    errorMessage = result.message || '답변 제출 실패 · 다시 시도';
+    errorMessage = result.message || '답변 제출 실패, 다시 시도';
     render();
     options.onComposerModeChange(true, Boolean(composerOtherQuestionId));
     announce(errorMessage);

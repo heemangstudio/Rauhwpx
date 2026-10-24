@@ -77,7 +77,7 @@ test('an annual key shows its renewal date, or its end date once auto-renewal is
     state: 'licensed',
     license: { maskedKey: 'HAMA-…AB12', leaseExpiresAt: NOW, lastCheckAt: NOW, lastError: null, ...patch },
   }), NOW).detail;
-  assert.match(licensed({ licenseExpiresAt: renewsAt, autoRenew: true }), /HAMA-…AB12 · 다음 갱신 2027년 10월 20일 · 마지막 확인/);
+  assert.match(licensed({ licenseExpiresAt: renewsAt, autoRenew: true }), /HAMA-…AB12, 다음 갱신 2027년 10월 20일, 마지막 확인/);
   assert.match(licensed({ licenseExpiresAt: renewsAt, autoRenew: false }), /2027년 10월 20일까지/);
   assert.doesNotMatch(licensed({ licenseExpiresAt: null, autoRenew: null }), /갱신|까지/);
   assert.doesNotMatch(licensed({}), /갱신|까지/, 'an older main process sends no expiry');

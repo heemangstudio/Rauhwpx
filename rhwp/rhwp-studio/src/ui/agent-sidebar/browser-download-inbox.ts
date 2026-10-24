@@ -34,7 +34,7 @@ export function createBrowserDownloadInbox(options: { bridge: SidebarBridge; get
     for (const job of inbox) {
       const row = document.createElement('article'); row.className = 'ag-download-inbox-row'; row.dataset.downloadId = job.downloadId;
       const title = document.createElement('strong'); title.textContent = job.filename;
-      const status = document.createElement('span'); status.textContent = `${labels[job.state]} · ${(job.size / 1024).toFixed(0)} KB`;
+      const status = document.createElement('span'); status.textContent = `${labels[job.state]}, ${(job.size / 1024).toFixed(0)} KB`;
       row.append(title, status);
       if (job.error) { const failed = document.createElement('p'); failed.textContent = typeof job.error === 'string' ? job.error : job.error.message ?? '파일 처리를 완료하지 못했습니다.'; row.append(failed); }
       if (['downloaded', 'imported', 'importing', 'import-failed'].includes(job.state)) button('받은 파일 열기', '열기', () => { void open(job); }, row);

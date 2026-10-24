@@ -20,10 +20,10 @@ const UNICODE_BLOCKS: UnicodeBlock[] = [
   { name: 'IPA 확장', start: 0x0250, end: 0x02AF },
   { name: '공백 변환 문자', start: 0x02B0, end: 0x02FF },
   { name: '조합 분음 부호', start: 0x0300, end: 0x036F },
-  { name: '그리스·콥트 문자', start: 0x0370, end: 0x03FF },
+  { name: '그리스 및 콥트 문자', start: 0x0370, end: 0x03FF },
   { name: '키릴 문자', start: 0x0400, end: 0x04FF },
   { name: '일반 구두점', start: 0x2000, end: 0x206F },
-  { name: '위 첨자·아래 첨자', start: 0x2070, end: 0x209F },
+  { name: '위 첨자 및 아래 첨자', start: 0x2070, end: 0x209F },
   { name: '통화 기호', start: 0x20A0, end: 0x20CF },
   { name: '문자형 기호', start: 0x2100, end: 0x214F },
   { name: '숫자 형태', start: 0x2150, end: 0x218F },
@@ -50,7 +50,7 @@ const UNICODE_BLOCKS: UnicodeBlock[] = [
   { name: 'CJK 통합 한자 (일부)', start: 0x4E00, end: 0x4FFF },
   { name: '한글 음절 (가~깋)', start: 0xAC00, end: 0xAD0F },
   { name: '한글 음절 (나~닣)', start: 0xB098, end: 0xB1FF },
-  { name: '반각·전각 형태', start: 0xFF00, end: 0xFFEF },
+  { name: '반각 및 전각 형태', start: 0xFF00, end: 0xFFEF },
 ];
 
 const COLS = 16;

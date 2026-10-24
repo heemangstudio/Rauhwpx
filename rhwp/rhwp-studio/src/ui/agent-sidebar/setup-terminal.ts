@@ -1,7 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
-const HINT = '↑ ↓ 선택 · Enter 확인';
+const HINT = '↑ ↓ 선택, Enter 확인';
 
 /** 모델 연결 전용 터미널. 닫으면 출력과 입력 상태를 모두 지운다. */
 export function createSetupTerminal(options: {
@@ -83,7 +83,7 @@ export function createSetupTerminal(options: {
       if (pending) { terminal.write(pending, () => terminal?.scrollToBottom()); pending = ''; }
       terminal.focus();
     } catch {
-      if (current === generation) screen.textContent = '로그인 창 열기 실패 · API 키로 연결';
+      if (current === generation) screen.textContent = '로그인 창을 열지 못했습니다. API 키로 연결하세요.';
     } finally { if (current === generation) loading = false; }
   }
   function stopKeyPropagation(event: KeyboardEvent) { event.stopPropagation(); }
@@ -106,7 +106,7 @@ export function createSetupTerminal(options: {
     /** 허브 연결이 끊기면 입력을 막는다. 입력이 사라지는 대신 끊김을 보여 준다. */
     setOnline(next: boolean) {
       online = next;
-      hint.textContent = online ? HINT : '연결 끊김 · 다시 연결하는 중';
+      hint.textContent = online ? HINT : '연결 끊김, 다시 연결하는 중';
       if (terminal) terminal.options.disableStdin = !ready || !online;
     },
     write(data: string, reset = false) {

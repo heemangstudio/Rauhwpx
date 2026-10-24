@@ -4744,7 +4744,7 @@ function setupEventListeners(): void {
     if (hfLabel) {
       const kind = state === 'none' ? '' : state.mode === 'header' ? '머리말' : '꼬리말';
       const target = state === 'none' ? '' : headerFooterApplyToLabel(state.applyTo);
-      hfLabel.textContent = state === 'none' ? '' : `${kind} · ${target} 편집 중`;
+      hfLabel.textContent = state === 'none' ? '' : `${kind}(${target}) 편집 중`;
       hfLabel.dataset.mode = state === 'none' ? '' : state.mode;
       hfLabel.dataset.applyTo = state === 'none' ? '' : String(state.applyTo);
       if (hfLiveStatus) {

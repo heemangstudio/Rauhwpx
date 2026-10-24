@@ -58,8 +58,8 @@ const LICENSED_HOLD_MS = 1_400;
 
 const THEME_CHOICES: ReadonlyArray<{ mode: ThemeMode; label: string }> = [
   { mode: 'system', label: '시스템 설정' },
-  { mode: 'light', label: '밝게' },
-  { mode: 'dark', label: '어둡게' },
+  { mode: 'light', label: '라이트' },
+  { mode: 'dark', label: '다크' },
 ];
 
 function el<K extends keyof HTMLElementTagNameMap>(

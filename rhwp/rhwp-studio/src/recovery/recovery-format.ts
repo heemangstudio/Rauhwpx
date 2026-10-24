@@ -28,5 +28,5 @@ export function describeDraft(draft: AutosaveDraftSummary): string {
   const suffix = isLegacyDraft(draft) && ['hwpx', 'hml'].includes(draft.sourceFormat.toLowerCase())
     ? ' → HWP'
     : '';
-  return `${formatDraftSavedAt(draft.savedAt)} · ${formatDraftSize(draft.byteLength)} · ${format}${suffix}`;
+  return `${formatDraftSavedAt(draft.savedAt)}, ${formatDraftSize(draft.byteLength)}, ${format}${suffix}`;
 }

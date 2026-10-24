@@ -224,7 +224,7 @@ test('접힘 계획: 작업만 접히고 답변·질문·계획·시스템 줄�
   assert.deepEqual(where, ['flow', 'flow', 'turn-1', 'turn-1', 'flow', 'turn-1', 'flow', 'flow', 'flow']);
   assert.equal(plan.folds.length, 1);
   assert.equal(plan.folds[0].anchorIndex, 1);
-  assert.equal(plan.folds[0].view.title, '작업 2분 31초 · 문단 2개 수정 · 문서 읽음');
+  assert.equal(plan.folds[0].view.title, '작업 2분 31초, 문단 2개 수정, 문서 읽음');
   assert.equal(plan.folds[0].view.expandable, true);
 });
 
@@ -240,7 +240,7 @@ test('접힘 계획: 사용자 메시지 없이 시작한 계획 승인 턴도 �
   ];
   const { plan, where } = placements(messages);
   assert.deepEqual(where, ['flow', 'flow', 'research', 'flow', 'flow', 'implement', 'flow']);
-  assert.deepEqual(plan.folds.map((fold) => fold.view.title), ['작업 20초 · 문서 읽음', '작업 1분 · 표 1개 추가']);
+  assert.deepEqual(plan.folds.map((fold) => fold.view.title), ['작업 20초, 문서 읽음', '작업 1분, 표 1개 추가']);
 });
 
 test('접힘 계획: 표식 없는 옛 대화는 사용자 메시지 경계로 시간 없이 접힌다', () => {
@@ -255,7 +255,7 @@ test('접힘 계획: 표식 없는 옛 대화는 사용자 메시지 경계로 �
   ];
   const { plan, where } = placements(messages);
   assert.deepEqual(where, ['flow', 'legacy-1', 'legacy-1', 'flow', 'flow', 'legacy-5', 'flow']);
-  assert.deepEqual(plan.folds.map((fold) => fold.view.title), ['작업 내역 · 표 1개 읽음', '작업 내역 · 표 1개 삭제']);
+  assert.deepEqual(plan.folds.map((fold) => fold.view.title), ['작업 내역, 표 1개 읽음', '작업 내역, 표 1개 삭제']);
   assert.deepEqual(plan.folds.map((fold) => fold.durationMs), [null, null]);
 });
 
@@ -290,7 +290,7 @@ test('접힘 계획: 중단된 턴은 작업이 없어도 펼칠 것 없는 한 
   const { plan } = placements(messages);
   assert.deepEqual(plan.folds.map((fold) => [fold.view.title, fold.view.expandable]), [
     ['중단됨', false],
-    ['중단됨 · 1분 12초 · 표 1개 추가', true],
+    ['중단됨, 1분 12초, 표 1개 추가', true],
   ]);
 });
 
@@ -307,10 +307,10 @@ test('접힘 계획: 보고를 쓰고 도구를 부른 뒤 끝난 턴은 그 보
   ];
   const { plan, where } = placements(messages);
   assert.deepEqual(where, ['flow', 'flow', 'turn-1', 'turn-1', 'flow', 'turn-1']);
-  assert.equal(plan.folds[0].view.title, '작업 40초 · 문단 3개 읽음');
+  assert.equal(plan.folds[0].view.title, '작업 40초, 문단 3개 읽음');
   assert.equal(keepsFinalMilestone(messages, turn), true);
 
-  // 편집 턴 끝의 “작업 완료 · 문서 확인” 안내는 답이 아니다 — 보고는 그대로 흐름에 남는다.
+  // 편집 턴 끝의 “작업을 마쳤습니다” 안내는 답이 아니다 — 보고는 그대로 흐름에 남는다.
   const withNote = [...messages, answer(TURN_CHECK_DOCUMENT_TEXT)];
   assert.deepEqual(placements(withNote).where, ['flow', 'flow', 'turn-1', 'turn-1', 'flow', 'turn-1', 'flow']);
 
@@ -372,7 +372,7 @@ test('정착 때 남기는 제목은 기록에서 같은 규칙으로 만든다'
     activity('a1', [record('create_table', { sectionIdx: 0, paraIdx: 0, charOffset: 0, rows: 2, cols: 2 }), record('set_table_props', { sectionIdx: 0, paraIdx: 0, controlIdx: 0, tableProps: {} }, 'failed')]),
     answer('만들었습니다.'),
   ];
-  assert.equal(settledTurnText(messages, turn, 'completed', 48_000), '작업 48초 · 표 1개 추가 · 오류 1');
+  assert.equal(settledTurnText(messages, turn, 'completed', 48_000), '작업 48초, 표 1개 추가, 오류 1');
   assert.equal(settledTurnText(messages, turn, 'failed', 48_000), '');
   assert.equal(settledTurnText([user('a'), turn, answer('b')], turn, 'completed', 1_000), '');
 });
@@ -383,7 +383,7 @@ test('시간은 한 시간 안에서 서브에이전트 시계와 같고, 넘으
   assert.equal(formatTurnDuration(3_900_000), '1시간 5분');
   assert.equal(formatTurnDuration(7_200_000), '2시간');
   assert.equal(formatTurnDuration(-5_000), '0초');
-  assert.equal(turnFoldLabel({ outcome: 'interrupted', durationMs: 72_000, parts: ['문단 2개 수정'], errors: 0 }), '중단됨 · 1분 12초 · 문단 2개 수정');
+  assert.equal(turnFoldLabel({ outcome: 'interrupted', durationMs: 72_000, parts: ['문단 2개 수정'], errors: 0 }), '중단됨, 1분 12초, 문단 2개 수정');
 });
 
 test('턴 결과: 사용자 중단과 바깥이 끊은 턴은 중단, 오류·비정상 종료는 실패, 모르는 종료는 완료', () => {

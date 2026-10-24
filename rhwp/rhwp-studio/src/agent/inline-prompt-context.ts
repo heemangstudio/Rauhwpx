@@ -380,8 +380,8 @@ export function buildInlineElementSelection(
     '아래 지시는 위 선택 요소를 대상으로 한다.',
   ];
   return {
-    label: labels.join(' · '),
-    excerpt: selectionExcerpt(excerptParts.join(' · ')),
+    label: labels.join(', '),
+    excerpt: selectionExcerpt(excerptParts.join(', ')),
     contextBlock: context.join('\n'),
     items,
     attachments: attachments.length > 0 ? attachments : undefined,

@@ -121,21 +121,21 @@ function fontValue(fontSet: FontSet, index: number): string {
 
 function localFontStatus(state: LocalFontState): string {
   const imported = getImportedLocalFontCount();
-  const session = imported > 0 ? ` · 이번 세션에 ${imported}개 가져옴` : '';
-  if (state.lastError) return `저장소 접근 실패 · ${state.lastError}`;
+  const session = imported > 0 ? `, 이번 세션에 ${imported}개 가져옴` : '';
+  if (state.lastError) return `저장소 접근 실패: ${state.lastError}`;
   if (!state.stored) {
     if (!canDetectFonts()) return `이 브라우저는 로컬 글꼴 감지 미지원${session}`;
     return `저장된 감지 결과가 없습니다.${session}`;
   }
   const date = state.detectedAt ? new Date(state.detectedAt).toLocaleDateString('ko-KR') : '';
-  return `${state.count.toLocaleString()}개 감지${date ? ` · ${date}` : ''}${session}`;
+  return `${state.count.toLocaleString()}개 감지${date ? `, ${date}` : ''}${session}`;
 }
 
 function fontFolderStatus(state: FontFolderState): string {
   switch (state.status) {
-    case 'connecting': return `${state.name ?? ''} · 색인 중…`;
-    case 'connected': return `${state.name} · ${state.faces.toLocaleString()}개${state.persistent ? '' : ' · 이번 세션'}`;
-    case 'needs-permission': return `${state.name} · 다시 연결 필요`;
+    case 'connecting': return `${state.name ?? ''} 색인 중…`;
+    case 'connected': return `${state.name}, ${state.faces.toLocaleString()}개${state.persistent ? '' : ', 이번 세션'}`;
+    case 'needs-permission': return `${state.name}, 다시 연결 필요`;
     case 'error': return state.error ?? '연결하지 못했습니다.';
     default: return '연결된 폴더 없음';
   }
@@ -433,7 +433,7 @@ export function createEditingSettings(options: {
       const summary = el(
         'span',
         'ag-settings-control-description',
-        `${LANG_LABELS[0]} ${fontValue(fontSet, 0)} · ${LANG_LABELS[1]} ${fontValue(fontSet, 1)}`,
+        `${LANG_LABELS[0]} ${fontValue(fontSet, 0)}, ${LANG_LABELS[1]} ${fontValue(fontSet, 1)}`,
       );
       copy.append(name, summary);
       const actions = el('div', 'ag-settings-actions');
@@ -627,7 +627,7 @@ export function createEditingSettings(options: {
     next.versionControl.useHancomGit = userSettings.getUseHancomGit();
     const result = userSettings.tryApplyEditorScalarSettings(next);
     if (!result.ok) {
-      status.textContent = `설정을 저장하지 못했습니다 · ${result.error}`;
+      status.textContent = `설정을 저장하지 못했습니다. ${result.error}`;
       status.hidden = false;
       return false;
     }
