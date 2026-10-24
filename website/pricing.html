@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함)이고 매년 자동 갱신돼요. 언제든 해지할 수 있고, macOS·Windows에서 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이거나 Signature Edition ₩29,000(일회성)이에요. macOS·Windows에서 3일 동안 먼저 써 볼 수 있어요.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -19,15 +19,24 @@
 /* 가격 카드 한 장, 하마가 모서리에 앉아요 */
 .buy-cell { padding-top: clamp(140px, 13vw, 184px); padding-bottom: clamp(56px, 7vw, 96px); }
 .buy-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: stretch; max-width: 1000px; margin-inline: auto; }
+.buy-pair--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 1200px; }
 .buy-wrap { position: relative; display: flex; }
 .buy-wrap > .buy { flex: 1; }
 .buy { display: flex; flex-direction: column; }
 .buy__cta { margin-top: auto; }
 .buy--trial { background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line); }
 .buy--trial .buy__list { margin-bottom: 24px; }
-@media (max-width: 860px) {
-  .buy-pair { grid-template-columns: 1fr; max-width: 520px; }
-  .buy-pair .buy--trial { order: 2; }
+.buy__badge {
+  display: inline-block; margin-right: 6px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  color: #0b1220; background: #b2e2fb;
+}
+.buy--signature { box-shadow: inset 0 0 0 1px rgba(178, 226, 251, 0.55), 0 24px 48px -28px rgba(31, 94, 255, 0.45); }
+@media (max-width: 960px) {
+  .buy-pair, .buy-pair--3 { grid-template-columns: 1fr; max-width: 520px; }
+  .buy-pair--3 .buy-wrap--annual { order: 1; }
+  .buy-pair--3 .buy-wrap--signature { order: 2; }
+  .buy-pair--3 .buy--trial { order: 3; }
 }
 .buy-wrap .perch { right: 36px; }
 .buy { padding: 36px clamp(20px, 5vw, 40px) 30px; }
@@ -143,7 +152,7 @@
 
     <div class="frame frame--top">
       <div class="cell cell--open buy-cell">
-        <div class="buy-pair">
+        <div class="buy-pair buy-pair--3">
           <article class="card buy buy--trial" id="trial" aria-labelledby="trial-title" data-reveal="rise">
             <div class="buy__top">
               <p class="eyebrow">무료 체험</p>
@@ -156,7 +165,7 @@
             </ul>
             <a class="btn btn--secondary btn--block buy__cta" href="trial.html">체험판 안내</a>
           </article>
-        <div class="buy-wrap">
+        <div class="buy-wrap buy-wrap--annual">
           <div class="perch" data-reveal style="--i:5"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
           <article class="card card--navy buy" id="price" data-reveal="rise">
             <div class="buy__top">
@@ -175,7 +184,29 @@
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
+            <a class="btn btn--primary btn--block buy__cta" href="#price" data-buy data-buy-sku="annual" aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
+            <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
+          </article>
+        </div>
+        <div class="buy-wrap buy-wrap--signature">
+          <div class="perch" data-reveal style="--i:6"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
+          <article class="card card--navy buy buy--signature" id="signature" aria-labelledby="signature-title" data-reveal="rise" data-sku="signature">
+            <div class="buy__top">
+              <p class="eyebrow"><span class="buy__badge">Signature</span></p>
+              <h2 id="signature-title" class="buy__num">₩29,000</h2>
+              <p class="meta">일회성</p>
+            </div>
+            <ul class="buy__list">
+              <li><span>앱의 <b>모든 기능</b> (연간과 동일)</span></li>
+              <li><span><b>최소 3년</b> 지속 업데이트 약속</span></li>
+              <li><span><b>우선 지원</b> · 영업일 1일 내 첫 답변 (이메일)</span></li>
+              <li><span>키 하나로 <b>기기 두 대</b>까지 (Mac · Windows)</span></li>
+            </ul>
+            <label class="check">
+              <input type="checkbox" data-consent data-consent-for="signature">
+              <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
+            </label>
+            <a class="btn btn--primary btn--block buy__cta" href="#signature" data-buy data-buy-sku="signature" aria-disabled="true">Groble에서 Signature 결제하기</a>
             <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
           </article>
         </div>
@@ -242,19 +273,24 @@
 <script>
 (function(){
   var P=window.HamaPurchase;
-  var buy=document.querySelector('[data-buy]');
-  var consent=document.querySelector('[data-consent]');
-  var note=document.querySelector('[data-buy-note]');
-  if(!buy||!P)return;
-  function sync(){buy.setAttribute('aria-disabled',consent.checked?'false':'true');}
-  consent.addEventListener('change',sync);sync();
-  buy.addEventListener('click',function(e){
-    e.preventDefault();
-    if(!consent.checked){note.textContent='동의에 체크하면 결제할 수 있어요.';consent.focus();return;}
-    // 결제마다 새 ref 를 만들어 이 브라우저에 남겨요. success.html 이 이 값으로 키를 찾아요.
-    var ref=P.newRef();
-    P.saveRef(window.localStorage,ref);
-    window.location.href=P.checkoutUrl(ref);
+  if(!P)return;
+  document.querySelectorAll('[data-buy]').forEach(function(buy){
+    var card=buy.closest('article');
+    var consent=card&&card.querySelector('[data-consent]');
+    var note=card&&card.querySelector('[data-buy-note]');
+    if(!consent)return;
+    var sku=buy.getAttribute('data-buy-sku')||'annual';
+    function sync(){buy.setAttribute('aria-disabled',consent.checked?'false':'true');}
+    consent.addEventListener('change',sync);sync();
+    buy.addEventListener('click',function(e){
+      e.preventDefault();
+      if(!consent.checked){if(note)note.textContent='동의에 체크하면 결제할 수 있어요.';consent.focus();return;}
+      // 결제마다 새 ref 를 만들어 이 브라우저에 남겨요. success.html 이 이 값으로 키를 찾아요.
+      var ref=P.newRef();
+      P.saveRef(window.localStorage,ref);
+      var base=P.CONFIG.CHECKOUT_URLS[sku]||P.CONFIG.CHECKOUT_URLS.annual;
+      window.location.href=P.checkoutUrl(ref, base);
+    });
   });
 })();
 </script>
