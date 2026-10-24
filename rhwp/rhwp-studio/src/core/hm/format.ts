@@ -242,6 +242,10 @@ export function findOrCreateFontId(core: HmCore, name: string): number {
   throw unsupported('findOrCreateFontId');
 }
 
+export function prepareFontFamilies(core: HmCore, names: string[]): Promise<void> {
+  throw unsupported('prepareFontFamilies');
+}
+
 export function findOrCreateFontIdForLang(core: HmCore, lang: number, name: string): number {
   throw unsupported('findOrCreateFontIdForLang');
 }

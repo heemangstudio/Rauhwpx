@@ -711,4 +711,32 @@ export class HeemangAdapter {
   /** 글꼴 준비 전에도 문서를 연 상태로 본다. 두 번째 브리지(버전·비교)는 공유 엔진의 글꼴로 조판한다. */
   markFontsPrepared(): void { this.fontsPrepared = true; }
   get fontsReady(): boolean { return this.fontsPrepared; }
+
+  /** 위젯에서 고른 글꼴 파일을 서식 변경 전에 연결한다. 문서 내용은 바꾸지 않는다. */
+  async hmPrepareFontFamilies(names: string[], options: WebFontLoadOptions): Promise<void> {
+    const doc = this.document();
+    const missing = () => [...new Set(names)].filter(name => name && !this.hasFamily(name));
+    if (!missing().length) return;
+    await this.loadFonts({ faces: missing().map(name => ({ name, candidates: [name], standIns: [] })), classDefaults: [], fallbacks: [] });
+    if (this.doc !== doc) return;
+    const plan = resolveCanvasKitFontPlan(missing(), options);
+    await Promise.all(plan.sources.map(source => {
+      let pending = this.webFonts.get(source.url);
+      if (!pending) {
+        const read = async () => {
+          const response = await fetch(source.url, { signal: AbortSignal.timeout(6000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const bytes = await readResponseBytesWithLimit(response, 32 * 1024 * 1024, '글꼴');
+          return decodeWebFont(bytes, { decompress: this.webFontDecoders(), maxBytes: 32 * 1024 * 1024 });
+        };
+        this.sources.set(source.url, read);
+        pending = read().then(bytes => this.register(source.url, bytes));
+        this.webFonts.set(source.url, pending);
+      }
+      return pending;
+    }));
+    if (this.doc !== doc) return;
+    if (missing().length) throw new EngineNotSupportedError(`글꼴 파일: ${missing().join(', ')}`);
+    this.refreshLayout();
+  }
 }
