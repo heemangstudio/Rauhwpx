@@ -23,6 +23,7 @@ export const doc_markSaved: (a: number, b: number) => [number, number];
 export const doc_navigate: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_objects: (a: number, b: number) => [number, number, number, number];
 export const doc_page: (a: number, b: number) => [number, number, number, number];
+export const doc_pageInfo: (a: number, b: number) => [number, number, number, number];
 export const doc_pagePng: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
 export const doc_pages: (a: number) => [number, number, number, number];

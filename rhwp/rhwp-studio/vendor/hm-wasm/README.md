@@ -1,13 +1,14 @@
 # hm-wasm
 
 Generated browser bindings and WASM from HeemangEngine commit
-`2008f209e97a70bd586644b8b8596ca32ef5274f`, built on 2026-10-23.
-Built from a git archive of main in an isolated output directory; the source checkout was read-only. Contract and
+`e72ad80` (branch `feat/studio-widgets`: main MAIN106 `c953ceb` plus the
+character count and run format queries, the right paragraph margin and
+per-slot font faces), built on 2026-10-24 in an engine worktree. Contract and
 page-packet versions are both 1. The package is committed so Studio does not
 need the HeemangEngine checkout to run or build.
 
-`hm_wasm_bg.wasm`: 4,121,888 bytes, SHA-256
-`412a55db1e1a3f69df7a49c693e008d7e800875427e1ab25de10432be79e6df3`.
+`hm_wasm_bg.wasm`: 4,557,519 bytes, SHA-256
+`1793b1e9274a6462d4ee46462a48ec020285fd99f27d5993b4ef265b672e5d50`.
 
 To refresh, run `CARGO_BUILD_JOBS=3 ./build.sh` in HeemangEngine's
 `crates/hm-wasm`. It requires wasm-bindgen 0.2.125; set `WASM_BINDGEN` to its
