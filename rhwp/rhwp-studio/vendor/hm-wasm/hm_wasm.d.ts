@@ -36,19 +36,38 @@ export type SelectedRange =
 export interface Selected { range: SelectedRange; rects: Rect[] }
 export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
-export interface CharPatch { bold?: boolean; italic?: boolean; underline?: boolean; size?: number; color?: number }
+/**
+ * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
+ * all seven script slots, which must be registered; \`charSpacing\` a percent
+ * of the character size (-50 to 50) for all slots.
+ */
+export interface CharPatch {
+    bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
+    fontFace?: string; charSpacing?: number;
+}
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
-| { op: "insertText"; at: Address; text: string }
+| { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
 | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
 | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
-| { op: "pageBreak"; at: Address; on: boolean };
+| { op: "pageBreak"; at: Address; on: boolean }
+| { op: "applyStyle"; from: Address; to: Address; styleId: number }
+| { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number }
+| { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
+| { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number }
+| { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
+| { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
+| { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+| { op: "setList"; from: Address; to: Address; list: ListSpec | null };
 /** A directed selection the host keeps with an undo step. */
-export interface Selection { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
-export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection }
+export type Selection =
+| { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
+| { kind: "cells"; table: TableAddress; from: CellRef; to: CellRef };
+export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; selection?: Selection; afterSelection?: Selection }
 /**
  * \`changedPages\`: pages (zero-based, as now laid out, plus pages that no
  * longer exist) to paint again; null for all. \`selection\`: after a
@@ -57,8 +76,14 @@ export interface TransactRequest { expectedEpoch?: number; ops: EditOp[]; select
  */
 export interface Receipt {
     contentEpoch: number; layoutEpoch: number; pageCount: number; caret?: Address; undo: number; redo: number;
-    changedPages: number[] | null; selection?: Selection; historyId: number;
+    changedPages: number[] | null; selection?: Selection | null; historyId: number; tableChanges?: TableChange[];
 }
+/** Ordered per operation. Removed cells map to null; merged cells to their survivor.
+ * All cell list addresses in the table expire after structural edits or undo/redo.
+ * Requery the table to resolve a mapped origin to its new list. */
+export interface TableChange { table: TableAddress; cells: { from: CellRef; to: CellRef | null; index: number | null; paragraphShift: number }[] }
+export interface TableCell extends CellRef { rowSpan: number; columnSpan: number; list: ListAddress; rects: Rect[] }
+export interface TableInfo { table: TableAddress; rows: number; columns: number; cells: TableCell[]; rects: Rect[] }
 export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
     format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
@@ -76,13 +101,45 @@ export interface PageInfo {
     margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
 }
 export interface Capabilities {
-    contract: number; packet: number; open: string[]; serialize: string[];
-    scopes: string[]; ops: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
+    contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; open: string[]; serialize: string[];
+    scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
-export interface QueryRequest { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
-export interface ControlInfo { index: number; offset: number; kind: string; lists: number }
-export interface ParagraphInfo { index: number; text: string; length: number; caret: [number, number]; controls: ControlInfo[] }
+export type QueryRequest =
+| { kind: "table"; table: TableAddress; page?: number }
+| { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
+| { kind: "formatContext"; at: Address; to?: Address }
+| { kind: "styles"; from?: number; count?: number }
+| { kind: "style"; id: number }
+| { kind: "lists" }
+| { kind: "list"; listKind: "bullet" | "numbering"; id: number };
+export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
+/**
+ * Values at \`at\` (for a caret, what typing there takes: the shape of the
+ * unit before it, or the paragraph's first at its start); \`mixed\` names the
+ * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
+ * the range. \`lineSpacing\` is absent unless the spacing is a percentage.
+ */
+export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
+export interface StyleInfo {
+    id: number; name: string; englishName: string; kind: "paragraph" | "character"; next: number;
+    paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
+}
+export interface ListLevel { format: string; numberKind: number; start: number }
+export interface ListInfo { kind: "bullet" | "numbering"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
+export interface ControlInfo {
+    index: number; offset: number; kind: string; lists: number;
+    /** Authored equation source, including an empty string; absent on other controls. */
+    script?: string;
+}
+export interface ParagraphInfo {
+    index: number;
+    /** Characters, tabs, line breaks (\n) and the two fixed spaces (U+00A0, U+2007). */
+    text: string;
+    /** The wire offset of each UTF-16 unit of `text`, then the end mark's. */
+    offsets: number[];
+    length: number; caret: [number, number]; controls: ControlInfo[];
+}
 export interface SearchRequest {
     text: string; caseSensitive?: boolean; list?: ListAddress; limit?: number;
     /** With `from`, the one match after it (before it with `backward`), wrapping around. */
@@ -97,7 +154,11 @@ export interface FontFileSource { readonly size: number; read(offset: number, le
 export interface ComposeRequest { at?: Address; text?: string }
 export interface CopyRequest { from: Address; to: Address }
 export interface Copied { text: string; html: string }
-export interface PasteRequest { at: Address; text?: string; expectedEpoch?: number }
+/** Exactly one of `at` and `replace`. */
+export interface PasteRequest {
+    at?: Address; replace?: { from: Address; to: Address };
+    text?: string; expectedEpoch?: number; selection?: Selection; afterSelection?: Selection;
+}
 export type ErrorCode =
 | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
 | "STALE_EPOCH" | "EDIT_FAILED" | "NO_SUCH_PAGE" | "CLOSED" | "SAVE_FAILED"
@@ -153,7 +214,9 @@ export class Doc {
     compose(request: string): string;
     /**
      * Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
-     * the system clipboard; the engine keeps the fragment for `paste`.
+     * the system clipboard. The fragment is shared by this Engine's
+     * documents until the next copy, survives source closure, and carries
+     * face names for paste into another document.
      */
     copy(request: string): string;
     /**
@@ -206,6 +269,10 @@ export class Doc {
      */
     page(i: number): Uint8Array;
     /**
+     * Metadata for just one page, without serializing the whole document.
+     */
+    pageInfo(index: number): string;
+    /**
      * Page `i` rasterized by the engine as PNG, the reference the canvas
      * player is checked against.
      */
@@ -220,9 +287,10 @@ export class Doc {
      */
     pages(): string;
     /**
-     * Pastes at `at` (`PasteRequest`) as one undo step: the engine's
-     * fragment when `text` is absent or is the fragment's text, else
-     * `text` as typed. A `Receipt` with the caret after the paste.
+     * Pastes at `at`, or over `replace` (one list), as one undo step
+     * (`PasteRequest`): the engine's fragment when `text` is absent or is
+     * the fragment's text, else `text` as typed. A `Receipt` with the caret
+     * after the paste; on failure nothing changes, epochs included.
      */
     paste(request: string): string;
     /**
@@ -252,7 +320,9 @@ export class Doc {
     pictureSource(i: number, item: number): string;
     /**
      * Bounded reads of the document (`QueryRequest`), as JSON:
-     * `paragraphs` gives `ParagraphInfo[]` for a list.
+     * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
+     * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
+     * `lists` `ListInfo[]` and `list` one (or null).
      */
     query(request: string): string;
     /**
@@ -444,6 +514,7 @@ export interface InitOutput {
     readonly doc_navigate: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_objects: (a: number, b: number) => [number, number, number, number];
     readonly doc_page: (a: number, b: number) => [number, number, number, number];
+    readonly doc_pageInfo: (a: number, b: number) => [number, number, number, number];
     readonly doc_pagePng: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pages: (a: number) => [number, number, number, number];
