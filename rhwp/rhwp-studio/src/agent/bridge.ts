@@ -45,6 +45,7 @@ import {
 } from './provider-failure.ts';
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { missingAnchorIds, readDocumentMemoryResult } from './document-memory.ts';
+import { readTasteLearned, readTasteSettings, readTasteUndoResult } from './taste.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import { currentAgentEditLock, onAgentEditLockChange } from './agent-prefs.ts';
@@ -99,6 +100,8 @@ import type {
   DocumentMemoryEntry,
   DocumentMemoryOp,
   DocumentMemoryResult,
+  TasteSettings,
+  TasteUndoResult,
   AgentEditingLease,
   AgentName,
   AgentAuthMethod,
@@ -469,8 +472,8 @@ export interface AgentBridge {
   installPi(): Promise<PiStatus | null>;
   /** OpenRouter API 키를 검증하고 저장한다. */
   setPiKey(key: string): Promise<PiStatus | null>;
-  /** 라이브 OpenRouter 모델 카탈로그. */
-  requestPiCatalog(refresh?: boolean): Promise<PiCatalogModel[] | null>;
+  /** 라이브 OpenRouter 모델 카탈로그. own 이면 선물 모드여도 내 키의 카탈로그. */
+  requestPiCatalog(refresh?: boolean, options?: { own?: boolean }): Promise<PiCatalogModel[] | null>;
   /** 사용자가 고른 최대 3개 pi 모델(표시 이름 포함)을 저장한다. */
   setPiModels(
     models: Array<{ id: string; name: string; defaultEffort?: string }>,
@@ -563,6 +566,20 @@ export interface AgentBridge {
   revertDocumentMemory(changes: DocumentMemoryChange[], documentId?: string | null): Promise<DocumentMemoryResult | null>;
   /** 글에 매인 항목 가운데 인용이 지금 문서에서 사라진 것의 id. */
   missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[];
+  /** 취향 학습(Rau-0.1) 설정. 연결이 없으면 null. */
+  requestTasteSettings(): Promise<TasteSettings | null>;
+  /** 바꿀 칸만 보낸다. 공급자만 바꾸면 허브가 모델·추론을 그 공급자의 기본값으로 돌린다. */
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
+  /** 학습 한 번의 변경을 되돌린다. entryId 를 생략하면 그 학습의 모든 변경. 연결이 없으면 null. */
+  undoTaste(input: {
+    learnId: string;
+    /** 같은 구분선에 합쳐진 다음 학습들 — 허브는 이 id 들로 자기가 남긴 변경 목록을 찾는다. */
+    learnIds?: string[];
+    documentId: string;
+    key: string;
+    changes: unknown[];
+    entryId?: string;
+  }): Promise<TasteUndoResult | null>;
   requestWritingStyleCatalog(refresh?: boolean): Promise<WritingStyleCatalog | null>;
   calibrateWritingStyle(input: {
     language: WritingStyleLanguage;
@@ -3505,6 +3522,21 @@ export class AgentBridgeImpl implements AgentBridge {
         this.requests.settle(msg.requestId, result);
         break;
       }
+      case 'taste-learned': {
+        const learned = readTasteLearned(msg);
+        if (learned) this.emit({ type: 'taste-learned', ...learned });
+        break;
+      }
+      case 'taste-undo-result': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readTasteUndoResult(msg));
+        break;
+      }
+      case 'taste-settings': {
+        const settings = msg.ok === false ? null : readTasteSettings(msg.settings);
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, settings);
+        if (settings) this.emit({ type: 'taste-settings', settings });
+        break;
+      }
       case 'document-memory-changed': {
         if (typeof msg.documentId !== 'string' || typeof msg.key !== 'string' || !Number.isSafeInteger(msg.revision)) break;
         const cached = this.documentMemory;
@@ -5558,7 +5590,37 @@ export class AgentBridgeImpl implements AgentBridge {
     });
   }
 
-  /** 지금 문서 원본의 digest·파일 이름 — 허브가 다시 발급된 documentId 를 같은 기억에 다시 묶는다. */
+  requestTasteSettings(): Promise<TasteSettings | null> {
+    return this.request<TasteSettings>({ type: 'taste-settings-request' }, 'taste-settings');
+  }
+
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null> {
+    return this.request<TasteSettings>({ type: 'taste-settings-set', ...patch }, 'taste-settings-set');
+  }
+
+  undoTaste(input: {
+    learnId: string;
+    learnIds?: string[];
+    documentId: string;
+    key: string;
+    changes: unknown[];
+    entryId?: string;
+  }): Promise<TasteUndoResult | null> {
+    return this.request<TasteUndoResult>({
+      type: 'taste-undo',
+      learnId: input.learnId,
+      ...(input.learnIds?.length ? { learnIds: input.learnIds } : {}),
+      documentId: input.documentId,
+      key: input.key,
+      changes: input.changes,
+      ...(input.entryId ? { entryId: input.entryId } : {}),
+    }, 'taste-undo');
+  }
+
+  /**
+   * 지금 문서 원본의 digest·파일 이름 — 허브가 다시 발급된 documentId 를 같은 기억에 다시 묶는다.
+   * 이름 없는 새 문서는 모두 같은 빈 문서 digest·이름이라 보내지 않는다 — 보내면 새 문서끼리 기억을 나눈다.
+   */
   private documentSourceIdentity(): { digest: string | null; fileName: string | null } {
     const engine = this.documentEngine;
     return { digest: engine?.documentDigest ?? null, fileName: engine?.fileName ?? null };
@@ -5870,9 +5932,9 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.onEvent((event) => { if (event.type === 'browser-event') handler(event.event); });
   }
 
-  requestPiCatalog(refresh = false): Promise<PiCatalogModel[] | null> {
+  requestPiCatalog(refresh = false, options: { own?: boolean } = {}): Promise<PiCatalogModel[] | null> {
     return this.request<PiCatalogModel[]>(
-      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}) },
+      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}), ...(options.own ? { own: true } : {}) },
       'pi-catalog',
       30_000,
     );

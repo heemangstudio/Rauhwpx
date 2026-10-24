@@ -261,3 +261,20 @@ test('the prompt block leaves out notes whose anchor is gone and lists subjects 
   assert.equal(documentMemoryPromptBlock({ revision: 0, entries: [] }), '');
   assert.match(documentMemoryPromptBlock({ revision: 5, entries: [] }, { emptied: true }), /No notes/);
 });
+
+test('revert refuses a malformed change list and never restores past the size caps', async (t) => {
+  const dir = tempDir(t);
+  const store = new DocumentMemoryStore({ dir });
+  const key = await store.resolveKey({ documentId: 'doc-1' });
+  const long = (n) => `${n}${'가'.repeat(279)}`;
+  const seeded = await store.apply(key, [{ op: 'add', kind: 'fact', subject: '사실.0', text: long(0) }], explicit);
+  const removed = await store.apply(key, [{ op: 'remove', id: seeded.changes[0].entryId }], explicit);
+  await assert.rejects(store.revert(key, [{ op: 'remove', entryId: seeded.changes[0].entryId }]), { code: 'MEMORY_INVALID' });
+  await assert.rejects(store.revert(key, [{ ...removed.changes[0], prev: { ...removed.changes[0].prev, id: 'mem_000000000000' } }]), { code: 'MEMORY_INVALID' });
+
+  // Fill the document to the character cap; restoring the removed note would pass it.
+  const fill = Array.from({ length: 28 }, (_, index) => ({ op: 'add', kind: 'fact', subject: `사실.${index + 1}`, text: long(index + 1).slice(0, 285) }));
+  await store.apply(key, fill, explicit);
+  const result = await store.revert(key, removed.changes);
+  assert.deepEqual([result.reverted, result.skipped], [[], [seeded.changes[0].entryId]]);
+});

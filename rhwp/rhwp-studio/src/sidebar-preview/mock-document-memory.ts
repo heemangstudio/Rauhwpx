@@ -52,7 +52,9 @@ function sampleEntries(): T.DocumentMemoryEntry[] {
   ];
 }
 
-const mode = new URLSearchParams(location.search).get('memory');
+const params = new URLSearchParams(location.search);
+// `taste=sample` 의 모두 보기도 표본 기억을 연다.
+const mode = params.get('taste') === 'sample' ? 'sample' : params.get('memory');
 
 function storeFor(documentId: string): Store {
   let store = stores.get(documentId);

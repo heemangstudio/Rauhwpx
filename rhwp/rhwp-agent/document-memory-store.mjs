@@ -93,6 +93,24 @@ export function canonicalSubject(subject) {
   return String(subject ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * 취향 비교 키 — 같은 주제라도 글이 같아야 같은 취향이다(한다체 ≠ 합니다체). 공백·전각·끝 마침표 차이는 같다.
+ */
+export function preferenceText(text) {
+  return String(text ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').replace(/[.。]+$/, '').trim().toLowerCase();
+}
+
+/**
+ * 이 항목의 지금 글이 AGENTS.md 제안에서 확인(promoted)·거절(declined)됐는가. 표시는 그때의 글에만 묶인다 —
+ * 글이 바뀌면 새 취향이라 다시 제안할 수 있다. 글 없이 남은 표시는 지금 글의 것으로 본다.
+ * @returns {'promoted' | 'declined' | null}
+ */
+export function promotionState(entry) {
+  if (!entry || (entry.promoted !== true && entry.promotionDeclined !== true)) return null;
+  if (preferenceText(entry.promotionText ?? entry.text) !== preferenceText(entry.text)) return null;
+  return entry.promoted === true ? 'promoted' : 'declined';
+}
+
 function deriveSubject(kind, text) {
   return `${KIND_LABELS[kind] ?? kind}.${text}`.slice(0, MAX_SUBJECT_CHARS).trim();
 }
@@ -167,6 +185,11 @@ function readStoredEntry(value) {
     entry.evidence = Number.isSafeInteger(value.evidence) && value.evidence >= 1 ? value.evidence : 1;
     if (value.userCandidate === true) entry.userCandidate = true;
     if (value.promoted === true) entry.promoted = true;
+    if (value.promotionDeclined === true) entry.promotionDeclined = true;
+    if ((entry.promoted || entry.promotionDeclined) && typeof value.promotionText === 'string'
+      && value.promotionText.length <= MAX_ENTRY_TEXT_CHARS) {
+      entry.promotionText = value.promotionText;
+    }
     const epoch = new Date(0).toISOString();
     entry.createdAt = isoOr(value.createdAt, epoch);
     entry.updatedAt = isoOr(value.updatedAt, entry.createdAt);
@@ -186,6 +209,18 @@ function sameEntry(a, b) {
   const left = a ? readStoredEntry(a) : null;
   const right = b ? readStoredEntry(b) : null;
   return Boolean(left && right) && JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** 되돌릴 수 있는 모양의 변경인가 — 항목 id 와 op, 그 op 에 필요한 정규형 항목(entry·prev)이 같은 id 로 있어야 한다. */
+function revertableChange(change) {
+  if (!isPlainObject(change) || typeof change.entryId !== 'string' || !ENTRY_ID_PATTERN.test(change.entryId)) return false;
+  const entry = change.entry === undefined ? null : readStoredEntry(change.entry);
+  const prev = change.prev === undefined ? null : readStoredEntry(change.prev);
+  if ((change.entry !== undefined && entry?.id !== change.entryId) || (change.prev !== undefined && prev?.id !== change.entryId)) return false;
+  if (change.op === 'add') return Boolean(entry);
+  if (change.op === 'update') return Boolean(entry && prev);
+  if (change.op === 'remove') return Boolean(prev);
+  return false;
 }
 
 function textChars(entries) {
@@ -461,6 +496,10 @@ export class DocumentMemoryStore {
   revert(key, changes) {
     return this.#mutate(async () => {
       if (!Array.isArray(changes) || changes.length > MAX_OPS * 2) throw memoryError('MEMORY_INVALID', 'changes must be a list');
+      // 되돌리기 목록은 Studio 를 거쳐 온다 — 모양이 틀린 변경이 하나라도 있으면 아무것도 하지 않는다.
+      for (const change of changes) {
+        if (!revertableChange(change)) throw memoryError('MEMORY_INVALID', 'changes hold a malformed change');
+      }
       const doc = await this.#loadDoc(this.#key(key));
       const entries = doc.entries.map(cloneEntry);
       const reverted = [];
@@ -474,11 +513,14 @@ export class DocumentMemoryStore {
         if (change?.op === 'add' && current && sameEntry(current, left)) {
           entries.splice(position, 1);
           reverted.push(entryId);
-        } else if (change?.op === 'update' && current && prev?.id === entryId && sameEntry(current, left)) {
+        } else if (change?.op === 'update' && current && prev?.id === entryId && sameEntry(current, left)
+          && !entries.some((entry) => entry !== current && canonicalSubject(entry.subject) === canonicalSubject(prev.subject))
+          && textChars(entries) - current.text.length + prev.text.length <= MAX_MEMORY_TEXT_CHARS) {
           entries[position] = prev;
           reverted.push(entryId);
         } else if (change?.op === 'remove' && !current && prev?.id === entryId
           && entries.length < MAX_MEMORY_ENTRIES
+          && textChars(entries) + prev.text.length <= MAX_MEMORY_TEXT_CHARS
           && !entries.some((entry) => canonicalSubject(entry.subject) === canonicalSubject(prev.subject))) {
           entries.push(prev);
           reverted.push(entryId);
@@ -491,22 +533,58 @@ export class DocumentMemoryStore {
     });
   }
 
+  /**
+   * 사용자 지시로 올린 결과를 항목에 적는다 — promoted 는 확인됨, declined 는 거절됨(다시 제안하지 않는다).
+   * 내용이 아닌 표시라 리비전을 올리지 않는다 (에이전트에게 기억을 다시 보내지 않는다).
+   * 표시는 제안한 글(text, 없으면 항목의 지금 글)에 묶인다 — 그 글과 다른 항목은 건드리지 않는다.
+   * @param {{key: string, entryId: string}[]} refs
+   * @param {'promoted' | 'declined'} outcome
+   * @param {{ text?: string }} [options]
+   * @returns {Promise<string[]>} 표시한 항목 id
+   */
+  markPromotion(refs, outcome, { text } = {}) {
+    return this.#mutate(async () => {
+      const field = outcome === 'promoted' ? 'promoted' : outcome === 'declined' ? 'promotionDeclined' : null;
+      if (!field) throw memoryError('MEMORY_INVALID', 'outcome must be promoted or declined');
+      const line = typeof text === 'string' && text.trim() ? text.normalize('NFC').trim().slice(0, MAX_ENTRY_TEXT_CHARS) : null;
+      const byKey = new Map();
+      for (const ref of Array.isArray(refs) ? refs : []) {
+        if (typeof ref?.key !== 'string' || !KEY_PATTERN.test(ref.key) || typeof ref.entryId !== 'string') continue;
+        byKey.set(ref.key, [...(byKey.get(ref.key) ?? []), ref.entryId]);
+      }
+      const marked = [];
+      for (const [key, ids] of byKey) {
+        const doc = await this.#loadDoc(key);
+        const hits = doc.entries
+          .filter((entry) => ids.includes(entry.id) && (!line || preferenceText(line) === preferenceText(entry.text))
+            && promotionState(entry) !== outcome)
+          .map((entry) => entry.id);
+        if (hits.length === 0) continue;
+        const withPromotion = (entry) => {
+          const copy = cloneEntry(entry);
+          delete copy.promoted;
+          delete copy.promotionDeclined;
+          return { ...copy, [field]: true, promotionText: line ?? entry.text };
+        };
+        const next = {
+          ...doc,
+          entries: doc.entries.map((entry) => (hits.includes(entry.id) ? withPromotion(entry) : entry)),
+        };
+        await this.#writeDoc(next);
+        Object.assign(doc, next);
+        marked.push(...hits);
+      }
+      return marked;
+    });
+  }
+
   /** 모든 문서에서 같은 주제의 항목 (사용자 단위 취향 승격용). */
   findSubject(subject) {
     return this.#mutate(async () => {
       const wanted = canonicalSubject(subject);
       if (!wanted) return [];
-      const keys = new Set(this.docs.keys());
-      const files = await this.fs.readdir(this.docsDir).catch((error) => {
-        if (error?.code === 'ENOENT') return [];
-        throw error;
-      });
-      for (const file of files) {
-        const key = file.endsWith('.json') ? file.slice(0, -5) : '';
-        if (KEY_PATTERN.test(key)) keys.add(key);
-      }
       const hits = [];
-      for (const key of keys) {
+      for (const key of await this.#allKeys()) {
         const doc = await this.#loadDoc(key);
         for (const entry of doc.entries) {
           if (canonicalSubject(entry.subject) === wanted) hits.push({ key, entryId: entry.id });
@@ -514,6 +592,38 @@ export class DocumentMemoryStore {
       }
       return hits;
     });
+  }
+
+  /**
+   * 다른 문서들의 사용자 취향 후보 — 주제와 글. 학습기가 같은 취향에는 같은 주제·글을 쓰게 한다.
+   * @returns {Promise<{subject: string, text: string}[]>}
+   */
+  candidateSubjects({ excludeKey, limit = 30 } = {}) {
+    return this.#mutate(async () => {
+      const found = new Map();
+      for (const key of await this.#allKeys()) {
+        if (key === excludeKey) continue;
+        const doc = await this.#loadDoc(key).catch(() => null);
+        for (const entry of doc?.entries ?? []) {
+          const id = `${canonicalSubject(entry.subject)}\n${preferenceText(entry.text)}`;
+          if (entry.userCandidate === true && !found.has(id)) found.set(id, { subject: entry.subject, text: entry.text });
+        }
+      }
+      return [...found.values()].slice(0, limit);
+    });
+  }
+
+  async #allKeys() {
+    const keys = new Set(this.docs.keys());
+    const files = await this.fs.readdir(this.docsDir).catch((error) => {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const file of files) {
+      const key = file.endsWith('.json') ? file.slice(0, -5) : '';
+      if (KEY_PATTERN.test(key)) keys.add(key);
+    }
+    return keys;
   }
 
   #mutate(operation) {

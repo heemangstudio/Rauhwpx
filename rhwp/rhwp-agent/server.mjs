@@ -115,6 +115,16 @@ import { createProjectIngest } from './project-ingest.mjs';
 import { createHomeSearch } from './home-search.mjs';
 import { createProjectLibrarian } from './project-librarian.mjs';
 import { createTasteSignalBuffer } from './taste-signals.mjs';
+import {
+  RAU_TASTE_NAME,
+  TASTE_CLOSE_GRACE_MS,
+  TasteSettingsStore,
+  appendRauInstruction,
+  createTasteLearner,
+  newTasteTurn,
+  noteTasteTurnEvent,
+  tasteOwnOpenRouter,
+} from './taste-learner.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -347,7 +357,11 @@ const documentMemoryHub = createDocumentMemoryHub({
   store: new DocumentMemoryStore(),
   log,
   broadcast: (frame) => broadcastToStudios(frame),
+  // 턴 중 에이전트가 쓴 기억은 그 턴의 배움 표시에 함께 싣는다.
+  onWrite: (write) => tasteLearner.noteExplicit(write),
 });
+// 대화에서 배우기 설정 (Settings → AI → Rau-0.1). 문서 기억 폴더에 둔다.
+const tasteSettings = await new TasteSettingsStore({ dir: documentMemoryHub.store.dir }).init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
 const PI_ROOT = defaultPiRoot();
 const openRouter = createOpenRouter({ cacheDir: PI_ROOT });
@@ -520,6 +534,24 @@ if (process.env.RHWP_TASTE_SIGNALS_LOG === '1') {
     log(`taste-signals doc=${documentId} +${info.count} [${info.kinds.join(',')}] buffered=${info.buffered} ${JSON.stringify(tasteSignals.peekSignals(documentId).slice(-info.count))}`);
   });
 }
+// Rau-0.1 취향 학습기. 테스트 허브(NODE_ENV=test)는 RHWP_TASTE_LEARNER=1 일 때만 모델을 부르고, 0 이면 늘 끈다.
+const TASTE_LEARNER_AVAILABLE = process.env.RHWP_TASTE_LEARNER === '1'
+  || (process.env.RHWP_TASTE_LEARNER !== '0' && process.env.NODE_ENV !== 'test');
+const tasteLearner = createTasteLearner({
+  store: documentMemoryHub.store,
+  signals: tasteSignals,
+  settings: () => (TASTE_LEARNER_AVAILABLE ? tasteSettings.get() : { enabled: false }),
+  routes: (context) => tasteLearnerRoutes(context),
+  resolveKey: (context) => tasteMemoryKey(context),
+  isTurnRunning: (documentId) => [...sessions.values()].some((record) => (
+    record.agentSession?.status === 'running' && record.agentSession.documentId === documentId
+  )),
+  emit: (frame) => sendTasteFrame(frame),
+  changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
+  promote: (proposal) => proposeRauInstruction(proposal),
+  log,
+});
+tasteSignals.onReviewSignals((documentId, info) => tasteLearner.signalsArrived(documentId, info));
 
 const homeSearch = createHomeSearch({
   home: os.homedir(),
@@ -1384,10 +1416,13 @@ function publishedSkillOutcome(outcome) {
 
 function broadcastAgentInstructions(status, changedBy) {
   for (const record of sessions.values()) {
-    if (record.pendingInstructionDraft
-      && record.pendingInstructionDraft.expectedRevision !== status.revision) {
-      clearInstructionDraft(record, 'stale');
+    const draft = record.pendingInstructionDraft;
+    if (!draft || draft.expectedRevision === status.revision) continue;
+    if (typeof draft.rauLine === 'string') {
+      rebaseRauInstructionDraft(record, draft, status);
+      continue;
     }
+    clearInstructionDraft(record, 'stale');
   }
   broadcastToStudios({ v: 1, type: 'agent-instructions', status, changedBy });
 }
@@ -1508,6 +1543,8 @@ function flushProviderCredentialHomes(homes) {
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
 const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
 const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
+// 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
+const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 const CLAUDE_MODELS = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 const CODEX_LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
@@ -2214,6 +2251,8 @@ function beginAgentTurn(record, activeSession, { userTurn = true } = {}) {
   activeSession.status = 'running';
   // 이 턴에 보고된 프로바이더 실패 — turn-end 가 하나로 합쳐 싣는다.
   activeSession.turnFailure = null;
+  // 학습기 입력: 이 턴의 사용자 글(dispatchUserMessage 가 채운다)과 루트 에이전트의 마지막 답.
+  activeSession.tasteTurn = newTasteTurn(activeSession.turnId);
   if (activeSession.planning.phase === 'implementing' && activeSession.planning.execution?.status !== 'completed') {
     activeSession.planExecutionTurnId = activeSession.turnId;
     activeSession.planExecutionTurnSucceeded = false;
@@ -3586,6 +3625,7 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
+    noteTasteTurnEvent(activeSession.tasteTurn, evt);
     if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$|request_secret$)/.test(evt.tool ?? '')) {
       const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
       try {
@@ -3693,9 +3733,22 @@ function makeBackendEventHandler(record, generation) {
       ? { ...evt, turnId: providerTurnId }
       : { ...evt };
     if (evt.type === 'turn-start') record.missedTurnEnd = null;
+    let tasteTurnEnd = null;
     if (evt.type === 'turn-end') {
       const succeeded = providerTurnSucceeded(evt);
       const compactionTurn = Boolean(activeSession.manualCompaction);
+      // 학습은 성공한 보통 턴만 한다. 실패·중단·압축 턴은 그 턴에 에이전트가 쓴 기억만 표시한다.
+      // 안전 모드에서 문서를 고친 턴은 검토가 끝날 때 검토 신호와 함께 한 번에 배운다.
+      tasteTurnEnd = {
+        threadId: activeSession.threadId,
+        turnId: providerTurnId,
+        documentId: activeSession.documentId ?? null,
+        userText: activeSession.tasteTurn?.userText ?? '',
+        answer: activeSession.tasteTurn?.answer ?? '',
+        learn: succeeded && !compactionTurn,
+        reviewPending: activeSession.permissionProfile === 'safe' && activeSession.tasteTurn?.wrote === true,
+      };
+      activeSession.tasteTurn = null;
       delete studioEvent.handoffUncertain;
       sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, succeeded, evt), providerTurnId);
       // 압축 턴은 기록을 싣지도, 비우지도 않는다 — 다음 보통 턴이 그대로 전한다.
@@ -3745,6 +3798,7 @@ function makeBackendEventHandler(record, generation) {
       }), providerTurnId);
     }
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
+    if (tasteTurnEnd) void tasteLearner.turnEnded(tasteTurnEnd);
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
       record.suppressedUserQuestionCallIds.clear();
@@ -4547,6 +4601,132 @@ async function librarianRoutes(projectId) {
   };
 }
 
+/** 학습기가 쓸 기록 — 그 채팅을 가진 창, 없으면 그 문서를 연 창. */
+function tasteRecord({ threadId, documentId } = {}, { socket = false } = {}) {
+  const live = [...sessions.values()].filter((record) => !record.disposed && (!socket || record.studioSocket));
+  return live.find((record) => threadId && record.agentSession?.threadId === threadId)
+    ?? live.find((record) => documentId && recordDocumentId(record) === documentId)
+    ?? null;
+}
+
+function tasteMemoryKey({ threadId, documentId }) {
+  const record = tasteRecord({ threadId, documentId });
+  return record ? documentMemoryHub.keyFor(record, documentId) : documentMemoryHub.store.resolveKey({ documentId });
+}
+
+/** 학습기의 공급자 경로 — 제목 생성과 같은 준비 상태·격리 환경을 쓴다. */
+async function tasteLearnerRoutes(context) {
+  const record = tasteRecord(context) ?? [...sessions.values()].find((candidate) => !candidate.disposed) ?? null;
+  if (!record) return { readiness: {} };
+  const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
+  const { readiness, resolvePiTitleModel, resolveCodexTitleModel: _codex, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
+  return {
+    readiness,
+    codexQuota: providerLimits.snapshot().codex,
+    giftMode: piManager.access().mode === 'gift',
+    resolveModel: { pi: resolvePiTitleModel },
+    ownOpenRouter: tasteOwnOpenRouter(piManager),
+    deps,
+  };
+}
+
+/** taste-learned 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
+function sendTasteFrame(frame) {
+  const record = tasteRecord(frame, { socket: true })
+    ?? [...sessions.values()].find((candidate) => !candidate.disposed && candidate.studioSocket)
+    ?? null;
+  if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId}`);
+}
+
+function sendTasteSettings(sock, requestId, extra = {}) {
+  sendJson(sock, { v: 1, type: 'taste-settings', ...(requestId ? { requestId } : {}), ok: true, settings: tasteSettings.get(), ...extra });
+}
+
+/**
+ * 여러 문서에서 배운 사용자 취향을 AGENTS.md 의 `## Rau-0.1` 아래 한 줄로 제안한다(설정의 확인 카드).
+ * 모든 창을 통틀어 Rau-0.1 제안은 하나만 두고, 다른 제안이 기다리는 창은 건드리지 않는다.
+ * 확인할 때 그때의 AGENTS.md 에 다시 붙이므로(rauLine) 기다리는 동안 사용자가 고쳐도 낡지 않는다.
+ * @returns {{ draftId: string } | { exists: true } | null} 만든 제안, 이미 있는 줄, 또는 자리 없음
+ */
+function proposeRauInstruction({ line, documents, refs, threadId, documentId }) {
+  const status = agentInstructionsStore.snapshot();
+  const content = appendRauInstruction(status.content, line);
+  if (content === null) return { exists: true };
+  const live = [...sessions.values()].filter((record) => !record.disposed);
+  if (live.some((record) => currentInstructionDraft(record)?.requestedBy === RAU_TASTE_NAME)) return null;
+  const record = tasteRecord({ threadId, documentId }, { socket: true });
+  if (!record || currentInstructionDraft(record)) return null;
+  let prepared;
+  try {
+    prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
+  } catch (error) {
+    log(`${RAU_TASTE_NAME}: instruction proposal skipped: ${error?.code ?? error?.message ?? error}`);
+    return null;
+  }
+  const createdAt = Date.now();
+  const draft = {
+    id: crypto.randomUUID(),
+    confirmationToken: crypto.randomUUID(),
+    content: prepared.content,
+    expectedRevision: prepared.expectedRevision,
+    reason: `${documents}개 문서에서 같은 취향을 배웠습니다.`,
+    requestedBy: RAU_TASTE_NAME,
+    createdAt,
+    expiresAt: createdAt + RAU_INSTRUCTION_DRAFT_TTL_MS,
+    rauRefs: refs,
+    rauLine: line,
+  };
+  record.pendingInstructionDraft = draft;
+  draft.expiryTimer = setTimeout(() => {
+    if (record.pendingInstructionDraft?.id === draft.id) clearInstructionDraft(record, 'expired');
+  }, RAU_INSTRUCTION_DRAFT_TTL_MS);
+  draft.expiryTimer.unref?.();
+  if (!sendInstructionDraft(record)) {
+    clearTimeout(draft.expiryTimer);
+    record.pendingInstructionDraft = null;
+    return null;
+  }
+  log(`${RAU_TASTE_NAME}: proposed an AGENTS.md line learned in ${documents} documents`);
+  return { draftId: draft.id };
+}
+
+/**
+ * Rau-0.1 변경안은 AGENTS.md 가 바뀌어도 낡지 않는다 — 그 줄을 새 내용에 다시 붙여 보낸다. 사용자가 그 줄을
+ * 직접 넣었으면 변경안을 거두고 그 취향을 올린 것으로 적는다.
+ */
+function rebaseRauInstructionDraft(record, draft, status) {
+  const content = appendRauInstruction(status.content, draft.rauLine);
+  if (content === null) {
+    clearInstructionDraft(record, 'stale');
+    void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
+    return;
+  }
+  try {
+    const prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
+    draft.content = prepared.content;
+    draft.expectedRevision = prepared.expectedRevision;
+  } catch (error) {
+    log(`${RAU_TASTE_NAME}: instruction proposal dropped: ${error?.code ?? error?.message ?? error}`);
+    clearInstructionDraft(record, 'stale');
+    return;
+  }
+  sendInstructionDraft(record);
+}
+
+/**
+ * 확인한 변경안을 쓴다. Rau-0.1 변경안은 지금의 AGENTS.md 에 그 줄을 다시 붙인다 — 이미 있으면 그대로 둔다.
+ * 확인 토큰은 consumeAuthorizedInstructionDraft 가 이미 검사했다.
+ */
+function writeConfirmedInstructionDraft(draft) {
+  if (typeof draft.rauLine !== 'string') {
+    return agentInstructionsStore.update(draft.content, { expectedRevision: draft.expectedRevision });
+  }
+  const status = agentInstructionsStore.snapshot();
+  const content = appendRauInstruction(status.content, draft.rauLine);
+  if (content === null) return Promise.resolve(status);
+  return agentInstructionsStore.update(content, { expectedRevision: status.revision });
+}
+
 function addAgentInstructionsContext(prompt, documentMemoryBlock = '') {
   return [agentInstructionsStore.promptBlock(), documentMemoryBlock, prompt].filter(Boolean).join('\n\n');
 }
@@ -4746,6 +4926,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     return;
   }
   beginAgentTurn(record, activeSession);
+  if (typeof msg.text === 'string') activeSession.tasteTurn.userText = msg.text;
   const providerTurn = Object.freeze({
     session: activeSession,
     generation: activeSession.generation,
@@ -5490,6 +5671,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
       const referenced = await addReferenceContext(activeSession, feedback, revisionPrompt);
       if (record.agentSession !== activeSession) return;
       beginAgentTurn(record, activeSession);
+      activeSession.tasteTurn.userText = feedback;
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
@@ -5966,6 +6148,50 @@ async function handleStudioMessage(record, sock, msg) {
       sendInstructionDraft(record, sock);
       return;
     }
+    case 'taste-settings-request': {
+      sendTasteSettings(sock, typeof msg.requestId === 'string' ? msg.requestId : null);
+      return;
+    }
+    case 'taste-settings-set': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const patch = Object.fromEntries(['enabled', 'provider', 'model', 'effort']
+        .filter((field) => msg[field] !== undefined)
+        .map((field) => [field, msg[field]]));
+      void tasteSettings.set(patch).then(() => {
+        sendTasteSettings(sock, requestId);
+        for (const other of sessions.values()) if (other !== record) sendTasteSettings(other.studioSocket, null);
+      }).catch((error) => sendTasteSettings(sock, requestId, {
+        ok: false,
+        error: { code: error?.code ?? 'TASTE_SETTINGS_FAILED', message: String(error?.message ?? error) },
+      }));
+      return;
+    }
+    case 'taste-undo': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const learnId = typeof msg.learnId === 'string' ? msg.learnId : null;
+      const documentId = typeof msg.documentId === 'string' && msg.documentId ? msg.documentId : null;
+      // 키는 Studio 가 보낸 것을 믿지 않고 문서에서 다시 구한다. 다르면 다른 문서의 기억이다.
+      void (async () => {
+        if (!documentId) throw Object.assign(new Error('documentId is required'), { code: 'MEMORY_INVALID' });
+        const key = await documentMemoryHub.keyFor(record, documentId);
+        if (msg.key !== undefined && msg.key !== key) {
+          throw Object.assign(new Error('That learning belongs to another document'), { code: 'MEMORY_KEY_MISMATCH' });
+        }
+        return tasteLearner.undo({
+          key,
+          documentId,
+          learnId,
+          learnIds: Array.isArray(msg.learnIds) ? msg.learnIds.slice(0, 64) : [],
+          changes: msg.changes,
+          entryId: msg.entryId,
+        });
+      })().then((result) => sendJson(sock, { v: 1, type: 'taste-undo-result', requestId, ok: true, learnId, ...result }))
+        .catch((error) => sendJson(sock, {
+          v: 1, type: 'taste-undo-result', requestId, ok: false, learnId, reverted: [], skipped: [],
+          error: { code: error?.code ?? 'TASTE_UNDO_FAILED', message: String(error?.message ?? error) },
+        }));
+      return;
+    }
     case 'agent-instructions-save': {
       void agentInstructionsStore.update(msg.content, {
         expectedRevision: Number(msg.expectedRevision),
@@ -6004,9 +6230,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         return;
       }
-      void agentInstructionsStore.update(draft.content, {
-        expectedRevision: draft.expectedRevision,
-      }).then((status) => {
+      void writeConfirmedInstructionDraft(draft).then((status) => {
         sendJson(sock, {
           v: 1,
           type: 'agent-instructions',
@@ -6021,6 +6245,7 @@ async function handleStudioMessage(record, sock, msg) {
           outcome: 'confirmed',
         });
         broadcastAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`);
+        if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
       }).catch((error) => {
         sendJson(sock, {
           v: 1,
@@ -6061,6 +6286,8 @@ async function handleStudioMessage(record, sock, msg) {
         draftId: draft.id,
         outcome: 'rejected',
       });
+      // 거절한 취향은 다시 제안하지 않는다.
+      if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'rejected', { text: draft.rauLine }).catch(() => {});
       return;
     }
     case 'chat-permission-set': {
@@ -6619,7 +6846,11 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'pi-catalog-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void piManager.catalog(msg.refresh === true)
+      // own: 선물 모드에서도 내 키의 OpenRouter 카탈로그 (Rau-0.1 의 OpenRouter 모델 고르기).
+      const catalog = msg.own === true
+        ? piRouter.catalog(msg.refresh === true, piManager.ownApiKey())
+        : piManager.catalog(msg.refresh === true);
+      void catalog
         .then((models) => replyToStudio(record, sock, { v: 1, type: 'pi-catalog', requestId, models }))
         .catch((e) => sendPiError(record, sock, requestId, e, 'OPENROUTER_UNREACHABLE'));
       return;
@@ -9320,6 +9551,8 @@ function prepareShutdown(signal) {
     for (const timer of projectChangeTimers.values()) clearTimeout(timer);
     projectChangeTimers.clear();
     projectLibrarian.cancelAll();
+    // 도는 취향 학습은 잠깐 기다렸다가 끊는다 — 한 번짜리 호출과 그 임시 작업 폴더가 남지 않게.
+    const tasteLearnerClosed = tasteLearner.close({ graceMs: TASTE_CLOSE_GRACE_MS }).catch(() => {});
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
@@ -9329,6 +9562,8 @@ function prepareShutdown(signal) {
     const browserClosed = await ownedBrowser.close().catch(() => false);
     await credentialBroker.close?.();
     await browserDownloads.close?.();
+    // 학습기의 한 번짜리 호출은 세션의 격리 환경을 빌려 쓴다 — 세션을 치우기 전에 끝낸다.
+    await tasteLearnerClosed;
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );

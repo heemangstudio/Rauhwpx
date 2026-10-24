@@ -8,6 +8,7 @@ import { isTurnOutcome, type TurnOutcome } from './turn-outcome.ts';
 import { readProviderFailure } from './provider-failure.ts';
 import { isTurnInterruptionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
 import { planToMarkdown } from '../ui/agent-sidebar/plan-markdown.ts';
+import { readTasteLearnItem } from './taste.ts';
 import type {
   AgentName,
   AgentWorkflow,
@@ -19,6 +20,8 @@ import type {
   ProviderFailureOrigin,
   ServiceTier,
   StructuredPlan,
+  TasteLearnItem,
+  TasteLearned,
   UserQuestion,
   UserQuestionAnswer,
   UserQuestionInteraction,
@@ -184,7 +187,8 @@ export type ThreadTurnOutcome = 'interrupted' | 'failed';
 
 /**
  * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
- * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리.
+ * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리,
+ * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서 문서 기억을 바꾼 자리.
  */
 export type ThreadMarkerMessage =
   | (ThreadMessageBase & {
@@ -204,7 +208,32 @@ export type ThreadMarkerMessage =
       beforeTokens?: number;
       afterTokens?: number;
       planId?: never;
+    })
+  | (ThreadMessageBase & {
+      role: 'system';
+      kind: 'marker';
+      marker: 'taste';
+      /** 처음 학습의 id. 같은 턴의 다음 학습은 learnIds 에 더한다. */
+      learnId: string;
+      learnIds?: string[];
+      /** 허브 턴 id(ThreadTurnMessage.hubTurnId). 모르면 null. */
+      turnId?: string | null;
+      documentId: string;
+      /** 문서 기억 키 — 되돌리기에 그대로 보낸다. */
+      key: string;
+      items: TasteLearnItem[];
+      /** 허브 저장소의 변경 목록. 읽지 않고 되돌리기에 그대로 보낸다 — 새로고침 뒤 되돌리기가 이것에 기댄다. */
+      changes: unknown[];
+      /** 되돌린 항목의 entryId */
+      undone?: string[];
+      /** 그새 바뀌어 되돌릴 수 없는 항목의 entryId */
+      stale?: string[];
+      /** 이 학습이 낸 AGENTS.md 변경안 */
+      proposalDraftId?: string;
+      planId?: never;
     });
+
+export type ThreadTasteMarker = Extract<ThreadMarkerMessage, { marker: 'taste' }>;
 
 /**
  * 턴 표식 — 턴이 시작될 때 대화에 넣고 끝날 때 결과와 함께 정착한다.
@@ -1074,6 +1103,38 @@ function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMe
       text: message.text,
       ...(beforeTokens !== undefined ? { beforeTokens } : {}),
       ...(afterTokens !== undefined ? { afterTokens } : {}),
+    };
+  }
+  if (message.marker === 'taste') {
+    const learnId = nonEmptyString(message.learnId);
+    const documentId = nonEmptyString(message.documentId);
+    const key = nonEmptyString(message.key);
+    if (!learnId || !documentId || !key || !Array.isArray(message.items) || !Array.isArray(message.changes)) return null;
+    const items = message.items.map(readTasteLearnItem).filter((item): item is TasteLearnItem => item !== null);
+    if (!items.length) return null;
+    const ids = (value: unknown): string[] => (Array.isArray(value)
+      ? [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+      : []);
+    const learnIds = ids(message.learnIds).filter((id) => id !== learnId);
+    const undone = ids(message.undone);
+    const stale = ids(message.stale).filter((id) => !undone.includes(id));
+    const turnId = nonEmptyString(message.turnId);
+    const proposalDraftId = nonEmptyString(message.proposalDraftId);
+    return {
+      role: 'system',
+      kind: 'marker',
+      marker: 'taste',
+      learnId,
+      ...(learnIds.length ? { learnIds } : {}),
+      turnId,
+      documentId,
+      key,
+      items,
+      changes: message.changes,
+      ...(undone.length ? { undone } : {}),
+      ...(stale.length ? { stale } : {}),
+      ...(proposalDraftId ? { proposalDraftId } : {}),
+      text: message.text,
     };
   }
   return null;
@@ -2345,6 +2406,89 @@ export function addCompactionMarker(
   };
   thread.messages.push(marker);
   return marker;
+}
+
+export function isTasteMarker(message: ThreadMessage | null | undefined): message is ThreadTasteMarker {
+  return message?.kind === 'marker' && message.marker === 'taste';
+}
+
+/** 이 학습을 이미 담은 구분선. */
+export function findTasteMarker(messages: readonly ThreadMessage[], learnId: string): ThreadTasteMarker | null {
+  for (const message of messages) {
+    if (isTasteMarker(message) && (message.learnId === learnId || message.learnIds?.includes(learnId))) return message;
+  }
+  return null;
+}
+
+/**
+ * 취향 학습 구분선. 같은 learnId 는 한 번만 담고(재전송), 같은 턴의 다음 학습은 그 턴의 구분선에
+ * 더한다. 새 구분선은 그 턴의 마지막 기록 바로 뒤에 놓는다 — 학습은 턴이 끝난 뒤에 와서 그새
+ * 다음 요청이 들어와 있을 수 있다. 턴을 찾지 못하면 끝에 놓는다.
+ * 바뀐 구분선(새로 넣었거나 더한 것)을 돌려준다. 이미 담은 학습이면 null.
+ */
+export function addTasteMarker(
+  thread: ChatThread,
+  learned: Pick<TasteLearned, 'learnId' | 'turnId' | 'documentId' | 'key' | 'items' | 'changes' | 'proposal'>,
+): ThreadTasteMarker | null {
+  if (!learned.items.length || findTasteMarker(thread.messages, learned.learnId)) return null;
+  const turnId = learned.turnId ?? null;
+  const sameTurn = turnId === null
+    ? null
+    : thread.messages.find((message): message is ThreadTasteMarker => isTasteMarker(message) && message.turnId === turnId) ?? null;
+  if (sameTurn) {
+    sameTurn.items = [...sameTurn.items, ...learned.items];
+    sameTurn.changes = [...sameTurn.changes, ...learned.changes];
+    sameTurn.learnIds = [...(sameTurn.learnIds ?? []), learned.learnId];
+    // 다음 학습이 다시 그 항목을 바꿨으면 앞의 되돌림·만료 표시는 맞지 않는다.
+    const fresh = new Set(learned.items.map((item) => item.entryId));
+    if (sameTurn.undone) sameTurn.undone = sameTurn.undone.filter((id) => !fresh.has(id));
+    if (sameTurn.stale) sameTurn.stale = sameTurn.stale.filter((id) => !fresh.has(id));
+    if (!sameTurn.undone?.length) delete sameTurn.undone;
+    if (!sameTurn.stale?.length) delete sameTurn.stale;
+    if (learned.proposal?.draftId) sameTurn.proposalDraftId = learned.proposal.draftId;
+    return sameTurn;
+  }
+  const marker: ThreadTasteMarker = {
+    role: 'system',
+    kind: 'marker',
+    marker: 'taste',
+    learnId: learned.learnId,
+    turnId,
+    documentId: learned.documentId,
+    key: learned.key,
+    items: [...learned.items],
+    changes: [...learned.changes],
+    ...(learned.proposal?.draftId ? { proposalDraftId: learned.proposal.draftId } : {}),
+    text: '',
+  };
+  thread.messages.splice(tasteMarkerIndex(thread.messages, turnId), 0, marker);
+  return marker;
+}
+
+/** 그 턴의 마지막 기록 바로 뒤 — 다음 사용자 메시지나 다음 턴 표식 앞. */
+function tasteMarkerIndex(messages: readonly ThreadMessage[], turnId: string | null): number {
+  const start = turnId === null ? -1 : messages.findIndex((message) => isTurnMarker(message) && message.hubTurnId === turnId);
+  if (start < 0) return messages.length;
+  let index = start + 1;
+  while (index < messages.length && messages[index]!.role !== 'user' && !isTurnMarker(messages[index])) index += 1;
+  return index;
+}
+
+/** 되돌리기 결과를 구분선에 남긴다. 바뀌었으면 true. */
+export function settleTasteUndo(
+  marker: ThreadTasteMarker,
+  result: { reverted: readonly string[]; skipped: readonly string[] },
+): boolean {
+  const known = new Set(marker.items.map((item) => item.entryId));
+  const undone = new Set(marker.undone ?? []);
+  const stale = new Set(marker.stale ?? []);
+  const before = `${[...undone]}|${[...stale]}`;
+  for (const id of result.reverted) if (known.has(id)) { undone.add(id); stale.delete(id); }
+  for (const id of result.skipped) if (known.has(id) && !undone.has(id)) stale.add(id);
+  if (`${[...undone]}|${[...stale]}` === before) return false;
+  if (undone.size) marker.undone = [...undone]; else delete marker.undone;
+  if (stale.size) marker.stale = [...stale]; else delete marker.stale;
+  return true;
 }
 
 export function createEmptyThread(draft: ThreadDraft): ChatThread {
