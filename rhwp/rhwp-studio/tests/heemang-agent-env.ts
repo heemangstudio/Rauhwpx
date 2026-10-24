@@ -95,5 +95,7 @@ export async function openHeemangAgent(t: test.TestContext, path: string = FIXTU
   const read = (tool: string, args: Record<string, unknown> = {}) =>
     executor.execute(tool, args, 'claude') as Promise<Record<string, unknown>>;
   const text = (para: number, section = 0) => adapter.getParagraphText(section, para);
-  return { adapter, wasm, bus, revision, pending, executor, call, read, text };
+  /** 이 엔진 빌드가 글자 offset 표(ParagraphInfo.offsets)를 주는가 — 없으면 좌표 도구가 거절된다. */
+  const modern = Array.isArray(adapter.paragraphs(0, [], 0, 1)[0]?.offsets);
+  return { adapter, wasm, bus, revision, pending, executor, call, read, text, modern };
 }

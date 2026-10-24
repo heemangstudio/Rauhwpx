@@ -182,6 +182,8 @@ export class HeemangAgentCore {
         paras.push(...page);
         if (page.length < 1024) break;
       }
+      // 문단 텍스트의 wire offset 표가 없는 엔진 빌드로는 글자 좌표를 옮길 수 없다.
+      if (paras.length > 0 && !Array.isArray(paras[0].offsets)) throw new EngineNotSupportedError('문단 글자 offset 표 (hm-wasm 갱신 필요)');
       this.paraCache.set(key, paras);
     }
     return paras;
