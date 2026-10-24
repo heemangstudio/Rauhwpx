@@ -3,9 +3,11 @@
 //   export SITE_API_BASE=https://rau-credits-production.up.railway.app
 //   export ADMIN_TOKEN=...            # same value as the Railway ADMIN_TOKEN variable
 //   node scripts/license-admin.mjs issue --email buyer@example.com --merchant-uid <groble merchantUid> [--ref r] [--note "..."] [--send-email] [--years 1 | --until 2027-10-20]   # --years/--until = subscription key
+//   node scripts/license-admin.mjs issue --edition signature --email buyer@example.com [--product-id 8Xy27f] [--updates-until 2029-10-20] [--send-email]
 //   node scripts/license-admin.mjs extend <key|ref> [--years N | --until YYYY-MM-DD] [--note "..."]   # subscription keys only; default 1 year from expiry (or now if lapsed)
 //   node scripts/license-admin.mjs beta --name "홍길동" [--devices 5] [--email tester@example.com] [--note "..."] [--gift-usd 20]   # beta-tester key, 1..50 devices, never emailed
 //   node scripts/license-admin.mjs betas                               # every beta key with its devices
+//   node scripts/license-admin.mjs signatures                          # Signature Edition keys (priority email support)
 //   node scripts/license-admin.mjs lookup --email buyer@example.com | --key HAMA-... | --merchant-uid ... | --ref ...
 //   node scripts/license-admin.mjs orders [--status held|issued|refunded]
 //   node scripts/license-admin.mjs webhooks [--rejected | --held] [--limit 50]   # recorded webhook rejections and holds
@@ -64,6 +66,7 @@ const posts = {
 const gets = {
   lookup: '/v1/admin/licenses',
   betas: '/v1/admin/licenses/betas',
+  signatures: '/v1/admin/licenses/signatures',
   customers: '/v1/admin/licenses/customers',
   attention: '/v1/admin/attention',
   orders: '/v1/admin/orders',
@@ -94,7 +97,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
@@ -103,6 +106,10 @@ process.stdout.write(`${res.status} ${pretty}\n`);
 const kstDate = (iso) => new Date(Date.parse(iso) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 /** One line per key: plan, status and how long it runs (KST date). */
 function expiryLine(license) {
+  if (license.edition === 'signature') {
+    const until = license.updatesUntil ? ` · 업데이트 약속 ~${kstDate(license.updatesUntil)}` : '';
+    return `${license.key} signature · ${license.status} · 우선지원 1영업일${until}`;
+  }
   if (!license.expiresAt) return `${license.key} ${license.plan ?? 'lifetime'} · ${license.status} · 평생`;
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
@@ -115,7 +122,7 @@ if (command === 'downloads' && res.ok && parsed) {
   for (const day of parsed.byDay) lines.push(`${day.day} ${day.total} (${pairs(day.counts)})`);
   process.stdout.write(`\n${lines.join('\n')}\n`);
 }
-const listed = parsed?.licenses ?? (parsed?.license ? [parsed.license] : []);
+const listed = parsed?.licenses ?? parsed?.signatures ?? (parsed?.license ? [parsed.license] : []);
 if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
 }

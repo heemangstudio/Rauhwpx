@@ -415,6 +415,10 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.orders(bearerToken(req), Object.fromEntries(searchParams)));
           return;
+        case 'GET /v1/admin/licenses/signatures':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.signatures(bearerToken(req)));
+          return;
         case 'GET /v1/admin/licenses/betas': {
           allow('admin', 120, TEN_MINUTES);
           const token = bearerToken(req);
@@ -662,10 +666,14 @@ export function createSiteServer(env = process.env, options = {}) {
     emailProvider: options.emailProvider ?? createEmailProvider(env),
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
+    signatureProductIds: licenseConfig.signatureProductIds,
+    products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
     paymentFixUrl: licenseConfig.paymentFixUrl,
     expectedPrice: licenseConfig.expectedPrice,
     minAmount: licenseConfig.minAmount,
+    signatureExpectedPrice: licenseConfig.signatureExpectedPrice,
+    signatureMinAmount: licenseConfig.signatureMinAmount,
     grandfatherCutoff: licenseConfig.grandfatherCutoff,
     grandfatherPlatforms: licenseConfig.grandfatherPlatforms,
     adminToken: licenseConfig.adminToken,
