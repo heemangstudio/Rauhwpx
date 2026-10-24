@@ -163,7 +163,9 @@ export class Doc {
     }
     /**
      * Copies `[from, to)` (`CopyRequest`) as `Copied` text and HTML for
-     * the system clipboard; the engine keeps the fragment for `paste`.
+     * the system clipboard. The fragment is shared by this Engine's
+     * documents until the next copy, survives source closure, and carries
+     * face names for paste into another document.
      * @param {string} request
      * @returns {string}
      */
@@ -359,6 +361,53 @@ export class Doc {
         return v1;
     }
     /**
+     * Metadata for just one page, without serializing the whole document.
+     * @param {number} index
+     * @returns {string}
+     */
+    pageInfo(index) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_pageInfo(this.__wbg_ptr, index);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Every object and table page `i` draws, in any paragraph list
+     * (`PageObject[]`), bottom to top.
+     * @param {number} i
+     * @returns {string}
+     */
+    pageObjects(i) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_pageObjects(this.__wbg_ptr, i);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Page `i` rasterized by the engine as PNG, the reference the canvas
      * player is checked against.
      * @param {number} i
@@ -422,9 +471,10 @@ export class Doc {
         }
     }
     /**
-     * Pastes at `at` (`PasteRequest`) as one undo step: the engine's
-     * fragment when `text` is absent or is the fragment's text, else
-     * `text` as typed. A `Receipt` with the caret after the paste.
+     * Pastes at `at`, or over `replace` (one list), as one undo step
+     * (`PasteRequest`): the engine's fragment when `text` is absent or is
+     * the fragment's text, else `text` as typed. A `Receipt` with the caret
+     * after the paste; on failure nothing changes, epochs included.
      * @param {string} request
      * @returns {string}
      */
@@ -530,7 +580,9 @@ export class Doc {
     }
     /**
      * Bounded reads of the document (`QueryRequest`), as JSON:
-     * `paragraphs` gives `ParagraphInfo[]` for a list.
+     * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
+     * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
+     * `lists` `ListInfo[]` and `list` one (or null).
      * @param {string} request
      * @returns {string}
      */
