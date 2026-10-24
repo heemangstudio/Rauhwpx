@@ -435,8 +435,15 @@ export interface TasteUndoResult {
   error?: { code: string; message: string };
 }
 
+/** 학습기 공급자 — auto 는 허브의 기본 차례, pi 는 사용자의 OpenRouter 키. */
+export type TasteProvider = 'auto' | 'claude' | 'codex' | 'pi';
+
 export interface TasteSettings {
   enabled: boolean;
+  provider: TasteProvider;
+  /** null 이면 그 공급자의 기본 모델. 자동이면 늘 null. */
+  model: string | null;
+  effort: string | null;
 }
 
 export interface StructuredPlanStep {

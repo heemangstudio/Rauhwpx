@@ -179,7 +179,8 @@ async function startTasteHub(t) {
 test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the toggle and proposes one AGENTS.md line', async (t) => {
   const { hub, root, fake, studio, request, start, say } = await startTasteHub(t);
 
-  assert.deepEqual((await request({ type: 'taste-settings-request' }, 'taste-settings')).settings, { enabled: true });
+  const auto = { enabled: true, provider: 'auto', model: null, effort: null };
+  assert.deepEqual((await request({ type: 'taste-settings-request' }, 'taste-settings')).settings, auto);
 
   // 1. 에이전트가 턴 중에 기억을 쓰고, 학습기도 배운다 → 표시 하나.
   const started = await start('thread-1', 'doc-1');
@@ -266,12 +267,20 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
 
   // 6. 끄면 다음 턴에 학습기를 부르지 않는다.
   const off = await request({ type: 'taste-settings-set', enabled: false }, 'taste-settings');
-  assert.deepEqual(off.settings, { enabled: false });
+  assert.deepEqual(off.settings, { ...auto, enabled: false });
   const before = fake.learnerPrompts().length;
   await say('한다체 말고 합니다체로 바꿔 줘');
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(fake.learnerPrompts().length, before);
   assert.equal(studio.buffered.some((frame) => frame.type === 'taste-learned'), false);
+
+  // 7. 공급자·모델·추론을 고른다. 잘못된 값은 거절하고 설정을 그대로 둔다.
+  const chosen = await request({ type: 'taste-settings-set', provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }, 'taste-settings');
+  assert.deepEqual(chosen.settings, { enabled: false, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
+  const rejected = await request({ type: 'taste-settings-set', provider: 'openai' }, 'taste-settings');
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'TASTE_SETTINGS_INVALID');
+  assert.deepEqual(rejected.settings, chosen.settings);
 });
 
 async function waitFor(predicate, label, timeoutMs = 10_000) {

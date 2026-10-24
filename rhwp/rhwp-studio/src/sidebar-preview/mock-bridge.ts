@@ -1132,7 +1132,7 @@ export function createMockBridge(
       data.pi.keyTail = 'demo';
       return syncPi();
     },
-    requestPiCatalog: async () => giftActive() ? giftCatalog.map((model) => ({
+    requestPiCatalog: async (_refresh, options) => giftActive() && !options?.own ? giftCatalog.map((model) => ({
       id: model.id,
       name: model.name,
       provider: 'anthropic',
@@ -1146,6 +1146,7 @@ export function createMockBridge(
       { id: 'openai/gpt-5.2', name: 'GPT-5.2', provider: 'openai' },
       { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro', provider: 'google' },
       { id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'deepseek' },
+      { id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', provider: 'deepseek' },
     ].map((model) => ({
       ...model,
       contextLength: 200000,

@@ -472,8 +472,8 @@ export interface AgentBridge {
   installPi(): Promise<PiStatus | null>;
   /** OpenRouter API 키를 검증하고 저장한다. */
   setPiKey(key: string): Promise<PiStatus | null>;
-  /** 라이브 OpenRouter 모델 카탈로그. */
-  requestPiCatalog(refresh?: boolean): Promise<PiCatalogModel[] | null>;
+  /** 라이브 OpenRouter 모델 카탈로그. own 이면 선물 모드여도 내 키의 카탈로그. */
+  requestPiCatalog(refresh?: boolean, options?: { own?: boolean }): Promise<PiCatalogModel[] | null>;
   /** 사용자가 고른 최대 3개 pi 모델(표시 이름 포함)을 저장한다. */
   setPiModels(
     models: Array<{ id: string; name: string; defaultEffort?: string }>,
@@ -568,7 +568,8 @@ export interface AgentBridge {
   missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[];
   /** 취향 학습(Rau-0.1) 설정. 연결이 없으면 null. */
   requestTasteSettings(): Promise<TasteSettings | null>;
-  setTasteEnabled(enabled: boolean): Promise<TasteSettings | null>;
+  /** 바꿀 칸만 보낸다. 공급자만 바꾸면 허브가 모델·추론을 그 공급자의 기본값으로 돌린다. */
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
   /** 학습 한 번의 변경을 되돌린다. entryId 를 생략하면 그 학습의 모든 변경. 연결이 없으면 null. */
   undoTaste(input: {
     learnId: string;
@@ -5593,8 +5594,8 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.request<TasteSettings>({ type: 'taste-settings-request' }, 'taste-settings');
   }
 
-  setTasteEnabled(enabled: boolean): Promise<TasteSettings | null> {
-    return this.request<TasteSettings>({ type: 'taste-settings-set', enabled }, 'taste-settings-set');
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null> {
+    return this.request<TasteSettings>({ type: 'taste-settings-set', ...patch }, 'taste-settings-set');
   }
 
   undoTaste(input: {
@@ -5931,9 +5932,9 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.onEvent((event) => { if (event.type === 'browser-event') handler(event.event); });
   }
 
-  requestPiCatalog(refresh = false): Promise<PiCatalogModel[] | null> {
+  requestPiCatalog(refresh = false, options: { own?: boolean } = {}): Promise<PiCatalogModel[] | null> {
     return this.request<PiCatalogModel[]>(
-      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}) },
+      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}), ...(options.own ? { own: true } : {}) },
       'pi-catalog',
       30_000,
     );

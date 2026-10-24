@@ -1,5 +1,5 @@
 // Rau-0.1 구분선: 접힌 이름, 펼치기, 항목 되돌리기(허브 요청·저장), 그새 바뀐 항목, 같은 턴의 늦은 학습,
-// 다른 채팅으로 온 학습, 모두 보기(문서 기억 시트의 이름표), 지시에 추가 제안, 설정의 대화에서 배우기.
+// 다른 채팅으로 온 학습, 모두 보기(문서 기억 시트의 이름표), 지시에 추가 제안, 설정의 대화에서 배우기와 학습기 공급자.
 import assert from 'node:assert/strict';
 
 const CHAT = 'preview-chat-taste';
@@ -94,7 +94,35 @@ export async function checkTaste({ page, open, screenshot }) {
   if (screenshot) await screenshot('taste-settings');
   await tasteToggle.evaluate((input) => input.click());
   await page.waitForFunction((input) => !input.disabled && !input.checked, {}, tasteToggle);
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.bridge.requestTasteSettings()), { enabled: false });
+  const tasteSettings = () => page.evaluate(() => window.sidebarPreview.bridge.requestTasteSettings());
+  assert.deepEqual(await tasteSettings(), { enabled: false, provider: 'auto', model: null, effort: null });
+  const field = (name) => `.ag-taste-settings [data-taste-field="${name}"]`;
+  assert.equal(await page.$eval(`${field('provider')} select`, (node) => node.disabled), true, 'the provider is locked while learning is off');
+  await tasteToggle.evaluate((input) => input.click());
+  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
+  assert.equal(await page.$eval(field('model'), (node) => node.hidden), true, 'auto has no model choice');
+
+  // OpenRouter 는 내 키로만 돈다 — 키가 없으면 키 칸이 보이고, Pi 설정과 같은 길로 저장된다.
+  await page.evaluate(() => window.sidebarPreview.setPiOwnKey(false));
+  await page.select(`${field('provider')} select`, 'pi');
+  await page.waitForSelector('.ag-taste-key-row:not([hidden])');
+  await page.waitForFunction((selector) => document.querySelector(selector)?.value === 'deepseek/deepseek-v4.1-flash', {}, `${field('model')} select`);
+  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'pi', model: null, effort: null });
+  assert.equal(await page.$eval(`${field('effort')} select`, (node) => node.value), 'max');
+  if (screenshot) await screenshot('taste-settings-openrouter-key');
+  await page.type('.ag-taste-key-row input', 'sk-or-v1-preview');
+  await page.click('.ag-taste-key-row button');
+  await page.waitForSelector('.ag-taste-key-row', { hidden: true });
+  assert.equal((await page.evaluate(() => window.sidebarPreview.bridge.requestPiStatus())).keyConfigured, true);
+  await page.select(`${field('model')} select`, 'openai/gpt-5.2');
+  await page.waitForFunction(() => window.sidebarPreview.bridge.requestTasteSettings().then((value) => value.model === 'openai/gpt-5.2'));
+  // 공급자를 바꾸면 모델·추론은 그 공급자의 기본값으로 돌아간다.
+  await page.select(`${field('provider')} select`, 'claude');
+  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
+  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'claude', model: null, effort: null });
+  assert.equal(await page.$eval('.ag-taste-key-row', (node) => node.hidden), true);
+  await page.select(`${field('provider')} select`, 'auto');
+  await page.waitForFunction((selector) => document.querySelector(selector)?.hidden === true, {}, field('model'));
   await page.click('.ag-settings-instructions-proposal .ag-settings-primary');
   await page.waitForSelector('.ag-settings-instructions-proposal', { hidden: true });
   assert.equal(await page.$eval('.ag-taste-action + .ag-taste-action', (node) => node.hidden), true);

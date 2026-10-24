@@ -91,13 +91,76 @@ export function noteTasteTurnEvent(turn, evt) {
 
 // ── 설정 ────────────────────────────────────────────────────────────────────
 
-/** 대화에서 배우기 설정 — 문서 기억 폴더의 taste-settings.json. 기본은 켜짐. */
+/** 학습기 공급자. auto 는 TASTE_ROUTES 의 차례대로, 그 밖은 그 공급자 하나만 쓴다. */
+export const TASTE_PROVIDERS = Object.freeze(['auto', 'claude', 'codex', 'pi']);
+/** 한 번짜리 호출이 받는 추론 강도 (one-shot-llm 의 CLI·OpenRouter 값). */
+export const TASTE_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const DEFAULT_TASTE_SETTINGS = Object.freeze({ enabled: true, provider: 'auto', model: null, effort: null });
+const MAX_MODEL_CHARS = 200;
+
+function settingsError(message) {
+  return Object.assign(new Error(message), { code: 'TASTE_SETTINGS_INVALID' });
+}
+
+function validModel(value) {
+  if (value === null) return true;
+  if (typeof value !== 'string') return false;
+  const text = value.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return text === value && text.length > 0 && text.length <= MAX_MODEL_CHARS;
+}
+
+const TASTE_FIELDS = Object.freeze({
+  enabled: (value) => typeof value === 'boolean',
+  provider: (value) => TASTE_PROVIDERS.includes(value),
+  model: validModel,
+  effort: (value) => value === null || TASTE_EFFORTS.includes(value),
+});
+
+/** 자동이면 모델·추론을 비운다 — 모델 선택은 고른 공급자의 것이다. */
+function settled(settings) {
+  return settings.provider === 'auto' ? { ...settings, model: null, effort: null } : settings;
+}
+
+/**
+ * 디스크의 설정을 읽는다. 잘못된 칸은 그 칸만 기본값이 된다 — { enabled } 만 있는 옛 파일은 자동 경로다.
+ * @returns {{ enabled: boolean, provider: string, model: string | null, effort: string | null }}
+ */
+export function normalizeTasteSettings(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const next = { ...DEFAULT_TASTE_SETTINGS };
+  for (const [field, valid] of Object.entries(TASTE_FIELDS)) {
+    if (source[field] !== undefined && valid(source[field])) next[field] = source[field];
+  }
+  return settled(next);
+}
+
+/**
+ * 바꿀 칸만 담은 요청을 지금 설정에 얹는다. 잘못된 칸이 하나라도 있으면 던진다.
+ * 공급자를 바꾸며 모델·추론을 보내지 않으면 그 공급자의 기본값(null)으로 돌린다.
+ */
+export function mergeTasteSettings(current, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw settingsError('settings must be an object');
+  const fields = Object.keys(TASTE_FIELDS).filter((field) => patch[field] !== undefined);
+  if (fields.length === 0) throw settingsError('nothing to change');
+  for (const field of fields) {
+    if (!TASTE_FIELDS[field](patch[field])) throw settingsError(`${field} is invalid`);
+  }
+  const next = { ...current };
+  for (const field of fields) next[field] = patch[field];
+  if (patch.provider !== undefined && patch.provider !== current.provider) {
+    if (patch.model === undefined) next.model = null;
+    if (patch.effort === undefined) next.effort = null;
+  }
+  return settled(next);
+}
+
+/** 대화에서 배우기 설정 — 문서 기억 폴더의 taste-settings.json. 기본은 켜짐, 자동 경로. */
 export class TasteSettingsStore {
   constructor({ dir, fsApi = fs, platform = process.platform } = {}) {
     this.file = path.join(dir, SETTINGS_FILE);
     this.fs = fsApi;
     this.platform = platform;
-    this.settings = { enabled: true };
+    this.settings = { ...DEFAULT_TASTE_SETTINGS };
     this.queue = Promise.resolve();
   }
 
@@ -106,8 +169,7 @@ export class TasteSettingsStore {
       await recoverInterruptedFileReplacement(this.file, { platform: this.platform, fsApi: this.fs });
       const stat = await this.fs.lstat(this.file);
       if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_SETTINGS_BYTES) {
-        const raw = JSON.parse(await this.fs.readFile(this.file, 'utf8'));
-        if (typeof raw?.enabled === 'boolean') this.settings = { enabled: raw.enabled };
+        this.settings = normalizeTasteSettings(JSON.parse(await this.fs.readFile(this.file, 'utf8')));
       }
     } catch {
       // 없거나 깨진 설정은 기본값(켜짐)이다.
@@ -119,10 +181,10 @@ export class TasteSettingsStore {
     return { ...this.settings };
   }
 
-  set({ enabled }) {
+  /** @param {{ enabled?: boolean, provider?: string, model?: string | null, effort?: string | null }} patch */
+  set(patch) {
     const run = this.queue.then(async () => {
-      if (typeof enabled !== 'boolean') throw Object.assign(new Error('enabled must be true or false'), { code: 'TASTE_SETTINGS_INVALID' });
-      const next = { enabled };
+      const next = mergeTasteSettings(this.settings, patch);
       await this.fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
       const temp = `${this.file}.tmp-${process.pid}-${crypto.randomUUID()}`;
       try {
@@ -143,12 +205,29 @@ export class TasteSettingsStore {
 // ── 경로·프롬프트·출력 ──────────────────────────────────────────────────────
 
 /**
- * 학습기 경로. Codex 는 남은 사용량이 넉넉할 때만 쓴다. 선물 크레딧(Pi gift)에는 DeepSeek 가 없어
- * 선물 모델 중 가장 싼 것으로 바꾼다(resolveModel.pi).
+ * 학습기 경로. Codex 는 남은 사용량이 넉넉할 때만 쓴다(고른 경우에도). 자동 경로에서 선물 크레딧(Pi gift)에는
+ * DeepSeek 가 없어 선물 모델 중 가장 싼 것으로 바꾼다(resolveModel.pi).
+ * 공급자를 고르면 그 경로 하나만 쓰고, 모델·추론이 없으면 TASTE_ROUTES 의 기본값이다. 고른 OpenRouter 경로는
+ * 사용자의 OpenRouter 키(routeInfo.ownOpenRouter)로만 돈다 — 고른 모델을 선물 크레딧으로 쓰지 않는다.
+ * 키가 없으면 준비되지 않은 경로라 학습을 건너뛴다.
  */
-export function tasteCandidates(routeInfo = {}) {
+export function tasteCandidates(routeInfo = {}, settings = {}) {
   const readiness = routeInfo.readiness ?? {};
   const codexAllowed = codexQuotaAllowsTitle(routeInfo.codexQuota);
+  const chosen = TASTE_ROUTES.find((route) => route.provider === settings.provider);
+  if (chosen) {
+    const candidate = {
+      provider: chosen.provider,
+      model: settings.model ?? chosen.model,
+      effort: settings.effort ?? chosen.effort,
+      ready: readiness[chosen.provider]?.ready === true && (chosen.provider !== 'codex' || codexAllowed),
+    };
+    if (chosen.provider === 'pi') {
+      candidate.ready = typeof routeInfo.ownOpenRouter?.apiKey === 'function' && Boolean(routeInfo.ownOpenRouter.apiKey());
+      candidate.ownKey = true;
+    }
+    return [candidate];
+  }
   return TASTE_ROUTES.map(({ provider, model, effort }) => {
     const candidate = {
       provider,
@@ -527,9 +606,11 @@ export function createTasteLearner({
     }
     let routeInfo = {};
     try { routeInfo = (await routes({ threadId: input.threadId, documentId: input.documentId })) ?? {}; } catch {}
-    const candidates = tasteCandidates(routeInfo);
+    let chosen = {};
+    try { chosen = settings() ?? {}; } catch {}
+    const candidates = tasteCandidates(routeInfo, chosen);
     if (!candidates.some((candidate) => candidate.ready)) {
-      log(`${RAU_TASTE_NAME}: skipped ${input.kind} run, no learner route is ready`);
+      log(`${RAU_TASTE_NAME}: skipped ${input.kind} run, no ${chosen.provider && chosen.provider !== 'auto' ? `${chosen.provider} ` : ''}learner route is ready`);
       return empty;
     }
     let drained = input.signals;
@@ -568,6 +649,8 @@ export function createTasteLearner({
         overallTimeoutMs,
         deps: {
           ...(routeInfo.deps ?? {}),
+          // 고른 OpenRouter 경로는 선물 리스 대신 사용자의 키로 부른다.
+          ...(candidates.some((candidate) => candidate.ownKey) ? { piManager: routeInfo.ownOpenRouter } : {}),
           signal: controller.signal,
           tempPrefix: 'rhwp-taste-',
           label: RAU_TASTE_NAME,
