@@ -1,16 +1,16 @@
 # Rebuilding the bundled npm
 
-`npm-11.19.2-rau.2.tgz` is a source rebuild of the official npm commit recorded in `provenance.json`. It repairs embedded code that root dependency overrides cannot replace. The downstream version identifies this private build; the package has not been published to a registry.
+`npm-11.19.2-rau.3.tgz` is a source rebuild of the official npm commit recorded in `provenance.json`. It repairs embedded code that root dependency overrides cannot replace. The downstream version identifies this private build; the package has not been published to a registry.
 
 Fetch the source archive URL in the provenance record and verify its SHA-256 before extraction. Use a separate scratch directory and a separate npm cache. Install with lifecycle scripts disabled. The recorded build used Node 26.7.0 and npm 11.19.0, with `GOMAXPROCS=2` and `NODE_OPTIONS=--max-old-space-size=1024`. Do not use the upstream release/publish scripts.
 
-Set the source package version to `11.19.2-rau.2`. Add these root overrides:
+Set the source package version to `11.19.2-rau.3`. Add these root overrides:
 
 ```json
-{"minimatch@^10.2.5":{"brace-expansion":"5.0.12"},"node-gyp@^12.4.0":{"undici":"6.28.1"},"http-cache-semantics":"4.3.0","ip-address":"10.7.3"}
+{"minimatch@^10.2.5":{"brace-expansion":"5.0.12"},"node-gyp@^12.4.0":{"undici":"6.29.1"},"http-cache-semantics":"4.3.0","ip-address":"10.7.3"}
 ```
 
-Run `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`, then targeted `npm update http-cache-semantics ip-address --package-lock-only --ignore-scripts --no-audit --no-fund`. Check the source lock diff: only the root version, existing brace-expansion/undici fixes and the http-cache-semantics/ip-address resolutions may change. Run `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build --workspace docs`, then `npm pack --ignore-scripts --pack-destination <output>`. Preserve the `bin/npm-cli.js` layout and verify the packed dependency source and versions.
+Run `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`, then targeted `npm update http-cache-semantics ip-address undici --package-lock-only --ignore-scripts --no-audit --no-fund`. npm keeps the locked root `brace-expansion` entry despite the override, so remove that entry and rerun the install. Check the source lock diff: only the root version, existing brace-expansion/undici fixes and the http-cache-semantics/ip-address resolutions may change. Run `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build --workspace docs`, then `npm pack --ignore-scripts --pack-destination <output>`. Preserve the `bin/npm-cli.js` layout and verify the packed dependency source and versions.
 
 The npm refresh uses upstream stable http-cache-semantics 4.3.0. It is outside [GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp)'s affected range; the upstream maintainer [disputes the report](https://github.com/github/advisory-database/issues/10139). The release changes Vary matching and status reporting, preserving upstream max-stale behavior. No downstream cache policy patch or audit exception is applied.
 

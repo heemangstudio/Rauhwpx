@@ -10,16 +10,16 @@
     "sha256": "f989a61dea2467dee559b46d278f8b5b7d8ca2e5b7c4ab82b6ece1e6c7967fa0"
   },
   "downstream": {
-    "file": "npm-11.19.2-rau.2.tgz",
-    "sha256": "a54e58e6ce33d4cd79d937d167df9d529c4939c25a458fcde138ef9d1d4e21d1",
-    "sourcePackageJsonSha256": "5ef2a5b1864ec42bcba4e56e6cb1dd836b1e245009bd12256677938519a0b827",
-    "sourceLockSha256": "af8408aa88dcda43f2a4dce2a74ac408a0d26f91f7c8bae5a095c23ef2779d47",
+    "file": "npm-11.19.2-rau.3.tgz",
+    "sha256": "b2c121020b5de7ab9ff3dcca34c3e870e4acee7434a3d1f35fc495710f32d154",
+    "sourcePackageJsonSha256": "224147cdfbd637936e29bf185f9693bd21e21cdb91002710613981a37476b7c7",
+    "sourceLockSha256": "a2d1ebacdd2ceec055c77935c0bbe1b36909d075903960ea6802fd7245d1e6fa",
     "sourceOverrides": {
       "minimatch@^10.2.5": {
         "brace-expansion": "5.0.12"
       },
       "node-gyp@^12.4.0": {
-        "undici": "6.28.1"
+        "undici": "6.29.1"
       },
       "http-cache-semantics": "4.3.0",
       "ip-address": "10.7.3"
@@ -30,14 +30,14 @@
       "GOMAXPROCS": 2,
       "nodeHeapMiB": 1024
     },
-    "version": "11.19.2-rau.2"
+    "version": "11.19.2-rau.3"
   },
   "verification": {
     "packedBraceExpansion": "5.0.12",
-    "packedUndici": "6.28.1",
+    "packedUndici": "6.29.1",
     "sourceResolutionChanges": [
       "brace-expansion 5.0.9 -> 5.0.12",
-      "undici 6.28.0 -> 6.28.1",
+      "undici 6.28.0 -> 6.29.1",
       "http-cache-semantics 4.2.0 -> 4.3.0",
       "ip-address 10.5.0 -> 10.7.3"
     ],
