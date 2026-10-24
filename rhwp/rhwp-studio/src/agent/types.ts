@@ -426,6 +426,9 @@ export interface TasteLearned {
   proposal?: { draftId: string };
 }
 
+/** 기록에서 배우기의 결과 — 턴에 묶이지 않는다. 채팅의 끝에 구분선으로 남는다. */
+export type TasteHistoryLearned = Pick<TasteLearned, 'documentId' | 'key' | 'learnId' | 'items' | 'changes'>;
+
 export interface TasteUndoResult {
   ok: boolean;
   learnId: string;
@@ -444,6 +447,19 @@ export interface TasteSettings {
   /** null 이면 그 공급자의 기본 모델. 자동이면 늘 null. */
   model: string | null;
   effort: string | null;
+}
+
+/** 허브 → Studio `taste-history-result`. 기록에서 배우기 한 번의 결과 (기억이 그대로여도 ok). */
+export interface TasteHistoryResult {
+  ok: boolean;
+  learnId: string;
+  key: string;
+  items: TasteLearnItem[];
+  /** 저장소 변경 목록 — 되돌리기(taste-undo)에 그대로 보낸다. */
+  changes: unknown[];
+  /** 허브가 학습기에 넘긴 짝의 번호 (보낸 pairs 기준) — 이 짝만 '이미 보냄'으로 남긴다. */
+  accepted: number[];
+  error?: { code: string; message: string };
 }
 
 export interface StructuredPlanStep {
@@ -1264,6 +1280,8 @@ export type SidebarEvent =
   | ({ type: 'taste-learned' } & TasteLearned)
   /** 취향 학습 설정 — 요청의 답이거나 다른 창에서 바꾼 알림. */
   | { type: 'taste-settings'; settings: TasteSettings }
+  /** 기록에서 배우기가 이 문서의 기억을 바꿨다 (문서를 연 뒤 자동으로, 또는 문서 기억 시트에서). */
+  | ({ type: 'taste-history-learned' } & TasteHistoryLearned)
   | { type: 'chat-template-changed'; template: DocumentTemplate | null; reason?: string }
   | { type: 'permission-changed'; permissionProfile: PermissionProfile }
   | { type: 'service-tier-changed'; serviceTier: ServiceTier }
@@ -1407,8 +1425,10 @@ export interface AgentBridgeDeps {
   isReadOnly?: () => boolean;
   /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. 하나뿐이면 null. */
   getDocumentWorktree?: () => { branch: string; primary: boolean } | null;
-  /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
-  commitVersion?: (message: string) => Promise<void>;
+  /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 에이전트 이름으로 남긴다. */
+  commitVersion?: (message: string, author: { agent: AgentName | null; threadId: string }) => Promise<void>;
+  /** 이 문서의 어느 채팅이든 에이전트가 일하는 중인가 — 기록에서 배우기가 그동안 돌지 않는다. */
+  documentTurnRunning?: () => boolean;
   /**
    * 쓰기 도구가 문서에 닿기 직전에 이 채팅이 문서를 고칠 자리를 요구한다. 같은 문서의 다른
    * 채팅이 고치는 중이면 false 이고, 그 쓰기는 DOCUMENT_WRITER_BUSY 로 거절된다. 없으면

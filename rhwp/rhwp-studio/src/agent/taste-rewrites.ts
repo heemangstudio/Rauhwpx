@@ -160,7 +160,7 @@ function touchesSpans(agentText: string, userText: string, spans: ReadonlyArray<
 }
 
 /** 바뀐 구간 밖의 구간을 새 글 기준으로 옮긴다. */
-function shiftSpans(
+export function shiftSpans(
   spans: ReadonlyArray<readonly [number, number]>, agentText: string, userText: string,
 ): Array<[number, number]> {
   const { prefix, suffix } = changedRegion(agentText, userText);
@@ -196,7 +196,8 @@ export interface TrackParagraph {
 /** track() 이 돌려주는 지켜보기 표 — untrack() 에 넘긴다. 문단 번호가 밀려도 그대로다. */
 export type RewriteHandle = object;
 
-interface Tracked {
+/** 문단을 다시 찾는 기준 — 지켜보기와 기록에서 배우기(taste-history.ts)가 같이 쓴다. */
+export interface ParagraphAnchor {
   ref: ParagraphRef;
   agentText: string;
   lastText: string;
@@ -204,6 +205,9 @@ interface Tracked {
   prevText: string | null;
   nextText: string | null;
   count: number;
+}
+
+interface Tracked extends ParagraphAnchor {
   beforeText?: string;
   spans: Array<[number, number]> | null;
   threadId?: string;
@@ -211,19 +215,36 @@ interface Tracked {
   trackedAt: number;
 }
 
+/** 지켜보기를 시작한 문단의 그때 모습 (handle 은 untrack·고쳐 쓰기 알림에 쓰는 같은 표). */
+export interface TrackedParagraph extends ParagraphAnchor {
+  handle: RewriteHandle;
+  beforeText?: string;
+  spans: Array<[number, number]> | null;
+  threadId?: string;
+  turnId?: string;
+}
+
+/** 고쳐 쓰기 신호를 낸 지켜보기와 그때의 글 (자르기 전). */
+export interface RewriteSource {
+  handle: RewriteHandle;
+  agentText: string;
+  userText: string;
+}
+
 /** 다시 찾은 문단. joined 면 나누거나 합친 문단이라 한 번 견주고 놓는다. */
-interface Located {
+export interface LocatedParagraph {
   paraIdx: number;
   text: string;
   joined?: boolean;
 }
+type Located = LocatedParagraph;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 export interface RewriteTrackerDeps {
   reader: ParagraphReader;
   caret(): DocumentPosition | null;
-  emit(signal: ReviewSignal, threadId?: string): void;
+  emit(signal: ReviewSignal, threadId?: string, source?: RewriteSource): void;
   /** 긴 두 글을 바뀐 곳 둘레로 줄인다 (보낼 글 길이 상한) */
   focus?(agentText: string, userText: string): [string, string];
   now?(): number;
@@ -284,6 +305,25 @@ export class RewriteTracker {
       this.entries.delete(entry);
     }
     return handles;
+  }
+
+  /** track() 이 돌려준 지켜보기의 지금 모습. 이미 놓았으면 null. */
+  describe(handle: RewriteHandle): TrackedParagraph | null {
+    const entry = handle as Tracked;
+    if (!this.entries.has(entry)) return null;
+    return {
+      handle,
+      ref: cloneRef(entry.ref),
+      agentText: entry.agentText,
+      lastText: entry.lastText,
+      prevText: entry.prevText,
+      nextText: entry.nextText,
+      count: entry.count,
+      ...(entry.beforeText !== undefined ? { beforeText: entry.beforeText } : {}),
+      spans: entry.spans ? entry.spans.map(([from, to]) => [from, to] as [number, number]) : null,
+      ...(entry.threadId ? { threadId: entry.threadId } : {}),
+      ...(entry.turnId ? { turnId: entry.turnId } : {}),
+    };
   }
 
   /** 사용자(비-에이전트) 편집이 있었다. 깃발만 세운다 — 키 입력마다 문서를 읽지 않는다. */
@@ -420,7 +460,7 @@ export class RewriteTracker {
         userText,
         ...(entry.ref.cell ? {} : { paraIdx: found.paraIdx }),
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
-      }, entry.threadId);
+      }, entry.threadId, { handle: entry, agentText: entry.agentText, userText: found.text });
     }
     if (this.entries.size === 0) this.stop();
     return waiting;
@@ -428,94 +468,117 @@ export class RewriteTracker {
 
   /** 찾은 자리와 글, 그 앞뒤 문단을 새 기준으로 적어 둔다. */
   private settle(entry: Tracked, paraIdx: number, text: string): void {
-    const count = this.count(entry.ref);
-    const at = (index: number) => (index >= 0 && index < count ? this.read({ ...entry.ref, paraIdx: index }) : null);
-    entry.ref = { ...entry.ref, paraIdx };
-    entry.lastText = text;
-    entry.prevText = at(paraIdx - 1);
-    entry.nextText = at(paraIdx + 1);
-    entry.count = count;
+    settleAnchor(entry, this.deps.reader, paraIdx, text);
   }
 
-  /** 내용이 그대로인(마지막으로 본 글이나 기준 글) 문단을 원래 번호 가까이에서 찾는다. */
   private locateExact(entry: Tracked, count: number): Located | null {
-    const origin = entry.ref.paraIdx;
-    for (let d = 0; d <= EXACT_RADIUS; d++) {
-      for (const paraIdx of d === 0 ? [origin] : [origin - d, origin + d]) {
-        if (paraIdx < 0 || paraIdx >= count) continue;
-        const text = this.read({ ...entry.ref, paraIdx });
-        if (text !== null && (text === entry.lastText || text === entry.agentText)) return { paraIdx, text };
-      }
-    }
-    return null;
+    return locateExactParagraph(entry, this.deps.reader, count);
   }
 
-  /** 기억한 문단을 지금 문서에서 찾는다. 지웠거나 자리를 확인할 수 없으면 null. */
   private locate(entry: Tracked): Located | null {
-    const count = this.count(entry.ref);
-    const exact = this.locateExact(entry, count);
-    if (exact) return exact;
-    const origin = entry.ref.paraIdx;
-    const at = (index: number) => (index >= 0 && index < count ? this.read({ ...entry.ref, paraIdx: index }) : null);
-    const prevOk = (index: number) => at(index - 1) === entry.prevText;
-    const nextOk = (index: number) => at(index + 1) === entry.nextText;
-    const close = (text: string) =>
-      Math.max(similarity(text, entry.lastText), similarity(text, entry.agentText)) >= MIN_SIMILARITY;
-    const delta = count - entry.count;
-
-    if (delta === 0) {
-      // 문단 수가 그대로다 — 제자리에서 고쳤다 (앞뒤 문단 하나는 그대로여야 한다).
-      const own = at(origin);
-      return own !== null && (prevOk(origin) || nextOk(origin)) && close(own) ? { paraIdx: origin, text: own } : null;
-    }
-    if (delta > 0) {
-      // 문단을 나눴다 — 원래 자리와 다음 문단이 기준 글의 앞·뒤 조각이다.
-      const head = at(origin);
-      const tail = at(origin + 1);
-      if (delta === 1 && head !== null && tail !== null && prevOk(origin) && nextOk(origin + 1)
-        && (entry.lastText.startsWith(head) || entry.lastText.endsWith(tail))) {
-        return { paraIdx: origin, text: `${head}\n${tail}`, joined: true };
-      }
-      // 뒤에 문단이 늘었으면 제자리(앞 문단이 그대로), 앞에 늘었으면 그만큼 밀린 자리(뒤 문단이 그대로)다.
-      const own = at(origin);
-      if (own !== null && prevOk(origin) && close(own)) return { paraIdx: origin, text: own };
-      const shifted = at(origin + delta);
-      if (shifted !== null && nextOk(origin + delta) && close(shifted)) return { paraIdx: origin + delta, text: shifted };
-      return null;
-    }
-    if (delta === -1) {
-      // 앞 문단과 합쳤다 (문단 첫머리에서 Backspace) — 합친 문단이 앞 문단 글로 시작한다.
-      const merged = at(origin - 1);
-      if (entry.prevText && merged !== null && merged.startsWith(entry.prevText) && nextOk(origin - 1)) {
-        const text = merged.slice(entry.prevText.length);
-        if (text.trim() && close(text)) return { paraIdx: origin - 1, text, joined: true };
-      }
-      // 뒤 문단을 끌어왔다 (문단 끝에서 Delete) — 이 문단이 뒤 문단 글로 끝난다.
-      const pulled = at(origin);
-      if (entry.nextText && pulled !== null && pulled.endsWith(entry.nextText) && prevOk(origin)) {
-        const text = pulled.slice(0, pulled.length - entry.nextText.length);
-        if (text.trim() && close(text)) return { paraIdx: origin, text, joined: true };
-      }
-    }
-    // 문단이 줄었는데 합친 흔적이 없다 — 지웠다.
-    return null;
+    return locateParagraph(entry, this.deps.reader);
   }
 
   private count(container: ParagraphContainer): number {
-    try {
-      return this.deps.reader.count(container);
-    } catch {
-      return 0;
-    }
+    return safeCount(this.deps.reader, container);
   }
 
   private read(ref: ParagraphRef): string | null {
-    try {
-      return this.deps.reader.text(ref);
-    } catch {
-      return null;
+    return safeRead(this.deps.reader, ref);
+  }
+}
+
+function safeCount(reader: ParagraphReader, container: ParagraphContainer): number {
+  try {
+    return reader.count(container);
+  } catch {
+    return 0;
+  }
+}
+
+function safeRead(reader: ParagraphReader, ref: ParagraphRef): string | null {
+  try {
+    return reader.text(ref);
+  } catch {
+    return null;
+  }
+}
+
+/** 찾은 자리와 글, 그 앞뒤 문단을 기준에 적어 둔다. */
+export function settleAnchor(anchor: ParagraphAnchor, reader: ParagraphReader, paraIdx: number, text: string): void {
+  const count = safeCount(reader, anchor.ref);
+  const at = (index: number) => (index >= 0 && index < count ? safeRead(reader, { ...anchor.ref, paraIdx: index }) : null);
+  anchor.ref = { ...anchor.ref, paraIdx };
+  anchor.lastText = text;
+  anchor.prevText = at(paraIdx - 1);
+  anchor.nextText = at(paraIdx + 1);
+  anchor.count = count;
+}
+
+/** 내용이 그대로인(마지막으로 본 글이나 기준 글) 문단을 원래 번호 가까이에서 찾는다. */
+export function locateExactParagraph(
+  anchor: ParagraphAnchor, reader: ParagraphReader, count = safeCount(reader, anchor.ref),
+): LocatedParagraph | null {
+  const origin = anchor.ref.paraIdx;
+  for (let d = 0; d <= EXACT_RADIUS; d++) {
+    for (const paraIdx of d === 0 ? [origin] : [origin - d, origin + d]) {
+      if (paraIdx < 0 || paraIdx >= count) continue;
+      const text = safeRead(reader, { ...anchor.ref, paraIdx });
+      if (text !== null && (text === anchor.lastText || text === anchor.agentText)) return { paraIdx, text };
     }
   }
+  return null;
+}
+
+/** 기억한 문단을 지금 문서에서 찾는다. 지웠거나 자리를 확인할 수 없으면 null. */
+export function locateParagraph(anchor: ParagraphAnchor, reader: ParagraphReader): LocatedParagraph | null {
+  const count = safeCount(reader, anchor.ref);
+  const exact = locateExactParagraph(anchor, reader, count);
+  if (exact) return exact;
+  const origin = anchor.ref.paraIdx;
+  const at = (index: number) => (index >= 0 && index < count ? safeRead(reader, { ...anchor.ref, paraIdx: index }) : null);
+  const prevOk = (index: number) => at(index - 1) === anchor.prevText;
+  const nextOk = (index: number) => at(index + 1) === anchor.nextText;
+  const close = (text: string) =>
+    Math.max(similarity(text, anchor.lastText), similarity(text, anchor.agentText)) >= MIN_SIMILARITY;
+  const delta = count - anchor.count;
+
+  if (delta === 0) {
+    // 문단 수가 그대로다 — 제자리에서 고쳤다 (앞뒤 문단 하나는 그대로여야 한다).
+    const own = at(origin);
+    return own !== null && (prevOk(origin) || nextOk(origin)) && close(own) ? { paraIdx: origin, text: own } : null;
+  }
+  if (delta > 0) {
+    // 문단을 나눴다 — 원래 자리와 다음 문단이 기준 글의 앞·뒤 조각이다.
+    const head = at(origin);
+    const tail = at(origin + 1);
+    if (delta === 1 && head !== null && tail !== null && prevOk(origin) && nextOk(origin + 1)
+      && (anchor.lastText.startsWith(head) || anchor.lastText.endsWith(tail))) {
+      return { paraIdx: origin, text: `${head}\n${tail}`, joined: true };
+    }
+    // 뒤에 문단이 늘었으면 제자리(앞 문단이 그대로), 앞에 늘었으면 그만큼 밀린 자리(뒤 문단이 그대로)다.
+    const own = at(origin);
+    if (own !== null && prevOk(origin) && close(own)) return { paraIdx: origin, text: own };
+    const shifted = at(origin + delta);
+    if (shifted !== null && nextOk(origin + delta) && close(shifted)) return { paraIdx: origin + delta, text: shifted };
+    return null;
+  }
+  if (delta === -1) {
+    // 앞 문단과 합쳤다 (문단 첫머리에서 Backspace) — 합친 문단이 앞 문단 글로 시작한다.
+    const merged = at(origin - 1);
+    if (anchor.prevText && merged !== null && merged.startsWith(anchor.prevText) && nextOk(origin - 1)) {
+      const text = merged.slice(anchor.prevText.length);
+      if (text.trim() && close(text)) return { paraIdx: origin - 1, text, joined: true };
+    }
+    // 뒤 문단을 끌어왔다 (문단 끝에서 Delete) — 이 문단이 뒤 문단 글로 끝난다.
+    const pulled = at(origin);
+    if (anchor.nextText && pulled !== null && pulled.endsWith(anchor.nextText) && prevOk(origin)) {
+      const text = pulled.slice(0, pulled.length - anchor.nextText.length);
+      if (text.trim() && close(text)) return { paraIdx: origin, text, joined: true };
+    }
+  }
+  // 문단이 줄었는데 합친 흔적이 없다 — 지웠다.
+  return null;
 }
 
 function cloneRef(ref: ParagraphRef): ParagraphRef {

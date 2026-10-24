@@ -29,7 +29,9 @@ import {
   type ParagraphReader,
   type ParagraphRef,
   type RewriteHandle,
+  type RewriteSource,
   type TrackParagraph,
+  type TrackedParagraph,
 } from './taste-rewrites.ts';
 
 export const SIGNAL_TEXT_LIMIT = 600;
@@ -203,6 +205,47 @@ export function writtenParagraphs(
   return [...byKey.values()];
 }
 
+/** 에이전트가 고친 문단의 지금 글과 (알면) 고치기 전 글 — 글 없는 지우기(빈 바꾸기)도 담는다. */
+export interface AgentEditedParagraph {
+  ref: ParagraphRef;
+  /** 고치기 전 문단 전체 글 (문단 하나 안의 op 일 때만) */
+  before?: string;
+  /** 지금 문단 글. 읽지 못하면 null */
+  text: string | null;
+}
+
+/** 승인·확정된 op 들이 닿은 문단. 문단 하나 안의 op 는 전·후 글을, 여러 문단에 걸치면 닿은 문단의 지금 글만. */
+export function editedParagraphs(
+  ops: readonly PendingOp[],
+  opts: { reader: ParagraphReader; exclude?: ReadonlySet<string> },
+): AgentEditedParagraph[] {
+  const out = new Map<string, AgentEditedParagraph>();
+  const read = (ref: ParagraphRef): string | null => {
+    try {
+      return opts.reader.text(ref);
+    } catch {
+      return null;
+    }
+  };
+  for (const group of groupByParagraph(textOps(ops, opts.exclude))) {
+    const pair = paragraphPair(group, opts.reader);
+    if (pair) {
+      const ref = opContainer(group[0]);
+      out.set(`${containerKey(ref)}#${ref.paraIdx}`, { ref, before: pair.before, text: pair.after });
+      continue;
+    }
+    for (const op of group) {
+      const last = Math.min(op.range.endParaIdx, op.range.startParaIdx + TRACK_PARAGRAPHS_PER_OP - 1);
+      for (let paraIdx = op.range.startParaIdx; paraIdx <= last; paraIdx++) {
+        const ref = { ...opContainer(op), paraIdx };
+        const key = `${containerKey(ref)}#${paraIdx}`;
+        if (!out.has(key)) out.set(key, { ref, text: read(ref) });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
 // ── 보내기 ────────────────────────────────────────────────
 
 export interface ReviewSignalFrame {
@@ -346,6 +389,18 @@ export class ReviewSignalOutbox {
 
 // ── 모으기 ────────────────────────────────────────────────
 
+/**
+ * 에이전트 글의 출처를 남기는 쪽 (기록에서 배우기, taste-history.ts). 지켜보기를 시작한 문단,
+ * 고쳐 쓰기 신호를 낸 문단, 되돌린 쓰기의 문단을 handle 로 알린다. edited 는 승인·확정된 쓰기가 닿은
+ * 모든 문단(글 없는 지우기 포함)과, 그 쓰기를 실행 취소해 다시 바뀐 문단이다.
+ */
+export interface AgentWriteObserver {
+  written(paragraphs: readonly TrackedParagraph[]): void;
+  edited(paragraphs: readonly AgentEditedParagraph[]): void;
+  rewritten(source: RewriteSource): void;
+  undone(handles: readonly RewriteHandle[]): void;
+}
+
 /** 실행 취소 판별에 쓰는 히스토리 — CommandHistory 의 일부. */
 export interface TasteUndoHistory {
   peekUndoTop(): { readonly type: string } | null;
@@ -367,6 +422,7 @@ export interface TasteSignalCollectorDeps {
   documentInstance?(): number | undefined;
   history?(): TasteUndoHistory | null;
   emit(signals: ReviewSignal[], context: { threadId: string; turnId: string | null }): void;
+  observer?: AgentWriteObserver;
   now?(): number;
   setTimer?(run: () => void, ms: number): TimerHandle;
   clearTimer?(handle: TimerHandle): void;
@@ -386,6 +442,8 @@ interface WriteRecord {
   texts: string[];
   /** 이 쓰기가 건 고쳐 쓰기 지켜보기 — 문단 번호가 밀려도 되돌릴 때 찾을 수 있다 */
   tracked: RewriteHandle[];
+  /** 이 쓰기가 닿은 문단과 쓴 뒤 글 — 되돌리면 출처 기록의 기준을 되돌린 글로 옮긴다 */
+  edited: AgentEditedParagraph[];
   undoEntry: object | null;
 }
 
@@ -408,7 +466,10 @@ export class TasteSignalCollector {
     this.rewrites = new RewriteTracker({
       reader: deps.reader,
       caret: deps.caret,
-      emit: (signal, threadId) => this.send([signal], signal.turnId ?? null, threadId),
+      emit: (signal, threadId, source) => {
+        this.send([signal], signal.turnId ?? null, threadId);
+        if (source) this.observe((observer) => observer.rewritten(source));
+      },
       focus: (agentText, userText) => focusPair(agentText, userText),
       ...(deps.now ? { now: deps.now } : {}),
       ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
@@ -540,9 +601,16 @@ export class TasteSignalCollector {
     }
     const paragraphs = writtenParagraphs(ops, { threadId: origin.threadId, turnId, reader: this.deps.reader, exclude });
     const tracked = this.rewrites.track(paragraphs);
+    if (tracked.length > 0) {
+      const written = tracked.map((handle) => this.rewrites.describe(handle)).filter((paragraph) => paragraph !== null);
+      this.observe((observer) => observer.written(written));
+    }
+    // 앞선 쓰기의 출처 기록이 이 쓰기(글 없는 지우기 포함)를 사용자 고침으로 읽지 않게 기준을 옮긴다.
+    const edited = editedParagraphs(ops, { reader: this.deps.reader, exclude });
+    if (edited.length > 0) this.observe((observer) => observer.edited(edited));
     const texts = ops.filter((op): op is TextOp => (op.kind === 'insert' || op.kind === 'replace') && !exclude?.has(op.id))
       .map((op) => op.text.trim()).filter(Boolean);
-    if (texts.length === 0) return;
+    if (texts.length === 0 && edited.length === 0) return;
     const top = this.readHistory()?.peekUndoTop() ?? null;
     this.records.push({
       seq: ++this.recordSeq,
@@ -550,6 +618,7 @@ export class TasteSignalCollector {
       turnId: origin.turnId,
       texts,
       tracked,
+      edited,
       undoEntry: top?.type === AGENT_APPLY_COMMAND ? top : null,
     });
     if (this.records.length > WRITE_RECORD_LIMIT) this.records.splice(0, this.records.length - WRITE_RECORD_LIMIT);
@@ -577,6 +646,14 @@ export class TasteSignalCollector {
 
   private sendUndone(records: readonly WriteRecord[], threadId: string, turnId: string | null): void {
     for (const record of records) this.rewrites.untrack(record.tracked);
+    this.observe((observer) => observer.undone(records.flatMap((record) => record.tracked)));
+    // 되돌린 쓰기가 옮긴 기준을 되돌린 뒤 글로 다시 옮긴다.
+    const reverted = records.flatMap((record) => record.edited)
+      .filter((edit) => edit.text !== null)
+      .map((edit) => ({ ref: edit.ref, before: edit.text!, text: this.readText(edit.ref) }));
+    if (reverted.length > 0) this.observe((observer) => observer.edited(reverted));
+    // 글 없는 쓰기(지우기)만 되돌렸으면 신호는 내지 않는다.
+    if (records.every((record) => record.texts.length === 0)) return;
     const after = records.flatMap((record) => record.texts).join(' … ');
     this.send([{
       kind: 'undone',
@@ -594,6 +671,24 @@ export class TasteSignalCollector {
   private forgetSet(changeSetId: string): void {
     this.origins.delete(changeSetId);
     this.droppedOps.delete(changeSetId);
+  }
+
+  /** 출처 기록의 오류가 신호 모으기를 막지 않는다. */
+  private observe(run: (observer: AgentWriteObserver) => void): void {
+    if (!this.deps.observer) return;
+    try {
+      run(this.deps.observer);
+    } catch (error) {
+      console.warn('[taste] agent write observer failed:', error);
+    }
+  }
+
+  private readText(ref: ParagraphRef): string | null {
+    try {
+      return this.deps.reader.text(ref);
+    } catch {
+      return null;
+    }
   }
 
   private readHistory(): TasteUndoHistory | null {

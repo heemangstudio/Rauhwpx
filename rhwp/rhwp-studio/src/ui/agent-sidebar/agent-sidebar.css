@@ -3083,11 +3083,13 @@ button.ag-skill-copy {
 }
 
 .ag-marker-compaction.ag-marker-live .ag-marker-line:first-child,
+.ag-marker-memory.ag-marker-live .ag-marker-line:first-child,
 .ag-marker-handoff.ag-marker-live .ag-marker-line:last-child {
   transform-origin: left center;
 }
 
 .ag-marker-compaction.ag-marker-live .ag-marker-line:last-child,
+.ag-marker-memory.ag-marker-live .ag-marker-line:last-child,
 .ag-marker-handoff.ag-marker-live .ag-marker-line:first-child {
   transform-origin: right center;
 }
@@ -3096,7 +3098,8 @@ button.ag-skill-copy {
   animation: ag-marker-fade var(--ag-dur-slow) var(--ag-ease-out) both;
 }
 
-.ag-marker-compaction.ag-marker-live .ag-marker-icon {
+.ag-marker-compaction.ag-marker-live .ag-marker-icon,
+.ag-marker-memory.ag-marker-live .ag-marker-icon {
   animation: ag-marker-contract var(--ag-dur-slow) var(--ag-spring) both;
 }
 
@@ -3305,6 +3308,20 @@ button.ag-skill-copy {
 .ag-taste-undo:disabled {
   color: var(--ag-text-disabled);
   cursor: default;
+}
+
+/* 되돌리기는 아이콘 단추다. */
+.ag-taste-undo {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.ag-taste-undo .ag-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .ag-taste-undone {

@@ -39,6 +39,7 @@ export const scenarios = [
   'writer-busy',
   'interrupted',
   'compaction',
+  'memory',
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -1437,6 +1438,12 @@ export function createMockBridge(
             stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
           }
         }
+        if (reply === 'memory') {
+          // ?scenario=memory — 에이전트가 문서 기억을 저장하고, 그 도구 행 뒤에 "기억에 저장됨" 구분선이 그어진다.
+          toolPair(`memory-${turnGeneration}`, 'update_document_memory',
+            { ops: [{ op: 'add', kind: 'style', subject: '문체', text: '보고서 본문은 "~한다" 체로 쓴다.' }] },
+            { ok: true, revision: 1 });
+        }
         if (reply === 'writer-busy') {
           const call = writerBusyCall();
           stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
@@ -2275,6 +2282,8 @@ export function createMockBridge(
     },
     /** 허브의 취향 학습 결과(taste-learned)를 보낸다. */
     emitTasteLearned: (learned: T.TasteLearned) => emit({ type: 'taste-learned', ...learned }),
+    /** 기록에서 배우기의 결과(taste-history-learned)를 보낸다 — 턴에 묶이지 않는다. */
+    emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
     /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */
     emitTasteDraft: (id: string) => emit({ type: 'agent-instructions-draft', draft: { ...sampleTasteDraft(data.instructions), id } }),
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */

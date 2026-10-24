@@ -327,7 +327,14 @@ import { loadAttentionPrefs, subscribeAttentionPrefs } from './agent/attention-p
 import { installAttentionToasts, installWebAgentAttention } from './ui/agent-attention.ts';
 import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
 import { checkTurnRestore, restoreTurn, type TurnRestoreGates } from './agent/turn-checkpoints.ts';
-import { detachThreadDocument, getThread, renameThreadsDocument, waitForThreadsPersistence } from './agent/threads.ts';
+import {
+  addStoredTasteHistoryMarker,
+  detachThreadDocument,
+  getThread,
+  renameThreadsDocument,
+  tasteHistoryThreadId,
+  waitForThreadsPersistence,
+} from './agent/threads.ts';
 import {
   ForeignDocumentPool,
   createRecentDocumentResolver,
@@ -359,7 +366,7 @@ import {
   openPortableHistoryBundle,
   versionErrorCode,
 } from './versioning/index.ts';
-import type { AgentEditingLease } from './agent/types.ts';
+import type { AgentEditingLease, TasteHistoryLearned } from './agent/types.ts';
 import { mountUpdateHippo } from './ui/update-hippo/update-hippo.ts';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import {
@@ -2306,6 +2313,19 @@ function allChats(): ChatSession[] {
   return liveSessions.flatMap((session) => session.chats);
 }
 
+/**
+ * 기록에서 배운 것(Rau-0.1)의 구분선 — 보이는 채팅이 그 문서의 것이면 그 채팅에, 아니면 그 문서의 최근 채팅에
+ * 남긴다. 다른 문서의 보이는 채팅에는 놓지 않는다. 그 채팅을 띄운 사이드바가 있으면 그 사이드바가 그린다.
+ */
+function routeTasteHistory(learned: TasteHistoryLearned): void {
+  const visible = attachedSession.activeChat?.sidebar.currentThreadId() ?? null;
+  const threadId = tasteHistoryThreadId(learned.documentId, visible);
+  if (!threadId) return;
+  const holder = allChats().find((chat) => chat.sidebar.currentThreadId() === threadId);
+  if (holder) holder.sidebar.addTasteHistoryMarker(threadId, learned);
+  else addStoredTasteHistoryMarker(threadId, learned);
+}
+
 /** 같은 문서의 다른 채팅이 문서를 고치는 중이면 이 채팅은 채팅 모드만 쓴다. */
 function chatModeLockFor(chat: ChatSession): { reason: string } | null {
   // 문서를 고치고 있는 채팅은 스스로 잠기지 않는다 (잠그면 그 채팅의 계획·모드를 잃는다).
@@ -2362,9 +2382,13 @@ function installChatAgent(
       const identity = worktreeIdentity(session.versions?.getState(), session.documentId);
       return identity ? { branch: identity.branch, primary: identity.primary } : null;
     },
-    commitVersion: async (message) => {
-      await versions.checkpoint(message, { agentTurn: true });
+    commitVersion: async (message, author) => {
+      await versions.checkpoint(message, {
+        agentTurn: true,
+        agent: { label: author.agent ? AGENT_LABEL[author.agent] : '에이전트', threadId: author.threadId },
+      });
     },
+    documentTurnRunning: () => session.chats.some(({ bridge: other }) => chatWorksOnDocument(other)),
     // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
     claimDocumentWrite: () => chat !== undefined && claimDocumentWriter(session, chat),
     turnCheckpoints: session.turnCheckpoints,
@@ -2390,6 +2414,7 @@ function installChatAgent(
     bridge,
     eventBus: session.bus,
     startActive: active && docAttached,
+    routeTasteHistory,
     ...(issueReporter ? { reportIssue: issueReporter } : {}),
     editorSettingsRuntime: {
       preview: applyEditorSettingsPreview,

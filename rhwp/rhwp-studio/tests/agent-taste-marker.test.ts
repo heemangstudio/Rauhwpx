@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  addStoredTasteHistoryMarker,
   addTasteMarker,
   createEmptyThread,
   createTurnMarker,
   findTasteMarker,
   getThread,
   serializeThreadMessagesForProviderHistory,
+  listThreads,
   settleTasteUndo,
+  tasteHistoryThreadId,
   upsertThread,
   type ChatThread,
   type ThreadTasteMarker,
@@ -160,4 +163,60 @@ test('a taste-learned frame with no readable item is ignored', () => {
   const ok = readTasteLearned({ ...learned(), turnId: 42, proposal: { draftId: 'd' } } as unknown as Record<string, unknown>);
   assert.equal(ok?.turnId, null);
   assert.deepEqual(ok?.proposal, { draftId: 'd' });
+});
+
+/** 문서 하나에 묶인 대화 한 번짜리 채팅 — 최근 활동 순서는 at 이 정한다. */
+function storedChat(id: string, documentId: string | null, at: number): ChatThread {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high', documentId });
+  thread.id = id;
+  thread.updatedAt = at;
+  thread.lastActivityAt = at;
+  thread.messages.push({ role: 'user', text: '요청', agent: 'claude' }, { role: 'assistant', text: '답', agent: 'claude' });
+  return thread;
+}
+
+function seedChats(...threads: ChatThread[]): void {
+  mem.clear();
+  localStorage.setItem('rhwp-agent-threads', JSON.stringify(threads));
+}
+
+const historyLearn = (documentId: string, learnId = 'learn_history') => {
+  const { threadId: _t, turnId: _u, proposal: _p, ...rest } = learned({ documentId, learnId });
+  return rest;
+};
+
+test('a history learn goes to the visible chat when it belongs to that document', () => {
+  seedChats(storedChat('visible', 'doc-1', 1_000), storedChat('newer', 'doc-1', 9_000));
+  assert.equal(tasteHistoryThreadId('doc-1', 'visible'), 'visible');
+});
+
+test('a background document\'s history learn goes to its own latest chat, never the visible chat of another document', () => {
+  seedChats(storedChat('visible', 'doc-other', 9_000), storedChat('old', 'doc-1', 1_000), storedChat('latest', 'doc-1', 5_000));
+  assert.equal(tasteHistoryThreadId('doc-1', 'visible'), 'latest');
+  assert.equal(tasteHistoryThreadId('doc-1', null), 'latest');
+});
+
+test('a document with no chat gets no history divider and no chat is created', () => {
+  seedChats(storedChat('visible', 'doc-other', 9_000));
+  const empty = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high', documentId: 'doc-1' });
+  assert.equal(tasteHistoryThreadId('doc-1', 'visible'), null);
+  assert.equal(tasteHistoryThreadId('doc-1', empty.id), null, 'an empty draft of that document is not a chat');
+  assert.equal(addStoredTasteHistoryMarker('missing', historyLearn('doc-1')), false);
+  assert.deepEqual(listThreads().map((thread) => thread.id), ['visible']);
+});
+
+test('a history divider is stored at the end of the chat, once per learn, and survives a reload', () => {
+  const thread = threadWithTwoTurns();
+  thread.documentId = 'doc-1';
+  seedChats(thread);
+  assert.equal(addStoredTasteHistoryMarker('thread-1', historyLearn('doc-1')), true);
+  assert.equal(addStoredTasteHistoryMarker('thread-1', historyLearn('doc-1')), false, 'the same learn is kept once');
+  const restored = getThread('thread-1')!;
+  const marker = restored.messages.at(-1) as ThreadTasteMarker;
+  assert.equal(marker.marker, 'taste');
+  assert.equal(marker.learnId, 'learn_history');
+  assert.equal(marker.turnId, null);
+  assert.deepEqual(marker.items, learned().items);
+  assert.deepEqual(marker.changes, learned().changes);
+  assert.equal(tasteMarkers(restored).length, 1);
 });
