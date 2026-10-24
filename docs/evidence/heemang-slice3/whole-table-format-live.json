@@ -1,0 +1,108 @@
+{
+  "url": "http://127.0.0.1:7700/?engine=heemang",
+  "sourceCopy": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/table-format/fdi_q1.hwpx",
+  "errors": [],
+  "boundary": "Production file input, mouse and format dialog; native read-only inspection.",
+  "engineCommit": "2008f209e97a70bd586644b8b8596ca32ef5274f",
+  "target": {
+    "body": {
+      "section": 0,
+      "para": 3,
+      "offset": 8
+    },
+    "cell": {
+      "section": 0,
+      "steps": [
+        {
+          "para": 3,
+          "control": 0,
+          "index": 0
+        }
+      ],
+      "para": 0,
+      "offset": 0
+    },
+    "cellRange": {
+      "from": {
+        "section": 0,
+        "steps": [
+          {
+            "para": 3,
+            "control": 0,
+            "index": 0
+          }
+        ],
+        "para": 0,
+        "offset": 0
+      },
+      "to": {
+        "section": 0,
+        "steps": [
+          {
+            "para": 3,
+            "control": 0,
+            "index": 0
+          }
+        ],
+        "para": 0,
+        "offset": 42
+      }
+    },
+    "beforeHtml": "<p><span style=\"font-size:26pt;font-family:'함초롬돋움';font-weight:bold;text-decoration:underline\">‘24년 1분기 해외직접투자는 150.9억 달러로 전년동기비 14.6% 감소</span></p>",
+    "before": {
+      "instance": 1,
+      "contentEpoch": 0,
+      "layoutEpoch": 2,
+      "fontGeneration": 82,
+      "format": "hwpx",
+      "pageCount": 9,
+      "dirty": false,
+      "undo": 0,
+      "redo": 0
+    }
+  },
+  "highlights": 3,
+  "formatted": {
+    "state": {
+      "instance": 1,
+      "contentEpoch": 1,
+      "layoutEpoch": 3,
+      "fontGeneration": 82,
+      "format": "hwpx",
+      "pageCount": 9,
+      "dirty": true,
+      "undo": 1,
+      "redo": 0
+    },
+    "html": "<p><span style=\"font-size:17pt;font-family:'함초롬돋움';font-weight:bold;text-decoration:underline\">‘24년 1분기 해외직접투자는 150.9억 달러로 전년동기비 14.6% 감소</span></p>"
+  },
+  "undone": {
+    "state": {
+      "instance": 1,
+      "contentEpoch": 2,
+      "layoutEpoch": 4,
+      "fontGeneration": 82,
+      "format": "hwpx",
+      "pageCount": 9,
+      "dirty": false,
+      "undo": 0,
+      "redo": 1
+    },
+    "html": "<p><span style=\"font-size:26pt;font-family:'함초롬돋움';font-weight:bold;text-decoration:underline\">‘24년 1분기 해외직접투자는 150.9억 달러로 전년동기비 14.6% 감소</span></p>"
+  },
+  "redone": {
+    "state": {
+      "instance": 1,
+      "contentEpoch": 3,
+      "layoutEpoch": 5,
+      "fontGeneration": 82,
+      "format": "hwpx",
+      "pageCount": 9,
+      "dirty": true,
+      "undo": 1,
+      "redo": 0
+    },
+    "html": "<p><span style=\"font-size:17pt;font-family:'함초롬돋움';font-weight:bold;text-decoration:underline\">‘24년 1분기 해외직접투자는 150.9억 달러로 전년동기비 14.6% 감소</span></p>"
+  },
+  "status": "passed"
+}

@@ -1,0 +1,864 @@
+{
+  "status": "passed",
+  "runtime": "http://127.0.0.1:7700/?engine=heemang",
+  "chrome": "Chrome/155.0.8059.86",
+  "engine": "2008f209e97a70bd586644b8b8596ca32ef5274f",
+  "engineMain": "2008f209e97a70bd586644b8b8596ca32ef5274f",
+  "hmrObserved": false,
+  "wasmSha256": "412a55db1e1a3f69df7a49c693e008d7e800875427e1ab25de10432be79e6df3",
+  "sourcesUnchanged": true,
+  "vendorUnchanged": true,
+  "documents": [
+    {
+      "name": "exam_math.hwp",
+      "status": "passed",
+      "saved": {
+        "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/exam_math/saved-exam_math.hwp",
+        "bytes": 740352,
+        "sha256": "16439d9494a46b055d54bdf730ce62e4bba7720ecb773427845fcf7bc328c6b6"
+      },
+      "geometry": {
+        "pagesBefore": 20,
+        "pagesAfter": 20,
+        "pageCountChange": 0,
+        "linesBefore": 568,
+        "linesAfter": 568,
+        "lineCountChange": 0,
+        "matchedLines": 568,
+        "exactLines": 568,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "stylesExact": true,
+      "savedBytesReopenedUnchanged": true,
+      "saveComparison": {
+        "pagesBefore": 20,
+        "pagesAfter": 20,
+        "pageCountChange": 0,
+        "linesBefore": 568,
+        "linesAfter": 568,
+        "lineCountChange": 0,
+        "matchedLines": 568,
+        "exactLines": 568,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "failurePaths": [
+        {
+          "mode": "cancel",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 8,
+              "fontGeneration": 156,
+              "format": "hwp5",
+              "pageCount": 20,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 8,
+              "fontGeneration": 156,
+              "format": "hwp5",
+              "pageCount": 20,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "cancel",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "exam_math.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "cancel"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        },
+        {
+          "mode": "failure",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 8,
+              "fontGeneration": 156,
+              "format": "hwp5",
+              "pageCount": 20,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 8,
+              "fontGeneration": 156,
+              "format": "hwp5",
+              "pageCount": 20,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "failure",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "exam_math.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "createWritable",
+              "write",
+              "abort"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        }
+      ],
+      "errors": [],
+      "screenshots": [
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/exam_math/before-save.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/exam_math/reopened.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/exam_math/reopened-cell.png"
+      ]
+    },
+    {
+      "name": "lang_exam.hwp",
+      "status": "passed",
+      "saved": {
+        "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/lang_exam/saved-lang_exam.hwp",
+        "bytes": 407040,
+        "sha256": "72a54457f9ef712f98a4cceade9a0acc367e7b1d878c58a3fb571546e51a6d43"
+      },
+      "geometry": {
+        "pagesBefore": 15,
+        "pagesAfter": 15,
+        "pageCountChange": 0,
+        "linesBefore": 1284,
+        "linesAfter": 1284,
+        "lineCountChange": 0,
+        "matchedLines": 1284,
+        "exactLines": 1284,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "stylesExact": true,
+      "savedBytesReopenedUnchanged": true,
+      "saveComparison": {
+        "pagesBefore": 15,
+        "pagesAfter": 15,
+        "pageCountChange": 0,
+        "linesBefore": 1284,
+        "linesAfter": 1284,
+        "lineCountChange": 0,
+        "matchedLines": 1284,
+        "exactLines": 1284,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "failurePaths": [
+        {
+          "mode": "cancel",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 123,
+              "format": "hwp5",
+              "pageCount": 15,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 123,
+              "format": "hwp5",
+              "pageCount": 15,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "cancel",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "lang_exam.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "cancel"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        },
+        {
+          "mode": "failure",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 123,
+              "format": "hwp5",
+              "pageCount": 15,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 123,
+              "format": "hwp5",
+              "pageCount": 15,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "failure",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "lang_exam.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "createWritable",
+              "write",
+              "abort"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        }
+      ],
+      "errors": [],
+      "screenshots": [
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/lang_exam/before-save.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/lang_exam/reopened.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/lang_exam/reopened-cell.png"
+      ]
+    },
+    {
+      "name": "nikl_plan.hwp",
+      "status": "passed",
+      "saved": {
+        "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/nikl_plan/saved-nikl_plan.hwp",
+        "bytes": 268800,
+        "sha256": "4fc6a8908e5cee789b8dc2c44914b82b3d07fe9ad35bc5f9bec5c6ef43739c32"
+      },
+      "geometry": {
+        "pagesBefore": 35,
+        "pagesAfter": 35,
+        "pageCountChange": 0,
+        "linesBefore": 2159,
+        "linesAfter": 2159,
+        "lineCountChange": 0,
+        "matchedLines": 2159,
+        "exactLines": 2159,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "stylesExact": true,
+      "savedBytesReopenedUnchanged": true,
+      "saveComparison": {
+        "pagesBefore": 35,
+        "pagesAfter": 35,
+        "pageCountChange": 0,
+        "linesBefore": 2159,
+        "linesAfter": 2159,
+        "lineCountChange": 0,
+        "matchedLines": 2159,
+        "exactLines": 2159,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "failurePaths": [
+        {
+          "mode": "cancel",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 89,
+              "format": "hwp5",
+              "pageCount": 35,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 89,
+              "format": "hwp5",
+              "pageCount": 35,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "cancel",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "nikl_plan.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "cancel"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        },
+        {
+          "mode": "failure",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 89,
+              "format": "hwp5",
+              "pageCount": 35,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 89,
+              "format": "hwp5",
+              "pageCount": 35,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "failure",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "nikl_plan.hwp",
+              "types": [
+                {
+                  "description": "HWP 5.0 문서",
+                  "accept": {
+                    "application/x-hwp": [
+                      ".hwp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "createWritable",
+              "write",
+              "abort"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        }
+      ],
+      "errors": [],
+      "screenshots": [
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/nikl_plan/before-save.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/nikl_plan/reopened.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/nikl_plan/reopened-cell.png"
+      ]
+    },
+    {
+      "name": "fdi_q1.hwpx",
+      "status": "passed",
+      "saved": {
+        "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/fdi_q1/saved-fdi_q1.hwpx",
+        "bytes": 537749,
+        "sha256": "2921f01b0ab693beb748ff53acb1c02ec390c9236466a1bdb5c316610ab7ae6d"
+      },
+      "geometry": {
+        "pagesBefore": 10,
+        "pagesAfter": 10,
+        "pageCountChange": 0,
+        "linesBefore": 1605,
+        "linesAfter": 1605,
+        "lineCountChange": 0,
+        "matchedLines": 1605,
+        "exactLines": 1605,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "stylesExact": true,
+      "savedBytesReopenedUnchanged": true,
+      "saveComparison": {
+        "pagesBefore": 10,
+        "pagesAfter": 10,
+        "pageCountChange": 0,
+        "linesBefore": 1605,
+        "linesAfter": 1605,
+        "lineCountChange": 0,
+        "matchedLines": 1605,
+        "exactLines": 1605,
+        "changedLines": 0,
+        "addedLines": 0,
+        "removedLines": 0,
+        "stopCountChanges": 0,
+        "maxDeltasHu": {
+          "y": 0,
+          "height": 0,
+          "baseline": 0,
+          "stopX": 0,
+          "page": 0,
+          "stopOffset": 0
+        },
+        "maxGeometryDeltaPt": 0,
+        "allLineGeometryExact": true,
+        "paragraphsExact": true,
+        "normalizedPaintExact": true,
+        "firstDifferences": []
+      },
+      "failurePaths": [
+        {
+          "mode": "cancel",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 82,
+              "format": "hwpx",
+              "pageCount": 10,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 82,
+              "format": "hwpx",
+              "pageCount": 10,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "cancel",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "fdi_q1.hwpx",
+              "types": [
+                {
+                  "description": "HWPX 문서 (권장)",
+                  "accept": {
+                    "application/hwp+zip": [
+                      ".hwpx"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "cancel"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        },
+        {
+          "mode": "failure",
+          "before": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 82,
+              "format": "hwpx",
+              "pageCount": 10,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "after": {
+            "native": {
+              "instance": 1,
+              "contentEpoch": 4,
+              "layoutEpoch": 6,
+              "fontGeneration": 82,
+              "format": "hwpx",
+              "pageCount": 10,
+              "dirty": true,
+              "undo": 4,
+              "redo": 0
+            },
+            "shellRevision": 4,
+            "dirty": true,
+            "savedEvents": 0,
+            "writes": 0
+          },
+          "unchanged": true,
+          "io": {
+            "mode": "failure",
+            "options": {
+              "excludeAcceptAllOption": true,
+              "suggestedName": "fdi_q1.hwpx",
+              "types": [
+                {
+                  "description": "HWPX 문서 (권장)",
+                  "accept": {
+                    "application/hwp+zip": [
+                      ".hwpx"
+                    ]
+                  }
+                }
+              ]
+            },
+            "stages": [
+              "picker",
+              "createWritable",
+              "write",
+              "abort"
+            ]
+          },
+          "geometryExact": true,
+          "paintExact": true
+        }
+      ],
+      "errors": [],
+      "screenshots": [
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/fdi_q1/before-save.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/fdi_q1/reopened.png",
+        "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/fdi_q1/reopened-cell.png"
+      ]
+    }
+  ],
+  "gateTotals": {
+    "documents": 4,
+    "pagesBefore": 80,
+    "pagesReopened": 80,
+    "linesBefore": 5616,
+    "linesReopened": 5616,
+    "changed": 0,
+    "added": 0,
+    "removed": 0
+  },
+  "handbook": {
+    "status": "passed",
+    "screenshots": [
+      "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/handbook/studio.png",
+      "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/handbook/page-001.png",
+      "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/handbook/page-002.png",
+      "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/handbook/page-384.png",
+      "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/handbook/after-typing.png"
+    ],
+    "open": {
+      "result": {
+        "requestId": "slice3-b3ab56e3-b9cf-4f4d-ad31-4787d4752723",
+        "ok": true,
+        "cancelled": false
+      },
+      "firstPaintMs": 1557.0999999642372,
+      "openCompleteMs": 1808.5,
+      "pages": 384,
+      "memory": 121700352,
+      "wasmMiB": 116.0625,
+      "zoom": 1,
+      "firstVisiblePicturesPaintedMs": 1850.5999999642372
+    },
+    "settledWasmBytes": 121700352,
+    "afterTypingWasmBytes": 121700352,
+    "heap": {
+      "usedSize": 55013800,
+      "totalSize": 123813888,
+      "embedderHeapUsedSize": 14941744,
+      "backingStorageSize": 171310059
+    },
+    "jsHeapMiB": 52.465248107910156,
+    "typing": {
+      "count": 36,
+      "keyToPaint": {
+        "p50": 24.69999998807907,
+        "p95": 34.30000001192093
+      },
+      "definition": "36 trusted Chrome keyboard.press characters at native-hit-tested body text. keyToPaint starts in capture-phase trusted keydown and finishes after rAF + macrotask with rendered contentEpoch >= key epoch+1. Handler latency is not measured: capture-phase microtask timing does not bracket the production mutation handlers. No synthetic input or direct document mutation."
+    },
+    "errors": []
+  },
+  "evidence": {
+    "gates": "output/heemang-editing/slice3/2026-10-23T09-06-11-174Z/results.json",
+    "performance": "output/heemang-editing/slice3/2026-10-23T09-07-40-039Z/results.json"
+  },
+  "limitations": [
+    "Production source and engine remain read-only. All editing uses Chrome mouse/keyboard and production menus. File-system picker/writable handles are intercepted and write only inside this run.",
+    "Geometry compares every native line on every page exactly in HWP units. No rounding/tolerance. Paint comparison normalizes runtime face/glyph IDs and excludes glyph binary payloads and runtime epochs; raw packets are preserved. It does not prove glyph-outline identity.",
+    "Enter and cross-cell checks are owned by the parent. Native read-only sampling is used to choose clickable text and inspect results.",
+    "First paint follows the prior event-to-first synchronous Canvas2D paint definition, which may precede image decode. Typing uses trusted Chrome keys rather than the prior synthetic input sequence; this delivery difference limits direct comparison.",
+    "Local dev build, headless Chrome, one machine; no CPU throttling. Measurements are observations, not release-build benchmarks."
+  ]
+}

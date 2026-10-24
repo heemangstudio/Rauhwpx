@@ -1,3 +1,5 @@
+import { HeemangAdapter } from './heemang-adapter';
+import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, type StudioEngineId } from './engine-support';
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
 import { guardEngineCalls } from './engine-trap';
 import { setHftWasmApi } from './hft-glyphs';
@@ -389,25 +391,17 @@ class PreparedWasmDocumentState implements PreparedWasmDocument {
   }
 }
 
-/**
- * 문서 세대·인스턴스 번호는 페이지의 모든 WasmBridge 가 한 카운터를 나눠 쓴다. 화면이 퍼사드로
- * 다른 세션의 브리지에 붙어도 번호가 겹치지 않아, "같은 문서인가" 비교가 브리지를 넘나들어도
- * 맞는다.
- */
-let lastDocumentGeneration = 0;
-let lastDocumentInstance = 0;
-
-function nextDocumentGeneration(): number {
-  lastDocumentGeneration += 1;
-  return lastDocumentGeneration;
-}
-
-function nextDocumentInstance(): number {
-  lastDocumentInstance += 1;
-  return lastDocumentInstance;
-}
+let legacyMemory: WebAssembly.Memory | undefined;
 
 export class WasmBridge {
+  declare readonly viewer?: HeemangAdapter;
+  constructor(kind: StudioEngineId = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('engine') === 'heemang' ? 'heemang' : 'rhwp') {
+    if (kind === 'heemang') return createStudioEngine(kind) as WasmBridge;
+  }
+  get wasmMemoryBytes(): number { return legacyMemory?.buffer.byteLength ?? 0; }
+  readonly engineKind: StudioEngineId = 'rhwp';
+  readonly readOnly: boolean = false;
   private doc: HwpDocument | null = null;
   private _documentGeneration = 0;
   get documentGeneration(): number {
@@ -444,7 +438,7 @@ export class WasmBridge {
     installDeclaredFontAvailabilityProbe();
     installCanvasFontSubstitution();
     this.installMeasureTextWidth();
-    await init();
+    legacyMemory = (await init()).memory;
     guardEngineCalls(HwpDocument.prototype);
     const downsampleRgba = Reflect.get(wasmExports, 'smoothHermiteDownsampleRgba');
     setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
@@ -4296,4 +4290,36 @@ export class WasmBridge {
       this.doc = null;
     }
   }
+}
+
+/** 세션이 만든 엔진은 문서 교체·탭 전환 동안 바뀌지 않는다. */
+export interface StudioEngine extends Omit<WasmBridge, 'engineKind' | 'readOnly'> {
+  readonly engineKind: StudioEngineId;
+  readonly readOnly: boolean;
+  readonly viewer?: HeemangAdapter;
+}
+
+export function createStudioEngine(kind: StudioEngineId): StudioEngine {
+  if (kind === 'rhwp') return new RhwpAdapter();
+  const adapter = new HeemangAdapter();
+  // 공개되지 않은 기존 편집 API도 같은 오류로 거절한다. 구 엔진으로 보내지 않는다.
+  return new Proxy(adapter, {
+    get(target, key, receiver) {
+      if (key === 'viewer') return target;
+      if (Reflect.has(target, key)) {
+        const value = Reflect.get(target, key, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      if (key === 'then' || typeof key === 'symbol') return undefined;
+      if (Object.getOwnPropertyDescriptor(WasmBridge.prototype, key)?.get) {
+        throw new EngineNotSupportedError(String(key));
+      }
+      return () => { throw new EngineNotSupportedError(String(key)); };
+    },
+  }) as unknown as StudioEngine;
+}
+
+/** 기존 문서 엔진. URL 설정과 무관하게 rhwp 세션을 만든다. */
+export class RhwpAdapter extends WasmBridge {
+  constructor() { super('rhwp'); }
 }

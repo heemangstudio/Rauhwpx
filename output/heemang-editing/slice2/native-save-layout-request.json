@@ -1,0 +1,677 @@
+{
+  "title": "Preserve native layout geometry across same-format save and reopen after text/format edits",
+  "status": "Open native gate; text, character styles, requested paragraph properties and page counts survive, full layout differs.",
+  "runtime": "Studio http://127.0.0.1:7700/?engine=heemang via real Chrome; all mutations through UI.",
+  "baseline": "exam_math.hwp passes full save/reopen geometry after runtime glyph resource-ID normalization.",
+  "affected": [
+    {
+      "document": "lang_exam.hwp",
+      "originalFixture": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/docs/lang_exam.hwp",
+      "savedCopy": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/saved-lang_exam.hwp",
+      "pageCounts": [
+        15,
+        15
+      ],
+      "exactUiOperationOrder": [
+        "body toolbar bold explicit on/off",
+        "body full character dialog",
+        "body paragraph dialog",
+        "body toolbar size and line spacing",
+        "body dialog cancellation",
+        "cell toolbar bold explicit on/off",
+        "cell full character dialog",
+        "cell paragraph dialog",
+        "cell toolbar size and line spacing",
+        "cell dialog cancellation",
+        "body keyboard internal copy/paste styles",
+        "body keyboard cut",
+        "body selected plain clipboard replacement",
+        "body external HTML paste rejected",
+        "cell keyboard internal copy/paste styles",
+        "cell keyboard cut",
+        "cell selected plain clipboard replacement",
+        "cell external HTML paste rejected",
+        "body find and replace",
+        "cell find and replace",
+        "replace all across body and table cell",
+        "unsupported cross-cell selection",
+        "unsupported caret character formatting",
+        "unsupported strike",
+        "unsupported font",
+        "unsupported character spacing",
+        "unsupported style",
+        "unsupported list",
+        "unsupported table row",
+        "unsupported table column",
+        "unsupported table merge",
+        "unsupported table split"
+      ],
+      "nativeAddressDeltas": [
+        {
+          "page": 1,
+          "list": {
+            "section": 0,
+            "steps": []
+          },
+          "para": 37,
+          "line": 0,
+          "before": {
+            "y": 36604,
+            "height": 22582,
+            "baseline": 19195
+          },
+          "reopened": {
+            "y": 36604,
+            "height": 21890,
+            "baseline": 18607
+          },
+          "deltaHU": {
+            "y": 0,
+            "height": -692,
+            "baseline": -588
+          },
+          "deltaPx": {
+            "y": 0.0,
+            "height": -9.226666666666667,
+            "baseline": -7.84
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 1,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 37,
+                "control": 0,
+                "index": 0
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 36894,
+            "height": 100,
+            "baseline": 85
+          },
+          "reopened": {
+            "y": 36306,
+            "height": 100,
+            "baseline": 85
+          },
+          "deltaHU": {
+            "y": -588,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -7.84,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 1,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 37,
+                "control": 0,
+                "index": 1
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 36716,
+            "height": 1100,
+            "baseline": 935
+          },
+          "reopened": {
+            "y": 36128,
+            "height": 1100,
+            "baseline": 935
+          },
+          "deltaHU": {
+            "y": -588,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -7.84,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 1,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 37,
+                "control": 0,
+                "index": 2
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 36894,
+            "height": 100,
+            "baseline": 85
+          },
+          "reopened": {
+            "y": 36306,
+            "height": 100,
+            "baseline": 85
+          },
+          "deltaHU": {
+            "y": -588,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -7.84,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        }
+      ],
+      "savedParagraphProperties": [
+        {
+          "id": 65,
+          "align": 3,
+          "leftPt": 4.0,
+          "indentPt": 3.0,
+          "beforePt": 2.0,
+          "afterPt": 5.0,
+          "legacyLineSpacing": 180,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        },
+        {
+          "id": 67,
+          "align": 3,
+          "leftPt": 4.0,
+          "indentPt": 3.0,
+          "beforePt": 2.0,
+          "afterPt": 5.0,
+          "legacyLineSpacing": 180,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        }
+      ],
+      "textAndStyleSurvival": true,
+      "snapshots": {
+        "before": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/104-save-before.json.gz",
+        "reopened": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/106-reopened.json.gz"
+      },
+      "screenshots": {
+        "before.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/before.png",
+        "after-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/after-body-formatting.png",
+        "after-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/after-cell-formatting.png",
+        "reopened-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/reopened-body-formatting.png",
+        "reopened-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/lang_exam/reopened-cell-formatting.png"
+      }
+    },
+    {
+      "document": "nikl_plan.hwp",
+      "originalFixture": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/docs/nikl_plan.hwp",
+      "savedCopy": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/saved-nikl_plan.hwp",
+      "pageCounts": [
+        35,
+        35
+      ],
+      "exactUiOperationOrder": [
+        "body toolbar bold explicit on/off",
+        "body full character dialog",
+        "body paragraph dialog",
+        "body toolbar size and line spacing",
+        "body dialog cancellation",
+        "cell toolbar bold explicit on/off",
+        "cell full character dialog",
+        "cell paragraph dialog",
+        "cell toolbar size and line spacing",
+        "cell dialog cancellation",
+        "body keyboard internal copy/paste styles",
+        "body keyboard cut",
+        "body selected plain clipboard replacement",
+        "body external HTML paste rejected",
+        "cell keyboard internal copy/paste styles",
+        "cell keyboard cut",
+        "cell selected plain clipboard replacement",
+        "cell external HTML paste rejected",
+        "body find and replace",
+        "cell find and replace",
+        "replace all across body and table cell",
+        "unsupported cross-cell selection",
+        "unsupported caret character formatting",
+        "unsupported strike",
+        "unsupported font",
+        "unsupported character spacing",
+        "unsupported style",
+        "unsupported list",
+        "unsupported table row",
+        "unsupported table column",
+        "unsupported table merge",
+        "unsupported table split"
+      ],
+      "nativeAddressDeltas": [
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": []
+          },
+          "para": 4,
+          "line": 0,
+          "before": {
+            "y": 17326,
+            "height": 11781,
+            "baseline": 10014
+          },
+          "reopened": {
+            "y": 17326,
+            "height": 11436,
+            "baseline": 9721
+          },
+          "deltaHU": {
+            "y": 0,
+            "height": -345,
+            "baseline": -293
+          },
+          "deltaPx": {
+            "y": 0.0,
+            "height": -4.6,
+            "baseline": -3.9066666666666667
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 4,
+                "control": 0,
+                "index": 0
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 18033,
+            "height": 100,
+            "baseline": 85
+          },
+          "reopened": {
+            "y": 17740,
+            "height": 100,
+            "baseline": 85
+          },
+          "deltaHU": {
+            "y": -293,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -3.9066666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 4,
+                "control": 0,
+                "index": 1
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 18898,
+            "height": 3200,
+            "baseline": 2720
+          },
+          "reopened": {
+            "y": 18605,
+            "height": 3200,
+            "baseline": 2720
+          },
+          "deltaHU": {
+            "y": -293,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -3.9066666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 4,
+                "control": 0,
+                "index": 1
+              }
+            ]
+          },
+          "para": 0,
+          "line": 1,
+          "before": {
+            "y": 24658,
+            "height": 3200,
+            "baseline": 2720
+          },
+          "reopened": {
+            "y": 24365,
+            "height": 3200,
+            "baseline": 2720
+          },
+          "deltaHU": {
+            "y": -293,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -3.9066666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        }
+      ],
+      "savedParagraphProperties": [
+        {
+          "id": 510,
+          "align": 3,
+          "leftPt": 4.0,
+          "indentPt": 3.0,
+          "beforePt": 2.0,
+          "afterPt": 5.0,
+          "legacyLineSpacing": 180,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        },
+        {
+          "id": 512,
+          "align": 3,
+          "leftPt": 4.0,
+          "indentPt": 3.0,
+          "beforePt": 2.0,
+          "afterPt": 5.0,
+          "legacyLineSpacing": 180,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        }
+      ],
+      "textAndStyleSurvival": true,
+      "snapshots": {
+        "before": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/104-save-before.json.gz",
+        "reopened": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/106-reopened.json.gz"
+      },
+      "screenshots": {
+        "before.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/before.png",
+        "after-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/after-body-formatting.png",
+        "after-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/after-cell-formatting.png",
+        "reopened-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/reopened-body-formatting.png",
+        "reopened-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/nikl_plan/reopened-cell-formatting.png"
+      }
+    },
+    {
+      "document": "fdi_q1.hwpx",
+      "originalFixture": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/docs/fdi_q1.hwpx",
+      "savedCopy": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/saved-fdi_q1.hwpx",
+      "pageCounts": [
+        10,
+        10
+      ],
+      "exactUiOperationOrder": [
+        "body toolbar bold explicit on/off",
+        "body full character dialog",
+        "body paragraph dialog",
+        "body toolbar size and line spacing",
+        "body dialog cancellation",
+        "cell toolbar bold explicit on/off",
+        "cell full character dialog",
+        "cell paragraph dialog",
+        "cell toolbar size and line spacing",
+        "cell dialog cancellation",
+        "body keyboard internal copy/paste styles",
+        "body keyboard cut",
+        "body selected plain clipboard replacement",
+        "body external HTML paste rejected",
+        "cell keyboard internal copy/paste styles",
+        "cell keyboard cut",
+        "cell selected plain clipboard replacement",
+        "cell external HTML paste rejected",
+        "body find and replace",
+        "cell find and replace",
+        "replace all across body and table cell",
+        "unsupported cross-cell selection",
+        "unsupported caret character formatting",
+        "unsupported strike",
+        "unsupported font",
+        "unsupported character spacing",
+        "unsupported style",
+        "unsupported list",
+        "unsupported table row",
+        "unsupported table column",
+        "unsupported table merge",
+        "unsupported table split"
+      ],
+      "nativeAddressDeltas": [
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 10,
+                "control": 0,
+                "index": 0
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 43397,
+            "height": 1000,
+            "baseline": 850
+          },
+          "reopened": {
+            "y": 38589,
+            "height": 1000,
+            "baseline": 850
+          },
+          "deltaHU": {
+            "y": -4808,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -64.10666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 10,
+                "control": 0,
+                "index": 1
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 42757,
+            "height": 1000,
+            "baseline": 500
+          },
+          "reopened": {
+            "y": 37949,
+            "height": 1000,
+            "baseline": 500
+          },
+          "deltaHU": {
+            "y": -4808,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -64.10666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 10,
+                "control": 0,
+                "index": 2
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 42757,
+            "height": 1000,
+            "baseline": 500
+          },
+          "reopened": {
+            "y": 37949,
+            "height": 1000,
+            "baseline": 500
+          },
+          "deltaHU": {
+            "y": -4808,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -64.10666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        },
+        {
+          "page": 0,
+          "list": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 10,
+                "control": 0,
+                "index": 3
+              }
+            ]
+          },
+          "para": 0,
+          "line": 0,
+          "before": {
+            "y": 42757,
+            "height": 1000,
+            "baseline": 850
+          },
+          "reopened": {
+            "y": 37949,
+            "height": 1000,
+            "baseline": 850
+          },
+          "deltaHU": {
+            "y": -4808,
+            "height": 0,
+            "baseline": 0
+          },
+          "deltaPx": {
+            "y": -64.10666666666667,
+            "height": 0.0,
+            "baseline": 0.0
+          },
+          "stopsEqual": true
+        }
+      ],
+      "savedParagraphProperties": [
+        {
+          "id": "86",
+          "align": "center",
+          "indentPt": 3,
+          "leftPt": 4,
+          "beforePt": 2,
+          "afterPt": 5,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        },
+        {
+          "id": "88",
+          "align": "center",
+          "indentPt": 3,
+          "leftPt": 4,
+          "beforePt": 2,
+          "afterPt": 5,
+          "lineSpacing": 180,
+          "referencedParagraphs": 1
+        }
+      ],
+      "textAndStyleSurvival": true,
+      "snapshots": {
+        "before": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/106-save-before.json.gz",
+        "reopened": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/108-reopened.json.gz"
+      },
+      "screenshots": {
+        "before.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/before.png",
+        "after-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/after-body-formatting.png",
+        "after-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/after-cell-formatting.png",
+        "reopened-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/reopened-body-formatting.png",
+        "reopened-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z/fdi_q1/reopened-cell-formatting.png"
+      }
+    }
+  ],
+  "fontDiagnostic": {
+    "document": "nikl_plan.hwp",
+    "result": "Explicit prepareFonts before save changes no geometry, no font generation, no fontRequests. Reopen still shifts geometry.",
+    "artifact": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/font-diagnostic-summary.json"
+  },
+  "requiredBehavior": "Reopened packets retain page geometry, line y/height/baseline/stops, glyph x positions and style values; resource IDs may remap across native document instances.",
+  "evidencePolicy": "Within-session undo/redo compares exact raw packets. Reopen does not normalize any coordinates or sizes.",
+  "sourceChanges": "None performed by test agent."
+}

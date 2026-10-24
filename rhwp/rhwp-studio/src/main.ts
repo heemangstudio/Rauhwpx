@@ -1,3 +1,5 @@
+import { EngineNotSupportedError } from './core/engine-support';
+import { installHeemangReader } from './view/heemang-reader';
 import {
   installLicenseGate,
   mountLicenseRegisterButton,
@@ -447,7 +449,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || licenseReadOnly || session.wasm.readOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -763,39 +765,48 @@ function createActiveDocumentId(): string {
 // ─── 커맨드 시스템 ─────────────────────────────
 const registry = new CommandRegistry();
 
+function pendingUserEditingLocked(): boolean {
+  return agentEditingLease.active || (inputHandler?.isUserEditingLocked() ?? false)
+    || attachedSession.chats.some(({ bridge }) => bridge.pendingEdits.hasPending() || bridge.pendingEdits.isTemplateLocked());
+}
+
 function getContext(): EditorContext {
   // 엔진이 멈춘 뒤에는 엔진을 부르지 않는다. 명령 상태를 갱신할 때마다 EngineTrappedError 가
   // 나지 않도록, 복구(문서 복구)까지는 문서가 없는 읽기 전용 상태로 둔다.
   if (engineTrap()) return trappedEditorContext();
+  const userEditingLocked = wasm.engineKind === 'heemang' ? pendingUserEditingLocked() : agentEditingLease.active;
+  const legacyInput = wasm.engineKind === 'heemang' ? null : inputHandler;
   const hasDoc = wasm.pageCount > 0;
-  const canEditFormField = inputHandler?.canEditCurrentFormField() ?? false;
+  const history = wasm.engineKind === 'heemang' && hasDoc ? wasm.viewer!.state() : null;
+  const canEditFormField = legacyInput?.canEditCurrentFormField() ?? false;
   const isFormMode = editMode === 'form';
-  const selectedObject = inputHandler?.getSelectedPictureRef() ?? null;
-  const selectedObjects = inputHandler?.getSelectedPictureRefs() ?? [];
+  const selectedObject = legacyInput?.getSelectedPictureRef() ?? null;
+  const selectedObjects = legacyInput?.getSelectedPictureRefs() ?? [];
   return {
+    engineKind: wasm.engineKind,
     hasDocument: hasDoc,
-    hasSelection: inputHandler?.hasSelection() ?? false,
-    hasCopiedFormat: inputHandler?.hasCopiedFormat() ?? false,
-    inTable: inputHandler?.isInTable() ?? false,
-    inCellSelectionMode: inputHandler?.isInCellSelectionMode() ?? false,
-    hasMultiCellSelection: inputHandler?.hasMultiCellSelection() ?? false,
+    hasSelection: legacyInput?.hasSelection() ?? false,
+    hasCopiedFormat: legacyInput?.hasCopiedFormat() ?? false,
+    inTable: legacyInput?.isInTable() ?? false,
+    inCellSelectionMode: legacyInput?.isInCellSelectionMode() ?? false,
+    hasMultiCellSelection: legacyInput?.hasMultiCellSelection() ?? false,
     hasTableTransposeClipboard: wasm.hasTableTransposeClipboard(),
-    inTableObjectSelection: inputHandler?.isInTableObjectSelection() ?? false,
-    inPictureObjectSelection: inputHandler?.isInPictureObjectSelection() ?? false,
+    inTableObjectSelection: legacyInput?.isInTableObjectSelection() ?? false,
+    inPictureObjectSelection: legacyInput?.isInPictureObjectSelection() ?? false,
     canArrangeSelectedObject: !!selectedObject && isTopLevelLayerOrderTarget(selectedObject),
     canGroupSelectedObjects: canGroupTopLevelBodyObjects(selectedObjects),
     canUngroupSelectedObject: canUngroupTopLevelBodyObject(selectedObject),
-    inField: inputHandler?.isInField() ?? false,
-    isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
+    inField: legacyInput?.isInField() ?? false,
+    isEditable: !sessionReadOnly() && !userEditingLocked && (!isFormMode || canEditFormField),
     readOnly: sessionReadOnly(),
     // 라이선스 읽기 전용은 문서 보기 전용이다. 템플릿 미리보기 창은 다른 문서를 열지 않는다.
     readOnlyCanOpen: !documentReadOnly,
-    userEditingLocked: agentEditingLease.active,
+    userEditingLocked,
     editMode,
     isFormMode,
     canEditFormField,
-    canUndo: inputHandler?.canUndo() ?? false,
-    canRedo: inputHandler?.canRedo() ?? false,
+    canUndo: history ? history.undo > 0 : legacyInput?.canUndo() ?? false,
+    canRedo: history ? history.redo > 0 : legacyInput?.canRedo() ?? false,
     zoom: canvasView?.getViewportManager().getZoom() ?? 1.0,
     showControlCodes: wasm.getShowControlCodes(),
     showParagraphMarks: wasm.getShowParagraphMarks(),
@@ -851,7 +862,7 @@ function setEditMode(mode: EditorEditMode): void {
 function setDocumentReadOnly(readOnly: boolean): void {
   documentReadOnly = readOnly;
   document.documentElement.dataset.documentReadOnly = sessionReadOnly() ? 'true' : 'false';
-  inputHandler?.setReadOnly(sessionReadOnly());
+  inputHandler?.setReadOnly(sessionReadOnly() || wasm.engineKind === 'heemang');
   // 멈춘 엔진에는 쪽 수를 묻지 않는다 (버전 기록이 작업 공간 점유를 다시 맞출 때도 여기를 지난다).
   toolbar?.setEnabled(!engineTrap() && wasm.pageCount > 0 && !sessionReadOnly() && !agentEditingLease.active);
   eventBus.emit('command-state-changed');
@@ -907,7 +918,7 @@ const commandServices: CommandServices = {
   wasm,
   documentState,
   getContext,
-  getInputHandler: () => inputHandler,
+  getInputHandler: () => wasm.engineKind === 'heemang' ? null : inputHandler,
   getViewportManager: () => canvasView?.getViewportManager() ?? null,
   pickOpenHandle: pickDesktopNativeOpenFile,
   // 다른 이름으로 저장은 지금 문서가 있는 폴더에서 연다.
@@ -1098,6 +1109,7 @@ const statusNumber = new Intl.NumberFormat('ko-KR');
 function updatePaperStatus(): void {
   paperStatusFrame = 0;
   const paper = sbPaper();
+  if (wasm.engineKind === 'heemang') { paper.textContent = '—'; return; }
   try {
     if (wasm.getSectionCount() === 0) {
       paper.textContent = '—';
@@ -1114,12 +1126,14 @@ function updatePaperStatus(): void {
 }
 
 function schedulePaperStatus(): void {
+  if (wasm.engineKind === 'heemang') return;
   if (!paperStatusFrame) paperStatusFrame = requestAnimationFrame(updatePaperStatus);
 }
 
 function updateCharacterStatus(): void {
   characterStatusFrame = 0;
   const indicator = sbCount();
+  if (wasm.engineKind === 'heemang') { indicator.textContent = ''; return; }
   if (!inputHandler) {
     indicator.textContent = '0글자';
     indicator.title = '문서 글자 수';
@@ -1146,6 +1160,7 @@ function updateCharacterStatus(): void {
 }
 
 function scheduleCharacterStatus(invalidate = false): void {
+  if (wasm.engineKind === 'heemang') return;
   if (invalidate) {
     cancelCharacterRecount();
     statusCharacterCounter.invalidate();
@@ -1155,6 +1170,7 @@ function scheduleCharacterStatus(invalidate = false): void {
 
 /** 편집 뒤 전체 글자 수는 문서 전체를 다시 세므로 타이핑이 멈춘 뒤 한 번만 갱신한다. */
 function scheduleCharacterRecount(): void {
+  if (wasm.engineKind === 'heemang') return;
   cancelCharacterRecount();
   characterRecountTimer = setTimeout(() => {
     characterRecountTimer = null;
@@ -1508,7 +1524,7 @@ async function saveOpenDocumentsBeforeLicenseLock(prepareWrite: () => Promise<vo
   let failed = 0;
   for (const session of [...liveSessions]) {
     if (!session.documentState.isDirty()) continue;
-    if (session === attachedSession) {
+    if (session === attachedSession && session.wasm.engineKind !== 'heemang') {
       try { inputHandler?.flushDeferredPaginationIfNeeded('license-lock'); } catch { /* 복구본과 파일 저장은 그대로 시도한다 */ }
     }
     const kept = await session.autosave.flushAndWait('license-lock');
@@ -1590,7 +1606,10 @@ async function initialize(): Promise<void> {
       // 가져온 개발 글꼴을 첫 문서 조판 전에 WASM 메트릭에도 등록한다.
       syncImportedFontMetrics();
     }
-    const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
+    if (wasm.engineKind === 'heemang' && resolveRenderBackendRequest(window.location.search).backend === 'canvaskit') {
+      throw new EngineNotSupportedError('CanvasKit');
+    }
+    const renderBackendRequest = resolveRenderBackendRequest(wasm.engineKind === 'heemang' ? '?renderer=canvas2d' : window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;
     const canvaskitSurfaceRequest = resolveCanvasKitSurfaceRequest(window.location.search);
@@ -1671,7 +1690,7 @@ async function initialize(): Promise<void> {
     };
 
     // 눈금자 초기화
-    ruler = new Ruler(
+    if (wasm.engineKind !== 'heemang') ruler = new Ruler(
       document.getElementById('h-ruler') as HTMLCanvasElement,
       document.getElementById('v-ruler') as HTMLCanvasElement,
       container,
@@ -1688,8 +1707,11 @@ async function initialize(): Promise<void> {
       // 처음 붙은 문서 세션과 같은 히스토리를 쓴다 — 세션 단위 기록(턴 체크포인트)이 같은 것을 본다.
       attachedSession.editorState.history,
     );
+    installHeemangReader(container, wasm, eventBus, canvasView,
+      error => showToast({ message: error.message, durationMs: 3000 }),
+      () => !sessionReadOnly() && editMode !== 'form' && !pendingUserEditingLocked());
     inputHandler.setEditMode(editMode);
-    inputHandler.setReadOnly(sessionReadOnly());
+    inputHandler.setReadOnly(sessionReadOnly() || wasm.engineKind === 'heemang');
     inputHandler.setUserEditingLocked(agentEditingLease.active);
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
@@ -1724,12 +1746,12 @@ async function initialize(): Promise<void> {
     new MenuBar(document.getElementById('menu-bar')!, eventBus, dispatcher, registry, {
       onMenuOpen: (menuName) => {
         if (menuName === 'file') void renderRecentSubmenu();
-        if (menuName === 'page' || menuName === 'format') syncSpacingPresetMenus(wasm);
+        if (wasm.engineKind !== 'heemang' && (menuName === 'page' || menuName === 'format')) syncSpacingPresetMenus(wasm);
       },
     });
     installDesktopNativeMenu({
       menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus,
-      beforeSync: () => syncSpacingPresetMenus(wasm),
+      beforeSync: () => { if (wasm.engineKind !== 'heemang') syncSpacingPresetMenus(wasm); },
     });
 
     // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
@@ -2352,7 +2374,7 @@ function installChatAgent(
   if (!inputHandler || !canvasView) throw new Error('편집기가 아직 준비되지 않았습니다.');
   const editor = inputHandler;
   const view = { inputHandler: editor, canvasView };
-  const versions = installDocumentVersions(session);
+  const versions = session.wasm.engineKind === 'heemang' ? undefined : installDocumentVersions(session);
   const documentShown = () => attachedSession === session;
   const docAttached = documentShown();
   let chat: ChatSession | undefined;
@@ -2362,12 +2384,13 @@ function installChatAgent(
     documentState: session.documentState,
     editor: docAttached ? editor : session.editorHost,
     view: docAttached ? view : null,
-    isReadOnly: () => sessionReadOnly(session),
+    isReadOnly: () => session.wasm.engineKind === 'heemang' || sessionReadOnly(session),
     getDocumentWorktree: () => {
       const identity = worktreeIdentity(session.versions?.getState(), session.documentId);
       return identity ? { branch: identity.branch, primary: identity.primary } : null;
     },
     commitVersion: async (message) => {
+      if (!versions) throw new EngineNotSupportedError('버전 기록');
       await versions.checkpoint(message, { agentTurn: true });
     },
     // 같은 문서의 다른 채팅이 고치는 중이면 이 채팅의 쓰기는 문서에 닿지 않는다.
@@ -3511,14 +3534,14 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
     console.error('[sessions] 문서 화면을 다시 그리지 못했습니다:', error);
   }
   inputHandler.attachDocumentState(next.editorState);
-  inputHandler.setReadOnly(sessionReadOnly(next));
+  inputHandler.setReadOnly(next.wasm.engineKind === 'heemang' || sessionReadOnly(next));
   if (next.editMode !== editMode) setEditMode(next.editMode);
   if (viewReady) {
     try {
-      inputHandler.activateWithCaretPosition(next.editorState.cursor);
+      if (next.wasm.engineKind !== 'heemang') inputHandler.activateWithCaretPosition(next.editorState.cursor);
       prepareCanvasKitLocalFonts(fontsUsed);
-      toolbar?.initFontDropdown(fontsUsed);
-      toolbar?.initStyleDropdown();
+      if (wasm.engineKind !== 'heemang') toolbar?.initFontDropdown(fontsUsed);
+      if (wasm.engineKind !== 'heemang') toolbar?.initStyleDropdown();
       documentHome?.hide();
     } catch (error) {
       console.error('[sessions] 편집 상태를 이어 붙이지 못했습니다:', error);
@@ -4288,7 +4311,7 @@ function setupGlobalShortcuts(): void {
     if (isEditorInput(target) && inputHandler?.isActive()) return;
     const commandId = matchShortcut(e, defaultShortcuts);
     if (!commandId) return;
-    if (!inputHandler?.isActive() && !['file:new-doc', 'file:open'].includes(commandId)) return;
+    if (!inputHandler?.isActive() && wasm.engineKind !== 'heemang' && !['file:new-doc', 'file:open'].includes(commandId)) return;
     e.preventDefault();
     if (inputHandler?.isActive()) inputHandler.focus();
     dispatcher.dispatch(commandId);
@@ -4565,6 +4588,12 @@ function setupEventListeners(): void {
   });
 
   eventBus.on('document-changed', () => {
+    if (wasm.engineKind === 'heemang') {
+      // 세션의 dirty 세대는 한 번만 올리고, 저장 지점으로 돌아온 undo는 clean으로 맞춘다.
+      if (!wasm.viewer!.state().dirty) documentState.markClean('heemang-history');
+      eventBus.emit('command-state-changed');
+      return;
+    }
     schedulePaperStatus();
     scheduleCharacterRecount();
     scheduleDesktopFontSync();
@@ -4619,7 +4648,9 @@ function setupEventListeners(): void {
 
   eventBus.on('autosave-settings-changed', () => {
     const schedule = autosaveScheduleFromUserSettings();
-    for (const session of liveSessions) session.autosave.updateSchedule(schedule);
+    for (const session of liveSessions) {
+      if (session.wasm.engineKind !== 'heemang') session.autosave.updateSchedule(schedule);
+    }
   });
 
   // 필드 정보 표시
@@ -4776,6 +4807,7 @@ function setupEventListeners(): void {
 }
 
 function applyEditorSettingsPreview(settings: EditorScalarSettings): void {
+  if (wasm.engineKind === 'heemang') throw new EngineNotSupportedError('엔진 보기 설정');
   wasm.setShowControlCodes(settings.view.showControlCodes);
   wasm.setShowParagraphMarks(settings.view.showParagraphMarks);
   syncTextMarkMenu(settings.view.showControlCodes, settings.view.showParagraphMarks);
@@ -4799,6 +4831,7 @@ function commitEditorSettingsRuntime(settings: EditorScalarSettings): void {
 
 /** 문서마다 따로 가진 보기 설정(조판 부호·문단 부호·잘라 보기)을 사용자 설정에 맞춘다. */
 function applyTextMarkSettingsTo(target: WasmBridge): void {
+  if (target.engineKind === 'heemang') return;
   const settings = userSettings.getEditorScalarSettings();
   target.setShowControlCodes(settings.view.showControlCodes);
   target.setShowParagraphMarks(settings.view.showParagraphMarks);
@@ -4807,6 +4840,7 @@ function applyTextMarkSettingsTo(target: WasmBridge): void {
 
 /** 문서 초기화 공통 시퀀스 (loadFile, createNewDocument 양쪽에서 사용) */
 function applySavedTextMarkSettings(): void {
+  if (wasm.engineKind === 'heemang') return;
   applyEditorSettingsPreview(userSettings.getEditorScalarSettings());
 }
 
@@ -4870,11 +4904,15 @@ async function initializeDocument(
         void desktopFonts.then(applyLateFontReports);
       }
     }
+    if (wasm.viewer) {
+      await wasm.viewer.prepareFonts(docInfo.fontsUsed, extensionViewerSettings);
+      docInfo = wasm.getDocumentInfo();
+    }
     await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
     statusSectionIndex = 0;
     sbSection().textContent = `구역: 1 / ${totalSections}`;
-    schedulePaperStatus();
+    if (wasm.engineKind !== 'heemang') schedulePaperStatus();
     applySavedTextMarkSettings();
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     await canvasView?.loadDocument();
@@ -4882,8 +4920,8 @@ async function initializeDocument(
     prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(!sessionReadOnly() && !agentEditingLease.active);
-    toolbar?.initFontDropdown(docInfo.fontsUsed);
-    toolbar?.initStyleDropdown();
+    if (wasm.engineKind !== 'heemang') toolbar?.initFontDropdown(docInfo.fontsUsed);
+    if (wasm.engineKind !== 'heemang') toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
     documentHome?.hide();
     if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
@@ -4895,7 +4933,7 @@ async function initializeDocument(
     // 글자가 대량으로 겹치므로, 모달을 띄우지 않고 항상 '그대로 보기'로 연다.
     // reflow 근본 수정 후 모달/자동 보정 재도입을 검토한다.
     try {
-      if (wasm.getSourceFormat() === 'hwpx') {
+      if (wasm.engineKind !== 'heemang' && wasm.getSourceFormat() === 'hwpx') {
         const report = wasm.getValidationWarnings();
         if (report.count > 0) {
           console.log(`[validation] ${report.count} warnings — 그대로 보기 (#2527)`, report.summary);
@@ -4914,11 +4952,11 @@ async function initializeDocument(
 
     // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
     await updateLoadProgress(96, '편집 상태 초기화 중...', { paint: true });
-    inputHandler?.activateWithCaretPosition();
+    if (wasm.engineKind !== 'heemang') inputHandler?.activateWithCaretPosition();
     eventBus.emit('document-context-changed');
-    scheduleCharacterStatus(true);
+    if (wasm.engineKind !== 'heemang') scheduleCharacterStatus(true);
     // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
-    msg.textContent = documentReadOnly ? '읽기 전용' : '';
+    msg.textContent = wasm.engineKind === 'heemang' ? (sessionReadOnly() ? 'HeemangEngine · 읽기 전용' : 'HeemangEngine') : documentReadOnly ? '읽기 전용' : '';
     updateFontStatusButton();
 
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 clean 이다. 복구한 자동 저장본만 dirty 로 연다.
@@ -4926,7 +4964,7 @@ async function initializeDocument(
     if (options.initialDirtyReason) documentState.markDirty(options.initialDirtyReason);
     else documentState.markClean('document-initialized');
     try {
-      await attachedSession.versions?.documentLoaded({
+      if (wasm.engineKind !== 'heemang') await attachedSession.versions?.documentLoaded({
         fromDisk: options.fromDisk,
         autoEnable: options.autoEnableVersions,
       });
@@ -5026,7 +5064,7 @@ async function loadFile(
         name: file.name,
       };
     await updateLoadProgress(15, '파일 읽기 완료');
-    return openDocumentBytes({
+    return await openDocumentBytes({
       bytes: selected.bytes,
       fileName: selected.name,
       fileHandle: options.fileHandle ?? null,
@@ -5348,7 +5386,7 @@ async function loadBytesNow(
   // 원본 파일에 연결되지 않고, 같은 문서 ID 로 열려 그 워크트리로 돌아간다. 파일 핸들 없이 연
   // 작업 공간 스냅숏도 디스크 파일과 이어지지 않는다.
   const fileBacked = !isManagedWorktree(target) && !(options.worktreeSnapshot && !fileHandle);
-  await autosaveManager.beginDocument(
+  if (wasm.engineKind !== 'heemang') await autosaveManager.beginDocument(
     {
       fileName: wasm.fileName,
       sourceFormat: wasm.getSourceFormat(),
@@ -6201,6 +6239,10 @@ function createNewDocument(template?: Uint8Array, restoredDocumentId?: string): 
 }
 
 async function createNewDocumentNow(template?: Uint8Array, restoredDocumentId?: string): Promise<boolean> {
+  if (wasm.engineKind === 'heemang') {
+    showToast({ message: 'Heemang 새 문서는 아직 지원하지 않습니다.', durationMs: 3000 });
+    return false;
+  }
   const msg = sbMessage();
   // 템플릿은 세션 상태를 건드리기 전에 읽는다. 읽지 못하면 지금 문서·작업 트리·점유가 그대로다.
   let prepared: PreparedWasmDocument | null = null;

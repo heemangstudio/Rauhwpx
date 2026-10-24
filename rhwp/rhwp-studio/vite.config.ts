@@ -1,3 +1,4 @@
+import { heemangFontsPlugin } from './vite-plugin-heemang-fonts.mjs';
 import { defineConfig, type Plugin } from 'vite';
 import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
@@ -179,6 +180,7 @@ export default defineConfig({
     rhwpAgentHubPlugin(__dirname),
     rhwpPinnedDocumentPlugin(__dirname),
     rhwpDevFontPackPlugin(),
+    heemangFontsPlugin(__dirname),
     rhwpLocalFontsPlugin(__dirname),
     rhwpPdfjsAssetsPlugin(),
     {

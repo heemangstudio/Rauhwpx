@@ -1,8 +1,14 @@
+import { EngineNotSupportedError } from '../core/engine-support.ts';
 import type { SaveFormat } from './save-format.ts';
 import { detectDocumentByteKind } from '../core/document-signature.ts';
 import { engineMutationEpoch } from '../core/engine-trap.ts';
 
 export interface DocumentFormatExporter {
+  readonly engineKind?: string;
+  readonly viewer?: {
+    getSourceFormat(): string;
+    serialize(markSaved: boolean): Uint8Array;
+  };
   exportHml(): Uint8Array;
   exportHwp(): Uint8Array;
   exportHwpx(): Uint8Array;
@@ -48,14 +54,18 @@ export function exportDocumentForFormat(
   exporter: DocumentFormatExporter,
   format: SaveFormat,
 ): Uint8Array {
+  const heemang = exporter.engineKind === 'heemang';
+  if (heemang && (!exporter.viewer || format === 'hml' || exporter.viewer.getSourceFormat() !== format)) {
+    throw new EngineNotSupportedError(`${format.toUpperCase()} 형식 변환`);
+  }
   const generation = exporter.documentGeneration;
-  const shareable = typeof generation === 'number' && generation > 0;
+  const shareable = !heemang && typeof generation === 'number' && generation > 0;
   if (shareable) {
     const recalled = recallExport(generation, format);
     if (recalled) return recalled;
   }
   const epoch = engineMutationEpoch();
-  const bytes = format === 'hml'
+  const bytes = heemang ? exporter.viewer!.serialize(false) : format === 'hml'
     ? exporter.exportHml()
     : format === 'hwpx'
       ? exporter.exportHwpx()

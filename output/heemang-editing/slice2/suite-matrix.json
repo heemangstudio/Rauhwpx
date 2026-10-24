@@ -1,0 +1,147 @@
+{
+  "status": "incomplete: full save/reopen geometry fails on three documents",
+  "runtime": "http://127.0.0.1:7700/?engine=heemang, real Chrome Puppeteer using repository ensureChromePath; existing dev server reused",
+  "sourceState": "Final-source focused adjacent search/replace, real menu clipboard, saved text/styles and additional stubs verified. Earlier broad ordinary-flow results retained.",
+  "documents": [
+    {
+      "document": "exam_math.hwp",
+      "bodyAndCellEditing": "passed",
+      "exactWithinSessionUndoRedo": "passed",
+      "findReplaceBodyAndCell": "ordinary body/cell flows passed; final native adjacent-navigation/replacement check additionally passed on nikl_plan",
+      "syntheticClipboardHandlerChecks": "passed, explicitly synthetic after native keyboard emitted no clipboard events",
+      "realEditMenuClipboard": "passed",
+      "saveContainerTextStyles": "passed",
+      "saveFullLayout": "passed",
+      "pageCounts": [
+        20,
+        20
+      ],
+      "savedParagraphProperties": "passed",
+      "mainRun": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-23-32-056Z",
+      "realMenuRun": "output/heemang-editing/slice2/2026-10-23T07-28-40-426Z",
+      "geometryFirstDeltaHU": 0,
+      "geometryFirstDeltaPxAt100Percent": 0.0,
+      "crossCellGuardFinal": "passed via real Shift-click; previous drag coverage gap resolved",
+      "previousCoverageGaps": [
+        {
+          "name": "unsupported cross-cell selection",
+          "status": "skipped",
+          "reason": "Safe targets lie on different pages; no cross-page drag attempted"
+        }
+      ],
+      "coverageGaps": [],
+      "additionalStubsFinal": "passed: row/column deletion, bullet, apply-style, character-spacing-decrease"
+    },
+    {
+      "document": "lang_exam.hwp",
+      "bodyAndCellEditing": "passed",
+      "exactWithinSessionUndoRedo": "passed",
+      "findReplaceBodyAndCell": "ordinary body/cell flows passed; final native adjacent-navigation/replacement check additionally passed on nikl_plan",
+      "syntheticClipboardHandlerChecks": "passed, explicitly synthetic after native keyboard emitted no clipboard events",
+      "realEditMenuClipboard": "passed",
+      "saveContainerTextStyles": "passed",
+      "saveFullLayout": "failed",
+      "pageCounts": [
+        15,
+        15
+      ],
+      "savedParagraphProperties": "passed",
+      "mainRun": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z",
+      "realMenuRun": "output/heemang-editing/slice2/2026-10-23T07-28-40-426Z",
+      "geometryFirstDeltaHU": -588,
+      "geometryFirstDeltaPxAt100Percent": -7.84,
+      "crossCellGuardFinal": "passed via real Shift-click; previous drag coverage gap resolved",
+      "previousCoverageGaps": [
+        {
+          "name": "unsupported cross-cell selection",
+          "status": "failed",
+          "reason": "Error: No safe cell text line found"
+        }
+      ],
+      "coverageGaps": [],
+      "additionalStubsFinal": "passed: row/column deletion, bullet, apply-style, character-spacing-decrease"
+    },
+    {
+      "document": "nikl_plan.hwp",
+      "bodyAndCellEditing": "passed",
+      "exactWithinSessionUndoRedo": "passed",
+      "findReplaceBodyAndCell": "ordinary body/cell flows passed; final native adjacent-navigation/replacement check additionally passed on nikl_plan",
+      "syntheticClipboardHandlerChecks": "passed, explicitly synthetic after native keyboard emitted no clipboard events",
+      "realEditMenuClipboard": "passed",
+      "saveContainerTextStyles": "passed",
+      "saveFullLayout": "failed",
+      "pageCounts": [
+        35,
+        35
+      ],
+      "savedParagraphProperties": "passed",
+      "mainRun": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z",
+      "realMenuRun": "output/heemang-editing/slice2/2026-10-23T07-28-40-426Z",
+      "geometryFirstDeltaHU": -293,
+      "geometryFirstDeltaPxAt100Percent": -3.9066666666666667,
+      "crossCellGuardFinal": "passed via real Shift-click; previous drag coverage gap resolved",
+      "previousCoverageGaps": [
+        {
+          "name": "unsupported cross-cell selection",
+          "status": "skipped",
+          "reason": "Safe targets lie on different pages; no cross-page drag attempted"
+        }
+      ],
+      "coverageGaps": [],
+      "additionalStubsFinal": "passed: row/column deletion, bullet, apply-style, character-spacing-decrease",
+      "finalTargetedSaveLayout": "passed for targeted character/search/menu scenario; original full-paragraph scenario remains failed"
+    },
+    {
+      "document": "fdi_q1.hwpx",
+      "bodyAndCellEditing": "passed",
+      "exactWithinSessionUndoRedo": "passed",
+      "findReplaceBodyAndCell": "ordinary body/cell flows passed; final native adjacent-navigation/replacement check additionally passed on nikl_plan",
+      "syntheticClipboardHandlerChecks": "passed, explicitly synthetic after native keyboard emitted no clipboard events",
+      "realEditMenuClipboard": "passed",
+      "saveContainerTextStyles": "passed",
+      "saveFullLayout": "failed",
+      "pageCounts": [
+        10,
+        10
+      ],
+      "savedParagraphProperties": "passed",
+      "mainRun": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-24-54-901Z",
+      "realMenuRun": "output/heemang-editing/slice2/2026-10-23T07-28-40-426Z",
+      "geometryFirstDeltaHU": -4808,
+      "geometryFirstDeltaPxAt100Percent": -64.10666666666667,
+      "crossCellGuardFinal": "passed via real Shift-click; previous drag coverage gap resolved",
+      "previousCoverageGaps": [],
+      "coverageGaps": [],
+      "additionalStubsFinal": "passed: row/column deletion, bullet, apply-style, character-spacing-decrease"
+    }
+  ],
+  "fontDiagnostic": "prepareFonts on edited nikl_plan changed neither geometry, native requests, nor font generation 89. Reopen had identical requests, font generation 98, and remaining geometry drift.",
+  "realMenuBoundary": "All four body/cell copy, cut, internal styled paste, selected plain paste and external HTML rejection checks passed via production navigator.clipboard.write/read. Completion monitored without replacing clipboard I/O.",
+  "nativeCompare": "Raw paragraphs and exact packet ops/lines/glyphs for within-session undo/redo; reopen comparison only normalizes resource IDs and preserves geometry.",
+  "script": "output/heemang-editing/slice2-verify-live.mjs",
+  "commands": [
+    "node output/heemang-editing/slice2-verify-live.mjs [document names]",
+    "node output/heemang-editing/slice2-verify-live.mjs --clipboard-menu [document names]",
+    "node output/heemang-editing/slice2-verify-live.mjs --font-diagnostic nikl_plan.hwp"
+  ],
+  "finalTargetedCheck": {
+    "status": "passed",
+    "document": "nikl_plan.hwp",
+    "passed": 12,
+    "total": 12,
+    "result": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/results.json",
+    "report": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/final-report.json"
+  },
+  "finalSearchTrace": {
+    "status": "passed",
+    "passed": 4,
+    "total": 4,
+    "trace": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-39-17-051Z/search-trace.json"
+  },
+  "additionalStubChecks": {
+    "status": "passed",
+    "passed": 24,
+    "total": 24,
+    "result": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/results.json"
+  }
+}
