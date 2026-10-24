@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 export async function checkPiModels(page, origin) {
-  await page.goto(`${origin}/?page=settings&destination=ai&services=ready&width=480&reset=1`, { waitUntil: 'networkidle0' });
+  await page.goto(`${origin}/?page=settings&destination=ai-connection&services=ready&width=480&reset=1`, { waitUntil: 'networkidle0' });
   await page.click('#ag-settings-model-tab-pi');
   await page.waitForSelector('.ag-settings-model-list .ag-settings-model-row');
   const rows = '.ag-settings-model-list .ag-settings-model-row';

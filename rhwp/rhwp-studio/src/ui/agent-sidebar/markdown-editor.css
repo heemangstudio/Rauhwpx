@@ -1,0 +1,347 @@
+/* ── 마크다운 편집기: 서식이 보이는 본문 + 아래 서식 막대 ───────── */
+
+.ag-mde {
+  --ag-mde-ink: var(--n-ink, var(--ag-text));
+  --ag-mde-ink-2: var(--n-ink-secondary, var(--ag-text-secondary));
+  --ag-mde-line: var(--n-ink-hairline, var(--ag-border));
+  --ag-mde-fill: var(--n-ink-fill-soft, rgba(127, 127, 127, 0.1));
+  --ag-mde-fill-hover: var(--n-ink-fill-hover, rgba(127, 127, 127, 0.14));
+  --ag-mde-fill-pressed: var(--n-ink-fill-pressed, rgba(127, 127, 127, 0.2));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--n-ink-hairline-strong, var(--ag-border-strong));
+  border-radius: var(--ag-r-field, 8px);
+  background: var(--ag-input-bg, transparent);
+  color: var(--ag-mde-ink);
+}
+
+.ag-mde:focus-within {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-mde-disabled {
+  opacity: 0.62;
+}
+
+.ag-mde-surface,
+.ag-mde-source {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 200px;
+  max-height: min(60vh, 520px);
+  margin: 0;
+  padding: 12px 14px 14px;
+  overflow: auto;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  overscroll-behavior: contain;
+}
+
+.ag-mde-surface {
+  position: relative;
+  font-family: var(--ag-font);
+  font-size: var(--ag-fs-secondary, 13px);
+  line-height: 1.62;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+  cursor: text;
+  caret-color: var(--ag-mde-ink);
+}
+
+.ag-mde-surface[hidden],
+.ag-mde-source[hidden] {
+  display: none;
+}
+
+.ag-mde-source {
+  display: block;
+  resize: none;
+  font-family: var(--ag-mono, ui-monospace, monospace);
+  font-size: var(--ag-fs-mono, 11px);
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre-wrap;
+}
+
+.ag-mde-empty .ag-mde-surface::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 12px 14px auto;
+  color: var(--ag-mde-ink-2);
+  pointer-events: none;
+}
+
+.ag-mde-source::placeholder {
+  color: var(--ag-mde-ink-2);
+}
+
+/* 본문 블록 */
+.ag-mde-surface > :first-child { margin-top: 0; }
+.ag-mde-surface > :last-child { margin-bottom: 0; }
+
+.ag-mde-surface :is(p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre, .ag-mde-raw) {
+  margin: 0 0 8px;
+}
+
+.ag-mde-surface :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--ag-mde-ink);
+  font-weight: var(--ag-fw-strong, 600);
+  letter-spacing: var(--ag-track-tight, -0.01em);
+  line-height: 1.35;
+}
+
+.ag-mde-surface h1 { margin-top: 4px; font-size: 17px; }
+.ag-mde-surface h2 { margin-top: 14px; font-size: 15px; }
+.ag-mde-surface h3 { margin-top: 12px; font-size: 13.5px; }
+.ag-mde-surface :is(h4, h5, h6) { margin-top: 10px; font-size: 13px; color: var(--ag-mde-ink-2); }
+
+.ag-mde-surface :is(ul, ol) {
+  padding-left: 1.45em;
+}
+
+.ag-mde-surface li {
+  margin: 0;
+  padding-left: 0.15em;
+}
+
+.ag-mde-surface li + li {
+  margin-top: 3px;
+}
+
+.ag-mde-surface li > :is(ul, ol) {
+  margin: 3px 0 0;
+}
+
+.ag-mde-surface ul { list-style: disc; }
+.ag-mde-surface ul ul { list-style: circle; }
+.ag-mde-surface ul ul ul { list-style: square; }
+.ag-mde-surface li::marker { color: var(--ag-mde-ink-2); }
+
+.ag-mde-surface blockquote {
+  padding: 1px 0 1px 12px;
+  border-left: 2px solid var(--n-ink-hairline-strong, var(--ag-border-strong));
+  color: var(--ag-mde-ink-2);
+}
+
+.ag-mde-surface blockquote > :last-child { margin-bottom: 0; }
+
+.ag-mde-surface hr {
+  height: 0;
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--ag-mde-line);
+}
+
+.ag-mde-surface strong,
+.ag-mde-surface b {
+  font-weight: var(--ag-fw-strong, 600);
+}
+
+.ag-mde-surface a {
+  color: var(--ag-link, var(--ag-accent));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 40%, transparent);
+  text-underline-offset: 2px;
+  cursor: text;
+}
+
+.ag-mde-surface code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ag-mde-fill);
+  font-family: var(--ag-mono, ui-monospace, monospace);
+  font-size: 0.88em;
+}
+
+.ag-mde-surface pre,
+.ag-mde-surface .ag-mde-raw {
+  position: relative;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--ag-mde-fill);
+  font-family: var(--ag-mono, ui-monospace, monospace);
+  font-size: var(--ag-fs-mono, 11px);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  tab-size: 2;
+}
+
+.ag-mde-surface pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.ag-mde-surface pre[data-md-info]:not([data-md-info=""])::after {
+  content: attr(data-md-info);
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  color: var(--ag-mde-ink-2);
+  font-family: var(--ag-font);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+/* 지원하지 않는 구조: 원문을 그대로 보여 준다. */
+.ag-mde-surface .ag-mde-raw {
+  color: var(--ag-mde-ink-2);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ag-mde-line);
+}
+
+.ag-mde-raw-inline {
+  color: var(--ag-mde-ink-2);
+  font-family: var(--ag-mono, ui-monospace, monospace);
+  font-size: 0.88em;
+}
+
+/* 링크 입력 줄 */
+.ag-mde-linkbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--ag-mde-line);
+}
+
+.ag-mde-linkbar[hidden] {
+  display: none;
+}
+
+.ag-mde-link-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--n-ink-hairline-strong, var(--ag-border-strong));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ag-mde-ink);
+  font: inherit;
+  font-size: var(--ag-fs-meta, 12px);
+}
+
+.ag-mde-link-input:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
+}
+
+.ag-mde-link-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ag-mde-fill);
+  color: var(--ag-mde-ink);
+  font: inherit;
+  font-size: var(--ag-fs-meta, 12px);
+  cursor: pointer;
+}
+
+.ag-mde-link-btn:hover { background: var(--ag-mde-fill-hover); }
+.ag-mde-link-btn[hidden] { display: none; }
+
+/* 서식 막대 */
+.ag-mde-bar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-height: 32px;
+  padding: 3px 5px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--ag-mde-line);
+}
+
+.ag-mde-btn {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ag-mde-ink-2);
+  font: inherit;
+  font-size: var(--ag-fs-meta, 12px);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ag-mde-btn .ag-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.ag-mde-btn:hover:not(:disabled) {
+  background: var(--ag-mde-fill-hover);
+  color: var(--ag-mde-ink);
+}
+
+.ag-mde-btn[aria-pressed="true"] {
+  background: var(--ag-mde-fill-pressed);
+  color: var(--ag-mde-ink);
+}
+
+.ag-mde-btn:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -1px;
+}
+
+.ag-mde-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.ag-mde-level {
+  margin-left: 1px;
+  font-size: 9px;
+  font-weight: var(--ag-fw-strong, 600);
+  line-height: 1;
+  transform: translateY(3px);
+}
+
+.ag-mde-level:empty {
+  display: none;
+}
+
+.ag-mde-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--ag-mde-line);
+}
+
+.ag-mde-spacer {
+  flex: 1 1 auto;
+}
+
+.ag-mde-source-toggle {
+  padding: 0 8px;
+  font-weight: var(--ag-fw-medium, 500);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-mde-btn { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .ag-mde { border-color: CanvasText; }
+  .ag-mde-btn[aria-pressed="true"] { outline: 1px solid CanvasText; }
+}

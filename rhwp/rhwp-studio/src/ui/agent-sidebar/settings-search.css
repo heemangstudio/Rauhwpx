@@ -1,0 +1,142 @@
+/* 설정 왼쪽 목록 맨 위의 검색 칸과 결과. */
+.ag-settings-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ag-settings-search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 5px 0 9px;
+  border-radius: var(--ag-r-row);
+  color: var(--n-ink-secondary);
+  background: var(--n-ink-fill-hover);
+  cursor: text;
+  transition: var(--ag-transition-color);
+}
+
+.ag-settings-search-field:focus-within {
+  color: var(--n-ink);
+  box-shadow: inset 0 0 0 1px var(--ag-border);
+}
+
+.ag-settings-search-icon {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+}
+
+.ag-settings-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--n-ink);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-settings-search-input::placeholder { color: var(--n-ink-secondary); }
+.ag-settings-search-input::-webkit-search-cancel-button { display: none; }
+
+.ag-settings-search-key {
+  flex: 0 0 auto;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: var(--ag-r-chip);
+  color: var(--n-ink-secondary);
+  background: var(--n-ink-fill-hover);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  line-height: 16px;
+  text-align: center;
+}
+
+.ag-settings-search-field:focus-within .ag-settings-search-key { visibility: hidden; }
+
+.ag-settings-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+}
+
+.ag-settings-search-results[hidden] { display: none; }
+
+.ag-settings-search-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: var(--ag-r-row);
+  cursor: pointer;
+}
+
+/* 결과가 속한 탭의 아이콘 — 라벨 첫 줄 가운데에 맞춘다. */
+.ag-settings-search-result > .ag-settings-nav-icon {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  margin-top: calc((1lh - 12px) / 2);
+}
+
+.ag-settings-search-result.ag-active > .ag-settings-nav-icon { color: var(--n-ink); }
+
+.ag-settings-search-result-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ag-settings-search-result.ag-active { background: var(--n-ink-fill-hover); }
+
+.ag-settings-search-result-label {
+  overflow: hidden;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ag-settings-search-result-path {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-settings-search-empty {
+  padding: 7px 12px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+/* 검색하는 동안에는 목록 대신 결과만 보인다. */
+.ag-root .ag-settings-nav.ag-settings-searching > .ag-settings-nav-button,
+.ag-root .ag-settings-nav.ag-settings-searching > .ag-settings-nav-sublist { display: none; }
+
+/* 고른 설정의 머리말 글자를 하마의 하늘색으로 잠깐 밝혀 어디인지 보인다. */
+.ag-settings-search-hit {
+  /* 1.5초 머문 뒤 0.4초에 걸쳐 원래 색으로 돌아간다. */
+  animation: ag-settings-search-hit 1.9s ease-out;
+}
+
+@keyframes ag-settings-search-hit {
+  0%, 79% { color: #62b3e2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-settings-search-hit { animation-timing-function: step-end; }
+}
+
+/* 좁은 설정은 위쪽 가로 탭줄이라 검색 칸을 두지 않는다. */
+@container settings-hub (max-width: 760px) {
+  .ag-settings-search { display: none; }
+}

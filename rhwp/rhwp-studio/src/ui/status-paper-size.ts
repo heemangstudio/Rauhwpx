@@ -24,6 +24,6 @@ export function describePaperSize(pageDef: PageDef): { label: string; title: str
   const dimensions = `${format(displayWidth)} × ${format(displayHeight)} mm`;
   return {
     label: preset ? `${preset}${landscape ? ' 가로' : ''}` : dimensions,
-    title: preset ? `${preset} · ${dimensions}` : dimensions,
+    title: preset ? `${preset} (${dimensions})` : dimensions,
   };
 }

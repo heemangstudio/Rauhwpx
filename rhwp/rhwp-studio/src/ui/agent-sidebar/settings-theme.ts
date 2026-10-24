@@ -15,8 +15,8 @@ import { createIcon } from './icons.ts';
 
 const MODES: ReadonlyArray<{ mode: ThemeMode; label: string }> = [
   { mode: 'system', label: '시스템' },
-  { mode: 'light', label: '밝게' },
-  { mode: 'dark', label: '어둡게' },
+  { mode: 'light', label: '라이트' },
+  { mode: 'dark', label: '다크' },
 ];
 
 const ARROW_STEPS: Readonly<Record<string, number>> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
@@ -179,17 +179,6 @@ export function createThemeSettings(options: {
     accentChoices.appendChild(choice);
     swatches.set(swatch.color, choice);
   }
-  const custom = el('label', 'ag-theme-swatch ag-theme-swatch-custom');
-  custom.title = '직접 고르기';
-  const customInput = el('input', 'ag-theme-swatch-input');
-  customInput.type = 'color';
-  customInput.setAttribute('aria-label', '직접 고르기');
-  custom.append(customInput, createIcon('insert'));
-  customInput.addEventListener('input', () => {
-    draft = { ...draft, accent: customInput.value.toLowerCase() };
-    previewDraft();
-  });
-  accentChoices.appendChild(custom);
   accentRow.append(accentCopy, accentChoices);
 
   colorBody.append(modeRow, accentRow);
@@ -240,16 +229,7 @@ export function createThemeSettings(options: {
     const presetColor = presetScheme(getThemePreset(draft.preset), effective).accent;
     presetAccent.style.setProperty('--swatch', presetColor);
     presetAccent.setAttribute('aria-checked', String(draft.accent === null));
-    let curated = false;
-    for (const [color, choice] of swatches) {
-      const selected = draft.accent === color;
-      curated ||= selected;
-      choice.setAttribute('aria-checked', String(selected));
-    }
-    const customSelected = draft.accent !== null && !curated;
-    custom.classList.toggle('ag-checked', customSelected);
-    custom.style.setProperty('--swatch', customSelected ? draft.accent ?? 'transparent' : 'transparent');
-    customInput.value = draft.accent ?? presetColor;
+    for (const [color, choice] of swatches) choice.setAttribute('aria-checked', String(draft.accent === color));
     renderDirty();
   }
 
@@ -264,7 +244,7 @@ export function createThemeSettings(options: {
     const result = userSettings.tryApplyThemeSettings(draft);
     saving = false;
     if (!result.ok) {
-      status.textContent = `테마를 저장하지 못했습니다 · ${result.error}`;
+      status.textContent = `테마를 저장하지 못했습니다. ${result.error}`;
       status.hidden = false;
       return false;
     }

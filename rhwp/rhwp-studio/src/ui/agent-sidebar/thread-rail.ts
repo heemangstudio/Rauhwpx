@@ -129,7 +129,7 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
     setFilter(filter) {
       filterButton.setAttribute('aria-pressed', filter ? 'true' : 'false');
       filterButton.classList.toggle('ag-active', Boolean(filter));
-      filterButton.title = filter ? `문서별로 보기 · ${filter.label}` : '문서별로 보기';
+      filterButton.title = filter ? `문서별로 보기: ${filter.label}` : '문서별로 보기';
       filterChip.hidden = !filter;
       chipLabel.textContent = filter?.label ?? '';
       chipLabel.title = filter?.label ?? '';

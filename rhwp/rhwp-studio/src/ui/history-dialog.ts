@@ -172,8 +172,8 @@ export class HistoryDialog {
       if (e.id === this.selectedId) li.classList.add('selected');
       li.dataset.id = e.id;
       const dt = new Date(e.createdAt).toLocaleString('ko-KR');
-      const kindNote = e.storageKind === 'legacy' ? ' · 구바이트' : '';
-      li.innerHTML = `<strong>${this.escape(e.label)}</strong><div class="history-entry-meta">${this.escape(e.sourceFileName)} · ${(e.byteLength / 1024).toFixed(1)} KB${kindNote} · ${dt}</div>`;
+      const kindNote = e.storageKind === 'legacy' ? ', 구바이트' : '';
+      li.innerHTML = `<strong>${this.escape(e.label)}</strong><div class="history-entry-meta">${this.escape(e.sourceFileName)}, ${(e.byteLength / 1024).toFixed(1)} KB${kindNote}, ${dt}</div>`;
       li.addEventListener('click', () => {
         this.selectedId = e.id;
         this.listEl.querySelectorAll('.history-entry').forEach((el) => el.classList.remove('selected'));
@@ -254,7 +254,7 @@ export class HistoryDialog {
       this.compareSessionStore.set(session);
       const mode =
         session.textCompareStrategyUsed === 'identity' ? '본문=id(Map)' : '본문=정렬(alignment)';
-      this.resultMetaEl.textContent = `${session.diffItems.length}개 차이 · ${mode} · "${leftName}" vs "${rightName}"`;
+      this.resultMetaEl.textContent = `${session.diffItems.length}개 차이, ${mode}, "${leftName}" vs "${rightName}"`;
       this.renderDiffList(session.diffItems);
       this.services.eventBus.emit('compare:mode-changed', true);
       if (session.diffItems.length > 0) {

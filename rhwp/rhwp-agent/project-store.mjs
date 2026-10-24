@@ -892,7 +892,7 @@ function summarizeOps(ops, state) {
     const label = OP_LABELS[op.op] ?? op.op;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return [...counts].map(([label, count]) => `${label} ${count}`).join(' · ');
+  return [...counts].map(([label, count]) => `${label} ${count}`).join(', ');
 }
 
 function validateProjectState(raw, projectId) {

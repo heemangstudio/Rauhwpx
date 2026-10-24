@@ -3,22 +3,37 @@ import type { EditorScalarSettings } from '../../core/user-settings.ts';
 export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'browser', 'skills', 'project', 'archive', 'license'] as const;
 export type SettingsDestination = (typeof SETTINGS_DESTINATIONS)[number];
 
+/** AI 설정 아래의 세부 탭. */
+export const AI_SETTINGS_SECTIONS = ['connection', 'usage', 'custom'] as const;
+export type AiSettingsSection = (typeof AI_SETTINGS_SECTIONS)[number];
+
 /** 이전 설정 링크와 세션 값에서 사용하던 연결 탭 이름. */
 export type LegacySettingsDestination = 'connections';
 
-/** 외부 호출자가 넘길 수 있는 현재 이름과 이전 이름의 합집합. */
-export type SettingsDestinationInput = SettingsDestination | LegacySettingsDestination;
+/** AI 세부 탭을 바로 여는 주소. */
+export type AiSettingsDestination = `ai-${AiSettingsSection}`;
 
-/** 이전 연결 탭 주소를 통합 AI 탭으로 보낸다. */
+/** 외부 호출자가 넘길 수 있는 현재 이름, 이전 이름, AI 세부 탭 주소의 합집합. */
+export type SettingsDestinationInput = SettingsDestination | LegacySettingsDestination | AiSettingsDestination;
+
+/** 주소가 가리키는 AI 세부 탭. AI 세부 탭 주소가 아니면 undefined. */
+export function aiSettingsSection(value: unknown): AiSettingsSection | undefined {
+  if (value === 'connections') return 'connection';
+  if (typeof value !== 'string' || !value.startsWith('ai-')) return undefined;
+  const section = value.slice(3);
+  return AI_SETTINGS_SECTIONS.find((candidate) => candidate === section);
+}
+
+/** 이전 연결 탭과 AI 세부 탭 주소를 AI 탭으로 보낸다. */
 export function normalizeSettingsDestination(value: unknown): SettingsDestination | undefined {
-  if (value === 'connections') return 'ai';
+  if (aiSettingsSection(value)) return 'ai';
   return SETTINGS_DESTINATIONS.some((destination) => destination === value)
     ? value as SettingsDestination
     : undefined;
 }
 
-export function isSettingsDestination(value: unknown): value is SettingsDestination {
-  // Keep the legacy value accepted by URL/event callers; consumers that need
+export function isSettingsDestination(value: unknown): value is SettingsDestinationInput {
+  // Keep the legacy and AI section values accepted by URL/event callers; consumers that need
   // the canonical pane id should call normalizeSettingsDestination().
   return normalizeSettingsDestination(value) !== undefined;
 }

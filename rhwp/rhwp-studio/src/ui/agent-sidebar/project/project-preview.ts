@@ -320,7 +320,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       saving = true;
       save.disabled = true;
       const label = source.title.replace(/\.(csv|tsv|txt)$/i, '');
-      const link = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] · ${range.ref}`;
+      const link = `[[${source.id}|${label.replace(/[[\]\n]/g, ' ').trim().slice(0, 80) || '원본'}]] ${range.ref}`;
       const note = comment.value.trim();
       const body = `${link}\n\n${note ? `${note}\n\n` : ''}${range.markdown}\n`;
       void saveOps(projectId, [{ op: 'note', body, name: `${label} ${range.ref}`, column: source.column ?? undefined }])

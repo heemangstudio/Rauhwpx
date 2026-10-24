@@ -134,7 +134,7 @@ export function actorLabel(actor: ProjectActor): string {
   return actor.agent ? `${actor.agent}` : '에이전트';
 }
 
-/** 항목 메타 한 줄: 종류 · 쪽수 · 크기. */
+/** 항목 메타 한 줄: 종류, 쪽수, 크기. */
 export function itemMeta(item: ProjectItem): string {
   const parts = [itemKindLabel(item)];
   if (item.kind === 'clip') parts.push(`p.${item.page}`);
@@ -142,7 +142,7 @@ export function itemMeta(item: ProjectItem): string {
     if (item.pageCount) parts.push(`${item.pageCount}쪽`);
     parts.push(formatBytes(item.size));
   }
-  return parts.join(' · ');
+  return parts.join(', ');
 }
 
 /** 정리 도우미가 이 항목을 다루는 중인가. */

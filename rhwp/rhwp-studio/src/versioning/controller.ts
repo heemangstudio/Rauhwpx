@@ -1857,7 +1857,7 @@ export class DocumentVersionController implements VersionManagerController {
       bytes: capture.bytes,
       compareSnapshot: capture.compareSnapshot,
       contentFingerprint: capture.fingerprint,
-      title: title?.trim() || `보관 · ${timestampTitle()}`,
+      title: title?.trim() || `보관 ${timestampTitle()}`,
       expectedRepositoryRevision: repository.revision,
     });
     try {

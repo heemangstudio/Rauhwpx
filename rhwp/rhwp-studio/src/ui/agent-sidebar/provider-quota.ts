@@ -36,7 +36,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
     try {
       localStorage.setItem(resetStorageKey, JSON.stringify(request));
     } catch {
-      feedback.textContent = '리셋 요청 저장 실패 · 브라우저 저장소 확인';
+      feedback.textContent = '리셋 요청 저장 실패, 브라우저 저장소 확인';
       feedback.hidden = false;
       return;
     }
@@ -55,7 +55,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       }[result.outcome];
     } catch (error) {
       if (disposed) return;
-      feedback.textContent = `리셋 확인 실패 · 다시 시도 ${error instanceof Error ? error.message : ''}`;
+      feedback.textContent = `리셋 확인 실패, 다시 시도 ${error instanceof Error ? error.message : ''}`;
     } finally {
       busy = false;
       if (!disposed) render(summary);
@@ -91,7 +91,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       if (quota?.status !== 'ok' || stale) {
         card.append(node('p', 'ag-settings-note', quota?.status === 'error'
           ? `한도 불러오기 실패 ${quota.error ?? ''}`.trim()
-          : stale ? '이전 조회 결과 · 새로고침' : '한도 정보 없음'));
+          : stale ? '이전 조회 결과, 새로고침' : '한도 정보 없음'));
       }
       const hideSession = agent === 'codex' && quota?.planType?.trim().toLowerCase() === 'pro';
       const rows = ([['session', '5시간'], ['week', '주간 한도'], ['month', '월간 한도']] as const)
@@ -124,7 +124,10 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       }
       if (agent === 'codex' && quota && (quota.resetCredits || confirmation)) {
         const credits = quota.resetCredits;
-        if (credits) card.append(node('p', 'ag-settings-note', `보관한 리셋 ${credits.availableCount}개${credits.nextExpiresAt ? `, 다음 만료 ${new Date(credits.nextExpiresAt).toLocaleString()}` : ''}`));
+        // 보관한 리셋은 개수와 사용 단추를 한 줄에 둔다. 없으면 단추 없이 개수만.
+        const resetRow = node('div', 'ag-settings-quota-reset-row');
+        if (credits) resetRow.append(node('p', 'ag-settings-note', `보관한 리셋 ${credits.availableCount}개${credits.nextExpiresAt ? `, 다음 만료 ${new Date(credits.nextExpiresAt).toLocaleString()}` : ''}`));
+        card.append(resetRow);
         const canReset = (credits?.availableCount ?? 0) > 0 && quota.status === 'ok' && !!quota.accountKey && !stale;
         if (confirmation) {
           card.append(node('p', 'ag-settings-note', '보관한 리셋 1개로 Codex 한도를 리셋합니다.'));
@@ -149,6 +152,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
           reset.type = 'button';
           reset.dataset.action = 'request-reset';
           reset.disabled = busy || !canReset;
+          reset.hidden = (credits?.availableCount ?? 0) === 0;
           reset.onclick = () => {
             let pending: { key: string; account: string } | null = null;
             try { pending = JSON.parse(localStorage.getItem(resetStorageKey) ?? 'null'); } catch { /* 소비 전에 저장을 확인한다. */ }
@@ -157,7 +161,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
             feedback.textContent = '';
             render(summary);
           };
-          card.append(reset);
+          resetRow.append(reset);
         }
       }
       return card;
@@ -192,10 +196,8 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
         amount.append(node('span', 'ag-settings-row-detail', '남은 크레딧'));
         card.append(amount);
       }
+      // 남은 금액이 위에 크게 보이므로 잔액 비율 막대는 따로 두지 않는다.
       const windows = [...(balance?.windows ?? [])];
-      if (knownBalance && typeof balance?.totalCreditsUsd === 'number' && balance.totalCreditsUsd > 0) {
-        windows.unshift({ label: '잔액', remainingPercent: Math.max(0, Math.min(100, balance.balanceUsd! / balance.totalCreditsUsd * 100)), resetsAt: null });
-      }
       for (const window of windows) {
         const windowLabel = window.label === '단기 한도' ? '5시간' : window.label;
         const meter = node('div', 'ag-settings-quota-meter');
@@ -217,7 +219,7 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       const stale = !!balance?.updatedAt && Date.now() - balance.updatedAt > 120_000;
       if (balance?.status !== 'ok' || stale || (!knownBalance && windows.length === 0)) {
         card.append(node('p', 'ag-settings-note', balance?.error || (stale
-          ? '이전 조회 결과 · 새로고침'
+          ? '이전 조회 결과, 새로고침'
           : balance?.status === 'error' ? '잔액 불러오기 실패' : '잔액 정보 없음')));
       }
       cards.push(card);

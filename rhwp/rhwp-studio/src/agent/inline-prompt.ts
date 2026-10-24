@@ -288,7 +288,7 @@ class InlinePromptController {
       // 영역 캡처처럼 지금 무엇을 할 수 있는지 위에 짧게 알린다.
       const hint = Object.assign(document.createElement('div'), {
         className: 'ag-inline-armed-hint',
-        textContent: '문서에서 텍스트를 선택하세요 · S 화면 캡처 · Esc 취소',
+        textContent: '문서에서 텍스트를 선택하세요. S 화면 캡처, Esc 취소',
       });
       this.armedFrame.append(hint);
     }
@@ -1133,9 +1133,9 @@ class InlinePromptController {
         const scope = item.selectedRange
           ? `${item.selectedRange.startRow + 1}–${item.selectedRange.endRow + 1}행, ${item.selectedRange.startCol + 1}–${item.selectedRange.endCol + 1}열`
           : '전체';
-        return `표 ${item.rowCount}×${item.colCount} · ${scope}`;
+        return `표 ${item.rowCount}×${item.colCount} (${scope})`;
       }
-      if (item.kind === 'equation') return item.script ? `수식 · ${item.script}` : '수식';
+      if (item.kind === 'equation') return item.script ? `수식: ${item.script}` : '수식';
       if (item.kind === 'screenshot') return '스크린샷';
       return ({ image: '이미지', shape: '도형', line: '선', group: '묶음', ole: 'OLE' } as Record<string, string>)[item.objectType]
         ?? item.objectType;

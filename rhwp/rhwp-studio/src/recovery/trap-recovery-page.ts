@@ -164,12 +164,12 @@ export class TrapRecoveryPage {
         // 화면에 붙이다 멈춘 문서는 이미 열렸어도 suspect 로 다시 적힌다.
         if (run.openedIds.has(entry.id) && entry.id !== run.openingId) continue;
         const status = entry.suspect || entry.id === run.openingId
-          ? '이 문서를 열다가 엔진이 다시 멈췄습니다 · 자동으로 열지 않습니다'
+          ? '이 문서를 열다가 엔진이 다시 멈춰 자동으로 열지 않습니다'
           : entry.worktree === 'managed'
-            ? '버전 기록의 작업 공간 문서 · 다시 불러온 뒤 버전 기록에서 여세요'
+            ? '버전 기록의 작업 공간 문서입니다. 다시 불러온 뒤 버전 기록에서 여세요'
             : !entry.draft && !entry.hasFile
               ? '복구본이 없어 다시 열 수 없습니다'
-              : '아직 다시 열지 못한 문서 · 이어서 엽니다';
+              : '아직 다시 열지 못한 문서를 이어서 엽니다';
         rows.push({ key: `carried-${entry.id}`, fileName: entry.fileName, attached: false, status: () => status, notes: [] });
       }
     }

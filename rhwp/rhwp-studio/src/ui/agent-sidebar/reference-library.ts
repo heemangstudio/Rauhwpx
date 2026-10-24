@@ -293,7 +293,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     add.disabled = !connected || (activeScope === 'project' && !currentProject());
     if (!connected) add.title = '에이전트 서버 연결 대기';
     else add.removeAttribute('title');
-    search.placeholder = activeScope === 'project' ? '이름·태그 검색' : '파일 내용 검색';
+    search.placeholder = activeScope === 'project' ? '이름, 태그 검색' : '파일 내용 검색';
     search.setAttribute('aria-label', activeScope === 'project' ? '프로젝트 자료 이름 검색' : '공용 자료 내용 검색');
     const project = currentProject();
     projectName.textContent = project?.name || '프로젝트';
@@ -368,7 +368,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
         const copy = el('span', 'ag-reference-file-copy');
         const name = el('strong', 'ag-reference-file-name', item.title);
         name.title = item.title;
-        const meta = el('span', 'ag-reference-file-meta', itemOrganizing(item) ? `${itemMeta(item)} · 정리 중` : itemMeta(item));
+        const meta = el('span', 'ag-reference-file-meta', itemOrganizing(item) ? `${itemMeta(item)}, 정리 중` : itemMeta(item));
         copy.append(name, meta);
         open.append(projectIcon(itemIconName(item)), copy);
         open.addEventListener('click', () => requestProject(item.id));
@@ -402,7 +402,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       const state = el(
         'span',
         `ag-reference-file-meta ag-reference-status-${file.status}`,
-        `${formatBytes(file.size)} · ${STATUS_LABEL[file.status]}`,
+        `${formatBytes(file.size)}, ${STATUS_LABEL[file.status]}`,
       );
       copy.append(name, state);
       const remove = el('button', 'ag-reference-remove');
@@ -650,7 +650,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
         await stageOne(chip);
         status.textContent = `${file.name} 첨부 준비가 끝났습니다.`;
       } catch (caught) {
-        const message = `${file.name} 추가 실패 · 다시 시도 ${errorMessage(caught)}`;
+        const message = `${file.name} 추가 실패: ${errorMessage(caught)}`;
         showError(message);
         showDraftError(message);
         status.textContent = `${file.name} 업로드 실패`;
@@ -784,7 +784,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     const failed = settled.filter((entry) => entry.status === 'rejected');
     if (failed.length > 0) {
       const first = failed[0] as PromiseRejectedResult;
-      showError(`${failed.length}개 파일 추가 실패 · 다시 시도 ${errorMessage(first.reason)}`);
+      showError(`${failed.length}개 파일 추가 실패: ${errorMessage(first.reason)}`);
       status.textContent = `${settled.length - failed.length}개 추가, ${failed.length}개 실패`;
     } else {
       status.textContent = `${settled.length}개 참고자료를 추가했습니다.`;
@@ -802,7 +802,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     const settled = await Promise.allSettled(accepted.map((file) => client.service.uploadFile(projectId, file)));
     const failed = settled.filter((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
     if (failed.length) {
-      showError(`${failed.length}개 파일 추가 실패 · ${errorMessage(failed[0].reason)}`);
+      showError(`${failed.length}개 파일 추가 실패: ${errorMessage(failed[0].reason)}`);
       status.textContent = `${settled.length - failed.length}개 추가, ${failed.length}개 실패`;
     } else {
       status.textContent = `${settled.length}개 자료를 추가했습니다.`;

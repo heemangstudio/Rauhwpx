@@ -61,7 +61,7 @@ export function createBrowserWatchStrip(options: { onCancel(watchId: string): vo
         const title = link('ag-watch-title', watch.url, watch.title || siteLabel(watch.url));
         const meta = el('span', 'ag-watch-meta', watch.status === 'paused'
           ? '멈춤'
-          : [watchIntervalLabel(watch.intervalMinutes), watchCheckedLabel(watch.lastCheckedAt)].filter(Boolean).join(' · '));
+          : [watchIntervalLabel(watch.intervalMinutes), watchCheckedLabel(watch.lastCheckedAt)].filter(Boolean).join(', '));
         const cancel = el('button', 'ag-watch-cancel');
         cancel.type = 'button';
         cancel.title = '감시 끝내기';

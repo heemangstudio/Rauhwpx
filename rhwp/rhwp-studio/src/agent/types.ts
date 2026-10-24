@@ -683,6 +683,31 @@ export interface UsageSummary {
   openrouter?: OpenRouterCredits;
 }
 
+export type TokenUsageDays = 7 | 30 | 90;
+export type TokenUsageAgent = 'claude' | 'codex' | 'pi';
+
+export interface TokenUsageProvider {
+  agent: TokenUsageAgent;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  sessions: number;
+  costUsd: number | null;
+}
+
+/** 로컬 세션 기록에서 센 기간별 토큰 사용량. daily 는 days 개, 오래된 날부터. */
+export interface TokenUsageReport {
+  days: TokenUsageDays;
+  generatedAt: number;
+  totalTokens: number;
+  sessions: number;
+  providers: TokenUsageProvider[];
+  daily: Array<{ date: string; claude: number; codex: number; pi: number }>;
+  errors?: string[];
+}
+
 /** pi 사용자가 OpenRouter 카탈로그에서 고른 모델 하나 (최대 3개). */
 export interface PiModelConfig {
   id: string;

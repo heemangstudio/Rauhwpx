@@ -285,7 +285,7 @@ export async function installLicenseGate(
     const status = current;
     if (!status) return;
     if (savingAtLock) {
-      show(savingAtLock === 'trial' ? '체험 끝 · 저장 중' : '읽기 전용 · 저장 중', '', true);
+      show(savingAtLock === 'trial' ? '체험 끝, 저장 중' : '읽기 전용, 저장 중', '', true);
       return;
     }
     if (status.state === 'trial' && !trialFinished) {
@@ -462,6 +462,6 @@ export async function installLicenseGate(
     if (!receivedChange) render(initial);
   } catch {
     setLicenseViewerMode(true);
-    show('라이선스 확인 실패 · 읽기 전용', '활성화', true);
+    show('라이선스 확인 실패, 읽기 전용', '활성화', true);
   }
 }

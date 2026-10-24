@@ -46,7 +46,7 @@ import {
   sampleRecentDocuments,
   sampleReloadQuestion,
 } from './fixtures.ts';
-import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
+import { isSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
 import { applyAuditState } from './audit-state.ts';
@@ -694,7 +694,7 @@ services.value = params.get('services') === 'setup' ? 'setup' : 'ready';
 services.addEventListener('change', () => {
   mock.bridge.interrupt();
   mock.setServices(services.value === 'ready');
-  eventBus.emit('settings:open', { destination: 'ai' });
+  eventBus.emit('settings:open', { destination: 'ai-connection' });
 });
 const autofixSelect = document.querySelector<HTMLSelectElement>('#autofix')!;
 for (const outcome of mockAutofixOutcomes) autofixSelect.add(new Option(outcome, outcome));
@@ -800,8 +800,10 @@ async function enterFocusMode(): Promise<void> {
 if (params.get('page') === 'settings' || params.get('page') === 'versions')
   await sidebar.startupChatSettled();
 if (params.get('fullscreen') === '1') await enterFocusMode();
-if (params.get('page') === 'settings')
-  eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
+if (params.get('page') === 'settings') {
+  const requestedDestination = params.get('destination');
+  eventBus.emit('settings:open', { destination: isSettingsDestination(requestedDestination) ? requestedDestination : 'editing' });
+}
 if (params.get('page') === 'versions') sidebar.openVersions();
 const projectTab = params.get('project');
 if (projectTab === 'board' || projectTab === 'graph' || projectTab === 'files') {

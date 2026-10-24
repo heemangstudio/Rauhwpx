@@ -15,7 +15,7 @@ export const hyperlinkCommand: CommandDef = {
     const ih = services.getInputHandler();
     if (!ih) return;
     try {
-      if (!ih.canEditHyperlink()) throw new Error('본문·표 셀·글상자의 글자에서 하이퍼링크를 편집해 주세요.');
+      if (!ih.canEditHyperlink()) throw new Error('본문, 표 셀, 글상자의 글자에서 하이퍼링크를 편집해 주세요.');
       const selection = ih.hasSelection() ? structuredClone(ih.getSelection()) : null;
       const range = hyperlinkRange(ih.getCursorPosition(), selection);
       const { target, pos, start, end } = range;

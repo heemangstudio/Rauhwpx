@@ -45,7 +45,7 @@ export function createCaptureInbox(options: {
       chip.title = draft.comment;
       const label = document.createElement('span');
       label.className = 'ag-reference-upload-chip-name';
-      label.textContent = `${draft.label} · ${draft.comment.replace(/\s+/g, ' ').slice(0, 48)}`;
+      label.textContent = `${draft.label}: ${draft.comment.replace(/\s+/g, ' ').slice(0, 48)}`;
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'ag-reference-upload-remove';

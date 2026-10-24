@@ -1,0 +1,52 @@
+/* 설정 왼쪽 목록과 검색 결과의 아이콘 — 글자색을 그대로 따르고, 글자와 한 덩어리로 붙인다.
+   :not([hidden]) — display 가 숨긴 탭(라이선스 등)의 기본 [hidden] 을 덮지 않게 한다. */
+.ag-has-nav-icon:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ag-settings-nav-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  overflow: visible;
+}
+
+.ag-root .ag-settings-page .ag-settings-nav-button.ag-has-nav-icon {
+  justify-content: flex-start;
+}
+
+.ag-settings-nav-group-label.ag-has-nav-icon:not([hidden]) {
+  display: inline-flex;
+}
+
+/* 넓은 폭의 세로 목록: 글자와 아이콘을 본문 크기로 키운다. */
+@container settings-hub (min-width: 761px) {
+  .ag-root .ag-settings-page .ag-settings-nav-button {
+    min-height: 38px;
+    font-size: var(--ag-fs-body);
+    font-weight: var(--ag-fw-regular);
+  }
+
+  .ag-root .ag-settings-page .ag-settings-nav-button.ag-active,
+  .ag-root .ag-settings-page .ag-settings-nav-group.ag-has-active { font-weight: var(--ag-fw-medium); }
+
+  .ag-has-nav-icon:not([hidden]) { gap: 7px; }
+
+  .ag-settings-nav-button .ag-settings-nav-icon {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+/* 좁은 폭의 가로 탭 줄은 칸이 빠듯해 글자만 남기고, 원래 블록 배치로 돌려 말줄임을 살린다. */
+@container settings-hub (max-width: 760px) {
+  .ag-settings-nav-button .ag-settings-nav-icon {
+    display: none;
+  }
+
+  .ag-settings-nav .ag-has-nav-icon:not([hidden]) {
+    display: block;
+  }
+}

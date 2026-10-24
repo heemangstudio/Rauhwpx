@@ -241,19 +241,19 @@ export function trapSaveStatusText(save: TrapSaveState, document: { dirty: boole
     case 'saving':
       return '복구본 저장 중…';
     case 'skipped':
-      return '변경 없음 · 파일에서 다시 엽니다';
+      return '변경이 없어 파일에서 다시 엽니다';
     case 'saved':
       return `복구본 저장됨 (${formatTrapClock(save.savedAt, true)})`;
     case 'failed':
       if (save.lastSavedAt !== null) {
-        return `복구본을 만들지 못했습니다 · 마지막 자동 저장본(${formatTrapClock(save.lastSavedAt, false)})으로 엽니다`;
+        return `복구본을 만들지 못해 마지막 자동 저장본(${formatTrapClock(save.lastSavedAt, false)})으로 엽니다`;
       }
       if (document.hasFile) {
         return document.dirty
-          ? '복구본을 만들지 못했습니다 · 저장하지 않은 변경은 복구할 수 없습니다. 마지막으로 저장한 파일로 엽니다'
-          : '복구본을 만들지 못했습니다 · 파일에서 다시 엽니다';
+          ? '복구본을 만들지 못했습니다. 저장하지 않은 변경은 복구할 수 없어 마지막으로 저장한 파일로 엽니다'
+          : '복구본을 만들지 못해 파일에서 다시 엽니다';
       }
-      return '복구본을 만들지 못했습니다 · 이 문서는 다시 열 수 없습니다';
+      return '복구본을 만들지 못해 이 문서는 다시 열 수 없습니다';
   }
 }
 

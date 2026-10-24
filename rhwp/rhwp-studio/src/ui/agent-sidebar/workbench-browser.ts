@@ -62,7 +62,7 @@ export function createWorkbenchBrowser(options: {
   address.addEventListener('input', () => { addressDraft = true; });
   address.setAttribute('aria-label', '브라우저 주소'); address.placeholder = '주소 또는 검색어 입력'; navigation.append(address);
   const go = button('주소 열기', '', () => navigation.requestSubmit(), navigation); icon(go, 'browserForward'); go.classList.add('ag-browser-go');
-  const zoom = document.createElement('div'); zoom.className = 'ag-browser-zoom'; zoom.setAttribute('role', 'group'); zoom.setAttribute('aria-label', '페이지 확대·축소'); navigation.append(zoom);
+  const zoom = document.createElement('div'); zoom.className = 'ag-browser-zoom'; zoom.setAttribute('role', 'group'); zoom.setAttribute('aria-label', '페이지 확대/축소'); navigation.append(zoom);
   const zoomFactors = [.25, .5, .67, .75, .9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
   const tabZoom = new Map<string, number>(); let zoomPending = false;
   const zoomOut = button('페이지 축소', '−', () => stepZoom(-1), zoom);
@@ -348,7 +348,7 @@ export function createWorkbenchBrowser(options: {
     const jobs = controller.state.downloads;
     const rect = downloadsButton.getBoundingClientRect(); const anchor = { x: rect.right, y: rect.bottom };
     const selected = await showContextMenu([
-      ...jobs.slice(0, 40).map(job => ({ id: job.downloadId, label: `${job.filename} — ${job.state === 'downloading' ? `받는 중${job.totalBytes ? ` ${Math.min(100, Math.round(job.size / job.totalBytes * 100))}%` : ''}` : job.savedPath ? '저장됨' : job.state === 'cancelled' ? '취소됨' : job.state === 'interrupted' ? '중단됨' : '받은 파일'} · ${formatDownloadSize(job.size)}` })),
+      ...jobs.slice(0, 40).map(job => ({ id: job.downloadId, label: `${job.filename} — ${job.state === 'downloading' ? `받는 중${job.totalBytes ? ` ${Math.min(100, Math.round(job.size / job.totalBytes * 100))}%` : ''}` : job.savedPath ? '저장됨' : job.state === 'cancelled' ? '취소됨' : job.state === 'interrupted' ? '중단됨' : '받은 파일'}, ${formatDownloadSize(job.size)}` })),
       ...(jobs.length ? [] : [{ id: 'empty', label: '받은 파일이 없습니다', enabled: false }]),
       { type: 'separator' as const }, { id: 'refresh', label: '목록 새로고침' },
     ], anchor);
@@ -475,7 +475,7 @@ export function createWorkbenchBrowser(options: {
   }, { capture: true });
   function paintDownloads(): void {
     const activeCount = controller.state.downloads.filter(job => job.state === 'downloading').length;
-    downloadsButton.dataset.downloading = String(activeCount > 0); downloadsButton.title = activeCount ? `받는 중 · ${activeCount}개` : `받은 파일 · ${controller.state.downloads.length}개`;
+    downloadsButton.dataset.downloading = String(activeCount > 0); downloadsButton.title = activeCount ? `받는 중 ${activeCount}개` : `받은 파일 ${controller.state.downloads.length}개`;
     const signature = JSON.stringify(controller.state.downloads); if (signature === downloadsSignature) return; downloadsSignature = signature;
     downloads.replaceChildren(); const header = document.createElement('header'); header.className = 'ag-browser-popover-header'; const title = document.createElement('strong'); title.textContent = '받은 파일'; header.append(title); const close = button('다운로드 목록 닫기', '', () => showDownloads(false), header); icon(close, 'close'); downloads.append(header);
     if (!controller.state.downloads.length) { const text = document.createElement('p'); text.textContent = '받은 파일이 없습니다.'; downloads.append(text); }
@@ -483,7 +483,7 @@ export function createWorkbenchBrowser(options: {
     for (const job of controller.state.downloads) {
       const row = document.createElement('article'); row.className = 'ag-browser-download'; row.dataset.downloadId = job.downloadId;
       const name = document.createElement('strong'); name.textContent = job.filename;
-      const state = document.createElement('span'); state.textContent = `${labels[job.state]} · ${formatDownloadSize(job.size)} · ${job.target.projectId || '일반 받은 파일'}`;
+      const state = document.createElement('span'); state.textContent = `${labels[job.state]}, ${formatDownloadSize(job.size)}, ${job.target.projectId || '일반 받은 파일'}`;
       row.append(name, state);
       if (['downloaded', 'importing', 'imported', 'import-failed'].includes(job.state)) {
         if (nativeBrowserApi()) button('다운로드 폴더에 저장', '저장', () => handle(controller.action('downloads', { action: 'save', downloadId: job.downloadId })), row);
@@ -732,7 +732,7 @@ export function createWorkbenchBrowser(options: {
       if (mark) { const label = document.createElement('span'); label.className = 'ag-browser-tab-title'; label.textContent = select.textContent; select.replaceChildren(mark, label); }
       select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(row.tabId === tab?.tabId)); select.tabIndex = row.tabId === tab?.tabId ? 0 : -1;
       if (options.onFloatTab) installBrowserTabDrag(select, () => element.getBoundingClientRect(), point => options.onFloatTab?.(row.tabId, point));
-      select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' · 잠자기'; select.addEventListener('keydown', event => {
+      select.dataset.tabId = row.tabId; select.dataset.sleeping = String(row.status === 'sleeping'); if (row.status === 'sleeping') select.title += ' (잠자기)'; select.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault(); const index = controller.state.tabs.indexOf(row); const length = controller.state.tabs.length;
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + length) % length;

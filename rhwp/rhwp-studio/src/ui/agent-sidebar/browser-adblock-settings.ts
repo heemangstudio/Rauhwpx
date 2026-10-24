@@ -13,7 +13,7 @@ export function createAdblockSettings() {
   const label = document.createElement('label'); label.className = 'ag-browser-check';
   const enabled = document.createElement('input'); enabled.type = 'checkbox';
   label.append(enabled, document.createTextNode('광고 및 추적 요청 차단'));
-  const credit = document.createElement('p'); credit.className = 'ag-browser-empty'; credit.textContent = 'Ghostery · EasyList · EasyPrivacy';
+  const credit = document.createElement('p'); credit.className = 'ag-browser-empty'; credit.textContent = 'Ghostery, EasyList, EasyPrivacy';
   const sites = document.createElement('div');
   const actions = document.createElement('div'); actions.className = 'ag-browser-adblock-actions';
   const input = document.createElement('input'); input.className = 'ag-settings-input'; input.placeholder = 'example.com'; input.setAttribute('aria-label', '광고 차단을 일시 중지할 사이트');
@@ -32,7 +32,7 @@ export function createAdblockSettings() {
       button.addEventListener('click', () => void change(() => api!.configure({ enabled: state.enabled, pausedSites: paused ? state.pausedSites.filter(value => value !== site) : [...state.pausedSites, site] })));
       row.append(name, button); sites.append(row);
     }
-    credit.textContent = `Ghostery · EasyList · EasyPrivacy · ${state.updatedAt.slice(0, 10)}`;
+    credit.textContent = `Ghostery, EasyList, EasyPrivacy, ${state.updatedAt.slice(0, 10)}`;
   }
   function disable(value: boolean) { busy = value; for (const control of section.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = value; }
   async function change(operation: () => Promise<AdblockState>) {

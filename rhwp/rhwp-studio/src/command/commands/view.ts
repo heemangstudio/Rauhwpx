@@ -246,8 +246,8 @@ export const viewCommands: CommandDef[] = [
   zoomLevel(200),
   zoomLevel(300),
   themeModeCommand('system', '시스템 설정'),
-  themeModeCommand('light', '밝게'),
-  themeModeCommand('dark', '어둡게'),
+  themeModeCommand('light', '라이트'),
+  themeModeCommand('dark', '다크'),
   // ─── 보기 메뉴: 표시/숨기기 ─────────────────────────
   {
     id: 'view:form-mode',

@@ -203,7 +203,7 @@ export function createWorkbenchAgents(options: WorkbenchAgentsOptions = {}): Wor
         setText(view.label, outcome?.label || call.label);
         setText(view.summary, call.summary);
         view.summary.hidden = !call.summary;
-        setText(view.status, [STATUS_LABEL[tool.status], tool.elapsedMs !== null ? formatDuration(tool.elapsedMs) : ''].filter(Boolean).join(' · '));
+        setText(view.status, [STATUS_LABEL[tool.status], tool.elapsedMs !== null ? formatDuration(tool.elapsedMs) : ''].filter(Boolean).join(', '));
         view.element.setAttribute('data-status', tool.status);
         setText(view.result, [...new Set([outcome?.text, outcome?.detail, ...(outcome?.notices ?? []), ...(outcome?.items?.map((item) => item.text) ?? [])].filter(Boolean))].join('\n')
           || (tool.status === 'stopped' ? '결과 없이 중단됨' : ''));
@@ -229,7 +229,7 @@ export function createWorkbenchAgents(options: WorkbenchAgentsOptions = {}): Wor
       if (!unique.has(id)) { card.dispose(); cards.delete(id); }
     }
     const running = [...unique.values()].filter((task) => task.status === 'running').length;
-    setText(count, unique.size ? `${running} 진행 중 · ${unique.size}개` : '');
+    setText(count, unique.size ? `${running}/${unique.size} 진행 중` : '');
     for (const [value, button] of filterButtons) button.setAttribute('aria-pressed', String(value === filter));
     let shown = 0;
     for (const task of unique.values()) {
@@ -245,7 +245,7 @@ export function createWorkbenchAgents(options: WorkbenchAgentsOptions = {}): Wor
         : task.summary || task.activity || (task.status === 'failed' ? '작업이 실패했습니다.' : task.status === 'stopped' ? '작업이 중단되었습니다.' : '작업을 마쳤습니다.'));
       card.activity.setAttribute('title', card.activity.textContent ?? '');
       const toolCount = task.toolUses ?? (task.tools.length ? task.tools.length : null);
-      setText(card.metrics, [metric(toolCount, '도구'), metric(task.totalTokens, '토큰'), task.durationMs !== null ? formatDuration(task.durationMs) : ''].filter(Boolean).join(' · '));
+      setText(card.metrics, [metric(toolCount, '도구'), metric(task.totalTokens, '토큰'), task.durationMs !== null ? formatDuration(task.durationMs) : ''].filter(Boolean).join(', '));
       setText(card.summary, task.summary || task.activity);
       card.summary.hidden = !card.summary.textContent;
       if (card.expanded) updateTools(card, task.tools);

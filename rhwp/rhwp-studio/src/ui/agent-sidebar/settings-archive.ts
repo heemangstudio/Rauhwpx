@@ -96,7 +96,7 @@ export function createArchiveSettingsPane(deps: ArchiveSettingsPaneDeps): Archiv
         el(
           'span',
           'ag-settings-control-description ag-archive-meta',
-          `${thread.docKey ?? '문서 없음'} · ${formatArchivedAt(thread.archivedAt!)}`,
+          `${thread.docKey ?? '문서 없음'}, ${formatArchivedAt(thread.archivedAt!)}`,
         ),
       );
       const actions = el('div', 'ag-settings-actions ag-pset-storage-actions');

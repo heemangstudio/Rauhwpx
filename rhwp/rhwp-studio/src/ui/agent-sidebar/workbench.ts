@@ -28,7 +28,7 @@ const views: ReadonlyArray<{ id: WorkbenchView; title: string; key: string; code
   { id: 'board', title: '보드', key: 'B', code: 'KeyB' },
   { id: 'changes', title: '변경 사항', key: 'C', code: 'KeyC' },
   { id: 'agents', title: '서브에이전트', key: 'S', code: 'KeyS' },
-  { id: 'documents', title: 'PDF · 문서', key: 'P', code: 'KeyP' },
+  { id: 'documents', title: 'PDF와 문서', key: 'P', code: 'KeyP' },
   { id: 'browser', title: '브라우저', key: 'R', code: 'KeyR' },
 ];
 const LAUNCHER_TITLE = '작업 열기';

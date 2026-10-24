@@ -83,7 +83,7 @@ const CATEGORIES = {
   linkAdd: counted('edit', (n) => `링크 ${n}개 추가`),
   fieldSet: counted('edit', (n) => `필드 ${n}개 입력`),
   bookmarkEdit: counted('edit', (n) => `책갈피 ${n}개 수정`),
-  headerFooter: plain('edit', '머리말·꼬리말 수정'),
+  headerFooter: plain('edit', '머리말과 꼬리말 수정'),
   pageSetup: plain('edit', '쪽 설정 변경'),
   templateInsert: counted('edit', (n) => `서식 틀 내용 ${n}곳 가져옴`),
   replaceAll: plain('edit', '텍스트 모두 바꿈'),
@@ -458,26 +458,26 @@ function turnFoldHead(fold: TurnFoldFacts): string {
   if (fold.outcome === 'interrupted') {
     // 1초도 안 돼 멈췄거나 끝 시각을 모르면 시간은 붙이지 않는다.
     return fold.durationMs !== null && fold.durationMs >= 1000
-      ? `중단됨 · ${formatTurnDuration(fold.durationMs)}`
+      ? `중단됨, ${formatTurnDuration(fold.durationMs)}`
       : '중단됨';
   }
   return fold.durationMs !== null ? `작업 ${formatTurnDuration(fold.durationMs)}` : '작업';
 }
 
-/** 접힘 머리 전체 — “작업 48초 · 표 1개 추가 · 오류 1”. */
+/** 접힘 머리 전체 — “작업 48초, 표 1개 추가, 오류 1”. */
 export function turnFoldLabel(fold: TurnFoldFacts): string {
   const view = turnFoldSummaryView(fold, true);
   return view.title;
 }
 
 export function turnFoldSummaryView(fold: TurnFoldFacts, expandable: boolean): TurnFoldSummaryView {
-  const label = [turnFoldHead(fold), ...fold.parts].join(' · ');
-  const errorsText = fold.errors > 0 ? `· 오류 ${fold.errors}` : '';
+  const label = [turnFoldHead(fold), ...fold.parts].join(', ');
+  const errorsText = fold.errors > 0 ? `오류 ${fold.errors}` : '';
   return {
     outcome: fold.outcome,
     label,
     errorsText,
-    title: errorsText ? `${label} ${errorsText}` : label,
+    title: errorsText ? `${label}, ${errorsText}` : label,
     expandable,
   };
 }
@@ -533,13 +533,15 @@ export function turnWorkFor(messages: readonly ThreadMessage[], marker: ThreadTu
 }
 
 /** 편집 턴이 답변 없이 끝나면 사이드바가 덧붙이는 안내. 모델이 쓴 답이 아니라 최종 답변으로 치지 않는다. */
-export const TURN_CHECK_DOCUMENT_TEXT = '작업 완료 · 문서 확인';
+export const TURN_CHECK_DOCUMENT_TEXT = '작업을 마쳤습니다. 문서를 확인해 주세요.';
+/** 예전 기록에 남은 같은 안내. */
+const LEGACY_CHECK_DOCUMENT_TEXT = '작업 완료 · 문서 확인';
 
 /** 모델이 쓴 최종 답변인가 — 진행 이정표·카드·안내가 아닌 어시스턴트 글. */
 function isAnswerMessage(message: ThreadMessage): boolean {
   if (message.role !== 'assistant' || message.kind !== undefined) return false;
   const text = message.text.trim();
-  return text !== '' && text !== TURN_CHECK_DOCUMENT_TEXT;
+  return text !== '' && text !== TURN_CHECK_DOCUMENT_TEXT && text !== LEGACY_CHECK_DOCUMENT_TEXT;
 }
 
 /**

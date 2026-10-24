@@ -300,7 +300,7 @@ try {
     await openFromFile(page, DOC_B);
     await simulateTrap(page);
     const cleanRows = await openRecoveryDialogWhenSaved(page, 1);
-    assert(cleanRows[0]?.status === '변경 없음 · 파일에서 다시 엽니다',
+    assert(cleanRows[0]?.status === '변경이 없어 파일에서 다시 엽니다',
       `A clean document is reopened from its file (${cleanRows[0]?.status})`);
     await reopenAll(page);
     await waitForToast(page, '문서 1개를 다시 열었습니다.');
@@ -332,7 +332,7 @@ try {
 
     await simulateTrap(page);
     const rows = await openRecoveryDialogWhenSaved(page, 2);
-    assert(rows[0]?.title === `${DOC_B} (화면)` && rows[0].status === '변경 없음 · 파일에서 다시 엽니다',
+    assert(rows[0]?.title === `${DOC_B} (화면)` && rows[0].status === '변경이 없어 파일에서 다시 엽니다',
       `The shown clean document comes first (${JSON.stringify(rows[0])})`);
     assert(rows[1]?.title === DOC_A && rows[1].status.startsWith('복구본 저장됨')
       && rows[1].notes.includes('작업 중인 채팅은 중단됩니다'),
@@ -494,7 +494,7 @@ try {
 
     await simulateTrap(page);
     const rows = await openRecoveryDialogWhenSaved(page, 1);
-    assert(rows[0]?.status === '변경 없음 · 파일에서 다시 엽니다', `The bundle-backed document reopens from its file (${rows[0]?.status})`);
+    assert(rows[0]?.status === '변경이 없어 파일에서 다시 엽니다', `The bundle-backed document reopens from its file (${rows[0]?.status})`);
     await reopenAll(page);
     await page.waitForFunction(() => [...document.querySelectorAll('.rhwp-toast-message')]
       .some((message) => message.textContent?.includes('다시 열었습니다'))

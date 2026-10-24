@@ -82,7 +82,7 @@ export function quote(text: string, max = 24): string {
   return flat ? `“${flat}”` : '';
 }
 
-function join(parts: Array<string | null | undefined | false>, sep = ' · '): string {
+function join(parts: Array<string | null | undefined | false>, sep = ', '): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(sep);
 }
 
@@ -287,7 +287,7 @@ function size(a: Args): string {
 function position(a: Args): string {
   const x = mm(a['xMm']);
   const y = mm(a['yMm']);
-  return x || y ? `x ${x || '0'} · y ${y || '0'}mm` : '';
+  return x || y ? `x ${x || '0'}, y ${y || '0'}mm` : '';
 }
 
 /** edit_object 의 동작 — op 값이나 들어온 키로 고른다. 대상 종류는 결과가 알려 준다. */
@@ -427,7 +427,7 @@ const SPECS: Record<string, ToolSpec> = {
   },
   edit_header_footer: {
     category: 'edit',
-    label: (a) => str(a['which']) === 'footer' ? '꼬리말 편집' : str(a['which']) === 'both' ? '머리말·꼬리말 편집' : '머리말 편집',
+    label: (a) => str(a['which']) === 'footer' ? '꼬리말 편집' : str(a['which']) === 'both' ? '머리말과 꼬리말 편집' : '머리말 편집',
     summary: (a) => {
       const lines = Array.isArray(a['lines']) ? a['lines'].map((line) => typeof line === 'string' ? line : str(rec(line)['text'])) : [];
       return join([
@@ -587,7 +587,7 @@ const SPECS: Record<string, ToolSpec> = {
   register_copy_layout_template: { category: 'other', label: '서식 틀 등록', summary: (a) => quote(str(a['name'])) },
 
   // 앱 브라우저
-  browser_status: { category: 'other', label: '브라우저 상태', summary: (a) => typeof a['history'] === 'string' ? (a['history'].trim() ? `방문 기록 · ${quote(a['history'].trim())}` : '방문 기록') : '' },
+  browser_status: { category: 'other', label: '브라우저 상태', summary: (a) => typeof a['history'] === 'string' ? (a['history'].trim() ? `방문 기록, ${quote(a['history'].trim())}` : '방문 기록') : '' },
   browser_open: { category: 'other', label: (a) => Array.isArray(a['urls']) ? '여러 페이지 읽기' : '브라우저 열기', summary: (a) => Array.isArray(a['urls']) ? `${a['urls'].length}개` : host(str(a['url'])) },
   browser_close: { category: 'other', label: '브라우저 닫기' },
   browser_navigate: { category: 'other', label: '웹 페이지 열기', summary: (a) => host(str(a['url'])) },
@@ -902,14 +902,14 @@ export function parseResultPreview(preview: string): ParsedPreview {
   return out;
 }
 
-/** 쪽 번호 목록(0 기반)을 “2쪽”, “2–4쪽”, “2·5쪽” 으로. */
+/** 쪽 번호 목록(0 기반)을 “2쪽”, “2–4쪽”, “2, 5쪽” 으로. */
 export function pagesText(pages: readonly number[]): string {
   const sorted = [...new Set(pages.filter((p) => Number.isInteger(p) && p >= 0))].sort((a, b) => a - b);
   if (sorted.length === 0) return '';
   const contiguous = sorted.every((p, i) => i === 0 || p === sorted[i - 1] + 1);
   if (sorted.length === 1) return `${sorted[0] + 1}쪽`;
   if (contiguous) return `${sorted[0] + 1}–${sorted[sorted.length - 1] + 1}쪽`;
-  const shown = sorted.slice(0, 3).map((p) => p + 1).join('·');
+  const shown = sorted.slice(0, 3).map((p) => p + 1).join(', ');
   return `${shown}${sorted.length > 3 ? '…' : ''}쪽`;
 }
 

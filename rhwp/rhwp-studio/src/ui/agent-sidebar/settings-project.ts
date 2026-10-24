@@ -450,7 +450,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
     storageList.classList.toggle('ag-pset-selecting', selecting);
     storageList.replaceChildren();
     const total = projects.reduce((sum, project) => sum + project.usage.bytes, 0);
-    const usage = el('span', 'ag-pset-usage', `${formatBytes(total)} · 파일 ${projects.reduce((sum, project) => sum + project.usage.files, 0)}개`);
+    const usage = el('span', 'ag-pset-usage', `${formatBytes(total)}, 파일 ${projects.reduce((sum, project) => sum + project.usage.files, 0)}개`);
     const totalRow = row('전체', selecting ? bulkActions : usage);
     totalRow.root.classList.add('ag-pset-total');
     if (selecting) {
@@ -473,7 +473,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
       const line = row(projectLabel(project), selecting ? undefined : actions);
       line.root.dataset.project = project.id;
       line.description.hidden = false;
-      line.description.textContent = `${formatBytes(project.usage.bytes)} · 파일 ${project.usage.files}개`;
+      line.description.textContent = `${formatBytes(project.usage.bytes)}, 파일 ${project.usage.files}개`;
       if (selecting) {
         const check = el('input', 'ag-pset-check');
         check.type = 'checkbox';
@@ -567,7 +567,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
         else await service.remove(project.id);
         selected.delete(project.id);
       } catch (error) {
-        failure ||= `${projectLabel(project)} · ${error instanceof Error ? error.message : String(error)}`;
+        failure ||= `${projectLabel(project)}: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
     bulkBusy = false;
@@ -780,7 +780,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
       showStatus('프로젝트 설정을 적용했습니다.');
       return true;
     } catch (error) {
-      showStatus(`적용하지 못했습니다 · ${error instanceof Error ? error.message : String(error)}`);
+      showStatus(`적용하지 못했습니다. ${error instanceof Error ? error.message : String(error)}`);
       return false;
     } finally {
       saving = false;

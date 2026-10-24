@@ -186,40 +186,13 @@
   margin-right: 8px;
 }
 
-.ag-theme-swatch:is([aria-checked='true'], .ag-checked) {
+.ag-theme-swatch[aria-checked='true'] {
   box-shadow: 0 0 0 2px var(--ag-set-card, var(--n-surface-raised)), 0 0 0 4px var(--n-ink);
 }
 
-.ag-theme-swatch:focus-visible,
-.ag-theme-swatch-custom:focus-within {
+.ag-theme-swatch:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: 5px;
-}
-
-.ag-theme-swatch-custom {
-  box-shadow: inset 0 0 0 1px var(--n-ink-hairline-strong);
-}
-
-.ag-theme-swatch-custom .ag-icon {
-  width: 12px;
-  height: 12px;
-  pointer-events: none;
-}
-
-.ag-theme-swatch-custom.ag-checked .ag-icon {
-  display: none;
-}
-
-.ag-theme-swatch-input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  cursor: default;
 }
 
 @media (prefers-reduced-motion: reduce) {

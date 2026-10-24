@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   cloneEditorDraft,
   editorDraftEquals,
+  aiSettingsSection,
   isSettingsDestination,
   normalizeSettingsDestination,
   normalizeEditorDraft,
@@ -57,4 +58,10 @@ test('설정 목적지는 편집·테마·AI·스킬·프로젝트·보관함만
   assert.equal(isSettingsDestination('archive'), true);
   assert.equal(isSettingsDestination('about'), false);
   assert.equal(normalizeSettingsDestination('connections'), 'ai');
+  assert.equal(normalizeSettingsDestination('ai-usage'), 'ai');
+  assert.equal(isSettingsDestination('ai-custom'), true);
+  assert.equal(isSettingsDestination('ai-billing'), false);
+  assert.equal(aiSettingsSection('ai-connection'), 'connection');
+  assert.equal(aiSettingsSection('connections'), 'connection');
+  assert.equal(aiSettingsSection('ai'), undefined);
 });

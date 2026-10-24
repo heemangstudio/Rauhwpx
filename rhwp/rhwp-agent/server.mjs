@@ -82,6 +82,11 @@ import { createBrowserDownloads } from './browser-downloads.mjs';
 import { resolveBrowserUploadFiles } from './browser-upload-sources.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
+import {
+  createTokenUsageReporter,
+  defaultTokenUsageSources,
+  sessionRecordSources,
+} from './token-usage-report.mjs';
 import { appendToolTelemetryRow, startToolCall, ToolTurnTelemetry } from './tool-telemetry.mjs';
 import {
   TOOL_TRACE_ENABLED,
@@ -465,6 +470,19 @@ const providerHealth = createProviderHealth({
   },
 });
 const usageStore = await createUsageStore().init();
+// 설정 > AI > 사용량의 토큰 보기: 이 컴퓨터의 CLI 세션 기록 전체(앱 창의 격리 홈 포함)에서 센다.
+const tokenUsage = createTokenUsageReporter({
+  usageRoot: usageStore.rootDir,
+  sources: async () => {
+    const base = defaultTokenUsageSources({ home: HOST_PROFILE_HOME, piRoot: PI_ROOT });
+    const records = await sessionRecordSources(RECORDS_ROOT);
+    return { claude: [...base.claude, ...records.claude], codex: [...base.codex, ...records.codex], pi: base.pi };
+  },
+});
+// 첫 스캔은 1초 남짓 걸린다: 허브가 뜨고 조금 뒤 미리 훑어 두면 사용량 화면이 바로 열린다.
+setTimeout(() => {
+  tokenUsage.warm().catch((error) => process.stderr.write(`[token-usage] warm-up failed: ${error?.message ?? error}\n`));
+}, 2000).unref();
 const providerLimits = createProviderLimitsClient({
   homeDir: HOST_PROFILE_HOME,
   resetLedgerPath: path.join(usageStore.rootDir, 'codex-reset-ledger.json'),
@@ -5728,7 +5746,7 @@ async function handleStudioMessage(record, sock, msg) {
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
         rejectStart(Object.assign(
-          new Error('Pi 설정을 먼저 끝내 주세요 (설치 · OpenRouter 키 · 모델 선택).'),
+          new Error('Pi 설정을 먼저 끝내 주세요 (설치, OpenRouter 키, 모델 선택).'),
           { code: 'PI_NOT_CONFIGURED' },
         ));
         return;
@@ -6625,6 +6643,16 @@ async function handleStudioMessage(record, sock, msg) {
         .catch((e) => replyToStudio(record, sock, {
           v: 1, type: 'usage-error', requestId,
           code: e?.code ?? 'USAGE_FETCH_FAILED', message: String(e?.message ?? e),
+        }));
+      return;
+    }
+    case 'token-usage-request': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      void tokenUsage.report(msg.days, { refresh: msg.refresh === true })
+        .then((report) => replyToStudio(record, sock, { v: 1, type: 'token-usage', requestId, ...report }))
+        .catch((e) => replyToStudio(record, sock, {
+          v: 1, type: 'token-usage-error', requestId,
+          code: e?.code ?? 'TOKEN_USAGE_FAILED', message: '토큰 사용량을 읽지 못했어요.',
         }));
       return;
     }

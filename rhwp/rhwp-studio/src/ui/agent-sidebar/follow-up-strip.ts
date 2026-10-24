@@ -53,7 +53,7 @@ export interface FollowUpStrip {
  * 더 기다리는 것이 없으므로 그 메시지가 언제 쓰였는지만 말한다.
  */
 export function followUpHoldCopy(hold: FollowUpHold, opts: { planAwaitingApproval?: boolean } = {}): string {
-  const prefix = hold.detail ? `${hold.detail} · ` : '';
+  const prefix = hold.detail ? `${hold.detail}. ` : '';
   switch (hold.reason) {
     case 'stopped': return `${prefix}작업을 멈춰서 대기 메시지를 보내지 않았어요`;
     case 'failed': return `${prefix}작업이 오류로 끝나 대기 메시지를 보내지 않았어요`;

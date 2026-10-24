@@ -81,7 +81,7 @@ test('with chat details on, a system notice names the chat and the document; toa
   h.report({ threadId: 'named', status: 'needs-input', key: 't2:input:q2', reason: 'question' });
   assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body, notice.message]), [
     ['HamaEditor', '답변을 기다립니다', '사업 개요 다듬기 — 답변을 기다립니다'],
-    ['사업 개요 다듬기', '답변을 기다립니다 · 사업 제안서.hwpx', '사업 개요 다듬기 — 답변을 기다립니다'],
+    ['사업 개요 다듬기', '답변을 기다립니다 (사업 제안서.hwpx)', '사업 개요 다듬기 — 답변을 기다립니다'],
   ], 'the setting is read at each notice');
   h.showDetails(false);
   h.report({ threadId: 'fail', status: 'failed', key: 't3:end', reason: 'error', summary: 'Claude 로그인이 필요해요' });
@@ -96,9 +96,9 @@ test('copy follows the reason: plan approval, interruption, a bare error, and no
   h.report({ threadId: 'err', status: 'failed', key: 't3:end', reason: 'error' });
   h.report({ threadId: 'label', status: 'failed', key: 't4:end', reason: 'error', label: '사용 한도', documentName: null, title: '' });
   assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body]), [
-    ['사업 개요 다듬기', '계획 승인을 기다립니다 · 사업 제안서.hwpx'],
-    ['사업 개요 다듬기', '작업이 중단됐습니다 · 사업 제안서.hwpx'],
-    ['사업 개요 다듬기', '오류로 멈췄습니다 · 사업 제안서.hwpx'],
+    ['사업 개요 다듬기', '계획 승인을 기다립니다 (사업 제안서.hwpx)'],
+    ['사업 개요 다듬기', '작업이 중단됐습니다 (사업 제안서.hwpx)'],
+    ['사업 개요 다듬기', '오류로 멈췄습니다 (사업 제안서.hwpx)'],
     ['새 채팅', '사용 한도'],
   ]);
 });
