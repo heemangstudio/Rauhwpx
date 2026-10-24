@@ -81,9 +81,9 @@ export function replacementOps(range: TextSelection, text: string): EditOp[] {
 /** JSON으로 넘기기 전에 알 수 없는 필드와 잘못된 값을 거절한다. */
 export function formattingPatch(patch: CharPatch | ParaPatch, paragraph: boolean): CharPatch | ParaPatch {
   const fields = paragraph
-    ? ['align', 'spaceBefore', 'spaceAfter', 'left', 'indent', 'lineSpacing']
-    : ['bold', 'italic', 'underline', 'size', 'color'];
-  const result: Record<string, boolean | number | string> = {};
+    ? ['align', 'spaceBefore', 'spaceAfter', 'left', 'right', 'indent', 'lineSpacing']
+    : ['bold', 'italic', 'underline', 'strike', 'size', 'color', 'fontFace', 'fontFaces'];
+  const result: Record<string, boolean | number | string | (string | null)[]> = {};
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw Object.assign(new Error('잘못된 서식 변경입니다'), { code: 'BAD_REQUEST' });
   }
@@ -91,7 +91,11 @@ export function formattingPatch(patch: CharPatch | ParaPatch, paragraph: boolean
     if (typeof key !== 'string' || !fields.includes(key)) throw new EngineNotSupportedError(`서식 필드 ${String(key)}`);
     const value = (patch as Record<string, unknown>)[key];
     if (value === undefined) continue;
-    const valid = ['bold', 'italic', 'underline'].includes(key) ? typeof value === 'boolean'
+    const faceName = (name: unknown) => typeof name === 'string' && name.trim().length > 0 && name.length <= 255;
+    const valid = ['bold', 'italic', 'underline', 'strike'].includes(key) ? typeof value === 'boolean'
+      : key === 'fontFace' ? faceName(value)
+      // 한글·영문·한자·일어·외국어·기호·사용자 슬롯 순서, null 은 그 슬롯을 그대로 둔다.
+      : key === 'fontFaces' ? Array.isArray(value) && value.length <= 7 && value.every(name => name === null || faceName(name))
       : key === 'align' ? ['justify', 'left', 'right', 'center', 'distribute', 'divide'].includes(value as string)
       : typeof value === 'number' && Number.isInteger(value) && (key === 'size' ? value > 0 && value <= 0x7fffffff
         : key === 'color' ? value >= 0 && value <= 0xffffffff
@@ -99,7 +103,7 @@ export function formattingPatch(patch: CharPatch | ParaPatch, paragraph: boolean
         // 문단 거리는 native에서 한 비트 왼쪽으로 이동해 저장한다.
         : value >= -0x40000000 && value <= 0x3fffffff);
     if (!valid) throw Object.assign(new Error(`잘못된 서식 값: ${key}`), { code: 'BAD_REQUEST' });
-    result[key] = value as boolean | number | string;
+    result[key] = value as boolean | number | string | (string | null)[];
   }
   return result;
 }

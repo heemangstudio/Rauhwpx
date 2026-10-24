@@ -1,4 +1,4 @@
-import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Selection } from '../../vendor/hm-wasm/hm_wasm';
+import type { Address, Affinity, Caret, CharacterCount, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, FormatContext, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphFormat, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Selection, StyleInfo, TableAddress, TableInfo } from '../../vendor/hm-wasm/hm_wasm';
 import { copyAddress, copySelection, editingText, formattingPatch, replacementOps, sameAddress, isCellSelection, type EditingSelection, type CellSelection, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
@@ -9,8 +9,9 @@ import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+import { pageDef, pageInfo, styleList } from './heemang-format';
 
-export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
+export type { Address, Affinity, Caret, CharPatch, Copied, FormatContext, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphFormat, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step, StyleInfo, TableAddress, TableInfo } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
 export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' };
 export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt; selection?: EditingSelection }
@@ -18,7 +19,6 @@ export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
 
 const PX_PER_HU = 96 / 7200;
-function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
 let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 // native clipboard는 같은 Engine의 문서들이 공유한다.
 let internalClipboard: { engine: Engine; text: string } | null = null;
@@ -306,19 +306,7 @@ export class HeemangAdapter {
     return pages;
   }
   getAllPageInfo(): PageInfo[] { return this.hmPages().map(p => this.pageInfo(p)); }
-  private pageInfo(p: HmPage): PageInfo {
-    return {
-      pageIndex: p.index, pageNumber: p.number, sectionIndex: p.section,
-      width: p.width * PX_PER_HU, height: p.height * PX_PER_HU,
-      // hm-wasm/1은 여백을 제공하지 않는다. 0으로 꾸미지 않고, 소비자가 읽으면 거절한다.
-      get marginLeft() { return unsupportedMargin(); },
-      get marginRight() { return unsupportedMargin(); },
-      get marginTop() { return unsupportedMargin(); },
-      get marginBottom() { return unsupportedMargin(); },
-      get marginHeader() { return unsupportedMargin(); },
-      get marginFooter() { return unsupportedMargin(); },
-    };
-  }
+  private pageInfo(p: HmPage): PageInfo { return pageInfo(p); }
   getPageInfo(index: number): PageInfo {
     const page = this.hmPages()[index];
     if (!page) throw new RangeError(`No page ${index}`);
@@ -691,4 +679,124 @@ export class HeemangAdapter {
   getShowControlCodes(): boolean { return false; }
   getShowParagraphMarks(): boolean { return false; }
   getClipEnabled(): boolean { return true; }
+
+  // ─── 편집기 위젯: 글꼴·스타일 목록, 캐럿 서식, 눈금자, 상태 표시줄 ───────────────
+  // 구 엔진과 같은 이름(getStyleList·getPageDef·findOrCreateFontId…)은 그대로 위젯이 부른다.
+
+  private widgetStyles: { doc: Doc; styles: StyleInfo[] } | null = null;
+  /** findOrCreateFontId 의 번호는 이 세션의 글꼴 이름 목록 위치다. 엔진은 이름으로 서식을 바꾼다. */
+  private readonly widgetFontIds = new Map<string, number>();
+  private readonly widgetFontNames: string[] = [];
+
+  private widgetQuery<T>(request: object): T { return JSON.parse(this.document().query(JSON.stringify(request))) as T; }
+
+  /** 캐럿(to 없음)이면 그 자리에 입력할 서식, 범위면 시작 값과 섞인 속성. */
+  formatContext(at: Address, to?: Address): FormatContext {
+    return this.widgetQuery<FormatContext>(to ? { kind: 'formatContext', at, to } : { kind: 'formatContext', at });
+  }
+
+  /** 문서 스타일. 편집 연산은 스타일 표를 바꾸지 않으므로 문서마다 한 번 읽는다. */
+  getStyles(): StyleInfo[] {
+    const doc = this.document();
+    if (this.widgetStyles?.doc !== doc) this.widgetStyles = { doc, styles: this.widgetQuery<StyleInfo[]>({ kind: 'styles' }) };
+    return this.widgetStyles.styles;
+  }
+
+  getStyleList(): ReturnType<typeof styleList> { return styleList(this.getStyles()); }
+
+  applyStyle(range: EditingSelection, styleId: number): EditResult | null {
+    this.requireEditable();
+    if (!this.getStyles().some(style => style.id === styleId)) throw Object.assign(new RangeError(`스타일 ${styleId} 없음`), { code: 'BAD_REQUEST' });
+    return this.edit(this.spans(range).map(({ from, to }) => ({ op: 'applyStyle', from, to, styleId }) as EditOp), range, true);
+  }
+
+  /** 구역 첫 쪽의 용지 설정(HWPUNIT). */
+  getPageDef(section: number): ReturnType<typeof pageDef> {
+    const page = this.hmPages().find(p => p.section === section);
+    if (!page) throw new RangeError(`No section ${section}`);
+    return pageDef(page);
+  }
+
+  /** 한컴 상태 표시줄과 같은 규칙의 문서 전체 글자 수. */
+  getDocumentCharacterCount(): number { return this.widgetQuery<CharacterCount>({ kind: 'count' }).characters; }
+
+  /** 선택 범위의 글자 수. 셀 블록은 각 셀 전체를 센다. */
+  countCharacters(range: EditingSelection): number {
+    const selected = this.normalized(range);
+    if (selected.kind === 'cells') {
+      return selected.cells.reduce((sum, cell) => sum + this.widgetQuery<CharacterCount>({ kind: 'count', list: cell.list }).characters, 0);
+    }
+    return this.widgetQuery<CharacterCount>({ kind: 'count', from: selected.from, to: selected.to }).characters;
+  }
+
+  /** 목록 하나(셀·글상자) 전체의 글자 수. */
+  countListCharacters(list: { section: number; steps?: Address['steps'] }): number {
+    return this.widgetQuery<CharacterCount>({ kind: 'count', list }).characters;
+  }
+
+  tableInfo(table: TableAddress, page?: number): TableInfo {
+    return this.widgetQuery<TableInfo>(page === undefined ? { kind: 'table', table } : { kind: 'table', table, page });
+  }
+
+  /** 문단마다 문단 모양·스타일과 글자 모양 구간. */
+  paragraphFormats(section: number, steps: Address['steps'] = [], from = 0, count = 1024): ParagraphFormat[] {
+    return this.widgetQuery<ParagraphFormat[]>({ kind: 'formatRuns', list: { section, steps }, from, count });
+  }
+
+  findOrCreateFontId(name: string): number {
+    const key = name.trim();
+    if (!key) return -1;
+    let id = this.widgetFontIds.get(key);
+    if (id === undefined) {
+      id = this.widgetFontNames.push(key) - 1;
+      this.widgetFontIds.set(key, id);
+    }
+    return id;
+  }
+  /** 언어 슬롯과 상관없이 같은 번호를 쓴다. 슬롯은 fontIds 배열의 위치가 정한다. */
+  findOrCreateFontIdForLang(_lang: number, name: string): number { return this.findOrCreateFontId(name); }
+  fontNameForId(id: number): string | null { return this.widgetFontNames[id] ?? null; }
+
+  /** 서식에 쓸 글꼴을 엔진에 등록한다. 엔진은 등록된 이름만 받는다. 등록하지 못한 이름을 돌려준다. */
+  async ensureFontFamilies(names: readonly string[], options: WebFontLoadOptions = {}): Promise<string[]> {
+    const doc = this.document();
+    const missing = () => [...new Set(names)].filter(name => !this.hasFamily(name));
+    if (!missing().length) return [];
+    await this.loadFonts({ faces: missing().map(name => ({ name, candidates: [name], standIns: [] })), classDefaults: [], fallbacks: [] });
+    if (this.doc !== doc) return missing();
+    const plan = resolveCanvasKitFontPlan(missing(), options);
+    if (plan.sources.length) {
+      const decoder = streamWebFontDecoders();
+      await Promise.all(plan.sources.map(source => {
+        let pending = this.webFonts.get(source.url);
+        if (!pending) {
+          const read = async () => {
+            const response = await fetch(source.url, { signal: AbortSignal.timeout(6000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const bytes = await readResponseBytesWithLimit(response, 32 * 1024 * 1024, '글꼴');
+            return decodeWebFont(bytes, { decompress: decoder, maxBytes: 32 * 1024 * 1024 });
+          };
+          this.sources.set(source.url, read);
+          pending = read().then(bytes => this.register(source.url, bytes))
+            .catch(error => { console.warn(`[Heemang] ${source.url} 글꼴 등록 실패:`, error); });
+          this.webFonts.set(source.url, pending);
+        }
+        return pending;
+      }));
+    }
+    // 새 글꼴로 조판이 바뀐 쪽은 다음 그리기에서 packet 을 다시 받는다.
+    this.refreshLayout();
+    return missing();
+  }
+
+  /** 입력할 텍스트에 서식을 함께 준다(캐럿에서 고른 글꼴·크기). */
+  insertFormattedText(range: EditingSelection, text: string, patch: CharPatch): EditResult | null {
+    const normalized = editingText(text);
+    if (!normalized) return null;
+    const validated = formattingPatch(patch, false) as CharPatch;
+    const ops = replacementOps(this.textRange(range), normalized);
+    const insert = ops.at(-1);
+    if (insert?.op === 'insertText' && Object.keys(validated).length) insert.format = validated;
+    return this.edit(ops, range);
+  }
 }
