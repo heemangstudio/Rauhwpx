@@ -183,4 +183,7 @@ test('yearly stays on sale, and only the pricing page sells Signature as a one-t
   assert.match(pricing, /기기 두 대/);
   assert.match(pricing, /Mac · Windows/);
   assert.doesNotMatch(pricing, /평생/);
+  assert.match(pricing, /href="trial\.html"/);
+  assert.match(pricing, /체험판 안내/);
+  assert.doesNotMatch(pricing, /무료 체험/);
 });
