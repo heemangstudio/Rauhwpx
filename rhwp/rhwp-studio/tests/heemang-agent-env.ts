@@ -48,7 +48,7 @@ export function rhwpFile(path: string): Uint8Array {
 export const FIXTURES = {
   /** 본문 몇 문단과 셀 하나 (한컴 저장) */
   cellMixed: 'tests/fixtures/editing_parity/mac-hancom-12.30.0/cell-mixed-text/source.hwpx',
-  bodyMixed: 'tests/fixtures/editing_parity/mac-hancom-12.30.0/body-mixed-text/source.hwpx',
+  bodyMixed: 'tests/fixtures/editing_parity/mac-hancom-12.30.0/body-mixed-text/edited.hwpx',
   blankHwpx: 'samples/hwpx/blank_hwpx.hwpx',
   blankHwp: 'template/blank-batang.hwp',
 } as const;
