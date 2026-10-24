@@ -649,10 +649,6 @@ export function baseToolName(tool: string): string {
   return stripped;
 }
 
-export function isKnownTool(tool: string): boolean {
-  return Object.prototype.hasOwnProperty.call(SPECS, baseToolName(tool));
-}
-
 /** 표시 규칙이 있는 rhwp 도구 이름 전체 — 계약 테스트가 tools.mjs 와 맞춰 본다. */
 export const PRESENTED_TOOL_NAMES: readonly string[] = Object.freeze(Object.keys(SPECS));
 

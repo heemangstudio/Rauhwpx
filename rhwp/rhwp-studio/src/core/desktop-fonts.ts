@@ -896,10 +896,6 @@ export function getDesktopFontIndex(): SystemFontIndex | null {
   return currentIndex;
 }
 
-export function getLastDesktopFontReport(): DesktopFontReport | null {
-  return lastReport;
-}
-
 /**
  * 세션당 한 번 색인을 받는다. 실패하면 다음 호출에서 다시 시도한다.
  * refresh 는 host 가 글꼴 폴더를 다시 훑게 하고, refetch 는 host 가 이미 새로 만든 색인을 다시 받는다.
