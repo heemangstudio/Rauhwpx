@@ -8,6 +8,7 @@
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
+import { EngineNotSupportedError } from '../core/engine-support.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
@@ -543,6 +544,13 @@ function assertForeignReadable(tool: string, args: Record<string, unknown>): voi
 /** 도구 실행 중 던져진 값을 응답 오류로 — engine trap 과 문서 없음은 제 코드로, 나머지는 RPC_ERROR. */
 function toolErrorOf(e: unknown): AgentToolError {
   if (e instanceof AgentToolError) return e;
+  if (e instanceof EngineNotSupportedError) {
+    return new AgentToolError(
+      'ENGINE_NOT_SUPPORTED',
+      `The document engine (HeemangEngine) does not support this yet: ${e.operation}. Nothing was changed. `
+        + 'Tell the user this part cannot be done in this editor yet, and continue with what the tools support.',
+    );
+  }
   const message = e instanceof Error ? e.message : String(e);
   if (reportEngineTrap(e)) return engineTrappedError(message);
   if (message.includes(DOC_NOT_LOADED_MESSAGE)) {
