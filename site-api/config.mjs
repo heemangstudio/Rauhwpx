@@ -60,7 +60,6 @@ export const DEFAULT_LICENSE_ALLOWED_ORIGINS = [
   'https://heemangstudio.github.io',
 ];
 
-/** Groble products: paused one-time lifetime, the 12-month subscription, and Signature Edition. */
 export const DEFAULT_ONETIME_PRODUCT_IDS = 'uRshdR';
 export const DEFAULT_SUBSCRIPTION_PRODUCT_IDS = 'GLJFC9';
 export const DEFAULT_SIGNATURE_PRODUCT_IDS = '8Xy27f';
@@ -88,7 +87,6 @@ function integerKrw(name, text, fallback) {
   return value;
 }
 
-/** `id:price` or `id:price:min`, comma-separated. A min alone is not accepted. */
 function productPriceOverrides(text) {
   const overrides = new Map();
   if (!text) return overrides;
@@ -106,10 +104,6 @@ function productPriceOverrides(text) {
   return overrides;
 }
 
-/**
- * One row per Groble product. Price checks read this table, so Signature at ₩29,000
- * is not judged against the ₩9,900 yearly price.
- */
 export function buildProductCatalog({
   onetimeProductIds,
   subscriptionProductIds,

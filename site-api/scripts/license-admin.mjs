@@ -3,11 +3,9 @@
 //   export SITE_API_BASE=https://rau-credits-production.up.railway.app
 //   export ADMIN_TOKEN=...            # same value as the Railway ADMIN_TOKEN variable
 //   node scripts/license-admin.mjs issue --email buyer@example.com --merchant-uid <groble merchantUid> [--ref r] [--note "..."] [--send-email] [--years 1 | --until 2027-10-20]   # --years/--until = subscription key
-//   node scripts/license-admin.mjs issue --edition signature --email buyer@example.com [--product-id 8Xy27f] [--updates-until 2029-10-20] [--send-email]
 //   node scripts/license-admin.mjs extend <key|ref> [--years N | --until YYYY-MM-DD] [--note "..."]   # subscription keys only; default 1 year from expiry (or now if lapsed)
 //   node scripts/license-admin.mjs beta --name "홍길동" [--devices 5] [--email tester@example.com] [--note "..."] [--gift-usd 20]   # beta-tester key, 1..50 devices, never emailed
 //   node scripts/license-admin.mjs betas                               # every beta key with its devices
-//   node scripts/license-admin.mjs signatures                          # Signature Edition keys (priority email support)
 //   node scripts/license-admin.mjs lookup --email buyer@example.com | --key HAMA-... | --merchant-uid ... | --ref ...
 //   node scripts/license-admin.mjs orders [--status held|issued|refunded]
 //   node scripts/license-admin.mjs webhooks [--rejected | --held] [--limit 50]   # recorded webhook rejections and holds

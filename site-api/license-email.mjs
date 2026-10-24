@@ -103,7 +103,6 @@ const DEFAULT_NOTE_HTML = '아래 키를 HamaEditor에 붙여 넣으면 바로 �
 export const LICENSE_EMAIL_KINDS = Object.keys(LICENSE_EMAIL_COPY);
 export const LICENSE_EMAIL_SUBJECT = LICENSE_EMAIL_COPY.purchase.subject;
 
-/** Renewal copy wins, then Signature, then a resend, then any sign of payment, else a free key. */
 export function licenseEmailKind(license) {
   if (license?.emailDelivery?.renewal) return 'renewal';
   if (license?.edition === 'signature') return 'signature';
@@ -114,7 +113,6 @@ export function licenseEmailKind(license) {
 
 const KST_DATE = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
 
-/** The line under the key card for a Signature key. The card itself still holds only the key. */
 export function signatureUpdatesLine(updatesUntil) {
   if (!Number.isSafeInteger(updatesUntil)) return '';
   return `업데이트 약속은 ${KST_DATE.format(new Date(updatesUntil))}까지예요.`;

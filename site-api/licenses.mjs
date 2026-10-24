@@ -28,7 +28,6 @@ const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 /** Months one paid subscription round buys when Groble does not say (the GLJFC9 product bills every 12 months). */
 export const SUBSCRIPTION_CYCLE_MONTHS = 12;
-/** Signature's update promise is three years. The key stays usable after this date. */
 export const SIGNATURE_UPDATE_MONTHS = 36;
 const SIGNATURE_SUPPORT = { channel: 'email', sla: '1_business_day', timezone: 'Asia/Seoul' };
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -158,7 +157,6 @@ function deviceLimitOf(license) {
   return Number.isSafeInteger(license.deviceLimit) && license.deviceLimit > 0 ? license.deviceLimit : DEVICE_LIMIT;
 }
 
-/** Priority support is the Signature edition only. A lifetime key without `edition` is not uplifted. */
 function signatureView(license) {
   const prioritySupport = license.edition === 'signature' && license.status === 'active';
   return {
@@ -171,7 +169,6 @@ function signatureView(license) {
   };
 }
 
-/** `updatesUntilMs` is the promise end itself. Omit it and the promise runs three years from `paidMs`. */
 function signatureEntitlement(productId, paidMs, updatesUntilMs) {
   return {
     edition: 'signature',
@@ -890,7 +887,6 @@ export function createLicensesService({
       ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
-      // Additive. Old apps ignore these. They stay out of the signed lease so a passed updatesUntil cannot lock the app.
       ...(license.edition === 'signature' ? {
         edition: 'signature',
         prioritySupport: license.status === 'active',

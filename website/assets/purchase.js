@@ -4,9 +4,6 @@
   'use strict';
 
   var CONFIG = {
-    // 파는 상품. 'annual' = GLJFC9 (연 ₩9,900, 12개월마다 자동 갱신).
-    // 'signature' = 8Xy27f (Signature Edition, ₩29,000 일회성, Groble에서는 초안).
-    // 'onetime' = uRshdR (판매를 멈춘 예전 상품). 결제 버튼은 sku 로 링크를 고르고, PLAN 은 기본 링크예요.
     PLAN: 'annual',
     // Groble 상품 결제 링크. 구매 버튼이 여기에 ?ref=<무작위 값> 을 붙여 보내요.
     CHECKOUT_URLS: {
