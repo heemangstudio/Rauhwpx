@@ -16,7 +16,7 @@ export interface ObjectTarget {
 /** `object` is set when the point picks a floating object rather than text. */
 export interface Located { position: Address; affinity: Affinity; caret: Caret; object?: ObjectTarget }
 export type LocateRequest =
-| { kind: "point"; page: number; x: number; y: number }
+| { kind: "point"; page: number; x: number; y: number; body?: boolean; within?: ListAddress }
 | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
 /** A table control in a paragraph list. */
@@ -38,17 +38,15 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`fontFaces\` a family per
- * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
- * slot's, read back with all seven; \`charSpacing\` a percent of the character
- * size (-50 to 50) for all slots.
+ * all seven script slots, which must be registered; \`charSpacing\` a percent
+ * of the character size (-50 to 50) for all slots.
  */
 export interface CharPatch {
     bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-    fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number;
+    fontFace?: string; charSpacing?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
@@ -115,22 +113,9 @@ export type QueryRequest =
 | { kind: "style"; id: number }
 | { kind: "lists" }
 | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
-| { kind: "count"; list?: ListAddress; from?: Address; to?: Address }
-| { kind: "formatRuns"; list: ListAddress; from?: number; count?: number };
-/**
- * Characters as Hancom's status bar counts them (\`count\`): one per code
- * point, spaces, tabs and fixed spaces included, line breaks, numbers and
- * objects not; with each field's end, and the text of the tables, text
- * boxes, captions, headers, footers and notes inside. The whole document's
- * body with no \`list\` or range, one list with all it holds, or \`[from, to)\`
- * with what the controls in it hold.
- */
-export interface CharacterCount { characters: number }
-/** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
-export interface ParagraphFormat {
-    index: number; styleId: number; paragraphs: ParaPatch; list: ListRef | null;
-    runs: { offset: number; characters: CharPatch }[];
-}
+| { kind: "lines"; list: ListAddress; para: number };
+/** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
+export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
 /**
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
@@ -149,6 +134,12 @@ export interface ControlInfo {
     index: number; offset: number; kind: string; lists: number;
     /** Authored equation source, including an empty string; absent on other controls. */
     script?: string;
+    /** Objects, tables and form objects: whether it sits in the text like a character. */
+    inline?: boolean;
+    /** Headers and footers: the pages they apply to. */
+    side?: "both" | "even" | "odd";
+    /** Notes: the number Hancom last assigned. */
+    number?: number;
 }
 export interface ParagraphInfo {
     index: number;
@@ -340,8 +331,7 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null), `count` a
-     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
+     * `lists` `ListInfo[]` and `list` one (or null).
      */
     query(request: string): string;
     /**
@@ -492,6 +482,13 @@ export class EngineError {
 }
 
 /**
+ * Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+ * most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+ * web fonts through this.
+ */
+export function brotliDecompress(bytes: Uint8Array, max: number): Uint8Array;
+
+/**
  * What this build offers, as JSON (`Capabilities`).
  */
 export function capabilities(): string;
@@ -518,6 +515,7 @@ export interface InitOutput {
     readonly blake3hasher_finalizeHex: (a: number) => [number, number];
     readonly blake3hasher_new: () => number;
     readonly blake3hasher_update: (a: number, b: number, c: number) => void;
+    readonly brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
     readonly capabilities: () => [number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];
