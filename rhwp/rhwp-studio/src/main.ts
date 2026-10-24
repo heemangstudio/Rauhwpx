@@ -2384,7 +2384,7 @@ function installChatAgent(
     documentState: session.documentState,
     editor: docAttached ? editor : session.editorHost,
     view: docAttached ? view : null,
-    isReadOnly: () => session.wasm.engineKind === 'heemang' || sessionReadOnly(session),
+    isReadOnly: () => sessionReadOnly(session),
     getDocumentWorktree: () => {
       const identity = worktreeIdentity(session.versions?.getState(), session.documentId);
       return identity ? { branch: identity.branch, primary: identity.primary } : null;
