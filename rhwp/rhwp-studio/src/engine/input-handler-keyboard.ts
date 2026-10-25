@@ -2327,12 +2327,7 @@ export function onPaste(this: any, e: ClipboardEvent): void {
         const result = wasm.pasteControl(p.sectionIndex, p.paragraphIndex, p.charOffset);
         const parsed = JSON.parse(result);
         if (parsed.ok) {
-          const newParaIdx = (parsed.paraIdx ?? p.paragraphIndex) + 1;
-          return {
-            sectionIndex: p.sectionIndex,
-            paragraphIndex: newParaIdx,
-            charOffset: 0,
-          } as DocumentPosition;
+          return positionAfterPasteResult(p, parsed);
         }
         return p;
       }});

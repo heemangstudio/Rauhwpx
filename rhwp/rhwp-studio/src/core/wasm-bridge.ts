@@ -1331,6 +1331,10 @@ export class WasmBridge {
     return api.findOrCreateFontId(this.core, name);
   }
 
+  prepareFontFamilies(names: string[]): Promise<void> {
+    return api.prepareFontFamilies(this.core, names);
+  }
+
   findOrCreateFontIdForLang(lang: number, name: string): number {
     return api.findOrCreateFontIdForLang(this.core, lang, name);
   }
