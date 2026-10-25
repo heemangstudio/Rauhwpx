@@ -32,7 +32,25 @@ export function charProperties(characters: CharPatch): CharProperties {
   if (characters.italic !== undefined) props.italic = characters.italic;
   if (characters.underline !== undefined) props.underline = characters.underline;
   if (characters.strike !== undefined) props.strikethrough = characters.strike;
+  if (characters.spacings) props.spacings = characters.spacings.map(value => value ?? 0);
+  if (characters.ratios) props.ratios = characters.ratios.map(value => value ?? 100);
   if (characters.color !== undefined) props.textColor = colorRefToHex(characters.color);
+  if (characters.shadeColor !== undefined) props.shadeColor = colorRefToHex(characters.shadeColor);
+  if (characters.underlineKind !== undefined) props.underlineType = { none: 'None', below: 'Bottom', above: 'Top' }[characters.underlineKind];
+  if (characters.underlineShape !== undefined) props.underlineShape = characters.underlineShape;
+  if (characters.underlineColor !== undefined) props.underlineColor = colorRefToHex(characters.underlineColor);
+  if (characters.strikeShape !== undefined) props.strikeShape = characters.strikeShape;
+  if (characters.strikeColor !== undefined) props.strikeColor = colorRefToHex(characters.strikeColor);
+  if (characters.outline !== undefined) props.outlineType = characters.outline;
+  if (characters.shadow !== undefined) props.shadowType = characters.shadow;
+  if (characters.shadowColor !== undefined) props.shadowColor = colorRefToHex(characters.shadowColor);
+  if (characters.shadowOffset) [props.shadowOffsetX, props.shadowOffsetY] = characters.shadowOffset;
+  if (characters.emphasis !== undefined) props.emphasisDot = characters.emphasis;
+  for (const key of ['superscript', 'subscript', 'emboss', 'engrave', 'kerning'] as const) {
+    if (characters[key] !== undefined) props[key] = characters[key];
+  }
+  if (characters.relSizes) props.relativeSizes = characters.relSizes.map(value => value ?? 100);
+  if (characters.offsets) props.charOffsets = characters.offsets.map(value => value ?? 0);
   return props;
 }
 
@@ -42,7 +60,7 @@ export function paraProperties(paragraphs: ParaPatch): ParaProperties {
   // 엔진은 비율 줄 간격만 lineSpacing 으로 알린다.
   if (paragraphs.lineSpacing !== undefined) {
     props.lineSpacing = paragraphs.lineSpacing;
-    props.lineSpacingType = 'Percent';
+    props.lineSpacingType = { percent: 'Percent', fixed: 'Fixed', added: 'SpaceOnly', atLeast: 'Minimum' }[paragraphs.lineSpacingKind ?? 'percent'];
   }
   if (paragraphs.left !== undefined) props.marginLeft = paragraphs.left / HU_PER_PX;
   if (paragraphs.right !== undefined) props.marginRight = paragraphs.right / HU_PER_PX;

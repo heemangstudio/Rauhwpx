@@ -1,0 +1,152 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+import { transformSync } from 'rolldown/utils';
+import { Engine, initSync } from '../vendor/hm-wasm/hm_wasm.js';
+import type { HeemangAdapter } from '../src/core/heemang-adapter.ts';
+
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier.endsWith('?url')) return { url: `data:text/javascript,export default ${JSON.stringify(specifier)}`, shortCircuit: true };
+    return next(specifier.startsWith('.') && !/\.[a-z]+$/i.test(specifier) ? `${specifier}.ts` : specifier, context);
+  },
+  load(url, context, next) {
+    if (url.endsWith('.ts') && url.includes('/src/core/hm/')) return {
+      format: 'module', shortCircuit: true,
+      source: transformSync(url, readFileSync(new URL(url), 'utf8'), { lang: 'ts', target: 'es2022' }).code,
+    };
+    return next(url, context);
+  },
+});
+initSync({ module: readFileSync(new URL('../vendor/hm-wasm/hm_wasm_bg.wasm', import.meta.url)) });
+const { HmCore } = await import('../src/core/hm/core.ts');
+const { api } = await import('../src/core/hm/api.ts');
+await import('../src/core/hm/extensions.ts');
+
+function open(t: test.TestContext, fixture = '../src/core/hm/blank.hwpx') {
+  const engine = new Engine();
+  const doc = engine.open(readFileSync(new URL(fixture, import.meta.url)));
+  const adapter = {
+    documentInstance: 1, hmDoc: () => doc, hmEngine: () => engine,
+    hasLoadedDocument: () => true, applyReceipt: () => {}, refreshLayout: () => {}, getSectionCount: () => 1,
+  } as unknown as HeemangAdapter;
+  t.after(() => { doc.free(); engine.free(); });
+  return { core: new HmCore(adapter), doc, engine };
+}
+
+test('widget format changes preserve exact shape runs across undo, clipboard paste and serialization', t => {
+  const { core, doc, engine } = open(t);
+  api.insertText(core, 0, 0, 0, 'Alpha Beta', false);
+  const original = api.getCharShapeRuns(core, 0, 0, 0, 10);
+  api.applyCharFormat(core, 0, 0, 0, 5, JSON.stringify({ bold: true, fontSize: 1800 }));
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 2).bold, true);
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 2).fontSize, 1800);
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 8).bold, false);
+  api.copySelection(core, 0, 0, 0, 0, 5);
+  assert.equal(api.getClipboardText(core), 'Alpha');
+  const pasted = JSON.parse(api.pasteInternal(core, 0, 0, 10));
+  assert.equal(pasted.charOffset, 15);
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 12).bold, true);
+  core.mutate(value => value.undo());
+  assert.equal(core.paragraph({ section: 0, steps: [] }, 0).text, 'Alpha Beta');
+  api.setCharShapeRuns(core, 0, 0, 0, 10, original);
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 2).bold, false);
+  api.applyCharFormat(core, 0, 0, 0, 5, JSON.stringify({ bold: true, fontSize: 1800 }));
+  const reopened = engine.open(doc.serialize(false));
+  try {
+    const value = JSON.parse(reopened.query(JSON.stringify({ kind: 'formatContext', at: { section: 0, para: 0, offset: core.paragraph({ section: 0, steps: [] }, 0).caret[0] + 2 } })));
+    assert.equal(value.characters.bold, true);
+    assert.equal(value.characters.size, 1800);
+  } finally { reopened.free(); }
+});
+
+test('find includes the starting word, wraps, and replace-all is one undo step', t => {
+  const { core, doc } = open(t);
+  api.insertText(core, 0, 0, 0, 'alpha alpha\tALPHA', false);
+  const found = api.searchText(core, 'alpha', 0, 0, 0, true, false, []);
+  assert.equal(found.charOffset, 0);
+  assert.equal(found.wrapped, false);
+  assert.equal(api.searchText(core, 'alpha', 0, 0, 17, true, false, []).wrapped, true);
+  const before = core.state().undo;
+  assert.equal(api.replaceAll(core, 'alpha', '한글', false).count, 3);
+  assert.equal(core.paragraph({ section: 0, steps: [] }, 0).text, '한글 한글\t한글');
+  assert.equal(core.state().undo, before + 1);
+  core.mutate(value => value.undo());
+  assert.equal(core.paragraph({ section: 0, steps: [] }, 0).text, 'alpha alpha\tALPHA');
+  const bytes = doc.serialize(false);
+  assert.throws(() => api.applyCharFormat(core, 0, 0, 0, 3, JSON.stringify({ bold: true, madeUpFormat: true })));
+  assert.deepEqual(doc.serialize(false), bytes);
+});
+
+test('styles, paragraph margins, numbering and character counts use the document model', t => {
+  const { core } = open(t);
+  api.insertText(core, 0, 0, 0, 'A😀\tB', false);
+  assert.equal(api.getDocumentCharacterCount(core), 4);
+  assert.equal(api.getBodyRangeCharacterCount(core, 0, 0, 0, 0, 0, 1), 1);
+  const id = api.createStyle(core, JSON.stringify({ name: '본문 검증', englishName: 'Widget test' }));
+  api.updateStyleShapes(core, id, JSON.stringify({ bold: true, fontSize: 1600 }), JSON.stringify({ marginRight: 24 * 150 }));
+  api.applyStyle(core, 0, 0, id);
+  assert.equal(api.getStyleAt(core, 0, 0).name, '본문 검증');
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 1).fontSize, 1600);
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).marginRight, 24);
+  // 문단 모양 대화상자는 10pt 를 저장값 2000 으로 보낸다.
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ spacingBefore: 2000, indent: -1500 }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).spacingBefore, 1000 / 75);
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, -10);
+  const bullet = api.ensureDefaultBullet(core, '•');
+  assert.equal(api.ensureDefaultBullet(core, '•'), bullet);
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ headType: 'Bullet', numberingId: bullet, paraLevel: 0 }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).headType, 'Bullet');
+  const numbering = api.ensureDefaultNumbering(core);
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ headType: 'Number', numberingId: numbering }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).numberingId, numbering);
+  assert.ok(api.getFontList(core).length > 0);
+  const page = api.getPageDef(core, 0);
+  assert.ok(page.width > 0 && page.marginLeft > 0);
+});
+
+test('character effects from the toolbar and dialog reach the document and read back', t => {
+  const { core, doc, engine } = open(t);
+  api.insertText(core, 0, 0, 0, 'Effects 글자', false);
+  const x0 = api.getCharPropertiesAt(core, 0, 0, 3).shadowOffsetX;
+  api.applyCharFormat(core, 0, 0, 0, 7, JSON.stringify({
+    superscript: true, emboss: true, underline: true, underlineType: 'Top', underlineShape: 2, underlineColor: '#0000ff',
+    strikethrough: true, strikeShape: 3, strikeColor: '#00ff00', outlineType: 1, shadowType: 2, shadowColor: '#808080',
+    shadowOffsetY: 15, emphasisDot: 2, shadeColor: '#ffff00', relativeSizes: Array(7).fill(90), charOffsets: Array(7).fill(-5),
+  }));
+  const read = (props = api.getCharPropertiesAt(core, 0, 0, 3)) => ({
+    sup: props.superscript, emboss: props.emboss, ul: props.underlineType, ulShape: props.underlineShape, ulColor: props.underlineColor,
+    strike: props.strikethrough, strikeShape: props.strikeShape, strikeColor: props.strikeColor, outline: props.outlineType,
+    shadow: props.shadowType, shadowColor: props.shadowColor, offset: [props.shadowOffsetX, props.shadowOffsetY], dot: props.emphasisDot,
+    shade: props.shadeColor, rel: props.relativeSizes?.[0], pos: props.charOffsets?.[0],
+  });
+  const expected = { sup: true, emboss: true, ul: 'Top', ulShape: 2, ulColor: '#0000ff', strike: true, strikeShape: 3, strikeColor: '#00ff00',
+    outline: 1, shadow: 2, shadowColor: '#808080', offset: [x0, 15], dot: 2, shade: '#ffff00', rel: 90, pos: -5 };
+  assert.deepEqual(read(), expected);
+  assert.equal(api.getCharPropertiesAt(core, 0, 0, 9).superscript, false);
+  // 아래 첨자는 위 첨자를, 색 없음은 음영을 지운다.
+  api.applyCharFormat(core, 0, 0, 0, 7, JSON.stringify({ subscript: true, shadeColor: '#ffffff', shadowOffsetX: -8 }));
+  const after = api.getCharPropertiesAt(core, 0, 0, 3);
+  assert.deepEqual([after.superscript, after.subscript, after.shadowOffsetX, after.shadowOffsetY], [false, true, -8, 15]);
+  core.mutate(value => value.undo());
+  const reopened = engine.open(doc.serialize(false));
+  try {
+    const at = { section: 0, para: 0, offset: core.paragraph({ section: 0, steps: [] }, 0).caret[0] + 3 };
+    const characters = JSON.parse(reopened.query(JSON.stringify({ kind: 'formatContext', at }))).characters;
+    assert.deepEqual([characters.superscript, characters.underlineKind, characters.shadeColor, characters.outline], [true, 'above', 0x00FFFF, 1]);
+  } finally { reopened.free(); }
+  // 글자 테두리는 아직 엔진이 못 바꾸므로 문서를 바꾸기 전에 거절한다.
+  const bytes = doc.serialize(false);
+  assert.throws(() => api.applyCharFormat(core, 0, 0, 0, 3, JSON.stringify({ bold: true, borderLeft: { type: 1, width: 1, color: '#000000' } })), { code: 'ENGINE_NOT_SUPPORTED' });
+  assert.deepEqual(doc.serialize(false), bytes);
+});
+
+test('the numbering button reuses the document numbering before creating the Hancom default', t => {
+  const { core } = open(t);
+  api.insertText(core, 0, 0, 0, 'one', false);
+  const first = api.ensureDefaultNumbering(core);
+  assert.deepEqual(api.getNumberingList(core).find(item => item.id === first)!.levelFormats.slice(0, 3), ['^1.', '^2.', '^3)']);
+  assert.equal(api.ensureDefaultNumbering(core), first);
+  assert.equal(api.getNumberingList(core).length, 1);
+});

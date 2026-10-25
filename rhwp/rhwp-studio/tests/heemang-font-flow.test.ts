@@ -11,6 +11,7 @@ const stubs = new Map([
   ['/vendor/hm-wasm/hm_wasm.js', `const e = () => globalThis.heemangFontTest();
     export default async function init() { return { memory: new WebAssembly.Memory({initial:1}) }; }
     export class Blake3Hasher {}
+    export class Doc {}
     export const capabilities = () => '{"contract":1,"packet":1}';
     export const fileFamilyNames = file => { e().probes++; return JSON.stringify(e().families.get(file.read(0,1)[0]) ?? []); };
     export class Engine {

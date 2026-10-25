@@ -1,4 +1,4 @@
-import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Selection } from '../../vendor/hm-wasm/hm_wasm';
+import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDocState, EditOp, Engine, FaceCandidates, FontFileSource, FontRequests, Located, LocateRequest, Match, NavigateRequest, PageInfo as HmPage, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Selection } from '../../vendor/hm-wasm/hm_wasm';
 import { copyAddress, copySelection, editingText, formattingPatch, replacementOps, sameAddress, isCellSelection, type EditingSelection, type CellSelection, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
@@ -712,31 +712,41 @@ export class HeemangAdapter {
   markFontsPrepared(): void { this.fontsPrepared = true; }
   get fontsReady(): boolean { return this.fontsPrepared; }
 
-  /** 위젯에서 고른 글꼴 파일을 서식 변경 전에 연결한다. 문서 내용은 바꾸지 않는다. */
+  /**
+   * 위젯에서 고른 글꼴 파일을 서식 변경 전에 연결한다. 문서 내용은 바꾸지 않는다. 엔진이 알려 주는 후보
+   * (같은 이름, 한컴이 대신 쓰는 글꼴, 글꼴 표의 대체 글꼴) 가운데 있는 것을 연결하므로, 파일이 없는 바탕·돋움도
+   * 함초롬바탕·함초롬돋움이 있으면 고를 수 있다.
+   */
   async hmPrepareFontFamilies(names: string[], options: WebFontLoadOptions): Promise<void> {
     const doc = this.document();
-    const missing = () => [...new Set(names)].filter(name => name && !this.hasFamily(name));
+    const wanted = [...new Set(names)].filter(Boolean);
+    const missing = () => (JSON.parse(doc.query(JSON.stringify({ kind: 'fontCandidates', names: wanted }))) as FaceCandidates[])
+      .filter(face => !face.resolves);
     if (!missing().length) return;
-    await this.loadFonts({ faces: missing().map(name => ({ name, candidates: [name], standIns: [] })), classDefaults: [], fallbacks: [] });
+    await this.loadFonts({ faces: missing().map(({ name, candidates, standIns }) => ({ name, candidates, standIns })), classDefaults: [], fallbacks: [] });
     if (this.doc !== doc) return;
-    const plan = resolveCanvasKitFontPlan(missing(), options);
-    await Promise.all(plan.sources.map(source => {
-      let pending = this.webFonts.get(source.url);
-      if (!pending) {
-        const read = async () => {
-          const response = await fetch(source.url, { signal: AbortSignal.timeout(6000) });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const bytes = await readResponseBytesWithLimit(response, 32 * 1024 * 1024, '글꼴');
-          return decodeWebFont(bytes, { decompress: this.webFontDecoders(), maxBytes: 32 * 1024 * 1024 });
-        };
-        this.sources.set(source.url, read);
-        pending = read().then(bytes => this.register(source.url, bytes));
-        this.webFonts.set(source.url, pending);
-      }
-      return pending;
-    }));
-    if (this.doc !== doc) return;
-    if (missing().length) throw new EngineNotSupportedError(`글꼴 파일: ${missing().join(', ')}`);
+    const unresolved = missing();
+    if (unresolved.length) {
+      const plan = resolveCanvasKitFontPlan([...new Set(unresolved.flatMap(face => [...face.candidates, ...face.standIns]))], options);
+      await Promise.all(plan.sources.map(source => {
+        let pending = this.webFonts.get(source.url);
+        if (!pending) {
+          const read = async () => {
+            const response = await fetch(source.url, { signal: AbortSignal.timeout(6000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const bytes = await readResponseBytesWithLimit(response, 32 * 1024 * 1024, '글꼴');
+            return decodeWebFont(bytes, { decompress: this.webFontDecoders(), maxBytes: 32 * 1024 * 1024 });
+          };
+          this.sources.set(source.url, read);
+          pending = read().then(bytes => this.register(source.url, bytes));
+          this.webFonts.set(source.url, pending);
+        }
+        return pending;
+      }));
+      if (this.doc !== doc) return;
+    }
+    const left = missing();
+    if (left.length) throw new EngineNotSupportedError(`글꼴 파일: ${left.map(face => face.name).join(', ')}`);
     this.refreshLayout();
   }
 }
