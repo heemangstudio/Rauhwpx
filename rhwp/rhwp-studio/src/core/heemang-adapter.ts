@@ -2,7 +2,7 @@ import type { Address, Affinity, Caret, CharPatch, Copied, Doc, DocState as HmDo
 import { copyAddress, copySelection, editingText, formattingPatch, replacementOps, sameAddress, isCellSelection, type EditingSelection, type CellSelection, type TextSelection } from './heemang-editing';
 import type { DocumentInfo, PageInfo } from './types';
 import type { FileSystemFileHandleLike } from '../command/file-system-access';
-import { getSystemFontHost, loadDesktopFontIndex, type RuntimeFontMetricsApi } from './desktop-fonts';
+import { getSystemFontHost, loadDesktopFontIndex, getDesktopFontLookup, matchDesktopFont, isDesktopFontMatch, readDesktopFace, type RuntimeFontMetricsApi } from './desktop-fonts';
 import { blake3Hex, setBlake3WasmApi } from './content-hash';
 import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, receiveEngineFonts, type EngineFontReader } from './engine-support';
 import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader';
@@ -10,6 +10,7 @@ import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
 import { guardHeemangEngineCalls } from './engine-trap';
+import { fontGlyphCoverage } from './heemang-font-coverage';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
@@ -24,7 +25,8 @@ let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 // native clipboard는 같은 Engine의 문서들이 공유한다.
 let internalClipboard: { engine: Engine; text: string } | null = null;
 
-type FontAsset = { name: string; url: string; size: number; families: string[]; host?: boolean };
+type FontSubsetReader = (characters: string, glyphs?: readonly number[]) => Promise<ArrayBuffer | Uint8Array>;
+type FontAsset = { name: string; url: string; size: number; families: string[]; host?: boolean; subset?: FontSubsetReader };
 const normalize = (name: string) => name.toLowerCase().replace(/\s/g, '');
 const copyKey = (name: string, size: number) => `${name.split(/[\\/]/).pop()!.toLowerCase()}:${size}`;
 const fontFile = (b: Uint8Array): FontFileSource => ({ size: b.length, read: (o: number, n: number) => b.subarray(o, o + n) });
@@ -39,11 +41,15 @@ async function initializeRuntime() {
   const engine = new Engine();
   const registered = new Set<string>();
   const sources = new Map<string, EngineFontReader>();
+  const subsetReaders = new Map<string,FontSubsetReader>();
   let faces = 0;
   const families = new Set<string>();
+  const coverage = new Map<string, Uint8Array>();
   const register = (label: string, bytes: Uint8Array, names?: string[], name = label, refill = false) => {
     const key = copyKey(name, bytes.length);
     if (!refill && registered.has(key)) return;
+    const included = fontGlyphCoverage(bytes);
+    if (included) coverage.set(label, included); else coverage.delete(label);
     const file = fontFile(bytes);
     const added = engine.addFontFile(label, file);
     if (!added && !refill) return;
@@ -69,9 +75,13 @@ async function initializeRuntime() {
     if (!res.ok) throw new Error(`Heemang 글꼴 읽기 실패: ${asset.name}`);
     return new Uint8Array(await res.arrayBuffer());
   };
-  receiveEngineFonts((label, bytes, read) => {
-    if (read) sources.set(label, read);
-    register(label, bytes);
+  receiveEngineFonts((label, bytes, read, sourceUrl) => {
+    // 브라우저 미리보기와 엔진이 같은 호스트 face를 중복 등록하지 않는다.
+    const identity = sourceUrl ?? label;
+    if (read) sources.set(identity, read);
+    if (sourceUrl && loadedAssets.has(sourceUrl)) return;
+    register(identity, bytes, undefined, label);
+    if (sourceUrl) loadedAssets.add(sourceUrl);
   });
   // 배포에 한컴 자산을 넣지 않는다. 명시적으로 설정한 개발용 파일만 받는다.
   if (import.meta.env.DEV && import.meta.env.VITE_HEEMANG_FONT_ASSETS === '1') {
@@ -89,35 +99,59 @@ async function initializeRuntime() {
   const hasFamily = (name: string) => families.has(normalize(name));
   const hasAvailableFamily = (name: string) => hasFamily(name) || assetsByFamily.has(normalize(name));
   const loadFonts = async (requests: FontRequests) => {
+    const before = loadedAssets.size;
     // 일반 실행에서도 호스트 색인에서 엔진이 고른 대체 서체를 직접 연결한다.
     const host = getSystemFontHost();
     if (host) {
       const index = await loadDesktopFontIndex();
       for (const face of index.faces) {
         const url = `heemang-host:${face.id}`;
+        const subset: FontSubsetReader | undefined = host.readSubset ? (characters,glyphs) => host.readSubset!(face.id,characters,glyphs) : undefined;
+        if (subset) subsetReaders.set(url,subset);
         if (sources.has(url)) continue;
-        addAsset({ name: face.path, url, size: face.size, families: face.families, host: true });
-        sources.set(url, () => host.read(face.id));
+        addAsset({ name: face.path, url, size: face.size, families: face.families, host: true,
+          ...(subset ? { subset } : {}) });
+        sources.set(url, () => readDesktopFace(host, face.id));
       }
     }
     const wanted = new Set<string>();
+    const outlined = new Set<string>();
     const first = (names: string[] = []) => names.find(hasAvailableFamily);
-    const want = (name: string | undefined) => { if (name) wanted.add(normalize(name)); };
-    for (const request of requests.faces) want(first(request.candidates));
+    const want = (name: string | undefined, text = true) => {
+      if (!name) return;
+      wanted.add(normalize(name));
+      if (text) outlined.add(normalize(name));
+    };
+    for (const request of requests.faces) want(first(request.candidates), request.text !== false);
     const defaults = first(requests.classDefaults[0]);
     for (const name of defaults ? [defaults] : requests.classDefaults.slice(1).map(first)) want(name);
-    for (const name of requests.fallbacks ?? []) want(first([name]));
+    // 한 대체 서체가 여러 후보의 빈 글자를 채울 수 있으므로 연결 뒤 다시 조회한다.
+    want(first(requests.fallbacks ?? []));
     const matching = new Set([...wanted].flatMap(name => [...(assetsByFamily.get(name) ?? [])]));
+    const lookup = getDesktopFontLookup();
+    const preferred = new Set<string>();
+    if (lookup) {
+      for (const name of wanted) {
+        const match = matchDesktopFont(name, lookup);
+        if (isDesktopFontMatch(match)) {
+          for (const { face } of match.slots) preferred.add(`heemang-host:${face.id}`);
+        }
+      }
+    }
     const copies = new Set(registered);
     // 기존 색인 순서를 유지해 같은 face와 HFT 은행의 선택 순서도 바뀌지 않는다.
     await Promise.all(assets.filter(asset => matching.has(asset)).map(asset => {
+      // SFNT는 PC 글꼴과 같은 선호 face만 읽는다. HFT는 모든 문자 은행이 필요하다.
+      if (lookup && asset.host && !/\.hft$/i.test(asset.name) && !preferred.has(asset.url)) return;
       const key = copyKey(asset.name, asset.size);
       if (loadedAssets.has(asset.url) || copies.has(key)) return;
       copies.add(key);
       let load = pending.get(asset.url);
       if (!load) {
         load = (async () => {
-          const bytes = await sources.get(asset.url)!();
+          // 빈 문단의 메트릭 face는 윤곽선을 미리 읽지 않는다. 실제 쪽 glyph는 아래 preflight가 채운다.
+          const characters = asset.subset && asset.families.some(name => outlined.has(normalize(name))) ? engine.fontCharacters() : '\0';
+          const bytes = asset.subset ? await asset.subset(characters) : await sources.get(asset.url)!();
           if (!bytes) throw new Error(`Heemang 글꼴 읽기 실패: ${asset.name}`);
           const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
           register(asset.url, view, asset.host ? undefined : asset.families, asset.name);
@@ -127,14 +161,20 @@ async function initializeRuntime() {
       }
       return load;
     }));
+    return loadedAssets.size > before;
   };
-  const refillOutlines = async () => {
-    const paths = JSON.parse(engine.outlineRequests()) as string[];
+  const refillOutlines = async (extra: string[] = []) => {
+    const paths = [...new Set([...(JSON.parse(engine.outlineRequests()) as string[]), ...extra])];
+    if (!paths.length) return false;
+    const retained = JSON.parse(engine.glyphCoverage(JSON.stringify(paths))) as [string,number,number[]][];
     const loads = paths.filter(path => sources.has(path)).map(path => {
       let load = pending.get(path);
       if (!load) {
         load = (async () => {
-          const bytes = await sources.get(path)!();
+          const reader = subsetReaders.get(path);
+          const glyphs = retained.filter(([label]) => label === path);
+          const bytes = reader && glyphs.length === 1 && glyphs[0][1] === 0
+            ? await reader(engine.fontCharacters(),glyphs[0][2]) : await sources.get(path)!();
           if (!bytes) throw new Error(`Heemang 글꼴 다시 읽기 실패: ${path}`);
           register(path, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), [], path, true);
         })().finally(() => pending.delete(path));
@@ -145,12 +185,21 @@ async function initializeRuntime() {
     await Promise.all(loads);
     return loads.length > 0;
   };
+  const prepareOutlines = async (doc: Doc) => {
+    if (!coverage.size) return false;
+    const requests = JSON.parse(doc.glyphRequests()) as { label: string; index: number; glyphs: number[] }[];
+    const missing = requests.filter(request => {
+      const included = coverage.get(request.label);
+      return included && request.glyphs.some(glyph => !(included[glyph >> 3] & (1 << (glyph & 7))));
+    }).map(request => request.label);
+    return refillOutlines(missing);
+  };
   // Brotli DecompressionStream 이 없는 브라우저(Chrome 포함)는 엔진의 해제기로 WOFF2 를 읽는다.
   const webFontDecoders = () => ({
     brotli: (data: Uint8Array, outLength: number) => brotliDecompress(data, outLength),
     ...streamWebFontDecoders(),
   });
-  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, sources, webFontDecoders };
+  return { engine, player: new Player(engine), memory, fontCount: () => faces, register, hasFamily, hasAvailableFamily, loadFonts, refillOutlines, prepareOutlines, sources, webFontDecoders };
 }
 
 /** 문서와 엔진의 편집·선택 이력을 연결한다. */
@@ -164,8 +213,9 @@ export class HeemangAdapter {
   private register!: (label: string, bytes: Uint8Array) => void;
   private hasFamily!: (name: string) => boolean;
   private hasAvailableFamily!: (name: string) => boolean;
-  private loadFonts!: (requests: FontRequests) => Promise<void>;
+  private loadFonts!: (requests: FontRequests) => Promise<boolean>;
   private refillOutlines!: () => Promise<boolean>;
+  private prepareOutlines!: (doc: Doc) => Promise<boolean>;
   private sources!: Map<string, EngineFontReader>;
   private webFontDecoders!: () => { brotli?: (data: Uint8Array, outLength: number) => Uint8Array | Promise<Uint8Array>; zlib?: (data: Uint8Array, outLength: number) => Promise<Uint8Array> };
   private fontsPrepared = false;
@@ -216,7 +266,9 @@ export class HeemangAdapter {
     await this.loadFonts(requests());
     if (!current()) return;
     // 등록한 face에 없는 문자의 fallback도 첫 레이아웃 전에 연결한다.
-    await this.loadFonts(requests());
+    while (await this.loadFonts(requests())) {
+      if (!current()) return;
+    }
     if (!current()) return;
     const req = requests();
     const defaults = req.classDefaults;
@@ -224,7 +276,7 @@ export class HeemangAdapter {
       && (!defaults.some(list => list.length) || defaults.some(list => list.some(this.hasFamily)))
       && (req.fallbacks ?? []).every(name => !this.hasAvailableFamily(name) || this.hasFamily(name));
     if (!satisfied) {
-      const plan = resolveCanvasKitFontPlan(names.filter(name => !this.hasFamily(name)), options);
+      const plan = resolveCanvasKitFontPlan([...new Set([...names, ...req.faces.map(face => face.name)])].filter(name => !this.hasFamily(name)), options);
       const decoder = this.webFontDecoders();
       await Promise.all(plan.sources.map(source => {
         if (source.aliases.some(alias => this.hasFamily(alias))) return;
@@ -244,12 +296,18 @@ export class HeemangAdapter {
         return pending;
       }));
       if (!current()) return;
-      await this.loadFonts(requests());
+      while (await this.loadFonts(requests())) {
+        if (!current()) return;
+      }
       if (!current()) return;
     }
     if (!this.fontCount()) throw new EngineNotSupportedError('글꼴 파일이 필요합니다. 로컬 TTF·OTF·TTC·HFT 글꼴을 연결해 주세요.');
     doc.state();
-    await this.loadFonts(requests());
+    while (await this.loadFonts(requests())) {
+      if (!current()) return;
+    }
+    if (!current()) return;
+    await this.prepareOutlines(doc);
     if (!current()) return;
     this.fontsPrepared = true;
     this.refreshLayout();
@@ -311,7 +369,7 @@ export class HeemangAdapter {
       version: 'hm-wasm/1', sectionCount: this.fontsPrepared ? this.getSectionCount() : 1, pageCount: this.fontsPrepared ? this.pageCount : 0,
       encrypted: false, fallbackFont: '',
       // fontNames는 모든 대체 후보까지 펼친다. 호스트에는 문서가 요청한 이름만 보낸다.
-      fontsUsed: [...new Set(requests.faces.map(face => face.name))],
+      fontsUsed: [...new Set(requests.faces.filter(face => face.text !== false).map(face => face.name))],
     };
   }
   getSectionCount(): number { return Math.max(-1, ...this.hmPages().map(p => p.section)) + 1; }

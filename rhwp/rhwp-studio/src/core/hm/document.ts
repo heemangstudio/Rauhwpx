@@ -86,14 +86,14 @@ export function prepareDocument(core: HmCore, data: Uint8Array, fileName?: strin
   }
   let info: DocumentInfo;
   try {
-    const requests = JSON.parse(probe.fontRequests()) as { faces: { name: string }[] };
+    const requests = JSON.parse(probe.fontRequests()) as { faces: { name: string; text?: boolean }[] };
     info = {
       version: 'hm-wasm/1',
       sectionCount: 1,
       pageCount: 0,
       encrypted: false,
       fallbackFont: '',
-      fontsUsed: [...new Set(requests.faces.map(face => face.name))],
+      fontsUsed: [...new Set(requests.faces.filter(face => face.text !== false).map(face => face.name))],
     };
   } finally {
     probe.close();

@@ -81,6 +81,13 @@ export function createHubFontHost(options: HubFontHostOptions): SystemFontHost {
       const response = await request(`/fonts/faces/${encodeURIComponent(id)}`);
       return new Uint8Array(await response.arrayBuffer());
     },
+    async readSubset(id, characters, glyphs = []) {
+      const chars = [...characters].map(char => char.codePointAt(0)!.toString(16)).join(',');
+      const ids = glyphs.map(glyph=>glyph.toString(16)).join(',');
+      if (!chars || chars.length+ids.length > 8000) return host.read(id);
+      const response = await request(`/fonts/faces/${encodeURIComponent(id)}`, { chars, ...(ids ? { glyphs: ids } : {}) });
+      return new Uint8Array(await response.arrayBuffer());
+    },
   };
   return host;
 }

@@ -289,9 +289,15 @@ function lookupCmapSubtable(bytes, codepoint) {
     const deltaBase = startBase + segCount * 2;
     const rangeBase = deltaBase + segCount * 2;
     if (rangeBase + segCount * 2 > bytes.length) return 0;
-    for (let i = 0; i < segCount; i += 1) {
-      const end = u16(bytes, endBase + i * 2);
-      if (codepoint > end) continue;
+    // endCode는 정렬돼 있다. 큰 CJK cmap도 문자마다 전체 구간을 훑지 않는다.
+    let lo = 0, hi = segCount;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (codepoint > u16(bytes, endBase + mid * 2)) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < segCount) {
+      const i = lo;
       const start = u16(bytes, startBase + i * 2);
       if (codepoint < start) return 0;
       const delta = i16(bytes, deltaBase + i * 2);
@@ -666,16 +672,22 @@ function sfntChecksum(bytes) {
  * DSIG 는 재조립하면 서명이 깨지므로 뺀다.
  * @returns {Promise<Uint8Array>}
  */
-export async function extractCollectionFace(input, faceIndex, { maxBytes = MAX_FACE_BYTES } = {}) {
+export async function extractCollectionFace(input, faceIndex, options = {}) {
   const source = asSource(input);
-  const { collection, offsets } = await faceOffsets(source);
-  if (!collection) throw new Error('not a font collection');
+  if (!(await faceOffsets(source)).collection) throw new Error('not a font collection');
+  return extractSfntFace(source, faceIndex, options);
+}
+
+async function extractSfntFace(input, faceIndex, { maxBytes = MAX_FACE_BYTES, replacements = new Map(), omit = new Set() } = {}) {
+  const source = asSource(input);
+  const { offsets } = await faceOffsets(source);
   if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= offsets.length) {
     throw new Error(`face index ${faceIndex} out of range (0..${offsets.length - 1})`);
   }
   const { sfntVersion, tables } = await readTableDirectory(source, offsets[faceIndex]);
   const entries = [...tables.values()]
-    .filter((table) => table.tag !== 'DSIG')
+    .filter((table) => table.tag !== 'DSIG' && !replacements.has(table.tag) && !omit.has(table.tag))
+    .concat([...replacements].map(([tag,data]) => ({tag,length:data.length,offset:0})))
     .sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
   const numTables = entries.length;
   const headerLength = 12 + numTables * 16;
@@ -695,7 +707,7 @@ export async function extractCollectionFace(input, faceIndex, { maxBytes = MAX_F
   let headAt = -1;
   for (let i = 0; i < numTables; i += 1) {
     const table = entries[i];
-    const data = await source.read(table.offset, table.length);
+    const data = replacements.get(table.tag) ?? await source.read(table.offset, table.length);
     output.set(data, cursor);
     const padded = output.subarray(cursor, cursor + pad4(table.length));
     if (table.tag === 'head') {
@@ -714,6 +726,93 @@ export async function extractCollectionFace(input, faceIndex, { maxBytes = MAX_F
     view.setUint32(headAt + 8, (0xb1b0afba - sfntChecksum(output)) >>> 0);
   }
   return output;
+}
+
+/**
+ * 원래 glyph ID와 모든 메트릭을 유지하고 현재 문자와 그 복합 glyph의 glyf만 싣는다.
+ * 지원하지 않는 윤곽선·가변 글꼴은 null을 돌려 원본 전송을 유지한다.
+ * HMGC 표는 실제로 포함한 glyph의 비트맵이며, 빠진 glyph를 빈 윤곽선으로 오인하지 않게 한다.
+ */
+export async function compactSfntFace(input, face, characters, extraGlyphs = []) {
+  if (!['ttf','ttc'].includes(face.format)) return null;
+  const source = asSource(input);
+  const { offsets } = await faceOffsets(source);
+  const { tables } = await readTableDirectory(source, offsets[face.faceIndex]);
+  if (tables.has('fvar') || !['head','maxp','loca','glyf','cmap'].every(tag => tables.has(tag))) return null;
+  const head = await readTable(source, tables.get('head'));
+  const maxp = await readTable(source, tables.get('maxp'));
+  const loca = await readTable(source, tables.get('loca'));
+  const cmap = tables.get('cmap');
+  if (head.length < 54 || maxp.length < 6) return null;
+  const count = u16(maxp,4), long = i16(head,50) === 1;
+  if (!count) return null;
+  if (loca.length < (count + 1) * (long ? 4 : 2)) return null;
+  const offset = id => long ? u32(loca,id*4) : u16(loca,id*2)*2;
+  const header = await source.read(cmap.offset, Math.min(cmap.length, 4+8*64));
+  const subtables = [];
+  const cache = new Map();
+  for (let i=0;i<u16(header,2)&&4+i*8+8<=header.length;i++) {
+    const at=4+i*8, platform=u16(header,at), encoding=u16(header,at+2), sub=u32(header,at+4);
+    if (sub>=cmap.length || !(platform===0 || (platform===3 && [1,10].includes(encoding)))) continue;
+    const bytes=await readCmapSubtable(source,cmap.offset,sub,cache);
+    if (bytes && !subtables.includes(bytes)) subtables.push(bytes);
+  }
+  if (!subtables.length) return null;
+  if (extraGlyphs.some(glyph => !Number.isInteger(glyph) || glyph<0 || glyph>=count)) return null;
+  const keep = new Set([0,...extraGlyphs]);
+  for (const char of characters) for (const sub of subtables) {
+    const glyph=lookupCmapSubtable(sub,char.codePointAt(0));
+    if (glyph>0 && glyph<count) keep.add(glyph);
+  }
+  // 작은 glyph마다 파일 시스템을 왕복하지 않도록 인접 윤곽선을 블록으로 함께 읽는다.
+  const blockSize = 128 * 1024, blocks = new Map();
+  const glyfTable = tables.get('glyf');
+  const readGlyph = async (start,end) => {
+    const out = new Uint8Array(end-start);
+    for(let at=start;at<end;) {
+      const block = Math.floor(at/blockSize), base=block*blockSize;
+      let bytes = blocks.get(block);
+      if (!bytes) {bytes=await source.read(glyfTable.offset+base,Math.min(blockSize,glyfTable.length-base));blocks.set(block,bytes);}
+      const length=Math.min(end-at,bytes.length-(at-base));
+      out.set(bytes.subarray(at-base,at-base+length),at-start);at+=length;
+    }
+    return out;
+  };
+  const glyphs = new Map();
+  const pending = [...keep];
+  while (pending.length) {
+    const id = pending.pop(), start=offset(id), end=offset(id+1);
+    if (start>end || end>tables.get('glyf').length) return null;
+    const bytes=await readGlyph(start,end);
+    glyphs.set(id,bytes);
+    if (bytes.length>=10 && i16(bytes,0)<0) {
+      let at=10, flags;
+      do {
+        if (at+4>bytes.length) return null;
+        flags=u16(bytes,at); const child=u16(bytes,at+2); at+=4;
+        if (child>=count) return null;
+        if (!keep.has(child)) {keep.add(child);pending.push(child);}
+        at += (flags&1)?4:2;
+        if (flags&8) at+=2;
+        else if (flags&64) at+=4;
+        else if (flags&128) at+=8;
+      } while (flags&32);
+      if (at>bytes.length) return null;
+    }
+  }
+  const compactLoca=new Uint8Array((count+1)*4), lv=dataView(compactLoca);
+  let length=0;
+  for(let id=0;id<count;id++){lv.setUint32(id*4,length);length+=pad4(glyphs.get(id)?.length??0);}
+  lv.setUint32(count*4,length);
+  if (length >= glyfTable.length) return null;
+  const glyf=new Uint8Array(length), coverage=new Uint8Array(8+Math.ceil(count/8));
+  coverage.set([72,77,48,49]);dataView(coverage).setUint32(4,count);
+  for(const [id,bytes]of glyphs){glyf.set(bytes,lv.getUint32(id*4));coverage[8+(id>>3)]|=1<<(id&7);}
+  const newHead=new Uint8Array(head);dataView(newHead).setInt16(50,1);
+  // 엔진은 TrueType 윤곽선으로 그린다. 사용하지 않는 내장 bitmap은 보내지 않는다.
+  return extractSfntFace(source,face.faceIndex,{omit:new Set(['EBDT','EBLC','EBSC']),replacements:new Map([
+    ['head',newHead],['loca',compactLoca],['glyf',glyf],['HMGC',coverage],
+  ])});
 }
 
 // ---------------------------------------------------------------------------

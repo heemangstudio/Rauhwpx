@@ -12,13 +12,13 @@ export class EngineNotSupportedError extends Error {
 
 /** 전체 글꼴 파일을 넘긴다. 메트릭 부분집합에는 글리프 윤곽선이 없다. */
 export type EngineFontReader = () => Promise<ArrayBuffer | Uint8Array | null>;
-type FontReceiver = (label: string, bytes: Uint8Array, reader?: EngineFontReader) => void;
+type FontReceiver = (label: string, bytes: Uint8Array, reader?: EngineFontReader, sourceUrl?: string) => void;
 const receivers = new Set<FontReceiver>();
 export function receiveEngineFonts(receiver: FontReceiver): void { receivers.add(receiver); }
-export function provideEngineFont(label: string, bytes: ArrayBuffer | Uint8Array, reader?: EngineFontReader): void {
+export function provideEngineFont(label: string, bytes: ArrayBuffer | Uint8Array, reader?: EngineFontReader, sourceUrl?: string): void {
   if (!receivers.size) return;
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  for (const receiver of receivers) receiver(label, view, reader);
+  for (const receiver of receivers) receiver(label, view, reader, sourceUrl);
 }
 
 // 모든 엔진의 문서 번호는 같은 축을 쓴다. 세션을 바꿔도 서로 겹치지 않는다.

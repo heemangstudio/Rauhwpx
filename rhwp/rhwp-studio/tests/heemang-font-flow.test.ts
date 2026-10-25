@@ -24,10 +24,16 @@ const stubs = new Map([
         return 1;
       }
       outlineRequests() { return JSON.stringify(e().outlines); }
+      glyphCoverage() { return '[]'; }
+      fontCharacters() { return 'A각'; }
     }
     function assertFile(file) { if (file.size < 1 || !(file.read(0,1) instanceof Uint8Array)) throw Error('invalid FontFile'); }`],
   ['/core/desktop-fonts.ts', `export const getSystemFontHost = () => globalThis.heemangFontTest().host;
-    export const loadDesktopFontIndex = async () => globalThis.heemangFontTest().index;`],
+    export const loadDesktopFontIndex = async () => globalThis.heemangFontTest().index;
+    export const readDesktopFace = (host,id) => host.read(id);
+    export const getDesktopFontLookup = () => globalThis.heemangFontTest().lookup ?? null;
+    export const matchDesktopFont = (name,lookup) => lookup.get(name) ?? {requested:name,reason:'not-found'};
+    export const isDesktopFontMatch = match => Array.isArray(match.slots);`],
   ['/core/content-hash.ts', `export const blake3Hex = () => 'digest'; export const setBlake3WasmApi = () => {};`],
   ['/core/font-loader.ts', `export const resolveCanvasKitFontPlan = () => { globalThis.heemangFontTest().plans++; return {sources: []}; };`],
   ['/fonts/font-index-core.mjs', `export const streamWebFontDecoders = () => null; export const decodeWebFont = b => b;`],
@@ -203,4 +209,72 @@ test('catalog families keep every script bank in order and discover later host f
   await adapter.prepareFonts(['body'],{});
   assert.deepEqual(env.events,['font:1','font:2','layout','font:9','layout']);
   assert.equal(env.plans,0);
+});
+
+test('host SFNT preparation reuses preferred slots while retaining every matching HFT bank', async () => {
+  const reads: string[] = [];
+  const { HeemangAdapter } = await setup([], () => req(['Body'],[]));
+  env.index = {faces:[
+    {id:'duplicate',path:'/old/Body.ttf',size:4,families:['Body']},
+    {id:'preferred',path:'/new/Body.ttf',size:4,families:['Body']},
+    {id:'korean',path:'/hft/Body-Korean.hft',size:4,families:['Body']},
+    {id:'latin',path:'/hft/Body-Latin.hft',size:4,families:['Body']},
+  ]};
+  env.lookup = new Map([['body',{slots:[{face:{id:'preferred'}}]}]]);
+  env.host = {read:async (id: string) => { reads.push(id); return new Uint8Array(4).fill(9); }};
+  env.families.set(9,['Body']);
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  await adapter.prepareFonts(['Body'],{});
+  assert.deepEqual(reads,['preferred','korean','latin']);
+  assert.equal(env.plans,0);
+});
+
+test('a desktop TTC face already handed to the engine is not fetched again under its catalog identity', async () => {
+  const { HeemangAdapter } = await setup([], () => req(['Body'],[]));
+  env.index = {faces:[{id:'ttc-face',path:'/fonts/Body.ttc',size:1000,families:['Body']}]};
+  let reads = 0;
+  env.host = {read:async () => { reads++; throw Error('duplicate full-face read'); }};
+  env.families.set(1,['Body']);
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  provideEngineFont('/fonts/Body.ttc#regular', new Uint8Array(4).fill(1), async () => new Uint8Array(4).fill(1), 'heemang-host:ttc-face');
+  await adapter.prepareFonts(['Body'],{});
+  assert.equal(adapter.getDocumentInfo().pageCount,3);
+  assert.equal(env.plans,0);
+  assert.equal(reads,0);
+  const registered = [...env.registered];
+  assert.ok(registered.every(label => label === 'heemang-host:ttc-face'));
+  provideEngineFont('/fonts/Body.ttc#regular', new Uint8Array(4).fill(1), undefined, 'heemang-host:ttc-face');
+  assert.deepEqual(env.registered, registered);
+});
+
+test('fallback coverage is queried again before reading another large candidate', async () => {
+  const assets = [asset(1,'Body.ttf','Body'),asset(2,'Fallback.ttf','Fallback'),asset(3,'Other.ttf','Other')];
+  const { HeemangAdapter } = await setup(assets, () => req(['Body'], [],
+    env.registered.includes('/__heemang-fonts/2') ? [] : ['Fallback','Other']));
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  await adapter.prepareFonts(['Body'],{});
+  assert.equal(env.fetches.includes('/__heemang-fonts/2'),true);
+  assert.equal(env.fetches.includes('/__heemang-fonts/3'),false);
+  assert.equal(env.events.at(-1),'layout');
+});
+
+
+test('metric-only faces defer outline transfer while retaining their native metrics', async () => {
+  const { HeemangAdapter } = await setup([], () => ({
+    ...req(['Metric'], []), faces: [{name:'Metric', candidates:['Metric'], standIns:[], text:false}],
+  }));
+  env.index = {faces:[{id:'metric',path:'/fonts/metric.ttf',size:1000,families:['Metric']}]};
+  const plans: string[] = [];
+  env.host = {read:async () => { throw Error('unexpected full read'); },
+    readSubset:async (_id: string, characters: string) => { plans.push(characters); return new Uint8Array(4).fill(9); }};
+  env.families.set(9,['Metric']);
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  await adapter.prepareFonts([],{});
+  assert.deepEqual(plans,['\0']);
+  assert.equal(adapter.getDocumentInfo().pageCount,3);
+  assert.deepEqual(adapter.getDocumentInfo().fontsUsed,[]);
 });

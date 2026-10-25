@@ -16,6 +16,7 @@ import {
 } from '../desktop/system-fonts.mjs';
 import {
   blobSource,
+  compactSfntFace,
   decodeWebFont,
   extractCollectionFace as extractCollectionFaceCore,
   parseFontSource,
@@ -771,4 +772,31 @@ test('catalog probes only the Fonts folder directly under each Windows program f
     listDir: async (target) => tree[target] ?? [],
   });
   assert.deepEqual(win.roots.map((root) => [root.path, root.label]), [['C:\\PF\\Vendor\\Fonts', 'program fonts: Vendor']]);
+});
+
+
+test('compact SFNT transfer preserves source bytes, metrics, glyph IDs and composite records', async () => {
+  const source = await readFile(WEB_TTF), before = Buffer.from(source), original = readTables(source);
+  for (const text of ['A', 'é']) {
+    const subset = await compactSfntFace(source, {format:'ttf',faceIndex:0}, text);
+    assert.ok(subset && subset.length < source.length);
+    assert.deepEqual(source, before, 'Buffer-backed source headers must not be mutated');
+    const tables = readTables(Buffer.from(subset));
+    for (const tag of ['cmap','hmtx','hhea','maxp','name']) assert.deepEqual(tables.get(tag), original.get(tag));
+    const mask = tables.get('HMGC'); assert.equal(mask.toString('ascii',0,4),'HM01');
+    const count = original.get('maxp').readUInt16BE(4); assert.equal(mask.readUInt32BE(4),count);
+    const long = original.get('head').readInt16BE(50) === 1;
+    const offset = id => long ? original.get('loca').readUInt32BE(id*4) : original.get('loca').readUInt16BE(id*2)*2;
+    let kept = 0;
+    for (let glyph=0;glyph<count;glyph++) {
+      const a=tables.get('loca').readUInt32BE(glyph*4), b=tables.get('loca').readUInt32BE(glyph*4+4);
+      if (!(mask[8+(glyph>>3)]&(1<<(glyph&7)))) { assert.equal(a,b); continue; }
+      kept++;
+      const bytes=original.get('glyf').subarray(offset(glyph),offset(glyph+1));
+      assert.deepEqual(tables.get('glyf').subarray(a,a+bytes.length),bytes);
+      assert.ok(tables.get('glyf').subarray(a+bytes.length,b).every(byte=>byte===0));
+    }
+    assert.ok(kept>1);
+  }
+  for (const format of ['otf','otc','hft','woff2']) assert.equal(await compactSfntFace(source,{format,faceIndex:0},'A'),null);
 });
