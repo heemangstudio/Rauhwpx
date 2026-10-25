@@ -17,6 +17,8 @@ export interface NativeObject {
   brightness?: number; contrast?: number; effect?: number; transparency?: number;
   flipHorizontal?: boolean; flipVertical?: boolean; pictureMargins?: number[];
   fill?: { color?: number | null; kind: number; solid?: { background: number; patternColor: number; pattern: number } | null; alpha?: number[] };
+  /** 캡션. list 는 개체 안 목록 가운데 캡션의 번호다. */
+  caption?: { side: string; includeMargin: boolean; width: number; gap: number; maxWidth: number; paragraphs: number; list: number } | null;
 }
 export const objectAddress = (section: number, para: number, control: number): ObjectAddress => ({ section, para, control });
 export function objectAddressByPath(section: number, parent: number, path: CellPathLike | string, control: number): ObjectAddress {
@@ -55,7 +57,8 @@ export function pictureProperties(core: HmCore, object: ObjectAddress): PictureP
     transparency: Math.round((o.transparency ?? 0) * 100 / 255), originalWidth: o.naturalWidth ?? o.width, originalHeight: o.naturalHeight ?? o.height,
     cropLeft: o.crop?.[0] ?? 0, cropTop: o.crop?.[1] ?? 0, cropRight: o.crop?.[2] ?? o.width, cropBottom: o.crop?.[3] ?? o.height,
     paddingLeft: o.pictureMargins?.[0] ?? 0, paddingRight: o.pictureMargins?.[1] ?? 0, paddingTop: o.pictureMargins?.[2] ?? 0, paddingBottom: o.pictureMargins?.[3] ?? 0,
-    hasCaption: false, captionDirection: 'Bottom', captionVertAlign: 'Top', captionWidth: 0, captionSpacing: 0, captionMaxWidth: 0, captionIncludeMargin: false };
+    hasCaption: !!o.caption, captionDirection: title(o.caption?.side ?? 'bottom'), captionVertAlign: 'Top', captionWidth: o.caption?.width ?? 0,
+    captionSpacing: o.caption?.gap ?? 0, captionMaxWidth: o.caption?.maxWidth ?? 0, captionIncludeMargin: o.caption?.includeMargin ?? false };
 }
 function shapeProperties(core: HmCore, object: ObjectAddress): ShapeProperties {
   const o = objectProperties(core, object);
@@ -138,7 +141,25 @@ export const getCellPicturePropertiesByPath: typeof original.getCellPicturePrope
 export const getShapeProperties: typeof original.getShapeProperties = (core, s, p, c) => shapeProperties(core, objectAddress(s, p, c));
 export const getCellShapePropertiesByPath: typeof original.getCellShapePropertiesByPath = (core, s, p, path, c) => shapeProperties(core, objectAddressByPath(s, p, path, c));
 export const getShapeText: typeof original.getShapeText = (core, s, p, c) => ({ ok: true, text: objectProperties(core, objectAddress(s, p, c)).text ?? '' });
-export const setPictureProperties: typeof original.setPictureProperties = (core, s, p, c, props) => setObjectProperties(core, objectAddress(s, p, c), props, { ...pictureProperties(core, objectAddress(s, p, c)) });
+/**
+ * 캡션이 없는 그림에 hasCaption 을 켜면 한컴 기본 캡션("그림 N", 아래)을 만든다. captionCharOffset 은 캡션 첫 문단에서
+ * 글을 이어 쓸 글자 위치다. 캡션 끄기와 다른 자리의 새 캡션은 아직 엔진에 없다.
+ */
+function setPictureWithCaption(core: HmCore, object: ObjectAddress, props: Record<string, unknown>) {
+  const current = pictureProperties(core, object);
+  const { hasCaption, ...rest } = props;
+  if (hasCaption === undefined || hasCaption === current.hasCaption) return setObjectProperties(core, object, props, { ...current });
+  if (!hasCaption) throw unsupported('setObjectProperties.hasCaption.false');
+  const side = String(rest.captionDirection ?? 'Bottom');
+  if (side !== 'Bottom') throw unsupported(`setObjectProperties.captionDirection.${side}`);
+  const caption = { ...current, captionDirection: side };
+  setObjectProperties(core, object, rest, caption);
+  core.transact([{ op: 'setObjectCaption', object, text: ' ', withNumber: true } as EditOp]);
+  const list = objectProperties(core, object).caption!.list;
+  const steps = [...(object.steps ?? []), { para: object.para, control: object.control, index: list }];
+  return { ok: true, captionCharOffset: paraMap(core.paragraph({ section: object.section, steps }, 0)).textLength };
+}
+export const setPictureProperties: typeof original.setPictureProperties = (core, s, p, c, props) => setPictureWithCaption(core, objectAddress(s, p, c), props);
 export const setShapeProperties: typeof original.setShapeProperties = (core, s, p, c, props) => setObjectProperties(core, objectAddress(s, p, c), props, { ...shapeProperties(core, objectAddress(s, p, c)) });
 export const setCellPicturePropertiesByPath: typeof original.setCellPicturePropertiesByPath = (core, s, p, path, c, props) => { const at = objectAddressByPath(s, p, path, c); return setObjectProperties(core, at, props, { ...pictureProperties(core, at) }); };
 export const setCellShapePropertiesByPath: typeof original.setCellShapePropertiesByPath = (core, s, p, path, c, props) => { const at = objectAddressByPath(s, p, path, c); return setObjectProperties(core, at, props, { ...shapeProperties(core, at) }); };

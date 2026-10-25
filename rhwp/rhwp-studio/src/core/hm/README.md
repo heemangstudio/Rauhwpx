@@ -10,7 +10,7 @@ directory. Those functions turn Studio coordinates into HeemangEngine addresses 
 | File | Owns |
 | --- | --- |
 | `core.ts` | `HmCore`: the open `Doc`, paragraph and line caches, `transact`/`mutate` (every content change goes through them), caret and point lookups |
-| `address.ts` | Coordinate conversion. Caret offsets are logical (characters plus inline objects and notes, one each); text offsets count characters only; the engine uses wire offsets. Cell paths map to engine `steps` |
+| `address.ts` | Coordinate conversion. Characters are Unicode scalars (an emoji is one). Caret offsets are logical (characters plus inline objects and notes, one each); text offsets count characters only; the engine uses wire offsets. Cell paths map to engine `steps` |
 | `document.ts` | Open, new document, save/export, page info and painting, snapshots |
 | `cursor.ts` | Caret rects, hit testing, line info, vertical movement, selection rects |
 | `text.ts` | Insert, delete, split and merge in body, cells and nested cells |

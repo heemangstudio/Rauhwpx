@@ -1,4 +1,4 @@
-import { agentEngineCoordinates, agentTextToLogicalOffset } from './engine-coordinates.ts';
+import { agentTextToLogicalOffset } from './engine-coordinates.ts';
 /**
  * MCP 툴 실행기 — 허브가 전달한 tool-request를 실제 문서 호출로 매핑한다.
  *
@@ -4089,7 +4089,9 @@ export class AgentToolExecutor {
         const fieldId = wasm.insertHyperlink(target, linkStart, linkEnd, url);
         applyHyperlinkFormat(wasm, target, linkStart, linkEnd, '#0000ff');
         if (footnote === undefined) return { fieldId };
-        const res = wasm.insertFootnote(sectionIdx, paraIdx, linkEnd);
+        // 링크 범위는 글자 위치, 각주 자리는 캐럿 위치다. 링크 마지막 글자 바로 뒤에 단다.
+        const noteAt = linkEnd > 0 ? agentTextToLogicalOffset(wasm, sectionIdx, paraIdx, linkEnd - 1) + 1 : 0;
+        const res = wasm.insertFootnote(sectionIdx, paraIdx, noteAt);
         if (!res.ok) throw new AgentToolError('HYPERLINK_FAILED', 'insertFootnote failed');
         // 새 각주 문단은 번호 자리 공백 둘("  ")로 시작한다 — 손으로 넣을 때처럼 번호 뒤에 쓴다.
         const fresh = wasm.getFootnoteInfo(sectionIdx, res.paraIdx, res.controlIdx);
@@ -5434,7 +5436,6 @@ export class AgentToolExecutor {
    * label 은 get_structure 머리 줄이다 — read_batch 항목까지 부른 채팅의 revision 대신 이 이름을 쓴다.
    */
   private foreignExecutor(wasm: WasmBridge, dirty: boolean, label: string): AgentToolExecutor {
-    wasm = agentEngineCoordinates(wasm);
     const nested = new AgentToolExecutor({
       ...this.deps,
       wasm,

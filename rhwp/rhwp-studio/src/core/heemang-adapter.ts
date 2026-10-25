@@ -714,6 +714,28 @@ export class HeemangAdapter {
   get fontsReady(): boolean { return this.fontsPrepared; }
 
   /**
+   * 열린 엔진 문서의 내용만 bytes 로 바꾼다. 문서 객체와 checkpoint, 파일 이름·연결·출처 digest 는 그대로라
+   * 바꾸기 전 스냅샷으로 되돌릴 수 있다. 잘못된 입력은 지금 문서를 건드리지 않는다.
+   */
+  hmAdopt(bytes: Uint8Array): void {
+    const doc = this.document();
+    // adopt 는 성공하든 실패하든 next 를 가져가 닫는다.
+    doc.adopt(this.engine.open(bytes));
+    if (this.pictureFrame) cancelAnimationFrame(this.pictureFrame);
+    this.pictureFrame = 0;
+    this.pictures.clear();
+    this.canvasPaints.clear();
+    this.packets.clear();
+    this.pageMetadata = null;
+    this.serialized = null;
+    this.historyId = 0;
+    this.selectionFallbacks.clear();
+    this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
+    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.documentGeneration = nextDocumentGeneration();
+  }
+
+  /**
    * 위젯에서 고른 글꼴 파일을 서식 변경 전에 연결한다. 문서 내용은 바꾸지 않는다. 엔진이 알려 주는 후보
    * (같은 이름, 한컴이 대신 쓰는 글꼴, 글꼴 표의 대체 글꼴) 가운데 있는 것을 연결하므로, 파일이 없는 바탕·돋움도
    * 함초롬바탕·함초롬돋움이 있으면 고를 수 있다.

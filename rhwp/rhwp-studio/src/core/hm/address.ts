@@ -1,7 +1,7 @@
 /**
  * Studio 좌표와 HeemangEngine 주소 사이의 변환.
  *
- * Studio 캐럿 오프셋은 "논리 오프셋"이다: 글자(UTF-16 단위)와 글자처럼 취급하는 개체(표·그림·도형·수식·양식 개체)
+ * Studio 캐럿 오프셋은 "논리 오프셋"이다: 글자(유니코드 scalar, 이모지 하나가 한 칸)와 글자처럼 취급하는 개체(표·그림·도형·수식·양식 개체)
  * 및 각주·미주를 한 칸씩 센다. 구역·단 정의, 필드 시작·끝, 책갈피, 떠 있는 개체 같은 나머지 컨트롤은
  * 칸을 차지하지 않는다. "텍스트 오프셋"은 글자만 센다. 엔진은 컨트롤이 8칸인 wire 오프셋을 쓴다.
  *
@@ -20,8 +20,14 @@ export interface ParaMap {
   widths: number[];
   /** 논리 칸이 글자인지(false 면 개체). */
   isText: boolean[];
-  /** 글자 UTF-16 단위 수. */
+  /** 글자(유니코드 scalar) 수. */
   textLength: number;
+  /** 글자마다 시작 wire 오프셋. 서로게이트 쌍은 wire 2칸이다. */
+  textStops: number[];
+  /** 글자마다 wire 폭(탭 8, 서로게이트 쌍 2, 나머지 1). */
+  textWidths: number[];
+  /** 글자마다 info.text 의 UTF-16 위치, 끝에 text.length. */
+  textUnits: number[];
   /** 캐럿이 설 수 있는 첫 위치(구역·단 정의 뒤). */
   lead: number;
   /** 문단 끝 표시의 wire 오프셋. */
@@ -36,27 +42,38 @@ export function isLogicalControl(control: ControlInfo): boolean {
   return (control.kind === 'table' || control.kind === 'object' || control.kind === 'equation' || control.kind === 'form') && control.inline === true;
 }
 
-const textWidth = (info: ParagraphInfo, k: number): number => (info.text.charCodeAt(k) === 9 ? 8 : 1);
-
 export function paraMap(info: ParagraphInfo): ParaMap {
   let map = maps.get(info);
   if (map) return map;
-  const textLength = Math.max(0, info.offsets.length - 1);
-  const end = info.offsets[textLength] ?? Math.max(0, info.length - 1);
+  const utf16Length = Math.max(0, info.offsets.length - 1);
+  const end = info.offsets[utf16Length] ?? Math.max(0, info.length - 1);
+  const textStops: number[] = [];
+  const textWidths: number[] = [];
+  const textUnits: number[] = [];
+  for (let u = 0; u < utf16Length;) {
+    const code = info.text.codePointAt(u) ?? 0;
+    const size = code > 0xffff ? 2 : 1;
+    textStops.push(info.offsets[u]);
+    textWidths.push(code === 9 ? 8 : size);
+    textUnits.push(u);
+    u += size;
+  }
+  textUnits.push(utf16Length);
+  const textLength = textStops.length;
   const controls = info.controls.filter(isLogicalControl).map(control => control.offset);
   const stops: number[] = [];
   const widths: number[] = [];
   const isText: boolean[] = [];
   let c = 0;
   for (let t = 0; t < textLength; t++) {
-    const wire = info.offsets[t];
+    const wire = textStops[t];
     while (c < controls.length && controls[c] < wire) {
       stops.push(controls[c++]);
       widths.push(8);
       isText.push(false);
     }
     stops.push(wire);
-    widths.push(textWidth(info, t));
+    widths.push(textWidths[t]);
     isText.push(true);
   }
   while (c < controls.length && controls[c] < end) {
@@ -64,7 +81,7 @@ export function paraMap(info: ParagraphInfo): ParaMap {
     widths.push(8);
     isText.push(false);
   }
-  map = { info, stops, widths, isText, textLength, lead: info.caret[0], end };
+  map = { info, stops, widths, isText, textLength, textStops, textWidths, textUnits, lead: info.caret[0], end };
   maps.set(info, map);
   return map;
 }
@@ -92,6 +109,18 @@ export function logicalToWire(map: ParaMap, logical: number): number {
   return Math.min(map.stops[k] + map.widths[k], map.end);
 }
 
+/**
+ * 캐럿 wire 위치 뒤에 붙은 필드 끝을 건너뛴 위치. 필드 끝은 컨트롤 목록에 없는 8칸짜리 wire 다.
+ * 필드 시작·책갈피 같은 목록에 있는 컨트롤 앞에서는 멈춘다. 링크 끝에 넣는 각주가 링크 밖에 서게 한다.
+ */
+export function afterFieldEnds(map: ParaMap, wire: number): number {
+  const next = map.stops.find(stop => stop >= wire) ?? map.end;
+  const listed = new Set(map.info.controls.map(control => control.offset));
+  let at = wire;
+  while (at < next && !listed.has(at)) at += 8;
+  return at <= next ? at : wire;
+}
+
 export function wireToLogical(map: ParaMap, wire: number): number {
   return countBelow(map.stops, wire);
 }
@@ -111,11 +140,11 @@ export function logicalRangeToWire(map: ParaMap, from: number, to: number): [num
 export function textToWire(map: ParaMap, text: number): number {
   if (text <= 0) return map.lead;
   const k = Math.min(text, map.textLength) - 1;
-  return map.info.offsets[k] + textWidth(map.info, k);
+  return map.textStops[k] + map.textWidths[k];
 }
 
 export function wireToText(map: ParaMap, wire: number): number {
-  return countBelow(map.info.offsets, wire, map.textLength);
+  return countBelow(map.textStops, wire);
 }
 
 /** 텍스트 범위 [from, to) 의 wire 범위. */
@@ -126,7 +155,7 @@ export function textRangeToWire(map: ParaMap, from: number, to: number): [number
     const at = textToWire(map, a);
     return [at, at];
   }
-  return [map.info.offsets[a], map.info.offsets[b - 1] + textWidth(map.info, b - 1)];
+  return [map.textStops[a], map.textStops[b - 1] + map.textWidths[b - 1]];
 }
 
 export function logicalToText(map: ParaMap, logical: number): number {
@@ -138,13 +167,19 @@ export function logicalToText(map: ParaMap, logical: number): number {
 
 export function textToLogical(map: ParaMap, text: number): number {
   if (text <= 0) return 0;
-  return text >= map.textLength ? map.stops.length : wireToLogical(map, map.info.offsets[text]);
+  return text >= map.textLength ? map.stops.length : wireToLogical(map, map.textStops[text]);
+}
+
+/** 텍스트 범위 [from, to) 의 글자. */
+export function textSlice(map: ParaMap, from: number, to: number): string {
+  const a = Math.max(0, Math.min(from, map.textLength));
+  const b = Math.max(a, Math.min(to, map.textLength));
+  return map.info.text.slice(map.textUnits[a], map.textUnits[b]);
 }
 
 /** 논리 범위 [from, to) 의 글자. 개체 칸은 건너뛴다. */
 export function logicalText(map: ParaMap, from: number, to: number): string {
-  const a = logicalToText(map, from), b = logicalToText(map, Math.max(from, to));
-  return map.info.text.slice(a, b);
+  return textSlice(map, logicalToText(map, from), logicalToText(map, Math.max(from, to)));
 }
 
 export function bodyList(section: number): ListAddress {

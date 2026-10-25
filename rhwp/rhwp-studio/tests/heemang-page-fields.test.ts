@@ -91,8 +91,8 @@ test('hyperlink wrapping preserves text and character formatting and removes onl
   core.transact([{ op: 'insertText', at: logicalAddress(core, list, 0, 0), text: '가😀나다' }]);
   const from = logicalAddress(core, list, 0, 1), to = logicalAddress(core, list, 0, 3);
   core.transact([{ op: 'formatChars', from, to, patch: { bold: true } }]);
-  const id = fields.insertHyperlink(core, target, 1, 3, 'https://example.com/a;b#c');
-  assert.deepEqual(fields.getHyperlinkContext(core, target), { text: '가😀나다', links: [{ fieldId: id, start: 1, end: 3, text: '😀', uri: 'https://example.com/a;b#c' }] });
+  const id = fields.insertHyperlink(core, target, 1, 2, 'https://example.com/a;b#c');
+  assert.deepEqual(fields.getHyperlinkContext(core, target), { text: '가😀나다', links: [{ fieldId: id, start: 1, end: 2, text: '😀', uri: 'https://example.com/a;b#c' }] });
   const saved = open(t, doc.serialize(false)).core;
   assert.deepEqual(fields.getHyperlinkContext(saved, target), fields.getHyperlinkContext(core, target));
   const at = logicalAddress(core, list, 0, 2);

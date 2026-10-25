@@ -8,7 +8,7 @@ import type { HmCore, ListAddress } from './core';
 import { unsupported } from './core';
 import {
   bodyList, cellList, logicalLength, logicalRangeToWire, logicalText, logicalToText, logicalToWire, paraMap,
-  pathTarget, textRangeToWire, textToLogical, textToWire, toAddress, wireToLogical, wireToText,
+  pathTarget, textRangeToWire, textSlice, textToLogical, textToWire, toAddress, wireToLogical, wireToText,
 } from './address';
 import type { TextContent, LocalBodyTextReplaceResult, RemovedParaMeta, DeferredCellTextMutationResult } from './bridge-types';
 
@@ -19,8 +19,8 @@ function engineText(text: string): string {
   return text.replace(/\r\n?/g, '\n');
 }
 
-/** UTF-16 으로 센 글자 수 (Studio 캐럿 산술과 같은 축). */
-const units = (text: string): number => text.length;
+/** 유니코드 scalar 로 센 글자 수 (Studio 캐럿 산술과 같은 축). */
+const units = (text: string): number => [...text].length;
 
 // ─── 목록 단위 연산 ─────────────────────────────────────────
 
@@ -32,7 +32,7 @@ export function insertIn(core: HmCore, list: ListAddress, para: number, offset: 
   if (value.includes('\n')) {
     // 문단이 나뉘었다. 마지막 문단의 캐럿을 돌려준다.
     const tail = value.slice(value.lastIndexOf('\n') + 1);
-    return logical ? units(tail) : units(tail);
+    return units(tail);
   }
   const after = paraMap(core.paragraph(list, para));
   const wire = at + [...value].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
@@ -45,7 +45,7 @@ export function deleteIn(core: HmCore, list: ListAddress, para: number, offset: 
   const map = paraMap(core.paragraph(list, para));
   const end = offset + Math.max(0, count);
   const [from, to] = logical ? logicalRangeToWire(map, offset, end) : textRangeToWire(map, offset, end);
-  const removedText = logical ? logicalText(map, offset, end) : map.info.text.slice(offset, end);
+  const removedText = logical ? logicalText(map, offset, end) : textSlice(map, offset, end);
   const removedStart = logical ? logicalToText(map, offset) : Math.min(offset, map.textLength);
   if (to > from) core.transact([{ op: 'delete', from: toAddress(list, para, from), to: toAddress(list, para, to) }]);
   return {
@@ -56,10 +56,21 @@ export function deleteIn(core: HmCore, list: ListAddress, para: number, offset: 
   };
 }
 
-function splitIn(core: HmCore, list: ListAddress, para: number, offset: number, logical = true): string {
+/** 병합으로 사라진 문단의 스타일과 문단 모양. 병합을 되돌리는 나누기가 새 문단에 다시 입힌다. */
+interface MergedParagraphShape { styleId: number; paragraphs: object }
+
+function splitIn(core: HmCore, list: ListAddress, para: number, offset: number, logical = true, meta?: RemovedParaMeta): string {
   const map = paraMap(core.paragraph(list, para));
   const at = logical ? logicalToWire(map, offset) : textToWire(map, offset);
-  core.transact([{ op: 'split', at: toAddress(list, para, at) }]);
+  const ops: EditOp[] = [{ op: 'split', at: toAddress(list, para, at) }];
+  const restored = meta?.heemang as MergedParagraphShape | undefined;
+  if (restored) {
+    // 나눈 뒤 새 문단은 para + 1 이고 lead 위치에서 시작한다. 끝은 나누기 전 문단 끝을 옮긴 자리다.
+    const from = toAddress(list, para + 1, 0);
+    const to = toAddress(list, para + 1, map.end - at);
+    ops.push({ op: 'applyStyle', from, to, styleId: restored.styleId }, { op: 'formatParas', from, to, patch: restored.paragraphs });
+  }
+  core.transact(ops);
   return json({ ok: true, paraIdx: para + 1, charOffset: 0 });
 }
 
@@ -69,8 +80,10 @@ function mergeIn(core: HmCore, list: ListAddress, para: number): string {
   const prev = paraMap(core.paragraph(list, para - 1));
   const next = paraMap(core.paragraph(list, para));
   const mergePoint = logicalLength(prev);
+  const heemang = core.query<MergedParagraphShape>({ kind: 'formatContext', at: toAddress(list, para, next.lead) });
+  const removedParaMeta: RemovedParaMeta = { heemang: { styleId: heemang.styleId, paragraphs: heemang.paragraphs } };
   core.transact([{ op: 'delete', from: toAddress(list, para - 1, prev.end), to: toAddress(list, para, next.lead) }]);
-  return json({ ok: true, paraIdx: para - 1, charOffset: mergePoint });
+  return json({ ok: true, paraIdx: para - 1, charOffset: mergePoint, removedParaMeta });
 }
 
 function rangeIn(core: HmCore, list: ListAddress, startPara: number, startOffset: number, endPara: number, endOffset: number, logical: boolean): { paraIdx: number; charOffset: number } {
@@ -94,7 +107,7 @@ function rangeIn(core: HmCore, list: ListAddress, startPara: number, startOffset
 
 function textIn(core: HmCore, list: ListAddress, para: number, offset: number, count: number, logical: boolean): string {
   const map = paraMap(core.paragraph(list, para));
-  return logical ? logicalText(map, offset, offset + count) : map.info.text.slice(offset, offset + count);
+  return logical ? logicalText(map, offset, offset + count) : textSlice(map, offset, offset + count);
 }
 
 const cell = (sec: number, parentPara: number, controlIdx: number, cellIdx: number): ListAddress =>
@@ -143,8 +156,8 @@ export function deleteText(core: HmCore, sec: number, para: number, charOffset: 
   return json({ ok: true, ...deleteIn(core, bodyList(sec), para, charOffset, count, logical) });
 }
 
-export function splitParagraph(core: HmCore, sec: number, para: number, charOffset: number, _removedParaMeta?: RemovedParaMeta): string {
-  return splitIn(core, bodyList(sec), para, charOffset);
+export function splitParagraph(core: HmCore, sec: number, para: number, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
+  return splitIn(core, bodyList(sec), para, charOffset, true, removedParaMeta);
 }
 
 export function splitParagraphLogical(core: HmCore, sec: number, para: number, charOffset: number): string {
@@ -224,8 +237,8 @@ export function deleteRangeAcrossSections(core: HmCore, startSec: number, startP
 
 // ─── 셀(한 단계) ────────────────────────────────────────────
 
-export function splitParagraphInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, _removedParaMeta?: RemovedParaMeta): string {
-  return splitIn(core, cell(sec, parentPara, controlIdx, cellIdx), cellParaIdx, charOffset);
+export function splitParagraphInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
+  return splitIn(core, cell(sec, parentPara, controlIdx, cellIdx), cellParaIdx, charOffset, true, removedParaMeta);
 }
 
 export function splitParagraphInCellLogical(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number): string {
@@ -306,9 +319,9 @@ export function deleteRangeInCellByPath(core: HmCore, sec: number, parentPara: n
   return json({ ok: true, ...rangeIn(core, list, startPara, startOffset, endPara, endOffset, logical) });
 }
 
-export function splitParagraphInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number, _removedParaMeta?: RemovedParaMeta): string {
+export function splitParagraphInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
   const { list, para } = pathTarget(sec, parentPara, pathJson);
-  return splitIn(core, list, para, charOffset);
+  return splitIn(core, list, para, charOffset, true, removedParaMeta);
 }
 
 export function mergeParagraphInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string): string {

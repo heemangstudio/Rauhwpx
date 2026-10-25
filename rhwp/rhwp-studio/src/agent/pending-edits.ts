@@ -1,4 +1,5 @@
 import type { WasmBridge } from '../core/wasm-bridge.ts';
+import { agentTextToLogicalOffset } from './engine-coordinates.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentPosition, CharProperties, CharShapeRun, SelectionRect } from '../core/types.ts';
 import { replacementCharShapes } from './replacement-format.ts';
@@ -2458,9 +2459,11 @@ export class PendingEditManager {
         return;
       }
       case 'insertNote': {
+        // 에이전트 charOffset 은 글자 위치, 주석 삽입은 캐럿 위치를 받는다.
+        const at = agentTextToLogicalOffset(wasm, obj.sectionIdx, obj.paraIdx, obj.charOffset);
         const res = obj.noteKind === 'endnote'
-          ? wasm.insertEndnote(obj.sectionIdx, obj.paraIdx, obj.charOffset)
-          : wasm.insertFootnote(obj.sectionIdx, obj.paraIdx, obj.charOffset);
+          ? wasm.insertEndnote(obj.sectionIdx, obj.paraIdx, at)
+          : wasm.insertFootnote(obj.sectionIdx, obj.paraIdx, at);
         if (!res.ok) throw new AgentToolError('RPC_ERROR', `insert${obj.noteKind === 'endnote' ? 'Endnote' : 'Footnote'} failed`);
         obj.anchor = { paraIdx: res.paraIdx, controlIdx: res.controlIdx, charOffset: obj.charOffset };
         obj.number = obj.noteKind === 'endnote'

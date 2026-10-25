@@ -1,4 +1,3 @@
-import { agentEngineCoordinates } from './engine-coordinates.ts';
 /**
  * 스튜디오 ↔ rhwp-agent 허브 WebSocket 브리지.
  *
@@ -1772,7 +1771,6 @@ export class AgentBridgeImpl implements AgentBridge {
   private activeTemplateId: string | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
-    deps = { ...deps, wasm: agentEngineCoordinates(deps.wasm) };
     this.versionCommit = deps.commitVersion;
     this.linkDocument = deps.linkDocument;
     this.detachDocument = deps.detachDocument;

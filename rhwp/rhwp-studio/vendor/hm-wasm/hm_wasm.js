@@ -68,6 +68,34 @@ export class Doc {
         wasm.__wbg_doc_free(ptr, 0);
     }
     /**
+     * Takes `other`'s document in place of this one's, with an empty
+     * history, and closes `other`. This document's checkpoints stay, so a
+     * host can put back what it held before; the result counts as unsaved.
+     * A `Receipt`.
+     * @param {Doc} other
+     * @returns {string}
+     */
+    adopt(other) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            _assertClass(other, Doc);
+            var ptr0 = other.__destroy_into_raw();
+            const ret = wasm.doc_adopt(this.__wbg_ptr, ptr0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Takes the IME text out; a `Receipt` with the caret where it began,
      * or `null` when nothing was composing.
      * @returns {string}
@@ -1307,6 +1335,12 @@ const EngineFinalization = (typeof FinalizationRegistry === 'undefined')
 const EngineErrorFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_engineerror_free(ptr, 1));
+
+function _assertClass(instance, klass) {
+    if (!(instance instanceof klass)) {
+        throw new Error(`expected instance of ${klass.name}`);
+    }
+}
 
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
