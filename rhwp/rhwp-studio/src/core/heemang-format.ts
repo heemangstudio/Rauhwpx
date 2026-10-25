@@ -51,6 +51,20 @@ export function charProperties(characters: CharPatch): CharProperties {
   }
   if (characters.relSizes) props.relativeSizes = characters.relSizes.map(value => value ?? 100);
   if (characters.offsets) props.charOffsets = characters.offsets.map(value => value ?? 0);
+  type Line = { style: number; width: number; color: number };
+  const border = characters as unknown as { borderFillId?: number; borderFill?: Partial<Record<'left' | 'right' | 'top' | 'bottom', Line>> & { fill?: { kind: string; background?: number; patternColor?: number; pattern?: number } } };
+  if (border.borderFillId !== undefined) props.borderFillId = border.borderFillId;
+  if (border.borderFill) {
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      const line = border.borderFill[side];
+      if (line) Object.assign(props, { [`border${side[0].toUpperCase()}${side.slice(1)}`]: { type: line.style, width: line.width, color: colorRefToHex(line.color) } });
+    }
+    const fill = border.borderFill.fill;
+    props.fillType = fill?.kind ?? 'none';
+    props.fillColor = colorRefToHex(fill?.kind === 'solid' ? fill.background ?? 0xffffff : 0xffffff);
+    props.patternColor = colorRefToHex(fill?.kind === 'solid' ? fill.patternColor ?? 0 : 0);
+    props.patternType = fill?.kind === 'solid' ? fill.pattern ?? 0 : 0;
+  }
   return props;
 }
 

@@ -12,13 +12,14 @@ export interface NativeObject {
   horzRelTo: string; vertRelTo: string; horzAlign: string; vertAlign: string; textWrap: string;
   description: string; margins: number[]; rotation: number; zOrder: number; sizeProtect: boolean;
   restrictInPage: boolean; allowOverlap: boolean; keepWithAnchor: boolean;
-  border?: { color: number; width: number; style: number }; crop?: number[];
+  border?: { color: number; width: number; style: number; attr?: number; outline?: number; endCap?: number; head?: number; tail?: number; headSize?: number; tailSize?: number }; crop?: number[];
   naturalWidth?: number; naturalHeight?: number; text?: string; size?: number[];
   brightness?: number; contrast?: number; effect?: number; transparency?: number;
   flipHorizontal?: boolean; flipVertical?: boolean; pictureMargins?: number[];
-  fill?: { color?: number | null; kind: number; solid?: { background: number; patternColor: number; pattern: number } | null; alpha?: number[] };
+  fill?: { color?: number | null; kind: number; solid?: { background: number; patternColor: number; pattern: number } | null; gradient?: { kind: number; angle: number; centerX: number; centerY: number; step: number }; alpha?: number[] };
+  textMargins?: number[]; textVerticalAlign?: string; round?: number; shadow?: { kind: number; color: number; x: number; y: number } | null;
   /** 캡션. list 는 개체 안 목록 가운데 캡션의 번호다. */
-  caption?: { side: string; includeMargin: boolean; width: number; gap: number; maxWidth: number; paragraphs: number; list: number } | null;
+  caption?: { side: string; verticalAlign?: string; includeMargin: boolean; width: number; gap: number; maxWidth: number; paragraphs: number; list: number } | null;
 }
 export const objectAddress = (section: number, para: number, control: number): ObjectAddress => ({ section, para, control });
 export function objectAddressByPath(section: number, parent: number, path: CellPathLike | string, control: number): ObjectAddress {
@@ -50,23 +51,33 @@ function commonProperties(o: NativeObject) {
     borderColor: o.border?.color ?? 0, borderWidth: o.border?.width ?? 0,
     rotationAngle: o.rotation ?? 0, horzFlip: o.flipHorizontal ?? false, vertFlip: o.flipVertical ?? false };
 }
-const EFFECTS = ['RealPic', 'GrayScale', 'BlackWhite'];
+const EFFECTS = ['RealPic', 'GrayScale', 'BlackWhite', '', 'Pattern8x8'];
 export function pictureProperties(core: HmCore, object: ObjectAddress): PictureProperties {
   const o = objectProperties(core, object);
   return { ...commonProperties(o), brightness: o.brightness ?? 0, contrast: o.contrast ?? 0, effect: EFFECTS[o.effect ?? 0] ?? 'RealPic',
     transparency: Math.round((o.transparency ?? 0) * 100 / 255), originalWidth: o.naturalWidth ?? o.width, originalHeight: o.naturalHeight ?? o.height,
     cropLeft: o.crop?.[0] ?? 0, cropTop: o.crop?.[1] ?? 0, cropRight: o.crop?.[2] ?? o.width, cropBottom: o.crop?.[3] ?? o.height,
     paddingLeft: o.pictureMargins?.[0] ?? 0, paddingRight: o.pictureMargins?.[1] ?? 0, paddingTop: o.pictureMargins?.[2] ?? 0, paddingBottom: o.pictureMargins?.[3] ?? 0,
-    hasCaption: !!o.caption, captionDirection: title(o.caption?.side ?? 'bottom'), captionVertAlign: 'Top', captionWidth: o.caption?.width ?? 0,
+    hasCaption: !!o.caption, captionDirection: title(o.caption?.side ?? 'bottom'), captionVertAlign: title(o.caption?.verticalAlign ?? 'top'), captionWidth: o.caption?.width ?? 0,
+    captionSpacing: o.caption?.gap ?? 0, captionMaxWidth: o.caption?.maxWidth ?? 0, captionIncludeMargin: o.caption?.includeMargin ?? false };
+}
+function captionProperties(o: NativeObject) {
+  return { hasCaption: !!o.caption, captionDirection: title(o.caption?.side ?? 'bottom'), captionVertAlign: title(o.caption?.verticalAlign ?? 'top'), captionWidth: o.caption?.width ?? 0,
     captionSpacing: o.caption?.gap ?? 0, captionMaxWidth: o.caption?.maxWidth ?? 0, captionIncludeMargin: o.caption?.includeMargin ?? false };
 }
 function shapeProperties(core: HmCore, object: ObjectAddress): ShapeProperties {
   const o = objectProperties(core, object);
   const kind = o.fill?.kind ?? 0;
   const solid = o.fill?.solid;
-  return { ...commonProperties(o), fillType: kind & 1 ? 'solid' : kind & 4 ? 'gradient' : kind & 2 ? 'image' : 'none',
+  return { ...commonProperties(o), ...captionProperties(o), fillType: kind & 1 ? 'solid' : kind & 4 ? 'gradient' : kind & 2 ? 'image' : 'none',
     fillBgColor: solid?.background, fillPatColor: solid?.patternColor, fillPatType: solid?.pattern, fillAlpha: o.fill?.alpha?.[0] ?? 0,
-    lineType: o.border?.style ?? 0 } as ShapeProperties;
+    lineType: o.border?.style ?? 0, borderAttr: o.border?.attr ?? 0, borderOutlineStyle: o.border?.outline ?? 0,
+    lineEndShape: o.border?.endCap ?? 0, arrowStart: o.border?.head ?? 0, arrowEnd: o.border?.tail ?? 0,
+    arrowStartSize: o.border?.headSize ?? 0, arrowEndSize: o.border?.tailSize ?? 0,
+    tbMarginLeft: o.textMargins?.[0] ?? 0, tbMarginRight: o.textMargins?.[1] ?? 0, tbMarginTop: o.textMargins?.[2] ?? 0, tbMarginBottom: o.textMargins?.[3] ?? 0,
+    tbVerticalAlign: title(o.textVerticalAlign ?? 'top'), roundRate: o.round ?? 0,
+    ...(o.fill?.gradient ? { gradientType: o.fill.gradient.kind, gradientAngle: o.fill.gradient.angle, gradientCenterX: o.fill.gradient.centerX, gradientCenterY: o.fill.gradient.centerY, gradientBlur: o.fill.gradient.step } : {}),
+    shadowType: o.shadow?.kind ?? 0, shadowColor: o.shadow?.color ?? 0, shadowOffsetX: o.shadow?.x ?? 0, shadowOffsetY: o.shadow?.y ?? 0 } as ShapeProperties;
 }
 export function objectPatch(native: NativeObject, props: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
@@ -80,12 +91,23 @@ export function objectPatch(native: NativeObject, props: Record<string, unknown>
   const marginKeys = ['outerMarginLeft', 'outerMarginRight', 'outerMarginTop', 'outerMarginBottom'];
   const cropKeys = ['cropLeft', 'cropTop', 'cropRight', 'cropBottom'];
   const paddingKeys = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom'];
+  const caption: Record<string, unknown> = {};
+  const textMargins = [...(native.textMargins ?? [0, 0, 0, 0])];
+  const textMarginKeys = ['tbMarginLeft', 'tbMarginRight', 'tbMarginTop', 'tbMarginBottom'];
+  const shadow: Record<string, unknown> = {};
+  const gradientKeys = ['gradientType', 'gradientAngle', 'gradientCenterX', 'gradientCenterY', 'gradientBlur'];
   const fillKeys = ['fillType', 'fillBgColor', 'fillPatColor', 'fillPatType'];
   let fillChanged = false;
   for (const [key, value] of Object.entries(props)) {
     if (value === undefined || Object.is(value, current[key])) continue;
     if (direct.includes(key)) patch[key] = value;
     else if (enums.includes(key)) patch[key] = nativeEnum(value);
+    else if (key === 'hasCaption') caption.enabled = value;
+    else if (key.startsWith('caption')) {
+      const mapped = { captionDirection: 'side', captionVertAlign: 'verticalAlign', captionWidth: 'width', captionSpacing: 'gap', captionMaxWidth: 'maxWidth', captionIncludeMargin: 'includeMargin' }[key];
+      if (!mapped) throw new RangeError(`잘못된 캡션 속성: ${key}`);
+      caption[mapped] = mapped === 'side' || mapped === 'verticalAlign' ? nativeEnum(value) : value;
+    }
     else if (key === 'rotationAngle') patch.rotation = value;
     else if (key === 'horzFlip') patch.flipHorizontal = value;
     else if (key === 'vertFlip') patch.flipVertical = value;
@@ -98,18 +120,35 @@ export function objectPatch(native: NativeObject, props: Record<string, unknown>
     else if (cropKeys.includes(key)) { crop[cropKeys.indexOf(key)] = Number(value); patch.crop = crop; }
     else if (paddingKeys.includes(key)) { pictureMargins[paddingKeys.indexOf(key)] = Number(value); patch.pictureMargins = pictureMargins; }
     else if (fillKeys.includes(key)) fillChanged = true;
+    else if (gradientKeys.includes(key)) fillChanged = true;
+    else if (textMarginKeys.includes(key)) { textMargins[textMarginKeys.indexOf(key)] = Number(value); patch.textMargins = textMargins; }
+    else if (key === 'tbVerticalAlign') patch.textVerticalAlign = nativeEnum(value);
+    else if (key === 'roundRate') patch.round = Number(value);
+    else if (key.startsWith('shadow')) {
+      const name = { shadowType: 'kind', shadowColor: 'color', shadowOffsetX: 'x', shadowOffsetY: 'y' }[key];
+      if (!name) throw new RangeError(`잘못된 그림자 속성: ${key}`);
+      shadow[name] = value;
+    }
+    else if (['lineEndShape', 'arrowStart', 'arrowEnd', 'arrowStartSize', 'arrowEndSize'].includes(key)) {
+      const name = { lineEndShape: 'endCap', arrowStart: 'head', arrowEnd: 'tail', arrowStartSize: 'headSize', arrowEndSize: 'tailSize' }[key]!;
+      Object.assign(border, { [name]: Number(value) }); patch.border = border;
+    }
     else if (key === 'fillAlpha') patch.fillAlpha = Number(value);
     else if (key === 'borderColor' || key === 'borderWidth' || key === 'lineType') {
       border[key === 'borderColor' ? 'color' : key === 'borderWidth' ? 'width' : 'style'] = Number(value); patch.border = border;
     } else throw unsupported(`setObjectProperties.${key}`);
   }
+  if (Object.keys(shadow).length) patch.shadow = shadow;
+  if (Object.keys(caption).length) patch.caption = caption;
   if (fillChanged) {
     const pick = (key: string) => props[key] ?? current[key];
     const type = pick('fillType');
     if (type === 'solid') {
       patch.fill = { kind: 'solid', background: Number(pick('fillBgColor') ?? 0xffffff),
         patternColor: Number(pick('fillPatColor') ?? 0), pattern: Number(pick('fillPatType') ?? 0) };
-    } else if (type === 'none') patch.fill = { kind: 'none' };
+    } else if (type === 'gradient') patch.fill = { kind: 'gradient', gradientType: pick('gradientType'), angle: pick('gradientAngle'), centerX: pick('gradientCenterX'), centerY: pick('gradientCenterY'), step: pick('gradientBlur') };
+    else if (type === 'image') patch.fill = { kind: 'image' };
+    else if (type === 'none') patch.fill = { kind: 'none' };
     else throw unsupported(`setObjectProperties.fillType.${String(type)}`);
   }
   return patch;
@@ -143,24 +182,22 @@ export const getCellShapePropertiesByPath: typeof original.getCellShapePropertie
 export const getShapeText: typeof original.getShapeText = (core, s, p, c) => ({ ok: true, text: objectProperties(core, objectAddress(s, p, c)).text ?? '' });
 /**
  * 캡션이 없는 그림에 hasCaption 을 켜면 한컴 기본 캡션("그림 N", 아래)을 만든다. captionCharOffset 은 캡션 첫 문단에서
- * 글을 이어 쓸 글자 위치다. 캡션 끄기와 다른 자리의 새 캡션은 아직 엔진에 없다.
+ * 글을 이어 쓸 글자 위치다. 생성과 속성 변경은 같은 편집으로 묶는다.
  */
-function setPictureWithCaption(core: HmCore, object: ObjectAddress, props: Record<string, unknown>) {
-  const current = pictureProperties(core, object);
-  const { hasCaption, ...rest } = props;
-  if (hasCaption === undefined || hasCaption === current.hasCaption) return setObjectProperties(core, object, props, { ...current });
-  if (!hasCaption) throw unsupported('setObjectProperties.hasCaption.false');
-  const side = String(rest.captionDirection ?? 'Bottom');
-  if (side !== 'Bottom') throw unsupported(`setObjectProperties.captionDirection.${side}`);
-  const caption = { ...current, captionDirection: side };
-  setObjectProperties(core, object, rest, caption);
-  core.transact([{ op: 'setObjectCaption', object, text: ' ', withNumber: true } as EditOp]);
+function setPictureWithCaption(core: HmCore, object: ObjectAddress, props: Record<string, unknown>, current: Record<string, unknown> = { ...pictureProperties(core, object) }) {
+  const creating = props.hasCaption === true && !current.hasCaption;
+  const patch = objectPatch(objectProperties(core, object), props, { ...current });
+  const ops: EditOp[] = [];
+  if (creating) ops.push({ op: 'setObjectCaption', object, text: ' ', withNumber: true } as EditOp);
+  if (Object.keys(patch).length) ops.push({ op: 'setObjectProperties', object, patch } as EditOp);
+  core.transact(ops);
+  if (!creating) return { ok: true };
   const list = objectProperties(core, object).caption!.list;
   const steps = [...(object.steps ?? []), { para: object.para, control: object.control, index: list }];
   return { ok: true, captionCharOffset: paraMap(core.paragraph({ section: object.section, steps }, 0)).textLength };
 }
 export const setPictureProperties: typeof original.setPictureProperties = (core, s, p, c, props) => setPictureWithCaption(core, objectAddress(s, p, c), props);
-export const setShapeProperties: typeof original.setShapeProperties = (core, s, p, c, props) => setObjectProperties(core, objectAddress(s, p, c), props, { ...shapeProperties(core, objectAddress(s, p, c)) });
+export const setShapeProperties: typeof original.setShapeProperties = (core, s, p, c, props) => setPictureWithCaption(core, objectAddress(s, p, c), props, { ...shapeProperties(core, objectAddress(s, p, c)) });
 export const setCellPicturePropertiesByPath: typeof original.setCellPicturePropertiesByPath = (core, s, p, path, c, props) => { const at = objectAddressByPath(s, p, path, c); return setObjectProperties(core, at, props, { ...pictureProperties(core, at) }); };
 export const setCellShapePropertiesByPath: typeof original.setCellShapePropertiesByPath = (core, s, p, path, c, props) => { const at = objectAddressByPath(s, p, path, c); return setObjectProperties(core, at, props, { ...shapeProperties(core, at) }); };
 export const deletePictureControl: typeof original.deletePictureControl = (core, s, p, c) => deleteObject(core, objectAddress(s, p, c));
@@ -194,7 +231,6 @@ export const createShapeControl: typeof original.createShapeControl = (core, par
   const kinds: Record<string, 'rect' | 'ellipse' | 'line' | 'textbox'> = { rectangle: 'rect', rect: 'rect', ellipse: 'ellipse', line: 'line', textbox: 'textbox' };
   const kind = kinds[String(params.shapeType)];
   if (!kind) throw unsupported(`createShapeControl.${params.shapeType}`);
-  if (params.lineFlipX || params.lineFlipY) throw unsupported('createShapeControl.lineFlip');
   const target = pathTarget(Number(params.sectionIdx ?? 0), Number(params.paraIdx ?? 0), '[]');
   const caret = logicalAddress(core, target.list, target.para, Number(params.charOffset ?? 0));
   const controls = core.paragraph(target.list, target.para).controls;
@@ -209,7 +245,8 @@ export const createShapeControl: typeof original.createShapeControl = (core, par
     inline: params.treatAsChar === true, horzOffset: Number(params.horzOffset ?? 0), vertOffset: Number(params.vertOffset ?? 0), text: params.text } as EditOp,
     { op: 'setObjectProperties', object: { ...target.list, para: target.para, control }, patch: {
       horzRelTo: nativeEnum(params.horzRelTo ?? 'Paper'), vertRelTo: nativeEnum(params.vertRelTo ?? 'Paper'),
-      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')), zOrder } } as EditOp]);
+      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')), zOrder,
+      flipHorizontal: params.lineFlipX === true, flipVertical: params.lineFlipY === true } } as EditOp]);
   return insertedControl(core, at, before);
 };
 export const getControlImageData: typeof original.getControlImageData = (core, s, p, c, path) => new Uint8Array(core.query<{ bytes: number[] }>({ kind: 'pictureData', object: objectAddressByPath(s, p, path, c) }).bytes);

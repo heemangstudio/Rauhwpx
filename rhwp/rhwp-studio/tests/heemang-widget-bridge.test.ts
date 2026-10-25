@@ -136,10 +136,11 @@ test('character effects from the toolbar and dialog reach the document and read 
     const characters = JSON.parse(reopened.query(JSON.stringify({ kind: 'formatContext', at }))).characters;
     assert.deepEqual([characters.superscript, characters.underlineKind, characters.shadeColor, characters.outline], [true, 'above', 0x00FFFF, 1]);
   } finally { reopened.free(); }
-  // 글자 테두리는 아직 엔진이 못 바꾸므로 문서를 바꾸기 전에 거절한다.
-  const bytes = doc.serialize(false);
-  assert.throws(() => api.applyCharFormat(core, 0, 0, 0, 3, JSON.stringify({ bold: true, borderLeft: { type: 1, width: 1, color: '#000000' } })), { code: 'ENGINE_NOT_SUPPORTED' });
-  assert.deepEqual(doc.serialize(false), bytes);
+  const beforeBorder = core.state().undo;
+  api.applyCharFormat(core, 0, 0, 0, 3, JSON.stringify({ borderLeft: { type: 1, width: 1, color: '#000000' } }));
+  assert.deepEqual(api.getCharPropertiesAt(core, 0, 0, 1).borderLeft, { type: 1, width: 1, color: '#000000' });
+  assert.equal(core.state().undo, beforeBorder + 1);
+  core.mutate(doc => doc.undo());
 });
 
 test('the numbering button reuses the document numbering before creating the Hancom default', t => {

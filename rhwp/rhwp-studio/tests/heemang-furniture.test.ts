@@ -85,7 +85,7 @@ test('미주 번호 모양과 간격은 미주 설정을 저장하고 각주 설
   assert.deepEqual(reopened.query({ kind: 'noteShape', section: 0, noteKind: 'footnote' }), beforeFootnote);
 });
 
-test('머리말 마당은 쪽 번호와 정렬·굵게를 넣고, 파일 이름 마당은 문서를 바꾸지 않고 막는다', t => {
+test('머리말 마당은 쪽 번호·파일 이름과 정렬·굵게를 넣는다', t => {
   const { core, doc } = open(t);
   furniture.createHeaderFooter(core, 0, true, 0);
   furniture.insertTextInHeaderFooter(core, 0, true, 0, 0, 0, '지울 글');
@@ -95,7 +95,6 @@ test('머리말 마당은 쪽 번호와 정렬·굵게를 넣고, 파일 이름 
   assert.deepEqual([info.text, info.charCount], ['', 1]);
   assert.equal(furniture.getParaPropertiesInHf(reopened, 0, true, 0, 0).alignment, 'center');
   assert.equal(furniture.getCharPropertiesInHf(reopened, 0, true, 0, 0, 0).bold, true);
-  const before = doc.serialize(false);
-  assert.throws(() => furniture.applyHfTemplate(core, 0, true, 0, 4), { name: 'EngineNotSupportedError' });
-  assert.deepEqual(doc.serialize(false), before);
+  assert.deepEqual(furniture.applyHfTemplate(core, 0, true, 0, 4), { ok: true });
+  assert.match(JSON.parse(furniture.getHeaderFooter(core, 0, true, 0)).text, /문서/);
 });

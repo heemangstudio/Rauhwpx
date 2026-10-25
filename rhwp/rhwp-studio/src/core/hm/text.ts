@@ -5,7 +5,6 @@
 // 글자만 센다 (address.ts).
 import type { EditOp } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
-import { unsupported } from './core';
 import {
   bodyList, cellList, logicalLength, logicalRangeToWire, logicalText, logicalToText, logicalToWire, paraMap,
   pathTarget, textRangeToWire, textSlice, textToLogical, textToWire, toAddress, wireToLogical, wireToText,
@@ -232,7 +231,13 @@ export function deleteRangeAcrossSections(core: HmCore, startSec: number, startP
   if (startSec === endSec) {
     return { ok: true, sectionIdx: startSec, ...rangeIn(core, bodyList(startSec), startPara, startOffset, endPara, endOffset, logical) };
   }
-  throw unsupported('구역을 넘는 삭제');
+  if (startSec > endSec) throw new RangeError('시작 구역이 끝 구역보다 뒤에 있습니다');
+  const first = bodyList(startSec), last = bodyList(endSec);
+  const a = paraMap(core.paragraph(first, startPara)), b = paraMap(core.paragraph(last, endPara));
+  const from = logical ? logicalRangeToWire(a, startOffset, logicalLength(a))[0] : textRangeToWire(a, startOffset, a.textLength)[0];
+  const to = endOffset <= 0 ? b.lead : logical ? logicalRangeToWire(b, 0, endOffset)[1] : textRangeToWire(b, 0, endOffset)[1];
+  core.transact([{ op: 'delete', from: toAddress(first, startPara, from), to: toAddress(last, endPara, to) }]);
+  return { ok: true, sectionIdx: startSec, paraIdx: startPara, charOffset: startOffset };
 }
 
 // ─── 셀(한 단계) ────────────────────────────────────────────

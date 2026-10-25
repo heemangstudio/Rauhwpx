@@ -18,12 +18,12 @@ interface NativeBorderFill {
 }
 interface NativeCell {
   width: number; height: number; padding: number[]; verticalAlign: string; protected: boolean; header: boolean; ownPadding: boolean;
-  textDirection: number; editableInForm: boolean; borderFill: NativeBorderFill | null;
+  textDirection: number; editableInForm: boolean; fieldName?: string; borderFill: NativeBorderFill | null;
 }
 interface NativeZone { startRow: number; startColumn: number; endRow: number; endColumn: number; borderFill: NativeBorderFill | null }
 interface NativeTable {
   spacing: number; padding: number[]; repeatHeader: boolean; split: string; borderFill: NativeBorderFill | null;
-  caption: { side: 'left' | 'right' | 'top' | 'bottom'; width: number; gap: number } | null; zones: NativeZone[];
+  caption: { side: 'left' | 'right' | 'top' | 'bottom'; verticalAlign?: string; width: number; gap: number } | null; zones: NativeZone[];
 }
 type LinePatch = { style: number; width: number; color: number };
 type BorderFillPatch = Partial<Record<'left' | 'right' | 'top' | 'bottom' | 'diagonal', LinePatch>> & {
@@ -121,7 +121,7 @@ function cellProperties(core: HmCore, table: TableAddress, index: number): CellP
     paddingLeft: props.padding[0], paddingRight: props.padding[1], paddingTop: props.padding[2], paddingBottom: props.padding[3],
     applyInnerMargin: props.ownPadding, verticalAlign: ['top', 'center', 'bottom'].indexOf(props.verticalAlign),
     textDirection: props.textDirection, isHeader: props.header, cellProtect: props.protected,
-    fieldName: '', editableInForm: props.editableInForm, ...borderFillProps(props.borderFill) };
+    fieldName: props.fieldName ?? '', editableInForm: props.editableInForm, ...borderFillProps(props.borderFill) };
 }
 function setCell(core: HmCore, table: TableAddress, index: number, props: Partial<CellProperties>) {
   const info = tableInfo(core, table).cells[index];
@@ -140,8 +140,10 @@ function setCell(core: HmCore, table: TableAddress, index: number, props: Partia
     else if (key === 'applyInnerMargin') patch.ownPadding = value;
     else if (key === 'textDirection') patch.textDirection = Number(value);
     else if (key === 'editableInForm') patch.editableInForm = value;
+    else if (key === 'fieldName') patch.fieldName = value;
     else throw unsupported(`setCellProperties.${key}`);
   }
+  if (props.borderFillId !== undefined && props.borderFillId !== current.borderFillId) patch.borderFillId = props.borderFillId;
   const borderFill = borderFillPatch(props as Record<string, unknown>, current);
   if (borderFill) patch.borderFill = borderFill;
   if (Object.keys(patch).length) core.transact([{ op: 'setCellProperties', table, row: info.row, column: info.column, patch } as EditOp]);
@@ -173,7 +175,7 @@ export const getTableProperties: typeof original.getTableProperties = (core, s, 
     outerLeft: common.margins[0], outerRight: common.margins[1], outerTop: common.margins[2], outerBottom: common.margins[3],
     restrictInPage: common.restrictInPage, allowOverlap: common.allowOverlap, keepWithAnchor: common.keepWithAnchor,
     hasCaption: !!props.caption, captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption?.side ?? 'bottom'),
-    captionWidth: props.caption?.width ?? 0, captionSpacing: props.caption?.gap ?? 0, ...borderFillProps(props.borderFill) } as TableProperties;
+    captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption?.verticalAlign ?? 'top'), captionWidth: props.caption?.width ?? 0, captionSpacing: props.caption?.gap ?? 0, ...borderFillProps(props.borderFill) } as TableProperties;
 };
 export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => {
   const table = tableAddress(s, p, c);
@@ -189,11 +191,15 @@ export const setTableProperties: typeof original.setTableProperties = (core, s, 
     else if (key === 'repeatHeader') patch.repeatHeader = value;
     else if (key === 'pageBreak') patch.split = value === 0 ? 'none' : 'cell';
     else if (paddingKeys.includes(key)) { padding[paddingKeys.indexOf(key)] = Number(value); patch.padding = padding; }
+    else if (key === 'captionDirection') common[key] = ['Left', 'Right', 'Top', 'Bottom'][Number(value)];
+    else if (key === 'captionVertAlign') common[key] = ['Top', 'Center', 'Bottom'][Number(value)];
     else common[commonKeys[key] ?? key] = value;
   }
+  if (props.borderFillId !== undefined && props.borderFillId !== current.borderFillId) patch.borderFillId = props.borderFillId;
   const borderFill = borderFillPatch(props as Record<string, unknown>, current as Partial<CellProperties>);
   if (borderFill) patch.borderFill = borderFill;
   const ops: EditOp[] = [];
+  if (props.hasCaption === true && !current.hasCaption) ops.push({ op: 'setTableCaption', table, text: ' ', withNumber: true } as EditOp);
   if (Object.keys(patch).length) ops.push({ op: 'setTableProperties', table, patch } as EditOp);
   if (Object.keys(common).length) {
     const mappedCurrent = Object.fromEntries(Object.entries(current).map(([key, value]) => [commonKeys[key] ?? key, value]));

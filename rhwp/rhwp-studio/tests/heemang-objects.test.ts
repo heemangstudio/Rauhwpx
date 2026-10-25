@@ -74,7 +74,7 @@ test('table properties apply together and reject an unsupported edit atomically'
   api.setCellProperties(core, 0, 0, c, 0, { verticalAlign: 1, paddingLeft: 280, applyInnerMargin: true });
   assert.equal(api.getCellProperties(core, 0, 0, c, 0).paddingLeft, 280);
   const state = core.state();
-  assert.throws(() => api.setCellProperties(core, 0, 0, c, 0, { paddingLeft: 500, fieldName: 'unsupported' }), /ENGINE_NOT_SUPPORTED|지원하지 않는/);
+  assert.throws(() => api.setCellProperties(core, 0, 0, c, 0, { paddingLeft: 500, invalidProperty: 'unsupported' } as never), /ENGINE_NOT_SUPPORTED|지원하지 않는/);
   assert.deepEqual(core.state(), state);
   assert.equal(api.getCellProperties(core, 0, 0, c, 0).paddingLeft, 280);
 });

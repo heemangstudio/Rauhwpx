@@ -172,6 +172,7 @@ export class HeemangAdapter {
   private readonly webFonts = new Map<string, Promise<void>>();
   private doc: Doc | null = null;
   private packets = new Map<number, PagePacket>();
+  private furniturePreview: { key: string; doc: Doc; list: { section: number; steps: { para: number; control: number; index: number }[] } } | null = null;
   private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
   private _fileName = '';
   private sourceFormat = 'hwpx';
@@ -258,6 +259,7 @@ export class HeemangAdapter {
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
+    this.furniturePreview?.doc.free(); this.furniturePreview = null;
     if (this.pictureFrame) cancelAnimationFrame(this.pictureFrame);
     this.pictureFrame = 0;
     this.pictures.clear();
@@ -357,6 +359,35 @@ export class HeemangAdapter {
     this.packets.set(index, packet);
     while (this.packets.size > 8) this.packets.delete(this.packets.keys().next().value!);
     return packet;
+  }
+
+  /** 표시되지 않는 머리말·꼬리말의 조판은 내용·글꼴이 바뀔 때만 다시 만든다. */
+  withFurniturePreview<T>(target: { section: number; para: number; control: number }, run: (doc: Doc, list: { section: number; steps: { para: number; control: number; index: number }[] }) => T): T {
+    const source = this.document(), state = this.state();
+    const key = `${state.instance}:${state.contentEpoch}:${state.fontGeneration}:${JSON.stringify(target)}`;
+    if (this.furniturePreview?.key !== key) {
+      this.furniturePreview?.doc.free(); this.furniturePreview = null;
+      const sourceControls = JSON.parse(source.query('{"kind":"controls"}')) as { kind: string; target: { section: number; para: number; control: number; steps?: unknown[] } }[];
+      const kind = sourceControls.find(c => c.target.section === target.section && c.target.para === target.para && c.target.control === target.control && !c.target.steps?.length)?.kind;
+      const doc = (source as unknown as { furniturePreview(target: string): Doc }).furniturePreview(JSON.stringify(target));
+      const controls = JSON.parse(doc.query('{"kind":"controls"}')) as typeof sourceControls;
+      const active = controls.find(c => c.kind === kind && c.target.section === 0 && c.target.para === 0 && !c.target.steps?.length);
+      if (!active) { doc.free(); throw new Error('머리말·꼬리말 미리보기 위치를 찾을 수 없습니다'); }
+      this.furniturePreview = { key, doc, list: { section: 0, steps: [{ para: 0, control: active.target.control, index: 0 }] } };
+    }
+    return run(this.furniturePreview.doc, this.furniturePreview.list);
+  }
+
+  renderFurniturePreviewToCanvas(index: number, target: { section: number; para: number; control: number }, canvas: HTMLCanvasElement, scale: number): void {
+    this.withFurniturePreview(target, preview => {
+      const packet = decodePacket(preview.page(index).slice());
+      canvas.width = Math.max(1, Math.floor(packet.width * PX_PER_HU * scale));
+      canvas.height = Math.max(1, Math.floor(packet.height * PX_PER_HU * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas2D를 사용할 수 없습니다');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      this.player.paint(ctx, packet, 96 * scale, (item, dpi) => patchImage(preview.patch(index, item, dpi).slice(), (w, h) => new OffscreenCanvas(w, h)));
+    });
   }
 
   renderPageToCanvas(index: number, canvas: HTMLCanvasElement, scale: number, refill = true): void {
