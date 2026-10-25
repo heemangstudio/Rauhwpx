@@ -186,6 +186,8 @@ export function decodeOutlines(bytes: Uint8Array, into = new Map<string, Outline
 }
 
 const DASHES = [null, [8, 4], [1, 2], [8, 3, 1, 3], [8, 3, 1, 3, 1, 3], [16, 6], [0, 2.5]];
+const KEPT_RUN_PATHS = 256;
+const KEPT_RUN_GLYPHS = 4096;
 
 export const css = (colorref: number) =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;
@@ -280,6 +282,8 @@ export class Player {
   outlines: Map<string, Outline>;
   paths: Map<string, { em: number; path: Path2D }>;
   generation: number;
+  private readonly runPaths = new Map<string, { path: Path2D; glyphs: number }>();
+  private retainedRunGlyphs = 0;
   constructor(engine: Engine) {
     this.engine = engine;
     this.outlines = new Map();
@@ -292,6 +296,8 @@ export class Player {
     if (packet.fontGeneration !== this.generation || this.outlines.size > 8192) {
       this.outlines.clear();
       this.paths.clear();
+      this.runPaths.clear();
+      this.retainedRunGlyphs = 0;
       this.generation = packet.fontGeneration;
     }
     const g = packet.glyphs;
@@ -324,6 +330,29 @@ export class Player {
 
   /** The device path of a glyph run at `s` pixels per HU. */
   runPath(run: GlyphRun, s: number) {
+    const key = run.glyphs.length <= KEPT_RUN_GLYPHS
+      ? JSON.stringify([s, run.face, run.size, run.ratio, run.flags & 2, run.baseline, run.glyphs]) : null;
+    const cached = key !== null && this.runPaths.get(key);
+    if (key !== null && cached) {
+      this.runPaths.delete(key);
+      this.runPaths.set(key, cached);
+      return cached.path;
+    }
+    const out = this.buildRunPath(run, s);
+    if (key !== null) {
+      this.runPaths.set(key, { path: out, glyphs: run.glyphs.length });
+      this.retainedRunGlyphs += run.glyphs.length;
+      // Composite paths copy glyph geometry, so bound both runs and glyphs retained.
+      while (this.runPaths.size > KEPT_RUN_PATHS || this.retainedRunGlyphs > KEPT_RUN_GLYPHS) {
+        const oldest = this.runPaths.keys().next().value!;
+        this.retainedRunGlyphs -= this.runPaths.get(oldest)!.glyphs;
+        this.runPaths.delete(oldest);
+      }
+    }
+    return out;
+  }
+
+  private buildRunPath(run: GlyphRun, s: number): Path2D {
     const out = new Path2D();
     const skew = run.flags & 2 ? 0.2 : 0;
     for (const [glyph, x] of run.glyphs) {

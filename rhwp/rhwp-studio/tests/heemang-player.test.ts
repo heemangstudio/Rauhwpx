@@ -251,6 +251,47 @@ test('player clips picture placement, skips pending pictures and preserves patch
   ]);
 });
 
+test('glyph-run reuse preserves geometry across packet replacement, zoom and font refill', t => {
+  const previous = new Map(['Path2D','DOMMatrix'].map(name => [name,Object.getOwnPropertyDescriptor(globalThis,name)]));
+  class Path {
+    commands = [];
+    moveTo(...p) { this.commands.push(['move',...p]); }
+    lineTo(...p) { this.commands.push(['line',...p]); }
+    quadraticCurveTo(...p) { this.commands.push(['quad',...p]); }
+    bezierCurveTo(...p) { this.commands.push(['cubic',...p]); }
+    closePath() { this.commands.push(['close']); }
+    addPath(path,matrix) { this.commands.push(['add',path.commands,matrix.values]); }
+  }
+  Object.defineProperty(globalThis,'Path2D',{configurable:true,value:Path});
+  Object.defineProperty(globalThis,'DOMMatrix',{configurable:true,value:class { constructor(values) { this.values=values; } }});
+  t.after(() => { for (const [name,descriptor] of previous) {
+    if (descriptor) Object.defineProperty(globalThis,name,descriptor); else delete globalThis[name];
+  } });
+  const seed = (player,shape=10) => {
+    for (const face of [2,3]) for (const glyph of [3,4]) player.outlines.set(`${face}:${glyph}`,{
+      em:1000,cmds:new Float32Array([0,face,shape,1,glyph,shape+1,4]),
+    });
+  };
+  const fresh = (shape=10) => { const player=new Player({}); player.load(decodePacket(packet())); seed(player,shape); return player; };
+  const run = {face:2,size:1000,ratio:100,color:0,flags:0,baseline:100,glyphs:[[3,0],[4,500]]};
+  const player=fresh(),cached=player.runPath(run,1);
+  assert.equal(player.runPath(structuredClone(run),1),cached,'unchanged runs survive decoded packet replacement');
+  for (const [patch,scale] of [[{face:3},1],[{size:1200},1],[{ratio:80},1],[{flags:2},1],
+    [{baseline:130},1],[{glyphs:[[4,10],[3,520]]},1],[{},1.5],[{color:0xff},1]]) {
+    const next={...run,...patch};
+    assert.deepEqual(player.runPath(next,scale).commands,fresh().runPath(next,scale).commands);
+  }
+  const missing=fresh(); missing.outlines.delete('2:4');
+  const partial=missing.runPath(run,1);
+  const refill=decodePacket(packet()); refill.fontGeneration+=1; missing.load(refill); seed(missing);
+  assert.notDeepEqual(missing.runPath(run,1).commands,partial.commands,'the newly available glyph is painted');
+  assert.deepEqual(missing.runPath(run,1).commands,fresh().runPath(run,1).commands);
+  const next=decodePacket(packet()); next.fontGeneration+=1; player.load(next); seed(player,40);
+  const refilled=player.runPath(run,1);
+  assert.notEqual(refilled,cached,'a font refill replaces retained composite outlines');
+  assert.deepEqual(refilled.commands,fresh(40).runPath(run,1).commands);
+});
+
 
 test('deferred reads retry after relayout moves a different picture into the item', async t => {
   const bitmap = { close() {} };
