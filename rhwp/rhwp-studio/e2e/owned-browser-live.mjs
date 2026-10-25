@@ -110,9 +110,10 @@ try {
     provider = await attachProvider();
     tab = (await human('open', { url: site.origin })).tab;
     assert.equal(tab.scope, 'global');
-    await page.click('.ag-fullscreen-btn');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
     await waitForState(page, 'Agent Focus ready', () => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.documentElement.classList.contains('ag-fs-vt') && !document.body.classList.contains('ag-fs-vt'));
-    await page.click('.ag-browser-trigger');
+    await page.click('.ag-workspace-panel-btn');
+    await page.click('.ag-workbench-launcher-item[data-view="browser"]');
     await eventually('sidebar selection reported through authenticated MCP', () => provider.call('browser_status').then(frame => must(frame, 'agent status')), value => value.activeTabId === tab.tabId);
     const second = (await human('open', { url: 'about:blank' })).tab;
     await page.waitForSelector(`[data-resource-id="browser:${second.tabId}"]`);
@@ -441,7 +442,8 @@ try {
   await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.documentElement.classList.contains('document-home-open'));
-  await page.click('.ag-browser-trigger');
+  await page.click('.ag-workspace-panel-btn');
+  await page.click('.ag-workbench-launcher-item[data-view="browser"]');
   await page.waitForSelector('.ag-browser [aria-label="다운로드 목록"]', { visible: true });
   await page.click('.ag-browser [aria-label="다운로드 목록"]');
   await page.click(`.ag-browser-downloads [data-download-id="${inboxJob.downloadId}"] [aria-label="문서에서 열기"]`);

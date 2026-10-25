@@ -521,7 +521,6 @@ function createParallelChat(): PreviewChat {
   const chat = { sidebar: chatSidebar, mock: chatMock };
   chats.push(chat);
   watchChatModeLock(chat);
-  placeholderFocusButton(chatSidebar);
   return chat;
 }
 
@@ -757,18 +756,6 @@ document.querySelector('#reset')!.addEventListener('click', () => {
   url.searchParams.set('reset', '1');
   location.replace(url);
 });
-// Keep the production focus button visible while staying within the sidebar-only scope.
-function placeholderFocusButton(target: AgentSidebarHandle): void {
-  target.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
-    'click',
-    (event) => {
-      event.stopImmediatePropagation();
-      report('Focus mode opens the full workspace in the application.');
-    },
-    { capture: true },
-  );
-}
-for (const session of sessions) placeholderFocusButton(session.sidebar);
 // External destinations are represented locally; never launch an OAuth page.
 const openLocalWindow = window.open.bind(window);
 window.open = (url, target, features) => {

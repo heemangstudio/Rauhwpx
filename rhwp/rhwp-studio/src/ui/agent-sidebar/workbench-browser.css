@@ -124,8 +124,6 @@ html.document-home-open .ag-browser-floating { visibility: hidden; pointer-event
 .ag-browser-float-edge[data-edge=ne],.ag-browser-float-edge[data-edge=sw] { cursor: nesw-resize; }
 @media (max-width: 639px) { .ag-browser-floating { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100dvh !important; padding: 0; border-radius: 0; } .ag-browser-floating .ag-browser { border-radius: 0; } .ag-browser-move { cursor: default; } .ag-browser-float-edge { display: none; } }
 
-.ag-browser-trigger { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border: 0; background: transparent; color: var(--ag-text-secondary, var(--n-text-secondary)); cursor: pointer; border-radius: 4px; }
-.ag-browser-trigger:hover { background: var(--ag-active); color: var(--ag-text, var(--n-text)); }
 .ag-browser-upload { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; padding: 8px; border-bottom: 1px solid var(--browser-border); }
 .ag-browser-upload[hidden] { display: none; }
 .ag-browser-upload span { flex: 1; }

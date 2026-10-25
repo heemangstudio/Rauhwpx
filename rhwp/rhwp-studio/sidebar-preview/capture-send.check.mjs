@@ -13,14 +13,16 @@ async function sendText(page, text) {
 }
 
 async function attachCapture(page) {
-  await page.click('.ag-browser-trigger');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } })));
+  await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && !document.body.classList.contains('ag-fs-vt'));
+  await page.click('.ag-workspace-panel-btn');
+  await page.click('.ag-workbench-launcher-item[data-view="browser"]');
   await page.waitForSelector('.ag-browser:not([hidden])', { visible: true });
   const emptyOpen = await page.$('.ag-browser [aria-label="연구 브라우저 열기"]');
   if (emptyOpen && await emptyOpen.evaluate((button) => button.checkVisibility())) await emptyOpen.click();
   await page.waitForFunction(() => document.querySelector('.ag-browser-frame')?.src.startsWith('data:image'));
   await page.click('[aria-label="현재 화면을 캡처해 채팅에 첨부"]');
   await page.waitForSelector('.ag-capture-inbox [data-capture-id]');
-  await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-close');
 }
 
 const currentThread = (page) => page.evaluate(() => window.sidebarPreview.threadStore.getThread(window.sidebarPreview.sidebar.currentThreadId()));
