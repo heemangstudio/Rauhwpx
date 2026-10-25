@@ -1,0 +1,37 @@
+{
+  "url": "http://127.0.0.1:7723/?engine=heemang",
+  "pictures": {
+    "bytes": 68,
+    "mime": "image/png",
+    "body": true,
+    "cell": true,
+    "reopened": [
+      "hwp",
+      "hwpx"
+    ]
+  },
+  "ole": [
+    {
+      "method": "getControlImageData",
+      "rejected": true,
+      "error": "Error: BAD_REQUEST: the object is not a picture"
+    },
+    {
+      "method": "getControlImageMime",
+      "rejected": true,
+      "error": "Error: BAD_REQUEST: the object is not a picture"
+    },
+    {
+      "method": "getControlImageData",
+      "rejected": true,
+      "error": "Error: BAD_REQUEST: the object is not a picture"
+    },
+    {
+      "method": "getControlImageMime",
+      "rejected": true,
+      "error": "Error: BAD_REQUEST: the object is not a picture"
+    }
+  ],
+  "pageErrors": [],
+  "legacyRequests": []
+}
