@@ -1705,9 +1705,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "columnCount",
       "columnType",
       "sameWidth",
-      "spacingHu"
+      "spacingHu",
+      "columnWidths"
     ],
-    "signature": "setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number)"
+    "signature": "setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number, columnWidths?: number[])"
   },
   {
     "method": "setEquationProperties",

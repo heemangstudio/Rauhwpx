@@ -20,12 +20,13 @@ interface Settings {
   page: Required<PagePatch> | null;
   pageBorders: PageBorder[];
   settings: Required<SectionPatch> | null;
-  columns: { count: number; kind: number; equalWidths: boolean; gap: number } | null;
+  columns: { count: number; kind: number; equalWidths: boolean; gap: number; columns?: [number, number][] } | null;
 }
+type ColumnPatch = { count: number; kind: number; equalWidths: boolean; gap: number; columns?: [number, number][] };
 type PageOp =
   | { op: 'setPageSettings'; section: number; patch: PagePatch }
   | { op: 'setSectionSettings'; section: number; patch: SectionPatch }
-  | { op: 'setColumns'; at: Address; patch: { count: number; kind: number; equalWidths: boolean; gap: number } }
+  | { op: 'setColumns'; at: Address; patch: ColumnPatch }
   | { op: 'setPageHide'; at: Address; flags: number }
   | { op: 'setPageBorder'; section: number; side: 'both'; patch: { attr?: number; offsets?: number[]; borderFill?: number; lines?: Line[]; fill?: PageFill } }
   | { op: 'columnBreak'; at: Address }
@@ -115,14 +116,53 @@ export function insertNewNumber(core: HmCore, sec: number, para: number, charOff
   return JSON.stringify({ ok: true });
 }
 
-export function getColumnDef(core: HmCore, sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number } {
+export function getColumnDef(core: HmCore, sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number; widths?: number[] } {
   const columns = settings(core, sec).columns;
-  return { columnCount: columns?.count ?? 1, columnType: columns?.kind ?? 0, sameWidth: columns?.equalWidths ?? true, spacing: columns?.gap ?? 0 };
+  const def = { columnCount: columns?.count ?? 1, columnType: columns?.kind ?? 0, sameWidth: columns?.equalWidths ?? true, spacing: columns?.gap ?? 0 };
+  if (def.sameWidth || columns?.columns?.length !== def.columnCount) return def;
+  // 너비가 다른 단은 비례값(합 32768)으로 저장된다. 본문 너비에 맞춰 HU 로 돌려준다.
+  // HWP5 는 이때 공통 간격을 따로 적지 않으므로 간격도 첫 단 뒤 비례값에서 읽는다.
+  const body = bodyWidth(core, sec);
+  const total = columns.columns.reduce((sum, [w, g]) => sum + w + g, 0) || 1;
+  const hu = (value: number) => Math.round(value * body / total);
+  return { ...def, spacing: hu(columns.columns[0][1]), widths: columns.columns.map(([w]) => hu(w)) };
 }
 
-export function setColumnDef(core: HmCore, sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number): string {
-  apply(core, [{ op: 'setColumns', at: logicalAddress(core, bodyList(sec), 0, 0),
-    patch: { count: columnCount, kind: columnType, equalWidths: !!sameWidth, gap: spacingHu } }]);
+/** 구역 첫 쪽의 본문 너비(HU). */
+function bodyWidth(core: HmCore, sec: number): number {
+  const laid = (JSON.parse(core.call(doc => doc.pages())) as HmPage[]).find(item => item.section === sec);
+  if (laid) return laid.body.width;
+  const page = getPageDef(core, sec);
+  return (page.landscape ? page.height : page.width) - page.marginLeft - page.marginRight - page.marginGutter;
+}
+
+/** 단 너비 비율(weights)과 간격(HU)을 본문 너비 안에서 단마다 (너비, 뒤 간격) 비례값(합 32768)으로 바꾼다. */
+function proportionalColumns(weights: number[], gap: number, body: number): [number, number][] {
+  const n = weights.length;
+  const available = Math.max(n, body - gap * (n - 1));
+  const positive = weights.map(w => Math.max(0, w));
+  const sum = positive.reduce((total, w) => total + w, 0);
+  const share = sum > 0 ? positive.map(w => w / sum) : positive.map(() => 1 / n);
+  const pairs = share.map((part, i) => [available * part, i < n - 1 ? gap : 0]);
+  const total = pairs.reduce((acc, [w, g]) => acc + w + g, 0);
+  const scaled = pairs.map(([w, g]) => [Math.max(1, Math.round(w * 32768 / total)), Math.round(g * 32768 / total)] as [number, number]);
+  scaled[n - 1][0] += 32768 - scaled.reduce((acc, [w, g]) => acc + w + g, 0);
+  return scaled;
+}
+
+/**
+ * 단 설정. 너비가 다른 단(sameWidth 0)은 columnWidths 로 단마다 너비 비율을 받는다(getColumnDef 의
+ * widths(HU)를 그대로 넘겨도 된다). 없으면 지금 단 비율을 쓰고, 단 수가 달라 쓸 비율이 없으면 같은 너비로 나눈다.
+ */
+export function setColumnDef(core: HmCore, sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number, columnWidths?: number[]): string {
+  const patch: ColumnPatch = { count: columnCount, kind: columnType, equalWidths: !!sameWidth, gap: spacingHu };
+  if (!sameWidth && columnCount > 1) {
+    const weights = columnWidths?.length === columnCount ? columnWidths
+      : settings(core, sec).columns?.columns?.length === columnCount ? null
+        : Array.from({ length: columnCount }, () => 1);
+    if (weights) patch.columns = proportionalColumns(weights, spacingHu, bodyWidth(core, sec));
+  }
+  apply(core, [{ op: 'setColumns', at: logicalAddress(core, bodyList(sec), 0, 0), patch }]);
   return JSON.stringify(result(core));
 }
 

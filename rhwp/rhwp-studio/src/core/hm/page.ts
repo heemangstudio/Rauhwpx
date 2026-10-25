@@ -44,7 +44,7 @@ export function insertColumnBreak(core: HmCore, sec: number, para: number, charO
   throw unsupported('insertColumnBreak');
 }
 
-export function getColumnDef(core: HmCore, sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number } {
+export function getColumnDef(core: HmCore, sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number; widths?: number[] } {
   throw unsupported('getColumnDef');
 }
 
@@ -52,7 +52,7 @@ export function insertNewNumber(core: HmCore, sec: number, para: number, charOff
   throw unsupported('insertNewNumber');
 }
 
-export function setColumnDef(core: HmCore, sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number): string {
+export function setColumnDef(core: HmCore, sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number, _columnWidths?: number[]): string {
   throw unsupported('setColumnDef');
 }
 

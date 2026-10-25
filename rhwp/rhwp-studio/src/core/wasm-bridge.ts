@@ -415,7 +415,7 @@ export class WasmBridge {
     return api.insertColumnBreak(this.core, sec, para, charOffset);
   }
 
-  getColumnDef(sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number } {
+  getColumnDef(sec: number): { columnCount: number; columnType: number; sameWidth: boolean; spacing: number; widths?: number[] } {
     return api.getColumnDef(this.core, sec);
   }
 
@@ -423,8 +423,9 @@ export class WasmBridge {
     return api.insertNewNumber(this.core, sec, para, charOffset, startNum);
   }
 
-  setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number): string {
-    return api.setColumnDef(this.core, sec, columnCount, columnType, sameWidth, spacingHu);
+  /** columnWidths: 너비가 다른 단(sameWidth 0)의 단마다 너비 비율. getColumnDef().widths(HU)도 그대로 받는다. */
+  setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number, columnWidths?: number[]): string {
+    return api.setColumnDef(this.core, sec, columnCount, columnType, sameWidth, spacingHu, columnWidths);
   }
 
   mergeParagraph(sec: number, para: number): string {
