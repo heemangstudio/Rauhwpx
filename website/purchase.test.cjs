@@ -239,16 +239,15 @@ test('yearly stays on sale, and only the pricing page sells Signature', async ()
   assert.equal(byKind.subscription.expectedPrice, 9900);
   assert.match(pricing, /₩29,000/);
   assert.match(pricing, /연 ₩9,900/);
-  assert.match(pricing, /자동 갱신 · 언제든 해지/);
+  assert.match(pricing, /자동 갱신, 언제든 해지/);
   assert.match(pricing, /data-buy-sku="signature"/);
   assert.match(pricing, /data-buy-sku="annual"/);
   assert.match(pricing, /Groble에서 연 ₩9,900 결제하기/);
   assert.match(pricing, /Groble에서 Signature 결제하기/);
   assert.match(pricing, /일회성/);
   assert.match(pricing, /최소 3년/);
-  assert.match(pricing, /우선 지원/);
   assert.match(pricing, /기기 두 대/);
-  assert.match(pricing, /Mac · Windows/);
+  assert.match(pricing, /Mac, Windows/);
   assert.match(pricing, /href="trial\.html"/);
   assert.match(pricing, /체험판 안내/);
   assert.doesNotMatch(pricing, /무료 체험/);

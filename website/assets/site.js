@@ -68,7 +68,7 @@
   }
 
   /* Hero launch: the neurons grow from their cell bodies, the title types itself in, then the rest follows.
-     After the intro a blue signal light wanders the neurons (or follows the cursor) and the hero tilts with it. */
+     After the intro a steady blue light follows the cursor across the neurons. */
   function hero() {
     var section = document.querySelector('.sketch-hero');
     var title = section && section.querySelector('h1');
@@ -84,37 +84,34 @@
     canvas.style.position = 'absolute';
     glow.appendChild(canvas);
     var ink = canvas.getContext('2d');
-    var neuronLines = pre.textContent.split('\n');
+    // One entry per column. A jamo is two columns wide, so it leaves an empty column behind it.
+    var neuronLines = pre.textContent.split('\n').map(function (line) {
+      var columns = [];
+      Array.prototype.forEach.call(line, function (ch) { columns.push(ch); if (/[ㄱ-ㅎ]/.test(ch)) columns.push(''); });
+      return columns;
+    });
     var neuronColumns = Math.max.apply(null, neuronLines.map(function (line) { return line.length; }));
-    var states = new Uint8Array(neuronColumns * neuronLines.length), nextStates = new Uint8Array(states.length);
 
-    // Only rasterize the 144px hover patch. The original text never changes.
+    // Only rasterize the 144px hover patch: a steady light that fades out from the pointer.
     function shimmer() {
       ink.clearRect(0, 0, canvas.width, canvas.height);
       var left = Math.round(light.x - glowRadius), top = Math.round(light.y - glowRadius);
       canvas.style.left = left + 'px';
       canvas.style.top = top + 'px';
-      nextStates.fill(0);
       var x0 = Math.max(1, Math.floor(left / cellWidth));
       var x1 = Math.min(neuronColumns - 2, Math.ceil((left + canvas.width) / cellWidth));
       var y0 = Math.max(1, Math.floor(top / cellHeight));
       var y1 = Math.min(neuronLines.length - 2, Math.ceil((top + canvas.height) / cellHeight));
       for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
-        var glyph = neuronLines[y].charAt(x);
+        var glyph = neuronLines[y][x];
         if (!glyph || glyph === ' ') continue;
         var px = x * cellWidth - left, py = y * cellHeight - top;
         var dx = px - glowRadius, dy = py - glowRadius;
         var distance = (dx * dx + dy * dy) / (glowRadius * glowRadius);
         if (distance >= 1) continue;
-        var index = y * neuronColumns + x, state = states[index], excited = 0;
-        for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) {
-          if ((ox || oy) && states[index + oy * neuronColumns + ox] === 1) excited++;
-        }
-        nextStates[index] = state ? (state < 4 ? state + 1 : 0) : (excited === 1 || Math.random() < .035 ? 1 : 0);
-        ink.globalAlpha = (1 - distance) * (nextStates[index] === 1 ? 1 : nextStates[index] === 2 ? .65 : .25);
+        ink.globalAlpha = (1 - distance) * .85;
         ink.fillText(glyph, px, py);
       }
-      var previous = states; states = nextStates; nextStates = previous;
     }
 
     function glyph(c) {
@@ -166,17 +163,17 @@
       place(chars[0], true);
       caret.classList.add('is-on');
       chars.forEach(function (ch, i) {
-        setTimeout(function () { ch.classList.add('is-on'); place(ch); scramble(ch, 3); }, 260 + i * 56);
+        setTimeout(function () { ch.classList.add('is-on'); place(ch); scramble(ch, 3); }, 120 + i * 56);
       });
-      var end = 260 + chars.length * 56;
+      var end = 120 + chars.length * 56;
       setTimeout(function () { caret.classList.add('is-blink'); }, end + 120);
-      setTimeout(function () { section.classList.add('is-lit'); measure(); wake(); }, 1500);
+      setTimeout(function () { section.classList.add('is-lit'); measure(); wake(); }, 1100);
       setTimeout(function () {
         caret.classList.remove('is-on', 'is-blink');
         chars.forEach(function (ch) { ch.style.width = ''; });
         done = true;
-        setTimeout(rotate, 1400);
-      }, end + 1800);
+        setTimeout(rotate, 400);
+      }, end + 1000);
     }
     // After the intro, the last word erases and retypes through the documents people write in HWP.
     var rotor = title.querySelector('.hero-rotate');
@@ -234,8 +231,6 @@
         y: glowHeight / 2 - turn.sin * dx + turn.cos * dy
       };
       shimmer();
-      // Eight small canvas updates per second; no DOM glyph updates or idle loop.
-      raf = setTimeout(function () { raf = 0; wake(); }, 125);
     }
 
     glow.classList.add('ascii-art--glow');
@@ -252,7 +247,7 @@
 
     var fonts = document.fonts && document.fonts.load ? document.fonts.load('700 1em Gaegu') : null;
     if (fonts) fonts.then(play, play);
-    setTimeout(play, fonts ? 700 : 0);
+    setTimeout(play, fonts ? 400 : 0);
     window.addEventListener('resize', measure, { passive: true });
     section.addEventListener('pointermove', function (e) {
       if (fine.matches) { pointer = { x: e.clientX, y: e.clientY }; section.classList.add('is-neuron-hover'); wake(); }
@@ -287,7 +282,8 @@
     var words = splash ? Array.prototype.slice.call(splash.querySelectorAll('.keyword-splash li')) : [];
     var art = Array.prototype.slice.call(document.querySelectorAll('.ascii-art:not(.ascii-art--neurons)'));
     var depth = [-24, 26, -20, 34, -28, 18, -32, 24, 20, 36, -22, 30];
-    var centers = [], pointer = null, queued = false, lastY = window.scrollY, hidden = false;
+    var centers = [], pointer = null, queued = false;
+    var phone = window.matchMedia('(max-width: 760px)');
 
     function enabled() { return !reduce.matches && 'IntersectionObserver' in window; }
     function apply() { root.classList.toggle('motion', enabled()); queue(); }
@@ -318,12 +314,8 @@
       var y = window.scrollY;
       if (nav) {
         nav.classList.toggle('is-stuck', y > 8);
-        // Hide the nav while scrolling down; show it again on scroll up.
-        if (Math.abs(y - lastY) > 6) {
-          hidden = y > lastY && y > 240 && !root.classList.contains('menu-open');
-          lastY = y;
-        }
-        nav.classList.toggle('is-hidden', hidden && enabled());
+        // Past the first screen the nav stays put: a slim bar on larger screens, the bare menu button on phones.
+        nav.classList.toggle('is-compact', y > 240 && !phone.matches);
         var line = window.innerHeight * .4, current = null;
         sections.forEach(function (section, i) { if (section && section.getBoundingClientRect().top <= line) current = links[i]; });
         links.forEach(function (link) {
@@ -385,52 +377,229 @@
     });
     if (splash) observer.observe(splash);
   }
-  /* The hero resists the first wheel strokes, then glides to the next section in one move. */
+  /* Full-screen sections ([data-slide]) behave like slides. One critically damped spring drives every move:
+     a stroke toward the next slide stretches the page a little with growing resistance, a firm stroke
+     retargets the same spring at the next slide, and a stroke that stops short lets it settle back.
+     Because the spring keeps its velocity across those changes, the motion never restarts or jerks.
+     Trackpad momentum after a slide change is absorbed, so one swipe moves one slide. A slide taller
+     than the screen scrolls natively until its edge comes into view. */
   function friction() {
     var reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
-    var hero = document.querySelector('.sketch-hero');
-    var next = hero && hero.nextElementSibling;
-    if (!next) return;
-    var pull = 0, idle = 0, frame = 0;
+    var slides = Array.prototype.slice.call(document.querySelectorAll('[data-slide]'));
+    if (!slides.length) return;
+    // A gentle trackpad swipe sums past COMMIT; a single event of NOTCH or more (a wheel notch) commits at once.
+    var STRETCH = 48, SOFTNESS = 60, COMMIT = 60, NOTCH = 50, IDLE = 180, QUIET = 180, GAP = 120, SETTLE_MAX = 700;
+    var GLIDE = 12, BAND = 20;                        // spring frequencies (rad/s): slide change, stretch
+    var raf = 0, pos = 0, vel = 0, goal = 0, last = 0, committed = false;
+    var pull = null, idle = 0, settling = false, settleTimer = 0, settleStart = 0, lastDelta = 0, lastWheel = 0;
 
-    function gate() { return next.getBoundingClientRect().top + window.scrollY; }
-    function stop() { cancelAnimationFrame(frame); frame = 0; pull = 0; }
-    function glide(to, duration) {
-      var from = window.scrollY, start = 0;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(function step(now) {
-        if (!start) start = now;
-        var t = Math.min(1, (now - start) / duration);
-        var ease = t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        window.scrollTo({ top: from + (to - from) * ease, behavior: 'instant' });
-        frame = t < 1 ? requestAnimationFrame(step) : 0;
+    function tick(now) {
+      var dt = Math.min(.034, (now - last) / 1000), w = committed ? GLIDE : BAND;
+      last = now;
+      vel += (w * w * (goal - pos) - 2 * w * vel) * dt;
+      pos += vel * dt;
+      // Land once the last couple of pixels remain instead of creeping through the spring's long tail.
+      if (Math.abs(goal - pos) < 2 && Math.abs(vel) < 40) {
+        window.scrollTo({ top: goal, behavior: 'instant' });
+        raf = 0; vel = 0;
+        if (committed) { committed = false; settled(); }
+        return;
+      }
+      window.scrollTo({ top: pos, behavior: 'instant' });
+      raf = requestAnimationFrame(tick);
+    }
+    function drive(to, commit, speed) {
+      goal = to;
+      committed = !!commit;
+      if (raf) return;
+      pos = window.scrollY; vel = speed || 0; last = performance.now();
+      raf = requestAnimationFrame(tick);
+    }
+    function halt() { cancelAnimationFrame(raf); raf = 0; vel = 0; committed = false; }
+    function stop() { halt(); pull = null; clearTimeout(idle); }
+    // Absorb the momentum tail of the swipe that changed slides; disarm after a short quiet spell.
+    function settled() {
+      settling = true; settleStart = performance.now(); lastDelta = Infinity;
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(function () { settling = false; }, QUIET);
+    }
+    // Where each slide starts (the first one from the very top) and the last scroll position that still shows it.
+    // What follows the last slide (the footer) is one more stop, so a single-slide page still glides to it.
+    function stops() {
+      var max = document.documentElement.scrollHeight - window.innerHeight;
+      var list = slides.map(function (slide, i) {
+        var r = slide.getBoundingClientRect(), top = i ? r.top + window.scrollY : 0;
+        var start = Math.min(top, max);
+        return { start: start, end: Math.min(max, Math.max(start, r.bottom + window.scrollY - window.innerHeight)) };
       });
+      var tail = Math.min(max, slides[slides.length - 1].getBoundingClientRect().bottom + window.scrollY);
+      if (tail > list[list.length - 1].end + 1) list.push({ start: tail, end: max });
+      return list;
+    }
+    // Where a stroke leaves from and heads to, a clamp at a slide edge, or null to let the browser scroll.
+    function plan(y, delta, list) {
+      if (delta > 0) {
+        var i = -1;
+        list.forEach(function (s, k) { if (s.start <= y + 1) i = k; });
+        var cur = list[i], next = list[i + 1];
+        if (!cur || !next) return null;
+        if (y < cur.end - 1) return y + delta <= cur.end ? null : { clampTo: cur.end };
+        // Stretch from where the page actually is, which can be past the slide after a jump or scrollbar drag.
+        return { home: Math.max(y, cur.end), to: next.start };
+      }
+      var j = -1;
+      list.forEach(function (s, k) { if (s.start < y - 1) j = k; });
+      if (j < 0) return null;
+      var s = list[j];
+      if (y > s.end + 1) {
+        // Below the last slide (the footer) scrolls freely, then stops at its edge.
+        if (j === list.length - 1) return y + delta > s.end ? null : { clampTo: s.end };
+        return { home: y, to: s.end };
+      }
+      if (s.end > s.start + 1 && y + delta > s.start) return null;
+      return { home: s.start, to: s.start };
+    }
+    function step(dir) {
+      var p = plan(raf ? goal : window.scrollY, dir, stops());
+      if (!p) return false;
+      pull = null; clearTimeout(idle);
+      drive(p.clampTo !== undefined ? p.clampTo : p.to, true);
+      return true;
     }
     window.addEventListener('wheel', function (e) {
       if (reduce.matches || e.ctrlKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
       if (root.classList.contains('menu-open')) return;
-      var y = window.scrollY, line = gate(), down = e.deltaY > 0;
       var delta = e.deltaY * (e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1);
-      if (frame) { e.preventDefault(); return; }
-      // Going up, any stroke that would reach the hero glides straight to the top.
-      if (!down) {
-        if (y <= 0 || y + delta > line) return;
+      var now = performance.now(), size = Math.abs(delta), gap = now - lastWheel;
+      lastWheel = now;
+      if (committed) {
+        // A deliberate stroke against the glide turns it around; anything else rides along.
+        if (Math.sign(delta) !== Math.sign(goal - pos) && size > 30 && gap > GAP) {
+          committed = false;
+          if (step(delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
+        }
         e.preventDefault();
-        pull = 0;
-        glide(0, Math.min(850, 300 + y * .6));
         return;
       }
-      // Going down, only the stretch above the next section is gated.
-      if (y >= line - 1) return;
+      if (settling) {
+        // After a pause, or when strokes grow again, it is a new swipe; anything else is momentum.
+        var fresh = gap > GAP || (size > lastDelta * 1.6 && size > 24);
+        if (!fresh && now - settleStart < SETTLE_MAX) {
+          e.preventDefault();
+          lastDelta = size;
+          clearTimeout(settleTimer);
+          settleTimer = setTimeout(function () { settling = false; }, QUIET);
+          return;
+        }
+        clearTimeout(settleTimer); settling = false;
+      }
+      // Plan from where the spring is heading, so a stroke mid-stretch keeps its slide.
+      var y = raf ? goal : window.scrollY, p = plan(y, delta, stops());
+      if (!p) { if (raf) stop(); pull = null; return; }
       e.preventDefault();
-      pull += delta;
+      if (p.clampTo !== undefined) { stop(); window.scrollTo({ top: p.clampTo, behavior: 'instant' }); settled(); return; }
+      var dir = delta > 0 ? 1 : -1;
       clearTimeout(idle);
-      idle = setTimeout(function () { pull = 0; }, 260);
-      // A short stroke only nudges the page; a firm one carries it across.
-      if (pull > 120) { pull = 0; glide(line, 850); }
-      else window.scrollTo({ top: Math.min(line, y + delta * .18), behavior: 'instant' });
+      if (Math.abs(p.to - p.home) < 2) { pull = null; drive(p.to, true); return; }
+      if (!pull || pull.dir !== dir || pull.to !== p.to) pull = { dir: dir, home: p.home, to: p.to, amount: 0 };
+      pull.amount += size;
+      if (pull.amount > COMMIT || size >= NOTCH) { var to = pull.to; pull = null; drive(to, true); return; }
+      // Stretch: the page gives way less the harder it is pulled, and settles back when the stroke stops.
+      drive(pull.home + dir * STRETCH * (1 - Math.exp(-pull.amount / SOFTNESS)));
+      idle = setTimeout(function () {
+        if (!pull) return;
+        var home = pull.home;
+        pull = null;
+        drive(home);
+      }, IDLE);
     }, { passive: false });
-    window.addEventListener('keydown', stop);
-    window.addEventListener('pointerdown', stop);
+    // Arrow, Page and Space keys step between slides with the same spring; Home and End jump to the ends.
+    // Inside a tall slide or the footer they scroll natively. Other keys leave the spring alone.
+    window.addEventListener('keydown', function (e) {
+      var el = e.target, key = e.key;
+      var typing = el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+      if (typing || e.altKey || e.ctrlKey || e.metaKey || reduce.matches || root.classList.contains('menu-open')) return;
+      var dir = { ArrowDown: 1, PageDown: 1, ArrowUp: -1, PageUp: -1 }[key];
+      // Space on a focused button or link presses it.
+      if (key === ' ') { if (el && el.closest && el.closest('button, a, summary')) return; dir = e.shiftKey ? -1 : 1; }
+      else if (e.shiftKey) return;
+      if (key === 'Home' || key === 'End') {
+        e.preventDefault(); pull = null; clearTimeout(idle);
+        drive(key === 'Home' ? 0 : document.documentElement.scrollHeight - window.innerHeight, true);
+        return;
+      }
+      if (!dir) return;
+      if (step(dir)) e.preventDefault();
+      else stop();
+    });
+    // In-page links to a slide (or anything inside one) glide to the slide's start instead of the browser's jump.
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest && e.target.closest('a[href^="#"]');
+      if (!link || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || reduce.matches) return;
+      var target = document.getElementById(decodeURIComponent(link.getAttribute('href').slice(1)));
+      var slide = target && target.closest('[data-slide]');
+      if (!slide) return;
+      e.preventDefault();
+      pull = null; clearTimeout(idle);
+      drive(stops()[slides.indexOf(slide)].start, true);
+      history.replaceState(null, '', link.getAttribute('href'));
+    });
+    // A resize moves the slides; keep a glide aimed at the slide it was heading for.
+    window.addEventListener('resize', function () {
+      if (!raf || !committed) return;
+      var list = stops(), best = list[0];
+      list.forEach(function (s) { if (Math.abs(s.start - goal) < Math.abs(best.start - goal)) best = s; });
+      goal = best.start;
+    }, { passive: true });
+    // Touch: past the slide edge the page follows the finger with resistance; a swipe of 40px, or a
+    // quick flick, changes slides and the spring carries the finger's speed into the glide.
+    var touch = null, nativeUntil = 0, nativeY = 0, wall = null;
+    // A native touch scroll (and its momentum) inside a tall slide or the footer stops at the slide edge it
+    // crosses, and stays there until the gesture and its momentum are over.
+    window.addEventListener('scroll', function () {
+      if (performance.now() > nativeUntil) { wall = null; return; }
+      var y = window.scrollY;
+      if (wall === null) {
+        stops().forEach(function (s) {
+          [s.start, s.end].forEach(function (b) { if ((nativeY < b && y > b) || (nativeY > b && y < b)) wall = { at: b, side: Math.sign(nativeY - b) }; });
+        });
+        nativeY = y;
+      }
+      if (wall && (y - wall.at) * wall.side < 0) window.scrollTo({ top: wall.at, behavior: 'instant' });
+    }, { passive: true });
+    window.addEventListener('touchstart', function (e) {
+      if (reduce.matches || e.touches.length > 1 || root.classList.contains('menu-open')) { touch = null; return; }
+      var y = e.touches[0].clientY;
+      touch = { y0: y, last: y, t: performance.now(), v: 0, mode: committed ? 'block' : null };
+      if (!committed && raf) halt();
+    }, { passive: true });
+    window.addEventListener('touchmove', function (e) {
+      if (!touch || e.touches.length > 1) return;
+      var y = e.touches[0].clientY, now = performance.now(), dy = touch.y0 - y;
+      touch.v = (touch.last - y) / Math.max(1, now - touch.t);
+      touch.last = y; touch.t = now;
+      // Decide on the very first move: once the browser starts a native scroll it ignores preventDefault
+      // (iOS) or makes the event uncancelable (Android), and the two would fight over the page.
+      if (touch.mode === null) {
+        if (!dy) return;
+        var dir = dy > 0 ? 1 : -1, p = e.cancelable ? plan(window.scrollY, dir, stops()) : null;
+        if (!p || p.clampTo !== undefined) { touch.mode = 'native'; nativeUntil = Infinity; nativeY = window.scrollY; wall = null; return; }
+        touch.mode = 'band'; touch.dir = dir; touch.home = p.home; touch.to = p.to;
+      }
+      if (touch.mode === 'native') return;
+      e.preventDefault();
+      if (touch.mode !== 'band') return;
+      var reach = Math.max(0, dy * touch.dir);
+      window.scrollTo({ top: touch.home + touch.dir * STRETCH * 1.6 * (1 - Math.exp(-reach / 180)), behavior: 'instant' });
+    }, { passive: false });
+    window.addEventListener('touchend', function () {
+      if (touch && touch.mode === 'native' && nativeUntil) nativeUntil = performance.now() + 1500;
+      if (!touch || touch.mode !== 'band') { touch = null; return; }
+      var dy = (touch.y0 - touch.last) * touch.dir, flick = touch.v * touch.dir > .35;
+      var go = Math.abs(touch.to - touch.home) > 1 && (dy > 40 || flick);
+      drive(go ? touch.to : touch.home, go, go ? touch.v * 1000 : 0);
+      touch = null;
+    });
+    window.addEventListener('pointerdown', function (e) { if (e.pointerType !== 'touch') stop(); });
   }
 })();
