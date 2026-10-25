@@ -223,25 +223,9 @@ export function getHmlSaveState(_core: HmCore): HmlSaveState {
   throw unsupported('HML 저장');
 }
 
-/** 저장 결과를 다시 열어 쪽 수를 맞춰 본다. */
+/** 저장 결과를 다시 열어 문서 속성과 그림 바이트를 검증한다. */
 export function exportHwpVerify(core: HmCore): string {
-  const bytes = exportHwp(core);
-  const before = core.state().pageCount;
-  let pageCount = 0;
-  let ok = false;
-  try {
-    const doc = core.adapter.hmEngine().open(bytes);
-    try {
-      pageCount = (JSON.parse(doc.state()) as { pageCount: number }).pageCount;
-      ok = true;
-    } finally {
-      doc.close();
-      doc.free();
-    }
-  } catch {
-    ok = false;
-  }
-  return JSON.stringify({ ok, bytes: bytes.length, pageCountBefore: before, pageCountAfter: pageCount });
+  return core.adapter.hmDoc().verifyHwp();
 }
 
 export function getSourceFormat(core: HmCore): string {

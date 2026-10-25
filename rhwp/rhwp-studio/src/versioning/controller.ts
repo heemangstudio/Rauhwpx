@@ -80,7 +80,6 @@ import {
 import { mergeResourceDependencyErrors } from './merge-validation.ts';
 import { carriedMergeResolutions, retainedMergeDraftLocalState } from './merge-draft.ts';
 import { VersionMaintenance } from './maintenance.ts';
-import { EngineNotSupportedError } from '../core/engine-support.ts';
 import {
   VERSION_COMPARE_OPTIONS,
   VersionSnapshotCache,
@@ -2973,11 +2972,7 @@ export class DocumentVersionController implements VersionManagerController {
       const entries = await this.#mergeWorker.buildDocumentManifest(blob.bytes, {
         onProgress: (progress) => this.#eventBus.emit('merge-progress', progress),
       });
-      // 엔진에 구조 병합이 없으면 커밋 때 만든 비교 스냅샷 manifest 를 그대로 쓴다. 병합 자체는 병합 작업자가 막는다.
-      if (!entries) {
-        if (existing) return existing;
-        throw new EngineNotSupportedError('문서 구조 병합');
-      }
+      if (!entries) throw new VersionError('MERGE_VALIDATION_FAILED', '문서 구조 식별 정보를 만들지 못했습니다.');
       return this.#store.putFullMergeManifest(repositoryId, id, entries);
     })();
     memo.set(id, building);
