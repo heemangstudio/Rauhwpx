@@ -1,4 +1,4 @@
-/* 검은 종이, 따뜻한 목탄, 차분한 파랑. 모든 페이지가 이 토큰을 공유해요. */
+/* Black paper, warm charcoal, calm blue. Every page shares these tokens. */
 :root {
   --paper: #16191b;
   --paper-2: #202528;
@@ -36,9 +36,6 @@
   --color-focus: var(--accent);
   --paper-note: #222a2e;
   --paper-white: #fbfcff;
-  --pencil-wood: #d6c1a1;
-  --pencil-lead: #edede3;
-  --pencil-shine: #ededdf;
   --paper-shadow: 0 16px 40px #00000030;
   --text-display: clamp(56px, 6.6vw, 92px);
   --text-section: clamp(38px, 4.4vw, 62px);
@@ -63,7 +60,6 @@
   --space-2xl: 64px;
   --link-ink: #a0bdf6;
   --charcoal: #deded1;
-  --pencil-body: #c5c8bd;
   --brand-blue: #1f5eff;
   --note-ink: #c4c9c6;
   --button-ink: #101923;

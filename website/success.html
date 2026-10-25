@@ -18,8 +18,8 @@
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 결제 완료 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   상태(확인 중, 키 받음, 오류, 시간 초과)는 아래 스크립트가 data-* 요소를 켜고 끄는 것만으로 바뀌어요. */
+/* Layout for the payment success page. Shared parts live in assets/site.css.
+   The script below switches states (checking, key received, error, timeout) only by toggling data-* elements. */
 [hidden] { display: none !important; }
 
 .key-cell { padding-top: 0; padding-bottom: clamp(56px, 7vw, var(--space-3xl)); }
@@ -27,7 +27,7 @@
 .key-wrap .perch { left: 50%; margin-left: -56px; }
 .key { padding: 32px clamp(20px, 4vw, 32px); }
 
-/* 상태 한 줄: 확인 중이면 도는 표시, 문제가 있으면 노란 네모 */
+/* Status line: a spinner while checking, a yellow square on a problem */
 .status {
   display: flex; align-items: flex-start; gap: var(--space-sm);
   font-size: var(--fs-lead); line-height: 1.6; font-weight: 600; color: var(--text);
@@ -41,7 +41,7 @@
 .status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: var(--status-warning); }
 .key:has(.status.is-bad) { box-shadow: 0 0 0 1.5px var(--status-warning-line), 0 24px 48px -28px var(--shadow-ink); }
 
-/* 키 받음 */
+/* Key received */
 .key__issued { margin-top: 20px; }
 .key__issued .code-box { flex-wrap: wrap; padding: var(--space-sm) var(--space-sm) var(--space-sm) 20px; }
 .key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--text); user-select: all; }
@@ -49,7 +49,7 @@
 .key__issued .meta { margin-top: var(--space-sm); }
 .key__issued .term { margin-top: var(--space-md); color: var(--text); }
 
-/* 오류와 시간 초과 */
+/* Error and timeout */
 .key [data-retry-wrap] { margin-top: 20px; }
 .key__help {
   margin-top: 20px; padding: var(--space-md) 20px;
@@ -58,7 +58,7 @@
 }
 .ref { margin-top: var(--space-sm); font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
 
-/* 키 넣는 법 */
+/* How to enter the key */
 .activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: var(--space-xl); padding-bottom: clamp(36px, 5vw, var(--space-2xl)); }
 .activate > .h2 { font-size: clamp(28px, 1.4vw + 20px, 44px); }
 .activate .step .btn { margin-top: var(--space-md); }
@@ -254,7 +254,7 @@
           say(u.attempts>3?'결제 확인을 기다리는 중이에요. 보통 1분 안에 끝나요…':'결제를 확인하고 있어요…',false,true);
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
-          // 연간 구독 키는 갱신일을 보여요. 기간 없는 키는 이 줄을 숨겨요.
+          // Annual subscription keys show the renewal date. Keys without a term hide this line.
           term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
         }else if(u.state==='timeout'){

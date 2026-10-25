@@ -48,6 +48,30 @@ class Site(SimpleHTTPRequestHandler):
         if path.suffix == '.html' and path.is_file():
             body = path.read_bytes().replace(b'</body>', RELOAD.encode() + b'</body>')
             return self.send(body, 'text/html; charset=utf-8')
+        if path.suffix == '.mp4' and path.is_file() and self.headers.get('Range'):
+            size = path.stat().st_size
+            unit, _, span = self.headers['Range'].partition('=')
+            try:
+                first, last = span.split('-')
+                start = int(first) if first else max(0, size - int(last))
+                end = min(int(last), size - 1) if first and last else size - 1
+                if unit != 'bytes' or start < 0 or start > end:
+                    raise ValueError
+            except ValueError:
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header('Content-Type', 'video/mp4')
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.send_header('Content-Length', str(end - start + 1))
+            self.end_headers()
+            with path.open('rb') as media:
+                media.seek(start)
+                self.wfile.write(media.read(end - start + 1))
+            return
         super().do_GET()
 
     def log_message(self, *_args):
@@ -63,6 +87,7 @@ class Assets(Site):
             path for path in (ROOT / 'assets').glob('sketchbook-*')
             if path.is_file() and path.suffix in ('.png', '.jpg', '.webp', '.svg', '.txt')
         ))
+        files.extend(sorted((ROOT / 'assets/features').glob('*.webp')))
         cards = []
         for path in files:
             src = html.escape('/' + str(path.relative_to(ROOT)))

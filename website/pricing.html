@@ -17,9 +17,9 @@
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 가격 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
+/* Layout for the pricing page. Shared parts live in assets/site.css. */
 
-/* 가격 카드 한 장, 하마가 모서리에 앉아요 */
+/* A single price card, with the hippo sitting on its corner */
 .buy-cell { padding-top: clamp(140px, 13vw, 184px); padding-bottom: clamp(56px, 7vw, var(--space-3xl)); }
 .buy-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); align-items: stretch; max-width: 1000px; margin-inline: auto; }
 .buy-wrap { position: relative; display: flex; }
@@ -49,14 +49,14 @@
   padding: var(--space-md) var(--space-3xs); border-bottom: 1px solid var(--line);
   font-size: var(--fs-small); line-height: 1.6; color: var(--muted);
 }
-/* 하늘의 점과 같은 네모 표시 */
+/* Square marker matching the dots in the sky */
 .buy__list li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 0.62em; background: var(--accent); }
 .buy__list b { color: var(--text); font-weight: 600; }
 
 .buy .check { margin-top: var(--space-lg); }
 .buy .check a { color: var(--soft); }
 .buy [data-buy] { margin-top: 20px; }
-/* 동의 전에도 누르면 안내가 떠야 해서 클릭은 받아요 */
+/* Keep clicks enabled so a click before consenting still shows the notice */
 .buy [data-buy][aria-disabled="true"] { pointer-events: auto; cursor: not-allowed; }
 .buy [data-buy][aria-disabled="true"]:active { transform: none; }
 .buy__note { margin-top: var(--space-sm); text-align: center; font-size: var(--fs-meta); line-height: 1.6; color: var(--accent); }
@@ -65,7 +65,7 @@
 
 
 
-/* 아래 안내 칸 */
+/* Notice area below */
 .info .h3 + .text, .info .h3 + .terms { margin-top: var(--space-sm); }
 .info .link-arrow { margin-top: 20px; font-size: var(--fs-small); }
 .terms { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); font-size: var(--fs-small); line-height: 1.7; color: var(--muted); }
@@ -226,7 +226,7 @@
   buy.addEventListener('click',function(e){
     e.preventDefault();
     if(!consent.checked){note.textContent='동의에 체크하면 결제할 수 있어요.';consent.focus();return;}
-    // 결제마다 새 ref 를 만들어 이 브라우저에 남겨요. success.html 이 이 값으로 키를 찾아요.
+    // Create a new ref for each checkout and keep it in this browser. success.html uses it to look up the key.
     var ref=P.newRef();
     P.saveRef(window.localStorage,ref);
     window.location.href=P.checkoutUrl(ref);

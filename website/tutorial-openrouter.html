@@ -16,10 +16,10 @@
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* OpenRouter 연결 튜토리얼 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   단계 머리는 왼쪽 번호 칸 + 오른쪽 글 칸으로 나뉘고, 스크린샷은 기둥 폭을 다 써요. */
+/* Layout for the OpenRouter tutorial. Shared parts live in assets/site.css.
+   Step headers split into a number column and a text column; screenshots span the full column width. */
 
-/* 쪽 머리 */
+/* page header */
 .back-link {
   display: inline-flex; align-items: center; gap: var(--space-xs);
   font-size: var(--fs-small); font-weight: 500; color: var(--meta);
@@ -31,7 +31,7 @@
 .page-head .back-link + .h1 { margin-top: 20px; }
 .page-head .btn-row { margin-top: 32px; }
 
-/* 두 갈래 요약 */
+/* two-path summary */
 .route > .cell { padding-block: 28px; }
 .route__link { display: flex; align-items: flex-start; gap: 20px; }
 .route__no { flex: none; min-width: 52px; padding-top: var(--space-2xs); font-family: var(--mono); font-size: 13px; color: var(--accent); }
@@ -40,7 +40,7 @@
 .route__link::after { content: "↓"; margin-left: auto; color: var(--meta); transition: transform 0.2s var(--ease-out), color 0.15s ease; }
 .route__link:hover::after { transform: translateY(3px); color: var(--text); }
 
-/* 번호 칸 + 글 칸 */
+/* number column + text column */
 .ledger { display: grid; grid-template-columns: 216px minmax(0, 1fr); padding: 0; }
 .ledger__key, .ledger__body { padding: var(--cell-pad); }
 .ledger__key { position: relative; border-right: 1px solid var(--line); }
@@ -50,7 +50,7 @@
   background: var(--night-1); border: 1px solid var(--line-strong);
 }
 
-/* 갈래 머리 */
+/* path header */
 .phase .ledger__key, .phase .ledger__body { padding-top: clamp(var(--space-2xl), 7vw, 104px); padding-bottom: clamp(32px, 4vw, 48px); }
 .phase__no {
   display: block;
@@ -62,7 +62,7 @@
 .phase__where img.px { width: 26px; height: 24px; border-radius: 0; }
 .phase .lead { margin-top: 20px; }
 
-/* 단계 머리 */
+/* step header */
 .step-no { display: flex; gap: var(--space-xs); }
 .step-no > span[aria-hidden] {
   width: 40px; height: 28px; display: grid; place-items: center;
@@ -76,7 +76,7 @@
 .step-title + .text { margin-top: var(--space-sm); max-width: 38em; }
 .text b { color: var(--text); font-weight: 700; }
 
-/* 스크린샷: 투명 여백과 그림자를 기둥 밖으로 빼서 창 테두리를 글 칸에 맞춰요 */
+/* Screenshots: pull the transparent margin and shadow out of the column so the window border aligns with the text column */
 .snap { padding: var(--cell-pad) var(--cell-pad) 28px; }
 .snap__win { position: relative; display: flow-root; }
 .snap__win img {
@@ -91,17 +91,17 @@
 }
 .snap__cap .link-arrow { flex: none; font-size: var(--fs-meta); }
 
-/* 스크린샷은 실제 화면 비율 그대로 보여 줘요. */
+/* Screenshots keep their real aspect ratio. */
 .snap__win img { width: 100%; max-width: 100%; margin: 0; }
 .hit { display: none; }
-/* HamaEditor 로 돌아가는 띠 */
+/* Band linking back to HamaEditor */
 .handoff__cell {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px 48px; align-items: end;
   padding-block: clamp(var(--space-2xl), 7vw, 104px);
 }
 .handoff .lead { margin-top: var(--space-md); }
 
-/* 끝 */
+/* end */
 .finish .cell--head { padding-bottom: clamp(72px, 9vw, 120px); }
 .finish__wrap { position: relative; width: min(100%, 560px); margin: var(--space-3xl) auto 0; }
 .finish__wrap .perch { width: 132px; height: 120px; left: 50%; margin-left: -68px; }
@@ -167,7 +167,7 @@
 
 <main id="main">
 
-  <!-- ─────────── 머리 ─────────── -->
+  <!-- ─────────── Header ─────────── -->
   <section id="top" aria-labelledby="tut-title">
     <div class="frame frame--top">
       <header class="cell cell--open page-head">
@@ -275,7 +275,7 @@
     </div>
   </section>
 
-  <!-- ─────────── HamaEditor 로 ─────────── -->
+  <!-- ─────────── To HamaEditor ─────────── -->
   <section class="handoff has-sky" aria-labelledby="handoff-title">
 
     <div class="frame">
@@ -323,7 +323,7 @@
     </div>
   </section>
 
-  <!-- ─────────── 끝 ─────────── -->
+  <!-- ─────────── End ─────────── -->
   <section class="finish" aria-labelledby="finish-title">
     <div class="frame">
       <div class="cell cell--head cell--center">

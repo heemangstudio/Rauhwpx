@@ -28,6 +28,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
+<script>/* Arm the hero intro before first paint; if site.js never takes over, show everything. */(function(r){if(window.matchMedia&&!matchMedia('(prefers-reduced-motion: reduce)').matches){r.classList.add('intro');setTimeout(function(){if(!r.classList.contains('intro-run'))r.classList.remove('intro')},2500)}})(document.documentElement)</script>
 </head>
 <body class="home">
 <a class="skip" href="#main">본문으로 건너뛰기</a>
@@ -37,10 +38,10 @@
     <nav class="nav__links" aria-label="주요 메뉴">
       <a href="#gongmun">문서 편집</a>
       <a href="#connect">연결</a>
-      <a href="#apply">가격</a>
+      <a href="pricing.html">가격</a>
     </nav>
     <div class="nav__end">
-      <a class="btn btn--primary btn--white btn--sm" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>무료로 시작하기</a>
+      <a class="btn btn--primary btn--white btn--sm" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="12" height="14"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
       <button class="nav__toggle" type="button" data-menu-toggle aria-controls="menu" aria-expanded="false" aria-label="메뉴 열기"><span></span><span></span></button>
     </div>
   </div>
@@ -48,25 +49,15 @@
     <nav class="menu__links" aria-label="메뉴">
       <a href="#gongmun">문서 편집</a>
       <a href="#connect">연결</a>
-      <a href="#apply">가격</a>
+      <a href="pricing.html">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>무료로 시작하기</a>
+      <a class="btn btn--primary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
       <a class="btn btn--secondary" href="pricing.html">라이선스 구매</a>
     </div>
   </div>
 </header>
 <main id="main" class="sketchbook">
-  <svg class="pencil-trail" aria-hidden="true" data-pencil-trail>
-    <g class="pencil-trail__ink" data-pencil-ink></g>
-    <g data-pencil-tip class="pencil-trail__tip">
-      <path d="M0 0L-7-18L7-18Z" class="pencil-wood"/>
-      <path d="M0 0L-2.5-6L2.5-6Z" class="pencil-lead"/>
-      <path d="M-7-18V-108Q0-115 7-108V-18Z" class="pencil-body"/>
-      <path d="M0-22V-103" class="pencil-shine"/>
-      <path d="M-7-104H7M-7-99H7" class="pencil-ferrule"/>
-    </g>
-  </svg>
   <section class="sketch-hero notebook-section" id="top" aria-labelledby="hero-title">
     <pre class="ascii-art ascii-art--neurons" aria-hidden="true">
 
@@ -164,21 +155,15 @@
 
 
 </pre>
-    <div class="hero-scribble hero-scribble--left" aria-hidden="true">
-      <svg viewBox="0 0 125 155" class="file-doodle"><path d="M19 8L89 13L111 39L102 143L12 136Z M89 13L85 38L111 39 M31 98L80 102 M30 110L65 113"/><text x="28" y="78">.hwp</text></svg>
-      <span class="handnote">내 파일 그대로!</span>
-    </div>
     <div class="hero-center">
-      <h1 id="hero-title">AI와 함께 쓰는<br><span class="hero-marked-title">나의 한글 문서.</span></h1>
-      <p class="hero-description">Claude와 Codex가 열린 HWP 문서를 직접 읽고 편집해요.</p>
+      <h1 id="hero-title">AI와 함께 쓰는<br><span class="hero-marked-title">나의 한글 <span class="hero-tail"><span class="hero-rotate">문서</span>.</span><svg class="hero-scribble" viewBox="0 0 640 28" preserveAspectRatio="none" aria-hidden="true"><path pathLength="1" d="M6 16C92 9 190 15 286 12C382 9 470 13 560 9C592 8 616 11 634 15"/></svg></span></h1>
       <div class="hero-actions"><a class="btn btn--primary" href="download.html">무료로 써 보기<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/></svg></a></div>
-      <p class="hero-platforms">macOS와 Windows에서 <a href="trial.html">3일 무료 체험</a></p>
     </div>
-    <div class="hero-friend" aria-hidden="true"><span class="handnote">한글도, 이제 같이 쓰자.</span><img src="assets/hama.svg" alt="" width="240" height="220"><svg class="friend-arrow" viewBox="0 0 130 90"><path d="M113 4C117 36 91 52 65 38C42 26 59 6 79 20C102 38 70 74 14 73M26 61L12 74L30 79"/></svg></div>
+    <a class="hero-next" href="#gongmun" aria-label="아래로 이동"><svg viewBox="0 0 48 28" width="48" height="28" aria-hidden="true"><path d="M3 4C11 10 17 17 24 24C31 16 38 10 45 3"/></svg></a>
   </section>
 
   <section class="notebook-section document-section" id="gongmun" aria-labelledby="document-title">
-    <div class="document-heading"><h2 id="document-title">대화 옆에,<br>작업하던 그 문서.</h2><div><p>대화와 편집이 한 화면에 있어요.<br>에이전트가 바꾼 내용은 직접 검토하고 반영해요.</p><span class="handnote">수정의 마지막 결정은 내가.</span></div></div>
+    <div class="document-heading"><h2 id="document-title">대화 옆에,<br>작업하던 그 문서.</h2></div>
     <div class="editor-splash">
       <pre class="ascii-art ascii-art--splash-neuron" aria-hidden="true">&lt;/-    &gt;-           &lt;v/&lt;&gt;                &gt;&gt;          &lt;&lt;                    //
   -&lt;&gt;v&lt;&lt;&lt;             &lt;v&lt;               /v/         -v/                    &lt;  -                                                                                                     --
@@ -306,7 +291,18 @@
       <li>표 편집</li><li>계획 세우기</li><li>문장 다듬기</li><li>수식까지</li>
       <li>Claude</li><li>변경 검토</li><li>Codex</li><li>내 문서 그대로</li>
     </ul>
-    <figure class="editor-photograph"><img src="assets/demo/review.jpg" width="1600" height="1000" alt="HamaEditor에서 한글 문서와 AI 에이전트 사이드바를 나란히 열고 변경 내용을 검토하는 실제 편집 화면" loading="lazy"><figcaption>HamaEditor의 문서 편집과 변경 검토 화면</figcaption></figure>
+    <figure class="editor-photograph feature-reel">
+      <video width="1600" height="1000" poster="assets/features/agent-edits-01.webp" muted loop playsinline preload="metadata" aria-label="HamaEditor 실제 화면: AI 문서 편집, 웹 탐색, 자료 정리">
+        <source src="assets/features/feature-reel.mp4" type="video/mp4">
+        <img src="assets/features/agent-edits-01.webp" width="1600" height="1000" alt="Claude가 한글 문서 양식을 채우는 실제 HamaEditor 화면">
+      </video>
+      <div class="feature-reel__chapters" role="group" aria-label="기능 장면 선택">
+        <button type="button" data-feature-time="0" aria-pressed="true">AI 문서 편집</button>
+        <button type="button" data-feature-time="6" aria-pressed="false">웹 탐색</button>
+        <button type="button" data-feature-time="12" aria-pressed="false">자료 정리</button>
+      </div>
+      <figcaption>웹에서 자료를 찾고, 문서에 쓰고, 마인드맵으로 정리해요.</figcaption>
+    </figure>
     </div>
   </section>
 
@@ -399,7 +395,7 @@
 
 
 </pre>
-    <div class="connect-intro"><h2 id="connect-title">쓰던 AI를,<br>한글 문서 곁으로.</h2><p>계정을 연결하면, 이제 문서 안에서 만나요.</p><span class="handnote">익숙한 동료와 계속!</span></div>
+    <div class="connect-intro"><h2 id="connect-title">쓰던 AI를,<br>한글 문서 곁으로.</h2></div>
     <div class="provider-list"><article><img src="assets/icon-codex.png" width="40" height="40" loading="lazy" alt=""><div><h3>Codex</h3><p>Codex를 지원하는 ChatGPT Plus 이상 계정<br>API 또는 OAuth로 연결해요.</p></div></article><article><img src="assets/icon-claude.png" width="40" height="40" loading="lazy" alt=""><div><h3>Claude</h3><p>Claude Code를 지원하는 Claude Pro 이상 계정<br>API 또는 OAuth로 연결해요.</p></div></article><article><img src="assets/icon-openrouter.png" width="40" height="40" loading="lazy" alt=""><div><h3>OpenRouter</h3><p>구독 없이 크레딧을 충전해서 시작해요.</p><a class="text-link" href="tutorial-openrouter.html">연결 방법 보기</a></div></article></div>
     <p class="provider-billing">AI 제공자의 이용 요금은 HamaEditor 구독에 포함되지 않아요.</p>
   </section>

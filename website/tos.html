@@ -17,8 +17,8 @@
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 이용약관 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   왼쪽은 목차, 오른쪽은 약관 본문. 둘 사이에 세로선이 내려와요. */
+/* Layout for the terms page. Shared parts live in assets/site.css.
+   Contents on the left, terms on the right, with a vertical rule between them. */
 
 .terms-meta { display: flex; flex-wrap: wrap; gap: var(--space-xs) 28px; margin-top: var(--space-lg); }
 .terms-meta div { display: flex; align-items: baseline; gap: var(--space-sm); }
@@ -27,7 +27,7 @@
 
 .terms { display: grid; grid-template-columns: 232px minmax(0, 1fr); padding: 0; }
 
-/* 목차 */
+/* table of contents */
 .toc { position: relative; border-right: 1px solid var(--line); }
 .toc::after {
   content: ""; position: absolute; top: -4px; right: -4px; z-index: 2;
@@ -48,7 +48,7 @@
 .toc a:hover { color: var(--text); }
 .toc a[aria-current] { color: var(--text); }
 .toc a[aria-current] span { color: var(--accent); }
-/* 지금 읽는 조: 기둥 선 위에 짧은 획 */
+/* Article being read: a short stroke over the column line */
 .toc a::before {
   content: ""; position: absolute; top: 6px; bottom: 6px;
   left: calc(-1 * var(--cell-pad) - 1.5px); width: 2px;
@@ -57,7 +57,7 @@
 }
 .toc a[aria-current]::before { opacity: 1; }
 
-/* 본문 */
+/* body */
 .terms__body { max-width: none; padding: 36px var(--cell-pad) clamp(72px, 9vw, 120px) clamp(32px, 4vw, 56px); }
 .terms__body > * { max-width: 68ch; }
 .terms__body .art { scroll-margin-top: var(--space-md); }
@@ -307,7 +307,7 @@
 </footer>
 
 <script>
-/* 목차: 내비게이션 바로 아래 선을 지난 마지막 조에 aria-current 를 줘요. */
+/* Table of contents: give aria-current to the last article that passed the line just below the navigation. */
 (function () {
   var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
   var arts = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });
