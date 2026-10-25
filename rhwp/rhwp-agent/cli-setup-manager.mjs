@@ -186,6 +186,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
    * 같은 지문의 확인이 이미 돌고 있으면 그 결과를 함께 기다린다.
    */
   const versionProbes = new Map();
+  const installedVersions = new Map();
   let installQueue = Promise.resolve();
   let activeLaunches = 0;
   let launchReady = Promise.resolve();
@@ -478,7 +479,12 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function status(agent) {
     assertAgent(agent); await load(); const bin = binPath(agent);
-    const version = await managedVersion(agent);
+    // npm 이 바이너리를 교체하는 동안 확인된 버전을 유지한다.
+    const version = installs.has(agent)
+      ? installedVersions.get(agent) ?? null
+      : await managedVersion(agent);
+    if (version) installedVersions.set(agent, version);
+    else if (!installs.has(agent)) installedVersions.delete(agent);
     const { authenticated, authMethod, authSource, authVerifiedAt } = await authState(agent);
     // 관리형 CLI 가 없으면 Claude 는 SDK 번들 런타임으로 실행되므로 그 버전을 기준으로 삼는다.
     const runtimeVersion = version ?? (agent === 'claude' ? bundledClaudeVersion : null);
@@ -518,7 +524,12 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
     });
     installQueue = task.catch(() => {});
-    const settled = task.finally(() => { installs.delete(agent); versionProbes.delete(agent); }).then(() => { onProgress?.({ state: 'done' }); return status(agent); });
+    const settled = task.finally(() => { installs.delete(agent); versionProbes.delete(agent); }).then(async () => {
+      onProgress?.({ state: 'installing', phase: 'verifying' });
+      const installed = await status(agent);
+      onProgress?.({ state: 'done' });
+      return installed;
+    });
     installs.set(agent, settled);
     return settled;
   }

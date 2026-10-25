@@ -580,6 +580,7 @@ function versionedCli(rootDir, platform = process.platform) {
         state.cacheDirs.push(cacheDir);
         await fs.mkdir(path.join(cacheDir, '_cacache', 'content-v2'), { recursive: true });
         await fs.writeFile(path.join(cacheDir, '_cacache', 'content-v2', 'tarball'), 'x'.repeat(4096));
+        await state.beforeInstall?.();
         if (state.installCode === 0) await writeInstall(state.nextVersion);
         else proc.stderr.emit('data', 'npm ERR! network\n');
         proc.emit('close', state.installCode, null);
@@ -713,4 +714,46 @@ test('startup removes the old shared npm cache and abandoned install caches but 
   await assert.rejects(fs.stat(path.join(rootDir, 'npm-cache')), { code: 'ENOENT' });
   await assert.rejects(fs.stat(abandoned), { code: 'ENOENT' });
   assert.ok((await fs.stat(path.join(recent, 'tarball'))).isFile(), 'another hub may still be installing with it');
+});
+
+test('install confirms the new CLI version before reporting completion', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+  await manager.install('claude');
+  cli.state.nextVersion = '2.0.0';
+  let probesAtDone = 0;
+  const before = cli.state.versionRuns;
+  const installed = await manager.install('claude', ({ state }) => {
+    if (state === 'done') probesAtDone = cli.state.versionRuns;
+  });
+  assert.equal(installed.version, '2.0.0');
+  assert.ok(probesAtDone > before, 'completion must follow the new binary probe');
+});
+
+
+test('status keeps the installed version while npm temporarily removes the binary', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+  await manager.install('claude');
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let removed;
+  const ready = new Promise(resolve => { removed = resolve; });
+  cli.state.beforeInstall = async () => {
+    await fs.rm(manager.binPath('claude'));
+    removed();
+    await gate;
+  };
+  cli.state.nextVersion = '2.0.0';
+  const installing = manager.install('claude');
+  try {
+    await ready;
+    const during = await manager.status('claude');
+    assert.equal(during.installing, true);
+    assert.equal(during.installed, true);
+    assert.equal(during.version, '1.0.0');
+  } finally { release(); await installing; }
+  assert.equal((await manager.status('claude')).version, '2.0.0');
 });
