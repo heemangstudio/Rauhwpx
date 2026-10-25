@@ -4,6 +4,7 @@
  * 그려지므로 숨기고 비교한다.
  *
  * 실행: node rhwp/rhwp-studio/e2e/heemang-verify/design-diff.mjs [상태 이름 일부]
+ *       HV_DESIGN_SHOW_DOC=1 로 문서 쪽 내용까지 비교한다.
  * 결과: e2e/heemang-verify/out/design/<state>.{baseline,candidate,diff}.png, summary.json
  */
 import fs from 'node:fs';
@@ -17,9 +18,11 @@ const filter = process.argv[2] ?? '';
 const out = L.ensureOut('design');
 for (const file of fs.readdirSync(out)) fs.rmSync(path.join(out, file));
 
+// HV_DESIGN_SHOW_DOC=1 이면 문서 쪽 내용도 비교한다(엔진 글자 그리기 차이를 재는 진단용, 기본은 앱 크롬만).
+const SHOW_DOC = process.env.HV_DESIGN_SHOW_DOC === '1';
 const FREEZE_CSS = `
 *, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }
-#scroll-content * { visibility: hidden !important; }
+${SHOW_DOC ? '#scroll-content .caret { visibility: hidden !important; }' : '#scroll-content * { visibility: hidden !important; }'}
 `;
 
 async function freeze(page) {
@@ -100,7 +103,12 @@ const DIALOGS = [
 
 /** 상태 목록. run 은 상태를 만들고 메모(문자열)나 true 를 돌려준다. */
 const STATES = [
-  { id: 'home', before: 'home', run: async () => true },
+  { id: 'home', before: 'home', run: async (page) => {
+    // 템플릿 갤러리는 허브가 붙은 뒤 2·4·6초 간격으로 다시 묻는다. 목록이 올 때까지 기다려야 두 앱이 같은 순간을 찍는다.
+    const ready = await L.waitFor(page, 'template gallery', () => document.querySelector('#dh-templates .dh-paper-add'), { timeout: 15000 })
+      .then(() => true, () => 'no template gallery (hub template list never arrived)');
+    return ready;
+  } },
   { id: 'settings', before: 'home', run: async (page) => {
     if (!(await clickSelector(page, '.dh-settings'))) return 'no home settings button (.dh-settings)';
     await L.sleep(600);

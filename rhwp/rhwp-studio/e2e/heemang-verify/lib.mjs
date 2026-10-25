@@ -5,6 +5,7 @@
  * 환경 변수
  *   HV_BASELINE  기준선 작업 트리 (기본 ../studio-baseline)
  *   HV_CANDIDATE 후보 작업 트리 (기본 이 파일이 있는 작업 트리)
+ *   HV_BASELINE_VITE_PORT, HV_CANDIDATE_VITE_PORT  Vite 시작 포트 (기본 8400, 8500 부터 빈 포트)
  *   HV_CANDIDATE_QUERY 후보 앱 URL 의 쿼리 (기본 "?engine=heemang"; 엔진 기본값이 바뀌면 "" 로)
  */
 import fs from 'node:fs';
@@ -37,7 +38,7 @@ export async function startApp(name, root, portBase) {
   const { piRoot, finishTurnPath } = harness.writeFakePi(fixtureRoot);
   const token = `hv-${name}`;
   const hubPort = await harness.findAvailablePort(portBase);
-  const vitePort = await harness.findAvailablePort(portBase + 2000);
+  const vitePort = await harness.findAvailablePort(Number(process.env[`HV_${name.toUpperCase()}_VITE_PORT`]) || portBase + 2000);
   const hub = await harness.startHub({
     hubPort, token, fixtureRoot, logName: `hv-${name}-hub.log`,
     env: { RHWP_PI_DIR: piRoot, RHWP_CLI_DIR: path.join(fixtureRoot, 'cli'), ...OFFLINE },
