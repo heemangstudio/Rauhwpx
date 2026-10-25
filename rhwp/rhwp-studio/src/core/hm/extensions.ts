@@ -21,6 +21,7 @@ import './objects-grouping';
 import './objects-navigation';
 import './objects-transform';
 import './page-settings';
+import './picture-resource';
 import './search-text';
 import './table-editing';
 import './table-properties';
