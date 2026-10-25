@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이거나 Signature Edition ₩29,000(일회성)이에요. macOS와 Windows에서 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이에요. Signature Edition ₩29,000(일회성)은 출시 예정이에요. macOS와 Windows에서 3일 동안 먼저 써 볼 수 있어요.">
 <meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -34,6 +34,7 @@ html, body { overflow-x: clip; }
 .plans li + li { margin-top: var(--space-xs); }
 .plans .check { margin-top: auto; }
 .plans .btn--block { margin-top: var(--space-md); }
+.plans .btn:disabled { margin-top: auto; }
 .plans [data-buy-note]:empty { display: none; }
 .trial-row { display: flex; justify-content: center; padding: var(--space-xl) 48px; }
 @media (max-width: 760px) {
@@ -199,12 +200,7 @@ html, body { overflow-x: clip; }
               <li>최소 3년 지속 업데이트 약속</li>
               <li>키 하나로 기기 두 대까지 (Mac, Windows)</li>
             </ul>
-            <label class="check">
-              <input type="checkbox" data-consent>
-              <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
-            </label>
-            <a class="btn btn--primary btn--block" href="#signature" data-buy data-buy-sku="signature" aria-disabled="true">Groble에서 Signature 결제하기</a>
-            <p data-buy-note role="status" aria-live="polite"></p>
+            <button class="btn btn--primary btn--block" type="button" disabled>출시 예정</button>
           </div>
         </article>
       </div>

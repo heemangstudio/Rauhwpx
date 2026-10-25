@@ -108,6 +108,24 @@ test('repeated errors end in error; a single blip does not', async () => {
   assert.equal(v.at(-1).state, 'issued');
 });
 
+test('a revoked license ends polling without retrying', async () => {
+  const updates = await poll([json(200, { status: 'revoked' })]);
+  assert.deepEqual(updates, [{ state: 'revoked', attempts: 1 }]);
+});
+
+test('malformed responses count as consecutive errors, and valid pending resets them', async () => {
+  const malformed = json(200, { status: 'issued' });
+  const updates = await poll([malformed]);
+  assert.equal(updates.at(-1).state, 'error');
+  assert.equal(updates.at(-1).attempts, 3);
+  const recovered = await poll([
+    malformed, malformed, json(200, { status: 'pending' }), malformed, malformed,
+    json(200, { status: 'issued', key: 'K' }),
+  ]);
+  assert.equal(recovered.at(-1).state, 'issued');
+  assert.equal(recovered.at(-1).attempts, 6);
+});
+
 test('annual keys get the renewal line on the success page; lifetime keys get none', () => {
   assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
   assert.equal(P.renewalText(null), '');
@@ -156,7 +174,7 @@ test('the download page counts each file once per tab, so the fallback link afte
   assert.equal(P.trackDownloadOnce('mac-arm64', blocked, t, nav), true, 'blocked storage still counts');
 });
 
-test('each buy button checks out its own product after that card agrees', () => {
+test('buy buttons check their own consent and product, and tolerate blocked storage', () => {
   function article(sku) {
     const consent = {
       checked: false,
@@ -211,9 +229,13 @@ test('each buy button checks out its own product after that card agrees', () => 
   unknown.buy.listeners.click({ preventDefault() {} });
   assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
   assert.doesNotMatch(location.href, /uRshdR/);
+  Object.defineProperty(doc.defaultView, 'localStorage', { get() { throw new Error('blocked'); } });
+  location.href = '';
+  yearly.buy.listeners.click({ preventDefault() {} });
+  assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
 });
 
-test('yearly stays on sale, and only the pricing page sells Signature', async () => {
+test('yearly stays on sale, and only the pricing page previews Signature', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const pages = fs.readdirSync(__dirname).filter((f) => f.endsWith('.html'));
@@ -240,10 +262,10 @@ test('yearly stays on sale, and only the pricing page sells Signature', async ()
   assert.match(pricing, /₩29,000/);
   assert.match(pricing, /연 ₩9,900/);
   assert.match(pricing, /자동 갱신, 언제든 해지/);
-  assert.match(pricing, /data-buy-sku="signature"/);
+  assert.doesNotMatch(pricing, /data-buy-sku="signature"/);
   assert.match(pricing, /data-buy-sku="annual"/);
   assert.match(pricing, /Groble에서 연 ₩9,900 결제하기/);
-  assert.match(pricing, /Groble에서 Signature 결제하기/);
+  assert.match(pricing, /<button[^>]* disabled>출시 예정<\/button>/);
   assert.match(pricing, /일회성/);
   assert.match(pricing, /최소 3년/);
   assert.match(pricing, /기기 두 대/);

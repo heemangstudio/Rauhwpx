@@ -129,7 +129,7 @@
   }
 
   /* Polls until the key is issued.
-     onUpdate({state:'pending'|'issued'|'error'|'timeout', key?, licenseExpiresAt?, attempts})
+     onUpdate({state:'pending'|'issued'|'revoked'|'error'|'timeout', key?, licenseExpiresAt?, attempts})
      Calling the returned function stops it. */
   function pollLicense(opts) {
     var fetchImpl = opts.fetch;
@@ -164,12 +164,16 @@
         })
         .then(function (body) {
           if (stopped) return;
-          errors = 0;
           if (body && body.status === 'issued' && typeof body.key === 'string' && body.key) {
             done({ state: 'issued', key: body.key, licenseExpiresAt: typeof body.licenseExpiresAt === 'number' ? body.licenseExpiresAt : null, attempts: attempts });
             return;
           }
+          if (body && body.status === 'revoked') {
+            done({ state: 'revoked', attempts: attempts });
+            return;
+          }
           if (body && body.status === 'pending') {
+            errors = 0;
             opts.onUpdate({ state: 'pending', attempts: attempts });
             next();
             return;
@@ -213,7 +217,9 @@
         }
         var ref = newRef();
         var view = scope.defaultView || root;
-        if (view && view.localStorage) saveRef(view.localStorage, ref);
+        var storage = null;
+        try { storage = view && view.localStorage; } catch (_) {}
+        if (storage) saveRef(storage, ref);
         if (view && view.location) view.location.href = checkoutUrl(ref, CONFIG.CHECKOUT_URLS[sku]);
       });
     });
