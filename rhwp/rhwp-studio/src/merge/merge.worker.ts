@@ -201,7 +201,15 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
       return;
     }
     if (request.operation === 'build-manifest') {
-      const exports = await exportsReady();
+      // 구조 병합이 없는 엔진에서도 버전 기록은 시작한다. 커밋 manifest 는 비교 스냅샷으로 만든다.
+      const exports = await exportsReady().catch((error: unknown) => {
+        if (error instanceof Error && error.message === STRUCTURAL_MERGE_UNAVAILABLE) return null;
+        throw error;
+      });
+      if (!exports) {
+        post({ id: request.id, type: 'manifest', entries: null });
+        return;
+      }
       if (typeof exports.structuralMergeBuildManifest !== 'function') {
         throw new Error('This RHWP WebAssembly build does not include structural manifest export.');
       }
