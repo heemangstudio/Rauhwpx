@@ -1,0 +1,46 @@
+/** 서식 틀 블록 삽입과 구역 안 선택 복사. 문서 사이 조각은 엔진 copy/paste 로 옮긴다. */
+import type { ParagraphInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { HmCore } from './core';
+import { unsupported } from './core';
+import { bodyList, logicalAddress } from './address';
+import { api, extendBridge } from './api';
+
+export function copySelectionAcrossSections(core: HmCore, startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): string {
+  if (startSec !== endSec) throw unsupported('구역을 넘는 클립보드 선택');
+  return api.copySelection(core, startSec, startPara, startOffset, endPara, endOffset);
+}
+
+export function exportSelectionAcrossSectionsHtml(core: HmCore, startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): string {
+  if (startSec !== endSec) throw unsupported('구역을 넘는 클립보드 선택');
+  return api.exportSelectionHtml(core, startSec, startPara, startOffset, endPara, endOffset);
+}
+
+/**
+ * 다른 문서의 본문 문단 범위를 대상 위치에 붙인다. 원본은 같은 엔진에서 열고 닫는다.
+ * 엔진 조각은 엔진 전체가 함께 쓰므로 내부 클립보드는 이 블록으로 바뀐다.
+ */
+export function pasteDocumentBlock(core: HmCore, sourceBytes: Uint8Array, sourceSection: number, startPara: number, endPara: number, targetSection: number, targetPara: number, targetCharOffset: number): string {
+  if (!Number.isInteger(startPara) || !Number.isInteger(endPara) || startPara < 0 || endPara < startPara) {
+    throw new RangeError('잘못된 원본 문단 범위');
+  }
+  const at = logicalAddress(core, bodyList(targetSection), targetPara, targetCharOffset);
+  const source = core.adapter.hmEngine().open(sourceBytes);
+  try {
+    const paras = JSON.parse(source.query(JSON.stringify({
+      kind: 'paragraphs', list: { section: sourceSection }, from: startPara, count: endPara - startPara + 1,
+    }))) as ParagraphInfo[];
+    if (paras.length !== endPara - startPara + 1) throw new RangeError('원본 문단 범위 초과');
+    source.copy(JSON.stringify({
+      from: { section: sourceSection, para: startPara, offset: paras[0].caret[0] },
+      to: { section: sourceSection, para: endPara, offset: paras[paras.length - 1].caret[1] },
+    }));
+    core.mutate(doc => doc.paste(JSON.stringify({ at })));
+    const controlCounts: Record<string, number> = {};
+    for (const para of paras) for (const control of para.controls) controlCounts[control.kind] = (controlCounts[control.kind] ?? 0) + 1;
+    return JSON.stringify({ ok: true, warnings: [], skippedFeatures: [], insertedParagraphCount: paras.length, controlCounts });
+  } finally {
+    source.close();
+  }
+}
+
+extendBridge({ copySelectionAcrossSections, exportSelectionAcrossSectionsHtml, pasteDocumentBlock });
