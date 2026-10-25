@@ -15,7 +15,7 @@ export async function checkProviderUpdates(page, origin, navigate = true) {
     const bridge = Object.create(original);
     bridge.requestAgentSetupStatus = async () => structuredClone(statuses);
     bridge.installAgent = () => { installs++; return new Promise(resolve => { finish = resolve; }); };
-    const panel = createSettingsPanel({ bridge, editorRuntime: { preview() {}, committed() {} },
+    const panel = createSettingsPanel({ bridge, updatesApi: null, editorRuntime: { preview() {}, committed() {} },
       getSelection: () => ({ agent: 'claude', model: '', effort: '', permission: 'safe' }),
       applyDefaults() {}, openCalibration() {}, reconnectSession() {} });
     document.body.append(panel.element);
@@ -25,6 +25,9 @@ export async function checkProviderUpdates(page, origin, navigate = true) {
     const initialChecking = [...document.querySelectorAll('.ag-agent-setup-generic > .ag-agent-setup-pane')]
       .every(pane => pane.hidden);
     await tick(); emit();
+    const hippo = document.querySelector('.uh-provider:not([hidden])');
+    const hippoOffered = hippo?.textContent.includes('Claude 2.0.0');
+    hippo.querySelector('[data-action="download"]').click();
     const update = () => document.querySelector('.ag-agent-setup-update');
     update().click();
     const body = document.querySelector('.ag-agent-setup-body');
@@ -56,9 +59,9 @@ export async function checkProviderUpdates(page, origin, navigate = true) {
     const retryable = !update().disabled && !document.querySelector('.ag-agent-setup-error').hidden
       && document.querySelector('.ag-agent-setup-progress').hidden;
     panel.dispose(); panel.element.remove();
-    return { initialChecking, detachedBody, prematureReady, reopenedBusy, duplicateInstalls, updated, finished, retryable };
+    return { hippoOffered, initialChecking, detachedBody, prematureReady, reopenedBusy, duplicateInstalls, updated, finished, retryable };
   });
-  assert.deepEqual(result, { initialChecking: true, detachedBody: false, prematureReady: false, reopenedBusy: true,
+  assert.deepEqual(result, { hippoOffered: true, initialChecking: true, detachedBody: false, prematureReady: false, reopenedBusy: true,
     duplicateInstalls: 1, updated: true, finished: true, retryable: true });
 }
 if (isMainModule(import.meta)) await runStandalone('Provider update lifecycle', checkProviderUpdates);

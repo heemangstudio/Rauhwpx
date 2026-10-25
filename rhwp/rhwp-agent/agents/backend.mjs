@@ -226,6 +226,7 @@ export function redactableTail(value, limit) {
  *   나머지는 무시한다.
  * @property {(profile: 'safe'|'unrestricted') => void|Promise<void>} setPermissionProfile
  * @property {(mode: {workflow: 'direct'|'plan'|'question'; phase: 'planning'|'questioning'|'awaiting-approval'|'switching'|'implementing'; capabilityEpoch: string|number; chatPermissionGrants?: string[]}) => Promise<void>} setExecutionMode
+ * @property {() => Promise<boolean>} [releaseIdle] 턴 사이에 프로세스만 내리고 네이티브 재개 상태는 유지한다.
  * @property {() => void} interrupt
  * @property {() => Promise<boolean>} dispose 자식 프로세스 트리가 끝날 때까지 기다린 결과를 돌려준다.
  */

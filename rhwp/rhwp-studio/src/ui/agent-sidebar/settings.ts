@@ -3,7 +3,7 @@ import { createSetupTerminal } from './setup-terminal.ts';
 import './settings.css';
 import { type SettingsNavIconId, withNavIcon } from './settings-nav-icons.ts';
 import { confirmSheet } from './sheet.ts';
-import { showToast } from '../toast.ts';
+import { createUpdateSignHippo } from '../update-hippo/update-hippo.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 
 import {
@@ -33,7 +33,7 @@ import { createProjectSettingsPane } from './settings-project.ts';
 import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../../agent/attention-prefs.ts';
-import { isDesktopApp } from '../../desktop-integration.ts';
+import { isDesktopApp, desktopUpdatesApi, type DesktopUpdatesApi } from '../../desktop-integration.ts';
 import { webNotificationsGranted } from '../agent-attention.ts';
 import {
   aiSettingsSection,
@@ -134,21 +134,21 @@ const PI_MODEL_MAX = 3;
 const PI_CATALOG_VISIBLE_MAX = 50;
 
 const PI_PROGRESS_LABEL: Record<string, string> = {
-  preparing: '준비하는 중…',
-  downloading: '내려받는 중…',
-  installing: '설치하는 중…',
-  configuring: '설정하는 중…',
-  verifying: '설치 확인 중…',
+  preparing: '준비하는 중',
+  downloading: '내려받는 중',
+  installing: '설치하는 중',
+  configuring: '설정하는 중',
+  verifying: '설치 확인 중',
   done: '',
 };
 
 const INSTALL_PROGRESS_LABEL: Record<string, string> = {
-  preparing: '준비하는 중…',
-  resolving: '패키지 확인 중…',
-  downloading: '내려받는 중…',
-  installing: '설치하는 중…',
-  configuring: '설정하는 중…',
-  verifying: '설치 확인 중…',
+  preparing: '준비하는 중',
+  resolving: '패키지 확인 중',
+  downloading: '내려받는 중',
+  installing: '설치하는 중',
+  configuring: '설정하는 중',
+  verifying: '설치 확인 중',
   done: '설치 완료',
 };
 
@@ -209,46 +209,6 @@ function createToggleRow(
   track.setAttribute('aria-hidden', 'true');
   root.append(copy, input, track);
   return { root, input };
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-/** 점선 화살표의 픽셀: 한 칸씩 띄운 몸통과 끝의 꺾쇠. 2배로 그린다. */
-const ARROW_DOTS: ReadonlyArray<readonly [number, number]> = [
-  [0, 3], [2, 3], [4, 3], [6, 3], [8, 3],
-  [9, 0], [10, 1], [11, 2], [12, 3], [11, 4], [10, 5], [9, 6],
-];
-
-/** 회색 점 위에 흰 점을 겹치고, 흰 점은 진행률만큼 왼쪽부터 드러낸다. */
-function dottedArrow(): { root: SVGSVGElement; fill(percent: number): void } {
-  const root = document.createElementNS(SVG_NS, 'svg');
-  root.setAttribute('class', 'ag-agent-setup-arrow');
-  root.setAttribute('viewBox', '0 0 13 7');
-  root.setAttribute('width', '26');
-  root.setAttribute('height', '14');
-  root.setAttribute('shape-rendering', 'crispEdges');
-  root.setAttribute('aria-hidden', 'true');
-  const layer = (className: string): SVGGElement => {
-    const group = document.createElementNS(SVG_NS, 'g');
-    group.setAttribute('class', className);
-    for (const [x, y] of ARROW_DOTS) {
-      const dot = document.createElementNS(SVG_NS, 'rect');
-      dot.setAttribute('x', String(x));
-      dot.setAttribute('y', String(y));
-      dot.setAttribute('width', '1');
-      dot.setAttribute('height', '1');
-      group.appendChild(dot);
-    }
-    root.appendChild(group);
-    return group;
-  };
-  layer('ag-agent-setup-arrow-track');
-  const lit = layer('ag-agent-setup-arrow-fill');
-  return {
-    root,
-    fill(percent) {
-      lit.style.clipPath = `inset(0 ${(100 - Math.min(100, Math.max(0, percent))).toFixed(2)}% 0 0)`;
-    },
-  };
 }
 
 /** 편집 중 잠금 눈금의 이름 — 왼쪽 끝은 잠그지 않음, 오른쪽 끝은 작업 내내. */
@@ -363,6 +323,7 @@ interface PiDraftModel {
 
 export interface SettingsPanelDeps {
   bridge: SidebarBridge;
+  updatesApi?: DesktopUpdatesApi | null;
   eventBus?: EventBus;
   editorRuntime: EditorSettingsRuntime;
   /** 지금 대화가 쓰고 있는 조합 — 기본값과 다를 수 있다. */
@@ -486,7 +447,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupProgressCreepTimer: ReturnType<typeof setInterval> | null = null;
   let setupProgressResetTimer: ReturnType<typeof setTimeout> | null = null;
   const openedAuthUrls = new Set<string>();
-  const announcedUpdates = new Set<string>();
+  const updatesApi = deps.updatesApi === undefined ? desktopUpdatesApi() : deps.updatesApi;
+  const unifiedUpdates = Boolean(updatesApi?.updateAll);
+  let updateAgent: AgentName | null = null;
+  const providerUpdateHippo = unifiedUpdates ? null : createUpdateSignHippo(() => {
+    if (updateAgent) openAgentSetup(updateAgent);
+  });
+  if (providerUpdateHippo) {
+    providerUpdateHippo.element.classList.add('uh-provider');
+    document.body.append(providerUpdateHippo.element);
+  }
   const unsubscribeInitialSetup = onInitialSetupInactive(() => {
     if (!disposed && setupStatuses) announceProviderUpdates(setupStatuses);
   });
@@ -899,8 +869,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
   setupUpdate.type = 'button';
   setupVersionRow.append(el('span', 'ag-agent-setup-row-label', '버전'), setupVersionValue, setupUpdate);
-  // 업데이트하는 동안 지금 버전과 새 버전 사이의 점선 화살표. 진행한 만큼 회색 점이 흰색으로 찬다.
-  const setupVersionArrow = dottedArrow();
+  // 업데이트하는 동안 지금 버전과 새 버전을 화살표로 잇는다.
+  const setupVersionArrow = el('span', 'ag-agent-setup-arrow', '→');
+  setupVersionArrow.setAttribute('aria-hidden', 'true');
   setupStatusCard.append(setupAccountRow, setupVersionRow);
   const setupProgress = el('div', 'ag-agent-setup-progress');
   setupProgress.setAttribute('role', 'progressbar');
@@ -2253,6 +2224,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderProviders(): void {
+    if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
     for (const agent of PROVIDER_ORDER) {
       const row = providerRows.get(agent);
@@ -2303,24 +2275,20 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
   }
 
-  /** 새 Claude/Codex 버전을 세션마다 한 번 조용히 알린다. 놓쳐도 연결 목록에 업데이트 버튼이 남는다. */
+  /** 앱 업데이트와 같은 하마가 프로바이더 업데이트를 안내한다. */
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
-    // 처음 설정 중에는 띄우지 않는다. 설정이 닫히면 그때의 상태로 다시 알린다.
-    if (isInitialSetupActive()) return;
-    for (const agent of ['claude', 'codex'] as const) {
+    updateAgent = isInitialSetupActive() ? null : (['claude', 'codex'] as const).find((agent) => {
       const status = statuses[agent];
-      // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
-      // 아무것도 설치되지 않은 첫 실행에 업데이트 배너를 띄우지 않는다.
-      if (!status?.installed || !status.updateRequired || !status.latestVersion) continue;
-      const key = `${agent}@${status.latestVersion}`;
-      if (announcedUpdates.has(key)) continue;
-      announcedUpdates.add(key);
-      showToast({
-        message: `${AGENT_LABEL[agent]} ${status.latestVersion} 업데이트가 있습니다.`,
-        durationMs: 10_000,
-        action: { label: '업데이트', onClick: () => openAgentSetup(agent) },
-      });
-    }
+      return status?.installed && status.updateRequired && status.latestVersion
+        && !status.installing && !pendingInstalls.has(agent);
+    }) ?? null;
+    const status = updateAgent ? statuses[updateAgent] : null;
+    const line = updateAgent && status ? `${AGENT_LABEL[updateAgent]} ${status.latestVersion} 업데이트가 있어요.` : '';
+    providerUpdateHippo?.setSign(status ? {
+      key: `provider:${updateAgent}:${status.latestVersion}`,
+      tone: 'plain', lines: [line, '업데이트할까요?'], progress: null,
+      actions: [{ id: 'download', label: '업데이트', icon: 'download' }], spoken: line,
+    } : null);
   }
 
   function maybeOpenAuthUrl(url: string | null | undefined): void {
@@ -2542,7 +2510,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   function paintSetupInstallProgress(): void {
     setupProgressFill.style.width = `${setupProgressPercent.toFixed(2)}%`;
-    setupVersionArrow.fill(setupProgressPercent);
     setupProgress.setAttribute('aria-valuenow', String(Math.round(setupProgressPercent)));
     setupProgress.setAttribute('aria-valuetext', `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`);
     setupProgressLine.textContent = `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`;
@@ -2688,7 +2655,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       setupVersionValue.dataset.version = versionKey;
       setupVersionValue.replaceChildren(status?.version ?? '');
       if (updateVersion && installing) {
-        setupVersionValue.append(setupVersionArrow.root, el('span', 'ag-agent-setup-row-next', updateVersion));
+        setupVersionValue.append(setupVersionArrow, el('span', 'ag-agent-setup-row-next', updateVersion));
       } else if (updateVersion) {
         setupVersionValue.append(el('span', 'ag-agent-setup-row-note', `새 버전 ${updateVersion}`));
       }
@@ -3648,6 +3615,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           renderProviders();
           break;
         case 'agent-setup-status': {
+          if (unifiedUpdates) void updatesApi?.refreshAll?.().catch(() => {});
           setupStatusRevision += 1;
           setupStatuses = ev.statuses;
           announceProviderUpdates(ev.statuses);
@@ -3714,6 +3682,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             if (ev.authRunId && abandonedAuthRunIds.has(ev.authRunId)) break;
             if (ev.authRunId) setupAuthRunId = ev.authRunId;
             const awaitingInstall = pendingInstalls.has(ev.agent);
+            if (ev.state === 'installing' && setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
             setupBusy = awaitingInstall || ev.state !== 'done';
             // API 키 검증 중에도 authorizing 이 온다 — 브라우저 로그인 근거가 있을 때만 상자를 연다.
             if (ev.state === 'authorizing' && (ev.authUrl || ev.userCode)) setupOauthPending = true;
@@ -3853,6 +3822,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       unsubscribeAttentionPrefs();
       instructionsEditor.destroy();
       unsubscribeInitialSetup();
+      providerUpdateHippo?.dispose();
       licenseSection?.dispose();
       autofixSection?.dispose();
       piGift?.dispose();

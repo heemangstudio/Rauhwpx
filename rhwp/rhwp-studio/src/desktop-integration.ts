@@ -75,7 +75,30 @@ export interface UpdateRestoreSlice {
   restoredDocumentIds: string[];
 }
 
+export interface UpdateAllItem {
+  id: 'app' | 'claude' | 'codex';
+  fromVersion: string | null;
+  targetVersion: string;
+  installedVersion?: string;
+  status: 'available' | 'manual' | 'queued' | 'waiting' | 'running' | 'ready' | 'done' | 'failed';
+  message: string | null;
+}
+
+export interface UpdateAllState {
+  runId: string | null;
+  phase: 'idle' | 'checking' | 'updating' | 'waiting' | 'countdown' | 'deferred' | 'restarting' | 'complete' | 'failed';
+  items: UpdateAllItem[];
+  restartAt: number | null;
+  appPercent?: number | null;
+  error?: string | null;
+}
+
 export interface DesktopUpdatesApi {
+  getAllState?(): Promise<UpdateAllState | null>;
+  onAllState?(callback: (state: UpdateAllState) => void): () => void;
+  refreshAll?(): Promise<UpdateAllState | null>;
+  updateAll?(): Promise<UpdateAllState | null>;
+  later?(): Promise<void>;
   getState(): Promise<DesktopUpdateState>;
   /** 채널 'desktop:update-state'. 해제 함수를 돌려준다. */
   onState(callback: (state: DesktopUpdateState) => void): () => void;
