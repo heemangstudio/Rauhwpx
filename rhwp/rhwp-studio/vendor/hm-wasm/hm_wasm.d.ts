@@ -79,7 +79,7 @@ export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;prefix?:number;suffix?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
     width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -153,7 +153,7 @@ export type EditOp =
 | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
 | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
 | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
-| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; connector?:ConnectorSpec; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"|"polygon"|"arc"; connector?:ConnectorSpec; width:number; height:number; points?:[number,number][]; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
 | { op:"deleteObject"; object:ObjectAddress }
 | { op:"relocateObject"; object:ObjectAddress; at:Address }
 | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -200,7 +200,7 @@ export interface PageObject {
     section: number; steps?: Step[]; para: number; control: number;
     kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
     page: number; x: number; y: number; width: number; height: number;
-    inline: boolean; layer: "behind" | "text" | "front"; z: number;
+    inline: boolean; layer: "behind" | "text" | "front"; wrap: "square" | "topAndBottom" | "behindText" | "inFrontOfText"; rows?: number; cols?: number; z: number;
     furniture: boolean; locked: boolean; text: boolean; missing?: boolean; rotation?: number; line?: [number, number, number, number];
 }
 /** A directed selection the host keeps with an undo step. */
@@ -311,7 +311,7 @@ export interface ControlInfo {
     inline?: boolean;
     /** Headers and footers: the pages they apply to. */
     side?: "both" | "even" | "odd";
-    /** Notes: the number Hancom last assigned. */
+    /** Notes and automatic numbers: the number Hancom last assigned. */
     number?: number;
 }
 export interface ParagraphInfo {
