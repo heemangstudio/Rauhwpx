@@ -3353,7 +3353,8 @@ export class PendingEditManager {
       off = typeof res.charOffset === 'number' ? res.charOffset : scalarLen(lines[0]);
     }
     for (let i = 1; i < lines.length; i++) {
-      this.parseOk(wasm.splitParagraphInCellLogical(sec, anchor.paraIdx, anchor.controlIdx, cellIdx, para, off), 'splitParagraphInCellLogical');
+      this.parseOk(wasm.splitParagraphInCellLogical(sec, anchor.paraIdx, anchor.controlIdx, cellIdx, para,
+        this.caretOffset(sec, para, off, { paraIdx: anchor.paraIdx, controlIdx: anchor.controlIdx, cellIdx })), 'splitParagraphInCellLogical');
       para += 1;
       off = 0;
       if (lines[i].length > 0) {

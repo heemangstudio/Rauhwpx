@@ -1,3 +1,4 @@
+import { agentEngineCoordinates, agentTextToLogicalOffset } from './engine-coordinates.ts';
 /**
  * MCP 툴 실행기 — 허브가 전달한 tool-request를 실제 문서 호출로 매핑한다.
  *
@@ -4703,6 +4704,7 @@ export class AgentToolExecutor {
   private caretRect(sectionIdx: number, paraIdx: number, charOffset: number, cell?: CellAddr): SelectionRect | null {
     const { wasm } = this.deps;
     try {
+      charOffset = agentTextToLogicalOffset(wasm, sectionIdx, paraIdx, charOffset, cell);
       const rect = cell?.path
         ? wasm.getCursorRectByPath(sectionIdx, cell.paraIdx, cellPathAt(cell, paraIdx), charOffset)
         : cell
@@ -5432,6 +5434,7 @@ export class AgentToolExecutor {
    * label 은 get_structure 머리 줄이다 — read_batch 항목까지 부른 채팅의 revision 대신 이 이름을 쓴다.
    */
   private foreignExecutor(wasm: WasmBridge, dirty: boolean, label: string): AgentToolExecutor {
+    wasm = agentEngineCoordinates(wasm);
     const nested = new AgentToolExecutor({
       ...this.deps,
       wasm,

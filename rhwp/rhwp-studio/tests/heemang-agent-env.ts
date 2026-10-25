@@ -1,12 +1,14 @@
+import { agentEngineCoordinates } from '../src/agent/engine-coordinates.ts';
 /**
  * HeemangEngine 위 에이전트 도구 통합 테스트 환경 — 실제 hm-wasm 문서 → 에이전트 도구 엔진
- * (agent/heemang) → PendingEditManager → AgentToolExecutor.
+ * (core/hm) → PendingEditManager → AgentToolExecutor.
  *
  * HM_WASM_PKG 에 hm-wasm 빌드 폴더(hm_wasm.js·hm_wasm_bg.wasm)를 주면 번들(vendor/hm-wasm)
  * 대신 그것을 쓴다 — 번들이 아직 갖추지 않은 엔진 API 를 시험할 때.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { registerHooks, stripTypeScriptTypes } from 'node:module';
+import { registerHooks } from 'node:module';
+import { transformSync } from 'rolldown/utils';
 import { pathToFileURL } from 'node:url';
 import type test from 'node:test';
 
@@ -15,12 +17,13 @@ const pkg = process.env.HM_WASM_PKG ? pathToFileURL(`${process.env.HM_WASM_PKG.r
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier.endsWith('/vendor/hm-wasm/hm_wasm')) return next(new URL('hm_wasm.js', pkg).href, context);
+    if (specifier.endsWith('blank.hwpx?url')) return { url: `data:text/javascript,export default ${JSON.stringify(new URL('../src/core/hm/blank.hwpx', import.meta.url).href)}`, shortCircuit: true };
     return next(specifier.startsWith('.') && !/\.[a-z]+$/i.test(specifier) ? `${specifier}.ts` : specifier, context);
   },
   load(url, context, next) {
-    if (new URL(url).pathname.endsWith('/core/heemang-adapter.ts')) {
-      return { format: 'module', shortCircuit: true, source: stripTypeScriptTypes(
-        readFileSync(new URL(url), 'utf8').replaceAll('import.meta.env', '({DEV:false})')) };
+    if (new URL(url).pathname.endsWith('.ts')) {
+      return { format: 'module', shortCircuit: true, source: transformSync(new URL(url).pathname,
+        readFileSync(new URL(url), 'utf8').replaceAll('import.meta.env', '({DEV:false})'), { lang: 'ts' }).code };
     }
     return next(url, context);
   },
@@ -29,9 +32,10 @@ registerHooks({
 const wasmModule = await import(new URL('hm_wasm.js', pkg).href) as { initSync(o: { module: Uint8Array }): unknown };
 wasmModule.initSync({ module: readFileSync(new URL('hm_wasm_bg.wasm', pkg)) });
 
-const { HeemangAdapter } = await import('../src/core/heemang-adapter.ts');
+const { WasmBridge } = await import('../src/core/wasm-bridge.ts');
 const { provideEngineFont } = await import('../src/core/engine-support.ts');
-const { agentEngineFor } = await import('../src/agent/heemang/index.ts');
+const { CommandHistory } = await import('../src/engine/history.ts');
+const { HeadlessEditorHost } = await import('../src/engine/headless-editor-host.ts');
 const { EventBus } = await import('../src/core/event-bus.ts');
 const { RevisionTracker } = await import('../src/agent/revision.ts');
 const { PendingEditManager } = await import('../src/agent/pending-edits.ts');
@@ -54,7 +58,8 @@ export const FIXTURES = {
 } as const;
 
 export async function openHeemangAgent(t: test.TestContext, path: string = FIXTURES.cellMixed) {
-  const adapter = new HeemangAdapter();
+  const wasm = agentEngineCoordinates(new WasmBridge());
+  const adapter = wasm.viewer;
   await adapter.initialize();
   if (!fontsRegistered) {
     for (const name of readdirSync(fontDir)) {
@@ -62,20 +67,16 @@ export async function openHeemangAgent(t: test.TestContext, path: string = FIXTU
     }
     fontsRegistered = true;
   }
-  adapter.loadDocument(rhwpFile(path), path.split('/').pop());
+  wasm.loadDocument(rhwpFile(path), path.split('/').pop());
   // 테스트는 웹 글꼴을 받지 않는다 — 등록한 글꼴로 바로 조판한다.
   (adapter as unknown as { fontsPrepared: boolean }).fontsPrepared = true;
   adapter.refreshLayout();
   t.after(() => adapter.releaseDocument());
-  const host = new Proxy(adapter, { get: (target, key) => (key === 'viewer' ? target : Reflect.get(target, key)) });
-  const wasm = agentEngineFor(host as never);
   const bus = new EventBus();
   const revision = new RevisionTracker(bus, { documentInstance: () => adapter.documentInstance });
-  const editor = {
-    executeOperation: () => { throw new Error('HeemangEngine 대기 편집은 편집기 이력에 명령을 남기지 않는다'); },
-    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
-    getSelection: () => null,
-  };
+  const history = new CommandHistory();
+  const editor = new HeadlessEditorHost({ wasm, eventBus: bus, state: { history, cursor: null } });
+  t.after(() => editor.dispose());
   const pending = new PendingEditManager({
     wasm,
     eventBus: bus,
@@ -97,5 +98,5 @@ export async function openHeemangAgent(t: test.TestContext, path: string = FIXTU
   const text = (para: number, section = 0) => adapter.getParagraphText(section, para);
   /** 이 엔진 빌드가 글자 offset 표(ParagraphInfo.offsets)를 주는가 — 없으면 좌표 도구가 거절된다. */
   const modern = Array.isArray(adapter.paragraphs(0, [], 0, 1)[0]?.offsets);
-  return { adapter, wasm, bus, revision, pending, executor, call, read, text, modern };
+  return { adapter, wasm, bus, revision, pending, executor, history, call, read, text, modern };
 }

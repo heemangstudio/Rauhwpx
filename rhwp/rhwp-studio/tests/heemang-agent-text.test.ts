@@ -77,3 +77,56 @@ test('앞선 revision 으로 보낸 쓰기는 REVISION_MISMATCH 로 거절되고
   );
   assert.equal(env.text(0), text);
 });
+
+test('스테이징 미리보기를 거절하면 다른 문단에 쓴 사용자 글자는 보존한다', async (t) => {
+  const env = await openHeemangAgent(t, FIXTURES.cellMixed);
+  const original = env.text(0);
+  env.pending.beginTurn('claude');
+  const read = await env.read('get_text_range', { sectionIdx: 0, paraIdx: 0 });
+  assert.equal(read.revision, env.revision.revision);
+  await env.call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '미리보기 ' });
+  assert.equal(env.text(0), `미리보기 ${original}`);
+  env.pending.endTurn('review');
+  const userBefore = env.text(1);
+  env.wasm.insertText(0, 1, 0, '사용자 ');
+  env.bus.emit('document-mutated', 'input-handler-edit');
+  env.pending.rejectAll();
+  assert.equal(env.text(0), original);
+  assert.equal(env.text(1), `사용자 ${userBefore}`);
+  assert.equal(env.pending.getChangeSets().length, 0);
+});
+
+test('승인은 미리보기를 유지하며 한 번의 undo와 redo로 변경 묶음을 왕복한다', async (t) => {
+  const env = await openHeemangAgent(t, FIXTURES.bodyMixed);
+  const original = env.text(0);
+  env.pending.beginTurn('claude');
+  await env.call('apply_edits', { edits: [
+    { tool: 'insert_text', sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '첫째 ' },
+    { tool: 'insert_text', sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '둘째 ' },
+  ] });
+  const preview = env.text(0);
+  env.pending.endTurn('review');
+  assert.equal(env.pending.approve(env.pending.getChangeSets()[0].id), true);
+  assert.equal(env.text(0), preview);
+  assert.equal(env.pending.getChangeSets().length, 0);
+  assert.ok(env.history.undo(env.wasm));
+  assert.equal(env.text(0), original);
+  assert.equal(env.history.undo(env.wasm), null);
+  assert.ok(env.history.redo(env.wasm));
+  assert.equal(env.text(0), preview);
+});
+
+test('전체 모드는 도구 호출마다 즉시 확정하며 되돌림을 각각 남긴다', async (t) => {
+  const env = await openHeemangAgent(t, FIXTURES.bodyMixed);
+  const original = env.text(0);
+  env.pending.setDirectApply(true);
+  env.pending.beginTurn('claude');
+  await env.call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'A' });
+  assert.equal(env.pending.commitOpen(), true);
+  await env.call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'B' });
+  assert.equal(env.pending.commitOpen(), true);
+  env.history.undo(env.wasm);
+  assert.equal(env.text(0), `A${original}`);
+  env.history.undo(env.wasm);
+  assert.equal(env.text(0), original);
+});

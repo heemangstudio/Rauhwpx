@@ -274,13 +274,6 @@ async function runEngine(ctx, scenario) {
   };
   let refreshSource = null;
 
-  const setWriteGate = (on) => page.evaluate((enable) => {
-    const deps = window.__agentBridge?.executor?.deps;
-    if (!deps) throw new Error('executor deps not reachable');
-    if (!deps.__hvIsReadOnly) deps.__hvIsReadOnly = deps.isReadOnly;
-    deps.isReadOnly = enable ? deps.__hvIsReadOnly : () => false;
-  }, on);
-
   /** Records one tool invocation. `check` = { tool, args, test(result) } for writes. */
   const record = (name, entry) => { (records[name] ??= []).push(entry); };
   const api = {
@@ -300,15 +293,6 @@ async function runEngine(ctx, scenario) {
         const { msg: d } = await rawCall(check.tool, check.args);
         diffBefore = d.ok ? stripRevision(d.result) : null;
       }
-      let gated = null;
-      if (ctx.bypassWriteGate) {
-        // As shipped: the candidate's agent bridge marks every HeemangEngine document read-only.
-        await setWriteGate(true);
-        const { msg: g } = await rawCall(tool, { ...args, expectedRevision: revision });
-        gated = g.ok ? 'ok' : `${g.error?.code}`;
-        // Test-only: lift the bridge gate (executor deps, in-page) to reach the engine underneath.
-        await setWriteGate(false);
-      }
       const before = revision;
       let { msg, ms } = await rawCall(tool, { ...args, expectedRevision: revision });
       if (!msg.ok && msg.error?.code === 'REVISION_MISMATCH') {
@@ -316,7 +300,7 @@ async function runEngine(ctx, scenario) {
         ({ msg, ms } = await rawCall(tool, { ...args, expectedRevision: revision }));
       }
       const entry = { args: summarizeArgs(args), ms, ok: Boolean(msg.ok) };
-      if (gated) entry.shippedGate = gated;
+      if (label === 'candidate') entry.shippedGate = msg.ok ? 'ok' : `${msg.error?.code}`;
       if (refreshSource && refreshSource !== 'get_structure') entry.revisionFrom = refreshSource;
       if (msg.ok) {
         entry.sig = signature(msg.result);
@@ -722,7 +706,6 @@ try {
       return g.run(t, scenario.context);
     } }))],
   });
-  candidate.bypassWriteGate = true;
   const candRun = await runEngine(candidate, { context: scenario.context, groups: scenario.groups });
 
   // Merge per tool (each invocation variant is its own row).
@@ -768,8 +751,7 @@ try {
     candidate: { root: CANDIDATE_ROOT, url: '/?engine=heemang', engineKind: candRun.engineKind, pageErrors: candRun.pageErrors },
     context: { ...scenario.context, textParaText: trunc(scenario.context?.textParaText, 60) },
     counts, candidateErrorGroups: errorGroups,
-    // Candidate writes are first sent as shipped (bridge marks HeemangEngine read-only), then with the
-    // gate lifted in-page; verdicts use the ungated call.
+    // Each candidate write's outcome as shipped (no test-only gate lifting).
     candidateShippedWriteGate: shippedGate,
     rows,
     discovery: Object.fromEntries(Object.entries(baseRun.records).filter(([k]) => k.startsWith('__discover'))),
@@ -784,8 +766,8 @@ try {
     console.log(`| ${md(r.tool)} | ${md(r.baseline ? cell(r.baseline) : (r.verdict === 'skipped' ? '—' : '—'))} | ${md(r.candidate ? cell(r.candidate) : '—')} | ${md(r.verdict + (r.reason && r.verdict !== 'skipped' ? ` (${r.reason})` : (r.verdict === 'skipped' ? ` (${r.reason})` : '')))} |`);
   }
   console.log(`\ncounts: ${s(counts)}`);
-  console.log(`candidate writes as shipped (before lifting the read-only gate): ${s(Object.fromEntries(Object.entries(shippedGate).map(([k, v]) => [k, v.length])))}`);
-  console.log(`candidate error groups (gate lifted):`);
+  console.log(`candidate writes as shipped: ${s(Object.fromEntries(Object.entries(shippedGate).map(([k, v]) => [k, v.length])))}`);
+  console.log(`candidate error groups:`);
   for (const [k, v] of Object.entries(errorGroups)) console.log(`  - ${k}\n      ${v.join(', ')}`);
   console.log(`\nwrote ${path.join(OUT_DIR, 'mcp-parity.json')} in ${(output.runtimeMs / 1000).toFixed(1)} s`);
 } catch (error) {

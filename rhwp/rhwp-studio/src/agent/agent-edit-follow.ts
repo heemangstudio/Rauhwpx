@@ -1,3 +1,4 @@
+import { agentTextToLogicalOffset } from './engine-coordinates.ts';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
@@ -124,15 +125,16 @@ export class AgentEditFollow {
     point: { paraIdx: number; charOffset: number },
   ): { top: number; height: number } | 'unplaced' {
     const cell = r.cell;
+    const logical = agentTextToLogicalOffset(this.deps.wasm, r.sectionIdx, point.paraIdx, point.charOffset, cell);
     const rect = cell?.path
       ? this.deps.wasm.getCursorRectByPath(
-        r.sectionIdx, cell.paraIdx, cellPathAt(cell, point.paraIdx), point.charOffset,
+        r.sectionIdx, cell.paraIdx, cellPathAt(cell, point.paraIdx), logical,
       )
       : cell
       ? this.deps.wasm.getCursorRectInCell(
-        r.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx, point.paraIdx, point.charOffset,
+        r.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx, point.paraIdx, logical,
       )
-      : this.deps.wasm.getCursorRect(r.sectionIdx, point.paraIdx, point.charOffset);
+      : this.deps.wasm.getCursorRect(r.sectionIdx, point.paraIdx, logical);
     const vs = canvasView.getVirtualScroll();
     if (rect.pageIndex >= vs.pageCount) return 'unplaced';
     const zoom = canvasView.getViewportManager().getZoom();
