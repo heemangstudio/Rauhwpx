@@ -1,4 +1,4 @@
-/* 문서 연결 단추 — 브라우저 단추(.ag-browser-trigger)와 같은 크기와 상태. */
+/* 문서 연결 단추 — 입력기 아래 작은 아이콘 단추. */
 .ag-doc-link-toggle {
   display: inline-flex;
   align-items: center;
