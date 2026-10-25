@@ -91,6 +91,21 @@ export class Doc {
         }
     }
     /**
+     * Keeps a drawing's placement and transform (its box, matrices,
+     * rotation, flips and crop) under a handle, for `swapObjectTransform`.
+     * @param {string} object
+     * @returns {number}
+     */
+    captureObjectTransform(object) {
+        const ptr0 = passStringToWasm0(object, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.doc_captureObjectTransform(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      * @returns {number}
@@ -188,6 +203,18 @@ export class Doc {
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
+    }
+    /**
+     * Drops a kept transform; false when there was none.
+     * @param {number} handle
+     * @returns {boolean}
+     */
+    discardObjectTransform(handle) {
+        const ret = wasm.doc_discardObjectTransform(this.__wbg_ptr, handle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
@@ -825,6 +852,31 @@ export class Doc {
         }
     }
     /**
+     * Exchanges a kept transform with the object's current one as one
+     * undo step, keeping the current one under the same handle; a
+     * `Receipt`.
+     * @param {number} handle
+     * @returns {string}
+     */
+    swapObjectTransform(handle) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_swapObjectTransform(this.__wbg_ptr, handle);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Applies edits atomically as one undo step and lays out again;
      * returns a `Receipt`. With `expectedEpoch` set, a document edited
      * since fails with `STALE_EPOCH` and nothing changes.
@@ -1129,6 +1181,26 @@ export class EngineError {
     }
 }
 if (Symbol.dispose) EngineError.prototype[Symbol.dispose] = EngineError.prototype.free;
+
+/**
+ * Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+ * most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+ * web fonts through this.
+ * @param {Uint8Array} bytes
+ * @param {number} max
+ * @returns {Uint8Array}
+ */
+export function brotliDecompress(bytes, max) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.brotliDecompress(ptr0, len0, max);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
 
 /**
  * What this build offers, as JSON (`Capabilities`).

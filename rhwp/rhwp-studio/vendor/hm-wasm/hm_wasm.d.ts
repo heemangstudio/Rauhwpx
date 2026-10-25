@@ -16,7 +16,7 @@ export interface ObjectTarget {
 /** `object` is set when the point picks a floating object rather than text. */
 export interface Located { position: Address; affinity: Affinity; caret: Caret; object?: ObjectTarget }
 export type LocateRequest =
-| { kind: "point"; page: number; x: number; y: number }
+| { kind: "point"; page: number; x: number; y: number; body?: boolean; within?: ListAddress }
 | { kind: "caret"; position: Address; affinity?: Affinity; page?: number };
 export interface Rect { page: number; x: number; y: number; width: number; height: number }
 /** A table control in a paragraph list. */
@@ -48,7 +48,44 @@ export interface CharPatch {
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
 export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+/** HU throughout, including natural image dimensions. Patches reject unknown fields. */
+export interface ObjectPatch {
+    width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
+    vertRelTo?:"paper"|"page"|"para"; horzRelTo?:"paper"|"page"|"column"|"para";
+    vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
+    textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
+    description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
+    restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
+    border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+    brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
+    fill?:FillPatch; fillAlpha?:number;
+}
+export interface LinePatch { style:number; width:number; color:number }
+export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export interface BorderFillPatch {
+    left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
+    slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+}
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
+export interface ObjectProperties extends ObjectPatch {
+    kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
+    brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
+    fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+}
+export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
+export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 export type EditOp =
+| { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+| { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"deleteObject"; object:ObjectAddress }
+| { op:"relocateObject"; object:ObjectAddress; at:Address }
+| { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
+| { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
+| { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
+| { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
@@ -125,13 +162,20 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+| {kind:"objectProperties";object:ObjectAddress}
+| {kind:"tableProperties";table:TableAddress}
+| {kind:"cellProperties";table:TableAddress;row:number;column:number}
+| {kind:"pictureData";object:ObjectAddress}
 | { kind: "table"; table: TableAddress; page?: number }
 | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
 | { kind: "formatContext"; at: Address; to?: Address }
 | { kind: "styles"; from?: number; count?: number }
 | { kind: "style"; id: number }
 | { kind: "lists" }
-| { kind: "list"; listKind: "bullet" | "numbering"; id: number };
+| { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+| { kind: "lines"; list: ListAddress; para: number };
+/** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
+export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
 /**
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
@@ -150,6 +194,12 @@ export interface ControlInfo {
     index: number; offset: number; kind: string; lists: number;
     /** Authored equation source, including an empty string; absent on other controls. */
     script?: string;
+    /** Objects, tables and form objects: whether it sits in the text like a character. */
+    inline?: boolean;
+    /** Headers and footers: the pages they apply to. */
+    side?: "both" | "even" | "odd";
+    /** Notes: the number Hancom last assigned. */
+    number?: number;
 }
 export interface ParagraphInfo {
     index: number;
@@ -212,6 +262,11 @@ export class Doc {
      */
     cancelComposition(): string;
     /**
+     * Keeps a drawing's placement and transform (its box, matrices,
+     * rotation, flips and crop) under a handle, for `swapObjectTransform`.
+     */
+    captureObjectTransform(object: string): number;
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      */
@@ -238,6 +293,10 @@ export class Doc {
      * face names for paste into another document.
      */
     copy(request: string): string;
+    /**
+     * Drops a kept transform; false when there was none.
+     */
+    discardObjectTransform(handle: number): boolean;
     /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
      */
@@ -401,6 +460,12 @@ export class Doc {
      */
     substitutions(): string;
     /**
+     * Exchanges a kept transform with the object's current one as one
+     * undo step, keeping the current one under the same handle; a
+     * `Receipt`.
+     */
+    swapObjectTransform(handle: number): string;
+    /**
      * Applies edits atomically as one undo step and lays out again;
      * returns a `Receipt`. With `expectedEpoch` set, a document edited
      * since fails with `STALE_EPOCH` and nothing changes.
@@ -497,6 +562,13 @@ export class EngineError {
 }
 
 /**
+ * Decompresses a Brotli stream, such as a WOFF2 font's tables, into at
+ * most `max` bytes. Browsers without a Brotli `DecompressionStream` read
+ * web fonts through this.
+ */
+export function brotliDecompress(bytes: Uint8Array, max: number): Uint8Array;
+
+/**
  * What this build offers, as JSON (`Capabilities`).
  */
 export function capabilities(): string;
@@ -523,13 +595,16 @@ export interface InitOutput {
     readonly blake3hasher_finalizeHex: (a: number) => [number, number];
     readonly blake3hasher_new: () => number;
     readonly blake3hasher_update: (a: number, b: number, c: number) => void;
+    readonly brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
     readonly capabilities: () => [number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
+    readonly doc_captureObjectTransform: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];
     readonly doc_close: (a: number) => void;
     readonly doc_commitComposition: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_compose: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_copy: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_discardObjectTransform: (a: number, b: number) => [number, number, number];
     readonly doc_fontNames: (a: number) => [number, number, number, number];
     readonly doc_fontRequests: (a: number) => [number, number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
@@ -559,6 +634,7 @@ export interface InitOutput {
     readonly doc_serializeAs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_state: (a: number) => [number, number, number, number];
     readonly doc_substitutions: (a: number) => [number, number, number, number];
+    readonly doc_swapObjectTransform: (a: number, b: number) => [number, number, number, number];
     readonly doc_transact: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_undo: (a: number) => [number, number, number, number];
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;
