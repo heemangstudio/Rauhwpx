@@ -7,7 +7,7 @@ import { bodyList, paraMap, pathTarget, stepsToPath, textAddress, textRangeToWir
 import { extendBridge } from './api';
 
 /**
- * 찾는 범위. 각주·미주·머리말·꼬리말·바탕쪽은 어느 범위에도 들지 않는다.
+ * 찾는 범위. 각주·미주·머리말·꼬리말·바탕쪽, 표·개체의 캡션과 묶음 도형의 글은 어느 범위에도 들지 않는다.
  * - body: 본문 문단만.
  * - next: 다음 찾기. 본문과 표 셀(표 안의 표 포함).
  * - all: 모두 찾기·모두 바꾸기. 본문, 본문 표의 셀, 본문 글상자.
@@ -22,21 +22,45 @@ function inScope(kinds: readonly string[], scope: Scope): boolean {
 
 interface Found { match: Match; key: number[] }
 
+/**
+ * 컨트롤 안 목록의 종류. 캡션은 컨트롤의 마지막 목록이다. 개체는 자기 글상자 글만 'object'이고
+ * 묶음 안 도형의 글은 'group'이다.
+ */
+function listKinds(core: HmCore, at: { section: number; steps: Step[]; para: number; control: number }, info: { kind: string; lists: number }): (index: number) => string {
+  const address = at.steps.length ? at : { section: at.section, para: at.para, control: at.control };
+  try {
+    if (info.kind === 'table') {
+      const caption = core.query<{ caption: unknown }>({ kind: 'tableProperties', table: address }).caption ? info.lists - 1 : -1;
+      return index => index === caption ? 'caption' : 'table';
+    }
+    if (info.kind === 'object' && info.lists > 0) {
+      const props = core.query<{ caption?: { list: number } | null; text?: string }>({ kind: 'objectProperties', object: address });
+      const caption = props.caption?.list ?? -1;
+      return index => index === caption ? 'caption' : props.text !== undefined && index === 0 ? 'object' : 'group';
+    }
+  } catch {
+    // 속성을 읽지 못하는 컨트롤은 컨트롤 종류 그대로 본다.
+  }
+  return () => info.kind;
+}
+
 /** 문서 순서대로 고른 일치. 셀과 글상자의 일치는 그 컨트롤이 놓인 본문 자리에 끼운다. */
 function matches(core: HmCore, text: string, caseSensitive: boolean, scope: Scope): Found[] {
   if (!text) return [];
   // 구 엔진처럼 문단 안 컨트롤(각주 번호, 필드, 개체 칸)을 건너뛰고 글자만 맞춘다.
   const result = JSON.parse(core.call(doc => doc.search(JSON.stringify({ text, caseSensitive, limit: 0xFFFFFFFF, acrossControls: true })))) as HmSearchResult;
-  const controls = new Map<string, { kind: string; offset: number } | undefined>();
+  // 컨트롤마다 한 번만 속성을 읽는다. 셀·글상자 번호는 목록 종류를 고를 때만 쓴다.
+  const controls = new Map<string, { kind: (index: number) => string; offset: number } | undefined>();
   const control = (section: number, steps: readonly Step[], depth: number) => {
-    const id = JSON.stringify([section, steps.slice(0, depth + 1)]);
+    const step = steps[depth];
+    const id = JSON.stringify([section, steps.slice(0, depth), step.para, step.control]);
     if (!controls.has(id)) {
       const list: ListAddress = { section, steps: steps.slice(0, depth) };
-      const step = steps[depth];
       const info = core.paragraph(list, step.para).controls.find(c => c.index === step.control);
-      controls.set(id, info && { kind: info.kind, offset: info.offset });
+      controls.set(id, info && { kind: listKinds(core, { section, steps: list.steps, para: step.para, control: step.control }, info), offset: info.offset });
     }
-    return controls.get(id);
+    const found = controls.get(id);
+    return found && { kind: found.kind(step.index), offset: found.offset };
   };
   const found: Found[] = [];
   for (const match of result.matches) {
