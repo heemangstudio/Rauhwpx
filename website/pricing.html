@@ -4,93 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함)이고 매년 자동 갱신돼요. 언제든 해지할 수 있고, macOS·Windows에서 3일 동안 먼저 써 볼 수 있어요.">
-<meta name="theme-color" content="#ffffff">
+<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이에요. Signature Edition ₩29,000(일회성)은 출시 예정이에요. macOS와 Windows에서 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/pricing">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nanum+Gothic+Coding&text=%20%21%22%23%24%25%26%27%28%29%2A%2B%2C-.%2F0123456789%3A%3B%3C%3D%3E%3F%40ABCDEFGHIJKLMNOPQRSTUVWXYZ%5B%5C%5D%5E_%60abcdefghijklmnopqrstuvwxyz%7B%7C%7D~%E3%85%8A%E3%85%8E&display=block">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 가격 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
-
-/* 가격 카드 한 장, 하마가 모서리에 앉아요 */
-.buy-cell { padding-top: clamp(140px, 13vw, 184px); padding-bottom: clamp(56px, 7vw, 96px); }
-.buy-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: stretch; max-width: 1000px; margin-inline: auto; }
-.buy-wrap { position: relative; display: flex; }
-.buy-wrap > .buy { flex: 1; }
-.buy { display: flex; flex-direction: column; }
-.buy__cta { margin-top: auto; }
-.buy--trial { background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line); }
-.buy--trial .buy__list { margin-bottom: 24px; }
-@media (max-width: 860px) {
-  .buy-pair { grid-template-columns: 1fr; max-width: 520px; }
-  .buy-pair .buy--trial { order: 2; }
-}
-.buy-wrap .perch { right: 36px; }
-.buy { padding: 36px clamp(20px, 5vw, 40px) 30px; }
-.buy__top { text-align: center; }
-.buy__top .eyebrow { justify-content: center; }
-.buy__num {
-  margin-top: 14px;
-  font-size: clamp(52px, 3vw + 36px, 80px); line-height: 1; font-weight: 800; letter-spacing: -0.05em;
-  font-variant-numeric: tabular-nums;
-}
-.buy__top .meta { margin-top: 10px; }
-
-.buy__list { list-style: none; margin: 28px 0 0; padding: 0; border-top: 1px solid var(--line); }
-.buy__list li {
-  display: flex; gap: 14px;
-  padding: 14px 2px; border-bottom: 1px solid var(--line);
-  font-size: var(--fs-small); line-height: 1.6; color: var(--muted);
-}
-/* 하늘의 점과 같은 네모 표시 */
-.buy__list li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 0.62em; background: var(--accent); }
-.buy__list b { color: var(--text); font-weight: 600; }
-
-.buy .check { margin-top: 24px; }
-.buy .check a { color: var(--soft); }
-.buy [data-buy] { margin-top: 20px; }
-/* 동의 전에도 누르면 안내가 떠야 해서 클릭은 받아요 */
-.buy [data-buy][aria-disabled="true"] { pointer-events: auto; cursor: not-allowed; }
-.buy [data-buy][aria-disabled="true"]:active { transform: none; }
-.buy__note { margin-top: 12px; text-align: center; font-size: var(--fs-meta); line-height: 1.6; color: var(--accent); }
-.buy__note:empty { margin-top: 0; }
-.buy:has([data-consent]:checked) .buy__note { display: none; }
-
-/* 동의하면 하마가 한 번 뛰어요 (픽셀 그림답게 끊어서) */
-@keyframes hama-hop {
-  0% { translate: 0 0; }
-  12% { translate: 0 -6px; }
-  24% { translate: 0 -12px; }
-  36% { translate: 0 -14px; }
-  48% { translate: 0 -10px; }
-  60% { translate: 0 -4px; }
-  72% { translate: 0 0; }
-  84% { translate: 0 -3px; }
-  92%, 100% { translate: 0 0; }
-}
-.buy-wrap:has([data-consent]:checked) .perch img { animation: hama-hop 600ms steps(1, end); }
-
-/* 아래 안내 칸 */
-.info .h3 + .text, .info .h3 + .terms { margin-top: 10px; }
-.info .link-arrow { margin-top: 18px; font-size: var(--fs-small); }
-.terms { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: var(--fs-small); line-height: 1.7; color: var(--muted); }
-.terms li { position: relative; padding-left: 18px; }
-.terms li::before { content: ""; position: absolute; left: 2px; top: 0.72em; width: 4px; height: 4px; background: var(--meta); }
-.terms b { color: var(--text); font-weight: 600; }
-.terms a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(31, 94, 255, 0.35); text-underline-offset: 3px; }
-.terms a:hover { text-decoration-color: currentColor; }
-
-.dl { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 32px; }
-.dl .meta { margin-top: 4px; }
-
+html, body { overflow-x: clip; }
+#price-section { position: relative; isolation: isolate; overflow-y: clip; min-height: calc(100svh - var(--nav-h)); display: flex; flex-direction: column; justify-content: center; }
+.netart { position: absolute; left: 50%; top: 50%; z-index: -1; translate: -50% -50%; font: 400 clamp(7px, .75vw, 12px)/.8334 "Nanum Gothic Coding", var(--mono); pointer-events: none; user-select: none; }
+.netart pre { margin: 0; font: inherit; white-space: pre; }
+.netart__base { color: var(--ascii-neuron-ink); opacity: .42; }
+.netart__glow { position: absolute; left: 0; top: 0; color: var(--accent-hover); opacity: 0; transition: opacity 300ms ease; mask-image: radial-gradient(circle 170px at var(--mx, -999px) var(--my, -999px), #000 15%, rgb(0 0 0 / .4) 55%, transparent); }
+.netart.is-lit .netart__glow { opacity: .9; }
+.plans { gap: var(--space-lg); padding: var(--space-xl) 48px 0; }
+.plans .cell { padding: 0; }
+.plans .card { display: flex; flex-direction: column; height: 100%; background: color-mix(in srgb, var(--paper) 88%, transparent); outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.plans .h2 { margin-top: var(--space-2xs); }
+.plans .meta { margin-top: var(--space-xs); }
+.plans ul { margin: var(--space-lg) 0 var(--space-xl); }
+.plans li + li { margin-top: var(--space-xs); }
+.plans .check { margin-top: auto; }
+.plans .btn--block { margin-top: var(--space-md); }
+.plans .btn:disabled { margin-top: auto; }
+.plans [data-buy-note]:empty { display: none; }
+.trial-row { display: flex; justify-content: center; padding: var(--space-xl) 48px; }
 @media (max-width: 760px) {
-  .buy-cell { padding-top: 104px; }
-  .buy-wrap .perch { right: 20px; }
-  .dl .btn { flex: 1 1 100%; }
+  .plans { padding: 28px var(--space-md) 0; }
+  .trial-row { padding: 28px var(--space-md); }
 }
 </style>
 </head>
@@ -101,8 +50,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
@@ -113,8 +61,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
@@ -126,75 +73,143 @@
 </header>
 
 <main id="main">
-  <section class="has-sky" aria-labelledby="price-title">
-    <div class="sky" aria-hidden="true">
-      <i class="wide-only cloud cloud--l" style="left:7%;top:34%"></i>
-      <i class="wide-only cloud" style="left:80%;top:58%"></i>
-      <i class="star star--lg star--blink" style="left:14%;top:14%;--d:.8s"></i>
-      <i class="star star--lg" style="left:86%;top:20%"></i>
-      <i class="wide-only star star--dim" style="left:28%;top:52%"></i>
-      <i class="star star--blink" style="left:92%;top:44%;--d:2.6s;--blink:7.4s"></i>
-      <i class="star star--dim" style="left:4%;top:74%"></i>
-      <i class="dot dot--hi" style="left:24%;top:10%"></i>
-      <i class="wide-only dot" style="left:66%;top:8%"></i>
-      <i class="dot" style="left:96%;top:66%"></i>
-      <i class="wide-only dot dot--hi" style="left:72%;top:36%"></i>
-    </div>
+  <section id="price-section" data-slide aria-labelledby="price-title">
+    <div class="netart" aria-hidden="true"><pre class="netart__base">
 
+                                                                                                                                                                                                                                                               / o -
+                                                                       - - o                                                                                                                                                                               / / /     - - -
+                                                             - - - - -        \                                                                                                                (ㅎ)                                                    / /   /             - - -                                                  *
+                              - *  - - -             - - - -               |    \                                                           *                                                      - - -                                           / /     /                     - -                                           /
+                        - - -           ------ o - -                              \                          *                          / /                                                   /   \      - -                                   / /       /                           - - -                                 / /
+                    - - - - - - - -\- -                                     |       \                 / / /     \                     /    | |                                                      \        - - -                         / /         /                                   - *                           /
+                o - - -                                                               \           / /        |    \ \               /                                                       /                      - - -               / /           /                                         \ \ \                 / /
+                                     \          |                           |           \     / /                     \           /      |    |                                                       \                  - -       / /             /                                          |      \             /
+               |                       \                                                  * /                |          \ \   / /                                                          /            \                    -(ㅎ) - - - - - - - *                                                     \ \ \   / /
+                                         \      |                           |                                               *           |       |                                                                                                                                              |            (ㅎ)
+             |                                                                          /                    |            /                                                              /                \                  /   \             /
+                                           \    |                            |                                          /    |         |         |                                                          \              /                                                                    |           |
+            |                                \                                        /                      |        /                                                                /                                 /         \         /
+                                                 |                           |                                      /         |       |           |                                                           \                                                                                  |         |
+           |                                   \                                    /                        |    /                                                                  /                                 /            \       /
+                                                 *                           |    /                             /              |    |                                                                           \                                                                                 |       |
+          |                                    /   \                                                                                                o                               /                                /                \   /
+                                                                              | /                            * -                |  |         / / /    \                                                           (ㅎ) - - - -                                                                     |     |
+        |                                    /       \                                                    /      - - - -                 / /            \                                                                      - - - - (ㅎ)
+                                           /           \                      o \                       /                - - -       / /                  \                     (ㅎ)                                |                                                                               |   |
+       * - -                                             \               / /      \ \                 /                        - o /                                          /     \ \                         /                        |
+             - - - - -                   /                           / /      |       \ \           /                                                       \             / /     |     \ \                   /      |
+          \            - - - - -                           \     / /                      \ \     /                                \                          \         /                   \ \                                           |                                                           o
+            \                    - -- *  - - - - - - - - - - * /              |               \ o                              /                                \   / /            |            \ \         /         |                                                                             /   \ \
+              \                 - -                                                                                                 \                             o                                 \ \                                   |                                                     / /  |      \ \
+                          - - -       |                        \             |                   |                           /                                                     |                    \ o            |                                                                      /                 \ \
+                \     - -                                        \                                                                    \                                                                 /   \ \                            |                                                /       |               \ \
+                  * \                  |                                     |                    |                         /                                     |                 |                 /         \       |                                                                 /                              o
+                      \ \                                          \                                                                    \                                                                         \                         |               - - * - -                 / /          |                 / /
+                 |        \ \          |                                     |                    |                     - * -                                     |                  |              /               \    |                        - - - - -           - - - -       /                              /    |
+                              \ \                                    \                                            - - -       - - - - -                                                           /                   \ \           - - - -  o  -                             - - *                |             /         |
+                 |                \ \                                        |                     |          - -                       - o                       |                   |         /                        (ㅎ) - - -                           /                     \                        / /        |
+                                      \ *                              \                                - - -                                                                                 /                                                 \                                     \           |        /                |
+                |                                                        \  |                     -(ㅎ)                                    |                      |                    |                                                                    /                           \ \            / /             |
+                                         |                                              - - - - -                                                                                           /                                                     \                                         \    |   /                        |
+               |                        |                                         - - -              |                                     |                      |                       /                                                                /                                  \    /                  |
+                                           |                               (ㅎ) -                                                                                             - - - - - o                                                           \                                           o  -                           |
+              |                         |                                                             |                                     |                     o - - - - -                                                                         \  /                                           - - -            |
+                                            |                                                                                                                                                                                                                                                              - - - -              |
+              |                        |                                                                |                                   |                     |                    |                                                               (ㅎ)                                        \               -(ㅎ)
+                                             |                                                                                                                                                                                                                                                       \                  \        |
+             |                         |                                                                 |                                   |                    |                   |                                                              /    \                                                         |     \ \
+                                               |                                                                                                                                                                                                   /        \                                          \                      \    |
+            |                        - o                                                                  |                                  |                    |                   |                                                          /                                                                  |           \ \
+                             - - - -     \      |                                                                                                                                                                                                             \                                          \                          o
+            |          - - -               \                                                              (ㅎ)                               (ㅎ)                  |                 |                                                         /                                                                   |            / /
+               - - - -                       \   |                                                      /    \ \                           /     \ \                                                                                         /                  \                                          \                  /
+           o -                                 \                                                      /     |    \                       /           \ \           |                |                                                      /                      \                                          \    |         /
+                                                 \ |                                                /              \ \                 /                 \ \                                                                             /                                                                              / /
+            |                                                                                     /         |          \             /                       \ \                    |                                                                               o                                          \  |   /
+                                                   (ㅎ)                                       / /                        \         /                             \ o - - - -                                                           /                              \                                             /
+            |                                                                               /                |             \ \   /                                           - - - o - - - - - - - - - - -(ㅎ) - - - -               /                            /                                              o
+                                                  /                                       /                                    o                                /                                                      - - - - - - *                                    \                                     /
+             |                                  /                                       o                    |               /    \                                                  \                   /                           \                           /        \                                 /      \
+                                                                                          \ \                              /        \                         /                                                                                                                                           /
+             |                                /                                        |      \ \             |          /            \                     /                          \               /                               \                       /            \                           /            \
+                                                                                                  \ \                / /                \                                                                                                \                                    \                       /                \
+                                            /                                        |                \ \     |    /                      \               /                              \            /                                    \                  /                 \                   /
+             (ㅎ)                         /                                                               \ \    /                          \ \         /                                  \                                                 \                                                    /                      \
+                \ \                                                                 |                          o                                \                                                   /                                                       /                     \             /
+             |      \                   /                                                                                                         \   /                                      \                                                 \                                    \         /                            \
+                      \                                                            |                         /  |                                   o \                                           /                                              \        /                                 /
+           |            \ \           /                                                                                                                 \ \                                                                                        \                                  \   /                                  \
+                            \       /                                            |                         /     |                                          \ \                              -  o                                                        /                              o                                      \
+          |                   \ \                                                                                                                               \ \                  - - - -                                                         \
+                                  o                                             |                        /        |                                                 \ \      - - - -                                                                  (ㅎ)                               |                                       \
+         |                          \ \                                                                                                                                  o -                    |
+                                /       \                                                   - - - - -  o          |                                                                                                                                  /  |                                 |                                        o
+                              /           \ \                                 o - - - - - -              \                                                              /  \                    |                                                  /
+      (ㅎ)                                    \ \                                                      |   \       |                                                                                                                                     |                                |                                        |
+         \ \                /                    (ㅎ)                       /                                \ \                                                      /     \                   |                                                /
+       |     \                                      \                     /                           |          \  |                                                                                                                          /          |                                |                                       |
+               \ \        /                           \ \                                                          \                                                /         \                 |
+      |            \ \                          |         \             /                             |              *                                                                                                                       /                                              |                                      |
+                       *                                    \                                                      /   \                                           /                            |                                          /            - - o  - - -
+      |              /    \                    |              \       /                              |                   \                                                    - * - - -                                                       - - - - -              - - - - - - - -                                                |
+                   /   |    \                                   \                                                /         \                                      /     - - -     \     - - - - * - - -                      - - - - - - *  -                 \                      - - - - *
+      |                       \               |                    *                                 |         /                                                    - -             \                   - - -  o - - - - - -                                    \                              \                                    |
+                 /     |        \                                                                            /               \                                / o -                   \                                                                                                    /     \
+      |        /                  \         |                      | \                              |                          \                            /                           \        |          /                                                     \                                \
+             /        |             \                                  \                                   /                     \                    / / /   /                           \                                                                                               /          \ \                            *
+      |    /                          \    |                       |                                |    /                         \                /                                       \     |       /                                                         \                                    \
+                      |                 \                                \                             /                             \        / / /         /                                 \         /                                                             \                 /                  \                      /
+     |   /                              -(ㅎ)                      |       \                       |                                        /                                                   \  |                                                                                                         \
+       /              |         - - - -     \ \                                                      /                                  * /               /                                       \   /                                                                 \             /                        \                /
+     o  - - -             - - -                 \ \                 |        \                    (ㅎ)                                    \             /                                          (ㅎ)                                                                                                          \            /
+              - - - - o -                           \                          \                 /                                                                                                                                                                        \         /                              \
+                                                      \ \           |                          /                                            \         /                                                                                                                                                              \      /
+                                                          \                      \         / /                                                \                                                                                                                             \      /                                   \
+                                                            \ \     |              \     /                                                          /                                                                                                                         \                                           o
+                                                                \ \                    /                                                        \
+                                                                   (ㅎ)- - - - - - - *                                                            *                                                                                                                             *
+
+</pre></div>
     <div class="frame frame--top">
-      <div class="cell cell--open buy-cell">
-        <div class="buy-pair">
-          <article class="card buy buy--trial" id="trial" aria-labelledby="trial-title" data-reveal="rise">
-            <div class="buy__top">
-              <p class="eyebrow">무료 체험</p>
-              <h2 id="trial-title" class="buy__num">3일</h2>
-              <p class="meta">모든 기능</p>
-            </div>
-            <ul class="buy__list">
-              <li><span>처음 실행하고 3일 동안 모든 기능을 무료로 써 볼 수 있어요.</span></li>
-              <li><span>체험이 끝나도 문서는 열어 볼 수 있고, 키를 넣으면 바로 다시 편집할 수 있어요.</span></li>
+      <div class="cells plans">
+        <article class="cell cell--open" id="price">
+          <div class="card">
+            <p class="handnote">연간</p>
+            <h1 id="price-title" class="h2">₩9,900</h1>
+            <p class="meta">부가세 포함, 자동 갱신, 언제든 해지</p>
+            <ul>
+              <li id="mac-only"><span>앱의 모든 기능</span></li>
+              <li><span>키 하나로 기기 두 대까지 (Mac, Windows)</span></li>
+              <li><span>언제든 해지, 결제한 기간까지 사용</span></li>
             </ul>
-            <a class="btn btn--secondary btn--block buy__cta" href="trial.html">체험판 안내</a>
-          </article>
-        <div class="buy-wrap">
-          <div class="perch" data-reveal style="--i:5"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
-          <article class="card card--navy buy" id="price" data-reveal="rise">
-            <div class="buy__top">
-              <p class="eyebrow">HamaEditor 공식 라이선스</p>
-              <h1 id="price-title" class="buy__num">연 ₩9,900</h1>
-              <p class="meta">부가세 포함 · 자동 갱신 · 언제든 해지</p>
-            </div>
-
-            <ul class="buy__list">
-              <li id="mac-only"><span>앱의 모든 기능을 사용할수 있어요</span></li>
-              <li><span>키 하나로 기기 두 대까지 동시에 쓸 수 있어요.</span></li>
-              <li><span>언제든 해지할 수 있고, 해지해도 결제한 기간은 끝까지 써요.</span></li>
-            </ul>
-
             <label class="check">
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
-            <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
-          </article>
-        </div>
-        </div>
+            <a class="btn btn--primary btn--block" href="#price" data-buy data-buy-sku="annual" aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
+            <p data-buy-note role="status" aria-live="polite"></p>
+          </div>
+        </article>
+        <article class="cell cell--open" id="signature">
+          <div class="card">
+            <p class="handnote">Signature</p>
+            <h2 id="signature-title" class="h2">₩29,000</h2>
+            <p class="meta">일회성</p>
+            <ul>
+              <li>앱의 모든 기능 (연간과 동일)</li>
+              <li>최소 3년 지속 업데이트 약속</li>
+              <li>키 하나로 기기 두 대까지 (Mac, Windows)</li>
+            </ul>
+            <button class="btn btn--primary btn--block" type="button" disabled>출시 예정</button>
+          </div>
+        </article>
+      </div>
+      <div class="trial-row">
+        <a class="btn btn--secondary" id="trial" href="trial.html">체험판 안내</a>
       </div>
     </div>
   </section>
 
-  <div class="frame">
-
-    <section class="cell dl" id="download" aria-labelledby="download-title">
-      <div>
-        <h2 id="download-title" class="h3">내려받기</h2>
-        <p class="meta">macOS · Apple Silicon / Windows · x64</p>
-      </div>
-      <a class="btn btn--secondary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
-    </section>
-    <div class="rule"></div>
-  </div>
 </main>
 
 <footer class="footer" data-footer>
@@ -206,9 +221,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>
@@ -229,7 +242,6 @@
       </nav>
     </div>
     <div class="footer__base">
-      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
       <span>운영자 하태욱</span>
       <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
@@ -240,23 +252,24 @@
 
 <script src="assets/purchase.js"></script>
 <script>
-(function(){
-  var P=window.HamaPurchase;
-  var buy=document.querySelector('[data-buy]');
-  var consent=document.querySelector('[data-consent]');
-  var note=document.querySelector('[data-buy-note]');
-  if(!buy||!P)return;
-  function sync(){buy.setAttribute('aria-disabled',consent.checked?'false':'true');}
-  consent.addEventListener('change',sync);sync();
-  buy.addEventListener('click',function(e){
-    e.preventDefault();
-    if(!consent.checked){note.textContent='동의에 체크하면 결제할 수 있어요.';consent.focus();return;}
-    // 결제마다 새 ref 를 만들어 이 브라우저에 남겨요. success.html 이 이 값으로 키를 찾아요.
-    var ref=P.newRef();
-    P.saveRef(window.localStorage,ref);
-    window.location.href=P.checkoutUrl(ref);
-  });
-})();
+  if (window.HamaPurchase) window.HamaPurchase.bindBuyButtons(document);
+</script>
+<script>
+  // A blue copy of the network, masked to a circle around the cursor, lights the strands under it.
+  (function () {
+    var art = document.querySelector('.netart'), section = document.getElementById('price-section');
+    if (!art || !matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    var glow = art.querySelector('.netart__base').cloneNode(true);
+    glow.className = 'netart__glow';
+    art.appendChild(glow);
+    section.addEventListener('pointermove', function (e) {
+      var r = glow.getBoundingClientRect();
+      glow.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+      glow.style.setProperty('--my', (e.clientY - r.top) + 'px');
+      art.classList.add('is-lit');
+    });
+    section.addEventListener('pointerleave', function () { art.classList.remove('is-lit'); });
+  })();
 </script>
 <script src="assets/site.js" defer></script>
 </body>

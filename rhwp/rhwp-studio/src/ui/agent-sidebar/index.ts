@@ -2209,17 +2209,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   agentUndoBtn.appendChild(createIcon('undo'));
   agentUndoBtn.addEventListener('click', undoLatestAgentTurn);
 
-  // 콘솔 펼치기 — 사이드바 폭에서는 diff 를 읽을 수 없어 전체 화면으로 넘긴다.
-  const fullscreenBtn = el('button', 'ag-header-icon-btn ag-fullscreen-btn');
-  fullscreenBtn.type = 'button';
-  fullscreenBtn.setAttribute('aria-pressed', 'false');
-  let fullscreenIcon = createIcon('expand');
-  fullscreenBtn.appendChild(fullscreenIcon);
-  fullscreenBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    setFullscreen(!fullscreen);
-  });
-
   const versionsBtn = el('button', 'ag-header-icon-btn ag-versions-btn');
   versionsBtn.type = 'button';
   versionsBtn.setAttribute('aria-label', '버전');
@@ -2249,7 +2238,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
   // pane 액션은 문서 콘텍스트 주변의 고정된 헤더 위치를 유지한다.
   // 설정은 집중 모드의 채팅 목록 아래와 환경 설정(Cmd+/)에서 연다.
-  headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn, fullscreenBtn);
+  headerActions.append(connDot, takeoverBtn, agentUndoBtn, homeBtn, versionsBtn, threadsBtn);
 
   selectors.append(providerWrap, llmWrap, effortWrap);
   const modelSummary = el('div', 'ag-model-summary');
@@ -4616,10 +4605,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     },
   });
-  const browserTrigger = el('button', 'ag-browser-trigger'); browserTrigger.type = 'button'; browserTrigger.setAttribute('aria-label', '브라우저 열기'); browserTrigger.title = '브라우저 열기'; browserTrigger.append(createIcon('browser'));
-  browserTrigger.addEventListener('click', () => workbench?.select('browser'));
-  composerUtilityActions.insertBefore(browserTrigger, modeMenu.root);
-  browserTrigger.after(documentLinkToggle.element);
+  composerUtilityActions.insertBefore(documentLinkToggle.element, modeMenu.root);
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerUtilityActions.insertBefore(contextMeter, referenceLibrary.trigger);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
@@ -5851,12 +5837,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     scrollRail.setEnabled(on);
     syncFocusGreeting();
     applyEnvironmentPanelState();
-    fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    fullscreenBtn.setAttribute('aria-label', on ? '사이드바로 돌아가기' : '에이전트 집중 모드');
-    fullscreenBtn.title = on ? '사이드바로 돌아가기 (Esc)' : '에이전트 집중 모드';
-    const nextIcon = createIcon(on ? 'contract' : 'expand');
-    fullscreenIcon.replaceWith(nextIcon);
-    fullscreenIcon = nextIcon;
 
     if (!on) {
       // 집중 모드를 닫아도 보내지 않은 초안은 남는다. 문서 옆에서 빈 초안만 앞 채팅으로 돌아간다 —

@@ -13,6 +13,7 @@ test('config points at the live Groble product and the default API base', () => 
   assert.equal(P.CONFIG.PLAN, 'annual', 'the yearly subscription is on sale');
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
   assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.signature, 'https://groble.im/payment/8Xy27f');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
   assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
@@ -33,6 +34,7 @@ test('refs match the Groble sellerReference rule and are unique', () => {
 
 test('checkout URL appends ?ref=', () => {
   assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/GLJFC9?ref=hama-abc');
+  assert.equal(P.checkoutUrl('hama-sig', P.CONFIG.CHECKOUT_URLS.signature), 'https://groble.im/payment/8Xy27f?ref=hama-sig');
   assert.equal(P.checkoutUrl('x', 'https://e.test/p?a=1'), 'https://e.test/p?a=1&ref=x');
   assert.throws(() => P.checkoutUrl('bad ref'));
 });
@@ -106,6 +108,24 @@ test('repeated errors end in error; a single blip does not', async () => {
   assert.equal(v.at(-1).state, 'issued');
 });
 
+test('a revoked license ends polling without retrying', async () => {
+  const updates = await poll([json(200, { status: 'revoked' })]);
+  assert.deepEqual(updates, [{ state: 'revoked', attempts: 1 }]);
+});
+
+test('malformed responses count as consecutive errors, and valid pending resets them', async () => {
+  const malformed = json(200, { status: 'issued' });
+  const updates = await poll([malformed]);
+  assert.equal(updates.at(-1).state, 'error');
+  assert.equal(updates.at(-1).attempts, 3);
+  const recovered = await poll([
+    malformed, malformed, json(200, { status: 'pending' }), malformed, malformed,
+    json(200, { status: 'issued', key: 'K' }),
+  ]);
+  assert.equal(recovered.at(-1).state, 'issued');
+  assert.equal(recovered.at(-1).attempts, 6);
+});
+
 test('annual keys get the renewal line on the success page; lifetime keys get none', () => {
   assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
   assert.equal(P.renewalText(null), '');
@@ -154,19 +174,105 @@ test('the download page counts each file once per tab, so the fallback link afte
   assert.equal(P.trackDownloadOnce('mac-arm64', blocked, t, nav), true, 'blocked storage still counts');
 });
 
-test('every page sells the yearly subscription and none offers a one-time purchase', () => {
+test('buy buttons check their own consent and product, and tolerate blocked storage', () => {
+  function article(sku) {
+    const consent = {
+      checked: false,
+      listeners: {},
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      focus() { this.focused = true; },
+    };
+    const note = { textContent: '' };
+    const buy = {
+      sku,
+      attrs: { 'aria-disabled': 'true' },
+      listeners: {},
+      getAttribute(name) { return name === 'data-buy-sku' ? sku : null; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(type, fn) { this.listeners[type] = fn; },
+      closest() { return card; },
+    };
+    const card = {
+      querySelector(sel) {
+        if (sel === '[data-consent]') return consent;
+        if (sel === '[data-buy-note]') return note;
+        return null;
+      },
+    };
+    return { buy, consent, note };
+  }
+  const yearly = article('annual');
+  const signature = article('signature');
+  const unknown = article('mystery');
+  const storage = memoryStorage();
+  const location = { href: '' };
+  const doc = {
+    defaultView: { localStorage: storage, location },
+    querySelectorAll(sel) {
+      return sel === '[data-buy]' ? [yearly.buy, signature.buy, unknown.buy] : [];
+    },
+  };
+  P.bindBuyButtons(doc);
+  signature.buy.listeners.click({ preventDefault() {} });
+  assert.equal(signature.note.textContent, '동의에 체크하면 결제할 수 있어요.');
+  assert.equal(location.href, '');
+  assert.equal(signature.consent.focused, true);
+  yearly.consent.checked = true;
+  signature.buy.listeners.click({ preventDefault() {} });
+  assert.equal(location.href, '', 'the other card consent does not unlock this one');
+  signature.consent.checked = true;
+  signature.buy.listeners.click({ preventDefault() {} });
+  assert.match(location.href, /^https:\/\/groble\.im\/payment\/8Xy27f\?ref=/);
+  yearly.buy.listeners.click({ preventDefault() {} });
+  assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
+  unknown.consent.checked = true;
+  unknown.buy.listeners.click({ preventDefault() {} });
+  assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
+  assert.doesNotMatch(location.href, /uRshdR/);
+  Object.defineProperty(doc.defaultView, 'localStorage', { get() { throw new Error('blocked'); } });
+  location.href = '';
+  yearly.buy.listeners.click({ preventDefault() {} });
+  assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
+});
+
+test('yearly stays on sale, and only the pricing page previews Signature', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const pages = fs.readdirSync(__dirname).filter((f) => f.endsWith('.html'));
   for (const page of pages) {
     const html = fs.readFileSync(path.join(__dirname, page), 'utf8');
-    assert.doesNotMatch(html, /일회성|평생|한 번 결제|1회 결제하여 구매/, `${page} has one-time purchase copy`);
+    assert.doesNotMatch(html, /평생/, `${page} says 평생`);
     assert.doesNotMatch(html, /9,900원에 구매/, `${page} has a price without 연`);
+    if (page !== 'pricing.html') {
+      assert.doesNotMatch(html, /일회성|8Xy27f|₩29,000/, `${page} sells Signature`);
+    }
     // 네이버 검수는 자바스크립트 없이 바닥글을 봐요.
     assert.match(html, /운영자 하태욱/, `${page} names the operator`);
     assert.match(html, /010-8512-1201/, `${page} shows the operator phone`);
   }
   const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  const { resolveLicenseConfig } = await import('../site-api/config.mjs');
+  const byKind = Object.fromEntries(resolveLicenseConfig({}).products.map((product) => [product.kind, product]));
+  assert.equal(P.CONFIG.CHECKOUT_URLS.signature, `https://groble.im/payment/${byKind.signature.id}`);
+  assert.equal(P.CONFIG.CHECKOUT_URLS.annual, `https://groble.im/payment/${byKind.subscription.id}`);
+  assert.equal(byKind.signature.id, '8Xy27f');
+  assert.equal(byKind.subscription.id, 'GLJFC9');
+  assert.equal(byKind.signature.expectedPrice, 29000);
+  assert.equal(byKind.subscription.expectedPrice, 9900);
+  assert.match(pricing, /₩29,000/);
   assert.match(pricing, /연 ₩9,900/);
-  assert.match(pricing, /자동 갱신 · 언제든 해지/);
+  assert.match(pricing, /자동 갱신, 언제든 해지/);
+  assert.doesNotMatch(pricing, /data-buy-sku="signature"/);
+  assert.match(pricing, /data-buy-sku="annual"/);
+  assert.match(pricing, /Groble에서 연 ₩9,900 결제하기/);
+  assert.match(pricing, /<button[^>]* disabled>출시 예정<\/button>/);
+  assert.match(pricing, /일회성/);
+  assert.match(pricing, /최소 3년/);
+  assert.match(pricing, /기기 두 대/);
+  assert.match(pricing, /Mac, Windows/);
+  assert.match(pricing, /href="trial\.html"/);
+  assert.match(pricing, /체험판 안내/);
+  assert.doesNotMatch(pricing, /무료 체험/);
+  assert.doesNotMatch(pricing, /buy-pair|card--navy|perch|buy__badge/);
+  assert.match(pricing, /bindBuyButtons/);
 });

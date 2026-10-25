@@ -1,0 +1,7 @@
+{
+  "tool": "Built-in imagegen",
+  "prompt": "Use case: photorealistic-natural\nAsset type: black sketchbook paper background for HamaEditor.\nPrimary request: A flat scanned sheet of matte black artist drawing paper with subtle charcoal-paper tooth and fine dark graphite fibers. Nearly uniform deep black-gray, delicate natural texture, a few very faint white charcoal dust flecks only at the extreme edges. Center 85 percent is empty, dark, and calm for white website typography.\nStyle/medium: high-resolution real paper scan, dry black drawing paper, restrained tactile surface.\nComposition: landscape edge-to-edge paper only, even illumination, no gradients or vignette.\nConstraints: no text, no drawing, no lines, no grid, no objects, no pencils, no animals, no hippo, no logo, no frame, no watermark. Texture only, not a website mockup.",
+  "original": "sketchbook-black-paper.png",
+  "web": "sketchbook-black-paper.jpg",
+  "mascot": "The original assets/hama.svg pixel artwork is unchanged."
+}

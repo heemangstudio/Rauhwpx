@@ -6,27 +6,30 @@
 <title>라이선스 키 | HamaEditor</title>
 <meta name="description" content="HamaEditor 결제를 마친 뒤 라이선스 키를 받는 페이지예요.">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/success">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 결제 완료 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   상태(확인 중, 키 받음, 오류, 시간 초과)는 아래 스크립트가 data-* 요소를 켜고 끄는 것만으로 바뀌어요. */
+/* Layout for the payment success page. Shared parts live in assets/site.css.
+   The script below switches states (checking, key received, error, timeout) only by toggling data-* elements. */
 [hidden] { display: none !important; }
 
-.key-cell { padding-top: 0; padding-bottom: clamp(56px, 7vw, 96px); }
+.key-cell { padding-top: 0; padding-bottom: clamp(56px, 7vw, var(--space-3xl)); }
 .key-wrap { position: relative; width: min(100%, 560px); margin: 112px auto 0; }
-.key-wrap .perch { left: 50%; margin-left: -55px; }
-.key { padding: 30px clamp(20px, 4vw, 32px); }
+.key-wrap .perch { left: 50%; margin-left: -56px; }
+.key { padding: 32px clamp(20px, 4vw, 32px); }
 
-/* 상태 한 줄: 확인 중이면 도는 표시, 문제가 있으면 노란 네모 */
+/* Status line: a spinner while checking, a yellow square on a problem */
 .status {
-  display: flex; align-items: flex-start; gap: 12px;
+  display: flex; align-items: flex-start; gap: var(--space-sm);
   font-size: var(--fs-lead); line-height: 1.6; font-weight: 600; color: var(--text);
 }
 .spin {
@@ -35,60 +38,40 @@
 }
 @media (prefers-reduced-motion: no-preference) { .spin { animation: spin 0.9s linear infinite; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: #e0901f; }
-.key:has(.status.is-bad) { box-shadow: 0 0 0 1.5px #f0c27a, 0 24px 48px -28px rgba(11, 13, 18, 0.18); }
+.status.is-bad::before { content: ""; flex: none; width: 8px; height: 8px; margin-top: 0.62em; background: var(--status-warning); }
+.key:has(.status.is-bad) { box-shadow: 0 0 0 1.5px var(--status-warning-line), 0 24px 48px -28px var(--shadow-ink); }
 
-/* 키 받음 */
-.key__issued { margin-top: 18px; }
-.key__issued .code-box { flex-wrap: wrap; padding: 10px 10px 10px 18px; }
+/* Key received */
+.key__issued { margin-top: 20px; }
+.key__issued .code-box { flex-wrap: wrap; padding: var(--space-sm) var(--space-sm) var(--space-sm) 20px; }
 .key__issued code { flex: 1 1 220px; font-family: var(--mono); font-size: 17px; letter-spacing: 0.04em; color: var(--text); user-select: all; }
 .key__issued .code-box .btn { font-family: var(--font); letter-spacing: -0.01em; }
-.key__issued .meta { margin-top: 12px; }
-.key__issued .term { margin-top: 14px; color: var(--text); }
+.key__issued .meta { margin-top: var(--space-sm); }
+.key__issued .term { margin-top: var(--space-md); color: var(--text); }
 
-/* 오류와 시간 초과 */
+/* Error and timeout */
 .key [data-retry-wrap] { margin-top: 20px; }
 .key__help {
-  margin-top: 20px; padding: 16px 18px;
-  border-radius: 12px; background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line);
+  margin-top: 20px; padding: var(--space-md) 20px;
+  border-top: 1px solid var(--line-strong); background: transparent; box-shadow: none;
   font-size: var(--fs-small); line-height: 1.7; color: var(--muted);
 }
-.ref { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
+.ref { margin-top: var(--space-sm); font-family: var(--mono); font-size: 13px; color: var(--meta); overflow-wrap: anywhere; }
 
-/* 하마: 기다리는 동안 살짝 들썩이고, 키가 나오면 뛰어오르며 별이 떠요 */
-.cheer { position: absolute; inset: 0; }
-.cheer .star { opacity: 0; transform: scale(0); }
-@keyframes hama-wait { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2px; } }
-@keyframes hama-cheer {
-  0% { translate: 0 0; }
-  10% { translate: 0 -8px; }
-  20% { translate: 0 -14px; }
-  30% { translate: 0 -8px; }
-  40% { translate: 0 0; }
-  50% { translate: 0 -8px; }
-  60% { translate: 0 -12px; }
-  70% { translate: 0 -6px; }
-  80%, 100% { translate: 0 0; }
-}
-@keyframes cheer-pop { from { opacity: 0; transform: scale(0); } to { opacity: 1; transform: none; } }
-.key-wrap:has(.spin) .perch img { animation: hama-wait 1.2s steps(1, end) infinite; }
-.key-wrap:has([data-issued]:not([hidden])) .perch img { animation: hama-cheer 900ms steps(1, end); }
-.key-wrap:has([data-issued]:not([hidden])) .cheer .star { animation: cheer-pop 420ms var(--ease-spring) both; animation-delay: calc(200ms + var(--n) * 110ms); }
-
-/* 키 넣는 법 */
-.activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 40px; padding-bottom: clamp(36px, 5vw, 64px); }
+/* How to enter the key */
+.activate { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: var(--space-xl); padding-bottom: clamp(36px, 5vw, var(--space-2xl)); }
 .activate > .h2 { font-size: clamp(28px, 1.4vw + 20px, 44px); }
-.activate .step .btn { margin-top: 14px; }
+.activate .step .btn { margin-top: var(--space-md); }
 .foot-note { padding-top: 20px; padding-bottom: 20px; }
-.foot-note a { color: var(--accent); text-decoration: underline; text-decoration-color: rgba(31, 94, 255, 0.35); text-underline-offset: 3px; }
+.foot-note a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--link-line); text-underline-offset: 3px; }
 
 @media (max-width: 900px) {
-  .activate { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .activate { grid-template-columns: minmax(0, 1fr); gap: var(--space-sm); }
 }
 @media (max-width: 760px) {
   .key-wrap { margin-top: 72px; }
-  .key-wrap .perch { margin-left: -33px; }
-  .key__issued .code-box { padding: 14px 16px; }
+  .key-wrap .perch { margin-left: -32px; }
+  .key__issued .code-box { padding: var(--space-md) var(--space-md); }
   .key__issued code { font-size: 15px; letter-spacing: 0.02em; }
   .key__issued .btn, .key [data-retry-wrap] .btn { flex: 1 1 100%; }
 }
@@ -101,8 +84,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -113,8 +95,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -126,28 +107,17 @@
 
 <main id="main">
   <section class="has-sky" aria-labelledby="ok-title">
-    <div class="sky" aria-hidden="true">
-      <i class="wide-only cloud cloud--l" style="left:5%;top:40%"></i>
-      <i class="wide-only cloud" style="left:84%;top:62%"></i>
-      <i class="star star--lg star--blink" style="left:12%;top:16%;--d:.8s"></i>
-      <i class="star star--lg" style="left:88%;top:22%"></i>
-      <i class="wide-only star star--dim" style="left:24%;top:60%"></i>
-      <i class="star star--blink" style="left:94%;top:44%;--d:2.6s;--blink:7.4s"></i>
-      <i class="star star--dim" style="left:3%;top:82%"></i>
-      <i class="dot dot--hi" style="left:30%;top:12%"></i>
-      <i class="wide-only dot" style="left:70%;top:14%"></i>
-      <i class="dot" style="left:97%;top:76%"></i>
-    </div>
+
 
     <div class="frame frame--top">
       <header class="cell cell--open page-head cell--center">
-        <p class="eyebrow">라이선스 키</p>
-        <h1 id="ok-title" class="h1" data-reveal="words">결제해 주셔서 고마워요</h1>
+
+        <h1 id="ok-title" class="h1">결제해 주셔서 고마워요</h1>
       </header>
 
       <div class="cell cell--open key-cell">
         <div class="key-wrap">
-          <div class="perch" data-reveal style="--i:4">
+          <div class="perch" style="--i:4">
             <img class="px" src="assets/hama.svg" width="110" height="100" alt="">
             <span class="cheer" aria-hidden="true">
               <i class="star" style="left:-14%;top:22%;--n:0"></i>
@@ -155,7 +125,7 @@
               <i class="star" style="left:2%;top:-8%;--n:2"></i>
             </span>
           </div>
-          <div class="card card--navy key" data-reveal="rise">
+          <div class="card card--navy key">
             <p class="status" data-status role="status" aria-live="polite"><span class="spin" aria-hidden="true"></span>결제를 확인하고 있어요…</p>
 
             <div class="key__issued" data-issued hidden>
@@ -172,7 +142,7 @@
             </div>
 
             <div class="key__help" data-help hidden>
-              <p>결제는 끝났는데 키가 보이지 않으면 아래 참조값과 Groble 주문번호를 <a class="link" href="mailto:management@heemangstudios.com?subject=HamaEditor%20%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4%20%ED%82%A4%20%EB%AC%B8%EC%9D%98">management@heemangstudios.com</a>으로 보내 주세요. 확인하고 키를 보내 드릴게요.</p>
+              <p>라이선스 문의는 아래 참조값과 Groble 주문번호를 <a class="link" href="mailto:management@heemangstudios.com?subject=HamaEditor%20%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4%20%ED%82%A4%20%EB%AC%B8%EC%9D%98">management@heemangstudios.com</a>으로 보내 주세요.</p>
               <p class="ref" data-ref-line></p>
             </div>
           </div>
@@ -214,9 +184,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>
@@ -237,7 +205,6 @@
       </nav>
     </div>
     <div class="footer__base">
-      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
       <span>운영자 하태욱</span>
       <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
@@ -286,9 +253,12 @@
           say(u.attempts>3?'결제 확인을 기다리는 중이에요. 보통 1분 안에 끝나요…':'결제를 확인하고 있어요…',false,true);
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
-          // 연간 구독 키는 갱신일을 보여요. 기간 없는 키는 이 줄을 숨겨요.
+          // Annual subscription keys show the renewal date. Keys without a term hide this line.
           term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
+        }else if(u.state==='revoked'){
+          say('환불 등으로 사용이 중지된 라이선스 키예요.',true,false);
+          help.hidden=false;
         }else if(u.state==='timeout'){
           say('아직 결제 확인이 오지 않았어요. 잠시 뒤 다시 확인해 주세요.',true,false);
           retryWrap.hidden=false;help.hidden=false;

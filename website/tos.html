@@ -5,39 +5,42 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>이용약관 | HamaEditor</title>
 <meta name="description" content="HamaEditor 이용약관.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/tos">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 이용약관 전용 배치. 공통 부품은 assets/site.css 에 있어요.
-   왼쪽은 목차, 오른쪽은 약관 본문. 둘 사이에 세로선이 내려와요. */
+/* Layout for the terms page. Shared parts live in assets/site.css.
+   Contents on the left, terms on the right, with a vertical rule between them. */
 
-.terms-meta { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-top: 24px; }
-.terms-meta div { display: flex; align-items: baseline; gap: 10px; }
+.terms-meta { display: flex; flex-wrap: wrap; gap: var(--space-xs) 28px; margin-top: var(--space-lg); }
+.terms-meta div { display: flex; align-items: baseline; gap: var(--space-sm); }
 .terms-meta dt { font-size: var(--fs-meta); color: var(--meta); }
 .terms-meta dd { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 
 .terms { display: grid; grid-template-columns: 232px minmax(0, 1fr); padding: 0; }
 
-/* 목차 */
+/* table of contents */
 .toc { position: relative; border-right: 1px solid var(--line); }
 .toc::after {
   content: ""; position: absolute; top: -4px; right: -4px; z-index: 2;
   width: 7px; height: 7px;
   background: var(--night-1); border: 1px solid var(--line-strong);
 }
-.toc__in { position: sticky; top: calc(var(--nav-h) + 24px); padding: 36px 24px 40px var(--cell-pad); }
-.toc__title { margin-bottom: 10px; font-size: var(--fs-meta); font-weight: 600; color: var(--meta); }
+.toc__in { position: sticky; top: calc(var(--nav-h) + 24px); padding: 36px var(--space-lg) var(--space-xl) var(--cell-pad); }
+.toc__title { margin-bottom: var(--space-sm); font-size: var(--fs-meta); font-weight: 600; color: var(--meta); }
 .toc ol { display: grid; }
 .toc a {
   position: relative;
   display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: baseline;
-  padding: 6px 0;
+  padding: var(--space-xs) 0;
   font-size: 14.5px; line-height: 1.45; color: var(--muted);
   transition: color 0.15s ease;
 }
@@ -45,7 +48,7 @@
 .toc a:hover { color: var(--text); }
 .toc a[aria-current] { color: var(--text); }
 .toc a[aria-current] span { color: var(--accent); }
-/* 지금 읽는 조: 기둥 선 위에 짧은 획 */
+/* Article being read: a short stroke over the column line */
 .toc a::before {
   content: ""; position: absolute; top: 6px; bottom: 6px;
   left: calc(-1 * var(--cell-pad) - 1.5px); width: 2px;
@@ -54,13 +57,13 @@
 }
 .toc a[aria-current]::before { opacity: 1; }
 
-/* 본문 */
+/* body */
 .terms__body { max-width: none; padding: 36px var(--cell-pad) clamp(72px, 9vw, 120px) clamp(32px, 4vw, 56px); }
 .terms__body > * { max-width: 68ch; }
-.terms__body .art { scroll-margin-top: 16px; }
+.terms__body .art { scroll-margin-top: var(--space-md); }
 .terms__body .art + .art { margin-top: 2.6em; }
-.terms__body h2 { display: flex; align-items: baseline; gap: 12px; margin-top: 0; font-size: 20px; }
-.art__no { flex: none; font-size: 14px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.terms__body h2 { display: flex; align-items: baseline; gap: var(--space-sm); margin-top: 0; font-size: 20px; }
+.art__no { flex: none; font-size: 14px; font-weight: inherit; color: inherit; font-variant-numeric: tabular-nums; }
 
 @counter-style circled { system: fixed; symbols: "①" "②" "③" "④" "⑤" "⑥" "⑦" "⑧" "⑨" "⑩"; suffix: " "; }
 .terms__body .clauses { list-style: circled outside; padding-left: 1.7em; }
@@ -68,9 +71,9 @@
 .clauses > li::marker { color: var(--meta); font-variant-numeric: tabular-nums; }
 .terms__body .clauses .sub { list-style: decimal; margin-top: 0.5em; padding-left: 1.3em; }
 
-.terms__sign { margin-top: 3em; padding-top: 22px; border-top: 1px solid var(--line); }
-.terms__sign dl { display: grid; gap: 6px; }
-.terms__sign div { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+.terms__sign { margin-top: 3em; padding-top: var(--space-lg); border-top: 1px solid var(--line); }
+.terms__sign dl { display: grid; gap: var(--space-xs); }
+.terms__sign div { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-md); align-items: baseline; }
 .terms__sign dt { min-width: 3.5em; font-size: var(--fs-meta); color: var(--meta); }
 .terms__sign dd { margin: 0; font-size: var(--fs-small); color: var(--text); }
 
@@ -78,7 +81,7 @@
   .terms { grid-template-columns: minmax(0, 1fr); }
   .toc { border-right: 0; border-bottom: 1px solid var(--line); }
   .toc::after { display: none; }
-  .toc__in { position: static; padding: 28px var(--cell-pad) 24px; }
+  .toc__in { position: static; padding: 28px var(--cell-pad) var(--space-lg); }
   .toc ol { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; }
   .toc a { grid-template-columns: 44px minmax(0, 1fr); }
   .toc a::before { display: none; }
@@ -86,7 +89,7 @@
 }
 @media (max-width: 520px) {
   .toc ol { grid-template-columns: minmax(0, 1fr); }
-  .terms__body h2 { flex-direction: column; gap: 2px; }
+  .terms__body h2 { flex-direction: column; gap: var(--space-3xs); }
 }
 </style>
 </head>
@@ -97,8 +100,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 처음으로"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -109,8 +111,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -124,8 +125,8 @@
 <main id="main">
   <div class="frame frame--top">
     <header class="cell cell--open page-head">
-      <p class="eyebrow">HamaEditor</p>
-      <h1 id="terms-title" class="h1" data-reveal="words">이용약관</h1>
+
+      <h1 id="terms-title" class="h1">이용약관</h1>
       <dl class="terms-meta">
         <div><dt>시행일</dt><dd><time datetime="2026-11-01">2026. 11. 1.</time></dd></div>
         <div><dt>버전</dt><dd>1.2</dd></div>
@@ -157,7 +158,7 @@
           <h2 id="h1"><span class="art__no">제1조</span>목적</h2>
           <ol class="clauses">
             <li>이 약관은 하태욱(이하 “운영자”라 한다)이 제공하는 HamaEditor 앱과 웹사이트(이하 “서비스”라 한다)의 이용 조건 및 절차, 운영자와 이용자의 권리·의무 및 책임 사항을 정함을 목적으로 한다.</li>
-            <li>이 약관에서 사용하는 용어의 뜻은 다음과 같다.<ol class="sub"><li>“이용자”란 이 약관에 따라 서비스를 이용하는 자를 말한다.</li><li>“라이선스 키”란 앱의 사용 권한을 확인하기 위하여 운영자가 발급하는 고유한 문자열을 말한다.</li><li>“구독”이란 이용자가 정해진 요금을 12개월마다 결제하고 그 기간 동안 앱을 사용하는 정기결제 계약을 말한다.</li><li>“구독 기간”이란 한 번의 결제로 라이선스 키를 사용할 수 있는 12개월을 말한다.</li><li>“체험판”이란 라이선스 키를 활성화하지 아니한 상태에서 제8조제3항에 따라 제공되는 앱의 이용 형태를 말한다.</li></ol></li>
+            <li>이 약관에서 사용하는 용어의 뜻은 다음과 같다.<ol class="sub"><li>“이용자”란 이 약관에 따라 서비스를 이용하는 자를 말한다.</li><li>“라이선스 키”란 앱의 사용 권한을 확인하기 위하여 운영자가 발급하는 고유한 문자열을 말한다.</li><li>“구독”이란 이용자가 정해진 요금을 12개월마다 결제하고 그 기간 동안 앱을 사용하는 정기결제 계약을 말한다.</li><li>“구독 기간”이란 한 번의 결제로 라이선스 키를 사용할 수 있는 12개월을 말한다.</li><li>“체험판”이란 라이선스 키를 활성화하지 아니한 상태에서 제8조제4항에 따라 제공되는 앱의 이용 형태를 말한다.</li></ol></li>
           </ol>
         </section>
 
@@ -220,6 +221,7 @@
           <h2 id="h8"><span class="art__no">제8조</span>구독과 체험</h2>
           <ol class="clauses">
             <li>HamaEditor는 연 9,900원(부가가치세 포함)을 결제하여 12개월 동안 사용하는 구독형 디지털콘텐츠이다. 결제는 결제대행사 Groble을 통하여 진행되며, 이용자가 해지하지 아니하면 구독은 12개월마다 같은 금액으로 자동 갱신되어 결제된다.</li>
+            <li>Signature Edition은 29,000원의 단건 상품이다. 그 라이선스 키에는 구독 기간이 없고, 운영자는 결제일부터 3년 동안 업데이트를 제공하며, 이메일로 영업일 1일 안에 첫 답변을 한다. 기능과 기기 2대(Mac 또는 Windows)는 구독과 같다. 이미 낸 구독 요금은 Signature Edition 대금에서 빼 주지 않는다.</li>
             <li>HamaEditor는 Apple Silicon을 탑재한 macOS 기기와 x64 프로세서를 탑재한 Windows 10 이후의 기기에서 동작한다.</li>
             <li>운영자는 이용자가 구매 전에 앱을 사용해 볼 수 있도록 체험판을 제공한다. 이용자는 앱을 최초로 실행한 때부터 3일(72시간) 동안 기기별로 모든 기능을 사용할 수 있으며, 체험 기간이 끝난 후에는 라이선스 키를 활성화할 때까지 문서를 읽기 전용으로만 열 수 있고 AI 에이전트 기능을 사용할 수 없다.</li>
             <li>이용자는 언제든지 Groble 주문조회에서 구독을 해지할 수 있다. 해지하더라도 이미 결제한 구독 기간이 끝날 때까지 앱을 사용할 수 있다. 운영자가 구독을 해지하거나 판매를 종료한 경우에도 같다.</li>
@@ -235,10 +237,11 @@
           <h2 id="h9"><span class="art__no">제9조</span>청약철회와 환불</h2>
           <ol class="clauses">
             <li>이용자는 라이선스 키를 앱에서 활성화하기 전이라면 결제일(갱신 결제는 그 갱신 결제일)부터 7일 이내에 청약을 철회할 수 있으며, 이 경우 운영자는 그 결제 금액 전액을 환불한다.</li>
-            <li>운영자가 제8조제3항에 따른 체험판을 제공하고 그 사실과 청약철회의 제한에 관한 사항을 구매 페이지에 표시하였으므로, 이용자가 라이선스 키를 활성화한 경우에는 「전자상거래 등에서의 소비자보호에 관한 법률」 제17조제2항에 따라 청약철회가 제한된다.</li>
+            <li>운영자가 제8조제4항에 따른 체험판을 제공하고 그 사실과 청약철회의 제한에 관한 사항을 구매 페이지에 표시하였으므로, 이용자가 라이선스 키를 활성화한 경우에는 「전자상거래 등에서의 소비자보호에 관한 법률」 제17조제2항에 따라 청약철회가 제한된다.</li>
             <li>제2항에도 불구하고 앱의 내용이 표시·광고의 내용과 다르거나 계약 내용과 다르게 이행된 경우에는 이용자는 앱을 공급받은 날부터 3개월 이내, 그 사실을 안 날 또는 알 수 있었던 날부터 30일 이내에 청약을 철회할 수 있다.</li>
             <li>이용자는 구독 기간 중 남은 기간에 대한 중도 해지와 환불을 청구할 수 있으며, 환불 금액은 Groble 환불규정과 관계 법령에 따라 산정한다.</li><li>청약철회, 중도 해지와 환불은 Groble 주문조회 또는 운영자의 이메일을 통하여 신청할 수 있으며, 환불은 Groble의 환불규정과 결제 수단에 따라 처리된다.</li><li>이 조는 「전자상거래 등에서의 소비자보호에 관한 법률」 등 관계 법령과 Groble 환불규정이 이용자에게 인정하는 청약철회, 해지와 환불의 권리를 제한하지 아니한다.</li>
             <li>환불이 완료되면 환불된 구독 기간만큼 라이선스 키의 사용 기간이 줄어들고, 남은 구독 기간이 없으면 라이선스 키는 해지된다. 앱은 다음 라이선스 확인 시(인터넷에 연결되지 아니한 경우에는 늦어도 7일 이내에) 읽기 전용으로 전환된다. 이 경우에도 이용자가 작성한 문서는 삭제되지 아니한다.</li>
+            <li>Signature Edition이 전액 환불되면 그 라이선스 키는 해지된다. 청약철회 기간과 신청 방법은 이 조의 다른 항과 같다.</li>
           </ol>
         </section>
 
@@ -252,7 +255,7 @@
 
         <section class="art" id="addendum" aria-labelledby="h-addendum">
           <h2 id="h-addendum">부칙</h2>
-          <p>이 약관(버전 1.2)은 2026년 11월 1일부터 시행한다. 종전 약관 버전 1.1은 2026년 10월 23일부터, 버전 1.0은 2026년 10월 8일부터 시행되었다. 제8조제8항에 따라 버전 1.2 시행 전에 구매한 라이선스 키는 기간 제한 없이 계속 사용할 수 있다.</p>
+          <p>이 약관(버전 1.2)은 2026년 11월 1일부터 시행한다. 종전 약관 버전 1.1은 2026년 10월 23일부터, 버전 1.0은 2026년 10월 8일부터 시행되었다. 제8조제9항에 따라 버전 1.2 시행 전에 구매한 라이선스 키는 기간 제한 없이 계속 사용할 수 있다.</p>
         </section>
 
         <footer class="terms__sign">
@@ -275,9 +278,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>
@@ -298,7 +299,6 @@
       </nav>
     </div>
     <div class="footer__base">
-      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 기반</span>
       <span>문의 <a href="mailto:management@heemangstudios.com">management@heemangstudios.com</a></span>
       <span>운영자 하태욱</span>
       <span>전화 <a href="tel:01085121201">010-8512-1201</a></span>
@@ -308,7 +308,7 @@
 </footer>
 
 <script>
-/* 목차: 내비게이션 바로 아래 선을 지난 마지막 조에 aria-current 를 줘요. */
+/* Table of contents: give aria-current to the last article that passed the line just below the navigation. */
 (function () {
   var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
   var arts = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });

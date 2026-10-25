@@ -1,0 +1,30 @@
+[
+  {
+    "mode": "redesign",
+    "depth": "full",
+    "scope": "site",
+    "shape": "sketchbook",
+    "theme": "custom",
+    "axes": "dark/handwritten/cool",
+    "hero": "manuscript",
+    "nav": "notebook contents",
+    "footer": "colophon",
+    "imagery": "Built-in imagegen black drawing paper; original pixel hippo; one real editor screenshot",
+    "entry": "index.html",
+    "fingerprint": "black paper, fading charcoal pencil trail, original pixel hippo, ASCII neurons and upright keyword splash",
+    "sections": [
+      "hero",
+      "document",
+      "connect",
+      "download"
+    ],
+    "signature": "A white charcoal pencil circles titles and underlines phrases with a short fading trail that disappears after stopping",
+    "waived": [
+      "65",
+      "79",
+      "80"
+    ],
+    "prompt": "Black sketchbook paper, warm ivory type and charcoal annotations, softened blue actions. Pencil freely circles titles and underlines phrases. Preserve the original pixel mascot and keep demos minimal.",
+    "date": "2026-10-25"
+  }
+]

@@ -175,14 +175,14 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   if (screenshot) await screenshot('browser-workbench-mobile');
   await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-close');
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
-  await page.goto(`${origin}/?reset=1&controls=0&scenario=chat&theme=dark`, { waitUntil: 'networkidle0' });
+  await page.goto(`${origin}/?reset=1&controls=0&scenario=chat&fullscreen=1&theme=dark`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.sidebarPreview && !document.querySelector('.ag-input').disabled);
-  await page.click('.ag-browser-trigger');
-  await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser', { visible: true });
-  assert.equal(await page.$eval('.ag-root', element => element.classList.contains('ag-fullscreen')), false, 'in-app float opens from the normal editor sidebar');
-  await page.click('.ag-browser [aria-label="연구 브라우저 열기"]');
+  await page.click('.ag-workspace-panel-btn');
+  await page.click('.ag-workbench-launcher-item[data-view="browser"]');
   await page.waitForFunction(() => document.querySelector('.ag-browser-frame')?.src.startsWith('data:image/jpeg'));
   const floatingTab = await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId);
+  await page.click('.ag-browser [aria-label="브라우저 띄우기"]');
+  await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser', { visible: true });
   await page.focus('.ag-input'); await page.keyboard.type('자료를 읽어 주세요');
   assert.equal(await page.$eval('.ag-input', element => element.value), '자료를 읽어 주세요', 'underlying chat remains editable while the browser floats');
   await page.focus('.ag-browser-floating:not([hidden]) .ag-browser-move');
@@ -196,9 +196,10 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   assert.ok(bounded.bottom <= bounded.height + 1, 'keyboard positioning keeps the full PiP within the app window');
   await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-close');
   assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'hiding an editor float retains the same browser tab');
-  await page.click('.ag-browser-trigger');
+  await page.click(siteTab(floatingTab));
+  await page.click('.ag-browser [aria-label="브라우저 띄우기"]');
   await page.waitForSelector('.ag-browser-floating:not([hidden]) .ag-browser', { visible: true });
-  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'reopening an editor float reuses the same browser tab');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'reopening a float reuses the same browser tab');
   // 다시 띄운 탭은 따로 뜬 창이 맡는다. 에이전트 작업은 그 창을 잠그고 빈 창을 하나 더 띄우지 않는다.
   await page.evaluate(tabId => window.sidebarPreview.browserAsAgent('click', { tabId, x: 120, y: 160 }), floatingTab);
   await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'true', { timeout: 3000 });
@@ -208,7 +209,7 @@ export async function checkBrowserWorkbench({ page, origin, screenshot }) {
   await page.waitForFunction(() => document.querySelector('.ag-browser-floating:not([hidden])')?.dataset.agentControlled === 'false');
   await page.click('.ag-browser-floating:not([hidden]) .ag-browser-floating-dock');
   await page.waitForFunction(() => document.querySelector('.ag-root').classList.contains('ag-fullscreen') && document.querySelector('.ag-workbench-panel[data-view="browser"] .ag-browser')?.getBoundingClientRect().width > 0 && !document.body.classList.contains('ag-fs-vt'));
-  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'docking from the normal editor preserves the same tab after fullscreen transition');
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browser.tabs[0].tabId), floatingTab, 'docking a float preserves the same tab');
   await page.click('.ag-browser [aria-label="브라우저 추가 메뉴"]');
   await page.waitForSelector('.ag-browser-details[open] [aria-label="별도 창으로 열기"]', { visible: true });
   const popupPromise = new Promise((resolve, reject) => {
