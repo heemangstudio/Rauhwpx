@@ -49,7 +49,7 @@ export type HmlWarningCode =
 export interface HmlOpenMetadata {
   format: 'hml';
   hwpmlVersion?: string;
-  encoding: 'utf-8' | 'utf-16le' | 'utf-16be';
+  encoding: 'utf-8' | 'utf-16le' | 'utf-16be' | 'euc-kr';
   resourceCount: number;
   /** HML로 다시 저장 가능한지 여부 (보존 불가 요소가 있으면 false). */
   hmlSavable: boolean;

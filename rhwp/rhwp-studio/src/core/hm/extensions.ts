@@ -17,6 +17,7 @@ import './format-fonts';
 import './format-widgets';
 import './furniture-editing';
 import './furniture-pictures';
+import './hml-document';
 import './hwpjson';
 import './objects-connectors';
 import './objects-editing';
