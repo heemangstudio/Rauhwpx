@@ -88,12 +88,12 @@ const focusedChecks = {
       const greeting = document.querySelector('.ag-focus-greeting');
       return {
         gapBelow: Math.round(chat.bottom - composer.bottom),
-        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+        greeting: greeting.checkVisibility() ? greeting.querySelector('canvas')?.getAttribute('aria-label') ?? '' : '',
       };
     });
     const centered = await layout();
     assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
-    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    assert(centered.greeting, 'the empty chat shows a pixel scene');
     await page.type('.ag-input', '요약해 줘');
     await page.click('.ag-send');
     await page.waitForSelector('.ag-msg-user');
