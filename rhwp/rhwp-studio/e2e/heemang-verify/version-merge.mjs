@@ -1,13 +1,14 @@
 /** 실제 브랜치 UI, 구조 병합 작업자, 복합 실행 취소와 저장·재열기 검증. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import * as L from './lib.mjs';
 process.env.HV_CANDIDATE_VITE_PORT ||= '7721';
 const out=L.ensureOut('version-merge');
 const app=await L.startApp('candidate',L.candidateRoot,5721);
 let browser,page,log;
-const report={url:app.url,provider:'fixture-backed local hub; no provider calls',steps:[],errors:[]};
+const report={url:app.url,provider:'fixture-backed local hub; no provider calls',wasmSha256:createHash('sha256').update(fs.readFileSync(path.join(L.candidateRoot,'rhwp/rhwp-studio/vendor/hm-wasm/hm_wasm_bg.wasm'))).digest('hex'),steps:[],errors:[]};
 const state=()=>page.evaluate(()=>window.__versionController.getState());
 const idle=()=>page.evaluate(()=>window.__versionController.whenIdle());
 const text=()=>page.evaluate(()=>window.__wasm.viewer.getParagraphText(0,0));

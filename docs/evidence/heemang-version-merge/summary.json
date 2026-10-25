@@ -1,13 +1,14 @@
 {
   "url": "http://127.0.0.1:7721/?engine=heemang",
   "provider": "fixture-backed local hub; no provider calls",
+  "wasmSha256": "6de67eeabf79f4e0b103d2e63f086929f8859c82092d389576fd6dd21439bb08",
   "steps": [
     {
       "format": "hwp",
       "conflicted": true,
       "groups": 1,
-      "beforeHead": "eee51ff3-a82d-46d2-89cd-9a0c97688701",
-      "afterHead": "70a75f24-d504-413d-8f43-6cb09f0cdc50",
+      "beforeHead": "cd357109-f057-458f-b800-0c37209fa4aa",
+      "afterHead": "fca4c194-99ba-4a8d-8185-9ab5e94a65ee",
       "merged": "INCOMING:Base 한글😀",
       "checks": [
         "branch creation/switch/checkpoint through UI",
@@ -21,8 +22,8 @@
       "format": "hwpx",
       "conflicted": false,
       "groups": 1,
-      "beforeHead": "fc87ed41-cb6a-4872-80df-6fad4b09fe66",
-      "afterHead": "aa048455-b660-4963-b154-8cc128cc4e4a",
+      "beforeHead": "ef3bc83f-6eca-4245-a174-a3f79c847f30",
+      "afterHead": "2d9d07b7-6aa4-4527-8c88-7a7c5d78956c",
       "merged": "CURRENT:Base 한글😀:INCOMING",
       "checks": [
         "branch creation/switch/checkpoint through UI",
