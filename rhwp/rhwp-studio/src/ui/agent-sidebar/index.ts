@@ -2288,7 +2288,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function updateDocumentContext(): void {
     const context = getDocumentContext?.();
     const currentDocumentName = paintDocumentNames();
-    focusGreeting.setDocumentName(context?.documentName || null);
     updateDocumentWorktreeChips();
     syncDocumentHeader();
     updateEnvironmentFilename(currentDocumentName);
@@ -4401,13 +4400,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  /* 전체 화면의 빈 채팅은 인사와 입력기를 가운데에 모은다. 첫 메시지를 보내면
+  /* 전체 화면의 빈 채팅은 픽셀 장면과 입력기를 가운데에 모은다. 첫 메시지를 보내면
      같은 채팅 안에서만 입력기가 아래로 미끄러진다 — 채팅을 바꾸거나 전체 화면을
-     오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 문장을 고른다. */
+     오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 장면을 고른다. */
   const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
-  focusGreeting.documentButton.addEventListener('click', () => {
-    openDocumentPalette(focusGreeting.documentButton, { link: true });
-  });
   let focusGreetingThreadId: string | null = null;
   function syncFocusGreeting(): void {
     const threadChanged = focusGreetingThreadId !== currentThread.id;
