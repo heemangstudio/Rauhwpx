@@ -1,12 +1,10 @@
 /**
- * 에이전트 표 도구 가운데 다른 작업 줄기가 맡지 않은 것: 셀 영역 테두리·배경, 표 캡션 글, 표 계산식.
+ * 에이전트 표 도구 가운데 다른 작업 줄기가 맡지 않은 것: 표 캡션 글, 표 계산식. 셀 영역 테두리·배경은 table-properties.ts 가 맡는다.
  */
-import type { EditOp, TableAddress, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
-import type { CellProperties } from '../types';
+import type { TableAddress, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
 import { extendBridge } from './api';
 import type { HmApi } from './api';
 import type { HmCore } from './core';
-import { hexToColor } from './format';
 import { paraMap, toAddress } from './address';
 
 const tableAddress = (section: number, para: number, control: number): TableAddress =>
@@ -15,31 +13,6 @@ const tableAddress = (section: number, para: number, control: number): TableAddr
 function tableInfo(core: HmCore, table: TableAddress): TableInfo {
   return core.query<TableInfo>({ kind: 'table', table });
 }
-
-type Line = { type: number; width: number; color: string } | undefined;
-const line = (value: Line) => value && { style: value.type, width: value.width, color: hexToColor(value.color) };
-const CENTER: Record<string, string> = { NONE: 'none', VERTICAL: 'vertical', HORIZONTAL: 'horizontal', CROSS: 'cross' };
-
-/**
- * 셀 영역에 바깥 테두리·배경·대각선을 준다. 엔진은 영역을 한 셀처럼 다뤄 테두리 모양을 공유하고,
- * 바뀐 가장자리를 이웃 셀에도 옮긴다. 한 칸 영역이 곧 한 셀의 테두리·배경이다.
- */
-export const setCellZoneProperties: HmApi['setCellZoneProperties'] = (core, sec, parent, control, range, props) => {
-  const borderFill: Record<string, unknown> = {};
-  const sides = { left: props.borderLeft, right: props.borderRight, top: props.borderTop, bottom: props.borderBottom };
-  for (const [side, value] of Object.entries(sides)) if (value) borderFill[side] = line(value);
-  if (props.fillType === 'none') borderFill.fill = { kind: 'none' };
-  else if (props.fillColor) borderFill.fill = { kind: 'solid', background: hexToColor(props.fillColor) };
-  if (props.diagonalLine !== undefined || props.diagonalColor !== undefined || props.diagonalWidth !== undefined) {
-    borderFill.diagonal = { style: props.diagonalLine ?? 1, width: props.diagonalWidth ?? 0, color: hexToColor(props.diagonalColor ?? '#000000') };
-  }
-  if (props.diagonalSlash !== undefined) borderFill.slash = props.diagonalSlash;
-  if (props.diagonalBackSlash !== undefined) borderFill.backslash = props.diagonalBackSlash;
-  if (typeof props.centerLine === 'string' && CENTER[props.centerLine]) borderFill.centerLine = CENTER[props.centerLine];
-  core.transact([{ op: 'setCellZone', table: tableAddress(sec, parent, control),
-    startRow: range.startRow, startColumn: range.startCol, endRow: range.endRow, endColumn: range.endCol, borderFill }]);
-  return { ok: true, borderFillId: 0 };
-};
 
 /** 표 캡션 목록의 글. 캡션이 없으면 null. */
 function captionText(core: HmCore, table: TableAddress): string | null {
@@ -185,4 +158,4 @@ export const evaluateTableFormulaEx: HmApi['evaluateTableFormulaEx'] = (core, op
 export const evaluateTableFormula: HmApi['evaluateTableFormula'] = (core, sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult) =>
   JSON.stringify(evaluateTableFormulaEx(core, { sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult }));
 
-extendBridge({ setCellZoneProperties, setTableCaptionText, evaluateTableFormula, evaluateTableFormulaEx });
+extendBridge({ setTableCaptionText, evaluateTableFormula, evaluateTableFormulaEx });
