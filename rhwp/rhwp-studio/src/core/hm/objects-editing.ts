@@ -1,7 +1,7 @@
 /** 기존 개체 선택·삽입·속성 UI가 쓰는 좌표와 희망 엔진 주소를 연결한다. */
 import type { Address, EditOp, ObjectAddress, PageObject } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
-import { hu, px, unsupported } from './core';
+import { hu, px, px1, unsupported } from './core';
 import { logicalAddress, paraMap, pathTarget, stepsToPath, wireToLogical } from './address';
 import { extendBridge } from './api';
 import type * as original from './objects';
@@ -35,7 +35,7 @@ function box(core: HmCore, object: ObjectAddress) {
   for (let page = 0; page < core.state().pageCount; page++) {
     const found = pageObjects(core, page).find(o => o.section === object.section && o.para === object.para && o.control === object.control
       && JSON.stringify(o.steps ?? []) === JSON.stringify(object.steps ?? []));
-    if (found) return { pageIndex: page, x: px(found.x), y: px(found.y), width: px(found.width), height: px(found.height) };
+    if (found) return { pageIndex: page, x: px1(found.x), y: px1(found.y), width: px1(found.width), height: px1(found.height) };
   }
   throw new Error('개체가 표시된 쪽을 찾을 수 없습니다');
 }
@@ -321,13 +321,14 @@ export function getPageControlLayout(core: HmCore, pageNum: number): { controls:
     const path = headerFooter ? [] : stepsToPath(o.steps ?? [], o.para);
     const type: ControlLayoutItem['type'] = o.kind === 'picture' ? 'image' : o.kind === 'connector' ? 'line' : ['table', 'shape', 'line', 'group', 'ole', 'equation'].includes(o.kind) ? o.kind as ControlLayoutItem['type'] : 'shape';
     const b = drawnBox(core, o);
-    controls.push({ type, x: px(b.x), y: px(b.y), w: px(b.w), h: px(b.h), secIdx: o.section,
+    controls.push({ type, x: px1(b.x), y: px1(b.y), w: px1(b.w), h: px1(b.h), ...(o.rows !== undefined ? { rowCount: o.rows, colCount: o.cols } : {}), secIdx: o.section,
       paraIdx: path.length ? o.steps![0].para : o.para, controlIdx: o.control,
       ...(headerFooter ? { headerFooter } : {}),
       ...(o.missing ? { missing: true } : {}),
       ...(path.length ? { cellPath: path, cellIdx: o.steps![0].index, cellParaIdx: o.para, innerControlIdx: o.control, outerTableControlIdx: o.steps![0].control } : {}),
-      ...(o.line ? { x1: px(o.line[0]), y1: px(o.line[1]), x2: px(o.line[2]), y2: px(o.line[3]) } : {}),
-      ...(o.layer === 'behind' ? { wrap: 'behindText' } : o.layer === 'front' ? { wrap: 'inFrontOfText' } : {}),
+      ...(o.line ? { x1: px1(o.line[0]), y1: px1(o.line[1]), x2: px1(o.line[2]), y2: px1(o.line[3]) } : {}),
+      // 구 엔진처럼 표가 아닌 개체는 저장된 배치를 알린다. 예전 엔진 빌드는 그리는 층으로 갈음한다.
+      ...(o.kind === 'table' ? {} : o.wrap ? { wrap: o.wrap } : o.layer === 'behind' ? { wrap: 'behindText' } : o.layer === 'front' ? { wrap: 'inFrontOfText' } : {}),
       plane: o.layer === 'behind' ? 1 : o.layer === 'front' ? 3 : 2, zOrder: o.z, stableIndex: controls.length });
   }
   return { controls };

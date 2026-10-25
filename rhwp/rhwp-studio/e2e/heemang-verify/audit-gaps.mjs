@@ -11,8 +11,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import * as L from './lib.mjs';
 
-process.env.HV_CANDIDATE_VITE_PORT ||= '7732';
-process.env.HV_BASELINE_VITE_PORT ||= '7742';
+process.env.HV_CANDIDATE_VITE_PORT ||= '7734';
+process.env.HV_BASELINE_VITE_PORT ||= '7744';
 const out = L.ensureOut('audit-gaps');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'heemang-audit-gaps-'));
 const SOURCES = ['rhwp/template/blank-batang.hwp', 'rhwp/samples/hwpx/blank_hwpx.hwpx'];
@@ -162,7 +162,7 @@ async function saveAs(page, format) {
 }
 
 async function runApp(name, root) {
-  const app = await L.startApp(name, root, name === 'candidate' ? 9732 : 9742);
+  const app = await L.startApp(name, root, name === 'candidate' ? 9734 : 9744);
   const browser = await L.launchBrowser();
   const runs = [];
   try {

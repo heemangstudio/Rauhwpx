@@ -1,8 +1,8 @@
 {
   "engine": {
     "branch": "fix/studio-audit-gaps",
-    "commit": "8f23449",
-    "wasmSha256": "037111bc293aa9e7bec27205ac9e05e194bc3df9b40c6d4844b94dc2a5cb8197"
+    "commit": "cb86974",
+    "wasmSha256": "1e9e78cff26e8314a493c2bf1ad0934ed6c07382d37cbc19d3e068ee7c2ddadf"
   },
   "baseline": "studio-baseline a2dc5c36 (old engine)",
   "script": "rhwp/rhwp-studio/e2e/heemang-verify/audit-gaps.mjs",
@@ -40,7 +40,7 @@
             "bodyFixedDisplay": {
               "ok": true,
               "type": "Fixed",
-              "value": "1125.0"
+              "value": "15.0"
             }
           },
           "live": {
@@ -51,13 +51,13 @@
               "underlineShape": 3,
               "emboss": true,
               "lineSpacingType": "Fixed",
-              "lineSpacing": 1500,
+              "lineSpacing": 20,
               "marginRight": 6.7
             },
             "footnote": {
               "emboss": true,
               "lineSpacingType": "Fixed",
-              "lineSpacing": 1200
+              "lineSpacing": 16
             },
             "shapes": 2
           },
@@ -71,13 +71,13 @@
                 "underlineShape": 3,
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1500,
+                "lineSpacing": 20,
                 "marginRight": 6.7
               },
               "footnote": {
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1200
+                "lineSpacing": 16
               },
               "shapes": 2,
               "shapeBoxes": [
@@ -92,7 +92,7 @@
               ]
             },
             "hwpx": {
-              "bytes": 7448,
+              "bytes": 7484,
               "header": {
                 "text": "머리말 서식",
                 "underline": true,
@@ -100,13 +100,13 @@
                 "underlineShape": 3,
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1500,
+                "lineSpacing": 20,
                 "marginRight": 6.7
               },
               "footnote": {
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1200
+                "lineSpacing": 16
               },
               "shapes": 2,
               "shapeBoxes": [
@@ -151,7 +151,7 @@
             "bodyFixedDisplay": {
               "ok": true,
               "type": "Fixed",
-              "value": "1125.0"
+              "value": "15.0"
             }
           },
           "live": {
@@ -162,13 +162,13 @@
               "underlineShape": 3,
               "emboss": true,
               "lineSpacingType": "Fixed",
-              "lineSpacing": 1500,
+              "lineSpacing": 20,
               "marginRight": 6.7
             },
             "footnote": {
               "emboss": true,
               "lineSpacingType": "Fixed",
-              "lineSpacing": 1200
+              "lineSpacing": 16
             },
             "shapes": 2
           },
@@ -182,13 +182,13 @@
                 "underlineShape": 3,
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1500,
+                "lineSpacing": 20,
                 "marginRight": 6.7
               },
               "footnote": {
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1200
+                "lineSpacing": 16
               },
               "shapes": 2,
               "shapeBoxes": [
@@ -203,7 +203,7 @@
               ]
             },
             "hwpx": {
-              "bytes": 13470,
+              "bytes": 13491,
               "header": {
                 "text": "머리말 서식",
                 "underline": true,
@@ -211,13 +211,13 @@
                 "underlineShape": 3,
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1500,
+                "lineSpacing": 20,
                 "marginRight": 6.7
               },
               "footnote": {
                 "emboss": true,
                 "lineSpacingType": "Fixed",
-                "lineSpacing": 1200
+                "lineSpacing": 16
               },
               "shapes": 2,
               "shapeBoxes": [
@@ -240,7 +240,7 @@
       ]
     },
     "baseline": {
-      "url": "http://127.0.0.1:7742/",
+      "url": "http://127.0.0.1:7745/",
       "runs": [
         {
           "source": "rhwp/template/blank-batang.hwp",

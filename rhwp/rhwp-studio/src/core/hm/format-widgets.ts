@@ -116,12 +116,13 @@ export function widgetCharPatch(core: HmCore, props: Record<string, unknown>, cu
 }
 
 /**
- * 문단 서식 변경의 여백·들여쓰기·문단 간격은 구 엔진처럼 HWP 저장값(HWPUNIT 의 2배, pt×200)으로 들어온다
- * (문단 모양 대화상자·에이전트 도구). 조회는 px 로 돌려준다. 엔진 patch 는 HWPUNIT 이다.
+ * 문단 서식 변경의 여백·들여쓰기·문단 간격과 비율이 아닌 줄 간격은 구 엔진처럼 HWP 저장값(HWPUNIT 의 2배,
+ * pt×200)으로 들어온다(문단 모양 대화상자·에이전트 도구). 조회는 px 로 돌려준다. 엔진 patch 의 여백은 HWPUNIT,
+ * 줄 간격은 저장값 그대로다. currentKind 는 종류 없이 값만 바뀔 때 그 문단의 줄 간격 종류다.
  */
 const RAW_DISTANCES = { marginLeft: 'left', marginRight: 'right', indent: 'indent', spacingBefore: 'spaceBefore', spacingAfter: 'spaceAfter' } as const;
 
-function widgetParaPatch(props: Record<string, unknown>): ParaPatch {
+function widgetParaPatch(props: Record<string, unknown>, currentKind?: ParaPatch['lineSpacingKind']): ParaPatch {
   const rest = { ...props };
   const patch: ParaPatch = {};
   for (const [key, field] of Object.entries(RAW_DISTANCES)) {
@@ -136,6 +137,10 @@ function widgetParaPatch(props: Record<string, unknown>): ParaPatch {
     if (!kind) throw unsupported(`줄 간격 종류: ${String(rest.lineSpacingType)}`);
     patch.lineSpacingKind = kind as ParaPatch['lineSpacingKind'];
     delete rest.lineSpacingType;
+  }
+  // 엔진도 비율이 아닌 줄 간격을 HWP 저장값(2배)으로 둔다. 종류 없는 값은 비율로 읽으므로 지금 종류를 함께 보낸다.
+  if (rest.lineSpacing !== undefined && rest.lineSpacingType === undefined && currentKind && currentKind !== 'percent') {
+    patch.lineSpacingKind = currentKind;
   }
   delete rest.paraShapeId;
   for (const key of ['headType', 'numberingId', 'paraLevel', 'pageBreakBefore']) delete rest[key];
@@ -227,7 +232,8 @@ export function applyCharFormatAcrossSections(core: HmCore, startSec: number, st
 export function paraOps(core: HmCore, list: ListAddress, first: number, last: number, props: Record<string, unknown>): EditOp[] {
   const from = toAddress(list, first, paraMap(core.paragraph(list, first)).lead);
   const to = toAddress(list, last, paraMap(core.paragraph(list, last)).end);
-  const patch = widgetParaPatch(props);
+  const kind = props.lineSpacing !== undefined && props.lineSpacingType === undefined ? format(core, list, first).paragraphs.lineSpacingKind : undefined;
+  const patch = widgetParaPatch(props, kind);
   const ops: EditOp[] = Object.keys(patch).length ? [{ op: 'formatParas', from, to, patch }] : [];
   // 쪽 나눔은 문단 모양이 아니라 문단마다의 나눔 표시다. 바뀌는 문단에만 엔진 pageBreak 를 둔다.
   if (props.pageBreakBefore !== undefined) {
@@ -330,7 +336,7 @@ export function updateStyle(core: HmCore, styleId: number, json: string): boolea
 export function deleteStyle(core: HmCore, styleId: number): boolean { core.transact([{ op: 'deleteStyle', id: styleId }]); return true; }
 export function updateStyleShapes(core: HmCore, styleId: number, charsJson: string, parasJson: string): boolean {
   const current = () => core.query<StyleInfo>({ kind: 'style', id: styleId }).characters;
-  core.transact([{ op: 'updateStyle', id: styleId, style: { characters: widgetCharPatch(core, JSON.parse(charsJson), current), paragraphs: widgetParaPatch(JSON.parse(parasJson)) } }]);
+  core.transact([{ op: 'updateStyle', id: styleId, style: { characters: widgetCharPatch(core, JSON.parse(charsJson), current), paragraphs: widgetParaPatch(JSON.parse(parasJson), core.query<StyleInfo>({ kind: 'style', id: styleId }).paragraphs.lineSpacingKind) } }]);
   return true;
 }
 
