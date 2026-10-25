@@ -59,6 +59,12 @@ function copy(core: HmCore, from: Address, to: Address): Clipboard {
   return result;
 }
 
+/** 셀 블록의 원본 표 조각과 시스템 클립보드 표현을 같은 상태로 묶는다. */
+export function rememberTableClipboard(core: HmCore, copied: { text: string; html: string }): void {
+  clipboards.set(core.adapter.hmEngine(), { ...copied, objects: 1, controls: true, single: true,
+    dropped: false, source: core.adapter.documentInstance, fragmentText: '' });
+}
+
 function copyIn(core: HmCore, list: ListAddress, startPara: number, startOffset: number, endPara: number, endOffset: number): Clipboard {
   let from = logicalAddress(core, list, startPara, startOffset);
   let to = logicalAddress(core, list, endPara, endOffset);

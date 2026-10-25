@@ -8,6 +8,7 @@ import type * as original from './objects';
 import type { CellPathLike, ControlLayoutItem, PictureProperties, ShapeProperties } from '../types';
 
 export interface NativeObject {
+  instanceId?: number;
   kind: string; width: number; height: number; treatAsChar: boolean; horzOffset: number; vertOffset: number;
   horzRelTo: string; vertRelTo: string; horzAlign: string; vertAlign: string; textWrap: string;
   description: string; margins: number[]; rotation: number; zOrder: number; sizeProtect: boolean;
@@ -64,7 +65,7 @@ function shapeProperties(core: HmCore, object: ObjectAddress): ShapeProperties {
   const o = objectProperties(core, object);
   const kind = o.fill?.kind ?? 0;
   const solid = o.fill?.solid;
-  return { ...commonProperties(o), fillType: kind & 1 ? 'solid' : kind & 4 ? 'gradient' : kind & 2 ? 'image' : 'none',
+  return { ...commonProperties(o), instanceId: o.instanceId, fillType: kind & 1 ? 'solid' : kind & 4 ? 'gradient' : kind & 2 ? 'image' : 'none',
     fillBgColor: solid?.background, fillPatColor: solid?.patternColor, fillPatType: solid?.pattern, fillAlpha: o.fill?.alpha?.[0] ?? 0,
     lineType: o.border?.style ?? 0 } as ShapeProperties;
 }
@@ -192,9 +193,10 @@ function nextZOrder(core: HmCore, section: number): number {
 }
 export const createShapeControl: typeof original.createShapeControl = (core, params) => {
   const kinds: Record<string, 'rect' | 'ellipse' | 'line' | 'textbox'> = { rectangle: 'rect', rect: 'rect', ellipse: 'ellipse', line: 'line', textbox: 'textbox' };
-  const kind = kinds[String(params.shapeType)];
+  const connectors: Record<string, number> = { 'connector-straight': 0, 'connector-straight-arrow': 1, 'connector-stroke': 3, 'connector-stroke-arrow': 4, 'connector-arc': 6, 'connector-arc-arrow': 7 };
+  const connectorKind = connectors[String(params.shapeType)];
+  const kind = connectorKind === undefined ? kinds[String(params.shapeType)] : 'line';
   if (!kind) throw unsupported(`createShapeControl.${params.shapeType}`);
-  if (params.lineFlipX || params.lineFlipY) throw unsupported('createShapeControl.lineFlip');
   const target = pathTarget(Number(params.sectionIdx ?? 0), Number(params.paraIdx ?? 0), '[]');
   const caret = logicalAddress(core, target.list, target.para, Number(params.charOffset ?? 0));
   const controls = core.paragraph(target.list, target.para).controls;
@@ -206,10 +208,12 @@ export const createShapeControl: typeof original.createShapeControl = (core, par
   const control = controls.filter(c => c.offset < at.offset).length;
   const zOrder = nextZOrder(core, target.list.section);
   core.transact([{ op: 'createShape', at, kind, width: Number(params.width), height: Number(params.height),
+    ...(connectorKind === undefined ? {} : { connector: { kind: connectorKind, start: [Number(params.startSubjectID ?? 0), Number(params.startSubjectIndex ?? 0)], end: [Number(params.endSubjectID ?? 0), Number(params.endSubjectIndex ?? 0)] } }),
     inline: params.treatAsChar === true, horzOffset: Number(params.horzOffset ?? 0), vertOffset: Number(params.vertOffset ?? 0), text: params.text } as EditOp,
     { op: 'setObjectProperties', object: { ...target.list, para: target.para, control }, patch: {
       horzRelTo: nativeEnum(params.horzRelTo ?? 'Paper'), vertRelTo: nativeEnum(params.vertRelTo ?? 'Paper'),
-      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')), zOrder } } as EditOp]);
+      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')), zOrder,
+      flipHorizontal: params.lineFlipX === true, flipVertical: params.lineFlipY === true } } as EditOp]);
   return insertedControl(core, at, before);
 };
 export const getControlImageData: typeof original.getControlImageData = (core, s, p, c, path) => new Uint8Array(core.query<{ bytes: number[] }>({ kind: 'pictureData', object: objectAddressByPath(s, p, path, c) }).bytes);

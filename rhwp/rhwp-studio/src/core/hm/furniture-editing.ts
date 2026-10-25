@@ -3,7 +3,7 @@ import type { Address, ControlInfo, EditOp, Rect } from '../../../vendor/hm-wasm
 import type { HmCore, ListAddress } from './core';
 import { px, unsupported } from './core';
 import { afterFieldEnds, bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
-import { extendBridge } from './api';
+import { api, extendBridge } from './api';
 import * as format from './format';
 import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
 import { validateTextContent } from '../local-text-replace-result';
@@ -113,12 +113,12 @@ function selection(core: HmCore, list: FurnitureList, page: number, startPara: n
 function charProps(core: HmCore, list: FurnitureList, para: number, offset: number): CharProperties {
   const owner = list.steps[0];
   const textOffset = wireToText(paraMap(core.paragraph(list, para)), logicalToWire(mapIn(core, list, para), offset));
-  return format.getCellCharPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para, textOffset);
+  return api.getCellCharPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para, textOffset);
 }
 
 function paraProps(core: HmCore, list: FurnitureList, para: number) {
   const owner = list.steps[0];
-  return format.getCellParaPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para);
+  return api.getCellParaPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para);
 }
 
 function formatChars(core: HmCore, list: FurnitureList, startPara: number, startOffset: number, endPara: number, endOffset: number, propsJson: string): string {
@@ -413,7 +413,28 @@ export function applyHfTemplate(core: HmCore, sec: number, isHeader: boolean, ap
   return { ok: true };
 }
 
+/** 취소·되돌리기는 같은 목록 주소에서 기존 모양 ID를 그대로 복원한다. */
+function shapeId(core: HmCore, list: FurnitureList, para: number, id: number, start?: number, end?: number): string {
+  const from = at(core, list, para, start ?? 0);
+  const to = start === undefined ? toAddress(list, para, mapIn(core, list, para).end) : at(core, list, para, end!);
+  core.transact([start === undefined ? { op: 'setParaShape', from, to, paraShapeId: id } : { op: 'setCharShape', from, to, charShapeId: id }]);
+  return JSON.stringify({ ok: true });
+}
+export function setCharShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, start: number, end: number, id: number): string {
+  return shapeId(core, noteList(core, sec, para, control), fnPara, id, start, end);
+}
+export function setParaShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, id: number): string {
+  return shapeId(core, noteList(core, sec, para, control), fnPara, id);
+}
+export function setCharShapeIdInHf(core: HmCore, sec: number, header: boolean, applyTo: number, para: number, start: number, end: number, id: number): string {
+  return shapeId(core, hfList(core, sec, header, applyTo), para, id, start, end);
+}
+export function setParaShapeIdInHf(core: HmCore, sec: number, header: boolean, applyTo: number, para: number, id: number): string {
+  return shapeId(core, hfList(core, sec, header, applyTo), para, id);
+}
+
 extendBridge({
+  setCharShapeIdInFootnote, setParaShapeIdInFootnote, setCharShapeIdInHf, setParaShapeIdInHf,
   applyHfTemplate, getHeaderFooter, createHeaderFooter, deleteHeaderFooter, getHeaderFooterParaInfo,
   insertTextInHeaderFooter, insertTextContentInHeaderFooter, deleteTextInHeaderFooter, splitParagraphInHeaderFooter,
   mergeParagraphInHeaderFooter, replaceRangeInHeaderFooter, copySelectionInHeaderFooter,

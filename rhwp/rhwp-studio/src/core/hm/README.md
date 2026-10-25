@@ -14,6 +14,9 @@ and call hm-wasm. Read `extensions.ts` before auditing stubs: a throw in a base 
 | `address.ts` | Coordinate conversion. Characters are Unicode scalars (an emoji is one). Caret offsets are logical (characters plus inline objects and notes, one each); text offsets count characters only; the engine uses wire offsets. Cell paths map to engine `steps` |
 | `document.ts` | Open, new document, save/export, page info and painting, snapshots |
 | `cursor.ts` | Caret rects, hit testing, line info, vertical movement, selection rects |
+| `document-captures.ts` | Native paragraph captures, scoped restoration and release |
+| `objects-connectors.ts` | Bound connector endpoint updates |
+| `table-transpose.ts` | Native cell-range and transpose clipboard, paste and in-place transpose |
 | `text.ts`, `agent-clipboard.ts`, `clipboard-native.ts`, `hwpjson.ts` | Text edits, internal/native clipboard and structured paste |
 | `format-fonts.ts`, `format-widgets.ts` | Formatting, fonts, styles and numbering |
 | `table-editing.ts`, `table-properties.ts`, `agent-tables.ts` | Table edits, properties and agent operations |

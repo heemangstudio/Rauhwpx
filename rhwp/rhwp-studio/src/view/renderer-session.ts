@@ -45,7 +45,8 @@ export interface RendererSessionSelection {
 }
 
 export interface RendererPreflightSource {
-  getCanvasKitDocumentPreflight(
+  readonly documentInstance?: number;
+  getCanvasKitDocumentPreflight?(
     mode: CanvasKitRenderModeRequest['mode'],
     profile: LayerRenderProfile,
   ): CanvasKitDocumentPreflight;
@@ -370,6 +371,7 @@ export class RendererSession {
   }
 
   private readPreflight(source: RendererPreflightSource): CanvasKitDocumentPreflight {
+    if (!source.getCanvasKitDocumentPreflight) throw new Error('CanvasKit 문서 사전 검사가 없는 엔진입니다');
     const preflight = source.getCanvasKitDocumentPreflight(
       this.canvaskitMode.mode,
       this.renderProfile,
