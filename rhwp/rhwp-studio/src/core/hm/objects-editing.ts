@@ -161,20 +161,34 @@ export const insertPicture: typeof original.insertPicture = (core, s, p, offset,
   core.transact(ops);
   return { ...insertedControl(core, at, before), sectionIdx: s, ...(target.list.steps.length ? { cellPath: stepsToPath(target.list.steps, target.para) } : {}) };
 };
+/** 구역 본문 개체 중 가장 위 z 의 다음 값. 새 개체가 z 를 받지 않으면 모두 같은 z 라 순서 바꾸기가 듣지 않는다. */
+function nextZOrder(core: HmCore, section: number): number {
+  let top = -1;
+  for (let page = 0; page < core.state().pageCount; page++) for (const object of pageObjects(core, page)) {
+    if (object.section === section && !object.furniture && !object.steps?.length) top = Math.max(top, object.z);
+  }
+  return top + 1;
+}
 export const createShapeControl: typeof original.createShapeControl = (core, params) => {
   const kinds: Record<string, 'rect' | 'ellipse' | 'line' | 'textbox'> = { rectangle: 'rect', rect: 'rect', ellipse: 'ellipse', line: 'line', textbox: 'textbox' };
   const kind = kinds[String(params.shapeType)];
   if (!kind) throw unsupported(`createShapeControl.${params.shapeType}`);
   if (params.lineFlipX || params.lineFlipY) throw unsupported('createShapeControl.lineFlip');
   const target = pathTarget(Number(params.sectionIdx ?? 0), Number(params.paraIdx ?? 0), '[]');
-  const at = logicalAddress(core, target.list, target.para, Number(params.charOffset ?? 0));
-  const before = core.paragraph(target.list, target.para).controls.map(c => c.index);
-  const control = core.paragraph(target.list, target.para).controls.filter(c => c.offset < at.offset).length;
+  const caret = logicalAddress(core, target.list, target.para, Number(params.charOffset ?? 0));
+  const controls = core.paragraph(target.list, target.para).controls;
+  // 같은 자리에 먼저 떠 있던 개체 뒤에 넣는다. 앞에 넣으면 이미 돌려준 개체 번호가 하나씩 밀린다.
+  let offset = caret.offset;
+  for (const c of controls) if (c.offset === offset && c.inline === false) offset += 8;
+  const at = { ...caret, offset };
+  const before = controls.map(c => c.index);
+  const control = controls.filter(c => c.offset < at.offset).length;
+  const zOrder = nextZOrder(core, target.list.section);
   core.transact([{ op: 'createShape', at, kind, width: Number(params.width), height: Number(params.height),
     inline: params.treatAsChar === true, horzOffset: Number(params.horzOffset ?? 0), vertOffset: Number(params.vertOffset ?? 0), text: params.text } as EditOp,
     { op: 'setObjectProperties', object: { ...target.list, para: target.para, control }, patch: {
       horzRelTo: nativeEnum(params.horzRelTo ?? 'Paper'), vertRelTo: nativeEnum(params.vertRelTo ?? 'Paper'),
-      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')) } } as EditOp]);
+      textWrap: nativeEnum(params.textWrap ?? (kind === 'textbox' ? 'InFrontOfText' : 'Square')), zOrder } } as EditOp]);
   return insertedControl(core, at, before);
 };
 export const getControlImageData: typeof original.getControlImageData = (core, s, p, c, path) => new Uint8Array(core.query<{ bytes: number[] }>({ kind: 'pictureData', object: objectAddressByPath(s, p, path, c) }).bytes);

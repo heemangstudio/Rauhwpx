@@ -5,7 +5,8 @@ import { unsupported } from './core';
 import { addressToPosition, bodyList, cellList, logicalAddress, logicalRangeToWire, paraMap, pathTarget, toAddress } from './address';
 import { extendBridge } from './api';
 
-interface Clipboard extends Copied { controls: boolean; single: boolean }
+/** `dropped`: 고른 개체가 엔진 조각에 담기지 않았다. 붙여넣으면 아무것도 들어가지 않는다. */
+interface Clipboard extends Copied { controls: boolean; single: boolean; dropped: boolean }
 const clipboards = new WeakMap<object, Clipboard>();
 const clipboard = (core: HmCore): Clipboard | undefined => clipboards.get(core.adapter.hmEngine());
 
@@ -42,12 +43,14 @@ function copy(core: HmCore, from: Address, to: Address): Clipboard {
       if (control.kind === 'table') tables.push(tableText(core, list, para, control.index));
     }
   }
+  // 엔진 조각은 아직 표·그림·도형을 담지 않는다. 개체만 고르면 조각이 비어 붙여넣기가 아무것도 넣지 않는다.
+  const dropped = controls && !copied.text;
   // 엔진 조각의 글자에는 표 안 글자가 없다. 표만 고른 경우 셀 글자를 외부 붙여넣기용으로 채운다.
   if (tables.length && !copied.text.trim()) {
     copied.text = tables.map(table => table.text).join('\n');
     copied.html = tables.map(table => table.html).join('');
   }
-  const result = { ...copied, controls, single };
+  const result = { ...copied, controls, single, dropped };
   clipboards.set(core.adapter.hmEngine(), result);
   return result;
 }
@@ -89,6 +92,7 @@ function pasteResult(core: HmCore, at: Address): string {
 }
 
 function paste(core: HmCore, at: Address): string {
+  if (clipboard(core)?.dropped) throw unsupported('개체 붙여넣기');
   const receipt = core.mutate(doc => doc.paste(JSON.stringify({ at })));
   return pasteResult(core, receipt?.caret ?? at);
 }
@@ -116,7 +120,8 @@ function controlRange(core: HmCore, sec: number, para: number, ci: number, cellP
 
 export function copyControl(core: HmCore, sec: number, para: number, ci: number, cellPathJson: string): string {
   const { from, to } = controlRange(core, sec, para, ci, cellPathJson);
-  copy(core, from, to);
+  // 담기지 않은 개체를 복사됐다고 하면 잘라내기가 개체를 지워 버린다.
+  if (copy(core, from, to).dropped) throw unsupported('개체 복사');
   return JSON.stringify({ ok: true });
 }
 
