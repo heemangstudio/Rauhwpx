@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:7721/?engine=heemang",
+  "provider": "fixture-backed local hub; no provider calls",
+  "steps": [
+    {
+      "format": "hwp",
+      "conflicted": true,
+      "groups": 1,
+      "beforeHead": "eee51ff3-a82d-46d2-89cd-9a0c97688701",
+      "afterHead": "70a75f24-d504-413d-8f43-6cb09f0cdc50",
+      "merged": "INCOMING:Base 한글😀",
+      "checks": [
+        "branch creation/switch/checkpoint through UI",
+        "draft close/resume preserves bytes",
+        "resolver choice and native worker materialization",
+        "composite Undo/Redo restores bytes and branch refs",
+        "save through file command and reopen identical text"
+      ]
+    },
+    {
+      "format": "hwpx",
+      "conflicted": false,
+      "groups": 1,
+      "beforeHead": "fc87ed41-cb6a-4872-80df-6fad4b09fe66",
+      "afterHead": "aa048455-b660-4963-b154-8cc128cc4e4a",
+      "merged": "CURRENT:Base 한글😀:INCOMING",
+      "checks": [
+        "branch creation/switch/checkpoint through UI",
+        "draft close/resume preserves bytes",
+        "resolver choice and native worker materialization",
+        "composite Undo/Redo restores bytes and branch refs",
+        "save through file command and reopen identical text"
+      ]
+    }
+  ],
+  "errors": [],
+  "ok": true
+}

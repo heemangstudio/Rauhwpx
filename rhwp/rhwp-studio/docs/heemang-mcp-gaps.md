@@ -17,13 +17,12 @@ from HeemangEngine `feat/studio-integrate` `f9528d9` (see `vendor/hm-wasm/README
 ## Gaps
 
 None of the tools fails on HeemangEngine where the old engine succeeds. The four earlier gaps are closed:
-`commit_version` (versions use the compare-snapshot manifest when the engine has no structural merge),
+`commit_version` (versions use typed structural manifests from HeemangEngine),
 `insert_page_break` (engine `pageBreak` op, read back from `formatRuns`), `edit_table set_caption` and
 `set_zone_borders` (the engine `tableProperties` query reports the caption and cell zones; cell properties show a
 zone's fill and its outer edges).
 
-Version merge between branches still needs structural merge in the engine (`merge.worker.ts`); until then merging
-versions reports `문서 구조 병합` as unsupported.
+Version branch merging uses the native structural backend in `merge.worker.ts`. The real HWP/HWPX branch UI, draft close/resume, conflict decisions, composite Undo/Redo and save/reopen flow are verified in [the merge handoff](../../../docs/heemang-version-merge-handoff.md).
 
 ## Smaller differences
 

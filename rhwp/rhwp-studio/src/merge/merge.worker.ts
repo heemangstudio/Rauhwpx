@@ -44,15 +44,17 @@ function post(message: MergeWorkerResponse, transfer: Transferable[] = []): void
   scope.postMessage(message, transfer);
 }
 
-/** 구조 병합은 아직 HeemangEngine 에 없다. 병합 창은 이 오류로 기존 버전 흐름에 머문다. */
-const STRUCTURAL_MERGE_UNAVAILABLE = 'HeemangEngine에서 아직 지원하지 않는 기능입니다: 문서 구조 병합';
+let runtime: Promise<StructuralMergeExports> | undefined;
 
-function wasmInitialized(): Promise<void> {
-  return Promise.resolve();
+function exportsReady(): Promise<StructuralMergeExports> {
+  return runtime ??= import('../../vendor/hm-wasm/hm_wasm').then(async (module) => {
+    await module.default();
+    return module as unknown as StructuralMergeExports;
+  });
 }
 
-async function exportsReady(): Promise<StructuralMergeExports> {
-  throw new Error(STRUCTURAL_MERGE_UNAVAILABLE);
+async function wasmInitialized(): Promise<void> {
+  await exportsReady();
 }
 
 function canonical(value: unknown): string {
@@ -201,17 +203,9 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
       return;
     }
     if (request.operation === 'build-manifest') {
-      // 구조 병합이 없는 엔진에서도 버전 기록은 시작한다. 커밋 manifest 는 비교 스냅샷으로 만든다.
-      const exports = await exportsReady().catch((error: unknown) => {
-        if (error instanceof Error && error.message === STRUCTURAL_MERGE_UNAVAILABLE) return null;
-        throw error;
-      });
-      if (!exports) {
-        post({ id: request.id, type: 'manifest', entries: null });
-        return;
-      }
+      const exports = await exportsReady();
       if (typeof exports.structuralMergeBuildManifest !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include structural manifest export.');
+        throw new Error('This HeemangEngine build does not include structural manifest export.');
       }
       const entries = parseManifestEntries(exports.structuralMergeBuildManifest(request.bytes));
       post({ id: request.id, type: 'manifest', entries });
@@ -228,7 +222,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
         return;
       }
       if (typeof exports.structuralMergeAnalyzeDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte merge analysis.');
+        throw new Error('This HeemangEngine build does not include document-byte merge analysis.');
       }
       const value = parseAnalysis(request.manifests
         && typeof exports.structuralMergeAnalyzeDocumentWithManifests === 'function'
@@ -268,7 +262,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
         return;
       }
       if (typeof exports.structuralMergeMaterializeDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte merge materialization.');
+        throw new Error('This HeemangEngine build does not include document-byte merge materialization.');
       }
       const bytes = request.manifests
         && typeof exports.structuralMergeMaterializeDocumentWithManifests === 'function'
@@ -294,7 +288,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
     if (request.operation === 'synthesize-virtual-base-document') {
       const exports = await exportsReady();
       if (typeof exports.structuralMergeVirtualBaseDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte virtual base synthesis.');
+        throw new Error('This HeemangEngine build does not include document-byte virtual base synthesis.');
       }
       const basesJson = JSON.stringify(request.bases.map(base64));
       const bytes = exports.structuralMergeVirtualBaseDocument(basesJson, request.currentFormat);
