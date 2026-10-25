@@ -1,0 +1,188 @@
+/**
+ * 에이전트 표 도구 가운데 다른 작업 줄기가 맡지 않은 것: 셀 영역 테두리·배경, 표 캡션 글, 표 계산식.
+ */
+import type { EditOp, TableAddress, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { CellProperties } from '../types';
+import { extendBridge } from './api';
+import type { HmApi } from './api';
+import type { HmCore } from './core';
+import { hexToColor } from './format';
+import { paraMap, toAddress } from './address';
+
+const tableAddress = (section: number, para: number, control: number): TableAddress =>
+  ({ section, steps: [], para, control });
+
+function tableInfo(core: HmCore, table: TableAddress): TableInfo {
+  return core.query<TableInfo>({ kind: 'table', table });
+}
+
+type Line = { type: number; width: number; color: string } | undefined;
+const line = (value: Line) => value && { style: value.type, width: value.width, color: hexToColor(value.color) };
+const CENTER: Record<string, string> = { NONE: 'none', VERTICAL: 'vertical', HORIZONTAL: 'horizontal', CROSS: 'cross' };
+
+/**
+ * 셀 영역에 바깥 테두리·배경·대각선을 준다. 엔진은 영역을 한 셀처럼 다뤄 테두리 모양을 공유하고,
+ * 바뀐 가장자리를 이웃 셀에도 옮긴다. 한 칸 영역이 곧 한 셀의 테두리·배경이다.
+ */
+export const setCellZoneProperties: HmApi['setCellZoneProperties'] = (core, sec, parent, control, range, props) => {
+  const borderFill: Record<string, unknown> = {};
+  const sides = { left: props.borderLeft, right: props.borderRight, top: props.borderTop, bottom: props.borderBottom };
+  for (const [side, value] of Object.entries(sides)) if (value) borderFill[side] = line(value);
+  if (props.fillType === 'none') borderFill.fill = { kind: 'none' };
+  else if (props.fillColor) borderFill.fill = { kind: 'solid', background: hexToColor(props.fillColor) };
+  if (props.diagonalLine !== undefined || props.diagonalColor !== undefined || props.diagonalWidth !== undefined) {
+    borderFill.diagonal = { style: props.diagonalLine ?? 1, width: props.diagonalWidth ?? 0, color: hexToColor(props.diagonalColor ?? '#000000') };
+  }
+  if (props.diagonalSlash !== undefined) borderFill.slash = props.diagonalSlash;
+  if (props.diagonalBackSlash !== undefined) borderFill.backslash = props.diagonalBackSlash;
+  if (typeof props.centerLine === 'string' && CENTER[props.centerLine]) borderFill.centerLine = CENTER[props.centerLine];
+  core.transact([{ op: 'setCellZone', table: tableAddress(sec, parent, control),
+    startRow: range.startRow, startColumn: range.startCol, endRow: range.endRow, endColumn: range.endCol, borderFill }]);
+  return { ok: true, borderFillId: 0 };
+};
+
+/** 표 캡션 목록의 글. 캡션이 없으면 null. */
+function captionText(core: HmCore, table: TableAddress): string | null {
+  // 캡션 목록은 모든 셀 목록 다음 번호다.
+  const index = tableInfo(core, table).cells.length;
+  const list = { section: table.section, steps: [...(table.steps ?? []), { para: table.para, control: table.control, index }] };
+  try {
+    const count = core.paragraphCount(list);
+    return Array.from({ length: count }, (_, p) => core.paragraph(list, p).text).join('\n');
+  } catch {
+    return null;
+  }
+}
+
+/** 표 캡션 글을 바꾼다. 캡션이 없으면 표 아래에 만든다. withNumber 면 "표 N" 번호를 앞에 둔다. */
+export const setTableCaptionText: HmApi['setTableCaptionText'] = (core, sec, parent, control, text, withNumber) => {
+  const table = tableAddress(sec, parent, control);
+  core.transact([{ op: 'setTableCaption', table, text, withNumber }]);
+  return { ok: true, captionText: captionText(core, table) ?? text };
+};
+
+/** 셀 참조·범위와 산술/집계식. JS eval 없이 길이와 중첩을 제한한다. */
+function formulaValue(core: HmCore, table: TableAddress, row: number, col: number, source: string): number {
+  const info = tableInfo(core, table);
+  if (source.length > 1000) throw new RangeError('표 계산식이 너무 깁니다');
+  const input = source.trim().replace(/^=/, '').toUpperCase();
+  let at = 0, depth = 0;
+  const space = () => { while (/\s/.test(input[at] ?? '') && at < input.length) at++; };
+  const take = (char: string) => { space(); if (input[at] === char) { at++; return true; } return false; };
+  const scalar = (values: number[]) => { if (values.length !== 1) throw new Error('범위는 집계 함수 안에서 사용해야 합니다'); return values[0]; };
+  const cellNumbers = (sr: number, sc: number, er: number, ec: number): number[] => {
+    if (sr < 0 || sc < 0 || er < sr || ec < sc || er >= info.rows || ec >= info.columns) throw new RangeError('표 계산식 셀 범위가 잘못되었습니다');
+    return info.cells.filter(c => c.row <= er && c.row + c.rowSpan > sr && c.column <= ec && c.column + c.columnSpan > sc)
+      .flatMap(c => {
+        const list = { section: c.list.section, steps: c.list.steps ?? [] };
+        const texts = Array.from({ length: core.paragraphCount(list) }, (_, p) => core.paragraph(list, p).text);
+        const text = texts.join(' ').trim().replace(/,/g, '');
+        if (!text) return [];
+        const value = Number(text);
+        return Number.isFinite(value) ? [value] : [];
+      });
+  };
+  const ref = (token: string): [number, number] => {
+    const match = /^([A-Z]+)([1-9][0-9]*)$/.exec(token);
+    if (!match) throw new Error(`잘못된 셀 참조: ${token}`);
+    let column = 0;
+    for (const char of match[1]) column = column * 26 + char.charCodeAt(0) - 64;
+    return [Number(match[2]) - 1, column - 1];
+  };
+  const atom = (): number[] => {
+    if (++depth > 64) throw new RangeError('표 계산식 중첩이 너무 깊습니다');
+    try {
+      space();
+      if (take('+')) return [scalar(atom())];
+      if (take('-')) return [-scalar(atom())];
+      if (take('(')) { const value = expression(); if (!take(')')) throw new Error('닫는 괄호가 없습니다'); return value; }
+      const numeric = /^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:E[+-]?[0-9]+)?/.exec(input.slice(at));
+      if (numeric) { at += numeric[0].length; return [Number(numeric[0])]; }
+      const token = /^[A-Z]+[0-9]*/.exec(input.slice(at))?.[0];
+      if (!token) throw new Error('표 계산식에 값이 필요합니다');
+      at += token.length;
+      if (take('(')) {
+        const values: number[] = [];
+        if (!take(')')) {
+          do { values.push(...expression()); } while (take(','));
+          if (!take(')')) throw new Error('닫는 괄호가 없습니다');
+        }
+        switch (token) {
+          case 'SUM': return [values.reduce((a, b) => a + b, 0)];
+          case 'AVG': case 'AVERAGE': if (!values.length) throw new Error('평균 범위가 비어 있습니다'); return [values.reduce((a, b) => a + b, 0) / values.length];
+          case 'MIN': if (!values.length) throw new Error('최솟값 범위가 비어 있습니다'); return [Math.min(...values)];
+          case 'MAX': if (!values.length) throw new Error('최댓값 범위가 비어 있습니다'); return [Math.max(...values)];
+          case 'COUNT': return [values.length];
+          case 'PRODUCT': return [values.reduce((a, b) => a * b, 1)];
+          case 'ABS': return [Math.abs(scalar(values))];
+          default: throw new Error(`지원하지 않는 표 함수: ${token}`);
+        }
+      }
+      if (['ABOVE', 'BELOW', 'LEFT', 'RIGHT'].includes(token)) {
+        if (token === 'ABOVE') return row > 0 ? cellNumbers(0, col, row - 1, col) : [];
+        if (token === 'BELOW') return row + 1 < info.rows ? cellNumbers(row + 1, col, info.rows - 1, col) : [];
+        if (token === 'LEFT') return col > 0 ? cellNumbers(row, 0, row, col - 1) : [];
+        return col + 1 < info.columns ? cellNumbers(row, col + 1, row, info.columns - 1) : [];
+      }
+      const [sr, sc] = ref(token);
+      if (take(':')) {
+        space(); const end = /^[A-Z]+[1-9][0-9]*/.exec(input.slice(at))?.[0];
+        if (!end) throw new Error('범위 끝 셀이 없습니다'); at += end.length;
+        const [er, ec] = ref(end); return cellNumbers(sr, sc, er, ec);
+      }
+      const values = cellNumbers(sr, sc, sr, sc);
+      return values.length ? values : [0];
+    } finally { depth--; }
+  };
+  const product = (): number[] => {
+    let value = atom();
+    for (;;) {
+      if (take('*')) value = [scalar(value) * scalar(atom())];
+      else if (take('/')) { const divisor = scalar(atom()); if (divisor === 0) throw new Error('0으로 나눌 수 없습니다'); value = [scalar(value) / divisor]; }
+      else return value;
+    }
+  };
+  const expression = (): number[] => {
+    let value = product();
+    for (;;) {
+      if (take('+')) value = [scalar(value) + scalar(product())];
+      else if (take('-')) value = [scalar(value) - scalar(product())];
+      else return value;
+    }
+  };
+  const value = scalar(expression()); space();
+  if (at !== input.length || !Number.isFinite(value)) throw new Error('잘못된 표 계산식입니다');
+  return value;
+}
+export const evaluateTableFormulaEx: HmApi['evaluateTableFormulaEx'] = (core, options) => {
+  const table = tableAddress(options.sectionIdx, options.parentParaIdx, options.controlIdx);
+  const info = tableInfo(core, table);
+  const cell = info.cells.find(c => c.row <= options.targetRow && options.targetRow < c.row + c.rowSpan
+    && c.column <= options.targetCol && options.targetCol < c.column + c.columnSpan);
+  if (!cell) throw new RangeError('계산 결과 셀 좌표가 잘못되었습니다');
+  const value = formulaValue(core, table, options.targetRow, options.targetCol, options.formula);
+  const digits = options.decimalPlaces;
+  if (digits !== undefined && (!Number.isInteger(digits) || digits < 0 || digits > 15)) throw new RangeError('소수 자릿수는 0..15입니다');
+  let display = digits === undefined ? String(value) : value.toFixed(digits);
+  if (options.thousandsSeparator) {
+    const [whole, fraction] = display.split('.');
+    display = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction === undefined ? '' : `.${fraction}`);
+  }
+  display = (options.prefix ?? '') + display + (options.suffix ?? '');
+  if (options.writeResult) {
+    const list = { section: cell.list.section, steps: cell.list.steps ?? [] };
+    const last = core.paragraphCount(list) - 1;
+    const firstMap = paraMap(core.paragraph(list, 0));
+    const lastMap = paraMap(core.paragraph(list, last));
+    const from = toAddress(list, 0, firstMap.lead);
+    core.transact([
+      { op: 'delete', from, to: toAddress(list, last, lastMap.end) },
+      { op: 'insertText', at: from, text: display },
+    ]);
+  }
+  return { ok: true, value, display };
+};
+export const evaluateTableFormula: HmApi['evaluateTableFormula'] = (core, sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult) =>
+  JSON.stringify(evaluateTableFormulaEx(core, { sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult }));
+
+extendBridge({ setCellZoneProperties, setTableCaptionText, evaluateTableFormula, evaluateTableFormulaEx });
