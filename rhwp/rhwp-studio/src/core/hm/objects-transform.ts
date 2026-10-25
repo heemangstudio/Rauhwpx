@@ -14,10 +14,13 @@ function journal(core: HmCore) {
   return value;
 }
 export const capturePictureTransform: typeof original.capturePictureTransform = (core, target) => {
-  if (target.headerFooter || target.noteRef || target.memoRef) throw unsupported('capturePictureTransform.furniture');
+  if (target.noteRef || target.memoRef) throw unsupported('capturePictureTransform.furniture');
   const section = Number(target.sec), parent = Number(target.ppi), control = Number(target.innerControlIdx ?? target.ci);
+  const headerFooter = target.headerFooter as { outerParaIdx: number; outerControlIdx: number } | undefined;
   let address = objectAddress(section, parent, control);
-  if (Array.isArray(target.cellPath) && target.cellPath.length) address = objectAddressByPath(section, parent, target.cellPath as CellPathLike, control);
+  // 머리말·꼬리말 그림: 문단·컨트롤 번호는 바깥 머리말·꼬리말 목록 안의 번호다.
+  if (headerFooter) address = { section, steps: [{ para: headerFooter.outerParaIdx, control: headerFooter.outerControlIdx, index: 0 }], para: parent, control };
+  else if (Array.isArray(target.cellPath) && target.cellPath.length) address = objectAddressByPath(section, parent, target.cellPath as CellPathLike, control);
   else if (target.cellIdx !== undefined) address = {
     section, steps: [{ para: parent, control: Number(target.outerTableControlIdx ?? target.ci), index: Number(target.cellIdx) }],
     para: Number(target.cellParaIdx ?? 0), control,

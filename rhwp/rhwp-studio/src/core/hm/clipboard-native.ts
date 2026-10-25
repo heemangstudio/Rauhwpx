@@ -5,8 +5,11 @@ import { unsupported } from './core';
 import { addressToPosition, bodyList, cellList, logicalAddress, logicalRangeToWire, paraMap, pathTarget, toAddress } from './address';
 import { extendBridge } from './api';
 
-/** `dropped`: 고른 개체가 엔진 조각에 담기지 않았다. 붙여넣으면 아무것도 들어가지 않는다. */
-interface Clipboard extends Copied { controls: boolean; single: boolean; dropped: boolean }
+/**
+ * `dropped`: 고른 개체가 엔진 조각에 담기지 않았다. 붙여넣으면 아무것도 들어가지 않는다.
+ * `source`: 복사한 문서. 엔진 조각의 표·개체는 그 문서에만 다시 붙는다. `fragmentText`: 엔진 조각 자체의 글자.
+ */
+interface Clipboard extends Copied { controls: boolean; single: boolean; dropped: boolean; source: number; fragmentText: string }
 const clipboards = new WeakMap<object, Clipboard>();
 const clipboard = (core: HmCore): Clipboard | undefined => clipboards.get(core.adapter.hmEngine());
 
@@ -43,14 +46,15 @@ function copy(core: HmCore, from: Address, to: Address): Clipboard {
       if (control.kind === 'table') tables.push(tableText(core, list, para, control.index));
     }
   }
-  // 엔진 조각은 아직 표·그림·도형을 담지 않는다. 개체만 고르면 조각이 비어 붙여넣기가 아무것도 넣지 않는다.
-  const dropped = controls && !copied.text;
+  // 엔진 조각은 표·그림·도형·수식·양식 개체를 통째로 담는다. 담지 못한 개체가 있으면 붙여넣어도 사라진다.
+  const dropped = controls && !(copied.objects > 0);
+  const fragmentText = copied.text;
   // 엔진 조각의 글자에는 표 안 글자가 없다. 표만 고른 경우 셀 글자를 외부 붙여넣기용으로 채운다.
   if (tables.length && !copied.text.trim()) {
     copied.text = tables.map(table => table.text).join('\n');
     copied.html = tables.map(table => table.html).join('');
   }
-  const result = { ...copied, controls, single, dropped };
+  const result = { ...copied, controls, single, dropped, source: core.adapter.documentInstance, fragmentText };
   clipboards.set(core.adapter.hmEngine(), result);
   return result;
 }
@@ -92,7 +96,14 @@ function pasteResult(core: HmCore, at: Address): string {
 }
 
 function paste(core: HmCore, at: Address): string {
-  if (clipboard(core)?.dropped) throw unsupported('개체 붙여넣기');
+  const held = clipboard(core);
+  if (held?.dropped) throw unsupported('개체 붙여넣기');
+  // 다른 문서에는 엔진 조각의 글자만 붙는다. 표만 고른 조각은 셀 글자를, 그림·도형만 고른 조각은 넣을 것이 없다.
+  if (held?.objects && held.source !== core.adapter.documentInstance && !held.fragmentText.trim()) {
+    if (!held.text.trim()) throw unsupported('다른 문서로 개체 붙여넣기');
+    const receipt = core.mutate(doc => doc.paste(JSON.stringify({ at, text: held.text })));
+    return pasteResult(core, receipt?.caret ?? at);
+  }
   const receipt = core.mutate(doc => doc.paste(JSON.stringify({ at })));
   return pasteResult(core, receipt?.caret ?? at);
 }

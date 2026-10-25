@@ -49,7 +49,7 @@ function commonProperties(o: NativeObject) {
     rotationAngle: o.rotation ?? 0, horzFlip: o.flipHorizontal ?? false, vertFlip: o.flipVertical ?? false };
 }
 const EFFECTS = ['RealPic', 'GrayScale', 'BlackWhite'];
-function pictureProperties(core: HmCore, object: ObjectAddress): PictureProperties {
+export function pictureProperties(core: HmCore, object: ObjectAddress): PictureProperties {
   const o = objectProperties(core, object);
   return { ...commonProperties(o), brightness: o.brightness ?? 0, contrast: o.contrast ?? 0, effect: EFFECTS[o.effect ?? 0] ?? 'RealPic',
     transparency: Math.round((o.transparency ?? 0) * 100 / 255), originalWidth: o.naturalWidth ?? o.width, originalHeight: o.naturalHeight ?? o.height,
@@ -238,18 +238,33 @@ function drawnBox(core: HmCore, o: PageObject): { x: number; y: number; w: numbe
   return { x: o.x + (o.width - size[0]) / 2, y: o.y + (o.height - size[1]) / 2, w: size[0], h: size[1] };
 }
 
+/** 머리말·꼬리말 바로 안의 그림이면 그 머리말·꼬리말 컨트롤 위치. 다른 바탕 개체는 본문 편집 대상이 아니다. */
+function headerFooterOf(core: HmCore, o: PageObject): ControlLayoutItem['headerFooter'] | null {
+  const step = o.steps?.length === 1 ? o.steps[0] : null;
+  if (!o.furniture || o.kind !== 'picture' || !step) return null;
+  const kind = core.paragraph({ section: o.section, steps: [] }, step.para).controls.find(c => c.index === step.control)?.kind;
+  return kind === 'header' || kind === 'footer' ? { kind, outerParaIdx: step.para, outerControlIdx: step.control } : null;
+}
+
 export function getPageControlLayout(core: HmCore, pageNum: number): { controls: ControlLayoutItem[] } {
-  return { controls: pageObjects(core, pageNum).filter(o => !o.furniture).map((o, stableIndex) => {
-    const path = stepsToPath(o.steps ?? [], o.para);
+  const controls: ControlLayoutItem[] = [];
+  for (const o of pageObjects(core, pageNum)) {
+    // 양식 개체는 개체 선택 대상이 아니다. 클릭은 양식 값 편집(getFormObjectAt)으로 간다.
+    if (o.kind === 'form') continue;
+    const headerFooter = headerFooterOf(core, o);
+    if (o.furniture && !headerFooter) continue;
+    const path = headerFooter ? [] : stepsToPath(o.steps ?? [], o.para);
     const type: ControlLayoutItem['type'] = o.kind === 'picture' ? 'image' : o.kind === 'connector' ? 'line' : ['table', 'shape', 'line', 'group', 'ole', 'equation'].includes(o.kind) ? o.kind as ControlLayoutItem['type'] : 'shape';
     const b = drawnBox(core, o);
-    return { type, x: px(b.x), y: px(b.y), w: px(b.w), h: px(b.h), secIdx: o.section,
+    controls.push({ type, x: px(b.x), y: px(b.y), w: px(b.w), h: px(b.h), secIdx: o.section,
       paraIdx: path.length ? o.steps![0].para : o.para, controlIdx: o.control,
+      ...(headerFooter ? { headerFooter } : {}),
       ...(path.length ? { cellPath: path, cellIdx: o.steps![0].index, cellParaIdx: o.para, innerControlIdx: o.control, outerTableControlIdx: o.steps![0].control } : {}),
       ...(o.line ? { x1: px(o.line[0]), y1: px(o.line[1]), x2: px(o.line[2]), y2: px(o.line[3]) } : {}),
       ...(o.layer === 'behind' ? { wrap: 'behindText' } : o.layer === 'front' ? { wrap: 'inFrontOfText' } : {}),
-      plane: o.layer === 'behind' ? 1 : o.layer === 'front' ? 3 : 2, zOrder: o.z, stableIndex };
-  }) };
+      plane: o.layer === 'behind' ? 1 : o.layer === 'front' ? 3 : 2, zOrder: o.z, stableIndex: controls.length });
+  }
+  return { controls };
 }
 
 extendBridge({ getShapeBBox, getObjectBBox, getPictureProperties, getCellPicturePropertiesByPath,

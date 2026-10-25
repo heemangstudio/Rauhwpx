@@ -407,8 +407,8 @@ test('copy/cut and selected plain paste use native wire offsets and one undo gro
   assert.equal(a.getParagraphText(0, 2), 'CDE');
   assert.equal(a.canRedo(), true);
   const noop = a.state();
-  assert.deepEqual(a.copyText(selection(body)), { text: '', html: '' });
-  assert.deepEqual(a.cutText(selection(body)), { clipboard: { text: '', html: '' }, edit: null });
+  assert.deepEqual(a.copyText(selection(body)), { text: '', html: '', objects: 0 });
+  assert.deepEqual(a.cutText(selection(body)), { clipboard: { text: '', html: '', objects: 0 }, edit: null });
   assert.deepEqual(a.state(), noop);
 });
 

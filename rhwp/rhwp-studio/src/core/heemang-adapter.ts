@@ -471,7 +471,7 @@ export class HeemangAdapter {
     }
     const { from, to } = selected;
     this.checkSelection({ from, to });
-    if (sameAddress(from, to)) return { text: '', html: '' };
+    if (sameAddress(from, to)) return { text: '', html: '', objects: 0 };
     for (let para = from.para; para <= to.para; para++) {
       const p = this.paragraphs(from.section, from.steps, para, 1)[0];
       const start = para === from.para ? from.offset : 0;

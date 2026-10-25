@@ -1,7 +1,7 @@
 /**
  * Studio 좌표와 HeemangEngine 주소 사이의 변환.
  *
- * Studio 캐럿 오프셋은 "논리 오프셋"이다: 글자(UTF-16 단위)와 글자처럼 취급하는 개체(표·그림·도형·수식)
+ * Studio 캐럿 오프셋은 "논리 오프셋"이다: 글자(UTF-16 단위)와 글자처럼 취급하는 개체(표·그림·도형·수식·양식 개체)
  * 및 각주·미주를 한 칸씩 센다. 구역·단 정의, 필드 시작·끝, 책갈피, 떠 있는 개체 같은 나머지 컨트롤은
  * 칸을 차지하지 않는다. "텍스트 오프셋"은 글자만 센다. 엔진은 컨트롤이 8칸인 wire 오프셋을 쓴다.
  *
@@ -33,7 +33,7 @@ const maps = new WeakMap<ParagraphInfo, ParaMap>();
 /** 캐럿이 한 칸으로 지나가는 컨트롤인가. */
 export function isLogicalControl(control: ControlInfo): boolean {
   if (control.kind === 'footnote' || control.kind === 'endnote') return true;
-  return (control.kind === 'table' || control.kind === 'object' || control.kind === 'equation') && control.inline === true;
+  return (control.kind === 'table' || control.kind === 'object' || control.kind === 'equation' || control.kind === 'form') && control.inline === true;
 }
 
 const textWidth = (info: ParagraphInfo, k: number): number => (info.text.charCodeAt(k) === 9 ? 8 : 1);
