@@ -1,15 +1,16 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `fix/studio-residual-a` at `a5b0951`, which is
-`feat/studio-integrate` (`f9528d9`: `feat/studio-api` (`05a3207`) with `feat/studio-widgets` (`bb98daf`),
-`feat/studio-dialogs` (`e6ee8d8`), `feat/studio-objects` (`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged
-and the read-back fix `f9528d9` on top, over main (MAIN107, `d660276`)) plus note renumbering (`0de6421`),
-`Doc.adopt` (`708adb0`) and object captions (`a5b0951`). Built on 2026-10-25.
+Generated browser bindings and WASM from HeemangEngine `fix/studio-residual-b` at `802bd97`: `feat/studio-integrate`
+at `a5b0951` (`feat/studio-api` (`05a3207`) with `feat/studio-widgets` (`bb98daf`), `feat/studio-dialogs`
+(`e6ee8d8`), `feat/studio-objects` (`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged, the read-back fix
+`f9528d9`, note renumbering (`0de6421`), `Doc.adopt` (`708adb0`) and object captions (`a5b0951`), over main
+(MAIN107, `d660276`)) plus `9591b4d`: line end points, grouping and ungrouping, tables and objects in same-document
+clipboard fragments, and script-defined combo box entries. Built on 2026-10-25.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
-`hm_wasm_bg.wasm`: 5,688,384 bytes, SHA-256
-`d0ba3af3e695c7d90b785f083d89fe100a3701b497566a8c8186ccf61b950eb3`.
+`hm_wasm_bg.wasm`: 5,774,599 bytes, SHA-256
+`39a8acf0248fff7eb4dbe08759f06d8cba25b23f465ca200b50f47b094775016`.
 
 Studio API additions on `feat/studio-api`:
 
