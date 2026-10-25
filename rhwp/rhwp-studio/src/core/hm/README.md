@@ -2,8 +2,9 @@
 
 `WasmBridge` (`src/core/wasm-bridge.ts`) is Studio's only document engine boundary. Its public methods keep the old
 Studio signatures and coordinates, so the input handler, dialogs, toolbar, agent tools and versioning call it unchanged.
-Every method delegates to a function of the same name in `api` (`api.ts`), which collects the area files in this
-directory. Those functions turn Studio coordinates into HeemangEngine addresses and call hm-wasm.
+Every method delegates to a function of the same name in `api` (`api.ts`). `extensions.ts` loads the registered
+implementations that replace base functions. Those functions turn Studio coordinates into HeemangEngine addresses
+and call hm-wasm. Read `extensions.ts` before auditing stubs: a throw in a base file does not establish a runtime gap.
 
 ## Layout
 
@@ -13,16 +14,19 @@ directory. Those functions turn Studio coordinates into HeemangEngine addresses 
 | `address.ts` | Coordinate conversion. Characters are Unicode scalars (an emoji is one). Caret offsets are logical (characters plus inline objects and notes, one each); text offsets count characters only; the engine uses wire offsets. Cell paths map to engine `steps` |
 | `document.ts` | Open, new document, save/export, page info and painting, snapshots |
 | `cursor.ts` | Caret rects, hit testing, line info, vertical movement, selection rects |
-| `text.ts` | Insert, delete, split and merge in body, cells and nested cells |
-| `format.ts` | Character and paragraph formatting, styles, numbering |
-| `table.ts`, `objects.ts`, `furniture.ts`, `fields.ts`, `page.ts`, `clipboard.ts`, `search.ts` | The rest, mostly stubs today |
+| `text.ts`, `agent-clipboard.ts`, `clipboard-native.ts`, `hwpjson.ts` | Text edits, internal/native clipboard and structured paste |
+| `format-fonts.ts`, `format-widgets.ts` | Formatting, fonts, styles and numbering |
+| `table-editing.ts`, `table-properties.ts`, `agent-tables.ts` | Table edits, properties and agent operations |
+| `objects-editing.ts`, `objects-grouping.ts`, `objects-navigation.ts`, `objects-transform.ts`, `agent-equations.ts` | Pictures, shapes, equations and transforms |
+| `furniture-editing.ts`, `furniture-pictures.ts`, `fields-controls.ts`, `fields-forms.ts` | Headers/footers, notes, fields and forms |
+| `page-settings.ts`, `search-text.ts`, `document-counts.ts`, `agent-document.ts` | Page settings, search, counts and agent document operations |
 
 A function the engine cannot serve yet throws `unsupported(name)` (`EngineNotSupportedError`). The command layer
 disables the matching menu and toolbar entries; it never falls back to another engine.
 
 ## Adding or replacing methods from another lane
 
-Do not edit the area files above; they belong to the core lane. Instead:
+For an existing implementation, edit its registered module. To replace an unimplemented base method:
 
 1. Create `src/core/hm/<area>-<topic>.ts`, for example `objects-layout.ts` or `status-counts.ts`.
 2. Export functions with exactly the stub's name and signature (first parameter `core: HmCore`). Use the helpers in
@@ -30,12 +34,14 @@ Do not edit the area files above; they belong to the core lane. Instead:
 3. At the bottom of the file call `extendBridge({ fnA, fnB })` from `./api`.
 4. Add one line `import './<area>-<topic>';` to `extensions.ts`, kept in name order.
 
-The registered implementation replaces the stub for every `WasmBridge` instance. New `WasmBridge` methods need a
-signature in `wasm-bridge.ts` and a stub in an area file; ask the core lane, or add both in one small commit.
+The registered implementation replaces the stub for every `WasmBridge` instance. Register a method once. New
+`WasmBridge` methods need a signature in `wasm-bridge.ts`, an implementation and registration.
 
 Low-level helpers that need the hm-wasm `Doc` or `Engine` belong in a clearly marked section of
-`heemang-adapter.ts`, added only. hm-wasm API additions go to the HeemangEngine `feat/studio-api` branch; the core lane
-merges engine branches and is the only lane that rebuilds `vendor/hm-wasm`.
+`heemang-adapter.ts`. Make hm-wasm additions in a task-owned engine worktree. The integrator merges engine branches
+into `feat/studio-integrate` and rebuilds `vendor/hm-wasm` once from that merged tip.
+
+The current lane ownership, stopped work and verification commands are in [the cutover handoff](../../../../../docs/heemang-cutover.md).
 
 ## Coordinates in short
 
