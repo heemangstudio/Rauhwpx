@@ -19,7 +19,7 @@ import type {
   HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo,
   TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect,
   CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo,
-  LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight, CharShapeRun, HyperlinkTarget, HyperlinkContext,
+  LayerRenderProfile, PageLayerTree, CharShapeRun, HyperlinkTarget, HyperlinkContext,
   HmlSaveState, SelectionPageHints, TextContent, LocalBodyTextReplaceResult, RuntimeFontMetricsApi,
   FileSystemFileHandleLike, RemovedParaMeta, ValidationReport, HmlOpenMetadata, TableCellResizeUpdate,
   TableTransposeResult, DeferredCellTextMutationResult, DeferredPaginationResult, WebCanvasImageCacheStats,
@@ -317,14 +317,6 @@ export class WasmBridge {
 
   clearLayerResourceCache(): void {
     return api.clearLayerResourceCache(this.core);
-  }
-
-  getCanvasKitReplayPlan(pageNum: number, mode: 'default' | 'compat' = 'default', profile: LayerRenderProfile = 'screen'): string {
-    return api.getCanvasKitReplayPlan(this.core, pageNum, mode, profile);
-  }
-
-  getCanvasKitDocumentPreflight(mode: 'default' | 'compat' = 'default', profile: LayerRenderProfile = 'screen'): CanvasKitDocumentPreflight {
-    return api.getCanvasKitDocumentPreflight(this.core, mode, profile);
   }
 
   getPageOverlayImages(pageNum: number): string {

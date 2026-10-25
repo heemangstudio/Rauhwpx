@@ -13,6 +13,9 @@ directory. Those functions turn Studio coordinates into HeemangEngine addresses 
 | `address.ts` | Coordinate conversion. Characters are Unicode scalars (an emoji is one). Caret offsets are logical (characters plus inline objects and notes, one each); text offsets count characters only; the engine uses wire offsets. Cell paths map to engine `steps` |
 | `document.ts` | Open, new document, save/export, page info and painting, snapshots |
 | `cursor.ts` | Caret rects, hit testing, line info, vertical movement, selection rects |
+| `document-captures.ts` | Native paragraph captures, scoped restoration and release |
+| `objects-connectors.ts` | Bound connector endpoint updates |
+| `table-transpose.ts` | Native cell-range and transpose clipboard, paste and in-place transpose |
 | `text.ts` | Insert, delete, split and merge in body, cells and nested cells |
 | `format.ts` | Character and paragraph formatting, styles, numbering |
 | `table.ts`, `objects.ts`, `furniture.ts`, `fields.ts`, `page.ts`, `clipboard.ts`, `search.ts` | The rest, mostly stubs today |

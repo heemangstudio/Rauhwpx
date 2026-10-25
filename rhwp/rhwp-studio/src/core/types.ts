@@ -661,6 +661,7 @@ export interface ObjectRef {
 
 /** WASM getShapeProperties() 반환 타입 */
 export interface ShapeProperties {
+  instanceId?: number;
   width: number;
   height: number;
   treatAsChar: boolean;

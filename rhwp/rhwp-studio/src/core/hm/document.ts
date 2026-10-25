@@ -8,7 +8,7 @@ import { engineError, px, unsupported } from './core';
 import { blake3Hex } from '../content-hash';
 import { FALLBACK_DOCUMENT_FILE_NAME, NEW_DOCUMENT_FILE_NAME } from '../document-names';
 import blankTemplateUrl from './blank.hwpx?url';
-import type { DocumentInfo, PageInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight, HmlSaveState, RuntimeFontMetricsApi, ValidationReport, HmlOpenMetadata, DeferredPaginationResult, WebCanvasImageCacheStats, PreparedWasmDocument } from './bridge-types';
+import type { DocumentInfo, PageInfo, LayerRenderProfile, PageLayerTree, HmlSaveState, RuntimeFontMetricsApi, ValidationReport, HmlOpenMetadata, DeferredPaginationResult, WebCanvasImageCacheStats, PreparedWasmDocument } from './bridge-types';
 
 const NO_DOCUMENT = '문서가 로드되지 않았습니다';
 
@@ -435,14 +435,6 @@ export function getPageLayerTreeObject(core: HmCore, pageNum: number, profile: L
 
 export function clearLayerResourceCache(_core: HmCore): void {
   /* 쪽 packet 은 어댑터가 관리한다. */
-}
-
-export function getCanvasKitReplayPlan(_core: HmCore, _pageNum: number, _mode: 'default' | 'compat', _profile: LayerRenderProfile): string {
-  throw unsupported('CanvasKit');
-}
-
-export function getCanvasKitDocumentPreflight(_core: HmCore, _mode: 'default' | 'compat', _profile: LayerRenderProfile): CanvasKitDocumentPreflight {
-  throw unsupported('CanvasKit');
 }
 
 export function getPageOverlayImages(_core: HmCore, _pageNum: number): string {
