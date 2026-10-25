@@ -305,14 +305,6 @@ test('save acknowledgement preserves revisions, protects concurrent edits and tr
   assert.equal(a.readOnly, true);
 });
 
-test('HWP3 stays read only because native same-format serialization is unavailable', async t => {
-  const a = await open(t, fixture('fuzz/corpus/parse_hwp3/hwp3-sample.hwp'));
-  assert.equal(a.state().format, 'hwp3');
-  assert.equal(a.readOnly, true);
-  assert.throws(() => a.replaceText(selection(body), 'x'), { code: 'ENGINE_NOT_SUPPORTED' });
-  assert.throws(() => a.serialize(false), { code: 'ENGINE_NOT_SUPPORTED' });
-});
-
 test('character formatting preserves the directed selection without a receipt caret and survives save/reopen', async t => {
   const a = await open(t);
   a.replaceText(selection(body), 'A😀\tB');

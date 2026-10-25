@@ -285,7 +285,7 @@ export class HeemangAdapter {
     this.doc = next;
     // open이 검증한 ZIP은 HWPX, CFB·HWP3는 HWP다. 여기서 state를 읽으면 조판된다.
     this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
-    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.editable = true; // open 이 검증한 HWP3도 편집하고 HWP5로 저장한다.
     this._digest = `blake3:${blake3Hex(bytes)}`;
     this.fileName = name;
     try { return this.getDocumentInfo(); }
@@ -661,7 +661,7 @@ export class HeemangAdapter {
     return { receipt, caret: locate(selection.to, selection.toAffinity), anchor: sameAddress(selection.from, selection.to) && (selection.fromAffinity ?? 'downstream') === (selection.toAffinity ?? 'downstream') ? null : locate(selection.from, selection.fromAffinity) };
   }
 
-  /** 같은 형식만 직렬화한다. 실제 파일 쓰기 성공 후 markSaved를 호출한다. */
+  /** HWP3는 HWP5로 직렬화한다. 실제 파일 쓰기 성공 후 markSaved를 호출한다. */
   serialize(markSaved = false): Uint8Array {
     this.requireEditable();
     const epoch = this.state().contentEpoch;
@@ -731,7 +731,7 @@ export class HeemangAdapter {
     this.historyId = 0;
     this.selectionFallbacks.clear();
     this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
-    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.editable = true; // open 이 검증한 HWP3도 편집하고 HWP5로 저장한다.
     this.documentGeneration = nextDocumentGeneration();
   }
 
