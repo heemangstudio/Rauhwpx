@@ -1,6 +1,6 @@
 # HeemangEngine cutover handoff
 
-All feature workers were stopped at Andy's request on 2026-10-25. Preserve their uncommitted work; resume only when requested. This is the current task handoff, replacing transcript/history reads for routine continuation.
+Feature work resumed at Andy's request after the navigation cleanup on 2026-10-25. Preserve saved lane edits. This is the current task handoff, replacing transcript/history reads for routine continuation.
 
 Navigation work split the engine's `hm-wasm/src/lib.rs` from 3,858 to 384 lines without changing method bodies. Rust checks passed 37 tests; the rebuilt WASM declarations match the integration vendor. JS checks with real samples passed 60 of 63 tests, with the same three failures on the unchanged vendor: formatting/font resolution, underline-shape roundtrip, and missing glyph-outline assumptions. These remain baseline issues, not fixes made by navigation work.
 
@@ -24,7 +24,7 @@ Paths below are relative to `/Users/pyu/projects/hobbies/Rau/heemang-wt`. Integr
 | Lane | Studio / engine worktrees | Saved state when stopped |
 | --- | --- | --- |
 | HML | `studio-hml` / `engine-hml` | Untracked `hm-hml` codec work; Studio HML metadata/export modules, adapter/type/registration edits and tests. Incomplete, not verified. |
-| HWP3 | `studio-hwp3w` / `engine-hwp3w` | Uncommitted save conversion and saved-history fixes, portable fixtures/tests; Studio editable-format check and test. Vendor files were temporarily replaced for checks. Incomplete, not integrated. |
+| HWP3 / export parity | `studio-hwp3w` / `engine-hwp3w` | HWP3 completed and merged: engine `813a678`, Studio `c4256062` via merge `7f562e01`. Native 38/38, focused Studio 13/13, 15 real inputs → 30 reopened HWP5/HWPX outputs; live Save/Save As/cancel/failure passed. Worker now owns explicit HWPX export packaging, exact version badge parity and performance verification. Vendor remains temporary in the lane. |
 | Remaining methods | `studio-stubs` / `engine-stubs` | Clean at stop. Findings: transpose and furniture shape-ID setters are live stubs; capture/restore and connector references need work; CanvasKit bridge paths need reachability review. |
 | Conditional gaps | `studio-gaps` / `engine-gaps` | Clean at stop. Confirmed work includes clipboard objects/HTML, cross-section edits, character borders, outline numbering and object/header/footer variants. Baseline page image/gradient authoring was also restricted, so it is not automatically a parity gap. |
 
@@ -42,7 +42,9 @@ Local diagnostic scripts/exports are under `/tmp/heemang-cutover-resume/`. Persi
 
 ## Worker brief
 
-Give one worker its lane, expected behavior, owned files, worktree and evidence required. Point it here and to the applicable code map; do not paste the transcript or historical shared briefs. At most four live workers total, including nested helpers. Checkpoint changes and test results in the lane handoff before stopping.
+Give one worker its lane, expected behavior, owned files, worktree and evidence required. Point it here and to the applicable code map; do not paste the transcript or historical shared briefs. Andy authorized four cutover workers plus three separate continuous rendering workers. Do not spawn nested helpers beyond those seven slots. Checkpoint changes and test results in the lane handoff before stopping.
+
+The rendering worktrees are `render-text`, `render-tables`, and `render-objects`, on `fix/render-*-continuous` branches from MAIN107. Their durable checkpoints are in `heemang-cleanroom/parity/notes/render-*-continuous/STATUS.md`. They own text metrics/breaking, table/pagination, and object/furniture rendering respectively. They validate against cached official Hancom references using `heemang-cleanroom/tools/accept.py`; only passing candidates are eligible for integration. Main's unrelated uncommitted old-Hangul work is preserved. Serialize expensive render builds to stay within available disk and memory.
 
 Use `CARGO_BUILD_JOBS=3`, separate target directories and bounded output. Do not read generated WASM/JS, corpus bytes or whole log files into context. Start with `rg --files` and `rg -n` in the relevant module. Keep full logs on disk; report failures and summary counts. Use existing helpers and module interfaces before adding abstractions.
 
