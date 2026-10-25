@@ -1,0 +1,7 @@
+{
+  "tool": "Built-in imagegen",
+  "prompt": "Use case: photorealistic-natural\nAsset type: sketchbook paper background texture for the HamaEditor website.\nPrimary request: A flat scanned sheet of white artist sketchbook paper with exceptionally subtle tactile paper fibers and tiny graphite dust imperfections, nearly uniform natural ivory-white, delicate blue pencil smudges restricted to the extreme outer edges. The center 85 percent is empty and calm for readable website typography.\nStyle/medium: high-resolution macro paper scan, understated physical texture, no lighting gradients, no shadows, no folds.\nComposition: landscape, edge to edge paper only.\nConstraints: no text, no lines, no grid, no objects, no pencils, no animals, no hippo, no logos, no borders, no watermark. This is only a fine background material, not a page mockup.",
+  "original": "sketchbook-paper.png",
+  "web": "sketchbook-paper.jpg",
+  "mascot": "The existing assets/hama.svg pixel artwork is preserved."
+}

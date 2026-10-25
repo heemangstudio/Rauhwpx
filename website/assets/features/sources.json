@@ -1,0 +1,416 @@
+{
+  "frameRate": 2,
+  "duration": 18,
+  "chapters": [
+    {
+      "name": "agent-edits",
+      "start": 0
+    },
+    {
+      "name": "browsing",
+      "start": 6
+    },
+    {
+      "name": "mindmap",
+      "start": 12
+    }
+  ],
+  "assets": [
+    {
+      "file": "agent-edits-01.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 600,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-02.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 610,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-03.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 620,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-04.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 630,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-05.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 640,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-06.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 650,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-07.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 660,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-08.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 664,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-09.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 668,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-10.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 672,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-11.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 676,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "agent-edits-12.webp",
+      "source": "Screen Recording 2026-10-21 at 1.52.26 PM.mov",
+      "timestamp": 680,
+      "crop": [
+        50,
+        35,
+        1550,
+        973
+      ]
+    },
+    {
+      "file": "browsing-01.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 0.1,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-02.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 0.45,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-03.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 0.8,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-04.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 1.15,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-05.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 1.5,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-06.webp",
+      "source": "Screen Recording 2026-10-18 at 2.38.43 PM.mov",
+      "timestamp": 1.85,
+      "crop": [
+        65,
+        47,
+        1530,
+        963
+      ]
+    },
+    {
+      "file": "browsing-07.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 0,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "browsing-08.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 0.6,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "browsing-09.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 1.2,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "browsing-10.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 1.8,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "browsing-11.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 2.4,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "browsing-12.webp",
+      "source": "Screen Recording 2026-10-22 at 10.31.47 AM.mov",
+      "timestamp": 3.2,
+      "crop": [
+        0,
+        30,
+        1600,
+        1004
+      ]
+    },
+    {
+      "file": "mindmap-01.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 0.25,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-02.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 0.9,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-03.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 1.55,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-04.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 2.2,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-05.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 2.85,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-06.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 3.5,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-07.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 4.15,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-08.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 4.8,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-09.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 5.45,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-10.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 6.1,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-11.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 6.75,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    },
+    {
+      "file": "mindmap-12.webp",
+      "source": "Screen Recording 2026-10-21 at 1.50.35 PM.mov",
+      "timestamp": 7.4,
+      "crop": [
+        345,
+        185,
+        1530,
+        926
+      ]
+    }
+  ]
+}

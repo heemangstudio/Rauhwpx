@@ -2,7 +2,7 @@
 
 The public site at [heemangstudios.com](https://heemangstudios.com/) lives here. GitHub Pages publishes this directory when website changes land on `main`. Repository checks validate local links and assets on pull requests, and Pages runs the same check before deployment.
 
-To preview it locally, run `python3 -m http.server 8000 --directory website` from the repository root and open `http://localhost:8000`. Run `python3 website/check.py` before submitting site changes.
+To preview it locally, run `python3 website/preview.py` from the repository root. The website runs at http://127.0.0.1:7716 and the asset gallery at http://127.0.0.1:7717. Both reload when local files change. The preview binds only to this Mac and adds its reload script in memory; deployed pages stay static. Run `python3 website/check.py` before submitting site changes.
 
 ## Purchase flow
 
