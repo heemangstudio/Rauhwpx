@@ -1,6 +1,6 @@
 import type { Address, EditOp, Step } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
-import { bodyList, cellList, logicalAddress, logicalRangeToWire, toAddress, paraMap, pathTarget, positionTarget, stepsToPath, wireToLogical } from './address';
+import { bodyList, cellList, logicalAddress, toAddress, paraMap, pathTarget, positionTarget, stepsToPath, textRangeToWire, wireToLogical, wireToText } from './address';
 import { webHyperlinkUrl } from '../hyperlink';
 import { api, extendBridge } from './api';
 import type { DocumentPosition, FieldInfoResult, BookmarkInfo, HyperlinkTarget, HyperlinkContext } from './bridge-types';
@@ -76,11 +76,14 @@ function link(core: HmCore, target: HyperlinkTarget, id: number) {
   return found?.fieldKind === 'hyperlink' && found.target.para === at.para && sameList(listOf(found.target), at.list) ? found : undefined;
 }
 
+/** 링크 범위는 text 의 글자 위치다(각주·개체 칸을 세지 않는다). 에이전트 좌표와 같은 축이다. */
 export function getHyperlinkContext(core: HmCore, target: HyperlinkTarget): HyperlinkContext {
   const { list, para } = hyperlinkTarget(target);
-  return { text: core.paragraph(list, para).text, links: fields(core)
-    .filter(f => f.fieldKind === 'hyperlink' && f.target.para === para && sameList(listOf(f.target), list))
-    .map(f => ({ fieldId: f.fieldId!, ...range(core, f), text: f.value ?? '', uri: hyperlinkUri(f.command ?? '') })) };
+  const map = paraMap(core.paragraph(list, para));
+  return { text: map.info.text, links: fields(core)
+    .filter(f => f.fieldKind === 'hyperlink' && f.target.para === para && f.end?.para === para && sameList(listOf(f.target), list))
+    .map(f => ({ fieldId: f.fieldId!, start: wireToText(map, f.offset + 8), end: wireToText(map, f.end!.offset),
+      text: f.value ?? '', uri: hyperlinkUri(f.command ?? '') })) };
 }
 
 function hyperlinkUri(command: string): string {
@@ -103,10 +106,14 @@ function hyperlinkCommand(uri: string): string {
 export function insertHyperlink(core: HmCore, target: HyperlinkTarget, start: number, end: number, uri: string): number {
   const { list, para } = hyperlinkTarget(target);
   const map = paraMap(core.paragraph(list, para));
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > map.stops.length) {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > map.textLength) {
     throw new RangeError('하이퍼링크 범위가 올바르지 않습니다.');
   }
-  const [from, to] = logicalRangeToWire(map, start, end);
+  // 글자 범위만 감싼다. 앞뒤의 각주·개체는 링크 밖에 남는다.
+  const [from, to] = textRangeToWire(map, start, end);
+  if (map.stops.some((stop, i) => !map.isText[i] && from <= stop && stop < to)) {
+    throw new Error('하이퍼링크 범위에 각주·미주나 글자처럼 취급한 개체가 있습니다.');
+  }
   const ids = new Set(fields(core).map(f => f.fieldId));
   apply(core, [{ op: 'insertField', at: toAddress(list, para, from), to: toAddress(list, para, to), kind: 'hyperlink', command: hyperlinkCommand(uri) }]);
   const inserted = fields(core).find(f => !ids.has(f.fieldId));

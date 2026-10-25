@@ -2,7 +2,7 @@
 import type { Address, ControlInfo, EditOp, Rect } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { px, unsupported } from './core';
-import { bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
+import { afterFieldEnds, bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
 import { extendBridge } from './api';
 import * as format from './format';
 import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
@@ -63,8 +63,8 @@ function mapIn(core: HmCore, list: FurnitureList, para: number) {
   units.sort((a, b) => a.start - b.start);
   // 각주·미주 첫 문단 맨 앞의 번호는 주석 자신의 번호다. 캐럿 0 은 그 뒤에 선다.
   const number = list.headerFooter ? undefined : info.controls.find(control => control.kind === 'autoNumber' && control.offset === info.caret[0]);
-  return { info, stops: units.map(unit => unit.start), widths: units.map(unit => unit.width), isText: units.map(unit => unit.text !== null),
-    textLength: utf16, lead: number ? number.offset + 8 : info.caret[0], end: info.offsets.at(-1)!, units };
+  return { ...paraMap(info), stops: units.map(unit => unit.start), widths: units.map(unit => unit.width), isText: units.map(unit => unit.text !== null),
+    lead: number ? number.offset + 8 : info.caret[0], end: info.offsets.at(-1)!, units };
 }
 
 const at = (core: HmCore, list: FurnitureList, para: number, offset: number): Address => toAddress(list, para, logicalToWire(mapIn(core, list, para), offset));
@@ -211,7 +211,8 @@ export function insertFieldInHf(core: HmCore, sec: number, isHeader: boolean, ap
 }
 
 function insertNote(core: HmCore, sec: number, para: number, offset: number, kind: 'footnote' | 'endnote') {
-  const position = toAddress(bodyList(sec), para, logicalToWire(paraMap(core.paragraph(bodyList(sec), para)), offset));
+  const map = paraMap(core.paragraph(bodyList(sec), para));
+  const position = toAddress(bodyList(sec), para, afterFieldEnds(map, logicalToWire(map, offset)));
   const before = new Set(core.paragraph(bodyList(sec), para).controls.map(control => control.index));
   edit(core, { op: 'insertNote', at: position, kind });
   const control = core.paragraph(bodyList(sec), para).controls.find(control => control.kind === kind && control.offset === position.offset)

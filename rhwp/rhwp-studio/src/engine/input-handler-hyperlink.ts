@@ -1,4 +1,4 @@
-import { hyperlinkTarget, applyHyperlinkFormat } from '@/core/hyperlink';
+import { hyperlinkTarget, applyHyperlinkFormat, hyperlinkCaretOffset, hyperlinkTextOffset } from '@/core/hyperlink';
 import type { HyperlinkInfo, HyperlinkTarget } from '@/core/hyperlink';
 import type { DocumentPosition } from '@/core/types';
 import { showToast } from '@/ui/toast';
@@ -22,16 +22,20 @@ export function hyperlinkAtPointer(self: any, e: MouseEvent, cachedContentRect?:
     const hit = hoverHitTest(self, page, px, py);
     const target = hyperlinkTarget(hit);
     const context = self.wasm.getHyperlinkContext(target);
+    // 링크 범위는 글자 위치, 적중 위치와 선택 사각형은 캐럿 위치다.
+    const hitText = hyperlinkTextOffset(self.wasm, target, hit.charOffset);
     for (const link of context.links as HyperlinkInfo[]) {
       if (!/^https?:\/\//i.test(link.uri)) continue;
-      if (hit.charOffset < link.start || hit.charOffset > link.end) continue;
+      if (hitText < link.start || hitText > link.end) continue;
+      const start = hyperlinkCaretOffset(self.wasm, target, link.start);
+      const end = hyperlinkCaretOffset(self.wasm, target, link.end, true);
       const path = target.cellPath;
       const rects = path.length ? self.wasm.getSelectionRectsByPath(target.section, target.para,
         path.map(([controlIndex, cellIndex, cellParaIndex]) => ({ controlIndex, cellIndex, cellParaIndex })),
-        path[path.length - 1][2], link.start, path[path.length - 1][2], link.end)
-        : self.wasm.getSelectionRects(target.section, target.para, link.start, target.para, link.end);
+        path[path.length - 1][2], start, path[path.length - 1][2], end)
+        : self.wasm.getSelectionRects(target.section, target.para, start, target.para, end);
       if (rects.some((r: any) => r.pageIndex === page && px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height)) {
-        return { target, link, position: { ...hit, charOffset: link.start } };
+        return { target, link, position: { ...hit, charOffset: start } };
       }
     }
   } catch {}

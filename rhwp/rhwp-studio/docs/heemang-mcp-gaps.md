@@ -36,8 +36,6 @@ versions reports `문서 구조 병합` as unsupported.
 - `apply_engine_edits` finds changed paragraphs by digest (text, controls, style, para shape, char shape runs).
   Paragraph capture (`captureParagraph`) is not implemented; object staging falls back to document snapshots, which
   is correct but heavier.
-- Agent offsets are Unicode scalars and core/hm offsets are UTF-16. `src/agent/engine-coordinates.ts` converts at the
-  agent boundary; text outside the BMP (emoji) is the only case where the two differ.
 - `get_table_properties` reports caption side, width and gap, not the caption's vertical alignment.
 - The objects lane's d.ts redeclares `fill`/`borderFill` in `ObjectProperties`, `TableProperties` and
   `CellProperties` with types that conflict with their patch types (strict `tsc` on the d.ts alone reports TS2430;

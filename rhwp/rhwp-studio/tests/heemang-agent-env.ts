@@ -1,4 +1,3 @@
-import { agentEngineCoordinates } from '../src/agent/engine-coordinates.ts';
 /**
  * HeemangEngine 위 에이전트 도구 통합 테스트 환경 — 실제 hm-wasm 문서 → 에이전트 도구 엔진
  * (core/hm) → PendingEditManager → AgentToolExecutor.
@@ -58,7 +57,7 @@ export const FIXTURES = {
 } as const;
 
 export async function openHeemangAgent(t: test.TestContext, path: string = FIXTURES.cellMixed) {
-  const wasm = agentEngineCoordinates(new WasmBridge());
+  const wasm = new WasmBridge();
   const adapter = wasm.viewer;
   await adapter.initialize();
   if (!fontsRegistered) {

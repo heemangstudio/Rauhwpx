@@ -144,12 +144,12 @@ function context(core: HmCore, list: ListAddress, para: number, offset: number):
  * 그 글자 하나를 범위로 묻는다. 문단 끝(빈 문단)은 캐럿 문맥을 쓴다.
  */
 function charAt(core: HmCore, list: ListAddress, para: number, offset: number): FormatContext {
-  const info = core.paragraph(list, para);
-  const length = paraMap(info).textLength;
+  const map = paraMap(core.paragraph(list, para));
+  const length = map.textLength;
   if (offset >= length) return context(core, list, para, length);
   // 글자 자신의 wire 위치다. 텍스트 오프셋의 캐럿 주소는 앞에 놓인 개체 앞일 수 있다.
-  const wire = info.offsets[offset];
-  const width = info.text.charCodeAt(offset) === 9 ? 8 : 1;
+  const wire = map.textStops[offset];
+  const width = map.textWidths[offset];
   return core.query<FormatContext>({ kind: 'formatContext', at: toAddress(list, para, wire), to: toAddress(list, para, wire + width) });
 }
 
@@ -160,8 +160,8 @@ function chars(core: HmCore, list: ListAddress, para: number, offset: number): C
   props.spacings = 'spacings' in value ? value.spacings as number[] : Array(7).fill(value.charSpacing ?? 0);
   if ('ratios' in value) props.ratios = value.ratios as number[];
   props.fontIds = props.fontFamilies?.map(name => findOrCreateFontId(core, name));
-  const info = core.paragraph(list, para);
-  const wire = info.offsets[Math.min(offset, paraMap(info).textLength)];
+  const map = paraMap(core.paragraph(list, para));
+  const wire = offset < map.textLength ? map.textStops[offset] : map.end;
   const runs = format(core, list, para).runs;
   props.charShapeId = runs.slice().reverse().find(run => run.offset <= wire)?.charShapeId ?? runs[0]?.charShapeId;
   return props;

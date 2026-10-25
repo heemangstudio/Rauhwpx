@@ -114,9 +114,21 @@ export function loadTrustedLocalFileOnce(core: HmCore, data: Uint8Array, fileNam
   return loadDocument(core, data, fileName);
 }
 
-/** 파일 연결은 그대로 두고 내용만 바꾼다(버전 되돌리기·외부 변경 반영). */
+/**
+ * 파일 연결은 그대로 두고 내용만 바꾼다(버전 되돌리기·외부 변경 반영). 열린 엔진 문서가 새 내용을 받아들여
+ * 바꾸기 전에 잡아 둔 스냅샷이 그대로 남으므로, 바꾸기를 되돌릴 수 있다.
+ */
 export function replaceContentFromBytes(core: HmCore, data: Uint8Array): DocumentInfo {
   const adapter = core.adapter;
+  if (adapter.hasLoadedDocument()) {
+    try {
+      adapter.hmAdopt(data);
+    } catch (error) {
+      throw engineError(error);
+    }
+    core.noteDocumentReplaced();
+    return getDocumentInfo(core);
+  }
   const name = adapter.fileName;
   const handle = adapter.currentFileHandle;
   const digest = adapter.documentDigest;
