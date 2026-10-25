@@ -97,5 +97,5 @@ export async function openHeemangAgent(t: test.TestContext, path: string = FIXTU
   const text = (para: number, section = 0) => adapter.getParagraphText(section, para);
   /** 이 엔진 빌드가 글자 offset 표(ParagraphInfo.offsets)를 주는가 — 없으면 좌표 도구가 거절된다. */
   const modern = Array.isArray(adapter.paragraphs(0, [], 0, 1)[0]?.offsets);
-  return { adapter, wasm, bus, revision, pending, executor, history, call, read, text, modern };
+  return { adapter, wasm, bus, revision, pending, executor, editor, history, call, read, text, modern };
 }
