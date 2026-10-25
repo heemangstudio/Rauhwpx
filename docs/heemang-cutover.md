@@ -28,7 +28,16 @@ Worktrees are under `/Users/pyu/projects/hobbies/Rau/heemang-wt`. Studio integra
 | Remaining methods and runtime verification | `studio-stubs` / `engine-stubs` | Transpose, captures, furniture IDs, connectors and OLE promotion are merged. Four-mode runtime verification is committed. Available for final combined checks. |
 | Conditional gaps and final audit | `studio-gaps` / `engine-gaps` | Formatting, clipboard/resources, objects, header/footer, list restart, last-page masters and template clipboard preservation are merged. Final reachable-gap audit is active. |
 
-Latest integration checkpoints are engine `e2c92f9` and Studio `79391ffa`. These include template clipboard preservation and the accepted rendering object branch through `48902b0`, plus table line anchors `e9957c9`. Engine main remains MAIN107. See lane handoffs and commit history for implementation evidence; keep routine continuation focused on the current task.
+Latest integration checkpoints are engine `54900b4` and the Studio commit that records this paragraph. Over `e2c92f9`, the engine merges structural version merging (`208dbfb`), sparse host-font coverage (`ebf68e8`) and only the accepted rendering milestones `968dc9a`, `5dfe0c6`, `4e2a40d`, `381dcae`, `5921168`, `f72c281` and `05515e0`; `54900b4` adds the `objects` field to two merged table render tests. Studio merges version merge (`16f5524a`), font performance (`4fcceaeb`), missing-picture verification (`860fa6ea`) and `heemangstudio/main` (`d25f784c`). Engine main remains MAIN107.
+
+### Release-candidate integration (2026-10-25)
+
+- Vendor `hm_wasm_bg.wasm` is rebuilt from engine `54900b4`: 7,517,203 bytes, SHA-256 `fd7ea2ac9b303b53cdf2f35bb0a29b2be14c468d09f0bdc2330a3e403b695c81`. Hashes of all four files are in `rhwp/rhwp-studio/vendor/hm-wasm/README.md`.
+- The frozen native parity CLI is `heemang-cleanroom/parity/bins/rc-54900b4` (`cargo build --profile parity -p hm-cli --bin heemang`), SHA-256 `eb1a716c5730b8e71101f68027dcaa8347a173687eb067a9ebc62401a95d3645`, manifest `rc-54900b4.json`.
+- Engine focused tests (hm-wasm, hm-fonts, hm-model, hm-hwpx, hm-hml, hm-layout, hm-render): 324 passed, 2 ignored, 0 failed over 57 binaries. hm-edit has two stale tests that predate this integration. `tests/roundtrip.rs` does not compile because it does not match `Format::Hml` (since `cadcbe1`). `conversion_membership::unplaced_furniture_and_last_page_master_refuse_partial_output` still expects last-page masters to be refused, but `0bc7652` made them convert.
+- Studio: typecheck clean; `npm test` 3,011 + 20 passed, 0 failed, 2 todo; build passed. Hub: 1,566 passed, 49 skipped; the single full-run failure (`project-migration` metadata coalescing) passes 5/5 when run alone. Desktop: 306 passed, 7 failed. Old-engine `studio-baseline` (`a2dc5c36`) fails the same five `desktop-native-file-follow` tests (`/private/var` vs `/var` tmp paths) and `desktop-owned-browser` hidden guests. `desktop-browser-agent-tools` passes alone.
+- Harness, fixture Pi provider: `design-diff versions-changes` 0 px. `functional footnote-01` has every feature at parity, with no old-engine requests, unsupported toasts or page errors. Typing p50/p95 over three runs, baseline/candidate: 20/40, 24/34, 22/42 vs 24/53, 26/33, 18/55. The p95 median is 40 vs 53 ms, still unresolved. Find-replace for `3D` counts 16 matches on baseline vs 19 on candidate, the same as the font lane's earlier evidence.
+- Font performance lane evidence is in `docs/evidence/heemang-font-performance/`.
 
 ## Measurements and evidence
 
