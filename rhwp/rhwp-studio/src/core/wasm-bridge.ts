@@ -79,6 +79,8 @@ export class WasmBridge {
   /** 문서 로드·새 문서·저장 이름 확정 후 알림. */
   get onFileNameChanged(): ((fileName: string) => void) | undefined { return this.viewer.onFileNameChanged; }
   set onFileNameChanged(listener: ((fileName: string) => void) | undefined) { this.viewer.onFileNameChanged = listener; }
+  get onPageRenderReady(): ((pageIndex: number) => void) | undefined { return this.viewer.onPageRenderReady; }
+  set onPageRenderReady(listener: ((pageIndex: number) => void) | undefined) { this.viewer.onPageRenderReady = listener; }
 
   get fileName(): string { return this.viewer.fileName; }
   set fileName(name: string) { this.viewer.fileName = name; }

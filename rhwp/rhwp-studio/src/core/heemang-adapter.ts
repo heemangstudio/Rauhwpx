@@ -228,9 +228,9 @@ export class HeemangAdapter {
     if (this.pictureFrame) return;
     this.pictureFrame = requestAnimationFrame(() => {
       this.pictureFrame = 0;
-      for (const [canvas, { index, scale }] of this.canvasPaints) {
+      for (const [canvas, paint] of this.canvasPaints) {
         if (!canvas.isConnected) { this.canvasPaints.delete(canvas); continue; }
-        this.renderPageToCanvas(index, canvas, scale);
+        this.redrawPage(canvas, paint);
       }
     });
   });
@@ -253,6 +253,8 @@ export class HeemangAdapter {
   currentFileHandle: FileSystemFileHandleLike | null = null;
   onFileNameChanged?: (name: string) => void;
   onExternalImagesInjected?: (count: number) => void;
+  /** 비동기 글꼴·그림 준비 뒤 쪽과 화면 장식을 함께 다시 그릴 호스트. */
+  onPageRenderReady?: (pageIndex: number) => void;
 
   async initialize(): Promise<void> {
     runtime ??= initializeRuntime().catch(error => { runtime = undefined; throw error; });
@@ -483,8 +485,13 @@ export class HeemangAdapter {
     if (!refill) return;
     void this.refillOutlines().then(refilled => {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;
-      this.renderPageToCanvas(index, canvas, scale, false);
+      this.redrawPage(canvas, paint, false);
     }).catch(error => console.warn('[Heemang] 글꼴 윤곽선 연결 실패:', error));
+  }
+
+  private redrawPage(canvas: HTMLCanvasElement, paint: { index: number; scale: number }, refill = true): void {
+    if (this.onPageRenderReady) this.onPageRenderReady(paint.index);
+    else this.renderPageToCanvas(paint.index, canvas, paint.scale, refill);
   }
 
   locate(request: LocateRequest): Located | Caret | null { return JSON.parse(this.document().locate(JSON.stringify(request))); }

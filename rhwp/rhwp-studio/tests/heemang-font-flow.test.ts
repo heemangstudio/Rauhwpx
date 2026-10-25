@@ -162,6 +162,25 @@ test('font preparation does not lay out or mark a replacement document prepared 
   assert.equal(adapter.getDocumentInfo().pageCount,0);
 });
 
+test('async outlines notify the owning view and ignore replaced, closed or detached canvases', async () => {
+  for (const state of ['ready','replaced','closed','detached']) {
+    const { HeemangAdapter } = await setup([asset(1,'Body.ttf','Body')], () => req(['Body'],[]));
+    const adapter = new HeemangAdapter(); await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    await adapter.prepareFonts(['Body'],{});
+    const pages: number[] = [];
+    adapter.onPageRenderReady = page => pages.push(page);
+    const wait = deferred(); env.fetchWait = () => wait.promise;
+    env.outlines = ['/__heemang-fonts/1'];
+    const target = canvas(); adapter.renderPageToCanvas(2,target,1);
+    if (state === 'replaced') adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    if (state === 'closed') adapter.releaseDocument();
+    if (state === 'detached') target.isConnected = false;
+    wait.resolve(); await tick();
+    assert.deepEqual(pages,state === 'ready' ? [2] : [],state);
+    assert.equal(env.paints.length,1,'the attached host owns the repaint and its decorations');
+  }
+});
+
 
 test('picture arrivals coalesce repaint, drop detached canvases and cancel repaint on document replacement', async () => {
   const originalRequest = globalThis.requestAnimationFrame;
@@ -181,11 +200,18 @@ test('picture arrivals coalesce repaint, drop detached canvases and cancel repai
     const [id, callback] = [...frames][0]; frames.delete(id); callback(0);
     assert.equal(env.paints.length,3);
     assert.equal(a.width,96);
+    const pages: number[] = [];
+    adapter.onPageRenderReady = page => pages.push(page);
+    env.pictureReady();
+    const [readyId, readyCallback] = [...frames][0]; frames.delete(readyId); readyCallback(0);
+    assert.deepEqual(pages,[0]);
+    assert.equal(env.paints.length,3);
     env.pictureReady();
     assert.equal(frames.size,1);
     adapter.loadDocument(new Uint8Array([0x50,0x4b]));
     assert.equal(frames.size,0);
     assert.equal(env.paints.length,3);
+    assert.deepEqual(pages,[0]);
   } finally {
     globalThis.requestAnimationFrame = originalRequest;
     globalThis.cancelAnimationFrame = originalCancel;

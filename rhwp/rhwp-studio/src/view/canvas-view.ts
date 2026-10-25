@@ -124,6 +124,13 @@ export class CanvasView {
     this.scrollContent = container.querySelector('#scroll-content')!;
     this.viewportManager.attachTo(container);
     this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
+    const pageRenderReady = (pageIndex: number) => {
+      if (!this.disposed) eventBus.emit('document-page-invalidated', { pageIndex, reason: 'async-content' });
+    };
+    wasm.onPageRenderReady = pageRenderReady;
+    this.unsubscribers.push(() => {
+      if (wasm.onPageRenderReady === pageRenderReady) wasm.onPageRenderReady = undefined;
+    });
     // trap 뒤에는 어떤 예약 작업도 엔진을 부를 수 없다. 대기 중인 이미지 재렌더·선렌더·검증
     // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다.
     this.unsubscribers.push(onEngineTrap(() => {
