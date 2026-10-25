@@ -202,3 +202,23 @@ test('a cell block splits cell by cell, F11 finds the nearest objects and a clic
   const hit = api.hitTest(core, cell.pageIndex, cell.x + cell.w * 0.8, cell.y + cell.h / 2);
   assert.deepEqual([hit.parentParaIndex, hit.controlIndex, hit.cellIndex], [0, c, 5]);
 });
+
+test('zone borders, table captions and page breaks read back what the agent tools wrote', t => {
+  const { core } = open(t);
+  const c = api.createTable(core, 0, 0, 0, 2, 2).controlIdx;
+  const red = { type: 1, width: 3, color: '#ff0000' };
+  api.setCellZoneProperties(core, 0, 0, c, { startRow: 0, startCol: 0, endRow: 0, endCol: 1 },
+    { borderBottom: red, fillType: 'solid', fillColor: '#00ff00' } as any);
+  const zoned = api.getCellProperties(core, 0, 0, c, 0) as any;
+  assert.deepEqual([zoned.borderBottom, zoned.fillType, zoned.fillColor], [red, 'solid', '#00ff00']);
+  // 영역 밖 셀은 자기 테두리·배경을 그대로 알린다.
+  assert.equal((api.getCellProperties(core, 0, 0, c, 2) as any).fillType, 'none');
+  assert.equal(api.getTableProperties(core, 0, 0, c).hasCaption, false);
+  api.setTableCaptionText(core, 0, 0, c, '설명', true);
+  const props = api.getTableProperties(core, 0, 0, c);
+  assert.deepEqual([props.hasCaption, props.captionDirection], [true, 3]);
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ pageBreakBefore: true }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).pageBreakBefore, true);
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ pageBreakBefore: false }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).pageBreakBefore, false);
+});

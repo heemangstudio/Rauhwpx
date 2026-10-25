@@ -125,7 +125,7 @@ function widgetParaPatch(props: Record<string, unknown>): ParaPatch {
     delete rest.lineSpacingType;
   }
   delete rest.paraShapeId;
-  for (const key of ['headType', 'numberingId', 'paraLevel']) delete rest[key];
+  for (const key of ['headType', 'numberingId', 'paraLevel', 'pageBreakBefore']) delete rest[key];
   return { ...basicParaPatch(rest), ...patch };
 }
 
@@ -156,7 +156,7 @@ function paras(core: HmCore, list: ListAddress, para: number): ParaProperties {
   const value = format(core, list, para);
   return { ...paraProperties(value.paragraphs), paraShapeId: value.paraShapeId,
     headType: value.list ? { bullet: 'Bullet', numbering: 'Number', outline: 'Outline' }[value.list.kind] : 'None',
-    numberingId: value.list?.id ?? 0, paraLevel: value.list?.level ?? 0 };
+    numberingId: value.list?.id ?? 0, paraLevel: value.list?.level ?? 0, pageBreakBefore: value.pageBreak };
 }
 
 export function getCharPropertiesAt(core: HmCore, sec: number, para: number, offset: number): CharProperties { return chars(core, bodyList(sec), para, offset); }
@@ -198,6 +198,14 @@ function paraOps(core: HmCore, list: ListAddress, first: number, last: number, p
   const to = toAddress(list, last, paraMap(core.paragraph(list, last)).end);
   const patch = widgetParaPatch(props);
   const ops: EditOp[] = Object.keys(patch).length ? [{ op: 'formatParas', from, to, patch }] : [];
+  // 쪽 나눔은 문단 모양이 아니라 문단마다의 나눔 표시다. 바뀌는 문단에만 엔진 pageBreak 를 둔다.
+  if (props.pageBreakBefore !== undefined) {
+    const on = props.pageBreakBefore === true;
+    const marks = core.query<ParagraphFormat[]>({ kind: 'formatRuns', list, from: first, count: last - first + 1 });
+    for (const mark of marks) if (mark.pageBreak !== on) {
+      ops.push({ op: 'pageBreak', at: toAddress(list, mark.index, paraMap(core.paragraph(list, mark.index)).lead), on });
+    }
+  }
   if (props.headType !== undefined || props.numberingId !== undefined || props.paraLevel !== undefined) {
     const current = context(core, list, first, 0).list;
     const kind = props.headType ?? (current?.kind === 'bullet' ? 'Bullet' : current ? 'Number' : 'None');

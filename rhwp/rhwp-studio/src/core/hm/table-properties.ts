@@ -1,5 +1,5 @@
 /** 표·셀 속성 대화상자의 HWPUNIT 값을 엔진 속성에 연결한다. */
-import type { EditOp, TableAddress } from '../../../vendor/hm-wasm/hm_wasm';
+import type { EditOp, TableAddress, TableCell } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
 import { unsupported } from './core';
 import { bodyList, logicalAddress } from './address';
@@ -20,7 +20,11 @@ interface NativeCell {
   width: number; height: number; padding: number[]; verticalAlign: string; protected: boolean; header: boolean; ownPadding: boolean;
   textDirection: number; editableInForm: boolean; borderFill: NativeBorderFill | null;
 }
-interface NativeTable { spacing: number; padding: number[]; repeatHeader: boolean; split: string; borderFill: NativeBorderFill | null }
+interface NativeZone { startRow: number; startColumn: number; endRow: number; endColumn: number; borderFill: NativeBorderFill | null }
+interface NativeTable {
+  spacing: number; padding: number[]; repeatHeader: boolean; split: string; borderFill: NativeBorderFill | null;
+  caption: { side: 'left' | 'right' | 'top' | 'bottom'; width: number; gap: number } | null; zones: NativeZone[];
+}
 type LinePatch = { style: number; width: number; color: number };
 type BorderFillPatch = Partial<Record<'left' | 'right' | 'top' | 'bottom' | 'diagonal', LinePatch>> & {
   slash?: number; backslash?: number; centerLine?: string;
@@ -90,10 +94,29 @@ function borderFillPatch(props: Record<string, unknown>, current: Partial<CellPr
   return Object.keys(patch).length ? patch : null;
 }
 
+/**
+ * 셀 영역은 영역 전체를 한 셀처럼 칠한다. 영역 안 셀의 배경·대각선은 영역 것이고, 테두리는 셀이 영역
+ * 바깥 가장자리에 닿은 쪽만 영역 것이다. 뒤에 놓인 영역이 앞 영역을 덮는다.
+ */
+function zonedBorderFill(core: HmCore, table: TableAddress, cell: TableCell, own: NativeBorderFill | null): NativeBorderFill | null {
+  const zones = core.query<NativeTable>({ kind: 'tableProperties', table }).zones ?? [];
+  let out = own;
+  for (const z of zones) {
+    const lastRow = cell.row + cell.rowSpan - 1, lastColumn = cell.column + cell.columnSpan - 1;
+    if (!z.borderFill || cell.row < z.startRow || lastRow > z.endRow || cell.column < z.startColumn || lastColumn > z.endColumn) continue;
+    const zone = z.borderFill;
+    out = { ...(out ?? zone), fill: zone.fill, diagonal: zone.diagonal, slash: zone.slash, backslash: zone.backslash,
+      ...(cell.column === z.startColumn ? { left: zone.left } : {}), ...(lastColumn === z.endColumn ? { right: zone.right } : {}),
+      ...(cell.row === z.startRow ? { top: zone.top } : {}), ...(lastRow === z.endRow ? { bottom: zone.bottom } : {}) };
+  }
+  return out;
+}
+
 function cellProperties(core: HmCore, table: TableAddress, index: number): CellProperties {
   const cell = tableInfo(core, table).cells[index];
   if (!cell) throw new RangeError(`셀 ${index}이 없습니다`);
-  const props = core.query<NativeCell>({ kind: 'cellProperties', table, row: cell.row, column: cell.column });
+  const native = core.query<NativeCell>({ kind: 'cellProperties', table, row: cell.row, column: cell.column });
+  const props = { ...native, borderFill: zonedBorderFill(core, table, cell, native.borderFill) };
   return { width: props.width, height: props.height,
     paddingLeft: props.padding[0], paddingRight: props.padding[1], paddingTop: props.padding[2], paddingBottom: props.padding[3],
     applyInnerMargin: props.ownPadding, verticalAlign: ['top', 'center', 'bottom'].indexOf(props.verticalAlign),
@@ -149,7 +172,8 @@ export const getTableProperties: typeof original.getTableProperties = (core, s, 
     textWrap: ({ behind: 'BehindText', inFront: 'InFrontOfText' }[common.textWrap] ?? cap(common.textWrap)),
     outerLeft: common.margins[0], outerRight: common.margins[1], outerTop: common.margins[2], outerBottom: common.margins[3],
     restrictInPage: common.restrictInPage, allowOverlap: common.allowOverlap, keepWithAnchor: common.keepWithAnchor,
-    hasCaption: false, ...borderFillProps(props.borderFill) } as TableProperties;
+    hasCaption: !!props.caption, captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption?.side ?? 'bottom'),
+    captionWidth: props.caption?.width ?? 0, captionSpacing: props.caption?.gap ?? 0, ...borderFillProps(props.borderFill) } as TableProperties;
 };
 export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => {
   const table = tableAddress(s, p, c);
