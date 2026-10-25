@@ -36,7 +36,7 @@ versions reports `문서 구조 병합` as unsupported.
 - `apply_engine_edits` finds changed paragraphs by digest (text, controls, style, para shape, char shape runs).
   Paragraph capture (`captureParagraph`) is not implemented; object staging falls back to document snapshots, which
   is correct but heavier.
-- `get_table_properties` reports caption side, width and gap, not the caption's vertical alignment.
-- The objects lane's d.ts redeclares `fill`/`borderFill` in `ObjectProperties`, `TableProperties` and
-  `CellProperties` with types that conflict with their patch types (strict `tsc` on the d.ts alone reports TS2430;
-  Studio's own `tsc` passes).
+
+Conditional property/clipboard parity is tracked in [the engine-gap inventory](../../../docs/heemang-engine-gaps.md).
+It covers cross-document object resources, cross-section selections, character borders/outline numbering, shape and
+caption variants, native filename/total-page furniture fields, inactive-furniture coordinates and note-equation writes.

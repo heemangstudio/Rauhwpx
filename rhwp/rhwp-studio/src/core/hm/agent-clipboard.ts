@@ -1,18 +1,19 @@
 /** 서식 틀 블록 삽입과 구역 안 선택 복사. 문서 사이 조각은 엔진 copy/paste 로 옮긴다. */
 import type { ParagraphInfo } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
-import { unsupported } from './core';
+import { copyRange } from './clipboard-native';
 import { bodyList, logicalAddress } from './address';
 import { api, extendBridge } from './api';
 
 export function copySelectionAcrossSections(core: HmCore, startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): string {
-  if (startSec !== endSec) throw unsupported('구역을 넘는 클립보드 선택');
-  return api.copySelection(core, startSec, startPara, startOffset, endPara, endOffset);
+  if (startSec === endSec) return api.copySelection(core, startSec, startPara, startOffset, endPara, endOffset);
+  copyRange(core, logicalAddress(core, bodyList(startSec), startPara, startOffset), logicalAddress(core, bodyList(endSec), endPara, endOffset));
+  return JSON.stringify({ ok: true });
 }
 
 export function exportSelectionAcrossSectionsHtml(core: HmCore, startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): string {
-  if (startSec !== endSec) throw unsupported('구역을 넘는 클립보드 선택');
-  return api.exportSelectionHtml(core, startSec, startPara, startOffset, endPara, endOffset);
+  if (startSec === endSec) return api.exportSelectionHtml(core, startSec, startPara, startOffset, endPara, endOffset);
+  return copyRange(core, logicalAddress(core, bodyList(startSec), startPara, startOffset), logicalAddress(core, bodyList(endSec), endPara, endOffset)).html;
 }
 
 /**
