@@ -91,6 +91,21 @@ export class Doc {
         }
     }
     /**
+     * Keeps a drawing's placement and transform (its box, matrices,
+     * rotation, flips and crop) under a handle, for `swapObjectTransform`.
+     * @param {string} object
+     * @returns {number}
+     */
+    captureObjectTransform(object) {
+        const ptr0 = passStringToWasm0(object, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.doc_captureObjectTransform(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      * @returns {number}
@@ -188,6 +203,18 @@ export class Doc {
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
+    }
+    /**
+     * Drops a kept transform; false when there was none.
+     * @param {number} handle
+     * @returns {boolean}
+     */
+    discardObjectTransform(handle) {
+        const ret = wasm.doc_discardObjectTransform(this.__wbg_ptr, handle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
@@ -384,6 +411,30 @@ export class Doc {
         }
     }
     /**
+     * Every object and table page `i` draws, in any paragraph list
+     * (`PageObject[]`), bottom to top.
+     * @param {number} i
+     * @returns {string}
+     */
+    pageObjects(i) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_pageObjects(this.__wbg_ptr, i);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Page `i` rasterized by the engine as PNG, the reference the canvas
      * player is checked against.
      * @param {number} i
@@ -558,7 +609,8 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null).
+     * `lists` `ListInfo[]` and `list` one (or null), `count` a
+     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
      * @param {string} request
      * @returns {string}
      */
@@ -787,6 +839,31 @@ export class Doc {
         let deferred2_1;
         try {
             const ret = wasm.doc_substitutions(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Exchanges a kept transform with the object's current one as one
+     * undo step, keeping the current one under the same handle; a
+     * `Receipt`.
+     * @param {number} handle
+     * @returns {string}
+     */
+    swapObjectTransform(handle) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_swapObjectTransform(this.__wbg_ptr, handle);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {

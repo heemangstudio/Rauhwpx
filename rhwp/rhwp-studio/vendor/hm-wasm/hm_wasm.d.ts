@@ -38,17 +38,115 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`charSpacing\` a percent
- * of the character size (-50 to 50) for all slots.
+ * all seven script slots, which must draw with a registered face (its own
+ * family or one Hancom draws in its place); \`fontFaces\` a family per
+ * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
+ * slot's, read back with all seven; \`charSpacing\` a percent of the character
+ * size (-50 to 50) for all slots. \`relSizes\` (10 to 250) and \`offsets\`
+ * (-100 to 100) are percents per slot; line shapes, \`outline\` (0 to 6),
+ * \`shadow\` (0 none, 1 discrete, 2 continuous) and \`emphasis\` (0 to 12) are
+ * HWP codes; \`shadeColor\` 0xFFFFFFFF is no shading.
  */
 export interface CharPatch {
     bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-    fontFace?: string; charSpacing?: number;
+    fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
+    relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
+    kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+    strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
+    shadeColor?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
+export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
+export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
+export interface FontFace { id: number; name: string }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+/** HU throughout, including natural image dimensions. Patches reject unknown fields. */
+export interface ObjectPatch {
+    width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
+    vertRelTo?:"paper"|"page"|"para"; horzRelTo?:"paper"|"page"|"column"|"para";
+    vertAlign?:"top"|"center"|"bottom"|"inside"|"outside"; horzAlign?:"left"|"center"|"right"|"inside"|"outside";
+    textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
+    description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
+    restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
+    border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+    brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
+    fill?:FillPatch; fillAlpha?:number;
+}
+export interface LinePatch { style:number; width:number; color:number }
+export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export interface BorderFillPatch {
+    left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
+    slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
+}
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
+export interface ObjectProperties extends ObjectPatch {
+    kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
+    brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
+    fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+}
+export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
+export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
+export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
+export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
+export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
+export interface BorderLineSpec { kind: number; width: number; color: number }
+export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
+/** `lines` (left, right, top, bottom) and `fill` derive a border fill from the current one; queries report both. */
+export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
+export type Side = "both" | "even" | "odd";
+export type NoteKind = "footnote" | "endnote";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type ControlAddress = TableAddress;
+export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
+/** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
+export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+/** Equation fields: size in HU (1000 = 10 pt), baseline a percent of the height. */
+export interface EquationPatch { script?: string; size?: number; color?: number; baseline?: number; font?: string }
+export interface EquationInfo { script: string; size: number; color: number; baseline: number; font: string | null; width: number; height: number }
+export interface EquationPreview { svg: string; widthPx: number; heightPx: number; baselinePx: number; warnings: string[] }
 export type EditOp =
+| { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+| { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"deleteObject"; object:ObjectAddress }
+| { op:"relocateObject"; object:ObjectAddress; at:Address }
+| { op:"setObjectProperties"; object:ObjectAddress; patch:ObjectPatch }
+| { op:"setTableProperties"; table:TableAddress; patch:TablePatch }
+| { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
+| { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
+| {op:"setPageSettings";section:number;patch:PageSettingsPatch}
+| {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
+| {op:"setColumns";at:Address;patch:ColumnSettingsPatch}
+| {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
+| {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
+| {op:"setPageHide";at:Address;flags:number}
+| {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+| {op:"insertNote";at:Address;kind:NoteKind}
+| {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+| {op:"updateField";target:ControlAddress;patch:FieldPatch}
+| {op:"insertBookmark";at:Address;name:string}
+| {op:"renameBookmark";target:ControlAddress;name:string}
+| {op:"deleteControl";target:ControlAddress}
+| {op:"setFormValue";target:ControlAddress;value?:number;text?:string}
+| {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
+| {op:"columnBreak";at:Address}
+| {op:"insertNewNumber";at:Address;number:number}
+| { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
+| { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
+| { op: "createStyle"; style: StylePatch }
+| { op: "updateStyle"; id: number; style: StylePatch }
+| { op: "deleteStyle"; id: number }
+| { op: "ensureList"; definition: ListDefinition }
+| { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
+| { op: "setEquation"; object: TableAddress; patch: EquationPatch }
+| { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
@@ -62,7 +160,26 @@ export type EditOp =
 | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
 | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
 | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
-| { op: "setList"; from: Address; to: Address; list: ListSpec | null };
+| { op: "setList"; from: Address; to: Address; list: ListSpec | null }
+| { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
+| { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
+| { op: "resizeTableCells"; table: TableAddress; cells: CellResize[] };
+/** An object control in a paragraph list (a table's address names it too). */
+export type ObjectAddress = TableAddress;
+/** HU added to a cell's laid-out width and height; `index` is the cell's in the table. */
+export interface CellResize { index: number; widthDelta?: number; heightDelta?: number }
+/**
+ * An object or table a page draws (`Doc.pageObjects`), bottom to top. The box
+ * excludes outer margins; a table split over pages gives this page's part.
+ * \`line\` holds a line's start and end on the page.
+ */
+export interface PageObject {
+    section: number; steps?: Step[]; para: number; control: number;
+    kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
+    page: number; x: number; y: number; width: number; height: number;
+    inline: boolean; layer: "behind" | "text" | "front"; z: number;
+    furniture: boolean; locked: boolean; text: boolean; rotation?: number; line?: [number, number, number, number];
+}
 /** A directed selection the host keeps with an undo step. */
 export type Selection =
 | { anchor: Address; focus: Address; anchorAffinity: Affinity; focusAffinity: Affinity }
@@ -106,6 +223,20 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+| {kind:"objectProperties";object:ObjectAddress}
+| {kind:"tableProperties";table:TableAddress}
+| {kind:"cellProperties";table:TableAddress;row:number;column:number}
+| {kind:"pictureData";object:ObjectAddress}
+| {kind:"sectionSettings";section:number}
+| {kind:"noteShape";section:number;noteKind:NoteKind}
+| {kind:"documentProperties"}
+| {kind:"controls"|"fields";list?:ListAddress}
+| { kind: "fonts" }
+| { kind: "fontCandidates"; names: string[] }
+| { kind: "charShape"; id: number }
+| { kind: "paraShape"; id: number }
+| { kind: "equation"; object: TableAddress }
+| { kind: "equationPreview"; script: string; size: number; color?: number; font?: string }
 | { kind: "table"; table: TableAddress; page?: number }
 | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
 | { kind: "formatContext"; at: Address; to?: Address }
@@ -113,7 +244,23 @@ export type QueryRequest =
 | { kind: "style"; id: number }
 | { kind: "lists" }
 | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+| { kind: "count"; list?: ListAddress; from?: Address; to?: Address }
+| { kind: "formatRuns"; list: ListAddress; from?: number; count?: number }
 | { kind: "lines"; list: ListAddress; para: number };
+/**
+ * Characters as Hancom's status bar counts them (\`count\`): one per code
+ * point, spaces, tabs and fixed spaces included, line breaks, numbers and
+ * objects not; with each field's end, and the text of the tables, text
+ * boxes, captions, headers, footers and notes inside. The whole document's
+ * body with no \`list\` or range, one list with all it holds, or \`[from, to)\`
+ * with what the controls in it hold.
+ */
+export interface CharacterCount { characters: number }
+/** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
+export interface ParagraphFormat {
+    index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+    runs: { offset: number; charShapeId: number; characters: CharPatch }[];
+}
 /** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
 export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
@@ -121,7 +268,7 @@ export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number;
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
  * unit before it, or the paragraph's first at its start); \`mixed\` names the
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
- * the range. \`lineSpacing\` is absent unless the spacing is a percentage.
+ * the range. \`lineSpacingKind\` identifies the spacing units.
  */
 export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
 export interface StyleInfo {
@@ -157,6 +304,8 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+/** A family a host may set (\`fontCandidates\`): what to register for it, and whether text set in it already draws with a registered face. */
+export interface FaceCandidates extends FaceRequest { resolves: boolean }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
 /** A font file the host holds, read in pieces (`Engine.addFontFile`). */
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
@@ -202,6 +351,11 @@ export class Doc {
      */
     cancelComposition(): string;
     /**
+     * Keeps a drawing's placement and transform (its box, matrices,
+     * rotation, flips and crop) under a handle, for `swapObjectTransform`.
+     */
+    captureObjectTransform(object: string): number;
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      */
@@ -228,6 +382,10 @@ export class Doc {
      * face names for paste into another document.
      */
     copy(request: string): string;
+    /**
+     * Drops a kept transform; false when there was none.
+     */
+    discardObjectTransform(handle: number): boolean;
     /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
      */
@@ -282,6 +440,11 @@ export class Doc {
      */
     pageInfo(index: number): string;
     /**
+     * Every object and table page `i` draws, in any paragraph list
+     * (`PageObject[]`), bottom to top.
+     */
+    pageObjects(i: number): string;
+    /**
      * Page `i` rasterized by the engine as PNG, the reference the canvas
      * player is checked against.
      */
@@ -331,7 +494,8 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null).
+     * `lists` `ListInfo[]` and `list` one (or null), `count` a
+     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
      */
     query(request: string): string;
     /**
@@ -385,6 +549,12 @@ export class Doc {
      * lines: the fonts worth providing.
      */
     substitutions(): string;
+    /**
+     * Exchanges a kept transform with the object's current one as one
+     * undo step, keeping the current one under the same handle; a
+     * `Receipt`.
+     */
+    swapObjectTransform(handle: number): string;
     /**
      * Applies edits atomically as one undo step and lays out again;
      * returns a `Receipt`. With `expectedEpoch` set, a document edited
@@ -518,11 +688,13 @@ export interface InitOutput {
     readonly brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
     readonly capabilities: () => [number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
+    readonly doc_captureObjectTransform: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];
     readonly doc_close: (a: number) => void;
     readonly doc_commitComposition: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_compose: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_copy: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_discardObjectTransform: (a: number, b: number) => [number, number, number];
     readonly doc_fontNames: (a: number) => [number, number, number, number];
     readonly doc_fontRequests: (a: number) => [number, number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
@@ -532,6 +704,7 @@ export interface InitOutput {
     readonly doc_objects: (a: number, b: number) => [number, number, number, number];
     readonly doc_page: (a: number, b: number) => [number, number, number, number];
     readonly doc_pageInfo: (a: number, b: number) => [number, number, number, number];
+    readonly doc_pageObjects: (a: number, b: number) => [number, number, number, number];
     readonly doc_pagePng: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pages: (a: number) => [number, number, number, number];
@@ -551,6 +724,7 @@ export interface InitOutput {
     readonly doc_serializeAs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_state: (a: number) => [number, number, number, number];
     readonly doc_substitutions: (a: number) => [number, number, number, number];
+    readonly doc_swapObjectTransform: (a: number, b: number) => [number, number, number, number];
     readonly doc_transact: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_undo: (a: number) => [number, number, number, number];
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;

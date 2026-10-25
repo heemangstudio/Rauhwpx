@@ -1,18 +1,15 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-api` at `05a3207`, which is main (MAIN107,
-`d660276`) plus the Studio API additions listed below. Built on 2026-10-24. Contract and page-packet versions are
-both 1. The package is committed so Studio does not need the HeemangEngine checkout to run or build.
+Generated browser bindings and WASM from a local HeemangEngine integration tree (`engine-agent-int`, `a819f29`, not a
+branch): `feat/studio-agent-api` (`8d6a669`, on `feat/studio-api` `05a3207`) merged with the Studio lane branches
+`feat/studio-objects` (`5c96a91`), `feat/studio-dialogs` (`e6ee8d8`) and `feat/studio-widgets` (`bb98daf`). Built on
+2026-10-25 for the agent lane. Contract and page-packet versions are both 1.
 
-`hm_wasm_bg.wasm`: 4,732,470 bytes, SHA-256
-`cfe43898c1ddc68c3d167b1c49beabea266f3d70269676460bfa5883e9528752`.
+`hm_wasm_bg.wasm`: 5,656,507 bytes, SHA-256
+`30ff7985ec3adeae822210d3719d8d7b4ce390805a207230c9451250386a3679`.
 
-Studio API additions on `feat/studio-api`:
-
-- `ControlInfo.inline`, `side` and `number` in paragraph queries.
-- The `lines` query: a paragraph's laid-out lines with their pages and wire ranges.
-- `body` and `within` scopes for point lookups.
-- `brotliDecompress`, so browsers without a Brotli `DecompressionStream` can read WOFF2 fonts.
+Agent lane additions on `feat/studio-agent-api`: `insertEquation` and `setEquation` edits, `equation` and
+`equationPreview` queries, `setTableCaption` (numbered "표 N" captions).
 
 To refresh, run `CARGO_BUILD_JOBS=6 WASM_BINDGEN=<wasm-bindgen 0.2.125> ./crates/hm-wasm/build.sh` in a HeemangEngine
 worktree of `feat/studio-api` rebased on main, copy the four files from `target/hm-wasm-pkg/web/` here and update this
