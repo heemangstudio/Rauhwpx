@@ -17,28 +17,29 @@ The engine worktree's `CONTEXT.md` routes tasks to crates. `crates/hm-wasm/READM
 - Match layout, styling and displayed values. The version-storage size difference must be investigated through serialization; masking the value in the visual check is not accepted.
 - Signed local commits only; no push or PR. Engine `main` remains at MAIN107. No old-engine fallback or copying, porting or paraphrasing old-engine implementation.
 
-## Preserved lanes
+## Current lanes and integration
 
-Paths below are relative to `/Users/pyu/projects/hobbies/Rau/heemang-wt`. Integration tips before navigation work were Studio `feat/heemang-engine-only` at `72d2b5a2` and engine `feat/studio-integrate` at `802bd97`.
+Worktrees are under `/Users/pyu/projects/hobbies/Rau/heemang-wt`. Studio integration is `studio-only` on `feat/heemang-engine-only`; engine integration is `engine-integrate` on `feat/studio-integrate`. Inspect each lane's git status before editing. The bundled vendor is awaiting a final combined rebuild; do not infer current native behavior from its checked-in bytes.
 
-| Lane | Studio / engine worktrees | Saved state when stopped |
+| Lane | Studio / engine worktrees | Current work |
 | --- | --- | --- |
-| HML | `studio-hml` / `engine-hml` | Untracked `hm-hml` codec work; Studio HML metadata/export modules, adapter/type/registration edits and tests. Incomplete, not verified. |
-| HWP3 / export parity | `studio-hwp3w` / `engine-hwp3w` | HWP3 completed and merged: engine `813a678`, Studio `c4256062` via merge `7f562e01`. Native 38/38, focused Studio 13/13, 15 real inputs → 30 reopened HWP5/HWPX outputs; live Save/Save As/cancel/failure passed. Worker now owns explicit HWPX export packaging, exact version badge parity and performance verification. Vendor remains temporary in the lane. |
-| Remaining methods | `studio-stubs` / `engine-stubs` | Clean at stop. Findings: transpose and furniture shape-ID setters are live stubs; capture/restore and connector references need work; CanvasKit bridge paths need reachability review. |
-| Conditional gaps | `studio-gaps` / `engine-gaps` | Clean at stop. Confirmed work includes clipboard objects/HTML, cross-section edits, character borders, outline numbering and object/header/footer variants. Baseline page image/gradient authoring was also restricted, so it is not automatically a parity gap. |
+| HML and version merge | `studio-hml` / `engine-hml` | HML read/write is merged, including live edit/save/reopen checks. Structural version merging is in progress, using typed document properties and independent three-way merge logic. |
+| HWP3, exports and performance | `studio-hwp3w` / `engine-hwp3w` | HWP3 editing/conversion and explicit HWPX export packaging are merged. Cold-open font transfer and preparation remain in progress. |
+| Remaining methods and runtime verification | `studio-stubs` / `engine-stubs` | Transpose, captures, furniture IDs, connectors and OLE promotion are merged. Four-mode runtime verification is committed. Available for final combined checks. |
+| Conditional gaps and final audit | `studio-gaps` / `engine-gaps` | Formatting, clipboard/resources, objects, header/footer, list restart, last-page masters and template clipboard preservation are merged. Final reachable-gap audit is active. |
 
-Do not restore the HWP3 lane's vendor from git until its work is reviewed. The final vendor is rebuilt from the merged engine tip with provenance. Inspect `git status --short` in each lane before editing; this table is a checkpoint, not a substitute for current status.
+Latest integration checkpoints are engine `e2c92f9` and Studio `79391ffa`. These include template clipboard preservation and the accepted rendering object branch through `48902b0`, plus table line anchors `e9957c9`. Engine main remains MAIN107. See lane handoffs and commit history for implementation evidence; keep routine continuation focused on the current task.
 
 ## Measurements and evidence
 
-Earlier full-suite results at the integration tips: Studio 2,977 pass, hub 1,566 pass, engine workspace 316 pass. These precede the stopped lane edits and must not be claimed as their validation.
+- The real version badge now displays 15 KB on both builds. Baseline storage is 13,595-byte blob + 1,883-byte snapshot; candidate is 12,907 + 2,003. Explicit HWPX exports preserve preview-image storage, with no padding or display masking. No-op serialization remains source-identical.
+- HML and HWP3 live editing, save, save-as, cancellation, failure preservation and saved-output reopening passed. HWP3 corpus conversion covered 15 inputs and 30 reopened outputs.
+- Four modes passed in a real authenticated hub with a fixture Pi provider: read-only Chat/Plan, actual Plan approval, revision rejection, staged review accept/reject, grouped and separate undo, version storage and saved-output reopening. Evidence is in `docs/evidence/heemang-agent-modes/`. This verifies the provider fixture rather than a real provider CLI.
+- Template import now preserves the user's clipboard through success, failure and undo/redo. Live baseline/candidate copy/import/paste and HWP/HWPX reopening passed. Evidence is in `docs/evidence/heemang-template-clipboard/`.
+- Cold-open performance remains unresolved. Warm timing alone concealed the original first-frame gap. Font preparation and excess font transfer are being corrected; repeat the original five-document sequence and unseen-glyph checks before claiming parity.
+- Root picture assignment has native and Studio checks, but the actual missing-image file-picker flow still needs a live combined-build check.
 
-Fresh checks on the unchanged integration build found the version screen still differs by 8 pixels, showing 15 KB versus 10 KB. Direct mixed-text HWPX export was 13,595 bytes on the old engine versus 8,000 bytes on HeemangEngine. ZIP inspection found differences in preview-image compression, XML and metadata.
-
-The reported footnote first paint of 458 ms versus 182 ms did not reproduce in the isolated rerun. Six warm-open median times were 54 ms candidate versus 56 ms baseline; the original functional flow also passed with first paints 1,607 versus 1,788 ms. Timing depends on warm state and machine load; repeat the original mixed-document sequence before declaring performance resolved. The typing probe missed candidate paint observations, which remains unverified.
-
-Local diagnostic scripts/exports are under `/tmp/heemang-cutover-resume/`. Persist important results before relying on them across machine restarts. Committed verification harnesses are under `rhwp/rhwp-studio/e2e/heemang-verify/`.
+Earlier full-suite checks predate the newest merges. Run final combined suites after the structural merge and font work are integrated. Local probes are under `/tmp/heemang-cutover-resume/`; committed harnesses are under `rhwp/rhwp-studio/e2e/heemang-verify/`.
 
 ## Worker brief
 
