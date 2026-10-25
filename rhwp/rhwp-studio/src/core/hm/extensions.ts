@@ -23,6 +23,7 @@ import './objects-connectors';
 import './objects-editing';
 import './objects-grouping';
 import './objects-navigation';
+import './objects-ole';
 import './objects-transform';
 import './page-settings';
 import './picture-resource';
