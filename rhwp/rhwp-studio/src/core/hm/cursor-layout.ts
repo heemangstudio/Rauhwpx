@@ -1,25 +1,9 @@
-/** 개체 탐색과 쪽별 줄·개체 배치를 엔진의 조회 결과로 제공한다. */
-import type { ObjectTarget } from '../../../vendor/hm-wasm/hm_wasm';
+/** 다음 편집 개체 찾기와 쪽별 줄 배치를 엔진의 조회 결과로 제공한다. */
 import type { HmCore } from './core';
 import { px } from './core';
 import { bodyList, paraMap, stepsToPath, wireToLogical, wireToText } from './address';
-import type { ControlLayoutItem, LineLayoutItem } from '../types';
+import type { LineLayoutItem } from '../types';
 import { extendBridge } from './api';
-
-export function getPageControlLayout(core: HmCore, pageNum: number): { controls: ControlLayoutItem[] } {
-  const objects = JSON.parse(core.call(doc => doc.objects(pageNum))) as ObjectTarget[];
-  return { controls: objects.map((object, index) => {
-    const type = object.kind === 'picture' ? 'image' : object.kind as ControlLayoutItem['type'];
-    const steps = object.steps ?? [];
-    const outer = steps[0];
-    return { type, x: px(object.x), y: px(object.y), w: px(object.width), h: px(object.height),
-      secIdx: object.section, paraIdx: outer?.para ?? object.para, controlIdx: outer?.control ?? object.control,
-      ...(outer ? { cellIdx: outer.index, cellParaIdx: object.para, innerControlIdx: object.control,
-        cellPath: stepsToPath(steps, object.para) } : {}),
-      plane: object.layer === 'behind' ? 1 : object.layer === 'front' ? 3 : 2, stableIndex: index,
-    };
-  }) };
-}
 
 export function getPageLineLayout(core: HmCore, pageNum: number): { lines: LineLayoutItem[] } {
   return { lines: core.adapter.page(pageNum).lines.map(line => {
@@ -57,12 +41,4 @@ export function findNextEditableControl(core: HmCore, sec: number, para: number,
   return entries[index + (delta < 0 ? -1 : 1)] ?? { type: 'none', sec, para, ci: -1 };
 }
 
-export function findNearestControlBackward(core: HmCore, sec: number, para: number, charOffset: number): { type: string; sec: number; para: number; ci: number } {
-  return controls(core).reverse().find(item => item.sec < sec || (item.sec === sec && (item.para < para || (item.para === para && item.charPos < charOffset)))) ?? { type: 'none', sec, para, ci: -1 };
-}
-
-export function findNearestControlForward(core: HmCore, sec: number, para: number, charOffset: number): { type: string; sec: number; para: number; ci: number; charPos?: number } {
-  return controls(core).find(item => item.sec > sec || (item.sec === sec && (item.para > para || (item.para === para && item.charPos > charOffset)))) ?? { type: 'none', sec, para, ci: -1 };
-}
-
-extendBridge({ getPageControlLayout, getPageLineLayout, findNextEditableControl, findNearestControlBackward, findNearestControlForward });
+extendBridge({ getPageLineLayout, findNextEditableControl });

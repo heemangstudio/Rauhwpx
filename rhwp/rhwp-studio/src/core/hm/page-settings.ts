@@ -1,4 +1,5 @@
-import type { Address, EditOp } from '../../../vendor/hm-wasm/hm_wasm';
+import type { Address, EditOp, PageInfo as HmPage } from '../../../vendor/hm-wasm/hm_wasm';
+import { pageDef } from '../heemang-format';
 import type { HmCore } from './core';
 import { unsupported } from './core';
 import { bodyList, logicalAddress } from './address';
@@ -38,9 +39,14 @@ const sections = (core: HmCore) => core.query<{ sectionCount: number }>({ kind: 
 
 export function getPageDef(core: HmCore, sectionIdx: number): PageDef {
   const page = settings(core, sectionIdx).page;
-  if (!page) throw unsupported('getPageDef');
-  const { gutter, ...rest } = page;
-  return { ...rest, marginGutter: gutter };
+  if (page) {
+    const { gutter, ...rest } = page;
+    return { ...rest, marginGutter: gutter };
+  }
+  // 구역 설정에 용지 정의가 없으면 그 구역 첫 쪽의 배치 결과로 채운다.
+  const laid = (JSON.parse(core.call(doc => doc.pages())) as HmPage[]).find(item => item.section === sectionIdx);
+  if (!laid) throw new RangeError(`구역 ${sectionIdx} 이 없습니다`);
+  return pageDef(laid);
 }
 
 function pagePatch({ marginGutter, ...rest }: Partial<PageDef>): PagePatch {

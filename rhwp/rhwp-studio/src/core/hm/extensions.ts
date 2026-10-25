@@ -15,6 +15,5 @@ import './objects-navigation';
 import './objects-transform';
 import './page-settings';
 import './search-text';
-import './status-widgets';
 import './table-editing';
 import './table-properties';

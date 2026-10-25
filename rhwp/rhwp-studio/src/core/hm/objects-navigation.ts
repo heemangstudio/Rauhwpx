@@ -21,19 +21,24 @@ function classify(core: HmCore, sec: number, para: number, c: ControlInfo): stri
   }
 }
 
+/** 커서 문단부터 같은 구역을 훑고, 없으면 다음(이전) 구역들로 넘어가 찾는다. */
 function nearest(core: HmCore, sec: number, para: number, offset: number, step: 1 | -1): Found {
-  const list = bodyList(sec);
-  const count = core.paragraphCount(list);
-  for (let p = Math.min(para, count - 1); p >= 0 && p < count; p += step) {
-    const info = core.paragraph(list, p);
-    const map = paraMap(info);
-    const controls = step > 0 ? info.controls : [...info.controls].reverse();
-    for (const c of controls) {
-      // 커서 문단에서는 커서 앞(뒤)의 컨트롤만 본다. 위치는 캐럿과 같은 논리 오프셋이다(개체 하나가 1).
-      const pos = wireToLogical(map, c.offset);
-      if (p === para && (step > 0 ? pos <= offset : pos >= offset)) continue;
-      const type = classify(core, sec, p, c);
-      if (type) return { type, sec, para: p, ci: c.index, charPos: wireToLogical(map, c.offset) };
+  const sections = core.adapter.getSectionCount();
+  for (let s = sec; s >= 0 && s < sections; s += step) {
+    const list = bodyList(s);
+    const count = core.paragraphCount(list);
+    const first = s === sec ? Math.min(para, count - 1) : step > 0 ? 0 : count - 1;
+    for (let p = first; p >= 0 && p < count; p += step) {
+      const info = core.paragraph(list, p);
+      const map = paraMap(info);
+      const controls = step > 0 ? info.controls : [...info.controls].reverse();
+      for (const c of controls) {
+        // 커서 문단에서는 커서 앞(뒤)의 컨트롤만 본다. 위치는 캐럿과 같은 논리 오프셋이다(개체 하나가 1).
+        const pos = wireToLogical(map, c.offset);
+        if (s === sec && p === para && (step > 0 ? pos <= offset : pos >= offset)) continue;
+        const type = classify(core, s, p, c);
+        if (type) return { type, sec: s, para: p, ci: c.index, charPos: pos };
+      }
     }
   }
   return { type: 'none', sec, para, ci: -1 };

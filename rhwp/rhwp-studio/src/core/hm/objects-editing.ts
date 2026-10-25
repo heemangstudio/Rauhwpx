@@ -232,6 +232,8 @@ export function getPageControlLayout(core: HmCore, pageNum: number): { controls:
     return { type, x: px(b.x), y: px(b.y), w: px(b.w), h: px(b.h), secIdx: o.section,
       paraIdx: path.length ? o.steps![0].para : o.para, controlIdx: o.control,
       ...(path.length ? { cellPath: path, cellIdx: o.steps![0].index, cellParaIdx: o.para, innerControlIdx: o.control, outerTableControlIdx: o.steps![0].control } : {}),
+      ...(o.line ? { x1: px(o.line[0]), y1: px(o.line[1]), x2: px(o.line[2]), y2: px(o.line[3]) } : {}),
+      ...(o.layer === 'behind' ? { wrap: 'behindText' } : o.layer === 'front' ? { wrap: 'inFrontOfText' } : {}),
       plane: o.layer === 'behind' ? 1 : o.layer === 'front' ? 3 : 2, zOrder: o.z, stableIndex };
   }) };
 }
