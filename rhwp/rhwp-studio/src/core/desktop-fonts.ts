@@ -129,6 +129,7 @@ export interface SystemFontHost {
   coversSystem: boolean;
   list(options?: { refresh?: boolean }): Promise<SystemFontIndex>;
   /** TTC face는 단독 SFNT로 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
+  readSubset?(id: string, characters: string, glyphs?: readonly number[]): Promise<ArrayBuffer | Uint8Array>;
   read(id: string): Promise<Uint8Array | ArrayBuffer>;
   /** face 이름 테이블만 읽는다 (설치 글꼴 감지용). 읽지 못한 face 는 null. */
   nameTables?(ids: readonly string[]): Promise<Array<SfntNameTables | null>>;
@@ -759,6 +760,12 @@ export function createCombinedFontHost(members: ReadonlyArray<readonly [string, 
       if (!host) return Promise.reject(new Error(`unknown font id ${id}`));
       return host.read(id.slice(split + 1));
     },
+    readSubset(id, characters, glyphs) {
+      const split = id.indexOf(':');
+      const host = split > 0 ? byTag.get(id.slice(0, split)) : undefined;
+      if (!host) return Promise.reject(new Error(`unknown font id ${id}`));
+      return host.readSubset ? host.readSubset(id.slice(split+1), characters, glyphs) : host.read(id.slice(split+1));
+    },
     async nameTables(ids) {
       const result: Array<SfntNameTables | null> = ids.map(() => null);
       const byHost = new Map<string, number[]>();
@@ -844,7 +851,8 @@ function installByteReader(): void {
   setDesktopFontByteReader(host ? (faceId) => host.read(faceId) : null);
 }
 
-function readDesktopFace(host: SystemFontHost, faceId: string): Promise<ArrayBuffer> {
+/** 같은 face의 동시 읽기를 글꼴 표시와 엔진이 함께 쓴다. */
+export function readDesktopFace(host: SystemFontHost, faceId: string): Promise<ArrayBuffer> {
   const pending = inflightReads.get(faceId);
   if (pending) return pending;
   const read = Promise.resolve().then(() => host.read(faceId)).then(toArrayBuffer);
@@ -890,6 +898,11 @@ export function isDesktopFontIndexReady(): boolean {
 /** 설치 글꼴 전체를 다루는 색인(데스크톱)을 받았는지. 받았다면 로컬 글꼴 감지 권한을 묻지 않는다. */
 export function isSystemFontIndexComplete(): boolean {
   return currentIndex !== null && getSystemFontHost()?.coversSystem === true;
+}
+
+/** 받은 색인의 이름 매칭을 엔진의 글꼴 준비에도 공유한다. */
+export function getDesktopFontLookup(): DesktopFontLookup | null {
+  return currentLookup;
 }
 
 export function getDesktopFontIndex(): SystemFontIndex | null {
@@ -1059,7 +1072,8 @@ function registerFaceMetrics(
   const record = getSessionLocalFontFace(faceKey)?.record;
   const label = engineLabel || record?.sourcePath || record?.postscriptName || faceKey;
   // 호스트가 TTC를 개별 SFNT로 풀어 주므로 서로 다른 face를 같은 파일의 재충전으로 덮지 않는다.
-  provideEngineFont(/\.(ttc|otc)$/i.test(label) ? `${label}#${faceKey}` : label, bytes, reader);
+  provideEngineFont(/\.(ttc|otc)$/i.test(label) ? `${label}#${faceKey}` : label, bytes, reader,
+    record?.desktopFaceId ? `heemang-host:${record.desktopFaceId}` : undefined);
   const api = metricsApi();
   if (!api) return { status: 'unavailable' };
   const merged = pendingMetricAliases(faceKey, aliases);
@@ -1859,7 +1873,7 @@ async function registerDesktopHftOutlines(fontsUsed: readonly string[]): Promise
     const read = previous
       .then(() => bytes)
       .then(source => {
-        provideEngineFont(face.path, source, () => readDesktopFace(host, face.id));
+        provideEngineFont(face.path, source, () => readDesktopFace(host, face.id), `heemang-host:${face.id}`);
         return registerHftOutlines(source);
       })
       .catch((error) => {

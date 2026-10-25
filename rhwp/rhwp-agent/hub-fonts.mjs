@@ -38,7 +38,7 @@ function sendJson(res, status, body, origin) {
  *   authenticate: (req: import('node:http').IncomingMessage, url: URL) => unknown,
  *   loadService?: () => Promise<{
  *     list(options?: { refresh?: boolean }): Promise<unknown>,
- *     openFace(id: string): Promise<{ size: number, chunks(): AsyncIterable<Uint8Array> }>,
+ *     openFace(id: string, options?: { characters: string; glyphs?: number[] }): Promise<{ size: number, chunks(): AsyncIterable<Uint8Array> }>,
  *   }>,
  *   log?: (line: string) => void,
  * }} options
@@ -106,9 +106,29 @@ export function createFontHttpHandler({ authenticate, loadService = loadDesktopF
       sendJson(res, 400, { status: 'invalid-id' }, origin);
       return true;
     }
+    const encoded = url.searchParams.get('chars');
+    let characters;
+    if (encoded !== null) {
+      if (encoded.length > 8192 || !/^[0-9a-f]{1,6}(?:,[0-9a-f]{1,6})*$/i.test(encoded)) {
+        sendJson(res, 400, { status: 'invalid-characters' }, origin); return true;
+      }
+      const codes = encoded.split(',').map(value => parseInt(value,16));
+      if (codes.some(code => code>0x10ffff || (code>=0xd800 && code<=0xdfff))) {
+        sendJson(res, 400, { status: 'invalid-characters' }, origin); return true;
+      }
+      characters = String.fromCodePoint(...codes);
+    }
+    const encodedGlyphs = url.searchParams.get('glyphs');
+    let glyphs;
+    if (encodedGlyphs !== null) {
+      if (characters === undefined || encodedGlyphs.length+(encoded?.length??0)>8192 || !/^[0-9a-f]{1,4}(?:,[0-9a-f]{1,4})*$/i.test(encodedGlyphs)) {
+        sendJson(res, 400, { status: 'invalid-glyphs' }, origin); return true;
+      }
+      glyphs=encodedGlyphs.split(',').map(value=>parseInt(value,16));
+    }
     let face;
     try {
-      face = await fonts.openFace(id);
+      face = await fonts.openFace(id, characters === undefined ? undefined : { characters, glyphs });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // stale은 Studio가 색인을 다시 받도록 409로 구분한다.

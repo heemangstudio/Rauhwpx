@@ -161,3 +161,5 @@ export function assembleFontIndex<F extends FontIndexFile>(input: {
   hftFiles: F[];
   mapStats: { files: number; entries: number; resolved: number; unresolved: number };
 }>;
+
+export function compactSfntFace(input: Uint8Array | FontByteSource, face: {format: string; faceIndex: number}, characters: string, glyphs?: readonly number[]): Promise<Uint8Array | null>;

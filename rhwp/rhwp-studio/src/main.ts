@@ -142,6 +142,7 @@ import {
   finalizeDesktopFontReport,
   fontReportsChangedLayout,
   getDesktopFontHostApi,
+  getSystemFontHost,
   hasSystemFontHost,
   setHubFontHost,
   isDesktopFontIndexReady,
@@ -4841,9 +4842,14 @@ async function initializeDocument(
     if (fontFolderRestore) await settleWithin(fontFolderRestore, DESKTOP_FONT_LOAD_BUDGET_MS);
     // 웹 글꼴과 함께 사용자 PC의 글꼴(데스크톱 색인·글꼴 폴더·로컬 글꼴 감지)을 연결한다.
     // 첫 페이지가 실제 글꼴로 조판되도록 제한 시간 안에 끝나면 레이아웃을 다시 계산한 뒤 그린다.
+    // PC 전체 색인을 쓰면 본문 윤곽선은 엔진이 직접 준비한다. 브라우저 face는 목록 미리보기용이다.
+    // 첫 문서도 엔진이 기다릴 같은 색인 약속을 쓴다. 로딩 중이라는 이유로 full face를 중복 읽지 않는다.
+    if (getSystemFontHost()?.coversSystem) await loadDesktopFontIndex().catch(() => {});
+    const desktopPreviewOnly = isDesktopFontIndexReady() && getSystemFontHost()?.coversSystem === true;
+    if (desktopPreviewOnly) await loadStoredLocalFonts();
     const fontsUsed = docInfo.fontsUsed;
-    const desktopFonts = fontsUsed?.length
-      ? (async () => {
+    const prepareDesktopFonts = fontsUsed?.length
+      ? () => (async () => {
         await loadStoredLocalFonts();
         return prepareSystemFontsForDocument(fontsUsed);
       })().catch((error): DesktopFontReport[] => {
@@ -4851,12 +4857,16 @@ async function initializeDocument(
         return [];
       })
       : null;
+    const desktopFonts = desktopPreviewOnly ? null : prepareDesktopFonts?.();
     if (docInfo.fontsUsed?.length) {
       // 쪽 글자는 엔진이 글꼴 윤곽선으로 그린다. CSS 웹 글꼴은 글꼴 목록 미리보기용이라 기다리지 않는다.
       void loadWebFonts(docInfo.fontsUsed, () => {}, extensionViewerSettings)
         .catch(error => console.warn('[fonts] 웹 글꼴 미리보기 등록 실패:', error));
     }
-    if (desktopFonts) {
+    // PC 글꼴과 엔진의 윤곽선 준비를 겹치되, 첫 조판은 둘 다 끝난 뒤에 한다.
+    const engineFonts = wasm.viewer.prepareFonts(docInfo.fontsUsed ?? [], extensionViewerSettings);
+    void engineFonts.catch(() => {}); // 아래 await에서 오류를 전파한다.
+    if (desktopFonts && !desktopPreviewOnly) {
       const budget = DESKTOP_FONT_LOAD_BUDGET_MS - (performance.now() - desktopFontsStartedAt);
       const settled = await settleWithin(desktopFonts, budget);
       if (settled) {
@@ -4870,8 +4880,8 @@ async function initializeDocument(
         void desktopFonts.then(applyLateFontReports);
       }
     }
-    // 엔진이 문서 글꼴을 등록한 뒤 첫 조판을 한다.
-    await wasm.viewer.prepareFonts(docInfo.fontsUsed ?? [], extensionViewerSettings);
+    // PC 글꼴과 엔진 윤곽선이 모두 준비된 뒤 문서 상태와 첫 쪽을 읽는다.
+    await engineFonts;
     docInfo = wasm.getDocumentInfo();
     await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
@@ -4918,6 +4928,10 @@ async function initializeDocument(
     // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
     await updateLoadProgress(96, '편집 상태 초기화 중...', { paint: true });
     inputHandler?.activateWithCaretPosition();
+    if (desktopPreviewOnly && prepareDesktopFonts) {
+      // 쪽과 입력이 준비된 다음 브라우저 목록용 face를 연결한다.
+      void waitForNextPaint().then(prepareDesktopFonts).then(applyLateFontReports);
+    }
     eventBus.emit('document-context-changed');
     scheduleCharacterStatus(true);
     // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
