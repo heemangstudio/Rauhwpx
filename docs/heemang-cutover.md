@@ -32,6 +32,14 @@ Latest integration checkpoints are engine `e48a461` and the Studio commit that r
 
 ### Release-candidate integration (2026-10-25)
 
+#### Resumed checks (2026-10-26)
+
+- Studio is signed-rebased onto `heemangstudio/main` `fcefd947` at `a9233132`. The upstream changes since `d25f784c` affect the website, site API and release version; the old engine and Studio comparison baseline is unchanged. The pre-rebase branch is `chore/rc-before-main-rebase-20261026`.
+- Engine integration `806027e` adds two accepted HWP3 fixes. Table commit `769282d` closes gaps between imported cells and restores sample16 from 65 to Hancom's 64 pages. The fresh `rc-render-tables/accept-current-20261026` gate passes 687 documents with 14 improved pages and no failures; all 11 importer tests pass with real fixtures.
+- Object commit `9e784cc` preserves the overlap flag on paragraph-anchored HWP3 objects. Its isolated binary is byte-identical to the previously accepted `rc-objects-1`; both target documents improve by 525,030 pixels compared with old and retain their 16-page matches. The importer regression was checked red before the fix, and all 11 importer tests pass. The separate vertical-text trial remains excluded. Native before/after crops were visually reviewed for both integrated fixes.
+- These engine changes are not yet in the Studio vendor. The combined native gate, vendor rebuild and final runtime/suite checks remain pending. Rendering, text and performance work continues under the existing release gates.
+- Font-argument pilots identified a measurement gap in the footnote pair. Hancom embeds system NanumGothic, absent from the frozen comparison arguments; supplying its exact MobileAsset font gives parity within 2 pixels on the document comparison and zero mismatch on the affected title page. Adding system font directories alone does not resolve the exam-eng regression. Pilot font manifests and scores are separate under `parity/notes/rc-vs-old/`; the frozen acceptance font arguments are unchanged.
+
 - Vendor `hm_wasm_bg.wasm` is rebuilt from engine `e48a461`: 7,527,537 bytes, SHA-256 `8a5eee93da7b64f1765ce09dea56afc46e84c66297a039dad3d1d199817ea248`. Hashes of all four files are in `rhwp/rhwp-studio/vendor/hm-wasm/README.md`.
 - The frozen native parity CLI is `heemang-cleanroom/parity/bins/rc-e48a461` (`cargo build --profile parity -p hm-cli --bin heemang`), SHA-256 `eb1a716c5730b8e71101f68027dcaa8347a173687eb067a9ebc62401a95d3645`. Every engine change after `54900b4` is in hm-wasm or tests, so `rc-54900b4`, `rc-cda58ff` and `rc-e48a461` are the same bytes.
 - Integration fixes. Engine:
