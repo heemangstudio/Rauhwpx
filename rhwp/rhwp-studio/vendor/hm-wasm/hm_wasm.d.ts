@@ -38,17 +38,54 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`charSpacing\` a percent
- * of the character size (-50 to 50) for all slots.
+ * all seven script slots, which must be registered; \`fontFaces\` a family per
+ * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
+ * slot's, read back with all seven; \`charSpacing\` a percent of the character
+ * size (-50 to 50) for all slots.
  */
 export interface CharPatch {
     bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-    fontFace?: string; charSpacing?: number;
+    fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
+export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
+export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
+export interface BorderLineSpec { kind: number; width: number; color: number }
+export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
+/** `lines` (left, right, top, bottom) and `fill` derive a border fill from the current one; queries report both. */
+export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
+export type Side = "both" | "even" | "odd";
+export type NoteKind = "footnote" | "endnote";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type ControlAddress = TableAddress;
+export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
+/** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
+export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
 export type EditOp =
+| {op:"setPageSettings";section:number;patch:PageSettingsPatch}
+| {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
+| {op:"setColumns";at:Address;patch:ColumnSettingsPatch}
+| {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
+| {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
+| {op:"setPageHide";at:Address;flags:number}
+| {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+| {op:"insertNote";at:Address;kind:NoteKind}
+| {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+| {op:"updateField";target:ControlAddress;patch:FieldPatch}
+| {op:"insertBookmark";at:Address;name:string}
+| {op:"renameBookmark";target:ControlAddress;name:string}
+| {op:"deleteControl";target:ControlAddress}
+| {op:"setFormValue";target:ControlAddress;value?:number;text?:string}
+| {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
+| {op:"columnBreak";at:Address}
+| {op:"insertNewNumber";at:Address;number:number}
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
@@ -106,6 +143,10 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+| {kind:"sectionSettings";section:number}
+| {kind:"noteShape";section:number;noteKind:NoteKind}
+| {kind:"documentProperties"}
+| {kind:"controls"|"fields";list?:ListAddress}
 | { kind: "table"; table: TableAddress; page?: number }
 | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
 | { kind: "formatContext"; at: Address; to?: Address }
@@ -113,7 +154,23 @@ export type QueryRequest =
 | { kind: "style"; id: number }
 | { kind: "lists" }
 | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+| { kind: "count"; list?: ListAddress; from?: Address; to?: Address }
+| { kind: "formatRuns"; list: ListAddress; from?: number; count?: number }
 | { kind: "lines"; list: ListAddress; para: number };
+/**
+ * Characters as Hancom's status bar counts them (\`count\`): one per code
+ * point, spaces, tabs and fixed spaces included, line breaks, numbers and
+ * objects not; with each field's end, and the text of the tables, text
+ * boxes, captions, headers, footers and notes inside. The whole document's
+ * body with no \`list\` or range, one list with all it holds, or \`[from, to)\`
+ * with what the controls in it hold.
+ */
+export interface CharacterCount { characters: number }
+/** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
+export interface ParagraphFormat {
+    index: number; styleId: number; paragraphs: ParaPatch; list: ListRef | null;
+    runs: { offset: number; characters: CharPatch }[];
+}
 /** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
 export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
@@ -331,7 +388,8 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null).
+     * `lists` `ListInfo[]` and `list` one (or null), `count` a
+     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
      */
     query(request: string): string;
     /**

@@ -1,11 +1,13 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-api` at `05a3207`, which is main (MAIN107,
-`d660276`) plus the Studio API additions listed below. Built on 2026-10-24. Contract and page-packet versions are
-both 1. The package is committed so Studio does not need the HeemangEngine checkout to run or build.
+Generated browser bindings and WASM from HeemangEngine `feat/studio-dialogs` at `e6ee8d8`: `feat/studio-api` (`05a3207`,
+main `d660276` plus the additions below) with `feat/studio-widgets` merged and the dialog API from
+`docs/wasm-dialogs.md` (page and section settings, columns, page borders, headers and footers, notes, fields,
+bookmarks, form objects). Built on 2026-10-25. Contract and page-packet versions are both 1. The package is committed
+so Studio does not need the HeemangEngine checkout to run or build.
 
-`hm_wasm_bg.wasm`: 4,732,470 bytes, SHA-256
-`cfe43898c1ddc68c3d167b1c49beabea266f3d70269676460bfa5883e9528752`.
+`hm_wasm_bg.wasm`: 5,094,990 bytes, SHA-256
+`658a3f6ade03fc8065de6db55199c1da791f071f4ee15d3fe932092b7126b66f`.
 
 Studio API additions on `feat/studio-api`:
 
