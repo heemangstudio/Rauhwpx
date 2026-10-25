@@ -363,7 +363,8 @@ test('paragraph formatting applies every patch field to endpoint paragraphs and 
   const header = zipXml(bytes, 'Contents/header.xml');
   for (const id of ids) {
     const shape = header.match(new RegExp(`<hh:paraPr\\b[^>]*id="${id}"[^>]*>[\\s\\S]*?</hh:paraPr>`))![0];
-    for (const property of ['horizontal="CENTER"', '<hc:left value="200"', '<hc:intent value="-100"', '<hc:prev value="300"', '<hc:next value="400"', 'type="PERCENT" value="180"']) {
+    // HWPX 문단 여백·간격은 한컴처럼 두 배 값으로 저장된다. 엔진은 patch 값(200 등)으로 되읽는다.
+    for (const property of ['horizontal="CENTER"', '<hc:left value="400"', '<hc:intent value="-200"', '<hc:prev value="600"', '<hc:next value="800"', 'type="PERCENT" value="180"']) {
       assert.ok(shape.includes(property), property);
     }
   }
@@ -376,7 +377,7 @@ test('paragraph formatting applies every patch field to endpoint paragraphs and 
   assert.equal(a.formatParagraphs(selection(body), { align: 'left' })!.anchor, null);
   const before = a.state();
   assert.equal(a.formatParagraphs(range, {}), null);
-  assert.throws(() => a.formatParagraphs(range, { right: 100 } as any), { code: 'ENGINE_NOT_SUPPORTED' });
+  assert.throws(() => a.formatParagraphs(range, { keepWithNext: true } as any), { code: 'ENGINE_NOT_SUPPORTED' });
   assert.throws(() => a.formatParagraphs(range, { lineSpacing: 0 }), { code: 'BAD_REQUEST' });
   assert.throws(() => a.formatParagraphs(range, { align: 'invalid' } as any), { code: 'BAD_REQUEST' });
   assert.throws(() => a.formatParagraphs(selection({ ...body, offset: 999 }), patch), { code: 'BAD_ADDRESS' });

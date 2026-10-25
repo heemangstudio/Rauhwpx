@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
  * Vite 개발 서버의 SSR 로더는 모듈마다 소스맵을 만들고 이어 붙이느라 InputHandler 같은 큰
  * 그래프 하나에 CPU 1초 가까이 쓴다. 여기서는 Vite 가 쓰는 것과 같은 oxc 변환(rolldown)으로
  * 파일 하나씩 바꾸고(parameter property 포함), Vite 가 해 주던 해석만 흉내 낸다:
- * `@/`·`@wasm` 별칭, 확장자 없는 상대 import, CSS 는 빈 모듈, `?url`/`?raw`, 속성 없는 JSON,
+ * `@/`·`@wasm` 별칭, 확장자 없는 상대 import(.ts·.js), CSS 는 빈 모듈, `?url`/`?raw`, 속성 없는 JSON,
  * `import.meta.env`. 한 프로세스 안에서는 모듈 인스턴스를 공유한다.
  */
 const studioRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -28,6 +28,8 @@ const DEFINE = {
 function withTsExtension(base: string): string | null {
   if (existsSync(`${base}.ts`)) return `${base}.ts`;
   if (existsSync(join(base, 'index.ts'))) return join(base, 'index.ts');
+  // 확장자 없는 wasm-bindgen 모듈(vendor/hm-wasm/hm_wasm)도 Vite 처럼 .js 로 푼다.
+  if (existsSync(`${base}.js`)) return `${base}.js`;
   return null;
 }
 

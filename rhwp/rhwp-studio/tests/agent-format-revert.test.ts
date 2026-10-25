@@ -7,7 +7,6 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { requireWasmPackage } from './browser-support.ts';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -193,10 +192,8 @@ test('검토 중 사용자가 범위 안 텍스트를 고쳤으면 서식 op 은
 });
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkgWasm = join(here, '..', '..', 'pkg', 'rhwp_bg.wasm');
 
-test('실제 WASM: 앞 세 글자만 굵은 문단의 bold:false 거절과 승인 후 undo 가 원래 모양이다', (t) => {
-  requireWasmPackage(dirname(pkgWasm));
+test('실제 HeemangEngine: 앞 세 글자만 굵은 문단의 bold:false 거절과 승인 후 undo 가 원래 모양이다', () => {
   const result = spawnSync(process.execPath, [
     '--no-warnings',
     '--import', pathToFileURL(join(here, 'support', 'ts-transform-hooks.mjs')).href,

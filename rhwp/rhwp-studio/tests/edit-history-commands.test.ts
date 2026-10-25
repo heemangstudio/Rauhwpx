@@ -540,13 +540,12 @@ function nestedTableDocument() {
   wasm.insertText(0, 0, 0, 'A');
   wasm.splitParagraph(0, 0, 1);
   const outer = wasm.createTableEx({ sectionIdx: 0, paraIdx: 0, charOffset: 1, rowCount: 2, colCount: 2 });
-  const source = wasm.createTableEx({
-    sectionIdx: 0, paraIdx: wasm.getParagraphCount(0) - 1, charOffset: 0, rowCount: 2, colCount: 2,
-  });
-  wasm.copyControl(0, source.paraIdx, source.controlIdx);
-  wasm.pasteInternalInCell(0, outer.paraIdx, outer.controlIdx, 0, 0, 0);
   const ppi = outer.paraIdx;
   const ci = outer.controlIdx;
+  // 바깥 첫 셀 첫 문단에 안쪽 표를 만든다. 표 복사·붙여넣기는 엔진이 아직 개체를 담지 못한다.
+  const cell = { section: 0, steps: [{ para: ppi, control: ci, index: 0 }] };
+  const lead = wasm.core.paragraph(cell, 0).caret[0];
+  wasm.core.transact([{ op: 'createTable', at: { ...cell, para: 0, offset: lead }, rows: 2, columns: 2, inline: true }]);
   // 바깥 첫 셀에도 문단을 둬서 평면 좌표로 새면 눈에 띄게 한다.
   const outerParas = wasm.getCellParagraphCount(0, ppi, ci, 0);
   wasm.insertTextInCell(0, ppi, ci, 0, outerParas - 1, 0, '바깥셀');

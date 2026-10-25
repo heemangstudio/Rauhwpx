@@ -1,29 +1,13 @@
-// 실제 command/history/bridge/InputHandler를 실행한다. pkg/pkg-node를 읽지 않는다.
+// 실제 command/history/bridge/InputHandler를 실행한다. 엔진 WASM 은 초기화하지 않는다(문서 없는 브리지).
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { loadStudioModule as load } from './module-server.ts';
 
-const src = join(dirname(fileURLToPath(import.meta.url)), '../../src');
-registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === '@wasm/rhwp.js') return {
-      url: 'data:text/javascript,export default function init(){throw Error("WASM unavailable")};export class HwpDocument{};export function version(){return "test"}',
-      shortCircuit: true,
-    };
-    if (specifier.startsWith('@/')) return { url: pathToFileURL(join(src, specifier.slice(2) + '.ts')).href, shortCircuit: true };
-    if (/^\.{1,2}\//.test(specifier) && !/\.[cm]?[tj]s$/.test(specifier)) {
-      return { url: pathToFileURL(join(dirname(fileURLToPath(context.parentURL)), specifier + '.ts')).href, shortCircuit: true };
-    }
-    return next(specifier, context);
-  },
-});
-const { ApplyCharFormatCommand } = await import(pathToFileURL(join(src, 'engine/command.ts')));
-const { CommandHistory } = await import(pathToFileURL(join(src, 'engine/history.ts')));
-const { InputHandler } = await import(pathToFileURL(join(src, 'engine/input-handler.ts')));
-const { WasmBridge } = await import(pathToFileURL(join(src, 'core/wasm-bridge.ts')));
-const { validateCharShapeRuns } = await import(pathToFileURL(join(src, 'core/char-shape-runs.ts')));
-const { CharFormatError, CharFormatRecoveryError } = await import(pathToFileURL(join(src, 'core/char-format-error.ts')));
+const { ApplyCharFormatCommand } = await load('/src/engine/command.ts');
+const { CommandHistory } = await load('/src/engine/history.ts');
+const { InputHandler } = await load('/src/engine/input-handler.ts');
+const { WasmBridge } = await load('/src/core/wasm-bridge.ts');
+const { validateCharShapeRuns } = await load('/src/core/char-shape-runs.ts');
+const { CharFormatError, CharFormatRecoveryError } = await load('/src/core/char-format-error.ts');
 
 const pos = (p, off) => ({ sectionIndex: 0, paragraphIndex: p, charOffset: off });
 const run = (id, start = 0, end = 3) => ({ startOffset: start, endOffset: end, charShapeId: id });
@@ -174,17 +158,15 @@ for (const cell of [false, true]) {
   assert.equal(history.canUndo(), false);
 }
 
-const wasm = Object.create(WasmBridge.prototype);
+// 문서를 열지 않은 브리지의 구간 서식 읽기·복원은 조용히 넘어가지 않고 실패한다.
+const wasm = new WasmBridge();
 const methods = [
   () => wasm.getCharShapeRuns(0, 0, 0, 3),
   () => wasm.setCharShapeRuns(0, 0, 0, 3, [run(1)]),
   () => wasm.getCharShapeRunsInCellByPath(0, 0, '[]', 0, 3),
   () => wasm.setCharShapeRunsInCellByPath(0, 0, '[]', 0, 3, [run(1)]),
 ];
-wasm.doc = null;
 for (const call of methods) assert.throws(call, /문서가 로드되지/);
-wasm.doc = {};
-for (const call of methods) assert.throws(call, /최신 WASM/);
 for (const bad of [null, 1, [1], [run(-1)], [run(1, 1, 3)], [run(1), run(2)], [{ ...run(1), extra: true }]]) {
   assert.throws(() => validateCharShapeRuns(bad, 0, 3));
 }
@@ -205,7 +187,7 @@ const previousError = console.error;
 console.error = () => {};
 try {
   handler.executeOperation({ kind: 'command', command: new ApplyCharFormatCommand([bodyRange(0)], {}, pos(0, 0)) });
-  assert.match(notices.pop(), /최신 WASM/);
+  assert.match(notices.pop(), /글자 서식을 적용하지 못했습니다/);
   assert.equal(handler.history.canUndo(), false);
   for (const method of ['handleUndo', 'handleRedo']) {
     const errors = new CharFormatRecoveryError([new Error('restore')]);

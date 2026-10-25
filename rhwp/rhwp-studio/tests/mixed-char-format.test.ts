@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { requireWasmPackage } from './browser-support.ts';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,8 +13,7 @@ function registerHooksSupported(): boolean {
   return typeof (nodeModule as { registerHooks?: unknown }).registerHooks === 'function';
 }
 
-test('#6788 실제 WASM + Studio 혼합 모양 적용/Undo/Redo', (t) => {
-  requireWasmPackage(fileURLToPath(new URL('../../pkg/', import.meta.url)));
+test('#6788 실제 HeemangEngine + Studio 혼합 모양 적용/Undo/Redo', (t) => {
   if (!registerHooksSupported()) {
     t.skip('현재 Node 가 module.registerHooks 미지원 — 행위 테스트 skip');
     return;

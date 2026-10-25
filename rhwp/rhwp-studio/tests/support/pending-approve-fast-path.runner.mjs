@@ -1,52 +1,29 @@
-// 실제 WASM(rhwp/pkg) + WasmBridge + PendingEditManager — 승인이 op 을 되돌리거나 문서를
+// 실제 HeemangEngine(hm-wasm) + WasmBridge + PendingEditManager — 승인이 op 을 되돌리거나 문서를
 // 다시 조판하지 않고 set 의 첫 변이 직전 스냅샷을 before 로 쓰는지, 그 undo 가 기존 경로와
 // 같은 문서(텍스트·글자 모양 구간·직렬화 바이트·렌더 트리)로 돌아가는지 본다.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { registerHooks } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { startEditEngine } from './edit-history-env.ts';
 
-const studio = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const src = join(studio, 'src');
-const pkg = join(studio, '../pkg');
-const binding = pathToFileURL(join(pkg, 'rhwp.js')).href;
-registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === '@wasm/rhwp.js') return { url: binding, shortCircuit: true };
-    if (/^\.{1,2}\//.test(specifier) && !/\.[cm]?[tj]s$/.test(specifier)) {
-      return { url: pathToFileURL(join(dirname(fileURLToPath(context.parentURL)), specifier + '.ts')).href, shortCircuit: true };
-    }
-    return next(specifier, context);
-  },
-});
-const engine = await import(binding);
-engine.initSync({ module: readFileSync(join(pkg, 'rhwp_bg.wasm')) });
-const { WasmBridge } = await import(pathToFileURL(join(src, 'core/wasm-bridge.ts')).href);
-const { EventBus } = await import(pathToFileURL(join(src, 'core/event-bus.ts')).href);
-const { PendingEditManager } = await import(pathToFileURL(join(src, 'agent/pending-edits.ts')).href);
+const engine = await startEditEngine();
+const { EventBus } = await engine.load('/src/core/event-bus.ts');
+const { PendingEditManager } = await engine.load('/src/agent/pending-edits.ts');
 
 const PARAS = ['가나다라마바사아자', '하나둘셋넷다섯여섯', '봄여름가을겨울'];
 
 /** exact=false 는 공유 스냅샷이 없는 엔진처럼 굴어 기존(되돌림) 승인 경로를 강제한다. */
 function setup({ exact = true } = {}) {
-  const doc = engine.HwpDocument.createEmpty();
-  doc.createBlankDocument();
+  const wasm = engine.newDocument();
   PARAS.forEach((text, i) => {
-    if (i > 0) doc.splitParagraph(0, i - 1, [...PARAS[i - 1]].length);
-    doc.insertText(0, i, 0, text);
+    if (i > 0) wasm.splitParagraph(0, i - 1, [...PARAS[i - 1]].length);
+    wasm.insertText(0, i, 0, text);
   });
-  doc.applyCharFormat(0, 1, 0, 3, JSON.stringify({ bold: true }));
+  wasm.applyCharFormat(0, 1, 0, 3, JSON.stringify({ bold: true }));
   const calls = { refreshLayout: 0, restoreSnapshot: 0 };
   for (const name of Object.keys(calls)) {
-    const original = doc[name].bind(doc);
-    doc[name] = (...args) => { calls[name]++; return original(...args); };
+    const original = wasm[name].bind(wasm);
+    wasm[name] = (...args) => { calls[name]++; return original(...args); };
   }
-  const wasm = Object.create(WasmBridge.prototype);
-  wasm.doc = doc;
-  // 스냅샷 복원 뒤의 외부 그림 주입은 개발 서버 fetch 라 여기서는 끈다
-  wasm.populateExternalImagesFromDevServer = async () => {};
   if (!exact) wasm.shareSnapshotExact = undefined;
   const bus = new EventBus();
   const recorded = [];
@@ -71,12 +48,12 @@ function setup({ exact = true } = {}) {
     }
     return {
       paras,
-      ir: createHash('sha256').update(doc.exportHwp()).digest('hex'),
-      tree: doc.getPageRenderTree(0),
+      ir: createHash('sha256').update(wasm.exportHwp()).digest('hex'),
+      page: createHash('sha256').update(wasm.renderPageSvg(0)).digest('hex'),
     };
   };
   const reset = () => { calls.refreshLayout = 0; calls.restoreSnapshot = 0; };
-  return { doc, wasm, bus, manager, recorded, state, calls, reset };
+  return { wasm, bus, manager, recorded, state, calls, reset };
 }
 
 const range = (paraIdx, start, end) => ({
@@ -148,7 +125,7 @@ function approveMixedSet(env) {
   env.manager.beginTurn('claude');
   env.manager.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 0 }, 'Q');
   env.manager.endTurn('review');
-  env.doc.insertText(0, 2, 0, 'U');
+  env.wasm.insertText(0, 2, 0, 'U');
   env.bus.emit('document-mutated', 'input-handler-edit');
   env.reset();
   assert.equal(env.manager.approve(env.manager.getChangeSets()[0].id), true);

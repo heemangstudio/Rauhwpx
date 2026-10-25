@@ -1,5 +1,5 @@
 /**
- * 실제 WASM 엔진 위에서 편집 이력(undo/redo)을 검증하는 Node 테스트 환경.
+ * 실제 HeemangEngine(hm-wasm) 위에서 편집 이력(undo/redo)을 검증하는 Node 테스트 환경.
  *
  * Vite 모듈 로더로 실제 WasmBridge·명령 클래스·CommandHistory·InputHandler 프로토타입을
  * 불러온다. InputHandler 는 DOM 없이 만들 수 없으므로 프로토타입을 그대로 쓰는 호스트를
@@ -9,15 +9,20 @@
 import './wasm-liftoff.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadStudioModule } from './module-server.ts';
-import { requireWasmPackage } from '../browser-support.ts';
 
-const studioRoot = fileURLToPath(new URL('../../', import.meta.url));
-const wasmPackageRoot = resolve(studioRoot, '../pkg');
-requireWasmPackage(wasmPackageRoot);
+const hmWasmRoot = new URL('../../vendor/hm-wasm/', import.meta.url);
+const fontDir = new URL('../../../ttfs/opensource/', import.meta.url);
+
+// Node fetch 는 file: URL 을 못 읽는다. 새 문서 서식(blank.hwpx?url) 같은 로컬 자산만 디스크에서 준다.
+const networkFetch = globalThis.fetch;
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input instanceof URL ? input.href : typeof input === 'string' ? input : input.url;
+  if (url.startsWith('file:')) return Promise.resolve(new Response(readFileSync(fileURLToPath(url))));
+  return networkFetch(input, init);
+}) as typeof fetch;
 
 export interface EditEngine {
   load: (path: string) => Promise<any>;
@@ -46,8 +51,8 @@ function quietly<T>(run: () => T): T {
 
 export async function startEditEngine(): Promise<EditEngine> {
   const load = (path: string) => loadStudioModule(path);
-  const engine = await load('@wasm/rhwp.js');
-  engine.initSync({ module: readFileSync(resolve(wasmPackageRoot, 'rhwp_bg.wasm')) });
+  const hm = await load(new URL('hm_wasm.js', hmWasmRoot).href);
+  hm.initSync({ module: readFileSync(new URL('hm_wasm_bg.wasm', hmWasmRoot)) });
   const [
     { WasmBridge }, command, { CommandHistory }, { InputHandler }, { CursorState }, { EventBus }, { ImeSession },
   ] = await Promise.all([
@@ -60,10 +65,27 @@ export async function startEditEngine(): Promise<EditEngine> {
     load('/src/engine/ime-session.ts'),
   ]);
 
+  const { provideEngineFont } = await load('/src/core/engine-support.ts');
+  // initialize() 는 프로세스 하나에 한 번 엔진 런타임(Engine·글꼴 등록기)을 만들고 어댑터에 붙인다.
+  // 편집 테스트는 문서를 동기로 열므로, 첫 어댑터가 받은 런타임 필드를 새 어댑터에 그대로 붙인다.
+  const probe = new WasmBridge();
+  const bare: Record<string, unknown> = { ...probe.viewer };
+  await probe.initialize();
+  const runtime = Object.fromEntries(Object.entries(probe.viewer).filter(([key, value]) => value !== bare[key]));
+  for (const name of readdirSync(fontDir)) {
+    if (/\.(ttf|otf|ttc)$/i.test(name)) provideEngineFont(name, readFileSync(new URL(name, fontDir)));
+  }
+
   function bridge(): any {
     const wasm = new WasmBridge();
-    // initialize() 는 브라우저 캔버스 글꼴 측정을 설치한다. 엔진은 위 initSync 로 이미 준비됐다.
-    wasm.initialized = true;
+    Object.assign(wasm.viewer, runtime);
+    return wasm;
+  }
+
+  /** 웹 글꼴을 받지 않고 등록한 글꼴로 바로 조판한다. */
+  function laidOut(wasm: any): any {
+    wasm.viewer.markFontsPrepared();
+    wasm.refreshLayout();
     return wasm;
   }
 
@@ -75,12 +97,12 @@ export async function startEditEngine(): Promise<EditEngine> {
     newDocument() {
       const wasm = bridge();
       quietly(() => wasm.createNewDocument());
-      return wasm;
+      return laidOut(wasm);
     },
     openDocument(bytes, fileName) {
       const wasm = bridge();
       quietly(() => wasm.loadDocument(bytes, fileName));
-      return wasm;
+      return laidOut(wasm);
     },
     createHost(wasm) {
       const host = Object.create(InputHandler.prototype);
