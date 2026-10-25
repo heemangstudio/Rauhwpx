@@ -401,6 +401,8 @@ export interface ParaProperties {
   headType?: string;         // 'None'|'Outline'|'Number'|'Bullet'
   paraLevel?: number;        // 0-6 (=1-7수준)
   numberingId?: number;      // 번호/글머리표 정의 ID (1-based, 0=없음)
+  numberingRestartMode?: number; // 세션의 번호 방식: 0=자동, 1=이어, 2=다시 시작
+  numberingStartNum?: number;
   widowOrphan?: boolean;
   keepWithNext?: boolean;
   keepLines?: boolean;

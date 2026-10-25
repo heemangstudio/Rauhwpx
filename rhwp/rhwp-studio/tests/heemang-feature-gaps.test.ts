@@ -117,3 +117,30 @@ test('표 캡션의 위치·세로 정렬을 적용하고 지운다', async t =>
   wasm.setTableProperties(0, table.paraIdx, table.controlIdx, { hasCaption: false });
   assert.equal(wasm.getTableProperties(0, table.paraIdx, table.controlIdx).hasCaption, false);
 });
+
+test('개요와 일반 문단의 세션 번호 다시 시작은 되돌릴 수 있고 파일에는 남지 않는다', async t => {
+  const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  wasm.insertText(0, 0, 0, '첫째');
+  wasm.splitParagraph(0, 0, 2);
+  wasm.insertText(0, 1, 0, '둘째');
+  const id = wasm.ensureDefaultNumbering();
+  for (const headType of ['Outline', 'None', 'Number']) {
+    wasm.applyParaFormat(0, 1, JSON.stringify({ headType, numberingId: id }));
+    const before = adapter.state().undo;
+    wasm.setNumberingRestart(0, 1, 2, 7);
+    assert.equal(adapter.state().undo, before + 1);
+    assert.equal(wasm.getParaPropertiesAt(0, 1).numberingStartNum, 7);
+    adapter.hmDoc().undo();
+    wasm.refreshLayout();
+    assert.equal(wasm.getParaPropertiesAt(0, 1).numberingRestartMode, 0);
+    adapter.hmDoc().redo();
+    wasm.refreshLayout();
+    if (headType === 'None') wasm.applyParaFormat(0, 1, JSON.stringify({ headType: 'Number', numberingId: id }));
+    assert.equal(wasm.getParaPropertiesAt(0, 1).numberingStartNum, 7);
+    const original = wasm.exportHwpx();
+    for (const [bytes, name] of [[wasm.exportHwp(), 'saved.hwp'], [original, 'saved.hwpx']] as const) {
+      wasm.loadDocument(bytes, name);
+      assert.equal(wasm.getParaPropertiesAt(0, 1).numberingRestartMode, 0);
+    }
+  }
+});

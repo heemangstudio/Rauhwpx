@@ -184,7 +184,9 @@ function paras(core: HmCore, list: ListAddress, para: number): ParaProperties {
   const value = format(core, list, para);
   return { ...paraProperties(value.paragraphs), paraShapeId: value.paraShapeId,
     headType: value.list ? { bullet: 'Bullet', numbering: 'Number', outline: 'Outline' }[value.list.kind] : 'None',
-    numberingId: value.list?.id ?? 0, paraLevel: value.list?.level ?? 0, pageBreakBefore: value.pageBreak };
+    numberingId: value.list?.id ?? 0, paraLevel: value.list?.level ?? 0, pageBreakBefore: value.pageBreak,
+    numberingRestartMode: value.listRestart?.mode === 'restart' ? 2 : value.listRestart ? 1 : 0,
+    numberingStartNum: value.listRestart?.mode === 'restart' ? value.listRestart.start : 1 };
 }
 
 export function getCharPropertiesAt(core: HmCore, sec: number, para: number, offset: number): CharProperties { return chars(core, bodyList(sec), para, offset); }
@@ -359,9 +361,8 @@ export function ensureDefaultBullet(core: HmCore, bulletChar: string): number {
 }
 export function setNumberingRestart(core: HmCore, sec: number, para: number, mode: number, startNum: number): string {
   const list = bodyList(sec), map = paraMap(core.paragraph(list, para));
-  const current = context(core, list, para, 0).list;
-  if (!current || current.kind === 'outline') throw unsupported('번호 없는 문단의 번호 다시 시작');
-  core.transact([{ op: 'setList', from: toAddress(list, para, map.lead), to: toAddress(list, para, map.end), list: { kind: current.kind, id: current.id, level: current.level, restart: mode === 2 ? startNum : undefined } }]);
+  core.transact([{ op: 'setListRestart', at: toAddress(list, para, map.lead),
+    restart: mode === 2 ? { mode: 'restart', start: startNum } : mode === 1 ? { mode: 'continue' } : null }]);
   return ok();
 }
 

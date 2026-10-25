@@ -106,7 +106,7 @@ export async function loadApp(page, url) {
 }
 
 /** 파일 열기와 같은 open-document-bytes 경로로 문서를 연다. 첫 캔버스가 그려질 때까지의 ms 를 돌려준다. */
-export async function openDocumentFile(page, filePath) {
+export async function openDocumentFile(page, filePath, { minInk = 30 } = {}) {
   const bytes = [...fs.readFileSync(filePath)];
   const fileName = path.basename(filePath);
   const t0 = Date.now();
@@ -124,7 +124,7 @@ export async function openDocumentFile(page, filePath) {
       });
     });
   }, bytes, fileName);
-  await waitFor(page, 'first page painted', inkPredicate, { timeout: 45000, args: [30] });
+  await waitFor(page, 'first page painted', inkPredicate, { timeout: 45000, args: [minInk] });
   return Date.now() - t0;
 }
 
