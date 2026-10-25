@@ -57,28 +57,30 @@ function installHelpers() {
       if (this.heemang()) return w.search(query, true).matches.length;
       return w.searchAllText(query, true, true).length;
     },
-    /** 문서 영역 캔버스의 띠(클릭한 줄 근처) 해시 — 화면이 바뀌었는지 본다. */
-    bandHash(y) {
+    /** 클릭한 쪽 전체의 해시 — 가운데 정렬된 셀의 글자는 클릭 지점과 멀리 그려질 수 있다. */
+    pageHash(y) {
       let hash = 0;
       for (const canvas of document.querySelectorAll('#scroll-content canvas')) {
         const rect = canvas.getBoundingClientRect();
         if (rect.bottom < y - 60 || rect.top > y + 60 || !canvas.width) continue;
-        const scale = canvas.width / rect.width;
-        const top = Math.max(0, Math.round((y - 60 - rect.top) * scale));
-        const height = Math.min(canvas.height - top, Math.round(120 * scale));
+        const height = canvas.height;
         if (height <= 0) continue;
         const copy = document.createElement('canvas');
         copy.width = canvas.width; copy.height = height;
         const ctx = copy.getContext('2d');
-        ctx.drawImage(canvas, 0, top, canvas.width, height, 0, 0, canvas.width, height);
+        ctx.drawImage(canvas, 0, 0);
         const { data } = ctx.getImageData(0, 0, copy.width, copy.height);
-        for (let i = 0; i < data.length; i += 8) hash = (hash * 31 + data[i]) | 0;
+        // 검은 글자가 투명 바탕에 그려지면 RGB는 그대로이고 alpha만 바뀐다.
+        for (let i = 0; i < data.length; i += 8) {
+          const rgba = data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24);
+          hash = (hash * 31 + rgba) | 0;
+        }
       }
       return hash;
     },
-    /** 다음 입력 이벤트부터 띠가 다시 그려진 프레임까지의 ms. */
+    /** 다음 입력 이벤트부터 쪽 내용이 다시 그려진 프레임까지의 ms. */
     armLatency(y, timeout = 1500) {
-      const before = this.bandHash(y);
+      const before = this.pageHash(y);
       return new Promise((resolve) => {
         let start = null;
         const onInput = (event) => { start ??= event.timeStamp; };
@@ -86,13 +88,17 @@ function installHelpers() {
         window.addEventListener('beforeinput', onInput, true);
         const limit = performance.now() + timeout;
         const tick = (now) => {
-          if (start !== null && this.bandHash(y) !== before) {
+          if (start !== null && this.pageHash(y) !== before) {
             window.removeEventListener('keydown', onInput, true);
             window.removeEventListener('beforeinput', onInput, true);
             resolve(Math.max(0, now - start));
             return;
           }
-          if (now > limit) { resolve(null); return; }
+          if (now > limit) {
+            window.removeEventListener('keydown', onInput, true);
+            window.removeEventListener('beforeinput', onInput, true);
+            resolve(null); return;
+          }
           requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
@@ -285,9 +291,12 @@ async function runDoc(engine, page, doc) {
   await step(result, 'type-ko-en', async () => {
     if (!target) return { ok: false, error: 'no caret target' };
     for (const ch of MARK) {
-      const waiter = page.evaluate((y) => window.__hv.armLatency(y), target.y);
+      // 공백 입력은 글자를 그리지 않을 수 있으므로 내용만 확인하고 paint 표본에서는 뺀다.
+      if (!ch.trim()) { await page.keyboard.type(ch); continue; }
+      // 이벤트 관찰자가 설치된 뒤 입력한다. evaluate와 CDP 키 입력을 경합시키지 않는다.
+      await page.evaluate((y) => { window.__hvPaintWaiter = window.__hv.armLatency(y); }, target.y);
       await page.keyboard.type(ch);
-      latencies.push(await waiter);
+      latencies.push(await page.evaluate(() => window.__hvPaintWaiter));
     }
     await L.sleep(150);
     const after = await text(page);
