@@ -10,10 +10,13 @@ import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
 import { guardHeemangEngineCalls } from './engine-trap';
+import { detectDocumentByteKind } from './document-signature';
+import { readHmlSourceMetadata } from './hm/hml-source';
+import type { HmlOpenMetadata } from './hm/bridge-types';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
-export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' };
+export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' | 'hml' };
 export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt; selection?: EditingSelection }
 export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
@@ -175,6 +178,7 @@ export class HeemangAdapter {
   private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
   private _fileName = '';
   private sourceFormat = 'hwpx';
+  private hmlSourceMetadata: HmlOpenMetadata | null = null;
   private _digest: string | null = null;
   private editable = false;
   // native가 아직 선택을 반환하지 않는 서식·rich paste 경로만 보완한다.
@@ -271,6 +275,7 @@ export class HeemangAdapter {
     this.currentFileHandle = null;
     this._digest = null;
     this.editable = false;
+    this.hmlSourceMetadata = null;
     this.serialized = null;
     this.historyId = 0;
     this.selectionFallbacks.clear();
@@ -283,9 +288,7 @@ export class HeemangAdapter {
     const next = this.engine.open(bytes);
     this.releaseDocument();
     this.doc = next;
-    // open이 검증한 ZIP은 HWPX, CFB·HWP3는 HWP다. 여기서 state를 읽으면 조판된다.
-    this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
-    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.hmReadSourceFormat(bytes);
     this._digest = `blake3:${blake3Hex(bytes)}`;
     this.fileName = name;
     try { return this.getDocumentInfo(); }
@@ -696,12 +699,24 @@ export class HeemangAdapter {
   isSubsecondHotpatchEnabled(): boolean { return false; }
   hasTableTransposeClipboard(): boolean { return false; }
   hasInternalClipboard(): boolean { return internalClipboard !== null && internalClipboard.engine === this.engine; }
-  hasHmlExportCapability(): boolean { return false; }
+  hasHmlExportCapability(): boolean { return true; }
   getShowControlCodes(): boolean { return false; }
   getShowParagraphMarks(): boolean { return false; }
   getClipEnabled(): boolean { return true; }
 
   // ─── WasmBridge 위임부가 쓰는 저수준 접근 (src/core/hm/) ───────────────
+
+  /** open/adopt가 검증한 바이트의 형식을 조판 없이 기억한다. */
+  private hmReadSourceFormat(bytes: Uint8Array): void {
+    const kind = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : detectDocumentByteKind(bytes);
+    this.sourceFormat = kind === 'hwpx' ? 'hwpx' : kind === 'hml' || kind === 'xml' ? 'hml' : 'hwp';
+    this.hmlSourceMetadata = this.sourceFormat === 'hml' ? readHmlSourceMetadata(bytes) : null;
+    this.editable = this.sourceFormat === 'hwpx' || this.sourceFormat === 'hml'
+      || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+  }
+  hmHmlSourceMetadata(): HmlOpenMetadata | null {
+    return this.hmlSourceMetadata ? structuredClone(this.hmlSourceMetadata) : null;
+  }
 
   /** 열린 엔진 문서. 없으면 던진다. */
   hmDoc(): Doc { return this.document(); }
@@ -730,8 +745,7 @@ export class HeemangAdapter {
     this.serialized = null;
     this.historyId = 0;
     this.selectionFallbacks.clear();
-    this.sourceFormat = bytes[0] === 0x50 && bytes[1] === 0x4b ? 'hwpx' : 'hwp';
-    this.editable = this.sourceFormat === 'hwpx' || [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((b, i) => bytes[i] === b);
+    this.hmReadSourceFormat(bytes);
     this.documentGeneration = nextDocumentGeneration();
   }
 
