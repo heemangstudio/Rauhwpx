@@ -558,7 +558,8 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null).
+     * `lists` `ListInfo[]` and `list` one (or null), `count` a
+     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
      * @param {string} request
      * @returns {string}
      */

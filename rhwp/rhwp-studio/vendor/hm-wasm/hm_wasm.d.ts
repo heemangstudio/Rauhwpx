@@ -38,17 +38,36 @@ export type Motion = "left" | "right" | "lineStart" | "lineEnd" | "up" | "down";
 export interface NavigateRequest { position: Address; affinity?: Affinity; motion: Motion; preferredX?: number; page?: number }
 /**
  * \`size\` in HU (1000 = 10 pt); \`color\` a COLORREF; \`fontFace\` a family for
- * all seven script slots, which must be registered; \`charSpacing\` a percent
- * of the character size (-50 to 50) for all slots.
+ * all seven script slots, which must draw with a registered face (its own
+ * family or one Hancom draws in its place); \`fontFaces\` a family per
+ * slot (Hangul, Latin, Hanja, Japanese, other, symbol, user), null keeping the
+ * slot's, read back with all seven; \`charSpacing\` a percent of the character
+ * size (-50 to 50) for all slots. \`relSizes\` (10 to 250) and \`offsets\`
+ * (-100 to 100) are percents per slot; line shapes, \`outline\` (0 to 6),
+ * \`shadow\` (0 none, 1 discrete, 2 continuous) and \`emphasis\` (0 to 12) are
+ * HWP codes; \`shadeColor\` 0xFFFFFFFF is no shading.
  */
 export interface CharPatch {
     bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
-    fontFace?: string; charSpacing?: number;
+    fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
+    relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
+    kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+    strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
+    shadeColor?: number;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; indent?: number; lineSpacing?: number }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
+export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
+export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
+export interface FontFace { id: number; name: string }
 export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
 export type EditOp =
+| { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
+| { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
+| { op: "createStyle"; style: StylePatch }
+| { op: "updateStyle"; id: number; style: StylePatch }
+| { op: "deleteStyle"; id: number }
+| { op: "ensureList"; definition: ListDefinition }
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
@@ -106,6 +125,10 @@ export interface Capabilities {
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
+| { kind: "fonts" }
+| { kind: "fontCandidates"; names: string[] }
+| { kind: "charShape"; id: number }
+| { kind: "paraShape"; id: number }
 | { kind: "table"; table: TableAddress; page?: number }
 | { kind: "paragraphs"; list: ListAddress; from?: number; count?: number }
 | { kind: "formatContext"; at: Address; to?: Address }
@@ -113,15 +136,32 @@ export type QueryRequest =
 | { kind: "style"; id: number }
 | { kind: "lists" }
 | { kind: "list"; listKind: "bullet" | "numbering"; id: number }
+| { kind: "count"; list?: ListAddress; from?: Address; to?: Address }
+| { kind: "formatRuns"; list: ListAddress; from?: number; count?: number }
 | { kind: "lines"; list: ListAddress; para: number };
+/**
+ * Characters as Hancom's status bar counts them (\`count\`): one per code
+ * point, spaces, tabs and fixed spaces included, line breaks, numbers and
+ * objects not; with each field's end, and the text of the tables, text
+ * boxes, captions, headers, footers and notes inside. The whole document's
+ * body with no \`list\` or range, one list with all it holds, or \`[from, to)\`
+ * with what the controls in it hold.
+ */
+export interface CharacterCount { characters: number }
+/** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
+export interface ParagraphFormat {
+    index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+    runs: { offset: number; charShapeId: number; characters: CharPatch }[];
+}
 /** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
 export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }
+
 export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number; level: number }
 /**
  * Values at \`at\` (for a caret, what typing there takes: the shape of the
  * unit before it, or the paragraph's first at its start); \`mixed\` names the
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
- * the range. \`lineSpacing\` is absent unless the spacing is a percentage.
+ * the range. \`lineSpacingKind\` identifies the spacing units.
  */
 export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
 export interface StyleInfo {
@@ -157,6 +197,8 @@ export interface SearchRequest {
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
 export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+/** A family a host may set (\`fontCandidates\`): what to register for it, and whether text set in it already draws with a registered face. */
+export interface FaceCandidates extends FaceRequest { resolves: boolean }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
 /** A font file the host holds, read in pieces (`Engine.addFontFile`). */
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
@@ -331,7 +373,8 @@ export class Doc {
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
      * `FormatContext`, `styles` `StyleInfo[]` and `style` one (or null),
-     * `lists` `ListInfo[]` and `list` one (or null).
+     * `lists` `ListInfo[]` and `list` one (or null), `count` a
+     * `CharacterCount` and `formatRuns` `ParagraphFormat[]`.
      */
     query(request: string): string;
     /**
