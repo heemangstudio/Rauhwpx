@@ -15,6 +15,7 @@ and call hm-wasm. Read `extensions.ts` before auditing stubs: a throw in a base 
 | `document.ts` | Open, new document, save/export, page info and painting, snapshots |
 | `cursor.ts` | Caret rects, hit testing, line info, vertical movement, selection rects |
 | `document-captures.ts` | Native paragraph captures, scoped restoration and release |
+| `objects-ole.ts` | Body legacy OLE equation conversion through native transactions |
 | `objects-connectors.ts` | Bound connector endpoint updates |
 | `table-transpose.ts` | Native cell-range and transpose clipboard, paste and in-place transpose |
 | `text.ts`, `agent-clipboard.ts`, `clipboard-native.ts`, `hwpjson.ts` | Text edits, internal/native clipboard and structured paste |

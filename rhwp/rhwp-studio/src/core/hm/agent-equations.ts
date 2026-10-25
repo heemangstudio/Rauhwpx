@@ -11,7 +11,7 @@ import { extendBridge } from './api';
 
 interface EquationInfo { script: string; size: number; color: number; baseline: number; font: string; width: number; height: number }
 interface ObjectInfo {
-  width?: number; height?: number; horzOffset?: number; vertOffset?: number; treatAsChar?: boolean;
+  instanceId?: number; width?: number; height?: number; horzOffset?: number; vertOffset?: number; treatAsChar?: boolean;
   vertRelTo?: string; horzRelTo?: string; vertAlign?: string; horzAlign?: string; textWrap?: string;
   margins?: [number, number, number, number]; description?: string; zOrder?: number; sizeProtect?: boolean;
 }
@@ -56,7 +56,7 @@ function read(core: HmCore, raw: TableAddress): EquationProperties {
     vertAlign: upper(common.vertAlign), horzAlign: upper(common.horzAlign),
     vertOffset: common.vertOffset ?? 0, horzOffset: common.horzOffset ?? 0,
     textWrap: common.textWrap ? WRAP_OUT[common.textWrap] ?? upper(common.textWrap) : undefined,
-    sizeProtect: common.sizeProtect, zOrder: common.zOrder, description: common.description ?? '',
+    instanceId: common.instanceId, sizeProtect: common.sizeProtect, zOrder: common.zOrder, description: common.description ?? '',
     outerMarginLeft: left, outerMarginRight: right, outerMarginTop: top, outerMarginBottom: bottom,
     script: eq.script, fontSize: eq.size, color: eq.color, baseline: eq.baseline, fontName: eq.font,
   };
