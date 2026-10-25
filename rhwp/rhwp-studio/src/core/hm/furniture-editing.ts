@@ -1,7 +1,7 @@
 /** 머리말·꼬리말과 주석을 엔진의 중첩 문단 목록으로 편집한다. */
-import type { Address, ControlInfo, EditOp, Rect } from '../../../vendor/hm-wasm/hm_wasm';
+import type { Address, Caret, Located, ControlInfo, EditOp, Rect } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
-import { px, unsupported } from './core';
+import { hu, px } from './core';
 import { afterFieldEnds, bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
 import { api, extendBridge } from './api';
 import * as format from './format';
@@ -202,10 +202,8 @@ export function applyCharFormatInHeaderFooter(core: HmCore, sec: number, isHeade
 export function insertFieldInHf(core: HmCore, sec: number, isHeader: boolean, applyTo: number, para: number, offset: number, fieldType: number) {
   const kind = ({ 1: 'pageNumber', 2: 'pageCount', 3: 'fileName' } as Record<number, 'pageNumber' | 'pageCount' | 'fileName'>)[fieldType];
   if (!kind) throw new RangeError('잘못된 머리말·꼬리말 필드');
-  // 엔진은 총 쪽수·파일 이름 필드의 원본 표현을 아직 확인하지 못해 쓰지 않는다.
-  if (kind !== 'pageNumber') throw unsupported(kind === 'pageCount' ? '총 쪽수 필드' : '파일 이름 필드');
   const list = hfList(core, sec, isHeader, applyTo), before = mapIn(core, list, para);
-  edit(core, { op: 'insertField', at: at(core, list, para, offset), kind });
+  edit(core, { op: 'insertField', at: at(core, list, para, offset), kind, ...(kind === 'fileName' ? { command: '$F', text: core.adapter.fileName || '문서' } : {}) });
   const length = logicalLength(mapIn(core, list, para)) - logicalLength(before);
   return { ok: true, charOffset: offset + length, insertedAt: offset, insertedLength: length };
 }
@@ -324,11 +322,24 @@ export function getHeaderFooterPreviewPage(core: HmCore, sec: number): number {
   return pages.find(page => page.sectionIndex === sec)?.pageIndex ?? 0;
 }
 export function getCursorRectInHeaderFooter(core: HmCore, sec: number, isHeader: boolean, applyTo: number, para: number, offset: number, page: number): CursorRect {
-  const caret = core.caret(at(core, hfList(core, sec, isHeader, applyTo), para, offset), 'downstream', page);
+  const list = hfList(core, sec, isHeader, applyTo), position = at(core, list, para, offset);
+  let caret = core.caret(position, 'downstream', page);
+  if (!caret) {
+    const target = hfTarget(core, sec, isHeader, applyTo)!;
+    caret = core.adapter.withFurniturePreview({ section: sec, para: target.para, control: target.control }, (doc, list) => JSON.parse(doc.locate(JSON.stringify({ kind: 'caret', position: { ...position, ...list }, page }))) as Caret | null);
+  }
   if (!caret) throw new Error('머리말·꼬리말의 캐럿을 찾을 수 없습니다');
   return cursor(caret);
 }
-export function getSelectionRectsInHeaderFooter(core: HmCore, sec: number, isHeader: boolean, applyTo: number, page: number, startPara: number, start: number, endPara: number, end: number) { return selection(core, hfList(core, sec, isHeader, applyTo), page, startPara, start, endPara, end); }
+export function getSelectionRectsInHeaderFooter(core: HmCore, sec: number, isHeader: boolean, applyTo: number, page: number, startPara: number, start: number, endPara: number, end: number) {
+  const list = hfList(core, sec, isHeader, applyTo), rects = selection(core, list, page, startPara, start, endPara, end);
+  if (rects.length || (startPara === endPara && start === end)) return rects;
+  const target = hfTarget(core, sec, isHeader, applyTo)!;
+  return core.adapter.withFurniturePreview({ section: sec, para: target.para, control: target.control }, (doc, previewList) => {
+    const from = { ...at(core, list, startPara, start), ...previewList }, to = { ...at(core, list, endPara, end), ...previewList };
+    return (JSON.parse(doc.select(JSON.stringify({ from, to, page }))) as Rect[]).map(rect => ({ ...cursor(rect), width: px(rect.width) }));
+  });
+}
 export function hitTestHeaderFooter(core: HmCore, page: number, x: number, y: number) {
   const p = core.adapter.getPageInfo(page);
   for (const isHeader of [true, false]) {
@@ -339,7 +350,12 @@ export function hitTestHeaderFooter(core: HmCore, page: number, x: number, y: nu
   return { hit: false };
 }
 export function hitTestInHeaderFooterTarget(core: HmCore, page: number, sec: number, isHeader: boolean, applyTo: number, x: number, y: number) {
-  const list = hfList(core, sec, isHeader, applyTo), located = core.locate(page, x, y, { within: list });
+  const list = hfList(core, sec, isHeader, applyTo);
+  let located = core.locate(page, x, y, { within: list });
+  if (!located) {
+    const target = hfTarget(core, sec, isHeader, applyTo)!;
+    located = core.adapter.withFurniturePreview({ section: sec, para: target.para, control: target.control }, (doc, within) => JSON.parse(doc.locate(JSON.stringify({ kind: 'point', page, x: hu(x), y: hu(y), within }))) as Located | null);
+  }
   if (!located) return { hit: false };
   return { hit: true, sectionIndex: sec, applyTo, paraIndex: located.position.para, charOffset: wireToLogical(mapIn(core, list, located.position.para), located.position.offset), cursorRect: cursor(located.caret) };
 }
@@ -350,7 +366,12 @@ export function hitTestInHeaderFooter(core: HmCore, page: number, isHeader: bool
 }
 export function renderHeaderFooterEditPreviewToCanvas(core: HmCore, page: number, sec: number, isHeader: boolean, applyTo: number, canvas: HTMLCanvasElement, scale: number): void {
   const target = getHeaderFooterEditTarget(core, page, isHeader);
-  if (target.sectionIndex !== sec || target.applyTo !== applyTo) throw unsupported('표시되지 않는 머리말·꼬리말 편집 미리보기');
+  if (target.sectionIndex !== sec || target.applyTo !== applyTo) {
+    const selected = hfTarget(core, sec, isHeader, applyTo);
+    if (!selected) throw new RangeError('머리말·꼬리말이 없습니다');
+    core.adapter.renderFurniturePreviewToCanvas(page, { section: sec, para: selected.para, control: selected.control }, canvas, scale);
+    return;
+  }
   core.adapter.renderPageToCanvas(page, canvas, scale);
 }
 export function getHeaderFooterList(core: HmCore, currentSection: number, currentIsHeader: boolean, currentApplyTo: number) {
@@ -394,21 +415,37 @@ export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteSh
 
 /**
  * 머리말·꼬리말 마당: 지우고 새로 만든 뒤 쪽 번호를 넣고 정렬한다. 6~10 은 1~5 에 굵게·밑줄을 더한다.
- * 파일 이름이 든 마당(4·5·9·10)은 엔진이 파일 이름 필드를 아직 쓰지 못해 막는다.
+ * 4·5·9·10 은 오른쪽 정렬 탭으로 파일 이름과 쪽 번호를 양끝에 놓는다.
  */
 export function applyHfTemplate(core: HmCore, sec: number, isHeader: boolean, applyTo: number, templateId: number): { ok: boolean } {
   if (!Number.isInteger(templateId) || templateId < 0 || templateId > 10) throw new RangeError('알 수 없는 머리말·꼬리말 마당');
   if (!SIDES[applyTo]) throw new RangeError('잘못된 머리말·꼬리말 적용 범위');
   const layout = templateId <= 5 ? templateId : templateId - 5;
-  if (layout === 4 || layout === 5) throw unsupported('파일 이름이 든 머리말·꼬리말 마당');
-  deleteHeaderFooter(core, sec, isHeader, applyTo);
-  createHeaderFooter(core, sec, isHeader, applyTo);
-  if (layout === 0) return { ok: true };
-  const list = hfList(core, sec, isHeader, applyTo);
-  edit(core, { op: 'insertField', at: at(core, list, 0, 0), kind: 'pageNumber' });
-  const map = mapIn(core, list, 0), from = toAddress(list, 0, map.lead), to = toAddress(list, 0, map.end);
-  const ops: EditOp[] = [{ op: 'formatParas', from, to, patch: format.paraPatch({ alignment: ['left', 'center', 'right'][layout - 1] }) }];
-  if (templateId > 5) ops.push({ op: 'formatChars', from, to, patch: format.charPatch({ bold: true, underline: true }) });
+  const previous = hfTarget(core, sec, isHeader, applyTo);
+  const head = core.paragraph(bodyList(sec), 0);
+  const control = head.controls.filter(c => c.offset < head.caret[0]).length;
+  const list: ListAddress = { section: sec, steps: [{ para: 0, control, index: 0 }] };
+  const ops: EditOp[] = [];
+  if (previous) ops.push({ op: 'deleteControl', target: { section: sec, para: previous.para, control: previous.control } });
+  ops.push({ op: 'createHeaderFooter', section: sec, kind: isHeader ? 'header' : 'footer', side: SIDES[applyTo] });
+  let offset = 0;
+  const field = (kind: 'pageNumber' | 'fileName') => {
+    const text = core.adapter.fileName || '문서';
+    ops.push({ op: 'insertField', at: toAddress(list, 0, offset), kind, ...(kind === 'fileName' ? { command: '$F', text } : {}) });
+    offset += kind === 'pageNumber' ? 8 : 16 + text.length;
+  };
+  if (layout) {
+    field(layout === 5 ? 'fileName' : 'pageNumber');
+    if (layout >= 4) {
+      ops.push({ op: 'insertText', at: toAddress(list, 0, offset), text: '\t' }); offset += 8;
+      field(layout === 4 ? 'fileName' : 'pageNumber');
+    }
+    const from = toAddress(list, 0, 0), to = toAddress(list, 0, offset);
+    const page = core.query<{ page: { width: number; marginLeft: number; marginRight: number } }>({ kind: 'sectionSettings', section: sec }).page;
+    const width = page.width - page.marginLeft - page.marginRight;
+    ops.push({ op: 'formatParas', from, to, patch: { align: layout === 2 ? 'center' : layout === 3 ? 'right' : 'left', ...(layout >= 4 ? { tabStops: [{ position: width, type: 1, fill: 0 }] } : {}) } } as EditOp);
+    if (templateId > 5) ops.push({ op: 'formatChars', from, to, patch: { bold: true, underline: true } });
+  }
   core.transact(ops);
   return { ok: true };
 }

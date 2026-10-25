@@ -3,7 +3,7 @@
  *
  * 모델 표: `ro` 본문 문단(`hp` 첫 문단, 문단마다 `np` 다음 문단), `cp` 글자 모양, `pp` 문단 모양.
  * 문단의 `ru` 는 글자 모양(`cp`)이 같은 조각이고, 조각의 `ch` 는 글자(`t`) 또는 조판 부호(`cc`)다.
- * 표·그림 같은 개체(`co`)는 아직 옮기지 않는다. 그런 모델은 거절해 HTML 경로로 넘긴다.
+ * 개체(`co`)는 `cs` 에서, 셀·글상자 문단은 `sl` 에서, 그림 바이트는 `bidt` 에서 읽는다.
  */
 import type { Address, Align, CharPatch, EditOp, FaceCandidates, ParaPatch } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
@@ -92,36 +92,58 @@ function paraPatch(pp: Obj): ParaPatch {
   return patch;
 }
 
-interface Run { text: string; format: CharPatch }
+interface Run { text: string; format: CharPatch; control?: { type: 'table' | 'picture' | 'rectangle'; data: Obj; inner: Obj; cells?: { data: Obj; paras: Para[] }[]; paras?: Para[]; bytes?: number[] } }
 interface Para { runs: Run[]; shape: ParaPatch | null }
 
-/** 본문 문단을 순서대로. 개체가 있으면 거절한다. */
+/** 본문과 개체의 중첩 문단을 순서대로 읽는다. */
 export function readHwpJson(json: string): Para[] {
   let model: Obj;
   try { model = obj(JSON.parse(json.trim())); } catch { throw new SyntaxError('한글 문서모델을 읽을 수 없습니다'); }
-  const ro = obj(model.ro), cp = obj(model.cp), pp = obj(model.pp);
-  const paras: Para[] = [];
-  const seen = new Set<string>();
-  for (let id = ro.hp; typeof id === 'string' && id && !seen.has(id); id = obj(ro[id]).np) {
-    seen.add(id);
-    const p = obj(ro[id]);
-    const runs: Run[] = [];
-    for (const run of Array.isArray(p.ru) ? p.ru : []) {
-      const r = obj(run);
-      let text = '';
-      for (const item of Array.isArray(r.ch) ? r.ch : []) {
-        const c = obj(item);
-        if (typeof c.t === 'string') { text += c.t.replace(/\r\n?|\n/g, ' '); continue; }
-        const code = num(c, 'cc');
-        if (code === SECTION_CODE) continue;
-        if (code !== undefined && CHAR_CODES[code] && !c.co) { text += CHAR_CODES[code]; continue; }
-        throw unsupported('한글 문서모델의 표·개체 붙여넣기');
+  const cp = obj(model.cp), pp = obj(model.pp), controls = obj(model.cs), lists = obj(model.sl);
+  const parse = (pool: Obj, first: unknown, depth = 0): Para[] => {
+    if (depth > 16) throw new RangeError('한글 문서모델의 개체가 너무 깊습니다');
+    const paras: Para[] = [], seen = new Set<string>();
+    for (let id = first; typeof id === 'string' && id && !seen.has(id); id = obj(pool[id]).np) {
+      seen.add(id);
+      const p = obj(pool[id]), runs: Run[] = [];
+      for (const raw of Array.isArray(p.ru) ? p.ru : []) {
+        const run = obj(raw), format = charPatch(obj(cp[String(run.cp ?? '')]));
+        let text = '';
+        const flush = () => { if (text) runs.push({ text, format }); text = ''; };
+        for (const item of Array.isArray(run.ch) ? run.ch : []) {
+          const c = obj(item);
+          if (typeof c.t === 'string') { text += c.t.replace(/\r\n?|\n/g, ' '); continue; }
+          const code = num(c, 'cc');
+          if (code === SECTION_CODE) continue;
+          if (code !== undefined && CHAR_CODES[code] && !c.co) { text += CHAR_CODES[code]; continue; }
+          const data = obj(controls[String(c.co ?? '')]);
+          if (!Object.keys(data).length) throw new RangeError('한글 문서모델의 개체 참조가 없습니다');
+          flush();
+          if (c.ci === 1952607264) {
+            const cells = (Array.isArray(data.tr) ? data.tr : []).flatMap(row => Array.isArray(row) ? row : []).map(cell => {
+              const head = obj(lists[String(obj(cell).so ?? '')]);
+              return { data: obj(head.tc), paras: parse(lists, head.hp, depth + 1) };
+            });
+            runs.push({ text: '', format, control: { type: 'table', data, inner: {}, cells } });
+          } else if (c.ci === 1735618336) {
+            const inner = obj(data.rc);
+            if (inner.ci === 611476835) {
+              const head = obj(lists[String(inner.so ?? '')]);
+              runs.push({ text: '', format, control: { type: 'rectangle', data, inner, paras: parse(lists, head.hp, depth + 1) } });
+            } else {
+              const name = String(obj(inner.img).bi ?? ''), encoded = obj(model.bidt)[name];
+              if (typeof encoded !== 'string' || !encoded) throw new RangeError('한글 문서모델의 그림 원본이 없습니다');
+              runs.push({ text: '', format, control: { type: 'picture', data, inner, bytes: [...atob(encoded.replace(/\s/g, ''))].map(c => c.charCodeAt(0)) } });
+            }
+          } else throw unsupported('한글 문서모델의 개체 종류');
+        }
+        flush();
       }
-      if (text) runs.push({ text, format: charPatch(obj(cp[String(r.cp ?? '')])) });
+      paras.push({ runs, shape: typeof p.pp === 'string' && pp[p.pp] ? paraPatch(obj(pp[p.pp])) : null });
     }
-    const shape = typeof p.pp === 'string' && pp[p.pp] ? paraPatch(obj(pp[p.pp])) : null;
-    paras.push({ runs, shape });
-  }
+    return paras;
+  };
+  const ro = obj(model.ro), paras = parse(ro, ro.hp);
   if (!paras.length) throw new SyntaxError('한글 문서모델에 본문 문단이 없습니다');
   return paras;
 }
@@ -131,10 +153,12 @@ export function readHwpJson(json: string): Para[] {
  * 그 언어 칸을 비워 붙여넣는 자리의 글꼴을 쓴다.
  */
 function keepRegisteredFaces(core: HmCore, paras: Para[]): void {
-  const names = [...new Set(paras.flatMap(p => p.runs.flatMap(r => r.format.fontFaces ?? [])).filter((n): n is string => !!n))];
+  const allRuns = (paras: Para[]): Run[] => paras.flatMap(p => p.runs.flatMap(r => [r, ...allRuns(r.control?.paras ?? []), ...allRuns(r.control?.cells?.flatMap(c => c.paras) ?? [])]));
+  const runs = allRuns(paras);
+  const names = [...new Set(runs.flatMap(r => r.format.fontFaces ?? []).filter((n): n is string => !!n))];
   if (!names.length) return;
   const known = new Set(core.query<FaceCandidates[]>({ kind: 'fontCandidates', names }).filter(f => f.resolves).map(f => f.name));
-  for (const run of paras.flatMap(p => p.runs)) {
+  for (const run of runs) {
     const faces = run.format.fontFaces?.map(name => (name && known.has(name) ? name : null));
     if (faces?.some(Boolean)) run.format.fontFaces = faces;
     else delete run.format.fontFaces;
@@ -152,21 +176,63 @@ function pasteAt(core: HmCore, at: Address, json: string): string {
   keepRegisteredFaces(core, paras);
   const ops: EditOp[] = [];
   let cursor = { ...at };
-  paras.forEach((para, k) => {
+  let nextControl = core.paragraph({ section: at.section, steps: at.steps ?? [] }, at.para).controls.filter(c => c.offset < at.offset).length;
+  const emit = (paras: Para[]) => paras.forEach((para, k) => {
     if (k > 0) {
       ops.push({ op: 'split', at: { ...cursor } });
-      cursor = { ...cursor, para: cursor.para + 1, offset: 0 };
-      if (para.shape && Object.keys(para.shape).length) {
-        ops.push({ op: 'formatParas', from: { ...cursor }, to: { ...cursor }, patch: para.shape });
-      }
+      cursor = { ...cursor, para: cursor.para + 1, offset: 0 }; nextControl = 0;
+      if (para.shape && Object.keys(para.shape).length) ops.push({ op: 'formatParas', from: { ...cursor }, to: { ...cursor }, patch: para.shape });
     }
     for (const run of para.runs) {
-      ops.push({ op: 'insertText', at: { ...cursor }, text: run.text, format: run.format });
-      cursor = { ...cursor, offset: cursor.offset + wireLength(run.text) };
+      if (!run.control) {
+        ops.push({ op: 'insertText', at: { ...cursor }, text: run.text, format: run.format });
+        cursor = { ...cursor, offset: cursor.offset + wireLength(run.text) }; continue;
+      }
+      const { type, data, inner } = run.control;
+      const parent = { ...cursor }, control = nextControl++, after = nextControl;
+      const object = { section: parent.section, steps: parent.steps, para: parent.para, control };
+      const width = Math.max(283, num(data, 'swi') ?? 7200), height = Math.max(283, num(data, 'she') ?? 3600);
+      if (type === 'table') {
+        const rows = num(data, 'rc') ?? 1, columns = num(data, 'cco') ?? 1;
+        if (rows * columns > 10000) throw new RangeError('붙여넣는 표가 너무 큽니다');
+        ops.push({ op: 'createTable', at: parent, rows, columns, columnWidths: Array(columns).fill(Math.max(283, Math.round(width / columns))), inline: flag(data, 'pta') } as EditOp);
+        for (const cell of run.control.cells ?? []) {
+          const row = num(cell.data, 'ar') ?? 0, column = num(cell.data, 'ac') ?? 0;
+          cursor = { section: parent.section, steps: [...(parent.steps ?? []), { para: parent.para, control, index: row * columns + column }], para: 0, offset: 0 }; nextControl = 0;
+          emit(cell.paras);
+          ops.push({ op: 'setCellProperties', table: object, row, column, patch: { header: flag(cell.data, 'he'), ownPadding: flag(cell.data, 'hm'), protected: flag(cell.data, 'pr'), padding: ['ml', 'mr', 'mt', 'mb'].map(k => num(cell.data, k) ?? 0) } } as EditOp);
+        }
+        for (const cell of run.control.cells ?? []) {
+          const rowSpan = num(cell.data, 'sr') ?? 1, columnSpan = num(cell.data, 'sc') ?? 1;
+          if (rowSpan > 1 || columnSpan > 1) {
+            const row = num(cell.data, 'ar') ?? 0, column = num(cell.data, 'ac') ?? 0;
+            ops.push({ op: 'mergeTableCells', table: object, startRow: row, startColumn: column, endRow: row + rowSpan - 1, endColumn: column + columnSpan - 1 });
+          }
+        }
+      } else if (type === 'picture') {
+        const key = String(obj(inner.img).bi ?? ''), extension = key.split('.').pop() || 'png';
+        ops.push({ op: 'insertPicture', at: parent, bytes: run.control.bytes!, extension, width, height, naturalWidth: num(inner, 'iw') ?? width, naturalHeight: num(inner, 'ih') ?? height, inline: flag(data, 'pta') } as EditOp);
+      } else {
+        ops.push({ op: 'createShape', at: parent, kind: run.control.paras?.length ? 'textbox' : 'rect', width, height, inline: flag(data, 'pta') } as EditOp);
+        const solid = obj(obj(inner.fb).wb), line = obj(inner.ls);
+        ops.push({ op: 'setObjectProperties', object, patch: { round: num(inner, 'rra') ?? 0, border: { color: num(line, 'co') ?? 0, width: num(line, 'wi') ?? 0, style: num(line, 'st') ?? 0 }, ...(Object.keys(solid).length ? { fill: { kind: 'solid', background: num(solid, 'fc') ?? 0xffffff, patternColor: num(solid, 'hc') ?? 0 } } : {}) } } as EditOp);
+        if (run.control.paras?.length) {
+          cursor = { section: parent.section, steps: [...(parent.steps ?? []), { para: parent.para, control, index: 0 }], para: 0, offset: 0 }; nextControl = 0; emit(run.control.paras);
+        }
+      }
+      ops.push({ op: 'setObjectProperties', object, patch: {
+        horzOffset: num(data, 'ph2') ?? 0, vertOffset: num(data, 'pvo') ?? 0,
+        horzRelTo: ['paper', 'page', 'column', 'para'][num(data, 'phr') ?? 3], vertRelTo: ['paper', 'page', 'para'][num(data, 'pvr') ?? 2],
+        horzAlign: ['left', 'center', 'right', 'inside', 'outside'][num(data, 'ph1') ?? 0], vertAlign: ['top', 'center', 'bottom', 'inside', 'outside'][num(data, 'pva') ?? 0],
+        allowOverlap: flag(data, 'pao'), keepWithAnchor: flag(data, 'pha'), sizeProtect: type === 'table' ? undefined : flag(data, 'spr'),
+        ...(type === 'picture' ? { brightness: num(obj(inner.img), 'br') ?? 0, contrast: num(obj(inner.img), 'co') ?? 0, effect: num(obj(inner.img), 'ef') ?? 0, pictureMargins: ['ml', 'mr', 'mt', 'mb'].map(k => num(inner, k) ?? 0) } : {}),
+      } } as EditOp);
+      cursor = { ...parent, offset: parent.offset + 8 }; nextControl = after;
     }
   });
-  const receipt = core.transact(ops);
-  const end = receipt?.caret ?? cursor;
+  emit(paras);
+  core.transact(ops);
+  const end = cursor;
   const position = addressToPosition(core, end);
   return JSON.stringify({ ok: true, paraIdx: end.para, charOffset: position.charOffset });
 }

@@ -115,6 +115,10 @@ export function getNoteEquationProperties(core: HmCore, ref: NoteControlRef): Eq
   return read(core, objectAt(cellList(ref.sectionIdx, ref.paraIdx, ref.controlIdx, 0), ref.noteParaIdx, ref.innerControlIdx));
 }
 
+export function setNoteEquationProperties(core: HmCore, ref: NoteControlRef, props: Record<string, unknown>): { ok: boolean } {
+  return write(core, objectAt(cellList(ref.sectionIdx, ref.paraIdx, ref.controlIdx, 0), ref.noteParaIdx, ref.innerControlIdx), props);
+}
+
 export function setEquationProperties(core: HmCore, sec: number, para: number, ci: number, cellIdx: number | undefined, cellParaIdx: number | undefined, props: Record<string, unknown>, innerControlIdx?: number): { ok: boolean } {
   return write(core, cellTarget(sec, para, ci, cellIdx, cellParaIdx, innerControlIdx), props);
 }
@@ -153,6 +157,6 @@ export function getEquationScriptInCellAt(core: HmCore, sec: number, parentPara:
 
 extendBridge({
   getEquationProperties, getEquationPropertiesByPath, getNoteEquationProperties,
-  setEquationProperties, setEquationPropertiesByPath, renderEquationPreview,
+  setEquationProperties, setEquationPropertiesByPath, setNoteEquationProperties, renderEquationPreview,
   insertEquation, insertEquationInCell, insertEquationInCellByPath, getEquationScriptInCellAt,
 });

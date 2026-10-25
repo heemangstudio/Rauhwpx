@@ -66,7 +66,20 @@ export function widgetCharPatch(core: HmCore, props: Record<string, unknown>, cu
   const patch: CharPatch = {};
   const take = (key: string): unknown => { const value = rest[key]; delete rest[key]; return value; };
   const has = (key: string): boolean => rest[key] !== undefined;
-  if (BORDER_KEYS.some(has)) throw unsupported('글자 테두리·배경');
+  if (has('borderFillId')) Object.assign(patch, { borderFillId: Number(take('borderFillId')) });
+  if (BORDER_KEYS.slice(1).some(has)) {
+    const borderFill: Record<string, unknown> = {};
+    for (const side of ['Left', 'Right', 'Top', 'Bottom']) {
+      const line = take(`border${side}`) as { type: number; width: number; color: string } | undefined;
+      if (line) borderFill[side.toLowerCase()] = { style: line.type, width: line.width, color: colorRef(line.color) };
+    }
+    const fill = take('fillType'), color = take('fillColor'), patternColor = take('patternColor'), pattern = take('patternType');
+    if (fill === 'none') borderFill.fill = { kind: 'none' };
+    else if (fill === 'solid' || color !== undefined || patternColor !== undefined || pattern !== undefined) {
+      borderFill.fill = { kind: 'solid', background: colorRef(color ?? '#ffffff'), patternColor: colorRef(patternColor ?? '#000000'), pattern: Number(pattern ?? 0) };
+    } else if (fill !== undefined) throw new RangeError(`잘못된 글자 배경: ${String(fill)}`);
+    Object.assign(patch, { borderFill });
+  }
   if (has('fontId')) patch.fontFace = fontName(core, 0, Number(take('fontId'))) ?? undefined;
   if (Array.isArray(rest.fontIds)) patch.fontFaces = (take('fontIds') as unknown[]).map((id, lang) => fontName(core, lang, Number(id)));
   for (const key of ['fontFamilies', 'fontNames']) {
@@ -223,11 +236,21 @@ function paraOps(core: HmCore, list: ListAddress, first: number, last: number, p
   }
   if (props.headType !== undefined || props.numberingId !== undefined || props.paraLevel !== undefined) {
     const current = context(core, list, first, 0).list;
-    const kind = props.headType ?? (current?.kind === 'bullet' ? 'Bullet' : current ? 'Number' : 'None');
-    if (kind === 'Outline') throw unsupported('개요 번호');
+    const kind = props.headType ?? (current?.kind === 'bullet' ? 'Bullet' : current?.kind === 'outline' ? 'Outline' : current ? 'Number' : 'None');
+    let id = Number(props.numberingId ?? current?.id ?? 0);
+    if (kind === 'Outline') {
+      const section = core.query<{ settings: { outlineNumbering?: number } | null }>({ kind: 'sectionSettings', section: list.section });
+      id = id || section.settings?.outlineNumbering || getNumberingList(core)[0]?.id || 0;
+      if (!id) {
+        const definition = { kind: 'numbering', start: 1, levels: DEFAULT_NUMBERING.levelFormats.map((format, i) => ({ format, numberKind: DEFAULT_NUMBERING.numberFormats[i] })) };
+        ops.push({ op: 'ensureList', definition } as EditOp);
+        id = getNumberingList(core).length + 1;
+      }
+      if (id !== section.settings?.outlineNumbering) ops.push({ op: 'setSectionSettings', section: list.section, patch: { outlineNumbering: id } });
+    }
     ops.push({ op: 'setList', from, to, list: kind === 'None' ? null : {
-      kind: kind === 'Bullet' ? 'bullet' : 'numbering', id: Number(props.numberingId ?? current?.id ?? 0), level: Number(props.paraLevel ?? current?.level ?? 0),
-    } });
+      kind: kind === 'Outline' ? 'outline' : kind === 'Bullet' ? 'bullet' : 'numbering', id, level: Number(props.paraLevel ?? current?.level ?? 0),
+    } } as EditOp);
   }
   return ops;
 }
