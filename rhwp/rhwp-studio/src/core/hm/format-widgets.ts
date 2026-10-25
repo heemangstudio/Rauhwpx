@@ -139,8 +139,18 @@ function context(core: HmCore, list: ListAddress, para: number, offset: number):
   return core.query<FormatContext>({ kind: 'formatContext', at: textAddress(core, list, para, offset) });
 }
 
+/**
+ * 글자 속성 API 의 오프셋은 그 자리의 글자를 가리킨다(구 엔진과 같다). 엔진의 캐럿 문맥은 앞 글자 모양이므로
+ * 그 글자 하나를 범위로 묻는다. 문단 끝(빈 문단)은 캐럿 문맥을 쓴다.
+ */
+function charAt(core: HmCore, list: ListAddress, para: number, offset: number): FormatContext {
+  if (offset >= paraMap(core.paragraph(list, para)).textLength) return context(core, list, para, offset);
+  return core.query<FormatContext>({ kind: 'formatContext',
+    at: textAddress(core, list, para, offset), to: textAddress(core, list, para, offset + 1) });
+}
+
 function chars(core: HmCore, list: ListAddress, para: number, offset: number): CharProperties {
-  const value = context(core, list, para, offset).characters;
+  const value = charAt(core, list, para, offset).characters;
   const props = charProperties(value);
   props.underlineType ??= value.underline ? 'Bottom' : 'None';
   props.spacings = 'spacings' in value ? value.spacings as number[] : Array(7).fill(value.charSpacing ?? 0);
@@ -148,7 +158,7 @@ function chars(core: HmCore, list: ListAddress, para: number, offset: number): C
   props.fontIds = props.fontFamilies?.map(name => findOrCreateFontId(core, name));
   const wire = textAddress(core, list, para, offset).offset;
   const runs = format(core, list, para).runs;
-  props.charShapeId = runs.slice().reverse().find(run => run.offset < wire)?.charShapeId ?? runs[0]?.charShapeId;
+  props.charShapeId = runs.slice().reverse().find(run => run.offset <= wire)?.charShapeId ?? runs[0]?.charShapeId;
   return props;
 }
 
@@ -171,7 +181,7 @@ function charOp(core: HmCore, list: ListAddress, para: number, start: number, en
   return b > a && Object.keys(patch).length ? [{ op: 'formatChars', from: toAddress(list, para, a), to: toAddress(list, para, b), patch }] : [];
 }
 function applyChars(core: HmCore, list: ListAddress, para: number, start: number, end: number, json: string): string {
-  const patch = widgetCharPatch(core, JSON.parse(json), () => context(core, list, para, start).characters);
+  const patch = widgetCharPatch(core, JSON.parse(json), () => charAt(core, list, para, start).characters);
   core.transact(charOp(core, list, para, start, end, patch));
   return ok();
 }
@@ -180,7 +190,7 @@ export function applyCharFormatInCell(core: HmCore, sec: number, parent: number,
 export function applyCharFormatInCellByPath(core: HmCore, sec: number, parent: number, path: string, start: number, end: number, json: string): string { const target = pathTarget(sec, parent, path); return applyChars(core, target.list, target.para, start, end, json); }
 
 export function applyCharFormatAcrossSections(core: HmCore, startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number, json: string): string {
-  const patch = widgetCharPatch(core, JSON.parse(json), () => context(core, bodyList(startSec), startPara, startOffset).characters);
+  const patch = widgetCharPatch(core, JSON.parse(json), () => charAt(core, bodyList(startSec), startPara, startOffset).characters);
   const ops: EditOp[] = [];
   for (let sec = startSec; sec <= endSec; sec++) {
     const list = bodyList(sec);

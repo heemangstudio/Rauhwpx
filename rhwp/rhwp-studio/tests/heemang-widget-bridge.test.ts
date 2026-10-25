@@ -150,3 +150,10 @@ test('the numbering button reuses the document numbering before creating the Han
   assert.equal(api.ensureDefaultNumbering(core), first);
   assert.equal(api.getNumberingList(core).length, 1);
 });
+
+test('character properties at an offset describe the character there, as the toolbar reads a selection start', t => {
+  const { core } = open(t);
+  api.insertText(core, 0, 0, 0, 'abcdef');
+  api.applyCharFormat(core, 0, 0, 2, 4, JSON.stringify({ bold: true }));
+  assert.deepEqual([1, 2, 3, 4].map(offset => api.getCharPropertiesAt(core, 0, 0, offset).bold), [false, true, true, false]);
+});
