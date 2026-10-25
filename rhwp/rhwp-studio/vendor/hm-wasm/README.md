@@ -1,14 +1,15 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `f9528d9`: `feat/studio-api`
-(`05a3207`) with `feat/studio-widgets` (`bb98daf`), `feat/studio-dialogs` (`e6ee8d8`), `feat/studio-objects`
-(`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged and the read-back fix
-`f9528d9` on top, over main (MAIN107, `d660276`). Built on 2026-10-25.
+Generated browser bindings and WASM from HeemangEngine `fix/studio-residual-a` at `a5b0951`, which is
+`feat/studio-integrate` (`f9528d9`: `feat/studio-api` (`05a3207`) with `feat/studio-widgets` (`bb98daf`),
+`feat/studio-dialogs` (`e6ee8d8`), `feat/studio-objects` (`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged
+and the read-back fix `f9528d9` on top, over main (MAIN107, `d660276`)) plus note renumbering (`0de6421`),
+`Doc.adopt` (`708adb0`) and object captions (`a5b0951`). Built on 2026-10-25.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
-`hm_wasm_bg.wasm`: 5,660,423 bytes, SHA-256
-`6ba890ed3ea8748d32f7b60a97029852288a9ba37000c2484cf8c0ef3c9777c7`.
+`hm_wasm_bg.wasm`: 5,688,384 bytes, SHA-256
+`d0ba3af3e695c7d90b785f083d89fe100a3701b497566a8c8186ccf61b950eb3`.
 
 Studio API additions on `feat/studio-api`:
 
@@ -34,7 +35,9 @@ query. Dialog branch additions (`4483a40`, `e6ee8d8`): page, section, column and
 footers, footnotes and endnotes, click-here fields, hyperlinks, bookmarks and form objects. Agent tools branch
 (`8d6a669`): equation insert and edit (`insertEquation`, `setEquation`), numbered table captions (`setTableCaption`)
 and the `equation` and `equationPreview` queries. `f9528d9` reports page and column breaks in `formatRuns` and a
-table's caption and cell zones in `tableProperties`.
+table's caption and cell zones in `tableProperties`. `0de6421` renumbers notes in document order after edits that add, remove or
+restart them (`renumberNotes`); `708adb0` adds `Doc.adopt`, which takes another opened document's content while
+keeping checkpoints; `a5b0951` adds `setObjectCaption` and reports object captions in `objectProperties`.
 
 To refresh, run `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> ./crates/hm-wasm/build.sh` in a HeemangEngine
 worktree of `feat/studio-integrate`, copy the four files from `target/hm-wasm-pkg/web/` here and update this

@@ -103,6 +103,8 @@ export interface ObjectProperties extends ObjectPatch {
     kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
     brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
     fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
+    /** Drawings and equations: null without a caption; `list` is the caption's list index in the object's steps. */
+    caption?:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
 }
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
 export interface TableProperties extends TablePatch {
@@ -131,6 +133,8 @@ export type EditOp =
 | {op:"setPageHide";at:Address;flags:number}
 | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
 | {op:"insertNote";at:Address;kind:NoteKind}
+/** Gives every note the number Hancom shows. Runs on its own after edits that add, remove or restart notes. */
+| {op:"renumberNotes"}
 | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
 | {op:"updateField";target:ControlAddress;patch:FieldPatch}
 | {op:"insertBookmark";at:Address;name:string}
@@ -152,6 +156,8 @@ export type EditOp =
 | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
 | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
 | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
+/** A picture, drawing or equation caption; "그림 N" or "수식 N" first with `withNumber`. Created below the object when missing. */
+| { op: "setObjectCaption"; object: ObjectAddress; text: string; withNumber?: boolean }
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
 | { op: "split"; at: Address; pageBreak?: boolean }
@@ -353,6 +359,13 @@ export class Doc {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Takes `other`'s document in place of this one's, with an empty
+     * history, and closes `other`. This document's checkpoints stay, so a
+     * host can put back what it held before; the result counts as unsaved.
+     * A `Receipt`.
+     */
+    adopt(other: Doc): string;
     /**
      * Takes the IME text out; a `Receipt` with the caret where it began,
      * or `null` when nothing was composing.
@@ -695,6 +708,7 @@ export interface InitOutput {
     readonly blake3hasher_update: (a: number, b: number, c: number) => void;
     readonly brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
     readonly capabilities: () => [number, number];
+    readonly doc_adopt: (a: number, b: number) => [number, number, number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
     readonly doc_captureObjectTransform: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];

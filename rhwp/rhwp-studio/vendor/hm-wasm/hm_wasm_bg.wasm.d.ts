@@ -10,6 +10,7 @@ export const blake3hasher_new: () => number;
 export const blake3hasher_update: (a: number, b: number, c: number) => void;
 export const brotliDecompress: (a: number, b: number, c: number) => [number, number, number, number];
 export const capabilities: () => [number, number];
+export const doc_adopt: (a: number, b: number) => [number, number, number, number];
 export const doc_cancelComposition: (a: number) => [number, number, number, number];
 export const doc_captureObjectTransform: (a: number, b: number, c: number) => [number, number, number];
 export const doc_checkpoint: (a: number) => [number, number, number];
