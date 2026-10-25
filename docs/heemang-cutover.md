@@ -28,15 +28,42 @@ Worktrees are under `/Users/pyu/projects/hobbies/Rau/heemang-wt`. Studio integra
 | Remaining methods and runtime verification | `studio-stubs` / `engine-stubs` | Transpose, captures, furniture IDs, connectors and OLE promotion are merged. Four-mode runtime verification is committed. Available for final combined checks. |
 | Conditional gaps and final audit | `studio-gaps` / `engine-gaps` | Formatting, clipboard/resources, objects, header/footer, list restart, last-page masters and template clipboard preservation are merged. Final reachable-gap audit is active. |
 
-Latest integration checkpoints are engine `54900b4` and the Studio commit that records this paragraph. Over `e2c92f9`, the engine merges structural version merging (`208dbfb`), sparse host-font coverage (`ebf68e8`) and only the accepted rendering milestones `968dc9a`, `5dfe0c6`, `4e2a40d`, `381dcae`, `5921168`, `f72c281` and `05515e0`; `54900b4` adds the `objects` field to two merged table render tests. Studio merges version merge (`16f5524a`), font performance (`4fcceaeb`), missing-picture verification (`860fa6ea`) and `heemangstudio/main` (`d25f784c`). Engine main remains MAIN107.
+Latest integration checkpoints are engine `e48a461` and the Studio commit that records this paragraph. Over `e2c92f9`, the engine merges structural version merging (`208dbfb`), sparse host-font coverage (`ebf68e8`), the audit gap fixes (`fix/studio-audit-gaps`, `cb86974`) and only the accepted rendering milestones `968dc9a`, `5dfe0c6`, `4e2a40d`, `381dcae`, `5921168`, `f72c281` and `05515e0`. Studio merges version merge (`16f5524a`), font performance (`4fcceaeb`), missing-picture verification (`860fa6ea`), the audit gap fixes (`fix/heemang-audit-gaps`, `c064551f`) and `heemangstudio/main` (`d25f784c`). Engine main remains MAIN107.
 
 ### Release-candidate integration (2026-10-25)
 
-- Vendor `hm_wasm_bg.wasm` is rebuilt from engine `54900b4`: 7,517,203 bytes, SHA-256 `fd7ea2ac9b303b53cdf2f35bb0a29b2be14c468d09f0bdc2330a3e403b695c81`. Hashes of all four files are in `rhwp/rhwp-studio/vendor/hm-wasm/README.md`.
-- The frozen native parity CLI is `heemang-cleanroom/parity/bins/rc-54900b4` (`cargo build --profile parity -p hm-cli --bin heemang`), SHA-256 `eb1a716c5730b8e71101f68027dcaa8347a173687eb067a9ebc62401a95d3645`, manifest `rc-54900b4.json`.
-- Engine focused tests (hm-wasm, hm-fonts, hm-model, hm-hwpx, hm-hml, hm-layout, hm-render): 324 passed, 2 ignored, 0 failed over 57 binaries. hm-edit has two stale tests that predate this integration. `tests/roundtrip.rs` does not compile because it does not match `Format::Hml` (since `cadcbe1`). `conversion_membership::unplaced_furniture_and_last_page_master_refuse_partial_output` still expects last-page masters to be refused, but `0bc7652` made them convert.
-- Studio: typecheck clean; `npm test` 3,011 + 20 passed, 0 failed, 2 todo; build passed. Hub: 1,566 passed, 49 skipped; the single full-run failure (`project-migration` metadata coalescing) passes 5/5 when run alone. Desktop: 306 passed, 7 failed. Old-engine `studio-baseline` (`a2dc5c36`) fails the same five `desktop-native-file-follow` tests (`/private/var` vs `/var` tmp paths) and `desktop-owned-browser` hidden guests. `desktop-browser-agent-tools` passes alone.
-- Harness, fixture Pi provider: `design-diff versions-changes` 0 px. `functional footnote-01` has every feature at parity, with no old-engine requests, unsupported toasts or page errors. Typing p50/p95 over three runs, baseline/candidate: 20/40, 24/34, 22/42 vs 24/53, 26/33, 18/55. The p95 median is 40 vs 53 ms, still unresolved. Find-replace for `3D` counts 16 matches on baseline vs 19 on candidate, the same as the font lane's earlier evidence.
+- Vendor `hm_wasm_bg.wasm` is rebuilt from engine `e48a461`: 7,527,537 bytes, SHA-256 `8a5eee93da7b64f1765ce09dea56afc46e84c66297a039dad3d1d199817ea248`. Hashes of all four files are in `rhwp/rhwp-studio/vendor/hm-wasm/README.md`.
+- The frozen native parity CLI is `heemang-cleanroom/parity/bins/rc-e48a461` (`cargo build --profile parity -p hm-cli --bin heemang`), SHA-256 `eb1a716c5730b8e71101f68027dcaa8347a173687eb067a9ebc62401a95d3645`. Every engine change after `54900b4` is in hm-wasm or tests, so `rc-54900b4`, `rc-cda58ff` and `rc-e48a461` are the same bytes.
+- Integration fixes. Engine:
+  - `54900b4` adds the `objects` field to two merged table render tests.
+  - `238182c` updates the two stale hm-edit tests: `roundtrip.rs` handles `Format::Hml`, and last-page masters now convert, per `0bc7652`.
+- Find and replace now match the old engine. The candidate used to search footnotes, endnotes, headers, footers, captions and grouped-shape text. It also visited cell hits after all body hits, never reported the wrap, and could not match across a footnote mark.
+  - Studio `search-text.ts` now uses the old scopes. Find next covers the body and tables at any depth. Find all and replace all cover the body, top-level cells and a drawing's own text.
+  - Hits come in document order, and the wrap is reported. Engine `3e2a9df` adds `acrossControls`, and a match spanning a note mark keeps the note when replaced.
+  - Probes on footnote-01, endnote-01, header, footer, nested-table, text-box, field and research-report documents now give equal counts, hit sets and next-hit order on both engines.
+  - One exception remains, a field-content model difference: click-here field text such as `여기에 입력` is missing from the old engine's paragraph text.
+  - Tests: `tests/heemang-find-scope.test.ts`, and engine `studio_bridge::search_across_controls_*`.
+- Version history on large documents is fixed.
+  - The structural manifest aligned each document with itself and copied the full character format into every text unit: a 185 MB view for the 92-page research report.
+  - Building it took about 460 s in WASM. Every opening hit the 5 s worker budget twice, the done event waited 10 s, and the toast `문서는 열렸지만 버전 기록을 준비하지 못했습니다.` appeared. No version was created.
+  - Engine `cbd1009`, `d50e982` and `e48a461` build the manifest from one unaligned view and hash sections and documents over their children's hashes. Studio raises `MERGE_MANIFEST_VERSION` to 5, so stored v4 manifests are rebuilt.
+  - Result: 0.3 s native, 1.1 to 1.9 s in Node WASM, about 0.6 s in the browser worker. Open completes in 2.35 s (old app 2.31 s) with no toast. The old app builds its manifest in about 300 ms.
+  - The live `version-merge.mjs` flow passes. Test: `structural_merge::manifest_hashes_follow_text_and_format_changes_of_each_paragraph`.
+- WASM grew from 6.3 to 7.5 MB, almost all from structural merge: the `merge_*` modules (+341 KB of code) and typed `hm_model` property views (+500 KB), plus a 170 KB larger name section. The name section is 0.9 MB in total and could be stripped.
+  - Gzipped size is 2.50 MB, against 4.51 MB for the old 12.4 MB `rhwp_bg.wasm`.
+  - Median of 7 `WebAssembly.compile` runs under load: 18.5 ms vs 55 ms for the old engine.
+  - First paint in the final five-document run is parity or better on all five documents.
+- Final checks:
+  - Engine: hm-wasm, hm-fonts, hm-model, hm-hwpx, hm-hml, hm-layout, hm-render and hm-edit, 359 passed, 2 ignored, 0 failed. hm-edit `roundtrip` also passes with `HEEMANG_CORPUS`.
+  - Studio: typecheck clean; `npm test` 3,027 passed, 0 failed, 2 todo; build passed.
+  - Hub: 1,567 passed, 49 skipped.
+  - Desktop: 308 passed, 5 failed. The same five `desktop-native-file-follow` tests fail on the old-engine baseline (`/private/var` vs `/var`).
+- Harness runs use the fixture Pi provider, against a baseline worktree at `heemangstudio/main` `d25f784c`:
+  - `design-diff`: 0 of 23 states differ.
+  - `functional`, five documents: no candidate feature failures, no old-engine requests, unsupported toasts or page errors. Press-release select+bold fails only on the baseline.
+  - `mcp-parity`: 63 parity, 1 better, 1 poorer (`get_structure` 38 vs 8 ms, single run), 6 failing on both.
+  - The footnote-01 find count after the scripted edits (16 vs 18) comes from the harness flow, not from find. The old engine deletes the title table when the mark is typed over its selection; the candidate keeps it and pastes it with the copied mark. Counts on the unedited document are 17 on both.
+- Open performance items for the performance lane: research-report typing p50/p95 is still slower (48/65 vs 24/30 ms here, consistent across runs). Single-run p95 spikes appear on press-release and footnote-01.
 - Font performance lane evidence is in `docs/evidence/heemang-font-performance/`.
 
 ## Measurements and evidence
