@@ -1,0 +1,474 @@
+{
+  "engine": {
+    "branch": "fix/studio-audit-gaps",
+    "commit": "8f23449",
+    "wasmSha256": "037111bc293aa9e7bec27205ac9e05e194bc3df9b40c6d4844b94dc2a5cb8197"
+  },
+  "baseline": "studio-baseline a2dc5c36 (old engine)",
+  "script": "rhwp/rhwp-studio/e2e/heemang-verify/audit-gaps.mjs",
+  "fixtureProvider": "none (no agent turns)",
+  "apps": {
+    "candidate": {
+      "url": "http://127.0.0.1:7735/?engine=heemang",
+      "runs": [
+        {
+          "source": "rhwp/template/blank-batang.hwp",
+          "steps": {
+            "header": {
+              "ok": true
+            },
+            "footnote": {
+              "ok": true
+            },
+            "shapes": {
+              "ok": true,
+              "shapes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "caption": {
+              "ok": true,
+              "captionText": "표  1 설명"
+            },
+            "bodyFixedDisplay": {
+              "ok": true,
+              "type": "Fixed",
+              "value": "1125.0"
+            }
+          },
+          "live": {
+            "header": {
+              "text": "머리말 서식",
+              "underline": true,
+              "underlineColor": "#ff0000",
+              "underlineShape": 3,
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 1500,
+              "marginRight": 6.7
+            },
+            "footnote": {
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 1200
+            },
+            "shapes": 2
+          },
+          "reopened": {
+            "hwp": {
+              "bytes": 8192,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1500,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1200
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "hwpx": {
+              "bytes": 7448,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1500,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1200
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            }
+          }
+        },
+        {
+          "source": "rhwp/samples/hwpx/blank_hwpx.hwpx",
+          "steps": {
+            "header": {
+              "ok": true
+            },
+            "footnote": {
+              "ok": true
+            },
+            "shapes": {
+              "ok": true,
+              "shapes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "caption": {
+              "ok": true,
+              "captionText": "표  1 설명"
+            },
+            "bodyFixedDisplay": {
+              "ok": true,
+              "type": "Fixed",
+              "value": "1125.0"
+            }
+          },
+          "live": {
+            "header": {
+              "text": "머리말 서식",
+              "underline": true,
+              "underlineColor": "#ff0000",
+              "underlineShape": 3,
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 1500,
+              "marginRight": 6.7
+            },
+            "footnote": {
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 1200
+            },
+            "shapes": 2
+          },
+          "reopened": {
+            "hwp": {
+              "bytes": 4608,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1500,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1200
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "hwpx": {
+              "bytes": 13470,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1500,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 1200
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            }
+          }
+        },
+        {
+          "pageErrors": [],
+          "engineErrors": []
+        }
+      ]
+    },
+    "baseline": {
+      "url": "http://127.0.0.1:7742/",
+      "runs": [
+        {
+          "source": "rhwp/template/blank-batang.hwp",
+          "steps": {
+            "header": {
+              "ok": true
+            },
+            "footnote": {
+              "ok": true
+            },
+            "shapes": {
+              "ok": true,
+              "shapes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "caption": {
+              "ok": true,
+              "captionText": "표  1 설명"
+            },
+            "bodyFixedDisplay": {
+              "ok": true,
+              "type": "Fixed",
+              "value": "7.5"
+            }
+          },
+          "live": {
+            "header": {
+              "text": "머리말 서식",
+              "underline": true,
+              "underlineColor": "#ff0000",
+              "underlineShape": 3,
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 10,
+              "marginRight": 6.7
+            },
+            "footnote": {
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 8
+            },
+            "shapes": 2
+          },
+          "reopened": {
+            "hwp": {
+              "bytes": 8192,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 10,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 8
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "hwpx": {
+              "bytes": 9038,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 10,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 8
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            }
+          }
+        },
+        {
+          "source": "rhwp/samples/hwpx/blank_hwpx.hwpx",
+          "steps": {
+            "header": {
+              "ok": true
+            },
+            "footnote": {
+              "ok": true
+            },
+            "shapes": {
+              "ok": true,
+              "shapes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "caption": {
+              "ok": true,
+              "captionText": "표  1 설명"
+            },
+            "bodyFixedDisplay": {
+              "ok": true,
+              "type": "Fixed",
+              "value": "7.5"
+            }
+          },
+          "live": {
+            "header": {
+              "text": "머리말 서식",
+              "underline": true,
+              "underlineColor": "#ff0000",
+              "underlineShape": 3,
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 10,
+              "marginRight": 6.7
+            },
+            "footnote": {
+              "emboss": true,
+              "lineSpacingType": "Fixed",
+              "lineSpacing": 8
+            },
+            "shapes": 2
+          },
+          "reopened": {
+            "hwp": {
+              "bytes": 12800,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 10,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 8
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            },
+            "hwpx": {
+              "bytes": 14053,
+              "header": {
+                "text": "머리말 서식",
+                "underline": true,
+                "underlineColor": "#ff0000",
+                "underlineShape": 3,
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 10,
+                "marginRight": 6.7
+              },
+              "footnote": {
+                "emboss": true,
+                "lineSpacingType": "Fixed",
+                "lineSpacing": 8
+              },
+              "shapes": 2,
+              "shapeBoxes": [
+                {
+                  "w": 100,
+                  "h": 80
+                },
+                {
+                  "w": 120,
+                  "h": 100
+                }
+              ]
+            }
+          }
+        },
+        {
+          "pageErrors": [],
+          "engineErrors": []
+        }
+      ]
+    }
+  }
+}

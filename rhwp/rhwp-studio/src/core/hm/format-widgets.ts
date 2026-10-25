@@ -223,7 +223,8 @@ export function applyCharFormatAcrossSections(core: HmCore, startSec: number, st
   return ok();
 }
 
-function paraOps(core: HmCore, list: ListAddress, first: number, last: number, props: Record<string, unknown>): EditOp[] {
+/** 문단 서식 변경을 엔진 편집으로. 본문·셀·머리말·주석 목록이 같은 변환을 쓴다. */
+export function paraOps(core: HmCore, list: ListAddress, first: number, last: number, props: Record<string, unknown>): EditOp[] {
   const from = toAddress(list, first, paraMap(core.paragraph(list, first)).lead);
   const to = toAddress(list, last, paraMap(core.paragraph(list, last)).end);
   const patch = widgetParaPatch(props);

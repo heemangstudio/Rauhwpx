@@ -229,7 +229,7 @@ function nextZOrder(core: HmCore, section: number): number {
   return top + 1;
 }
 export const createShapeControl: typeof original.createShapeControl = (core, params) => {
-  const kinds: Record<string, 'rect' | 'ellipse' | 'line' | 'textbox'> = { rectangle: 'rect', rect: 'rect', ellipse: 'ellipse', line: 'line', textbox: 'textbox' };
+  const kinds: Record<string, 'rect' | 'ellipse' | 'line' | 'textbox' | 'polygon' | 'arc'> = { rectangle: 'rect', rect: 'rect', ellipse: 'ellipse', line: 'line', textbox: 'textbox', polygon: 'polygon', arc: 'arc' };
   const connectors: Record<string, number> = { 'connector-straight': 0, 'connector-straight-arrow': 1, 'connector-stroke': 3, 'connector-stroke-arrow': 4, 'connector-arc': 6, 'connector-arc-arrow': 7 };
   const connectorKind = connectors[String(params.shapeType)];
   const kind = connectorKind === undefined ? kinds[String(params.shapeType)] : 'line';
@@ -244,7 +244,10 @@ export const createShapeControl: typeof original.createShapeControl = (core, par
   const before = controls.map(c => c.index);
   const control = controls.filter(c => c.offset < at.offset).length;
   const zOrder = nextZOrder(core, target.list.section);
-  core.transact([{ op: 'createShape', at, kind, width: Number(params.width), height: Number(params.height),
+  const points = kind === 'polygon' && Array.isArray(params.polygonPoints)
+    ? (params.polygonPoints as { x: number; y: number }[]).map(p => [Math.round(Number(p.x)), Math.round(Number(p.y))])
+    : undefined;
+  core.transact([{ op: 'createShape', at, kind, width: Number(params.width), height: Number(params.height), ...(points ? { points } : {}),
     ...(connectorKind === undefined ? {} : { connector: { kind: connectorKind, start: [Number(params.startSubjectID ?? 0), Number(params.startSubjectIndex ?? 0)], end: [Number(params.endSubjectID ?? 0), Number(params.endSubjectIndex ?? 0)] } }),
     inline: params.treatAsChar === true, horzOffset: Number(params.horzOffset ?? 0), vertOffset: Number(params.vertOffset ?? 0), text: params.text } as EditOp,
     { op: 'setObjectProperties', object: { ...target.list, para: target.para, control }, patch: {

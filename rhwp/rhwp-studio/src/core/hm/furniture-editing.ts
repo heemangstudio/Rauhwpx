@@ -1,10 +1,11 @@
 /** 머리말·꼬리말과 주석을 엔진의 중첩 문단 목록으로 편집한다. */
-import type { Address, Caret, Located, ControlInfo, EditOp, Rect } from '../../../vendor/hm-wasm/hm_wasm';
+import type { Address, Caret, Located, ControlInfo, EditOp, FormatContext, Rect } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { hu, px } from './core';
 import { afterFieldEnds, bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
 import { api, extendBridge } from './api';
 import * as format from './format';
+import { paraOps, widgetCharPatch } from './format-widgets';
 import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
 import { validateTextContent } from '../local-text-replace-result';
 
@@ -121,14 +122,16 @@ function paraProps(core: HmCore, list: FurnitureList, para: number) {
   return api.getCellParaPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para);
 }
 
+/** 본문과 같은 서식 변환을 쓴다. 밑줄 색·모양, 양각, 고정 줄 간격, 오른쪽 여백도 머리말·주석에서 바뀐다. */
 function formatChars(core: HmCore, list: FurnitureList, startPara: number, startOffset: number, endPara: number, endOffset: number, propsJson: string): string {
-  const patch = format.charPatch(JSON.parse(propsJson));
-  core.transact([{ op: 'formatChars', from: at(core, list, startPara, startOffset), to: at(core, list, endPara, endOffset), patch }]);
+  const from = at(core, list, startPara, startOffset), to = at(core, list, endPara, endOffset);
+  const patch = widgetCharPatch(core, JSON.parse(propsJson), () => core.query<FormatContext>({ kind: 'formatContext', at: from, to }).characters);
+  if (Object.keys(patch).length) core.transact([{ op: 'formatChars', from, to, patch }]);
   return JSON.stringify({ ok: true });
 }
 
 function formatPara(core: HmCore, list: FurnitureList, para: number, propsJson: string): string {
-  core.transact([{ op: 'formatParas', from: at(core, list, para, 0), to: toAddress(list, para, mapIn(core, list, para).end), patch: format.paraPatch(JSON.parse(propsJson)) }]);
+  core.transact(paraOps(core, list, para, para, JSON.parse(propsJson)));
   return JSON.stringify({ ok: true });
 }
 
