@@ -4,13 +4,12 @@
   'use strict';
 
   var CONFIG = {
-    // 파는 상품. 'annual' = GLJFC9 (연 ₩9,900, 12개월마다 자동 갱신), 'onetime' = uRshdR (예전 한 번 결제 상품).
-    // 이 한 줄이 결제 링크를 정해요. 'onetime' 은 되돌릴 때만 쓰고, 그때는 사이트의 가격 문구도 함께 바꿔야 해요.
     PLAN: 'annual',
     // Groble 상품 결제 링크. 구매 버튼이 여기에 ?ref=<무작위 값> 을 붙여 보내요.
     CHECKOUT_URLS: {
       onetime: 'https://groble.im/payment/uRshdR',
-      annual: 'https://groble.im/payment/GLJFC9'
+      annual: 'https://groble.im/payment/GLJFC9',
+      signature: 'https://groble.im/payment/8Xy27f'
     },
     // 라이선스 서버. success.html 이 GET {API_BASE}/v1/license/by-ref?ref= 를 물어봐요.
     API_BASE: 'https://rau-credits-production.up.railway.app',

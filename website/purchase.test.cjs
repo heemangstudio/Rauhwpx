@@ -13,6 +13,7 @@ test('config points at the live Groble product and the default API base', () => 
   assert.equal(P.CONFIG.PLAN, 'annual', 'the yearly subscription is on sale');
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
   assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.signature, 'https://groble.im/payment/8Xy27f');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
   assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
@@ -33,6 +34,7 @@ test('refs match the Groble sellerReference rule and are unique', () => {
 
 test('checkout URL appends ?ref=', () => {
   assert.equal(P.checkoutUrl('hama-abc'), 'https://groble.im/payment/GLJFC9?ref=hama-abc');
+  assert.equal(P.checkoutUrl('hama-sig', P.CONFIG.CHECKOUT_URLS.signature), 'https://groble.im/payment/8Xy27f?ref=hama-sig');
   assert.equal(P.checkoutUrl('x', 'https://e.test/p?a=1'), 'https://e.test/p?a=1&ref=x');
   assert.throws(() => P.checkoutUrl('bad ref'));
 });
@@ -154,14 +156,17 @@ test('the download page counts each file once per tab, so the fallback link afte
   assert.equal(P.trackDownloadOnce('mac-arm64', blocked, t, nav), true, 'blocked storage still counts');
 });
 
-test('every page sells the yearly subscription and none offers a one-time purchase', () => {
+test('yearly stays on sale, and only the pricing page sells Signature as a one-time purchase', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const pages = fs.readdirSync(__dirname).filter((f) => f.endsWith('.html'));
   for (const page of pages) {
     const html = fs.readFileSync(path.join(__dirname, page), 'utf8');
-    assert.doesNotMatch(html, /일회성|평생|한 번 결제|1회 결제하여 구매/, `${page} has one-time purchase copy`);
+    assert.doesNotMatch(html, /평생/, `${page} says 평생`);
     assert.doesNotMatch(html, /9,900원에 구매/, `${page} has a price without 연`);
+    if (page !== 'pricing.html') {
+      assert.doesNotMatch(html, /일회성|8Xy27f|₩29,000/, `${page} sells Signature`);
+    }
     // 네이버 검수는 자바스크립트 없이 바닥글을 봐요.
     assert.match(html, /운영자 하태욱/, `${page} names the operator`);
     assert.match(html, /010-8512-1201/, `${page} shows the operator phone`);
@@ -169,4 +174,16 @@ test('every page sells the yearly subscription and none offers a one-time purcha
   const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
   assert.match(pricing, /연 ₩9,900/);
   assert.match(pricing, /자동 갱신 · 언제든 해지/);
+  assert.match(pricing, /data-buy-sku="signature"/);
+  assert.match(pricing, /data-buy-sku="annual"/);
+  assert.match(pricing, /class="buy__badge">Signature</);
+  assert.match(pricing, /<p class="meta">일회성<\/p>/);
+  assert.match(pricing, /최소 3년/);
+  assert.match(pricing, /우선 지원/);
+  assert.match(pricing, /기기 두 대/);
+  assert.match(pricing, /Mac · Windows/);
+  assert.doesNotMatch(pricing, /평생/);
+  assert.match(pricing, /href="trial\.html"/);
+  assert.match(pricing, /체험판 안내/);
+  assert.doesNotMatch(pricing, /무료 체험/);
 });
