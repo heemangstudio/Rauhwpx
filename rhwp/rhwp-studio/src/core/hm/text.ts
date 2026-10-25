@@ -55,6 +55,29 @@ export function deleteIn(core: HmCore, list: ListAddress, para: number, offset: 
   };
 }
 
+/**
+ * 지우고 같은 자리에 넣기(IME 조합 갱신)를 엔진 트랜잭션 하나로 한다. 따로 하면 조판을 두 번 한다.
+ * 넣는 자리는 지운 뒤 문단에서 캐럿 오프셋이 가리키는 wire 위치다. 캐럿 앞 단위는 지워도 그대로라
+ * 지우기 전 문단에서 같은 값을 얻는다(logicalToWire 는 캐럿 앞 단위만 본다).
+ */
+export function replaceIn(core: HmCore, list: ListAddress, para: number, offset: number, count: number, text: string): Removal & { charOffset: number } {
+  const map = paraMap(core.paragraph(list, para));
+  const end = offset + Math.max(0, count);
+  const [from, to] = logicalRangeToWire(map, offset, end);
+  const removedText = logicalText(map, offset, end);
+  const at = logicalToWire(map, offset);
+  const value = engineText(text);
+  const ops: EditOp[] = [];
+  if (to > from) ops.push({ op: 'delete', from: toAddress(list, para, from), to: toAddress(list, para, to) });
+  if (value) ops.push({ op: 'insertText', at: toAddress(list, para, at), text: value });
+  core.transact(ops);
+  const removal = { removedStart: logicalToText(map, offset), removedCount: [...removedText].length, removedContent: { text: removedText } };
+  if (value.includes('\n')) return { ...removal, charOffset: units(value.slice(value.lastIndexOf('\n') + 1)) };
+  const after = paraMap(core.paragraph(list, para));
+  const wire = at + [...value].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
+  return { ...removal, charOffset: value ? wireToLogical(after, wire) : offset };
+}
+
 /** 병합으로 사라진 문단의 스타일과 문단 모양. 병합을 되돌리는 나누기가 새 문단에 다시 입힌다. */
 interface MergedParagraphShape { styleId: number; paragraphs: object }
 
@@ -145,8 +168,15 @@ export function insertTextLogical(core: HmCore, sec: number, para: number, logic
 /** 한 문단 안 글자 바꾸기. 엔진은 바뀐 문단만 다시 조판하므로 쪽 나누기를 미루지 않는다. */
 export function replaceBodyTextLocal(core: HmCore, sec: number, para: number, charOffset: number, deleteCount: number, text: string, logical: boolean): LocalBodyTextReplaceResult {
   const list = bodyList(sec);
-  const removal = deleteCount > 0 ? deleteIn(core, list, para, charOffset, deleteCount, logical) : undefined;
-  const next = text ? insertIn(core, list, para, charOffset, text, logical) : charOffset;
+  let removal: (Removal & { charOffset: number }) | undefined;
+  let next: number;
+  if (logical && deleteCount > 0 && text) {
+    removal = replaceIn(core, list, para, charOffset, deleteCount, text);
+    next = removal.charOffset;
+  } else {
+    removal = deleteCount > 0 ? deleteIn(core, list, para, charOffset, deleteCount, logical) : undefined;
+    next = text ? insertIn(core, list, para, charOffset, text, logical) : charOffset;
+  }
   const { charOffset: _ignored, ...removed } = removal ?? { charOffset: 0 };
   return { ...(removal ? removed : {}), ok: true, charOffset: next, documentPaginationPending: false, flowChanged: true };
 }
@@ -264,6 +294,10 @@ export function insertTextInCellDeferredPagination(core: HmCore, sec: number, pa
 
 export function replaceTextInCellDeferredPagination(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, deleteCount: number, text: string, logical: boolean): DeferredCellTextMutationResult {
   const list = cell(sec, parentPara, controlIdx, cellIdx);
+  if (logical && deleteCount > 0 && text) {
+    const { charOffset: next, ...removal } = replaceIn(core, list, cellParaIdx, charOffset, deleteCount, text);
+    return cellResult(next, removal);
+  }
   let removal: Removal | undefined;
   if (deleteCount > 0) {
     const { charOffset: _ignored, ...removed } = deleteIn(core, list, cellParaIdx, charOffset, deleteCount, logical);
