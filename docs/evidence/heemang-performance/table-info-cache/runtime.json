@@ -1,0 +1,102 @@
+{
+  "runtime": "http://127.0.0.1:7733/?engine=heemang",
+  "fixtureHub": true,
+  "latencyMeasured": false,
+  "document": {
+    "file": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity-corpus/docs/d-1341000-research-report-foot-cd72258675b5.hwp",
+    "sha256": "e9011fe125a76ed5d56ae06a1702e7f82b4ff5550f2a07ead956ca540f1231c8"
+  },
+  "checks": [
+    {
+      "label": "opened",
+      "sha256": "c3d3728c04bd3fc81d5d5638e8877da53a84a311c2bb3502c4363fc6e1de244c",
+      "characters": 597303,
+      "state": {
+        "instance": 1,
+        "contentEpoch": 0,
+        "layoutEpoch": 2,
+        "fontGeneration": 54,
+        "format": "hwp5",
+        "pageCount": 92,
+        "dirty": false,
+        "undo": 0,
+        "redo": 0
+      },
+      "cancellationChecks": 2
+    },
+    {
+      "label": "typed",
+      "sha256": "cbcc02b31b6fd21ffcaf43d51fa97d4fbe976e7965bff55bcef98377e56d4f85",
+      "characters": 597327,
+      "state": {
+        "instance": 1,
+        "contentEpoch": 1,
+        "layoutEpoch": 3,
+        "fontGeneration": 54,
+        "format": "hwp5",
+        "pageCount": 92,
+        "dirty": true,
+        "undo": 1,
+        "redo": 0
+      },
+      "cancellationChecks": 2
+    },
+    {
+      "label": "undo",
+      "sha256": "c3d3728c04bd3fc81d5d5638e8877da53a84a311c2bb3502c4363fc6e1de244c",
+      "characters": 597303,
+      "state": {
+        "instance": 1,
+        "contentEpoch": 2,
+        "layoutEpoch": 4,
+        "fontGeneration": 54,
+        "format": "hwp5",
+        "pageCount": 92,
+        "dirty": true,
+        "undo": 2,
+        "redo": 0
+      },
+      "cancellationChecks": 2
+    },
+    {
+      "label": "redo",
+      "sha256": "cbcc02b31b6fd21ffcaf43d51fa97d4fbe976e7965bff55bcef98377e56d4f85",
+      "characters": 597327,
+      "state": {
+        "instance": 1,
+        "contentEpoch": 3,
+        "layoutEpoch": 5,
+        "fontGeneration": 54,
+        "format": "hwp5",
+        "pageCount": 92,
+        "dirty": true,
+        "undo": 3,
+        "redo": 0
+      },
+      "cancellationChecks": 2
+    },
+    {
+      "label": "reopened",
+      "sha256": "cbcc02b31b6fd21ffcaf43d51fa97d4fbe976e7965bff55bcef98377e56d4f85",
+      "characters": 597327,
+      "state": {
+        "instance": 2,
+        "contentEpoch": 0,
+        "layoutEpoch": 1,
+        "fontGeneration": 54,
+        "format": "hwp5",
+        "pageCount": 92,
+        "dirty": false,
+        "undo": 0,
+        "redo": 0
+      },
+      "cancellationChecks": 2
+    }
+  ],
+  "versionCommits": {
+    "before": 1,
+    "after": 2
+  },
+  "savedSha256": "910443f7467098ed9a09bb8edd9eb6577400a0246aaec8cef9a414888990c78f",
+  "pageErrors": []
+}

@@ -6,7 +6,7 @@
  * 문서 내용을 바꾸는 호출은 모두 transact/mutate 를 거쳐 캐시·쪽 packet·화면 갱신 정보를 함께 맞춘다.
  */
 import type {
-  Address, Affinity, Caret, Doc, EditOp, LineInfo as HmLineInfo, Located, ParagraphInfo, Receipt, Step,
+  Address, Affinity, Caret, Doc, EditOp, LineInfo as HmLineInfo, Located, ParagraphInfo, Receipt, Step, TableAddress, TableInfo,
 } from '../../../vendor/hm-wasm/hm_wasm';
 import { EngineNotSupportedError } from '../engine-support';
 import type { HeemangAdapter } from '../heemang-adapter';
@@ -49,6 +49,8 @@ export class HmCore {
   private readonly counts = new Map<string, number>();
   private readonly lineCache = new Map<string, HmLineInfo[]>();
   private lineTag = '';
+  private readonly tables = new Map<string, TableInfo>();
+  private tableTag = '';
   /** 마지막 편집 영수증. 화면은 바뀐 쪽만 다시 그린다. */
   lastReceipt: Receipt | null = null;
 
@@ -79,6 +81,7 @@ export class HmCore {
   noteMutation(receipt: Receipt | null): void {
     this.revision += 1;
     this.lineCache.clear();
+    this.tables.clear();
     if (receipt) {
       this.adapter.applyReceipt(receipt);
       this.lastReceipt = receipt;
@@ -92,11 +95,30 @@ export class HmCore {
   noteDocumentReplaced(): void {
     this.revision += 1;
     this.lineCache.clear();
+    this.tables.clear();
     this.lastReceipt = null;
   }
 
   query<T>(request: object): T {
     return JSON.parse(this.call(doc => doc.query(JSON.stringify(request)))) as T;
+  }
+
+  /** 내부 읽기 전용 표 정보. 내용·조판·글꼴이나 문서가 바뀌면 셀 경로와 상자도 다시 읽는다. */
+  tableInfo(table: TableAddress, page?: number): TableInfo {
+    const state = this.state();
+    const tag = `${this.adapter.documentInstance}:${state.contentEpoch}:${state.layoutEpoch}:${state.fontGeneration}`;
+    if (tag !== this.tableTag) {
+      this.tableTag = tag;
+      this.tables.clear();
+    }
+    const key = JSON.stringify([table.section, table.steps ?? [], table.para, table.control, page ?? null]);
+    let info = this.tables.get(key);
+    if (!info) {
+      info = this.query<TableInfo>({ kind: 'table', table, ...(page === undefined ? {} : { page }) });
+      this.tables.set(key, info);
+      if (this.tables.size > 64) this.tables.delete(this.tables.keys().next().value!);
+    }
+    return info;
   }
 
   paragraph(list: ListAddress, para: number): ParagraphInfo {

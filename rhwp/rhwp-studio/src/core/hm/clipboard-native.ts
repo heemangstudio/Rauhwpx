@@ -1,5 +1,5 @@
 /** 엔진이 보관하는 서식 포함 조각을 기존 클립보드 경로에 연결한다. */
-import type { Address, CharPatch, Copied, EditOp, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { Address, CharPatch, Copied, EditOp } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { unsupported } from './core';
 import { addressToPosition, bodyList, cellList, logicalAddress, logicalRangeToWire, paraMap, pathTarget, toAddress } from './address';
@@ -17,7 +17,7 @@ const escapeHtml = (text: string): string => text.replace(/[&<>"]/g, c => ({ '&'
 
 /** 표의 셀 글자: 칸은 탭, 줄은 줄바꿈으로 잇는다. HTML 은 같은 모양의 표다. */
 function tableText(core: HmCore, list: ListAddress, para: number, control: number): { text: string; html: string } {
-  const table = core.query<TableInfo>({ kind: 'table', table: { section: list.section, steps: list.steps.length ? list.steps : undefined, para, control } });
+  const table = core.tableInfo({ section: list.section, steps: list.steps.length ? list.steps : undefined, para, control });
   const rows: string[][] = Array.from({ length: table.rows }, () => []);
   for (const cell of table.cells) {
     const cellList = { section: cell.list.section, steps: cell.list.steps ?? [] };

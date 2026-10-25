@@ -18,7 +18,7 @@ export function tableAddressByPath(section: number, parent: number, pathJson: st
 }
 
 export const tableInfo = (core: HmCore, table: TableAddress, page?: number): TableInfo =>
-  core.query({ kind: 'table', table, ...(page === undefined ? {} : { page }) });
+  core.tableInfo(table, page);
 const dimensions = (info: TableInfo) => ({ rowCount: info.rows, colCount: info.columns, cellCount: info.cells.length });
 const cellInfo = (cell: TableCell) => ({ row: cell.row, col: cell.column, rowSpan: cell.rowSpan, colSpan: cell.columnSpan });
 function cellAt(info: TableInfo, index: number): TableCell {

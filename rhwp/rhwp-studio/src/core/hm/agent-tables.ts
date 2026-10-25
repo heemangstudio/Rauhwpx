@@ -11,7 +11,7 @@ const tableAddress = (section: number, para: number, control: number): TableAddr
   ({ section, steps: [], para, control });
 
 function tableInfo(core: HmCore, table: TableAddress): TableInfo {
-  return core.query<TableInfo>({ kind: 'table', table });
+  return core.tableInfo(table);
 }
 
 /** 문단 글에 자동 번호를 구 엔진처럼 " N" 으로 넣는다. */
