@@ -53,14 +53,15 @@ export interface CharPatch {
     relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
     kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
     strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
-    shadeColor?: number;
+    shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast" }
+export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[] }
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
-export interface ListSpec { kind: "bullet" | "numbering"; id: number; level?: number; restart?: number }
+export type ListRestart = { mode: "continue" } | { mode: "restart"; start: number };
+export interface ListSpec { kind: "bullet" | "numbering" | "outline"; id: number; level?: number; restart?: number }
 export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
 export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
 export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
@@ -87,32 +88,37 @@ export interface ObjectPatch {
     textWrap?:"square"|"topAndBottom"|"behind"|"inFront"; margins?:[number,number,number,number];
     description?:string; rotation?:number; flipHorizontal?:boolean; flipVertical?:boolean; zOrder?:number; sizeProtect?:boolean;
     restrictInPage?:boolean; allowOverlap?:boolean; keepWithAnchor?:boolean;
-    border?:{color?:number;width?:number;style?:number}; crop?:[number,number,number,number];
+    border?:{color?:number;width?:number;style?:number;endCap?:number;head?:number;tail?:number;headSize?:number;tailSize?:number}; crop?:[number,number,number,number];
     brightness?:number; contrast?:number; effect?:number; transparency?:number; pictureMargins?:[number,number,number,number];
     fill?:FillPatch; fillAlpha?:number;
+    caption?:CaptionPatch; textMargins?:[number,number,number,number];textVerticalAlign?:"top"|"center"|"bottom";round?:number;shadow?:{kind?:number;color?:number;x?:number;y?:number};
+}
+export interface CaptionPatch {
+    enabled?:boolean; side?:"left"|"right"|"top"|"bottom"; verticalAlign?:"top"|"center"|"bottom";
+    width?:number;gap?:number;maxWidth?:number;includeMargin?:boolean;
 }
 export interface LinePatch { style:number; width:number; color:number }
-export type FillPatch = { kind:"none" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number };
+export type FillPatch = { kind:"none"|"image" } | { kind:"solid"; background:number; patternColor?:number; pattern?:number } | {kind:"gradient";gradientType?:number;angle?:number;centerX?:number;centerY?:number;step?:number};
 export interface BorderFillPatch {
     left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
     slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch }
-export interface ObjectProperties extends ObjectPatch {
+export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
+export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
     kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
     brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
     fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
     /** Drawings and equations: null without a caption; `list` is the caption's list index in the object's steps. */
-    caption?:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
+    caption?:{side:"left"|"right"|"top"|"bottom";verticalAlign:"top"|"center"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number;list:number}|null;
 }
 /** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
-export interface TableProperties extends TablePatch {
+export interface TableProperties extends Omit<TablePatch,"borderFill"> {
     rows:number; columns:number; borderFill:unknown;
-    caption:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
+    caption:{side:"left"|"right"|"top"|"bottom";verticalAlign:"top"|"center"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
     zones:{startRow:number;startColumn:number;endRow:number;endColumn:number;borderFill:unknown}[];
 }
-export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
+export interface CellProperties extends Omit<CellPatch,"borderFill"> { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
 export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 /** Equation fields: size in HU (1000 = 10 pt), baseline a percent of the height. */
 export interface EquationPatch { script?: string; size?: number; color?: number; baseline?: number; font?: string }
@@ -146,7 +152,8 @@ export type EditOp =
 | {op:"insertNewNumber";at:Address;number:number}
 | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
 | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
-| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+| { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
+| { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"; connector?:ConnectorSpec; width:number; height:number; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
 | { op:"deleteObject"; object:ObjectAddress }
 | { op:"relocateObject"; object:ObjectAddress; at:Address }
 | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -157,6 +164,7 @@ export type EditOp =
 | { op:"setCellProperties"; table:TableAddress; row:number; column:number; patch:CellPatch }
 | { op:"setCellZone"; table:TableAddress; startRow:number; startColumn:number; endRow:number; endColumn:number; borderFill:BorderFillPatch }
 | { op: "insertEquation"; at: Address; script: string; size?: number; color?: number; font?: string; baseline?: number }
+| { op: "promoteOleEquation"; object: TableAddress }
 | { op: "setEquation"; object: TableAddress; patch: EquationPatch }
 | { op: "setTableCaption"; table: TableAddress; text: string; withNumber?: boolean }
 /** A picture, drawing or equation caption; "그림 N" or "수식 N" first with `withNumber`. Created below the object when missing. */
@@ -174,6 +182,7 @@ export type EditOp =
 | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
 | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
 | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+| { op: "setListRestart"; at: Address; restart: ListRestart | null }
 | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
 | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }
 | { op: "resizeObject"; object: ObjectAddress; width: number; height: number }
@@ -192,7 +201,7 @@ export interface PageObject {
     kind: "table" | "picture" | "shape" | "line" | "connector" | "group" | "ole" | "equation" | "form" | "object";
     page: number; x: number; y: number; width: number; height: number;
     inline: boolean; layer: "behind" | "text" | "front"; z: number;
-    furniture: boolean; locked: boolean; text: boolean; rotation?: number; line?: [number, number, number, number];
+    furniture: boolean; locked: boolean; text: boolean; missing?: boolean; rotation?: number; line?: [number, number, number, number];
 }
 /** A directed selection the host keeps with an undo step. */
 export type Selection =
@@ -217,7 +226,7 @@ export interface TableCell extends CellRef { rowSpan: number; columnSpan: number
 export interface TableInfo { table: TableAddress; rows: number; columns: number; cells: TableCell[]; rects: Rect[] }
 export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
-    format: "hwp5" | "hwpx"; pageCount: number; dirty: boolean; undo: number; redo: number;
+    format: "hwp5" | "hwpx" | "hwp3" | "hml"; pageCount: number; dirty: boolean; undo: number; redo: number;
 }
 export interface Area { x: number; y: number; width: number; height: number }
 /** A picture to decode with the browser and draw in place of a patch. */
@@ -232,7 +241,7 @@ export interface PageInfo {
     margins: Margins; body: Area; header: Area; footer: Area; columns: Area[];
 }
 export interface Capabilities {
-    contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; open: string[]; serialize: string[];
+    contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
     scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
@@ -272,7 +281,7 @@ export type QueryRequest =
 export interface CharacterCount { characters: number }
 /** A paragraph's formatting (\`formatRuns\`): runs start at a wire offset. */
 export interface ParagraphFormat {
-    index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
+    index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null; listRestart: ListRestart | null;
     runs: { offset: number; charShapeId: number; characters: CharPatch }[];
     /** The paragraph starts a new page or column. */
     pageBreak: boolean; columnBreak: boolean;
@@ -287,13 +296,13 @@ export interface ListRef { kind: "bullet" | "numbering" | "outline"; id: number;
  * properties (\`characters.bold\`, \`styleId\`, \`list\`, ...) that differ over
  * the range. \`lineSpacingKind\` identifies the spacing units.
  */
-export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; mixed: string[] }
+export interface FormatContext { characters: CharPatch; paragraphs: ParaPatch; styleId: number; list: ListRef | null; listRestart: ListRestart | null; mixed: string[] }
 export interface StyleInfo {
     id: number; name: string; englishName: string; kind: "paragraph" | "character"; next: number;
     paraShape: number; charShape: number; characters: CharPatch; paragraphs: ParaPatch;
 }
 export interface ListLevel { format: string; numberKind: number; start: number }
-export interface ListInfo { kind: "bullet" | "numbering"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
+export interface ListInfo { kind: "bullet" | "numbering" | "outline"; id: number; bullet?: string; start?: number; levels?: ListLevel[] }
 export interface ControlInfo {
     index: number; offset: number; kind: string; lists: number;
     /** Authored equation source, including an empty string; absent on other controls. */
@@ -320,13 +329,20 @@ export interface SearchRequest {
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
-export interface FaceRequest { name: string; candidates: string[]; standIns: string[] }
+export interface FaceRequest { name: string; candidates: string[]; standIns: string[]; text?: boolean }
 /** A family a host may set (\`fontCandidates\`): what to register for it, and whether text set in it already draws with a registered face. */
 export interface FaceCandidates extends FaceRequest { resolves: boolean }
 export interface FontRequests { faces: FaceRequest[]; classDefaults: string[][]; fallbacks: string[] }
 /** A font file the host holds, read in pieces (`Engine.addFontFile`). */
 export interface FontFileSource { readonly size: number; read(offset: number, length: number): Uint8Array }
 export interface ComposeRequest { at?: Address; text?: string }
+export interface ConnectorSpec { kind: number; start: [number,number]; end: [number,number] }
+export type TableTransposeRequest =
+| {action:"copy";transpose?:boolean;table:TableAddress;startRow:number;startColumn:number;endRow:number;endColumn:number}
+| {action:"paste";transpose?:boolean;table:TableAddress;startRow:number;startColumn:number}
+| {action:"inPlace";table:TableAddress}
+| {action:"insert";at:Address};
+export interface TableTransposeResult { ok:boolean; sourceRows:number; sourceCols:number; targetRows:number; targetCols:number; receipt:Receipt|null; paraIdx?:number; controlIdx?:number; text?:string; html?:string }
 export interface CopyRequest { from: Address; to: Address }
 /** `objects`: tables and objects carried; they paste back only into the document copied from. */
 export interface Copied { text: string; html: string; objects: number }
@@ -381,6 +397,10 @@ export class Doc {
      */
     captureObjectTransform(object: string): number;
     /**
+     * Keeps one complete paragraph, including nested controls, in this document.
+     */
+    captureParagraph(address: string): number;
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      */
@@ -411,6 +431,13 @@ export class Doc {
      * Drops a kept transform; false when there was none.
      */
     discardObjectTransform(handle: number): boolean;
+    discardParagraphCapture(handle: number): boolean;
+    /**
+     * An explicit HWPX editor export. Preview images are stored without a
+     * second compression layer; native serialize/serializeAs keep their
+     * source-preserving contract. Export never acknowledges a file write.
+     */
+    exportHwpx(): Uint8Array;
     /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
      */
@@ -431,6 +458,18 @@ export class Doc {
      * what is new and available lays it out again.
      */
     fontRequests(): string;
+    /**
+     * A disposable document showing the selected header/footer on every page.
+     * Editing and the shared clipboard of the source document are untouched.
+     */
+    furniturePreview(target: string): Doc;
+    /**
+     * Actual glyphs drawn on every current page, grouped by canonical font
+     * source label and source face index. Touches residency so an unavailable
+     * outline also appears in Engine.outlineRequests before visible painting.
+     */
+    glyphRequests(): string;
+    hasTableTransposeClipboard(): boolean;
     /**
      * Paragraphs the last layout reused and formatted.
      */
@@ -491,6 +530,11 @@ export class Doc {
      */
     paste(request: string): string;
     /**
+     * Imports a source range through the same atomic paste path, without
+     * reading or replacing the Engine's user clipboard.
+     */
+    pasteFrom(source: Doc, range: string, request: string): string;
+    /**
      * Pixels of patch op `item` of page `i` at `dpi`: `u32` width and
      * height, then straight RGBA rows; empty when it draws nothing.
      */
@@ -537,6 +581,10 @@ export class Doc {
      */
     restore(checkpoint: number): string;
     /**
+     * Restores only the addressed paragraph as one undoable edit; keeps the capture.
+     */
+    restoreParagraph(handle: number, address: string): string;
+    /**
      * Text matches within paragraphs (`SearchRequest` to `SearchResult`),
      * in document order: each list, then the lists its paragraphs' controls
      * hold. Doesn't lay the document out.
@@ -554,15 +602,18 @@ export class Doc {
     selectRange(request: string): string;
     /**
      * The document in its own format, edited paragraphs carrying line
-     * segments from our layout. `markSaved` clears the dirty state; the
-     * content epoch never changes.
+     * segments from our layout. An HWP 3 document is written as a new
+     * HWP 5 file, the `.hwp` format this engine writes. `markSaved`
+     * clears the dirty state; the content epoch never changes.
      */
     serialize(mark_saved: boolean): Uint8Array;
     /**
-     * The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+     * The document written as `format` (`"hwp5"`, `"hwpx"` or `"hml"`): in its
      * own format as [`Doc::serialize`] writes it, in the other as a new
-     * file encoded from the model alone. The open document keeps its
-     * format; `markSaved` clears the dirty state.
+     * file encoded from the model alone. An HWP 3 document, which has no
+     * writer, is always converted; as `"hwp5"` it is what
+     * [`Doc::serialize`] writes. The open document keeps its format;
+     * `markSaved` clears the dirty state.
      */
     serializeAs(format: string, mark_saved: boolean): Uint8Array;
     /**
@@ -587,10 +638,23 @@ export class Doc {
      */
     transact(request: string): string;
     /**
+     * Copies or applies a transposed cell block; writes form one undo step.
+     */
+    transposeTable(request: string): string;
+    /**
      * Reverts the last transaction; a `Receipt`, or `null` when there is
      * nothing to undo.
      */
     undo(): string;
+    /**
+     * Rebinds the section's attached connector endpoints as one undoable edit.
+     */
+    updateConnectors(section: number): string;
+    /**
+     * Reopens an HWP export and compares its typed properties and resource
+     * values with the model that was written, excluding source/layout caches.
+     */
+    verifyHwp(): string;
 }
 
 /**
@@ -637,13 +701,23 @@ export class Engine {
      */
     create(template: Uint8Array): Doc;
     /**
+     * Characters whose outlines compact font registration retains, including
+     * the documents opened so far and the engine's basic Latin seed.
+     */
+    fontCharacters(): string;
+    /**
+     * Retained and pending glyph IDs for canonical source labels, as
+     * `[label, faceIndex, glyphIds][]`. Sparse refills must keep their union.
+     */
+    glyphCoverage(labels: string): string;
+    /**
      * Outlines for `(face, glyph)` pairs as a page's `GLYF` block lists
      * them (see [`packet::glyph_outlines`]).
      */
     glyphOutlines(pairs: Uint32Array): Uint8Array;
     constructor();
     /**
-     * Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
+     * Opens HWP 5, HWPX, HML or HWP 3 bytes; layout waits for a request.
      */
     open(bytes: Uint8Array): Doc;
     /**
@@ -699,6 +773,28 @@ export function familyNames(bytes: Uint8Array): string;
  */
 export function fileFamilyNames(file: FontFileSource): string;
 
+export function structuralMergeAnalyze(base: string, current: string, incoming: string): string;
+
+export function structuralMergeAnalyzeDocument(b: Uint8Array, c: Uint8Array, i: Uint8Array): string;
+
+export function structuralMergeAnalyzeDocumentWithManifests(b: Uint8Array, c: Uint8Array, i: Uint8Array, bm: string, cm: string, im: string): string;
+
+export function structuralMergeBuildManifest(bytes: Uint8Array): string;
+
+export function structuralMergeMaterialize(analysis: string, resolutions: string): string;
+
+export function structuralMergeMaterializeDocument(b: Uint8Array, c: Uint8Array, i: Uint8Array, r: string): Uint8Array;
+
+export function structuralMergeMaterializeDocumentWithManifests(b: Uint8Array, c: Uint8Array, i: Uint8Array, bm: string, cm: string, im: string, r: string): Uint8Array;
+
+export function structuralMergeMaterializeReviewDocument(b: Uint8Array, c: Uint8Array, i: Uint8Array, bm: string, cm: string, im: string, r: string): Uint8Array;
+
+export function structuralMergeReviewDocument(b: Uint8Array, c: Uint8Array, i: Uint8Array, bm: string, cm: string, im: string): string;
+
+export function structuralMergeVirtualBase(raw: string): string;
+
+export function structuralMergeVirtualBaseDocument(raw: string, format: string): Uint8Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -715,14 +811,20 @@ export interface InitOutput {
     readonly doc_adopt: (a: number, b: number) => [number, number, number, number];
     readonly doc_cancelComposition: (a: number) => [number, number, number, number];
     readonly doc_captureObjectTransform: (a: number, b: number, c: number) => [number, number, number];
+    readonly doc_captureParagraph: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_checkpoint: (a: number) => [number, number, number];
     readonly doc_close: (a: number) => void;
     readonly doc_commitComposition: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_compose: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_copy: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_discardObjectTransform: (a: number, b: number) => [number, number, number];
+    readonly doc_discardParagraphCapture: (a: number, b: number) => [number, number, number];
+    readonly doc_exportHwpx: (a: number) => [number, number, number, number];
     readonly doc_fontNames: (a: number) => [number, number, number, number];
     readonly doc_fontRequests: (a: number) => [number, number, number, number];
+    readonly doc_furniturePreview: (a: number, b: number, c: number) => [number, number, number];
+    readonly doc_glyphRequests: (a: number) => [number, number, number, number];
+    readonly doc_hasTableTransposeClipboard: (a: number) => [number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
     readonly doc_locate: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_markSaved: (a: number, b: number) => [number, number];
@@ -735,6 +837,7 @@ export interface InitOutput {
     readonly doc_pageSvg: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pages: (a: number) => [number, number, number, number];
     readonly doc_paste: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_pasteFrom: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly doc_patch: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_pdf: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_pictureBytes: (a: number, b: number, c: number) => [number, number, number, number];
@@ -743,6 +846,7 @@ export interface InitOutput {
     readonly doc_redo: (a: number) => [number, number, number, number];
     readonly doc_releaseCheckpoint: (a: number, b: number) => [number, number, number];
     readonly doc_restore: (a: number, b: number) => [number, number, number, number];
+    readonly doc_restoreParagraph: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_search: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_select: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_selectRange: (a: number, b: number, c: number) => [number, number, number, number];
@@ -752,7 +856,10 @@ export interface InitOutput {
     readonly doc_substitutions: (a: number) => [number, number, number, number];
     readonly doc_swapObjectTransform: (a: number, b: number) => [number, number, number, number];
     readonly doc_transact: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_transposeTable: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_undo: (a: number) => [number, number, number, number];
+    readonly doc_updateConnectors: (a: number, b: number) => [number, number, number, number];
+    readonly doc_verifyHwp: (a: number) => [number, number, number, number];
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;
     readonly engine_addFont: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly engine_addFontFile: (a: number, b: number, c: number, d: any) => number;
@@ -760,7 +867,9 @@ export interface InitOutput {
     readonly engine_addHftInfo: (a: number, b: number, c: number) => number;
     readonly engine_create: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_fontBytes: (a: number) => number;
+    readonly engine_fontCharacters: (a: number) => [number, number];
     readonly engine_fontGeneration: (a: number) => number;
+    readonly engine_glyphCoverage: (a: number, b: number, c: number) => [number, number, number, number];
     readonly engine_glyphOutlines: (a: number, b: number, c: number) => [number, number];
     readonly engine_new: () => number;
     readonly engine_open: (a: number, b: number, c: number) => [number, number, number];
@@ -771,6 +880,17 @@ export interface InitOutput {
     readonly engineerror_toString: (a: number) => [number, number];
     readonly familyNames: (a: number, b: number) => [number, number];
     readonly fileFamilyNames: (a: any) => [number, number];
+    readonly structuralMergeAnalyze: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly structuralMergeAnalyzeDocument: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly structuralMergeAnalyzeDocumentWithManifests: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly structuralMergeBuildManifest: (a: number, b: number) => [number, number, number, number];
+    readonly structuralMergeMaterialize: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly structuralMergeMaterializeDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly structuralMergeMaterializeDocumentWithManifests: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number, number];
+    readonly structuralMergeMaterializeReviewDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number, number];
+    readonly structuralMergeReviewDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly structuralMergeVirtualBase: (a: number, b: number) => [number, number, number, number];
+    readonly structuralMergeVirtualBaseDocument: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

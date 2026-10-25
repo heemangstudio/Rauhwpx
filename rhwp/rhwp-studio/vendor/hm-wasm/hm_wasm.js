@@ -134,6 +134,20 @@ export class Doc {
         return ret[0] >>> 0;
     }
     /**
+     * Keeps one complete paragraph, including nested controls, in this document.
+     * @param {string} address
+     * @returns {number}
+     */
+    captureParagraph(address) {
+        const ptr0 = passStringToWasm0(address, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.doc_captureParagraph(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Keeps the document and its history to come back to; returns the
      * checkpoint's handle.
      * @returns {number}
@@ -245,6 +259,32 @@ export class Doc {
         return ret[0] !== 0;
     }
     /**
+     * @param {number} handle
+     * @returns {boolean}
+     */
+    discardParagraphCapture(handle) {
+        const ret = wasm.doc_discardParagraphCapture(this.__wbg_ptr, handle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * An explicit HWPX editor export. Preview images are stored without a
+     * second compression layer; native serialize/serializeAs keep their
+     * source-preserving contract. Export never acknowledges a file write.
+     * @returns {Uint8Array}
+     */
+    exportHwpx() {
+        const ret = wasm.doc_exportHwpx(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * Every family [`Doc::font_requests`] names, as a JSON `string[]`.
      * @returns {string}
      */
@@ -299,6 +339,55 @@ export class Doc {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * A disposable document showing the selected header/footer on every page.
+     * Editing and the shared clipboard of the source document are untouched.
+     * @param {string} target
+     * @returns {Doc}
+     */
+    furniturePreview(target) {
+        const ptr0 = passStringToWasm0(target, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.doc_furniturePreview(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Doc.__wrap(ret[0]);
+    }
+    /**
+     * Actual glyphs drawn on every current page, grouped by canonical font
+     * source label and source face index. Touches residency so an unavailable
+     * outline also appears in Engine.outlineRequests before visible painting.
+     * @returns {string}
+     */
+    glyphRequests() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_glyphRequests(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @returns {boolean}
+     */
+    hasTableTransposeClipboard() {
+        const ret = wasm.doc_hasTableTransposeClipboard(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * Paragraphs the last layout reused and formatted.
@@ -554,6 +643,37 @@ export class Doc {
         }
     }
     /**
+     * Imports a source range through the same atomic paste path, without
+     * reading or replacing the Engine's user clipboard.
+     * @param {Doc} source
+     * @param {string} range
+     * @param {string} request
+     * @returns {string}
+     */
+    pasteFrom(source, range, request) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            _assertClass(source, Doc);
+            const ptr0 = passStringToWasm0(range, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(request, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.doc_pasteFrom(this.__wbg_ptr, source.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
      * Pixels of patch op `item` of page `i` at `dpi`: `u32` width and
      * height, then straight RGBA rows; empty when it draws nothing.
      * @param {number} i
@@ -721,6 +841,32 @@ export class Doc {
         }
     }
     /**
+     * Restores only the addressed paragraph as one undoable edit; keeps the capture.
+     * @param {number} handle
+     * @param {string} address
+     * @returns {string}
+     */
+    restoreParagraph(handle, address) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(address, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.doc_restoreParagraph(this.__wbg_ptr, handle, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Text matches within paragraphs (`SearchRequest` to `SearchResult`),
      * in document order: each list, then the lists its paragraphs' controls
      * hold. Doesn't lay the document out.
@@ -801,8 +947,9 @@ export class Doc {
     }
     /**
      * The document in its own format, edited paragraphs carrying line
-     * segments from our layout. `markSaved` clears the dirty state; the
-     * content epoch never changes.
+     * segments from our layout. An HWP 3 document is written as a new
+     * HWP 5 file, the `.hwp` format this engine writes. `markSaved`
+     * clears the dirty state; the content epoch never changes.
      * @param {boolean} mark_saved
      * @returns {Uint8Array}
      */
@@ -816,10 +963,12 @@ export class Doc {
         return v1;
     }
     /**
-     * The document written as `format` (`"hwp5"` or `"hwpx"`): in its
+     * The document written as `format` (`"hwp5"`, `"hwpx"` or `"hml"`): in its
      * own format as [`Doc::serialize`] writes it, in the other as a new
-     * file encoded from the model alone. The open document keeps its
-     * format; `markSaved` clears the dirty state.
+     * file encoded from the model alone. An HWP 3 document, which has no
+     * writer, is always converted; as `"hwp5"` it is what
+     * [`Doc::serialize`] writes. The open document keeps its format;
+     * `markSaved` clears the dirty state.
      * @param {string} format
      * @param {boolean} mark_saved
      * @returns {Uint8Array}
@@ -933,6 +1082,31 @@ export class Doc {
         }
     }
     /**
+     * Copies or applies a transposed cell block; writes form one undo step.
+     * @param {string} request
+     * @returns {string}
+     */
+    transposeTable(request) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(request, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.doc_transposeTable(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Reverts the last transaction; a `Receipt`, or `null` when there is
      * nothing to undo.
      * @returns {string}
@@ -942,6 +1116,52 @@ export class Doc {
         let deferred2_1;
         try {
             const ret = wasm.doc_undo(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Rebinds the section's attached connector endpoints as one undoable edit.
+     * @param {number} section
+     * @returns {string}
+     */
+    updateConnectors(section) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_updateConnectors(this.__wbg_ptr, section);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Reopens an HWP export and compares its typed properties and resource
+     * values with the model that was written, excluding source/layout caches.
+     * @returns {string}
+     */
+    verifyHwp() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_verifyHwp(this.__wbg_ptr);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {
@@ -1067,11 +1287,54 @@ export class Engine {
         return ret >>> 0;
     }
     /**
+     * Characters whose outlines compact font registration retains, including
+     * the documents opened so far and the engine's basic Latin seed.
+     * @returns {string}
+     */
+    fontCharacters() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.engine_fontCharacters(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @returns {number}
      */
     get fontGeneration() {
         const ret = wasm.engine_fontGeneration(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Retained and pending glyph IDs for canonical source labels, as
+     * `[label, faceIndex, glyphIds][]`. Sparse refills must keep their union.
+     * @param {string} labels
+     * @returns {string}
+     */
+    glyphCoverage(labels) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(labels, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.engine_glyphCoverage(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Outlines for `(face, glyph)` pairs as a page's `GLYF` block lists
@@ -1094,7 +1357,7 @@ export class Engine {
         return this;
     }
     /**
-     * Opens HWP 5, HWPX or HWP 3 bytes and lays them out.
+     * Opens HWP 5, HWPX, HML or HWP 3 bytes; layout waits for a request.
      * @param {Uint8Array} bytes
      * @returns {Doc}
      */
@@ -1285,6 +1548,338 @@ export function fileFamilyNames(file) {
     } finally {
         wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
+}
+
+/**
+ * @param {string} base
+ * @param {string} current
+ * @param {string} incoming
+ * @returns {string}
+ */
+export function structuralMergeAnalyze(base, current, incoming) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(base, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(current, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(incoming, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeAnalyze(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @returns {string}
+ */
+export function structuralMergeAnalyzeDocument(b, c, i) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeAnalyzeDocument(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @param {string} bm
+ * @param {string} cm
+ * @param {string} im
+ * @returns {string}
+ */
+export function structuralMergeAnalyzeDocumentWithManifests(b, c, i, bm, cm, im) {
+    let deferred8_0;
+    let deferred8_1;
+    try {
+        const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(bm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passStringToWasm0(cm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passStringToWasm0(im, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len5 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeAnalyzeDocumentWithManifests(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
+        var ptr7 = ret[0];
+        var len7 = ret[1];
+        if (ret[3]) {
+            ptr7 = 0; len7 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred8_0 = ptr7;
+        deferred8_1 = len7;
+        return getStringFromWasm0(ptr7, len7);
+    } finally {
+        wasm.__wbindgen_free(deferred8_0, deferred8_1, 1);
+    }
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+export function structuralMergeBuildManifest(bytes) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeBuildManifest(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * @param {string} analysis
+ * @param {string} resolutions
+ * @returns {string}
+ */
+export function structuralMergeMaterialize(analysis, resolutions) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(analysis, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(resolutions, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeMaterialize(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @param {string} r
+ * @returns {Uint8Array}
+ */
+export function structuralMergeMaterializeDocument(b, c, i, r) {
+    const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(r, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.structuralMergeMaterializeDocument(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v5 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v5;
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @param {string} bm
+ * @param {string} cm
+ * @param {string} im
+ * @param {string} r
+ * @returns {Uint8Array}
+ */
+export function structuralMergeMaterializeDocumentWithManifests(b, c, i, bm, cm, im, r) {
+    const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(bm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passStringToWasm0(cm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ptr5 = passStringToWasm0(im, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len5 = WASM_VECTOR_LEN;
+    const ptr6 = passStringToWasm0(r, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len6 = WASM_VECTOR_LEN;
+    const ret = wasm.structuralMergeMaterializeDocumentWithManifests(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v8 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v8;
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @param {string} bm
+ * @param {string} cm
+ * @param {string} im
+ * @param {string} r
+ * @returns {Uint8Array}
+ */
+export function structuralMergeMaterializeReviewDocument(b, c, i, bm, cm, im, r) {
+    const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(bm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passStringToWasm0(cm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ptr5 = passStringToWasm0(im, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len5 = WASM_VECTOR_LEN;
+    const ptr6 = passStringToWasm0(r, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len6 = WASM_VECTOR_LEN;
+    const ret = wasm.structuralMergeMaterializeReviewDocument(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v8 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v8;
+}
+
+/**
+ * @param {Uint8Array} b
+ * @param {Uint8Array} c
+ * @param {Uint8Array} i
+ * @param {string} bm
+ * @param {string} cm
+ * @param {string} im
+ * @returns {string}
+ */
+export function structuralMergeReviewDocument(b, c, i, bm, cm, im) {
+    let deferred8_0;
+    let deferred8_1;
+    try {
+        const ptr0 = passArray8ToWasm0(b, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(c, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(i, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(bm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passStringToWasm0(cm, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passStringToWasm0(im, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len5 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeReviewDocument(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
+        var ptr7 = ret[0];
+        var len7 = ret[1];
+        if (ret[3]) {
+            ptr7 = 0; len7 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred8_0 = ptr7;
+        deferred8_1 = len7;
+        return getStringFromWasm0(ptr7, len7);
+    } finally {
+        wasm.__wbindgen_free(deferred8_0, deferred8_1, 1);
+    }
+}
+
+/**
+ * @param {string} raw
+ * @returns {string}
+ */
+export function structuralMergeVirtualBase(raw) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.structuralMergeVirtualBase(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * @param {string} raw
+ * @param {string} format
+ * @returns {Uint8Array}
+ */
+export function structuralMergeVirtualBaseDocument(raw, format) {
+    const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.structuralMergeVirtualBaseDocument(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 function __wbg_get_imports() {
     const import0 = {

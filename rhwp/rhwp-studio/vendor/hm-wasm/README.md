@@ -1,16 +1,22 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `fix/studio-residual-b` at `802bd97`: `feat/studio-integrate`
-at `a5b0951` (`feat/studio-api` (`05a3207`) with `feat/studio-widgets` (`bb98daf`), `feat/studio-dialogs`
-(`e6ee8d8`), `feat/studio-objects` (`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged, the read-back fix
-`f9528d9`, note renumbering (`0de6421`), `Doc.adopt` (`708adb0`) and object captions (`a5b0951`), over main
-(MAIN107, `d660276`)) plus `9591b4d`: line end points, grouping and ungrouping, tables and objects in same-document
-clipboard fragments, and script-defined combo box entries. Built on 2026-10-25.
+Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `54900b4` (2026-10-25 release
+candidate). Over the earlier integration `e2c92f9` it adds structural version merging and `Doc.verifyHwp`
+(`feat/studio-version-merge`, `208dbfb`), sparse host-font glyph coverage (`fix/studio-export-packaging`, `ebf68e8`)
+and the accepted rendering milestones `968dc9a`, `5dfe0c6` (text), `4e2a40d`, `381dcae` (tables) and `5921168`,
+`f72c281`, `05515e0` (objects), over main (MAIN107, `d660276`). Built with
+`CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
-`hm_wasm_bg.wasm`: 5,774,599 bytes, SHA-256
-`39a8acf0248fff7eb4dbe08759f06d8cba25b23f465ca200b50f47b094775016`.
+SHA-256 of the four files:
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `hm_wasm_bg.wasm` | 7,517,203 | `fd7ea2ac9b303b53cdf2f35bb0a29b2be14c468d09f0bdc2330a3e403b695c81` |
+| `hm_wasm.js` | 73,223 | `36b81090d1e158b5c8b7156fe5f69b480934b87b22c741ac17b73baa3ffe9271` |
+| `hm_wasm.d.ts` | 54,311 | `d9bb62d9cfbbc964f51837d524e0a9e67ccab36aa7f9ef1ed74f165a80eba39d` |
+| `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
 
 Studio API additions on `feat/studio-api`:
 
