@@ -115,3 +115,14 @@ node rhwp/rhwp-studio/e2e/heemang-verify/functional.mjs footnote-01
 ```
 
 Use the existing headless harness for real Studio interactions, with fake-provider checks labeled as such. Assign a separate port per lane and stop servers after checks. After integration run full Studio/hub suites, engine tests, `design-diff.mjs`, `functional.mjs` and `mcp-parity.mjs`; update `heemang-cleanroom/STATE.md` after merges with concise results.
+
+## 2026-10-26 qualification checkpoint
+
+Accepted source remains engine `e2e0d75` and Studio `8863fb64`; the checked-in vendor still needs a final combined rebuild. The following trials remain isolated.
+
+- Shared lazy paragraph facts (`32f93fd`, engine documentation `e3f1c11`) preserve all 687 documents / 11,498 pages exactly against the preceding performance build. Worker vendor `bfcde1d17a4dc1efb873ec4525c445899a6ff9493ebee0ce89d24d05012452a9` passes 410 exact packet and bitmap checks, six reopens, IME commit/undo/redo/cancel, and real File-menu HWP save/reopen.
+- Quiet seven-run report measurements pass cold first-visible median (1236.5 to 464.8 ms) and completed-result typing p95 (27.8 to 25.7 ms), but fail p50 (16.4 to 16.7 ms). Raw records are in `/private/tmp/heemang-perf-resume/report-seven-layout-facts/`. Pre-input capture occurs after phase scheduling and takes 4.5 ms on baseline versus 3.2 ms on candidate; actual input-phase diagnostics are pending. The completion metric and gate remain unchanged.
+- Joint rendering freeze `d78b03b4258349df211d2103ba7ee10b9dd6548e218cbe3641942767d12153dc` improves six of seven targets with all seven page-count matches retained. AIFT HWPX still scores 13,714 pixels against old 409, so full acceptance has not started. Separate alpha/color controls isolate the remaining thin-rule loss to combined RGBA sampling.
+- Fresh inputs with no cached lines reproduce a separate control-30 wrapping regression against the old executable. Ordinary spaces wrap identically; a fitting no-break group splits only on the candidate. A standalone wrapping fix and behavioral coverage are in progress.
+
+Watermark metadata/grayscale and curriculum empty-cut trials remain held by the existing strict page/band gate. No gate relaxation, push or PR has occurred. The remaining-document estimate requires a fresh combined corpus comparison, followed by final engine, Studio, hub, desktop, design, functional and MCP verification.
