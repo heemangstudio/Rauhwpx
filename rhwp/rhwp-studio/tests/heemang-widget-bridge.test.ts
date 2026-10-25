@@ -156,4 +156,8 @@ test('character properties at an offset describe the character there, as the too
   api.insertText(core, 0, 0, 0, 'abcdef');
   api.applyCharFormat(core, 0, 0, 2, 4, JSON.stringify({ bold: true }));
   assert.deepEqual([1, 2, 3, 4].map(offset => api.getCharPropertiesAt(core, 0, 0, offset).bold), [false, true, true, false]);
+  // 문단 앞에 글자처럼 놓인 표가 있어도 첫 글자를 읽는다.
+  api.createTableEx(core, { sectionIdx: 0, paraIdx: 0, charOffset: 0, rowCount: 1, colCount: 1, treatAsChar: true } as any);
+  api.applyCharFormat(core, 0, 0, 0, 1, JSON.stringify({ bold: true }));
+  assert.deepEqual([0, 1].map(offset => api.getCharPropertiesAt(core, 0, 0, offset).bold), [true, false]);
 });
