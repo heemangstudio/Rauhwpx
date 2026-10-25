@@ -307,25 +307,28 @@ export function getContainerRangeCharacterCountByPath(core: HmCore, sec: number,
   throw unsupported('getContainerRangeCharacterCountByPath');
 }
 
+/** 구 엔진 API 처럼 쪽 정보는 0.1px 로 맞춘다. 눈금자·쪽 틀이 이 값으로 그려진다(A4 폭 793.71 → 793.7). */
+const pagePx = (hu: number): number => Math.round(px(hu) * 10) / 10;
+
 function toPageInfo(page: HmPageInfo): PageInfo {
   const m = page.margins;
   return {
     pageIndex: page.index,
     pageNumber: page.number,
-    width: px(page.width),
-    height: px(page.height),
+    width: pagePx(page.width),
+    height: pagePx(page.height),
     sectionIndex: page.section,
-    marginLeft: px(m.left),
-    marginRight: px(m.right),
-    marginTop: px(m.top),
-    marginBottom: px(m.bottom),
-    marginHeader: px(m.header),
-    marginFooter: px(m.footer),
-    headerArea: { x: px(page.header.x), y: px(page.header.y), width: px(page.header.width), height: px(page.header.height) },
-    footerArea: { x: px(page.footer.x), y: px(page.footer.y), width: px(page.footer.width), height: px(page.footer.height) },
-    bodyLeft: px(page.body.x),
-    bodyRight: px(page.body.x + page.body.width),
-    columns: page.columns.map(column => ({ x: px(column.x), width: px(column.width) })),
+    marginLeft: pagePx(m.left),
+    marginRight: pagePx(m.right),
+    marginTop: pagePx(m.top),
+    marginBottom: pagePx(m.bottom),
+    marginHeader: pagePx(m.header),
+    marginFooter: pagePx(m.footer),
+    headerArea: { x: pagePx(page.header.x), y: pagePx(page.header.y), width: pagePx(page.header.width), height: pagePx(page.header.height) },
+    footerArea: { x: pagePx(page.footer.x), y: pagePx(page.footer.y), width: pagePx(page.footer.width), height: pagePx(page.footer.height) },
+    bodyLeft: pagePx(page.body.x),
+    bodyRight: pagePx(page.body.x + page.body.width),
+    columns: page.columns.map(column => ({ x: pagePx(column.x), width: pagePx(column.width) })),
   };
 }
 
@@ -392,8 +395,8 @@ export function renderPageToCanvasFiltered(core: HmCore, pageNum: number, canvas
     return;
   }
   const info = getPageInfo(core, pageNum);
-  canvas.width = Math.ceil(info.width * scale);
-  canvas.height = Math.ceil(info.height * scale);
+  canvas.width = Math.max(1, Math.floor(info.width * scale));
+  canvas.height = Math.max(1, Math.floor(info.height * scale));
   canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
 }
 

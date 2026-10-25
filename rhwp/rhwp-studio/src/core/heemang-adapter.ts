@@ -365,8 +365,9 @@ export class HeemangAdapter {
     for (const old of this.canvasPaints.keys()) if (!old.isConnected) this.canvasPaints.delete(old);
     this.canvasPaints.set(canvas, paint);
     const packet = this.page(index);
-    canvas.width = Math.ceil(packet.width * PX_PER_HU * scale);
-    canvas.height = Math.ceil(packet.height * PX_PER_HU * scale);
+    // 쪽 그리기(page-renderer)와 같이 내림한다. 올림하면 A4 가 794×1123 이 되어 쪽 틀이 1px 커진다.
+    canvas.width = Math.max(1, Math.floor(packet.width * PX_PER_HU * scale));
+    canvas.height = Math.max(1, Math.floor(packet.height * PX_PER_HU * scale));
     canvas.dataset.heemangPage = String(index);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas2D를 사용할 수 없습니다');
