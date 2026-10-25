@@ -1,7 +1,7 @@
 /**
  * 에이전트 표 도구 가운데 다른 작업 줄기가 맡지 않은 것: 표 캡션 글, 표 계산식. 셀 영역 테두리·배경은 table-properties.ts 가 맡는다.
  */
-import type { TableAddress, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { ParagraphInfo, TableAddress, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
 import { extendBridge } from './api';
 import type { HmApi } from './api';
 import type { HmCore } from './core';
@@ -14,6 +14,20 @@ function tableInfo(core: HmCore, table: TableAddress): TableInfo {
   return core.query<TableInfo>({ kind: 'table', table });
 }
 
+/** 문단 글에 자동 번호를 구 엔진처럼 " N" 으로 넣는다. */
+function textWithNumbers(info: ParagraphInfo): string {
+  const map = paraMap(info);
+  let text = '', from = 0;
+  for (const control of info.controls) {
+    if (control.kind !== 'autoNumber' || control.number === undefined) continue;
+    const cut = map.textStops.findIndex(stop => stop > control.offset);
+    const end = map.textUnits[cut < 0 ? map.textLength : cut];
+    text += info.text.slice(from, end) + ` ${control.number}`;
+    from = end;
+  }
+  return text + info.text.slice(from);
+}
+
 /** 표 캡션 목록의 글. 캡션이 없으면 null. */
 function captionText(core: HmCore, table: TableAddress): string | null {
   // 캡션 목록은 모든 셀 목록 다음 번호다.
@@ -21,7 +35,7 @@ function captionText(core: HmCore, table: TableAddress): string | null {
   const list = { section: table.section, steps: [...(table.steps ?? []), { para: table.para, control: table.control, index }] };
   try {
     const count = core.paragraphCount(list);
-    return Array.from({ length: count }, (_, p) => core.paragraph(list, p).text).join('\n');
+    return Array.from({ length: count }, (_, p) => textWithNumbers(core.paragraph(list, p))).join('\n');
   } catch {
     return null;
   }

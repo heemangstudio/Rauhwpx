@@ -2,7 +2,7 @@
 import type { EditOp, TableAddress, TableCell } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
 import { unsupported } from './core';
-import { bodyList, logicalAddress } from './address';
+import { bodyList, logicalAddress, logicalLength, paraMap, toAddress } from './address';
 import { extendBridge } from './api';
 import { deleteObject, insertedControl, objectPatch, objectProperties } from './objects-editing';
 import { tableAddress, tableAddressByPath, tableInfo } from './table-editing';
@@ -167,15 +167,18 @@ export const getTableProperties: typeof original.getTableProperties = (core, s, 
   const common = objectProperties(core, table);
   const cap = (v: string) => v[0].toUpperCase() + v.slice(1);
   return { cellSpacing: props.spacing, paddingLeft: props.padding[0], paddingRight: props.padding[1], paddingTop: props.padding[2], paddingBottom: props.padding[3],
-    pageBreak: props.split === 'none' ? 0 : 1, repeatHeader: props.repeatHeader,
+    // 표 대화상자처럼 저장값 그대로: 0 나누지 않음, 1 셀 단위로 나눔, 2 나눔.
+    pageBreak: Math.max(0, ['none', 'row', 'cell'].indexOf(props.split)), repeatHeader: props.repeatHeader,
     tableWidth: common.width, tableHeight: common.height, treatAsChar: common.treatAsChar,
     horzOffset: common.horzOffset, vertOffset: common.vertOffset, horzRelTo: cap(common.horzRelTo), vertRelTo: cap(common.vertRelTo),
     horzAlign: cap(common.horzAlign), vertAlign: cap(common.vertAlign),
     textWrap: ({ behind: 'BehindText', inFront: 'InFrontOfText' }[common.textWrap] ?? cap(common.textWrap)),
     outerLeft: common.margins[0], outerRight: common.margins[1], outerTop: common.margins[2], outerBottom: common.margins[3],
     restrictInPage: common.restrictInPage, allowOverlap: common.allowOverlap, keepWithAnchor: common.keepWithAnchor,
-    hasCaption: !!props.caption, captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption?.side ?? 'bottom'),
-    captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption?.verticalAlign ?? 'top'), captionWidth: props.caption?.width ?? 0, captionSpacing: props.caption?.gap ?? 0, ...borderFillProps(props.borderFill) } as TableProperties;
+    // 구 엔진처럼 캡션이 없으면 캡션 칸을 알리지 않는다.
+    hasCaption: !!props.caption, ...(props.caption ? { captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption.side ?? 'bottom'),
+      captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption.verticalAlign ?? 'top'), captionWidth: props.caption.width ?? 0, captionSpacing: props.caption.gap ?? 0 } : {}),
+    ...borderFillProps(props.borderFill) } as TableProperties;
 };
 export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => {
   const table = tableAddress(s, p, c);
@@ -189,7 +192,7 @@ export const setTableProperties: typeof original.setTableProperties = (core, s, 
     if (value === undefined || value === current[key as keyof TableProperties] || BORDER_FILL_KEYS.has(key)) continue;
     if (key === 'cellSpacing') patch.spacing = value;
     else if (key === 'repeatHeader') patch.repeatHeader = value;
-    else if (key === 'pageBreak') patch.split = value === 0 ? 'none' : 'cell';
+    else if (key === 'pageBreak') patch.split = ['none', 'row', 'cell'][Number(value)] ?? 'cell';
     else if (paddingKeys.includes(key)) { padding[paddingKeys.indexOf(key)] = Number(value); patch.padding = padding; }
     else if (key === 'captionDirection') common[key] = ['Left', 'Right', 'Top', 'Bottom'][Number(value)];
     else if (key === 'captionVertAlign') common[key] = ['Top', 'Center', 'Bottom'][Number(value)];
@@ -218,13 +221,34 @@ export const deleteCellTableControlByPath: typeof original.deleteCellTableContro
   const address = tableAddressByPath(s, p, JSON.stringify([...container, { controlIndex: c, cellIndex: 0, cellParaIndex: 0 }]));
   return deleteObject(core, address);
 };
+/**
+ * 글자처럼 취급하지 않는 표(기본)는 구 엔진처럼 제 문단에 놓고 뒤에 빈 문단을 둔다. 빈 문단이면 그 문단에,
+ * 문단 처음이면 문단 뒤에, 그 밖에는 캐럿에서 문단을 나눠 사이에 넣는다.
+ */
 export const createTableEx: typeof original.createTableEx = (core, options) => {
   const list = bodyList(options.sectionIdx);
-  const at = logicalAddress(core, list, options.paraIdx, options.charOffset);
-  const before = core.paragraph(list, options.paraIdx).controls.map(c => c.index);
-  core.transact([{ op: 'createTable', at, rows: options.rowCount, columns: options.colCount,
-    columnWidths: options.colWidths, rowHeights: options.rowHeights, inline: options.treatAsChar ?? true } as EditOp]);
-  return insertedControl(core, at, before);
+  const para = options.paraIdx;
+  const at = logicalAddress(core, list, para, options.charOffset);
+  const inline = options.treatAsChar ?? false;
+  const table = (where: typeof at): EditOp => ({ op: 'createTable', at: where, rows: options.rowCount, columns: options.colCount,
+    columnWidths: options.colWidths, rowHeights: options.rowHeights, inline } as EditOp);
+  if (inline) {
+    const before = core.paragraph(list, para).controls.map(c => c.index);
+    core.transact([table(at)]);
+    return insertedControl(core, at, before);
+  }
+  const map = paraMap(core.paragraph(list, para));
+  if (logicalLength(map) === 0) {
+    const before = map.info.controls.map(c => c.index);
+    core.transact([table(at), { op: 'split', at: toAddress(list, para, map.end + 8) }]);
+    return insertedControl(core, at, before);
+  }
+  const own = toAddress(list, para + 1, 0);
+  const splits: EditOp[] = options.charOffset <= 0
+    ? [{ op: 'split', at: toAddress(list, para, map.end) }, table(own), { op: 'split', at: toAddress(list, para + 1, 8) }]
+    : [{ op: 'split', at }, { op: 'split', at }, { op: 'split', at }, table(own)];
+  core.transact(splits);
+  return insertedControl(core, own, []);
 };
 export const createTable: typeof original.createTable = (core, s, p, offset, rows, cols) => createTableEx(core, { sectionIdx: s, paraIdx: p, charOffset: offset, rowCount: rows, colCount: cols });
 export const setTableColumnWidths: typeof original.setTableColumnWidths = (core, s, p, c, widths) => {

@@ -9,6 +9,7 @@ import type { CharProperties, PageDef, PageInfo, ParaProperties } from './types'
 
 /** 쪽 좌표: HU(1/7200 inch) ÷ 75 = 96 DPI px. */
 const HU_PER_PX = 75;
+const roundedPx = (hu: number): number => Math.round(hu / HU_PER_PX * 10) / 10;
 
 /** COLORREF(0x00BBGGRR) → '#rrggbb' */
 export function colorRefToHex(color: number): string {
@@ -71,16 +72,18 @@ export function charProperties(characters: CharPatch): CharProperties {
 export function paraProperties(paragraphs: ParaPatch): ParaProperties {
   const props: ParaProperties = {};
   if (paragraphs.align) props.alignment = paragraphs.align === 'divide' ? 'split' : paragraphs.align;
-  // 엔진은 비율 줄 간격만 lineSpacing 으로 알린다.
+  // 비율 줄 간격은 %, 나머지 줄 간격과 여백·간격은 구 엔진처럼 0.1px 로 반올림한 px 다.
+  // 엔진의 비율 아닌 줄 간격은 HWP 저장값(HWPUNIT 의 2배)이다.
   if (paragraphs.lineSpacing !== undefined) {
-    props.lineSpacing = paragraphs.lineSpacing;
-    props.lineSpacingType = { percent: 'Percent', fixed: 'Fixed', added: 'SpaceOnly', atLeast: 'Minimum' }[paragraphs.lineSpacingKind ?? 'percent'];
+    const kind = paragraphs.lineSpacingKind ?? 'percent';
+    props.lineSpacing = kind === 'percent' ? paragraphs.lineSpacing : roundedPx(paragraphs.lineSpacing / 2);
+    props.lineSpacingType = { percent: 'Percent', fixed: 'Fixed', added: 'SpaceOnly', atLeast: 'Minimum' }[kind];
   }
-  if (paragraphs.left !== undefined) props.marginLeft = paragraphs.left / HU_PER_PX;
-  if (paragraphs.right !== undefined) props.marginRight = paragraphs.right / HU_PER_PX;
-  if (paragraphs.indent !== undefined) props.indent = paragraphs.indent / HU_PER_PX;
-  if (paragraphs.spaceBefore !== undefined) props.spacingBefore = paragraphs.spaceBefore / HU_PER_PX;
-  if (paragraphs.spaceAfter !== undefined) props.spacingAfter = paragraphs.spaceAfter / HU_PER_PX;
+  if (paragraphs.left !== undefined) props.marginLeft = roundedPx(paragraphs.left);
+  if (paragraphs.right !== undefined) props.marginRight = roundedPx(paragraphs.right);
+  if (paragraphs.indent !== undefined) props.indent = roundedPx(paragraphs.indent);
+  if (paragraphs.spaceBefore !== undefined) props.spacingBefore = roundedPx(paragraphs.spaceBefore);
+  if (paragraphs.spaceAfter !== undefined) props.spacingAfter = roundedPx(paragraphs.spaceAfter);
   return props;
 }
 

@@ -189,7 +189,7 @@ test('cell and zone borders and fills apply from dialog payloads and carry to ne
 
 test('a cell block splits cell by cell, F11 finds the nearest objects and a click in an empty cell enters it', t => {
   const { core } = open(t);
-  const c = api.createTable(core, 0, 0, 0, 2, 2).controlIdx;
+  const c = api.createTableEx(core, { sectionIdx: 0, paraIdx: 0, charOffset: 0, rowCount: 2, colCount: 2, treatAsChar: true }).controlIdx;
   api.splitTableCellsInRange(core, 0, 0, c, 0, 0, 1, 1, 1, 2, false);
   assert.deepEqual(api.getTableDimensions(core, 0, 0, c), { rowCount: 2, colCount: 4, cellCount: 8 });
   // 표 뒤(논리 오프셋 1)에 그림을 넣는다.

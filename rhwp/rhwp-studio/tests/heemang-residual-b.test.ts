@@ -52,7 +52,7 @@ test('한글 문서모델은 글자 모양과 둘째 문단부터의 문단 모�
   assert.equal(wasm.getCharPropertiesAt(0, 0, 4).bold, false);
   const second = wasm.getParaPropertiesAt(0, 1);
   assert.equal(second.alignment, 'center');
-  assert.equal(second.marginLeft, 1000 / 75, '모델 여백 2000 은 1000 HU 다');
+  assert.equal(second.marginLeft, 13.3, '모델 여백 2000 은 1000 HU(0.1px 반올림)다');
   assert.equal(second.lineSpacing, 180);
   assert.throws(() => wasm.pasteHwpJson(0, 0, 0, JSON.stringify({ ro: { hp: 'p', p: { ru: [{ ch: [{ cc: 11, co: 't' }] }] } } })));
 });

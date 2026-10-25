@@ -37,7 +37,6 @@ import { popModal, pushModal } from './modal-stack';
 import {
   changedRawValue,
   formatPtFromPx,
-  ptToRaw,
   ptToRaw2x,
   sameDisplayedNumber,
 } from './para-shape-model';
@@ -811,7 +810,8 @@ export class ParaShapeDialog {
     if (newLSType === 'Percent') {
       newLS = clampLineSpacing(parseInt(this.lineSpacingInput.value) || 160);
     } else {
-      newLS = ptToRaw(clampLineSpacing(parseFloat(this.lineSpacingInput.value) || 0));
+      // 여백과 같은 HWP 저장값(pt×200)으로 보낸다. 다시 열면 넣은 pt 가 그대로 보인다.
+      newLS = ptToRaw2x(clampLineSpacing(parseFloat(this.lineSpacingInput.value) || 0));
     }
     // 종류를 바꾸면 값의 의미가 달라지므로 함께 보낸다.
     if (mods.lineSpacingType !== undefined

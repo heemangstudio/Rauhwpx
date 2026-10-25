@@ -14,6 +14,8 @@ import type { HeemangAdapter } from '../heemang-adapter';
 /** 쪽 좌표: HU(1/7200 inch) ÷ 75 = 96 DPI px. */
 export const HU_PER_PX = 75;
 export const px = (hu: number): number => hu / HU_PER_PX;
+/** 개체·표 상자처럼 에이전트에게도 보이는 값은 구 엔진처럼 0.1px 로 반올림한다. */
+export const px1 = (hu: number): number => Math.round(hu / HU_PER_PX * 10) / 10;
 export const hu = (value: number): number => Math.round(value * HU_PER_PX);
 
 export function unsupported(operation: string): EngineNotSupportedError {

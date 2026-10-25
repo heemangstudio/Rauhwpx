@@ -92,7 +92,7 @@ test('styles, paragraph margins, numbering and character counts use the document
   assert.equal(api.getParaPropertiesAt(core, 0, 0).marginRight, 24);
   // 문단 모양 대화상자는 10pt 를 저장값 2000 으로 보낸다.
   api.applyParaFormat(core, 0, 0, JSON.stringify({ spacingBefore: 2000, indent: -1500 }));
-  assert.equal(api.getParaPropertiesAt(core, 0, 0).spacingBefore, 1000 / 75);
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).spacingBefore, 13.3);
   assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, -10);
   const bullet = api.ensureDefaultBullet(core, '•');
   assert.equal(api.ensureDefaultBullet(core, '•'), bullet);

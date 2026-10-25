@@ -1,7 +1,7 @@
 /** 표의 주소·셀 경계와 구조 편집을 희망 엔진 트랜잭션에 연결한다. */
 import type { EditOp, Rect, TableAddress, TableCell, TableInfo } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
-import { px } from './core';
+import { px1 } from './core';
 import { bodyList, logicalAddress, logicalLength, paraMap, parsePath, pathTarget } from './address';
 import { extendBridge } from './api';
 import type * as original from './table';
@@ -28,7 +28,7 @@ function cellAt(info: TableInfo, index: number): TableCell {
 }
 function cellBoxes(info: TableInfo): CellBbox[] {
   return info.cells.flatMap((cell, cellIdx) => cell.rects.map(rect => ({
-    cellIdx, ...cellInfo(cell), pageIndex: rect.page, x: px(rect.x), y: px(rect.y), w: px(rect.width), h: px(rect.height),
+    cellIdx, ...cellInfo(cell), pageIndex: rect.page, x: px1(rect.x), y: px1(rect.y), w: px1(rect.width), h: px1(rect.height),
   })));
 }
 function boundingBox(rects: Rect[]) {
@@ -37,9 +37,9 @@ function boundingBox(rects: Rect[]) {
   const samePage = rects.filter(rect => rect.page === first.page);
   const x = Math.min(...samePage.map(rect => rect.x));
   const y = Math.min(...samePage.map(rect => rect.y));
-  return { pageIndex: first.page, x: px(x), y: px(y),
-    width: px(Math.max(...samePage.map(rect => rect.x + rect.width)) - x),
-    height: px(Math.max(...samePage.map(rect => rect.y + rect.height)) - y) };
+  return { pageIndex: first.page, x: px1(x), y: px1(y),
+    width: px1(Math.max(...samePage.map(rect => rect.x + rect.width)) - x),
+    height: px1(Math.max(...samePage.map(rect => rect.y + rect.height)) - y) };
 }
 function edit(core: HmCore, op: EditOp, table: TableAddress) {
   core.transact([op]);
