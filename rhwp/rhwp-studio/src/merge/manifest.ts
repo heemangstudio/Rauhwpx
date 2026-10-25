@@ -9,7 +9,7 @@ import {
   type VersionMergeManifest,
 } from '../versioning/types.ts';
 
-export const MERGE_MANIFEST_VERSION = 4;
+export const MERGE_MANIFEST_VERSION = 5;
 
 function propertyHash(value: unknown): `blake3:${string}` {
   return hashBytes(new TextEncoder().encode(JSON.stringify(value))) as `blake3:${string}`;
