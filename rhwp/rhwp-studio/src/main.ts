@@ -4843,6 +4843,8 @@ async function initializeDocument(
     // 웹 글꼴과 함께 사용자 PC의 글꼴(데스크톱 색인·글꼴 폴더·로컬 글꼴 감지)을 연결한다.
     // 첫 페이지가 실제 글꼴로 조판되도록 제한 시간 안에 끝나면 레이아웃을 다시 계산한 뒤 그린다.
     // PC 전체 색인을 쓰면 본문 윤곽선은 엔진이 직접 준비한다. 브라우저 face는 목록 미리보기용이다.
+    // 첫 문서도 엔진이 기다릴 같은 색인 약속을 쓴다. 로딩 중이라는 이유로 full face를 중복 읽지 않는다.
+    if (getSystemFontHost()?.coversSystem) await loadDesktopFontIndex().catch(() => {});
     const desktopPreviewOnly = isDesktopFontIndexReady() && getSystemFontHost()?.coversSystem === true;
     if (desktopPreviewOnly) await loadStoredLocalFonts();
     const fontsUsed = docInfo.fontsUsed;
