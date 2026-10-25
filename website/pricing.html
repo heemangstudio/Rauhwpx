@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함)이고 매년 자동 갱신돼요. 언제든 해지할 수 있고, macOS·Windows에서 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이거나 Signature Edition ₩29,000(일회성)이에요. macOS·Windows에서 3일 동안 먼저 써 볼 수 있어요.">
 <meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -17,70 +17,9 @@
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* Layout for the pricing page. Shared parts live in assets/site.css. */
-
-/* A single price card, with the hippo sitting on its corner */
-.buy-cell { padding-top: clamp(140px, 13vw, 184px); padding-bottom: clamp(56px, 7vw, var(--space-3xl)); }
-.buy-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); align-items: stretch; max-width: 1000px; margin-inline: auto; }
-.buy-wrap { position: relative; display: flex; }
-.buy-wrap > .buy { flex: 1; }
-.buy { display: flex; flex-direction: column; }
-.buy__cta { margin-top: auto; }
-.buy--trial { background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--line); }
-.buy--trial .buy__list { margin-bottom: var(--space-lg); }
-@media (max-width: 860px) {
-  .buy-pair { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
-  .buy-pair .buy--trial { order: 2; }
-}
-.buy-wrap .perch { right: 36px; }
-.buy { padding: 36px clamp(20px, 5vw, var(--space-xl)) 32px; }
-.buy__top { text-align: center; }
-.buy__top .eyebrow { justify-content: center; }
-.buy__num {
-  margin-top: var(--space-md);
-  font-size: clamp(52px, 3vw + 36px, 80px); line-height: 1; font-weight: 800; letter-spacing: -0.05em;
-  font-variant-numeric: tabular-nums;
-}
-.buy__top .meta { margin-top: var(--space-sm); }
-
-.buy__list { list-style: none; margin: 28px 0 0; padding: 0; border-top: 1px solid var(--line); }
-.buy__list li {
-  display: flex; gap: var(--space-md);
-  padding: var(--space-md) var(--space-3xs); border-bottom: 1px solid var(--line);
-  font-size: var(--fs-small); line-height: 1.6; color: var(--muted);
-}
-/* Square marker matching the dots in the sky */
-.buy__list li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 0.62em; background: var(--accent); }
-.buy__list b { color: var(--text); font-weight: 600; }
-
-.buy .check { margin-top: var(--space-lg); }
-.buy .check a { color: var(--soft); }
-.buy [data-buy] { margin-top: 20px; }
-/* Keep clicks enabled so a click before consenting still shows the notice */
-.buy [data-buy][aria-disabled="true"] { pointer-events: auto; cursor: not-allowed; }
-.buy [data-buy][aria-disabled="true"]:active { transform: none; }
-.buy__note { margin-top: var(--space-sm); text-align: center; font-size: var(--fs-meta); line-height: 1.6; color: var(--accent); }
-.buy__note:empty { margin-top: 0; }
-.buy:has([data-consent]:checked) .buy__note { display: none; }
-
-
-
-/* Notice area below */
-.info .h3 + .text, .info .h3 + .terms { margin-top: var(--space-sm); }
-.info .link-arrow { margin-top: 20px; font-size: var(--fs-small); }
-.terms { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); font-size: var(--fs-small); line-height: 1.7; color: var(--muted); }
-.terms li { position: relative; padding-left: 20px; }
-.terms li::before { content: ""; position: absolute; left: 2px; top: 0.72em; width: 4px; height: 4px; background: var(--meta); }
-.terms b { color: var(--text); font-weight: 600; }
-.terms a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--link-line); text-underline-offset: 3px; }
-.terms a:hover { text-decoration-color: currentColor; }
-
 .dl { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px 32px; }
 .dl .meta { margin-top: var(--space-2xs); }
-
 @media (max-width: 760px) {
-  .buy-cell { padding-top: 104px; }
-  .buy-wrap .perch { right: 20px; }
   .dl .btn { flex: 1 1 100%; }
 }
 </style>
@@ -115,49 +54,47 @@
 </header>
 
 <main id="main">
-  <section class="has-sky" aria-labelledby="price-title">
-
-
+  <section aria-labelledby="price-title">
     <div class="frame frame--top">
-      <div class="cell cell--open buy-cell">
-        <div class="buy-pair">
-          <article class="card buy buy--trial" id="trial" aria-labelledby="trial-title">
-            <div class="buy__top">
-
-              <h2 id="trial-title" class="buy__num">3일</h2>
-              <p class="meta">모든 기능</p>
-            </div>
-            <ul class="buy__list">
-              <li><span>처음 실행하고 3일 동안 모든 기능을 무료로 써 볼 수 있어요.</span></li>
-              <li><span>체험이 끝나도 문서는 열어 볼 수 있고, 키를 넣으면 바로 다시 편집할 수 있어요.</span></li>
-            </ul>
-            <a class="btn btn--secondary btn--block buy__cta" href="trial.html">체험판 안내</a>
-          </article>
-        <div class="buy-wrap">
-          <div class="perch" style="--i:5"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
-          <article class="card card--navy buy" id="price">
-            <div class="buy__top">
-
-              <h1 id="price-title" class="buy__num">연 ₩9,900</h1>
-              <p class="meta">부가세 포함 · 자동 갱신 · 언제든 해지</p>
-            </div>
-
-            <ul class="buy__list">
+      <div class="cells">
+        <article class="cell cell--open" id="price">
+          <div class="card">
+            <h1 id="price-title" class="h2">연 ₩9,900</h1>
+            <p class="meta">부가세 포함 · 자동 갱신 · 언제든 해지</p>
+            <ul>
               <li id="mac-only"><span>앱의 모든 기능을 사용할수 있어요</span></li>
               <li><span>키 하나로 기기 두 대까지 동시에 쓸 수 있어요.</span></li>
               <li><span>언제든 해지할 수 있고, 해지해도 결제한 기간은 끝까지 써요.</span></li>
             </ul>
-
             <label class="check">
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy aria-disabled="true">연 ₩9,900 결제하기</a>
-            <p class="buy__note" data-buy-note role="status" aria-live="polite"></p>
-          </article>
-        </div>
-        </div>
+            <a class="btn btn--primary btn--block" href="#price" data-buy data-buy-sku="annual" aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
+            <p data-buy-note role="status" aria-live="polite"></p>
+          </div>
+        </article>
+        <article class="cell cell--open" id="signature">
+          <div class="card">
+            <p class="handnote">Signature</p>
+            <h2 id="signature-title" class="h2">₩29,000</h2>
+            <p class="meta">일회성</p>
+            <ul>
+              <li>앱의 모든 기능 (연간과 동일)</li>
+              <li>최소 3년 지속 업데이트 약속</li>
+              <li>우선 지원 · 영업일 1일 내 첫 답변 (이메일)</li>
+              <li>키 하나로 기기 두 대까지 (Mac · Windows)</li>
+            </ul>
+            <label class="check">
+              <input type="checkbox" data-consent>
+              <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
+            </label>
+            <a class="btn btn--primary btn--block" href="#signature" data-buy data-buy-sku="signature" aria-disabled="true">Groble에서 Signature 결제하기</a>
+            <p data-buy-note role="status" aria-live="polite"></p>
+          </div>
+        </article>
       </div>
+      <a class="btn btn--secondary" id="trial" href="trial.html">체험판 안내</a>
     </div>
   </section>
 
@@ -215,23 +152,7 @@
 
 <script src="assets/purchase.js"></script>
 <script>
-(function(){
-  var P=window.HamaPurchase;
-  var buy=document.querySelector('[data-buy]');
-  var consent=document.querySelector('[data-consent]');
-  var note=document.querySelector('[data-buy-note]');
-  if(!buy||!P)return;
-  function sync(){buy.setAttribute('aria-disabled',consent.checked?'false':'true');}
-  consent.addEventListener('change',sync);sync();
-  buy.addEventListener('click',function(e){
-    e.preventDefault();
-    if(!consent.checked){note.textContent='동의에 체크하면 결제할 수 있어요.';consent.focus();return;}
-    // Create a new ref for each checkout and keep it in this browser. success.html uses it to look up the key.
-    var ref=P.newRef();
-    P.saveRef(window.localStorage,ref);
-    window.location.href=P.checkoutUrl(ref);
-  });
-})();
+  if (window.HamaPurchase) window.HamaPurchase.bindBuyButtons(document);
 </script>
 <script src="assets/site.js" defer></script>
 </body>

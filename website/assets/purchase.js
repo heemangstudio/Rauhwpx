@@ -4,13 +4,15 @@
   'use strict';
 
   var CONFIG = {
-    // Product on sale. 'annual' = GLJFC9 (₩9,900/year, auto-renews every 12 months), 'onetime' = uRshdR (the old one-time product).
-    // This one line selects the checkout link. Use 'onetime' only to roll back, and then change the site's price copy too.
+    // Product selected by PLAN. 'annual' = GLJFC9 (₩9,900/year, auto-renews every 12 months), 'onetime' = uRshdR (the paused one-time product).
+    // This one line selects the default checkout link. Use 'onetime' only to roll back, and then change the site's price copy too.
+    // Signature is a separate button. PLAN does not select it.
     PLAN: 'annual',
-    // Groble product checkout links. The buy button appends ?ref=<random value> to them.
+    // Groble product checkout links. Each buy button appends ?ref=<random value> to its own link.
     CHECKOUT_URLS: {
       onetime: 'https://groble.im/payment/uRshdR',
-      annual: 'https://groble.im/payment/GLJFC9'
+      annual: 'https://groble.im/payment/GLJFC9',
+      signature: 'https://groble.im/payment/8Xy27f'
     },
     // License server. success.html queries GET {API_BASE}/v1/license/by-ref?ref= .
     API_BASE: 'https://rau-credits-production.up.railway.app',
@@ -186,6 +188,37 @@
     return function stop() { stopped = true; if (timer !== null) clearTimer(timer); };
   }
 
+  // Each [data-buy] uses the consent and note inside its own article, then opens that sku's checkout.
+  function bindBuyButtons(doc) {
+    var scope = doc && typeof doc.querySelectorAll === 'function' ? doc : (root && root.document);
+    if (!scope || typeof scope.querySelectorAll !== 'function') return;
+    var buttons = scope.querySelectorAll('[data-buy]');
+    Array.prototype.forEach.call(buttons, function (buy) {
+      var article = typeof buy.closest === 'function' ? buy.closest('article') : null;
+      var consent = article && article.querySelector('[data-consent]');
+      var note = article && article.querySelector('[data-buy-note]');
+      if (!consent) return;
+      var sku = buy.getAttribute('data-buy-sku');
+      function sync() {
+        buy.setAttribute('aria-disabled', consent.checked ? 'false' : 'true');
+      }
+      consent.addEventListener('change', sync);
+      sync();
+      buy.addEventListener('click', function (event) {
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        if (!consent.checked) {
+          if (note) note.textContent = '동의에 체크하면 결제할 수 있어요.';
+          if (typeof consent.focus === 'function') consent.focus();
+          return;
+        }
+        var ref = newRef();
+        var view = scope.defaultView || root;
+        if (view && view.localStorage) saveRef(view.localStorage, ref);
+        if (view && view.location) view.location.href = checkoutUrl(ref, CONFIG.CHECKOUT_URLS[sku]);
+      });
+    });
+  }
+
   var api = {
     CONFIG: CONFIG,
     REF_RE: REF_RE,
@@ -200,7 +233,8 @@
     renewalText: renewalText,
     trackDownload: trackDownload,
     trackDownloadOnce: trackDownloadOnce,
-    pollLicense: pollLicense
+    pollLicense: pollLicense,
+    bindBuyButtons: bindBuyButtons
   };
 
   if (typeof module === 'object' && module.exports) module.exports = api;

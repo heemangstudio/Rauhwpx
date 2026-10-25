@@ -60,9 +60,10 @@ export const DEFAULT_LICENSE_ALLOWED_ORIGINS = [
   'https://heemangstudio.github.io',
 ];
 
-/** Groble products: the one-time lifetime license and the 12-month auto-renewing subscription. */
 export const DEFAULT_ONETIME_PRODUCT_IDS = 'uRshdR';
 export const DEFAULT_SUBSCRIPTION_PRODUCT_IDS = 'GLJFC9';
+export const DEFAULT_SIGNATURE_PRODUCT_IDS = '8Xy27f';
+export const DEFAULT_SIGNATURE_PRICE = 29000;
 /**
  * After a failed renewal Groble retries once a day for 3 days, then keeps the subscription for a 7-day
  * grace period (groble.im/legal/refund 제6조 제13항). Keys stay usable this long past their expiry
@@ -80,6 +81,66 @@ function commaList(text, fallback) {
   return (text || fallback).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+function integerKrw(name, text, fallback) {
+  const value = Number(text || fallback);
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} must be an integer (KRW)`);
+  return value;
+}
+
+function productPriceOverrides(text) {
+  const overrides = new Map();
+  if (!text) return overrides;
+  for (const part of text.split(',')) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const [id, priceText, minText] = entry.split(':').map((s) => s.trim());
+    const expectedPrice = Number(priceText);
+    const minAmount = minText === undefined ? expectedPrice : Number(minText);
+    if (!id || !Number.isSafeInteger(expectedPrice) || !Number.isSafeInteger(minAmount)) {
+      throw new Error(`GROBLE_PRODUCT_PRICES entry is not id:price[:min]: ${entry}`);
+    }
+    overrides.set(id, { expectedPrice, minAmount });
+  }
+  return overrides;
+}
+
+export function buildProductCatalog({
+  onetimeProductIds,
+  subscriptionProductIds,
+  signatureProductIds,
+  expectedPrice,
+  minAmount,
+  signatureExpectedPrice,
+  signatureMinAmount,
+  priceOverrides = new Map(),
+}) {
+  const groups = [
+    ['one-time', 'onetime', onetimeProductIds, expectedPrice, minAmount],
+    ['subscription', 'subscription', subscriptionProductIds, expectedPrice, minAmount],
+    ['signature', 'signature', signatureProductIds, signatureExpectedPrice, signatureMinAmount],
+  ];
+  const seen = new Map();
+  const products = [];
+  for (const [label, kind, ids, price, min] of groups) {
+    for (const id of ids) {
+      const previous = seen.get(id);
+      if (previous) throw new Error(`Groble product ${id} is both ${previous} and ${label}`);
+      seen.set(id, label);
+      const override = priceOverrides.get(id);
+      products.push({
+        id,
+        kind,
+        expectedPrice: override?.expectedPrice ?? price,
+        minAmount: override?.minAmount ?? min,
+      });
+    }
+  }
+  for (const id of priceOverrides.keys()) {
+    if (!seen.has(id)) throw new Error(`GROBLE_PRODUCT_PRICES names ${id}, which is not a configured Groble product`);
+  }
+  return products;
+}
+
 /** License settings from env. Parsing errors throw at startup so a typo never ships silently. */
 export function resolveLicenseConfig(env = process.env) {
   const origins = trimmed(env.LICENSE_ALLOWED_ORIGINS);
@@ -91,16 +152,24 @@ export function resolveLicenseConfig(env = process.env) {
       throw new Error(`GRANDFATHER_CUTOFF is not an ISO-8601 time: ${cutoffText}`);
     }
   }
-  const price = Number(trimmed(env.GROBLE_EXPECTED_PRICE) || 9900);
-  const minAmount = Number(trimmed(env.GROBLE_MIN_AMOUNT) || price);
-  if (!Number.isSafeInteger(price) || !Number.isSafeInteger(minAmount)) {
-    throw new Error('GROBLE_EXPECTED_PRICE and GROBLE_MIN_AMOUNT must be integers (KRW)');
-  }
+  const price = integerKrw('GROBLE_EXPECTED_PRICE', trimmed(env.GROBLE_EXPECTED_PRICE), 9900);
+  const minAmount = integerKrw('GROBLE_MIN_AMOUNT', trimmed(env.GROBLE_MIN_AMOUNT), price);
+  const signatureExpectedPrice = integerKrw('GROBLE_SIGNATURE_EXPECTED_PRICE', trimmed(env.GROBLE_SIGNATURE_EXPECTED_PRICE), DEFAULT_SIGNATURE_PRICE);
+  const signatureMinAmount = integerKrw('GROBLE_SIGNATURE_MIN_AMOUNT', trimmed(env.GROBLE_SIGNATURE_MIN_AMOUNT), signatureExpectedPrice);
   // GROBLE_CONTENT_ID is the older single-product variable; GROBLE_ONETIME_PRODUCT_IDS wins when both are set.
   const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
-  const overlap = onetimeProductIds.filter((id) => subscriptionProductIds.includes(id));
-  if (overlap.length) throw new Error(`Groble product ${overlap.join(', ')} is both one-time and subscription`);
+  const signatureProductIds = commaList(trimmed(env.GROBLE_SIGNATURE_PRODUCT_IDS), DEFAULT_SIGNATURE_PRODUCT_IDS);
+  const products = buildProductCatalog({
+    onetimeProductIds,
+    subscriptionProductIds,
+    signatureProductIds,
+    expectedPrice: price,
+    minAmount,
+    signatureExpectedPrice,
+    signatureMinAmount,
+    priceOverrides: productPriceOverrides(trimmed(env.GROBLE_PRODUCT_PRICES)),
+  });
   const paymentGraceDays = positiveNumber('GROBLE_PAYMENT_GRACE_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_DAYS), DEFAULT_PAYMENT_GRACE_DAYS);
   const paymentFixUrl = trimmed(env.GROBLE_PAYMENT_FIX_URL) || DEFAULT_PAYMENT_FIX_URL;
   if (!/^https:\/\/(?:www\.)?groble\.im\//.test(paymentFixUrl)) throw new Error(`GROBLE_PAYMENT_FIX_URL must be an https://groble.im/ page: ${paymentFixUrl}`);
@@ -109,6 +178,10 @@ export function resolveLicenseConfig(env = process.env) {
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
     onetimeProductIds,
     subscriptionProductIds,
+    signatureProductIds,
+    signatureExpectedPrice,
+    signatureMinAmount,
+    products,
     paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
     paymentFixUrl,
     expectedPrice: price,

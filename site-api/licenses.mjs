@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
+import { buildProductCatalog } from './config.mjs';
 import { heldReasonText } from './held-alert.mjs';
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import {
@@ -27,6 +28,8 @@ const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 /** Months one paid subscription round buys when Groble does not say (the GLJFC9 product bills every 12 months). */
 export const SUBSCRIPTION_CYCLE_MONTHS = 12;
+export const SIGNATURE_UPDATE_MONTHS = 36;
+const SIGNATURE_SUPPORT = { channel: 'email', sla: '1_business_day', timezone: 'Asia/Seoul' };
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const MAX_EXTEND_YEARS = 10;
 
@@ -154,6 +157,27 @@ function deviceLimitOf(license) {
   return Number.isSafeInteger(license.deviceLimit) && license.deviceLimit > 0 ? license.deviceLimit : DEVICE_LIMIT;
 }
 
+function signatureView(license) {
+  const prioritySupport = license.edition === 'signature' && license.status === 'active';
+  return {
+    prioritySupport,
+    ...(license.edition ? { edition: license.edition } : {}),
+    ...(license.productId && license.edition === 'signature' ? { productId: license.productId } : {}),
+    ...(license.updatesUntil ? { updatesUntil: license.updatesUntil } : {}),
+    ...(license.support ? { support: license.support } : {}),
+    ...(prioritySupport ? { supportSlaLabel: '1영업일 내 첫 답변' } : {}),
+  };
+}
+
+function signatureEntitlement(productId, paidMs, updatesUntilMs) {
+  return {
+    edition: 'signature',
+    productId,
+    updatesUntil: iso(updatesUntilMs ?? subscriptionEnd(paidMs, SIGNATURE_UPDATE_MONTHS)),
+    support: { ...SIGNATURE_SUPPORT },
+  };
+}
+
 /** Public, buyer-safe view used by admin responses. */
 function licenseView(license, { includeKey = true } = {}) {
   if (!license) return null;
@@ -174,6 +198,7 @@ function licenseView(license, { includeKey = true } = {}) {
     revokedAt: license.revokedAt,
     revokeReason: license.revokeReason,
     plan: expiryOf(license) === null ? 'lifetime' : 'annual',
+    ...signatureView(license),
     expiresAt: license.expiresAt ?? null,
     subscription: license.subscription,
     extensions: license.extensions,
@@ -201,6 +226,7 @@ function customerView(license, nowMs) {
     status: license.status,
     source: license.source,
     subscriptionStatus: subscriptionStatusOf(license, nowMs),
+    ...signatureView(license),
     expiresAt: license.expiresAt ?? null,
     autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
     paymentGraceEndsAt: paymentGraceEndOf(license) === null ? null : iso(paymentGraceEndOf(license)),
@@ -234,10 +260,14 @@ export function createLicensesService({
   emailProvider,
   onetimeProductIds = ['uRshdR'],
   subscriptionProductIds = ['GLJFC9'],
+  signatureProductIds = ['8Xy27f'],
   paymentGraceMs = 10 * 24 * 60 * 60 * 1000,
   paymentFixUrl = 'https://groble.im/manage/purchase',
   expectedPrice = 9900,
   minAmount = expectedPrice,
+  signatureExpectedPrice = 29000,
+  signatureMinAmount = signatureExpectedPrice,
+  products,
   grandfatherCutoff = undefined,
   grandfatherPlatforms = ['darwin'],
   adminToken = '',
@@ -245,6 +275,16 @@ export function createLicensesService({
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
+  const catalog = new Map((products ?? buildProductCatalog({
+    onetimeProductIds,
+    subscriptionProductIds,
+    signatureProductIds,
+    expectedPrice,
+    minAmount,
+    signatureExpectedPrice,
+    signatureMinAmount,
+  })).map((product) => [product.id, product]));
+
   let mutation = Promise.resolve();
   function withLock(fn) {
     const result = mutation.then(fn, fn);
@@ -330,26 +370,27 @@ export function createLicensesService({
   // `expiresAt`, and every RENEWAL round extends that same key. A subscription is found by its
   // `sellerReference` (the success-page ref, the same on every round); `merchantUid` is new each round.
 
-  function priceProblem(object, { renewal = false } = {}) {
+  function priceProblem(object, product, { renewal = false } = {}) {
     const finalAmount = num(object?.pricing?.finalAmount);
     const originalAmount = num(object?.pricing?.originalAmount);
     if (str(object?.pricing?.currency, 8) && object.pricing.currency !== 'KRW') return 'wrong_currency';
     if (finalAmount === undefined) return 'missing_amount';
     // A renewal bills the price frozen at signup, so a later price change must not hold old subscribers.
     if (renewal) return finalAmount > 0 ? null : `amount_below_minimum:${finalAmount}`;
-    if (originalAmount !== undefined && originalAmount !== expectedPrice) return `wrong_price:${originalAmount}`;
-    if (finalAmount < minAmount) return `amount_below_minimum:${finalAmount}`;
+    if (originalAmount !== undefined && originalAmount !== product.expectedPrice) return `wrong_price:${originalAmount}`;
+    if (finalAmount < product.minAmount) return `amount_below_minimum:${finalAmount}`;
     return null;
   }
 
   function checkPurchase(object, { subscription = false, renewal = false } = {}) {
     const contentId = str(object?.content?.id, 128);
     const paymentType = str(object?.content?.paymentType, 32);
-    const products = subscription ? subscriptionProductIds : onetimeProductIds;
-    const expectedType = subscription ? 'SUBSCRIPTION' : 'ONE_TIME';
-    if (products.length && !products.includes(contentId)) return `wrong_product:${contentId ?? 'missing'}`;
+    const product = contentId ? catalog.get(contentId) : undefined;
+    if (!product) return `wrong_product:${contentId ?? 'missing'}`;
+    if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
+    const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
-    return priceProblem(object, { renewal });
+    return priceProblem(object, product, { renewal });
   }
 
   /** Create or update the order record of one paid round. */
@@ -455,6 +496,7 @@ export function createLicensesService({
     if (order.status === 'refunded') return { action: 'refunded_before_completed' };
     const problem = checkPurchase(object, { subscription });
     if (problem) return hold(order, problem);
+    const product = catalog.get(order.contentId);
     const license = createLicense(state, {
       source: 'groble',
       merchantUid: order.merchantUid,
@@ -463,6 +505,7 @@ export function createLicensesService({
       amount: order.amount,
       occurredAt: event.occurredAt,
       ...(subscription ? subscriptionStart(order, object) : {}),
+      ...(product?.kind === 'signature' ? signatureEntitlement(product.id, paidAtOf(order)) : {}),
     });
     queueEmail(license);
     order.status = 'issued';
@@ -737,6 +780,7 @@ export function createLicensesService({
         downloadUrl,
         expiresAt: expiryOf(license),
         autoRenew: license.subscription?.autoRenew !== false,
+        updatesUntil: parseTime(license.updatesUntil) ?? null,
       });
       let outcome;
       try {
@@ -773,7 +817,18 @@ export function createLicensesService({
     const merchantUid = state.refs[ref];
     const order = merchantUid ? state.orders[merchantUid] : undefined;
     const license = order?.keyId ? state.licenses[order.keyId] : undefined;
-    if (license?.status === 'active') return { status: 'issued', key: license.key, licenseExpiresAt: expiryOf(license) };
+    if (license?.status === 'active') {
+      return {
+        status: 'issued',
+        key: license.key,
+        licenseExpiresAt: expiryOf(license),
+        ...(license.edition === 'signature' ? {
+          edition: 'signature',
+          prioritySupport: true,
+          updatesUntil: parseTime(license.updatesUntil) ?? null,
+        } : {}),
+      };
+    }
     if (license?.status === 'revoked' || order?.status === 'refunded') return { status: 'revoked' };
     return { status: 'pending' };
   }
@@ -832,6 +887,11 @@ export function createLicensesService({
       ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
+      ...(license.edition === 'signature' ? {
+        edition: 'signature',
+        prioritySupport: license.status === 'active',
+        updatesUntil: parseTime(license.updatesUntil) ?? null,
+      } : {}),
     };
   }
 
@@ -986,8 +1046,16 @@ export function createLicensesService({
       const ref = str(body?.ref, 128);
       if (ref && !REF_RE.test(ref)) throw licenseError('ref_invalid', 400);
       const sendEmail = body?.sendEmail === true;
+      if (body?.edition !== undefined && body.edition !== 'signature') throw licenseError('edition_invalid', 400);
+      const signature = body?.edition === 'signature';
       // `years` or `until` makes a subscription key (a backfilled subscription order); neither means lifetime.
       const term = parseTerm(body, { allowNone: true });
+      if (signature && term) throw licenseError('term_conflict', 400);
+      let updatesUntilMs;
+      if (signature && body?.updatesUntil !== undefined && body.updatesUntil !== true) {
+        updatesUntilMs = parseUntil(body.updatesUntil);
+        if (updatesUntilMs === undefined) throw licenseError('until_invalid', 400);
+      }
       return mutate(async (state) => {
         if (merchantUid && state.orders[merchantUid]?.keyId) {
           const license = state.licenses[state.orders[merchantUid].keyId];
@@ -1009,6 +1077,7 @@ export function createLicensesService({
             expiresAt: iso(term.until ?? subscriptionEnd(now(), 12 * term.years)),
             subscription: { productId: subscriptionProductIds[0], status: 'active', autoRenew: true, manual: true },
           } : {}),
+          ...(signature ? signatureEntitlement(str(body?.productId, 128) ?? signatureProductIds[0], now(), updatesUntilMs) : {}),
         });
         if (sendEmail) queueEmail(license);
         else license.emailDelivery = { status: 'manual' };
@@ -1092,11 +1161,30 @@ export function createLicensesService({
       }
       return { ok: true, licenses: matches.map((l) => licenseView(l)), orders };
     },
-    async orders(token, { status } = {}) {
+    async signatures(token) {
+      requireAdmin(token);
+      const state = await read();
+      const list = Object.values(state.licenses)
+        .filter((l) => l.edition === 'signature')
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .map((l) => ({
+          email: l.email,
+          keyId: l.keyId,
+          key: l.key,
+          edition: 'signature',
+          createdAt: l.createdAt,
+          updatesUntil: l.updatesUntil,
+          status: l.status,
+          prioritySupport: l.status === 'active',
+        }));
+      return { ok: true, count: list.length, signatures: list };
+    },
+    async orders(token, { status, contentId } = {}) {
       requireAdmin(token);
       const state = await read();
       const list = Object.values(state.orders)
         .filter((o) => !status || o.status === status)
+        .filter((o) => !contentId || o.contentId === contentId)
         .sort((a, b) => String(b.lastEventAt ?? b.createdAt).localeCompare(String(a.lastEventAt ?? a.createdAt)))
         .slice(0, 200);
       return { ok: true, count: list.length, orders: list };
@@ -1126,6 +1214,9 @@ export function createLicensesService({
           occurredAt: order.completedAt,
           note: `released from hold: ${order.holdReason ?? ''}`.trim(),
           ...(order.kind === 'subscription' ? subscriptionStart(order) : {}),
+          ...(catalog.get(order.contentId)?.kind === 'signature'
+            ? signatureEntitlement(order.contentId, paidAtOf(order))
+            : {}),
         });
         queueEmail(license);
         order.status = 'issued';
@@ -1165,7 +1256,8 @@ export function createLicensesService({
     },
     /**
      * Extend a subscription key: `years` from its expiry (or from now when it lapsed), or set it to
-     * `until`. Lifetime keys have nothing to extend. Every extension is kept on the license.
+     * `until`. Lifetime keys have nothing to extend. A Signature key is lifetime; years or until on it conflicts.
+     * Every extension is kept on the license.
      */
     async extend(token, body) {
       requireAdmin(token);
@@ -1173,6 +1265,10 @@ export function createLicensesService({
       return mutate(async (state) => {
         const license = findLicense(state, body ?? {});
         if (!license) throw licenseError('invalid_key', 404);
+        if (license.edition === 'signature') {
+          if (body?.years !== undefined || body?.until !== undefined) throw licenseError('term_conflict', 400);
+          throw licenseError('lifetime_key', 409);
+        }
         const before = expiryOf(license);
         if (before === null) throw licenseError('lifetime_key', 409);
         const to = term.until ?? subscriptionEnd(Math.max(before, now()), 12 * term.years);
