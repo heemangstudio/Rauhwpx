@@ -1,0 +1,50 @@
+[SystemFonts:desktop] 색인 2개 face · 한컴 목록 0개 · 12ms · system:2
+[SystemFonts:desktop] 색인 2개 face · 한컴 목록 0개 · 12ms · system:2
+[SystemFonts:desktop] 색인 4개 face · 한컴 목록 0개 · 12ms · system:4
+[SystemFonts:desktop] 색인 3개 face · 한컴 목록 0개 · 12ms · system:3
+[SystemFonts:desktop] 색인 3개 face · 한컴 목록 0개 · 12ms · system:3
+[SystemFonts:desktop] 색인 2개 face · 한컴 목록 0개 · 12ms · system:2
+[SystemFonts:desktop] 색인 1개 face · 한컴 목록 0개 · 12ms · system:1
+[SystemFonts:desktop] 색인 2개 face · 한컴 목록 0개 · 12ms · system:2
+(node:15812) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 데스크톱 글꼴 매칭은 한글 이름·한컴 목록·정규화·별칭 순서를 지키고 다른 family로 넘어가지 않는다 (6.689875ms)
+✔ 같은 이름이 여러 곳에 있으면 한컴 번들 사본과 그 출처의 스타일을 고른다 (0.949791ms)
+✔ 다른 앱 전용 사본은 같은 이름의 사용자·시스템 글꼴을 가리지 않는다 (1.00275ms)
+✔ 다른 앱 번들 글꼴은 글꼴 메뉴에 없지만 문서가 이름으로 부르면 연결된다 (2.299334ms)
+✔ 가변 글꼴 인스턴스는 고정 굵기 FontFace와 인스턴스 좌표 메트릭으로 등록된다 (46.041916ms)
+✔ rhwpDesktop이 없으면 데스크톱 글꼴 경로는 아무것도 바꾸지 않는다 (0.309708ms)
+✔ desktop HY equations prepare installed auxiliary faces without replacing the source font (30.265792ms)
+✔ desktop HFT outline reads retry after registration fails (2.007208ms)
+✔ 데스크톱 글꼴은 스타일별 FontFace와 런타임 메트릭으로 등록되고 권한 요청을 막는다 (2.479917ms)
+✔ 데스크톱 글꼴은 가져온 파일과 별도 한도를 쓴다 (0.797ms)
+✔ 데스크톱 색인은 이미 가져온 regular·bold face와 WASM 바이트를 보존한다 (0.375083ms)
+✔ 직접 가져온 face는 늦게 끝난 데스크톱 등록보다 우선한다 (0.253375ms)
+✔ 늦게 로드된 가져온 face는 앞서 등록된 데스크톱 FontFace를 제거한다 (0.150167ms)
+✔ 글꼴 폴더와 허브 색인을 합치고, 한쪽이 실패해도 나머지로 연결한다 (3.124208ms)
+✔ SFNT localized physical style is shared with imported metric registration (2.655166ms)
+✔ TTC에서 분리한 face는 각자 바이트를 다시 읽고 서로의 등록을 덮지 않는다 (0.613583ms)
+✔ Studio HWPX export packages previews while native saving keeps source bytes and history (78.276375ms)
+(node:15814) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ metadata stays lazy; first candidates/default and newly requested fallbacks precede layout, deduping physical copies (79.85475ms)
+✔ missing primary default selects only first available families from remaining lists, including host-only fallbacks (11.794125ms)
+✔ outline refetch uses approved readers, shares asynchronous reads, and repaints only current attached canvases (25.283125ms)
+✔ font preparation does not lay out or mark a replacement document prepared after an async load (24.274375ms)
+✔ picture arrivals coalesce repaint, drop detached canvases and cancel repaint on document replacement (3.426042ms)
+✔ catalog families keep every script bank in order and discover later host fallbacks (8.479375ms)
+✔ host SFNT preparation reuses preferred slots while retaining every matching HFT bank (31.854167ms)
+✔ a desktop TTC face already handed to the engine is not fetched again under its catalog identity (8.710625ms)
+✔ fallback coverage is queried again before reading another large candidate (11.454208ms)
+✔ metric-only faces defer outline transfer while retaining their native metrics (25.667959ms)
+✔ sparse coverage repairs kept-empty Latin and unseen Korean/non-BMP/composite glyphs through undo and reopen (103.499333ms)
+✔ a composite glyph includes its components on the first paint (5.213541ms)
+✔ HWP3 edits and adopted HWP3 content save to modern formats without marking unwritten output clean (94.440083ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 30
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 566.278833
