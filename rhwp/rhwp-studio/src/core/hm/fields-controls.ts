@@ -80,6 +80,7 @@ function link(core: HmCore, target: HyperlinkTarget, id: number) {
 export function getHyperlinkContext(core: HmCore, target: HyperlinkTarget): HyperlinkContext {
   const { list, para } = hyperlinkTarget(target);
   const map = paraMap(core.paragraph(list, para));
+  if (!map.info.controls.some(c => c.kind === 'field')) return { text: map.info.text, links: [] };
   return { text: map.info.text, links: fields(core)
     .filter(f => f.fieldKind === 'hyperlink' && f.target.para === para && f.end?.para === para && sameList(listOf(f.target), list))
     .map(f => ({ fieldId: f.fieldId!, start: wireToText(map, f.offset + 8), end: wireToText(map, f.end!.offset),
@@ -144,6 +145,10 @@ export function removeHyperlink(core: HmCore, target: HyperlinkTarget, fieldId: 
 
 function fieldAt(core: HmCore, pos: DocumentPosition): FieldRecord | undefined {
   const { list, para } = positionTarget(pos);
+  // 필드는 시작 컨트롤이 있는 문단에서만 찾는다. 그런 컨트롤이 없으면 문서 전체 필드 목록을 읽지 않는다.
+  let controls;
+  try { controls = core.paragraph(list, para).controls; } catch { return undefined; }
+  if (!controls.some(c => c.kind === 'field')) return undefined;
   return fields(core).find(f => {
     if (!sameList(listOf(f.target), list) || f.target.para !== para || f.end?.para !== para) return false;
     const { start, end } = range(core, f);
