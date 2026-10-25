@@ -104,7 +104,12 @@ export interface ObjectProperties extends ObjectPatch {
     brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
     fill?:{kind:number;color:number|null;solid:unknown;gradient:unknown;image:unknown;alpha:number[]};
 }
-export interface TableProperties extends TablePatch { rows:number; columns:number; borderFill:unknown }
+/** `caption` is null without a caption; `zones` are the table's cell zones, each with the border fill it applies. */
+export interface TableProperties extends TablePatch {
+    rows:number; columns:number; borderFill:unknown;
+    caption:{side:"left"|"right"|"top"|"bottom";includeMargin:boolean;width:number;gap:number;maxWidth:number;paragraphs:number}|null;
+    zones:{startRow:number;startColumn:number;endRow:number;endColumn:number;borderFill:unknown}[];
+}
 export interface CellProperties extends CellPatch { row:number; column:number; rowSpan:number; columnSpan:number; tablePadding:number[]; borderFill:unknown }
 export interface PictureData { bytes:number[]; extension:string; mime:string; naturalWidth:number; naturalHeight:number }
 /** Equation fields: size in HU (1000 = 10 pt), baseline a percent of the height. */
@@ -260,6 +265,8 @@ export interface CharacterCount { characters: number }
 export interface ParagraphFormat {
     index: number; styleId: number; paraShapeId: number; paragraphs: ParaPatch; list: ListRef | null;
     runs: { offset: number; charShapeId: number; characters: CharPatch }[];
+    /** The paragraph starts a new page or column. */
+    pageBreak: boolean; columnBreak: boolean;
 }
 /** A paragraph's laid-out line (\`lines\` query): page HU and the wire range it shows. */
 export interface LineInfo { line: number; page: number; y: number; height: number; baseline: number; start: number; end: number; left: number; right: number }

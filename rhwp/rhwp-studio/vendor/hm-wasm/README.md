@@ -1,13 +1,14 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `b97cb96`: `feat/studio-api`
+Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `f9528d9`: `feat/studio-api`
 (`05a3207`) with `feat/studio-widgets` (`bb98daf`), `feat/studio-dialogs` (`e6ee8d8`), `feat/studio-objects`
-(`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged, over main (MAIN107, `d660276`). Built on 2026-10-25.
+(`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged and the read-back fix
+`f9528d9` on top, over main (MAIN107, `d660276`). Built on 2026-10-25.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
-`hm_wasm_bg.wasm`: 5,656,518 bytes, SHA-256
-`d73137e0e0de4ecb7860ed092d27898f3845df8f8ad705254e9878495196aee2`.
+`hm_wasm_bg.wasm`: 5,660,423 bytes, SHA-256
+`6ba890ed3ea8748d32f7b60a97029852288a9ba37000c2484cf8c0ef3c9777c7`.
 
 Studio API additions on `feat/studio-api`:
 
@@ -32,7 +33,8 @@ colors, outlines, shadows, emphasis marks, shading and per-slot faces, sizes and
 query. Dialog branch additions (`4483a40`, `e6ee8d8`): page, section, column and page-border settings, headers and
 footers, footnotes and endnotes, click-here fields, hyperlinks, bookmarks and form objects. Agent tools branch
 (`8d6a669`): equation insert and edit (`insertEquation`, `setEquation`), numbered table captions (`setTableCaption`)
-and the `equation` and `equationPreview` queries.
+and the `equation` and `equationPreview` queries. `f9528d9` reports page and column breaks in `formatRuns` and a
+table's caption and cell zones in `tableProperties`.
 
 To refresh, run `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> ./crates/hm-wasm/build.sh` in a HeemangEngine
 worktree of `feat/studio-integrate`, copy the four files from `target/hm-wasm-pkg/web/` here and update this
