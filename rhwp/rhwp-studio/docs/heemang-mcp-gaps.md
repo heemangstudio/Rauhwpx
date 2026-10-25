@@ -27,7 +27,6 @@ versions reports `문서 구조 병합` as unsupported.
 
 ## Smaller differences
 
-- `template_insert_block` copies through the engine fragment, so it replaces the user's internal clipboard.
 - `setTableCaptionText` returns `captionText` without the auto number's digits ("표  설명"); the `paragraphs` query does not
   expand auto numbers. The dialogs lane's `controls` query reports them.
 - `get_outline` in `outline` mode treats outline and numbered paragraphs as headings (level = list level + 1), as the old
@@ -40,3 +39,5 @@ versions reports `문서 구조 병합` as unsupported.
 Conditional property/clipboard parity is tracked in [the engine-gap inventory](../../../docs/heemang-engine-gaps.md).
 It covers cross-document object resources, cross-section selections, character borders/outline numbering, shape and
 caption variants, native filename/total-page furniture fields, inactive-furniture coordinates and note-equation writes.
+
+`template_insert_block` now imports through the native `pasteFrom` fragment path without replacing the user's clipboard. Actual baseline and candidate checks copy `A`, insert `TEMPLATE`, then paste: both produce `ATEMPLATEA`. Invalid source/target ranges and closed sources also preserve the clipboard and document state. The template-tool test covers review approval, one history undo/redo and HWP/HWPX reopen. [Evidence](../../../docs/evidence/heemang-template-clipboard/README.md) records the original failure and the fixed live flow.

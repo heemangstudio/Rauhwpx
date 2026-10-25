@@ -1,0 +1,70 @@
+{
+  "baseline": {
+    "before": {
+      "text": "A",
+      "has": true
+    },
+    "after": {
+      "text": "A",
+      "has": true
+    },
+    "text": "ATEMPLATEA",
+    "transfer": {
+      "charOffset": 9,
+      "controlCounts": {},
+      "insertedParagraphCount": 1,
+      "ok": true,
+      "paraIdx": 0,
+      "skippedFeatures": [
+        "sectionStructure"
+      ],
+      "warnings": [
+        "Section and column definitions stay owned by the target section; use template_apply_section_layout for those surfaces."
+      ]
+    }
+  },
+  "candidateBefore": {
+    "before": {
+      "text": "A",
+      "has": true
+    },
+    "after": {
+      "text": "A",
+      "has": true
+    },
+    "text": "ATEMPLATETEMPLATE",
+    "result": {
+      "ok": true,
+      "warnings": [],
+      "skippedFeatures": [],
+      "insertedParagraphCount": 1,
+      "controlCounts": {
+        "section": 1,
+        "columns": 1
+      }
+    },
+    "undoDelta": 1
+  },
+  "candidateAfter": {
+    "before": {
+      "text": "A",
+      "has": true
+    },
+    "after": {
+      "text": "A",
+      "has": true
+    },
+    "text": "ATEMPLATEA",
+    "result": {
+      "ok": true,
+      "warnings": [],
+      "skippedFeatures": [],
+      "insertedParagraphCount": 1,
+      "controlCounts": {
+        "section": 1,
+        "columns": 1
+      }
+    },
+    "undoDelta": 1
+  }
+}
