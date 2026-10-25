@@ -151,6 +151,10 @@ test('표 만들기는 구 엔진처럼 제 문단에 한컴 기본 표를 놓�
   assert.deepEqual([table.x, table.w, table.h, table.rowCount, table.colCount], [117.2, 559.4, 17.1, 1, 2]);
   const props = wasm.getTableProperties(0, empty.paraIdx, empty.controlIdx);
   assert.deepEqual([props.treatAsChar, props.textWrap, props.outerLeft, props.paddingLeft, props.paddingTop], [false, 'TopAndBottom', 283, 510, 141]);
+  // 캡션이 없는 표는 캡션 칸을 알리지 않는다(구 엔진과 같다). 캡션을 달면 알린다.
+  assert.deepEqual(Object.keys(props).filter(k => k.startsWith('caption')), []);
+  wasm.setTableCaptionText(0, empty.paraIdx, empty.controlIdx, '설명', true);
+  assert.equal(wasm.getTableProperties(0, empty.paraIdx, empty.controlIdx).captionDirection, 3);
 
   for (const [offset, expected, at] of [[0, ['abc', '[표]', ''], 1], [1, ['a', '[표]', '', 'bc'], 1], [3, ['abc', '[표]', '', ''], 1]] as const) {
     wasm.loadDocument(await import('./heemang-agent-env.ts').then(m => m.rhwpFile(FIXTURES.blankHwpx)), 'blank.hwpx');

@@ -175,8 +175,10 @@ export const getTableProperties: typeof original.getTableProperties = (core, s, 
     textWrap: ({ behind: 'BehindText', inFront: 'InFrontOfText' }[common.textWrap] ?? cap(common.textWrap)),
     outerLeft: common.margins[0], outerRight: common.margins[1], outerTop: common.margins[2], outerBottom: common.margins[3],
     restrictInPage: common.restrictInPage, allowOverlap: common.allowOverlap, keepWithAnchor: common.keepWithAnchor,
-    hasCaption: !!props.caption, captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption?.side ?? 'bottom'),
-    captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption?.verticalAlign ?? 'top'), captionWidth: props.caption?.width ?? 0, captionSpacing: props.caption?.gap ?? 0, ...borderFillProps(props.borderFill) } as TableProperties;
+    // 구 엔진처럼 캡션이 없으면 캡션 칸을 알리지 않는다.
+    hasCaption: !!props.caption, ...(props.caption ? { captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption.side ?? 'bottom'),
+      captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption.verticalAlign ?? 'top'), captionWidth: props.caption.width ?? 0, captionSpacing: props.caption.gap ?? 0 } : {}),
+    ...borderFillProps(props.borderFill) } as TableProperties;
 };
 export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => {
   const table = tableAddress(s, p, c);
