@@ -52,6 +52,16 @@ async function initializeRuntime() {
     registered.add(key);
   };
   const assets: FontAsset[] = [];
+  const assetsByFamily = new Map<string, Set<FontAsset>>();
+  const addAsset = (asset: FontAsset) => {
+    assets.push(asset);
+    for (const name of asset.families) {
+      const key = normalize(name);
+      let matches = assetsByFamily.get(key);
+      if (!matches) assetsByFamily.set(key, matches = new Set());
+      matches.add(asset);
+    }
+  };
   const loadedAssets = new Set<string>();
   const pending = new Map<string, Promise<void>>();
   const readAsset = async (asset: FontAsset) => {
@@ -67,7 +77,7 @@ async function initializeRuntime() {
   if (import.meta.env.DEV && import.meta.env.VITE_HEEMANG_FONT_ASSETS === '1') {
     const response = await fetch('/__heemang-fonts/manifest.json');
     if (!response.ok) throw new Error(`Heemang 글꼴 목록 오류: ${response.status}`);
-    assets.push(...await response.json());
+    for (const asset of await response.json() as FontAsset[]) addAsset(asset);
     for (const asset of assets) sources.set(asset.url, () => readAsset(asset));
     for (const asset of assets.filter(a => /\.dat$/i.test(a.name))) {
       const bytes = await readAsset(asset);
@@ -77,7 +87,7 @@ async function initializeRuntime() {
     }
   }
   const hasFamily = (name: string) => families.has(normalize(name));
-  const hasAvailableFamily = (name: string) => hasFamily(name) || assets.some(a => a.families.some(f => normalize(f) === normalize(name)));
+  const hasAvailableFamily = (name: string) => hasFamily(name) || assetsByFamily.has(normalize(name));
   const loadFonts = async (requests: FontRequests) => {
     // 일반 실행에서도 호스트 색인에서 엔진이 고른 대체 서체를 직접 연결한다.
     const host = getSystemFontHost();
@@ -86,7 +96,7 @@ async function initializeRuntime() {
       for (const face of index.faces) {
         const url = `heemang-host:${face.id}`;
         if (sources.has(url)) continue;
-        assets.push({ name: face.path, url, size: face.size, families: face.families, host: true });
+        addAsset({ name: face.path, url, size: face.size, families: face.families, host: true });
         sources.set(url, () => host.read(face.id));
       }
     }
@@ -97,10 +107,12 @@ async function initializeRuntime() {
     const defaults = first(requests.classDefaults[0]);
     for (const name of defaults ? [defaults] : requests.classDefaults.slice(1).map(first)) want(name);
     for (const name of requests.fallbacks ?? []) want(first([name]));
+    const matching = new Set([...wanted].flatMap(name => [...(assetsByFamily.get(name) ?? [])]));
     const copies = new Set(registered);
-    await Promise.all(assets.map(asset => {
+    // 기존 색인 순서를 유지해 같은 face와 HFT 은행의 선택 순서도 바뀌지 않는다.
+    await Promise.all(assets.filter(asset => matching.has(asset)).map(asset => {
       const key = copyKey(asset.name, asset.size);
-      if (loadedAssets.has(asset.url) || copies.has(key) || !asset.families.some(f => wanted.has(normalize(f)))) return;
+      if (loadedAssets.has(asset.url) || copies.has(key)) return;
       copies.add(key);
       let load = pending.get(asset.url);
       if (!load) {

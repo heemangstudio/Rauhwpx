@@ -185,3 +185,22 @@ test('picture arrivals coalesce repaint, drop detached canvases and cancel repai
     globalThis.cancelAnimationFrame = originalCancel;
   }
 });
+
+test('catalog families keep every script bank in order and discover later host fallbacks', async () => {
+  const assets = [asset(1,'Body-Korean.hft','B O D Y'),asset(2,'Body-Latin.hft','Body'),asset(3,'Unused.ttf','Unused')];
+  const fallbacks: string[] = [];
+  const { HeemangAdapter } = await setup(assets, () => req(['body'], [], fallbacks));
+  env.index = {faces:[]};
+  env.host = {read:async () => new Uint8Array(4).fill(9)};
+  const adapter = new HeemangAdapter();
+  await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  await adapter.prepareFonts(['body'],{});
+  assert.deepEqual(env.events,['font:1','font:2','layout']);
+  assert.equal(env.fetches.includes('/__heemang-fonts/3'),false);
+  env.index.faces.push({id:'new-fallback',path:'/fonts/new.ttf',size:4,families:['New Fallback']});
+  env.families.set(9,['New Fallback']);
+  fallbacks.push('new fallback');
+  await adapter.prepareFonts(['body'],{});
+  assert.deepEqual(env.events,['font:1','font:2','layout','font:9','layout']);
+  assert.equal(env.plans,0);
+});
