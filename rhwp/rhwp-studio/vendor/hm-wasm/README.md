@@ -1,10 +1,10 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `54900b4` (2026-10-25 release
+Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `3e2a9df` (2026-10-25 release
 candidate). Over the earlier integration `e2c92f9` it adds structural version merging and `Doc.verifyHwp`
 (`feat/studio-version-merge`, `208dbfb`), sparse host-font glyph coverage (`fix/studio-export-packaging`, `ebf68e8`)
 and the accepted rendering milestones `968dc9a`, `5dfe0c6` (text), `4e2a40d`, `381dcae` (tables) and `5921168`,
-`f72c281`, `05515e0` (objects), over main (MAIN107, `d660276`). Built with
+`f72c281`, `05515e0` (objects), over main (MAIN107, `d660276`). `3e2a9df` adds `acrossControls` text search. Built with
 `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
@@ -13,9 +13,9 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,517,203 | `fd7ea2ac9b303b53cdf2f35bb0a29b2be14c468d09f0bdc2330a3e403b695c81` |
+| `hm_wasm_bg.wasm` | 7,517,971 | `e29821a1690186ed95b14935ece061a26f9faf68b169d51ede6ad69c80f60ed8` |
 | `hm_wasm.js` | 73,223 | `36b81090d1e158b5c8b7156fe5f69b480934b87b22c741ac17b73baa3ffe9271` |
-| `hm_wasm.d.ts` | 54,311 | `d9bb62d9cfbbc964f51837d524e0a9e67ccab36aa7f9ef1ed74f165a80eba39d` |
+| `hm_wasm.d.ts` | 54,444 | `35e2478b124544a14b69fc39075f2581a65794e555307d6c01a38b9436cd2be4` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
 
 Studio API additions on `feat/studio-api`:
