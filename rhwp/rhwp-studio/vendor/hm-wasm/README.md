@@ -1,11 +1,13 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/studio-objects` at `5c96a91`, which includes main (MAIN107,
-`d660276`), the core API branch and native table/object editing. Built on 2026-10-25. Contract and page-packet versions are
-both 1. The package is committed so Studio does not need the HeemangEngine checkout to run or build.
+Generated browser bindings and WASM from HeemangEngine `feat/studio-integrate` at `b97cb96`: `feat/studio-api`
+(`05a3207`) with `feat/studio-widgets` (`bb98daf`), `feat/studio-dialogs` (`e6ee8d8`), `feat/studio-objects`
+(`5c96a91`) and `feat/studio-agent-api` (`8d6a669`) merged, over main (MAIN107, `d660276`). Built on 2026-10-25.
+Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
+checkout to run or build.
 
-`hm_wasm_bg.wasm`: 5,080,059 bytes, SHA-256
-`285405e7b67c7d3d1e399649ef83d881056ba190083b7b8c9685da31d1f817b5`.
+`hm_wasm_bg.wasm`: 5,656,518 bytes, SHA-256
+`d73137e0e0de4ecb7860ed092d27898f3845df8f8ad705254e9878495196aee2`.
 
 Studio API additions on `feat/studio-api`:
 
@@ -24,8 +26,16 @@ fills (`borderFill` patches, the `setCellZone` op), cell text direction and form
 `allowOverlap` and `keepWithAnchor`, picture brightness, contrast, effect, transparency and inner margins, and drawing
 face fills.
 
+Widget branch additions (`18fac63`, `bb98daf`): atomic style, list definition and shape-ID edits; font and shape
+queries; character patches for script positions, emboss and engrave, kerning, underline and strikeout shapes and
+colors, outlines, shadows, emphasis marks, shading and per-slot faces, sizes and offsets; and the `fontCandidates`
+query. Dialog branch additions (`4483a40`, `e6ee8d8`): page, section, column and page-border settings, headers and
+footers, footnotes and endnotes, click-here fields, hyperlinks, bookmarks and form objects. Agent tools branch
+(`8d6a669`): equation insert and edit (`insertEquation`, `setEquation`), numbered table captions (`setTableCaption`)
+and the `equation` and `equationPreview` queries.
+
 To refresh, run `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> ./crates/hm-wasm/build.sh` in a HeemangEngine
-worktree of `feat/studio-objects`, copy the four files from `target/hm-wasm-pkg/web/` here and update this
+worktree of `feat/studio-integrate`, copy the four files from `target/hm-wasm-pkg/web/` here and update this
 provenance. The Canvas2D player in `src/view/heemang-player.ts`
 ports `crates/hm-wasm/js/player.mjs`. The accompanying LICENSE applies to the engine and reference player.
 
