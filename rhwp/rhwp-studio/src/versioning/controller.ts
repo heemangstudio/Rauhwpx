@@ -2973,8 +2973,11 @@ export class DocumentVersionController implements VersionManagerController {
       const entries = await this.#mergeWorker.buildDocumentManifest(blob.bytes, {
         onProgress: (progress) => this.#eventBus.emit('merge-progress', progress),
       });
-      // 전체 문서 manifest 는 구조 병합에만 쓴다. 엔진에 구조 병합이 없으면 병합을 시작하지 않는다.
-      if (!entries) throw new EngineNotSupportedError('문서 구조 병합');
+      // 엔진에 구조 병합이 없으면 커밋 때 만든 비교 스냅샷 manifest 를 그대로 쓴다. 병합 자체는 병합 작업자가 막는다.
+      if (!entries) {
+        if (existing) return existing;
+        throw new EngineNotSupportedError('문서 구조 병합');
+      }
       return this.#store.putFullMergeManifest(repositoryId, id, entries);
     })();
     memo.set(id, building);
