@@ -7,48 +7,25 @@
 <base href="/">
 <title>페이지를 찾을 수 없어요 | HamaEditor</title>
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#ffffff">
+<meta name="description" content="요청한 페이지를 찾을 수 없어요. HamaEditor 홈페이지로 돌아가세요.">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
-/* 404 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
-.lost-sky { height: clamp(200px, 26vw, 300px); }
-/* 가로선 위에 엎드린 하마 */
-.lost { padding-top: clamp(40px, 5vw, 56px); padding-bottom: clamp(72px, 9vw, 120px); }
-.lost .perch { left: 50%; width: 216px; height: 88px; margin-left: -108px; }
-.lost .perch svg { display: block; width: 100%; height: 100%; }
-.lost__code { font-family: var(--mono); font-size: 15px; color: var(--accent); letter-spacing: 0.04em; }
-.lost .h1 { margin-top: 16px; }
-.lost .lead { margin-top: 16px; }
+.lost-sky { height: 144px; }
+.lost { text-align: center; padding-block: 56px var(--space-3xl); }
+.lost .perch { position: static; margin: 0 auto var(--space-lg); width: 110px; height: 100px; }
+.lost .perch img { width: 100%; height: 100%; }
+.lost .lead { margin: 20px auto 0; }
 .lost .btn { margin-top: 32px; }
-@media (max-width: 760px) {
-  .lost .perch { width: 162px; height: 66px; margin-left: -81px; }
-}
-
-/* 픽셀 그림답게 끊어서: 눈물이 볼을 타고 한 칸씩 내려가고, 두 번 흐느껴요 */
-.tear { opacity: 0; }
-@keyframes tear {
-  0%, 30% { opacity: 0; transform: translateY(0); }
-  34% { opacity: 1; transform: translateY(0); }
-  44% { transform: translateY(1px); }
-  54% { opacity: 1; transform: translateY(2px); }
-  60%, 100% { opacity: 0; transform: translateY(2px); }
-}
-@keyframes sob {
-  0%, 66%, 72%, 78%, 100% { transform: none; }
-  69%, 75% { transform: translateY(1px); }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .tear { animation: tear 3.6s steps(1, end) infinite; }
-  .sob { animation: sob 3.6s steps(1, end) infinite; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tear { opacity: 1; }
-}
+.lost__code { color: var(--accent); font-size: 16px; margin-bottom: var(--space-md); }
 </style>
 </head>
 <body>
@@ -58,8 +35,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -70,8 +46,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -84,33 +59,16 @@
 
 <main id="main">
   <section class="has-sky" aria-labelledby="lost-title">
-    <div class="sky" aria-hidden="true">
-      <i class="wide-only cloud cloud--l" style="left:9%;top:30%"></i>
-      <i class="cloud" style="left:76%;top:20%"></i>
-      <i class="wide-only cloud cloud--s" style="left:88%;top:62%"></i>
-      <i class="star star--lg star--blink" style="left:16%;top:12%;--d:.8s"></i>
-      <i class="star star--lg" style="left:84%;top:9%"></i>
-      <i class="wide-only star star--dim" style="left:30%;top:24%"></i>
-      <i class="star star--blink" style="left:66%;top:34%;--d:2.6s;--blink:7.4s"></i>
-      <i class="star star--dim" style="left:6%;top:64%"></i>
-      <i class="wide-only star star--blink" style="left:92%;top:82%;--d:1.4s;--blink:9s"></i>
-      <i class="dot dot--hi" style="left:24%;top:8%"></i>
-      <i class="wide-only dot" style="left:56%;top:12%"></i>
-      <i class="dot" style="left:46%;top:44%"></i>
-      <i class="wide-only dot dot--hi" style="left:72%;top:72%"></i>
-      <i class="dot" style="left:12%;top:86%"></i>
-    </div>
+
 
     <div class="frame frame--top">
       <div class="cell cell--open lost-sky"></div>
       <div class="cell cell--center lost">
         <div class="perch" aria-hidden="true">
-          <svg class="px" viewBox="0 0 27 11">
-            <g class="sob"><path fill="#000000" d="M17 6h1v1h-1z"/><path fill="#0c2536" d="M18 5h1v1h-1z"/><path fill="#1d4766" d="M4 9h2v1h-2zM11 9h2v1h-2zM25 9h1v1h-1zM4 10h2v1h-2zM11 10h2v1h-2zM14 10h10v1h-10z"/><path fill="#2f73a0" d="M19 2h1v1h-1zM19 3h1v1h-1zM24 5h1v1h-1zM0 6h1v1h-1zM26 7h1v1h-1zM4 8h2v1h-2zM11 8h1v1h-1zM26 8h1v1h-1zM6 9h2v1h-2zM16 9h9v1h-9zM1 10h3v1h-3zM8 10h3v1h-3z"/><path fill="#62b3e2" d="M5 2h4v1h-4zM2 3h11v1h-11zM17 3h2v1h-2zM0 4h15v1h-15zM16 4h6v1h-6zM0 5h18v1h-18zM19 5h5v1h-5zM1 6h16v1h-16zM18 6h7v1h-7zM1 7h25v1h-25zM1 8h3v1h-3zM6 8h5v1h-5zM12 8h14v1h-14zM1 9h3v1h-3zM8 9h3v1h-3zM13 9h3v1h-3z"/><path fill="#b2e2fb" d="M5 1h4v1h-4zM2 2h3v1h-3zM9 2h3v1h-3zM17 2h2v1h-2zM0 3h2v1h-2zM13 3h2v1h-2zM16 3h1v1h-1zM20 3h1v1h-1zM15 4h1v1h-1zM22 4h3v1h-3z"/><rect class="tear" x="18" y="7" width="1" height="1" fill="#e6f5ff"/></g>
-          </svg>
+          <img src="assets/hama.svg" width="110" height="100" alt="">
         </div>
         <p class="lost__code">404</p>
-        <h1 class="h1" id="lost-title" data-reveal="words">페이지를 찾을 수 없어요</h1>
+        <h1 class="h1" id="lost-title">페이지를 찾을 수 없어요</h1>
         <p class="lead">주소가 바뀌었거나 사라진 페이지예요.</p>
         <a class="btn btn--primary" href="index.html">홈으로</a>
       </div>
@@ -127,9 +85,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>

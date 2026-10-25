@@ -5,20 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>이용약관 | HamaEditor</title>
 <meta name="description" content="HamaEditor 이용약관.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/tos">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
 <style>
 /* 이용약관 전용 배치. 공통 부품은 assets/site.css 에 있어요.
    왼쪽은 목차, 오른쪽은 약관 본문. 둘 사이에 세로선이 내려와요. */
 
-.terms-meta { display: flex; flex-wrap: wrap; gap: 6px 28px; margin-top: 24px; }
-.terms-meta div { display: flex; align-items: baseline; gap: 10px; }
+.terms-meta { display: flex; flex-wrap: wrap; gap: var(--space-xs) 28px; margin-top: var(--space-lg); }
+.terms-meta div { display: flex; align-items: baseline; gap: var(--space-sm); }
 .terms-meta dt { font-size: var(--fs-meta); color: var(--meta); }
 .terms-meta dd { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 
@@ -31,13 +34,13 @@
   width: 7px; height: 7px;
   background: var(--night-1); border: 1px solid var(--line-strong);
 }
-.toc__in { position: sticky; top: calc(var(--nav-h) + 24px); padding: 36px 24px 40px var(--cell-pad); }
-.toc__title { margin-bottom: 10px; font-size: var(--fs-meta); font-weight: 600; color: var(--meta); }
+.toc__in { position: sticky; top: calc(var(--nav-h) + 24px); padding: 36px var(--space-lg) var(--space-xl) var(--cell-pad); }
+.toc__title { margin-bottom: var(--space-sm); font-size: var(--fs-meta); font-weight: 600; color: var(--meta); }
 .toc ol { display: grid; }
 .toc a {
   position: relative;
   display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: baseline;
-  padding: 6px 0;
+  padding: var(--space-xs) 0;
   font-size: 14.5px; line-height: 1.45; color: var(--muted);
   transition: color 0.15s ease;
 }
@@ -57,10 +60,10 @@
 /* 본문 */
 .terms__body { max-width: none; padding: 36px var(--cell-pad) clamp(72px, 9vw, 120px) clamp(32px, 4vw, 56px); }
 .terms__body > * { max-width: 68ch; }
-.terms__body .art { scroll-margin-top: 16px; }
+.terms__body .art { scroll-margin-top: var(--space-md); }
 .terms__body .art + .art { margin-top: 2.6em; }
-.terms__body h2 { display: flex; align-items: baseline; gap: 12px; margin-top: 0; font-size: 20px; }
-.art__no { flex: none; font-size: 14px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.terms__body h2 { display: flex; align-items: baseline; gap: var(--space-sm); margin-top: 0; font-size: 20px; }
+.art__no { flex: none; font-size: 14px; font-weight: inherit; color: inherit; font-variant-numeric: tabular-nums; }
 
 @counter-style circled { system: fixed; symbols: "①" "②" "③" "④" "⑤" "⑥" "⑦" "⑧" "⑨" "⑩"; suffix: " "; }
 .terms__body .clauses { list-style: circled outside; padding-left: 1.7em; }
@@ -68,9 +71,9 @@
 .clauses > li::marker { color: var(--meta); font-variant-numeric: tabular-nums; }
 .terms__body .clauses .sub { list-style: decimal; margin-top: 0.5em; padding-left: 1.3em; }
 
-.terms__sign { margin-top: 3em; padding-top: 22px; border-top: 1px solid var(--line); }
-.terms__sign dl { display: grid; gap: 6px; }
-.terms__sign div { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+.terms__sign { margin-top: 3em; padding-top: var(--space-lg); border-top: 1px solid var(--line); }
+.terms__sign dl { display: grid; gap: var(--space-xs); }
+.terms__sign div { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-md); align-items: baseline; }
 .terms__sign dt { min-width: 3.5em; font-size: var(--fs-meta); color: var(--meta); }
 .terms__sign dd { margin: 0; font-size: var(--fs-small); color: var(--text); }
 
@@ -78,7 +81,7 @@
   .terms { grid-template-columns: minmax(0, 1fr); }
   .toc { border-right: 0; border-bottom: 1px solid var(--line); }
   .toc::after { display: none; }
-  .toc__in { position: static; padding: 28px var(--cell-pad) 24px; }
+  .toc__in { position: static; padding: 28px var(--cell-pad) var(--space-lg); }
   .toc ol { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; }
   .toc a { grid-template-columns: 44px minmax(0, 1fr); }
   .toc a::before { display: none; }
@@ -86,7 +89,7 @@
 }
 @media (max-width: 520px) {
   .toc ol { grid-template-columns: minmax(0, 1fr); }
-  .terms__body h2 { flex-direction: column; gap: 2px; }
+  .terms__body h2 { flex-direction: column; gap: var(--space-3xs); }
 }
 </style>
 </head>
@@ -97,8 +100,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 처음으로"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -109,8 +111,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -124,8 +125,8 @@
 <main id="main">
   <div class="frame frame--top">
     <header class="cell cell--open page-head">
-      <p class="eyebrow">HamaEditor</p>
-      <h1 id="terms-title" class="h1" data-reveal="words">이용약관</h1>
+
+      <h1 id="terms-title" class="h1">이용약관</h1>
       <dl class="terms-meta">
         <div><dt>시행일</dt><dd><time datetime="2026-11-01">2026. 11. 1.</time></dd></div>
         <div><dt>버전</dt><dd>1.2</dd></div>
@@ -275,9 +276,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>

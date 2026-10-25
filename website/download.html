@@ -5,275 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>다운로드 | HamaEditor</title>
 <meta name="description" content="HamaEditor를 내려받고 Mac이나 Windows PC에 설치하는 순서예요. 설치 파일을 열고 안내대로 설치한 뒤 처음 실행하면 3일 체험이 시작돼요.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="canonical" href="https://heemangstudios.com/download">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
 <link rel="stylesheet" href="assets/site.css">
 <script>document.documentElement.classList.add('js');</script>
-<style>
-/* 설치 전용 배치. 공통 부품은 assets/site.css 에 있어요. */
 
-.install-head .lead + .dl-line { margin-top: 28px; }
-.install-head .h1 ~ .os-pick { margin-top: 28px; }
-.install-head .os-pick ~ .dl-line { margin-top: 20px; }
-.dl-line { font-size: var(--fs-small); color: var(--muted); }
-
-/* 고른 운영체제: 로고와 이름. 다른 운영체제는 아래에 조용한 링크로 있어요 */
-.os-pick { display: flex; align-items: center; gap: 14px; }
-.os-pick[hidden], .os-other[hidden] { display: none; }
-.os-pick__logo {
-  flex: none; width: 52px; height: 52px; display: grid; place-items: center;
-  border-radius: 14px; background: var(--paper); color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--line-strong), 0 8px 16px -10px rgba(11, 13, 18, 0.3);
-}
-.os-pick__name { font-size: var(--fs-h3); font-weight: 750; letter-spacing: -0.01em; color: var(--text); }
-.os-pick .meta { margin-top: 2px; }
-.os-other {
-  display: flex; width: fit-content; margin-top: 8px;
-  font-size: var(--fs-small); color: var(--meta);
-  text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px;
-  transition: color 0.15s ease;
-}
-.os-other:hover { color: var(--text); }
-
-/* 단계 한 칸: 왼쪽 글, 오른쪽 그림 */
-.inst { list-style: none; margin: 0; padding: 0; counter-reset: none; }
-.inst { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.inst__step {
-  display: grid; place-items: start center;
-  padding-block: clamp(40px, 5vw, 64px);
-}
-.inst__step[hidden] { display: none; }
-.inst__step .eyebrow + .h3 { margin-top: 14px; }
-.inst__step .h3 { font-size: clamp(20px, 0.6vw + 17px, 24px); }
-.inst__art .win { transition: translate 0.5s var(--ease-out); }
-.inst__step:hover .inst__art .win { translate: 0 -4px; }
-.inst__step .h3 + .text { margin-top: 10px; max-width: 30em; }
-.inst__step .link-arrow { margin-top: 18px; font-size: var(--fs-small); }
-.inst__art { position: relative; width: 100%; max-width: 420px; }
-.inst__art .win__title { inset: 0 70px; }
-/* 테두리가 그림 바깥으로 나가서, 안의 창은 다른 단계와 같은 크기와 높이에 놓여요 */
-.inst__frame { margin: -54px -20px -20px; padding: 28px 20px 20px; width: calc(100% + 40px); min-width: 0; border: 1px solid var(--line-strong); border-radius: 18px; display: grid; place-items: center; }
-.inst__frame legend { padding: 0 10px; margin-inline: auto; font-size: var(--fs-small); font-weight: 700; color: var(--text); }
-.cursor { position: absolute; z-index: 3; width: 18px; height: 22px; pointer-events: none; }
-
-/* 윈도우 창: 제목은 왼쪽, 최소화·최대화·닫기는 오른쪽 */
-.win--pc .win__bar { justify-content: flex-end; }
-.inst__art .win--pc .win__title { inset: 0 auto 0 14px; place-items: center start; }
-.win__ctl { display: flex; align-items: center; gap: 18px; margin-right: 2px; }
-.win__ctl i { position: relative; width: 9px; height: 9px; }
-.win__ctl i::before, .win__ctl i::after { content: ""; position: absolute; }
-.win__ctl i:nth-last-child(3)::before { left: 0; right: 0; top: 4px; height: 1px; background: var(--app-dim); }
-.win__ctl i:nth-last-child(2)::before { inset: 0; border: 1px solid var(--app-dim); border-radius: 1px; }
-.win__ctl i:last-child::before, .win__ctl i:last-child::after { left: -1px; right: -1px; top: 4px; height: 1px; background: var(--app-dim); transform: rotate(45deg); }
-.win__ctl i:last-child::after { transform: rotate(-45deg); }
-
-/* 01 다운로드 폴더의 DMG */
-.fd__body {
-  position: relative; height: 210px; display: grid; place-items: center;
-  background: var(--app-work); border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.fd__file { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; width: 168px; }
-.fd__icon { position: relative; width: 64px; height: 64px; display: grid; place-items: center; border-radius: 10px; }
-.disk {
-  position: relative; width: 52px; height: 40px; border-radius: 6px;
-  background: #d9dde2;
-  box-shadow: inset 0 -12px 0 #b9bfc6, 0 6px 12px -6px rgba(0, 0, 0, 0.8);
-}
-.disk::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 5px; height: 2px; border-radius: 1px; background: #8e959d; }
-.fd__name { position: relative; isolation: isolate; padding: 1px 6px; border-radius: 4px; font-size: 11.5px; line-height: 1.45; text-align: center; color: var(--app-text); overflow-wrap: anywhere; }
-.fd__sel-icon { position: absolute; inset: 0; border-radius: 10px; background: rgba(255, 255, 255, 0.1); }
-.fd__sel-name { position: absolute; inset: 0; z-index: -1; border-radius: 4px; background: var(--deep); }
-.fd__name span { position: relative; }
-.fd__exe { width: 48px; height: 48px; border-radius: 11px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 6px 12px -6px rgba(0, 0, 0, 0.8); }
-.fd__exe img { width: 100%; height: 100%; }
-.fd .cursor { left: calc(50% + 10px); top: 34px; }
-.ring { position: absolute; left: 50%; top: 32px; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5); pointer-events: none; }
-.js [data-demo] .ring[data-at] { opacity: 0; transform: none; filter: none; transition: none; }
-.js [data-demo] .ring[data-at].is-on { animation: ring 900ms var(--ease-out) both; }
-@keyframes ring {
-  0% { opacity: 0.9; transform: scale(0.4); }
-  40% { opacity: 0; transform: scale(1.4); }
-  41% { opacity: 0.9; transform: scale(0.4); }
-  100% { opacity: 0; transform: scale(1.4); }
-}
-
-/* 02 설치 창: macOS 가 여는 DMG 창. 바탕은 실제 설치 창처럼 밝아요 */
-.dmg__body {
-  display: grid; place-items: center;
-  height: 236px; padding: 0 20px;
-  overflow: hidden;
-  background: #f5f5f7;
-  border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.dmg__stage {
-  --slot: 112px;
-  position: relative;
-  width: min(100%, 340px);
-  display: flex; justify-content: space-between; align-items: flex-start;
-}
-.dmg__slot { width: var(--slot); display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.dmg__label { font-size: 12.5px; font-weight: 500; color: #1d1d1f; white-space: nowrap; }
-.dmg__icon { width: 76px; height: 76px; border-radius: 18px; overflow: hidden; background: #000; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 16px -8px rgba(0, 0, 0, 0.45); }
-.dmg__icon img { width: 100%; height: 100%; }
-.dmg__arrow {
-  position: absolute; left: var(--slot); right: var(--slot); top: 30px;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-}
-.dmg__arrow i { width: 6px; height: 4px; background: #b8bcc2; }
-.dmg__arrow i:last-child { width: 0; height: 0; background: none; border-left: 8px solid #b8bcc2; border-block: 6px solid transparent; }
-/* 맥 폴더 모양 */
-.dmg__folder { position: relative; width: 80px; height: 76px; }
-.dmg__folder::before {
-  content: ""; position: absolute; left: 4px; top: 10px; width: 32px; height: 12px;
-  border-radius: 5px 5px 0 0; background: #3f8fc4;
-}
-.dmg__folder::after {
-  content: ""; position: absolute; left: 4px; right: 4px; top: 18px; bottom: 6px;
-  border-radius: 6px; background: var(--accent);
-  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.28), 0 8px 16px -8px rgba(0, 0, 0, 0.45);
-}
-/* 끌고 가는 복사본: 무대 폭만큼 넓고, 아이콘은 왼쪽 칸에 있어요 */
-.dmg__drag { position: absolute; left: 0; top: 0; z-index: 2; width: 100%; pointer-events: none; transform-origin: calc(var(--slot) / 2) 38px; }
-.dmg__drag .dmg__slot { position: relative; }
-.dmg__drag .cursor { left: calc(var(--slot) / 2 + 22px); top: 50px; }
-.js [data-demo] .dmg__drag[data-at] { opacity: 0; transform: none; filter: none; transition: none; }
-.js [data-demo] .dmg__drag[data-at].is-on { animation: dmg-drag 1500ms var(--ease-std) both; }
-@keyframes dmg-drag {
-  0% { opacity: 0; transform: none; }
-  12% { opacity: 0.92; transform: translateY(-4px) scale(1.04); }
-  72% { opacity: 0.92; transform: translateX(calc(100% - var(--slot))) translateY(-4px) scale(1.04); }
-  86% { opacity: 0.8; transform: translateX(calc(100% - var(--slot))) scale(0.7); }
-  100% { opacity: 0; transform: translateX(calc(100% - var(--slot))) scale(0.4); }
-}
-.js [data-demo] .dmg__folder[data-at] { opacity: 1; transform: none; filter: none; transition: none; }
-.js [data-demo] .dmg__folder[data-at].is-on { animation: folder-take 460ms var(--ease-spring); }
-@keyframes folder-take {
-  0% { transform: none; }
-  40% { transform: scale(1.08); filter: brightness(1.08); }
-  100% { transform: none; }
-}
-.inst__art .perch { right: 28px; }
-
-/* 03 처음 열 때 macOS 가 묻는 창 */
-.ask__body {
-  position: relative; height: 236px; display: grid; place-items: center;
-  background: var(--app-work); border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.ask {
-  position: relative; width: 232px; padding: 20px 16px 16px;
-  display: flex; flex-direction: column; align-items: center; text-align: center;
-  border-radius: 12px; background: #2a2a2c;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 18px 36px -12px rgba(0, 0, 0, 0.8);
-}
-.ask__icon { width: 44px; height: 44px; border-radius: 10px; overflow: hidden; }
-.ask__icon img { width: 100%; height: 100%; }
-.ask__title { margin-top: 10px; font-size: 12.5px; font-weight: 650; color: var(--app-text); }
-.ask__lines { width: 100%; margin-top: 8px; display: grid; justify-items: center; gap: 6px; }
-.ask__lines i { width: 88%; height: 6px; border-radius: 3px; background: #48484c; }
-.ask__lines i:last-child { width: 60%; }
-.ask__btns { width: 100%; margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.ask__btn { position: relative; height: 26px; display: grid; place-items: center; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--app-text); background: #4a4a4e; }
-.ask__btn--go { background: #2f7fd6; color: #fff; }
-.ask__press { position: absolute; inset: 0; border-radius: inherit; background: rgba(0, 0, 0, 0.22); }
-.ask .cursor { left: calc(75% + 4px); top: calc(100% - 22px); }
-
-/* 윈도우 02: 서명 안 된 앱을 처음 열 때 나오는 Windows의 PC 보호 창 */
-.ss .win__bar { background: var(--deep); border-bottom-color: transparent; }
-.ss .win__ctl i::before, .ss .win__ctl i::after { background: rgba(255, 255, 255, 0.8); }
-.ss__body {
-  position: relative; height: 236px; padding: 6px 22px 18px;
-  display: flex; flex-direction: column; align-items: flex-start;
-  background: var(--deep); color: #fff;
-  border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.ss__title { font-size: 17px; font-weight: 650; letter-spacing: -0.02em; }
-.ss__lines { width: 100%; margin-top: 12px; display: grid; gap: 6px; }
-.ss__lines i { width: 92%; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.28); }
-.ss__lines i:last-child { width: 64%; }
-.ss__more { margin-top: 12px; font-size: 11.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
-.ss__app { margin-top: 10px; font-size: 11px; color: rgba(255, 255, 255, 0.86); }
-.ss__btns { margin-top: auto; align-self: stretch; display: flex; justify-content: flex-end; gap: 8px; }
-.ss__btn { position: relative; height: 26px; padding: 0 14px; display: grid; place-items: center; border-radius: 4px; font-size: 11.5px; font-weight: 500; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6); }
-/* 커서가 추가 정보를 누르고 실행으로 옮겨 가요 */
-.ss__cursor { left: 48px; top: 80px; }
-.js [data-demo] .ss__cursor[data-at] { opacity: 0; transform: none; filter: none; transition: none; }
-.js [data-demo] .ss__cursor[data-at].is-on { animation: ss-cursor 1900ms var(--ease-std) both; }
-@keyframes ss-cursor {
-  0% { opacity: 0; }
-  12% { opacity: 1; left: 48px; top: 80px; }
-  52% { left: 48px; top: 80px; }
-  80%, 100% { opacity: 1; left: calc(100% - 128px); top: calc(100% - 34px); }
-}
-
-/* 윈도우 03: 설치 위치를 고르는 설치 창. 바탕은 실제 설치 창처럼 밝아요 */
-.nsis__body {
-  position: relative; height: 236px; padding: 18px 20px 16px;
-  display: flex; flex-direction: column;
-  background: #f5f5f7; color: #1d1d1f;
-  border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.nsis__h { font-size: 13px; font-weight: 650; }
-.nsis__lines { margin-top: 10px; display: grid; gap: 6px; }
-.nsis__lines i { width: 90%; height: 6px; border-radius: 3px; background: #d9dde2; }
-.nsis__lines i:last-child { width: 56%; }
-.nsis__path { margin-top: 16px; display: flex; gap: 6px; }
-.nsis__field {
-  flex: 1; min-width: 0; height: 26px; padding: 0 8px; display: flex; align-items: center;
-  border-radius: 4px; background: #ffffff; box-shadow: inset 0 0 0 1px #b8bcc2;
-  font-family: var(--mono); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.nsis__field { display: block; line-height: 26px; }
-.nsis__btn { position: relative; flex: none; height: 26px; padding: 0 12px; display: grid; place-items: center; border-radius: 4px; background: #ffffff; box-shadow: inset 0 0 0 1px #b8bcc2; font-size: 11.5px; font-weight: 500; }
-.nsis__btn--go { background: #2f7fd6; color: #fff; box-shadow: none; }
-.nsis__bar { margin-top: 14px; height: 6px; border-radius: 3px; background: #d9dde2; overflow: hidden; }
-.nsis__bar i { display: block; height: 100%; background: #2f7fd6; }
-.js [data-demo] .nsis__bar i[data-at] { transition-duration: 900ms; }
-.nsis__btns { margin-top: auto; display: flex; justify-content: flex-end; gap: 8px; }
-.nsis__btns .nsis__btn { min-width: 64px; }
-.nsis__body > .cursor { right: 104px; bottom: 2px; }
-
-/* 04 라이선스 창: 앱의 실제 설정 → 라이선스 화면 */
-.lic__body {
-  height: 236px; padding: 22px 22px 0;
-  background: var(--app-work); border-radius: 0 0 var(--r-win) var(--r-win);
-}
-.lic__h { font-size: 15px; font-weight: 650; color: var(--app-text); }
-.lic__status { margin-top: 6px; display: flex; align-items: center; gap: 8px; color: var(--app-muted); }
-.lic__status::before { content: ""; width: 6px; height: 6px; background: var(--accent); flex: none; }
-.lic__sub { margin-top: 20px; font-weight: 600; color: var(--app-text); }
-.lic__form { margin-top: 8px; display: flex; gap: 8px; }
-.lic__input {
-  flex: 1; min-width: 0; height: 32px; padding: 0 10px; display: flex; align-items: center;
-  border-radius: 7px; background: var(--app-side); box-shadow: inset 0 0 0 1px var(--app-line);
-  font-family: var(--mono); font-size: 10.5px; color: var(--app-dim); white-space: nowrap; overflow: hidden;
-}
-.lic__btn { flex: none; height: 32px; padding: 0 14px; display: grid; place-items: center; border-radius: 7px; background: var(--accent); color: var(--navy); font-weight: 600; }
-.lic__buy { margin-top: 14px; color: var(--app-dim); font-size: 11.5px; }
-
-@media (max-width: 900px) {
-  .inst { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 760px) {
-  .inst__step { padding-block: 36px; }
-  .inst__frame { margin: 0 -12px; padding: 24px 12px 12px; width: calc(100% + 24px); }
-  .dmg__body { height: 200px; padding: 0 12px; }
-  .ask__body, .lic__body, .ss__body, .nsis__body { height: 210px; }
-  .lic__body { padding: 18px 16px 0; }
-  .dmg__stage { --slot: 96px; }
-  .dmg__icon { width: 64px; height: 64px; border-radius: 15px; }
-  .dmg__folder { width: 68px; height: 64px; }
-  .dmg__arrow { top: 25px; }
-  .dmg__drag { transform-origin: calc(var(--slot) / 2) 32px; }
-  .dmg__drag .cursor { top: 42px; left: calc(var(--slot) / 2 + 18px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dmg__drag, .ring, .ss__cursor { display: none; }
-}
-</style>
 </head>
 <body>
 <a class="skip" href="#main">본문으로 건너뛰기</a>
@@ -282,8 +25,7 @@
   <div class="nav__in">
     <a class="brand" href="index.html" aria-label="HamaEditor 홈"><img class="px" src="assets/hama.svg" width="44" height="40" alt="">HamaEditor</a>
     <nav class="nav__links" aria-label="주요 메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -294,8 +36,7 @@
   </div>
   <div class="menu" id="menu" hidden>
     <nav class="menu__links" aria-label="메뉴">
-      <a href="index.html#features">기능</a>
-      <a href="index.html#flow">예시</a>
+      <a href="index.html#gongmun">문서 편집</a>
       <a href="index.html#connect">연결</a>
       <a href="pricing.html">가격</a>
     </nav>
@@ -306,211 +47,25 @@
 </header>
 
 <main id="main">
-  <section class="has-sky" aria-labelledby="install-title">
-    <div class="sky" aria-hidden="true">
-      <i class="cloud" style="left:82%;top:24%"></i>
-      <i class="wide-only cloud cloud--l" style="left:58%;top:70%"></i>
-      <i class="star star--lg star--blink" style="left:90%;top:10%;--d:1.2s"></i>
-      <i class="wide-only star star--lg" style="left:64%;top:18%"></i>
-      <i class="star star--dim" style="left:4%;top:30%"></i>
-      <i class="wide-only star star--blink" style="left:96%;top:58%;--d:2.8s;--blink:7.2s"></i>
-      <i class="dot dot--hi" style="left:74%;top:40%"></i>
-      <i class="wide-only dot" style="left:3%;top:12%"></i>
-      <i class="dot" style="left:94%;top:84%"></i>
-    </div>
-
-    <div class="frame frame--top">
-      <div class="cell cell--open page-head install-head">
-        <p class="eyebrow">다운로드</p>
-        <h1 id="install-title" class="h1" data-reveal="words">HamaEditor 다운로드</h1>
-        <div class="os-pick" data-os="mac">
-          <span class="os-pick__logo"><svg viewBox="0 0 384 512" width="20" height="24" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg></span>
-          <div>
-            <p class="os-pick__name">macOS 용 HamaEditor</p>
-            <p class="meta">Apple Silicon(M1 이후) · .dmg</p>
-          </div>
-        </div>
-        <div class="os-pick" data-os="windows" hidden>
-          <span class="os-pick__logo"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>
-          <div>
-            <p class="os-pick__name">Windows 용 HamaEditor</p>
-            <p class="meta">x64 · Windows 10 이후 · .exe</p>
-          </div>
-        </div>
-        <p class="dl-line" data-dl-line>다운로드가 시작되지 않으면? <a class="link" data-dl href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">클릭</a></p>
-        <a class="os-other" data-os="mac" data-dl="windows" href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">Windows 용 받기</a>
-        <a class="os-other" data-os="windows" data-dl="mac" href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest" hidden>macOS 용 받기</a>
-      </div>
-    </div>
-  </section>
-
-  <div class="frame">
-    <ol class="inst" aria-label="설치 순서">
-      <li class="cell inst__step" data-os="mac" aria-label="내려받은 파일을 열어요">
-        <div class="inst__art">
-          <div class="win win--sm fd" data-reveal="rise" data-demo data-loop="2400" role="img" aria-label="다운로드 폴더. HamaEditor-mac-arm64.dmg 파일을 두 번 눌러요.">
-            <div class="win__bar">
-              <span class="win__dots"><i></i><i></i><i></i></span>
-              <span class="win__title">다운로드</span>
-            </div>
-            <div class="fd__body">
-              <div class="fd__file">
-                <span class="fd__icon"><span class="fd__sel-icon" data-at="700" aria-hidden="true"></span><span class="disk"></span></span>
-                <span class="fd__name"><span class="fd__sel-name" data-at="700" aria-hidden="true"></span><span>HamaEditor-mac-arm64.dmg</span></span>
-                <span class="ring" data-at="1200" aria-hidden="true"></span>
-                <svg class="cursor" data-at="200" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" data-os="mac" aria-label="응용 프로그램 폴더로 끌어다 놓아요">
-        <div class="inst__art">
-          <div class="perch" data-reveal style="--i:4"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
-          <div class="win win--sm dmg" data-reveal="rise" data-demo data-loop="2600" role="img" aria-label="설치 창. HamaEditor 아이콘을 응용 프로그램 폴더로 끌어다 놓아요.">
-            <div class="win__bar">
-              <span class="win__dots"><i></i><i></i><i></i></span>
-              <span class="win__title">HamaEditor</span>
-            </div>
-            <div class="dmg__body">
-              <div class="dmg__stage">
-                <div class="dmg__slot">
-                  <span class="dmg__icon"><img src="assets/hamaeditor-logo.png?v=hippo" width="1024" height="1024" alt=""></span>
-                  <span class="dmg__label">HamaEditor</span>
-                </div>
-                <span class="dmg__arrow" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-                <div class="dmg__slot">
-                  <span class="dmg__folder" data-at="1650"></span>
-                  <span class="dmg__label">Applications</span>
-                </div>
-                <div class="dmg__drag" data-at="500" aria-hidden="true">
-                  <div class="dmg__slot">
-                    <span class="dmg__icon"><img src="assets/hamaeditor-logo.png?v=hippo" width="1024" height="1024" alt=""></span>
-                    <svg class="cursor" viewBox="0 0 18 22"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" data-os="mac" aria-label="응용 프로그램 폴더에서 열어요">
-        <div class="inst__art">
-          <div class="win win--sm" data-reveal="rise" data-demo data-loop="2400" role="img" aria-label="macOS 확인 창. 열기를 눌러요.">
-            <div class="win__bar">
-              <span class="win__dots"><i></i><i></i><i></i></span>
-              <span class="win__title">응용 프로그램</span>
-            </div>
-            <div class="ask__body">
-              <div class="ask" data-at="200" data-fx="pop">
-                <span class="ask__icon"><img src="assets/hamaeditor-logo.png?v=hippo" width="1024" height="1024" alt=""></span>
-                <p class="ask__title">HamaEditor</p>
-                <span class="ask__lines" aria-hidden="true"><i></i><i></i></span>
-                <span class="ask__btns">
-                  <span class="ask__btn">취소</span>
-                  <span class="ask__btn ask__btn--go">열기<span class="ask__press" data-at="1500" aria-hidden="true"></span></span>
-                </span>
-                <svg class="cursor" data-at="900" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" data-os="windows" hidden aria-label="내려받은 설치 파일을 열어요">
-        <div class="inst__art">
-          <div class="win win--sm win--pc fd" data-reveal="rise" data-demo data-loop="2400" role="img" aria-label="다운로드 폴더. HamaEditor-win-x64.exe 파일을 두 번 눌러요.">
-            <div class="win__bar">
-              <span class="win__title">다운로드</span>
-              <span class="win__ctl" aria-hidden="true"><i></i><i></i><i></i></span>
-            </div>
-            <div class="fd__body">
-              <div class="fd__file">
-                <span class="fd__icon"><span class="fd__sel-icon" data-at="700" aria-hidden="true"></span><span class="fd__exe"><img src="assets/hamaeditor-logo.png?v=hippo" width="1024" height="1024" alt=""></span></span>
-                <span class="fd__name"><span class="fd__sel-name" data-at="700" aria-hidden="true"></span><span>HamaEditor-win-x64.exe</span></span>
-                <span class="ring" data-at="1200" aria-hidden="true"></span>
-                <svg class="cursor" data-at="200" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" data-os="windows" hidden aria-label="Windows의 PC 보호 창에서 추가 정보, 실행을 차례로 눌러요">
-        <div class="inst__art">
-          <div class="perch" data-reveal style="--i:4"><img class="px px--flip" src="assets/hama.svg" width="110" height="100" alt=""></div>
-          <div class="win win--sm win--pc ss" data-reveal="rise" data-demo data-loop="2400" role="img" aria-label="Windows의 PC 보호 창. 추가 정보를 누르고 실행을 눌러요.">
-            <div class="win__bar">
-              <span class="win__ctl" aria-hidden="true"><i></i></span>
-            </div>
-            <div class="ss__body">
-              <p class="ss__title">Windows의 PC 보호</p>
-              <span class="ss__lines" aria-hidden="true"><i></i><i></i></span>
-              <p class="ss__more">추가 정보</p>
-              <p class="ss__app" data-at="1200">앱: HamaEditor-win-x64.exe</p>
-              <span class="ss__btns">
-                <span class="ss__btn" data-at="1200">실행<span class="ask__press" data-at="2100" aria-hidden="true"></span></span>
-                <span class="ss__btn">실행 안 함</span>
-              </span>
-              <svg class="cursor ss__cursor" data-at="300" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" data-os="windows" hidden aria-label="설치 위치를 고르고 설치를 눌러요">
-        <div class="inst__art">
-          <div class="win win--sm win--pc" data-reveal="rise" data-demo data-loop="2400" role="img" aria-label="HamaEditor 설치 창. 설치 위치를 고르고 설치를 누르면, 끝난 뒤 HamaEditor가 열려요.">
-            <div class="win__bar">
-              <span class="win__title">HamaEditor 설치</span>
-              <span class="win__ctl" aria-hidden="true"><i></i><i></i><i></i></span>
-            </div>
-            <div class="nsis__body">
-              <p class="nsis__h">설치 위치 선택</p>
-              <span class="nsis__lines" aria-hidden="true"><i></i><i></i></span>
-              <span class="nsis__path">
-                <span class="nsis__field">C:\Users\사용자\AppData\Local\Programs\HamaEditor</span>
-                <span class="nsis__btn">찾아보기...</span>
-              </span>
-              <span class="nsis__bar" aria-hidden="true"><i data-at="1500" data-fx="grow"></i></span>
-              <span class="nsis__btns">
-                <span class="nsis__btn nsis__btn--go">설치<span class="ask__press" data-at="1200" aria-hidden="true"></span></span>
-                <span class="nsis__btn">취소</span>
-              </span>
-              <svg class="cursor" data-at="600" viewBox="0 0 18 22" aria-hidden="true"><path d="M1.5 1.5v16.2l4.3-4.1 2.9 6.6 3-1.3-2.9-6.5h6z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
-            </div>
-          </div>
-        </div>
-      </li>
-
-      <li class="cell inst__step" aria-label="3일 체험이 바로 시작돼요">
-        <fieldset class="inst__frame">
-          <legend>유료 구매자라면? 라이선스 키 입력</legend>
-        <div class="inst__art">
-          <div class="win win--sm" data-reveal="rise" role="img" aria-label="라이선스 창. 체험 중이에요, 3일 남았어요. 아래에 라이선스 키 넣는 칸이 있어요.">
-            <div class="win__bar">
-              <span class="win__dots"><i></i><i></i><i></i></span>
-              <span class="win__title">HamaEditor 라이선스</span>
-            </div>
-            <div class="lic__body">
-              <p class="lic__h">라이선스</p>
-              <p class="lic__status">체험 중이에요. 3일 남았어요.</p>
-              <p class="lic__sub">라이선스 키 넣기</p>
-              <div class="lic__form">
-                <span class="lic__input">HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX</span>
-                <span class="lic__btn">활성화</span>
-              </div>
-              <p class="lic__buy">아직 키가 없나요? 연 ₩9,900에 구매하기</p>
-            </div>
-          </div>
-        </div>
-        </fieldset>
-      </li>
-    </ol>
-    <div class="rule"></div>
+ <section class="frame frame--top" aria-labelledby="install-title">
+  <div class="cell cell--open page-head download-head">
+   <img class="download-hippo" src="assets/hama.svg" width="110" height="100" alt="" aria-hidden="true">
+   <h1 id="install-title" class="h1">새 문서를 함께 써요.</h1>
+   <p class="lead">HamaEditor를 설치하면 첫 실행부터 3일 동안 모든 기능을 써 볼 수 있어요.</p>
+   <div class="download-choice" data-os="mac"><h2>macOS용 HamaEditor</h2><p>Apple Silicon M1 이후 / .dmg</p></div>
+   <div class="download-choice" data-os="windows" hidden><h2>Windows용 HamaEditor</h2><p>Windows 10 이후 / x64 / .exe</p></div>
+   <p class="dl-line" data-dl-line>다운로드가 자동으로 시작돼요.</p>
+   <div class="btn-row"><a class="btn btn--primary" data-dl href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">다시 다운로드</a><a class="text-link" data-os="mac" data-dl="windows" href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">Windows용 받기</a><a class="text-link" data-os="windows" data-dl="mac" href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest" hidden>macOS용 받기</a></div>
+   <noscript><p>아래 설치 순서를 확인하고 <a class="text-link" href="https://github.com/heemangstudio/hamaeditor-releases/releases/latest">최신 릴리스에서 설치 파일을 내려받으세요.</a></p></noscript>
   </div>
+ </section>
+ <section class="frame installation-guide" aria-labelledby="guide-title">
+  <div class="cell"><h2 id="guide-title" class="h2">설치는 이렇게 해요.</h2>
+   <ol class="installation-steps" data-os="mac"><li><h3>내려받은 파일을 열어요</h3><p>다운로드 폴더에서 HamaEditor-mac-arm64.dmg를 여세요.</p></li><li><h3>응용 프로그램으로 옮겨요</h3><p>HamaEditor 아이콘을 Applications 폴더로 드래그하세요.</p></li><li><h3>HamaEditor를 실행해요</h3><p>응용 프로그램 폴더에서 HamaEditor를 여세요. 처음 표시되는 확인창에서 열기를 누르면 체험이 시작돼요.</p></li></ol>
+   <ol class="installation-steps" data-os="windows" hidden><li><h3>설치 파일을 열어요</h3><p>다운로드 폴더에서 HamaEditor-win-x64.exe를 실행하세요.</p></li><li><h3>Windows 안내를 확인해요</h3><p>Windows의 PC 보호 창이 나오면 추가 정보, 실행을 차례로 누르세요.</p></li><li><h3>설치 후 앱을 열어요</h3><p>설치 위치를 확인하고 설치를 누르세요. HamaEditor를 처음 실행하면 체험이 시작돼요.</p></li></ol>
+  </div>
+  <div class="cell activation-note"><h2 class="h3">이미 라이선스가 있나요?</h2><p class="text">설정의 라이선스에서 구매한 키를 입력하고 활성화를 누르세요.</p><a class="text-link" href="pricing.html">라이선스 구매 안내</a></div>
+ </section>
 </main>
 
 <footer class="footer" data-footer>
@@ -522,9 +77,7 @@
       <nav class="footer__col" aria-labelledby="foot-tour">
         <h2 id="foot-tour">둘러보기</h2>
         <ul>
-          <li><a href="index.html#features">기능</a></li>
           <li><a href="index.html#gongmun">문서 편집</a></li>
-          <li><a href="index.html#flow">예시</a></li>
           <li><a href="index.html#connect">연결</a></li>
         </ul>
       </nav>

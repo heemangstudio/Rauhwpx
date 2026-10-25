@@ -1,0 +1,40 @@
+{
+  "scope": "website",
+  "routes": [
+    "/",
+    "/pricing",
+    "/download",
+    "/trial",
+    "/success",
+    "/tos",
+    "/tutorial-openrouter",
+    "/404"
+  ],
+  "preserved": [
+    "Original assets/hama.svg pixel mascot",
+    "Blue #1f5eff",
+    "Purchase, download, legal and provider link destinations",
+    "Purchase, license and download scripts",
+    "All 11 terms sections"
+  ],
+  "introduced": [
+    "Black sketchbook paper generated with the built-in imagegen tool",
+    "Warm ivory typography and white charcoal annotations",
+    "Dusty blue actions and links",
+    "Pencil leaves a short charcoal trail while moving; its tail tapers and disappears after stopping",
+    "One static real editor screenshot",
+    "Live website and full asset gallery",
+    "Atmospheric ASCII neuron branches, fern fronds and clustered node networks in feathered background layers",
+    "Upright keywords scattered around the editor screenshot with a dedicated ASCII neuron"
+  ],
+  "sources": [
+    "README.md:1",
+    "assets/purchase.js:1",
+    "assets/hama.svg:1"
+  ],
+  "reviews": {
+    "mode": "in-thread, per Codex Hallmark instructions",
+    "hero": "Dark paper with warm ivory handwriting, a charcoal circle around the HWP headline, a dusty blue trial action and the unchanged pixel mascot.",
+    "finish": "Ship. The same paper and typography carry through supporting pages. The old site showed more simulated workflows; those were removed in response to the request for minimal demos."
+  }
+}
