@@ -1782,3 +1782,25 @@ test('a lost resume injects the full-history handoff instead of the delta', asyn
   assert.equal(h.events.find((event) => event.type === 'turn-end').resumeLost, true);
   assert.equal(await h.session.dispose(), true);
 });
+
+test('update maintenance releases a warm Codex process without losing native resume state', async (t) => {
+  const h = harness(t, { workflow: 'plan', phase: 'planning' });
+  h.session.sendUserMessage('Before update');
+  await settle();
+  await assert.rejects(h.session.releaseIdle(), /busy/);
+  h.spawns[0].process.send({ method: 'turn/completed', params: {
+    threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' },
+  } });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  const warm = h.spawns.at(-1).process;
+  const events = h.events.length;
+  assert.equal(await h.session.releaseIdle(), true);
+  assert.equal(warm.signalCode, 'SIGTERM');
+  assert.equal(h.session.getSessionId(), 'thread-native');
+  assert.equal(h.events.length, events);
+  h.session.sendUserMessage('After update');
+  await settle(24);
+  assert.ok(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'thread/resume'));
+  await h.session.dispose();
+});

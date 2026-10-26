@@ -1,3 +1,5 @@
+import { updateAllSign } from './update-all-sign.ts';
+import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 /**
  * 문서 홈 오른쪽 아래 가장자리의 업데이트 하마. 가장자리 위로 고개를 내밀고 팻말 막대를 물어
  * 들고 있다. 팻말 내용은 update-sign.ts 가 업데이트 상태에서 정한다.
@@ -11,7 +13,7 @@
  * 단위로만 끊고, 동작 줄이기 설정이면 움직이지 않는다.
  */
 import './update-hippo.css';
-import type { DesktopUpdateState, DesktopUpdatesApi } from '../../desktop-integration.ts';
+import type { DesktopUpdateState, DesktopUpdatesApi, UpdateAllState } from '../../desktop-integration.ts';
 import { updateSign, type UpdateSign, type UpdateSignAction, type UpdateSignIcon } from './update-sign.ts';
 
 const FRAMES = ['idle', 'blink', 'ear', 'dip', 'peek'] as const;
@@ -97,7 +99,9 @@ export interface UpdateHippo {
   dispose(): void;
 }
 
-export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
+export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => void): UpdateHippo & {
+  setSign(sign: UpdateSign | null): void;
+} {
   const element = document.createElement('div');
   element.className = 'uh';
   element.hidden = true;
@@ -132,8 +136,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
   spoken.setAttribute('aria-live', 'polite');
   element.append(rig, ears, spoken);
 
-  let state: DesktopUpdateState | null = null;
-  let confirming = false;
+  let state: UpdateSign | null = null;
   let ducked = rememberedDucked;
   /** 지금 들고 있는 팻말. null 이면 하마는 가장자리 밑에 있다. */
   let shown: UpdateSign | null = null;
@@ -230,7 +233,8 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
     board.replaceChildren();
     board.dataset.tone = sign.tone;
     board.dataset.sign = sign.key.split(':')[0];
-    board.classList.toggle('is-stacked', sign.actions.length > 1);
+    board.classList.toggle('is-stacked', sign.actions.length > 1
+      || sign.progress !== null && sign.lines.length > 0);
     if (sign.lines.length) {
       const text = document.createElement('p');
       text.className = 'uh-text';
@@ -271,6 +275,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
 
   /** 같은 팻말 안에서 바뀌는 것: 내려받은 비율, 경고의 채팅 수. */
   function updateBoard(sign: UpdateSign): void {
+    board.title = sign.detail ?? '';
     const lines = board.querySelectorAll('.uh-text span');
     sign.lines.forEach((line, index) => {
       if (lines[index] && lines[index].textContent !== line) lines[index].textContent = line;
@@ -329,7 +334,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
   /** 상태와 지금 팻말을 맞춘다. 움직이는 중이면 끝난 뒤 다시 맞춘다. */
   function sync(): void {
     if (disposed || moving) return;
-    let next = updateSign(state, { confirming });
+    let next = state;
     if (!next || next.key !== dismissedKey) dismissedKey = null;
     if (next && next.key === dismissedKey) next = null;
 
@@ -373,26 +378,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
   }
 
   function run(id: UpdateSignAction['id']): void {
-    switch (id) {
-      case 'download':
-        void api.download().catch(() => {});
-        break;
-      case 'check':
-        void api.check().catch(() => {});
-        break;
-      case 'restart':
-        confirming = true;
-        sync();
-        break;
-      case 'cancel':
-        confirming = false;
-        sync();
-        break;
-      case 'confirm':
-        confirming = false;
-        void api.restart().catch(() => ({ ok: false })).finally(sync);
-        break;
-    }
+    onAction(id);
   }
 
   /* ── 숨기·부르기 ── */
@@ -441,6 +427,48 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
   const boardSize = new ResizeObserver(() => alignBoard());
   boardSize.observe(board);
 
+  return {
+    element,
+    setSign(sign): void { state = sign; sync(); },
+    dispose(): void {
+      disposed = true;
+      boardSize.disconnect();
+      window.clearTimeout(moveTimer);
+      window.clearTimeout(idleTimer);
+      window.clearTimeout(blinkTimer);
+      window.clearTimeout(transientTimer);
+      element.remove();
+    },
+  };
+}
+
+export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
+  let state: DesktopUpdateState | null = null;
+  let confirming = false;
+  let disposed = false;
+  let allState: UpdateAllState | null = null;
+  const unified = Boolean(api.getAllState && api.onAllState && api.updateAll);
+  const sync = () => hippo.setSign(isInitialSetupActive() ? null
+    : unified ? updateAllSign(allState) : updateSign(state, { confirming }));
+  const hippo = createUpdateSignHippo((id) => {
+    switch (id) {
+      case 'update-all': void api.updateAll?.().catch(() => {}); break;
+      case 'later': void api.later?.().catch(() => {}); break;
+      case 'download': void api.download().catch(() => {}); break;
+      case 'check': void api.check().catch(() => {}); break;
+      case 'restart': confirming = true; sync(); break;
+      case 'cancel': confirming = false; sync(); break;
+      case 'confirm':
+        confirming = false;
+        void api.restart().catch(() => ({ ok: false })).finally(() => { if (!disposed) sync(); });
+        break;
+    }
+  });
+  const unsubscribeInitial = onInitialSetupInactive(sync);
+  const unsubscribeAll = unified ? api.onAllState!((next) => { allState = next; sync(); }) : () => {};
+  if (unified) void api.getAllState!().then((initial) => {
+    if (!disposed && !allState) { allState = initial; sync(); }
+  }).catch(() => {});
   const unsubscribe = api.onState((next) => {
     if (next.status !== 'downloaded') confirming = false;
     state = next;
@@ -451,19 +479,9 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
     state = initial;
     sync();
   }).catch(() => {});
-
   return {
-    element,
-    dispose(): void {
-      disposed = true;
-      unsubscribe();
-      boardSize.disconnect();
-      window.clearTimeout(moveTimer);
-      window.clearTimeout(idleTimer);
-      window.clearTimeout(blinkTimer);
-      window.clearTimeout(transientTimer);
-      element.remove();
-    },
+    element: hippo.element,
+    dispose() { disposed = true; unsubscribeInitial(); unsubscribeAll(); unsubscribe(); hippo.dispose(); },
   };
 }
 

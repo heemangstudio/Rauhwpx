@@ -767,15 +767,7 @@
   margin: 0 8px;
   vertical-align: middle;
 }
-.ag-agent-setup-arrow-track { fill: var(--ag-text-tertiary); }
-.ag-agent-setup-arrow-fill {
-  fill: var(--ag-text);
-  clip-path: inset(0 100% 0 0);
-  transition: clip-path 0.3s linear;
-}
-@media (prefers-reduced-motion: reduce) {
-  .ag-agent-setup-arrow-fill { transition: none; }
-}
+
 
 .ag-agent-setup-row .ag-settings-btn {
   flex: 0 0 auto;

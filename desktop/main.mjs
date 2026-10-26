@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,6 +34,7 @@ import {
   packagedRhwpBinary,
   registerHubSession,
   requestHubShutdown,
+  requestProviderMaintenance,
   resolveHubLaunch,
   spawnHubProcess,
   stopHubChild,
@@ -83,6 +84,8 @@ import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
 import { createFakeUpdater, createUpdateController } from './update-controller.mjs';
+import { createUpdateAllController } from './update-all.mjs';
+import { createDevProviderUpdates } from './dev-provider-updates.mjs';
 import {
   UPDATE_RESTART_FILE_NAME,
   buildRestartManifest,
@@ -901,6 +904,7 @@ const updateLifecycle = createUpdateLifecycle({
   platform: process.platform,
   cleanup: async () => {
     // 도는 자동 수정 에이전트를 멈추고 그 프로세스 트리 정리가 끝날 때까지 기다린다.
+    updateAll?.dispose();
     await disposeAutofix();
     await hubOwner.teardown();
     await browserHost.dispose();
@@ -915,8 +919,10 @@ const updatePrepareBroker = createRestartPrepareBroker();
 // 업데이트 재시작으로 창을 닫는 중이면 렌더러의 beforeunload 확인도 건너뛴다.
 let updateRestartClosing = false;
 let updates = null;
+let updateAll = null;
 
 function broadcastUpdateState(state) {
+  updateAll?.appChanged();
   for (const window of sessions.windows()) {
     if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-state', state);
   }
@@ -1023,7 +1029,7 @@ function configureAutoUpdater({ restartManifest }) {
   const mode = updateMode();
   const applied = restartManifest ? updateWasApplied(restartManifest, app.getVersion()) : false;
   updates = createUpdateController({
-    currentVersion: app.getVersion(),
+    currentVersion: fakeUpdateVersion && applied ? fakeUpdateVersion : app.getVersion(),
     mode,
     updater: mode !== 'in-app' ? null
       : fakeUpdateVersion ? createFakeUpdater({ version: fakeUpdateVersion, applied })
@@ -1034,6 +1040,38 @@ function configureAutoUpdater({ restartManifest }) {
     restartApp: restartForUpdate,
   });
   if (restartManifest && !applied) updates.markNotApplied(restartManifest.targetVersion);
+  const updateAllFile = join(app.getPath('userData'), 'update-all.json');
+  const fixtureScenario = !app.isPackaged && process.env.RHWP_FAKE_PROVIDER_UPDATES;
+  const fixtureFile = join(app.getPath('userData'), 'dev-provider-updates.json');
+  let installed = {};
+  if (fixtureScenario) {
+    try { installed = JSON.parse(readFileSync(fixtureFile, 'utf8')); } catch {}
+  }
+  const fixtureMaintenance = fixtureScenario ? createDevProviderUpdates({
+    scenario: fixtureScenario, installed,
+    busyMs: Math.min(10_000, Math.max(0, Number(process.env.RHWP_FAKE_PROVIDER_BUSY_MS) || 0)),
+    persist: (state) => writeNativeFileAtomically(fixtureFile, Buffer.from(JSON.stringify(state), 'utf8')),
+  }) : null;
+  const maintenance = async (agent = null) => {
+    if (fixtureMaintenance) return fixtureMaintenance(agent);
+    await hubOwner.ensure();
+    return requestProviderMaintenance({ ...hubOwner.context(), token: hubToken, launchId, agent });
+  };
+  updateAll = createUpdateAllController({
+    appState: () => updates.state(),
+    checkApp: () => updates.check(),
+    downloadApp: () => updates.download(),
+    restartApp: () => updates.restart(),
+    providerStatus: () => maintenance(),
+    installProvider: (agent) => maintenance(agent),
+    persist: (state) => writeNativeFileAtomically(updateAllFile, Buffer.from(JSON.stringify(state), 'utf8')),
+    broadcast(state) {
+      for (const window of sessions.windows()) {
+        if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-all-state', state);
+      }
+    },
+  });
+  try { updateAll.restore(JSON.parse(readFileSync(updateAllFile, 'utf8'))); } catch {}
 }
 
 function installMenu() {
@@ -1671,6 +1709,23 @@ ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(ev
 ipcMain.handle('desktop:update-get-state', (event) => {
   sessionForEvent(event);
   return updates?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-get-state', (event) => {
+  sessionForEvent(event);
+  return updateAll?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-refresh', async (event) => {
+  sessionForEvent(event);
+  return updateAll?.refresh() ?? null;
+});
+ipcMain.handle('desktop:update-all-start', (event) => {
+  sessionForEvent(event);
+  void updateAll?.start();
+  return updateAll?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-later', (event) => {
+  sessionForEvent(event);
+  updateAll?.later();
 });
 ipcMain.handle('desktop:update-check', async (event) => {
   sessionForEvent(event);
@@ -2381,6 +2436,11 @@ if (!hasSingleInstanceLock) {
     void reportUniqueInstallMetric();
     // 실행 4초 뒤 확인하고, 그 뒤로 한 시간마다 확인한다.
     updates.start();
+    void updateAll.refresh().catch((error) => console.warn('[updates] provider check failed:', error.message));
+    const maintenanceTimer = setInterval(() => {
+      if (!quitting) void updateAll.refresh().catch(() => {});
+    }, 60_000);
+    maintenanceTimer.unref();
   }).catch((error) => {
     // 창이 먼저 뜨므로 시작 중에 종료하면 허브 시작이 거절될 수 있다. 그때는 알리지 않는다.
     if (!quitting) showLaunchError(error);

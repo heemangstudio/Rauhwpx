@@ -25,7 +25,18 @@ Pull-request CI runs the engine and agent suites; browser, smoke and macOS sessi
 
 Packaged builds check for updates 4 seconds after launch and hourly after that, and download only when the user chooses to on the document home screen. There are no native update dialogs: main broadcasts one update state to every window (`desktop:update-state`). Restarting asks every window for its open documents, writes `update-restart.json` to the user data folder, closes the windows without the Save/Discard prompt and stops the agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds; Windows runs the NSIS installer silently and relaunches the app. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. The next launch reopens those windows from the manifest when it is less than 30 minutes old, and offers the update again if the version did not change. If the handoff fails, the app relaunches itself instead of calling `quitAndInstall()` a second time. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow. Debian packages continue to use the system package manager; their update action opens the release download.
 
-To try the flow from source, start Studio with `npm run dev:studio` and run `RHWP_FAKE_UPDATE=3.0.3 npm run dev:desktop`. The app offers 3.0.3, simulates a three-second download, and restarts through the same restore path without installing. Packaged builds ignore the variable.
+The homepage hippo combines app, Claude and Codex updates. **Update all and restart** downloads the app while the hub updates installed providers sequentially. Maintenance waits for active turns and jobs, releases idle CLI processes while retaining their native resume IDs, verifies the installed versions, and refreshes provider/model discovery. The five-second restart countdown offers **Later**. Provider-only runs finish without restarting; a partial failure retains successful results and offers a retry for failed items. Each window observes `desktop:update-all-state`; `update-all.json` retains results through a relaunch. The app version after restart determines whether installation succeeded.
+
+To exercise this without changing real provider installations, first start Studio with `npm run dev:studio`, then launch an isolated Electron profile:
+
+```sh
+env -u ELECTRON_RUN_AS_NODE RHWP_DESKTOP_USER_DATA=.run/update-all-preview \
+  RHWP_FAKE_UPDATE=99.0.0 RHWP_FAKE_PROVIDER_UPDATES=available npm run dev:desktop
+```
+
+The app simulates a three-second download and relaunches through the real document handoff. Provider fixtures advance from 1.0.0 to 2.0.0. Set `RHWP_FAKE_PROVIDER_UPDATES=partial-failure` to fail Claude once and exercise retry, or `RHWP_FAKE_PROVIDER_BUSY_MS=10000` to exercise waiting. Omit `RHWP_FAKE_UPDATE` for a provider-only run. Use a fresh profile to reset fixture versions. Packaged builds ignore these fixture variables.
+
+Focused checks: `node --test tests/desktop-update-all.test.mjs tests/desktop-update.test.mjs rhwp/rhwp-agent/tests/provider-maintenance.test.mjs` and `npm run test:sidebar -- update-all provider-updates setup-update-hippo`.
 
 Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2.0.2 release fixes the in-app installation handoff. Publish a new version for updater fixes instead of replacing assets under an existing version tag.
 

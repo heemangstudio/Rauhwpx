@@ -13,7 +13,9 @@ import { checkPiModels } from './pi-models.check.mjs';
 import { checkSelectMenu } from './select-menu.check.mjs';
 import { checkMarkdownEditor } from './markdown-editor.check.mjs';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
-import { checkInitialSetupUpdateToast } from './initial-setup-update.check.mjs';
+import { checkUpdateAll } from './update-all.check.mjs';
+import { checkProviderUpdates } from './provider-updates.check.mjs';
+import { checkInitialSetupUpdateHippo } from './initial-setup-update.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
@@ -123,7 +125,9 @@ const focusedChecks = {
   'select-menu': (h) => checkSelectMenu(h.page, h.origin),
   'markdown-editor': (h) => checkMarkdownEditor(h.page, h.origin, h.artifacts),
   'setup-terminal': (h) => checkSetupTerminal(h.page, h.origin),
-  'setup-update-toast': (h) => checkInitialSetupUpdateToast(h.page, h.origin),
+  'update-all': (h) => checkUpdateAll(h.page, h.origin),
+  'provider-updates': (h) => checkProviderUpdates(h.page, h.origin),
+  'setup-update-hippo': (h) => checkInitialSetupUpdateHippo(h.page, h.origin),
   'parallel-chats': async (h) => {
     await checkNewChatViewMode(h.page, h.origin);
     await checkDraftChat(h.page, h.origin);

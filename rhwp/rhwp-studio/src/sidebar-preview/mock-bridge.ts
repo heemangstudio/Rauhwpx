@@ -1020,6 +1020,8 @@ export function createMockBridge(
         installing: false,
         installed: true,
         available: true,
+        version: data.setups[provider].latestVersion ?? data.setups[provider].version,
+        updateRequired: false,
       });
       data.providers[provider].available = true;
       if (provider === 'pi') data.pi.installed = true;

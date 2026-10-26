@@ -1980,6 +1980,11 @@ export function createClaudeSession(opts, {
     getSessionId() {
       return sessionId;
     },
+    async releaseIdle() {
+      if (turnOpen || queuedTurn) throw new Error('Claude is busy');
+      await restartForConfigChange();
+      return true;
+    },
     compactionSupport: 'manual',
     canResume(id) {
       return canResumeClaudeSession(opts, id);

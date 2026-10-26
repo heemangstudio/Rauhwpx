@@ -101,6 +101,7 @@ import {
   defaultPiRoot,
 } from './pi-manager.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
+import { createProviderMaintenance } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
@@ -1055,6 +1056,10 @@ function publishBrowserAccountRequest(record, request) {
 
 /** 턴이 비었을 때 미뤄 둔 일을 차례로 연다. 하나가 턴이나 전환을 시작하면 나머지는 다음 기회로 넘어간다. */
 function drainIdleWork(record) {
+  if (providerMaintenance.active()) {
+    void providerMaintenance.wait().then(() => drainIdleWork(record));
+    return;
+  }
   syncRevokedChatGrants(record);
   drainTemplateCompletion(record);
   drainPlanningDocumentSaved(record);
@@ -1773,6 +1778,45 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
     typeof ownerSessionId === 'string' ? ownerSessionId : null,
   );
 }
+
+function providerMaintenanceBusy() {
+  return hasOrphanActiveWork() || cliSetup.busy() || piManager.isInstalling() || projectLibrarian.busy()
+    || [...sessions.values()].some((record) => record.processCleanupUncertain
+      || record.sessionDisposalPromise || record.agentSession?.pendingTransitions > 0);
+}
+const providerMaintenance = createProviderMaintenance({
+  busy: providerMaintenanceBusy,
+  async releaseIdle() {
+    for (const record of sessions.values()) {
+      const session = record.agentSession;
+      if (!session || !CLI_SETUP_AGENTS.includes(session.agent)) continue;
+      if (!session.backend.releaseIdle || await session.backend.releaseIdle() === false) {
+        throw new Error('프로바이더 프로세스 종료를 확인하지 못했습니다.');
+      }
+    }
+  },
+  async install(agent) {
+    const installing = cliSetup.install(agent, (entry) => {
+      broadcastToStudios({ v: 1, type: 'agent-setup-progress', agent, state: entry.state, phase: entry.phase });
+    });
+    void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
+    cliSetupStatus[agent] = await installing;
+  },
+  async refresh(agent) {
+    const providers = await providerHealth.check(true);
+    const statuses = await agentSetupStatuses();
+    broadcastToStudios({ v: 1, type: 'provider-status', providers });
+    broadcastAgentSetupStatuses(statuses);
+    for (const record of sessions.values()) {
+      if (!record.studioSocket) continue;
+      try {
+        const models = await modelCatalog(agent, record, { refresh: true });
+        sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
+      } catch (error) { log(`model refresh after update failed: ${error?.message ?? error}`); }
+    }
+    return { statuses };
+  },
+});
 
 let harnessUpdateTimer = null;
 let harnessUpdateRunning = false;
@@ -5286,6 +5330,7 @@ async function startSession(
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
     // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
     prepareLaunch: CLI_SETUP_AGENTS.includes(agent) ? async () => {
+      await providerMaintenance.wait();
       const launch = await cliSetup.prepareLaunch(agent);
       return {
         bin: launch.bin ?? agent,
@@ -5720,6 +5765,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-start': {
+      await providerMaintenance.wait();
       if (record.agentSession?.workflowTransition) {
         await record.agentSession.workflowTransition;
       }
@@ -5948,6 +5994,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-user-message': {
+      await providerMaintenance.wait();
       if (!record.agentSession) {
         rejectUserMessage(record, sock, msg, workflowError('AGENT_NOT_STARTED', 'No agent session; send chat-start first.'));
         return;
@@ -6375,6 +6422,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'agent-setup-install': {
+      await providerMaintenance.wait();
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {
@@ -8688,6 +8736,21 @@ const httpServer = http.createServer((req, res) => {
       authRuns.cancelForSession(sessionId, 'owner-session-closed');
       await disposeRecord(record, 'hub session closed');
       sendHttpJson(res, 200, { status: 'deleted', sessionId });
+      return;
+    }
+    if (url.pathname === '/maintenance/providers' && req.method === 'GET') {
+      authenticateOwnerRequest(req, url);
+      sendHttpJson(res, 200, { statuses: await agentSetupStatuses(), busy: providerMaintenance.active() || providerMaintenanceBusy() });
+      return;
+    }
+    const maintenanceAgent = /^\/maintenance\/providers\/(claude|codex)$/.exec(url.pathname);
+    if (maintenanceAgent && req.method === 'POST') {
+      authenticateOwnerRequest(req, url);
+      try {
+        sendHttpJson(res, 200, await providerMaintenance.run(maintenanceAgent[1]));
+      } catch (error) {
+        sendHttpJson(res, error.status ?? 500, { error: { message: error.message } });
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/shutdown') {

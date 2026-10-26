@@ -1416,6 +1416,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     getSessionId() {
       return fallback?.getSessionId() ?? threadId;
     },
+    async releaseIdle() {
+      if (starting || turnOpen) throw new Error('Codex is busy');
+      cancelIdleRelease();
+      if (fallback) return fallback.releaseIdle();
+      await restartPromise;
+      return stopConnection();
+    },
     get compactionSupport() {
       // legacy exec 는 자동 압축만 한다.
       return fallback ? 'auto-only' : 'manual';
