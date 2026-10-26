@@ -191,11 +191,12 @@ export const css = (colorref: number) =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;
 
 export type Picture = { source: PictureSource; bitmap: ImageBitmap | null };
-type PictureEntry = { bitmap: ImageBitmap | null; failed: boolean; timer?: ReturnType<typeof setTimeout> };
+type PictureEntry = { bitmap: ImageBitmap | null; failed: boolean; promise: Promise<void>; finish: () => void; timer?: ReturnType<typeof setTimeout> };
 
 /** Browser-decoded pictures shared by a document's pages. Clear before switching documents. */
 export class Pictures {
   private entries = new Map<string, PictureEntry>();
+  private generation = 0;
   private ready: () => void;
   constructor(ready: () => void) { this.ready = ready; }
 
@@ -209,7 +210,9 @@ export class Pictures {
     if (!source) return null;
     let entry = this.entries.get(source.key);
     if (!entry) {
-      const pending: PictureEntry = { bitmap: null, failed: false };
+      let finish!: () => void;
+      const promise = new Promise<void>(resolve => { finish = resolve; });
+      const pending: PictureEntry = { bitmap: null, failed: false, promise, finish };
       entry = pending;
       this.entries.set(source.key, pending);
       // Defer byte extraction and decoding until after the first paint.
@@ -235,6 +238,8 @@ export class Pictures {
         } catch {
           if (this.entries.get(source.key) !== pending) return;
           pending.failed = true;
+        } finally {
+          pending.finish();
         }
         this.ready();
       }, 0);
@@ -242,9 +247,24 @@ export class Pictures {
     return entry.failed ? null : { source, bitmap: entry.bitmap };
   }
 
+  async prepare(doc: Pick<Doc, 'pictureSource' | 'pictureBytes'>, page: number, items: number[]): Promise<void> {
+    const generation = this.generation;
+    while (generation === this.generation) {
+      const pending: Promise<void>[] = [];
+      for (const item of items) {
+        const picture = this.get(doc, page, item);
+        if (picture && !picture.bitmap) pending.push(this.entries.get(picture.source.key)!.promise);
+      }
+      if (!pending.length) return;
+      await Promise.all(pending);
+    }
+  }
+
   clear() {
+    this.generation++;
     for (const entry of this.entries.values()) {
       if (entry.timer !== undefined) clearTimeout(entry.timer);
+      entry.finish();
       entry.bitmap?.close();
     }
     this.entries.clear();

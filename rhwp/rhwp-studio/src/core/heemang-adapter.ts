@@ -311,15 +311,22 @@ export class HeemangAdapter {
       if (!current()) return;
     }
     if (!this.fontCount()) throw new EngineNotSupportedError('글꼴 파일이 필요합니다. 로컬 TTF·OTF·TTC·HFT 글꼴을 연결해 주세요.');
-    doc.state();
+    const pageCount = (JSON.parse(doc.state()) as DocState).pageCount;
     while (await this.loadFonts(requests())) {
       if (!current()) return;
     }
     if (!current()) return;
     await this.prepareOutlines(doc);
     if (!current()) return;
-    this.fontsPrepared = true;
     this.refreshLayout();
+    if (pageCount > 0) {
+      const packet = decodePacket(doc.page(0).slice());
+      // 첫 쪽의 그림도 준비한 뒤 문서를 화면에 공개한다.
+      await this.pictures.prepare(doc, 0, packet.ops.flatMap(op => op.op === 'patch' ? [op.item] : []));
+      if (!current()) return;
+      this.packets.set(0, packet);
+    }
+    this.fontsPrepared = true;
   }
 
   private document(): Doc {

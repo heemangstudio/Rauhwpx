@@ -37,11 +37,13 @@ const stubs = new Map([
   ['/core/content-hash.ts', `export const blake3Hex = () => 'digest'; export const setBlake3WasmApi = () => {};`],
   ['/core/font-loader.ts', `export const resolveCanvasKitFontPlan = () => { globalThis.heemangFontTest().plans++; return {sources: []}; };`],
   ['/fonts/font-index-core.mjs', `export const streamWebFontDecoders = () => null; export const decodeWebFont = b => b;`],
-  ['/view/heemang-player.ts', `export class Pictures { constructor(ready) { globalThis.heemangFontTest().pictureReady = ready; } get() { return null; } clear() {} }
+  ['/view/heemang-player.ts', `export class Pictures { constructor(ready) { globalThis.heemangFontTest().pictureReady = ready; } get() { return null; } clear() {}
+      async prepare(doc,page,items) { const e = globalThis.heemangFontTest(); e.picturePreparations.push({page,items}); await e.pictureWait?.(); }
+    }
     export class Player {
       paint(ctx) { const e = globalThis.heemangFontTest(); e.paints.push(ctx); e.onPaint?.(); }
     }
-    export const decodePacket = () => ({width:7200,height:7200,fontGeneration:0,layoutEpoch:0});
+    export const decodePacket = () => ({width:7200,height:7200,fontGeneration:0,layoutEpoch:0,ops:globalThis.heemangFontTest().packetOps ?? []});
     export const patchImage = () => null;`],
 ]);
 registerHooks({
@@ -62,7 +64,7 @@ registerHooks({
 
 let serial = 0;
 function setup(assets: any[], requests: () => any) {
-  env = { assets, events:[], registered:[], outlines:[], paints:[], probes:0, plans:0, host:null, families:new Map(), fetches:[] };
+  env = { assets, events:[], registered:[], outlines:[], paints:[], probes:0, plans:0, host:null, families:new Map(), fetches:[], picturePreparations:[] };
   env.doc = {
     fontRequests: () => JSON.stringify(requests()),
     state: () => { env.events.push('layout'); return JSON.stringify({pageCount:3,fontGeneration:env.registered.length,layoutEpoch:1}); },
@@ -130,6 +132,24 @@ function canvas() {
 }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => {resolve=r;}); return {promise,resolve}; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('first page waits for pictures before becoming visible and ignores replaced or closed documents', async () => {
+  for (const state of ['ready', 'replaced', 'closed']) {
+    const { HeemangAdapter } = await setup([asset(1,'Body.ttf','Body')], () => req(['Body'],[]));
+    const adapter = new HeemangAdapter(); await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    const wait = deferred(); env.pictureWait = () => wait.promise;
+    env.packetOps = [{op:'patch',item:7}];
+    const preparing = adapter.prepareFonts(['Body'],{});
+    await tick();
+    assert.equal(adapter.pageCount,0);
+    assert.deepEqual(env.picturePreparations,[{page:0,items:[7]}]);
+    if (state === 'replaced') adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    if (state === 'closed') adapter.releaseDocument();
+    wait.resolve(); await preparing;
+    assert.equal(adapter.pageCount,state === 'ready' ? 3 : 0);
+  }
+});
+
 test('outline refetch uses approved readers, shares asynchronous reads, and repaints only current attached canvases', async () => {
   const { HeemangAdapter } = await setup([asset(1,'Body.ttf','Body')], () => req(['Body'],[]));
   const adapter = new HeemangAdapter(); await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));

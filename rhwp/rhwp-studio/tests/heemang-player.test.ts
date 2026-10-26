@@ -74,6 +74,39 @@ function installDecoder(t, decode) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
 }
 
+test('picture preparation waits for decoding and shares the bitmap with the first paint', async t => {
+  let finish;
+  const bitmap = { close() {} };
+  installDecoder(t, () => new Promise(resolve => { finish = resolve; }));
+  const pictures = new Pictures(() => {});
+  const doc = pictureDoc();
+  const read = t.mock.method(doc, 'pictureBytes');
+  let ready = false;
+  const preparing = pictures.prepare(doc, 0, [7,7]).then(() => { ready = true; });
+  t.mock.timers.runAll(); await Promise.resolve();
+  assert.equal(read.mock.callCount(),1); assert.equal(ready,false);
+  finish(bitmap); await preparing;
+  assert.equal(pictures.get(doc,0,7).bitmap,bitmap);
+  pictures.clear();
+});
+
+for (const state of ['queued', 'decoding']) {
+  test(`picture preparation cancels ${state} reads without waiting on a replaced document`, async t => {
+    let finish;
+    installDecoder(t, () => new Promise(resolve => { finish = resolve; }));
+    const pictures = new Pictures(() => {}), doc = pictureDoc();
+    const read = t.mock.method(doc, 'pictureBytes');
+    const preparing = pictures.prepare(doc,0,[7]);
+    if (state === 'decoding') { t.mock.timers.runAll(); await Promise.resolve(); }
+    pictures.clear(); await preparing;
+    t.mock.timers.runAll(); assert.equal(read.mock.callCount(),state === 'queued' ? 0 : 1);
+    if (finish) {
+      const close = t.mock.fn(); finish({close}); await Promise.resolve();
+      assert.equal(close.mock.callCount(),1);
+    }
+  });
+}
+
 for (const mime of ['image/jpeg', 'image/png', 'image/gif', 'image/bmp']) {
   test(`pictures defer and share ${mime} decoding across pages while retaining placement`, async t => {
     const closed = t.mock.fn();
