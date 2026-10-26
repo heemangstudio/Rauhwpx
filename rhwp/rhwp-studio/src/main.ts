@@ -1104,21 +1104,24 @@ const CHARACTER_RECOUNT_IDLE_MS = 150;
 const statusCharacterCounter = new StatusCharacterCounter();
 const statusNumber = new Intl.NumberFormat('ko-KR');
 
+/** 같은 상태를 표시할 때 텍스트 노드를 다시 만들지 않는다. */
+function setStatusLabel(element: HTMLElement, text: string, title?: string): void {
+  if (element.textContent !== text) element.textContent = text;
+  if (title !== undefined && element.title !== title) element.title = title;
+}
+
 function updatePaperStatus(): void {
   paperStatusFrame = 0;
   const paper = sbPaper();
   try {
     if (wasm.getSectionCount() === 0) {
-      paper.textContent = '—';
-      paper.title = '용지 크기';
+      setStatusLabel(paper, '—', '용지 크기');
       return;
     }
     const size = describePaperSize(wasm.getPageDef(statusSectionIndex));
-    paper.textContent = size.label;
-    paper.title = size.title;
+    setStatusLabel(paper, size.label, size.title);
   } catch {
-    paper.textContent = '—';
-    paper.title = '용지 크기';
+    setStatusLabel(paper, '—', '용지 크기');
   }
 }
 
@@ -4559,14 +4562,14 @@ function setupEventListeners(): void {
   eventBus.on('local-fonts-changed', () => syncLocalFontAccessMetrics());
   eventBus.on('current-page-changed', (page, _total) => {
     const pageIdx = page as number;
-    sbPage().textContent = `${pageIdx + 1} / ${_total} 쪽`;
+    setStatusLabel(sbPage(), `${pageIdx + 1} / ${_total} 쪽`);
 
     // 구역 정보: 현재 페이지의 sectionIndex로 갱신
     if (wasm.pageCount > 0) {
       try {
         const pageInfo = wasm.getPageInfo(pageIdx);
         statusSectionIndex = pageInfo.sectionIndex;
-        sbSection().textContent = `구역: ${pageInfo.sectionIndex + 1} / ${totalSections}`;
+        setStatusLabel(sbSection(), `구역: ${pageInfo.sectionIndex + 1} / ${totalSections}`);
         schedulePaperStatus();
       } catch { /* 무시 */ }
     }
