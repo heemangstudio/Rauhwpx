@@ -19,7 +19,7 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
-import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
+import { IDLE_PROCESS_RELEASE_MS, redactDiagnosticText } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
@@ -42,6 +42,8 @@ import { SkillRegistry } from './skills.mjs';
 import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
 import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
+import { DocumentMemoryStore } from './document-memory-store.mjs';
+import { createDocumentMemoryHub, newSessionDocumentMemory } from './document-memory-hub.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
 import {
@@ -101,7 +103,9 @@ import {
   defaultPiRoot,
 } from './pi-manager.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
+import { createProviderMaintenance } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
+import { NODE_HOST_ENV } from './npm-cli-launch.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
 import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStore } from './codex-model-routing.mjs';
@@ -122,6 +126,18 @@ import { contextualPrompt, mentionedDocumentsBlock, normalizeDocumentMentions, n
 import { createProjectIngest } from './project-ingest.mjs';
 import { createHomeSearch } from './home-search.mjs';
 import { createProjectLibrarian } from './project-librarian.mjs';
+import { createTasteSignalBuffer } from './taste-signals.mjs';
+import {
+  RAU_TASTE_NAME,
+  TASTE_CLOSE_GRACE_MS,
+  TasteSettingsStore,
+  appendRauInstruction,
+  createTasteLearner,
+  newTasteTurn,
+  noteTasteTurnEvent,
+  tasteOwnOpenRouter,
+} from './taste-learner.mjs';
+import { createTasteHistoryHandler } from './taste-history.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -349,6 +365,14 @@ if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') 
 }
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
+// 문서 기억은 문서마다 따로 둔다 (RHWP_DOCUMENT_MEMORY_DIR). 읽는 문서만 메모리에 올린다.
+const documentMemoryHub = createDocumentMemoryHub({
+  store: new DocumentMemoryStore(),
+  log,
+  broadcast: (frame) => broadcastToStudios(frame),
+});
+// 대화에서 배우기 설정 (Settings → AI → Rau-0.1). 문서 기억 폴더에 둔다.
+const tasteSettings = await new TasteSettingsStore({ dir: documentMemoryHub.store.dir }).init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
 const PI_ROOT = defaultPiRoot();
 const openRouter = createOpenRouter({ cacheDir: PI_ROOT });
@@ -439,6 +463,8 @@ function ensureBootWork() {
   bootWorkPromise ??= Promise.all([piManager.init(), cliSetup.init()]).then(async () => {
     process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
       .filter(Boolean).join(path.delimiter);
+    // 에이전트 셸이 PATH 의 node.cmd 를 부를 때도 실행 파일 경로를 환경 변수로 넘긴다.
+    if (process.platform === 'win32' && cliSetup.nodeHostDir()) process.env[NODE_HOST_ENV] = process.execPath;
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);
@@ -526,6 +552,46 @@ const projectStore = await new ProjectStore({
 }).init();
 // 홈 폴더 검색은 데스크톱 앱이 RHWP_HOME_ACCESS=1 로 허브를 띄웠을 때만 쓸 수 있다.
 const HOME_ACCESS = process.env.RHWP_HOME_ACCESS === '1';
+// 취향 학습 신호 (chat-review-signal) — 문서별 메모리 버퍼, 파일에 남기지 않는다.
+const tasteSignals = createTasteSignalBuffer();
+// 진단용: RHWP_TASTE_SIGNALS_LOG=1 이면 받은 신호와 버퍼 크기를 허브 로그에 남긴다.
+if (process.env.RHWP_TASTE_SIGNALS_LOG === '1') {
+  tasteSignals.onReviewSignals((documentId, info) => {
+    log(`taste-signals doc=${documentId} +${info.count} [${info.kinds.join(',')}] buffered=${info.buffered} ${JSON.stringify(tasteSignals.peekSignals(documentId).slice(-info.count))}`);
+  });
+}
+// Rau-0.1 취향 학습기. 테스트 허브(NODE_ENV=test)는 RHWP_TASTE_LEARNER=1 일 때만 모델을 부르고, 0 이면 늘 끈다.
+const TASTE_LEARNER_AVAILABLE = process.env.RHWP_TASTE_LEARNER === '1'
+  || (process.env.RHWP_TASTE_LEARNER !== '0' && process.env.NODE_ENV !== 'test');
+const tasteLearner = createTasteLearner({
+  store: documentMemoryHub.store,
+  signals: tasteSignals,
+  settings: () => (TASTE_LEARNER_AVAILABLE ? tasteSettings.get() : { enabled: false }),
+  routes: (context) => tasteLearnerRoutes(context),
+  resolveKey: (context) => tasteMemoryKey(context),
+  isTurnRunning: (documentId) => [...sessions.values()].some((record) => (
+    record.agentSession?.status === 'running' && record.agentSession.documentId === documentId
+  )),
+  emit: (frame) => sendTasteFrame(frame),
+  changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
+  promote: (proposal) => proposeRauInstruction(proposal),
+  log,
+});
+tasteSignals.onReviewSignals((documentId, info) => tasteLearner.signalsArrived(documentId, info));
+// 기록에서 배우기 (taste-history-learn) — Studio 가 찾은 짝을 학습기에 넘긴다. 문서마다 한 번에 하나.
+const tasteHistory = createTasteHistoryHandler({
+  learner: tasteLearner,
+  available: () => TASTE_LEARNER_AVAILABLE,
+  enabled: () => tasteSettings.get().enabled,
+  threadId: (record) => record.agentSession?.threadId ?? null,
+  resolveKey: (record, documentId, msg) => {
+    documentMemoryHub.noteSource(record, documentId, { digest: msg.documentDigest, fileName: msg.documentFileName });
+    const repositoryId = typeof msg.repositoryId === 'string' && msg.repositoryId ? msg.repositoryId : undefined;
+    return documentMemoryHub.keyFor(record, documentId, { repositoryId });
+  },
+  log,
+});
+
 const homeSearch = createHomeSearch({
   home: os.homedir(),
   settings: () => projectSettings.get(),
@@ -645,6 +711,8 @@ const sessions = new HubSessionRegistry({
       untrustedNativeSessions: new Set(),
       styleCalibration: null,
       pendingInstructionDraft: null,
+      // documentId → Studio 가 알린 원본 digest·파일 이름. 다시 발급된 documentId 를 같은 문서 기억에 묶는다.
+      documentSources: new Map(),
       auxiliaryProcesses: new Set(),
       auxiliaryProcessCleanups: new Map(),
       checkpointTitleControllers: new Set(),
@@ -1055,6 +1123,10 @@ function publishBrowserAccountRequest(record, request) {
 
 /** 턴이 비었을 때 미뤄 둔 일을 차례로 연다. 하나가 턴이나 전환을 시작하면 나머지는 다음 기회로 넘어간다. */
 function drainIdleWork(record) {
+  if (providerMaintenance.active()) {
+    void providerMaintenance.wait().then(() => drainIdleWork(record));
+    return;
+  }
   syncRevokedChatGrants(record);
   drainTemplateCompletion(record);
   drainPlanningDocumentSaved(record);
@@ -1082,7 +1154,7 @@ function drainChatContinuation(record) {
   // 사용자 메시지가 아니므로 다른 요청과 사용자가 잡고 있는 탭은 그대로 둔다.
   beginAgentTurn(record, activeSession, { userTurn: false });
   try {
-    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text));
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -1460,10 +1532,13 @@ function publishedSkillOutcome(outcome) {
 
 function broadcastAgentInstructions(status, changedBy) {
   for (const record of sessions.values()) {
-    if (record.pendingInstructionDraft
-      && record.pendingInstructionDraft.expectedRevision !== status.revision) {
-      clearInstructionDraft(record, 'stale');
+    const draft = record.pendingInstructionDraft;
+    if (!draft || draft.expectedRevision === status.revision) continue;
+    if (typeof draft.rauLine === 'string') {
+      rebaseRauInstructionDraft(record, draft, status);
+      continue;
     }
+    clearInstructionDraft(record, 'stale');
   }
   broadcastToStudios({ v: 1, type: 'agent-instructions', status, changedBy });
 }
@@ -1478,6 +1553,8 @@ function instructionDraftFrame(draft) {
     createdAt: new Date(draft.createdAt).toISOString(),
     expiresAt: new Date(draft.expiresAt).toISOString(),
     confirmationToken: draft.confirmationToken,
+    threadId: draft.threadId ?? null,
+    origin: typeof draft.rauLine === 'string' ? 'rau' : 'agent',
   };
 }
 
@@ -1584,6 +1661,8 @@ function flushProviderCredentialHomes(homes) {
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
 const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
 const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
+// 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
+const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 const CLAUDE_MODELS = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 const CODEX_LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
@@ -1774,6 +1853,45 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
   );
 }
 
+function providerMaintenanceBusy() {
+  return hasOrphanActiveWork() || cliSetup.busy() || piManager.isInstalling() || projectLibrarian.busy()
+    || [...sessions.values()].some((record) => record.processCleanupUncertain
+      || record.sessionDisposalPromise || record.agentSession?.pendingTransitions > 0);
+}
+const providerMaintenance = createProviderMaintenance({
+  busy: providerMaintenanceBusy,
+  async releaseIdle() {
+    for (const record of sessions.values()) {
+      const session = record.agentSession;
+      if (!session || !CLI_SETUP_AGENTS.includes(session.agent)) continue;
+      if (!session.backend.releaseIdle || await session.backend.releaseIdle() === false) {
+        throw new Error('프로바이더 프로세스 종료를 확인하지 못했습니다.');
+      }
+    }
+  },
+  async install(agent) {
+    const installing = cliSetup.install(agent, (entry) => {
+      broadcastToStudios({ v: 1, type: 'agent-setup-progress', agent, state: entry.state, phase: entry.phase });
+    });
+    void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
+    cliSetupStatus[agent] = await installing;
+  },
+  async refresh(agent) {
+    const providers = await providerHealth.check(true);
+    const statuses = await agentSetupStatuses();
+    broadcastToStudios({ v: 1, type: 'provider-status', providers });
+    broadcastAgentSetupStatuses(statuses);
+    for (const record of sessions.values()) {
+      if (!record.studioSocket) continue;
+      try {
+        const models = await modelCatalog(agent, record, { refresh: true });
+        sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
+      } catch (error) { log(`model refresh after update failed: ${error?.message ?? error}`); }
+    }
+    return { statuses };
+  },
+});
+
 let harnessUpdateTimer = null;
 let harnessUpdateRunning = false;
 
@@ -1832,7 +1950,14 @@ async function runAutomaticHarnessUpdates() {
   }
 }
 
+/** 설치·로그인 실패는 Studio 배너와 함께 진단 로그에도 남긴다. 신고에 붙는 로그로 원인을 볼 수 있게 하기 위해서다. */
+function logAgentSetupError(agent, error, fallback) {
+  const detail = typeof error?.detail === 'string' && error.detail ? `\n${error.detail}` : '';
+  log(`${agent ?? 'agent'} setup failed (${error?.code ?? fallback}): ${redactDiagnosticText(`${error?.message ?? error}${detail}`)}`);
+}
+
 function sendAgentSetupError(record, sock, requestId, agent, error, fallback = 'AGENT_SETUP_FAILED') {
+  logAgentSetupError(agent, error, fallback);
   replyToStudio(record, sock, {
     v: 1,
     type: 'agent-setup-error',
@@ -1883,6 +2008,7 @@ function sendAuthRunFrame(run, frame) {
 }
 
 function sendAuthRunError(run, error, fallback = 'AGENT_AUTH_FAILED') {
+  logAgentSetupError(run.agent, error, fallback);
   const owner = ownerRecordForAuthRun(run);
   if (!owner) return;
   sendJson(owner.studioSocket, {
@@ -2299,6 +2425,8 @@ function beginAgentTurn(record, activeSession, { userTurn = true } = {}) {
   activeSession.status = 'running';
   // 이 턴에 보고된 프로바이더 실패 — turn-end 가 하나로 합쳐 싣는다.
   activeSession.turnFailure = null;
+  // 학습기 입력: 이 턴의 사용자 글(dispatchUserMessage 가 채운다)과 루트 에이전트의 마지막 답.
+  activeSession.tasteTurn = newTasteTurn(activeSession.turnId);
   if (activeSession.planning.phase === 'implementing' && activeSession.planning.execution?.status !== 'completed') {
     activeSession.planExecutionTurnId = activeSession.turnId;
     activeSession.planExecutionTurnSucceeded = false;
@@ -3173,6 +3301,7 @@ function drainTemplateCompletion(record) {
   try {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(
       buildCopyLayoutCompletionPrompt(entry.result),
+      documentMemoryHub.takeBlock(activeSession),
     ));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
@@ -3239,7 +3368,7 @@ function drainPlanningDocumentSaved(record) {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addActiveDocumentContext(
       activeSession,
       addTemplateContext(record, activeSession, prompt),
-    )));
+    ), documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -3533,6 +3662,11 @@ function classifyBackendFailureEvent(record, activeSession, evt) {
     secrets: activeSession.failureSecrets ?? [],
   });
   activeSession.turnFailure = held;
+  if (evt.type === 'turn-end' && failure) {
+    // 사이드바는 분류된 제목만 보인다. 문제 보고의 진단 기록에 실제 이유가 남도록 가린 문구를 한 줄로 적는다.
+    const detail = failure.message.replace(/\s+/g, ' ').trim().slice(0, 400);
+    log(`${agent} turn failed (model=${activeSession.model ?? 'default'}, class=${failure.class}, code=${failure.code ?? 'none'}): ${detail}`);
+  }
   if (evt.type === 'turn-end' && failure?.class === 'usage_limit' && (agent === 'claude' || agent === 'codex')) {
     // 한도 막대와 리셋 시각을 새로 읽는다. 강제 새로고침은 쿨다운이 있어 30초 캐시를 쓴다.
     void providerLimits.refresh(false)
@@ -3633,6 +3767,8 @@ function sendCompactionEvents(record, events, turnId) {
   for (const event of events) {
     // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
     // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
+    // 압축된 기록에는 앞서 실은 문서 기억이 남지 않을 수 있다 — 다음 턴에 다시 싣는다.
+    if (event.phase === 'completed') documentMemoryHub.forgetDelivery(activeSession);
     if (event.phase === 'completed' && activeSession?.contextUsage) {
       activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
         ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
@@ -3668,6 +3804,7 @@ function makeBackendEventHandler(record, generation) {
         ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
       });
     }
+    noteTasteTurnEvent(activeSession.tasteTurn, evt);
     if (evt.type === 'tool-call' && /^(?:mcp__rhwp__)?(?:browser_|download_file$|request_secret$)/.test(evt.tool ?? '')) {
       const tool = String(evt.tool).replace(/^mcp__rhwp__/, '');
       try {
@@ -3775,9 +3912,22 @@ function makeBackendEventHandler(record, generation) {
       ? { ...evt, turnId: providerTurnId }
       : { ...evt };
     if (evt.type === 'turn-start') record.missedTurnEnd = null;
+    let tasteTurnEnd = null;
     if (evt.type === 'turn-end') {
       const succeeded = providerTurnSucceeded(evt);
       const compactionTurn = Boolean(activeSession.manualCompaction);
+      // 학습은 성공한 보통 턴만 한다. 실패·중단·압축 턴은 그 턴에 에이전트가 쓴 기억만 표시한다.
+      // 안전 모드에서 문서를 고친 턴은 검토가 끝날 때 검토 신호와 함께 한 번에 배운다.
+      tasteTurnEnd = {
+        threadId: activeSession.threadId,
+        turnId: providerTurnId,
+        documentId: activeSession.documentId ?? null,
+        userText: activeSession.tasteTurn?.userText ?? '',
+        answer: activeSession.tasteTurn?.answer ?? '',
+        learn: succeeded && !compactionTurn,
+        reviewPending: activeSession.permissionProfile === 'safe' && activeSession.tasteTurn?.wrote === true,
+      };
+      activeSession.tasteTurn = null;
       delete studioEvent.handoffUncertain;
       sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, succeeded, evt), providerTurnId);
       // 압축 턴은 기록을 싣지도, 비우지도 않는다 — 다음 보통 턴이 그대로 전한다.
@@ -3800,7 +3950,10 @@ function makeBackendEventHandler(record, generation) {
         activeSession.resumed = false;
         // 이 턴이 실패했다면 다음 턴은 전체 기록으로 새 세션을 연다.
         if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
+        // 이어 받지 못한 세션은 앞서 실은 기억을 모른다 — 이번 글이 실었는지도 확신할 수 없어 다음 턴에 다시 싣는다.
+        documentMemoryHub.forgetDelivery(activeSession);
       }
+      documentMemoryHub.settleDelivery(activeSession, succeeded);
       // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
       const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
       if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
@@ -3824,6 +3977,7 @@ function makeBackendEventHandler(record, generation) {
       }), providerTurnId);
     }
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
+    if (tasteTurnEnd) void tasteLearner.turnEnded(tasteTurnEnd);
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
       record.suppressedUserQuestionCallIds.clear();
@@ -3970,8 +4124,8 @@ function prepareTurnHandoff(activeSession, history, plainText, usedTokens) {
  * 공급자가 아직 보지 못한 대화를 프롬프트 앞에 붙인다. 기록은 여기서 비우지 않는다 —
  * 턴이 성공적으로 끝났을 때만 비운다 (실패한 첫 턴 뒤에도 다음 턴이 같은 기록을 싣는다).
  */
-function handoffPromptText(delivery, turnPrompt) {
-  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt);
+function handoffPromptText(delivery, turnPrompt, documentMemoryBlock = '') {
+  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt, documentMemoryBlock);
 }
 
 /** Codex 가 네이티브로 주입할 조각. 인라인으로 보내는 공급자는 무시한다. */
@@ -4424,6 +4578,7 @@ async function linkChatDocument(record, sock, msg) {
   linked();
   await sendProjectBound(record);
   resumeLibrarianFor(projectId);
+  await documentMemoryHub.prepare(record, activeSession);
 }
 
 /**
@@ -4497,6 +4652,7 @@ async function detachChatDocument(record, sock, msg) {
   }
   sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
   await sendProjectBound(record);
+  await documentMemoryHub.prepare(record, activeSession);
 }
 
 /** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
@@ -4630,8 +4786,134 @@ async function librarianRoutes(projectId) {
   };
 }
 
-function addAgentInstructionsContext(prompt) {
-  return `${agentInstructionsStore.promptBlock()}\n\n${prompt}`;
+/** 학습기가 쓸 기록 — 그 채팅을 가진 창, 없으면 그 문서를 연 창. */
+function tasteRecord({ threadId, documentId } = {}, { socket = false } = {}) {
+  const live = [...sessions.values()].filter((record) => !record.disposed && (!socket || record.studioSocket));
+  return live.find((record) => threadId && record.agentSession?.threadId === threadId)
+    ?? live.find((record) => documentId && recordDocumentId(record) === documentId)
+    ?? null;
+}
+
+function tasteMemoryKey({ threadId, documentId }) {
+  const record = tasteRecord({ threadId, documentId });
+  return record ? documentMemoryHub.keyFor(record, documentId) : documentMemoryHub.store.resolveKey({ documentId });
+}
+
+/** 학습기의 공급자 경로 — 제목 생성과 같은 준비 상태·격리 환경을 쓴다. */
+async function tasteLearnerRoutes(context) {
+  const record = tasteRecord(context) ?? [...sessions.values()].find((candidate) => !candidate.disposed) ?? null;
+  if (!record) return { readiness: {} };
+  const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
+  const { readiness, resolvePiTitleModel, resolveCodexTitleModel: _codex, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
+  return {
+    readiness,
+    codexQuota: providerLimits.snapshot().codex,
+    giftMode: piManager.access().mode === 'gift',
+    resolveModel: { pi: resolvePiTitleModel },
+    ownOpenRouter: tasteOwnOpenRouter(piManager),
+    deps,
+  };
+}
+
+/** taste-learned 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
+function sendTasteFrame(frame) {
+  const record = tasteRecord(frame, { socket: true })
+    ?? [...sessions.values()].find((candidate) => !candidate.disposed && candidate.studioSocket)
+    ?? null;
+  if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId}`);
+}
+
+function sendTasteSettings(sock, requestId, extra = {}) {
+  sendJson(sock, { v: 1, type: 'taste-settings', ...(requestId ? { requestId } : {}), ok: true, settings: tasteSettings.get(), ...extra });
+}
+
+/**
+ * 여러 문서에서 배운 사용자 취향을 AGENTS.md 의 `## Rau-0.1` 아래 한 줄로 제안한다(설정의 확인 카드).
+ * 모든 창을 통틀어 Rau-0.1 제안은 하나만 두고, 다른 제안이 기다리는 창은 건드리지 않는다.
+ * 확인할 때 그때의 AGENTS.md 에 다시 붙이므로(rauLine) 기다리는 동안 사용자가 고쳐도 낡지 않는다.
+ * @returns {{ draftId: string } | { exists: true } | null} 만든 제안, 이미 있는 줄, 또는 자리 없음
+ */
+function proposeRauInstruction({ line, documents, refs, threadId, documentId }) {
+  const status = agentInstructionsStore.snapshot();
+  const content = appendRauInstruction(status.content, line);
+  if (content === null) return { exists: true };
+  const live = [...sessions.values()].filter((record) => !record.disposed);
+  if (live.some((record) => currentInstructionDraft(record)?.requestedBy === RAU_TASTE_NAME)) return null;
+  const record = tasteRecord({ threadId, documentId }, { socket: true });
+  if (!record || currentInstructionDraft(record)) return null;
+  let prepared;
+  try {
+    prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
+  } catch (error) {
+    log(`${RAU_TASTE_NAME}: instruction proposal skipped: ${error?.code ?? error?.message ?? error}`);
+    return null;
+  }
+  const createdAt = Date.now();
+  const draft = {
+    id: crypto.randomUUID(),
+    confirmationToken: crypto.randomUUID(),
+    content: prepared.content,
+    expectedRevision: prepared.expectedRevision,
+    reason: `${documents}개 문서에서 같은 취향을 배웠습니다.`,
+    requestedBy: RAU_TASTE_NAME,
+    createdAt,
+    expiresAt: createdAt + RAU_INSTRUCTION_DRAFT_TTL_MS,
+    rauRefs: refs,
+    rauLine: line,
+  };
+  record.pendingInstructionDraft = draft;
+  draft.expiryTimer = setTimeout(() => {
+    if (record.pendingInstructionDraft?.id === draft.id) clearInstructionDraft(record, 'expired');
+  }, RAU_INSTRUCTION_DRAFT_TTL_MS);
+  draft.expiryTimer.unref?.();
+  if (!sendInstructionDraft(record)) {
+    clearTimeout(draft.expiryTimer);
+    record.pendingInstructionDraft = null;
+    return null;
+  }
+  log(`${RAU_TASTE_NAME}: proposed an AGENTS.md line learned in ${documents} documents`);
+  return { draftId: draft.id };
+}
+
+/**
+ * Rau-0.1 변경안은 AGENTS.md 가 바뀌어도 낡지 않는다 — 그 줄을 새 내용에 다시 붙여 보낸다. 사용자가 그 줄을
+ * 직접 넣었으면 변경안을 거두고 그 취향을 올린 것으로 적는다.
+ */
+function rebaseRauInstructionDraft(record, draft, status) {
+  const content = appendRauInstruction(status.content, draft.rauLine);
+  if (content === null) {
+    clearInstructionDraft(record, 'stale');
+    void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
+    return;
+  }
+  try {
+    const prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
+    draft.content = prepared.content;
+    draft.expectedRevision = prepared.expectedRevision;
+  } catch (error) {
+    log(`${RAU_TASTE_NAME}: instruction proposal dropped: ${error?.code ?? error?.message ?? error}`);
+    clearInstructionDraft(record, 'stale');
+    return;
+  }
+  sendInstructionDraft(record);
+}
+
+/**
+ * 확인한 변경안을 쓴다. Rau-0.1 변경안은 지금의 AGENTS.md 에 그 줄을 다시 붙인다 — 이미 있으면 그대로 둔다.
+ * 확인 토큰은 consumeAuthorizedInstructionDraft 가 이미 검사했다.
+ */
+function writeConfirmedInstructionDraft(draft) {
+  if (typeof draft.rauLine !== 'string') {
+    return agentInstructionsStore.update(draft.content, { expectedRevision: draft.expectedRevision });
+  }
+  const status = agentInstructionsStore.snapshot();
+  const content = appendRauInstruction(status.content, draft.rauLine);
+  if (content === null) return Promise.resolve(status);
+  return agentInstructionsStore.update(content, { expectedRevision: status.revision });
+}
+
+function addAgentInstructionsContext(prompt, documentMemoryBlock = '') {
+  return [agentInstructionsStore.promptBlock(), documentMemoryBlock, prompt].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -4837,6 +5119,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     return;
   }
   beginAgentTurn(record, activeSession);
+  if (typeof msg.text === 'string') activeSession.tasteTurn.userText = msg.text;
   const providerTurn = Object.freeze({
     session: activeSession,
     generation: activeSession.generation,
@@ -4867,6 +5150,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
+      await documentMemoryHub.prepare(record, activeSession);
       const referencedPrompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), {
         required: msg.requireAcceptance === true,
         documentMentions: normalizeDocumentMentions(msg.documentMentions),
@@ -4886,9 +5170,11 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
           addDocumentNoteContext(record, activeSession, addEditReportContext(record, activeSession, addRequestNotesContext(record, activeSession, addWatchNotesContext(record, activeSession, referencedPrompt)))),
         ),
       );
-      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
-      const plainText = addAgentInstructionsContext(turnPrompt);
       const replaceSession = activeSession.replaceSessionPending === true;
+      // 새 공급자 세션은 앞서 실은 기억을 모른다 — 세션 교체와 재개 실패 대체 글에는 늘 싣는다.
+      const memoryBlock = documentMemoryHub.takeBlock(activeSession, { force: replaceSession });
+      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
+      const plainText = addAgentInstructionsContext(turnPrompt, memoryBlock);
       const resumedNative = activeSession.resumed && !replaceSession;
       // 새 세션(재개 실패·세션 교체)에는 전체 기록을 쓰고 사용량은 0 으로 본다.
       const full = prepareTurnHandoff(activeSession, activeSession.fallbackHistory, plainText, 0);
@@ -4904,7 +5190,9 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       const withResumeFallback = resumedNative && !activeSession.nativeTurnSucceeded;
       const options = {
         ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
-        ...(withResumeFallback ? { resumeFallbackText: handoffPromptText(full, turnPrompt) } : {}),
+        ...(withResumeFallback ? {
+          resumeFallbackText: handoffPromptText(full, turnPrompt, documentMemoryHub.takeBlock(activeSession, { force: true })),
+        } : {}),
         ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
         ...(replaceSession ? { replaceSession: true } : {}),
       };
@@ -4923,7 +5211,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         fallback: withResumeFallback && Boolean(full),
         userText,
       };
-      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
+      const dispatched = activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt, memoryBlock), options);
       // Current providers accept synchronously; a future asynchronous backend
       // may reject its dispatch promise before acknowledging the message.
       if (dispatched?.then) await dispatched;
@@ -5286,6 +5574,7 @@ async function startSession(
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
     // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
     prepareLaunch: CLI_SETUP_AGENTS.includes(agent) ? async () => {
+      await providerMaintenance.wait();
       const launch = await cliSetup.prepareLaunch(agent);
       return {
         bin: launch.bin ?? agent,
@@ -5384,6 +5673,7 @@ async function startSession(
     handoffDelivery: null,
     replaceSessionPending: false,
     reportResumeLost: untrustedCursor,
+    documentMemory: newSessionDocumentMemory(),
     contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
     compaction: null,
     manualCompaction: null,
@@ -5548,7 +5838,7 @@ async function approveImplementationPlan(record, sock, msg) {
       record,
       activeSession,
       addEditReportContext(record, activeSession, approvedPrompt),
-    )));
+    ), documentMemoryHub.takeBlock(activeSession)));
   } catch (error) {
     if (record.agentSession === activeSession) {
       if (activeSession.planning.phase === 'switching') {
@@ -5605,7 +5895,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      )));
+      ), documentMemoryHub.takeBlock(activeSession)));
       return;
     }
     if (feedback) {
@@ -5618,11 +5908,12 @@ async function requestImplementationPlanChanges(record, sock, msg, {
       const referenced = await addReferenceContext(activeSession, feedback, revisionPrompt);
       if (record.agentSession !== activeSession) return;
       beginAgentTurn(record, activeSession);
+      activeSession.tasteTurn.userText = feedback;
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
         referenced,
-      )));
+      ), documentMemoryHub.takeBlock(activeSession)));
     }
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -5720,6 +6011,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-start': {
+      await providerMaintenance.wait();
       if (record.agentSession?.workflowTransition) {
         await record.agentSession.workflowTransition;
       }
@@ -5752,10 +6044,12 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       const previousRepository = record.projectRepository ?? null;
+      documentMemoryHub.noteSource(record, msg.documentId, { digest: msg.documentDigest, fileName: msg.documentFileName });
       try {
         // 버전 저장소가 있는 문서는 모든 작업 공간이 한 프로젝트를 함께 쓴다.
         const repositoryChanged = applyRecordRepository(record, msg.documentId, msg);
         const reusable = record.agentSession;
+        const previousDocumentName = reusable?.documentName ?? null;
         const s = await startSession(
           record,
           agent,
@@ -5777,8 +6071,9 @@ async function handleStudioMessage(record, sock, msg) {
               : null,
           },
         );
-        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
-        if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이나 문서 이름이 바뀌었으면 여기서 다시 묶는다.
+        const renamed = Boolean(s.documentName) && s.documentName !== previousDocumentName;
+        if ((repositoryChanged || renamed) && s === reusable) await rebindRecordProject(record);
         // 떼어 낸 채팅: 문서 없이 다시 연 세션만 받는다. 모양이 어긋나면 버린다.
         const detachedFrom = sessionHasNoDocument(s) ? normalizeDetachedFrom(msg.detachedFrom) : null;
         if (detachedFrom) {
@@ -5813,6 +6108,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         await sendProjectBound(record);
         resumeLibrarianFor(record.boundProjectId);
+        void documentMemoryHub.prepare(record, s);
       } catch (e) {
         // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
         if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
@@ -5835,6 +6131,13 @@ async function handleStudioMessage(record, sock, msg) {
       // 기다리지 않고 프로젝트를 다시 묶어 프로젝트 칸의 HTTP 호출이 바로 통하게 한다.
       // 이미 있는 프로젝트에만 묶는다 — 새 프로젝트는 첫 채팅이 만든다.
       const activeSession = record.agentSession;
+      // 같은 문서의 새 이름(다른 이름으로 저장·이름 바꾸기)은 세션이 따른다 — 프로젝트와 구성원 이름도 맞춘다.
+      if (activeSession?.documentId && msg.documentId === activeSession.documentId) {
+        try {
+          const renamed = normalizeDocumentName(msg.documentName);
+          if (renamed) activeSession.documentName = renamed;
+        } catch {}
+      }
       const identity = activeSession
         ? { threadId: activeSession.threadId, documentId: activeSession.documentId ?? null, documentName: activeSession.documentName ?? null }
         : {
@@ -5948,6 +6251,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'chat-user-message': {
+      await providerMaintenance.wait();
       if (!record.agentSession) {
         rejectUserMessage(record, sock, msg, workflowError('AGENT_NOT_STARTED', 'No agent session; send chat-start first.'));
         return;
@@ -6017,6 +6321,10 @@ async function handleStudioMessage(record, sock, msg) {
           message: msg, socket: sock, session: record.agentSession, turnId: null,
         });
       }
+      // Studio 가 이 문서·기억 리비전에서 확인한 앵커 — 허브가 여는 다음 턴들도 이 확인을 쓴다.
+      documentMemoryHub.noteMissingAnchors(record.agentSession, msg.memoryMissingAnchors, {
+        documentId: msg.documentId, revision: msg.memoryAnchorRevision,
+      });
       if (Object.prototype.hasOwnProperty.call(msg, 'activeTemplateId')) {
         try {
           const templateId = msg.activeTemplateId == null ? null : String(msg.activeTemplateId);
@@ -6071,6 +6379,12 @@ async function handleStudioMessage(record, sock, msg) {
       sendJson(sock, { v: 1, type: 'templates-catalog', ...templateStore.list() });
       return;
     }
+    case 'document-memory-request': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void documentMemoryHub.studioRequest(record, msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'document-memory-result', requestId: msg.requestId, ...reply }));
+      return;
+    }
     case 'agent-instructions-request': {
       sendJson(sock, {
         v: 1,
@@ -6080,6 +6394,56 @@ async function handleStudioMessage(record, sock, msg) {
         changedBy: 'system',
       });
       sendInstructionDraft(record, sock);
+      return;
+    }
+    case 'taste-settings-request': {
+      sendTasteSettings(sock, typeof msg.requestId === 'string' ? msg.requestId : null);
+      return;
+    }
+    case 'taste-settings-set': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const patch = Object.fromEntries(['enabled', 'provider', 'model', 'effort']
+        .filter((field) => msg[field] !== undefined)
+        .map((field) => [field, msg[field]]));
+      void tasteSettings.set(patch).then(() => {
+        sendTasteSettings(sock, requestId);
+        for (const other of sessions.values()) if (other !== record) sendTasteSettings(other.studioSocket, null);
+      }).catch((error) => sendTasteSettings(sock, requestId, {
+        ok: false,
+        error: { code: error?.code ?? 'TASTE_SETTINGS_FAILED', message: String(error?.message ?? error) },
+      }));
+      return;
+    }
+    case 'taste-history-learn': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void tasteHistory.handle(record, msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'taste-history-result', requestId: msg.requestId, ...reply }));
+      return;
+    }
+    case 'taste-undo': {
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      const learnId = typeof msg.learnId === 'string' ? msg.learnId : null;
+      const documentId = typeof msg.documentId === 'string' && msg.documentId ? msg.documentId : null;
+      // 키는 Studio 가 보낸 것을 믿지 않고 문서에서 다시 구한다. 다르면 다른 문서의 기억이다.
+      void (async () => {
+        if (!documentId) throw Object.assign(new Error('documentId is required'), { code: 'MEMORY_INVALID' });
+        const key = await documentMemoryHub.keyFor(record, documentId);
+        if (msg.key !== undefined && msg.key !== key) {
+          throw Object.assign(new Error('That learning belongs to another document'), { code: 'MEMORY_KEY_MISMATCH' });
+        }
+        return tasteLearner.undo({
+          key,
+          documentId,
+          learnId,
+          learnIds: Array.isArray(msg.learnIds) ? msg.learnIds.slice(0, 64) : [],
+          changes: msg.changes,
+          entryId: msg.entryId,
+        });
+      })().then((result) => sendJson(sock, { v: 1, type: 'taste-undo-result', requestId, ok: true, learnId, ...result }))
+        .catch((error) => sendJson(sock, {
+          v: 1, type: 'taste-undo-result', requestId, ok: false, learnId, reverted: [], skipped: [],
+          error: { code: error?.code ?? 'TASTE_UNDO_FAILED', message: String(error?.message ?? error) },
+        }));
       return;
     }
     case 'agent-instructions-save': {
@@ -6120,9 +6484,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         return;
       }
-      void agentInstructionsStore.update(draft.content, {
-        expectedRevision: draft.expectedRevision,
-      }).then((status) => {
+      void writeConfirmedInstructionDraft(draft).then((status) => {
         sendJson(sock, {
           v: 1,
           type: 'agent-instructions',
@@ -6137,6 +6499,7 @@ async function handleStudioMessage(record, sock, msg) {
           outcome: 'confirmed',
         });
         broadcastAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`);
+        if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
       }).catch((error) => {
         sendJson(sock, {
           v: 1,
@@ -6177,6 +6540,8 @@ async function handleStudioMessage(record, sock, msg) {
         draftId: draft.id,
         outcome: 'rejected',
       });
+      // 거절한 취향은 다시 제안하지 않는다.
+      if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'rejected', { text: draft.rauLine }).catch(() => {});
       return;
     }
     case 'chat-permission-set': {
@@ -6274,6 +6639,10 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'chat-edit-report': {
       queueEditReport(record, msg);
+      return;
+    }
+    case 'chat-review-signal': {
+      tasteSignals.ingest(msg);
       return;
     }
     case 'chat-plan-execution-result': {
@@ -6375,6 +6744,7 @@ async function handleStudioMessage(record, sock, msg) {
       return;
     }
     case 'agent-setup-install': {
+      await providerMaintenance.wait();
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {
@@ -6741,7 +7111,11 @@ async function handleStudioMessage(record, sock, msg) {
     }
     case 'pi-catalog-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void piManager.catalog(msg.refresh === true)
+      // own: 선물 모드에서도 내 키의 OpenRouter 카탈로그 (Rau-0.1 의 OpenRouter 모델 고르기).
+      const catalog = msg.own === true
+        ? piRouter.catalog(msg.refresh === true, piManager.ownApiKey())
+        : piManager.catalog(msg.refresh === true);
+      void catalog
         .then((models) => replyToStudio(record, sock, { v: 1, type: 'pi-catalog', requestId, models }))
         .catch((e) => sendPiError(record, sock, requestId, e, 'OPENROUTER_UNREACHABLE'));
       return;
@@ -7686,6 +8060,12 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         sendResult(agentInstructionsStore.snapshot());
         return;
       }
+      if (tool === 'read_document_memory') {
+        void documentMemoryHub.runTool(record, record.agentSession)
+          .then(sendResult)
+          .catch((error) => sendError(error, 'DOCUMENT_MEMORY_FAILED'));
+        return;
+      }
       if (tool === 'update_agent_instructions') {
         try {
           const status = agentInstructionsStore.snapshot();
@@ -7712,6 +8092,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             expectedRevision: prepared.expectedRevision,
             reason: typeof args.reason === 'string' ? args.reason : null,
             requestedBy,
+            threadId: record.agentSession?.threadId ?? null,
             createdAt,
             expiresAt: createdAt + AGENT_INSTRUCTION_DRAFT_TTL_MS,
           };
@@ -8493,7 +8874,7 @@ const httpServer = http.createServer((req, res) => {
         sendHttpJson(res, 404, { status: 'not-found' });
         return;
       }
-      const encodedName = encodeURIComponent(artifact.fileName).replaceAll('%20', ' ');
+      const encodedName = encodeURIComponent(artifact.fileName.toWellFormed()).replaceAll('%20', ' ');
       const asciiName = artifact.fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
       res.writeHead(200, {
         'content-type': artifact.mime,
@@ -8688,6 +9069,22 @@ const httpServer = http.createServer((req, res) => {
       authRuns.cancelForSession(sessionId, 'owner-session-closed');
       await disposeRecord(record, 'hub session closed');
       sendHttpJson(res, 200, { status: 'deleted', sessionId });
+      return;
+    }
+    if (url.pathname === '/maintenance/providers' && req.method === 'GET') {
+      authenticateOwnerRequest(req, url);
+      sendHttpJson(res, 200, { statuses: await agentSetupStatuses(), busy: providerMaintenance.active() || providerMaintenanceBusy() });
+      return;
+    }
+    const maintenanceAgent = /^\/maintenance\/providers\/(claude|codex)$/.exec(url.pathname);
+    if (maintenanceAgent && req.method === 'POST') {
+      authenticateOwnerRequest(req, url);
+      try {
+        sendHttpJson(res, 200, await providerMaintenance.run(maintenanceAgent[1]));
+      } catch (error) {
+        if (error.status !== 409) logAgentSetupError(maintenanceAgent[1], error, 'AGENT_INSTALL_FAILED');
+        sendHttpJson(res, error.status ?? 500, { error: { message: error.message } });
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/shutdown') {
@@ -9255,6 +9652,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         changedBy: 'system',
       });
       sendInstructionDraft(record, ws);
+      // 대화에서 배우기 — Studio 는 이 값을 들은 뒤에만 기록에서 배우기의 출처 기록을 남긴다.
+      sendJson(ws, { v: 1, type: 'taste-settings', ok: true, settings: tasteSettings.get() });
       const activeSession = record.agentSession;
       if (activeSession?.planning.latestPlan && activeSession.planning.phase === 'awaiting-approval') {
         sendJson(ws, {
@@ -9459,6 +9858,8 @@ function prepareShutdown(signal) {
     for (const timer of projectChangeTimers.values()) clearTimeout(timer);
     projectChangeTimers.clear();
     projectLibrarian.cancelAll();
+    // 도는 취향 학습은 잠깐 기다렸다가 끊는다 — 한 번짜리 호출과 그 임시 작업 폴더가 남지 않게.
+    const tasteLearnerClosed = tasteLearner.close({ graceMs: TASTE_CLOSE_GRACE_MS }).catch(() => {});
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);
@@ -9469,6 +9870,8 @@ function prepareShutdown(signal) {
     const browserClosed = await ownedBrowser.close().catch(() => false);
     await credentialBroker.close?.();
     await browserDownloads.close?.();
+    // 학습기의 한 번짜리 호출은 세션의 격리 환경을 빌려 쓴다 — 세션을 치우기 전에 끝낸다.
+    await tasteLearnerClosed;
     const cleanupProven = await sessions.disposeAll(
       (record) => disposeRecord(record, 'hub shutdown'),
     );

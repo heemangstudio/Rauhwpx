@@ -437,6 +437,12 @@ export function createLegacyCodexSession(opts, {
       return threadId;
     },
     // exec 는 자동 압축만 하고, 그 신호를 이벤트로 내지 않는다.
+    async releaseIdle() {
+      if (turnOpen || queuedTurn) throw new Error('Codex is busy');
+      const cleaned = await killChild();
+      await childExitPromise;
+      return cleaned !== false && !uncertainTreeCleanup;
+    },
     compactionSupport: 'auto-only',
     canResume(id) {
       return canResumeCodexThread(opts, id);

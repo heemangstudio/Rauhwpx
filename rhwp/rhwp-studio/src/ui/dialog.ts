@@ -146,11 +146,13 @@ export abstract class ModalDialog {
         btn?.click();
         return;
       }
-      // 시트에서는 Space 로 포커스된 버튼을 누를 수 있어야 한다.
-      if (this.sheet && e.key === ' ' && target instanceof HTMLButtonElement) {
+      // Space 로 포커스된 버튼을 누를 수 있어야 한다.
+      if (e.key === ' ' && target instanceof HTMLButtonElement) {
         e.stopPropagation();
         return;
       }
+      // Tab 은 대화상자 안에서만 돈다. 밖으로 나가면 뒤의 메뉴·편집기에 초점이 간다.
+      if (e.key === 'Tab') this.keepFocusInside(e);
       // 편집 가능한 요소 내부 → 키 입력 허용, 외부 전파만 차단
       e.stopPropagation();
       if (!isEditable && e.key !== 'Tab') {
@@ -162,6 +164,24 @@ export abstract class ModalDialog {
     // 확인 버튼에 포커스 → 시각적 피드백 + 접근성
     const btn = this.dialog.querySelector('.dialog-btn-primary') as HTMLButtonElement | null;
     btn?.focus();
+  }
+
+  private keepFocusInside(e: KeyboardEvent): void {
+    const items = [...this.dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )].filter((el) => el.getClientRects().length > 0);
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    const inside = active instanceof Node && this.dialog.contains(active);
+    if (e.shiftKey && (!inside || active === first)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (!inside || active === last)) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   hide(): void {

@@ -1,4 +1,5 @@
 import './trial-ended-banner.css';
+import { isTopModal, popModal, pushModal } from './modal-stack.ts';
 
 /**
  * 체험이 끝났거나 라이선스가 잠긴 동안 막힌 동작을 눌렀을 때 뜨는 모달. 화면을 어둡게 덮고 가운데에 정사각형에 가까운 카드를 띄운다.
@@ -151,12 +152,14 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
   function dismiss(): void {
     if (!open) return;
     open = false;
+    popModal(dismiss);
     overlay.remove();
     if (previousFocus?.isConnected) previousFocus.focus();
   }
   // 모달이라 Tab 은 세 버튼 안에서만 돈다.
   const focusables = [purchase, activate, later];
   function onKeydown(event: KeyboardEvent): void {
+    if (!isTopModal(dismiss)) return;
     if (event.key === 'Escape' && !locked) {
       event.preventDefault();
       event.stopPropagation();
@@ -183,6 +186,8 @@ export function showTrialEndedBanner(options: TrialEndedBannerOptions): TrialEnd
   overlay.addEventListener('keydown', onKeydown);
 
   document.body.append(overlay);
+  // 아래 대화상자가 Escape 를 가로채 카드는 남기고 자기만 닫지 않게 맨 위로 올린다.
+  pushModal(dismiss);
   purchase.focus({ preventScroll: true });
   return { dismiss };
 }

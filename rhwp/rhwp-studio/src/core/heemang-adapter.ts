@@ -243,6 +243,8 @@ export class HeemangAdapter {
   private sourceFormat = 'hwpx';
   private hmlSourceMetadata: HmlOpenMetadata | null = null;
   private _digest: string | null = null;
+  /** 파일 바이트로 연 문서인가. 새 문서·서식 문서는 false 다(digest 가 문서의 정체성이 아니다). */
+  openedFromFile = false;
   private editable = false;
   // native가 아직 선택을 반환하지 않는 서식·rich paste 경로만 보완한다.
   private readonly selectionFallbacks = new Map<number, { before: EditingSelection; after: EditingSelection }>();
@@ -348,6 +350,7 @@ export class HeemangAdapter {
     this.pageMetadata = null;
     this.currentFileHandle = null;
     this._digest = null;
+    this.openedFromFile = false;
     this.editable = false;
     this.hmlSourceMetadata = null;
     this.serialized = null;
@@ -364,6 +367,7 @@ export class HeemangAdapter {
     this.doc = next;
     this.hmReadSourceFormat(bytes);
     this._digest = `blake3:${blake3Hex(bytes)}`;
+    this.openedFromFile = true;
     this.fileName = name;
     try { return this.getDocumentInfo(); }
     catch (error) { this.releaseDocument(); throw error; }

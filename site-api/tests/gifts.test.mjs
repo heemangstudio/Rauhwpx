@@ -353,6 +353,17 @@ test('BYOK spend counts toward the gift, and an exhausted or disabled gift answe
   assert.equal(after.remainingUsd, 0);
 });
 
+test('a 402 for the owner\'s OpenRouter balance passes through and does not read as a used-up gift', async (t) => {
+  const s = await setup(t);
+  const lease = await (await s.license()).activate(MAC_A);
+  await s.claim(lease);
+  const owner = { error: { code: 402, message: 'Insufficient credits. Add more using https://openrouter.ai/credits', metadata: { limit_source: 'openrouter_credits' } } };
+  s.upstream.failNextChat(402, owner);
+  const res = await s.chat(lease, { model: SONNET, messages: [] });
+  assert.equal(res.status, 402);
+  assert.deepEqual(await res.json(), owner);
+});
+
 test('per-license amounts: an allocation sets the claimed limit, 0 blocks the claim, and status reports the license amount', async (t) => {
   const s = await setup(t);
   const amount = (keyId, amountUsd, token = ADMIN) => fetch(`${s.origin}/v1/admin/gifts/amount`, {
@@ -475,6 +486,36 @@ test('changing an active gift PATCHes the OpenRouter limit within the budget, an
   assert.equal(revoked.status, 200);
   assert.equal(revoked.body.gift.status, 'revoked');
   assert.equal(patches().length, count);
+});
+
+test('overlapping limit changes for one gift finish in order, so a late reply cannot undercount the budget', async (t) => {
+  const s = await setup(t, { GIFT_TOTAL_BUDGET_USD: '30' });
+  const amount = (keyId, amountUsd) => fetch(`${s.origin}/v1/admin/gifts/amount`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN}` },
+    body: JSON.stringify({ keyId, amountUsd }),
+  }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const a = await s.license();
+  const b = await s.license();
+  await s.claim(await a.activate(MAC_A));
+  const [[, keyA]] = [...s.upstream.keys.entries()];
+
+  // Two admin tabs: the first lowers to $5 and its reply is slow, the second raises to $25.
+  const resume = s.upstream.holdNextPatch();
+  const lowering = amount(a.keyId, 5);
+  while (keyA.limit !== 5) await new Promise((resolve) => setTimeout(resolve, 5));
+  const raising = amount(a.keyId, 25);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  resume();
+  assert.equal((await lowering).status, 200);
+  assert.equal((await raising).status, 200);
+
+  const listed = await fetch(`${s.origin}/v1/admin/gifts`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  assert.equal(keyA.limit, 25);
+  assert.equal(listed.grants.find((g) => g.keyId === a.keyId).limitUsd, 25);
+  assert.equal(listed.committedUsd, 25);
+  // $25 + another $20 gift would exceed the $30 budget at OpenRouter.
+  assert.equal((await s.claim(await b.activate(MAC_B))).status, 409);
 });
 
 test('issue-beta takes giftUsd, checked before the key is created', async (t) => {

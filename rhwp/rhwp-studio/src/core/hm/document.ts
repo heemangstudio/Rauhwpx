@@ -61,13 +61,14 @@ class PreparedHeemangDocument implements PreparedWasmDocument {
     private bytes: Uint8Array | null,
     readonly fileName: string,
     readonly info: DocumentInfo,
+    readonly openedFromFile: boolean,
   ) {}
 
-  take(): { bytes: Uint8Array; fileName: string } {
+  take(): { bytes: Uint8Array; fileName: string; openedFromFile: boolean } {
     if (!this.bytes) throw new Error('Prepared document has already been consumed or disposed');
     const bytes = this.bytes;
     this.bytes = null;
-    return { bytes, fileName: this.fileName };
+    return { bytes, fileName: this.fileName, openedFromFile: this.openedFromFile };
   }
 
   dispose(): void {
@@ -76,7 +77,12 @@ class PreparedHeemangDocument implements PreparedWasmDocument {
 }
 
 /** 지금 문서를 건드리지 않고 바이트를 검증한다. 들일 때 다시 연다. */
-export function prepareDocument(core: HmCore, data: Uint8Array, fileName?: string): PreparedWasmDocument {
+export function prepareDocument(
+  core: HmCore,
+  data: Uint8Array,
+  fileName?: string,
+  { openedFromFile = true }: { openedFromFile?: boolean } = {},
+): PreparedWasmDocument {
   const name = fileName ?? FALLBACK_DOCUMENT_FILE_NAME;
   let probe;
   try {
@@ -99,15 +105,17 @@ export function prepareDocument(core: HmCore, data: Uint8Array, fileName?: strin
     probe.close();
     probe.free();
   }
-  return new PreparedHeemangDocument(data, name, info);
+  return new PreparedHeemangDocument(data, name, info, openedFromFile);
 }
 
 export function adoptPreparedDocument(core: HmCore, prepared: PreparedWasmDocument): DocumentInfo {
   if (!(prepared instanceof PreparedHeemangDocument)) {
     throw new Error('Prepared document was not created by this WASM bridge');
   }
-  const { bytes, fileName } = prepared.take();
-  return loadDocument(core, bytes, fileName);
+  const { bytes, fileName, openedFromFile } = prepared.take();
+  const info = loadDocument(core, bytes, fileName);
+  core.adapter.openedFromFile = openedFromFile;
+  return info;
 }
 
 export function loadTrustedLocalFileOnce(core: HmCore, data: Uint8Array, fileName?: string): DocumentInfo {
@@ -133,7 +141,9 @@ export function replaceContentFromBytes(core: HmCore, data: Uint8Array): Documen
   const handle = adapter.currentFileHandle;
   const digest = adapter.documentDigest;
   const prepared = adapter.fontsReady;
+  const openedFromFile = adapter.openedFromFile;
   loadDocument(core, data, name);
+  adapter.openedFromFile = openedFromFile;
   adapter.currentFileHandle = handle;
   if (digest) adapter.adoptSourceDigest(digest);
   if (prepared) adapter.markFontsPrepared();
@@ -165,7 +175,7 @@ function preloadBlankTemplate(): Promise<Uint8Array> {
 }
 
 export function prepareNewDocument(core: HmCore, source?: Uint8Array): PreparedWasmDocument {
-  return prepareDocument(core, newDocumentBytes(core, source), NEW_DOCUMENT_FILE_NAME);
+  return prepareDocument(core, newDocumentBytes(core, source), NEW_DOCUMENT_FILE_NAME, { openedFromFile: false });
 }
 
 /** 새 문서(template 이 있으면 그 내용)의 HWPX 바이트. 지금 문서는 건드리지 않는다. */

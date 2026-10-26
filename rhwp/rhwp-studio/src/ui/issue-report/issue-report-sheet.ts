@@ -6,6 +6,7 @@ import '../agent-sidebar/sheet.css';
 import './issue-report.css';
 import type { IssueReportFailureCode, IssueReportResult } from './types.ts';
 import type { PreparedScreenshot } from './screenshot.ts';
+import { isTopModal, popModal, pushModal } from '../modal-stack.ts';
 
 export interface IssueReportSheetForm {
   message: string;
@@ -184,6 +185,7 @@ export function openIssueReportSheet(options: IssueReportSheetOptions): void {
 
   let sending = false;
   let closed = false;
+  const modalToken = {};
   const syncSend = () => {
     send.disabled = sending || message.value.trim().length === 0;
   };
@@ -205,6 +207,7 @@ export function openIssueReportSheet(options: IssueReportSheetOptions): void {
     closed = true;
     openSheet = null;
     document.removeEventListener('keydown', onKeyDown, true);
+    popModal(modalToken);
     layer.classList.remove('ag-sheet-open');
     layer.classList.add('ag-sheet-closing');
     const remove = () => {
@@ -254,6 +257,8 @@ export function openIssueReportSheet(options: IssueReportSheetOptions): void {
   };
 
   function onKeyDown(event: KeyboardEvent): void {
+    // 위에 다른 대화상자가 열려 있으면 그쪽이 키를 받는다.
+    if (!isTopModal(modalToken)) return;
     if (event.key === 'Escape' && !event.isComposing) {
       event.preventDefault();
       event.stopPropagation();
@@ -288,6 +293,8 @@ export function openIssueReportSheet(options: IssueReportSheetOptions): void {
   cancel.addEventListener('click', () => { if (!sending) close(false); });
   backdrop.addEventListener('click', () => { if (!sending) close(false); });
   send.addEventListener('click', () => void submit());
+  // 아래 대화상자(정보 등)가 같은 Escape 로 함께 닫히지 않게 모달 스택에 올린다.
+  pushModal(modalToken);
   document.addEventListener('keydown', onKeyDown, true);
 
   openSheet = { focus: () => message.focus({ preventScroll: true }) };

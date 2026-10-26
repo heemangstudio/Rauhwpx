@@ -129,6 +129,15 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   },
   // 앱 업데이트. 확인·다운로드·재시작은 메인이 하고, 렌더러는 상태를 받아 보여 준다.
   updates: {
+    getAllState: () => ipcRenderer.invoke('desktop:update-all-get-state'),
+    onAllState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('desktop:update-all-state', listener);
+      return () => ipcRenderer.removeListener('desktop:update-all-state', listener);
+    },
+    refreshAll: () => ipcRenderer.invoke('desktop:update-all-refresh'),
+    updateAll: () => ipcRenderer.invoke('desktop:update-all-start'),
+    later: () => ipcRenderer.invoke('desktop:update-all-later'),
     getState: () => ipcRenderer.invoke('desktop:update-get-state'),
     onState: (callback) => {
       const listener = (_event, state) => callback(state);

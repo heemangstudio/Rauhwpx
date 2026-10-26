@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,6 +34,7 @@ import {
   packagedRhwpBinary,
   registerHubSession,
   requestHubShutdown,
+  requestProviderMaintenance,
   resolveHubLaunch,
   spawnHubProcess,
   stopHubChild,
@@ -83,6 +84,8 @@ import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
 import { createFakeUpdater, createUpdateController } from './update-controller.mjs';
+import { createUpdateAllController } from './update-all.mjs';
+import { createDevProviderUpdates } from './dev-provider-updates.mjs';
 import {
   UPDATE_RESTART_FILE_NAME,
   buildRestartManifest,
@@ -481,6 +484,7 @@ class AgentHubOwner {
         RHWP_RUNTIME_DIR: runtimeDir,
         RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
+        RHWP_DOCUMENT_MEMORY_DIR: join(app.getPath('userData'), 'document-memory'),
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
         RHWP_SECRET_BROKER: 'ipc',
@@ -901,6 +905,7 @@ const updateLifecycle = createUpdateLifecycle({
   platform: process.platform,
   cleanup: async () => {
     // 도는 자동 수정 에이전트를 멈추고 그 프로세스 트리 정리가 끝날 때까지 기다린다.
+    updateAll?.dispose();
     await disposeAutofix();
     await hubOwner.teardown();
     await browserHost.dispose();
@@ -915,8 +920,10 @@ const updatePrepareBroker = createRestartPrepareBroker();
 // 업데이트 재시작으로 창을 닫는 중이면 렌더러의 beforeunload 확인도 건너뛴다.
 let updateRestartClosing = false;
 let updates = null;
+let updateAll = null;
 
 function broadcastUpdateState(state) {
+  updateAll?.appChanged();
   for (const window of sessions.windows()) {
     if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-state', state);
   }
@@ -962,6 +969,7 @@ function liveWindowSessions() {
  * 남기고, 확인 없이 창을 닫고 설치로 넘긴다. 어느 단계에서 멈추면 그 뒤로는 아무것도 보내지 않는다.
  */
 async function restartForUpdate(state) {
+  const startingSessionIds = new Set(liveWindowSessions().map((session) => session.sessionId));
   const targets = liveWindowSessions()
     // 문서를 띄우지 못한 창은 넘길 것이 없다.
     .filter((session) => session.rendererLoaded && !session.rendererLoadFailed && !session.window.webContents.isCrashed())
@@ -1000,6 +1008,11 @@ async function restartForUpdate(state) {
     await rm(updateRestartFile, { force: true }).catch(() => {});
     throw error;
   }
+  // 준비하는 동안 새로 열린 창은 넘김을 받지 않았다. 그대로 닫으면 그 창의 저장 안 한 내용이 사라진다.
+  if (liveWindowSessions().some((session) => !startingSessionIds.has(session.sessionId))) {
+    await rm(updateRestartFile, { force: true }).catch(() => {});
+    throw new Error('A window opened while preparing the update. Try restarting again.');
+  }
   updateRestartClosing = true;
   // 열린 닫기 확인의 답이 설치를 멈추지 않게 한다. 설치로 넘기지 못하면 되돌린다.
   const closeStates = liveWindowSessions().map((session) => [session, session.allowCloseOnce, session.pendingCloseRequestId]);
@@ -1023,7 +1036,7 @@ function configureAutoUpdater({ restartManifest }) {
   const mode = updateMode();
   const applied = restartManifest ? updateWasApplied(restartManifest, app.getVersion()) : false;
   updates = createUpdateController({
-    currentVersion: app.getVersion(),
+    currentVersion: fakeUpdateVersion && applied ? fakeUpdateVersion : app.getVersion(),
     mode,
     updater: mode !== 'in-app' ? null
       : fakeUpdateVersion ? createFakeUpdater({ version: fakeUpdateVersion, applied })
@@ -1034,6 +1047,38 @@ function configureAutoUpdater({ restartManifest }) {
     restartApp: restartForUpdate,
   });
   if (restartManifest && !applied) updates.markNotApplied(restartManifest.targetVersion);
+  const updateAllFile = join(app.getPath('userData'), 'update-all.json');
+  const fixtureScenario = !app.isPackaged && process.env.RHWP_FAKE_PROVIDER_UPDATES;
+  const fixtureFile = join(app.getPath('userData'), 'dev-provider-updates.json');
+  let installed = {};
+  if (fixtureScenario) {
+    try { installed = JSON.parse(readFileSync(fixtureFile, 'utf8')); } catch {}
+  }
+  const fixtureMaintenance = fixtureScenario ? createDevProviderUpdates({
+    scenario: fixtureScenario, installed,
+    busyMs: Math.min(10_000, Math.max(0, Number(process.env.RHWP_FAKE_PROVIDER_BUSY_MS) || 0)),
+    persist: (state) => writeNativeFileAtomically(fixtureFile, Buffer.from(JSON.stringify(state), 'utf8')),
+  }) : null;
+  const maintenance = async (agent = null) => {
+    if (fixtureMaintenance) return fixtureMaintenance(agent);
+    await hubOwner.ensure();
+    return requestProviderMaintenance({ ...hubOwner.context(), token: hubToken, launchId, agent });
+  };
+  updateAll = createUpdateAllController({
+    appState: () => updates.state(),
+    checkApp: () => updates.check(),
+    downloadApp: () => updates.download(),
+    restartApp: () => updates.restart(),
+    providerStatus: () => maintenance(),
+    installProvider: (agent) => maintenance(agent),
+    persist: (state) => writeNativeFileAtomically(updateAllFile, Buffer.from(JSON.stringify(state), 'utf8')),
+    broadcast(state) {
+      for (const window of sessions.windows()) {
+        if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-all-state', state);
+      }
+    },
+  });
+  try { updateAll.restore(JSON.parse(readFileSync(updateAllFile, 'utf8'))); } catch {}
 }
 
 function installMenu() {
@@ -1362,14 +1407,21 @@ async function openLaunch(request) {
     await createWindow(request);
     return;
   }
+  // 없는 파일 하나가 뒤의 파일까지 막지 않게 모두 열어 본 뒤 첫 실패를 알린다.
+  let firstError = null;
   for (const filePath of request.openFiles) {
-    const ownerSessionId = await nativeFiles.ownerForPath(filePath).catch(() => null);
-    if (ownerSessionId) {
-      sessions.focusSession(ownerSessionId);
-      continue;
+    try {
+      const ownerSessionId = await nativeFiles.ownerForPath(filePath).catch(() => null);
+      if (ownerSessionId) {
+        sessions.focusSession(ownerSessionId);
+        continue;
+      }
+      await createWindow(launchRequest({ openFiles: [filePath], source: request.source }));
+    } catch (error) {
+      firstError ??= error;
     }
-    await createWindow(launchRequest({ openFiles: [filePath], source: request.source }));
   }
+  if (firstError) throw firstError;
 }
 
 function queueLaunch(request) {
@@ -1671,6 +1723,23 @@ ipcMain.handle('desktop:offers-autosave-recovery', (event) => sessionForEvent(ev
 ipcMain.handle('desktop:update-get-state', (event) => {
   sessionForEvent(event);
   return updates?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-get-state', (event) => {
+  sessionForEvent(event);
+  return updateAll?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-refresh', async (event) => {
+  sessionForEvent(event);
+  return updateAll?.refresh() ?? null;
+});
+ipcMain.handle('desktop:update-all-start', (event) => {
+  sessionForEvent(event);
+  void updateAll?.start();
+  return updateAll?.state() ?? null;
+});
+ipcMain.handle('desktop:update-all-later', (event) => {
+  sessionForEvent(event);
+  updateAll?.later();
 });
 ipcMain.handle('desktop:update-check', async (event) => {
   sessionForEvent(event);
@@ -2381,6 +2450,11 @@ if (!hasSingleInstanceLock) {
     void reportUniqueInstallMetric();
     // 실행 4초 뒤 확인하고, 그 뒤로 한 시간마다 확인한다.
     updates.start();
+    void updateAll.refresh().catch((error) => console.warn('[updates] provider check failed:', error.message));
+    const maintenanceTimer = setInterval(() => {
+      if (!quitting) void updateAll.refresh().catch(() => {});
+    }, 60_000);
+    maintenanceTimer.unref();
   }).catch((error) => {
     // 창이 먼저 뜨므로 시작 중에 종료하면 허브 시작이 거절될 수 있다. 그때는 알리지 않는다.
     if (!quitting) showLaunchError(error);

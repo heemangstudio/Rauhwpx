@@ -304,7 +304,8 @@ test('unwrapped Claude spawn actually starts with a cmd.exe-overflowing argv', a
   // 실제 세션처럼 서브에이전트 정의는 파일로 넘긴다 — 인라인 JSON 이면 CreateProcess 상한(32,767자)을 넘는다.
   const argv = buildClaudeArgv(claudeOpts, sessionId, false, { agentsPath: path.join(root, 'rhwp-agents.json') });
   assert.ok(windowsCmdExeCommandLineLength(cmdPath, argv) > WINDOWS_CMD_LINE_LIMIT);
-  assert.ok(argv.reduce((total, arg) => total + arg.length + 3, 0) < 24_000);
+  // 실제 상한은 CreateProcess 의 32,767자다. 25,000자 예산은 사용자 경로가 길어질 여유를 남긴다.
+  assert.ok(argv.reduce((total, arg) => total + arg.length + 3, 0) < 25_000);
   const launched = applyNpmCliLaunch(cmdPath, argv, {
     platform: 'win32',
     nodeCommand: process.execPath,

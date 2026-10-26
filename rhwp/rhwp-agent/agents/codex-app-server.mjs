@@ -38,6 +38,11 @@ import { codexHistoryItems } from '../chat-handoff.mjs';
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MODE_FEATURE = 'default_mode_request_user_input';
 const NEGOTIATION_TIMEOUT_MS = 10_000;
+/**
+ * 스레드 열기·턴 시작의 응답 기한. 앱 서버가 응답 없이 멈추면 턴이 끝없이 도는 채로 남는다.
+ * 처음 실행(모델 목록·인증 확인)이 느린 경우를 넉넉히 덮는다.
+ */
+const STARTUP_REQUEST_TIMEOUT_MS = 120_000;
 const STDERR_TAIL_LIMIT = 16_000;
 export const CODEX_RPC_LINE_LIMIT_BYTES = 8 * 1024 * 1024;
 
@@ -212,7 +217,7 @@ export class CodexJsonRpcConnection {
           const pending = this.pending.get(key);
           if (!pending) return;
           this.pending.delete(key);
-          pending.reject(new CodexAppServerUnavailableError(`${label} timed out`));
+          pending.reject(Object.assign(new CodexAppServerUnavailableError(`${label} timed out`), { timedOut: true }));
         }, timeoutMs);
       }
       this.pending.set(key, { resolve, reject, method, timer });
@@ -424,6 +429,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     createLegacySession,
     platform = process.platform,
     nodeCommand = process.execPath,
+    startupRequestTimeoutMs = STARTUP_REQUEST_TIMEOUT_MS,
   } = dependencies;
   // 재개가 사라진 턴의 turn-end 에 resumeLost 를 싣는다 — turn-end 를 내는 곳이 여럿이라 여기서 한 번에.
   let turnResumeLost = false;
@@ -521,6 +527,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       details.push(String(cause.message ?? cause));
     }
     return truncate(redactDiagnosticText(details.join(': '), [opts.token]), max);
+  }
+
+  /** TurnError 의 문구. 서버가 덧붙인 additionalDetails 가 실제 원인인 경우가 있어 함께 싣는다. */
+  function turnErrorText(err) {
+    const message = String(err.message);
+    const details = typeof err.additionalDetails === 'string' ? err.additionalDetails.trim() : '';
+    return details && !message.includes(details) ? `${message}\n${details}` : message;
   }
 
   /** codexErrorInfo 를 허브 분류기가 읽는 단서로 옮긴다. 사용 한도면 다 쓴 창의 리셋 시각을 싣는다. */
@@ -672,7 +685,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     const usage = pendingUsage;
     const turnError = params.turn?.error ?? null;
     const failureMessage = status === 'failed'
-      ? String(turnError?.message ?? lastTurnError?.message ?? 'Codex turn failed')
+      ? (turnError?.message ? turnErrorText(turnError) : lastTurnError?.message ?? 'Codex turn failed')
       : null;
     const failure = failureMessage
       ? codexFailureHint(turnError?.codexErrorInfo ?? lastTurnError?.codexErrorInfo)
@@ -816,7 +829,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (params.willRetry === true) return;
       const err = params.error && typeof params.error === 'object' ? params.error : params;
       if (!err.message) return;
-      const message = String(err.message);
+      const message = turnErrorText(err);
       if (turnOpen) lastTurnError = { message, codexErrorInfo: err.codexErrorInfo ?? null };
       onEvent({ type: 'error', agent: 'codex', message, failure: codexFailureHint(err.codexErrorInfo) });
     }
@@ -1107,10 +1120,12 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
           sandbox: sandboxMode(opts),
           developerInstructions: systemBriefFor(opts, 'codex'),
           excludeTurns: true,
-        });
+        }, { timeoutMs: startupRequestTimeoutMs });
       } catch (error) {
         // 재개 커서의 롤아웃이 사라졌다 ("no rollout found for thread id …", 0.162 확인).
         // 이 백엔드에서 이미 붙었던 스레드도 롤아웃이 없으면 새 스레드로 간다. 그 밖의 실패는 그대로 올린다.
+        // 응답이 없던 것은 롤아웃이 사라진 것이 아니다. 새 스레드로 가면 대화가 끊긴다.
+        if (error instanceof CodexAppServerUnavailableError) throw error;
         if (!resumeUnverified && !/no rollout found/i.test(String(error?.message ?? error))) throw error;
         process.stderr.write(`[codex-app-server] resume failed, starting a new thread: ${safeMessage(error)}\n`);
         resumeUnverified = false;
@@ -1128,7 +1143,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         sandbox: sandboxMode(opts),
         developerInstructions: systemBriefFor(opts, 'codex'),
         ephemeral: false,
-      });
+      }, { timeoutMs: startupRequestTimeoutMs });
     }
     const id = String(result?.thread?.id ?? threadId ?? '');
     if (!id) throw new Error('Codex app-server did not return a thread id');
@@ -1321,7 +1336,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         model: opts.model ?? DEFAULT_CODEX_MODEL,
         effort: opts.effort ?? null,
         collaborationMode: collaborationMode(opts),
-      });
+      }, { timeoutMs: startupRequestTimeoutMs });
       if (stale() || interruptRequested || (!starting && !turnOpen)) return;
       const responseTurnId = String(response?.turn?.id ?? '');
       if (!responseTurnId) throw new Error('Codex app-server turn/start returned no turn id');
@@ -1338,6 +1353,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (ownsPending) pendingTurnStart = null;
       if (stale()) return;
       const ownedActiveTurn = turnOpen && connectionIsCurrent(connection, turnGeneration);
+      // turn/started 로 이미 열린 턴은 늦은 응답 기한 때문에 끊지 않는다.
+      if (ownedActiveTurn && error?.timedOut) return;
       if (starting || ownedActiveTurn) {
         starting = false;
         const cleaned = await stopConnection();
@@ -1415,6 +1432,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     agent: 'codex',
     getSessionId() {
       return fallback?.getSessionId() ?? threadId;
+    },
+    async releaseIdle() {
+      if (starting || turnOpen) throw new Error('Codex is busy');
+      cancelIdleRelease();
+      if (fallback) return fallback.releaseIdle();
+      await restartPromise;
+      return stopConnection();
     },
     get compactionSupport() {
       // legacy exec 는 자동 압축만 한다.

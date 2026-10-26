@@ -140,7 +140,8 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     'provider-setup': `.ag-settings-provider-row[data-agent="${['claude', 'codex', 'pi'].includes(params.get('provider') ?? '') ? params.get('provider') : 'codex'}"] button`,
   };
   if (surface === 'skills') {
-    await click('.ag-settings-btn');
+    // 미리보기 단추가 숨겨져 있어도(controls=0) 열리게 설정 이벤트로 연다.
+    preview.eventBus.emit('settings:open', { destination: 'editing' });
     await until(() => document.querySelector('.ag-root.ag-settings-open'), 'settings page');
   }
   if (surface === 'provider-setup') {

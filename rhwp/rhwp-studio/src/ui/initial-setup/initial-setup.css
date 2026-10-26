@@ -61,6 +61,11 @@
   transform: none;
 }
 
+/* Rau-0.1 장은 파란 테두리로 구분한다. */
+.rhwp-setup-dialog[data-step='taste'] {
+  border-color: #5b8fd4; /* token-ok */
+}
+
 /* ── 하마와 말풍선 ── */
 
 .rhwp-setup-head {
@@ -220,9 +225,55 @@
   gap: 8px;
 }
 
+/* Rau-0.1: 켜기·끄기 아래에 공급자 넷을 한 줄로. */
+.rhwp-setup-taste {
+  display: grid;
+  gap: 12px;
+}
+
+.rhwp-setup-taste-providers {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* 켜기·끄기는 공급자 카드보다 낮게 — 아이콘과 글을 한 줄에. */
+.rhwp-setup-taste .rhwp-setup-font-action {
+  flex-direction: row;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.rhwp-setup-taste .rhwp-setup-font-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.rhwp-setup-taste .rhwp-setup-font-icon .ag-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.rhwp-setup-taste .rhwp-setup-font-action .rhwp-setup-check {
+  top: 50%;
+  margin-top: -9px;
+}
+
+.rhwp-setup-taste-providers[hidden] {
+  display: none;
+}
+
+.rhwp-setup-card-logo > .ag-icon {
+  width: 22px;
+  height: 22px;
+}
+
 @media (max-width: 380px) {
   .rhwp-setup-grid {
     grid-template-columns: 1fr;
+  }
+
+  .rhwp-setup-taste-providers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -264,6 +315,7 @@
 
 .rhwp-setup-theme[aria-checked='true'],
 .rhwp-setup-card[data-configured='true'] .rhwp-setup-card-action,
+.rhwp-setup-taste-providers .rhwp-setup-card-action[aria-checked='true'],
 .rhwp-setup-font-action[data-done='true'] {
   border-color: var(--n-ink);
   background: var(--n-surface);
@@ -294,6 +346,7 @@
 
 .rhwp-setup-theme[aria-checked='true'] .rhwp-setup-check,
 .rhwp-setup-card[data-configured='true'] .rhwp-setup-check,
+.rhwp-setup-taste-providers .rhwp-setup-card-action[aria-checked='true'] .rhwp-setup-check,
 .rhwp-setup-font-action[data-done='true'] .rhwp-setup-check {
   opacity: 1;
   transform: none;

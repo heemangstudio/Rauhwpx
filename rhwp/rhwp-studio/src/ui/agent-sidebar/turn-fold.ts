@@ -136,6 +136,7 @@ export const TURN_SUMMARY_IGNORED_TOOLS: ReadonlySet<string> = new Set([
   'prepare_engine_edit_session',
   'materialize_document_snapshot',
   'read_agent_instructions',
+  'read_document_memory',
   'read_product_skill',
   'list_harness_skills',
   // CLI 의 할 일 도구 — update_todos 와 같은 일이다.

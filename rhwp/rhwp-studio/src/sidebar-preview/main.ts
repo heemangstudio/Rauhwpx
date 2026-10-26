@@ -15,6 +15,7 @@ import {
 import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
+import { skipTasteUndo, tasteUndos } from './mock-taste.ts';
 import { showToast } from '../ui/toast.ts';
 import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
@@ -792,6 +793,11 @@ if (params.get('page') === 'settings') {
   eventBus.emit('settings:open', { destination: isSettingsDestination(requestedDestination) ? requestedDestination : 'editing' });
 }
 if (params.get('page') === 'versions') sidebar.openVersions();
+// `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
+if (params.has('memory')) {
+  await sidebar.startupChatSettled();
+  sidebar.openDocumentMemory();
+}
 const projectTab = params.get('project');
 if (projectTab === 'board' || projectTab === 'graph' || projectTab === 'files') {
   await waitForThreadsPersistence();
@@ -819,7 +825,11 @@ async function openLockedParallelScene(): Promise<void> {
   sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
   await until(() => chats.length > 1 && chats[shownChat]!.sidebar.root.classList.contains('ag-fullscreen'));
 }
-if (parallel === 'locked') await openLockedParallelScene();
+// 잠긴 두 번째 채팅은 전체 화면에서만 보인다. fullscreen=1 이 없어도 장면이 열리게 먼저 들어간다.
+if (parallel === 'locked') {
+  if (!sidebar.root.classList.contains('ag-fullscreen')) await enterFocusMode();
+  await openLockedParallelScene();
+}
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
@@ -828,6 +838,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
+  taste: { undos: tasteUndos, skipUndo: skipTasteUndo },
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

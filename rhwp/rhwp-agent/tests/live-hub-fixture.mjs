@@ -92,7 +92,7 @@ export async function startLiveHub(t, {
     env: { ...process.env, NODE_ENV: 'test', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: HUB_TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID, RHWP_WORK_DIR: root, RHWP_PI_DIR: piRoot,
       RHWP_TEMPLATES_DIR: path.join(root, 'templates'), RHWP_AGENT_INSTRUCTIONS_DIR: path.join(root, 'instructions'),
-      RHWP_REFERENCES_DIR: path.join(root, 'references'),
+      RHWP_REFERENCES_DIR: path.join(root, 'references'), RHWP_TASTE_LEARNER: '0',
       ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -12,6 +12,7 @@ import './mention-picker.css';
 import type { ProjectItem } from '../../agent/types.ts';
 import { fuzzyTemplateScore } from './template-fuzzy.ts';
 import { itemIconName, projectIcon } from './project/project-ui.ts';
+import { fitPopupAboveViewportTop } from './popup-fit.ts';
 
 export interface MentionPickerOptions {
   textarea: HTMLTextAreaElement;
@@ -196,6 +197,7 @@ export function createMentionPicker(options: MentionPickerOptions): MentionPicke
       menu.append(row);
     });
     setOpen(rows.length > 0);
+    fitPopupAboveViewportTop(menu);
     menu.querySelector<HTMLElement>('.ag-active')?.scrollIntoView({ block: 'nearest' });
   }
 

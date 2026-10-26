@@ -35,6 +35,7 @@ import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
 import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import { ReviewSignalOutbox, TasteSignalCollector, wasmParagraphReader } from './taste-signals.ts';
 import {
   createTurnFailureCollector,
   isProviderHubErrorCode,
@@ -43,7 +44,21 @@ import {
   type TurnFailureCollector,
 } from './provider-failure.ts';
 import { isPlanApprovalText } from './plan-approval-text.ts';
+import { missingAnchorIds, readDocumentMemoryResult } from './document-memory.ts';
+import { readTasteLearned, readTasteSettings, readTasteUndoResult } from './taste.ts';
+import {
+  AutoHistoryTrigger,
+  MAX_HISTORY_CHATS,
+  ProvenanceLog,
+  TasteHistoryMiner,
+  idbProvenanceBackend,
+  provenanceObserver,
+  readTasteHistoryResult,
+  type HistoryBlocker,
+  type TasteHistoryOutcome,
+} from './taste-history.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
+import { documentChatTurns } from './threads.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import { currentAgentEditLock, onAgentEditLockChange } from './agent-prefs.ts';
 import { chatPermissionMatchesContext, isChatPermissionScope, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest, readChatPermissionRequests, readSecretMeta } from './chat-permissions.ts';
@@ -92,6 +107,14 @@ import type {
   AgentViewHost,
   AgentInstructionsDraft,
   AgentInstructionsStatus,
+  DocumentMemory,
+  DocumentMemoryChange,
+  DocumentMemoryEntry,
+  DocumentMemoryOp,
+  DocumentMemoryResult,
+  TasteHistoryResult,
+  TasteSettings,
+  TasteUndoResult,
   AgentEditingLease,
   AgentName,
   AgentAuthMethod,
@@ -306,7 +329,8 @@ export type ChatCompactResult =
   | { ok: false; code: string; message: string };
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
 type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
-  | 'holdsDocumentWrites' | 'noteDocumentRestored' | 'flashJumpTarget';
+  | 'holdsDocumentWrites' | 'noteDocumentRestored' | 'noteTurnKey' | 'noteTurnKeyRebound' | 'noteTurnRestored'
+  | 'flashJumpTarget';
 
 /** Frontend consumers only need the pending-edit review surface. */
 export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
@@ -425,6 +449,12 @@ export interface AgentBridge {
    * (없으면 지금 스레드)다. stillApplies 가 false 를 돌려주면(되돌리기를 실행 취소했다) 안내를 버린다.
    */
   noteDocumentRestored(threadId?: string, stillApplies?: () => boolean): void;
+  /** 요청 말풍선(turnKey)이 방금 시작된 턴에 묶였다 — 취향 신호가 되돌린 턴을 찾는 데 쓴다. */
+  noteTurnKey(threadId: string, key: string | null): void;
+  /** 허브가 요청 말풍선의 turnKey 를 바꿨다. */
+  noteTurnKeyRebound(threadId: string, fromKey: string, toKey: string | null): void;
+  /** "이 작업 전으로 되돌리기"가 그 요청의 턴을 되돌렸다. */
+  noteTurnRestored(threadId: string, key: string): void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -460,8 +490,8 @@ export interface AgentBridge {
   installPi(): Promise<PiStatus | null>;
   /** OpenRouter API 키를 검증하고 저장한다. */
   setPiKey(key: string): Promise<PiStatus | null>;
-  /** 라이브 OpenRouter 모델 카탈로그. */
-  requestPiCatalog(refresh?: boolean): Promise<PiCatalogModel[] | null>;
+  /** 라이브 OpenRouter 모델 카탈로그. own 이면 선물 모드여도 내 키의 카탈로그. */
+  requestPiCatalog(refresh?: boolean, options?: { own?: boolean }): Promise<PiCatalogModel[] | null>;
   /** 사용자가 고른 최대 3개 pi 모델(표시 이름 포함)을 저장한다. */
   setPiModels(
     models: Array<{ id: string; name: string; defaultEffort?: string }>,
@@ -510,6 +540,11 @@ export interface AgentBridge {
    * 함께 쓰도록 채팅 시작 때 허브에 실어 보내고, 바뀌면 바로 다시 묶는다.
    */
   setProjectWorktrees(binding: ProjectWorktreeBinding | null): void;
+  /**
+   * 이 채팅 문서의 파일 이름이 바뀌었다(첫 저장·다른 이름으로 저장·이름 바꾸기). 문서는 그대로이므로
+   * 허브가 세션의 문서 이름과 프로젝트·구성원 이름을 새 이름으로 맞추게 다시 묶는다.
+   */
+  renameDocument(documentId: string, documentName: string): void;
   listTemplates(): Promise<TemplateCatalog>;
   addTemplate(file: File, name?: string): Promise<DocumentTemplate>;
   renameTemplate(id: string, name: string): Promise<DocumentTemplate>;
@@ -545,6 +580,31 @@ export interface AgentBridge {
   saveAgentInstructions(content: string, expectedRevision: number): Promise<AgentInstructionsStatus | null>;
   confirmAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<AgentInstructionsStatus | null>;
   rejectAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<boolean>;
+  /** 문서 기억 — documentId 를 생략하면 이 채팅의 문서. 연결이 없으면 null, 허브가 거절하면 ok:false. */
+  listDocumentMemory(documentId?: string | null): Promise<DocumentMemoryResult | null>;
+  applyDocumentMemory(
+    ops: DocumentMemoryOp[],
+    options?: { expectedRevision?: number; documentId?: string | null },
+  ): Promise<DocumentMemoryResult | null>;
+  revertDocumentMemory(changes: DocumentMemoryChange[], documentId?: string | null): Promise<DocumentMemoryResult | null>;
+  /** 글에 매인 항목 가운데 인용이 지금 문서에서 사라진 것의 id. */
+  missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[];
+  /** 취향 학습(Rau-0.1) 설정. 연결이 없으면 null. */
+  requestTasteSettings(): Promise<TasteSettings | null>;
+  /** 바꿀 칸만 보낸다. 공급자만 바꾸면 허브가 모델·추론을 그 공급자의 기본값으로 돌린다. */
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
+  /** 학습 한 번의 변경을 되돌린다. entryId 를 생략하면 그 학습의 모든 변경. 연결이 없으면 null. */
+  undoTaste(input: {
+    learnId: string;
+    /** 같은 구분선에 합쳐진 다음 학습들 — 허브는 이 id 들로 자기가 남긴 변경 목록을 찾는다. */
+    learnIds?: string[];
+    documentId: string;
+    key: string;
+    changes: unknown[];
+    entryId?: string;
+  }): Promise<TasteUndoResult | null>;
+  /** 기록에서 배우기 — 이 문서에서 에이전트 글을 사용자가 고친 짝을 찾아 배운다 (설정과 상관없이). */
+  learnFromHistory(): Promise<TasteHistoryOutcome>;
   requestWritingStyleCatalog(refresh?: boolean): Promise<WritingStyleCatalog | null>;
   calibrateWritingStyle(input: {
     language: WritingStyleLanguage;
@@ -595,6 +655,29 @@ const CONNECT_TIMEOUT_MS = 4000;
 
 /** 요청/응답 대기 상한 — 넘기면 null 로 안착한다(던지지 않는다). */
 const REQUEST_TIMEOUT_MS = 10_000;
+/** 기록에서 배우기는 학습기 대기열 뒤에서 모델을 부른다 — 학습기의 전체 제한보다 넉넉히 기다린다. */
+const TASTE_HISTORY_TIMEOUT_MS = 240_000;
+
+/** 창 하나의 출처 기록 — 같은 문서의 채팅 여럿이 한 줄로 쓴다. */
+let provenanceLog: ProvenanceLog | null = null;
+function sharedProvenanceLog(): ProvenanceLog {
+  provenanceLog ??= new ProvenanceLog(idbProvenanceBackend());
+  return provenanceLog;
+}
+
+/**
+ * 창이 마지막으로 들은 대화에서 배우기 설정 (허브가 welcome 뒤와 바뀔 때 taste-settings 로 알린다).
+ * 모르면 null — 출처 기록은 켜져 있다고 들었을 때만 남긴다.
+ */
+let tasteLearningEnabled: boolean | null = null;
+/** 설정을 들었다. 꺼진 것을 처음 보면 출처 기록을 모두 지운다 — 다시 켰을 때 꺼져 있던 동안의 고침을 보내지 않게. */
+function noteTasteLearning(enabled: boolean): void {
+  const previous = tasteLearningEnabled;
+  tasteLearningEnabled = enabled;
+  if (!enabled && previous !== false) {
+    void sharedProvenanceLog().clear().catch((error) => console.warn('[taste-history] provenance clear failed:', error));
+  }
+}
 
 /** 페이지 새로고침 뒤에도 같은 허브 세션의 질문 취소를 이어 가는 탭별 저장 키. */
 const QUESTION_CANCELLATION_STORAGE_PREFIX = 'rhwp-agent-question-cancellation:';
@@ -912,6 +995,8 @@ function readAgentInstructionsDraft(value: unknown): AgentInstructionsDraft | nu
     createdAt: item['createdAt'],
     expiresAt: item['expiresAt'],
     confirmationToken: item['confirmationToken'],
+    threadId: typeof item['threadId'] === 'string' && item['threadId'] ? item['threadId'] : null,
+    origin: item['origin'] === 'rau' ? 'rau' : 'agent',
   };
 }
 
@@ -1527,6 +1612,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private executor: AgentToolExecutor;
   /** 이 문서의 어느 채팅이든 검토 대기 편집이 있는가 (ForeignDocumentAccess.ownPendingReview). */
   private readonly ownPendingReview: (() => boolean) | undefined;
+  /** 이 문서의 어느 채팅이든 에이전트가 일하는 중인가 (AgentBridgeDeps.documentTurnRunning). */
+  private readonly documentTurnRunning: (() => boolean) | undefined;
 
   private url = '';
   private token = '';
@@ -1535,7 +1622,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private sessionId = '';
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
-  private readonly versionCommit?: (message: string) => Promise<void>;
+  private readonly versionCommit?: AgentBridgeDeps['commitVersion'];
   /** 문서 없는 채팅에 문서를 잇는 편집기 흐름 (open_document·create_document). */
   private readonly linkDocument?: (request: ChatDocumentLinkRequest) => Promise<ChatDocumentLinked>;
   /** 채팅을 문서에서 떼어 빈 문서 자리로 옮기는 편집기 흐름 (detach_document). */
@@ -1554,6 +1641,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly turnCheckpoints?: TurnCheckpointPort;
   /** 턴 체크포인트에 알린 마지막 검토 set 목록 — 사라진 set 을 거절·폐기로 알린다. */
   private checkpointSetIds = new Set<string>();
+  /** 취향 학습 신호 — 승인·거절·고쳐 쓰기·되돌리기를 모아 chat-review-signal 로 보낸다. */
+  private readonly tasteSignals: TasteSignalCollector;
+  private readonly reviewSignals: ReviewSignalOutbox;
+  /** 기록에서 배우기 (Rau-0.1) — 출처 기록에서 짝을 찾아 보낸다. 문서를 열면 한 번 저절로 돈다. */
+  private readonly tasteHistory: TasteHistoryMiner;
+  private readonly tasteHistoryAuto: AutoHistoryTrigger;
   /** 문서를 되돌린 뒤 아직 보내지 않은 안내 — 그 스레드의 다음 사용자 메시지 앞에 붙는다. */
   private restoredNotice: RestoredNotice | null = null;
   /** 안내를 싣고 나갔지만 아직 턴이 열리지 않은 메시지 — 허브가 거절하면 안내를 다시 건다. */
@@ -1756,7 +1849,19 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 캔버스가 알린 활성 쪽 (캐럿 쪽이 보이면 그 쪽, 아니면 뷰포트 쪽). */
   private activePageIndex: number | null = null;
   private threadId = '';
-  private documentId: string | null = null;
+  private chatDocumentId: string | null = null;
+  /** 이 채팅의 문서. 바뀌면 그 문서의 기억을 바로 읽어 둔다 — 첫 메시지도 앵커를 확인해 싣는다. */
+  private get documentId(): string | null {
+    return this.chatDocumentId;
+  }
+  private set documentId(value: string | null) {
+    if (value === this.chatDocumentId) return;
+    this.chatDocumentId = value;
+    if (value) queueMicrotask(() => {
+      this.loadDocumentMemory();
+      this.tasteHistoryAuto?.noteDocument();
+    });
+  }
   private documentName: string | null = null;
   /** 문서 세션이 알려 준 작업 공간 묶음. 이 채팅 문서의 것일 때만 허브에 싣는다. */
   private projectWorktreeBinding: ProjectWorktreeBinding | null = null;
@@ -1769,8 +1874,19 @@ export class AgentBridgeImpl implements AgentBridge {
   private templateCatalog: TemplateCatalog = { revision: 0, templates: [] };
   private activeTemplate: DocumentTemplate | null = null;
   private activeTemplateId: string | null = null;
+  /** 이 채팅 문서의 기억 한 벌 — 메시지를 보낼 때 앵커를 확인한다. 바뀌면 허브가 알린다. */
+  private documentMemory: { documentId: string; memory: DocumentMemory } | null = null;
+  private documentMemoryLoading: string | null = null;
+  /** 앵커 검색과 원본 digest·파일 이름을 읽는 이 채팅의 문서 엔진. */
+  private documentEngine: Pick<
+    AgentBridgeDeps['wasm'],
+    'searchText' | 'documentDigest' | 'fileName' | 'openedFromFile' | 'documentInstance' | 'documentGeneration'
+  > | null = null;
+  /** 인용별 검색 결과. 문서 인스턴스·세대·revision 이 그대로인 동안만 쓴다 — 바뀌면 통째로 버린다. */
+  private anchorSearchCache: { documentState: string; found: Map<string, boolean> } | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
+    this.documentEngine = deps.wasm;
     this.versionCommit = deps.commitVersion;
     this.linkDocument = deps.linkDocument;
     this.detachDocument = deps.detachDocument;
@@ -1835,6 +1951,54 @@ export class AgentBridgeImpl implements AgentBridge {
       this.handlePlanEditChange(e);
       this.settleCheckpointSets(e);
       this.scheduleBusyCheck();
+      // 검토가 끝났다 — 검토 대기로 미룬 기록에서 배우기를 다시 본다.
+      if (e.type === 'approved' || e.type === 'rejected' || e.type === 'set-finalized' || e.type === 'invalidated') {
+        queueMicrotask(() => this.tasteHistoryAuto?.noteTurnEnded());
+      }
+    });
+    this.reviewSignals = new ReviewSignalOutbox({
+      send: (frame) => this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-review-signal', ...frame }),
+      canSend: () => this.state === 'connected' && !this.awaitingWelcome,
+      documentId: () => this.documentId,
+    });
+    const paragraphReader = wasmParagraphReader(deps.wasm);
+    this.tasteSignals = new TasteSignalCollector({
+      pending: this.pendingEdits,
+      eventBus: deps.eventBus,
+      reader: paragraphReader,
+      caret: () => (this.view ? this.editor.getCursorPosition() : null),
+      turnContext: () => ({ threadId: this.turnThreadId ?? this.threadId, turnId: this.activeProviderTurnId }),
+      documentInstance: () => deps.wasm.documentInstance,
+      history: () => deps.undoHistory?.() ?? null,
+      emit: (signals, context) => this.reviewSignals.push({ ...context, documentId: this.documentId }, signals),
+      observer: provenanceObserver(sharedProvenanceLog(), () => this.documentId, {
+        reader: paragraphReader,
+        recording: () => tasteLearningEnabled === true,
+      }),
+    });
+    this.documentTurnRunning = deps.documentTurnRunning;
+    this.tasteHistory = new TasteHistoryMiner({
+      log: sharedProvenanceLog(),
+      reader: paragraphReader,
+      documentId: () => this.documentId,
+      send: (documentId, pairs, options) => this.request<TasteHistoryResult>({
+        type: 'taste-history-learn',
+        documentId,
+        ...(pairs.length ? { pairs } : {}),
+        ...(options.chats.length ? { chats: options.chats } : {}),
+        ...(options.auto ? { auto: true } : {}),
+        ...this.documentMemoryIdentityFields(documentId),
+      }, 'taste-history', TASTE_HISTORY_TIMEOUT_MS),
+      blocked: () => this.historyBlocker(),
+      revision: () => this.revision.revision,
+      chats: (documentId) => documentChatTurns(documentId, MAX_HISTORY_CHATS),
+    });
+    this.tasteHistoryAuto = new AutoHistoryTrigger({
+      openKey: () => (this.documentId && deps.wasm.hasLoadedDocument?.() ? `${this.documentId}#${deps.wasm.documentInstance}` : null),
+      ready: () => this.state === 'connected' && !this.awaitingWelcome,
+      blocked: () => this.historyBlocker() !== null,
+      enabled: async () => (await this.requestTasteSettings())?.enabled === true,
+      run: async () => (await this.runTasteHistory({ auto: true })).status,
     });
     this.ownPendingReview = deps.foreignDocuments?.ownPendingReview;
     this.executor = new AgentToolExecutor({
@@ -1879,6 +2043,9 @@ export class AgentBridgeImpl implements AgentBridge {
       deps.eventBus.on('document-changed', () => this.markUserDocumentEdit()),
       deps.eventBus.on('document-mutated', () => this.markUserDocumentEdit()),
       deps.eventBus.on('document-saved', () => this.notifyPlanningDocumentSaved()),
+      // 같은 문서를 다시 열어도(같은 documentId) 새 열기다 — 기록에서 배우기를 한 번 더 본다.
+      deps.eventBus.on('document-swapped', () => this.tasteHistoryAuto?.noteDocument()),
+      deps.eventBus.on('document-context-changed', () => this.tasteHistoryAuto?.noteDocument()),
     );
     window.addEventListener('focus', this.onResume);
     window.addEventListener('online', this.onResume);
@@ -1940,6 +2107,18 @@ export class AgentBridgeImpl implements AgentBridge {
   noteDocumentRestored(threadId: string = this.threadId, stillApplies?: () => boolean): void {
     this.restoredNotice = { threadId, ...(stillApplies ? { stillApplies } : {}) };
     this.restoredNoticeInFlight = null;
+  }
+
+  noteTurnKey(threadId: string, key: string | null): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnKey(threadId, key);
+  }
+
+  noteTurnKeyRebound(threadId: string, fromKey: string, toKey: string | null): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnKeyRebound(threadId, fromKey, toKey);
+  }
+
+  noteTurnRestored(threadId: string, key: string): void {
+    if (!this.disposed) this.tasteSignals?.noteTurnRestored(threadId, key);
   }
 
   holdsDocumentWrites(): boolean {
@@ -2459,7 +2638,7 @@ export class AgentBridgeImpl implements AgentBridge {
       await Promise.allSettled(earlierWrites);
       // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
       this.pendingEdits.commitOpen();
-      await versionCommit(message);
+      await versionCommit(message, { agent: this.activeAgent, threadId: this.turnThreadId ?? this.threadId });
     })();
     this.versionCommitInFlight = commit;
     try {
@@ -2912,6 +3091,12 @@ export class AgentBridgeImpl implements AgentBridge {
         // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
         this.reconnectAttempt = 0;
         this.awaitingWelcome = false;
+        // 끊긴 동안 기억이 바뀌었을 수 있다 — 세션 문서가 정해진 뒤 다시 읽는다.
+        queueMicrotask(() => {
+          this.loadDocumentMemory(true);
+          this.tasteHistoryAuto?.noteDocument();
+        });
+        this.reviewSignals?.noteConnected();
         // 허브 프로세스가 바뀌었는지는 앞 welcome 의 id 와 견준다 — 아래 일찍 돌아가는 갈래에서도 갱신한다.
         const previousHubInstanceId = this.hubInstanceId ?? null;
         this.hubShuttingDown = false;
@@ -3254,6 +3439,10 @@ export class AgentBridgeImpl implements AgentBridge {
         // 마지막 startChat 이 고른 정체성을 절대 덮어쓰지 않는다.
         if (typeof msg.threadId === 'string' && this.threadId && msg.threadId !== this.threadId) break;
         const replacedSession = this.pendingChatStart !== null;
+        // 시작 요청을 보낸 뒤 바뀐 문서 이름(renameDocument)은 허브가 되돌려 준 옛 이름보다 새롭다.
+        const requestedDocumentName = this.pendingChatStart?.documentId === msg.documentId
+          ? this.pendingChatStart?.documentName ?? null
+          : null;
         this.pendingChatStart = null;
         this.chatStartSent = false;
         // chat-started 는 세션의 템플릿을 싣지 않는다 — 다음 선택은 그대로 보낸다. 새 세션에는 사용자의 선택이
@@ -3274,9 +3463,10 @@ export class AgentBridgeImpl implements AgentBridge {
         if (msg.serviceTier === 'fast' || msg.serviceTier === 'standard') this.serviceTier = msg.serviceTier;
         if (typeof msg.threadId === 'string') this.threadId = msg.threadId;
         if (typeof msg.documentId === 'string' || msg.documentId === null) this.documentId = msg.documentId;
-        if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = msg.documentName;
+        if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = requestedDocumentName ?? msg.documentName;
         this.syncChatPermissions(msg);
         this.syncProjectWorktreeContext();
+        this.loadDocumentMemory();
         if (this.projectBindPending) {
           this.projectBindPending = false;
           this.sendProjectBind();
@@ -3479,6 +3669,41 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.draftId === 'string' && outcome) {
           this.emit({ type: 'agent-instructions-draft-cleared', draftId: msg.draftId, outcome });
         }
+        break;
+      }
+      case 'document-memory-result': {
+        if (typeof msg.requestId !== 'string') break;
+        const result = readDocumentMemoryResult(msg);
+        this.requests.settle(msg.requestId, result);
+        break;
+      }
+      case 'taste-learned': {
+        const learned = readTasteLearned(msg);
+        if (learned) this.emit({ type: 'taste-learned', ...learned });
+        break;
+      }
+      case 'taste-undo-result': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readTasteUndoResult(msg));
+        break;
+      }
+      case 'taste-history-result': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readTasteHistoryResult(msg));
+        break;
+      }
+      case 'taste-settings': {
+        const settings = msg.ok === false ? null : readTasteSettings(msg.settings);
+        if (settings) noteTasteLearning(settings.enabled);
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, settings);
+        if (settings) this.emit({ type: 'taste-settings', settings });
+        break;
+      }
+      case 'document-memory-changed': {
+        if (typeof msg.documentId !== 'string' || typeof msg.key !== 'string' || !Number.isSafeInteger(msg.revision)) break;
+        const cached = this.documentMemory;
+        const mine = msg.documentId === this.documentId || cached?.memory.key === msg.key;
+        if (!mine) break;
+        if (!cached || cached.memory.revision !== msg.revision) this.loadDocumentMemory(true);
+        this.emit({ type: 'document-memory-changed', documentId: msg.documentId, key: msg.key, revision: msg.revision });
         break;
       }
       case 'agent-instructions-error': {
@@ -4006,6 +4231,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 보낸 메시지가 연 턴만 '다시 시도' 로 같은 요청을 다시 보낼 수 있다 — 허브가 연 턴은 아니다.
         this.turnFailures().beginTurn(typeof event.turnId === 'string' ? event.turnId : null, this.messageAwaitingTurn);
         this.turnWroteDocument = false;
+        // 앞 턴의 글을 고친 흔적은 지금 내고, 새 턴의 글부터 다시 지켜본다.
+        this.tasteSignals?.noteTurnStart();
         // 끝을 듣지 못한 앞 턴이 다른 스레드의 것이면 그 기록을 닫는다 (같은 스레드는 저장소가 닫는다).
         if (this.turnThreadId !== null && this.turnThreadId !== this.threadId) this.endTurnCheckpoint(this.turnThreadId);
         this.turnThreadId = this.threadId;
@@ -4039,6 +4266,7 @@ export class AgentBridgeImpl implements AgentBridge {
         this.restoredNoticeInFlight = null;
         this.turnRunning = false;
         this.messageAwaitingTurn = false;
+        queueMicrotask(() => this.tasteHistoryAuto?.noteTurnEnded());
         this.activeProviderTurnId = null;
         this.abortProviderToolRequests(eventTurnId ?? undefined);
         const disposition = turnEndDisposition(event, this.workflow === 'question' ? 'safe' : this.permissionProfile, this.turnHadError);
@@ -4821,6 +5049,7 @@ export class AgentBridgeImpl implements AgentBridge {
       type: 'chat-start',
       ...pending,
       ...this.projectRepositoryFields(pending.documentId),
+      ...this.documentSourceFields(pending.documentId),
     });
   }
 
@@ -4842,6 +5071,20 @@ export class AgentBridgeImpl implements AgentBridge {
     this.sendProjectBind();
   }
 
+  renameDocument(documentId: string, documentName: string): void {
+    const pending = this.pendingChatStart;
+    if ((pending?.documentId ?? this.documentId) !== documentId) return;
+    if ((pending?.documentName ?? this.documentName) === documentName) return;
+    if (pending) pending.documentName = documentName;
+    if (this.documentId === documentId) this.documentName = documentName;
+    // 보낸 시작 요청은 옛 이름을 실었다 — 그 답 뒤에 다시 묶는다. 아직 보내지 않았으면 시작 요청이 싣고 간다.
+    if (pending && this.chatStartSent) {
+      this.projectBindPending = true;
+      return;
+    }
+    this.sendProjectBind();
+  }
+
   /** 화면이 보는 작업 공간: 이 채팅 문서(초안이면 세션 문서)의 묶음만. */
   private syncProjectWorktreeContext(): void {
     const binding = this.projectWorktreeBinding;
@@ -4854,6 +5097,19 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       : null;
     this.projects?.worktrees?.set(visible);
+  }
+
+  /**
+   * 지금 문서의 원본 digest·파일 이름 — 허브가 다시 발급된 documentId 에 같은 기억을 복사해 준다.
+   * 파일에서 연 문서만 싣는다. 새 문서·템플릿 문서는 바이트와 이름이 서로 같아 정체성이 아니다.
+   */
+  private documentSourceFields(documentId: string | null): Record<string, unknown> {
+    if (!documentId || documentId !== this.documentId || this.documentEngine?.openedFromFile !== true) return {};
+    const { digest, fileName } = this.documentSourceIdentity();
+    return {
+      ...(digest ? { documentDigest: digest } : {}),
+      ...(fileName ? { documentFileName: fileName } : {}),
+    };
   }
 
   private projectRepositoryFields(documentId: string | null): Record<string, unknown> {
@@ -4910,6 +5166,7 @@ export class AgentBridgeImpl implements AgentBridge {
     }
     // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
     const built = this.buildTurnSnapshot();
+    const anchorCheck = this.memoryAnchorCheckFor(message.context.documentId);
     const notice = this.restoredNoticeFor(message);
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
@@ -4925,6 +5182,8 @@ export class AgentBridgeImpl implements AgentBridge {
       ...(message.documentMentions?.length ? { documentMentions: message.documentMentions } : {}),
       ...(message.requireAcceptance ? { requireAcceptance: true } : {}),
       ...(built ? { documentSnapshot: built.snapshot } : {}),
+      ...(anchorCheck ? { memoryAnchorRevision: anchorCheck.revision } : {}),
+      ...(anchorCheck?.missing.length ? { memoryMissingAnchors: anchorCheck.missing } : {}),
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
@@ -5475,6 +5734,160 @@ export class AgentBridgeImpl implements AgentBridge {
     ).then((result) => result === true);
   }
 
+  listDocumentMemory(documentId: string | null = this.documentId): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({ op: 'list' }, documentId);
+  }
+
+  applyDocumentMemory(
+    ops: DocumentMemoryOp[],
+    options: { expectedRevision?: number; documentId?: string | null } = {},
+  ): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({
+      op: 'apply',
+      ops,
+      ...(options.expectedRevision !== undefined ? { expectedRevision: options.expectedRevision } : {}),
+    }, options.documentId === undefined ? this.documentId : options.documentId);
+  }
+
+  revertDocumentMemory(
+    changes: DocumentMemoryChange[],
+    documentId: string | null = this.documentId,
+  ): Promise<DocumentMemoryResult | null> {
+    return this.documentMemoryRequest({ op: 'revert', changes }, documentId);
+  }
+
+  missingDocumentMemoryAnchors(entries: readonly DocumentMemoryEntry[]): string[] {
+    const engine = this.documentEngine;
+    if (!engine) return [];
+    // 검색은 문서 전체(표 칸 포함)의 일치를 모두 모은다 — 같은 문서 상태에서는 인용마다 한 번만 찾는다.
+    const documentState = `${engine.documentInstance}:${engine.documentGeneration}:${this.revision.revision}`;
+    if (this.anchorSearchCache?.documentState !== documentState) {
+      this.anchorSearchCache = { documentState, found: new Map() };
+    }
+    const cache = this.anchorSearchCache.found;
+    return missingAnchorIds(entries, (quote) => {
+      const known = cache.get(quote);
+      if (known !== undefined) return known;
+      const found = engine.searchText(quote, 0, 0, 0, true, true).found === true;
+      cache.set(quote, found);
+      return found;
+    });
+  }
+
+  requestTasteSettings(): Promise<TasteSettings | null> {
+    return this.request<TasteSettings>({ type: 'taste-settings-request' }, 'taste-settings');
+  }
+
+  setTasteSettings(patch: Partial<TasteSettings>): Promise<TasteSettings | null> {
+    return this.request<TasteSettings>({ type: 'taste-settings-set', ...patch }, 'taste-settings-set');
+  }
+
+  undoTaste(input: {
+    learnId: string;
+    learnIds?: string[];
+    documentId: string;
+    key: string;
+    changes: unknown[];
+    entryId?: string;
+  }): Promise<TasteUndoResult | null> {
+    return this.request<TasteUndoResult>({
+      type: 'taste-undo',
+      learnId: input.learnId,
+      ...(input.learnIds?.length ? { learnIds: input.learnIds } : {}),
+      documentId: input.documentId,
+      key: input.key,
+      changes: input.changes,
+      ...(input.entryId ? { entryId: input.entryId } : {}),
+    }, 'taste-undo');
+  }
+
+  learnFromHistory(): Promise<TasteHistoryOutcome> {
+    return this.runTasteHistory({ auto: false });
+  }
+
+  /** 같은 문서의 모든 채팅을 본다 — 미리보기로 들어간 에이전트 글을 사용자 고침으로 읽지 않게. */
+  private historyBlocker(): HistoryBlocker {
+    if (this.pendingEdits.hasPending() || this.ownPendingReview?.()) return 'review';
+    if (this.turnRunning || this.messageAwaitingTurn || this.documentTurnRunning?.()) return 'turn';
+    return null;
+  }
+
+  /** 기록에서 배우기 한 번. 기억이 바뀌었으면 taste-history-learned 를 낸다 (구분선은 사이드바가 고른 채팅에). */
+  private async runTasteHistory(options: { auto: boolean }): Promise<TasteHistoryOutcome> {
+    const outcome = await this.tasteHistory.run(options).catch((error): TasteHistoryOutcome => {
+      console.warn('[taste-history] run failed:', error);
+      return { status: 'failed', code: 'TASTE_HISTORY_FAILED' };
+    });
+    if (outcome.status === 'learned' && outcome.result.items.length > 0 && !this.disposed) {
+      const { learnId, key, items, changes } = outcome.result;
+      this.emit({ type: 'taste-history-learned', documentId: outcome.documentId, learnId, key, items, changes });
+    }
+    return outcome;
+  }
+
+  /**
+   * 지금 문서 원본의 digest·파일 이름 — 허브가 다시 발급된 documentId 를 같은 기억에 다시 묶는다.
+   * 이름 없는 새 문서는 모두 같은 빈 문서 digest·이름이라 보내지 않는다 — 보내면 새 문서끼리 기억을 나눈다.
+   */
+  private documentSourceIdentity(): { digest: string | null; fileName: string | null } {
+    const engine = this.documentEngine;
+    return { digest: engine?.documentDigest ?? null, fileName: engine?.fileName ?? null };
+  }
+
+  private documentMemoryRequest(
+    payload: Record<string, unknown>,
+    documentId: string | null,
+  ): Promise<DocumentMemoryResult | null> {
+    if (!documentId) return Promise.resolve(null);
+    return this.request<DocumentMemoryResult>(
+      {
+        type: 'document-memory-request',
+        ...payload,
+        documentId,
+        ...this.documentMemoryIdentityFields(documentId),
+      },
+      'document-memory',
+    ).then((result) => {
+      // 지금 문서의 결과면 앵커 확인에 쓰는 한 벌도 바꾼다.
+      if (result?.memory && documentId === this.documentId) this.documentMemory = { documentId, memory: result.memory };
+      return result;
+    });
+  }
+
+  /** 허브가 기억 키를 고르는 데 쓰는 정체성: 작업 공간 저장소와, 지금 문서면 원본 digest·파일 이름. */
+  private documentMemoryIdentityFields(documentId: string | null): Record<string, unknown> {
+    const binding = this.projectWorktreeBinding;
+    return {
+      ...(documentId && binding?.documentId === documentId ? { repositoryId: binding.repositoryId } : {}),
+      ...this.documentSourceFields(documentId),
+    };
+  }
+
+  /** 이 채팅 문서의 기억을 (다시) 읽어 둔다. force 가 아니면 이미 그 문서의 것이 있을 때 건너뛴다. */
+  private loadDocumentMemory(force = false): void {
+    const documentId = this.documentId;
+    if (!documentId || !this.documentEngine || this.state !== 'connected' || this.awaitingWelcome) return;
+    if (!force && (this.documentMemory?.documentId === documentId || this.documentMemoryLoading === documentId)) return;
+    this.documentMemoryLoading = documentId;
+    void this.listDocumentMemory(documentId).finally(() => {
+      if (this.documentMemoryLoading === documentId) this.documentMemoryLoading = null;
+    });
+  }
+
+  /**
+   * 보낼 메시지에 실을 앵커 확인 — 확인한 기억 리비전과 문서에서 사라진 앵커의 기억 id. 그 문서의 기억을
+   * 아직 모르면 null 이고, 허브는 확인되지 않은 매인 항목을 이번 턴에 싣지 않는다.
+   */
+  private memoryAnchorCheckFor(documentId: string | null): { revision: number; missing: string[] } | null {
+    const cached = this.documentMemory;
+    if (!documentId || cached?.documentId !== documentId) {
+      this.loadDocumentMemory();
+      return null;
+    }
+    const anchored = cached.memory.entries.filter((entry) => entry.anchor);
+    return { revision: cached.memory.revision, missing: anchored.length ? this.missingDocumentMemoryAnchors(anchored) : [] };
+  }
+
   requestWritingStyleCatalog(refresh = false): Promise<WritingStyleCatalog | null> {
     return this.request<WritingStyleCatalog>(
       { type: 'writing-style-catalog-request', ...(refresh ? { refresh: true } : {}) },
@@ -5770,9 +6183,9 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.onEvent((event) => { if (event.type === 'browser-event') handler(event.event); });
   }
 
-  requestPiCatalog(refresh = false): Promise<PiCatalogModel[] | null> {
+  requestPiCatalog(refresh = false, options: { own?: boolean } = {}): Promise<PiCatalogModel[] | null> {
     return this.request<PiCatalogModel[]>(
-      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}) },
+      { type: 'pi-catalog-request', ...(refresh ? { refresh: true } : {}), ...(options.own ? { own: true } : {}) },
       'pi-catalog',
       30_000,
     );
@@ -5830,6 +6243,9 @@ export class AgentBridgeImpl implements AgentBridge {
       && (this.activeAgent !== null || this.pendingChatStart !== null || this.turnRunning)) {
       this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
     }
+    // 소켓이 아직 열려 있을 때 고친 문단과 모아 둔 취향 신호를 보낸다.
+    this.tasteSignals?.flush();
+    this.reviewSignals?.flush();
     this.disposed = true;
     this.unsubscribeEditLock();
     if (this.documentWriteHoldTimer !== null) clearTimeout(this.documentWriteHoldTimer);
@@ -5873,6 +6289,9 @@ export class AgentBridgeImpl implements AgentBridge {
     this.checkpointSetIds.clear();
     this.pendingChangeUnsub?.();
     this.pendingChangeUnsub = null;
+    this.tasteSignals?.dispose();
+    this.reviewSignals?.dispose();
+    this.tasteHistoryAuto?.dispose();
     for (const off of this.documentNotifyUnsubs) off();
     this.documentNotifyUnsubs = [];
     this.editFollow.dispose();

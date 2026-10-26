@@ -84,6 +84,34 @@ function chromeBottom(): number {
   return Math.max(0, Math.round(bottom));
 }
 
+function placeContainer(container: HTMLElement): void {
+  container.style.top = `${chromeBottom() + CHROME_GAP_PX}px`;
+}
+
+/**
+ * 토스트가 떠 있는 동안 홈이 닫히거나 도구 모음 높이가 바뀌면 크롬 아래로 다시 옮긴다.
+ * 홈에서 띄운 토스트가 편집 화면의 도구 모음을 덮은 채 남지 않게 한다.
+ */
+function followChrome(container: HTMLElement): void {
+  let frame = 0;
+  const schedule = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (container.childElementCount > 0) placeContainer(container);
+    });
+  };
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(schedule).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+  }
+  const header = document.getElementById('studio-header');
+  if (header && typeof ResizeObserver !== 'undefined') new ResizeObserver(schedule).observe(header);
+  window.addEventListener('resize', schedule);
+}
+
 function ensureContainer(): HTMLElement {
   let container = document.getElementById(CONTAINER_ID);
   if (!container) {
@@ -91,8 +119,9 @@ function ensureContainer(): HTMLElement {
     container.id = CONTAINER_ID;
     container.className = 'rhwp-toast-stack';
     document.body.appendChild(container);
+    followChrome(container);
   }
-  container.style.top = `${chromeBottom() + CHROME_GAP_PX}px`;
+  placeContainer(container);
   return container;
 }
 

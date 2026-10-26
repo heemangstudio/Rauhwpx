@@ -16,6 +16,7 @@ import type { OperationDescriptor } from '../engine/command.ts';
 import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 import type { TurnCheckpointPort } from './turn-checkpoints.ts';
+import type { TasteUndoHistory } from './taste-signals.ts';
 import type { ForeignDocumentAccess } from './foreign-documents.ts';
 import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
@@ -334,6 +335,135 @@ export interface AgentInstructionsDraft {
   expiresAt: string;
   /** Studio만 받는 단기·일회용 승인 capability. */
   confirmationToken: string;
+  /** 초안을 만든 채팅. 대화 흐름의 승인 카드가 이 채팅에 뜬다. */
+  threadId: string | null;
+  /** agent = 에이전트의 update_agent_instructions, rau = Rau-0.1 의 취향 제안. */
+  origin: 'agent' | 'rau';
+}
+
+/** 문서 기억 항목의 종류 — 결정·용어·보호·문체·사실. */
+export type DocumentMemoryKind = 'decision' | 'term' | 'protect' | 'style' | 'fact';
+
+/** 문서 하나에 붙는 지속 메모. 허브(document-memory-store.mjs)가 정본이다. */
+export interface DocumentMemoryEntry {
+  id: string;
+  kind: DocumentMemoryKind;
+  /** 문서 안에서 하나뿐인 주제 키 (예: '문체.종결'). */
+  subject: string;
+  text: string;
+  /** 문서의 특정 글에 매인 메모. 그 글이 문서에서 사라지면 에이전트에게 보내지 않는다. */
+  anchor?: { quote: string; paraIdx?: number };
+  /** explicit: 사용자 요청으로 에이전트가 기록 · learned: 자동 학습 · user: 문서 기억 시트에서 고침. */
+  origin: 'explicit' | 'learned' | 'user';
+  /** kind 'copy' 는 같은 바이트의 다른 문서에서 복사해 온 기억이다. */
+  source?: { threadId?: string; turnId?: string; kind?: 'turn' | 'signal' | 'history' | 'copy' };
+  evidence: number;
+  userCandidate?: boolean;
+  promoted?: boolean;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt: string;
+}
+
+export interface DocumentMemory {
+  key: string;
+  revision: number;
+  entries: DocumentMemoryEntry[];
+}
+
+export type DocumentMemoryOp =
+  /** subject 를 생략하면 허브가 종류와 글로 만든다. 같은 주제가 있으면 그 항목을 고친다. */
+  | { op: 'add'; kind: DocumentMemoryKind; subject?: string; text: string; anchor?: DocumentMemoryEntry['anchor']; userCandidate?: boolean }
+  | {
+    op: 'update';
+    id: string;
+    kind?: DocumentMemoryKind;
+    subject?: string;
+    text?: string;
+    /** null 이면 매인 글을 뗀다. */
+    anchor?: DocumentMemoryEntry['anchor'] | null;
+    userCandidate?: boolean;
+  }
+  | { op: 'remove'; id: string };
+
+/** apply 한 번의 결과 하나. revert 가 그대로 받는다. */
+export interface DocumentMemoryChange {
+  op: 'add' | 'update' | 'remove';
+  entryId: string;
+  entry?: DocumentMemoryEntry;
+  prev?: DocumentMemoryEntry;
+}
+
+export interface DocumentMemoryResult {
+  ok: boolean;
+  memory?: DocumentMemory;
+  changes?: DocumentMemoryChange[];
+  /** revert 만 채운다. */
+  reverted?: string[];
+  skipped?: string[];
+  error?: { code: string; message: string };
+}
+
+/** 취향 학습(Rau-0.1)이 한 번에 바꾼 기억 하나. remove 의 text 는 지운 글이다. */
+export interface TasteLearnItem {
+  op: 'add' | 'update' | 'remove';
+  entryId: string;
+  text: string;
+  /** update 에서 글이 바뀌었을 때만. */
+  prevText?: string;
+  origin: 'explicit' | 'learned';
+}
+
+/** 허브 → Studio `taste-learned`. 학습 한 번(턴 끝 또는 신호)에서 기억이 바뀌었을 때만 온다. */
+export interface TasteLearned {
+  threadId: string;
+  /** ThreadTurnMessage.hubTurnId 와 같은 허브 턴 id. 모르면 null. */
+  turnId: string | null;
+  documentId: string;
+  /** 문서 기억 키 — 되돌리기에 그대로 돌려보낸다. */
+  key: string;
+  learnId: string;
+  items: TasteLearnItem[];
+  /** 저장소 변경 목록. Studio 는 읽지 않고 그대로 저장했다가 되돌리기에 보낸다. */
+  changes: unknown[];
+  /** 이번 학습이 AGENTS.md 변경안을 냈다(설정 → AI → 지시의 확인 카드). */
+  proposal?: { draftId: string };
+}
+
+/** 기록에서 배우기의 결과 — 턴에 묶이지 않는다. 채팅의 끝에 구분선으로 남는다. */
+export type TasteHistoryLearned = Pick<TasteLearned, 'documentId' | 'key' | 'learnId' | 'items' | 'changes'>;
+
+export interface TasteUndoResult {
+  ok: boolean;
+  learnId: string;
+  reverted: string[];
+  /** 그새 바뀌었거나 되살릴 수 없는 항목 — 더는 되돌릴 수 없다. */
+  skipped: string[];
+  error?: { code: string; message: string };
+}
+
+/** 학습기 공급자 — auto 는 허브의 기본 차례, pi 는 사용자의 OpenRouter 키. */
+export type TasteProvider = 'auto' | 'claude' | 'codex' | 'pi';
+
+export interface TasteSettings {
+  enabled: boolean;
+  provider: TasteProvider;
+  /** null 이면 그 공급자의 기본 모델. 자동이면 늘 null. */
+  model: string | null;
+  effort: string | null;
+}
+
+/** 허브 → Studio `taste-history-result`. 기록에서 배우기 한 번의 결과 (기억이 그대로여도 ok). */
+export interface TasteHistoryResult {
+  ok: boolean;
+  learnId: string;
+  key: string;
+  items: TasteLearnItem[];
+  /** 저장소 변경 목록 — 되돌리기(taste-undo)에 그대로 보낸다. */
+  changes: unknown[];
+  /** 허브가 학습기에 넘긴 짝의 번호 (보낸 pairs 기준) — 이 짝만 '이미 보냄'으로 남긴다. */
+  accepted: number[];
+  error?: { code: string; message: string };
 }
 
 export interface StructuredPlanStep {
@@ -1175,6 +1305,14 @@ export type SidebarEvent =
   | { type: 'agent-instructions-draft'; draft: AgentInstructionsDraft }
   | { type: 'agent-instructions-draft-cleared'; draftId: string; outcome: 'confirmed' | 'rejected' | 'expired' | 'replaced' | 'stale' }
   | { type: 'agent-instructions-error'; code: string; message: string; status?: AgentInstructionsStatus }
+  /** 이 문서(또는 같은 기억을 나누는 작업 공간 사본)의 문서 기억이 바뀌었다 — 도구·시트·학습·되돌리기 모두. */
+  | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
+  /** 취향 학습이 이 채팅의 대화에서 기억을 바꿨다. 턴이 끝난 뒤, 흔히 다른 채팅을 보는 중에 온다. */
+  | ({ type: 'taste-learned' } & TasteLearned)
+  /** 취향 학습 설정 — 요청의 답이거나 다른 창에서 바꾼 알림. */
+  | { type: 'taste-settings'; settings: TasteSettings }
+  /** 기록에서 배우기가 이 문서의 기억을 바꿨다 (문서를 연 뒤 자동으로, 또는 문서 기억 시트에서). */
+  | ({ type: 'taste-history-learned' } & TasteHistoryLearned)
   | { type: 'chat-template-changed'; template: DocumentTemplate | null; reason?: string }
   | { type: 'permission-changed'; permissionProfile: PermissionProfile }
   | { type: 'service-tier-changed'; serviceTier: ServiceTier }
@@ -1318,8 +1456,10 @@ export interface AgentBridgeDeps {
   isReadOnly?: () => boolean;
   /** 같은 이름의 작업 트리 사본이 있을 때 이 문서의 가지. 하나뿐이면 null. */
   getDocumentWorktree?: () => { branch: string; primary: boolean } | null;
-  /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
-  commitVersion?: (message: string) => Promise<void>;
+  /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 에이전트 이름으로 남긴다. */
+  commitVersion?: (message: string, author: { agent: AgentName | null; threadId: string }) => Promise<void>;
+  /** 이 문서의 어느 채팅이든 에이전트가 일하는 중인가 — 기록에서 배우기가 그동안 돌지 않는다. */
+  documentTurnRunning?: () => boolean;
   /**
    * 쓰기 도구가 문서에 닿기 직전에 이 채팅이 문서를 고칠 자리를 요구한다. 같은 문서의 다른
    * 채팅이 고치는 중이면 false 이고, 그 쓰기는 DOCUMENT_WRITER_BUSY 로 거절된다. 없으면
@@ -1331,6 +1471,8 @@ export interface AgentBridgeDeps {
    * 검토 set 의 승인·거절과 턴 끝을 알린다. 없으면 체크포인트를 남기지 않는다.
    */
   turnCheckpoints?: TurnCheckpointPort;
+  /** 이 문서의 실행 취소 기록 — 에이전트 적용을 실행 취소했는지 취향 신호가 본다. */
+  undoHistory?: () => TasteUndoHistory | null;
   /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
   editor: AgentEditorHost;
   /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
@@ -1902,6 +2044,28 @@ export type PendingEditsChangeEvent =
       /** 거절/무효화로 되돌리지 못해 문서에 남은 op 인가 (승인은 false — 전부 반영됨) */
       leftInDocument?: boolean;
     };
+
+/**
+ * 취향 학습 신호 — 사용자가 에이전트의 글을 어떻게 다뤘는가 (chat-review-signal 프레임).
+ * accepted·rejected 는 검토 결과, rewritten 은 사용자가 고쳐 쓴 에이전트 글, undone 은 되돌린 턴,
+ * history 는 버전 기록에서 찾은 짝이다. 글은 모두 600자 이하로 잘라 보낸다.
+ */
+export type ReviewSignalKind = 'accepted' | 'rejected' | 'rewritten' | 'undone' | 'history';
+
+export interface ReviewSignal {
+  kind: ReviewSignalKind;
+  /** ISO 시각 */
+  at: string;
+  /** 에이전트가 바꾼 원래 문서 글 */
+  before?: string;
+  /** 에이전트가 제안하거나 쓴 글 */
+  after?: string;
+  /** rewritten·history: 사용자가 에이전트 글을 고친 결과 */
+  userText?: string;
+  /** 본문 문단 번호 (셀 안 문단은 생략) */
+  paraIdx?: number;
+  turnId?: string;
+}
 
 // ── 연구 프로젝트 ──────────────────────────────────────────
 // 허브 project-store 의 스냅샷·편집 연산·설정과 같은 모양이다 (/tmp/rp/CONTRACT.md).

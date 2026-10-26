@@ -12,9 +12,9 @@
   position: absolute;
   right: 0;
   bottom: 0;
-  /* 팻말이 올라설 자리까지만 덮는다. 밖은 가장자리 밑이라 잘린다. */
+  /* 긴 진행 팻말도 홈 안에서 보이고, 가장자리 아래로 숨는 동작만 잘린다. */
   width: 264px;
-  height: 216px;
+  height: 100%;
   overflow: hidden;
   z-index: 3;
   pointer-events: none;
@@ -208,4 +208,20 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* 프로바이더 알림은 문서 홈에서만 창 가장자리에 붙는다. */
+.uh.uh-provider {
+  position: fixed;
+  z-index: 1190;
+  --dh-raised: var(--n-surface-raised, #ffffff);
+  --dh-text: var(--n-text, #171b22);
+  --dh-ink: var(--n-text, #171b22);
+  --dh-text-secondary: var(--n-text-secondary, #424a55);
+  --dh-hairline-strong: var(--theme-hairline-strong, #c4cad3);
+  --dh-hover: var(--n-fill-hover, rgba(23, 27, 34, 0.06));
+}
+
+:root:not(.document-home-open) .uh-provider {
+  display: none;
 }

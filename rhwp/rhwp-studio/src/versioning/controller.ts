@@ -151,7 +151,7 @@ interface CreateCheckpointOptions {
   allowSameContent?: boolean;
   parents?: readonly [CommitId] | readonly [CommitId, CommitId];
   lastSaved?: boolean;
-  author?: { kind: 'user' | 'system' | 'agent'; label: string };
+  author?: import('./types.ts').VersionAuthor;
   merge?: import('./types.ts').VersionMergeMetadata;
   onPersisted?: () => void;
 }
@@ -683,9 +683,12 @@ export class DocumentVersionController implements VersionManagerController {
    * 명시적 커밋. agentTurn 은 전체 모드 에이전트가 자기 턴 안에서 부르는 commit_version 이다 —
    * 그 호출은 언제나 진행 중인 턴 안에 있으므로 '응답 중' 가드만 건너뛰고, 저장·병합·검토 대기·
    * 작업 공간 가드는 그대로 둔다. 쓰기 도구와의 순서는 브리지가 맞춘다(진행 중인 쓰기를 기다리고,
-   * 커밋하는 동안 새 쓰기를 붙잡는다).
+   * 커밋하는 동안 새 쓰기를 붙잡는다). agent 를 주면 그 에이전트가 남긴 커밋(reason 'agent')이다.
    */
-  async checkpoint(message?: string, options: { agentTurn?: boolean } = {}): Promise<void> {
+  async checkpoint(
+    message?: string,
+    options: { agentTurn?: boolean; agent?: { label: string; threadId?: string } } = {},
+  ): Promise<void> {
     const requestedDocumentId = this.#getDocumentId();
     const requestedEditorRevision = this.#editorRevision;
     const requestedRepositoryId = this.#repository?.id;
@@ -710,7 +713,13 @@ export class DocumentVersionController implements VersionManagerController {
       if (!requestIsCurrent()) {
         throw new VersionError('STALE_WORKSPACE', 'The workspace changed before checkpoint started');
       }
-      await this.#createCheckpoint({ reason: 'manual', message });
+      await this.#createCheckpoint(options.agent
+        ? {
+          reason: 'agent',
+          message,
+          author: { kind: 'agent', label: options.agent.label, ...(options.agent.threadId ? { threadId: options.agent.threadId } : {}) },
+        }
+        : { reason: 'manual', message });
     });
   }
 
@@ -3111,6 +3120,8 @@ export class DocumentVersionController implements VersionManagerController {
         parentLanes: graph?.edges.map((edge) => edge.toLane) ?? [],
         isHead: active?.target === commit.id,
         byteLength: blobLengths.get(commit.blobId) ?? 0,
+        author: { kind: commit.author.kind, label: commit.author.label },
+        ...(commit.author.kind === 'agent' && commit.author.threadId ? { threadId: commit.author.threadId } : {}),
         ...(commit.importedFrom?.fileName ?? commit.merge?.sourceFileName
           ? { sourceFileName: commit.importedFrom?.fileName ?? commit.merge?.sourceFileName }
           : {}),
@@ -3298,7 +3309,7 @@ export class DocumentVersionController implements VersionManagerController {
         await this.#refreshData(true);
         return null;
       }
-      if (options.reason === 'manual' && message) {
+      if ((options.reason === 'manual' || options.reason === 'agent') && message) {
         const name = tagForMessage(message, this.#refs);
         await this.#store.createTag({
           repositoryId: repository.id,
@@ -3311,7 +3322,7 @@ export class DocumentVersionController implements VersionManagerController {
         await this.#refreshData(true);
         return null;
       }
-      if (options.reason === 'manual') throw new VersionError('NO_CHANGES', '이미 커밋한 내용입니다.');
+      if (options.reason === 'manual' || options.reason === 'agent') throw new VersionError('NO_CHANGES', '이미 커밋한 내용입니다.');
       return null;
     }
     const before = await this.#store.getCompareSnapshot(head.compareSnapshotId);

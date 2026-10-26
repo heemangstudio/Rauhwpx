@@ -89,6 +89,28 @@ test('Claude recovers a missing streamed suffix and an unstreamed later message'
   assert.equal(turnEnds(events).length, 1);
 });
 
+test('Claude does not repeat text streamed after a thinking block', async (t) => {
+  // CLI 는 블록마다 assistant 이벤트를 따로 보낸다: 스트림 index 1 의 text 가 content[0] 으로 온다.
+  const events = [];
+  const { session, child } = startSession(events);
+  t.after(() => session.dispose());
+  await tick();
+  const text = '6번 절이 아직 3쪽에서 시작합니다. 2쪽 빈 공간이 남았는지 다시 확인합니다.';
+  child().emitJson(
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '...' } } },
+    { type: 'assistant', message: { id: 'm', content: [{ type: 'thinking', thinking: '...' }] } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text } } },
+    { type: 'assistant', message: { id: 'm', content: [{ type: 'text', text }] } },
+    { type: 'assistant', message: { id: 'm', content: [{ type: 'tool_use', id: 'call', name: 'Bash', input: {} }] } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 3, delta: { type: 'text_delta', text: '끝' } } },
+    { type: 'assistant', message: { id: 'm', content: [{ type: 'text', text: '끝.' }] } },
+    RESULT,
+  );
+  for (let i = 0; i < 20 && turnEnds(events).length === 0; i++) await tick();
+  assert.equal(events.filter((event) => event.type === 'text-delta').map((event) => event.text).join(''), `${text}끝.`);
+});
+
 test('Claude reconciles blocks and child scopes without suppressing tools sharing a message id', async (t) => {
   const events = [];
   const { session, child } = startSession(events);

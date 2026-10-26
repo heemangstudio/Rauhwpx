@@ -85,6 +85,8 @@ export class WasmBridge {
   get fileName(): string { return this.viewer.fileName; }
   set fileName(name: string) { this.viewer.fileName = name; }
   get documentDigest(): string | null { return this.viewer.documentDigest; }
+  /** 파일 바이트로 연 문서인가. 새 문서·서식 문서는 저장한 뒤에도 false 다. */
+  get openedFromFile(): boolean { return this.viewer.openedFromFile; }
   get currentFileHandle(): FileSystemFileHandleLike | null { return this.viewer.currentFileHandle; }
   set currentFileHandle(handle: FileSystemFileHandleLike | null) { this.viewer.currentFileHandle = handle; }
   get isNewDocument(): boolean { return isUntitledNewDocumentName(this.viewer.fileName); }
@@ -122,8 +124,8 @@ export class WasmBridge {
     return api.loadDocument(this.core, data, fileName);
   }
 
-  prepareDocument(data: Uint8Array, fileName?: string): PreparedWasmDocument {
-    return api.prepareDocument(this.core, data, fileName);
+  prepareDocument(data: Uint8Array, fileName?: string, options?: { openedFromFile?: boolean }): PreparedWasmDocument {
+    return api.prepareDocument(this.core, data, fileName, options);
   }
 
   adoptPreparedDocument(prepared: PreparedWasmDocument): DocumentInfo {

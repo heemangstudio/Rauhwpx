@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { NativeFileHandleRegistry } from '../desktop/native-file-handles.mjs';
+import { fingerprintNativeFile, NativeFileHandleRegistry } from '../desktop/native-file-handles.mjs';
 
 function scratch() {
   return mkdtempSync(join(tmpdir(), 'rhwp-home-'));
@@ -136,6 +137,65 @@ test('이 창에 열린 문서는 새 창 열기 대상이 아니다', async () 
     assert.equal(registry.ownsDocumentPath('window-1', 'doc-1'), true);
     assert.equal(registry.ownsDocumentPath('window-2', 'doc-1'), false);
     registry.releaseHandle('window-1', created.descriptor.handleId);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('열기가 끝나기 전에 창이 닫히면 그 창이 파일을 쥐지 않아 다른 창에서 열 수 있다', async () => {
+  const dir = scratch();
+  try {
+    const path = join(dir, '큰 문서.hwp');
+    writeFileSync(path, Buffer.from([1, 2, 3]));
+    let resume;
+    const hashing = new Promise((resolve) => { resume = resolve; });
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    let first = true;
+    const registry = new NativeFileHandleRegistry({
+      fingerprintImpl: async (filePath) => {
+        if (first) { first = false; entered(); await hashing; }
+        return fingerprintNativeFile(filePath);
+      },
+    });
+    const opening = registry.create('window-1', path);
+    await started;
+    registry.releaseSession('window-1');
+    resume();
+    await assert.rejects(opening);
+    assert.equal(await registry.ownerForPath(path), null);
+    const other = await registry.create('window-2', path);
+    assert.equal(other.ok, true);
+    // 크래시 뒤 같은 창이 다시 열면 열린다.
+    registry.releaseSession('window-2');
+    assert.equal((await registry.create('window-1', path)).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('기억한 문서를 다시 여는 사이 창이 닫히면 그 창이 파일을 쥐지 않는다', async () => {
+  const dir = scratch();
+  try {
+    const path = join(dir, '다시 열 문서.hwp');
+    writeFileSync(path, Buffer.from([1, 2, 3]));
+    let stall = null;
+    const registry = new NativeFileHandleRegistry({
+      statImpl: async (target, options) => {
+        if (stall && options?.bigint) { const wait = stall; stall = null; await wait; }
+        return stat(target, options);
+      },
+    });
+    await rememberIn(registry, path, 'doc-1');
+    let resume;
+    stall = new Promise((resolve) => { resume = resolve; });
+    const reopening = registry.reopenDocument('window-2', 'doc-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    registry.releaseSession('window-2');
+    resume();
+    await assert.rejects(reopening);
+    assert.equal(await registry.ownerForPath(path), null);
+    assert.equal((await registry.reopenDocument('window-3', 'doc-1')).ok, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

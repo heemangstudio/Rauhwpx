@@ -13,7 +13,9 @@ import { checkPiModels } from './pi-models.check.mjs';
 import { checkSelectMenu } from './select-menu.check.mjs';
 import { checkMarkdownEditor } from './markdown-editor.check.mjs';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
-import { checkInitialSetupUpdateToast } from './initial-setup-update.check.mjs';
+import { checkUpdateAll } from './update-all.check.mjs';
+import { checkProviderUpdates } from './provider-updates.check.mjs';
+import { checkInitialSetupUpdateHippo } from './initial-setup-update.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkWorktrees } from './worktrees.check.mjs';
@@ -33,6 +35,8 @@ import { checkDocumentMentions } from './document-mentions.check.mjs';
 import { checkDocumentLink } from './document-link.check.mjs';
 import { checkDocumentDetach } from './document-detach.check.mjs';
 import { checkDocumentNameWriter } from './document-name-writer.check.mjs';
+import { checkDocumentMemory } from './document-memory.check.mjs';
+import { checkInstructionsCard, checkTaste, checkTasteHistory } from './taste.check.mjs';
 import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
@@ -54,6 +58,10 @@ const focusedChecks = {
   'document-link': (h) => checkDocumentLink(h),
   'document-detach': (h) => checkDocumentDetach(h),
   'document-name-writer': (h) => checkDocumentNameWriter(h),
+  'document-memory': (h) => checkDocumentMemory(h),
+  taste: (h) => checkTaste(h),
+  'taste-history': (h) => checkTasteHistory(h),
+  'instructions-card': (h) => checkInstructionsCard(h),
   'scroll-rail': (h) => checkChatScrollRail(h),
   'focus-composer': async ({ page, open }) => {
     await open('reset=1&fullscreen=1');
@@ -123,7 +131,9 @@ const focusedChecks = {
   'select-menu': (h) => checkSelectMenu(h.page, h.origin),
   'markdown-editor': (h) => checkMarkdownEditor(h.page, h.origin, h.artifacts),
   'setup-terminal': (h) => checkSetupTerminal(h.page, h.origin),
-  'setup-update-toast': (h) => checkInitialSetupUpdateToast(h.page, h.origin),
+  'update-all': (h) => checkUpdateAll(h.page, h.origin),
+  'provider-updates': (h) => checkProviderUpdates(h.page, h.origin),
+  'setup-update-hippo': (h) => checkInitialSetupUpdateHippo(h.page, h.origin),
   'parallel-chats': async (h) => {
     await checkNewChatViewMode(h.page, h.origin);
     await checkDraftChat(h.page, h.origin);
@@ -217,6 +227,19 @@ try {
       await page.click('#play');
       await page.waitForFunction(() => window.sidebarPreview.bridge.isTurnRunning());
       await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning() && document.querySelector('.ag-msg-user'));
+    });
+    await step('Chat list stays clickable after the reference library closes', async () => {
+      await open('reset=1');
+      await page.click('.ag-references-btn');
+      await page.waitForSelector('.ag-root.ag-references-open');
+      await page.click('.ag-references-close');
+      await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-references-open'));
+      await page.click('.ag-header .ag-threads-btn');
+      await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-page', { visible: true });
+      await page.click('.ag-threads-page input');
+      await page.waitForFunction(() => document.activeElement?.closest('.ag-threads-page'), { timeout: 5000 });
+      await page.click('.ag-threads-page .ag-threads-close');
+      await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-threads-open'), { timeout: 5000 });
     });
     await step('Agent Focus panel opens a view from the surface list', async () => {
       await open('reset=1&fullscreen=1&width=400');

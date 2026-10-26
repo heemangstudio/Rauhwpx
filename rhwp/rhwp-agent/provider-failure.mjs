@@ -232,6 +232,11 @@ const PROVIDER_TEXT = /overloaded|\b5\d\d\b|server error|internal error|service 
 const CONTEXT_TEXT = /prompt is too long|context (?:length|window|limit)|maximum context/i;
 const MODEL_TEXT = /model\b.*\bnot (?:found|available)|model_not_found/i;
 const INVALID_TEXT = /invalid[_ ]request|\b40[04]\b|\b413\b/i;
+/**
+ * 프로바이더가 API 의 4xx 본문을 그대로 넘긴 문구 (Codex 0.164 는 codexErrorInfo 'other' 와 함께
+ * `{"type":"error","status":400,…}` 를 싣는다). 본문 속 숫자(input[512], 문서의 543)를 서버 오류로 읽지 않는다.
+ */
+const API_CLIENT_ERROR_TEXT = /"status"\s*:\s*4(?!29)\d\d\b|\binvalid_request_error\b/;
 /** 허브·어댑터가 직접 쓰는 정리 실패 문구 (영문 고정 문구). */
 const CLEANUP_TEXT = /cleanup (?:could not be confirmed|remains unconfirmed)|could not be confirmed stopped/i;
 const CLI_MISSING_TEXT = /\bENOENT\b|command not found|is not recognized as an internal or external command/i;
@@ -288,6 +293,9 @@ function textClass(text) {
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
   if (CLAUDE_TRANSIENT_429_TEXT.test(text)) return { class: 'provider_error', code: null };
   if (USAGE_TEXT.test(text)) return { class: 'usage_limit', code: null };
+  if (API_CLIENT_ERROR_TEXT.test(text)) {
+    return { class: 'invalid_request', code: MODEL_TEXT.test(text) ? 'model_not_found' : null };
+  }
   if (NETWORK_TEXT.test(text)) return { class: 'network', code: null };
   if (PROVIDER_TEXT.test(text)) return { class: 'provider_error', code: null };
   if (MODEL_TEXT.test(text)) return { class: 'invalid_request', code: 'model_not_found' };
@@ -385,7 +393,8 @@ export function classifyProviderFailure({ agent, message, hint = null, origin = 
     const matched = textClass(raw);
     if (matched) {
       failureClass = matched.class;
-      code ??= matched.code;
+      // Codex 'other' 는 이름이 없는 오류다 — 문구가 아는 이유(모델 없음 등)가 더 정확하다.
+      code = code === 'codex:other' ? matched.code ?? code : code ?? matched.code;
     }
   }
   if (!failureClass) {

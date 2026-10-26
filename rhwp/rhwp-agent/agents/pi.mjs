@@ -69,8 +69,8 @@ export const GIFT_EXHAUSTED_OWN_KEY_MESSAGE = '선물 크레딧을 모두 사용
 export const GIFT_EXHAUSTED_NO_KEY_MESSAGE = '선물 크레딧을 모두 사용했습니다. Pi 설정에서 OpenRouter 키를 연결해 주세요.';
 /** 잔액이 있는데 잠깐 거절된 402 (OpenRouter 가 Retry-After 와 함께 돌려준 경우). */
 export const GIFT_RETRY_MESSAGE = '선물 크레딧 요청이 잠시 거절되었습니다. 잠시 뒤 다시 시도해 주세요.';
-/** 선물 프록시는 선물을 다 썼거나 끊겼을 때만 이 문구로 402 를 준다. */
-const GIFT_EXHAUSTED_ERROR = /insufficient credits/i;
+/** 선물 프록시는 선물을 다 썼거나 끊겼을 때만 이 문구로 402 를 준다. 주인 계정 잔액의 402 는 그대로 지나온다. */
+const GIFT_EXHAUSTED_ERROR = /HamaEditor gift credit/i;
 
 export function isGiftExhaustedError(text) {
   return GIFT_EXHAUSTED_ERROR.test(String(text ?? ''));

@@ -2,7 +2,8 @@
  * 첫 실행 설정의 단계, 하마 대사, 한컴 글꼴 찾기.
  *
  * 화면에는 고를 것만 두고, 설명은 하마가 한 줄로 한다. 글꼴 단계는 한컴 글꼴을 스스로 찾지
- * 못했을 때만 넣는다. 자동 버그 수정 단계는 데스크톱(자동 수정 API 가 있을 때)에만 모델 다음에 넣는다.
+ * 못했을 때만 넣는다. Rau-0.1 단계는 허브에 붙어 있을 때, 자동 버그 수정 단계는 데스크톱(자동 수정 API 가
+ * 있을 때)에만 맨 끝에 넣는다.
  *   - 데스크톱: 설치 글꼴 색인이 이미 있다. 한컴 글꼴이 없으면 다시 찾기와 한컴오피스 받기만 둔다.
  *   - 브라우저: 허브 색인과 이미 허락된 설치 글꼴 목록으로 먼저 조용히 찾는다. 못 찾으면 한 번
  *     눌러 찾기(설치 글꼴 권한)와 한컴오피스 받기를 두고, 그래도 없을 때만 글꼴 폴더를 권한다.
@@ -22,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'autofix';
+export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'taste' | 'autofix';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -32,6 +33,7 @@ export const HIPPO_LINES = {
   theme: '화면은 어떤 게 편해요?',
   models: '같이 일할 AI를 연결해 주세요.',
   modelConnected: '연결됐어요!',
+  taste: 'Rau-0.1은 문서마다 자동으로 사용자님의 사용 기록을 토대로 취향을 기억해서 점점 맞추어가요. 사용할까요?',
   autofix: '예상치 못한 오류가 발생하면, AI가 자동으로 고치고 개발자에게 버그를 제보하는 기능입니다. 앱의 실행 기록 및 현재 상태 등을 개발자가 버그 수정용으로 사용할 수 있습니다.',
   discover: '문서 글꼴을 찾아볼게요.',
   searching: '찾는 중이에요…',
@@ -82,14 +84,15 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
   return env.canDiscover ? 'discover' : null;
 }
 
-/** 라이선스는 데스크톱에서 아직 키를 넣지 않았을 때만, 자동 버그 수정은 데스크톱에서 맨 끝에 둔다. */
+/** 라이선스는 데스크톱에서 아직 키를 넣지 않았을 때만, Rau-0.1 과 자동 버그 수정은 맨 끝에 이 순서로 둔다. */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { autofix?: boolean; license?: boolean } = {},
+  options: { autofix?: boolean; license?: boolean; taste?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['theme', 'models'];
   if (fontStep) steps.push('fonts');
   if (options.license) steps.push('license');
+  if (options.taste) steps.push('taste');
   if (options.autofix) steps.push('autofix');
   return steps;
 }

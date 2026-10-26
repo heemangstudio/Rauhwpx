@@ -3,7 +3,7 @@ import { createSetupTerminal } from './setup-terminal.ts';
 import './settings.css';
 import { type SettingsNavIconId, withNavIcon } from './settings-nav-icons.ts';
 import { confirmSheet } from './sheet.ts';
-import { showToast } from '../toast.ts';
+import { createUpdateSignHippo } from '../update-hippo/update-hippo.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 
 import {
@@ -33,7 +33,7 @@ import { createProjectSettingsPane } from './settings-project.ts';
 import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../../agent/attention-prefs.ts';
-import { isDesktopApp } from '../../desktop-integration.ts';
+import { isDesktopApp, desktopUpdatesApi, type DesktopUpdatesApi } from '../../desktop-integration.ts';
 import { webNotificationsGranted } from '../agent-attention.ts';
 import {
   aiSettingsSection,
@@ -59,6 +59,7 @@ import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
+import { createTasteSettingsSection } from './settings-taste.ts';
 import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
@@ -134,21 +135,21 @@ const PI_MODEL_MAX = 3;
 const PI_CATALOG_VISIBLE_MAX = 50;
 
 const PI_PROGRESS_LABEL: Record<string, string> = {
-  preparing: '준비하는 중…',
-  downloading: '내려받는 중…',
-  installing: '설치하는 중…',
-  configuring: '설정하는 중…',
-  verifying: '설치 확인 중…',
+  preparing: '준비하는 중',
+  downloading: '내려받는 중',
+  installing: '설치하는 중',
+  configuring: '설정하는 중',
+  verifying: '설치 확인 중',
   done: '',
 };
 
 const INSTALL_PROGRESS_LABEL: Record<string, string> = {
-  preparing: '준비하는 중…',
-  resolving: '패키지 확인 중…',
-  downloading: '내려받는 중…',
-  installing: '설치하는 중…',
-  configuring: '설정하는 중…',
-  verifying: '설치 확인 중…',
+  preparing: '준비하는 중',
+  resolving: '패키지 확인 중',
+  downloading: '내려받는 중',
+  installing: '설치하는 중',
+  configuring: '설정하는 중',
+  verifying: '설치 확인 중',
   done: '설치 완료',
 };
 
@@ -209,46 +210,6 @@ function createToggleRow(
   track.setAttribute('aria-hidden', 'true');
   root.append(copy, input, track);
   return { root, input };
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-/** 점선 화살표의 픽셀: 한 칸씩 띄운 몸통과 끝의 꺾쇠. 2배로 그린다. */
-const ARROW_DOTS: ReadonlyArray<readonly [number, number]> = [
-  [0, 3], [2, 3], [4, 3], [6, 3], [8, 3],
-  [9, 0], [10, 1], [11, 2], [12, 3], [11, 4], [10, 5], [9, 6],
-];
-
-/** 회색 점 위에 흰 점을 겹치고, 흰 점은 진행률만큼 왼쪽부터 드러낸다. */
-function dottedArrow(): { root: SVGSVGElement; fill(percent: number): void } {
-  const root = document.createElementNS(SVG_NS, 'svg');
-  root.setAttribute('class', 'ag-agent-setup-arrow');
-  root.setAttribute('viewBox', '0 0 13 7');
-  root.setAttribute('width', '26');
-  root.setAttribute('height', '14');
-  root.setAttribute('shape-rendering', 'crispEdges');
-  root.setAttribute('aria-hidden', 'true');
-  const layer = (className: string): SVGGElement => {
-    const group = document.createElementNS(SVG_NS, 'g');
-    group.setAttribute('class', className);
-    for (const [x, y] of ARROW_DOTS) {
-      const dot = document.createElementNS(SVG_NS, 'rect');
-      dot.setAttribute('x', String(x));
-      dot.setAttribute('y', String(y));
-      dot.setAttribute('width', '1');
-      dot.setAttribute('height', '1');
-      group.appendChild(dot);
-    }
-    root.appendChild(group);
-    return group;
-  };
-  layer('ag-agent-setup-arrow-track');
-  const lit = layer('ag-agent-setup-arrow-fill');
-  return {
-    root,
-    fill(percent) {
-      lit.style.clipPath = `inset(0 ${(100 - Math.min(100, Math.max(0, percent))).toFixed(2)}% 0 0)`;
-    },
-  };
 }
 
 /** 편집 중 잠금 눈금의 이름 — 왼쪽 끝은 잠그지 않음, 오른쪽 끝은 작업 내내. */
@@ -363,6 +324,7 @@ interface PiDraftModel {
 
 export interface SettingsPanelDeps {
   bridge: SidebarBridge;
+  updatesApi?: DesktopUpdatesApi | null;
   eventBus?: EventBus;
   editorRuntime: EditorSettingsRuntime;
   /** 지금 대화가 쓰고 있는 조합 — 기본값과 다를 수 있다. */
@@ -402,6 +364,8 @@ export interface SettingsPanel {
    * 이미 로그인된 프로바이더는 완료 화면만 보여 준다.
    */
   beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void;
+  /** AI 탭의 지시(변경안 카드)로 옮긴다. */
+  revealInstructions(): void;
   handleEvent(ev: SidebarEvent): void;
   dispose(): void;
 }
@@ -462,6 +426,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let templatesBusy = false;
   let templatesMessage = '';
   let setupStatuses: AgentSetupStatusMap | null = null;
+  let setupStatusRevision = 0;
   let setupAgent: AgentName | null = null;
   let setupBusy = false;
   /** 이 탭이 보낸 뒤 아직 응답을 받지 못한 설치 요청. */
@@ -485,7 +450,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupProgressCreepTimer: ReturnType<typeof setInterval> | null = null;
   let setupProgressResetTimer: ReturnType<typeof setTimeout> | null = null;
   const openedAuthUrls = new Set<string>();
-  const announcedUpdates = new Set<string>();
+  const updatesApi = deps.updatesApi === undefined ? desktopUpdatesApi() : deps.updatesApi;
+  const unifiedUpdates = Boolean(updatesApi?.updateAll);
+  let updateAgent: AgentName | null = null;
+  const providerUpdateHippo = unifiedUpdates ? null : createUpdateSignHippo(() => {
+    if (updateAgent) openAgentSetup(updateAgent);
+  });
+  if (providerUpdateHippo) {
+    providerUpdateHippo.element.classList.add('uh-provider');
+    document.body.append(providerUpdateHippo.element);
+  }
   const unsubscribeInitialSetup = onInitialSetupInactive(() => {
     if (!disposed && setupStatuses) announceProviderUpdates(setupStatuses);
   });
@@ -496,6 +470,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
+  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다. renderPi 가 부르므로 먼저 만든다.
+  const tasteSection = createTasteSettingsSection({
+    bridge,
+    piStatus: () => piStatus,
+    connectOpenRouterKey: (key) => connectOpenRouterKey(key),
+    loginOpenRouter: () => loginOpenRouterForTaste(),
+    authBlocked: () => piBusy || setupBusy || connectionState !== 'connected',
+    authError: () => piMessage,
+    isDisposed: () => disposed,
+  });
+  /** Rau-0.1 에서 시작한 Pi 브라우저 로그인 — 끝나면 Pi 모델 고르기 대신 Rau-0.1 로 돌아온다. */
+  let piAuthReturnToTaste = false;
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
   /** 한 번 실패한 목록을 렌더마다 다시 부르지 않게 막는다. */
@@ -898,8 +884,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
   setupUpdate.type = 'button';
   setupVersionRow.append(el('span', 'ag-agent-setup-row-label', '버전'), setupVersionValue, setupUpdate);
-  // 업데이트하는 동안 지금 버전과 새 버전 사이의 점선 화살표. 진행한 만큼 회색 점이 흰색으로 찬다.
-  const setupVersionArrow = dottedArrow();
+  // 업데이트하는 동안 지금 버전과 새 버전을 화살표로 잇는다.
+  const setupVersionArrow = el('span', 'ag-agent-setup-arrow', '→');
+  setupVersionArrow.setAttribute('aria-hidden', 'true');
   setupStatusCard.append(setupAccountRow, setupVersionRow);
   const setupProgress = el('div', 'ag-agent-setup-progress');
   setupProgress.setAttribute('role', 'progressbar');
@@ -1343,7 +1330,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   syncNotificationsSection();
   // 자동 버그 수정 — 데스크톱만. 바꾸는 즉시 저장한다.
   const autofixSection = createAutofixSettingsSection();
-
   instructionsEditor.addEventListener('input', () => {
     instructionsDirty = instructionsEditor.value !== (agentInstructions?.content ?? '');
     instructionsMessage = '';
@@ -1495,6 +1481,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     ['custom', editLockSection.root],
     ['connection', modelCatalogSection.root],
     ['custom', instructionsSection.root],
+    ['custom', tasteSection.root],
     ['custom', calibration.root],
     ['custom', templatesSection.root],
     ['custom', notificationsSection.root],
@@ -1520,6 +1507,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     quotaSection.root,
     modelCatalogSection.root,
     instructionsSection.root,
+    tasteSection.root,
     calibration.root,
     templatesSection.root,
     notificationsSection.root,
@@ -2252,6 +2240,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderProviders(): void {
+    if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
     for (const agent of PROVIDER_ORDER) {
       const row = providerRows.get(agent);
@@ -2261,7 +2250,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const detected = health?.available === true || setup?.available === true;
       const connected = setup?.connected === true || setup?.setupComplete === true
         || (detected && setup?.authenticated === true);
-      const working = setup?.installing === true || setup?.authenticating === true;
+      const working = pendingInstalls.has(agent) || setup?.installing === true || setup?.authenticating === true;
       const identity = (setup?.authMethod === 'api-key' && setup.keyTail ? `API 키 ****${setup.keyTail}` : null)
         || ((agent === 'claude' || agent === 'codex') ? usage?.limits?.[agent]?.planType : null);
       let label: string;
@@ -2270,7 +2259,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         label = '허브 연결 필요';
         message = '허브 연결 후 관리합니다.';
       } else if (working) {
-        label = setup?.installing ? '설치 중…' : '로그인 중…';
+        label = pendingInstalls.has(agent) || setup?.installing ? '설치 중…' : '로그인 중…';
         message = '설정에서 진행 상황 확인';
       } else if (setup?.installed === true && setup?.updateRequired) {
         // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다 —
@@ -2302,24 +2291,20 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
   }
 
-  /** 새 Claude/Codex 버전을 세션마다 한 번 조용히 알린다. 놓쳐도 연결 목록에 업데이트 버튼이 남는다. */
+  /** 앱 업데이트와 같은 하마가 프로바이더 업데이트를 안내한다. */
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
-    // 처음 설정 중에는 띄우지 않는다. 설정이 닫히면 그때의 상태로 다시 알린다.
-    if (isInitialSetupActive()) return;
-    for (const agent of ['claude', 'codex'] as const) {
+    updateAgent = isInitialSetupActive() ? null : (['claude', 'codex'] as const).find((agent) => {
       const status = statuses[agent];
-      // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
-      // 아무것도 설치되지 않은 첫 실행에 업데이트 배너를 띄우지 않는다.
-      if (!status?.installed || !status.updateRequired || !status.latestVersion) continue;
-      const key = `${agent}@${status.latestVersion}`;
-      if (announcedUpdates.has(key)) continue;
-      announcedUpdates.add(key);
-      showToast({
-        message: `${AGENT_LABEL[agent]} ${status.latestVersion} 업데이트가 있습니다.`,
-        durationMs: 10_000,
-        action: { label: '업데이트', onClick: () => openAgentSetup(agent) },
-      });
-    }
+      return status?.installed && status.updateRequired && status.latestVersion
+        && !status.installing && !pendingInstalls.has(agent);
+    }) ?? null;
+    const status = updateAgent ? statuses[updateAgent] : null;
+    const line = updateAgent && status ? `${AGENT_LABEL[updateAgent]} ${status.latestVersion} 업데이트가 있어요.` : '';
+    providerUpdateHippo?.setSign(status ? {
+      key: `provider:${updateAgent}:${status.latestVersion}`,
+      tone: 'plain', lines: [line, '업데이트할까요?'], progress: null,
+      actions: [{ id: 'download', label: '업데이트', icon: 'download' }], spoken: line,
+    } : null);
   }
 
   function maybeOpenAuthUrl(url: string | null | undefined): void {
@@ -2453,6 +2438,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     await startSetupAuth('oauth');
   }
 
+  /** Rau-0.1 의 브라우저로 로그인 — Pi 설정의 브라우저로 로그인과 같은 창·흐름이다. Pi 설치는 필요 없다. */
+  function loginOpenRouterForTaste(): void {
+    if (piBusy || setupBusy || connectionState !== 'connected') return;
+    openAgentSetup('pi');
+    piAuthReturnToTaste = true;
+    void startSetupAuth('oauth');
+  }
+
   function beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void {
     openAgentSetup(agent);
     void continueAgentConnect(agent, options?.reauth === true);
@@ -2463,13 +2456,19 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       clearTimeout(setupCloseTimer);
       setupCloseTimer = null;
     }
+    const sameAgent = setupAgent === agent;
     setupAgent = agent;
+    piAuthReturnToTaste = false;
     setupMessage = '';
     setupBusy = false;
     setupReauth = false;
     setupCodePending = false;
     clearSetupAuthPrompt();
-    resetSetupInstallProgress();
+    if (!sameAgent) resetSetupInstallProgress();
+    if (pendingInstalls.has(agent) || setupStatuses?.[agent]?.installing) {
+      setupBusy = true;
+      if (setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
+    }
     setupKey.input.value = '';
     setupKeyBox.hidden = true;
     setupCode.input.value = '';
@@ -2504,12 +2503,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       }
     }
     authAttempt += 1;
+    piAuthReturnToTaste = false;
     setupCodePending = false;
     setupBusy = false;
     clearSetupAuthPrompt();
+    tasteSection.render();
     setupOverlay.classList.remove('ag-open');
     setupOverlay.setAttribute('aria-hidden', 'true');
-    resetSetupInstallProgress();
+    if (!setupAgent || !pendingInstalls.has(setupAgent)) resetSetupInstallProgress();
     if (setupCloseTimer) clearTimeout(setupCloseTimer);
     setupCloseTimer = setTimeout(() => {
       setupOverlay.remove();
@@ -2536,7 +2537,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   function paintSetupInstallProgress(): void {
     setupProgressFill.style.width = `${setupProgressPercent.toFixed(2)}%`;
-    setupVersionArrow.fill(setupProgressPercent);
     setupProgress.setAttribute('aria-valuenow', String(Math.round(setupProgressPercent)));
     setupProgress.setAttribute('aria-valuetext', `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`);
     setupProgressLine.textContent = `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`;
@@ -2613,9 +2613,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     // Pi 카드는 자체 머리(아이콘·상태)를 가지므로 대화상자 머리는 제목만 둔다.
     setupTitle.textContent = agent === 'pi' ? `${AGENT_LABEL[agent]} 설정` : AGENT_LABEL[agent];
     setupHeroIcon.hidden = agent === 'pi';
-    setupHeroIcon.replaceChildren(createProviderIcon(agent));
+    if (setupHeroIcon.dataset.agent !== agent) {
+      setupHeroIcon.replaceChildren(createProviderIcon(agent));
+      setupHeroIcon.dataset.agent = agent;
+    }
     syncSetupAccent(agent);
-    setupBody.replaceChildren(agent === 'pi' ? piCard : setupGeneric);
+    const body = agent === 'pi' ? piCard : setupGeneric;
+    if (setupBody.firstChild !== body) setupBody.replaceChildren(body);
     if (agent === 'pi') {
       setupState.hidden = true;
       if (setupMessage) piMessage = setupMessage;
@@ -2632,7 +2636,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       || (available && status?.authenticated === true);
     const showConnected = connected && !setupReauth;
     const updateVersion = available && status?.updateRequired ? status.latestVersion : null;
-    const installing = setupBusy && setupProgressPercent > 0;
+    const installing = pendingInstalls.has(agent) || status?.installing === true
+      || (setupBusy && setupProgressPercent > 0);
+    if (installing) setupBusy = true;
     setupKey.input.placeholder = API_KEY_PLACEHOLDER[agent];
     setupAuthHeading.textContent = '로그인 방법';
     setupOauth.hidden = status?.terminalAuthSupported === false;
@@ -2640,11 +2646,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const oauthDetail = setupOauth.querySelector('span');
     if (oauthTitle) oauthTitle.textContent = supportsTerminalSetup(agent) ? '로그인 시작' : '브라우저로 로그인';
     if (oauthDetail) oauthDetail.textContent = supportsTerminalSetup(agent) ? '이 창에서 계정 연결' : '구독 계정 또는 웹 계정 연결';
-    setupInstallPane.hidden = available;
-    setupAuthPane.hidden = !available || showConnected;
+    const checking = status === null && !setupMessage && !setupBusy;
+    setupInstallPane.hidden = available || checking;
+    setupAuthPane.hidden = !available || showConnected || checking;
 
     // 머리 상태 줄 — 목록의 점 색과 같은 규칙.
-    const [stateDot, stateText] = installing
+    const [stateDot, stateText] = checking
+      ? ['connecting', '확인 중…']
+      : installing
       ? ['connecting', available ? '업데이트 중' : '설치 중']
       : setupBusy
         ? ['connecting', '로그인 중']
@@ -2667,12 +2676,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupChangeAuth.disabled = setupBusy;
     setupAccountLogout.hidden = agent !== 'claude' || !connected;
     setupAccountLogout.disabled = setupBusy || connectionState !== 'connected';
-    setupVersionRow.hidden = !(updateVersion || (showConnected && status?.version));
-    setupVersionValue.replaceChildren(status?.version ?? '');
-    if (updateVersion && installing) {
-      setupVersionValue.append(setupVersionArrow.root, el('span', 'ag-agent-setup-row-next', updateVersion));
-    } else if (updateVersion) {
-      setupVersionValue.append(el('span', 'ag-agent-setup-row-note', `새 버전 ${updateVersion}`));
+    setupVersionRow.hidden = !(updateVersion || (available && status?.version));
+    const versionKey = JSON.stringify([agent, status?.version, updateVersion, installing]);
+    if (setupVersionValue.dataset.version !== versionKey) {
+      setupVersionValue.dataset.version = versionKey;
+      setupVersionValue.replaceChildren(status?.version ?? '');
+      if (updateVersion && installing) {
+        setupVersionValue.append(setupVersionArrow, el('span', 'ag-agent-setup-row-next', updateVersion));
+      } else if (updateVersion) {
+        setupVersionValue.append(el('span', 'ag-agent-setup-row-note', `새 버전 ${updateVersion}`));
+      }
     }
     setupUpdate.hidden = !updateVersion;
     setupUpdate.textContent = installing ? '업데이트 중' : '업데이트';
@@ -2689,7 +2702,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupProgressLine.textContent = setupProgressPercent > 0
       ? `${setupProgressLabel} ${Math.floor(setupProgressPercent)}%`
       : '';
-    setupInstall.disabled = setupBusy || connectionState !== 'connected';
+    setupInstall.disabled = checking || setupBusy || connectionState !== 'connected';
     const authBusyElsewhere = status?.authenticating === true && status.authOwnedByThisSession !== true;
     setupOauth.disabled = setupBusy || authBusyElsewhere || connectionState !== 'connected';
     setupApiToggle.disabled = setupBusy || authBusyElsewhere || connectionState !== 'connected';
@@ -2721,8 +2734,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   async function refreshSetupStatuses(refresh = false): Promise<void> {
+    const revision = ++setupStatusRevision;
     const statuses = await bridge.requestAgentSetupStatus(refresh);
-    if (disposed || !statuses) return;
+    if (disposed || revision !== setupStatusRevision) return;
+    if (!statuses) {
+      if (!setupStatuses) {
+        setupMessage = '연결 상태를 확인하지 못했습니다.';
+        renderAgentSetup();
+      }
+      return;
+    }
     setupStatuses = statuses;
     renderProviders();
     renderAgentSetup();
@@ -2730,7 +2751,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   async function installSelectedAgent(): Promise<void> {
-    if (!setupAgent || setupBusy) return;
+    if (!setupAgent || setupBusy || pendingInstalls.has(setupAgent)
+      || setupStatuses?.[setupAgent]?.installing) return;
     if (setupAgent === 'pi') {
       await runPiInstall();
       return;
@@ -2740,15 +2762,29 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupMessage = '';
     resetSetupInstallProgress();
     setSetupInstallProgress(8, 'preparing');
-    renderAgentSetup();
     pendingInstalls.add(agent);
-    const statuses = await bridge.installAgent(agent).finally(() => pendingInstalls.delete(agent));
+    renderAgentSetup();
+    renderProviders();
+    let statuses: AgentSetupStatusMap | null = null;
+    try {
+      statuses = await bridge.installAgent(agent);
+    } catch {
+      // 연결 실패도 오류 카드로 끝내고 다시 시도할 수 있게 한다.
+    } finally {
+      pendingInstalls.delete(agent);
+    }
     if (disposed) return;
+    setupStatusRevision += 1;
     if (statuses) setupStatuses = statuses;
     // 그사이 다른 프로바이더 창을 열었다면 그 창의 진행 상태는 건드리지 않는다.
     if (setupAgent === agent) {
       setupBusy = false;
-      if (!statuses && !setupMessage) setupMessage = '설치 실패';
+      if (!statuses) {
+        if (!setupMessage) setupMessage = '설치 실패';
+        resetSetupInstallProgress();
+      } else {
+        setSetupInstallProgress(100, 'done');
+      }
     }
     renderAgentSetup();
     renderProviders();
@@ -3098,6 +3134,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
+    tasteSection.render();
     piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
@@ -3229,27 +3266,38 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     void refreshProviders(true);
   }
 
-  async function submitPiKey(): Promise<void> {
-    const key = piKeyInput.input.value.trim();
-    if (!key || piBusy) return;
+  /** OpenRouter 키 저장 — Pi 설정의 키 칸과 Rau-0.1 의 키 칸이 함께 쓴다. 성공하면 true. */
+  async function connectOpenRouterKey(key: string): Promise<boolean> {
+    if (!key || piBusy) return false;
     piBusy = true;
     piMessage = '';
     renderPi();
     const status = await bridge.setPiKey(key);
-    if (disposed) return;
+    if (disposed) return false;
     piBusy = false;
-    piKeyInput.input.value = '';
     if (status) {
       piStatus = status;
       // 새 키로 목록을 다시 받아 본다.
       piCatalogTried = false;
       piStepOverride = null;
-      openPiModelCatalog();
     } else if (!piMessage) {
       piMessage = '키 확인 실패';
     }
     renderPi();
     syncPrefsInputs();
+    return status !== null;
+  }
+
+  async function submitPiKey(): Promise<void> {
+    const key = piKeyInput.input.value.trim();
+    if (!key || piBusy) return;
+    const connected = await connectOpenRouterKey(key);
+    if (disposed) return;
+    piKeyInput.input.value = '';
+    if (connected) {
+      openPiModelCatalog();
+      renderPi();
+    }
   }
 
   async function loadPiCatalog(refresh: boolean): Promise<void> {
@@ -3525,6 +3573,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       renderPi();
       void refreshProviders(false);
       void refreshAgentInstructions(false);
+      void tasteSection.refresh();
       void refreshUsage();
       void refreshPiStatus();
       void refreshSetupStatuses();
@@ -3550,8 +3599,17 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     openAgentSetup,
     beginAgentConnect,
+    revealInstructions(): void {
+      selectDestination('ai', 'custom');
+      // 변경안 카드는 이 묶음의 맨 위에 있다.
+      instructionsSection.root.scrollIntoView({ block: 'start' });
+    },
     handleEvent(ev: SidebarEvent): void {
       switch (ev.type) {
+        case 'taste-settings':
+          // 다른 창에서 바꿨거나 요청의 답이다. 고르는 중인 값은 그 요청의 답이 덮는다.
+          tasteSection.accept(ev.settings);
+          break;
         case 'connection':
           connectionState = ev.state;
           setupTerminal.setOnline(ev.state === 'connected');
@@ -3606,6 +3664,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           renderProviders();
           break;
         case 'agent-setup-status': {
+          if (unifiedUpdates) void updatesApi?.refreshAll?.().catch(() => {});
+          setupStatusRevision += 1;
           setupStatuses = ev.statuses;
           announceProviderUpdates(ev.statuses);
           const selectedStatus = setupAgent ? ev.statuses[setupAgent] : null;
@@ -3670,14 +3730,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             // 끊긴 사이 취소한 실행은 재연결 때 재생돼도 다시 열지 않는다.
             if (ev.authRunId && abandonedAuthRunIds.has(ev.authRunId)) break;
             if (ev.authRunId) setupAuthRunId = ev.authRunId;
-            setupBusy = ev.state !== 'done';
+            const awaitingInstall = pendingInstalls.has(ev.agent);
+            if (ev.state === 'installing' && setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
+            setupBusy = awaitingInstall || ev.state !== 'done';
             // API 키 검증 중에도 authorizing 이 온다 — 브라우저 로그인 근거가 있을 때만 상자를 연다.
             if (ev.state === 'authorizing' && (ev.authUrl || ev.userCode)) setupOauthPending = true;
             if (ev.authUrl) setupAuthUrl = ev.authUrl;
             if (ev.userCode) setupUserCode = ev.userCode;
             if (ev.state === 'done') clearSetupAuthPrompt();
             maybeOpenAuthUrl(ev.authUrl);
-            if (typeof ev.percent === 'number') {
+            if (ev.state === 'done' && awaitingInstall) {
+              setSetupInstallProgress(Math.min(setupProgressPercent, 99), 'verifying');
+            } else if (typeof ev.percent === 'number') {
               setSetupInstallProgress(ev.percent, ev.phase ?? ev.state);
             } else if (setupProgressPercent > 0) {
               // CLI 설치는 단계만 알린다. 단계로 막대를 옮기고 끝나면 100% 까지 채운다.
@@ -3725,7 +3789,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           if (authenticated && setupAgent === 'pi' && setupOverlay.getAttribute('aria-hidden') === 'false') {
             setupBusy = false;
             piBusy = false;
-            openPiModelCatalog();
+            if (piAuthReturnToTaste) {
+              closeAgentSetup();
+              selectDestination('ai', 'custom');
+              tasteSection.root.scrollIntoView({ block: 'nearest' });
+            } else {
+              openPiModelCatalog();
+            }
           }
           renderPi();
           syncPrefsInputs();
@@ -3807,6 +3877,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       unsubscribeAttentionPrefs();
       instructionsEditor.destroy();
       unsubscribeInitialSetup();
+      providerUpdateHippo?.dispose();
       licenseSection?.dispose();
       autofixSection?.dispose();
       piGift?.dispose();

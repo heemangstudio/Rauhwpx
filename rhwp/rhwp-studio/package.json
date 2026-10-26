@@ -26,6 +26,7 @@
     "e2e:provider-stream-live": "node e2e/provider-stream-live.test.mjs",
     "e2e:worktrees": "node e2e/worktree-lifecycle.test.mjs --mode=headless",
     "e2e:chat-follows-document": "node e2e/chat-follows-document.test.mjs --mode=headless",
+    "e2e:document-switch-project": "node e2e/document-switch-project.test.mjs --mode=headless",
     "e2e:request-cards": "node e2e/request-cards-live.mjs --mode=headless",
     "bench:agent-tools": "node bench/agent-tool-bench.mjs",
     "bench:agent-tool-concurrency": "node bench/agent-tool-concurrency-bench.mjs",

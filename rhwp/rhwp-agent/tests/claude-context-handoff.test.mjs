@@ -237,3 +237,22 @@ test('replaceSession stops the resumed process and sends the full transcript on 
   assert.equal(session.getSessionId(), freshId);
   await session.dispose();
 });
+
+test('update maintenance closes idle Claude and the next turn resumes the same conversation', async () => {
+  const { session, events, children } = startSession({ resumeSessionId: SID });
+  session.sendUserMessage('Before update');
+  await waitUntil(() => children.length === 1);
+  await assert.rejects(session.releaseIdle(), /busy/);
+  children[0].emitJson({ type: 'system', subtype: 'init', session_id: SID },
+    { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'OK' });
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  const count = events.length;
+  assert.equal(await session.releaseIdle(), true);
+  assert.ok(children[0].signalCode);
+  assert.equal(session.getSessionId(), SID);
+  assert.equal(events.length, count);
+  session.sendUserMessage('After update');
+  await waitUntil(() => children.length === 2);
+  assert.equal(children[1].argv[children[1].argv.indexOf('--resume') + 1], SID);
+  await session.dispose();
+});

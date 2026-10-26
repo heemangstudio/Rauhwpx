@@ -9,7 +9,7 @@ import type { DesktopUpdateState } from '../../desktop-integration.ts';
 export type UpdateSignIcon = 'download' | 'reload';
 
 export interface UpdateSignAction {
-  id: 'download' | 'restart' | 'confirm' | 'cancel' | 'check';
+  id: 'download' | 'restart' | 'confirm' | 'cancel' | 'check' | 'update-all' | 'later';
   /** 단추 이름(aria-label). 글자 단추면 보이는 글자이기도 하다. */
   label: string;
   /** 아이콘 단추. 없으면 label 을 글자로 보인다. */
@@ -26,6 +26,8 @@ export interface UpdateSign {
   actions: UpdateSignAction[];
   /** 화면 읽기 프로그램이 한 번 읽을 문장. */
   spoken: string;
+  /** 길게 나오는 설치 오류는 팻말에 마우스를 올려 전부 읽는다. */
+  detail?: string;
   /** 직접 누른 확인의 결과처럼 잠깐 보이고 내려가는 팻말이면 그 시간(ms). */
   transientMs?: number;
 }

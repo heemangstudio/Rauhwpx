@@ -163,6 +163,13 @@ export async function registerHubSession({ port, token, launchId, sessionId, ...
   });
 }
 
+export function requestProviderMaintenance({ port, agent = null, ...options }) {
+  if (agent !== null && !['claude', 'codex'].includes(agent)) throw new Error('Unknown provider');
+  return requestHubOwnerRoute(`http://127.0.0.1:${port}/maintenance/providers${agent ? `/${agent}` : ''}`, {
+    ...options, method: agent ? 'POST' : 'GET', timeoutMs: agent ? 12 * 60_000 : 30_000,
+  });
+}
+
 export function requestHubShutdown({ port, token, launchId, ...options }) {
   return requestHubOwnerRoute(`http://127.0.0.1:${port}/shutdown`, {
     ...options,
