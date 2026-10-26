@@ -61,6 +61,37 @@ test('widget format changes preserve exact shape runs across undo, clipboard pas
   } finally { reopened.free(); }
 });
 
+test('format snapshots follow edits, undo, redo and document replacement without exposing shared values', t => {
+  const { core, engine } = open(t);
+  api.insertText(core, 0, 0, 0, 'one');
+  const original = api.getParaPropertiesAt(core, 0, 0).indent;
+  api.applyParaFormat(core, 0, 0, JSON.stringify({ indent: 1500 }));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, 10);
+  const props = api.getParaPropertiesAt(core, 0, 0);
+  props.indent = 999;
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, 10);
+  core.mutate(doc => doc.undo());
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, original);
+  core.mutate(doc => doc.redo());
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, 10);
+  const runs = api.getCharShapeRuns(core, 0, 0, 0, 3);
+  const expected = structuredClone(runs);
+  runs[0].charShapeId = 999;
+  assert.deepEqual(api.getCharShapeRuns(core, 0, 0, 0, 3), expected);
+  assert.throws(() => core.transact([
+    { op: 'formatParas', from: { section: 0, para: 0, offset: 0 }, to: { section: 0, para: 0, offset: 3 }, patch: { indent: 3000 } },
+    { op: 'insertText', at: { section: 99, para: 0, offset: 0 }, text: 'bad' },
+  ]));
+  assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, 10);
+  const replacement = engine.open(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url)));
+  try {
+    core.adapter.hmDoc = () => replacement;
+    core.adapter.documentInstance += 1;
+    core.noteDocumentReplaced();
+    assert.equal(api.getParaPropertiesAt(core, 0, 0).indent, original);
+  } finally { replacement.free(); }
+});
+
 test('find includes the starting word, wraps, and replace-all is one undo step', t => {
   const { core, doc } = open(t);
   api.insertText(core, 0, 0, 0, 'alpha alpha\tALPHA', false);

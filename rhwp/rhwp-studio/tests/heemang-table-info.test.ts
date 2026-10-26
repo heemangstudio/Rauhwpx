@@ -72,6 +72,19 @@ test('table signature, dimensions and geometry share one native read without exp
   assert.ok(tables.getTableCellBboxes(f.core,0,0,table.control)[0].w>0);
 });
 
+test('state snapshots remain fresh after edits and cannot be changed by callers', t => {
+  const f = open(t), before = f.core.state();
+  const original = structuredClone(before);
+  const copied = f.core.state();
+  copied.fontGeneration += 100;
+  copied.contentEpoch += 100;
+  assert.deepEqual(f.core.state(), before);
+  f.create();
+  const edited = f.core.state();
+  assert.ok(edited.contentEpoch > before.contentEpoch);
+  assert.deepEqual(before, original);
+});
+
 test('body and cell edits, structural edits and Undo/Redo invalidate table geometry and save the same table', t => {
   const f = open(t), table = f.create();
   f.expectFresh(table);

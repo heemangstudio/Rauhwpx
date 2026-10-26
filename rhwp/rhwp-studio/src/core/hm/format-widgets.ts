@@ -1,5 +1,5 @@
 /** 도구 모음·서식 대화상자·스타일·문단 번호의 HeemangEngine 연결. */
-import type { CharPatch, ParaPatch, EditOp, FormatContext, ParagraphFormat, StyleInfo, ListInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { CharPatch, ParaPatch, EditOp, FormatContext, ParagraphFormat, ParagraphInfo, StyleInfo, ListInfo } from '../../../vendor/hm-wasm/hm_wasm';
 import type { CharProperties, ParaProperties, CharShapeRun } from '../types';
 import type { HmCore, ListAddress } from './core';
 import { hu, unsupported } from './core';
@@ -147,9 +147,15 @@ function widgetParaPatch(props: Record<string, unknown>, currentKind?: ParaPatch
   return { ...basicParaPatch(rest), ...patch };
 }
 
+// 문단 정보와 수명이 같다. 내용 변경·문서 교체 뒤에는 새 문단 정보로 다시 읽는다.
+const formats = new WeakMap<ParagraphInfo, ParagraphFormat>();
 function format(core: HmCore, list: ListAddress, para: number): ParagraphFormat {
-  const value = core.query<ParagraphFormat[]>({ kind: 'formatRuns', list, from: para, count: 1 })[0];
+  const info = core.paragraph(list, para);
+  let value = formats.get(info);
+  if (value) return value;
+  value = core.query<ParagraphFormat[]>({ kind: 'formatRuns', list, from: para, count: 1 })[0];
   if (!value) throw new RangeError(`문단 ${para} 이 없습니다`);
+  formats.set(info, value);
   return value;
 }
 

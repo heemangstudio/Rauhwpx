@@ -6,7 +6,7 @@
  * 문서 내용을 바꾸는 호출은 모두 transact/mutate 를 거쳐 캐시·쪽 packet·화면 갱신 정보를 함께 맞춘다.
  */
 import type {
-  Address, Affinity, Caret, Doc, EditOp, LineInfo as HmLineInfo, Located, ParagraphInfo, Receipt, Step, TableAddress, TableInfo,
+  Address, Affinity, Caret, Doc, DocState, EditOp, LineInfo as HmLineInfo, Located, ParagraphInfo, Receipt, Step, TableAddress, TableInfo,
 } from '../../../vendor/hm-wasm/hm_wasm';
 import { EngineNotSupportedError } from '../engine-support';
 import type { HeemangAdapter } from '../heemang-adapter';
@@ -51,6 +51,7 @@ export class HmCore {
   private lineTag = '';
   private readonly tables = new Map<string, TableInfo>();
   private tableTag = '';
+  private stateSnapshot: { raw: string; value: DocState } | null = null;
   /** 마지막 편집 영수증. 화면은 바뀐 쪽만 다시 그린다. */
   lastReceipt: Receipt | null = null;
 
@@ -168,8 +169,11 @@ export class HmCore {
     return lines;
   }
 
-  state(): { contentEpoch: number; layoutEpoch: number; pageCount: number; undo: number; redo: number; dirty: boolean; format: string; fontGeneration: number } {
-    return JSON.parse(this.call(doc => doc.state()));
+  state(): DocState {
+    // 조판·글꼴 변경은 매번 엔진에서 확인하고, 같은 응답의 JSON 해석만 재사용한다.
+    const raw = this.call(doc => doc.state());
+    if (this.stateSnapshot?.raw !== raw) this.stateSnapshot = { raw, value: JSON.parse(raw) };
+    return { ...this.stateSnapshot!.value };
   }
 
   /** 편집 묶음을 한 엔진 트랜잭션으로 적용한다. 바뀐 것이 없으면 null. */
