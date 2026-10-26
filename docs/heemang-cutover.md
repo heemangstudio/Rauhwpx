@@ -131,4 +131,12 @@ The corrected input scheduler places bitmap capture before a common absolute fra
 
 The final isolated no-break wrapping trial matches 265 old-executable controls over 33 inputs, including mixed policies, nonzero condensing and forbidden punctuation. Its full layout suite passes 138 tests, with zero failures and one ignored. The trial still requires combined target and full corpus qualification.
 
+## 2026-10-26 resumed qualification
+
+The Claude session `ef338e20-4e19-436e-9128-b7bc439044b0` stopped with unfinished objects, text, tables and performance lanes. Those lanes have resumed while preserving their dirty sources and frozen candidates. The original handoff is at `heemang-cleanroom/briefs/studio-only-handoff-20261026.md`. The root vendor remains unchanged; no pending rendering or performance trial is accepted by this checkpoint.
+
+The completed six-document worker performance run was recovered rather than repeated. On Studio `edec0d52`, engine `3d1f340` and WASM `67f619a9…e9bc5`, cold first-visible passes all six documents, with seven measured pairs each. Typing fails 17 of 20 body/cell p50/p95 comparisons. All 5,600 edited inputs paint with zero page errors. Every one of 651 candidate late completed frames coincides with a glyph-outline refill; that correlation is being diagnosed. [Exact metrics, source provenance, limitations and raw hashes](evidence/heemang-performance/six-document-gate-20261026.json) preserve the result. Personal Chrome contention and press first-frame ink at 97.25% remain recorded limitations.
+
+Upstream was fetched and remains `16c8ca55`, already included by the signed root merge `ef7a11a7`. Final explicit-font preflight records 592 existing files with no missing inputs at `heemang-cleanroom/parity/notes/rc-final-20261026/font-preflight.json`: argument SHA-256 `212db0ebb28526d241eb3f63b466badeaa503d581815300bff3497b0cbcf9716`, file-inventory SHA-256 `19700cab2911a62f9ff3c6f25bd7876e59664e881239912372aa66f0db0cf4d4`. This preflight does not replace the unchanged intermediate corpus gate or qualify a final combined build.
+
 Corrected synthetic endnote fixtures preserve their table/cell after HWPX reopening and prove two additional old-relative regressions: an overflowing floating grid stays beyond the page body instead of moving columns, and a trailing grid overlaps the next note. Fit-case geometry agrees. Evidence and normalized old/joint SVG bounds are in `heemang-cleanroom/parity/notes/rc-render-objects/probes/endnote-valid-audit/`; a separate worker owns the bounded note-flow correction.
