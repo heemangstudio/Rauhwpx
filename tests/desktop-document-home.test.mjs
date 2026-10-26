@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -168,6 +169,33 @@ test('열기가 끝나기 전에 창이 닫히면 그 창이 파일을 쥐지 �
     // 크래시 뒤 같은 창이 다시 열면 열린다.
     registry.releaseSession('window-2');
     assert.equal((await registry.create('window-1', path)).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('기억한 문서를 다시 여는 사이 창이 닫히면 그 창이 파일을 쥐지 않는다', async () => {
+  const dir = scratch();
+  try {
+    const path = join(dir, '다시 열 문서.hwp');
+    writeFileSync(path, Buffer.from([1, 2, 3]));
+    let stall = null;
+    const registry = new NativeFileHandleRegistry({
+      statImpl: async (target, options) => {
+        if (stall && options?.bigint) { const wait = stall; stall = null; await wait; }
+        return stat(target, options);
+      },
+    });
+    await rememberIn(registry, path, 'doc-1');
+    let resume;
+    stall = new Promise((resolve) => { resume = resolve; });
+    const reopening = registry.reopenDocument('window-2', 'doc-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    registry.releaseSession('window-2');
+    resume();
+    await assert.rejects(reopening);
+    assert.equal(await registry.ownerForPath(path), null);
+    assert.equal((await registry.reopenDocument('window-3', 'doc-1')).ok, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -2053,8 +2053,13 @@ export class NativeFileHandleRegistry {
   async reopenDocument(sessionId, documentId) {
     const bookmark = this.#bookmarks.get(documentId);
     if (!bookmark) return null;
+    const releases = this.#sessionReleases.get(sessionId) ?? 0;
     // 닫혀 있는 동안 이름이 바뀐 문서는 그 파일을 연다. 옛 이름에 새로 생긴 다른 파일이 아니다.
     await this.#followBookmark(sessionId, documentId, bookmark);
+    // 북마크를 따라가는 사이 창이 닫혔으면 create 의 확인보다 앞이라 여기서 막는다.
+    if ((this.#sessionReleases.get(sessionId) ?? 0) !== releases) {
+      throw new Error('The window closed before the document finished opening');
+    }
     return this.create(sessionId, bookmark.path);
   }
 
