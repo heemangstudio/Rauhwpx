@@ -256,6 +256,8 @@
 /* 서식 막대 */
 .ag-mde-bar {
   display: flex;
+  /* 좁은 창에서 끝의 단추(코드 블록·원문 보기)가 잘려 누를 수 없지 않게 다음 줄로 넘긴다. */
+  flex-wrap: wrap;
   align-items: center;
   gap: 1px;
   min-height: 32px;
