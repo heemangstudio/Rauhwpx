@@ -1,0 +1,20 @@
+{
+  "scope": "FUTURE-core-save-correctness",
+  "url": "http://127.0.0.1:7733/?engine=heemang",
+  "provider": "fixture local hub; no provider calls",
+  "checks": [
+    {
+      "mode": "cancel",
+      "sourceBytesUnchanged": true,
+      "stateUnchanged": true
+    },
+    {
+      "mode": "write-failure",
+      "sourceBytesUnchanged": true,
+      "stateUnchanged": true
+    }
+  ],
+  "pageErrors": [],
+  "legacyEngineRequests": [],
+  "pass": true
+}

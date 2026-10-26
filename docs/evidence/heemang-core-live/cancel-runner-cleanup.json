@@ -1,0 +1,7 @@
+{
+  "pid": 65962,
+  "command": "65962 65958 04:01 node /Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-core-live/save-cancel-failure.mjs\n",
+  "reason": "Own Node harness remained alive after printing final PASS after awaited browser/app cleanup; terminate only this completed runner to release owned test leases",
+  "report_pass": true,
+  "action": "SIGTERM"
+}
