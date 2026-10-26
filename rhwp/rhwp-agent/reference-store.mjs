@@ -128,7 +128,8 @@ export function sanitizeReferenceName(value) {
     );
   }
   const ext = path.extname(clean);
-  const stem = path.basename(clean, ext).slice(0, Math.max(1, 220 - ext.length));
+  // UTF-16 단위로 자르므로 이모지 같은 서로게이트 쌍의 앞 절반만 남으면 버린다.
+  const stem = path.basename(clean, ext).slice(0, Math.max(1, 220 - ext.length)).replace(/[\uD800-\uDBFF]$/, '');
   return `${stem}${ext.slice(0, 30)}`;
 }
 

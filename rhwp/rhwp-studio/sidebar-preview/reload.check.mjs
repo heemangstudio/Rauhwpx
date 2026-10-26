@@ -104,6 +104,17 @@ export async function checkReloadPreview(page, origin, artifacts) {
     'the adopted turn\'s normal end sends the first queued message');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().messageTexts.length === 2, { timeout: 10_000 });
   assert.deepEqual((await queueState()).sent, QUEUED, 'the next normal turn end sends the second one');
+
+  // An unsent draft comes back with its chat after a reload (and after an update restart, which
+  // reopens the window the same way).
+  const DRAFT = '보내지 않은 초안 2026';
+  await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
+  await page.focus('.ag-input');
+  await page.type('.ag-input', DRAFT);
+  await page.goto(`${origin}/?theme=light&width=480`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction((id) => window.sidebarPreview?.sidebar.currentThreadId() === id
+    && document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true', {}, RUNNING_CHAT);
+  assert.equal(await page.$eval('.ag-input', (input) => input.value), DRAFT, 'the unsent draft survives the reload');
 }
 
 if (isMainModule(import.meta)) await runStandalone('Reload re-adopts the live chat', checkReloadPreview);

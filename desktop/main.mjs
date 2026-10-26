@@ -968,6 +968,7 @@ function liveWindowSessions() {
  * 남기고, 확인 없이 창을 닫고 설치로 넘긴다. 어느 단계에서 멈추면 그 뒤로는 아무것도 보내지 않는다.
  */
 async function restartForUpdate(state) {
+  const startingSessionIds = new Set(liveWindowSessions().map((session) => session.sessionId));
   const targets = liveWindowSessions()
     // 문서를 띄우지 못한 창은 넘길 것이 없다.
     .filter((session) => session.rendererLoaded && !session.rendererLoadFailed && !session.window.webContents.isCrashed())
@@ -1005,6 +1006,11 @@ async function restartForUpdate(state) {
     // 멈춘 재시작의 창 목록이 다음 실행에서 창을 다시 열지 않게 한다.
     await rm(updateRestartFile, { force: true }).catch(() => {});
     throw error;
+  }
+  // 준비하는 동안 새로 열린 창은 넘김을 받지 않았다. 그대로 닫으면 그 창의 저장 안 한 내용이 사라진다.
+  if (liveWindowSessions().some((session) => !startingSessionIds.has(session.sessionId))) {
+    await rm(updateRestartFile, { force: true }).catch(() => {});
+    throw new Error('A window opened while preparing the update. Try restarting again.');
   }
   updateRestartClosing = true;
   // 열린 닫기 확인의 답이 설치를 멈추지 않게 한다. 설치로 넘기지 못하면 되돌린다.
@@ -1400,14 +1406,21 @@ async function openLaunch(request) {
     await createWindow(request);
     return;
   }
+  // 없는 파일 하나가 뒤의 파일까지 막지 않게 모두 열어 본 뒤 첫 실패를 알린다.
+  let firstError = null;
   for (const filePath of request.openFiles) {
-    const ownerSessionId = await nativeFiles.ownerForPath(filePath).catch(() => null);
-    if (ownerSessionId) {
-      sessions.focusSession(ownerSessionId);
-      continue;
+    try {
+      const ownerSessionId = await nativeFiles.ownerForPath(filePath).catch(() => null);
+      if (ownerSessionId) {
+        sessions.focusSession(ownerSessionId);
+        continue;
+      }
+      await createWindow(launchRequest({ openFiles: [filePath], source: request.source }));
+    } catch (error) {
+      firstError ??= error;
     }
-    await createWindow(launchRequest({ openFiles: [filePath], source: request.source }));
   }
+  if (firstError) throw firstError;
 }
 
 function queueLaunch(request) {

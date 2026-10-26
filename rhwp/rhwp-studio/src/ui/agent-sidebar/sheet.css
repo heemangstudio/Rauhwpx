@@ -44,6 +44,10 @@
   /* 사이드바 안에서는 입력창과 같은 여백으로 입력창을 완전히 덮는다. */
   max-width: none;
   margin: 0 12px 12px;
+  /* 긴 이름이 든 확인 시트도 창 안에 남고, 넘치면 안에서 스크롤해 단추에 닿는다. */
+  max-height: calc(100% - 12px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   padding: 8px 20px 20px;
   border-radius: var(--ag-r-sheet);
   background: var(--n-surface-raised);
@@ -57,6 +61,7 @@
 
 .ag-sheet-layer[data-placement='center'] .ag-sheet {
   max-width: 380px;
+  max-height: 100%;
   margin: 0;
   padding: 24px;
   box-sizing: border-box;

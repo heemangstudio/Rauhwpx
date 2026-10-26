@@ -14,6 +14,10 @@ test('download filenames are leaf-only and traversal-safe', () => {
   assert.equal(sanitizeFilename('..'), 'download');
   assert.equal(sanitizeFilename('CON.txt'), '_CON.txt');
   assert.equal(sanitizeFilename('lpt9'), '_lpt9');
+  // 길이 제한이 이모지 한가운데를 자르면 내려받기 주소를 만들 수 없다.
+  const emoji = sanitizeFilename(`${'a'.repeat(175)}😀.txt`);
+  assert.equal(emoji.isWellFormed(), true);
+  assert.doesNotThrow(() => encodeURIComponent(emoji));
   assert.equal(isPathInside('/tmp/chat', '/tmp/chat/file.txt'), true);
   assert.equal(isPathInside('/tmp/chat', '/tmp/escape.txt'), false);
 });

@@ -607,6 +607,11 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   padding-block: 12px;
 }
 
+/* 입력기 위 자리가 모자라 패널 높이를 줄이면(popup-fit) 안에서 스크롤해 모델·생각 깊이에 닿는다. */
+.ag-composer > .ag-config-panel.ag-open .ag-config-panel-inner {
+  overflow-y: auto;
+}
+
 .ag-config-group {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);

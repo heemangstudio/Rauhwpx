@@ -315,3 +315,30 @@ test('the mock gift proxy streams OpenAI chunks, meters usage and enforces its g
   assert.equal(broke.status, 402);
   assert.match((await broke.json()).error.message, /Insufficient credits/);
 });
+
+test('a status answer that arrives after the license is removed does not bring the gift back', async () => {
+  let lease = 'lease-before-deactivation';
+  let entered;
+  const asked = new Promise((resolve) => { entered = resolve; });
+  let answer;
+  const late = new Promise((resolve) => { answer = resolve; });
+  const changes = [];
+  const manager = createGiftManager({
+    client: createGiftClient({ baseUrl: BASE, fetchImpl: async () => { entered(); return late; } }),
+    currentLease: async () => lease,
+    platform: 'darwin',
+    onChange: (status) => changes.push(status.available),
+    log: quiet,
+  });
+  const pending = manager.status({ refresh: true });
+  await asked;
+  lease = null;
+  assert.equal((await manager.licenseChanged()).available, false);
+  answer(new Response(JSON.stringify({
+    ok: true, event: { id: 'gift', active: true, amountUsd: 5 }, eligible: true, claimed: true,
+    remainingUsd: 5, usedUsd: 0, claimedAt: null,
+  }), { status: 200 }));
+  const stale = await pending;
+  assert.equal(stale.available, false);
+  assert.equal(changes.includes(true), false);
+});

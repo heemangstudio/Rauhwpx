@@ -337,6 +337,7 @@ import {
 } from './turn-interruption-row.ts';
 import { createRequestCardController } from './request-card.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
+import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
@@ -718,6 +719,35 @@ interface ActivityTranscriptState {
 }
 
 const SIDEBAR_WIDTH_KEY = 'rhwp-agent-sidebar-width-v3';
+/**
+ * 채팅별로 보내지 않은 입력 글. 새로 고침·업데이트 재시작 뒤에도 같은 채팅을 열면 돌아온다.
+ * 첨부 파일은 남기지 않는다. 오래된 채팅의 글이 끝없이 쌓이지 않게 최근 것만 둔다.
+ */
+const COMPOSER_DRAFT_TEXT_KEY = 'rhwp-agent-composer-draft-text-v1';
+const COMPOSER_DRAFT_TEXT_MAX_CHATS = 50;
+
+function readStoredDraftTexts(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(COMPOSER_DRAFT_TEXT_KEY) ?? '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function storeDraftText(threadId: string, text: string): void {
+  const drafts = readStoredDraftTexts();
+  if (drafts[threadId] === (text || undefined)) return;
+  delete drafts[threadId];
+  if (text) drafts[threadId] = text;
+  const entries = Object.entries(drafts).slice(-COMPOSER_DRAFT_TEXT_MAX_CHATS);
+  try {
+    if (entries.length) localStorage.setItem(COMPOSER_DRAFT_TEXT_KEY, JSON.stringify(Object.fromEntries(entries)));
+    else localStorage.removeItem(COMPOSER_DRAFT_TEXT_KEY);
+  } catch {
+    // 저장소가 가득 찼거나 막혔으면 초안은 이번 화면에만 남는다.
+  }
+}
 const SIDEBAR_WIDTH_DEFAULT = 480;
 /* 레이아웃 전·측정 실패 시 바닥. 실제 최솟값은 입력기 하단 한 줄의
    묶인 폭으로 매 프레임 다시 잰다. */
@@ -811,7 +841,8 @@ function transferHasFiles(data: DataTransfer | null): boolean {
 
 function maxSidebarWidth(minWidth: number, viewportWidth = window.innerWidth): number {
   const viewport = Number.isFinite(viewportWidth) ? viewportWidth : minWidth * 2;
-  return Math.max(minWidth, Math.floor(viewport * 0.5));
+  // 창이 최소 폭보다 좁으면 창 폭에 맞춘다. 넘치면 사이드바가 왼쪽 밖으로 밀려 단추를 누를 수 없다.
+  return Math.min(Math.floor(viewport), Math.max(minWidth, Math.floor(viewport * 0.5)));
 }
 
 function clampSidebarWidth(
@@ -2683,6 +2714,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const menu of [providerMenu, llmMenu]) {
       menu.setAttribute('aria-hidden', open ? 'false' : 'true');
     }
+    // 펼친 입력기 줄이 자리를 잡는 전환이 끝나면 한 번 더 잰다.
+    if (open) {
+      fitPopupAboveViewportTop(configPanel);
+      configPanel.addEventListener('transitionend', () => {
+        if (configPanelOpen) fitPopupAboveViewportTop(configPanel);
+      }, { once: true });
+    }
   }
 
   const onDocPointerDown = (e: PointerEvent) => {
@@ -2691,18 +2729,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!composer.contains(t)) setConfigPanelOpen(false);
   };
   document.addEventListener('pointerdown', onDocPointerDown);
+  // 모드 메뉴도 입력기 안에 있어 위 규칙으로는 설정 패널이 닫히지 않는다. 둘이 겹쳐 열리면
+  // 모드 메뉴가 모델·생각 깊이 단추를 덮는다.
+  for (const type of ['click', 'keydown'] as const) {
+    modeMenu.trigger.addEventListener(type, () => {
+      if (modeMenu.trigger.getAttribute('aria-expanded') === 'true') setConfigPanelOpen(false);
+    });
+  }
 
   /* Esc 로 전체 화면을 접는다. 설정 패널이 열려 있으면 그쪽이 먼저
      닫히고, 입력 중 IME 조합은 가로채지 않는다. */
   const onDocKeyDown = (e: KeyboardEvent) => {
-    if (!active || e.key !== 'Escape' || !fullscreen) return;
+    if (!active || e.key !== 'Escape') return;
     // 슬래시 메뉴·팝오버처럼 먼저 Esc 를 받은 쪽이 있으면 모드는 그대로 둔다.
     if (e.isComposing || e.defaultPrevented) return;
+    // 설정 패널은 전체 화면이 아니어도 Esc 로 닫힌다(초점이 입력칸으로 옮겨 갔어도).
     if (configPanelOpen) {
       setConfigPanelOpen(false);
       e.preventDefault();
       return;
     }
+    if (!fullscreen) return;
     if (workbench?.isOpen()) {
       workbench.select(null);
       workspacePanelBtn.focus({ preventScroll: true });
@@ -2991,11 +3038,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     } else {
       threadComposerDrafts.delete(currentThread.id);
     }
+    storeDraftText(currentThread.id, input.value);
+  }
+
+  /** 화면을 떠나기 전(새로 고침·업데이트 재시작) 지금 채팅의 입력 글을 남긴다. */
+  function persistComposerDraftText(): void {
+    if (readOnlyDocLabel !== null || root.dataset.disposed === 'true') return;
+    // 질문의 직접 답변은 질문 초안에 남는다. 여기서는 빌리기 전의 메시지 글을 남긴다.
+    storeDraftText(currentThread.id, questionController.composerMessageText());
   }
 
   function restoreThreadComposerDraft(): void {
     const draft = threadComposerDrafts.get(currentThread.id);
-    input.value = draft?.text ?? '';
+    input.value = draft?.text ?? readStoredDraftTexts()[currentThread.id] ?? '';
     if (draft?.files.length) referenceLibrary.stageDraftFiles(draft.files);
     composerMentions?.set(draft?.mentions ?? []);
     // 이 채팅의 질문이 직접 입력 중이었으면 되살린 초안을 맡기고 답을 다시 보인다.
@@ -4197,7 +4252,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   window.addEventListener('focus', onWindowRefocus);
   // 창을 닫거나 새로고침하기 전에 모아 둔 도구 기록을 쓴다.
-  const onPageHide = (): void => flushTranscriptPersist();
+  const onPageHide = (): void => {
+    persistComposerDraftText();
+    flushTranscriptPersist();
+  };
   window.addEventListener('pagehide', onPageHide);
   composer.addEventListener('focusin', (event) => {
     if (!composerRest.resting || event.target === send || windowRefocusFrame !== null) return;
@@ -6602,6 +6660,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
     const open = slashOptions.length > 0;
     setSlashMenuOpen(open);
+    fitPopupAboveViewportTop(slashMenu);
     if (open) input.setAttribute('aria-activedescendant', `ag-slash-option-${slashIndex}`);
   }
 
@@ -13722,7 +13781,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       });
     },
     persistThread(): void {
-      if (root.dataset.disposed !== 'true') flushTranscriptPersist();
+      if (root.dataset.disposed !== 'true') {
+        persistComposerDraftText();
+        flushTranscriptPersist();
+      }
     },
     reportSnapshot() {
       return {

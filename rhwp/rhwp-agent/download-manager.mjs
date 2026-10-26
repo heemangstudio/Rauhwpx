@@ -144,7 +144,9 @@ export function sanitizeFilename(value, fallback = 'download') {
   }
   const ext = path.extname(safe);
   const stemLimit = Math.max(1, 180 - ext.length);
-  return `${path.basename(safe, ext).slice(0, stemLimit)}${ext.slice(0, 30)}`;
+  // UTF-16 단위로 자르므로 이모지 같은 서로게이트 쌍의 앞 절반만 남으면 버린다.
+  const truncated = path.basename(safe, ext).slice(0, stemLimit).replace(/[\uD800-\uDBFF]$/, '');
+  return `${truncated}${ext.slice(0, 30)}`;
 }
 
 /** 연구 기록에는 인증 정보·서명 쿼리·페이지 조각을 남기지 않는다. blob 주소도 저장하지 않는다. */

@@ -1595,6 +1595,11 @@ export class StaleNativeHandleError extends Error {
 export class NativeFileHandleRegistry {
   #byId = new Map();
   #byPath = new Map();
+  /**
+   * 창마다 문서를 놓은 횟수(닫힘·렌더러 종료). 열기가 끝나기 전에 늘면 그 열기는 쥐지 않는다.
+   * 크래시 뒤 같은 창이 다시 열 수 있게 집합이 아니라 횟수로 센다.
+   */
+  #sessionReleases = new Map();
   #bookmarks = new Map();
   #probes = new Map();
   #canonicalize;
@@ -1659,6 +1664,7 @@ export class NativeFileHandleRegistry {
   }
 
   async create(sessionId, filePath, { allowMissing = false } = {}) {
+    const releases = this.#sessionReleases.get(sessionId) ?? 0;
     const canonicalPath = await this.#canonicalize(filePath, { allowMissing });
     let legacyPortableHistoryFolder = false;
     if (isPortableHistoryBundleName(canonicalPath)) {
@@ -1710,6 +1716,11 @@ export class NativeFileHandleRegistry {
     if (concurrent) {
       concurrent.releaseRequested = false;
       return { ok: true, descriptor: this.#descriptor(concurrent), created: false };
+    }
+    // 지문을 재는 사이 창이 닫혔으면 정리는 이미 끝났다. 여기서 쥐면 없는 창이 파일을 계속 쥐어
+    // 다른 창에서도 열 수 없다.
+    if ((this.#sessionReleases.get(sessionId) ?? 0) !== releases) {
+      throw new Error('The window closed before the document finished opening');
     }
 
     const entry = {
@@ -2350,6 +2361,7 @@ export class NativeFileHandleRegistry {
   }
 
   releaseSession(sessionId) {
+    this.#sessionReleases.set(sessionId, (this.#sessionReleases.get(sessionId) ?? 0) + 1);
     for (const [handleId, entry] of this.#byId) {
       if (entry.sessionId !== sessionId) continue;
       if (entry.activeWrites > 0) {
