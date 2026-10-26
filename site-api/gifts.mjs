@@ -412,9 +412,10 @@ export function createGiftsService({
     if (!capped) payload.max_tokens = maxOutputTokens;
   }
 
+  /** Only the gift key's own limit. A 402 for the owner's account balance passes through as is. */
   function isGiftExhausted(status, body) {
     const source = body?.error?.metadata?.limit_source;
-    if (status === 402) return source !== 'openrouter_in_flight_budget';
+    if (status === 402) return source === 'openrouter_key_limit';
     return status === 403 && (source === 'openrouter_key_limit' || /key limit exceeded/i.test(String(body?.error?.message ?? '')));
   }
 

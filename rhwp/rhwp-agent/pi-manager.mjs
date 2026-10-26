@@ -920,7 +920,15 @@ export function createPiManager({
     giftCredentials = next;
     giftCheckedAt = now();
     await resumeOwnKeyIfFunded();
-    if (!next?.active) return currentStatus();
+    if (!next?.active) {
+      // 다 쓴 뒤 0 으로 보이는 잔액도 기준으로 삼아야, 그 뒤 조금 채운 크레딧에서 다시 쓴다.
+      if (config.gift.exhaustedAt && config.gift.eventId === next?.eventId && next.remainingUsd !== null
+        && next.remainingUsd < (config.gift.exhaustedRemainingUsd ?? 0) && !closed) {
+        config.gift.exhaustedRemainingUsd = next.remainingUsd;
+        await serialized(() => persistConfig()).catch(() => {});
+      }
+      return currentStatus();
+    }
     rememberLease(next.lease);
     try {
       let changed = false;
@@ -1101,7 +1109,7 @@ export function createPiManager({
         });
       } catch (error) {
         if (error?.status === 402) {
-          void markGiftExhausted({ confirmed: /insufficient credits/i.test(String(error?.message ?? '')) });
+          void markGiftExhausted({ confirmed: /HamaEditor gift credit/i.test(String(error?.message ?? '')) });
         }
         throw error;
       }

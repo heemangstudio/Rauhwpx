@@ -55,7 +55,7 @@ const OWN_CATALOG = [
  */
 function fakeNetwork() {
   const calls = [];
-  const state = { giftCredits: 1, ownBalance: 8 };
+  const state = { giftCredits: 1, ownBalance: 8, ownerAccountEmpty: false };
   const json = (status, body) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json' },
   });
@@ -72,7 +72,10 @@ function fakeNetwork() {
       }
       if (route === '/chat/completions') {
         if (state.giftCredits <= 0) {
-          return json(402, { error: { code: 402, message: 'Insufficient credits. This gift has no remaining balance.' } });
+          return json(402, { error: { code: 402, message: 'Insufficient credits: the HamaEditor gift credit for this license is used up.' } });
+        }
+        if (state.ownerAccountEmpty) {
+          return json(402, { error: { code: 402, message: 'Insufficient credits. Add more using https://openrouter.ai/credits' } });
         }
         const body = JSON.parse(init.body);
         return json(200, { choices: [{ message: { content: `gift:${body.model}` } }] });
@@ -238,6 +241,34 @@ test('a gift 402 is sticky for the event and falls back to the own key', async (
   assert.equal(next.credential, 'gift');
 });
 
+test('a used-up gift the desktop reports as inactive at $0 comes back after a small top-up', async (t) => {
+  const { manager, source, network } = await setUpManager(t);
+  await activateGift(source, manager); // 마지막으로 본 잔액 $18.40
+  network.state.giftCredits = 0;
+  await assert.rejects(
+    manager.router.chat({ key: manager.apiKey(), model: 'anthropic/claude-haiku-4.5', messages: [] }),
+    (error) => error.status === 402,
+  );
+  await manager.flush();
+  // 데스크톱은 잔액이 0 이면 active 를 끈다.
+  source.set(giftCredentials({ active: false, lease: null, remainingUsd: 0 }));
+  assert.equal((await manager.refreshGift({ refresh: true })).credential, 'own');
+  source.set(giftCredentials({ remainingUsd: 5 }));
+  assert.equal((await manager.refreshGift({ refresh: true })).credential, 'gift');
+});
+
+test('a 402 for the owner\'s OpenRouter balance keeps a gift that still has credit', async (t) => {
+  const { manager, source, network } = await setUpManager(t);
+  await activateGift(source, manager);
+  network.state.ownerAccountEmpty = true;
+  await assert.rejects(
+    manager.router.chat({ key: manager.apiKey(), model: 'anthropic/claude-haiku-4.5', messages: [] }),
+    (error) => error.status === 402,
+  );
+  await manager.flush();
+  assert.equal(manager.access().mode, 'gift');
+});
+
 test('a gift 402 without an own key leaves Pi with the reconnect message', async (t) => {
   const { manager, source } = await setUpManager(t, { ownKey: false });
   await activateGift(source, manager);
@@ -246,7 +277,7 @@ test('a gift 402 without an own key leaves Pi with the reconnect message', async
   session.sendUserMessage('hi');
   const { proc } = spawns[0];
   proc.emitJson(
-    { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '402: {"code":402,"message":"Insufficient credits. This gift has no remaining balance."}' } },
+    { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '402: {"code":402,"message":"Insufficient credits: the HamaEditor gift credit for this license is used up."}' } },
     { type: 'agent_settled' },
   );
   proc.exit(0);
