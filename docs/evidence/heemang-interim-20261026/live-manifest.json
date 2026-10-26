@@ -1,0 +1,12 @@
+{
+  "scope": "INTERIM",
+  "studio": "763198d9a3a734b415ed02fc3afb35cf69f37124",
+  "engine": "a6e01e98240f4bb78390d450f59443b34c411b23",
+  "wasm_sha256": "2ddeb93702a1c97539ef77402a23ba9a053fee4467c4b05e911836e464af86a7",
+  "candidate": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-perf-interim",
+  "scenario": "actual editor missing picture file chooser, cancel, invalid PNG, assignment, Undo/Redo and both saved-format reopens",
+  "provider": "fixture local hub; no provider calls",
+  "exit_code": 0,
+  "source_unchanged": true,
+  "package_unchanged": true
+}

@@ -1,0 +1,92 @@
+{
+  "status": "native GREEN; fresh live WASM save/reopen still pending",
+  "base": "f6ed9431b816d2ed13a7c1c67f242602fd7ff4d7",
+  "cli": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-conversion-fields-9930e2f18197",
+  "cli_sha256": "9930e2f181976cd30ce233653a9aff5a3ecc5e30c4b9020988885323e54b598e",
+  "source_sha256": {
+    "crates/hm-edit/src/lines.rs": "57885a2b91dd90a970421d50463e0f432b9db91f4621d864c00751045b73d2f0",
+    "crates/hm-edit/tests/conversion_membership.rs": "9ab4512d1836c684db6d1abd705a472fba309878f8f507c65d5a36c1e6098fab"
+  },
+  "rows": [
+    {
+      "format": "original",
+      "bytes": 13639865,
+      "pages": 384,
+      "sections": [
+        "  section 0: 97 paragraphs, paper 55559x75402 HU, 8 pages",
+        "  section 1: 166 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 2: 999 paragraphs, paper 55559x75402 HU, 101 pages",
+        "  section 3: 73 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 4: 94 paragraphs, paper 55559x75402 HU, 20 pages",
+        "  section 5: 149 paragraphs, paper 55559x75402 HU, 17 pages",
+        "  section 6: 102 paragraphs, paper 55559x75402 HU, 10 pages",
+        "  section 7: 439 paragraphs, paper 55559x75402 HU, 52 pages",
+        "  section 8: 46 paragraphs, paper 55559x75402 HU, 6 pages",
+        "  section 9: 265 paragraphs, paper 55559x75402 HU, 26 pages",
+        "  section 10: 117 paragraphs, paper 55559x75402 HU, 32 pages",
+        "  section 11: 5 paragraphs, paper 75402x55559 HU, 60 pages",
+        "  section 12: 62 paragraphs, paper 75402x55559 HU, 15 pages",
+        "  section 13: 4 paragraphs, paper 55559x75402 HU, 1 pages"
+      ],
+      "text_sha256": "c8745b1b0e914818b0f14e4b542607dd00a98d94f905b4cd11db9a41422aa4f4",
+      "text_bytes": 575917
+    },
+    {
+      "format": "hwp",
+      "bytes": 8885760,
+      "pages": 384,
+      "sections": [
+        "  section 0: 97 paragraphs, paper 55559x75402 HU, 8 pages",
+        "  section 1: 166 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 2: 999 paragraphs, paper 55559x75402 HU, 101 pages",
+        "  section 3: 73 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 4: 94 paragraphs, paper 55559x75402 HU, 20 pages",
+        "  section 5: 149 paragraphs, paper 55559x75402 HU, 17 pages",
+        "  section 6: 102 paragraphs, paper 55559x75402 HU, 10 pages",
+        "  section 7: 439 paragraphs, paper 55559x75402 HU, 52 pages",
+        "  section 8: 46 paragraphs, paper 55559x75402 HU, 6 pages",
+        "  section 9: 265 paragraphs, paper 55559x75402 HU, 26 pages",
+        "  section 10: 117 paragraphs, paper 55559x75402 HU, 32 pages",
+        "  section 11: 5 paragraphs, paper 75402x55559 HU, 60 pages",
+        "  section 12: 62 paragraphs, paper 75402x55559 HU, 15 pages",
+        "  section 13: 4 paragraphs, paper 55559x75402 HU, 1 pages"
+      ],
+      "text_sha256": "c8745b1b0e914818b0f14e4b542607dd00a98d94f905b4cd11db9a41422aa4f4",
+      "text_bytes": 575917
+    },
+    {
+      "format": "hwpx",
+      "bytes": 64538181,
+      "pages": 384,
+      "sections": [
+        "  section 0: 97 paragraphs, paper 55559x75402 HU, 8 pages",
+        "  section 1: 166 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 2: 999 paragraphs, paper 55559x75402 HU, 101 pages",
+        "  section 3: 73 paragraphs, paper 55559x75402 HU, 18 pages",
+        "  section 4: 94 paragraphs, paper 55559x75402 HU, 20 pages",
+        "  section 5: 149 paragraphs, paper 55559x75402 HU, 17 pages",
+        "  section 6: 102 paragraphs, paper 55559x75402 HU, 10 pages",
+        "  section 7: 439 paragraphs, paper 55559x75402 HU, 52 pages",
+        "  section 8: 46 paragraphs, paper 55559x75402 HU, 6 pages",
+        "  section 9: 265 paragraphs, paper 55559x75402 HU, 26 pages",
+        "  section 10: 117 paragraphs, paper 55559x75402 HU, 32 pages",
+        "  section 11: 5 paragraphs, paper 75402x55559 HU, 60 pages",
+        "  section 12: 62 paragraphs, paper 75402x55559 HU, 15 pages",
+        "  section 13: 4 paragraphs, paper 55559x75402 HU, 1 pages"
+      ],
+      "text_sha256": "c8745b1b0e914818b0f14e4b542607dd00a98d94f905b4cd11db9a41422aa4f4",
+      "text_bytes": 575917
+    }
+  ],
+  "exact_reopened_connector_routes": 20,
+  "source_input_sha256": "c6dd7e847a99f219681afc5a29c80a9665c04df9cda4d820a3350d739664fdf6",
+  "portable_conversion_tests": {
+    "passed": 14,
+    "failed": 0,
+    "ignored": 0
+  },
+  "red_test": "Repeated real page-number text box across >=10 pages fails original guard after proving digit-dependent glyph count/width",
+  "serialized_geometry_policy": "Only first_item, end_item and used are excluded from repeated-layout comparison. All wire membership, stored geometry and remaining line facts remain strict; existing conflicting section width test still passes.",
+  "live_status": "Original INTERIM browser reproduced failure; fixed native passed. Fresh fixed WASM browser save/reopen pending.",
+  "commit": "f6281d4"
+}
