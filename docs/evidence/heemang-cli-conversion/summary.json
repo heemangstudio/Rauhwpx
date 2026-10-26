@@ -1,0 +1,35 @@
+{
+  "scope": "CLI cross-format conversion only; no rendering/WASM source changes or final RC qualification.",
+  "commit": "c61c8434d968925d424f5f5238331174070679c0",
+  "binary": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-cli-inactive-furniture-5034ac22e5e2",
+  "binary_sha256": "5034ac22e5e2c872b96b6dcbc4216e8c9921f465bea8bd622a7e41445e2dd2d1",
+  "source_files": {
+    "crates/hm-cli/src/main.rs": "4734ac22c8a1f6de02961f071e4b75800426c58f6ece435b4f7960381f80d258",
+    "crates/hm-cli/tests/conversion.rs": "44682ccca9e3bda001adbac8cf845638bd76424c4365a10d48bd8e66b97a0198"
+  },
+  "cause": "CLI omitted fonts when selecting conversion line membership, unlike the existing WASM path. Existing font-aware helper measures inactive/superseded furniture without adding pages.",
+  "red": "Real CLI test failed on unchanged source with no current layout for inactive header.",
+  "green": {
+    "cli_tests_passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "regression": "Real CLI HWPX→HWP5→HWPX preserves inactive header/footer, superseded odd header, current odd header, parity, source bytes and one-page count."
+  },
+  "original": {
+    "source_sha256": "1121cdabe5929d7aa68704d0516488852bcdc78b4f4b368ad054e8c121d04023",
+    "old_oracle_export": true,
+    "saved_output_sha256": "4cac1432a68106edd75393e3388be1cbb1494f20d16c910c0b045962047c9492",
+    "reopened": true,
+    "text_bytes": 144456,
+    "text_equal": true,
+    "sections": 5,
+    "body_paragraphs": 956,
+    "fonted_pages": 122,
+    "fonted_info_equal_except_format": true
+  },
+  "logs": {
+    "test-red.log": "2145cdb499c09c33d5b236d1728ad3ea1a8dba9e5d6f6be589c6f6908f60eb88",
+    "test-green.log": "b2497235703f38710a94e2741bd595570cdc1ce166a996589a081695e5b708ec",
+    "test-cli.log": "37944f088b84a679947fb756ac3242f6e476c002b298d56a996495a5d680c144"
+  }
+}
