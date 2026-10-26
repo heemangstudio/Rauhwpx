@@ -101,10 +101,12 @@ function followChrome(container: HTMLElement): void {
       if (container.childElementCount > 0) placeContainer(container);
     });
   };
-  new MutationObserver(schedule).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class'],
-  });
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(schedule).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+  }
   const header = document.getElementById('studio-header');
   if (header && typeof ResizeObserver !== 'undefined') new ResizeObserver(schedule).observe(header);
   window.addEventListener('resize', schedule);
