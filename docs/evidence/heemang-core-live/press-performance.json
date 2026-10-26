@@ -1,0 +1,36 @@
+{
+  "qualificationScope": "FUTURE-interim",
+  "performanceQualified": false,
+  "sourceManifestSha256": "5ad7b1dff1d1e79a1f560c9098b2b559032cf9e86c9233aba16943940378eb48",
+  "typingPress": {
+    "verdict": "FAIL",
+    "runsPerApp": 7,
+    "warmupPerAppExcluded": 1,
+    "bodyBaselineP50P95Ms": [
+      18.2,
+      27.1
+    ],
+    "bodyCandidateP50P95Ms": [
+      19.3,
+      33.4
+    ],
+    "cellBaselineP50P95Ms": [
+      19.0,
+      28.0
+    ],
+    "cellCandidateP50P95Ms": [
+      19.8,
+      35.2
+    ],
+    "pageErrors": 0,
+    "resourcePreflights": 16,
+    "minimumFreeGiB": 9.610309600830078,
+    "sourceUnchanged": true,
+    "raw": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/perf-future-interim-20261026/gates/typing-press/typing/typing-2026-10-26T13-25-27-573Z.jsonl",
+    "rawSha256": "3206022dd68ce33d3d1207ed05ac0bb0bad818004332b40061dae289d883d9c8",
+    "manifestSha256": "79a8c326859aa6d514cba499f1cf18573fec22cc73cf4772d948859a148b71a0",
+    "summary": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/perf-future-interim-20261026/gates/typing-press/typing-strict-summary.txt"
+  },
+  "coldPress": "PENDING",
+  "next": "Diagnose actual input and frame task ordering before broader samples; no unchanged acceptance retry."
+}
