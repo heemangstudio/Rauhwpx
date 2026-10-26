@@ -44,7 +44,6 @@ async function initializeRuntime() {
   const engine = new Engine();
   const registered = new Set<string>();
   const sources = new Map<string, EngineFontReader>();
-  const subsetReaders = new Map<string,FontSubsetReader>();
   let faces = 0;
   const families = new Set<string>();
   const coverage = new Map<string, Uint8Array>();
@@ -110,7 +109,6 @@ async function initializeRuntime() {
       for (const face of index.faces) {
         const url = `heemang-host:${face.id}`;
         const subset: FontSubsetReader | undefined = host.readSubset ? (characters,glyphs) => host.readSubset!(face.id,characters,glyphs) : undefined;
-        if (subset) subsetReaders.set(url,subset);
         if (sources.has(url)) continue;
         addAsset({ name: face.path, url, size: face.size, families: face.families, host: true,
           ...(subset ? { subset } : {}) });
@@ -127,7 +125,7 @@ async function initializeRuntime() {
     };
     for (const request of requests.faces) want(first(request.candidates), request.text !== false);
     const defaults = first(requests.classDefaults[0]);
-    for (const name of defaults ? [defaults] : requests.classDefaults.slice(1).map(first)) want(name);
+    for (const name of defaults ? [defaults] : requests.classDefaults.slice(1).map(first)) want(name, false);
     // 한 대체 서체가 여러 후보의 빈 글자를 채울 수 있으므로 연결 뒤 다시 조회한다.
     want(first(requests.fallbacks ?? []));
     const matching = new Set([...wanted].flatMap(name => [...(assetsByFamily.get(name) ?? [])]));
@@ -152,9 +150,9 @@ async function initializeRuntime() {
       let load = pending.get(asset.url);
       if (!load) {
         load = (async () => {
-          // 빈 문단의 메트릭 face는 윤곽선을 미리 읽지 않는다. 실제 쪽 glyph는 아래 preflight가 채운다.
-          const characters = asset.subset && asset.families.some(name => outlined.has(normalize(name))) ? engine.fontCharacters() : '\0';
-          const bytes = asset.subset ? await asset.subset(characters) : await sources.get(asset.url)!();
+          // 실제 글자를 그리는 face의 원본은 이후 입력에도 쓴다. 메트릭만 필요한 face는 작게 읽는다.
+          const text = asset.families.some(name => outlined.has(normalize(name)));
+          const bytes = asset.subset && !text ? await asset.subset('\0') : await sources.get(asset.url)!();
           if (!bytes) throw new Error(`Heemang 글꼴 읽기 실패: ${asset.name}`);
           const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
           register(asset.url, view, asset.host ? undefined : asset.families, asset.name);
@@ -169,15 +167,11 @@ async function initializeRuntime() {
   const refillOutlines = async (extra: string[] = []) => {
     const paths = [...new Set([...(JSON.parse(engine.outlineRequests()) as string[]), ...extra])];
     if (!paths.length) return false;
-    const retained = JSON.parse(engine.glyphCoverage(JSON.stringify(paths))) as [string,number,number[]][];
     const loads = paths.filter(path => sources.has(path)).map(path => {
       let load = pending.get(path);
       if (!load) {
         load = (async () => {
-          const reader = subsetReaders.get(path);
-          const glyphs = retained.filter(([label]) => label === path);
-          const bytes = reader && glyphs.length === 1 && glyphs[0][1] === 0
-            ? await reader(engine.fontCharacters(),glyphs[0][2]) : await sources.get(path)!();
+          const bytes = await sources.get(path)!();
           if (!bytes) throw new Error(`Heemang 글꼴 다시 읽기 실패: ${path}`);
           register(path, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), [], path, true);
         })().finally(() => pending.delete(path));

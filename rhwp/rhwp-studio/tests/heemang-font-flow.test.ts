@@ -126,6 +126,31 @@ test('missing primary default selects only first available families from remaini
   assert.equal(env.events[4],'layout'); assert.equal(env.plans,0);
 });
 
+test('text faces read their complete source while metrics faces stay sparse until an actual outline request', async () => {
+  const { HeemangAdapter } = await setup([], () => ({
+    faces:[{candidates:['Body']},{candidates:['Metrics'],text:false}],classDefaults:[['Metrics']],fallbacks:[],
+  }));
+  env.index = {faces:[
+    {id:'body',path:'/fonts/body.ttf',size:4,families:['Body']},
+    {id:'metrics',path:'/fonts/metrics.ttf',size:4,families:['Metrics']},
+  ]};
+  const reads: string[] = [];
+  env.host = {
+    read:async (id: string) => { reads.push(`full:${id}`); return new Uint8Array(4).fill(id === 'body' ? 1 : 2); },
+    readSubset:async (id: string, characters: string) => {
+      assert.equal(characters,'\0'); reads.push(`sparse:${id}`); return new Uint8Array(4).fill(2);
+    },
+  };
+  env.families.set(1,['Body']); env.families.set(2,['Metrics']);
+  const adapter = new HeemangAdapter(); await adapter.initialize(); adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  await adapter.prepareFonts(['Body','Metrics'],{});
+  assert.deepEqual(reads,['full:body','sparse:metrics']);
+  env.outlines = ['heemang-host:metrics'];
+  adapter.renderPageToCanvas(0,canvas(),1); await tick();
+  assert.deepEqual(reads,['full:body','sparse:metrics','full:metrics']);
+  assert.equal(env.registered.filter((label: string) => label === 'heemang-host:metrics').length,2);
+});
+
 function canvas() {
   const ctx = {fillRect() {}};
   return {width:0,height:0,dataset:{},isConnected:true,getContext:() => ctx} as any;
