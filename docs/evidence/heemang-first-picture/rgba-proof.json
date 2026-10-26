@@ -1,0 +1,98 @@
+{
+  "scope": "FUTURE-first-picture-correctness; latency excluded",
+  "source": "1493aa57ed8e6bcf39ac9b6b905e1ac8ead3e5fa",
+  "wasm": "2ddeb93702a1c97539ef77402a23ba9a053fee4467c4b05e911836e464af86a7",
+  "rows": [
+    {
+      "doc": "mixed",
+      "first_ink": 1836,
+      "settled_ink": 1836,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/mixed-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/mixed-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "ebc8048e91359d84fc4b1b6560f235c197ba19baaaa61d244a9a46b0bf1aae6b",
+          "settled_rgba_sha256": "ebc8048e91359d84fc4b1b6560f235c197ba19baaaa61d244a9a46b0bf1aae6b"
+        }
+      ],
+      "page_errors": []
+    },
+    {
+      "doc": "table",
+      "first_ink": 1873,
+      "settled_ink": 1873,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/table-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/table-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "4b0f773a9d4ac523f8fa1b0bb2cc230e04a1f27c01c436bca70f0637616bae0c",
+          "settled_rgba_sha256": "4b0f773a9d4ac523f8fa1b0bb2cc230e04a1f27c01c436bca70f0637616bae0c"
+        }
+      ],
+      "page_errors": []
+    },
+    {
+      "doc": "press",
+      "first_ink": 21117,
+      "settled_ink": 21117,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/press-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/press-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "de3d70121fb21e9fbc972b8ca2749c531b19a174b5c11cf9a82fa5bf06cec8f7",
+          "settled_rgba_sha256": "de3d70121fb21e9fbc972b8ca2749c531b19a174b5c11cf9a82fa5bf06cec8f7"
+        }
+      ],
+      "page_errors": []
+    },
+    {
+      "doc": "footnote",
+      "first_ink": 6901,
+      "settled_ink": 6901,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/footnote-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/footnote-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "fc18b375e87396d20b6e3ba8d405dc38d84538d44b9bd9d15f324e1babf8c62b",
+          "settled_rgba_sha256": "fc18b375e87396d20b6e3ba8d405dc38d84538d44b9bd9d15f324e1babf8c62b"
+        }
+      ],
+      "page_errors": []
+    },
+    {
+      "doc": "report",
+      "first_ink": 3174,
+      "settled_ink": 3174,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/report-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/report-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "aa4e984d424a4daaba17926ebf05265863921e4fdda5960e5511899664dd7ea1",
+          "settled_rgba_sha256": "aa4e984d424a4daaba17926ebf05265863921e4fdda5960e5511899664dd7ea1"
+        }
+      ],
+      "page_errors": []
+    },
+    {
+      "doc": "footnoteHwpx",
+      "first_ink": 6901,
+      "settled_ink": 6901,
+      "pairs": [
+        {
+          "first": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/footnoteHwpx-firstCanvases-0.png",
+          "settled": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/rc-first-picture/live-accuracy-resource-resume1/footnoteHwpx-settledCanvases-0.png",
+          "changed_pixels": 0,
+          "first_rgba_sha256": "fc18b375e87396d20b6e3ba8d405dc38d84538d44b9bd9d15f324e1babf8c62b",
+          "settled_rgba_sha256": "fc18b375e87396d20b6e3ba8d405dc38d84538d44b9bd9d15f324e1babf8c62b"
+        }
+      ],
+      "page_errors": []
+    }
+  ],
+  "all_rgba_exact": true
+}

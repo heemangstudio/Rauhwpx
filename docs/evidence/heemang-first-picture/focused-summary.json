@@ -1,0 +1,10 @@
+{
+  "red_exit": 1,
+  "green_exit": 0,
+  "base": "b68700d3de07f2d7b878ddbdff60f254425bc759",
+  "source_sha256": {
+    "rhwp/rhwp-studio/src/core/heemang-adapter.ts": "013e263b7f4437cf82c6654e252a2d0b3bbec62dd1d1ce3568fe1e202a445b1a",
+    "rhwp/rhwp-studio/src/view/heemang-player.ts": "d866046ee8475f5cbfb99dd2e0ca31b9f725529574fa06bba403b6266d0ee30c"
+  },
+  "tsc_exit": 0
+}
