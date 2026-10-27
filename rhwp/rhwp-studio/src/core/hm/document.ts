@@ -42,9 +42,17 @@ export function releaseDocument(core: HmCore): void {
   core.noteDocumentReplaced();
 }
 
+/**
+ * 문서를 들인 직후의 정보. 글꼴을 준비하기 전에는 조판하지 않도록 쪽·구역 수를 세지 않는다(0쪽, 1구역).
+ * 편집기는 글꼴을 준비한 뒤 getDocumentInfo 로 다시 읽는다. 글꼴을 준비하지 않는 사본 브리지도 getDocumentInfo 를 읽는다.
+ */
+function loadedInfo(core: HmCore): DocumentInfo {
+  return core.adapter.fontsReady ? getDocumentInfo(core) : core.adapter.getDocumentInfo();
+}
+
 function adoptLoaded(core: HmCore): DocumentInfo {
   core.noteDocumentReplaced();
-  return getDocumentInfo(core);
+  return loadedInfo(core);
 }
 
 export function loadDocument(core: HmCore, data: Uint8Array, fileName?: string): DocumentInfo {
@@ -136,7 +144,7 @@ export function replaceContentFromBytes(core: HmCore, data: Uint8Array): Documen
       throw engineError(error);
     }
     core.noteDocumentReplaced();
-    return getDocumentInfo(core);
+    return loadedInfo(core);
   }
   const name = adapter.fileName;
   const handle = adapter.currentFileHandle;
@@ -148,7 +156,7 @@ export function replaceContentFromBytes(core: HmCore, data: Uint8Array): Documen
   adapter.currentFileHandle = handle;
   if (digest) adapter.adoptSourceDigest(digest);
   if (prepared) adapter.markFontsPrepared();
-  return getDocumentInfo(core);
+  return loadedInfo(core);
 }
 
 export function getFontMetricsPolicy(_core: HmCore): string {
@@ -385,11 +393,10 @@ export function refreshLayout(core: HmCore): void {
   core.noteDocumentReplaced();
 }
 
+/** 쪽·구역 수는 글꼴 준비와 상관없이 pageCount·getSectionCount 와 같다. */
 export function getDocumentInfo(core: HmCore): DocumentInfo {
   if (!core.hasDocument()) throw new Error(NO_DOCUMENT);
-  const info = core.adapter.getDocumentInfo();
-  if (!core.adapter.fontsReady) return info;
-  return { ...info, sectionCount: getSectionCount(core), pageCount: pageCount(core) };
+  return { ...core.adapter.getDocumentInfo(), sectionCount: getSectionCount(core), pageCount: pageCount(core) };
 }
 
 export function renderPageToCanvas(core: HmCore, pageNum: number, canvas: HTMLCanvasElement, scale: number): void {

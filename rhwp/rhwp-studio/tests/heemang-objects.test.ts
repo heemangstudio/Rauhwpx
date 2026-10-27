@@ -92,6 +92,20 @@ test('table formulas keep the dialog result contract and report a bad formula wi
   assert.deepEqual(core.state(), state);
 });
 
+test('a bridge whose fonts were never prepared reports the same page count in its document info', t => {
+  const engine = new Engine();
+  const doc = engine.open(blank);
+  t.after(() => { doc.free(); engine.free(); });
+  // 비교·버전 사본 브리지처럼 글꼴 준비를 거치지 않는다. 어댑터의 들인 직후 정보는 쪽 수를 세지 않는다.
+  const core = new HmCore({ documentInstance: 3, hmDoc: () => doc, hasLoadedDocument: () => true, fontsReady: false,
+    getDocumentInfo: () => ({ version: 'hm-wasm/1', sectionCount: 1, pageCount: 0, encrypted: false, fallbackFont: '', fontsUsed: [] }),
+    applyReceipt() {}, refreshLayout() {}, getSectionCount: () => 1 } as unknown as HeemangAdapter);
+  const info = api.getDocumentInfo(core);
+  assert.ok(api.pageCount(core) > 0);
+  assert.equal(info.pageCount, api.pageCount(core));
+  assert.equal(info.sectionCount, api.getSectionCount(core));
+});
+
 test('picture insertion, selection geometry, move and resize survive save and undo', t => {
   const { core, doc } = open(t);
   const result = api.insertPicture(core, 0, 0, 0, '[]', png, 7200, 5400, 96, 72, 'png', '그림', 7000, 8000, 'floating');
