@@ -464,6 +464,30 @@ function finiteTokens(value) {
 }
 
 /**
+ * 완성된 text 블록을 스트리밍된 블록과 맞추고, 아직 화면에 없는 뒷부분만 돌려준다.
+ * CLI 는 블록마다 assistant 이벤트를 따로 보내므로 배열 위치는 늘 0 이다 — 스트림 index 로
+ * 맞추면 thinking 이나 앞 블록 뒤의 text 를 처음부터 다시 보낸다. 그래서 아직 맞추지 않은
+ * 스트림 블록을 순서대로 쓴다. 접두가 아닌 고쳐 쓴 본문과 다시 온 같은 블록은 보내지 않는다.
+ */
+function settleStreamedText(message, text) {
+  message.settled ??= new Set();
+  const keys = [...message.blocks.keys()].sort((a, b) => a - b);
+  const open = keys.filter((key) => !message.settled.has(key));
+  const key = open.find((k) => text.startsWith(message.blocks.get(k)));
+  if (key !== undefined) {
+    const suffix = text.slice(message.blocks.get(key).length);
+    message.blocks.set(key, text);
+    message.settled.add(key);
+    return suffix;
+  }
+  if (open.length || keys.some((k) => message.blocks.get(k) === text)) return '';
+  const fresh = keys.length ? keys[keys.length - 1] + 1 : 0;
+  message.blocks.set(fresh, text);
+  message.settled.add(fresh);
+  return text;
+}
+
+/**
  * @param {import('./backend.mjs').BackendOptions} opts
  * @returns {import('./backend.mjs').AgentSession}
  */
@@ -1182,7 +1206,7 @@ export function createClaudeSession(opts, {
         // 로컬 명령의 합성 응답은 사용량이 0 이다 — 콘텍스트 크기로 치지 않는다.
         if (contextTokens > 0) lastContextTokens = contextTokens;
       }
-      for (const [index, block] of blocks.entries()) {
+      for (const block of blocks) {
         if (block?.type === 'tool_use') {
           if (block.name === 'Bash' && lastSpawnRequiredSandbox && block.id) sandboxedBashCalls.add(String(block.id));
           onEvent({
@@ -1194,11 +1218,9 @@ export function createClaudeSession(opts, {
             ...(parentTaskId ? { parentTaskId } : {}),
           });
         } else if (block?.type === 'text') {
-          const streamed = message.blocks.get(index) ?? '';
-          const suffix = typeof block.text === 'string' && block.text.startsWith(streamed)
-            ? block.text.slice(streamed.length) : '';
-          if (!apiError && suffix) {
-            message.blocks.set(index, block.text);
+          const suffix = !apiError && typeof block.text === 'string'
+            ? settleStreamedText(message, block.text) : '';
+          if (suffix) {
             onEvent({
               type: 'text-delta', agent: 'claude',
               text: parentToolUseId ? suffix : rootTextWithWakeBreak(suffix),
@@ -1207,7 +1229,8 @@ export function createClaudeSession(opts, {
           }
         }
       }
-      streamedMessages.delete(scope);
+      // 같은 메시지의 다음 블록 델타가 이 뒤에 이어진다 — 같은 객체에 쌓는다.
+      streamedMessages.set(scope, message);
       if (messageId) {
         if (!completedMessages.has(scope)) completedMessages.set(scope, new Map());
         completedMessages.get(scope).set(messageId, message);
