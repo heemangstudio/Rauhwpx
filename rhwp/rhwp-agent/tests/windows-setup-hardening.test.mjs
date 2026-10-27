@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -84,6 +85,26 @@ test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (
   assert.equal(env.npm_node_execpath, electron);
   assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(env.PATH.startsWith(`${root};`), true);
+});
+
+// 한국어 사용자 이름이면 앱과 node.cmd 가 모두 C:\Users\<한글>\ 아래에 있다. npm 의 postinstall(`node install.cjs`)이
+// cmd.exe 에서 node.cmd 를 거치므로, 경로가 깨지면 Claude 설치·업데이트가 실패한다.
+test('node.cmd starts a host under a non-ASCII path from cmd.exe', async (t) => {
+  if (process.platform !== 'win32') { t.skip('cmd.exe only'); return; }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-node-host-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const hostDir = path.join(root, '홍길동 앱');
+  await fs.symlink(path.dirname(process.execPath), hostDir, 'junction');
+  const nodeCommand = path.join(hostDir, path.basename(process.execPath));
+  const shimDir = path.join(root, '홍길동', 'node-host');
+  await writeNodeHostShim(shimDir, nodeCommand, { platform: 'win32' });
+  const { RHWP_NODE_HOST: _inherited, ...baseEnv } = process.env;
+  const env = applyNodeHostEnv(baseEnv, { nodeCommand, shimDir, platform: 'win32' });
+  const result = spawnSync('cmd.exe', ['/d', '/c', 'node -e process.stdout.write(String(6*7))'], {
+    env, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true, timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '42');
 });
 
 test('a real Node host on Unix does not need a PATH shim', () => {

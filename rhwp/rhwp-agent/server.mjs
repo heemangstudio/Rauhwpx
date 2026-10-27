@@ -19,7 +19,7 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
-import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
+import { IDLE_PROCESS_RELEASE_MS, redactDiagnosticText } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
@@ -103,6 +103,7 @@ import {
 import { AuthRunRegistry } from './auth-run-registry.mjs';
 import { createProviderMaintenance } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
+import { NODE_HOST_ENV } from './npm-cli-launch.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
 import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStore } from './codex-model-routing.mjs';
@@ -440,6 +441,8 @@ function ensureBootWork() {
   bootWorkPromise ??= Promise.all([piManager.init(), cliSetup.init()]).then(async () => {
     process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
       .filter(Boolean).join(path.delimiter);
+    // 에이전트 셸이 PATH 의 node.cmd 를 부를 때도 실행 파일 경로를 환경 변수로 넘긴다.
+    if (process.platform === 'win32' && cliSetup.nodeHostDir()) process.env[NODE_HOST_ENV] = process.execPath;
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);
@@ -1876,7 +1879,14 @@ async function runAutomaticHarnessUpdates() {
   }
 }
 
+/** 설치·로그인 실패는 Studio 배너와 함께 진단 로그에도 남긴다. 신고에 붙는 로그로 원인을 볼 수 있게 하기 위해서다. */
+function logAgentSetupError(agent, error, fallback) {
+  const detail = typeof error?.detail === 'string' && error.detail ? `\n${error.detail}` : '';
+  log(`${agent ?? 'agent'} setup failed (${error?.code ?? fallback}): ${redactDiagnosticText(`${error?.message ?? error}${detail}`)}`);
+}
+
 function sendAgentSetupError(record, sock, requestId, agent, error, fallback = 'AGENT_SETUP_FAILED') {
+  logAgentSetupError(agent, error, fallback);
   replyToStudio(record, sock, {
     v: 1,
     type: 'agent-setup-error',
@@ -1927,6 +1937,7 @@ function sendAuthRunFrame(run, frame) {
 }
 
 function sendAuthRunError(run, error, fallback = 'AGENT_AUTH_FAILED') {
+  logAgentSetupError(run.agent, error, fallback);
   const owner = ownerRecordForAuthRun(run);
   if (!owner) return;
   sendJson(owner.studioSocket, {
@@ -8749,6 +8760,7 @@ const httpServer = http.createServer((req, res) => {
       try {
         sendHttpJson(res, 200, await providerMaintenance.run(maintenanceAgent[1]));
       } catch (error) {
+        if (error.status !== 409) logAgentSetupError(maintenanceAgent[1], error, 'AGENT_INSTALL_FAILED');
         sendHttpJson(res, error.status ?? 500, { error: { message: error.message } });
       }
       return;
