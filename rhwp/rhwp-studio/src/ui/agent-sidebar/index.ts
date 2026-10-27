@@ -4649,11 +4649,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         skillsPage.setAttribute('aria-hidden', 'true');
         skillsPage.inert = true;
         threadsPage.inert = true;
-      } else if (fullscreen) {
-        threadsPage.inert = threadsRailCollapsed;
-        applyThreadsRailState();
       } else {
-        threadsPage.inert = true;
+        // 닫으면 채팅 목록의 잠금을 푼다. 목록을 다시 열 때(채팅 목록 단추·레일 펼치기)는 inert 를 만지지
+        // 않으므로, 여기서 남긴 잠금은 목록의 모든 단추와 행을 죽인 채 남는다. 접힌 면은 CSS 가 숨긴다.
+        threadsPage.inert = false;
+        if (fullscreen) applyThreadsRailState();
       }
       chatPage.setAttribute('aria-hidden', open ? 'true' : 'false');
       chatPage.inert = open;

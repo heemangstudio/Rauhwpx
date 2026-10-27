@@ -222,6 +222,19 @@ try {
       await page.waitForFunction(() => window.sidebarPreview.bridge.isTurnRunning());
       await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning() && document.querySelector('.ag-msg-user'));
     });
+    await step('Chat list stays clickable after the reference library closes', async () => {
+      await open('reset=1');
+      await page.click('.ag-references-btn');
+      await page.waitForSelector('.ag-root.ag-references-open');
+      await page.click('.ag-references-close');
+      await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-references-open'));
+      await page.click('.ag-header .ag-threads-btn');
+      await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-page', { visible: true });
+      await page.click('.ag-threads-page input');
+      await page.waitForFunction(() => document.activeElement?.closest('.ag-threads-page'), { timeout: 5000 });
+      await page.click('.ag-threads-page .ag-threads-close');
+      await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-threads-open'), { timeout: 5000 });
+    });
     await step('Agent Focus panel opens a view from the surface list', async () => {
       await open('reset=1&fullscreen=1&width=400');
       await page.click('.ag-workspace-panel-btn');
