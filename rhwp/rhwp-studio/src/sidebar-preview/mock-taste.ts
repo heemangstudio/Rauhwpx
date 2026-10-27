@@ -34,6 +34,8 @@ export function sampleTasteDraft(instructions: T.AgentInstructionsStatus): T.Age
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 60 * 60_000).toISOString(),
     confirmationToken: 'preview-taste-token',
+    threadId: null,
+    origin: 'rau',
   };
 }
 

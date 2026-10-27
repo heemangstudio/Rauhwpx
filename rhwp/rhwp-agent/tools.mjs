@@ -666,7 +666,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'update_agent_instructions',
-    description: 'Propose a full replacement for the app-only AGENTS.md; not persisted until the user explicitly confirms it in Settings > 지시. Durable instructions or repeated preferences only — never one-off task details, secrets or sensitive inferred facts. Tell the user what to confirm.',
+    description: 'Propose a full replacement for the app-only AGENTS.md; saved only when the user approves the card it shows in this chat. Durable instructions or repeated preferences only — never one-off task details, secrets or sensitive inferred facts. Say in one line what the card changes.',
     shape: {
       content: z.string().max(30_000).describe('Replacement AGENTS.md content'),
       expectedRevision: z.number().int().min(1).describe('From read_agent_instructions'),

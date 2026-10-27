@@ -335,6 +335,10 @@ export interface AgentInstructionsDraft {
   expiresAt: string;
   /** Studio만 받는 단기·일회용 승인 capability. */
   confirmationToken: string;
+  /** 초안을 만든 채팅. 대화 흐름의 승인 카드가 이 채팅에 뜬다. */
+  threadId: string | null;
+  /** agent = 에이전트의 update_agent_instructions, rau = Rau-0.1 의 취향 제안. */
+  origin: 'agent' | 'rau';
 }
 
 /** 문서 기억 항목의 종류 — 결정·용어·보호·문체·사실. */

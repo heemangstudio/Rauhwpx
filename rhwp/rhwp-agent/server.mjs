@@ -1553,6 +1553,8 @@ function instructionDraftFrame(draft) {
     createdAt: new Date(draft.createdAt).toISOString(),
     expiresAt: new Date(draft.expiresAt).toISOString(),
     confirmationToken: draft.confirmationToken,
+    threadId: draft.threadId ?? null,
+    origin: typeof draft.rauLine === 'string' ? 'rau' : 'agent',
   };
 }
 
@@ -8090,6 +8092,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             expectedRevision: prepared.expectedRevision,
             reason: typeof args.reason === 'string' ? args.reason : null,
             requestedBy,
+            threadId: record.agentSession?.threadId ?? null,
             createdAt,
             expiresAt: createdAt + AGENT_INSTRUCTION_DRAFT_TTL_MS,
           };

@@ -26,6 +26,7 @@ import type { DocumentPosition } from '../../core/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type { HubChat, SidebarBridge } from '../../agent/bridge.ts';
 import type {
+  AgentInstructionsDraft,
   AgentName,
   AgentPhase,
   AgentSetupStatusMap,
@@ -346,6 +347,7 @@ import {
   type TurnInterruptionRowState,
 } from './turn-interruption-row.ts';
 import { createRequestCardController } from './request-card.ts';
+import { createInstructionsCard, type InstructionsCard } from './instructions-card.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
@@ -8310,6 +8312,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const pill of permissionController.rootsForContext({ threadId: thread.id, documentId: currentDocumentId })) {
       appendConversation(pill);
     }
+    for (const card of instructionCards.values()) {
+      if (card.threadId === thread.id) appendConversation(card.view.root);
+    }
     if (documentRequiredRow?.dataset.threadId === thread.id && chatIsUnlinked()) appendConversation(documentRequiredRow);
     landConversationAtEnd();
   }
@@ -12133,6 +12138,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const expandedTasteMarkers = new Set<string>();
   /** 이 창에 와 있는 AGENTS.md 변경안 id — 구분선의 지시에 추가 제안은 그 변경안이 남아 있을 때만 보인다. */
   const pendingInstructionDrafts = new Set<string>();
+  /** 에이전트가 만든 지시 변경안 — 그 채팅의 대화 흐름에 승인 카드로 뜬다. 정착한 카드도 남긴다. */
+  const instructionCards = new Map<string, { threadId: string; view: InstructionsCard }>();
+
+  async function showInstructionsCard(draft: AgentInstructionsDraft): Promise<void> {
+    if (draft.origin !== 'agent' || !draft.threadId || instructionCards.has(draft.id)) return;
+    const threadId = draft.threadId;
+    const current = await bridge.requestAgentInstructions().catch(() => null);
+    if (instructionCards.has(draft.id) || !pendingInstructionDrafts.has(draft.id)) return;
+    const view = createInstructionsCard({
+      draft,
+      current: current?.content ?? null,
+      confirm: async (target) => (await bridge.confirmAgentInstructionsDraft(target)) !== null,
+      reject: (target) => bridge.rejectAgentInstructionsDraft(target),
+    });
+    instructionCards.set(draft.id, { threadId, view });
+    if (threadId !== currentThread.id) return;
+    flushPendingAssistantRender();
+    flushAssistantBuffer({ kind: 'progress' });
+    withAutoScroll(() => appendConversation(view.root));
+  }
   const tasteViews = new WeakMap<HTMLElement, TasteMarkerView>();
 
   /** 취향 학습(Rau-0.1) 구분선. 지금 채팅에만 그리므로 되돌리기는 그 채팅을 가리킨다. */
@@ -12620,10 +12645,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       case 'agent-instructions-draft':
         pendingInstructionDrafts.add(e.draft.id);
         syncTasteProposals();
+        void showInstructionsCard(e.draft);
         break;
       case 'agent-instructions-draft-cleared':
         pendingInstructionDrafts.delete(e.draftId);
         syncTasteProposals();
+        instructionCards.get(e.draftId)?.view.settle(e.outcome);
         break;
       case 'title-result': {
         if (e.threadId !== currentThread.id && !hasThread(e.threadId)) break;

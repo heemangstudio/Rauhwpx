@@ -995,6 +995,8 @@ function readAgentInstructionsDraft(value: unknown): AgentInstructionsDraft | nu
     createdAt: item['createdAt'],
     expiresAt: item['expiresAt'],
     confirmationToken: item['confirmationToken'],
+    threadId: typeof item['threadId'] === 'string' && item['threadId'] ? item['threadId'] : null,
+    origin: item['origin'] === 'rau' ? 'rau' : 'agent',
   };
 }
 
