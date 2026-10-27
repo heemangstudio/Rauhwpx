@@ -76,7 +76,7 @@ const SIGN_IN_POLL_MS = 3_000;
 export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   request: BrowserSettingsRequest;
   /** 앱 안 브라우저의 별도 창으로 주소를 연다. 없으면 로그인 단추를 숨긴다. */
-  openSignInWindow?: (url: string) => Promise<SignInWindow>;
+  openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
   isConnected: () => boolean;
   pollMs?: number;
 }): { root: HTMLElement; refresh(check?: boolean): Promise<void> } {
@@ -168,7 +168,7 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   signIn.addEventListener('click', () => {
     if (!options.openSignInWindow || signInWindow) return;
     const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
-    void options.openSignInWindow(url).then(async (window) => {
+    void options.openSignInWindow(url, spec.name).then(async (window) => {
       signInWindow = window; error = null; render();
       await watchSignIn(window);
       await window.closed;

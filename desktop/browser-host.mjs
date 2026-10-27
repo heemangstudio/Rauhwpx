@@ -485,12 +485,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, bare = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, bare = false, title, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab, bare === true);
+    if (mode === 'popout') return this.popout(window, tab, bare === true, typeof title === 'string' && title ? title.slice(0, 80) : null);
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -747,10 +747,11 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab, bare = false) {
+  popout(ownerWindow, tab, bare = false, title = null) {
     this.unplace(tab);
-    // 로그인 전용 창은 도구 막대 없이 페이지만 창 전체에 보인다.
+    // 로그인 전용 창은 도구 막대 없이 페이지만 창 전체에 보이고, 제목은 서비스 이름이다.
     tab.popoutBare = bare;
+    tab.popoutTitle = title;
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
       popout = new this.BrowserWindow({ width: 1000, height: 760, minWidth: 420, minHeight: 320, title: 'Browser', show: false,
@@ -759,6 +760,7 @@ export class OwnedBrowserHost {
       popout.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       popout.webContents.on('will-navigate', (event) => event.preventDefault());
       popout.on('resize', () => this.layoutPopout(tab, popout));
+      popout.on('page-title-updated', (event) => { if (tab.popoutTitle) event.preventDefault(); });
       popout.on('close', (event) => {
         if (this.disposing) return;
         if (this.quitRequested) {
@@ -772,6 +774,7 @@ export class OwnedBrowserHost {
       popout.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
       void popout.loadURL(POPOUT_URL);
     }
+    popout.setTitle(tab.popoutTitle || popout.webContents.getTitle() || 'Browser');
     this.placeGuest(tab, popout);
     tab.placement = { window: popout, ownerWindow, mode: 'popout' };
     tab.interactive = tab.human;

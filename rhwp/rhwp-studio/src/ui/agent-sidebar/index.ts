@@ -5030,7 +5030,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const settingsPanel = createSettingsPanel({
     bridge,
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
-    openSignInWindow: (url) => openSignInWindow(url),
+    openSignInWindow: (url, title) => openSignInWindow(url, title),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -5274,7 +5274,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   // 설정의 로그인(ChatGPT·Claude)은 작업 칸이 아니라 앱 안 브라우저의 별도 창으로 연다.
   // 그 탭은 작업 칸에서 고르지 않는다. 창을 닫으면 탭도 닫고 closed 가 끝난다.
-  const openSignInWindow = async (url: string): Promise<SignInWindow> => {
+  const openSignInWindow = async (url: string, title: string): Promise<SignInWindow> => {
     const native = nativeBrowserApi();
     if (!native?.onEvent) throw new Error('데스크톱 앱에서만 로그인할 수 있습니다.');
     const browser = ensureWorkbenchBrowser();
@@ -5306,7 +5306,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
     opening.catch(() => close());
     try {
-      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true });
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true, title });
     } catch (failure) { await close(); throw failure; }
     return { closed, close };
   };

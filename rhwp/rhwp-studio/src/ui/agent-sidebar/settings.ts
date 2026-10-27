@@ -351,7 +351,7 @@ export interface SettingsPanelDeps {
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
-  openSignInWindow?: (url: string) => Promise<SignInWindow>;
+  openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
 }
 
 export interface SettingsPanel {

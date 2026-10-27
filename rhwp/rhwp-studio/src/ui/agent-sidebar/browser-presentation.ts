@@ -4,7 +4,7 @@ import { FLOAT_EDGE_GAP, FLOAT_INSET, clampFloatPosition, fitFloatFrame, project
 export type BrowserPresentationMode = 'dock' | 'float' | 'popout';
 export interface NativeBrowserApi {
   passwords?: { armSave(args: { tabId: string; enabled: boolean }): Promise<{ enabled: boolean; navigationEpoch: number }> };
-  attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean; focus?: boolean; bare?: boolean }): Promise<unknown>;
+  attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean; focus?: boolean; bare?: boolean; title?: string }): Promise<unknown>;
   detach(args: { tabId: string }): Promise<unknown>;
   getState(args: { tabId: string; expectedTargetId?: string; checkPaint?: boolean }): Promise<unknown>;
   reload?(args: { tabId: string; expectedTargetId?: string; navigationEpoch?: number; recovery?: boolean }): Promise<unknown>;
