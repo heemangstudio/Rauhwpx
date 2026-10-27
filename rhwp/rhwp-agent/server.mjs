@@ -3588,6 +3588,11 @@ function classifyBackendFailureEvent(record, activeSession, evt) {
     secrets: activeSession.failureSecrets ?? [],
   });
   activeSession.turnFailure = held;
+  if (evt.type === 'turn-end' && failure) {
+    // 사이드바는 분류된 제목만 보인다. 문제 보고의 진단 기록에 실제 이유가 남도록 가린 문구를 한 줄로 적는다.
+    const detail = failure.message.replace(/\s+/g, ' ').trim().slice(0, 400);
+    log(`${agent} turn failed (model=${activeSession.model ?? 'default'}, class=${failure.class}, code=${failure.code ?? 'none'}): ${detail}`);
+  }
   if (evt.type === 'turn-end' && failure?.class === 'usage_limit' && (agent === 'claude' || agent === 'codex')) {
     // 한도 막대와 리셋 시각을 새로 읽는다. 강제 새로고침은 쿨다운이 있어 30초 캐시를 쓴다.
     void providerLimits.refresh(false)

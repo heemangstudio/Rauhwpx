@@ -74,6 +74,10 @@ const RUNNING_TITLE = '작업이 끝난 뒤 다시 시도할 수 있어요';
 const CONTEXT_CODES = new Set(['context_window', 'codex:contextWindowExceeded', 'claude:prompt_too_long']);
 const MODEL_CODES = new Set(['model_not_found', 'claude:model_not_found']);
 const CLEANUP_CODES = new Set(['cleanup_uncertain', 'AGENT_PROCESS_CLEANUP_UNCERTAIN']);
+/** 모델 서버가 붐벼 거절한 요청 — 잠시 뒤에, 또는 다른 모델로 풀린다. */
+const BUSY_CODES = new Set(['codex:serverOverloaded', 'codex:flexUnavailable', 'claude:overloaded']);
+/** 짧은 시간 요청이 몰려 걸린 속도 제한 (사용 한도와 다르다) — 잠시 뒤 풀린다. */
+const THROTTLE_CODES = new Set(['codex:rateLimitExceeded', 'claude:rate_limit']);
 
 /**
  * 자동 수정이 맡을 수 있는 실패 — 앱·서버 쪽 실패(제보 대상)에서 설정으로 가야 하는 것(CLI 없음, 모델)을 뺀다.
@@ -119,6 +123,8 @@ function titleFor(failure: ProviderFailure, label: string, origin: string): stri
       if (failure.code === 'gift_credits') return '무료 크레딧을 다 썼어요';
       return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
+      if (failure.code && BUSY_CODES.has(failure.code)) return `${label} 서버가 붐벼요`;
+      if (failure.code && THROTTLE_CODES.has(failure.code)) return `${label} 요청이 잠시 제한됐어요`;
       return `${label} 서버가 요청을 처리하지 못했어요`;
     case 'network':
       return `${label}에 연결하지 못했어요`;
@@ -212,6 +218,10 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
       retryAllowed = ctx.resumeBlocked === true || (ctx.resetAt !== null && !future);
       break;
     }
+    case 'provider_error':
+      if (failure.code && BUSY_CODES.has(failure.code)) line = '잠시 뒤 다시 시도하거나 다른 모델을 골라 주세요';
+      else if (failure.code && THROTTLE_CODES.has(failure.code)) line = '잠시 뒤 다시 시도해 주세요';
+      break;
     case 'process_exited':
       if (failure.code && CLEANUP_CODES.has(failure.code)) line = '앱을 다시 시작한 뒤 계속해 주세요.';
       if (settingsCodes) actions.push({ id: 'settings', label: '설정 열기' });

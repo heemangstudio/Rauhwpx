@@ -149,6 +149,23 @@ test('text patterns classify messages from older paths, in order', () => {
   assert.equal(classify({ message: 'model gpt-x not found' }).code, 'model_not_found');
 });
 
+test('a 4xx API body passed through Codex "other" is a refused request, not a server error', () => {
+  const hint = { source: 'codex', code: 'other' };
+  // codex-cli 0.164 app-server 가 실제로 보낸 TurnError 문구.
+  const model = classify({
+    agent: 'codex', hint,
+    message: '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-6.1-luna\' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}',
+  });
+  assert.deepEqual([model.class, model.code, model.retryable], ['invalid_request', 'model_not_found', false]);
+  const echoed = classify({
+    agent: 'codex', hint,
+    message: '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"Invalid \'input[512].content\': station 543 rate"}}',
+  });
+  assert.deepEqual([echoed.class, echoed.code], ['invalid_request', 'codex:other'],
+    'numbers and words inside a 400 body do not make it a retryable server error');
+  assert.equal(classify({ agent: 'codex', hint, message: '{"status":503,"error":{"message":"overloaded"}}' }).class, 'provider_error');
+});
+
 test('a process exit stays a process exit unless its text says login or usage limit', () => {
   const exit = { source: 'claude', code: 'process_exit' };
   const crash = classify({ hint: exit, message: 'Claude 실행이 중단되었습니다 (code 1).\nAPI Error: Connection error.' });
