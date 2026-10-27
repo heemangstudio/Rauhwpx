@@ -83,6 +83,30 @@ function button(className: string, label?: string): HTMLButtonElement {
   return node;
 }
 
+/**
+ * 첫 실행 설정이 기본값으로 저장한 프로바이더를 지금 사이드바의 채팅에 세울지. 아직 보낸 메시지가 없고 일하지
+ * 않는 채팅만 바꾼다 — 이미 시작한 대화의 프로바이더는 바꾸지 않는다. 바꿀 프로바이더, 아니면 null.
+ */
+export function firstRunAgentForChat(
+  defaultAgent: AgentName,
+  chat: { selectedAgent: AgentName; userMessages: number; working: boolean; readOnly: boolean },
+): AgentName | null {
+  if (chat.userMessages > 0 || chat.working || chat.readOnly) return null;
+  return defaultAgent === chat.selectedAgent ? null : defaultAgent;
+}
+
+/**
+ * 첫 실행 설정의 문서 수준 Esc 가 설정을 끝낼지. 위에 뜬 연결 창(설정 모달)이 먼저 처리한 Esc 나 그 창이
+ * 열려 있는 동안의 Esc 는 그 창의 것이다 — 첫 실행 설정을 끝내 나머지 단계를 건너뛰게 하지 않는다.
+ */
+export function initialSetupTakesEscape(
+  event: Pick<KeyboardEvent, 'key' | 'defaultPrevented'>,
+  doc: Pick<Document, 'querySelector'>,
+): boolean {
+  if (event.key !== 'Escape' || event.defaultPrevented) return false;
+  return doc.querySelector('.ag-agent-setup-overlay[aria-hidden="false"]') === null;
+}
+
 export interface InitialSetupDeps {
   openAgentSetup: (agent: AgentName) => void;
   beginAgentConnect?: (agent: AgentName) => void;
@@ -691,7 +715,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   function onKeyDown(event: KeyboardEvent): void {
     if (!overlay.isConnected || !overlay.classList.contains('rhwp-setup-open')) return;
-    if (event.key !== 'Escape') return;
+    if (!initialSetupTakesEscape(event, document)) return;
     event.preventDefault();
     finish();
   }

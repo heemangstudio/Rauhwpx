@@ -263,3 +263,65 @@ test('unknown failures and crashed processes offer 자동 수정 right away; use
   failRetryLoop(h, shown, 0, auth);
   assert.equal(h.action(h.drawn.at(-1)!, 'autofix'), null);
 });
+
+test('a restored login failure stays a login notice until there is proof of a newer credential, not just a token on disk', async () => {
+  const { authNoticeReconnected } = await import('../src/ui/agent-sidebar/failure-notice.ts');
+  const failedAt = 1_700_000_000_000;
+  // 새로고침 뒤: 이 창의 인증 실패 기억은 비었고, 허브는 Codex 의 auth.json 에 토큰이 있으니 authenticated 라고 한다.
+  const hub = { authenticated: true, authVerifiedAt: null as number | null };
+  let provenAt: number | null = null;
+  const shown = thread('t');
+  const stored = JSON.parse(JSON.stringify({
+    role: 'system', kind: 'error', text: 'Codex 로그인이 필요해요', agent: 'codex',
+    failure: failure({ class: 'auth_required', agent: 'codex', message: 'token revoked', retryable: false }),
+    origin: 'turn', turnId: 't1', retry: SEND, at: failedAt,
+  })) as import('../src/agent/threads.ts').ThreadFailureMessage;
+  shown.messages.push(stored);
+  const controller = createFailureNoticeController({
+    thread: () => shown,
+    persist: () => {},
+    persistThread: () => {},
+    append: () => {},
+    agentLabel: () => 'Codex',
+    isTurnRunning: () => false,
+    isConnected: () => true,
+    reconnected: (_agent, at) => authNoticeReconnected(at, {
+      authenticated: hub.authenticated, failing: false, verifiedAt: hub.authVerifiedAt, provenAt,
+    }),
+    openLogin: () => {},
+    openSettings: () => {},
+    restartSession: () => {},
+    resend: () => true,
+    dismissals: createFailureDismissals(() => null),
+  });
+  const action = (node: FakeElement, id: string) => node.find((element) => element.dataset.action === id);
+  const says = (node: FakeElement, text: string) => node.find((element) => element.textContent === text) !== null;
+
+  let node = controller.mount(stored) as unknown as FakeElement;
+  assert.ok(action(node, 'login'), 'a token on disk alone does not prove the revoked login came back');
+  assert.equal(says(node, '다시 연결됐어요'), false);
+
+  // 실패보다 오래된 확인은 증거가 아니다.
+  hub.authVerifiedAt = failedAt - 1;
+  provenAt = failedAt - 1;
+  node = controller.mount(stored) as unknown as FakeElement;
+  assert.ok(action(node, 'login'));
+
+  // 그 뒤에 로그인이 끝났다 — 이제 다시 연결됐고 다시 시도할 수 있다.
+  provenAt = failedAt + 5_000;
+  node = controller.mount(stored) as unknown as FakeElement;
+  assert.equal(action(node, 'login'), null);
+  assert.ok(says(node, '다시 연결됐어요'));
+  assert.ok(action(node, 'retry'));
+});
+
+test('auth recovery evidence: hub verification after the failure counts; unknown failure time trusts only this window', async () => {
+  const { authNoticeReconnected } = await import('../src/ui/agent-sidebar/failure-notice.ts');
+  assert.equal(authNoticeReconnected(1_000, { authenticated: true, failing: false, verifiedAt: 2_000 }), true);
+  assert.equal(authNoticeReconnected(1_000, { authenticated: false, failing: false, verifiedAt: 2_000 }), false);
+  assert.equal(authNoticeReconnected(1_000, { authenticated: true, failing: true, provenAt: 2_000 }), false,
+    'a provider this window still sees failing is never reconnected');
+  // 실패 시각이 없는 옛 알림(at 0)은 허브의 확인 시각과 견줄 수 없다.
+  assert.equal(authNoticeReconnected(0, { authenticated: true, failing: false, verifiedAt: 5 }), false);
+  assert.equal(authNoticeReconnected(0, { authenticated: true, failing: false, provenAt: 5 }), true);
+});

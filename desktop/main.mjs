@@ -84,7 +84,7 @@ import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
 import { createFakeUpdater, createUpdateController } from './update-controller.mjs';
-import { createUpdateAllController } from './update-all.mjs';
+import { createUpdateAllController, writeUpdateAllState } from './update-all.mjs';
 import { createDevProviderUpdates } from './dev-provider-updates.mjs';
 import {
   UPDATE_RESTART_FILE_NAME,
@@ -1071,7 +1071,7 @@ function configureAutoUpdater({ restartManifest }) {
     restartApp: () => updates.restart(),
     providerStatus: () => maintenance(),
     installProvider: (agent) => maintenance(agent),
-    persist: (state) => writeNativeFileAtomically(updateAllFile, Buffer.from(JSON.stringify(state), 'utf8')),
+    persist: (state) => writeUpdateAllState(updateAllFile, state),
     broadcast(state) {
       for (const window of sessions.windows()) {
         if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-all-state', state);

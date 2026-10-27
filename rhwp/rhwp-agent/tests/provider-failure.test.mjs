@@ -472,3 +472,23 @@ test('a secret cut by the classification length limit never shows as a fragment'
   assert.doesNotMatch(failure.message, /hub-sess/);
   assert.match(failure.message, /^stderr:/);
 });
+
+test('a proxy that demands credentials (407) is a network problem, not a provider login', () => {
+  // 회사 프록시의 407 은 로그인으로 풀리지 않는다 — auth_required 로 읽으면 로그인 루프에 빠진다.
+  const status = classify({ hint: { source: 'claude', httpStatus: 407 }, message: 'opaque' });
+  assert.deepEqual([status.class, status.code], ['network', 'http_407']);
+  const codexText = classifyProviderFailure({
+    agent: 'codex', message: 'stream error: tunnel error: Proxy Authentication Required',
+  });
+  assert.equal(codexText.class, 'network');
+  const codexExit = classifyProviderFailure({
+    agent: 'codex', hint: { source: 'codex', code: 'process_exit' },
+    message: 'Codex app-server disconnected.\nERROR codex_api: tunnel error: Proxy Authentication Required',
+  });
+  assert.equal(codexExit.class, 'network');
+  assert.equal(classify({ message: 'HTTP/1.1 407 Proxy Authentication Required' }).class, 'network');
+  // 프로바이더 자체의 인증 실패는 그대로 로그인 문제다.
+  assert.equal(classify({ message: 'authentication failed' }).class, 'auth_required');
+  assert.equal(classify({ hint: { source: 'claude', code: 'process_exit' }, message: 'Error: authentication failed' }).class, 'auth_required');
+  assert.equal(classify({ hint: { source: 'claude', httpStatus: 403 }, message: 'opaque' }).class, 'auth_required');
+});

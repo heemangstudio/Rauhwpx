@@ -8,10 +8,12 @@ import test from 'node:test';
 import {
   claudeCredentialExpiry,
   claudeKeychainService,
+  inspectClaudeCredentialFile,
   parseClaudeOAuthCredential,
   readClaudeCredentialFile,
   readClaudeKeychainCredential,
   readClaudeOAuthCredential,
+  verifyClaudeCredential,
 } from '../claude-credentials.mjs';
 
 const credential = (token, expiresAt = 1_789_000_000_000) =>
@@ -160,4 +162,48 @@ test('the credential file reader refuses symlinks and oversized payloads', async
   assert.equal(await readClaudeCredentialFile(path.join(home, 'absent.json')), null);
   assert.equal(await readClaudeCredentialFile(real, { maxBytes: 8 }), null, 'a smaller window rejects a larger credential');
   assert.notEqual(await readClaudeCredentialFile(real), null);
+});
+
+test('the credential file inspector tells a missing or empty login apart from one caught mid-write', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'rhwp-claude-creds-state-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, '.credentials.json');
+
+  assert.equal((await inspectClaudeCredentialFile(file)).state, 'absent');
+  await writeFile(file, '');
+  assert.equal((await inspectClaudeCredentialFile(file)).state, 'unreadable', 'Claude Code truncates before it rewrites');
+  await writeFile(file, '{"claudeAiOauth":{"accessTo');
+  assert.equal((await inspectClaudeCredentialFile(file)).state, 'unreadable', 'a half-written file is not a logout');
+  await writeFile(file, '{}');
+  assert.equal((await inspectClaudeCredentialFile(file)).state, 'none');
+  await writeFile(file, credential('token'));
+  const ok = await inspectClaudeCredentialFile(file);
+  assert.equal(ok.state, 'ok');
+  assert.equal(ok.credential.claudeAiOauth.accessToken, 'token');
+
+  // 읽지 못한 파일은 요청한 호출자에게만 따로 알린다. 다른 호출자에게는 예전처럼 null 이다.
+  await writeFile(file, '');
+  const options = { homeDir: home, configDir: home, env: {}, platform: 'linux' };
+  assert.equal(await readClaudeOAuthCredential(options), null);
+  assert.equal((await readClaudeOAuthCredential({ ...options, reportUnreadable: true }))?.source, 'unreadable');
+  await rm(file);
+  assert.equal(await readClaudeOAuthCredential({ ...options, reportUnreadable: true }), null);
+});
+
+test('only an Anthropic authentication or permission error marks a credential invalid', async () => {
+  const reply = (status, body, type = 'application/json') => async () => new Response(body, { status, headers: { 'content-type': type } });
+  const anthropicError = (type) => JSON.stringify({ type: 'error', error: { type, message: 'nope' } });
+  const verdict = (fetchImpl) => verifyClaudeCredential({ token: 'sk-ant-oat01-token', fetchImpl });
+
+  assert.equal(await verdict(reply(200, '{}')), 'valid');
+  assert.equal(await verdict(reply(401, anthropicError('authentication_error'))), 'invalid');
+  assert.equal(await verdict(reply(401, '<html>Unauthorized</html>', 'text/html')), 'invalid');
+  assert.equal(await verdict(reply(403, anthropicError('authentication_error'))), 'invalid');
+  assert.equal(await verdict(reply(403, anthropicError('permission_error'))), 'invalid');
+  // 프록시·Cloudflare·지역 차단이 돌려주는 403 은 자격 증명에 대한 판정이 아니다.
+  assert.equal(await verdict(reply(403, '<html>Forbidden by proxy</html>', 'text/html')), 'unknown');
+  assert.equal(await verdict(reply(403, '')), 'unknown');
+  assert.equal(await verdict(reply(403, JSON.stringify({ error: { type: 'forbidden' } }))), 'unknown');
+  assert.equal(await verdict(reply(429, anthropicError('rate_limit_error'))), 'unknown');
+  assert.equal(await verdict(async () => { throw new Error('offline'); }), 'unknown');
 });

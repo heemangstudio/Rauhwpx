@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import JSZip from 'jszip';
 
 import {
   ReferenceStore,
@@ -648,4 +649,19 @@ test('scanned PDFs store without chunks, keep every page, and report text-less p
   const text = await restarted.addBuffer({ ...scope, name: 'notes.txt', mimeType: 'text/plain', bytes: Buffer.from('본문') });
   assert.equal(await restarted.textlessPages(text.id), null);
   assert.equal(await restarted.textlessPages('missing'), null);
+});
+
+test('ZIP references are searchable by the text of the files inside them', async (t) => {
+  const store = await storeFor(t);
+  const archive = await new JSZip()
+    .file('회의/안건.md', '# 안건\n라온 출시 일정 확정')
+    .file('사진.png', 'png')
+    .generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const file = await store.addBuffer({
+    scope: 'chat', scopeId: 'zip-chat', name: '회의 자료.zip', mimeType: 'application/zip', bytes: archive,
+  });
+  assert.equal(file.kind, 'document');
+  assert.ok(file.chunkCount > 0);
+  const results = store.search({ query: '라온 출시 일정', scopes: [{ scope: 'chat', scopeId: 'zip-chat' }] });
+  assert.equal(results[0]?.fileId, file.id);
 });

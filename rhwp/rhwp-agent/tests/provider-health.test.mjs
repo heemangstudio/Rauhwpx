@@ -222,3 +222,72 @@ test('probes settle on close after stdout arrives', async () => {
   assert.equal(result.claude.version, 'claude 3.0.0');
   assert.equal(result.codex.version, 'codex 3.0.0');
 });
+
+// 아래 테스트는 PATH 해석(Windows 의 claude.exe 찾기)에 기대지 않도록 POSIX 플랫폼으로 돌린다.
+const POSIX = { platform: 'linux' };
+
+test('a failed first probe is not served from the cache once the CLI answers', async () => {
+  // Windows 에서 큰 exe 의 첫 실행이 백신 검사로 막히거나 설치 직후 PATH 가 늦게 잡히면 첫 확인은
+  // 실패한다. 그 실패가 1분 동안 남으면 '연결 안 됨' 이 저절로 '연결됨' 으로 바뀌어 깜빡인다.
+  let ready = false;
+  const { spawnProcess } = fakeSpawner((command, proc) => {
+    if (command === 'claude' && !ready) proc.enoent();
+    else proc.succeed(`${command} 1.0`);
+  });
+  let clock = 1_000;
+  const health = createProviderHealth({ ...POSIX, spawnProcess, now: () => clock });
+
+  assert.equal((await health.check()).claude.available, false);
+  ready = true;
+  clock += 5_000;
+  const next = await health.check();
+  assert.equal(next.claude.available, true, 'a non-forced check re-probes a failed result well inside the 60 s ttl');
+
+  // 성공한 결과는 그대로 TTL 동안 기억한다.
+  ready = false;
+  clock += 30_000;
+  assert.equal(await health.check(), next);
+});
+
+test('a probe that times out once is retried before reporting the CLI unavailable', async () => {
+  let claudeSpawns = 0;
+  const { spawns, spawnProcess } = fakeSpawner((command, proc) => {
+    if (command === 'claude' && ++claudeSpawns === 1) return; // 첫 실행은 검사에 막혀 응답하지 않는다.
+    proc.succeed(`${command} 1.0`);
+  });
+  const result = await createProviderHealth({ ...POSIX, spawnProcess, timeoutMs: 10 }).check();
+
+  assert.equal(result.claude.available, true);
+  assert.equal(result.claude.version, 'claude 1.0');
+  assert.equal(result.claude.timedOut, undefined);
+  assert.equal(spawns.filter((s) => s.command === 'claude').length, 2);
+  assert.equal(spawns.find((s) => s.command === 'claude').proc.killed, 'SIGTERM');
+});
+
+test('a forced refresh does not join a probe that started before the CLI was installed', async () => {
+  let installed = false;
+  const pending = [];
+  const { spawnProcess } = fakeSpawner((command, proc) => {
+    if (installed) proc.succeed(`${command} 1.0`);
+    else pending.push({ command, proc });
+  });
+  let clock = 1_000;
+  const health = createProviderHealth({ ...POSIX, spawnProcess, now: () => clock });
+
+  const stale = health.check();
+  await new Promise((resolve) => setImmediate(resolve));
+  installed = true; // 설치가 끝났고 허브가 곧바로 강제 확인을 건다.
+  const refreshed = health.check(true);
+  // 설치 전에 시작한 확인은 ENOENT 로 늦게 끝난다.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const { command, proc } of pending) {
+    if (command === 'claude') proc.enoent();
+    else proc.succeed(`${command} 1.0`);
+  }
+
+  assert.equal((await refreshed).claude.available, true);
+  assert.equal((await stale).claude.available, false);
+  clock += 1_000;
+  assert.equal((await health.check()).claude.available, true, 'the stale negative does not overwrite the fresh result');
+  assert.equal(health.cached().claude.available, true);
+});

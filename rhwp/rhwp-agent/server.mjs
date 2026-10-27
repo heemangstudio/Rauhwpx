@@ -103,7 +103,7 @@ import {
   defaultPiRoot,
 } from './pi-manager.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
-import { createProviderMaintenance } from './provider-maintenance.mjs';
+import { createProviderMaintenance, runHarnessUpdateRound } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
 import { NODE_HOST_ENV } from './npm-cli-launch.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
@@ -1671,6 +1671,15 @@ function syncSourceCodexAuth() {
   }
 }
 
+/**
+ * Codex 백엔드는 턴마다 이 게터로 원본 auth.json 경로를 다시 읽는다. 채팅을 연 뒤에
+ * 로그인해도 첫 턴이 로그인 전 값(undefined)으로 격리 홈의 사본을 지우지 않는다.
+ */
+function currentSourceCodexAuthPath() {
+  syncSourceCodexAuth();
+  return sourceCodexAuthPath;
+}
+
 function refreshSessionCredentials(agent) {
   for (const record of sessions.values()) {
     if (agent === 'codex') prepareCodexHome(record.codexHome, sourceCodexAuthPath);
@@ -1921,19 +1930,24 @@ const providerMaintenance = createProviderMaintenance({
     const statuses = await agentSetupStatuses();
     broadcastToStudios({ v: 1, type: 'provider-status', providers });
     broadcastAgentSetupStatuses(statuses);
-    for (const record of sessions.values()) {
-      if (!record.studioSocket) continue;
-      try {
-        const models = await modelCatalog(agent, record, { refresh: true });
-        sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
-      } catch (error) { log(`model refresh after update failed: ${error?.message ?? error}`); }
-    }
     return { statuses };
+  },
+  // 모델 목록은 잠금이 풀린 뒤 창마다 동시에 받는다. 첫 창만 강제로 다시 읽고, 같은
+  // 실행 파일·자격 증명을 쓰는 다른 창은 카탈로그가 합쳐 둔 그 조회를 함께 기다린다.
+  async afterRelease(agent) {
+    const records = [...sessions.values()].filter((record) => record.studioSocket);
+    await Promise.all(records.map((record, index) => modelCatalog(agent, record, { refresh: index === 0 })
+      .then((models) => {
+        if (record.studioSocket) sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
+      })
+      .catch((error) => log(`model refresh after update failed: ${error?.message ?? error}`))));
   },
 });
 
 let harnessUpdateTimer = null;
 let harnessUpdateRunning = false;
+// 열린 채팅 때문에 Pi 교체만 미룬 재시도. Claude·Codex registry 확인은 이미 끝났다.
+let harnessUpdatePiOnly = false;
 
 function scheduleHarnessUpdates(delayMs) {
   if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
@@ -1946,32 +1960,44 @@ function scheduleHarnessUpdates(delayMs) {
 
 async function runAutomaticHarnessUpdates() {
   if (harnessUpdateRunning) return;
-  // idle 세션도 CLI 프로세스를 물고 있으므로 완전히 닫힌 뒤 디스크의 하네스를 교체한다.
-  if (hasAgentSessions()) {
-    scheduleHarnessUpdates(HARNESS_UPDATE_BUSY_RETRY_MS);
-    return;
-  }
   harnessUpdateRunning = true;
   await ensureBootWork();
   let nextDelay = HARNESS_UPDATE_INTERVAL_MS;
   const canActivate = () => !hasAgentSessions();
+  const piOnly = harnessUpdatePiOnly;
+  harnessUpdatePiOnly = false;
   const before = {
     claude: cliSetupStatus.claude?.version ?? null,
     codex: cliSetupStatus.codex?.version ?? null,
     pi: piStatus.version ?? null,
   };
   try {
-    cliSetupStatus.claude = await cliSetup.automaticUpdate('claude', { canActivate });
-    cliSetupStatus.codex = await cliSetup.automaticUpdate('codex', { canActivate });
-    piStatus = await mutateSharedNpmPrefix(() => piManager.automaticUpdate({ canActivate }));
+    // Claude·Codex 는 registry 최신 버전만 확인하므로 열린 채팅과 상관없이 돈다.
+    // idle 세션도 Pi 프로세스를 물고 있으므로 Pi 하네스는 모든 채팅이 닫힌 뒤에만 교체한다.
+    const { piDeferred } = await runHarnessUpdateRound({
+      piOnly,
+      canActivate,
+      async checkRegistry() {
+        cliSetupStatus.claude = await cliSetup.automaticUpdate('claude', { canActivate });
+        cliSetupStatus.codex = await cliSetup.automaticUpdate('codex', { canActivate });
+      },
+      async updatePi() {
+        piStatus = await mutateSharedNpmPrefix(() => piManager.automaticUpdate({ canActivate }));
+      },
+    });
+    if (piDeferred) {
+      harnessUpdatePiOnly = true;
+      nextDelay = HARNESS_UPDATE_BUSY_RETRY_MS;
+    }
     const statuses = await agentSetupStatuses();
     if (Object.values(statuses).some((status) => status.updateRequired)) {
-      nextDelay = HARNESS_UPDATE_FAILURE_RETRY_MS;
+      nextDelay = Math.min(nextDelay, HARNESS_UPDATE_FAILURE_RETRY_MS);
     }
-    broadcastAgentSetupStatuses(statuses);
     const changed = before.claude !== statuses.claude.version
       || before.codex !== statuses.codex.version
       || before.pi !== statuses.pi.version;
+    // Pi 만 다시 미룬 재시도는 바뀐 것이 없으면 같은 상태를 5분마다 다시 보내지 않는다.
+    if (!piOnly || changed) broadcastAgentSetupStatuses(statuses);
     if (changed) {
       const providers = await providerHealth.check(true);
       broadcastToStudios({ v: 1, type: 'provider-status', providers });
@@ -3584,7 +3610,7 @@ async function launchTemplateJob(record, job) {
   return launchCopyLayoutWorker(record, job, {
     ensureBootWork,
     prepareCodexHome,
-    sourceCodexAuthPath,
+    sourceCodexAuthPath: currentSourceCodexAuthPath,
     prepareClaudeHome,
     sourceClaudeAuth,
     MCP_SCRIPT,
@@ -5609,7 +5635,7 @@ async function startSession(
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
-    codexAuthPath: sourceCodexAuthPath,
+    codexAuthPath: currentSourceCodexAuthPath,
     codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
     // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.

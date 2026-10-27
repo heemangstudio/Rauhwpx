@@ -2118,6 +2118,8 @@ export function createMockBridge(
       listeners.clear();
       pendingListeners.clear();
       leaseListeners.clear();
+      documentMemory.dispose();
+      taste.dispose();
     },
   };
   /**

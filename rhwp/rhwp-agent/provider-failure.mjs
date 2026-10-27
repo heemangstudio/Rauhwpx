@@ -239,6 +239,12 @@ const INVALID_TEXT = /invalid[_ ]request|\b40[04]\b|\b413\b/i;
 const API_CLIENT_ERROR_TEXT = /"status"\s*:\s*4(?!29)\d\d\b|\binvalid_request_error\b/;
 /** 허브·어댑터가 직접 쓰는 정리 실패 문구 (영문 고정 문구). */
 const CLEANUP_TEXT = /cleanup (?:could not be confirmed|remains unconfirmed)|could not be confirmed stopped/i;
+/**
+ * 프록시가 요구하는 인증(HTTP 407 'Proxy Authentication Required', Codex 'tunnel error: …').
+ * 'authentication' 낱말이 들어 있지만 프로바이더 로그인으로는 고칠 수 없는 네트워크 설정 문제다 —
+ * 로그인 문구보다 먼저 본다.
+ */
+const PROXY_AUTH_TEXT = /proxy[ -]authenticat|proxy[ -]auth(?:orization)? required/i;
 const CLI_MISSING_TEXT = /\bENOENT\b|command not found|is not recognized as an internal or external command/i;
 const SANDBOX_UNAVAILABLE_TEXT = /sandbox required but unavailable/i;
 /**
@@ -277,6 +283,7 @@ function exitTextClass(raw) {
   if (SANDBOX_UNAVAILABLE_TEXT.test(raw)) return { class: 'invalid_request', code: 'sandbox_unavailable' };
   if (EXIT_LOGIN_COMMAND.test(raw)) return { class: 'auth_required' };
   const text = withoutPathTokens(raw);
+  if (PROXY_AUTH_TEXT.test(text)) return { class: 'network' };
   if (EXIT_AUTH_TEXT.test(text)) return { class: 'auth_required' };
   // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
@@ -288,6 +295,7 @@ function exitTextClass(raw) {
 
 function textClass(text) {
   if (SANDBOX_UNAVAILABLE_TEXT.test(text)) return { class: 'invalid_request', code: 'sandbox_unavailable' };
+  if (PROXY_AUTH_TEXT.test(text)) return { class: 'network', code: null };
   if (AUTH_TEXT.test(text)) return { class: 'auth_required', code: null };
   // 'Context limit reached' 는 대화 길이 문제다 — 사용 한도 문구('limit reached')보다 먼저 본다.
   if (CONTEXT_TEXT.test(text)) return { class: 'invalid_request', code: 'context_window' };
@@ -308,6 +316,8 @@ const KEY_LIMIT_TEXT = /key limit exceeded/i;
 
 function httpClass(status, text, source) {
   if (status === 401) return 'auth_required';
+  // 407 은 사이의 프록시가 자격 증명을 요구한 것이다 — 프로바이더 로그인으로는 풀리지 않는다.
+  if (status === 407) return 'network';
   if (status === 403) {
     // Pi 는 언제나 OpenRouter 를 거친다. OpenRouter 의 403 은 로그인 문제가 아니라 모더레이션에
     // 걸린 입력이거나 키의 지출 한도다 — 로그인을 권하면 고칠 길이 없다.
