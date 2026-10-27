@@ -40,6 +40,13 @@
       </div>
     </div>
   </header>
+  <div id="chrome-sign-in" role="status" hidden>
+    <span id="chrome-sign-in-text"></span>
+    <button type="button" class="text-button" id="chrome-sign-in-start" data-command="chrome-sign-in">Google Chrome으로 로그인</button>
+    <button type="button" class="text-button" id="chrome-sign-in-finish" data-command="chrome-sign-in-finish">완료</button>
+    <button type="button" class="text-button" id="chrome-sign-in-cancel" data-command="chrome-sign-in-cancel">취소</button>
+    <button type="button" id="chrome-sign-in-dismiss" data-command="chrome-sign-in-dismiss" aria-label="닫기" title="닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M7 17 17 7"/></svg></button>
+  </div>
   <script src="browser-popout.cjs"></script>
 </body>
 </html>

@@ -7,6 +7,9 @@ import { PrivateBrowserCdp, protectedUrl } from './browser-cdp.mjs';
 import { AgentCursorOverlay, readAgentPointer } from './browser-agent-cursor.mjs';
 
 const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', import.meta.url));
+// 이 로그인 페이지에서는 앱 브라우저 대신 Google Chrome 로그인을 권한다. Google은 내장 브라우저를 거절할 수 있고 Apple 패스키는 iCloud 키체인이 필요하다.
+const CHROME_SIGN_IN_HOSTS = new Set(['accounts.google.com', 'appleid.apple.com']);
+const CHROME_SIGN_IN_BAR = 36;
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
@@ -283,6 +286,7 @@ export class OwnedBrowserHost {
     });
     for (const event of ['did-start-loading', 'did-stop-loading', 'page-title-updated']) contents.on(event, () => this.emit(tab, 'state'));
     contents.on('did-navigate', () => { tab.faviconCandidates = null; });
+    contents.on('did-navigate', (_event, rawUrl) => this.trackChromeSignIn(tab, rawUrl));
     contents.on('page-favicon-updated', (_event, favicons) => { tab.faviconCandidates = faviconList(favicons); this.forwardFavicons(tab); });
     contents.on('dom-ready', () => this.passwords?.restoreManualSave?.(tab));
     contents.on('did-navigate', () => { this.clearActivity(tab); tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
@@ -364,6 +368,8 @@ export class OwnedBrowserHost {
     Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id, global });
     this.aliases.set(tabId, targetId);
     this.emit(tab, 'bound');
+    // 팝업은 탭 ID를 받기 전에 첫 페이지(Google 로그인 등)를 연다. 묶인 뒤 다시 본다.
+    if (!tab.chromeSignIn && !tab.view.webContents.isDestroyed()) this.trackChromeSignIn(tab, tab.view.webContents.getURL());
     this.forwardFavicons(tab);
     return this.state(tab);
   }
@@ -455,6 +461,7 @@ export class OwnedBrowserHost {
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
       controller: tab.human ? 'human' : 'agent', held: tab.held === true, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
+      chromeSignIn: this.chromeSignInOffer(tab), chromeSignInActive: this.chromeSignInActiveSite ?? null, bare: !!tab.popoutBare,
     };
     if (tab.passwordShield) { state.url = protectedUrl(state.url); state.title = ''; state.error = null; }
     return this.passwords ? this.passwords.redact(tab, state) : state;
@@ -787,10 +794,66 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
+  /** 이 탭에서 Chrome 로그인을 권할 사이트. 숨겼으면 null이다. */
+  chromeSignInOffer(tab) {
+    const offer = tab.chromeSignIn;
+    return offer && !offer.dismissed ? { siteUrl: offer.siteUrl, host: new URL(offer.siteUrl).hostname, reason: offer.reason } : null;
+  }
+
+  /** 로그인할 사이트 주소. 로그인 제공자 페이지면 그 페이지를 연 사이트(팝업의 부모나 직전 사이트)다. */
+  chromeSignInSite(tab, rawUrl) {
+    let url; try { url = new URL(rawUrl); } catch { return null; }
+    if (url.protocol !== 'https:') return null;
+    if (!CHROME_SIGN_IN_HOSTS.has(url.hostname)) return url.href;
+    const opener = tab.openerTargetId && this.tabs.get(tab.openerTargetId);
+    const openerUrl = opener && !opener.view.webContents.isDestroyed() ? opener.view.webContents.getURL() : null;
+    return [openerUrl, tab.lastSiteUrl].find((candidate) => { try { const parsed = new URL(candidate); return parsed.protocol === 'https:' && !CHROME_SIGN_IN_HOSTS.has(parsed.hostname); } catch { return false; } }) ?? null;
+  }
+
+  offerChromeSignIn(tab, reason) {
+    if (process.platform !== 'darwin' || !tab.tabId || tab.closing || tab.view.webContents.isDestroyed()) return;
+    const siteUrl = this.chromeSignInSite(tab, tab.view.webContents.getURL());
+    if (!siteUrl) return;
+    const host = new URL(siteUrl).hostname;
+    // 같은 사이트에서 숨긴 제안은 다시 띄우지 않는다.
+    if (tab.chromeSignIn && new URL(tab.chromeSignIn.siteUrl).hostname === host && (tab.chromeSignIn.dismissed || tab.chromeSignIn.siteUrl === siteUrl)) return;
+    tab.chromeSignIn = { siteUrl, reason, dismissed: false };
+    this.refreshChromeSignIn(tab);
+  }
+
+  dismissChromeSignIn(tab) {
+    if (!tab.chromeSignIn || tab.chromeSignIn.dismissed) return;
+    tab.chromeSignIn.dismissed = true;
+    this.refreshChromeSignIn(tab);
+  }
+
+  trackChromeSignIn(tab, rawUrl) {
+    let url; try { url = new URL(rawUrl); } catch { return; }
+    if (CHROME_SIGN_IN_HOSTS.has(url.hostname)) { this.offerChromeSignIn(tab, 'identity-provider'); return; }
+    if (url.protocol === 'https:') tab.lastSiteUrl = url.href;
+    // 다른 사이트로 옮기면 이전 사이트의 제안을 지운다.
+    if (tab.chromeSignIn && new URL(tab.chromeSignIn.siteUrl).hostname !== url.hostname) { tab.chromeSignIn = null; this.refreshChromeSignIn(tab); }
+  }
+
+  /** 편집기가 알린 Chrome 로그인 상태. 모든 띄운 창이 진행 중임을 보이고 페이지 영역을 맞춘다. */
+  setChromeSignInState({ site = null } = {}) {
+    const next = typeof site === 'string' && site ? site.slice(0, 253) : null;
+    if (next === (this.chromeSignInActiveSite ?? null)) return { site: next };
+    this.chromeSignInActiveSite = next;
+    for (const tab of this.tabs.values()) if (tab.tabId && (this.popouts.has(tab.targetId) || tab.chromeSignIn)) this.refreshChromeSignIn(tab);
+    return { site: next };
+  }
+
+  refreshChromeSignIn(tab) {
+    const popout = this.popouts.get(tab.targetId);
+    if (popout && !popout.isDestroyed()) this.layoutPopout(tab, popout);
+    this.emit(tab, 'chrome-sign-in');
+  }
+
   layoutPopout(tab, popout) {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
-    const top = tab.popoutBare ? 0 : 76;
+    const top = (tab.popoutBare ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
     const bounds = { x: 0, y: top, width, height: Math.max(0, height - top) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
@@ -872,6 +935,12 @@ export class OwnedBrowserHost {
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
     if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
     if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
+    if (command === 'chrome-sign-in-dismiss') { this.dismissChromeSignIn(tab); return { dismissed: true }; }
+    if (['chrome-sign-in', 'chrome-sign-in-finish', 'chrome-sign-in-cancel'].includes(command)) {
+      // 허브 요청은 편집기 창이 보낸다. 창은 같은 명령을 받아 Chrome 로그인을 시작하거나 끝낸다.
+      this.emit(tab, 'presentation-command', { command, ...(command === 'chrome-sign-in' ? { url: this.chromeSignInOffer(tab)?.siteUrl ?? null } : {}) });
+      return { queued: true };
+    }
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
       this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });

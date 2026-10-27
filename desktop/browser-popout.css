@@ -51,3 +51,12 @@ body[data-error="true"] #collaboration { color: #c14639; }
 
 #zoom-controls { display: flex; align-items: center; gap: 1px; }
 #zoom-percent { width: 40px; font-size: 10px; }
+
+/* Chrome 로그인 띠. 도구 막대 아래(로그인 창은 맨 위)에 36px로 놓이고 페이지는 그 아래에서 시작한다. */
+#chrome-sign-in { display: flex; align-items: center; gap: 6px; height: 36px; box-sizing: border-box; padding: 0 8px 0 12px; background: var(--chrome); border-top: 1px solid var(--hover); color: var(--ink); font: 12px -apple-system, BlinkMacSystemFont, sans-serif; }
+#chrome-sign-in-text { flex: 1; min-width: 0; overflow: hidden; color: var(--quiet); white-space: nowrap; text-overflow: ellipsis; }
+.text-button { width: auto; height: 26px; padding: 0 10px; border-radius: 6px; font: inherit; font-weight: 600; }
+#chrome-sign-in-start, #chrome-sign-in-finish { background: var(--focus); color: white; }
+#chrome-sign-in-start:hover:not(:disabled), #chrome-sign-in-finish:hover:not(:disabled) { background: var(--focus); filter: brightness(1.08); }
+body[data-bare="true"] .browser-chrome { display: none; }
+body[data-bare="true"] #chrome-sign-in { border-top: 0; }
