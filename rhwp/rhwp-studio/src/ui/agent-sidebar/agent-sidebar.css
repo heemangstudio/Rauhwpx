@@ -3937,6 +3937,8 @@ button.ag-skill-copy {
 }
 
 .ag-tool-items[hidden],
+.ag-tool-question[hidden],
+.ag-tool-answer[hidden],
 .ag-tool-detail[hidden],
 .ag-tool-notices[hidden] {
   display: none;
@@ -4014,6 +4016,37 @@ button.ag-skill-copy {
   font-size: var(--ag-fs-meta);
   line-height: var(--ag-lh-secondary);
   overflow-wrap: anywhere;
+}
+
+/* ask_chatgpt: 질문과 받은 답. */
+.ag-tool-question {
+  margin: 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-tool-answer {
+  max-height: 320px;
+  overflow: auto;
+  padding-left: 8px;
+  border-left: 2px solid var(--ag-border);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-tool-link {
+  flex: none;
+  margin-left: 8px;
+  color: var(--ag-accent, var(--ag-text));
+  font-size: var(--ag-fs-meta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* 원본 인자/결과 — 디버깅용이라 접어 둔다. */

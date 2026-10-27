@@ -52,6 +52,8 @@ const capabilityIcons: Record<ChatPermissionCapability, SidebarIconName> = {
   browser: 'browser',
   'local-execution': 'terminal',
   'other-documents': 'document',
+  chatgpt: 'message',
+  claude: 'message',
 };
 
 const capabilityTitles: Record<ChatPermissionCapability, string> = {
@@ -60,6 +62,8 @@ const capabilityTitles: Record<ChatPermissionCapability, string> = {
   browser: '브라우저를 사용하려고 합니다',
   'local-execution': '로컬 파일과 명령을 실행하려고 합니다',
   'other-documents': '다른 문서를 읽으려고 합니다',
+  chatgpt: '내 ChatGPT에 물어보려고 합니다',
+  claude: '내 Claude에 물어보려고 합니다',
 };
 
 const secretTitles: Record<string, string> = {

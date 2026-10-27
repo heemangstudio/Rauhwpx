@@ -63,6 +63,10 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     });
   };
   const configuration: Record<string, unknown> = { profileId: 'shared', downloads: { maxFileBytes: 64 * 1024 * 1024, autoImport: true }, preview: { mode: 'docked', reducedMotion: false }, security: { privateNetworkAccess: false }, googleSignIn: { supported: null, status: 'not-verified' } };
+  // ?chatgpt=on|signed-out|web, ?claude=on|signed-out|web 으로 켜짐·로그인 필요·데스크톱 밖을 고른다.
+  const assistantState = (mode: string | null) => ({ enabled: mode === 'on' || mode === 'signed-out', available: mode !== 'web', signedIn: mode !== 'signed-out' });
+  const query = new URLSearchParams(globalThis.location?.search ?? '');
+  const assistants: Record<string, ReturnType<typeof assistantState>> = { chatgpt: assistantState(query.get('chatgpt')), claude: assistantState(query.get('claude')) };
   let faviconRequests = 0;
   const icons = new Map<string, string | null>();
   /** 미리보기 사이트의 아이콘 — 허브가 보내는 것과 같은 작은 data: PNG. 모르는 사이트는 null. */
@@ -153,6 +157,15 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       if (args.site && typeof args.site === 'object') { const site = args.site as typeof sites[number]; sites = [...sites.filter((row) => row.id !== site.id && row.origin !== site.origin), site]; }
       if (args.sites && Array.isArray(args.sites)) sites = structuredClone(args.sites);
       return { defaults: { ...defaults }, sites: structuredClone(sites) };
+    }
+    // 설정 → AI → ChatGPT·Claude.
+    const [service, verb] = action.split('.');
+    const assistant = service ? assistants[service] : undefined;
+    if (assistant && (verb === 'status' || verb === 'configure')) {
+      if (verb === 'configure') assistant.enabled = args.enabled === true;
+      return { enabled: assistant.enabled, available: assistant.available, projectUrl: null,
+        signedIn: args.check === true && assistant.enabled && assistant.available ? assistant.signedIn : null,
+        ...(args.check === true && assistant.signedIn && assistant.enabled ? { account: 'user@example.com' } : {}) };
     }
     if (action === 'configuration.get') return structuredClone(configuration);
     if (action === 'configuration.update') { Object.assign(configuration, structuredClone(args)); return structuredClone(configuration); }
