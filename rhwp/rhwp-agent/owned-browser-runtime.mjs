@@ -166,7 +166,7 @@ async function countProcessWindows(pid) {
 
 export async function startOwnedBrowserSignIn({ dataDir, url, onExit = () => {}, autoInstall = true, spawnProcess = spawn,
   authenticationMethod = 'website', inspectPasskeyBrowser = inspectMacPasskeyBrowser,
-  onWindowsClosed, countWindows = countProcessWindows, windowPollMs = 1000 } = {}) {
+  onWindowsClosed, countWindows = countProcessWindows, windowPollMs = 500 } = {}) {
   configureBrowserCache(dataDir);
   if (!['website', 'mac-passkey'].includes(authenticationMethod)) throw new OwnedBrowserError('BROWSER_SIGN_IN_METHOD_INVALID', 'Choose a supported website sign-in method.');
   let provider = await managedProvider(dataDir);
