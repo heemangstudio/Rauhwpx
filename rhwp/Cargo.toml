@@ -173,8 +173,9 @@ unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("tracing"
 debug = "line-tables-only"
 
 [profile.release]
+# codegen-units 는 기본값(16)을 쓴다. 1 로 두면 엔진 크레이트 코드 생성이 직렬화되어
+# WASM 빌드가 두 배 걸리고, 실측 렌더 속도 차이는 없다(크기는 약 8% 증가).
 lto = true
-codegen-units = 1
 strip = "debuginfo"
 
 [profile.release-test]
