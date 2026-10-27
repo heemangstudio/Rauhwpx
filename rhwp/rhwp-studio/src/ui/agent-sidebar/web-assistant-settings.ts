@@ -3,6 +3,7 @@
  * 로그인은 앱 안 브라우저의 별도 창으로 연다. 에이전트가 물을 때는 허브가 보이지 않는 탭으로 한다.
  */
 import type { BrowserSettingsRequest } from './browser-settings.ts';
+import type { ChromeSignIn } from './chrome-sign-in.ts';
 
 export type WebAssistant = 'chatgpt' | 'claude';
 
@@ -77,6 +78,8 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   request: BrowserSettingsRequest;
   /** 앱 안 브라우저의 별도 창으로 주소를 연다. 없으면 로그인 단추를 숨긴다. */
   openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
+  /** 패스키·Google 로그인용. 있으면 Google Chrome에서 로그인하는 단추를 둔다. */
+  chromeSignIn?: ChromeSignIn;
   isConnected: () => boolean;
   pollMs?: number;
 }): { root: HTMLElement; refresh(check?: boolean): Promise<void> } {
@@ -102,7 +105,10 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   track.setAttribute('aria-hidden', 'true');
   const switchLabel = el('label', 'ag-settings-assistant-switch');
   switchLabel.append(toggle, track);
-  root.append(text, dot, signIn, switchLabel);
+  const chrome = el('button', 'ag-settings-btn', 'Chrome');
+  chrome.type = 'button';
+  chrome.hidden = true;
+  root.append(text, dot, signIn, chrome, switchLabel);
 
   let status: WebAssistantStatus | null = null;
   let checking = false;
@@ -119,6 +125,9 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
     signIn.hidden = !options.openSignInWindow || !status?.enabled || !status.available || status.signedIn === true || (checking && !signInWindow);
     signIn.disabled = !!signInWindow;
     signIn.textContent = errorKind(error) === 'challenge' ? '확인 열기' : '로그인';
+    chrome.hidden = signIn.hidden || !options.chromeSignIn;
+    chrome.disabled = !!signInWindow || !!options.chromeSignIn?.site() || !options.chromeSignIn?.available();
+    chrome.title = options.chromeSignIn?.available() === false ? options.chromeSignIn.unavailableReason() : 'Google Chrome에서 로그인(패스키·Google 계정)';
   };
 
   const refresh = async (check = true): Promise<void> => {
@@ -165,6 +174,13 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
       .catch((failure) => { error = (failure as { code?: string })?.code ?? 'failed'; })
       .finally(() => { render(); if (status?.enabled) void refresh(true); });
   });
+  // Chrome에서 로그인하고, 끝나면(창을 닫거나 완료) 상태를 다시 읽는다.
+  chrome.addEventListener('click', () => {
+    const flow = options.chromeSignIn;
+    if (!flow || flow.site()) return;
+    void flow.start(spec.signInUrl).then(() => { render(); return flow.settled(); }).then(() => refresh(true)).catch(() => render());
+  });
+  options.chromeSignIn?.subscribe(() => render());
   signIn.addEventListener('click', () => {
     if (!options.openSignInWindow || signInWindow) return;
     const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;

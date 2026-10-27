@@ -12,6 +12,8 @@ export interface NativeBrowserApi {
   /** 에이전트 커서를 게스트 위 표시 계층에 그린다. x·y는 페이지 CSS px다. */
   pointer?(args: { tabId: string; expectedTargetId?: string; x: number; y: number; phase: 'move' | 'down' | 'up' | 'click'; durationMs: number }): Promise<unknown>;
   onEvent?(callback: (event: Record<string, unknown>) => void): () => void;
+  /** Chrome 로그인 진행 상태를 띄운 창들에 알리거나, 한 탭의 Chrome 로그인 제안을 숨긴다. */
+  chromeSignIn?(args: { site?: string | null; dismissTabId?: string }): Promise<unknown>;
 }
 export function nativeBrowserApi(): NativeBrowserApi | undefined {
   return (globalThis as { rhwpDesktop?: { browser?: NativeBrowserApi } }).rhwpDesktop?.browser;

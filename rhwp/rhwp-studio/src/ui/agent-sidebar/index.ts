@@ -299,6 +299,7 @@ import {
   type PublishedDocumentLink,
 } from '../../desktop-integration.ts';
 import { showToast } from '../toast.ts';
+import { createChromeSignIn } from './chrome-sign-in.ts';
 import type { ChatDocumentLinkReply, ChatDocumentLinked, ChatDocumentLinkTarget } from '../../agent/document-link.ts';
 import { linkError } from '../../agent/document-link.ts';
 
@@ -5027,8 +5028,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /* 설정 페이지 — 자기 DOM 은 settings.ts 가 짓고, 페이지 전환만
      여기서 관리한다(스킬 페이지와 같은 계약). */
+  // 패스키·Google 로그인은 데스크톱 앱에서 Google Chrome으로 넘긴다.
+  const chromeSignIn = nativeBrowserApi()?.chromeSignIn ? createChromeSignIn(bridge, (message) => showToast({ message, durationMs: 5000 })) : undefined;
   const settingsPanel = createSettingsPanel({
     bridge,
+    ...(chromeSignIn ? { chromeSignIn } : {}),
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
     openSignInWindow: (url, title) => openSignInWindow(url, title),
     projectSettings: bridge.projects?.service ?? null,
@@ -5215,7 +5219,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return view;
   }
   function createWorkbenchBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]>): WorkbenchBrowser {
-    return createWorkbenchBrowser({ bridge,
+    return createWorkbenchBrowser({ bridge, ...(chromeSignIn ? { chromeSignIn } : {}),
       getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
       onCapture: (draft) => {
         if (captureInbox.queue(draft)) {
@@ -14314,6 +14318,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       unsubscribeSharedBrowser();
       unsubscribeAgentBrowserPreview();
       unsubscribeBrowserWatches();
+      chromeSignIn?.dispose();
       unsubscribeWatchConnection();
       ++floatingBrowserSequence; floatingBrowser?.dispose(); floatingBrowserHost?.remove();
       workbenchBrowser?.dispose();
