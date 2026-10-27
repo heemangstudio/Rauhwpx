@@ -1,12 +1,13 @@
 import { codexManagedToolApprovalConfig } from './codex-mcp-approval.mjs';
 // cross-spawn: Windows에서 npm .cmd 심을 인자 이스케이프 손상 없이 실행한다.
 import spawn from 'cross-spawn';
-import { mkdirSync, rmSync } from 'node:fs';
+import { lstatSync, mkdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   credentialMirrorHasPendingCopybackSync,
   flushCredentialMirrorSync,
+  isJsonObjectContent,
   prepareCredentialMirrorSync,
 } from '../credential-mirror.mjs';
 import {
@@ -49,28 +50,59 @@ import { tapProviderProcess } from '../provider-transcript.mjs';
 const STDERR_TAIL_LIMIT = 16_000;
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 
+const codexMirrorsByHome = new Map();
+
+/**
+ * Codex 사본 auth.json 을 원본에 되돌려 써도 되는지. 턴 도중 강제 종료(taskkill /T /F)된
+ * Codex 가 남긴 0바이트·잘린 파일은 사용자의 실제 로그인을 덮지 못하게 한다.
+ * 필드 구성은 Codex 버전마다 달라서 온전한 JSON 객체인지만 본다.
+ *
+ * @param {Buffer} content
+ */
+export function validateCodexAuth(content) {
+  return isJsonObjectContent(content);
+}
+
+function plainFileExists(file) {
+  try {
+    const stat = lstatSync(file);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Recreate the isolated Codex home if the OS purged its temporary parent while
  * the long-running hub was idle. The auth link is restored with the directory.
+ * `authPath` may be a getter so a session created before `codex login`
+ * picks up the login on its next turn instead of keeping the stale value.
  *
  * @param {string} codexHome
- * @param {string} [authPath]
+ * @param {string | (() => string | undefined)} [authPath]
  */
-const codexMirrorsByHome = new Map();
-
 export function prepareCodexHome(codexHome, authPath, deps = {}) {
+  // 게터는 맵을 읽기 전에 부른다. 게터가 다른 세션의 홈을 다시 준비해도 아래 상태가 어긋나지 않는다.
+  let source = typeof authPath === 'function' ? authPath() : authPath;
   const key = path.resolve(codexHome);
   const previous = codexMirrorsByHome.get(key);
+  // 로그인 전에 받아 둔 빈 경로로 불려도, 원본이 그대로 있으면 사본을 지우지 않는다.
+  // 원본 auth.json 이 사라진 로그아웃만 사본을 거둔다.
+  if (!source && previous && plainFileExists(previous.source)) source = previous.source;
   if (previous) {
-    const result = flushCredentialMirrorSync(previous, { platform: deps.platform ?? process.platform });
+    const result = flushCredentialMirrorSync(previous, {
+      platform: deps.platform ?? process.platform,
+      validateTarget: validateCodexAuth,
+    });
     if (result.pending) throw Object.assign(new Error(result.errorMessage), { code: result.errorCode });
     if (!result.conflict) rmSync(previous.target, { force: true });
     codexMirrorsByHome.delete(key);
   }
   mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-  const mirror = prepareCredentialMirrorSync(authPath, path.join(codexHome, 'auth.json'), {
+  const mirror = prepareCredentialMirrorSync(source, path.join(codexHome, 'auth.json'), {
     platform: deps.platform ?? process.platform,
     ...(deps.symlink ? { symlink: deps.symlink } : {}),
+    validateSource: validateCodexAuth,
   });
   if (mirror?.mode === 'copy') codexMirrorsByHome.set(key, mirror);
   return mirror;
@@ -81,7 +113,7 @@ export function flushCodexCredentialMirror(codexHome) {
   const mirror = codexMirrorsByHome.get(key);
   if (!mirror) return true;
   try {
-    const result = flushCredentialMirrorSync(mirror);
+    const result = flushCredentialMirrorSync(mirror, { validateTarget: validateCodexAuth });
     if (result.pending) {
       process.stderr.write(`[codex] credential refresh copyback pending: ${result.errorMessage}\n`);
       return false;

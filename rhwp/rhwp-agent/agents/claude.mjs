@@ -12,6 +12,7 @@ import path from 'node:path';
 import {
   credentialMirrorHasPendingCopybackSync,
   flushCredentialMirrorSync,
+  isJsonObjectContent,
   prepareCredentialMirrorSync,
 } from '../credential-mirror.mjs';
 import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from '../npm-cli-launch.mjs';
@@ -104,6 +105,8 @@ function createClaudeInputQueue() {
 // rhwp 전용 서브에이전트 정의(RHWP_SUBAGENTS)는 backend.mjs 로 이동했다.
 
 const claudeMirrorsByHome = new Map();
+const SKIPPED_CONFIG_SEED_CODES = new Set(['CREDENTIAL_MIRROR_TOO_LARGE', 'CREDENTIAL_MIRROR_UNSAFE_FILE']);
+const loggedConfigSeedSkips = new Set();
 
 function seedClaudeCredential(source, target, deps = {}) {
   return prepareCredentialMirrorSync(source, target, {
@@ -112,7 +115,29 @@ function seedClaudeCredential(source, target, deps = {}) {
     // Two live Claude sessions must never share a writable host credential
     // inode. Copyback applies refreshes with the mirror's CAS rules on close.
     copyOnly: true,
+    // A config cut short by a hard-killed child must not replace ~/.claude.json.
+    validateSource: isJsonObjectContent,
   });
+}
+
+/**
+ * The portable config is optional: the login reaches Claude through the
+ * environment. Heavy Claude Code users often have a ~/.claude.json above the
+ * mirror's size limit, and that must not fail session creation for every
+ * provider, so the isolated home simply starts without it.
+ */
+function seedClaudePortableConfig(source, target, deps = {}) {
+  try {
+    return seedClaudeCredential(source, target, deps);
+  } catch (error) {
+    if (!SKIPPED_CONFIG_SEED_CODES.has(error?.code)) throw error;
+    const logKey = `${error.code}:${source}`;
+    if (!loggedConfigSeedSkips.has(logKey)) {
+      loggedConfigSeedSkips.add(logKey);
+      process.stderr.write(`[claude] portable config not seeded (${error.code}): ${error?.message ?? error}\n`);
+    }
+    return null;
+  }
 }
 
 export function flushClaudeCredentialMirrors(isolatedHome) {
@@ -121,7 +146,10 @@ export function flushClaudeCredentialMirrors(isolatedHome) {
   const pending = [];
   for (const mirror of mirrors) {
     try {
-      const result = flushCredentialMirrorSync(mirror, { platform: mirror.platform ?? process.platform });
+      const result = flushCredentialMirrorSync(mirror, {
+        platform: mirror.platform ?? process.platform,
+        validateTarget: isJsonObjectContent,
+      });
       if (result.pending) {
         pending.push(mirror);
         process.stderr.write(`[claude] credential refresh copyback pending: ${result.errorMessage}\n`);
@@ -150,14 +178,17 @@ export function prepareClaudeHome(isolatedHome, {
   const key = path.resolve(isolatedHome);
   const previous = claudeMirrorsByHome.get(key) ?? [];
   for (const mirror of previous) {
-    const result = flushCredentialMirrorSync(mirror, { platform: deps.platform ?? process.platform });
+    const result = flushCredentialMirrorSync(mirror, {
+      platform: deps.platform ?? process.platform,
+      validateTarget: isJsonObjectContent,
+    });
     if (result.pending) throw Object.assign(new Error(result.errorMessage), { code: result.errorCode });
     if (!result.conflict) rmSync(mirror.target, { force: true });
   }
   claudeMirrorsByHome.delete(key);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
   rmSync(path.join(isolatedHome, '.claude', '.credentials.json'), { force: true });
-  const mirrors = [seedClaudeCredential(
+  const mirrors = [seedClaudePortableConfig(
     configPath,
     path.join(isolatedHome, '.claude.json'),
     deps,
