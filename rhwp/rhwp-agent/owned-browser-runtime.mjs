@@ -152,8 +152,21 @@ export async function installOwnedBrowserRuntime({ dataDir, onProgress = () => {
 }
 
 /** A normal, unautomated browser process owns the profile until the user returns it. */
+/** 이 프로세스가 화면에 띄운 일반 창 수. macOS가 아니면 null(알 수 없음)이다. */
+async function countProcessWindows(pid) {
+  if (process.platform !== 'darwin') return null;
+  const script = `ObjC.import('CoreGraphics');var a=$.CGWindowListCopyWindowInfo(1,0);var c=0;var n=$.CFArrayGetCount(a);for(var i=0;i<n;i++){var w=ObjC.deepUnwrap(ObjC.castRefToObject($.CFArrayGetValueAtIndex(a,i)));if(w.kCGWindowOwnerPID==${Number(pid)}&&w.kCGWindowLayer==0&&w.kCGWindowBounds.Height>100)c++}c`;
+  return new Promise((resolve) => {
+    execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script], { ...processTreeSpawnOptions(), timeout: 3000, env: browserProcessEnv() }, (failure, stdout) => {
+      const count = Number(String(stdout).trim());
+      resolve(failure || !Number.isFinite(count) ? null : count);
+    });
+  });
+}
+
 export async function startOwnedBrowserSignIn({ dataDir, url, onExit = () => {}, autoInstall = true, spawnProcess = spawn,
-  authenticationMethod = 'website', inspectPasskeyBrowser = inspectMacPasskeyBrowser } = {}) {
+  authenticationMethod = 'website', inspectPasskeyBrowser = inspectMacPasskeyBrowser,
+  onWindowsClosed, countWindows = countProcessWindows, windowPollMs = 1000 } = {}) {
   configureBrowserCache(dataDir);
   if (!['website', 'mac-passkey'].includes(authenticationMethod)) throw new OwnedBrowserError('BROWSER_SIGN_IN_METHOD_INVALID', 'Choose a supported website sign-in method.');
   let provider = await managedProvider(dataDir);
@@ -187,7 +200,21 @@ export async function startOwnedBrowserSignIn({ dataDir, url, onExit = () => {},
     child.once('spawn', resolve);
     child.once('error', () => reject(new OwnedBrowserError('BROWSER_SIGN_IN_START_FAILED', 'The full browser could not open. Check the browser installation and desktop display.', true)));
   });
-  child.once('exit', () => { exited = true; onExit(); });
+  let windowTimer = null;
+  child.once('exit', () => { exited = true; clearTimeout(windowTimer); onExit(); onWindowsClosed?.(); });
+  if (onWindowsClosed) {
+    // macOS Chrome은 마지막 창을 닫아도 앱이 남는다. 창이 한 번 보인 뒤 두 번 연속 0개면 닫힌 것으로 본다.
+    let seen = false; let empty = 0;
+    const poll = async () => {
+      if (exited) return;
+      const count = await countWindows(child.pid);
+      if (exited) return;
+      if (count > 0) { seen = true; empty = 0; }
+      else if (count === 0 && seen && ++empty >= 2) { onWindowsClosed(); return; }
+      windowTimer = setTimeout(() => { void poll(); }, windowPollMs);
+    };
+    windowTimer = setTimeout(() => { void poll(); }, windowPollMs);
+  }
   try { await saveManagedProvider(dataDir, provider); }
   catch (failure) { await terminateAndWaitForProcessTreeExit(child, { timeoutMs: 5000 }); throw failure; }
   return {
@@ -195,6 +222,7 @@ export async function startOwnedBrowserSignIn({ dataDir, url, onExit = () => {},
     authenticationMethod, provider,
     get exited() { return exited || child.exitCode !== null || child.signalCode !== null; },
     async close() {
+      clearTimeout(windowTimer);
       if (!exited && process.platform === 'darwin') {
         // Ask only this owned app PID to quit normally so Chromium flushes its profile.
         const quit = spawn('/usr/bin/osascript', ['-l', 'JavaScript', '-e', `ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier(${child.pid}).terminate();`], { ...processTreeSpawnOptions(), shell: false, stdio: 'ignore', env: browserProcessEnv() });
