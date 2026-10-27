@@ -1,8 +1,33 @@
 import { randomUUID } from 'node:crypto';
+import { rename, rm, writeFile } from 'node:fs/promises';
 import { isNewerStableVersion } from './update-policy.mjs';
 
 const ACTIVE = new Set(['checking', 'updating', 'waiting', 'countdown', 'restarting']);
 const message = (error) => String(error?.message ?? error);
+const RETRYABLE_RENAME = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/**
+ * Small progress JSON: a temp file plus rename is enough. The document-grade writer (ACL copy,
+ * hard-link publish) costs several icacls spawns per write on Windows and is not needed here.
+ * Windows rename can briefly fail while a scanner holds the target, so retry a few times.
+ */
+export async function writeUpdateAllState(file, state, {
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), attempts = 5,
+} = {}) {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temp, JSON.stringify(state), 'utf8');
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try { await rename(temp, file); return; }
+      catch (error) {
+        if (attempt >= attempts || !RETRYABLE_RENAME.has(error?.code)) throw error;
+        await sleep(50 * attempt);
+      }
+    }
+  } finally {
+    await rm(temp, { force: true }).catch(() => {});
+  }
+}
 
 /** One application-wide run. Installers retain ownership of downloads and process cleanup. */
 export function createUpdateAllController({
@@ -15,6 +40,7 @@ export function createUpdateAllController({
   let running = null;
   let refreshing = null;
   let save = Promise.resolve();
+  let published = null;
   let deferred = false;
   let disposed = false;
 
@@ -23,6 +49,10 @@ export function createUpdateAllController({
   }
   function publish() {
     const next = snapshot();
+    // Waiting loops re-set the same phase every second; skip identical snapshots.
+    const serialized = JSON.stringify(next);
+    if (serialized === published) return;
+    published = serialized;
     broadcast(next);
     // Serialize writes so a slow earlier snapshot cannot replace a newer result.
     save = save.catch(() => {}).then(() => persist(next));
@@ -93,7 +123,8 @@ export function createUpdateAllController({
     // Recheck after the countdown rather than interrupting a newly started turn.
     if (appState()?.runningChats > 0 || (await providerStatus()).busy) return finishRestart();
     set({ phase: 'restarting', restartAt: null });
-    await save;
+    // A lost write must not block the restart; the relaunch rebuilds the state from versions.
+    await save.catch(() => {});
     const result = await restartApp();
     if (!result?.ok) {
       item('app', { status: 'failed', message: '재시작이 취소되었거나 시작하지 못했습니다.' });
@@ -178,8 +209,11 @@ export function createUpdateAllController({
     later() { deferred = true; if (state.phase === 'countdown') set({ phase: 'deferred', restartAt: null }); },
     restore(saved) {
       if (!saved || !Array.isArray(saved.items)) return;
+      // A saved 'done' was already shown in the launch that finished it; reshowing it every launch
+      // flashes a stale completion sign. The app item becomes 'done' only in the launch that applied it.
       state = { runId: saved.runId ?? null, phase: 'complete', restartAt: null,
-        items: saved.items.filter((entry) => ['app', 'claude', 'codex'].includes(entry.id)).map((entry) => {
+        items: saved.items.filter((entry) => ['app', 'claude', 'codex'].includes(entry.id)
+          && entry.status !== 'done').map((entry) => {
           if (entry.id === 'app' && entry.targetVersion && !isNewerStableVersion(entry.targetVersion, appState().currentVersion)) {
             return { ...entry, status: 'done', installedVersion: appState().currentVersion, message: null };
           }

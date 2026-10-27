@@ -657,6 +657,11 @@ const CONNECT_TIMEOUT_MS = 4000;
 const REQUEST_TIMEOUT_MS = 10_000;
 /** 기록에서 배우기는 학습기 대기열 뒤에서 모델을 부른다 — 학습기의 전체 제한보다 넉넉히 기다린다. */
 const TASTE_HISTORY_TIMEOUT_MS = 240_000;
+/**
+ * 프로바이더 설치 답을 기다리는 한도. 허브는 앞선 설치·업데이트가 끝나기를 기다린 뒤(그동안 진행 프레임이
+ * 없다) 자기 설치 제한(10분)까지 돌리므로 그보다 넉넉히 둔다. 진행 프레임이 올 때마다 처음부터 다시 잰다.
+ */
+export const INSTALL_REQUEST_TIMEOUT_MS = 25 * 60_000;
 
 /** 창 하나의 출처 기록 — 같은 문서의 채팅 여럿이 한 줄로 쓴다. */
 let provenanceLog: ProvenanceLog | null = null;
@@ -3852,6 +3857,8 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'agent-setup-progress': {
+        // 허브가 아직 이 요청(설치)을 처리하고 있다 — 답을 기다리는 시간을 다시 잰다.
+        if (typeof msg.requestId === 'string') this.requests.touch(msg.requestId);
         if (!isAgentName(msg.agent)) break;
         const state = msg.state === 'installing' || msg.state === 'authorizing' || msg.state === 'done'
           ? msg.state
@@ -6065,7 +6072,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   installAgent(agent: AgentName): Promise<AgentSetupStatusMap | null> {
-    return this.request<AgentSetupStatusMap>({ type: 'agent-setup-install', agent }, 'agent-setup-install', 10 * 60_000);
+    return this.request<AgentSetupStatusMap>({ type: 'agent-setup-install', agent }, 'agent-setup-install', INSTALL_REQUEST_TIMEOUT_MS);
   }
 
   authenticateAgent(agent: AgentName, method: AgentAuthMethod, key?: string): Promise<AgentSetupAuthStart | null> {

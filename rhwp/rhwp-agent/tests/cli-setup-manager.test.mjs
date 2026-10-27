@@ -200,7 +200,7 @@ test('Codex OAuth always uses device auth and commits only after a successful ex
   let committed = false;
   const running = manager.authenticate('codex', 'oauth', undefined, undefined, { onCommitted: () => { committed = true; } });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls.at(-1).argv, ['login', '--device-auth']);
+  assert.deepEqual(calls.at(-1).argv, ['-c', 'cli_auth_credentials_store=file', 'login', '--device-auth']);
   assert.equal(committed, false);
   process.emit('close', 0, null);
   await running;
@@ -276,7 +276,7 @@ test('Codex terminal login streams CLI output and falls back to the PATH binary'
   const frames = [];
   await manager.authenticate('codex', 'oauth', undefined, (entry) => frames.push(entry), { terminal: true });
   assert.equal(launches[0].command, 'codex');
-  assert.deepEqual(launches[0].argv, ['login', '--device-auth']);
+  assert.deepEqual(launches[0].argv, ['-c', 'cli_auth_credentials_store=file', 'login', '--device-auth']);
   assert.ok(frames.some((entry) => entry.terminalReady));
   assert.ok(frames.some((entry) => entry.terminalData === 'Enter this one-time code'));
 });
@@ -314,14 +314,15 @@ test('a CLI that cannot be spawned fails its run instead of crashing the hub', a
 
   const status = await manager.status('claude');
   assert.equal(status.installed, true);
-  assert.equal(status.version, '2.1.0');
+  // 관리형 CLI 가 있으면 그것이 실행되므로, 확인에 실패해도 번들 버전으로 바꿔 알리지 않는다.
+  assert.equal(status.version, null);
   await assert.rejects(
     () => manager.install('claude'),
     (error) => error.code === 'AGENT_INSTALL_FAILED' && /EACCES/.test(error.message),
   );
 
   throwSynchronously = true;
-  assert.equal((await manager.status('claude')).version, '2.1.0');
+  assert.equal((await manager.status('claude')).version, null);
   await assert.rejects(
     () => manager.install('codex'),
     (error) => error.code === 'AGENT_INSTALL_FAILED' && /EMFILE/.test(error.message),
@@ -532,7 +533,7 @@ test('on Windows an app-installed Codex is checked and signed in as a hidden cod
   calls.at(-1).proc.emit('close', 1, null);
   await assert.rejects(login, (error) => error.code === 'AGENT_AUTH_FAILED');
 
-  assert.deepEqual(calls.map((call) => call.argv), [['--version'], ['login', '--device-auth']]);
+  assert.deepEqual(calls.map((call) => call.argv), [['--version'], ['-c', 'cli_auth_credentials_store=file', 'login', '--device-auth']]);
   for (const call of calls) {
     assert.equal(call.command, path.resolve(exePath));
     assert.equal(call.options.windowsHide, true);
@@ -573,6 +574,7 @@ function versionedCli(rootDir, platform = process.platform) {
   }
   const spawnProcess = (command, argv) => {
     const proc = new FakeProcess();
+    state.calls = [...(state.calls ?? []), argv];
     queueMicrotask(async () => {
       if (argv.includes('install')) {
         // 진짜 npm 처럼 --cache 폴더에 tarball 을 남긴다.
@@ -588,7 +590,13 @@ function versionedCli(rootDir, platform = process.platform) {
       }
       if (argv.includes('--version')) {
         state.versionRuns += 1;
-        if (state.failVersion) { proc.emit('close', 1, null); return; }
+        // true 면 계속, 숫자면 그 횟수만큼 실패한다.
+        if (state.failVersion) {
+          if (typeof state.failVersion === 'number') state.failVersion -= 1;
+          proc.stderr.emit('data', 'spawn UNKNOWN\n');
+          proc.emit('close', 1, null);
+          return;
+        }
         proc.stdout.emit('data', `${state.installed} (Claude Code)\n`);
         proc.emit('close', 0, null);
         return;
@@ -756,4 +764,275 @@ test('status keeps the installed version while npm temporarily removes the binar
     assert.equal(during.version, '1.0.0');
   } finally { release(); await installing; }
   assert.equal((await manager.status('claude')).version, '2.0.0');
+});
+
+/**
+ * 사용자 npm 설정을 따르는 가짜 npm. 진짜 npm 처럼 명령줄 값이 npm_config_* 환경 변수보다 우선한다.
+ * ignore-scripts·omit=optional 이면 플랫폼 바이너리 없이 실행되지 않는 자리표시 파일만 남기고,
+ * save=false 면 package.json 을 갱신하지 않아 다음 설치가 목록에 없는 패키지를 지운다(prune).
+ */
+function npmConfigAwareCli(rootDir) {
+  const prefixDir = path.join(rootDir, 'prefix');
+  const modules = path.join(prefixDir, 'node_modules');
+  const manifestFile = path.join(prefixDir, 'package.json');
+  const binFile = (name) => path.join(modules, '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
+  const installs = [];
+  const setting = (argv, env, name) => {
+    const arg = argv.find((value) => value === `--${name}` || value.startsWith(`--${name}=`));
+    if (arg) return arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : 'true';
+    return env?.[`npm_config_${name.replace(/-/g, '_')}`];
+  };
+  const spawnProcess = (command, argv, options) => {
+    const proc = new FakeProcess();
+    queueMicrotask(async () => {
+      if (argv.includes('install')) {
+        installs.push(argv);
+        const packageName = argv.at(-1).replace(/@latest$/, '');
+        const env = options.env;
+        const runsScripts = setting(argv, env, 'ignore-scripts') !== 'true';
+        const optional = (setting(argv, env, 'include') ?? '').includes('optional')
+          || !(setting(argv, env, 'omit') ?? '').includes('optional');
+        const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8').catch(() => '{}'));
+        const dependencies = { ...manifest.dependencies };
+        if (setting(argv, env, 'save') !== 'false') {
+          dependencies[packageName] = '^1.2.3';
+          await fs.mkdir(prefixDir, { recursive: true });
+          await fs.writeFile(manifestFile, JSON.stringify({ dependencies }));
+        }
+        for (const other of ['@anthropic-ai/claude-code', '@openai/codex']) {
+          if (other === packageName || dependencies[other]) continue;
+          await fs.rm(path.join(modules, ...other.split('/')), { recursive: true, force: true });
+          await fs.rm(binFile(packageBinName(other)), { force: true });
+        }
+        const packageDir = path.join(modules, ...packageName.split('/'));
+        await fs.mkdir(packageDir, { recursive: true });
+        await fs.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: packageName, version: '1.2.3' }));
+        const bin = binFile(packageBinName(packageName));
+        await fs.mkdir(path.dirname(bin), { recursive: true });
+        await fs.writeFile(bin, runsScripts && optional ? 'rem runnable\n' : 'rem placeholder\n');
+        proc.emit('close', 0, null);
+        return;
+      }
+      if (argv.includes('--version')) {
+        const name = path.basename(String(command)).replace(/\.(?:cmd|exe)$/i, '');
+        const text = await fs.readFile(binFile(name), 'utf8').catch(() => '');
+        if (text.includes('runnable')) {
+          proc.stdout.emit('data', `${name} 1.2.3\n`);
+          proc.emit('close', 0, null);
+        } else {
+          proc.stderr.emit('data', 'Error: Missing optional dependency\n');
+          proc.emit('close', 1, null);
+        }
+        return;
+      }
+      proc.emit('close', 0, null);
+    });
+    return proc;
+  };
+  return { spawnProcess, installs };
+}
+
+test('a user npm config that skips scripts, optional packages or saving still installs runnable CLIs side by side', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = npmConfigAwareCli(rootDir);
+  const manager = await createCliSetupManager({
+    rootDir,
+    spawnProcess: cli.spawnProcess,
+    baseEnv: {
+      npm_config_ignore_scripts: 'true', npm_config_omit: 'optional', npm_config_save: 'false',
+      CODEX_HOME: path.join(rootDir, 'codex-home'),
+    },
+    readClaudeLogin: async () => null,
+    fetchImpl: async () => { throw new Error('offline'); },
+  }).init();
+
+  const claude = await manager.install('claude');
+  assert.equal(claude.installed, true);
+  assert.equal(claude.version, '1.2.3');
+  const codex = await manager.install('codex');
+  assert.equal(codex.installed, true);
+  assert.equal(codex.version, '1.2.3');
+  const after = await manager.status('claude');
+  assert.equal(after.installed, true, 'installing Codex must not prune the Claude CLI');
+  assert.equal(after.version, '1.2.3');
+  assert.equal(cli.installs.length, 2);
+});
+
+test('npm finishing without a runnable CLI fails the install instead of reporting it installed', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+  cli.state.failVersion = true;
+
+  await assert.rejects(manager.install('claude'), (error) => error.code === 'AGENT_INSTALL_FAILED' && /spawn UNKNOWN/.test(error.detail));
+  const failed = await manager.status('claude');
+  assert.equal(failed.installed, false);
+  assert.equal(failed.version, null);
+  assert.equal(failed.updateRequired, false);
+
+  // 설정을 고쳐 다시 설치하면 정상으로 돌아온다.
+  cli.state.failVersion = false;
+  cli.state.nextVersion = '1.0.1';
+  const fixed = await manager.install('claude');
+  assert.equal(fixed.installed, true);
+  assert.equal(fixed.version, '1.0.1');
+});
+
+test('a managed CLI whose version check fails is not reported as the bundled runtime or as outdated', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  cli.state.nextVersion = '2.1.311';
+  const options = {
+    bundledClaudeVersion: '2.1.241',
+    fetchImpl: async () => new Response(JSON.stringify({ version: '2.1.311' }), { status: 200 }),
+  };
+  const manager = await versionedManager(rootDir, cli, options);
+  assert.equal((await manager.install('claude')).version, '2.1.311');
+  assert.equal((await manager.automaticUpdate('claude')).updateRequired, false);
+
+  // 파일 지문이 바뀐 뒤(백신 검사·외부 갱신) 확인이 실패해도 마지막으로 확인한 버전을 유지한다.
+  const later = new Date(Date.now() + 60_000);
+  await fs.utimes(manager.binPath('claude'), later, later);
+  cli.state.failVersion = true;
+  const status = await manager.status('claude');
+  assert.equal(status.installed, true);
+  assert.equal(status.version, '2.1.311');
+  assert.equal(status.updateRequired, false);
+
+  // 확인한 적 없는 새 허브도 실행 파일이 있으면 번들 버전을 내세우지 않는다.
+  const fresh = await versionedManager(rootDir, cli, options);
+  const freshStatus = await fresh.status('claude');
+  assert.equal(freshStatus.installed, true);
+  assert.equal(freshStatus.version, null);
+  assert.equal(freshStatus.updateRequired, false);
+
+  // 한 번만 실패하는 확인은 같은 상태 확인 안에서 다시 실행해 바로 버전을 얻는다.
+  cli.state.failVersion = 1;
+  const retried = await fresh.status('claude');
+  assert.equal(retried.version, '2.1.311');
+});
+
+test('a failed update started from Settings does not fail an unrelated provider launch', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = versionedCli(rootDir);
+  const manager = await versionedManager(rootDir, cli);
+  await manager.install('claude');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  cli.state.beforeInstall = () => gate;
+  cli.state.installCode = 1;
+  const updating = manager.install('claude').catch((error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  const preparing = manager.prepareLaunch('claude');
+  release();
+  assert.equal((await updating).code, 'AGENT_INSTALL_FAILED');
+  const launch = await preparing;
+  assert.equal(launch.bin, manager.binPath('claude'));
+  launch.release();
+});
+
+test('a Claude credential file caught mid-rewrite keeps the terminal login until it is really gone', async (t) => {
+  const homeDir = await tmpRoot(t);
+  const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {} }).init();
+  const credentialFile = path.join(homeDir, '.claude', '.credentials.json');
+  await fs.mkdir(path.dirname(credentialFile), { recursive: true });
+  const live = JSON.stringify({ claudeAiOauth: { accessToken: 'access', expiresAt: Date.now() + 3_600_000 } });
+  await fs.writeFile(credentialFile, live);
+  assert.equal((await manager.status('claude')).authSource, 'local');
+
+  // Claude Code 가 파일을 비우고 다시 쓰는 순간이나 쓰다 만 JSON 을 읽어도 로그인은 그대로다.
+  for (const partial of ['', '{"claudeAiOauth":{"accessTo']) {
+    await fs.writeFile(credentialFile, partial);
+    await manager.refreshAuth('claude');
+    const during = await manager.authStatus('claude');
+    assert.equal(during.authenticated, true, JSON.stringify(partial));
+    assert.equal(during.authSource, 'local');
+  }
+
+  // 토큰이 없는 파일과 지워진 파일은 로그아웃이다.
+  await fs.writeFile(credentialFile, '{}');
+  await manager.refreshAuth('claude');
+  assert.equal((await manager.authStatus('claude')).authenticated, false);
+  await fs.writeFile(credentialFile, live);
+  await manager.refreshAuth('claude');
+  assert.equal((await manager.authStatus('claude')).authenticated, true);
+  await fs.rm(credentialFile);
+  await manager.refreshAuth('claude');
+  assert.equal((await manager.authStatus('claude')).authenticated, false);
+});
+
+test('a Claude login reader that throws once (file lock) does not sign the user out', async (t) => {
+  let fail = false;
+  const manager = await createCliSetupManager({
+    rootDir: await tmpRoot(t), platform: 'linux', baseEnv: {},
+    readClaudeLogin: async () => {
+      if (fail) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      return { source: 'file', text: JSON.stringify({ claudeAiOauth: { accessToken: 'access', expiresAt: Date.now() + 3_600_000 } }) };
+    },
+  }).init();
+  assert.equal((await manager.authStatus('claude')).authenticated, true);
+  fail = true;
+  await manager.refreshAuth('claude');
+  assert.equal((await manager.authStatus('claude')).authenticated, true);
+  assert.equal(manager.envFor('claude').CLAUDE_CODE_OAUTH_TOKEN, 'access');
+});
+
+test('a Codex auth.json caught empty or half-written while Codex rewrites it still counts as signed in', async (t) => {
+  const codexHome = await tmpRoot(t);
+  const authFile = path.join(codexHome, 'auth.json');
+  const signedIn = JSON.stringify({ tokens: { refresh_token: 'r' } });
+  let clock = 1_800_000_000_000;
+  let sleeps = 0;
+  let duringSleep = null;
+  const manager = await createCliSetupManager({
+    rootDir: await tmpRoot(t),
+    baseEnv: { CODEX_HOME: codexHome },
+    now: () => clock,
+    sleep: async () => { sleeps += 1; await duringSleep?.(); },
+  }).init();
+
+  // 파일이 없으면 기다리지 않고 곧바로 로그아웃으로 본다.
+  assert.equal((await manager.authStatus('codex')).authenticated, false);
+  assert.equal(sleeps, 0);
+
+  // 빈 파일이 잠시 뒤 채워지면 로그인으로 본다.
+  await fs.writeFile(authFile, '');
+  duringSleep = () => fs.writeFile(authFile, signedIn);
+  assert.equal((await manager.authStatus('codex')).authenticated, true);
+  assert.equal(sleeps, 1);
+
+  // 다시 읽어도 깨져 있으면 방금 확인한 로그인을 잠시 유지한다.
+  duringSleep = null;
+  await fs.writeFile(authFile, '{"tokens":');
+  assert.equal((await manager.authStatus('codex')).authenticated, true);
+  // 유예 시간이 지나도 계속 깨져 있으면 더는 로그인으로 보지 않는다.
+  clock += 5 * 60_000;
+  assert.equal((await manager.authStatus('codex')).authenticated, false);
+
+  await fs.writeFile(authFile, signedIn);
+  assert.equal((await manager.authStatus('codex')).authenticated, true);
+  await fs.rm(authFile);
+  assert.equal((await manager.authStatus('codex')).authenticated, false);
+});
+
+test('a proxy 403 during verification keeps the stored Claude app token; an Anthropic 401 drops it', async (t) => {
+  const TOKEN = `sk-ant-oat01-${'AbCd_-xy9'.repeat(12)}`;
+  const secretStore = createMemorySecretStore({ 'rhwp.claude.oauth-token': TOKEN });
+  let reply = () => new Response('<html>Forbidden by proxy</html>', { status: 403, headers: { 'content-type': 'text/html' } });
+  const manager = await createCliSetupManager({
+    rootDir: await tmpRoot(t), platform: 'linux', baseEnv: {}, secretStore,
+    readClaudeLogin: async () => null,
+    fetchImpl: async () => reply(),
+  }).init();
+  assert.equal((await manager.status('claude')).authSource, 'app');
+
+  assert.equal(await manager.verifyAuth('claude', { force: true }), 'unknown');
+  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), TOKEN);
+  assert.equal(manager.envFor('claude').CLAUDE_CODE_OAUTH_TOKEN, TOKEN);
+  assert.equal((await manager.status('claude')).authSource, 'app');
+
+  reply = () => new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid token' } }), { status: 401 });
+  assert.equal(await manager.verifyAuth('claude', { force: true }), 'invalid');
+  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), null);
+  assert.equal((await manager.status('claude')).authenticated, false);
 });

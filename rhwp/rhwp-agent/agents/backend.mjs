@@ -178,7 +178,7 @@ export function redactableTail(value, limit) {
  * @property {string|number} [capabilityEpoch]
  * @property {string} [isolatedHome]
  * @property {string} [codexHome]
- * @property {string} [codexAuthPath]
+ * @property {string | (() => string | undefined)} [codexAuthPath] Source auth.json, or a getter read on every launch
  * @property {string} [codexBin]
  * @property {string} [claudeBin]
  * @property {string} [piBin]

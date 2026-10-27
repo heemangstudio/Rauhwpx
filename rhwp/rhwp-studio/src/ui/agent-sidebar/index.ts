@@ -228,7 +228,7 @@ import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-d
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
 import './workbench-agents.css';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
-import { createFailureNoticeController, failureRailLabel, retryWire } from './failure-notice.ts';
+import { authNoticeReconnected, createFailureNoticeController, failureRailLabel, retryWire } from './failure-notice.ts';
 import { autofixReady, createRetryEscalation, onAutofixSettings } from '../autofix/autofix.ts';
 import { createAutofixButton, swapSlot, type AutofixButton } from '../autofix/autofix-button.ts';
 import {
@@ -247,6 +247,7 @@ import {
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
 import {
   createInitialSetup,
+  firstRunAgentForChat,
   maybeStartInitialSetup,
   type InitialSetupDeps,
   type InitialSetupUi,
@@ -1453,7 +1454,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 보낸 메시지가 턴을 기다리는 동안도 다시 시도는 막힌다 — 같은 요청이 두 번 나간다.
     isTurnRunning: () => agentWorking(),
     isConnected: () => connState === 'connected',
-    reconnected: (agent) => !authFailedAgents.has(agent) && setupStatuses?.[agent]?.authenticated === true,
+    reconnected: (agent, failedAt) => authNoticeReconnected(failedAt, {
+      authenticated: setupStatuses?.[agent]?.authenticated === true,
+      failing: authFailedAgents.has(agent),
+      verifiedAt: setupStatuses?.[agent]?.authVerifiedAt ?? null,
+      provenAt: authProvenAt.get(agent) ?? null,
+    }),
     openLogin: (agent) => {
       requestSettingsOpen('ai-connection');
       settingsPanel.beginAgentConnect(agent, { reauth: true });
@@ -3939,6 +3945,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 인증 실패를 본 시각. 허브가 그 뒤에 자격 증명을 다시 확인하면 칩을 거둔다. */
   const authFailedAt = new Map<AgentName, number>();
+  /** 이 창에서 자격 증명이 실제로 통한 마지막 시각 — 끝난 로그인이나 끝까지 간 턴. 저장된 실패 알림과 견준다. */
+  const authProvenAt = new Map<AgentName, number>();
   /** 턴이 도는 중에 로그인이 돌아와 턴이 끝난 뒤 다시 열 세션. */
   const reconnectRestartPending = new Set<AgentName>();
 
@@ -3950,7 +3958,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         authRunSeen.add(agent);
       } else if (authRunSeen.has(agent)) {
         authRunSeen.delete(agent);
-        if (status?.authenticated) authFailedAgents.delete(agent);
+        if (status?.authenticated) {
+          authFailedAgents.delete(agent);
+          authProvenAt.set(agent, Date.now());
+        }
       }
       const failedAt = authFailedAt.get(agent);
       if (failedAt !== undefined && status?.authenticated
@@ -5057,6 +5068,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       set: (patch) => bridge.setTasteSettings(patch),
     },
     onFinished: () => {
+      adoptFirstRunDefaultAgent();
       updateReconnectChip();
       updateCalibrationChip();
     },
@@ -10369,6 +10381,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return true;
   }
 
+  /**
+   * 첫 실행 설정이 연결한 프로바이더를 기본값으로 저장했다. 아직 아무것도 보내지 않은 채팅이면 그 기본값으로
+   * 바로 세운다 — 그러지 않으면 Codex 만 연결한 사용자의 첫 메시지가 연결하지 않은 Claude 로 간다.
+   */
+  function adoptFirstRunDefaultAgent(): void {
+    agentPrefs = loadAgentPrefs();
+    rebuildLlmMenu();
+    const next = firstRunAgentForChat(agentPrefs.defaultAgent, {
+      selectedAgent,
+      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
+      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
+      readOnly: readOnlyDocLabel !== null,
+    });
+    if (!next) return;
+    applyDefaultSelection();
+    // 초안은 첫 메시지를 보낼 때 이 선택으로 열린다. 이미 연 빈 채팅은 새 프로바이더로 다시 연다.
+    startCurrentBridgeChat();
+    refreshSidebarWidthMin();
+  }
+
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
   function applyAgentPrefs(prefs: AgentPrefs): void {
     agentPrefs = prefs;
@@ -11825,6 +11857,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           && !event.errorMessage
           && turnFailedToolCount === 0;
         if (completed) failureNotices.noteSuccess();
+        if (completed) authProvenAt.set(event.agent, Date.now());
         if (completed && authFailedAgents.delete(event.agent)) updateComposer();
         if (reconnectRestartPending.delete(event.agent) && event.agent === selectedAgent) {
           restartAgentSession();

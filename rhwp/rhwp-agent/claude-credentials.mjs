@@ -57,15 +57,27 @@ export function claudeCredentialExpiry(credential) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-/** Read the credential file as a plain, size-bounded, non-symlink file. */
-export async function readClaudeCredentialFile(file, { maxBytes = CLAUDE_CREDENTIAL_MAX_BYTES } = {}) {
+const ABSENT_FILE_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+/**
+ * Read the credential file as a plain, size-bounded, non-symlink file and say
+ * why nothing usable came back. `absent` and `none` (a readable file without
+ * an access token, a symlink, an oversized file) are settled answers.
+ * `unreadable` covers what a moment later can fix: an empty or half-written
+ * file while Claude Code rewrites it, or a Windows lock (EBUSY/EPERM) held by
+ * an antivirus scan or the CLI itself.
+ *
+ * @returns {Promise<{ state: 'ok'|'absent'|'none'|'unreadable', credential: object|null }>}
+ */
+export async function inspectClaudeCredentialFile(file, { maxBytes = CLAUDE_CREDENTIAL_MAX_BYTES } = {}) {
   let handle = null;
   try {
     const pathStat = await fs.lstat(file);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return null;
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return { state: 'none', credential: null };
     handle = await fs.open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const stat = await handle.stat();
-    if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 1 || stat.size > maxBytes) return null;
+    if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size > maxBytes) return { state: 'none', credential: null };
+    if (stat.size < 1) return { state: 'unreadable', credential: null };
     const bytes = Buffer.allocUnsafe(stat.size);
     let offset = 0;
     while (offset < bytes.byteLength) {
@@ -73,12 +85,21 @@ export async function readClaudeCredentialFile(file, { maxBytes = CLAUDE_CREDENT
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    return parseClaudeOAuthCredential(bytes.subarray(0, offset).toString('utf8'));
-  } catch {
-    return null;
+    const text = bytes.subarray(0, offset).toString('utf8');
+    const credential = parseClaudeOAuthCredential(text);
+    if (credential) return { state: 'ok', credential };
+    try { JSON.parse(text); } catch { return { state: 'unreadable', credential: null }; }
+    return { state: 'none', credential: null };
+  } catch (error) {
+    return { state: ABSENT_FILE_CODES.has(error?.code) ? 'absent' : 'unreadable', credential: null };
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+/** Read the credential file as a plain, size-bounded, non-symlink file. */
+export async function readClaudeCredentialFile(file, options = {}) {
+  return (await inspectClaudeCredentialFile(file, options)).credential;
 }
 
 /**
@@ -112,15 +133,22 @@ export async function readClaudeKeychainCredential({
  * Resolve the profile's live Claude login from every location Claude Code
  * uses, preferring the plain file on disk over the Keychain item.
  *
- * @returns {Promise<{ source: 'file'|'keychain', configDir: string, file: string, text: string } | null>}
+ * With `reportUnreadable`, a credential file that exists but could not be read
+ * right now (and no Keychain login to fall back on) resolves to
+ * `{ source: 'unreadable', text: null }` instead of null, so a caller can keep
+ * the login it already has rather than signing the user out.
+ *
+ * @returns {Promise<{ source: 'file'|'keychain', configDir: string, file: string, text: string } | { source: 'unreadable', configDir: string, file: string, text: null } | null>}
  */
 export async function readClaudeOAuthCredential({
   homeDir,
   configDir = null,
   env = {},
   platform = process.platform,
-  readFileImpl = readClaudeCredentialFile,
+  readFileImpl = null,
+  inspectFileImpl = inspectClaudeCredentialFile,
   readKeychainImpl = readClaudeKeychainCredential,
+  reportUnreadable = false,
 } = {}) {
   const hasConfigDir = typeof env?.[CLAUDE_CONFIG_DIR_ENV] === 'string' && env[CLAUDE_CONFIG_DIR_ENV].trim() !== '';
   const explicit = hasConfigDir
@@ -133,7 +161,10 @@ export async function readClaudeOAuthCredential({
   const usesProfileService = hasConfigDir
     || (explicit !== null && explicit !== defaultClaudeConfigDir(homeDir, platform));
   const file = path.join(resolvedConfigDir, CLAUDE_CREDENTIAL_FILENAME);
-  const fromFile = await readFileImpl(file).catch(() => null);
+  const inspected = readFileImpl
+    ? { state: null, credential: await readFileImpl(file).catch(() => null) }
+    : await inspectFileImpl(file).catch(() => ({ state: 'unreadable', credential: null }));
+  const fromFile = inspected?.credential ?? null;
   const fileExpired = claudeCredentialExpiry(fromFile) > 0
     && claudeCredentialExpiry(fromFile) <= Date.now();
   if (fromFile && (platform !== 'darwin' || !fileExpired)) {
@@ -164,6 +195,9 @@ export async function readClaudeOAuthCredential({
       file,
       text: JSON.stringify(fromFile),
     };
+  }
+  if (reportUnreadable && inspected?.state === 'unreadable') {
+    return { source: 'unreadable', configDir: resolvedConfigDir, file, text: null };
   }
   return null;
 }
@@ -232,10 +266,29 @@ export async function verifyClaudeCredential({
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
+    // A 403 is only a verdict on the credential when Anthropic itself says so.
+    // Proxies, captive portals and geo blocks answer 403 with their own (often
+    // HTML) page, and that must never sign the user out.
+    if (response.status === 403) return (await anthropicRejection(response)) ? 'invalid' : 'unknown';
     await response.body?.cancel?.().catch?.(() => {});
     if (response.ok) return 'valid';
-    return response.status === 401 || response.status === 403 ? 'invalid' : 'unknown';
+    return response.status === 401 ? 'invalid' : 'unknown';
   } catch {
     return 'unknown';
+  }
+}
+
+const ANTHROPIC_REJECTION_TYPES = new Set(['authentication_error', 'permission_error']);
+const REJECTION_BODY_MAX_CHARS = 16 * 1024;
+
+/** True when a response body is Anthropic's own JSON authentication or permission error. */
+async function anthropicRejection(response) {
+  try {
+    const text = await response.text();
+    if (text.length > REJECTION_BODY_MAX_CHARS) return false;
+    const parsed = JSON.parse(text);
+    return ANTHROPIC_REJECTION_TYPES.has(parsed?.error?.type);
+  } catch {
+    return false;
   }
 }

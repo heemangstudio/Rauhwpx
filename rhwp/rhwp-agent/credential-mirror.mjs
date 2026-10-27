@@ -61,6 +61,24 @@ function retryLockedSync(operation, {
   }
 }
 
+/**
+ * Whether bytes are one non-empty JSON object. A provider hard-killed mid
+ * write (Windows `taskkill /T /F` during a token refresh) leaves an empty or
+ * truncated file, and copyback must never install that over the host file.
+ */
+export function isJsonObjectContent(content) {
+  if (!content?.byteLength) return false;
+  try {
+    const text = Buffer.from(content).toString('utf8');
+    // Windows editors may prepend a UTF-8 BOM; JSON.parse rejects it.
+    const value = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
