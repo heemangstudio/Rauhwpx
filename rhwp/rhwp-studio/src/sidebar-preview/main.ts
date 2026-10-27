@@ -819,7 +819,11 @@ async function openLockedParallelScene(): Promise<void> {
   sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
   await until(() => chats.length > 1 && chats[shownChat]!.sidebar.root.classList.contains('ag-fullscreen'));
 }
-if (parallel === 'locked') await openLockedParallelScene();
+// 잠긴 두 번째 채팅은 전체 화면에서만 보인다. fullscreen=1 이 없어도 장면이 열리게 먼저 들어간다.
+if (parallel === 'locked') {
+  if (!sidebar.root.classList.contains('ag-fullscreen')) await enterFocusMode();
+  await openLockedParallelScene();
+}
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,

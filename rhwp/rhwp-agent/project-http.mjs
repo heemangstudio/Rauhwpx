@@ -85,7 +85,8 @@ function decodeUploadName(header) {
 
 function contentDisposition(kind, name, fileKind) {
   const inline = fileKind === 'pdf' || fileKind === 'image';
-  const encoded = encodeURIComponent(name).replaceAll('%20', ' ');
+  // 예전에 잘못 잘려 저장된 이름(짝 없는 서로게이트)도 내려받을 수 있게 고쳐서 인코딩한다.
+  const encoded = encodeURIComponent(name.toWellFormed()).replaceAll('%20', ' ');
   const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }

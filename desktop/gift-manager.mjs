@@ -102,11 +102,15 @@ export function createGiftManager({
     attemptedAt = now();
     attemptLease = lease;
     try {
-      answer = await client.status(lease);
+      const result = await client.status(lease);
+      // 묻는 사이 라이선스가 바뀌었으면(해제 등) 늦게 온 답으로 크레딧을 되살리지 않는다.
+      if (seenLease !== lease) return;
+      answer = result;
       answerLease = lease;
       checkedAt = now();
       lastError = null;
     } catch (error) {
+      if (seenLease !== lease) return;
       const code = error instanceof GiftServerError ? error.code : 'network';
       if (code === 'unauthorized' || (answer && keyIdOf(answerLease) !== keyIdOf(lease))) forget(code);
       else lastError = code;

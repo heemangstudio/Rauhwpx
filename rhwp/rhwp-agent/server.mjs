@@ -8541,7 +8541,7 @@ const httpServer = http.createServer((req, res) => {
         sendHttpJson(res, 404, { status: 'not-found' });
         return;
       }
-      const encodedName = encodeURIComponent(artifact.fileName).replaceAll('%20', ' ');
+      const encodedName = encodeURIComponent(artifact.fileName.toWellFormed()).replaceAll('%20', ' ');
       const asciiName = artifact.fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
       res.writeHead(200, {
         'content-type': artifact.mime,

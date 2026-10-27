@@ -13,6 +13,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
   const chats = [];
   let createFailure = null; // { status, createAnyway }
   let patchFailure = null; // status
+  let patchHold = null; // promise the next PATCH response waits for, after the change is applied
   let waiters = [];
   const release = () => { const w = waiters; waiters = []; w.forEach((fn) => fn()); };
   const gate = () => (autoRelease > 0
@@ -67,6 +68,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
         if (patchFailure) { const status = patchFailure; patchFailure = null; return json(res, status, { error: { code: status, message: 'boom' } }); }
         if (body.disabled !== undefined) k.disabled = body.disabled;
         if (body.limit !== undefined) k.limit = body.limit;
+        if (patchHold) { const held = patchHold; patchHold = null; await held; }
         return json(res, 200, { data: keyInfo(keyPath[1], k) });
       }
     }
@@ -120,6 +122,8 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
     release,
     failNextCreate(status, { createAnyway = false } = {}) { createFailure = { status, createAnyway }; },
     failNextPatch(status) { patchFailure = status; },
+    /** The next PATCH changes the key at once but answers only after the returned function is called. */
+    holdNextPatch() { let resume; patchHold = new Promise((resolve) => { resume = resolve; }); return resume; },
     async listen(port = 0) {
       await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
       return `http://127.0.0.1:${server.address().port}/api/v1`;

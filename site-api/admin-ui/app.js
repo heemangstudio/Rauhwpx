@@ -625,7 +625,11 @@
         showFeedbackList();
         showNewCount();
       }
-      detail.replaceChildren(...await reportView(report));
+      const view = await reportView(report);
+      // 첨부를 받는 사이 다른 보고를 골랐으면 그리지 않는다. 늦게 온 보고가 고른 보고 자리를 차지하면
+      // 삭제 단추가 엉뚱한 보고를 지운다.
+      if (selectedId !== id) return;
+      detail.replaceChildren(...view);
     } catch (error) {
       showError('feedback-error', error);
     }

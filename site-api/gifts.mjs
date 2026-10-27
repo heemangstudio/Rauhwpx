@@ -297,6 +297,19 @@ export function createGiftsService({
   }
 
   const claiming = new Map();
+  /**
+   * 한 라이선스의 한도 변경은 OpenRouter 응답과 저장까지 하나씩 끝낸다. 겹치면 늦게 온 이전 응답이
+   * 새 한도를 덮어써, 기록된 약정액이 실제 키 한도보다 작아지고 예산을 넘는 지급이 허용된다.
+   */
+  const limitChanges = new Map();
+  function serializeLimitChange(keyId, change) {
+    const previous = limitChanges.get(keyId);
+    const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(change);
+    limitChanges.set(keyId, run);
+    const clear = () => { if (limitChanges.get(keyId) === run) limitChanges.delete(keyId); };
+    run.then(clear, clear);
+    return run;
+  }
 
   async function claim(lease) {
     const who = await principal(lease);
@@ -629,57 +642,59 @@ export function createGiftsService({
       const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
       if (!keyId) throw giftError('key_id_required', 400);
       const amount = parseGiftAmount(body?.amountUsd);
-      const plan = await mutate((state) => {
-        const ev = eventState(state);
-        const grant = own(ev.grants, keyId);
-        if (grant?.status === 'provisioning' && claiming.has(keyId)) throw giftError('gift_provisioning', 409);
-        if (grant?.status !== 'active' || (grant.limitUsd === amount && grant.pendingLimitUsd === undefined)) {
-          ev.allocations[keyId] = amount;
-          return { value: { gift: licenseGift(ev, keyId) } };
+      return serializeLimitChange(keyId, async () => {
+        const plan = await mutate((state) => {
+          const ev = eventState(state);
+          const grant = own(ev.grants, keyId);
+          if (grant?.status === 'provisioning' && claiming.has(keyId)) throw giftError('gift_provisioning', 409);
+          if (grant?.status !== 'active' || (grant.limitUsd === amount && grant.pendingLimitUsd === undefined)) {
+            ev.allocations[keyId] = amount;
+            return { value: { gift: licenseGift(ev, keyId) } };
+          }
+          const raising = amount > (finite(grant.limitUsd) ?? 0);
+          if (raising && totalBudgetUsd !== undefined && usd(committedExcept(ev, keyId) + amount) > usd(totalBudgetUsd)) {
+            throw giftError('budget_exhausted', 409);
+          }
+          grant.pendingLimitUsd = amount;
+          return { value: { hash: grant.openrouterHash } };
+        });
+        if (plan.gift) {
+          log(`[site-api] gift amount for ${keyId} set to $${amount}`);
+          return { ok: true, gift: plan.gift };
         }
-        const raising = amount > (finite(grant.limitUsd) ?? 0);
-        if (raising && totalBudgetUsd !== undefined && usd(committedExcept(ev, keyId) + amount) > usd(totalBudgetUsd)) {
-          throw giftError('budget_exhausted', 409);
-        }
-        grant.pendingLimitUsd = amount;
-        return { value: { hash: grant.openrouterHash } };
-      });
-      if (plan.gift) {
-        log(`[site-api] gift amount for ${keyId} set to $${amount}`);
-        return { ok: true, gift: plan.gift };
-      }
 
-      const { ok, status: code } = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(plan.hash)}`, {
-        method: 'PATCH',
-        body: { limit: amount },
-      }).catch(() => ({ ok: false }));
-      if (!ok) {
-        log(`[site-api] gift limit for ${keyId} not changed: ${code ?? 'network'}`);
-        // A refusal frees the reservation. After a network failure the new limit may be live, so it stays counted.
-        if (code >= 400 && code < 500) {
-          await mutate((state) => {
-            const g = own(state.events[eventId]?.grants, keyId);
-            if (g?.pendingLimitUsd !== amount) return { dirty: false };
-            delete g.pendingLimitUsd;
-            return {};
-          }).catch(() => {});
+        const { ok, status: code } = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(plan.hash)}`, {
+          method: 'PATCH',
+          body: { limit: amount },
+        }).catch(() => ({ ok: false }));
+        if (!ok) {
+          log(`[site-api] gift limit for ${keyId} not changed: ${code ?? 'network'}`);
+          // A refusal frees the reservation. After a network failure the new limit may be live, so it stays counted.
+          if (code >= 400 && code < 500) {
+            await mutate((state) => {
+              const g = own(state.events[eventId]?.grants, keyId);
+              if (g?.pendingLimitUsd !== amount) return { dirty: false };
+              delete g.pendingLimitUsd;
+              return {};
+            }).catch(() => {});
+          }
+          throw giftError('upstream_unavailable', 502);
         }
-        throw giftError('upstream_unavailable', 502);
-      }
-      const gift = await mutate((state) => {
-        const ev = eventState(state);
-        const g = own(ev.grants, keyId);
-        ev.allocations[keyId] = amount;
-        if (g) {
-          g.limitUsd = amount;
-          g.limitChangedAt = new Date(now()).toISOString();
-          if (g.pendingLimitUsd === amount) delete g.pendingLimitUsd;
-        }
-        return { value: licenseGift(ev, keyId) };
+        const gift = await mutate((state) => {
+          const ev = eventState(state);
+          const g = own(ev.grants, keyId);
+          ev.allocations[keyId] = amount;
+          if (g) {
+            g.limitUsd = amount;
+            g.limitChangedAt = new Date(now()).toISOString();
+            if (g.pendingLimitUsd === amount) delete g.pendingLimitUsd;
+          }
+          return { value: licenseGift(ev, keyId) };
+        });
+        balances.delete(keyId);
+        log(`[site-api] gift limit for ${keyId} changed to $${amount}`);
+        return { ok: true, gift };
       });
-      balances.delete(keyId);
-      log(`[site-api] gift limit for ${keyId} changed to $${amount}`);
-      return { ok: true, gift };
     },
     /** PATCH the OpenRouter key to disabled, then mark the grant revoked. */
     async disable(token, body) {

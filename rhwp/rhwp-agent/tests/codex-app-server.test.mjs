@@ -160,6 +160,7 @@ function harness(t, {
   terminateProcess = (process) => process.kill('SIGTERM'),
   extraOpts = {},
   idleReleaseMs,
+  startupRequestTimeoutMs,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -194,6 +195,7 @@ function harness(t, {
     terminateProcess,
     waitForExit: async () => true,
     createRolloutWatcher: fakeWatcher,
+    ...(startupRequestTimeoutMs ? { startupRequestTimeoutMs } : {}),
   });
   return { session, events, spawns, opts };
 }
@@ -647,6 +649,51 @@ test('Codex settles once when started and completed arrive before the turn/start
   assert.equal(h.events.some((event) => (
     event.type === 'error' && /could not start the turn/i.test(event.message)
   )), false);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a turn/start that Codex never answers fails the turn instead of spinning forever', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    startupRequestTimeoutMs: 20,
+    responder(frame, process) {
+      if (frame.method === 'turn/start') return;
+      return base(frame, process);
+    },
+  });
+
+  h.session.sendUserMessage('Codex is stuck');
+  const deadline = Date.now() + 2_000;
+  while (!h.events.some((event) => event.type === 'turn-end') && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.deepEqual(h.events.filter((event) => event.type === 'turn-end').map((event) => event.stopReason), ['failed']);
+  assert.equal(h.events.some((event) => event.type === 'error' && /turn\/start timed out/.test(event.message)), true);
+  assert.equal(await h.session.dispose(), true);
+});
+
+test('a turn that already started is not cut off when its turn/start answer is late', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    startupRequestTimeoutMs: 20,
+    responder(frame, process) {
+      if (frame.method === 'turn/start') {
+        process.send({
+          method: 'turn/started',
+          params: { threadId: frame.params.threadId, turn: { id: 'turn-slow-ack', status: 'inProgress' } },
+        });
+        return;
+      }
+      return base(frame, process);
+    },
+  });
+
+  h.session.sendUserMessage('Long running turn');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
+  assert.equal(h.events.some((event) => event.type === 'turn-end' || event.type === 'error'), false);
   assert.equal(await h.session.dispose(), true);
 });
 

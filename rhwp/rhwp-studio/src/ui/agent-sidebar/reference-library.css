@@ -327,6 +327,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  /* 참고 칩이 많아도 입력기가 창보다 높아지지 않게 몇 줄만 보이고 안에서 스크롤한다. */
+  max-height: min(88px, 20vh);
+  overflow-y: auto;
   padding: 0 1px 5px;
 }
 

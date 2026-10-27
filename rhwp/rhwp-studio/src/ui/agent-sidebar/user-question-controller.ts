@@ -468,6 +468,8 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
     isHeld: () => interaction !== null && held && visible,
     present,
     usesComposerForOther: () => composerOtherQuestionId !== null,
+    /** 직접 답변이 입력기를 빌렸으면 빌리기 전의 글, 아니면 입력기의 글 — 이 채팅의 보내지 않은 메시지. */
+    composerMessageText: () => (composerOtherQuestionId !== null ? composerTextBeforeOther ?? '' : options.input.value),
     /**
      * 사이드바가 다른 채팅·새 채팅으로 입력기를 옮기기 전에 부른다. 직접 입력의 글은
      * 질문 초안에 남기고, 빌리기 전에 쓰던 글을 입력기에 되돌린다 — 사이드바는 그 글을

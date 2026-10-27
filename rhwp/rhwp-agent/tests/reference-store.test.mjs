@@ -314,6 +314,10 @@ test('quotas fail closed and failed/oversize streams leave no staged files', asy
 
 test('names, unsupported types, and Korean tokenizer are safe', async () => {
   assert.equal(sanitizeReferenceName('../../보고서.txt'), '보고서.txt');
+  // 길이 제한이 이모지 한가운데를 자르면 내려받기 주소를 만들 수 없다.
+  const emoji = sanitizeReferenceName(`${'a'.repeat(215)}😀.txt`);
+  assert.equal(emoji.isWellFormed(), true);
+  assert.doesNotThrow(() => encodeURIComponent(emoji));
   assert.throws(() => sanitizeReferenceName('payload.exe'), (error) => error instanceof ReferenceStoreError && error.code === 'REFERENCE_TYPE_UNSUPPORTED');
   for (const name of ['vector.svg', 'photo.heic', 'scan.tiff']) {
     assert.throws(() => sanitizeReferenceName(name), (error) => error instanceof ReferenceStoreError && error.code === 'REFERENCE_TYPE_UNSUPPORTED');
