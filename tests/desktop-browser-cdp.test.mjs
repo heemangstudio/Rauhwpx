@@ -112,3 +112,55 @@ test('target announcements resolve immediately and reattachment keeps aliases an
   assert.throws(() => host.attach(first, { tabId: 'logical-tab', expectedTargetId: 'native-first' }), /target is stale/);
   assert.throws(() => host.bind({ targetId, tabId: 'logical-tab', sessionId: 'two', chatId: 'chat' }), /another editor window/);
 });
+
+test('an open page dialog cannot hang the CDP teardown that hub restart and app quit wait for', { timeout: 10_000 }, async () => {
+  const relay = new PrivateBrowserCdp({ host: {} });
+  const sent = [];
+  // 열린 alert 가 렌더러를 막으면 Runtime·Page 명령은 끝나지 않는다.
+  const blockedTab = (targetId, dialogOpen) => ({
+    targetId,
+    dialogOpen,
+    view: { webContents: { debugger: { sendCommand: (method) => {
+      sent.push(`${targetId}:${method}`);
+      return ['Fetch.disable', 'Input.cancelDragging'].includes(method) ? Promise.resolve({}) : new Promise(() => {});
+    } } } },
+  });
+  relay.tabs.set('a', blockedTab('a', true));
+  relay.tabs.set('b', blockedTab('b', false));
+  relay.tabs.set('c', blockedTab('c', false));
+  const started = Date.now();
+  await relay.disconnect();
+  // 탭마다 명령 하나당 0.5초를 넘기지 않고, 탭끼리는 함께 정리한다.
+  assert.ok(Date.now() - started < 4_000, `disconnect took ${Date.now() - started} ms`);
+  assert.ok(sent.includes('a:Fetch.disable') && sent.includes('c:Target.setAutoAttach'));
+  assert.ok(!sent.includes('a:Runtime.disable'), 'a tab with an open dialog skips the blocked disables');
+});
+
+test('a parked Windows guest keeps a transparent surface mapped while the agent holds an activity lease', async () => {
+  const { host, tab, window } = captureHost();
+  const commands = [];
+  Object.assign(tab, { targetId: 'target-1', tabId: 'tab-1', sessionId: 'editor', chatId: 'chat' });
+  tab.view.webContents.debugger = { isAttached: () => true, sendCommand: async (method, params) => { commands.push([method, params]); } };
+  host.tabs.set(tab.targetId, tab);
+  const scope = { targetId: 'target-1', tabId: 'tab-1', sessionId: 'editor', chatId: 'chat', generation: host.generation };
+  const token = '0123456789abcdef0123456789abcdef';
+  // 매핑되지 않은 창은 초당 한 프레임만 그려 입력마다 1초가 걸린다 — 임대 동안 띄워 둔다.
+  await host.activity({ ...scope, token, active: true });
+  assert.equal(window.visible, true);
+  assert.equal(window.shows, 1);
+  // 겹친 캡처가 끝나도 임대가 남아 있으면 숨기지 않는다.
+  assert.equal(await host.withCaptureSurface(tab, () => 'image'), 'image');
+  assert.equal(window.visible, true);
+  await host.activity({ ...scope, token, active: false });
+  assert.equal(window.visible, false);
+  assert.equal(host.captureSurfaces.has(window), false);
+
+  const mac = captureHost('darwin');
+  Object.assign(mac.tab, { targetId: 'target-2', tabId: 'tab-2', sessionId: 'editor', chatId: 'chat' });
+  mac.tab.view.webContents.debugger = { isAttached: () => true, sendCommand: async () => {} };
+  mac.host.tabs.set(mac.tab.targetId, mac.tab);
+  await mac.host.activity({ targetId: 'target-2', tabId: 'tab-2', sessionId: 'editor', chatId: 'chat', generation: mac.host.generation, token, active: true });
+  assert.equal(mac.window.shows, 0);
+  mac.host.clearActivity(mac.tab);
+  host.clearActivity(tab);
+});

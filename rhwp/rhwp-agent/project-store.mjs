@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { replaceFileAtomically } from './harness-update.mjs';
+import { recoverInterruptedFileReplacement, replaceFileAtomically } from './harness-update.mjs';
 import { formatWikilinkAnchor, isProjectAnchor, parseWikilinks } from './project-links.mjs';
 import { DEFAULT_PROJECT_SETTINGS } from './project-settings.mjs';
 import { defaultReferenceRoot, tokenizeReferenceText } from './reference-store.mjs';
@@ -143,7 +143,8 @@ function tagColor(name) {
 
 function cleanText(value, maximum, { allowEmpty = false, multiline = false } = {}) {
   if (typeof value !== 'string') return null;
-  const normalized = value.normalize('NFKC').replace(multiline ? /[\u0000-\u0008\u000b-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, '');
+  // 제목·이름은 사용자가 쓴 그대로 보여야 한다 — NFKC 는 ①·㎡·㈜·전각 숫자를 바꾼다.
+  const normalized = value.normalize('NFC').replace(multiline ? /[\u0000-\u0008\u000b-\u001f\u007f]/g : /[\u0000-\u001f\u007f]/g, '');
   const text = multiline ? normalized : normalized.trim();
   if (!allowEmpty && !text.trim()) return null;
   return text.length <= maximum ? text : null;
@@ -190,6 +191,12 @@ async function writeFileAtomically(file, content, platform) {
     const handle = await fs.open(temp, 'r+');
     try { await handle.sync(); } finally { await handle.close(); }
     await replaceFileAtomically(temp, file, { platform });
+  } catch (error) {
+    // 교체 도우미는 잠금 실패를 설치 업데이트 문구로 바꾼다 — 프로젝트 저장 실패로 알린다.
+    if (error?.code === 'HARNESS_FILES_LOCKED') {
+      throw projectError('PROJECT_FILE_LOCKED', '프로젝트 파일을 다른 프로그램이 쓰고 있어 저장하지 못했어요. 백업·동기화·바이러스 검사 프로그램을 확인한 뒤 다시 시도하세요.');
+    }
+    throw error;
   } finally {
     await fs.unlink(temp).catch(() => undefined);
   }
@@ -993,6 +1000,8 @@ export class ProjectStore {
       throw projectError('PROJECT_PATH_UNSAFE', `Project path is not a plain directory: ${this.root}`);
     }
     try {
+      // Windows 교체가 두 rename 사이에서 끊겼으면 옛 색인을 먼저 되돌린다(묘비·합침 기록 보존).
+      await recoverInterruptedFileReplacement(this.indexPath, { platform: this.platform });
       const raw = JSON.parse(await readBoundedText(this.indexPath, MAX_INDEX_JSON_BYTES));
       if (!isPlainObject(raw) || raw.schemaVersion !== INDEX_SCHEMA_VERSION) throw new Error('unsupported index schema');
       const index = emptyIndex();
@@ -1017,7 +1026,9 @@ export class ProjectStore {
     for (const entry of entries) {
       if (!entry.isDirectory() || !PROJECT_ID_PATTERN.test(entry.name)) continue;
       try {
-        const raw = JSON.parse(await readBoundedText(path.join(this.root, entry.name, 'project.json'), MAX_PROJECT_JSON_BYTES));
+        const file = path.join(this.root, entry.name, 'project.json');
+        await recoverInterruptedFileReplacement(file, { platform: this.platform });
+        const raw = JSON.parse(await readBoundedText(file, MAX_PROJECT_JSON_BYTES));
         const state = validateProjectState(raw, entry.name);
         this.index.projects[state.id] = { id: state.id, implicit: state.implicit === true, createdAt: state.createdAt };
         for (const member of state.members) {
@@ -1107,6 +1118,8 @@ export class ProjectStore {
     const file = path.join(this.#projectDir(projectId), 'project.json');
     let state;
     try {
+      // Windows 교체가 두 rename 사이에서 끊긴 경우 `.previous-write` 에 남은 직전 값을 되살린다.
+      await recoverInterruptedFileReplacement(file, { platform: this.platform });
       state = validateProjectState(JSON.parse(await readBoundedText(file, MAX_PROJECT_JSON_BYTES)), projectId);
     } catch (error) {
       if (error?.code === 'ENOENT') throw projectError('PROJECT_NOT_FOUND', `Project ${projectId} has no data`);
@@ -2345,42 +2358,12 @@ export class ProjectStore {
     let repaired = 0;
     for (const scope of this.referenceStore.listScopes('project')) {
       const projectId = scope.scopeId;
-      const merged = this.index.mergedProjects[projectId];
-      if (merged && !this.hasProject(projectId) && this.hasProject(merged.into)) {
-        // 합쳐진 프로젝트 범위에 남은 기록은 합친 프로젝트로 옮긴다.
-        const files = this.referenceStore.list({ scope: 'project', scopeId: projectId });
-        repaired += (await this.adoptReferences(merged.into, files, { source: { kind: 'migrated' }, librarian: 'skipped' })).length;
-        continue;
+      try {
+        repaired += await this.#repairProjectReferences(projectId);
+      } catch (error) {
+        // 한 프로젝트를 읽지 못해도 나머지 프로젝트의 복구는 이어 간다.
+        this.logger?.(`project ${projectId} skipped while repairing references: ${error?.message ?? error}`);
       }
-      if (this.index.deletedProjects[projectId]) {
-        if (await this.#removeProjectReferences(projectId) === 0) {
-          await this.#withIndex(async () => {
-            delete this.index.deletedProjects[projectId];
-            await this.#writeIndex();
-          });
-        }
-        continue;
-      }
-      if (!this.hasProject(projectId)) {
-        await this.#withIndex(async () => {
-          if (this.hasProject(projectId)) return;
-          await this.#createProjectLocked({ id: projectId, name: '복구된 자료', implicit: false, nameSource: 'user' });
-          await this.#writeIndex();
-        });
-        this.logger?.(`recovered project ${projectId} from its stored files`);
-      }
-      const project = await this.get(projectId, { trash: true });
-      const linked = new Set(project.items.filter((item) => item.kind === 'file').map((item) => item.fileId));
-      const missing = this.referenceStore.list({ scope: 'project', scopeId: projectId })
-        .filter((file) => !linked.has(file.id));
-      if (missing.length === 0) continue;
-      await this.addFileItems(projectId, missing.map((file) => ({
-        fileId: file.id,
-        scope: 'project',
-        source: { kind: 'migrated' },
-        librarian: 'skipped',
-      })), { summary: `자료 복구 ${missing.length}` });
-      repaired += missing.length;
     }
     for (const projectId of Object.keys(this.index.deletedProjects)) {
       if (this.referenceStore.list({ scope: 'project', scopeId: projectId }).length > 0) continue;
@@ -2390,6 +2373,44 @@ export class ProjectStore {
       });
     }
     return repaired;
+  }
+
+  async #repairProjectReferences(projectId) {
+    const merged = this.index.mergedProjects[projectId];
+    if (merged && !this.hasProject(projectId) && this.hasProject(merged.into)) {
+      // 합쳐진 프로젝트 범위에 남은 기록은 합친 프로젝트로 옮긴다.
+      const files = this.referenceStore.list({ scope: 'project', scopeId: projectId });
+      return (await this.adoptReferences(merged.into, files, { source: { kind: 'migrated' }, librarian: 'skipped' })).length;
+    }
+    if (this.index.deletedProjects[projectId]) {
+      if (await this.#removeProjectReferences(projectId) === 0) {
+        await this.#withIndex(async () => {
+          delete this.index.deletedProjects[projectId];
+          await this.#writeIndex();
+        });
+      }
+      return 0;
+    }
+    if (!this.hasProject(projectId)) {
+      await this.#withIndex(async () => {
+        if (this.hasProject(projectId)) return;
+        await this.#createProjectLocked({ id: projectId, name: '복구된 자료', implicit: false, nameSource: 'user' });
+        await this.#writeIndex();
+      });
+      this.logger?.(`recovered project ${projectId} from its stored files`);
+    }
+    const project = await this.get(projectId, { trash: true });
+    const linked = new Set(project.items.filter((item) => item.kind === 'file').map((item) => item.fileId));
+    const missing = this.referenceStore.list({ scope: 'project', scopeId: projectId })
+      .filter((file) => !linked.has(file.id));
+    if (missing.length === 0) return 0;
+    await this.addFileItems(projectId, missing.map((file) => ({
+      fileId: file.id,
+      scope: 'project',
+      source: { kind: 'migrated' },
+      librarian: 'skipped',
+    })), { summary: `자료 복구 ${missing.length}` });
+    return missing.length;
   }
 
   // ─── 휴지통 ───────────────────────────────────────────────

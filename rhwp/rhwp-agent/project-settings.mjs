@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { replaceFileAtomically } from './harness-update.mjs';
+import { recoverInterruptedFileReplacement, replaceFileAtomically } from './harness-update.mjs';
 
 /**
  * 설정 → 프로젝트. 모든 프로젝트에 공통으로 적용되는 전역 기본값이며, 허브의
@@ -182,6 +182,8 @@ export class ProjectSettingsStore {
   async load() {
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
     try {
+      // Windows 교체가 두 rename 사이에서 끊겼으면 저장된 값을 기본값 대신 되살린다.
+      await recoverInterruptedFileReplacement(this.file, { platform: this.platform });
       const info = await fs.lstat(this.file);
       if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_SETTINGS_BYTES) {
         throw new Error('settings.json is not a plain bounded file');

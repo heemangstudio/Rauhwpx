@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+
+import { retryLockedOperation } from './harness-update.mjs';
 
 export const CHAT_PERMISSION_CAPABILITIES = Object.freeze([
   'project-edit', 'downloads', 'browser', 'local-execution', 'other-documents', 'chatgpt', 'claude',
@@ -73,44 +75,84 @@ export function normalizeChatPermissionScope(value) {
   return value;
 }
 
+/** Windows 에서 백신·동기화·편집기가 잠깐 쥔 파일은 rename·읽기가 EPERM/EBUSY 로 실패한다. 짧게 다시 시도한다. */
+function retryLockedFile(operation, platform) {
+  return retryLockedOperation(operation, { platform, relabel: false });
+}
+
+function parseChatPermissionPolicy(raw) {
+  // 메모장·PowerShell 이 붙이는 UTF-8 BOM 은 내용이 아니다.
+  const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+  if (parsed?.schema !== 1 || !Array.isArray(parsed.always)) {
+    throw Object.assign(new Error('The chat permission policy cannot be read'), { code: 'CHAT_PERMISSION_POLICY_INVALID' });
+  }
+  return normalizeChatPermissionGrants(parsed.always);
+}
+
 /**
  * "항상" 허용한 채팅 권한. 허브 데이터 폴더의 작은 JSON(0600, 원자적 교체)에 둔다.
  * 새 채팅도 이 권한으로 시작한다. 읽을 수 없는 파일은 빈 정책으로 다루지 않고 오류를 낸다.
+ * 같은 사용자의 여러 허브(데스크톱·개발 서버·다른 작업 폴더)가 이 파일을 함께 쓴다 — 바꿀 때마다
+ * 파일을 다시 읽어 합치고, 조회는 다른 허브가 바꾼 파일을 따라간다. 그래서 거둔 권한이 되살아나지 않는다.
  */
-export function createChatPermissionPolicy({ filePath }) {
+export function createChatPermissionPolicy({ filePath, platform = process.platform }) {
   if (!filePath) throw new TypeError('Chat permission policy filePath is required.');
   let always = [];
+  let stamp = null;
   let queue = Promise.resolve();
-  const ready = (async () => {
+  const stampOf = (info) => `${info.mtimeMs}:${info.size}`;
+  async function readFromDisk() {
     let raw;
-    try { raw = await fs.readFile(filePath, 'utf8'); }
-    catch (error) { if (error?.code === 'ENOENT') return; throw error; }
-    const parsed = JSON.parse(raw);
-    if (parsed?.schema !== 1 || !Array.isArray(parsed.always)) {
-      throw Object.assign(new Error('The chat permission policy cannot be read'), { code: 'CHAT_PERMISSION_POLICY_INVALID' });
+    let info;
+    try {
+      info = await retryLockedFile(() => fs.stat(filePath), platform);
+      raw = await retryLockedFile(() => fs.readFile(filePath, 'utf8'), platform);
+    } catch (error) {
+      if (error?.code === 'ENOENT') { stamp = null; return []; }
+      throw error;
     }
-    always = normalizeChatPermissionGrants(parsed.always);
-  })();
+    const grants = parseChatPermissionPolicy(raw);
+    stamp = stampOf(info);
+    return grants;
+  }
+  /** 다른 허브가 파일을 바꿨으면 동기로 다시 읽는다. 읽지 못하면 마지막 값을 쓴다. */
+  function refresh() {
+    try {
+      const info = statSync(filePath);
+      if (stampOf(info) === stamp) return;
+      always = parseChatPermissionPolicy(readFileSync(filePath, 'utf8'));
+      stamp = stampOf(info);
+    } catch (error) {
+      if (error?.code === 'ENOENT' && stamp !== null) { always = []; stamp = null; }
+    }
+  }
+  const ready = (async () => { always = await readFromDisk(); })();
   async function write(next) {
     await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
     const temp = `${filePath}.${crypto.randomUUID()}.tmp`;
     try {
       const file = await fs.open(temp, 'wx', 0o600);
       try { await file.writeFile(JSON.stringify({ schema: 1, always: next })); await file.sync(); } finally { await file.close(); }
-      await fs.rename(temp, filePath);
+      await retryLockedFile(() => fs.rename(temp, filePath), platform);
       await fs.chmod(filePath, 0o600).catch(() => {});
     } finally { await fs.rm(temp, { force: true }); }
     always = next;
+    stamp = await fs.stat(filePath).then(stampOf, () => null);
   }
   function mutate(operation) {
-    const task = queue.then(async () => { await ready; return operation(); });
+    const task = queue.then(async () => {
+      // 처음 읽기가 일시적으로 실패했어도 다시 읽는다. 파일이 여전히 깨져 있으면 여기서 오류가 난다.
+      await ready.catch(() => {});
+      always = await readFromDisk();
+      return operation();
+    });
     queue = task.catch(() => {});
     return task;
   }
   return {
     ready: () => ready,
     /** 동기 조회 — ready() 이후 값. */
-    list: () => [...always],
+    list: () => { refresh(); return [...always]; },
     grant: (capability) => mutate(async () => {
       const next = normalizeChatPermissionGrants([...always, capability]);
       if (next.length !== always.length) await write(next);

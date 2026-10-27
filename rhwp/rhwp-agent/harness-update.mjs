@@ -15,6 +15,8 @@ function delay(ms) {
 export async function retryLockedOperation(operation, {
   platform = process.platform,
   delays = RETRY_DELAYS_MS,
+  // false 면 원래 오류 코드를 그대로 둔다 — 설치와 무관한 저장소가 설치 문구를 보이지 않게 한다.
+  relabel = true,
 } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
@@ -26,7 +28,7 @@ export async function retryLockedOperation(operation, {
       await delay(delays[attempt]);
     }
   }
-  if (platform === 'win32' && LOCK_CODES.has(lastError?.code)) {
+  if (relabel && platform === 'win32' && LOCK_CODES.has(lastError?.code)) {
     lastError.code = 'HARNESS_FILES_LOCKED';
     lastError.message = '설치 파일이 사용 중이라 업데이트하지 못했어요. 실행 중인 harness와 바이러스 검사를 확인한 뒤 다시 시도하세요.';
   }

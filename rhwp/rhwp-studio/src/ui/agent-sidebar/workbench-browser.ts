@@ -611,7 +611,8 @@ export function createWorkbenchBrowser(options: {
     nativeTab = target;
     const placement = { tabId: target, expectedTargetId: tab.nativeTargetId, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, mode: presentation.current() ?? 'dock', interactive: !previewLocked() };
     const identity = () => JSON.stringify({ tabId: target, runtimeGeneration: controller.tab()?.runtimeGeneration, nativeTargetId: controller.tab()?.nativeTargetId });
-    const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity() });
+    // 보기 > 확대/축소는 CSS 영역을 그대로 두고 창 DIP 배율만 바꾼다 — devicePixelRatio 로 알아채 다시 배치한다.
+    const signature = () => JSON.stringify({ ...placement, expectedTargetId: controller.tab()?.nativeTargetId, identity: identity(), zoom: window.devicePixelRatio });
     const healthIdentity = () => JSON.stringify([identity(), controller.tab()?.navigationEpoch]);
     if (nativeFailedProjection === identity()) return;
     if (nativeProjection === signature()) {

@@ -21,6 +21,15 @@ const RESOURCE_TYPES = new Set(['Document', 'Stylesheet', 'Image', 'Media', 'Fon
 const INITIATOR_TYPES = new Set(['parser', 'script', 'preload', 'SignedExchange', 'preflight', 'FedCM', 'other']);
 const UTILITY_WORLD = /^__playwright_utility_world_page@[0-9a-f]{32}$/;
 const REDIRECTED_BODY_LIMIT = 64;
+const TEARDOWN_COMMAND_TIMEOUT_MS = 500;
+/** 결과·실패와 상관없이 늦어도 ms 뒤에는 끝난다. 정리 명령에만 쓴다. */
+function settleWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.catch(() => {}),
+    new Promise((resolve) => { timer = setTimeout(resolve, ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 function safePasswordSetup(tab, method, params) {
   // 일반 새로고침은 값을 읽지 않는다. 재로딩 시 실행할 스크립트는 허용하지 않는다.
   if (method === 'Page.reload') return Object.keys(params).every(key => key === 'ignoreCache') && (params.ignoreCache === undefined || typeof params.ignoreCache === 'boolean');
@@ -346,16 +355,22 @@ export class PrivateBrowserCdp {
     this.client = null;
     this.autoAttach = false;
     this.sessions.clear();
-    for (const tab of this.tabs.values()) {
+    // 열린 alert/confirm 은 렌더러를 막아 Runtime·Page 명령이 끝나지 않는다. 정리 명령마다 시간을 두고
+    // 탭끼리는 함께 돌려 허브 재시작·앱 종료가 대화상자에 묶이지 않게 한다.
+    await Promise.all([...this.tabs.values()].map(async (tab) => {
       tab.cdpSessionId = null;
+      const send = (method, params) => settleWithin(
+        Promise.resolve().then(() => tab.view.webContents.debugger.sendCommand(method, params)),
+        TEARDOWN_COMMAND_TIMEOUT_MS,
+      );
       // A failed hub must not leave requests indefinitely paused by Fetch.
-      await tab.view.webContents.debugger.sendCommand('Fetch.disable').catch(() => {});
-      await tab.view.webContents.debugger.sendCommand('Input.cancelDragging').catch(() => {});
-      for (const method of ['Runtime.disable', 'Page.disable', 'Network.disable', 'Log.disable']) {
-        await tab.view.webContents.debugger.sendCommand(method).catch(() => {});
+      await send('Fetch.disable');
+      await send('Input.cancelDragging');
+      if (!tab.dialogOpen) {
+        for (const method of ['Runtime.disable', 'Page.disable', 'Network.disable', 'Log.disable']) await send(method);
       }
-      await tab.view.webContents.debugger.sendCommand('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
-    }
+      await send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
+    }));
     client?.terminate();
   }
 

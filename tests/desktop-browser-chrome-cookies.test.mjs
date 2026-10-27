@@ -19,12 +19,16 @@ function encryptCookie(value, hostKey, version) {
 }
 async function fixture(t, { version = 24, legacyLocation = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'hama-chrome-cookies-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let db = null;
+  // Windows 는 열린 SQLite 파일을 지우지 못한다 — 같은 정리 단계에서 먼저 닫고 지운다.
+  t.after(async () => {
+    db?.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
   const chrome = join(root, 'Chrome'); const profile = join(chrome, 'Default');
   await mkdir(join(profile, 'Network'), { recursive: true });
   await writeFile(join(chrome, 'Local State'), JSON.stringify({ profile: { info_cache: { Default: { name: 'Test profile' } } } }));
-  const db = new DatabaseSync(legacyLocation ? join(profile, 'Cookies') : join(profile, 'Network', 'Cookies'));
-  t.after(() => db.close());
+  db = new DatabaseSync(legacyLocation ? join(profile, 'Cookies') : join(profile, 'Network', 'Cookies'));
   db.exec(`PRAGMA journal_mode = WAL; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER, has_expires INTEGER, is_persistent INTEGER)`);
   db.prepare('INSERT INTO meta VALUES (?, ?)').run('version', String(version));

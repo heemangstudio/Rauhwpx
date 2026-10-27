@@ -51,6 +51,8 @@ function lexicalAbsolutePath(candidate, platform) {
 export function validateAgentDocumentPath(candidate, { platform = process.platform } = {}) {
   const resolved = lexicalAbsolutePath(candidate, platform);
   if (!resolved) return null;
+  // NTFS 대체 데이터 스트림(a.txt:hidden.hwp)은 다른 파일의 숨은 내용이다.
+  if (platform === 'win32' && win32.basename(resolved).includes(':')) return null;
   const extension = pathApi(platform).extname(resolved).slice(1).toLowerCase();
   return AGENT_DOCUMENT_EXTENSIONS.includes(extension) ? resolved : null;
 }

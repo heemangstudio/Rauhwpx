@@ -91,3 +91,26 @@ test('reset recovers unreadable metadata, and a chat deleted while its secret is
   await assert.rejects(chatSaving, { code: 'SECRET_CHAT_ENDED' });
   assert.deepEqual((await slow.list({ threadId: 'chat-a' })).map((secret) => secret.label), ['Slow key'], 'a saved secret stays; the chat value is gone');
 });
+
+test('a secret too long for the Windows credential vault says so, and still saves for this chat', async (t) => {
+  const { createBrowserOsSecretStore } = await import('../browser-os-secret-store.mjs');
+  const root = await dataDir(t);
+  const entries = new Map();
+  class AsyncEntry {
+    constructor(service, key) { this.id = `${service}\n${key}`; }
+    async setSecret(secret) { entries.set(this.id, Uint8Array.from(secret)); }
+    async getSecret() { return entries.get(this.id); }
+    async deleteCredential() { return entries.delete(this.id); }
+  }
+  const vault = await createBrowserOsSecretStore({ dataDir: root, platform: 'win32', loadNative: async () => ({ AsyncEntry }) });
+  const store = createUserSecretStore({ dataDir: root, secretStore: vault });
+  const long = `-----BEGIN PRIVATE KEY-----${'A'.repeat(3000)}`;
+  await assert.rejects(
+    store.save({ label: 'Deploy key', kind: 'api-key', origins: [origin], value: long, scope: 'always', threadId: 'chat-a' }),
+    (error) => error.code === 'SECRET_TOO_LARGE_FOR_VAULT' && /this chat only/.test(error.message),
+  );
+  const chat = await store.save({ label: 'Deploy key', kind: 'api-key', origins: [origin], value: long, scope: 'chat', threadId: 'chat-a' });
+  assert.equal(await store.resolveValue(chat.id, 'chat-a'), long);
+  const short = await store.save({ label: 'Short key', kind: 'api-key', origins: [origin], value, scope: 'always', threadId: 'chat-a' });
+  assert.equal(await store.resolveValue(short.id, 'chat-b'), value);
+});

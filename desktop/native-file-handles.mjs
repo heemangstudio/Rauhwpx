@@ -1544,6 +1544,10 @@ export function validateNativeDocumentPath(filePath, { platform = process.platfo
   if (!absolute) {
     throw new Error('Native document paths must be absolute');
   }
+  // NTFS 대체 데이터 스트림(a.txt:hidden.hwp)은 열 수는 있어도 임시 파일 교체로 저장할 수 없다.
+  if (platform === 'win32' && win32.basename(filePath).includes(':')) {
+    throw new Error('Alternate data streams cannot be opened as documents');
+  }
   if (!SUPPORTED_EXTENSIONS.has(extname(filePath).toLowerCase())) {
     throw new Error('Only HWP, HWPX, HML, and RHWPX files can be opened');
   }
