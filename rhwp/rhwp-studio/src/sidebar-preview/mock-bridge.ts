@@ -812,6 +812,7 @@ export function createMockBridge(
         }
         : null);
     },
+    renameDocument: () => {},
     pendingEdits: {
       getChangeSets: () => changes,
       onChange: (listener) => {
