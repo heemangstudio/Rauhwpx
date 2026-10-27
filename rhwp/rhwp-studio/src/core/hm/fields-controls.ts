@@ -23,7 +23,9 @@ const records = (core: HmCore) => core.query<FieldRecord[]>({ kind: 'fields' });
 const fields = (core: HmCore) => records(core).filter(f => f.fieldId !== undefined && f.end);
 const field = (core: HmCore, id: number) => fields(core).find(f => f.fieldId === id);
 const listOf = (target: { section: number; steps?: Step[] }): ListAddress => ({ section: target.section, steps: target.steps ?? [] });
-const sameList = (a: ListAddress, b: ListAddress) => a.section === b.section && JSON.stringify(a.steps) === JSON.stringify(b.steps);
+// 엔진 필드 기록의 step 키 순서는 Studio 가 만든 주소와 다르다. 값으로 비교한다.
+const sameList = (a: ListAddress, b: ListAddress) => a.section === b.section && (a.steps ?? []).length === (b.steps ?? []).length
+  && (a.steps ?? []).every((s, i) => { const o = b.steps![i]; return s.para === o.para && s.control === o.control && s.index === o.index; });
 
 function range(core: HmCore, f: FieldRecord) {
   const list = listOf(f.target);

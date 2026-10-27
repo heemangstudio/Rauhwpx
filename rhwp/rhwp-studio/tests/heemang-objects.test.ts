@@ -124,6 +124,19 @@ test('a picture selected inside a cell edits its own control and preserves table
   assert.equal(api.getCellPicturePropertiesByPath(core, 0, 0, path, inserted.controlIdx).width, 7200);
 });
 
+test('a hyperlink inside a table cell is found by its cell target and position', t => {
+  const { core } = open(t);
+  const table = api.createTable(core, 0, 0, 0, 2, 2);
+  const path = [{ controlIndex: table.controlIdx, cellIndex: 1, cellParaIndex: 0 }];
+  api.insertTextInCellByPath(core, 0, 0, JSON.stringify(path), 0, '셀 링크', true);
+  const target = { section: 0, para: 0, cellPath: [[table.controlIdx, 1, 0]] as [number, number, number][] };
+  const id = api.insertHyperlink(core, target, 2, 4, 'https://example.com');
+  assert.deepEqual(api.getHyperlinkContext(core, target).links.map(l => l.text), ['링크']);
+  const pos = { sectionIndex: 0, paragraphIndex: 0, charOffset: 3, parentParaIndex: 0, cellPath: path };
+  assert.equal(api.getFieldInfoAt(core, pos).fieldId, id);
+  assert.equal(api.updateHyperlink(core, target, id, 'https://example.org'), true);
+});
+
 function reopenCore(t: test.TestContext, doc: { serializeAs(format: string, x: boolean): Uint8Array }, format: string) {
   const engine = new Engine();
   const reopened = engine.open(doc.serializeAs(format, false));
