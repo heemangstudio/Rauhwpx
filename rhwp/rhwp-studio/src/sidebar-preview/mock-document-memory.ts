@@ -143,7 +143,7 @@ function apply(store: Store, ops: readonly T.DocumentMemoryOp[]): T.DocumentMemo
 export type MockDocumentMemory = Pick<
   SidebarBridge,
   'listDocumentMemory' | 'applyDocumentMemory' | 'revertDocumentMemory' | 'missingDocumentMemoryAnchors' | 'learnFromHistory'
->;
+> & { dispose(): void };
 
 /** 모의 브리지 하나의 문서 기억 메서드. emit 은 이 브리지의 이벤트 구독자에게 보낸다. */
 export function createMockDocumentMemory(
@@ -155,6 +155,7 @@ export function createMockDocumentMemory(
     (documentId === undefined ? currentDocumentId() ?? 'preview-proposal' : documentId);
   const settle = <V>(value: V) => new Promise<V>((done) => setTimeout(() => done(value), 30));
   return {
+    dispose: () => { sinks.delete(emit); },
     listDocumentMemory: (documentId) => {
       const id = resolve(documentId);
       return settle(id ? { ok: true, memory: snapshot(storeFor(id)) } : null);
