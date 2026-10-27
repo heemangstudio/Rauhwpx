@@ -39,7 +39,10 @@ export function sampleTasteDraft(instructions: T.AgentInstructionsStatus): T.Age
   };
 }
 
-export type MockTaste = Pick<SidebarBridge, 'requestTasteSettings' | 'setTasteSettings' | 'undoTaste'>;
+export type MockTaste = Pick<
+  SidebarBridge,
+  'requestTasteSettings' | 'setTasteSettings' | 'undoTaste'
+> & { dispose(): void };
 
 /** 허브 TasteSettingsStore 처럼 바꿀 칸만 얹는다. 공급자를 바꾸면 모델·추론을 비우고, 자동은 늘 비운다. */
 function mergeSettings(patch: Partial<T.TasteSettings>): void {
@@ -55,6 +58,7 @@ export function createMockTaste(emit: (event: T.SidebarEvent) => void): MockTast
   sinks.add(emit);
   const settle = <V>(value: V) => new Promise<V>((done) => setTimeout(() => done(value), 30));
   return {
+    dispose: () => { sinks.delete(emit); },
     requestTasteSettings: () => settle({ ...settings }),
     setTasteSettings: (patch) => {
       mergeSettings(patch);
