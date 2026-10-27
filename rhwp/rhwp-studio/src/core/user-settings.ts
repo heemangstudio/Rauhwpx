@@ -64,6 +64,8 @@ export interface ViewSettings {
   clipView: boolean;
   /** 사이드바 펼침·집중 화면 전환을 움직임으로 보일지. 기본은 꺼짐(바로 바뀜). */
   sidebarMotion: boolean;
+  /** 입력기 위에 하마를 보일지. 기본은 켜짐. */
+  showHama: boolean;
   /** 기본 도구 상자와 서식 도구 상자를 한 줄로 합칠지 여부 */
   compactToolbar: boolean;
 }
@@ -178,6 +180,7 @@ function defaultSettings(): AppSettings {
       showControlCodes: false,
       clipView: true,
       sidebarMotion: false,
+      showHama: true,
       compactToolbar: false,
     },
     versionControl: {
@@ -285,6 +288,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       showControlCodes,
       clipView: normalizeBoolean(view.clipView, defaults.view.clipView),
       sidebarMotion: normalizeBoolean(view.sidebarMotion, defaults.view.sidebarMotion),
+      showHama: normalizeBoolean(view.showHama, defaults.view.showHama),
       compactToolbar: normalizeBoolean(view.compactToolbar, defaults.view.compactToolbar),
     },
     versionControl: {
@@ -394,6 +398,7 @@ class UserSettingsService {
         showControlCodes: normalizeBoolean(next.view.showControlCodes, false),
         clipView: normalizeBoolean(next.view.clipView, true),
         sidebarMotion: normalizeBoolean(next.view.sidebarMotion, false),
+        showHama: normalizeBoolean(next.view.showHama, true),
         compactToolbar: normalizeBoolean(next.view.compactToolbar, false),
       },
       versionControl: {
