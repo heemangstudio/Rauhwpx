@@ -297,7 +297,8 @@ export function createOwnedBrowserService(options = {}) {
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman && !tab.system) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, ...(actor.taskId ? { subagent: true } : {}), tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, ...(tab.system ? { system: tab.system } : {}), searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
+    // 로그인 창 같은 일회용 탭은 다음 실행에 되살리지 않는다.
+    const records = [...tabs.values()].filter((tab) => !tab.transient).map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, ...(tab.system ? { system: tab.system } : {}), searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
     persistQueue = persistQueue.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(descriptorFile), { recursive: true, mode: 0o700 });
       const temp = `${descriptorFile}.${crypto.randomBytes(8).toString('hex')}.part`;
@@ -801,7 +802,7 @@ export function createOwnedBrowserService(options = {}) {
           if (pageTabs.has(page) || page.isClosed()) return;
           if (!parent || tabs.size >= limits.maxTabs) { await page.close(); return; }
           // Pages created by popup scripts never gain another agent's binding.
-          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tab.transient = parent.transient; tabs.set(tab.tabId, tab);
           try { await attach(tab, page); }
           catch (failure) {
             // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
@@ -2200,6 +2201,7 @@ export function createOwnedBrowserService(options = {}) {
       if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       await assertPolicy(actor, action, url, null, args);
       const tab = makeTab(actor);
+      if (actor.isHuman && args.transient === true) tab.transient = true;
       if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
       tabs.set(tab.tabId, tab);
       tab.blocked = null; tab.dropped = null; tab.navHops = []; tab.changePermitted = false;

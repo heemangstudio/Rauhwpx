@@ -67,6 +67,23 @@ test('human new tabs announce their request identity before navigation completes
   assert.equal(result.tab.url, 'https://example.com/');
 });
 
+test('transient human tabs such as sign-in windows are not saved for the next launch', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-transient-tab-'));
+  const runtimeFactory = async () => ({ kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+    async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+    async newPage() { let url = 'about:blank'; return Object.assign(new EventEmitter(), { url: () => url, isClosed: () => false, frames: () => [], async routeWebSocket() {}, async close() {}, async goto(next) { url = next; } }); },
+  }) });
+  const options = { dataDir, lookup: async () => [{ address: '93.184.216.34', family: 4 }], runtimeFactory };
+  t.after(async () => { await fs.rm(dataDir, { recursive: true, force: true }); });
+  const actor = { isHuman: true, clientId: 'window', sessionId: 'window' };
+  const first = createOwnedBrowserService(options);
+  const kept = await first.request(actor, 'open', { url: 'https://example.com/' });
+  await first.request(actor, 'open', { url: 'https://example.com/login', transient: true });
+  await first.close();
+  const saved = JSON.parse(await fs.readFile(path.join(dataDir, 'browser', 'tabs.json'), 'utf8'));
+  assert.deepEqual(saved.tabs.map(tab => tab.tabId), [kept.tab.tabId]);
+});
+
 test('failed native setup releases its owned connection before retry and concurrent opens wait for setup', async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-setup-failure-'));
   let signalSetup; let failSetup;
