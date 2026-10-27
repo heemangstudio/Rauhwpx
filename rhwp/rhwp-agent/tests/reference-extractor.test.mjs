@@ -468,3 +468,63 @@ test('CID-keyed Korean PDFs extract through the bundled pdfjs CMaps', async () =
   const result = await extractReferenceText({ bytes: koreanCidPdf('한국어 문서 추출'), name: '한글.pdf' });
   assert.deepEqual(result.pages, [{ page: 1, text: '한국어 문서 추출' }]);
 });
+
+test('ZIP archives extract each supported member under its path and list what was skipped', async () => {
+  const deck = await ooxmlArchive({
+    'ppt/presentation.xml': '<p:presentation/>',
+    'ppt/slides/slide1.xml': '<p:sld><a:p><a:r><a:t>발표 첫 장</a:t></a:r></a:p></p:sld>',
+  });
+  const nested = await new JSZip().file('inner.txt', '읽지 않음').generateAsync({ type: 'nodebuffer' });
+  const zip = new JSZip();
+  zip.file('메모.txt', '예산 회의 메모');
+  zip.file('자료/발표.pptx', deck);
+  zip.file('자료/사진.png', 'png bytes');
+  zip.file('자료/묶음.zip', nested);
+  zip.file('자료/실행.exe', 'MZ');
+  zip.file('.DS_Store', 'junk');
+  zip.file('__MACOSX/._메모.txt', 'junk');
+  const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+  const result = await extractReferenceText({ bytes: archive, name: '모음.zip' });
+
+  assert.match(result.text, /## 메모\.txt\n\n예산 회의 메모/);
+  assert.match(result.text, /## 자료\/발표\.pptx\n\n발표 첫 장/);
+  assert.doesNotMatch(result.text, /읽지 않음|junk|DS_Store|MACOSX/);
+  const skipped = result.text.slice(result.text.indexOf('## Skipped files'));
+  assert.match(skipped, /자료\/사진\.png: images inside ZIP/);
+  assert.match(skipped, /자료\/묶음\.zip: nested ZIP/);
+  assert.match(skipped, /자료\/실행\.exe: unsupported file type/);
+  assert.equal(result.pages, null);
+});
+
+test('ZIP archives from Windows keep CP949 and backslash member names readable', async () => {
+  const zip = new JSZip();
+  zip.file('cp949.txt', '한글 이름 파일');
+  zip.file('폴더/win.txt', '역슬래시 경로');
+  const cp949Name = Buffer.from([0xBA, 0xB8, 0xB0, 0xED, 0xBC, 0xAD, 0x2E, 0x74, 0x78, 0x74]); // 보고서.txt
+  const archive = await zip.generateAsync({
+    type: 'nodebuffer',
+    encodeFileName: (name) => (name === 'cp949.txt' ? cp949Name : Buffer.from(name.replace('/', '\\'), 'utf8')),
+  });
+  const result = await extractReferenceText({ bytes: archive, name: 'windows.zip' });
+  assert.match(result.text, /## 보고서\.txt\n\n한글 이름 파일/);
+  assert.match(result.text, /## 폴더\/win\.txt\n\n역슬래시 경로/);
+});
+
+test('ZIP archives without readable files, or with traversal names, are handled safely', async () => {
+  const images = await new JSZip().file('a.png', 'x').file('b.jpg', 'y').generateAsync({ type: 'nodebuffer' });
+  await assert.rejects(
+    extractReferenceText({ bytes: images, name: 'photos.zip' }),
+    (error) => error.code === 'REFERENCE_EMPTY_TEXT',
+  );
+  const traversal = await new JSZip().file('ok.txt', '안전한 글').file('evil.txt', '밖으로')
+    .generateAsync({ type: 'nodebuffer', encodeFileName: (name) => Buffer.from(name === 'evil.txt' ? '../evil.txt' : name) });
+  const result = await extractReferenceText({ bytes: traversal, name: 'mixed.zip' });
+  assert.match(result.text, /## ok\.txt\n\n안전한 글/);
+  assert.match(result.text, /\.\.\/evil\.txt: unsafe path/);
+  assert.doesNotMatch(result.text, /밖으로/);
+  await assert.rejects(
+    extractReferenceText({ bytes: bytes('not a zip'), name: 'fake.zip' }),
+    (error) => error.code === 'REFERENCE_TYPE_MISMATCH',
+  );
+});

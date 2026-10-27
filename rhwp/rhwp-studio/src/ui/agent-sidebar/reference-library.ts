@@ -15,7 +15,7 @@ import { columnColor, itemIconName, itemMeta, itemOrganizing, projectIcon } from
 
 const ACCEPTED_EXTENSIONS = [
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm',
-  '.pdf', '.docx', '.hwp', '.hwpx', '.hml', '.png', '.jpg', '.jpeg', '.webp', '.gif',
+  '.pdf', '.docx', '.pptx', '.xlsx', '.hwp', '.hwpx', '.hml', '.zip', '.png', '.jpg', '.jpeg', '.webp', '.gif',
 ] as const;
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'] as const;
 const ACCEPTED_FILES = ACCEPTED_EXTENSIONS.join(',');
