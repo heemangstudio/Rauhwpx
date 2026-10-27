@@ -293,6 +293,42 @@ test('glyph-run reuse preserves geometry across packet replacement, zoom and fon
 });
 
 
+test('page repaint region covers changed ops whole and keeps distant pixels, or asks for a full repaint', () => {
+  const player = new Player({});
+  const base = decodePacket(packet());
+  player.load(base);
+  for (const glyph of [3, 4]) player.outlines.set(`2:${glyph}`, { em: 1000, cmds: new Float32Array([0, 0, -200, 1, 600, 800, 4]) });
+  const run = (baseline, glyphs) => ({ op: 'glyphs', face: 2, size: 2000, ratio: 100, color: 0, flags: 1, baseline, glyphs });
+  const page = ops => ({ ...base, ops });
+  const record = (p, patches = new Map()) => ({ packet: p, s: 0.01, patches });
+  const box = op => player.opBox(op, 0.01);
+  const rule = { op: 'rect', x: 1000, y: 30100, w: 50000, h: 20, color: 0 };
+  const far = run(70000, [[3, 1000], [4, 3000]]);
+  const before = page([run(30000, [[3, 1000], [4, 3000]]), rule, far]);
+  const after = page([run(30000, [[3, 1000], [3, 2000], [4, 4000]]), rule, far]);
+  const region = player.repaintRegion(record(before), record(after), 595, 841);
+  const overlaps = b => region.some(r => b.x < r.x + r.w && r.x < b.x + b.w && b.y < r.y + r.h && r.y < b.y + b.h);
+  const inside = b => region.some(r => b.x >= r.x && b.y >= r.y && b.x + b.w <= r.x + r.w && b.y + b.h <= r.y + r.h);
+  assert.ok(inside(box(before.ops[0])) && inside(box(after.ops[0])), 'old and new text are repainted');
+  assert.ok(inside(box(rule)), 'an op crossing the change is repainted whole, never cut by the clip');
+  assert.equal(overlaps(box(far)), false, 'distant unchanged text keeps its pixels');
+  const shown = page([...after.ops, { op: 'patch', item: 1, x: 1000, y: 1000, w: 2000, h: 2000 }]);
+  const state = (key, boxes) => new Map([[3, { key, boxes }]]);
+  const at = [{ x: 10, y: 10, w: 20, h: 20 }], moved = [{ x: 400, y: 600, w: 20, h: 20 }];
+  assert.deepEqual(player.repaintRegion(record(shown, state([new Uint8Array([1, 2])], at)),
+    record(shown, state([new Uint8Array([1, 2])], at)), 595, 841), [], 'unchanged patch pixels are kept');
+  assert.deepEqual(player.repaintRegion(record(shown, state(['decoded', null], at)), record(shown, state(['decoded', {}], moved)), 595, 841),
+    [...at, ...moved], 'a picture repaints where it was and where it lands once decoded');
+  const clip = { op: 'clip', x: 0, y: 0, w: 30000, h: 30000 };
+  const full = [
+    [before, { ...after, fontGeneration: after.fontGeneration + 1 }],
+    [before, page([run(30000, [[9, 1000]]), rule, far])],
+    [page([clip, ...after.ops]), page([{ ...clip, w: 20000 }, ...after.ops])],
+    [after, page([...after.ops, { op: 'rect', x: 0, y: 0, w: 59528, h: 84188, color: 0xff }])],
+  ];
+  for (const [a, b] of full) assert.equal(player.repaintRegion(record(a), record(b), 595, 841), null);
+});
+
 test('deferred reads retry after relayout moves a different picture into the item', async t => {
   const bitmap = { close() {} };
   const decode = t.mock.fn(async () => bitmap);

@@ -8,7 +8,7 @@ import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, 
 import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader';
 import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
-import { Pictures, Player, decodePacket, patchImage, type PagePacket } from '../view/heemang-player';
+import { Pictures, Player, decodePacket, patchImage, type Box, type PagePacket, type PaintRecord, type PatchState, type Picture } from '../view/heemang-player';
 import { guardHeemangEngineCalls } from './engine-trap';
 import { detectDocumentByteKind } from './document-signature';
 import { readHmlSourceMetadata } from './hm/hml-source';
@@ -23,6 +23,8 @@ export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
 
 const PX_PER_HU = 96 / 7200;
+// 떼어 둔 쪽 캔버스는 쪽 하나만큼 메모리를 더 쓰므로 최근에 그린 몇 쪽만 남긴다.
+const KEPT_PAGE_BUFFERS = 6;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
 let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 // native clipboard는 같은 Engine의 문서들이 공유한다.
@@ -217,6 +219,8 @@ export class HeemangAdapter {
   private webFontDecoders!: () => { brotli?: (data: Uint8Array, outLength: number) => Uint8Array | Promise<Uint8Array>; zlib?: (data: Uint8Array, outLength: number) => Promise<Uint8Array> };
   private fontsPrepared = false;
   private readonly canvasPaints = new Map<HTMLCanvasElement, { index: number; scale: number }>();
+  // 쪽 캔버스마다 마지막으로 그린 쪽을 떼어 둔 캔버스에 남겨, 다음에는 바뀐 영역만 다시 그린다.
+  private readonly pageBuffers = new Map<HTMLCanvasElement, { canvas: HTMLCanvasElement; doc: Doc; index: number; record: PaintRecord }>();
   private pictureFrame = 0;
   private readonly pictures = new Pictures(() => {
     if (this.pictureFrame) return;
@@ -343,6 +347,7 @@ export class HeemangAdapter {
     this.pictureFrame = 0;
     this.pictures.clear();
     this.canvasPaints.clear();
+    this.pageBuffers.clear();
     this.doc?.close();
     this.doc?.free();
     this.doc = null;
@@ -474,24 +479,97 @@ export class HeemangAdapter {
     const doc = this.document();
     const paint = { index, scale };
     for (const old of this.canvasPaints.keys()) if (!old.isConnected) this.canvasPaints.delete(old);
+    for (const old of this.pageBuffers.keys()) if (!old.isConnected) this.pageBuffers.delete(old);
     this.canvasPaints.set(canvas, paint);
     const packet = this.page(index);
     // 쪽 그리기(page-renderer)와 같이 내림한다. 올림하면 A4 가 794×1123 이 되어 쪽 틀이 1px 커진다.
-    canvas.width = Math.max(1, Math.floor(packet.width * PX_PER_HU * scale));
-    canvas.height = Math.max(1, Math.floor(packet.height * PX_PER_HU * scale));
+    const width = Math.max(1, Math.floor(packet.width * PX_PER_HU * scale));
+    const height = Math.max(1, Math.floor(packet.height * PX_PER_HU * scale));
+    canvas.width = width;
+    canvas.height = height;
     canvas.dataset.heemangPage = String(index);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas2D를 사용할 수 없습니다');
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    this.player.paint(ctx, packet, 96 * scale, (item, dpi) =>
-      patchImage(doc.patch(index, item, dpi).slice(), (w, h) => new OffscreenCanvas(w, h)),
-      item => this.pictures.get(doc, index, item));
+    // 영역 계산과 그리기가 같은 그림·조각을 보도록 이번 그리기 안에서는 항목마다 한 번만 묻는다.
+    const pictures = new Map<number, Picture | null>(), bytes = new Map<number, Uint8Array>();
+    const images = new Map<number, CanvasImageSource | null>();
+    const picture = (item: number) => {
+      if (!pictures.has(item)) pictures.set(item, this.pictures.get(doc, index, item));
+      return pictures.get(item)!;
+    };
+    const patchBytes = (item: number) => {
+      if (!bytes.has(item)) bytes.set(item, doc.patch(index, item, 96 * scale).slice());
+      return bytes.get(item)!;
+    };
+    const patch = (item: number) => {
+      if (!images.has(item)) images.set(item, patchImage(patchBytes(item), (w, h) => new OffscreenCanvas(w, h)));
+      return images.get(item)!;
+    };
+    // 떼어 둔 캔버스는 화면에 붙은 쪽 캔버스와 같은 문서에서 만든다. 섬네일 같은 일회성 캔버스는 바로 그린다.
+    const owner = canvas.isConnected ? canvas.ownerDocument : null;
+    if (owner) {
+      this.paintBuffered(owner, canvas, ctx, doc, index, packet, scale, patch, picture, patchBytes);
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      this.player.paint(ctx, packet, 96 * scale, patch, picture);
+    }
     if (!refill) return;
     void this.refillOutlines().then(refilled => {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;
       this.redrawPage(canvas, paint, false);
     }).catch(error => console.warn('[Heemang] 글꼴 윤곽선 연결 실패:', error));
+  }
+
+  /**
+   * 떼어 둔 캔버스에서 지난 그리기와 달라진 영역만 흰 바탕부터 다시 그리고 쪽 캔버스로 옮긴다.
+   * 영역 밖 픽셀은 지난 그리기와 같고 영역 안은 같은 순서로 다시 그리므로, 결과는 쪽 전체를 새로 그린 것과 같다.
+   * 쪽 캔버스 위에 덧그리는 안내선 등은 떼어 둔 캔버스에 남지 않는다.
+   */
+  private paintBuffered(owner: Document, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, doc: Doc, index: number, packet: PagePacket, scale: number,
+    patch: (item: number) => CanvasImageSource | null, picture: (item: number) => Picture | null, patchBytes: (item: number) => Uint8Array): void {
+    const { width, height } = canvas, dpi = 96 * scale, s = dpi / 7200;
+    // 그림은 원본·배치·디코드한 비트맵이, 엔진 조각은 픽셀이 같으면 다시 그리지 않는다.
+    const patches = new Map<number, PatchState>();
+    packet.ops.forEach((op, k) => {
+      if (op.op !== 'patch') return;
+      const pic = picture(op.item), boxes = this.player.patchBoxes(op, s, pic);
+      patches.set(k, pic
+        ? { boxes, key: [pic.source.key, JSON.stringify(pic.source.matrix), JSON.stringify(pic.source.clip), pic.bitmap] }
+        : { boxes, key: [patchBytes(op.item)] });
+    });
+    const record: PaintRecord = { packet, s, patches };
+    let buffer = this.pageBuffers.get(canvas);
+    let region: Box[] | null = null;
+    if (buffer && buffer.doc === doc && buffer.index === index && buffer.canvas.width === width && buffer.canvas.height === height) {
+      region = this.player.repaintRegion(buffer.record, record, width, height);
+    }
+    if (buffer) this.pageBuffers.delete(canvas);
+    buffer ??= { canvas: owner.createElement('canvas'), doc, index, record };
+    this.pageBuffers.set(canvas, buffer);
+    while (this.pageBuffers.size > KEPT_PAGE_BUFFERS) this.pageBuffers.delete(this.pageBuffers.keys().next().value!);
+    const target = buffer.canvas.getContext('2d');
+    if (!target) throw new Error('Canvas2D를 사용할 수 없습니다');
+    if (region === null) {
+      buffer.canvas.width = width;
+      buffer.canvas.height = height;
+      target.fillStyle = '#fff';
+      target.fillRect(0, 0, width, height);
+      this.player.paint(target, packet, dpi, patch, picture);
+    } else {
+      for (const box of region) {
+        target.save();
+        target.beginPath();
+        target.rect(box.x, box.y, box.w, box.h);
+        target.clip();
+        target.fillStyle = '#fff';
+        target.fillRect(box.x, box.y, box.w, box.h);
+        this.player.paint(target, packet, dpi, patch, picture, { box, boxes: record.boxes! });
+        target.restore();
+      }
+    }
+    Object.assign(buffer, { doc, index, record });
+    ctx.drawImage(buffer.canvas, 0, 0);
   }
 
   private redrawPage(canvas: HTMLCanvasElement, paint: { index: number; scale: number }, refill = true): void {
@@ -852,6 +930,7 @@ export class HeemangAdapter {
     this.pictureFrame = 0;
     this.pictures.clear();
     this.canvasPaints.clear();
+    this.pageBuffers.clear();
     this.packets.clear();
     this.pageMetadata = null;
     this.serialized = null;

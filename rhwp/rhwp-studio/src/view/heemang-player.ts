@@ -189,6 +189,89 @@ const DASHES = [null, [8, 4], [1, 2], [8, 3, 1, 3], [8, 3, 1, 3, 1, 3], [16, 6],
 const KEPT_RUN_PATHS = 256;
 const KEPT_RUN_GLYPHS = 4096;
 
+/** Integer device-pixel box. */
+export type Box = { x: number; y: number; w: number; h: number };
+/** What a patch op showed: where it lands and the picture or pixels drawn, compared value by value. */
+export type PatchState = { boxes: Box[]; key: unknown[] };
+/**
+ * What a page canvas last received from `Player.paint`, kept to repaint only
+ * what changed: patch states by op index and, once computed, each op's box.
+ */
+export type PaintRecord = { packet: PagePacket; s: number; patches: Map<number, PatchState>; boxes?: (Box | null)[] };
+// Antialiasing reaches past exact geometry; strokes use the Canvas 2D default miter limit.
+const AA_GUARD = 2;
+const MITER_LIMIT = 10;
+// Repainting most of the page costs about as much as repainting all of it.
+const MAX_REPAINT_SHARE = 0.5;
+
+function deviceBox(x0: number, y0: number, x1: number, y1: number, margin: number): Box | null {
+  if (!(x0 <= x1 && y0 <= y1)) return null;
+  const x = Math.floor(x0 - margin - AA_GUARD), y = Math.floor(y0 - margin - AA_GUARD);
+  return { x, y, w: Math.ceil(x1 + margin + AA_GUARD) - x, h: Math.ceil(y1 + margin + AA_GUARD) - y };
+}
+
+function sameOp(a: Op, b: Op): boolean {
+  if (a === b) return true;
+  if (a.op !== b.op) return false;
+  const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
+  if (Object.keys(x).length !== Object.keys(y).length) return false;
+  for (const key in x) {
+    const u = x[key], v = y[key];
+    if (u === v) continue;
+    if (!Array.isArray(u) || !Array.isArray(v) || u.length !== v.length) return false;
+    for (let k = 0; k < u.length; k++) {
+      const p = u[k], q = v[k];
+      if (p === q) continue;
+      if (!Array.isArray(p) || !Array.isArray(q) || p.length !== q.length || p.some((n, i) => n !== q[i])) return false;
+    }
+  }
+  return true;
+}
+
+const overlaps = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+function unionBox(boxes: Box[]): Box | null {
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map(b => b.x)), y = Math.min(...boxes.map(b => b.y));
+  return { x, y, w: Math.max(...boxes.map(b => b.x + b.w)) - x, h: Math.max(...boxes.map(b => b.y + b.h)) - y };
+}
+
+function sameKey(a: unknown[], b: unknown[]) {
+  return a.length === b.length && a.every((u, k) => {
+    const v = b[k];
+    if (u === v) return true;
+    return u instanceof Uint8Array && v instanceof Uint8Array && u.length === v.length && u.every((n, i) => n === v[i]);
+  });
+}
+
+/** Unions touching boxes until none touch, so each can be repainted under one rectangular clip. */
+function mergeBoxes(boxes: Box[]): Box[] {
+  const out = boxes.slice();
+  for (let merged = true; merged;) {
+    merged = false;
+    for (let i = 0; i < out.length; i++) {
+      for (let j = out.length - 1; j > i; j--) {
+        const a = out[i], b = out[j];
+        if (a.x > b.x + b.w || b.x > a.x + a.w || a.y > b.y + b.h || b.y > a.y + a.h) continue;
+        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+        out[i] = { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+        out.splice(j, 1);
+        merged = true;
+      }
+    }
+  }
+  return out;
+}
+
+function clipStack(ops: Op[], end: number): Op[] {
+  const stack: Op[] = [];
+  for (let k = 0; k < end; k++) {
+    if (ops[k].op === 'clip') stack.push(ops[k]);
+    else if (ops[k].op === 'unclip') stack.pop();
+  }
+  return stack;
+}
+
 export const css = (colorref: number) =>
   `rgb(${colorref & 255},${(colorref >> 8) & 255},${(colorref >> 16) & 255})`;
 
@@ -283,6 +366,8 @@ export class Player {
   paths: Map<string, { em: number; path: Path2D }>;
   generation: number;
   private readonly runPaths = new Map<string, { path: Path2D; glyphs: number }>();
+  // Glyph boxes [em, x0, y0, x1, y1] in font units; null when the outline draws nothing.
+  private readonly glyphBoxes = new Map<string, number[] | null>();
   private retainedRunGlyphs = 0;
   constructor(engine: Engine) {
     this.engine = engine;
@@ -297,6 +382,7 @@ export class Player {
       this.outlines.clear();
       this.paths.clear();
       this.runPaths.clear();
+      this.glyphBoxes.clear();
       this.retainedRunGlyphs = 0;
       this.generation = packet.fontGeneration;
     }
@@ -365,12 +451,181 @@ export class Player {
     return out;
   }
 
+  /** Control-point box of a glyph outline, null when it draws nothing, undefined when not loaded. */
+  private glyphBox(face: number, glyph: number): number[] | null | undefined {
+    const key = `${face}:${glyph}`;
+    let b = this.glyphBoxes.get(key);
+    if (b !== undefined) return b;
+    const o = this.outlines.get(key), c = o?.cmds;
+    if (!o) return undefined;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let k = 0; c && k < c.length;) {
+      const command = c[k++];
+      const points = command === 0 || command === 1 ? 1 : command === 2 ? 2 : command === 3 ? 3 : 0;
+      for (let n = 0; n < points; n++, k += 2) {
+        x0 = Math.min(x0, c[k]); x1 = Math.max(x1, c[k]);
+        y0 = Math.min(y0, c[k + 1]); y1 = Math.max(y1, c[k + 1]);
+      }
+    }
+    b = o?.em && x0 <= x1 ? [o.em, x0, y0, x1, y1] : null;
+    this.glyphBoxes.set(key, b);
+    return b;
+  }
+
+  /** Device pixels `paint` may touch for a run, from the same transform `buildRunPath` uses. */
+  private runBox(run: GlyphRun, s: number, margin: number): Box | null | undefined {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const skew = run.flags & 2 ? 0.2 : 0;
+    for (const [glyph, x] of run.glyphs) {
+      const b = this.glyphBox(run.face, glyph);
+      if (b === undefined) return undefined;
+      if (!b) continue;
+      const k = (run.size * s) / b[0], a = (k * run.ratio) / 100, c = k * skew;
+      // Extremes of a linear map over the box come from its corners, one axis at a time.
+      x0 = Math.min(x0, x * s + Math.min(a * b[1], a * b[3]) + Math.min(c * b[2], c * b[4]));
+      x1 = Math.max(x1, x * s + Math.max(a * b[1], a * b[3]) + Math.max(c * b[2], c * b[4]));
+      y0 = Math.min(y0, run.baseline * s + Math.min(-k * b[2], -k * b[4]));
+      y1 = Math.max(y1, run.baseline * s + Math.max(-k * b[2], -k * b[4]));
+    }
+    return deviceBox(x0, y0, x1, y1, margin);
+  }
+
+  /**
+   * Device pixels `paint` may touch for `op` at `s` pixels per HU, null when it
+   * draws nothing and undefined when a glyph outline is not loaded. Patches
+   * report their packet box.
+   */
+  opBox(op: Op, s: number): Box | null | undefined {
+    const px = (v: number) => v * s;
+    switch (op.op) {
+      case 'glyphs':
+        return this.runBox(op, s, op.flags & 1 ? ((op.size * s) / (op.flags & 4 ? 1000 : 40) / 2) * MITER_LIMIT : 0);
+      case 'outline':
+        return this.runBox(op, s, Math.max(px(op.width), 0.5) / 2);
+      case 'rect':
+        return deviceBox(px(op.x), px(op.y), px(op.x) + Math.max(px(op.w), 0.5), px(op.y) + Math.max(px(op.h), 0.5), 0);
+      case 'line':
+        return deviceBox(Math.min(px(op.x1), px(op.x2)), Math.min(px(op.y1), px(op.y2)),
+          Math.max(px(op.x1), px(op.x2)), Math.max(px(op.y1), px(op.y2)), Math.max(px(op.width), 0.5));
+      case 'path': {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const e of op.els) {
+          for (let k = 1; k + 1 < e.length; k += 2) {
+            x0 = Math.min(x0, px(e[k])); x1 = Math.max(x1, px(e[k]));
+            y0 = Math.min(y0, px(e[k + 1])); y1 = Math.max(y1, px(e[k + 1]));
+          }
+        }
+        return deviceBox(x0, y0, x1, y1, op.width >= 0 ? (Math.max(px(op.width), 0.5) / 2) * MITER_LIMIT : 0);
+      }
+      case 'patch':
+        return deviceBox(Math.min(px(op.x), px(op.x + op.w)), Math.min(px(op.y), px(op.y + op.h)),
+          Math.max(px(op.x), px(op.x + op.w)), Math.max(px(op.y), px(op.y + op.h)), 0);
+      default:
+        return null;
+    }
+  }
+
+  /** Where a patch op lands: its packet box and, for a browser-decoded picture, the placed image. */
+  patchBoxes(op: Op & { op: 'patch' }, s: number, picture: Picture | null): Box[] {
+    const out: Box[] = [];
+    const own = this.opBox(op, s);
+    if (own) out.push(own);
+    const m = picture?.source.matrix;
+    if (!m) return out;
+    const [a, b, c, d, e, f] = m;
+    const xs = [c, a + c, b + c, a + b + c].map(v => v * s), ys = [f, d + f, e + f, d + e + f].map(v => v * s);
+    const box = deviceBox(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys), 0);
+    if (box) out.push(box);
+    return out;
+  }
+
+  /** The device box of op `k` in `record`, a patch from its state. */
+  private recordBox(record: PaintRecord, k: number): Box | null | undefined {
+    const state = record.patches.get(k);
+    return state ? unionBox(state.boxes) : this.opBox(record.packet.ops[k], record.s);
+  }
+
+  /** Each op's device box for `record`; undefined when an outline is not loaded. */
+  private recordBoxes(record: PaintRecord): (Box | null)[] | undefined {
+    if (record.boxes) return record.boxes;
+    const out: (Box | null)[] = [];
+    for (let k = 0; k < record.packet.ops.length; k++) {
+      const box = this.recordBox(record, k);
+      if (box === undefined) return undefined;
+      out.push(box);
+    }
+    return (record.boxes = out);
+  }
+
+  /**
+   * Disjoint boxes outside which painting `next` leaves exactly the pixels
+   * `prev` left, or null when the whole page must be painted again. Both records
+   * must share scale, canvas size and font generation. Ops align by their common
+   * prefix and suffix; changed ops and patches whose pixels changed repaint, and
+   * the clip stack entering the common suffix must match. Repaint each box under
+   * its own rectangular clip. Skia rasterizes a fill that crosses a clip edge
+   * differently from one inside it, and a clip joining several rectangles is a
+   * coverage mask, so boxes grow until every op they touch lies wholly inside.
+   */
+  repaintRegion(prev: PaintRecord, next: PaintRecord, width: number, height: number): Box[] | null {
+    if (prev.s !== next.s || prev.packet.fontGeneration !== next.packet.fontGeneration) return null;
+    this.load(next.packet);
+    const a = prev.packet.ops, b = next.packet.ops;
+    let head = 0;
+    while (head < a.length && head < b.length && sameOp(a[head], b[head])) head++;
+    let tail = 0;
+    while (tail < a.length - head && tail < b.length - head && sameOp(a[a.length - 1 - tail], b[b.length - 1 - tail])) tail++;
+    const before = clipStack(a, a.length - tail), after = clipStack(b, b.length - tail);
+    if (before.length !== after.length || before.some((op, k) => !sameOp(op, after[k]))) return null;
+    const old = this.recordBoxes(prev);
+    if (!old) return null;
+    // Ops shared with the last paint keep their boxes; patches take their current state.
+    const drawn: (Box | null)[] = new Array(b.length);
+    for (let k = 0; k < b.length; k++) {
+      const shared = k < head ? k : k >= b.length - tail ? k - b.length + a.length : -1;
+      const box = shared >= 0 && b[k].op !== 'patch' ? old[shared] : this.recordBox(next, k);
+      if (box === undefined) return null;
+      drawn[k] = box;
+    }
+    next.boxes = drawn;
+    const boxes: Box[] = [];
+    const patch = (i: number, j: number) => {
+      const p = prev.patches.get(i), n = next.patches.get(j);
+      if (p && n && sameKey(p.key, n.key)) return;
+      boxes.push(...p?.boxes ?? [], ...n?.boxes ?? []);
+    };
+    for (let k = 0; k < head; k++) if (b[k].op === 'patch') patch(k, k);
+    for (let t = 1; t <= tail; t++) if (b[b.length - t].op === 'patch') patch(a.length - t, b.length - t);
+    for (let k = head; k < a.length - tail; k++) if (old[k]) boxes.push(old[k]!);
+    for (let k = head; k < b.length - tail; k++) if (drawn[k]) boxes.push(drawn[k]!);
+    let region = mergeBoxes(boxes);
+    for (let grown = true; grown;) {
+      grown = false;
+      region = mergeBoxes(region.map(box => {
+        for (const d of drawn) {
+          if (!d || !overlaps(d, box) || (d.x >= box.x && d.y >= box.y && d.x + d.w <= box.x + box.w && d.y + d.h <= box.y + box.h)) continue;
+          box = unionBox([box, d])!;
+          grown = true;
+        }
+        return box;
+      }));
+    }
+    const visible = region.map(box => {
+      const x = Math.max(0, box.x), y = Math.max(0, box.y);
+      return { x, y, w: Math.min(width, box.x + box.w) - x, h: Math.min(height, box.y + box.h) - y };
+    }).filter(box => box.w > 0 && box.h > 0);
+    const area = visible.reduce((sum, box) => sum + box.w * box.h, 0);
+    return area > width * height * MAX_REPAINT_SHARE ? null : visible;
+  }
+
   /**
    * Paints a packet on `ctx` at `dpi`, the canvas already sized and
    * cleared. `patch(item, dpi)` returns a patch image or null;
-   * `picture(item)` optionally supplies a browser-decoded picture.
+   * `picture(item)` optionally supplies a browser-decoded picture. `only`
+   * skips ops whose box (from `repaintRegion`) misses the box being repainted.
    */
-  paint(ctx: CanvasRenderingContext2D, packet: PagePacket, dpi: number, patch: (item: number, dpi: number) => CanvasImageSource | null, picture?: (item: number) => Picture | null) {
+  paint(ctx: CanvasRenderingContext2D, packet: PagePacket, dpi: number, patch: (item: number, dpi: number) => CanvasImageSource | null, picture?: (item: number) => Picture | null,
+    only?: { box: Box; boxes: (Box | null)[] }) {
     this.load(packet);
     const s = dpi / 7200;
     const px = (v: number) => v * s;
@@ -385,7 +640,10 @@ export class Player {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     let depth = 0;
-    for (const op of packet.ops) {
+    for (let k = 0; k < packet.ops.length; k++) {
+      const op = packet.ops[k];
+      // Ops wholly outside the box being repainted cannot change its pixels.
+      if (only && op.op !== 'clip' && op.op !== 'unclip' && !(only.boxes[k] && overlaps(only.boxes[k]!, only.box))) continue;
       switch (op.op) {
         case 'glyphs': {
           const path = this.runPath(op, s);
