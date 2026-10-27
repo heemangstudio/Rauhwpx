@@ -1,8 +1,8 @@
 /** 도구 모음·서식 대화상자·스타일·문단 번호의 HeemangEngine 연결. */
-import type { CharPatch, ParaPatch, EditOp, FormatContext, ParagraphFormat, ParagraphInfo, StyleInfo, ListInfo } from '../../../vendor/hm-wasm/hm_wasm';
+import type { CharPatch, ParaPatch, EditOp, FormatContext, ParagraphFormat, ParagraphInfo, StyleInfo, ListInfo, ControlRecord } from '../../../vendor/hm-wasm/hm_wasm';
 import type { CharProperties, ParaProperties, CharShapeRun } from '../types';
 import type { HmCore, ListAddress } from './core';
-import { hu, unsupported } from './core';
+import { hu, listKey, unsupported } from './core';
 import { bodyList, cellList, paraMap, pathTarget, textAddress, textRangeToWire, toAddress, wireToText } from './address';
 import { charProperties, hexToColorRef, paraProperties } from '../heemang-format';
 import { charPatch as basicCharPatch, paraPatch as basicParaPatch } from './format';
@@ -339,7 +339,35 @@ export function createStyle(core: HmCore, json: string): number {
   return id;
 }
 export function updateStyle(core: HmCore, styleId: number, json: string): boolean { core.transact([{ op: 'updateStyle', id: styleId, style: styleProps(json) } as EditOp]); return true; }
-export function deleteStyle(core: HmCore, styleId: number): boolean { core.transact([{ op: 'deleteStyle', id: styleId }]); return true; }
+/** 본문과 그 안의 모든 목록(셀, 글상자, 머리말·꼬리말, 각주, 캡션). */
+function documentLists(core: HmCore): ListAddress[] {
+  const found = new Map<string, ListAddress>();
+  const visit = (list: ListAddress) => {
+    const key = listKey(list);
+    if (found.has(key)) return;
+    found.set(key, list);
+    for (const control of core.query<ControlRecord[]>({ kind: 'controls', list })) {
+      for (const inner of control.lists) visit({ section: inner.section, steps: inner.steps ?? [] });
+    }
+  };
+  for (let sec = 0; sec < core.adapter.getSectionCount(); sec++) visit(bodyList(sec));
+  return [...found.values()];
+}
+/** 엔진은 쓰이는 스타일을 지우지 않는다. 그 스타일의 문단을 바탕글(0)로 바꾸고 같은 실행 취소 단계에서 지운다. */
+export function deleteStyle(core: HmCore, styleId: number): boolean {
+  const ops: EditOp[] = [];
+  if (styleId !== 0) for (const list of documentLists(core)) {
+    const count = core.paragraphCount(list);
+    if (!count) continue;
+    for (const para of core.query<ParagraphFormat[]>({ kind: 'formatRuns', list, from: 0, count })) {
+      if (para.styleId !== styleId) continue;
+      const map = paraMap(core.paragraph(list, para.index));
+      ops.push({ op: 'applyStyle', from: toAddress(list, para.index, map.lead), to: toAddress(list, para.index, map.end), styleId: 0 });
+    }
+  }
+  core.transact([...ops, { op: 'deleteStyle', id: styleId }]);
+  return true;
+}
 export function updateStyleShapes(core: HmCore, styleId: number, charsJson: string, parasJson: string): boolean {
   const current = () => core.query<StyleInfo>({ kind: 'style', id: styleId }).characters;
   core.transact([{ op: 'updateStyle', id: styleId, style: { characters: widgetCharPatch(core, JSON.parse(charsJson), current), paragraphs: widgetParaPatch(JSON.parse(parasJson), core.query<StyleInfo>({ kind: 'style', id: styleId }).paragraphs.lineSpacingKind) } }]);

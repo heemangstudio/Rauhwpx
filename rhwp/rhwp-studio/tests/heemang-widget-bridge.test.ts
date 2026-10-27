@@ -137,6 +137,25 @@ test('styles, paragraph margins, numbering and character counts use the document
   assert.ok(page.width > 0 && page.marginLeft > 0);
 });
 
+test('deleting a style in use moves its body and cell paragraphs to 바탕글 in one undo step', t => {
+  const { core } = open(t);
+  api.insertText(core, 0, 0, 0, '본문', false);
+  const table = api.createTable(core, 0, 0, 2, 1, 1);
+  const id = api.createStyle(core, JSON.stringify({ name: '지울 스타일', englishName: 'Doomed' }));
+  api.applyStyle(core, 0, 0, id);
+  api.applyCellStyle(core, 0, table.paraIdx, table.controlIdx, 0, 0, id);
+  const listed = () => api.getStyleList(core).some(style => style.name === '지울 스타일');
+  const used = () => [api.getStyleAt(core, 0, 0).id, api.getCellStyleAt(core, 0, table.paraIdx, table.controlIdx, 0, 0).id];
+  const before = core.state().undo;
+  assert.equal(api.deleteStyle(core, id), true);
+  assert.equal(core.state().undo, before + 1);
+  assert.equal(listed(), false);
+  assert.deepEqual(used(), [0, 0]);
+  core.mutate(doc => doc.undo());
+  assert.equal(listed(), true);
+  assert.deepEqual(used(), [id, id]);
+});
+
 test('character effects from the toolbar and dialog reach the document and read back', t => {
   const { core, doc, engine } = open(t);
   api.insertText(core, 0, 0, 0, 'Effects 글자', false);
