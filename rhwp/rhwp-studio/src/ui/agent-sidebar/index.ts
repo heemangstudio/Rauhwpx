@@ -5286,7 +5286,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
       if (data.type === 'owned_browser_tab' && data.openRequestId === openRequestId && data.tab?.tabId) created(data.tab);
     });
-    const opening = browser.controller.request<{ tab?: BrowserTab }>('open', { url, openRequestId });
+    const opening = browser.controller.request<{ tab?: BrowserTab }>('open', { url, openRequestId, transient: true });
     let tab: BrowserTab | undefined;
     try { tab = await Promise.race([early, opening.then((opened) => opened?.tab)]); } finally { unlisten(); }
     if (!tab?.tabId) throw new Error('로그인 창을 열지 못했습니다.');
@@ -5295,13 +5295,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     let done = false;
     const close = async (): Promise<void> => {
       if (done) return;
-      done = true; stop();
-      await browser.controller.refresh().then(() => browser.controller.close(tab.tabId)).catch(() => {});
+      done = true; stop(); stopPopups();
+      await browser.controller.refresh().then(async () => {
+        for (const popup of popups) await browser.controller.close(popup).catch(() => {});
+        await browser.controller.close(tab.tabId);
+      }).catch(() => {});
       finish();
     };
     const stop = native.onEvent((event) => {
       if (event.tabId !== tab.tabId) return;
       if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
+    });
+    // Google처럼 로그인을 팝업으로 여는 사이트는 그 팝업도 같은 이름의 창으로 띄운다. 팝업은 로그인이 끝나면 스스로 닫힌다.
+    const popups = new Set<string>();
+    const stopPopups = bridge.onBrowserEvent((event) => {
+      const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+      if (data.type !== 'owned_browser_popup' || data.openerTabId !== tab.tabId || !data.tab?.tabId) return;
+      popups.add(data.tab.tabId);
+      void native.attach({ tabId: data.tab.tabId, expectedTargetId: data.tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true, title }).catch(() => {});
     });
     // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
     opening.catch(() => close());
