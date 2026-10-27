@@ -54,6 +54,12 @@ export function nodeHostShimFileName(platform) {
 }
 
 /**
+ * node.cmd 가 실행할 Node 호환 실행 파일. cmd.exe 는 배치 파일을 OEM 코드 페이지(한국어 949)로
+ * 읽으므로 `C:\Users\홍길동\...` 같은 경로를 파일에 적으면 깨진다. 환경 변수는 UTF-16 이라 그대로 전달된다.
+ */
+export const NODE_HOST_ENV = 'RHWP_NODE_HOST';
+
+/**
  * @param {string} dir
  * @param {string} nodeCommand
  * @param {{
@@ -72,7 +78,8 @@ export async function writeNodeHostShim(dir, nodeCommand, {
   const file = path.join(dir, nodeHostShimFileName(platform));
   const exe = String(nodeCommand ?? '').replace(/"/g, '');
   if (platform === 'win32') {
-    await writeFile(file, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${exe}" %*\r\n`);
+    // 파일에 적은 경로는 환경 변수가 없을 때만 쓴다. ASCII 경로라면 그 경우에도 그대로 동작한다.
+    await writeFile(file, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\nif not defined ${NODE_HOST_ENV} set "${NODE_HOST_ENV}=${exe}"\r\n"%${NODE_HOST_ENV}%" %*\r\n`);
   } else {
     await writeFile(file, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${exe}" "$@"\n`, { mode: 0o755 });
   }
@@ -118,6 +125,7 @@ export function applyNodeHostEnv(env, { nodeCommand, shimDir, platform = 'win32'
     const current = next.PATH ?? next.Path ?? '';
     next.PATH = current ? `${shimDir}${delimiter}${current}` : shimDir;
     if (platform === 'win32') next.Path = next.PATH;
+    if (platform === 'win32' && nodeCommand) next[NODE_HOST_ENV] = nodeCommand;
   }
   if (nodeCommand) next.npm_node_execpath = nodeCommand;
   if (nodeCommand && !isNodeBinary(nodeCommand)) next.ELECTRON_RUN_AS_NODE = '1';
