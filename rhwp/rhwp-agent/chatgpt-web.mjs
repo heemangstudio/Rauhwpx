@@ -101,6 +101,11 @@ export async function pageFindProject(name) {
   return { shape: true, slug: null };
 }
 
+/** 페이지 로딩 진행: 문서가 끝났는지와 지금까지 받은 리소스 수. */
+export function pageLoadProgress() {
+  return { complete: document.readyState === 'complete', resources: performance.getEntriesByType('resource').length };
+}
+
 /** 보이는 입력창 하나. 없으면 null. */
 export function pageComposerState() {
   const editors = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
@@ -244,7 +249,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * browser.drive(actor, { url }, (page) => …) 는 ChatGPT 행위자의 탭 하나에서 작업을 차례로 돌린다(owned-browser-service).
  */
 export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAULT_TIMEOUT_MS, maxAnswerChars = CHATGPT_MAX_ANSWER_CHARS,
-  pollMs = 500, stepTimeoutMs = 15_000, now = Date.now }) {
+  pollMs = 500, stepTimeoutMs = 15_000, settleMs = 750, now = Date.now }) {
   let queue = Promise.resolve();
   const serial = (operation) => {
     const task = queue.then(operation, operation);
@@ -295,6 +300,27 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
   };
 
   const onChatgpt = (page) => { try { return new URL(page.url()).origin === CHATGPT_ORIGIN; } catch { return false; } };
+
+  /**
+   * 페이지가 다 떴을 때 ready() 의 값을 돌려준다: 문서가 끝났고, ready() 가 참이고, 새 리소스가 settleMs 동안 없다.
+   * 고정 시간이 아니라 진행을 본다. 리소스가 계속 들어오는 동안은 기다리고, 준비되지 않은 채 stepTimeoutMs 동안 진행이 없으면 멈춘다.
+   */
+  const waitUntilLoaded = async (page, ready, { until, label }) => {
+    let signature = ''; let movedAt = now(); let readySince = null;
+    for (;;) {
+      const state = await evaluate(page, pageLoadProgress).catch(() => null);
+      const value = state ? await ready() : null;
+      const next = state ? `${state.complete}:${state.resources}` : `navigating:${now()}`;
+      if (next !== signature) { signature = next; movedAt = now(); }
+      if (value && state.complete) {
+        // 준비된 뒤에도 리소스가 계속 오면(분석 요청 등) 최대 5초만 더 기다린다.
+        readySince ??= now();
+        if (now() - movedAt >= settleMs || now() - readySince >= 5_000) return value;
+      } else readySince = null;
+      if (now() >= until || !value && now() - movedAt >= stepTimeoutMs) throw fail('CHATGPT_UI_CHANGED', label);
+      await sleep(Math.min(pollMs, 250));
+    }
+  };
 
   const waitFor = async (check, { until, label, interval = pollMs }) => {
     for (;;) {
@@ -364,7 +390,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
 
   const send = async (page, question, until) => {
     await settle(page, Math.min(until, now() + stepTimeoutMs));
-    await waitFor(async () => (await evaluate(page, pageComposerState)).ready, { until: Math.min(until, now() + stepTimeoutMs), label: 'composer' });
+    // 페이지가 다 뜬 뒤에만 입력창을 다룬다. 숨은 탭에서 claude.ai 는 스크립트 수백 개를 차례로 받아 20초 넘게 걸리기도 한다.
+    await waitUntilLoaded(page, async () => (await evaluate(page, pageComposerState)).ready, { until, label: 'composer' });
     // 이미 있던 차례는 서버 대화에서 센다. 화면은 다시 그리는 중이면 옛 차례를 늦게 보여 새 차례로 오인하게 한다.
     const conversationId = conversationIdOf(page.url());
     const known = new Set([

@@ -2526,8 +2526,18 @@ export function createOwnedBrowserService(options = {}) {
           tab.sessionId = actor.sessionId; tab.nativeGeneration = nativeState?.generation; tab.zoomFactor = nativeState?.zoomFactor;
         }
         tab.activeActor = actor; tab.lastActivityAt = Date.now();
+        // 숨은 탭을 다루는 동안 데스크톱이 탭을 깨워 둔다(초점 흉내·백그라운드 제한 해제). 허브가 멈추면 30초 뒤 풀린다.
+        const adapter = selectedAdapter();
+        const activity = adapter?.activity && tab.nativeTargetId ? { targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity') } : null;
+        let renewal = null;
+        if (activity && await adapter.activity({ ...activity, active: true }).then(() => true, () => false)) {
+          renewal = setInterval(() => { void adapter.activity({ ...activity, active: true, renew: true }).catch(() => {}); }, 10_000); renewal.unref?.();
+        }
         try { return await operation(tab.page, { tabId: tab.tabId }); }
-        finally { tab.activeActor = null; tab.lastActivityAt = Date.now(); publish(tab); void persist(); }
+        finally {
+          if (renewal) { clearInterval(renewal); void adapter.activity({ ...activity, active: false }).catch(() => {}); }
+          tab.activeActor = null; tab.lastActivityAt = Date.now(); publish(tab); void persist();
+        }
       });
     },
     ownsTarget(actor, target) {

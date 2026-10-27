@@ -106,6 +106,11 @@ export async function pageClaudeProject({ orgId, name, create }) {
   return { shape: true, uuid: project.uuid, created: true };
 }
 
+/** 페이지 로딩 진행: 문서가 끝났는지와 지금까지 받은 리소스 수. */
+export function pageLoadProgress() {
+  return { complete: document.readyState === 'complete', resources: performance.getEntriesByType('resource').length };
+}
+
 /** 보이는 입력창 하나. 없으면 null. */
 export function pageClaudeComposerState() {
   const editors = [...document.querySelectorAll('[data-testid="chat-input"][contenteditable="true"], [data-testid="chat-input"] [contenteditable="true"], .ProseMirror[contenteditable="true"]')]
@@ -214,7 +219,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * browser.drive(actor, { url }, (page) => …) 는 Claude 행위자의 보이지 않는 탭 하나에서 작업을 차례로 돌린다(owned-browser-service).
  */
 export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_TIMEOUT_MS, maxAnswerChars = CLAUDE_MAX_ANSWER_CHARS,
-  pollMs = 500, stepTimeoutMs = 15_000, now = Date.now }) {
+  pollMs = 500, stepTimeoutMs = 15_000, settleMs = 750, now = Date.now }) {
   let queue = Promise.resolve();
   const serial = (operation) => {
     const task = queue.then(operation, operation);
@@ -274,6 +279,27 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
 
   const onClaude = (page) => { try { return new URL(page.url()).origin === CLAUDE_ORIGIN; } catch { return false; } };
 
+  /**
+   * 페이지가 다 떴을 때 ready() 의 값을 돌려준다: 문서가 끝났고, ready() 가 참이고, 새 리소스가 settleMs 동안 없다.
+   * 고정 시간이 아니라 진행을 본다. 리소스가 계속 들어오는 동안은 기다리고, 준비되지 않은 채 stepTimeoutMs 동안 진행이 없으면 멈춘다.
+   */
+  const waitUntilLoaded = async (page, ready, { until, label }) => {
+    let signature = ''; let movedAt = now(); let readySince = null;
+    for (;;) {
+      const state = await evaluate(page, pageLoadProgress).catch(() => null);
+      const value = state ? await ready() : null;
+      const next = state ? `${state.complete}:${state.resources}` : `navigating:${now()}`;
+      if (next !== signature) { signature = next; movedAt = now(); }
+      if (value && state.complete) {
+        // 준비된 뒤에도 리소스가 계속 오면(분석 요청 등) 최대 5초만 더 기다린다.
+        readySince ??= now();
+        if (now() - movedAt >= settleMs || now() - readySince >= 5_000) return value;
+      } else readySince = null;
+      if (now() >= until || !value && now() - movedAt >= stepTimeoutMs) throw fail('CLAUDE_UI_CHANGED', label);
+      await sleep(Math.min(pollMs, 250));
+    }
+  };
+
   const waitFor = async (check, { until, label, interval = pollMs }) => {
     for (;;) {
       const value = await check();
@@ -305,12 +331,13 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
   const openChat = async (page, chatKey, projectUrl) => {
     const known = store.chatUrl(chatKey);
     if (known) {
-      await goto(page, known);
+      // 이미 그 채팅을 보고 있으면 다시 열지 않는다. 다시 열면 숨은 탭에서 수십 초가 걸린다.
+      if (conversationIdOf(page.url()) !== conversationIdOf(known)) await goto(page, known);
       // 지운 채팅은 다른 주소로 옮겨진다. 그때는 프로젝트에서 새 채팅을 시작한다.
       if (conversationIdOf(page.url()) === conversationIdOf(known)) return known;
       await store.forgetChat(chatKey);
     }
-    await goto(page, projectUrl);
+    if (claudeProjectUrl(page.url()) !== projectUrl) await goto(page, projectUrl);
     // 사용자가 프로젝트를 지웠으면 다른 주소로 옮겨진다. 부른 쪽이 다시 찾거나 만든다.
     return projectIdOf(page.url()) === projectIdOf(projectUrl) ? null : false;
   };
@@ -318,7 +345,8 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
   const squash = (value) => value.replace(/\s+/g, ' ').trim();
 
   const send = async (page, question, until) => {
-    await waitFor(async () => (await evaluate(page, pageClaudeComposerState)).ready, { until: Math.min(until, now() + stepTimeoutMs), label: 'composer' });
+    // 페이지가 다 뜬 뒤에만 입력창을 다룬다. 숨은 탭에서 claude.ai 는 스크립트 수백 개를 차례로 받아 20초 넘게 걸리기도 한다.
+    await waitUntilLoaded(page, async () => (await evaluate(page, pageClaudeComposerState)).ready, { until, label: 'composer' });
     if (!await evaluate(page, pageClaudeClearComposer)) throw fail('CLAUDE_UI_CHANGED', 'composer draft');
     if (!await evaluate(page, pageClaudeFocusComposer)) throw fail('CLAUDE_UI_CHANGED', 'composer focus');
     await page.keyboard.insertText(question);

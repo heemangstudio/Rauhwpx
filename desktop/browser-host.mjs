@@ -404,6 +404,8 @@ export class OwnedBrowserHost {
       if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
       // 열린 페이지 대화상자는 렌더러를 멈춰 이 명령이 돌아오지 않는다. 에이전트가 대화상자에 답할 수 있게 닫힐 때까지 미룬다.
       if (tab.dialogOpen) { tab.activitySyncDeferred = true; return; }
+      // 허브가 숨은 탭을 다루는 동안에는 타이머·애니메이션 제한을 풀어 페이지가 제 속도로 뜨게 한다.
+      contents.setBackgroundThrottling(!tab.activityLeases?.size);
       await contents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: !!tab.activityLeases?.size });
     });
     return tab.activityQueue;
