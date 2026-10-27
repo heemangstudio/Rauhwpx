@@ -52,3 +52,16 @@ test('a merge preserves shared paragraph identities for subsequent branch edits'
   assert.deepEqual(merged.entries.map((entry) => entry.identity), base.entries.map((entry) => entry.identity));
   assert.deepEqual(next.entries.map((entry) => entry.identity), base.entries.map((entry) => entry.identity));
 });
+
+test('an edited paragraph keeps its identity beside an edited sibling that kept its own', () => {
+  const repository = repositoryId('split-instance');
+  const snapshot: CompareDocumentSnapshot = { meta: { name: 'test', sectionCount: 1, pageCount: 1 }, paragraphs: [], controls: [] };
+  // 문단 나누기는 문단 인스턴스 번호를 두 문단에 함께 남긴다.
+  const seeds = (first: string, second: string): MergeManifestEntrySeed[] => [
+    { kind: 'paragraph', path: ['sections', '0', 'paragraphs', '0'], propertyHash: `blake3:${first}`, identityHint: 'paragraph-instance:7' },
+    { kind: 'paragraph', path: ['sections', '0', 'paragraphs', '1'], propertyHash: `blake3:${second}`, identityHint: 'paragraph-instance:7' },
+  ];
+  const base = buildMergeManifest(repository, commitId('base'), snapshot, 1, [], seeds('anchor', 'text'));
+  const incoming = buildMergeManifest(repository, commitId('incoming'), snapshot, 2, [base], seeds('anchor+image', 'remote+text'));
+  assert.deepEqual(incoming.entries.map((entry) => entry.identity), base.entries.map((entry) => entry.identity));
+});

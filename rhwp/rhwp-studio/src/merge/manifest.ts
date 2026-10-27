@@ -123,6 +123,12 @@ export function buildMergeManifest(
     let anchoredInPlace = children.length === 1;
     let reordered = false;
     for (const child of children) {
+      // 내용이 바뀌어도 자기 식별자를 같은 자리에서 이어받은 노드는 기준점이다.
+      // 문단 나누기로 복제된 식별자처럼 다른 자리를 가리키는 힌트는 이동으로 보지 않는다.
+      const hinted = child.identityHint ? inheritedByIdentity.get(child.identityHint) : undefined;
+      if (hinted?.kind === child.kind && hinted.path.join('\u0000') === child.path.join('\u0000')) {
+        anchoredInPlace = true;
+      }
       const hashMatch = inheritedByHash.get(`${child.kind}\u0000${child.propertyHash}`);
       if (!hashMatch) continue;
       if (hashMatch.path.join('\u0000') === child.path.join('\u0000')) anchoredInPlace = true;
