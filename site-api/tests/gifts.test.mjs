@@ -353,6 +353,17 @@ test('BYOK spend counts toward the gift, and an exhausted or disabled gift answe
   assert.equal(after.remainingUsd, 0);
 });
 
+test('a 402 for the owner\'s OpenRouter balance passes through and does not read as a used-up gift', async (t) => {
+  const s = await setup(t);
+  const lease = await (await s.license()).activate(MAC_A);
+  await s.claim(lease);
+  const owner = { error: { code: 402, message: 'Insufficient credits. Add more using https://openrouter.ai/credits', metadata: { limit_source: 'openrouter_credits' } } };
+  s.upstream.failNextChat(402, owner);
+  const res = await s.chat(lease, { model: SONNET, messages: [] });
+  assert.equal(res.status, 402);
+  assert.deepEqual(await res.json(), owner);
+});
+
 test('per-license amounts: an allocation sets the claimed limit, 0 blocks the claim, and status reports the license amount', async (t) => {
   const s = await setup(t);
   const amount = (keyId, amountUsd, token = ADMIN) => fetch(`${s.origin}/v1/admin/gifts/amount`, {
