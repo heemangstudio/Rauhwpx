@@ -24,6 +24,7 @@ import {
 } from '../../agent/agent-prefs.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createBrowserSettingsPane } from './browser-settings.ts';
+import { createWebAssistantSettingsRow, type SignInWindow } from './web-assistant-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createUsageViews } from './token-usage-view.ts';
@@ -350,6 +351,8 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
+  /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
+  openSignInWindow?: (url: string) => Promise<SignInWindow>;
 }
 
 export interface SettingsPanel {
@@ -712,12 +715,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (connectionRefreshing) return;
     connectionRefreshing = true;
     renderConnection();
-    try { await Promise.all([refreshProviders(true), refreshSetupStatuses(true)]); }
+    try { await Promise.all([refreshProviders(true), refreshSetupStatuses(true), ...assistantRows.map(row => row.refresh(true))]); }
     finally { connectionRefreshing = false; if (!disposed) renderConnection(); }
   });
   refreshBtn.classList.add('ag-settings-section-action');
   connection.head.append(refreshBtn);
-  connection.body.append(providerList, hubRow);
+  // 웹 ChatGPT·Claude. 로그인 창은 설정 위에 별도 창으로 뜨고, 설정은 그대로 둔다.
+  const assistantRows = (['chatgpt', 'claude'] as const).map(service => createWebAssistantSettingsRow(service, {
+    request: (action, args) => bridge.requestBrowser(action, args),
+    ...(deps.openSignInWindow ? { openSignInWindow: deps.openSignInWindow } : {}),
+    isConnected: () => connectionState === 'connected',
+  }));
+  connection.body.append(providerList, ...assistantRows.map(row => row.root), hubRow);
 
   // ── Pi 모달 흐름 ──────────────────────────────────────
   // 설치 → 로그인 → 모델 → 요약으로 모습을 바꾸며, 설정 페이지에는 직접 붙지 않는다.
@@ -1781,6 +1790,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
     if (destination === 'archive') archivePane.open();
+    if (destination === 'ai') for (const row of assistantRows) void row.refresh(true);
     panes.get(destination)?.scrollTo({ top: 0 });
   }
 

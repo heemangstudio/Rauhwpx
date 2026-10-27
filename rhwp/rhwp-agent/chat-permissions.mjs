@@ -3,19 +3,20 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 export const CHAT_PERMISSION_CAPABILITIES = Object.freeze([
-  'project-edit', 'downloads', 'browser', 'local-execution', 'other-documents',
+  'project-edit', 'downloads', 'browser', 'local-execution', 'other-documents', 'chatgpt', 'claude',
 ]);
 
 /** 채팅 권한으로 남는(request_permission 으로 청할 수 있는) 권한. */
 export const GRANTABLE_CHAT_PERMISSIONS = CHAT_PERMISSION_CAPABILITIES;
 
 /** 허브만 확인하는 권한 — 공급자 실행 모드를 바꾸지 않으므로 턴 중에도 바로 부여한다. */
-export const HUB_ONLY_CHAT_PERMISSIONS = Object.freeze(['other-documents']);
+export const HUB_ONLY_CHAT_PERMISSIONS = Object.freeze(['other-documents', 'chatgpt', 'claude']);
 
 export function chatPermissionForCategory(category) {
   if (category === 'project-write' || category === 'project-ingest') return 'project-edit';
   if (category === 'download-write') return 'downloads';
   if (category === 'browser') return 'browser';
+  if (category === 'chatgpt' || category === 'claude') return category;
   return null;
 }
 

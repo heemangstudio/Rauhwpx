@@ -3,7 +3,7 @@ import type {
   SecretKind, SecretMeta, SiteRequestItem,
 } from './types.ts';
 
-const capabilities: readonly ChatPermissionCapability[] = ['project-edit', 'downloads', 'browser', 'local-execution', 'other-documents'];
+const capabilities: readonly ChatPermissionCapability[] = ['project-edit', 'downloads', 'browser', 'local-execution', 'other-documents', 'chatgpt', 'claude'];
 
 export const CHAT_PERMISSION_LABELS: Readonly<Record<ChatPermissionCapability, string>> = {
   'project-edit': '프로젝트 수정',
@@ -11,6 +11,8 @@ export const CHAT_PERMISSION_LABELS: Readonly<Record<ChatPermissionCapability, s
   browser: '브라우저 사용',
   'local-execution': '로컬 파일 및 명령 실행',
   'other-documents': '다른 문서 읽기',
+  chatgpt: 'ChatGPT에 묻기',
+  claude: 'Claude에 묻기',
 };
 
 const requestKinds: readonly ChatPermissionRequestKind[] = [
