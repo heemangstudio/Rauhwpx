@@ -211,6 +211,7 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
+import { createChatHama, type ChatHama } from './chat-hama.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -1336,6 +1337,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
   let fullscreen = false;
+  /** 입력기 위의 하마. 입력기를 만든 뒤 붙는다. */
+  let chatHama: ChatHama | null = null;
   let threadsRailCollapsed = readStoredThreadsRailCollapsed();
   let workspaceCompact = false;
   let compactThreadsRailOpen = false;
@@ -4338,6 +4341,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 편대 도크는 입력기 위에 뜨는 오버레이라서 입력기의 자식으로 붙는다 —
   // 사이드바·전체 화면 어디로 옮겨져도 입력기를 따라간다.
   composer.appendChild(fleetView.root);
+  // 입력기 위의 하마 — 사이드바와 집중 화면이 같은 입력기를 쓰므로 한 번만 붙인다.
+  chatHama = createChatHama({
+    composer,
+    input,
+    hitRoot: chatPage,
+    enabled: () => userSettings.getViewSettings().showHama,
+    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed')),
+  });
+  const unsubscribeHamaSetting = userSettings.subscribe(() => chatHama?.sync());
+  // 접기·집중 화면·설정이나 목록 같은 다른 면은 모두 뿌리의 클래스로 바뀐다.
+  const hamaRootObserver = typeof MutationObserver === 'function'
+    ? new MutationObserver(() => chatHama?.sync())
+    : null;
+  hamaRootObserver?.observe(root, { attributes: true, attributeFilter: ['class'] });
+  queueMicrotask(() => chatHama?.sync());
   const questionTimelineAnchor = el('span', 'ag-question-timeline-anchor');
   const permissionController = createRequestCardController({
     context: () => ({ threadId: currentThread.id, documentId: currentDocumentId }),
@@ -9701,6 +9719,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setTurnRunning(running: boolean): void {
     const ended = turnRunning && !running;
     turnRunning = running;
+    chatHama?.setRunning(running);
     if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); floatingBrowser?.endAgentPreview(); }
     // 일하는 동안 다른 창이 이 채팅을 이 문서에서 뗐으면 턴이 끝난 뒤 따른다(adoptStoredThreadLink).
     if (ended) queueMicrotask(() => {
@@ -11707,6 +11726,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (event.parentTaskId && fleetView.routeTextDelta(event)) break;
         assistantBuffer += event.text;
         if (!assistantBuffer.trim()) break;
+        chatHama?.talking();
         if (!streamBubble && turnActivity) closeCurrentActivityGroup();
         if (!streamBubble) {
           const bubble = openAssistantBubble(event.agent);
@@ -11726,6 +11746,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           trackSubagentToolCall(event);
           break;
         }
+        chatHama?.tool(event.tool, event.argsJson);
         // 스폰 자체는 편대 카드가 나타내므로 도구 행을 따로 그리지 않는다.
         if (!event.parentTaskId && isSpawnToolName(event.tool)) {
           suppressedSpawnCalls.add(event.callId);
@@ -11841,6 +11862,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // U3: 결과를 레일에 남긴다 — 보던 채팅, 사용자가 멈춘 턴, 대기열이 다음 메시지를 보낸 턴은 남기지 않는다.
         // 승인을 기다리는 계획은 입력 대기로 선다. 알림은 한 마이크로태스크 뒤 — turn-failure 의 이유가 먼저 닿는다.
         runStatus.turnEnded(lastTurnEndOutcome, { drained: drainedFollowUp });
+        // 대기 메시지가 곧바로 이어 나갔으면 끝 몸짓 없이 다음 턴으로 간다.
+        if (!drainedFollowUp) chatHama?.turnEnded(lastTurnEndOutcome);
         // 바깥 사정으로 끊긴 턴(S3) — 보지 않던 채팅이면 레일에 '중단됨', 알림은 '작업이 중단됐습니다' 한 번.
         if (interruption !== null) runStatus.noteTurnFailure({ interrupted: true });
         turnErrorSeen = false;
@@ -12724,6 +12747,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // U3: 허브 오류로 끝난 턴은 (보지 않았으면) 레일에 오류로 남는다.
         if (turnRunning) runStatus.sync();
         else if (runStatus.turnEnded('failed', { drained: false })) {
+          chatHama?.turnEnded('failed');
           if (e.failure) runStatus.noteTurnFailure(railFailureNote(e.failure, hubFailureSummary));
         } else if (followUpBounced && followUps.snapshot().hold?.reason !== 'busy') {
           // 앞 턴 끝에서 이어 보낸 대기 메시지를 허브가 받지 않았다 — 채팅은 붙잡힌 대기열과 함께 멈췄다.
@@ -13908,6 +13932,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     restoreSharedBrowser();
     // 다시 보이는 채팅의 완료·오류 점을 걷고 확인 필요 수를 다시 센다.
     scheduleSeenCheck();
+    chatHama?.sync();
   }
 
   function deactivate(): void {
@@ -13944,6 +13969,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     arrivalGuard.release();
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
+    chatHama?.sync();
   }
 
   if (active) queueMicrotask(restoreSharedBrowser);
@@ -14132,6 +14158,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       connAutofix?.dispose();
       // 이 사이드바가 쓴 작업·입력·검토 점을 걷는다. 미뤄 둔 알림은 그대로 나간다.
       runStatus.dispose();
+      unsubscribeHamaSetting();
+      hamaRootObserver?.disconnect();
+      chatHama?.dispose();
       attentionViewObserver?.disconnect();
       window.removeEventListener('focus', scheduleSeenCheck);
       document.removeEventListener('visibilitychange', scheduleSeenCheck);

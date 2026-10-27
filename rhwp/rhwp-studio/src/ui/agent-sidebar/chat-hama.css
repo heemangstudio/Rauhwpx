@@ -1,0 +1,34 @@
+/* ─── 입력기 위의 하마 ─────────────────────────────────────
+   하마는 입력기(붙은 질문 카드 포함) 위 가장자리에 발을 딛는다. 변경 막대나 칩이 위에 쌓이면
+   그 맨 위에 서고, 그때는 편대 알약 자리(--ag-fleet-reserve)도 함께 넘는다 — 쌓인 것이 없으면
+   min() 의 첫 항이 0 이 되어 알약 옆, 입력기 위에 그대로 선다.
+   하마는 포인터를 받지 않는다. 누르기는 chat-hama.ts 가 하마 픽셀에서만 가로챈다. */
+.ag-hama-perch {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% - 1px + var(--ag-attached-h, 0px) + var(--ag-stack-h, 0px)
+    + min(var(--ag-stack-h, 0px) * 1000, var(--ag-fleet-reserve, 0px)));
+  left: 0;
+  z-index: 2;
+  height: 0;
+  pointer-events: none;
+}
+
+.ag-hama {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.ag-hama canvas {
+  display: block;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+@media (forced-colors: active) {
+  .ag-hama-perch {
+    display: none;
+  }
+}

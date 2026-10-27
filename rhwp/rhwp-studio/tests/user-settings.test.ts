@@ -276,6 +276,7 @@ test('v1 설정은 최근 글꼴을 더한 v2로 마이그레이션되고 범위
     showControlCodes: false,
     clipView: true,
     sidebarMotion: false,
+    showHama: true,
     compactToolbar: false,
   });
   assert.equal(migrated.autosave.recoveryIntervalMinutes, 1);
