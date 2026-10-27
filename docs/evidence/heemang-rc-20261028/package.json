@@ -1,0 +1,25 @@
+{
+  "source": "a7dd22844ca851d76849ee3cc719785e1aea6f52",
+  "branch": "rc/combined-20261028",
+  "base": "53fabe6bd3578799b10433484aa4f5b41b5ad3ac",
+  "rendering_fixes": ["02d1b46", "f8899cd", "150b388", "9b93aa0", "a7dd228"],
+  "engine_worktree_clean": true,
+  "jobs": 3,
+  "own_target": "/Users/pyu/projects/hobbies/Rau/heemang-wt/rc-combined/target",
+  "build": "crates/hm-wasm/build.sh",
+  "bindgen": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/swarm-malformed-membership-r12/tooling/wasm-bindgen-0.2.125-aarch64-apple-darwin/wasm-bindgen",
+  "bindgen_version": "wasm-bindgen 0.2.125",
+  "wasm_opt": null,
+  "exit_code": 0,
+  "old_package_sha256": "8a5eee93da7b64f1765ce09dea56afc46e84c66297a039dad3d1d199817ea248",
+  "package_sha256": {
+    "hm_wasm.js": "2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110",
+    "hm_wasm_bg.wasm": "2652758ed536b297bd519994919e461355e0572ffb44dda550395d9de09f62f5",
+    "hm_wasm.d.ts": "2a9773b38391f4d95c2079472fe43fcf2b3cee9599f1c2475e3667345b6cf576",
+    "hm_wasm_bg.wasm.d.ts": "4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4"
+  },
+  "wasm_bytes": 7581567,
+  "wasm_gzip9_bytes": 2516727,
+  "bindings_match_core_53fabe6_package": true,
+  "frozen_package": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-combined-a7dd228-26527585"
+}

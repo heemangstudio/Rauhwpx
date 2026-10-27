@@ -1207,12 +1207,12 @@ export class Engine {
      * Registers a TTF, OTF, TTC or HFT file; returns the faces added.
      * Documents lay out again with it on their next request.
      *
-     * The engine keeps of a TrueType face its metrics and the outlines of
-     * the characters in the documents opened so far, not the file. Other
-     * outlines come empty (`em` 0 in `glyphOutlines`) and name the file in
-     * [`Engine::outline_requests`]; registering the same label again fills
-     * them in and bumps the font generation, without a new layout unless
-     * one measured a missing outline.
+     * Complete sources are retained for later characters. Explicitly sparse
+     * SFNT files retain their supplied outlines; other outlines come empty
+     * (`em` 0 in `glyphOutlines`) and name the file in
+     * [`Engine::outline_requests`]. Registering a complete source with the
+     * same label promotes it without changing face IDs, and requires a new
+     * layout only when one measured a missing outline.
      * @param {string} label
      * @param {Uint8Array} bytes
      * @returns {number}
@@ -1227,9 +1227,9 @@ export class Engine {
     }
     /**
      * Registers a font file the host holds, like [`Engine::add_font`],
-     * reading through `file.read(offset, length)` (a `Uint8Array`) only
-     * the parts the engine keeps, so the file never enters the engine's
-     * memory whole.
+     * reading through `file.read(offset, length)` (a `Uint8Array`).
+     * Complete files are retained; explicitly sparse SFNT files keep only
+     * their supplied outlines as described above.
      * @param {string} label
      * @param {FontFileSource} file
      * @returns {number}
