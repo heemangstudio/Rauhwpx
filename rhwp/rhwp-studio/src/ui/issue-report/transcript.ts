@@ -23,8 +23,13 @@ function messageBlock(message: ThreadMessage): string | null {
         return `[하위 작업]\n${message.tasks.map((task) => (
           `  - ${task.title || task.role || task.taskId} [${task.status}]${task.summary ? ` ${clip(task.summary, TOOL_TEXT_CHARS)}` : ''}`
         )).join('\n')}`;
-      case 'error':
-        return `[오류] ${message.failure.code ?? ''} ${clip(text || message.failure.message || '', 1000)}`.trim();
+      case 'error': {
+        // 알림 제목만으로는 원인을 알 수 없다. 허브가 가린 프로바이더 문구를 함께 싣는다.
+        const detail = (message.failure.message || '').trim();
+        const summary = text && detail && detail !== text ? `${text} — ${detail}` : text || detail;
+        const code = message.failure.code ? `${message.failure.code} ` : '';
+        return `[오류] ${code}${clip(summary, 1000)}`.trim();
+      }
       case 'marker':
         return message.marker === 'handoff'
           ? `— ${message.from} → ${message.to} —`

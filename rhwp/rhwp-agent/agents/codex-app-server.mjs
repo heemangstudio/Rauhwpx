@@ -529,6 +529,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     return truncate(redactDiagnosticText(details.join(': '), [opts.token]), max);
   }
 
+  /** TurnError 의 문구. 서버가 덧붙인 additionalDetails 가 실제 원인인 경우가 있어 함께 싣는다. */
+  function turnErrorText(err) {
+    const message = String(err.message);
+    const details = typeof err.additionalDetails === 'string' ? err.additionalDetails.trim() : '';
+    return details && !message.includes(details) ? `${message}\n${details}` : message;
+  }
+
   /** codexErrorInfo 를 허브 분류기가 읽는 단서로 옮긴다. 사용 한도면 다 쓴 창의 리셋 시각을 싣는다. */
   function codexFailureHint(codexErrorInfo) {
     const info = readCodexErrorInfo(codexErrorInfo);
@@ -678,7 +685,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     const usage = pendingUsage;
     const turnError = params.turn?.error ?? null;
     const failureMessage = status === 'failed'
-      ? String(turnError?.message ?? lastTurnError?.message ?? 'Codex turn failed')
+      ? (turnError?.message ? turnErrorText(turnError) : lastTurnError?.message ?? 'Codex turn failed')
       : null;
     const failure = failureMessage
       ? codexFailureHint(turnError?.codexErrorInfo ?? lastTurnError?.codexErrorInfo)
@@ -822,7 +829,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (params.willRetry === true) return;
       const err = params.error && typeof params.error === 'object' ? params.error : params;
       if (!err.message) return;
-      const message = String(err.message);
+      const message = turnErrorText(err);
       if (turnOpen) lastTurnError = { message, codexErrorInfo: err.codexErrorInfo ?? null };
       onEvent({ type: 'error', agent: 'codex', message, failure: codexFailureHint(err.codexErrorInfo) });
     }

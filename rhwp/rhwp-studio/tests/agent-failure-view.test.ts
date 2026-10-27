@@ -142,6 +142,20 @@ test('a resend after a turn that wrote to the document asks the agent to re-read
   assert.deepEqual(auth, { displayText: 'a', requestText: partial });
 });
 
+test('a named server failure says what to do; an unnamed one stays generic', () => {
+  const codex = ctx({ agentLabel: 'Codex' });
+  const busy = failureView(failure({ class: 'provider_error', agent: 'codex', code: 'codex:serverOverloaded' }), 'turn', codex);
+  assert.equal(busy.title, 'Codex 서버가 붐벼요');
+  assert.equal(busy.line, '잠시 뒤 다시 시도하거나 다른 모델을 골라 주세요');
+  assert.deepEqual(actions(busy), ['retry']);
+  const throttled = failureView(failure({ class: 'provider_error', agent: 'codex', code: 'codex:rateLimitExceeded' }), 'turn', codex);
+  assert.equal(throttled.title, 'Codex 요청이 잠시 제한됐어요');
+  assert.equal(throttled.line, '잠시 뒤 다시 시도해 주세요');
+  const unnamed = failureView(failure({ class: 'provider_error', agent: 'codex' }), 'turn', codex);
+  assert.equal(unnamed.title, 'Codex 서버가 요청을 처리하지 못했어요');
+  assert.equal(unnamed.line, null);
+});
+
 test('다시 시도 after a turn that wrote and then died mid-turn continues instead of repeating the request', () => {
   const retry = { displayText: '표를 정리해 줘', requestText: '표를 정리해 줘', afterPartialEdits: true };
   for (const kind of ['process_exited', 'network', 'provider_error'] as const) {
