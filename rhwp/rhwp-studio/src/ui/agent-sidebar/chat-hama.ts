@@ -7,7 +7,7 @@
  * - 하마 픽셀만 누를 수 있다. 캔버스는 포인터를 받지 않고, 채팅 화면의 pointerdown 을 가로채
  *   불투명한 하마 픽셀이고 그 아래가 버튼·링크·입력이 아닐 때만 잡는다. 글 선택과 입력을 막지 않는다.
  * - 꺼졌거나(view.showHama) 보이지 않으면(사이드바 닫힘·다른 화면·창 숨김) rAF 와 타이머를 모두 멈춘다.
- * - 동작 줄이기를 켜면 자리에 선 정지 그림만 그린다. 상태는 그대로 바뀐다.
+ * - 시스템의 동작 줄이기와 상관없이 움직인다. 끄려면 설정에서 하마를 끈다.
  */
 import type { TurnOutcome } from '../../agent/turn-outcome.ts';
 import { baseToolName, presentToolCall } from './tool-presentation.ts';
@@ -546,11 +546,6 @@ const MODES: Record<ChatHamaMode, (t: number) => ModeFrame> = {
   },
 };
 
-/** 동작 줄이기에서 상태마다 그 상태가 가장 잘 읽히는 한 장면. */
-const STILL_T: Record<ChatHamaMode, number> = {
-  idle: 0, think: 1000, work: 0, read: 0, search: 0, talk: 0, sleep: 0, error: 0, done: 120,
-};
-
 // ---------------------------------------------------------------- 엔진
 interface Drag {
   pointerId: number;
@@ -587,11 +582,9 @@ class Hama implements ActionHost {
   private clicks: number[] = [];
   private raf = 0;
   private active = false;
-  private still: boolean;
   private lastTurn = 0;
 
-  constructor(opts: { still: boolean }) {
-    this.still = opts.still;
+  constructor() {
     this.el = document.createElement('div');
     this.el.className = 'ag-hama';
     this.el.setAttribute('aria-hidden', 'true');
@@ -610,28 +603,15 @@ class Hama implements ActionHost {
     this.loop = this.loop.bind(this);
   }
 
-  /** 보이는 동안만 rAF 를 돌린다. 정지 그림이면 돌리지 않는다. */
+  /** 보이는 동안만 rAF 를 돌린다. */
   setActive(active: boolean): void {
     this.active = active;
     this.syncLoop();
     if (active) this.render(performance.now());
   }
 
-  setStill(still: boolean): void {
-    if (still === this.still) return;
-    this.still = still;
-    if (still) {
-      this.action = null;
-      this.target = null;
-      this.returnTo = null;
-      this.micro = null;
-    }
-    this.syncLoop();
-    this.render(performance.now());
-  }
-
   private syncLoop(): void {
-    const run = this.active && !this.still;
+    const run = this.active;
     if (run && !this.raf) this.raf = requestAnimationFrame(this.loop);
     if (!run && this.raf) {
       cancelAnimationFrame(this.raf);
@@ -642,7 +622,6 @@ class Hama implements ActionHost {
   setBounds(min: number, max: number): void {
     this.bounds = [min, Math.max(min, max)];
     this.x = Math.max(this.bounds[0], Math.min(this.bounds[1], this.x));
-    this.renderStill();
   }
 
   setMode(mode: ChatHamaMode): void {
@@ -657,11 +636,9 @@ class Hama implements ActionHost {
     if (mode === 'done') this.play('cheer');
     if (mode === 'error') this.play('shake');
     this.el.dataset.mode = mode;
-    this.renderStill();
   }
 
   play(name: ActionName, opts?: ActionState['opts']): void {
-    if (this.still) return;
     this.target = null;
     this.returnTo = null;
     this.action = { def: ACTIONS[name], name, at: performance.now(), from: this.x, opts };
@@ -669,7 +646,7 @@ class Hama implements ActionHost {
 
   /** 산책은 나갔다가 출발한 자리로 돌아온다. */
   walkTo(x: number, stroll = false): void {
-    if (this.still || !['idle', 'think', 'talk'].includes(this.mode)) return;
+    if (!['idle', 'think', 'talk'].includes(this.mode)) return;
     this.returnTo = stroll ? this.x : null;
     if (this.mode === 'idle') this.wake();
     this.target = Math.round(Math.max(this.bounds[0], Math.min(this.bounds[1], x)));
@@ -680,11 +657,6 @@ class Hama implements ActionHost {
     const to = Math.round(Math.max(this.bounds[0], Math.min(this.bounds[1], x)));
     if (this.drag || Math.abs(to - this.x) < 3) return;
     this.wake();
-    if (this.still) {
-      this.facing = to > this.x ? 1 : -1;
-      this.x = to;
-      return this.renderStill();
-    }
     this.play((['skate', 'ballBounce', 'swim'] as const)[Math.floor(Math.random() * 3)]!, { to });
   }
 
@@ -698,7 +670,7 @@ class Hama implements ActionHost {
 
   /** 마우스가 하마에 닿으면 귀를 턴다. */
   hover(): void {
-    if (!this.action && this.mode === 'idle' && !this.still) this.micro = { pose: 'ear', until: performance.now() + 220 };
+    if (!this.action && this.mode === 'idle') this.micro = { pose: 'ear', until: performance.now() + 220 };
   }
 
   /** 화면 좌표가 그려진 하마 픽셀(한 칸 여유)에 닿는가. 도는 중에는 잡지 않는다. */
@@ -741,7 +713,6 @@ class Hama implements ActionHost {
       if (nx !== this.x) this.facing = nx > this.x ? 1 : -1;
       this.x = nx;
       drag.lift = Math.round(Math.max(0, Math.min(maxLift, dy)));
-      this.renderStill();
     };
     const up = (e: PointerEvent): void => {
       const drag = this.drag;
@@ -750,12 +721,12 @@ class Hama implements ActionHost {
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
       this.drag = null;
-      if (e.type === 'pointercancel') return this.renderStill();
+      if (e.type === 'pointercancel') return;
       if (drag.moved) {
         this.wake();
         if (drag.lift >= 3) this.play('drop', { lift: drag.lift + 2 });
         else this.play('land');
-        return this.renderStill();
+        return;
       }
       const now = performance.now();
       this.wake();
@@ -766,7 +737,6 @@ class Hama implements ActionHost {
       } else {
         this.play('hop');
       }
-      this.renderStill();
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -774,12 +744,6 @@ class Hama implements ActionHost {
   }
 
   private frame(now: number): { layers: Layer[]; dx: number; dy: number; turn: number } {
-    if (this.still) {
-      const m = MODES[this.mode](STILL_T[this.mode]);
-      const lift = this.drag?.moved ? -2 - this.drag.lift : 0;
-      const pose = this.drag?.moved ? 'step' : m.pose;
-      return { layers: [...(m.behind ?? []), { art: POSES[pose] }, ...(m.fx ?? [])], dx: 0, dy: lift, turn: 0 };
-    }
     const free = !this.action && !this.drag && ['idle', 'think', 'talk'].includes(this.mode);
     let walking = false;
     if (free && this.target != null && this.target !== this.x) {
@@ -876,14 +840,9 @@ class Hama implements ActionHost {
     this.canvas.style.transform = `translateY(${f.dy * SCALE}px) scaleX(${this.facing}) rotate(${f.turn * 90 * this.facing}deg)`;
   }
 
-  /** 정지 그림일 때는 바뀐 순간에만 그린다. 움직일 때는 다음 프레임이 그린다. */
-  private renderStill(): void {
-    if (this.still && this.active) this.render(performance.now());
-  }
-
   private loop(now: number): void {
     this.raf = 0;
-    if (!this.active || this.still) return;
+    if (!this.active) return;
     this.render(now);
     this.raf = requestAnimationFrame(this.loop);
   }
@@ -948,7 +907,6 @@ const SETTLE_MS: Partial<Record<ChatHamaMode, number>> = { done: 2000, error: 50
 
 export function createChatHama(opts: ChatHamaOptions): ChatHama {
   const { composer, input, hitRoot } = opts;
-  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
   let mode: ChatHamaMode = 'idle';
   let running = false;
   let settleAt = 0;
@@ -1020,10 +978,6 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     if (event.target === hitRoot && event.propertyName === 'visibility') updateActive();
   }
 
-  function onMotionChange(): void {
-    mounted?.hama.setStill(reducedMotion?.matches ?? false);
-  }
-
   /** 캐럿이 있는 줄의 앞 글자 폭으로 캐럿의 가로 위치를 어림한다. */
   function caretX(perch: HTMLElement): number {
     measure ??= document.createElement('canvas').getContext('2d');
@@ -1093,7 +1047,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
   function mount(): void {
     const perch = document.createElement('div');
     perch.className = 'ag-hama-perch';
-    const hama = new Hama({ still: reducedMotion?.matches ?? false });
+    const hama = new Hama();
     hama.setMode(mode);
     hama.onImpact = () => {
       composer.animate?.([{ translate: '0 0' }, { translate: '0 1px' }, { translate: '0 0' }], { duration: 110 });
@@ -1121,7 +1075,6 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     io?.observe(composer);
     mounted = { hama, perch, resize, io };
     document.addEventListener('visibilitychange', onVisibility);
-    reducedMotion?.addEventListener?.('change', onMotionChange);
     input.addEventListener('input', onInput);
     input.addEventListener('focus', onFocus);
     hitRoot.addEventListener('pointerdown', onPointerDown, true);
@@ -1147,7 +1100,6 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     hama.dispose();
     perch.remove();
     document.removeEventListener('visibilitychange', onVisibility);
-    reducedMotion?.removeEventListener?.('change', onMotionChange);
     input.removeEventListener('input', onInput);
     input.removeEventListener('focus', onFocus);
     hitRoot.removeEventListener('pointerdown', onPointerDown, true);
