@@ -2332,6 +2332,20 @@ export function createMockBridge(
     emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
     /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */
     emitTasteDraft: (id: string) => emit({ type: 'agent-instructions-draft', draft: { ...sampleTasteDraft(data.instructions), id } }),
+    /** 에이전트의 update_agent_instructions 초안 — 지금 채팅의 대화 흐름에 승인 카드로 뜬다. */
+    emitAgentInstructionsDraft: (id = 'preview-agent-draft') => emit({
+      type: 'agent-instructions-draft',
+      draft: {
+        ...sampleTasteDraft(data.instructions),
+        id,
+        content: `${data.instructions.content}\n## 문서 작성\n- 긴 글을 새로 쓰거나 크게 고친 뒤에는 그 범위에 휴머나이즈 패스를 돈다.\n- 사실, 수치, 고유명사는 바꾸지 않는다.`,
+        reason: '긴 글을 쓴 뒤 휴머나이즈 패스를 돌려 달라는 요청이 반복됐습니다.',
+        requestedBy: 'claude',
+        threadId,
+        origin: 'agent',
+        confirmationToken: `${id}-token`,
+      },
+    }),
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */

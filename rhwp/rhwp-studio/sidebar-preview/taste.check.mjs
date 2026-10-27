@@ -222,3 +222,24 @@ export async function checkTasteHistory({ page, open, screenshot }) {
   assert(order.lastIndexOf('taste') > order.lastIndexOf('user'), `stored after the turn: ${order.join(',')}`);
   assert.equal(order.at(-1), 'taste');
 }
+
+/** 에이전트의 지시 변경안: 그 채팅의 대화 흐름에 승인 카드가 뜨고, 승인하면 AGENTS.md 에 저장되고 한 줄로 접힌다. */
+export async function checkInstructionsCard({ page, open, screenshot }) {
+  await open('reset=1');
+  await page.type('.ag-input', '앞으로 긴 글은 휴머나이즈해 줘');
+  await page.click('.ag-send');
+  await page.waitForSelector('.ag-msg-user');
+  const before = await page.evaluate(() => window.sidebarPreview.bridge.requestAgentInstructions().then((status) => status.revision));
+  await page.evaluate(() => window.sidebarPreview.emitAgentInstructionsDraft('preview-agent-draft'));
+  const card = '.ag-request-card[data-kind="instructions"]';
+  await page.waitForSelector(`${card} .ag-request-primary`, { visible: true });
+  const lines = await page.$$eval(`${card} .ag-request-item-label`, (nodes) => nodes.map((node) => node.textContent));
+  assert.ok(lines.includes('- 사실, 수치, 고유명사는 바꾸지 않는다.'), `added lines are listed: ${lines}`);
+  if (screenshot) await screenshot('instructions-card');
+  await page.click(`${card} .ag-request-primary`);
+  await page.waitForSelector(`${card}[data-settled="true"]`);
+  assert.equal(await page.$eval(`${card} .ag-request-done-status`, (node) => node.textContent), '승인됨');
+  const status = await page.evaluate(() => window.sidebarPreview.bridge.requestAgentInstructions());
+  assert.equal(status.revision, before + 1);
+  assert.match(status.content, /휴머나이즈 패스/);
+}
