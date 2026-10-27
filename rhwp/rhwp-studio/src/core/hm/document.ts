@@ -381,6 +381,8 @@ export function getWebCanvasImageCacheStats(_core: HmCore): WebCanvasImageCacheS
 export function refreshLayout(core: HmCore): void {
   if (!core.hasDocument()) throw new Error(NO_DOCUMENT);
   core.adapter.refreshLayout();
+  // 명시적으로 다시 조판할 때는 브리지 밖에서 바뀐 내용까지 읽도록 문단·서식 읽기 캐시도 버린다.
+  core.noteDocumentReplaced();
 }
 
 export function getDocumentInfo(core: HmCore): DocumentInfo {
