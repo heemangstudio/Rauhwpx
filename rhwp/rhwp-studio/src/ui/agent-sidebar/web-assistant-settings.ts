@@ -31,6 +31,8 @@ export interface WebAssistantStatus {
   available: boolean;
   signedIn: boolean | null;
   account?: string;
+  /** Chrome에서 로그인하는 동안 앱 브라우저가 멈춰 있다. */
+  busy?: boolean;
 }
 
 export function readWebAssistantStatus(value: unknown): WebAssistantStatus | null {
@@ -41,6 +43,7 @@ export function readWebAssistantStatus(value: unknown): WebAssistantStatus | nul
     available: raw.available,
     signedIn: typeof raw.signedIn === 'boolean' ? raw.signedIn : null,
     ...(typeof raw.account === 'string' && raw.account.length <= 320 ? { account: raw.account } : {}),
+    ...(raw.busy === true ? { busy: true } : {}),
   };
 }
 
@@ -49,8 +52,10 @@ const errorKind = (code: string | null | undefined): 'challenge' | 'signed-out' 
     : code === 'CHATGPT_SIGNED_OUT' || code === 'CLAUDE_SIGNED_OUT' ? 'signed-out' : null;
 
 /** 줄의 상태 문구와 점 색. */
-export function webAssistantStatusView(service: WebAssistant, status: WebAssistantStatus | null, options: { checking?: boolean; error?: string | null; signingIn?: boolean } = {}): { text: string; tone: 'ok' | 'warn' | 'off' } {
+export function webAssistantStatusView(service: WebAssistant, status: WebAssistantStatus | null, options: { checking?: boolean; error?: string | null; signingIn?: boolean; chromeSite?: string | null } = {}): { text: string; tone: 'ok' | 'warn' | 'off' } {
   const name = WEB_ASSISTANTS[service].name;
+  // Chrome 로그인 중에는 앱 브라우저가 멈추므로 다른 상태보다 먼저 보인다.
+  if (options.chromeSite || status?.busy) return { text: options.chromeSite ? `Chrome에서 ${options.chromeSite}에 로그인하는 중` : 'Chrome에서 로그인하는 중', tone: 'warn' };
   if (!status) return { text: options.error ? '허브에 연결할 수 없음' : '확인 중…', tone: 'off' };
   if (!status.available) return { text: '데스크톱 앱에서만 사용 가능', tone: 'off' };
   if (!status.enabled) return { text: '꺼짐', tone: 'off' };
@@ -117,7 +122,7 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   let signInWindow: SignInWindow | null = null;
 
   const render = () => {
-    const view = webAssistantStatusView(service, status, { checking, error, signingIn: !!signInWindow });
+    const view = webAssistantStatusView(service, status, { checking, error, signingIn: !!signInWindow, chromeSite: options.chromeSignIn?.site() ?? null });
     detail.textContent = view.text;
     dot.dataset.state = view.tone === 'ok' ? 'connected' : view.tone === 'warn' ? 'connecting' : 'off';
     toggle.checked = status?.enabled === true;
@@ -125,9 +130,12 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
     signIn.hidden = !options.openSignInWindow || !status?.enabled || !status.available || status.signedIn === true || (checking && !signInWindow);
     signIn.disabled = !!signInWindow;
     signIn.textContent = errorKind(error) === 'challenge' ? '확인 열기' : '로그인';
-    chrome.hidden = signIn.hidden || !options.chromeSignIn;
-    chrome.disabled = !!signInWindow || !!options.chromeSignIn?.site() || !options.chromeSignIn?.available();
-    chrome.title = options.chromeSignIn?.available() === false ? options.chromeSignIn.unavailableReason() : 'Google Chrome에서 로그인(패스키·Google 계정)';
+    // Chrome 로그인 중에는 같은 단추가 '완료'가 된다. Chrome 창을 닫아도 끝난다.
+    const chromeActive = !!options.chromeSignIn?.site();
+    chrome.hidden = !options.chromeSignIn || !chromeActive && signIn.hidden;
+    chrome.textContent = chromeActive ? '완료' : 'Chrome';
+    chrome.disabled = !chromeActive && (!!signInWindow || !options.chromeSignIn?.available());
+    chrome.title = chromeActive ? 'Chrome 로그인을 마치고 앱으로 가져오기' : options.chromeSignIn?.available() === false ? options.chromeSignIn.unavailableReason() : 'Google Chrome에서 로그인(패스키·Google 계정)';
   };
 
   const refresh = async (check = true): Promise<void> => {
@@ -177,10 +185,18 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   // Chrome에서 로그인하고, 끝나면(창을 닫거나 완료) 상태를 다시 읽는다.
   chrome.addEventListener('click', () => {
     const flow = options.chromeSignIn;
-    if (!flow || flow.site()) return;
-    void flow.start(spec.signInUrl).then(() => { render(); return flow.settled(); }).then(() => refresh(true)).catch(() => render());
+    if (!flow) return;
+    if (flow.site()) { chrome.disabled = true; void flow.finish().catch(() => render()); return; }
+    void flow.start(spec.signInUrl).catch(() => render());
   });
-  options.chromeSignIn?.subscribe(() => render());
+  // Chrome 로그인이 시작되면 바로 표시하고, 끝나면(어느 줄에서 시작했든) 곧바로 다시 확인한다.
+  let chromeSite = options.chromeSignIn?.site() ?? null;
+  options.chromeSignIn?.subscribe(() => {
+    const next = options.chromeSignIn?.site() ?? null;
+    const ended = !!chromeSite && !next;
+    chromeSite = next;
+    if (ended) { error = null; void refresh(true); } else render();
+  });
   signIn.addEventListener('click', () => {
     if (!options.openSignInWindow || signInWindow) return;
     const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
