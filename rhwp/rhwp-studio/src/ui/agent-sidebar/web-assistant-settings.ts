@@ -79,16 +79,140 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
 /** 로그인 창이 열린 동안 로그인을 확인하는 간격. */
 const SIGN_IN_POLL_MS = 3_000;
 
-export function createWebAssistantSettingsRow(service: WebAssistant, options: {
+export interface WebAssistantConnectionOptions {
   request: BrowserSettingsRequest;
-  /** 앱 안 브라우저의 별도 창으로 주소를 연다. 없으면 로그인 단추를 숨긴다. */
+  /** 앱 안 브라우저의 별도 창으로 주소를 연다. 없으면 로그인 창을 열 수 없다. */
   openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
-  /** 패스키·Google 로그인용. 있으면 Google Chrome에서 로그인하는 단추를 둔다. */
+  /** 패스키·Google 로그인용. 있으면 Google Chrome에서 로그인할 수 있다. */
   chromeSignIn?: ChromeSignIn;
   isConnected: () => boolean;
   pollMs?: number;
-}): { root: HTMLElement; refresh(check?: boolean): Promise<void> } {
+}
+
+/** 한 서비스의 연결 상태와 동작. 설정 줄과 첫 실행 설정의 카드가 같은 것을 그린다. */
+export interface WebAssistantConnection {
+  readonly service: WebAssistant;
+  status(): WebAssistantStatus | null;
+  checking(): boolean;
+  error(): string | null;
+  /** 앱 안 로그인 창이 열려 있다. */
+  signingIn(): boolean;
+  view(): { text: string; tone: 'ok' | 'warn' | 'off' };
+  refresh(check?: boolean): Promise<void>;
+  setEnabled(enabled: boolean): Promise<void>;
+  /** 앱 안 로그인 창을 연다. 창이 닫히고 상태를 다시 읽으면 끝난다. */
+  signIn(): Promise<void>;
+  /** Chrome 로그인을 시작하거나, 이미 진행 중이면 마친다. */
+  chrome(): Promise<void>;
+  subscribe(listener: () => void): () => void;
+  dispose(): void;
+}
+
+export function createWebAssistantConnection(service: WebAssistant, options: WebAssistantConnectionOptions): WebAssistantConnection {
   const spec = WEB_ASSISTANTS[service];
+  let status: WebAssistantStatus | null = null;
+  let checking = false;
+  let error: string | null = null;
+  let sequence = 0;
+  let signInWindow: SignInWindow | null = null;
+  const listeners = new Set<() => void>();
+  let wake: () => void = () => {};
+  const changed = () => { wake(); for (const listener of listeners) listener(); };
+
+  const refresh = async (check = true): Promise<void> => {
+    const current = ++sequence;
+    if (!options.isConnected()) { status = null; error = 'offline'; changed(); return; }
+    checking = check && status?.enabled === true && status.available;
+    changed();
+    try {
+      // 먼저 켜짐·사용 가능만 받고, 켜져 있으면 앱 안 브라우저(보이지 않는 탭)로 로그인을 확인한다.
+      const base = readWebAssistantStatus(await options.request(`${service}.status`, {}));
+      if (current !== sequence) return;
+      status = base; error = null;
+      checking = check && base?.enabled === true && base.available;
+      changed();
+      if (!checking) return;
+      const checked = readWebAssistantStatus(await options.request(`${service}.status`, { check: true }));
+      if (current !== sequence) return;
+      status = checked ?? status;
+    } catch (failure) {
+      if (current !== sequence) return;
+      error = (failure as { code?: string })?.code ?? 'failed';
+    } finally {
+      if (current === sequence) { checking = false; changed(); }
+    }
+  };
+
+  /** 로그인 창이 열린 동안 로그인됐는지 보고, 되면 바로 창을 닫는다. 다른 확인이 먼저 알아내도 기다리지 않는다. */
+  const watchSignIn = async (window: SignInWindow): Promise<void> => {
+    let open = true;
+    void window.closed.then(() => { open = false; });
+    while (open) {
+      if (status?.signedIn === true) { await window.close(); break; }
+      const changedNow = new Promise<void>((resolve) => { wake = resolve; });
+      const polled = await Promise.race([window.closed.then(() => false), changedNow.then(() => false), new Promise<boolean>((resolve) => setTimeout(() => resolve(true), options.pollMs ?? SIGN_IN_POLL_MS))]);
+      if (!open) break;
+      if (polled) await refresh(true);
+    }
+    wake = () => {};
+  };
+
+  const setEnabled = async (enabled: boolean): Promise<void> => {
+    try { status = readWebAssistantStatus(await options.request(`${service}.configure`, { enabled })) ?? status; error = null; }
+    catch (failure) { error = (failure as { code?: string })?.code ?? 'failed'; }
+    changed();
+    if (status?.enabled) void refresh(true);
+  };
+
+  const signIn = async (): Promise<void> => {
+    if (!options.openSignInWindow || signInWindow) return;
+    const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
+    try {
+      const window = await options.openSignInWindow(url, spec.name);
+      signInWindow = window; error = null; changed();
+      await watchSignIn(window);
+      await window.closed;
+      signInWindow = null;
+      await refresh(true);
+    } catch (failure) {
+      signInWindow = null;
+      error = (failure as { code?: string })?.code ?? 'failed';
+      changed();
+    }
+  };
+
+  const chrome = async (): Promise<void> => {
+    const flow = options.chromeSignIn;
+    if (!flow) return;
+    if (flow.site()) { await flow.finish().catch(() => changed()); return; }
+    await flow.start(spec.signInUrl).catch(() => changed());
+  };
+
+  // Chrome 로그인이 시작되면 바로 표시하고, 끝나면(어디서 시작했든) 곧바로 다시 확인한다.
+  let chromeSite = options.chromeSignIn?.site() ?? null;
+  const stopChrome = options.chromeSignIn?.subscribe(() => {
+    const next = options.chromeSignIn?.site() ?? null;
+    const ended = !!chromeSite && !next;
+    chromeSite = next;
+    if (ended) { error = null; void refresh(true); } else changed();
+  });
+
+  return {
+    service,
+    status: () => status,
+    checking: () => checking,
+    error: () => error,
+    signingIn: () => !!signInWindow,
+    view: () => webAssistantStatusView(service, status, { checking, error, signingIn: !!signInWindow, chromeSite: options.chromeSignIn?.site() ?? null }),
+    refresh, setEnabled, signIn, chrome,
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    dispose() { stopChrome?.(); listeners.clear(); },
+  };
+}
+
+export function createWebAssistantSettingsRow(service: WebAssistant, options: WebAssistantConnectionOptions): { root: HTMLElement; refresh(check?: boolean): Promise<void> } {
+  const spec = WEB_ASSISTANTS[service];
+  const connection = createWebAssistantConnection(service, options);
   const root = el('div', 'ag-settings-row ag-settings-assistant-row');
   root.dataset.service = service;
   const text = el('div', 'ag-settings-row-text');
@@ -115,103 +239,36 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   chrome.hidden = true;
   root.append(text, dot, signIn, chrome, switchLabel);
 
-  let status: WebAssistantStatus | null = null;
-  let checking = false;
-  let error: string | null = null;
-  let sequence = 0;
-  let signInWindow: SignInWindow | null = null;
-
   const render = () => {
-    const view = webAssistantStatusView(service, status, { checking, error, signingIn: !!signInWindow, chromeSite: options.chromeSignIn?.site() ?? null });
+    const status = connection.status();
+    const checking = connection.checking();
+    const signingIn = connection.signingIn();
+    const view = connection.view();
     detail.textContent = view.text;
     dot.dataset.state = view.tone === 'ok' ? 'connected' : view.tone === 'warn' ? 'connecting' : 'off';
     toggle.checked = status?.enabled === true;
     toggle.disabled = !options.isConnected() || !status?.available;
-    signIn.hidden = !options.openSignInWindow || !status?.enabled || !status.available || status.signedIn === true || (checking && !signInWindow);
-    signIn.disabled = !!signInWindow;
-    signIn.textContent = errorKind(error) === 'challenge' ? '확인 열기' : '로그인';
+    signIn.hidden = !options.openSignInWindow || !status?.enabled || !status.available || status.signedIn === true || (checking && !signingIn);
+    signIn.disabled = signingIn;
+    signIn.textContent = errorKind(connection.error()) === 'challenge' ? '확인 열기' : '로그인';
     // Chrome 로그인 중에는 같은 단추가 '완료'가 된다. Chrome 창을 닫아도 끝난다.
     const chromeActive = !!options.chromeSignIn?.site();
     chrome.hidden = !options.chromeSignIn || !chromeActive && signIn.hidden;
     chrome.textContent = chromeActive ? '완료' : 'Chrome';
-    chrome.disabled = !chromeActive && (!!signInWindow || !options.chromeSignIn?.available());
+    chrome.disabled = !chromeActive && (signingIn || !options.chromeSignIn?.available());
     chrome.title = chromeActive ? 'Chrome 로그인을 마치고 앱으로 가져오기' : options.chromeSignIn?.available() === false ? options.chromeSignIn.unavailableReason() : 'Google Chrome에서 로그인(패스키·Google 계정)';
   };
-
-  const refresh = async (check = true): Promise<void> => {
-    const current = ++sequence;
-    if (!options.isConnected()) { status = null; error = 'offline'; render(); return; }
-    checking = check && status?.enabled === true && status.available;
-    render();
-    try {
-      // 먼저 켜짐·사용 가능만 받고, 켜져 있으면 앱 안 브라우저(보이지 않는 탭)로 로그인을 확인한다.
-      const base = readWebAssistantStatus(await options.request(`${service}.status`, {}));
-      if (current !== sequence) return;
-      status = base; error = null;
-      checking = check && base?.enabled === true && base.available;
-      render();
-      if (!checking) return;
-      const checked = readWebAssistantStatus(await options.request(`${service}.status`, { check: true }));
-      if (current !== sequence) return;
-      status = checked ?? status;
-    } catch (failure) {
-      if (current !== sequence) return;
-      error = (failure as { code?: string })?.code ?? 'failed';
-    } finally {
-      if (current === sequence) { checking = false; render(); }
-    }
-  };
-
-  /** 로그인 창이 열린 동안 로그인됐는지 보고, 되면 창을 닫는다. */
-  const watchSignIn = async (window: SignInWindow): Promise<void> => {
-    let open = true;
-    void window.closed.then(() => { open = false; });
-    while (open) {
-      await Promise.race([window.closed, new Promise((resolve) => setTimeout(resolve, options.pollMs ?? SIGN_IN_POLL_MS))]);
-      if (!open) break;
-      await refresh(true);
-      if (status?.signedIn === true) { await window.close(); break; }
-    }
-  };
+  connection.subscribe(render);
 
   toggle.addEventListener('change', () => {
-    const enabled = toggle.checked;
     toggle.disabled = true;
-    void options.request(`${service}.configure`, { enabled })
-      .then((value) => { status = readWebAssistantStatus(value) ?? status; error = null; })
-      .catch((failure) => { error = (failure as { code?: string })?.code ?? 'failed'; })
-      .finally(() => { render(); if (status?.enabled) void refresh(true); });
+    void connection.setEnabled(toggle.checked);
   });
-  // Chrome에서 로그인하고, 끝나면(창을 닫거나 완료) 상태를 다시 읽는다.
   chrome.addEventListener('click', () => {
-    const flow = options.chromeSignIn;
-    if (!flow) return;
-    if (flow.site()) { chrome.disabled = true; void flow.finish().catch(() => render()); return; }
-    void flow.start(spec.signInUrl).catch(() => render());
+    if (options.chromeSignIn?.site()) chrome.disabled = true;
+    void connection.chrome();
   });
-  // Chrome 로그인이 시작되면 바로 표시하고, 끝나면(어느 줄에서 시작했든) 곧바로 다시 확인한다.
-  let chromeSite = options.chromeSignIn?.site() ?? null;
-  options.chromeSignIn?.subscribe(() => {
-    const next = options.chromeSignIn?.site() ?? null;
-    const ended = !!chromeSite && !next;
-    chromeSite = next;
-    if (ended) { error = null; void refresh(true); } else render();
-  });
-  signIn.addEventListener('click', () => {
-    if (!options.openSignInWindow || signInWindow) return;
-    const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
-    void options.openSignInWindow(url, spec.name).then(async (window) => {
-      signInWindow = window; error = null; render();
-      await watchSignIn(window);
-      await window.closed;
-      signInWindow = null;
-      await refresh(true);
-    }).catch((failure) => {
-      signInWindow = null;
-      error = (failure as { code?: string })?.code ?? 'failed';
-      render();
-    });
-  });
+  signIn.addEventListener('click', () => { void connection.signIn(); });
   render();
-  return { root, refresh };
+  return { root, refresh: connection.refresh };
 }
