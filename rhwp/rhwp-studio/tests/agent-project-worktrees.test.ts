@@ -116,3 +116,30 @@ test('chat-start carries the repository only for its own document', () => {
   assert.equal('repositoryId' in other, false);
   assert.equal(worktrees.get(), null, 'the board shows no worktree labels for another document');
 });
+
+test('a renamed document re-binds its project under the new name, after an in-flight chat start', () => {
+  const { bridge, open, welcome } = bridgeFixture({ syncEditingLease() {}, listeners: new Set() });
+  const socket = open();
+  welcome();
+  socket.sent.length = 0;
+  bridge.renameDocument('doc-other', '남의 문서.hwpx');
+  bridge.renameDocument('doc-variant', '보고서.hwpx');
+  assert.deepEqual(socket.sent, [], 'another document or the same name changes nothing');
+
+  bridge.renameDocument('doc-variant', '최종 보고서.hwpx');
+  assert.equal(socket.sent.at(-1).type, 'project-bind');
+  assert.equal(socket.sent.at(-1).documentId, 'doc-variant');
+  assert.equal(socket.sent.at(-1).documentName, '최종 보고서.hwpx');
+
+  // 보낸 시작 요청은 옛 이름을 실었다 — 시작 답 뒤에 새 이름으로 다시 묶는다.
+  bridge.startChat('pi', undefined, undefined, true, 'safe', 'question', 'thread-variant', 'doc-variant', '최종 보고서.hwpx', []);
+  socket.sent.length = 0;
+  bridge.renameDocument('doc-variant', 'jj.hwpx');
+  assert.deepEqual(socket.sent, []);
+  bridge.handleFrame(JSON.stringify({
+    v: 5, type: 'chat-started', requestId: bridge.pendingChatStart.requestId, agent: 'pi',
+    threadId: 'thread-variant', documentId: 'doc-variant', documentName: '최종 보고서.hwpx', status: 'idle',
+  }));
+  const rebind = socket.sent.findLast((frame) => frame.type === 'project-bind');
+  assert.equal(rebind?.documentName, 'jj.hwpx');
+});

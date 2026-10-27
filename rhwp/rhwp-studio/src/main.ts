@@ -192,6 +192,7 @@ import type { HostSaveTracker } from '@/recovery/host-save';
 import {
   MAX_PARALLEL_CHATS,
   chatHoldsDocumentWrites,
+  contextDocumentId,
   createDocumentSessionCore,
   createDocumentSessionSlotId,
   documentCreatedBy,
@@ -2445,7 +2446,7 @@ function installChatAgent(
         selectionLabel = '텍스트 선택됨';
       }
       return {
-        documentId: session.documentId,
+        documentId: contextDocumentId(session),
         documentName,
         selectionLabel,
         pageCount: doc.pageCount,
@@ -5226,6 +5227,8 @@ async function loadBytesNow(
       target.worktree = null;
       target.worktreeWritable = false;
     }
+    // 새 바이트가 올라갈 때까지 엔진에는 앞 문서가 있다 — 채팅이 새 id 를 앞 문서 이름과 짝짓지 않게 한다.
+    target.replacingDocument = { previousDocumentId: previousBinding.documentId };
     target.documentId = ownership.identity.documentId;
     if (!options.worktreeSnapshot && !options.autosaveDraftId && !options.keepBytes) {
       const persisted = await worktreeStore.findWorktreeByDocumentId(versionDocumentId(ownership.identity.documentId));
@@ -5252,6 +5255,7 @@ async function loadBytesNow(
   } catch (error) {
     await cancelDesktopDocument(ownership.reservationId, undefined, target.slotId).catch(() => {});
     worktreeOwnership.release(target);
+    target.replacingDocument = null;
     target.documentId = previousBinding.documentId;
     target.worktree = previousBinding.worktree;
     target.worktreeWritable = previousBinding.writable && previousBinding.worktree !== null
@@ -5278,6 +5282,7 @@ async function loadBytesNow(
       : consumeExactLocalFileRead(data, fileHandle)
         ? wasm.loadTrustedLocalFileOnce(data, fileName)
         : wasm.loadDocument(data, fileName);
+    target.replacingDocument = null;
     if (options.diskBytes) {
       // 화면에는 자동 저장본을 열었지만 파일은 디스크 내용 그대로다. 원본 digest 를 기준으로 삼고,
       // 디스크 바이트를 읽을 때 붙은 일회성 신뢰 표시는 여기서 소비한다.
@@ -5292,6 +5297,7 @@ async function loadBytesNow(
     deniedWorktreeSessions.delete(target);
     target.worktree = null;
     target.worktreeWritable = false;
+    target.replacingDocument = null;
     attachedSession.documentId = null;
     eventBus.emit('document-context-changed');
     await releaseDesktopDocument(undefined, attachedSession.slotId).catch(() => {});

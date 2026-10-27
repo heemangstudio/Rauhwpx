@@ -510,6 +510,11 @@ export interface AgentBridge {
    * 함께 쓰도록 채팅 시작 때 허브에 실어 보내고, 바뀌면 바로 다시 묶는다.
    */
   setProjectWorktrees(binding: ProjectWorktreeBinding | null): void;
+  /**
+   * 이 채팅 문서의 파일 이름이 바뀌었다(첫 저장·다른 이름으로 저장·이름 바꾸기). 문서는 그대로이므로
+   * 허브가 세션의 문서 이름과 프로젝트·구성원 이름을 새 이름으로 맞추게 다시 묶는다.
+   */
+  renameDocument(documentId: string, documentName: string): void;
   listTemplates(): Promise<TemplateCatalog>;
   addTemplate(file: File, name?: string): Promise<DocumentTemplate>;
   renameTemplate(id: string, name: string): Promise<DocumentTemplate>;
@@ -3254,6 +3259,10 @@ export class AgentBridgeImpl implements AgentBridge {
         // 마지막 startChat 이 고른 정체성을 절대 덮어쓰지 않는다.
         if (typeof msg.threadId === 'string' && this.threadId && msg.threadId !== this.threadId) break;
         const replacedSession = this.pendingChatStart !== null;
+        // 시작 요청을 보낸 뒤 바뀐 문서 이름(renameDocument)은 허브가 되돌려 준 옛 이름보다 새롭다.
+        const requestedDocumentName = this.pendingChatStart?.documentId === msg.documentId
+          ? this.pendingChatStart?.documentName ?? null
+          : null;
         this.pendingChatStart = null;
         this.chatStartSent = false;
         // chat-started 는 세션의 템플릿을 싣지 않는다 — 다음 선택은 그대로 보낸다. 새 세션에는 사용자의 선택이
@@ -3274,7 +3283,7 @@ export class AgentBridgeImpl implements AgentBridge {
         if (msg.serviceTier === 'fast' || msg.serviceTier === 'standard') this.serviceTier = msg.serviceTier;
         if (typeof msg.threadId === 'string') this.threadId = msg.threadId;
         if (typeof msg.documentId === 'string' || msg.documentId === null) this.documentId = msg.documentId;
-        if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = msg.documentName;
+        if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = requestedDocumentName ?? msg.documentName;
         this.syncChatPermissions(msg);
         this.syncProjectWorktreeContext();
         if (this.projectBindPending) {
@@ -4836,6 +4845,20 @@ export class AgentBridgeImpl implements AgentBridge {
     this.syncProjectWorktreeContext();
     if (JSON.stringify(previous) === JSON.stringify(this.projectWorktreeBinding)) return;
     if (this.pendingChatStart && this.chatStartSent) {
+      this.projectBindPending = true;
+      return;
+    }
+    this.sendProjectBind();
+  }
+
+  renameDocument(documentId: string, documentName: string): void {
+    const pending = this.pendingChatStart;
+    if ((pending?.documentId ?? this.documentId) !== documentId) return;
+    if ((pending?.documentName ?? this.documentName) === documentName) return;
+    if (pending) pending.documentName = documentName;
+    if (this.documentId === documentId) this.documentName = documentName;
+    // 보낸 시작 요청은 옛 이름을 실었다 — 그 답 뒤에 다시 묶는다. 아직 보내지 않았으면 시작 요청이 싣고 간다.
+    if (pending && this.chatStartSent) {
       this.projectBindPending = true;
       return;
     }

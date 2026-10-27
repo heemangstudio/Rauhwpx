@@ -28,6 +28,8 @@ These run outside the smoke suite and CI, for changes to the areas they cover.
 
 `npm run e2e:chat-follows-document` needs `npm run dev` running. Clicking another document's chat saves and commits the current document once, then opens that document and continues its chat.
 
+`npm run e2e:document-switch-project` starts its own hub and Vite with a fake Pi. After a new document, it opens a sample file and checks that the sample's chat and research project start under the sample's name, not the previous document's.
+
 `npm run e2e:worktrees` starts an isolated hub and Studio to check worktree creation
 from current edits, independent document state, local saving, standalone export,
 close and reopen, portable history import, removal with retained history, merge

@@ -5818,6 +5818,7 @@ async function handleStudioMessage(record, sock, msg) {
         // 버전 저장소가 있는 문서는 모든 작업 공간이 한 프로젝트를 함께 쓴다.
         const repositoryChanged = applyRecordRepository(record, msg.documentId, msg);
         const reusable = record.agentSession;
+        const previousDocumentName = reusable?.documentName ?? null;
         const s = await startSession(
           record,
           agent,
@@ -5839,8 +5840,9 @@ async function handleStudioMessage(record, sock, msg) {
               : null,
           },
         );
-        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
-        if (repositoryChanged && s === reusable) await rebindRecordProject(record);
+        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이나 문서 이름이 바뀌었으면 여기서 다시 묶는다.
+        const renamed = Boolean(s.documentName) && s.documentName !== previousDocumentName;
+        if ((repositoryChanged || renamed) && s === reusable) await rebindRecordProject(record);
         // 떼어 낸 채팅: 문서 없이 다시 연 세션만 받는다. 모양이 어긋나면 버린다.
         const detachedFrom = sessionHasNoDocument(s) ? normalizeDetachedFrom(msg.detachedFrom) : null;
         if (detachedFrom) {
@@ -5897,6 +5899,13 @@ async function handleStudioMessage(record, sock, msg) {
       // 기다리지 않고 프로젝트를 다시 묶어 프로젝트 칸의 HTTP 호출이 바로 통하게 한다.
       // 이미 있는 프로젝트에만 묶는다 — 새 프로젝트는 첫 채팅이 만든다.
       const activeSession = record.agentSession;
+      // 같은 문서의 새 이름(다른 이름으로 저장·이름 바꾸기)은 세션이 따른다 — 프로젝트와 구성원 이름도 맞춘다.
+      if (activeSession?.documentId && msg.documentId === activeSession.documentId) {
+        try {
+          const renamed = normalizeDocumentName(msg.documentName);
+          if (renamed) activeSession.documentName = renamed;
+        } catch {}
+      }
       const identity = activeSession
         ? { threadId: activeSession.threadId, documentId: activeSession.documentId ?? null, documentName: activeSession.documentName ?? null }
         : {

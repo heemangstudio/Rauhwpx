@@ -2375,6 +2375,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         currentThread.docKey = nextKey;
         currentThread.documentId = nextDocumentId;
         persistCurrentThread();
+        // 허브의 세션과 프로젝트도 새 이름을 따른다 — 아니면 자료함이 옛 문서 이름으로 남는다.
+        if (nextDocumentId && nextKey) bridge.renameDocument(nextDocumentId, nextKey);
       }
       referenceLibrary.contextChanged();
       void captureInbox.contextChanged();

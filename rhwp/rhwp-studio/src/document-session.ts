@@ -67,6 +67,11 @@ export interface DocumentSession {
   readonly editorHost: HeadlessEditorHost;
   viewState: CanvasViewState | null;
   documentId: string | null;
+  /**
+   * 다른 문서를 여는 중이다 — documentId 는 이미 새 문서지만 엔진에는 아직 앞 문서가 있다. 그동안 채팅과
+   * 프로젝트는 앞 문서를 본다(contextDocumentId). 새 바이트가 올라가거나 열기가 실패하면 비운다.
+   */
+  replacingDocument: { previousDocumentId: string | null } | null;
   /** 버전 저장소의 영속 작업 공간. 기본 문서도 브랜치를 하나 점유한다. */
   worktree: VersionWorktree | null;
   worktreeWritable: boolean;
@@ -95,6 +100,14 @@ export interface DocumentSession {
    */
   createdDocument: { threadId: string; documentId: string } | null;
   readonly disposers: Array<() => void>;
+}
+
+/**
+ * 채팅·프로젝트가 볼 문서. 문서를 바꾸는 중에는 아직 엔진에 있는 앞 문서다 — 새 문서 id 를 앞 문서의
+ * 이름과 짝지어 알리면 새 문서의 채팅과 프로젝트가 앞 문서 이름으로 시작한다.
+ */
+export function contextDocumentId(session: Pick<DocumentSession, 'documentId' | 'replacingDocument'>): string | null {
+  return session.replacingDocument ? session.replacingDocument.previousDocumentId : session.documentId;
 }
 
 /** 이 세션의 지금 문서를 만든 채팅. 다른 문서가 들어왔으면 null. */
@@ -162,6 +175,7 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     }),
     viewState: null,
     documentId: null,
+    replacingDocument: null,
     worktree: null,
     worktreeWritable: false,
     editMode: 'normal',
