@@ -8,6 +8,7 @@
 import { createChevron } from '../chevron.ts';
 import { createIcon } from './icons.ts';
 import {
+  parseToolArgs,
   presentToolCall,
   type ToolCallView,
   type ToolOutcomeView,
@@ -100,12 +101,18 @@ export function createToolRow(options: ToolRowOptions): ToolRowHandle {
   detail.hidden = true;
   const notices = el('ul', 'ag-tool-notices');
   notices.hidden = true;
+  // ask_chatgpt·ask_claude: 묻은 질문 전체와 받은 답. 링크는 채팅 링크처럼 앱 안 브라우저로 열린다.
+  const questionText = view.name === 'ask_chatgpt' || view.name === 'ask_claude' ? String(parseToolArgs(options.argsJson)['question'] ?? '').trim() : '';
+  const question = el('p', 'ag-tool-question', questionText);
+  question.hidden = !questionText;
+  const answer = el('div', 'ag-tool-answer');
+  answer.hidden = true;
   const raw = el('details', 'ag-tool-raw');
   const rawSummary = el('summary', 'ag-tool-raw-toggle', '원본');
   const args = el('pre', 'ag-tool-args', prettyJson(options.argsJson));
   const result = el('pre', 'ag-tool-result');
   raw.append(rawSummary, args, result);
-  body.append(items, detail, notices, raw);
+  body.append(items, question, answer, detail, notices, raw);
 
   head.addEventListener('click', () => {
     body.hidden = !body.hidden;
@@ -116,6 +123,7 @@ export function createToolRow(options: ToolRowOptions): ToolRowHandle {
   root.append(head, outcomeLine, body);
 
   let thumb: HTMLButtonElement | null = null;
+  let link: HTMLAnchorElement | null = null;
 
   const setState = (state: ToolRowState): void => {
     status.classList.remove('ag-pending', 'ag-ok', 'ag-err');
@@ -153,7 +161,17 @@ export function createToolRow(options: ToolRowOptions): ToolRowHandle {
       outcomeLine.appendChild(button);
       thumb = button;
     }
-    outcomeLine.hidden = !(outcome?.text || outcome?.image);
+    link?.remove();
+    link = null;
+    if (outcome?.link) {
+      link = el('a', 'ag-tool-link', outcome.link.label);
+      link.href = outcome.link.href;
+      link.rel = 'noopener noreferrer';
+      outcomeLine.appendChild(link);
+    }
+    outcomeLine.hidden = !(outcome?.text || outcome?.image || outcome?.link);
+    answer.textContent = outcome?.answer ?? '';
+    answer.hidden = !outcome?.answer;
 
     detail.textContent = outcome?.detail ?? '';
     detail.hidden = !outcome?.detail;

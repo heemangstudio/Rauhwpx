@@ -183,6 +183,24 @@ function toolScenarioCalls(): ToolScenarioCall[] {
       },
     },
     {
+      id: 'chatgpt',
+      tool: 'mcp__rhwp__ask_chatgpt',
+      args: { question: '보고서를 쓸 때 내가 선호하는 말투와 문장 길이를 알려 줘.' },
+      result: {
+        chatUrl: 'https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-hamaeditor/c/6adc5c72-88e4-83e8-9af1-76f614c6b91b',
+        answer: '평소 **간결하고 전문적인 말투**를 선호하십니다.\n\n- 문장은 짧게, 한 문장에 한 가지 내용\n- 불필요한 수식어는 빼고 숫자와 근거를 먼저',
+      },
+    },
+    {
+      id: 'claude',
+      tool: 'mcp__rhwp__ask_claude',
+      args: { question: '지난번에 정한 보고서 표지 형식을 알려 줘.' },
+      result: {
+        chatUrl: 'https://claude.ai/chat/0b6f7c1e-2a4d-4e8f-9c3b-5d7a1e2f4c6b',
+        answer: '지난달에 **기관명 · 제목 · 날짜** 세 줄 표지로 정하셨습니다. 로고는 왼쪽 위에 둡니다.',
+      },
+    },
+    {
       id: 'table',
       tool: 'mcp__rhwp__set_table_props',
       args: { expectedRevision: 13, sectionIdx: 0, paraIdx: 21, controlIdx: 0, tableProps: { repeatHeader: true, textWrap: 'topAndBottom' } },

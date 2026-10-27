@@ -153,7 +153,7 @@ export interface DocumentMention {
 export const MAX_DOCUMENT_MENTIONS = 5;
 
 /** 사용자가 지금 채팅에만 허용할 수 있는 추가 권한. */
-export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents';
+export type ChatPermissionCapability = 'project-edit' | 'downloads' | 'browser' | 'local-execution' | 'other-documents' | 'chatgpt' | 'claude';
 export type ChatPermissionDecision = 'grant' | 'deny';
 /** 허락이 이 채팅에서만 살지(chat), 다음 채팅에도 남을지(always). */
 export type ChatPermissionScope = 'chat' | 'always';

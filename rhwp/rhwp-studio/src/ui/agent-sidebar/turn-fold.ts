@@ -110,6 +110,8 @@ const CATEGORIES = {
   fileExport: counted('other', (n) => `파일 ${n}개 내보냄`),
   fileDownload: counted('other', (n) => `파일 ${n}개 내려받음`),
   web: plain('other', '웹 탐색'),
+  askChatgpt: plain('other', 'ChatGPT에 물음'),
+  askClaude: plain('other', 'Claude에 물음'),
   copyLayout: plain('other', '레이아웃 복제'),
   instructions: plain('other', '지시 변경 제안'),
   skill: plain('other', '스킬 변경'),
@@ -189,6 +191,8 @@ const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   commit_product_skill: 'skill',
   project_edit: 'projectEdit',
   project_import: 'projectImport',
+  ask_chatgpt: 'askChatgpt',
+  ask_claude: 'askClaude',
 };
 
 type Args = Record<string, unknown>;

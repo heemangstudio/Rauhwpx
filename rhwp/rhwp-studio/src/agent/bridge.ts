@@ -3613,6 +3613,15 @@ export class AgentBridgeImpl implements AgentBridge {
         this.emit({ type: 'implementation-started', planId, ...this.workflowState() });
         break;
       }
+      case 'hub-tool-executed': {
+        // 허브가 직접 실행한 도구(ask_chatgpt)의 잘리지 않은 결과. 도구 행은 이름과 인자로 맞춘다.
+        if (typeof msg.tool !== 'string' || typeof msg.ok !== 'boolean') break;
+        const error = msg.error && typeof msg.error === 'object'
+          ? { code: String(msg.error.code ?? ''), message: String(msg.error.message ?? '') }
+          : undefined;
+        this.notifyToolExecuted({ type: 'tool-executed', tool: msg.tool, args: msg.args, ok: msg.ok, ...(msg.ok ? { result: msg.result } : { error }) });
+        break;
+      }
       case 'plan-progress': {
         if (!isStructuredPlan(msg.latestPlan) || !msg.latestPlan.execution
           || msg.planId !== msg.latestPlan.planId || msg.planId !== this.latestPlan?.planId) break;

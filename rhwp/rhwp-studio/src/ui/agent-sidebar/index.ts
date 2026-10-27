@@ -52,6 +52,7 @@ import type {
   UserQuestionInteraction,
   StagedReference,
   TasteHistoryLearned,
+  BrowserTab,
 } from '../../agent/types.ts';
 import {
   defaultModelForAgent,
@@ -222,6 +223,7 @@ import { createDocumentLinkToggle } from './document-link-toggle.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
 import { browserPopupDestination } from './browser-controller.ts';
+import { nativeBrowserApi } from './browser-presentation.ts';
 import { readAgentPointer } from './browser-agent-cursor.ts';
 import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
@@ -239,6 +241,7 @@ import {
   type ToolOutcomeView,
 } from './tool-presentation.ts';
 import { createSettingsPanel } from './settings.ts';
+import type { SignInWindow } from './web-assistant-settings.ts';
 import {
   isSettingsDestination,
   type EditorSettingsRuntime,
@@ -5026,6 +5029,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      여기서 관리한다(스킬 페이지와 같은 계약). */
   const settingsPanel = createSettingsPanel({
     bridge,
+    // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
+    openSignInWindow: (url) => openSignInWindow(url),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -5266,6 +5271,33 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbench?.select('browser');
       browser.dock();
     } else browser.float();
+  };
+  // 설정의 로그인(ChatGPT·Claude)은 작업 칸이 아니라 앱 안 브라우저의 별도 창으로 연다.
+  // 그 탭은 작업 칸에서 고르지 않는다. 창을 닫으면 탭도 닫고 closed 가 끝난다.
+  const openSignInWindow = async (url: string): Promise<SignInWindow> => {
+    const native = nativeBrowserApi();
+    if (!native?.onEvent) throw new Error('데스크톱 앱에서만 로그인할 수 있습니다.');
+    const browser = ensureWorkbenchBrowser();
+    const opened = await browser.controller.request<{ tab?: BrowserTab }>('open', { url });
+    const tab = opened?.tab;
+    if (!tab?.tabId) throw new Error('로그인 창을 열지 못했습니다.');
+    let finish: () => void = () => {};
+    const closed = new Promise<void>((resolve) => { finish = resolve; });
+    let done = false;
+    const close = async (): Promise<void> => {
+      if (done) return;
+      done = true; stop();
+      await browser.controller.refresh().then(() => browser.controller.close(tab.tabId)).catch(() => {});
+      finish();
+    };
+    const stop = native.onEvent((event) => {
+      if (event.tabId !== tab.tabId) return;
+      if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
+    });
+    try {
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true });
+    } catch (failure) { await close(); throw failure; }
+    return { closed, close };
   };
   const chatLinkError = (error: unknown) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
   routeChatBrowserLinks(messages, openChatLink, chatLinkError);
