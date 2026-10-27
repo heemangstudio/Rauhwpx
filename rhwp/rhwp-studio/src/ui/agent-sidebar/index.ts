@@ -5306,7 +5306,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
     opening.catch(() => close());
     try {
-      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true });
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true });
     } catch (failure) { await close(); throw failure; }
     return { closed, close };
   };

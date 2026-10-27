@@ -485,12 +485,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, bare = false, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab);
+    if (mode === 'popout') return this.popout(window, tab, bare === true);
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -747,8 +747,10 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab) {
+  popout(ownerWindow, tab, bare = false) {
     this.unplace(tab);
+    // 로그인 전용 창은 도구 막대 없이 페이지만 창 전체에 보인다.
+    tab.popoutBare = bare;
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
       popout = new this.BrowserWindow({ width: 1000, height: 760, minWidth: 420, minHeight: 320, title: 'Browser', show: false,
@@ -783,7 +785,8 @@ export class OwnedBrowserHost {
   layoutPopout(tab, popout) {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
-    const bounds = { x: 0, y: 76, width, height: Math.max(0, height - 76) };
+    const top = tab.popoutBare ? 0 : 76;
+    const bounds = { x: 0, y: top, width, height: Math.max(0, height - top) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
   }
