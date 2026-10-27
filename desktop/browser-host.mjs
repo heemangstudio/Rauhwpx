@@ -1083,21 +1083,12 @@ export class OwnedBrowserHost {
     try {
       await removeScopedCookies(); await this.setCookies(state.cookies);
       for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
-      // 승인된 탭을 함께 다시 연다. 전체 기한은 허브 IPC 제한(20초)보다 짧다.
+      // 승인된 탭은 새 로그인으로 다시 연다. 무거운 페이지가 늦게 열려도 이미 옮긴 로그인을 되돌리지 않도록 기다리지 않는다.
       const reloads = !reload ? [] : [...this.tabs.values()].filter((tab) => {
         if (tab.closing || tab.view.webContents.isDestroyed()) return false;
         try { return approved.has(new URL(tab.view.webContents.getURL()).origin); } catch { return false; }
       }).map((tab) => tab.view.webContents);
-      const deadline = Date.now() + 10_000;
-      await Promise.all(reloads.map((contents) => new Promise((resolve, reject) => {
-        const finish = (error) => { clearTimeout(timer); contents.off('did-finish-load', done); contents.off('did-fail-load', failed); contents.off('destroyed', closed); error ? reject(error) : resolve(); };
-        const done = () => finish();
-        const failed = (_event, _code, _description, _url, mainFrame) => { if (mainFrame) finish(new Error('Native session reload failed')); };
-        const closed = () => finish(new Error('Native session tab closed'));
-        const timer = setTimeout(() => finish(new Error('Native session reload timed out')), Math.max(1, deadline - Date.now()));
-        contents.once('did-finish-load', done); contents.on('did-fail-load', failed); contents.once('destroyed', closed);
-        contents.reload();
-      })));
+      for (const contents of reloads) contents.reload();
       return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded: reloads.length };
     } catch {
       await removeScopedCookies(); await this.setCookies(previousCookies);
