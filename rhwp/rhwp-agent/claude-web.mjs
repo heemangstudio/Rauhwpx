@@ -15,7 +15,7 @@ import { createWebAssistantStore } from './web-assistant-store.mjs';
 export const CLAUDE_ORIGIN = 'https://claude.ai';
 export const CLAUDE_PROJECT_NAME = 'HamaEditor';
 export const CLAUDE_ERROR_CODES = Object.freeze([
-  'CLAUDE_DISABLED', 'CLAUDE_UNAVAILABLE', 'CLAUDE_SIGNED_OUT', 'CLAUDE_CHALLENGE', 'CLAUDE_LIMIT', 'CLAUDE_UI_CHANGED', 'CLAUDE_TIMEOUT',
+  'CLAUDE_DISABLED', 'CLAUDE_UNAVAILABLE', 'CLAUDE_BUSY', 'CLAUDE_SIGNED_OUT', 'CLAUDE_CHALLENGE', 'CLAUDE_LIMIT', 'CLAUDE_UI_CHANGED', 'CLAUDE_TIMEOUT',
 ]);
 export const CLAUDE_DEFAULT_TIMEOUT_MS = 120_000;
 export const CLAUDE_MAX_ANSWER_CHARS = 20_000;
@@ -229,6 +229,8 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
 
   const assertAvailable = () => {
     if (!store.enabled()) throw claudeError('CLAUDE_DISABLED', 'Claude is turned off in Settings → AI.');
+    // 사용자가 Chrome에서 로그인하는 동안 앱 브라우저는 멈춘다. 끝나면 다시 물을 수 있다.
+    if (browser.busy?.()) throw claudeError('CLAUDE_BUSY', 'The user is signing in with Google Chrome in HamaEditor. Ask again after they finish.');
     if (!browser.available()) throw claudeError('CLAUDE_UNAVAILABLE', 'Claude.ai works only in the HamaEditor desktop app with its built-in browser.');
   };
 
@@ -399,8 +401,8 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
     },
     /** 설정 줄의 상태. check 면 보이지 않는 탭으로 로그인을 확인한다(sessionId 는 그 탭을 붙일 편집기 창). */
     status: ({ check = false, sessionId = null } = {}) => serial(async () => {
-      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl() };
-      if (!check || !base.enabled || !base.available) return { ...base, signedIn: null };
+      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl(), ...(browser.busy?.() ? { busy: true } : {}) };
+      if (!check || !base.enabled || !base.available || base.busy) return { ...base, signedIn: null };
       return browser.drive(claudeActor(sessionId), { url: `${CLAUDE_ORIGIN}/` }, async (page) => {
         const watcher = watchPage(page);
         try {

@@ -13,7 +13,7 @@ import { createWebAssistantStore } from './web-assistant-store.mjs';
 export const CHATGPT_ORIGIN = 'https://chatgpt.com';
 export const CHATGPT_PROJECT_NAME = 'HamaEditor';
 export const CHATGPT_ERROR_CODES = Object.freeze([
-  'CHATGPT_DISABLED', 'CHATGPT_UNAVAILABLE', 'CHATGPT_SIGNED_OUT', 'CHATGPT_CHALLENGE', 'CHATGPT_UI_CHANGED', 'CHATGPT_TIMEOUT',
+  'CHATGPT_DISABLED', 'CHATGPT_UNAVAILABLE', 'CHATGPT_BUSY', 'CHATGPT_SIGNED_OUT', 'CHATGPT_CHALLENGE', 'CHATGPT_UI_CHANGED', 'CHATGPT_TIMEOUT',
 ]);
 export const CHATGPT_DEFAULT_TIMEOUT_MS = 120_000;
 export const CHATGPT_MAX_ANSWER_CHARS = 20_000;
@@ -259,6 +259,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
 
   const assertAvailable = () => {
     if (!store.enabled()) throw chatgptError('CHATGPT_DISABLED', 'ChatGPT is turned off in Settings → AI.');
+    // 사용자가 Chrome에서 로그인하는 동안 앱 브라우저는 멈춘다. 끝나면 다시 물을 수 있다.
+    if (browser.busy?.()) throw chatgptError('CHATGPT_BUSY', 'The user is signing in with Google Chrome in HamaEditor. Ask again after they finish.');
     if (!browser.available()) throw chatgptError('CHATGPT_UNAVAILABLE', 'ChatGPT works only in the HamaEditor desktop app with its built-in browser.');
   };
 
@@ -450,8 +452,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
     },
     /** 설정 줄의 상태. check 면 앱 브라우저로 로그인을 확인한다(sessionId 는 그 탭을 붙일 편집기 창). */
     status: ({ check = false, sessionId = null } = {}) => serial(async () => {
-      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl() };
-      if (!check || !base.enabled || !base.available) return { ...base, signedIn: null };
+      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl(), ...(browser.busy?.() ? { busy: true } : {}) };
+      if (!check || !base.enabled || !base.available || base.busy) return { ...base, signedIn: null };
       return browser.drive(chatgptActor(sessionId), { url: store.projectUrl() ?? `${CHATGPT_ORIGIN}/` }, async (page) => {
         const watcher = watchChallenge(page);
         try {
