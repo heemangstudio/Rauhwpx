@@ -159,6 +159,8 @@ import {
   normalizeChatPermissionRequest,
   normalizeChatPermissionScope,
 } from './chat-permissions.mjs';
+import { chatgptError, createChatgptDriver, createChatgptStore } from './chatgpt-web.mjs';
+import { claudeError, createClaudeDriver, createClaudeStore } from './claude-web.mjs';
 import { ChatContinuationQueue, ChatRequestRegistry } from './chat-requests.mjs';
 import {
   createUserSecretStore,
@@ -835,6 +837,29 @@ const ownedBrowser = createOwnedBrowserService({
 });
 await ownedBrowser.restore();
 await applyBrowserConfiguration(initialBrowserConfiguration);
+// ask_chatgpt: 설정에서 켠 사용자의 ChatGPT. 켜기·채팅 지도는 허브 데이터 폴더에, 대화는 앱 안 브라우저(네이티브)로만 한다.
+const chatgptStore = createChatgptStore({ filePath: path.join(path.dirname(PROJECTS_ROOT), 'chatgpt.json'), logger: log });
+await chatgptStore.ready();
+const chatgptDriver = createChatgptDriver({
+  store: chatgptStore,
+  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+});
+// ask_claude: 같은 방식으로 사용자의 Claude.ai. 상태는 claude.json 에 따로 둔다.
+const claudeStore = createClaudeStore({ filePath: path.join(path.dirname(PROJECTS_ROOT), 'claude.json'), logger: log });
+await claudeStore.ready();
+const claudeDriver = createClaudeDriver({
+  store: claudeStore,
+  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+});
+/** 웹 비서(ask_chatgpt·ask_claude)마다 저장소·구동기·오류·문구. */
+const WEB_ASSISTANTS = Object.freeze({
+  chatgpt: { store: chatgptStore, driver: chatgptDriver, error: chatgptError, code: 'CHATGPT', name: 'ChatGPT' },
+  claude: { store: claudeStore, driver: claudeDriver, error: claudeError, code: 'CLAUDE', name: 'Claude.ai' },
+});
+/** ask_chatgpt·ask_claude 를 보이고 부를 수 있는가: 설정에서 켰고 앱 안 브라우저가 데스크톱 네이티브다. */
+function webAssistantGate(service) {
+  return WEB_ASSISTANTS[service].store.enabled() && ownedBrowser.nativeActive();
+}
 // 페이지 감시: 채팅의 에이전트로 다시 읽고, 바뀌면 그 채팅에 알린다. RHWP_BROWSER_WATCH_MINUTE_MS 는 시험용으로 "1분" 을 줄인다.
 const browserWatches = createBrowserWatchService({
   dataDir: OWNED_BROWSER_DATA_DIR, ownedBrowser, log,
@@ -1255,6 +1280,21 @@ async function handleBrowserRequest(record, sock, msg) {
       case 'recipes.write': result = { recipe: await browserRecipes.write({ site: String(args.site ?? ''), text: String(args.text ?? ''), author: 'user', secrets: [...filledSecretValues] }) }; break;
       case 'recipes.delete': result = await browserRecipes.remove(String(args.site ?? '')); break;
       case 'permissions.list': result = { always: chatPermissionPolicy.list() }; break;
+      // 설정 → AI → ChatGPT·Claude: 켜기와 연결 상태. 로그인은 Studio 가 앱 안 브라우저의 별도 창으로 연다.
+      case 'chatgpt.status':
+      case 'claude.status': {
+        const assistant = WEB_ASSISTANTS[String(msg.action).split('.')[0]];
+        result = await assistant.driver.status({ check: args.check === true, sessionId: record.sessionId });
+        break;
+      }
+      case 'chatgpt.configure':
+      case 'claude.configure': {
+        const assistant = WEB_ASSISTANTS[String(msg.action).split('.')[0]];
+        if (typeof args.enabled !== 'boolean') throw workflowError('INVALID_ARGS', `Choose whether ${assistant.name} is on`);
+        await assistant.store.setEnabled(args.enabled);
+        result = await assistant.driver.status();
+        break;
+      }
       case 'permissions.revoke': result = { always: await revokeAlwaysChatPermission(args.capability) }; break;
       case 'sessions.imported': result = await ownedBrowser.acceptImportedSessions(Array.isArray(args.domains) ? args.domains.slice(0, 500) : []); break;
       case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
@@ -5604,7 +5644,7 @@ async function startSession(
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
     ...(agent === 'pi' ? piSpawnHooks() : {}),
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
-    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true }),
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true, askChatgpt: webAssistantGate('chatgpt'), askClaude: webAssistantGate('claude') }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
     providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
@@ -8288,6 +8328,32 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           });
         return;
       }
+      if (tool === 'ask_chatgpt' || tool === 'ask_claude') {
+        const service = tool === 'ask_chatgpt' ? 'chatgpt' : 'claude';
+        const assistant = WEB_ASSISTANTS[service];
+        void (async () => {
+          if (workerJob || sock.piSubagentId || msg.parentTaskId || sock.agentRole !== 'chat') {
+            throw workflowError('ROOT_INTERACTION_REQUIRED', `Only the root conversation may ask ${assistant.name}`);
+          }
+          if (!assistant.store.enabled()) throw assistant.error(`${assistant.code}_DISABLED`, `${assistant.name} is turned off in Settings → AI.`);
+          if (!ownedBrowser.nativeActive()) throw assistant.error(`${assistant.code}_UNAVAILABLE`, `${assistant.name} works only in the HamaEditor desktop app with its built-in browser.`);
+          // 채팅마다 한 번 묻는다(이 채팅·항상). 허브만 확인하는 권한이라 턴 중에 허용돼도 바로 쓸 수 있다.
+          if (!record.agentSession.chatPermissionGrants.includes(service)) {
+            throw workflowError('PERMISSION_REQUIRED', `Asking the user's ${assistant.name} needs their consent: call request_permission with capability "${service}" and a short reason, then end the turn and wait.`);
+          }
+          const chatKey = record.agentSession.chatId ?? record.agentSession.threadId;
+          // 앱 안 브라우저의 보이지 않는 탭에서 묻는다. 사용자의 탭 목록과 작업 칸에는 나오지 않는다.
+          return assistant.driver.ask({ chatKey, question: args.question, sessionId: record.sessionId });
+        })().then((result) => {
+          // 도구 카드는 프로바이더의 잘린 미리보기 대신 질문·답 전체와 채팅 주소를 그린다.
+          sendJson(record.studioSocket, { v: 1, type: 'hub-tool-executed', tool, args: msg.args ?? {}, ok: true, result });
+          sendResult(result);
+        }).catch((error) => {
+          sendJson(record.studioSocket, { v: 1, type: 'hub-tool-executed', tool, args: msg.args ?? {}, ok: false, error: { code: error?.code ?? `${assistant.code}_FAILED`, message: String(error?.message ?? error) } });
+          sendError(error, `${assistant.code}_FAILED`);
+        });
+        return;
+      }
       if (definition.category === 'browser' || tool === 'browser_request_account' || tool === 'request_secret') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
           if (tool === 'browser_watch') {
@@ -9259,6 +9325,8 @@ const httpServer = http.createServer((req, res) => {
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
           requestable: !requestedWorkerJobId && !requestedSubagentId,
           documentLink: !requestedWorkerJobId && !requestedSubagentId,
+          askChatgpt: webAssistantGate('chatgpt') && !requestedWorkerJobId && !requestedSubagentId,
+          askClaude: webAssistantGate('claude') && !requestedWorkerJobId && !requestedSubagentId,
           researchPermissions: gates.researchPermissions,
         },
       });

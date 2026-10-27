@@ -766,13 +766,25 @@ export function systemBriefFor(opts = {}, agentName = 'claude') {
   }
   // 잘못된 워크플로·단계는 여기서도 거절한다.
   normalizeExecutionMode(opts);
-  return `${SHARED_SYSTEM_BRIEF}\n\n${INSTRUCTION_MODES_BRIEF}\n\n${modesBriefFor(agentName)}${requestablePermissionBriefFor(opts)}\n\n${RHWP_TOOL_RULES}\n\n${HUMANIZE_KOREAN_RULES}`;
+  return `${SHARED_SYSTEM_BRIEF}\n\n${INSTRUCTION_MODES_BRIEF}\n\n${modesBriefFor(agentName)}${requestablePermissionBriefFor(opts)}${askWebAssistantBriefFor(opts)}\n\n${RHWP_TOOL_RULES}\n\n${HUMANIZE_KOREAN_RULES}`;
 }
 
 /** 권한 요청 안내 — 허브 설정(requestable)에만 따르고 모드에는 따르지 않는다. 부여된 권한은 모드 블록이 알린다. */
 function requestablePermissionBriefFor(opts) {
   return projectToolGatesOf(opts)?.requestable === true
     ? '\n\nOrdinary public research browsing, supported read/export flows and managed downloads are enabled by default, subject to Browser Settings. Additive research imports do not grant arbitrary project edits. Signed-in reads, website changes and saved logins or secrets need site access; when a browser refusal carries request, make exactly that call (usually browser_request_account with kind site), and never put credentials in chat. When a site needs an API key, token or password that browser_status does not list as a usable secret, call request_secret with its origins; type a secret only with browser_fill_secret. You never see secret values, and they never go into chat, files, commands or environment variables. If project editing or local execution is unavailable, call request_permission with project-edit or local-execution and a short reason. local-execution covers local file reading, editing, and commands. Document editing follows the current mode and cannot be granted through request_permission. A pending result is a request awaiting the user, not a grant: end your turn and wait. The chat resumes by itself when the user answers; after a decline, continue without it and do not ask again in that turn.'
+    : '';
+}
+
+/** ask_chatgpt·ask_claude 안내 — 설정에서 켜고 데스크톱 앱 안 브라우저가 있을 때만(허브 게이트). */
+function askWebAssistantBriefFor(opts) {
+  const gates = projectToolGatesOf(opts);
+  const tools = [gates?.askChatgpt === true ? 'ask_chatgpt' : null, gates?.askClaude === true ? 'ask_claude' : null].filter(Boolean);
+  const history = tools.length > 1 ? 'ChatGPT or Claude.ai' : tools[0] === 'ask_chatgpt' ? 'ChatGPT' : 'Claude.ai';
+  return tools.length
+    ? `
+
+Call ${tools.join(' or ')} only when the user's own ${history} history would help, such as their preferences, background or earlier decisions you cannot find here; keep document text out of the question unless the question needs it.`
     : '';
 }
 
@@ -802,6 +814,8 @@ export function mcpCapabilityEnv(opts = {}) {
   return {
     ...(gates && workflow === 'question' && gates.chatMayEdit === false ? { RHWP_PROJECT_WRITES: '0' } : {}),
     ...(gates?.homeSearch === true ? { RHWP_HOME_SEARCH: '1' } : {}),
+    ...(gates?.askChatgpt === true ? { RHWP_ASK_CHATGPT: '1' } : {}),
+    ...(gates?.askClaude === true ? { RHWP_ASK_CLAUDE: '1' } : {}),
     ...(gates?.requestable === true ? { RHWP_REQUESTABLE_TOOLS: '1' } : {}),
     ...(gates?.documentLink === true ? { RHWP_DOCUMENT_LINK: '1' } : {}),
     ...(gates?.researchPermissions?.browse === false ? { RHWP_RESEARCH_BROWSE: '0' } : {}),

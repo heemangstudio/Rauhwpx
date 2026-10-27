@@ -14,6 +14,11 @@ const CHAT_GRANT_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_GRANT_TOUCH_MS = 24 * 60 * 60 * 1000;
 const SIGNED_IN_LIMIT = 4096;
 const SIGNED_IN_SOURCES = new Set(['owner-form', 'handoff', 'chrome-import', 'passkey', 'federated', 'legacy']);
+/** 허브의 웹 비서 행위자(chatgpt-web.mjs·claude-web.mjs)가 쓰는 사이트. 일반 에이전트 브라우저 도구에는 해당하지 않는다. */
+const SYSTEM_ACTOR_SITE_KEYS = Object.freeze({
+  chatgpt: Object.freeze(['https://chatgpt.com', 'https://openai.com']),
+  claude: Object.freeze(['https://claude.ai', 'https://anthropic.com']),
+});
 export const DEFAULT_RESEARCH_SITES = Object.freeze([
   { origin: 'https://www.google.com', label: 'Google Search' },
   { origin: 'https://docs.google.com', label: 'Google Slides / Docs reading' },
@@ -362,6 +367,8 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       return { ...base, allowed: false, code: 'BROWSER_SITE_BLOCKED', reason: 'blocked', blocked, item: item?.blocked ? item : null };
     }
     if (resource === 'subresource' && action === 'browse') return { ...base, allowed: true, source: 'subresource' };
+    // 허브의 웹 비서 연결(ask_chatgpt·ask_claude)은 설정에서 켜고 채팅마다 허용한 뒤에만 돈다. 그 행위자에게는 자기 사이트만 연다.
+    if (Object.hasOwn(SYSTEM_ACTOR_SITE_KEYS, actor?.system ?? '') && SYSTEM_ACTOR_SITE_KEYS[actor.system].includes(scope.key)) return { ...base, allowed: true, source: actor.system };
     const grant = chatGrant(actor?.threadId, scope.key, action) ?? userEntry(origin, action) ?? researchDefault(origin, action);
     if (grant) return { ...base, allowed: true, source: grant.source, grantEpoch: grant.epoch };
     if (action === 'website-change' || action === 'account-use') return { ...base, allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: action, item };

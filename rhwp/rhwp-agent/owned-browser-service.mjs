@@ -66,6 +66,8 @@ const challengeFor = (tab) => {
 };
 const sameScope = (actor, tab) => tab.scope !== 'global' && actor.threadId === tab.threadId && actor.agentId === tab.agentId && (actor.projectId ?? null) === tab.projectId;
 // 하위 에이전트는 자기 탭만 쓴다. 사용자 탭은 루트 대화와 사용자만 조작해 서로의 화면과 입력을 빼앗지 않는다.
+/** 허브가 직접 움직이는 브라우저 행위자(ask_chatgpt·ask_claude). 그 탭은 사용자 화면에 나오지 않는다. */
+const SYSTEM_ACTORS = new Set(['chatgpt', 'claude']);
 const canAccessTab = (actor, tab) => tab.scope === 'global' ? !actor.taskId : sameScope(actor, tab);
 const PARAMETER_RULES = { verbs: ['delete', 'remove', 'destroy', 'send', 'publish', 'purchase', 'checkout', 'share', 'save', 'edit', 'upload', 'invite', 'logout'], operations: ['action', 'command', 'operation', 'method'], negative: ['0', 'false', 'no', 'none', 'off'] };
 const mutatingParameter = (name, value) => { const key = name.toLowerCase(), setting = String(value).trim().toLowerCase(); return PARAMETER_RULES.verbs.includes(key) && !PARAMETER_RULES.negative.includes(setting) || PARAMETER_RULES.operations.includes(key) && PARAMETER_RULES.verbs.includes(setting); };
@@ -290,11 +292,12 @@ export function createOwnedBrowserService(options = {}) {
   // 사이트 아이콘은 사용자 화면용 이벤트와 목록에만 붙인다. 에이전트 결과·browser_status·tabs.json은 descriptor만 쓴다.
   const faviconFor = (tab) => tab.snapshot?.passwordProtected || tab.passwordShielded ? undefined : favicons.peek(faviconOrigin(tab.page?.url?.() ?? tab.url, isWorkspace)) ?? undefined;
   const humanTab = (tab) => { const current = descriptor(tab), faviconUrl = faviconFor(tab); return faviconUrl ? { ...current, faviconUrl } : current; };
-  const publish = (tab) => emit('owned_browser_tab', { tab: humanTab(tab), runtime: runtimeInfo() });
-  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, ...(actor.taskId ? { subagent: true } : {}), tab: descriptor(tab), runtime: runtimeInfo() }); };
+  // 허브 행위자(ChatGPT·Claude)의 탭은 뒤에서 돈다. 사용자의 탭 목록·미리보기·커서에는 나오지 않는다.
+  const publish = (tab) => { if (!tab.system) emit('owned_browser_tab', { tab: humanTab(tab), runtime: runtimeInfo() }); };
+  const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman && !tab.system) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, ...(actor.taskId ? { subagent: true } : {}), tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
+    const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, ...(tab.system ? { system: tab.system } : {}), searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
     persistQueue = persistQueue.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(descriptorFile), { recursive: true, mode: 0o700 });
       const temp = `${descriptorFile}.${crypto.randomBytes(8).toString('hex')}.part`;
@@ -551,7 +554,7 @@ export function createOwnedBrowserService(options = {}) {
     for (const button of tab.heldButtons) await tab.page?.mouse?.up({ button }).catch(() => {});
     tab.heldKeys.clear(); tab.heldButtons.clear();
   };
-  const actorForTab = (tab) => ({ threadId: tab.threadId, projectId: tab.projectId, documentId: tab.documentId, agentId: tab.agentId, ownerId: tab.ownerId, sessionId: tab.sessionId, isHuman: false });
+  const actorForTab = (tab) => ({ threadId: tab.threadId, projectId: tab.projectId, documentId: tab.documentId, agentId: tab.agentId, ownerId: tab.ownerId, sessionId: tab.sessionId, isHuman: false, ...(tab.system ? { system: tab.system } : {}) });
   // 페이지가 스스로 보내는 요청의 주체. 사용자가 잡았거나 화면에서 직접 누른 탭의 요청은 사용자의 것이다.
   // 에이전트가 다음 조작을 시작하면 humanDriven 이 풀려 다시 에이전트 정책을 따른다.
   const pageActor = (tab, { ignoreActive = false } = {}) => (!ignoreActive && tab.activeActor) || (tab.controller.owner === 'human' || userHolds(tab) || tab.humanDriven
@@ -809,7 +812,7 @@ export function createOwnedBrowserService(options = {}) {
           if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
           const native = tab.nativeTargetId && (await selectedAdapter()?.inventory?.())?.find((entry) => entry.nativeTargetId === tab.nativeTargetId);
           if (page.isClosed() || tabs.get(tab.tabId) !== tab) return;
-          emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
+          if (!tab.system) emit('owned_browser_popup', { tab: descriptor(tab), openerTabId: parent.tabId, foreground: native?.disposition !== 'background-tab', runtime: runtimeInfo() });
           void persist();
         };
         let adopted; const adoption = new Promise((resolve) => { adopted = resolve; });
@@ -867,7 +870,7 @@ export function createOwnedBrowserService(options = {}) {
     })();
     return starting;
   };
-  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
+  const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, ...(SYSTEM_ACTORS.has(actor.system) ? { system: actor.system } : {}), url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
   const returnFromSignIn = async (account, storage) => {
     const origins = new Set(account.origins);
     const hosts = account.origins.map((origin) => new URL(origin).hostname);
@@ -1311,7 +1314,7 @@ export function createOwnedBrowserService(options = {}) {
   const between = (min, max) => min + Math.random() * (max - min);
   // 사용자가 보는 탭이면 화면이 에이전트 커서를 그린다. 페이지 DOM 에는 아무것도 넣지 않는다.
   const pointerEvent = (actor, tab, point, phase, durationMs = 0) => {
-    if (actor.isHuman) return;
+    if (actor.isHuman || tab.system) return;
     emit('owned_browser_pointer', { sessionId: actor.sessionId ?? tab.sessionId, tab: descriptor(tab), x: Math.round(point.x), y: Math.round(point.y), phase, durationMs, runtime: runtimeInfo() });
   };
   // 요소를 화면에 들이고 상자를 새로 읽어 가운데가 아닌 안쪽 한 점을 고른다.
@@ -1949,7 +1952,7 @@ export function createOwnedBrowserService(options = {}) {
     }
     const visible = [];
     for (const tab of tabs.values()) {
-      if (!actor.isHuman && !canAccessTab(actor, tab)) continue;
+      if (actor.isHuman ? tab.system : !canAccessTab(actor, tab)) continue;
       let current = actor.isHuman ? humanTab(tab) : descriptor(tab);
       if (!actor.isHuman) try { await assertPolicy(actor, 'snapshot', tab.page?.url?.() ?? tab.url, tab); }
       catch (failure) { current = { ...current, url: 'about:blank', title: '', status: 'approval-required', challenge: null, snapshotId: null, ...(failure.site ? { site: failure.site, request: failure.request } : {}) }; }
@@ -2489,6 +2492,41 @@ export function createOwnedBrowserService(options = {}) {
     configureSleep({ idleMinutes = 15 } = {}) {
       if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) throw error('BROWSER_CONFIGURATION_INVALID', 'Choose an idle timeout between 0 and 1440 minutes.');
       idleSleepMs = idleMinutes * 60_000;
+    },
+    /** 앱 안 브라우저가 데스크톱 네이티브 런타임인가. ChatGPT 연결은 이때만 쓴다. */
+    nativeActive: () => runtimeMode === 'native' && !!nativeAdapter,
+    /**
+     * 허브 행위자(actor.system) 하나가 자기 탭의 페이지를 직접 다룬다. 탭이 없으면 url 로 열고, 작업은 탭 대기열에서 차례로 돈다.
+     * 페이지 요청은 이 행위자로 정책을 받는다. 사용자가 탭을 잡고 있으면 기다리지 않고 거절한다.
+     */
+    async drive(actor, { url }, operation) {
+      validateActor(actor);
+      if (!actor.system || actor.isHuman) throw error('BROWSER_SCOPE_REQUIRED', 'Only a hub-owned browser actor can drive a page directly.');
+      if (runtimeMode !== 'native' || !nativeAdapter) throw error('BROWSER_NATIVE_UNAVAILABLE', 'The desktop browser is unavailable.', true);
+      let tab = [...tabs.values()].find((entry) => sameScope(actor, entry) && !['closed', 'crashed'].includes(entry.status));
+      // 잠들었거나 끊긴 탭은 새로 붙인다. 앞선 실행의 편집기 창이 아니라 지금 부른 창에 붙인다.
+      if (tab && actor.sessionId && (tab.sleeping || !tab.page || tab.page.isClosed())) tab.sessionId = actor.sessionId;
+      if (tab?.sleeping) await wakeTab(actor, tab);
+      if (tab && (!tab.page || tab.page.isClosed())) {
+        await enqueue(tab, async () => { await ensureRuntime(); if (!tab.page || tab.page.isClosed()) { if (actor.sessionId) tab.sessionId = actor.sessionId; invalidate(tab); await attach(tab, await runtime.context.newPage()); tab.status = 'ready'; } });
+      }
+      if (!tab) {
+        const opened = await performRequest(actor, 'open', { url });
+        tab = tabs.get(opened?.tab?.tabId);
+        if (!tab) throw error('BROWSER_TAB_NOT_FOUND', 'The browser tab could not be opened.', true);
+      }
+      return enqueue(tab, async () => {
+        if (userHolds(tab)) throw error('BROWSER_USER_CONTROL', 'The user is controlling this tab.');
+        if (!tab.page || tab.page.isClosed()) throw error('BROWSER_TAB_NOT_FOUND', 'The browser tab closed.', true);
+        // 함께 쓰는 탭은 지금 부른 편집기 창에 다시 붙인다(데스크톱 탭은 주인 창이 있어야 한다).
+        if (actor.sessionId && tab.sessionId !== actor.sessionId && tab.nativeTargetId && selectedAdapter()?.bind) {
+          const nativeState = await selectedAdapter().bind({ targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: actor.sessionId, chatId: tab.threadId, global: false });
+          tab.sessionId = actor.sessionId; tab.nativeGeneration = nativeState?.generation; tab.zoomFactor = nativeState?.zoomFactor;
+        }
+        tab.activeActor = actor; tab.lastActivityAt = Date.now();
+        try { return await operation(tab.page, { tabId: tab.tabId }); }
+        finally { tab.activeActor = null; tab.lastActivityAt = Date.now(); publish(tab); void persist(); }
+      });
     },
     ownsTarget(actor, target) {
       const tab = target?.tabId && tabs.get(target.tabId);

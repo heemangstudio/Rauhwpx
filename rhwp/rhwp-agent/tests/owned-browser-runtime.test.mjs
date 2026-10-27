@@ -538,3 +538,36 @@ test('idle desktop native browser is ready without installing or starting manage
   assert.equal(status.readiness.state, 'ready');
   assert.equal(status.readiness.retryAction, undefined);
 });
+
+test('hub-driven ChatGPT and Claude tabs stay out of the tab strip, activity preview and other actors, and reuse one tab each', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-system-tabs-'));
+  const events = []; const bindings = []; let pages = 0;
+  const runtimeFactory = async () => ({ kind: 'native', browser: new EventEmitter(), async close() {}, context: Object.assign(new EventEmitter(), {
+    async storageState() { return { cookies: [], origins: [] }; }, async route() {}, pages: () => [],
+    async newPage() { pages++; return Object.assign(new EventEmitter(), { url: () => 'about:blank', isClosed: () => false, async close() {}, async routeWebSocket() {}, frames: () => [], target: `target-${pages}` }); },
+    async newCDPSession(page) { return { async send() { return { targetInfo: { targetId: page.target } }; }, async detach() {} }; },
+  }) });
+  const browser = createOwnedBrowserService({ dataDir, runtimeFactory, onEvent: (event) => events.push(event),
+    nativeAdapter: { async bind(binding) { bindings.push(binding); } } });
+  t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const human = { isHuman: true, clientId: 'window', sessionId: 'window-1', threadId: 'chat-a', agentId: 'chat-a:root' };
+  const agent = { ...human, isHuman: false };
+  const chatgpt = { threadId: 'chatgpt', agentId: 'chatgpt:driver', projectId: null, documentId: null, sessionId: 'window-1', taskId: null, isHuman: false, system: 'chatgpt' };
+  const claude = { ...chatgpt, threadId: 'claude', agentId: 'claude:driver', system: 'claude' };
+
+  const first = await browser.drive(chatgpt, { url: 'about:blank' }, async (page, { tabId }) => ({ page, tabId }));
+  const again = await browser.drive(chatgpt, { url: 'about:blank' }, async (page, { tabId }) => ({ page, tabId }));
+  const other = await browser.drive(claude, { url: 'about:blank' }, async (_page, { tabId }) => tabId);
+  assert.equal(again.tabId, first.tabId, 'one tab per hub actor is reused');
+  assert.notEqual(other, first.tabId, 'ChatGPT and Claude never share a tab');
+  assert.equal(pages, 2);
+  // 사용자의 탭 줄·다른 에이전트·활동 미리보기에는 보이지 않는다.
+  assert.deepEqual((await browser.inventory(human)).tabs, []);
+  assert.deepEqual((await browser.inventory(agent)).tabs, []);
+  assert.equal(events.filter((event) => event.type === 'owned_browser_tab').length, 0, 'no tab events reach Studio');
+  await assert.rejects(browser.drive(agent, { url: 'about:blank' }, async () => {}), { code: 'BROWSER_SCOPE_REQUIRED' });
+  await assert.rejects(browser.drive({ ...human, system: 'chatgpt' }, { url: 'about:blank' }, async () => {}), { code: 'BROWSER_SCOPE_REQUIRED' });
+  // 다른 편집기 창이 부르면 그 창에 다시 붙인다.
+  await browser.drive({ ...chatgpt, sessionId: 'window-2' }, { url: 'about:blank' }, async () => {});
+  assert.equal(bindings.at(-1)?.sessionId, 'window-2');
+});
