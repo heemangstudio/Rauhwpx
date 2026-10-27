@@ -189,8 +189,11 @@ export type EditOp =
 | { op: "resizeTableCells"; table: TableAddress; cells: CellResize[] };
 /** An object control in a paragraph list (a table's address names it too). */
 export type ObjectAddress = TableAddress;
-/** HU added to a cell's laid-out width and height; `index` is the cell's in the table. */
-export interface CellResize { index: number; widthDelta?: number; heightDelta?: number }
+/**
+ * HU added to a cell's laid-out width and height; `index` is the cell's in the table.
+ * `width` and `height` set the laid-out size instead and win over the deltas.
+ */
+export interface CellResize { index: number; widthDelta?: number; heightDelta?: number; width?: number; height?: number }
 /**
  * An object or table a page draws (`Doc.pageObjects`), bottom to top. The box
  * excludes outer margins; a table split over pages gives this page's part.

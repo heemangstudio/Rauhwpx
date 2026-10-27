@@ -1,11 +1,14 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `a7dd228` (2026-10-28 release
+Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `afcacaf` (2026-10-28 release
 candidate). It is core `53fabe6` (qualified native `01c8536` plus the selected performance commits over
 integration `e48a461`) with five accepted rendering fixes: HWPX picture outer shadows (`02d1b46`),
 document-level integer-percent picture fill zoom with overflow clipping (`f8899cd`), paragraph-relative horizontal
 object alignment between paragraph margins (`150b388`), connected character borders (`9b93aa0`) and picture bullets
-with empty number formats as paragraph heads (`a7dd228`). Built with
+with empty number formats as paragraph heads (`a7dd228`), followed by two Studio fixes: tables pasted into a narrower
+cell fit its text width and `resizeTableCells` takes absolute sizes (`edbd0aa`), and structural merges keep the
+current document's default-tab paragraph shapes and compare HWPX binary entries without package addressing
+(`afcacaf`). Built with
 `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
@@ -14,9 +17,9 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,581,567 | `2652758ed536b297bd519994919e461355e0572ffb44dda550395d9de09f62f5` |
+| `hm_wasm_bg.wasm` | 7,585,818 | `1c91ad51ff815187b3f7c93dedddbb66fb29fe22f122c1f120405107699dbae9` |
 | `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
-| `hm_wasm.d.ts` | 54,666 | `2a9773b38391f4d95c2079472fe43fcf2b3cee9599f1c2475e3667345b6cf576` |
+| `hm_wasm.d.ts` | 54,782 | `004d64e811527a3ca6924d136e1b086310cce53c6b462185a434b28e894b92b4` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
 
 Integration `e48a461` adds, over the earlier `e2c92f9`, structural version merging and `Doc.verifyHwp`

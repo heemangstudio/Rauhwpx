@@ -58,13 +58,13 @@ function restoreSpan(core: HmCore, table: TableAddress, row: number, column: num
 }
 function resize(core: HmCore, table: TableAddress, updates: TableCellResizeUpdate[]) {
   const info = tableInfo(core, table);
+  // 바깥 셀에 잘린 중첩 셀은 그려진 칸이 실제 폭보다 좁으므로, 표시 크기는 증감이 아닌 목표 크기로 넘긴다.
   const cells = updates.map(update => {
-    const cell = cellAt(info, update.cellIdx);
-    const box = cell.rects[0];
-    if ((update.renderWidth !== undefined || update.renderHeight !== undefined) && !box) throw new Error('셀의 현재 크기를 찾을 수 없습니다');
+    cellAt(info, update.cellIdx);
     return { index: update.cellIdx,
-      widthDelta: update.renderWidth === undefined ? update.widthDelta : update.renderWidth - box.width,
-      heightDelta: update.renderHeight === undefined ? update.heightDelta : update.renderHeight - box.height };
+      widthDelta: update.widthDelta, heightDelta: update.heightDelta,
+      ...(update.renderWidth === undefined ? {} : { width: update.renderWidth }),
+      ...(update.renderHeight === undefined ? {} : { height: update.renderHeight }) };
   });
   core.transact([{ op: 'resizeTableCells', table, cells }]);
   return { ok: true };
