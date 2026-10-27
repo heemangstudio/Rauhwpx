@@ -760,7 +760,7 @@ export function sampleTasteChat(now: number): ChatThread {
       { role: 'user', text: '추진 배경을 한다체로 바꾸고 예산표는 분기별로 나눠 주세요.', agent: 'claude' },
       {
         role: 'system', kind: 'turn', messageId: `${SAMPLE_TASTE_CHAT_ID}-turn-1`, startedAt, endedAt: activityAt,
-        outcome: 'completed', hubTurnId: SAMPLE_TASTE_TURN_ID, text: '작업 48초 · 문단 3개 수정',
+        outcome: 'completed', hubTurnId: SAMPLE_TASTE_TURN_ID, text: '작업 48초, 문단 3개 수정',
       },
       {
         role: 'assistant', kind: 'activity', agent: 'claude', activityId: `${SAMPLE_TASTE_CHAT_ID}-activity-1`, text: '도구 호출',

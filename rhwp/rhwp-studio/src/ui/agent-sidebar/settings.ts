@@ -3791,7 +3791,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             piBusy = false;
             if (piAuthReturnToTaste) {
               closeAgentSetup();
-              selectDestination('ai');
+              selectDestination('ai', 'custom');
               tasteSection.root.scrollIntoView({ block: 'nearest' });
             } else {
               openPiModelCatalog();
