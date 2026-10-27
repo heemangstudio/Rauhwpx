@@ -593,6 +593,8 @@ export const TOOL_CATEGORIES = Object.freeze([
   'project-write',
   'project-ingest',
   'document-link',
+  'chatgpt',
+  'claude',
 ]);
 
 /**
@@ -602,14 +604,14 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'memory-read'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'} category
+ * @param {'instruction-read'|'instruction-write'|'memory-read'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'|'chatgpt'|'claude'} category
  */
 export function toolAnnotations(category) {
   return {
     readOnlyHint: category === 'instruction-read' || category === 'memory-read' || category === 'document-read' || category === 'reference-read'
       || category === 'template-read' || category === 'project-read',
     destructiveHint: category === 'download-write',
-    openWorldHint: category === 'browser' || category === 'download-write' || category === 'project-ingest',
+    openWorldHint: category === 'browser' || category === 'download-write' || category === 'project-ingest' || category === 'chatgpt' || category === 'claude',
   };
 }
 
@@ -1704,10 +1706,24 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'request_permission',
-    description: 'Request a missing project, local execution or other-documents (list_documents path) permission, explaining why. Public research browsing and managed downloads are on by default. Returns pending: end the turn; the chat resumes when the user answers. Document edits need 에이전트/전체 mode or an approved plan.',
+    description: 'Request a missing project, local execution, other-documents (list_documents path), chatgpt or claude permission, explaining why. Public research browsing and managed downloads are on by default. Returns pending: end the turn; the chat resumes when the user answers. Document edits need 에이전트/전체 mode or an approved plan.',
     shape: {
       capability: z.enum(GRANTABLE_CHAT_PERMISSIONS),
       reason: z.string().trim().min(1).max(1_000),
+    },
+  },
+  {
+    name: 'ask_chatgpt',
+    description: 'Ask the user\'s own ChatGPT (their saved memory and chat history) something only it would know, such as the user\'s preferences, background or past decisions. One ChatGPT chat per HamaEditor chat; follow-ups continue it. Keep document text out of the question unless it is needed. Needs the chatgpt permission (request_permission). Returns { chatUrl, answer }; the answer is the user\'s ChatGPT, not the user.',
+    shape: {
+      question: z.string().trim().min(1).max(8_000),
+    },
+  },
+  {
+    name: 'ask_claude',
+    description: 'Ask the user\'s own Claude.ai (its memory and chat history) something only it would know, such as the user\'s preferences, background or past decisions. One Claude.ai chat per HamaEditor chat; follow-ups continue it. Keep document text out of the question unless it is needed. Needs the claude permission (request_permission). Returns { chatUrl, answer }; the answer is the user\'s Claude.ai, not the user.',
+    shape: {
+      question: z.string().trim().min(1).max(8_000),
     },
   },
   {
@@ -2089,6 +2105,8 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
   request_permission: 'user-interaction',
+  ask_chatgpt: 'chatgpt',
+  ask_claude: 'claude',
   present_implementation_plan: 'planning-control',
   update_todos: 'plan-progress',
   download_file: 'download-write',
@@ -2141,11 +2159,11 @@ const PROJECT_CATEGORIES = Object.freeze(['project-read', 'project-write', 'proj
 
 // 문서 연결: open_document·detach_document 는 모든 채팅 단계에, create_document 는 문서를 쓸 수 있는 단계(direct·implementing)에만 보인다.
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['memory-read', 'browser', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
-  planning: Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  question: Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  'awaiting-approval': Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
-  implementing: Object.freeze(['memory-read', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
+  direct: Object.freeze(['memory-read', 'browser', 'chatgpt', 'claude', 'download-write', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'artifact-write', 'user-interaction', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
+  planning: Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'chatgpt', 'claude', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  question: Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'browser', 'chatgpt', 'claude', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  'awaiting-approval': Object.freeze(['memory-read', 'instruction-read', 'document-read', 'reference-read', 'template-read', 'template-write', 'download-write', 'user-interaction', 'planning-control', 'browser', 'chatgpt', 'claude', 'open_document', 'detach_document', ...PROJECT_CATEGORIES]),
+  implementing: Object.freeze(['memory-read', 'instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'template-write', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'chatgpt', 'claude', 'background-control', 'document-link', ...PROJECT_CATEGORIES]),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',
@@ -2173,6 +2191,8 @@ export const TOOL_PROFILES = Object.freeze({
  * - RHWP_PROJECT_WRITES=0: 채팅에서 프로젝트 쓰기·가져오기를 끈 설정(질문 워크플로에만 실린다).
  * - RHWP_HOME_SEARCH=1: 데스크톱 홈 폴더 검색이 켜져 있다.
  * - RHWP_DOCUMENT_LINK=1: 루트 채팅이다 — 문서를 붙이고 뗄 수 있다(open_document·create_document·detach_document).
+ * - RHWP_ASK_CHATGPT=1: 설정에서 ChatGPT 를 켰고 데스크톱 앱 안 브라우저가 있다(ask_chatgpt).
+ * - RHWP_ASK_CLAUDE=1: 설정에서 Claude 를 켰고 데스크톱 앱 안 브라우저가 있다(ask_claude).
  * @param {Record<string, string|undefined>} env
  */
 export function projectToolGatesFromEnv(env = process.env) {
@@ -2182,6 +2202,8 @@ export function projectToolGatesFromEnv(env = process.env) {
     researchPermissions: { browse: env.RHWP_RESEARCH_BROWSE !== '0', downloads: env.RHWP_RESEARCH_DOWNLOADS !== '0', import: env.RHWP_RESEARCH_IMPORT !== '0' },
     ...(env.RHWP_REQUESTABLE_TOOLS === '1' ? { requestable: true } : {}),
     ...(env.RHWP_DOCUMENT_LINK === '1' ? { documentLink: true } : {}),
+    ...(env.RHWP_ASK_CHATGPT === '1' ? { askChatgpt: true } : {}),
+    ...(env.RHWP_ASK_CLAUDE === '1' ? { askClaude: true } : {}),
   };
 }
 
@@ -2190,7 +2212,7 @@ export function projectToolGatesFromEnv(env = process.env) {
  * Unknown entries are ignored so a typo cannot accidentally broaden access.
  * @param {string | undefined} profile
  */
-export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false, documentLink = false, researchPermissions = { browse: true, downloads: true, import: true } } = {}) {
+export function filterToolDefinitions(profile, { projectWrites = true, homeSearch = false, requestable = false, documentLink = false, askChatgpt = false, askClaude = false, researchPermissions = { browse: true, downloads: true, import: true } } = {}) {
   const value = String(profile ?? 'direct').trim();
   const named = TOOL_PROFILES[value];
   const entries = new Set(named ?? value.split(',').map((entry) => entry.trim()).filter(Boolean));
@@ -2204,6 +2226,9 @@ export function filterToolDefinitions(profile, { projectWrites = true, homeSearc
     if ((definition.name === 'browser_request_account' || definition.name === 'request_secret') && !requestableProfile) return false;
     // 홈 폴더 검색은 데스크톱에서 켜졌을 때만 보인다(기본은 숨김).
     if (definition.name === 'find_home_files' && !homeSearch) return false;
+    // ChatGPT 는 설정에서 켜고 데스크톱 앱 안 브라우저가 있을 때 루트 채팅에만 보인다(기본은 숨김).
+    if (definition.category === 'chatgpt' && (askChatgpt !== true || !requestableProfile)) return false;
+    if (definition.category === 'claude' && (askClaude !== true || !requestableProfile)) return false;
     // 문서 연결 도구는 루트 채팅에만 보인다(작업자·하위 작업 제외).
     if (definition.category === 'document-link' && documentLink !== true) return false;
     if (!projectWrites && !canRequest && (definition.category === 'project-write' || definition.category === 'project-ingest')) return false;

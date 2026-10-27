@@ -264,8 +264,8 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!question.has('insert_text'));
 
   const implementing = new Set(filterToolDefinitions('implementing').map((definition) => definition.name));
-  // 계획 제시·백그라운드 작업자 3개, 데스크톱 게이트가 없으면 숨는 find_home_files, 루트 채팅에만 보이는 문서 붙이기·떼기 3개가 빠진다.
-  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 8);
+  // 계획 제시·백그라운드 작업자 3개, 데스크톱 게이트가 없으면 숨는 find_home_files·ask_chatgpt·ask_claude, 루트 채팅에만 보이는 문서 붙이기·떼기 3개가 빠진다.
+  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 10);
   assert.ok(implementing.has('insert_text'));
   assert.ok(implementing.has('download_file'));
   assert.ok(implementing.has('browser_click'));
@@ -1226,4 +1226,25 @@ test('insert_image takes one source and floating fields only with positionMode f
   assert.ok(!def.shape.cropPx.safeParse({ x: 0, y: 0, width: 0, height: 5 }).success);
   assert.ok(byName.get('read_reference_image').shape.zoom.safeParse(4).success);
   assert.ok(!byName.get('read_reference_image').shape.zoom.safeParse(5).success);
+});
+
+test('ask_chatgpt and ask_claude are hidden unless switched on in the desktop browser, and only reach root chat profiles', () => {
+  for (const [tool, gate, capability] of [['ask_chatgpt', 'askChatgpt', 'chatgpt'], ['ask_claude', 'askClaude', 'claude']]) {
+    const has = (profile, gates) => filterToolDefinitions(profile, gates).some((definition) => definition.name === tool);
+    for (const profile of ['direct', 'question', 'planning', 'awaiting-approval', 'implementing']) {
+      assert.equal(has(profile, {}), false, `${tool} ${profile}: off by default`);
+      assert.equal(has(profile, { requestable: true }), false, `${tool} ${profile}: a requestable chat still needs the opt-in`);
+      assert.equal(has(profile, { [gate]: true }), true, `${tool} ${profile}`);
+    }
+    for (const profile of ['doc-researcher', 'copy-layout-worker', 'all']) assert.equal(has(profile, { [gate]: true }), false, `${tool} ${profile}`);
+    // 한 서비스를 켜도 다른 서비스 도구는 나오지 않는다.
+    assert.equal(filterToolDefinitions('direct', { [gate]: true }).filter((definition) => /^ask_(chatgpt|claude)$/.test(definition.name)).length, 1);
+    // 허브 게이트는 MCP 프로세스 환경으로 건너간다.
+    const env = mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1, projectToolGates: () => ({ [gate]: true }) });
+    assert.equal(projectToolGatesFromEnv(env)[gate], true);
+    assert.equal(projectToolGatesFromEnv(mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1 }))[gate], undefined);
+    // 채팅 권한은 요청할 수 있는 권한이다.
+    assert.deepEqual(normalizeChatPermissionRequest({ capability, reason: 'Check the preferred tone.' }), { capability, reason: 'Check the preferred tone.' });
+  }
+  assert.deepEqual(normalizeChatPermissionGrants(['chatgpt', 'claude', 'unknown']), ['chatgpt', 'claude']);
 });
