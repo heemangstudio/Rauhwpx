@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn';
 import { constants as fsConstants, promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -30,9 +31,12 @@ const OOXML_KINDS = Object.freeze({
   '.pptx': { label: 'PPTX', main: 'ppt/presentation.xml' },
   '.xlsx': { label: 'XLSX', main: 'xl/workbook.xml' },
 });
+/** 일반 ZIP 묶음. OOXML 표식을 요구하지 않고, 위험한 경로는 막는 대신 건너뜁니다. */
+const ZIP_ARCHIVE_KIND = Object.freeze({ label: 'ZIP', main: null });
+const MAX_ZIP_SKIPPED_LISTED = 50;
 
 export const SUPPORTED_REFERENCE_EXTENSIONS = Object.freeze([
-  ...TEXT_EXTENSIONS, '.pdf', '.docx', '.pptx', '.xlsx', ...HWP_EXTENSIONS, ...IMAGE_REFERENCE_EXTENSIONS,
+  ...TEXT_EXTENSIONS, '.pdf', '.docx', '.pptx', '.xlsx', ...HWP_EXTENSIONS, ...IMAGE_REFERENCE_EXTENSIONS, '.zip',
 ]);
 
 let pdfjsAssetDirs;
@@ -542,6 +546,7 @@ function inspectDocxArchive(source, name, maxExpandedBytes, kind = OOXML_KINDS['
   const names = new Set();
   const members = [];
   const utf8 = new TextDecoder('utf-8', { fatal: true });
+  const cp949 = new TextDecoder('euc-kr');
   for (let index = 0; index < totalEntries; index += 1) {
     if (cursor + 46 > eocd || bytes.readUInt32LE(cursor) !== 0x02014b50) {
       throw archiveError('REFERENCE_EXTRACTION_FAILED', name, 'has a malformed ZIP entry');
@@ -565,14 +570,22 @@ function inspectDocxArchive(source, name, maxExpandedBytes, kind = OOXML_KINDS['
     const commentLength = bytes.readUInt16LE(cursor + 32);
     const next = cursor + 46 + nameLength + extraLength + commentLength;
     if (next > eocd) throw archiveError('REFERENCE_EXTRACTION_FAILED', name, 'has a truncated ZIP entry');
+    const rawName = bytes.subarray(cursor + 46, cursor + 46 + nameLength);
     let entryName;
     try {
-      entryName = utf8.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+      entryName = utf8.decode(rawName);
     } catch {
-      throw archiveError('REFERENCE_ARCHIVE_UNSUPPORTED', name, 'contains a non-UTF-8 ZIP entry name');
+      // 윈도 탐색기로 만든 ZIP은 UTF-8 표시 없이 CP949로 이름을 적습니다.
+      if (!kind.main && (flags & 0x0800) === 0) entryName = cp949.decode(rawName);
+      else throw archiveError('REFERENCE_ARCHIVE_UNSUPPORTED', name, 'contains a non-UTF-8 ZIP entry name');
     }
+    let unsafe = false;
+    if (!kind.main) entryName = entryName.replaceAll('\\', '/');
     if (!safeDocxMemberName(entryName, nameLength)) {
-      throw archiveError('REFERENCE_ARCHIVE_UNSUPPORTED', name, `contains an unsafe ZIP entry name: ${JSON.stringify(entryName)}`);
+      if (kind.main) {
+        throw archiveError('REFERENCE_ARCHIVE_UNSUPPORTED', name, `contains an unsafe ZIP entry name: ${JSON.stringify(entryName)}`);
+      }
+      unsafe = true;
     }
     if (names.has(entryName)) {
       throw archiveError('REFERENCE_EXTRACTION_FAILED', name, `contains duplicate ZIP entry ${JSON.stringify(entryName)}`);
@@ -604,6 +617,8 @@ function inspectDocxArchive(source, name, maxExpandedBytes, kind = OOXML_KINDS['
     }
     members.push({
       name: entryName,
+      rawName,
+      unsafe,
       flags,
       compressionMethod,
       compressedSize: compressed,
@@ -615,7 +630,7 @@ function inspectDocxArchive(source, name, maxExpandedBytes, kind = OOXML_KINDS['
   if (cursor !== centralOffset + centralSize) {
     throw archiveError('REFERENCE_EXTRACTION_FAILED', name, 'has inconsistent ZIP directory metadata');
   }
-  if (!hasContentTypes || !hasDocumentXml) {
+  if (kind.main && (!hasContentTypes || !hasDocumentXml)) {
     throw archiveError('REFERENCE_TYPE_MISMATCH', name, `is a ZIP file but not a ${kind.label} document`);
   }
   return { bytes, entries: totalEntries, expandedBytes, centralOffset, members };
@@ -645,7 +660,7 @@ function resolveDocxMemberData(inspected, member, documentName) {
     || !Number.isSafeInteger(dataEnd) || dataStart > centralOffset || dataEnd > centralOffset) {
     throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `has inconsistent local metadata for ${JSON.stringify(member.name)}`);
   }
-  const expectedName = Buffer.from(member.name, 'utf8');
+  const expectedName = member.rawName;
   const localName = bytes.subarray(cursor + 30, cursor + 30 + nameLength);
   if (nameLength !== expectedName.length || !localName.equals(expectedName)) {
     throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `has a mismatched local name for ${JSON.stringify(member.name)}`);
@@ -750,21 +765,25 @@ async function validateOoxmlArchive(source, name, { maxExpandedBytes = MAX_DOCX_
 /** 검증을 마친 OOXML 묶음에서 이름으로 XML 멤버를 읽습니다. 선언된 크기를 넘으면 실패합니다. */
 function ooxmlReader(resolvedMembers, documentName) {
   const byName = new Map(resolvedMembers.map((entry) => [entry.member.name, entry]));
+  const bytes = (memberName) => {
+    const entry = byName.get(memberName);
+    if (!entry) return null;
+    const { member, compressed } = entry;
+    try {
+      return member.compressionMethod === 0
+        ? compressed
+        : inflateRawSync(compressed, { maxOutputLength: Math.max(1, member.declaredUncompressedSize) });
+    } catch {
+      throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `contains invalid compressed data for ${JSON.stringify(memberName)}`);
+    }
+  };
   return {
     has: (memberName) => byName.has(memberName),
     names: () => [...byName.keys()],
+    bytes,
     read(memberName) {
-      const entry = byName.get(memberName);
-      if (!entry) return null;
-      const { member, compressed } = entry;
-      let raw;
-      try {
-        raw = member.compressionMethod === 0
-          ? compressed
-          : inflateRawSync(compressed, { maxOutputLength: Math.max(1, member.declaredUncompressedSize) });
-      } catch {
-        throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `contains invalid compressed data for ${JSON.stringify(memberName)}`);
-      }
+      const raw = bytes(memberName);
+      if (raw === null) return null;
       try {
         return new TextDecoder('utf-8', { fatal: true }).decode(raw).replace(/^\uFEFF/, '');
       } catch {
@@ -936,6 +955,80 @@ async function extractDocx(bytes, name) {
   } catch (error) {
     throw new ReferenceExtractionError('REFERENCE_EXTRACTION_FAILED', `Could not extract text from ${name}: ${error?.message ?? error}`);
   }
+}
+
+function hiddenZipMember(memberName) {
+  return memberName.split('/').some((segment) => segment.startsWith('.') || segment === '__MACOSX');
+}
+
+/**
+ * ZIP: 안에 든 지원 파일마다 글을 뽑아 `## 경로` 머리 아래 잇습니다. 그림, 중첩 ZIP,
+ * 지원하지 않는 형식은 건너뛰고 끝에 목록으로 남겨 에이전트가 빠진 파일을 알게 합니다.
+ */
+async function extractZip(bytes, name, projectRoot) {
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new ReferenceExtractionError('REFERENCE_TYPE_MISMATCH', `${name} does not have a valid ZIP signature`);
+  }
+  const { resolvedMembers } = await validateOoxmlArchive(bytes, name, { kind: ZIP_ARCHIVE_KIND });
+  const reader = ooxmlReader(resolvedMembers, name);
+  const sections = [];
+  const skipped = [];
+  const warnings = [];
+  let total = 0;
+  let tempDir = null;
+  try {
+    for (const [index, { member }] of resolvedMembers.entries()) {
+      if (member.name.endsWith('/') || (!member.unsafe && hiddenZipMember(member.name))) continue;
+      const label = member.name;
+      const extension = extensionOf(label);
+      let reason = null;
+      if (member.unsafe) reason = 'unsafe path';
+      else if (extension === '.zip') reason = 'nested ZIP archives are not read';
+      else if (IMAGE_REFERENCE_EXTENSIONS.includes(extension)) reason = 'images inside ZIP archives are not read';
+      else if (!SUPPORTED_REFERENCE_EXTENSIONS.includes(extension)) reason = 'unsupported file type';
+      else if (member.declaredUncompressedSize === 0) reason = 'empty file';
+      if (reason) {
+        skipped.push(`${label}: ${reason}`);
+        continue;
+      }
+      let extracted;
+      try {
+        const data = reader.bytes(label);
+        if (HWP_EXTENSIONS.has(extension)) {
+          tempDir ??= await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-zip-'));
+          const filePath = path.join(tempDir, `${index}${extension}`);
+          await fs.writeFile(filePath, data);
+          extracted = await extractReferenceText({ filePath, name: label, projectRoot });
+        } else {
+          extracted = await extractReferenceText({ bytes: data, name: label, projectRoot });
+        }
+      } catch (error) {
+        if (!(error instanceof ReferenceExtractionError)) throw error;
+        skipped.push(`${label}: ${error.message}`);
+        continue;
+      }
+      const section = `## ${label}\n\n${extracted.text.trim()}`;
+      if (total + section.length + 2 > MAX_EXTRACTED_CHARS) {
+        skipped.push(`${label}: the archive reached the text limit`);
+        continue;
+      }
+      total += section.length + 2;
+      sections.push(section);
+      warnings.push(...extracted.warnings.map((warning) => `${label}: ${warning}`));
+    }
+  } finally {
+    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+  if (sections.length === 0) {
+    throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${name} contains no supported files with searchable text`);
+  }
+  if (skipped.length > 0) {
+    const listed = skipped.slice(0, MAX_ZIP_SKIPPED_LISTED).map((line) => `- ${line}`);
+    if (skipped.length > listed.length) listed.push(`- … ${skipped.length - listed.length} more`);
+    const note = `## Skipped files\n\n${listed.join('\n')}`;
+    if (total + note.length + 2 <= MAX_EXTRACTED_CHARS) sections.push(note);
+  }
+  return { text: sections.join('\n\n'), warnings: [...warnings, ...skipped] };
 }
 
 async function isExecutable(file) {
@@ -1136,6 +1229,9 @@ export async function extractReferenceText({ bytes, filePath, name, mimeType, pr
   } else if (extension === '.xlsx') {
     const source = await boundedReferenceSource(bytes, filePath, name);
     result = await extractXlsx(source, name);
+  } else if (extension === '.zip') {
+    const source = await boundedReferenceSource(bytes, filePath, name);
+    result = await extractZip(source, name, projectRoot);
   } else if (HWP_EXTENSIONS.has(extension)) {
     result = await extractHwp(filePath, name, projectRoot);
   } else {
