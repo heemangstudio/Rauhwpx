@@ -144,3 +144,19 @@ test('개요와 일반 문단의 세션 번호 다시 시작은 되돌릴 수 �
     }
   }
 });
+
+test('파일 바이트로 연 문서만 파일에서 열린 문서로 알린다', async t => {
+  const { wasm } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  assert.equal(wasm.openedFromFile, true);
+  const bytes = wasm.exportHwpx();
+  wasm.createNewDocument(wasm.prepareNewDocument(bytes));
+  assert.equal(wasm.openedFromFile, false);
+  wasm.replaceContentFromBytes(bytes);
+  assert.equal(wasm.openedFromFile, false);
+  wasm.adoptPreparedDocument(wasm.prepareDocument(bytes, 'opened.hwpx'));
+  assert.equal(wasm.openedFromFile, true);
+  wasm.releaseDocument();
+  assert.equal(wasm.openedFromFile, false);
+  wasm.loadDocument(bytes, 'loaded.hwpx');
+  assert.equal(wasm.openedFromFile, true);
+});
