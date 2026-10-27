@@ -131,6 +131,10 @@ const SCALE = 3;
 const AUTO_SLEEP_MS = 45_000;
 /** 입력이 멈춘 뒤 오른쪽 구석으로 돌아가기까지. */
 const HOME_DELAY_MS = 3000;
+/** 두 번 눌러 하마를 부르는 입력기 가장자리 폭(CSS 픽셀). */
+const EDGE_PX = 12;
+/** 입력기 위로 함께 받는 빈자리 높이(CSS 픽셀). */
+const ABOVE_PX = 16;
 
 // ---------------------------------------------------------------- 그리기
 function drawLayers(ctx: CanvasRenderingContext2D, layers: readonly Layer[], palette: Record<string, string>): void {
@@ -189,7 +193,7 @@ interface ActionState {
   name: ActionName;
   at: number;
   from: number;
-  opts?: { to?: number };
+  opts?: { to?: number; lift?: number };
   impacted?: boolean;
 }
 interface ActionHost {
@@ -317,17 +321,21 @@ const SMASH: ActionFn = (t) => {
   return { pose: after < 260 ? 'crouch' : 'stand', y: after < 60 ? 1 : 0, impact: true, layers };
 };
 
-/** 물에 들어가 귀와 등만 내놓고 헤엄쳐 갔다 오고, 올라와 몸을 턴다. */
+/**
+ * 물에 들어가 귀와 등만 내놓고 헤엄쳐 갔다 오고, 올라와 몸을 턴다.
+ * a.opts.to 가 있으면 그곳까지 헤엄쳐 가서 올라온다.
+ */
 const SWIM: ActionFn = (t, a, h) => {
-  const span = 16;
-  const dir: Facing = a.from - span < h.bounds[0] ? 1 : -1;
+  const to = a.opts?.to;
+  const span = to != null ? Math.abs(to - a.from) : 16;
+  const dir: Facing = to != null ? (to >= a.from ? 1 : -1) : a.from - span < h.bounds[0] ? 1 : -1;
   if (t < 200) return { pose: 'step', y: arc(t / 200, 2) };
   if (t < 450) return { pose: 'crouch', hy: Math.round(lerp(0, 3, (t - 200) / 200)), clip: true, layers: ripples(6, t - 200) };
   const swim = t - 450;
-  const total = span * 2 * 90;
+  const total = span * (to != null ? 1 : 2) * 90;
   if (swim < total) {
-    const out = swim < total / 2;
-    const p = out ? swim / (total / 2) : 2 - swim / (total / 2);
+    const out = to != null || swim < total / 2;
+    const p = to != null ? swim / total : out ? swim / (total / 2) : 2 - swim / (total / 2);
     const bob = Math.floor(swim / 320) % 2;
     const wakeX = Math.floor(swim / 150) % 2;
     const wake = [dot(-1 - wakeX, GROUND, 'h'), dot(-3 - wakeX, GROUND, 'o'), dot(13, GROUND, 'h'), dot(14, GROUND, 'o')];
@@ -377,6 +385,42 @@ const BALL_BOUNCE: ActionFn = (t, a, h) => {
   return null;
 };
 
+/**
+ * 들어 올렸다 놓으면 떨어지며 공처럼 말리고, 땅에 닿아 납작해진 뒤 구르다 일어선다.
+ * a.opts.lift 는 놓은 높이(장면 픽셀), 높을수록 오래 떨어지고 멀리 구른다.
+ */
+const DROP: ActionFn = (t, a, h) => {
+  const lift = a.opts?.lift ?? 0;
+  const fall = 90 + Math.sqrt(lift) * 70;
+  if (t < fall) {
+    const p = t / fall;
+    const y = -Math.round(lift * (1 - p * p));
+    if (p < 0.35) return { pose: 'step', y };
+    return { pose: 'ball', y, turn: -Math.floor((t - fall * 0.35) / 70) - 1 };
+  }
+  let span = Math.round(6 + Math.min(34, lift * 1.2));
+  let dir: Facing = h.facing;
+  if (a.from + dir * span > h.bounds[1] || a.from + dir * span < h.bounds[0]) dir = -dir as Facing;
+  span = Math.min(span, dir > 0 ? h.bounds[1] - a.from : a.from - h.bounds[0]);
+  const at = t - fall;
+  if (at < 70) return { pose: 'squash', face: dir, impact: lift >= 8 };
+  const BOUNCES = [[Math.min(340, 160 + lift * 6), Math.max(1, Math.min(8, Math.round(lift / 4)))], [200, Math.min(3, Math.round(lift / 16)) || 1]] as const;
+  const total = BOUNCES[0][0] + BOUNCES[1][0];
+  const roll = at - 70;
+  const rolled = a.from + dir * Math.round(span * Math.min(1, roll / total));
+  if (roll < total) {
+    const [ms, height] = roll < BOUNCES[0][0] ? BOUNCES[0] : BOUNCES[1];
+    const local = roll < BOUNCES[0][0] ? roll : roll - BOUNCES[0][0];
+    return { pose: 'ball', y: arc(local / ms, height), turn: Math.floor(roll / 70), at: rolled, face: dir };
+  }
+  const end = roll - total;
+  if (end < 80) return { pose: 'squash', at: rolled, face: dir };
+  if (end < 170) return { pose: 'crouch', at: rolled, face: dir };
+  if (end < 230) return { pose: 'stand', at: rolled, face: dir };
+  if (end < 470) return { pose: 'ear', at: rolled, face: dir, x: Math.floor(end / 60) % 2 ? 1 : 0 };
+  return null;
+};
+
 const BOARD = ['.mmmmmmmmmmmm.', '..L.......L...'];
 const BOARD_SPIN = ['..L.......L...', '.mmmmmmmmmmmm.'];
 const board = (y: number, art: readonly string[] = BOARD, map?: Record<string, string>): Layer => ({ art, x: 0, y, map });
@@ -413,7 +457,7 @@ const SKATE: ActionFn = (t, a, h) => {
 
 const ACTIONS = {
   hop: HOP, cheer: CHEER, backflip: BACKFLIP, shuffle: SHUFFLE, land: LAND, shake: SHAKE,
-  jump: JUMP, splash: SPLASH, smash: SMASH, swim: SWIM, skate: SKATE, ballBounce: BALL_BOUNCE,
+  jump: JUMP, splash: SPLASH, smash: SMASH, swim: SWIM, skate: SKATE, ballBounce: BALL_BOUNCE, drop: DROP,
 } satisfies Record<string, ActionDef>;
 type ActionName = keyof typeof ACTIONS;
 const TRICKS: readonly ActionName[] = ['jump', 'backflip', 'ballBounce', 'splash', 'smash', 'swim', 'skate'];
@@ -511,7 +555,10 @@ const STILL_T: Record<ChatHamaMode, number> = {
 interface Drag {
   pointerId: number;
   startX: number;
+  startY: number;
   fromX: number;
+  /** 입력기 위로 들어 올린 높이(장면 픽셀). */
+  lift: number;
   moved: boolean;
 }
 
@@ -525,6 +572,8 @@ class Hama implements ActionHost {
   mode: ChatHamaMode = 'idle';
   /** 부딪혀 내려설 때(스매시) — 입력기를 흔든다. */
   onImpact: (() => void) | null = null;
+  /** 들어 올릴 수 있는 높이(장면 픽셀) — 채팅 화면의 절반까지. */
+  maxLift: () => number = () => 12;
   private target: number | null = null;
   private returnTo: number | null = null;
   private modeAt = performance.now();
@@ -611,7 +660,7 @@ class Hama implements ActionHost {
     this.renderStill();
   }
 
-  play(name: ActionName, opts?: { to?: number }): void {
+  play(name: ActionName, opts?: ActionState['opts']): void {
     if (this.still) return;
     this.target = null;
     this.returnTo = null;
@@ -624,6 +673,19 @@ class Hama implements ActionHost {
     this.returnTo = stroll ? this.x : null;
     if (this.mode === 'idle') this.wake();
     this.target = Math.round(Math.max(this.bounds[0], Math.min(this.bounds[1], x)));
+  }
+
+  /** 막대 위 x 로 보드를 타거나, 구르거나, 헤엄쳐 간다. */
+  travel(x: number): void {
+    const to = Math.round(Math.max(this.bounds[0], Math.min(this.bounds[1], x)));
+    if (this.drag || Math.abs(to - this.x) < 3) return;
+    this.wake();
+    if (this.still) {
+      this.facing = to > this.x ? 1 : -1;
+      this.x = to;
+      return this.renderStill();
+    }
+    this.play((['skate', 'ballBounce', 'swim'] as const)[Math.floor(Math.random() * 3)]!, { to });
   }
 
   wake(): void {
@@ -658,20 +720,27 @@ class Hama implements ActionHost {
     return false;
   }
 
-  /** 하마를 눌렀다. 끌면 옮기고, 그냥 떼면 뛰고, 세 번이면 재주를 부린다. */
+  /**
+   * 하마를 눌렀다. 끌면 옮기고, 위로 들어 올렸다 놓으면 떨어져 구르고, 그냥 떼면 뛰고,
+   * 세 번이면 재주를 부린다.
+   */
   grab(event: PointerEvent): void {
-    this.drag = { pointerId: event.pointerId, startX: event.clientX, fromX: this.x, moved: false };
+    const maxLift = this.maxLift();
+    this.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, fromX: this.x, lift: 0, moved: false };
     const move = (e: PointerEvent): void => {
       const drag = this.drag;
       if (!drag || e.pointerId !== drag.pointerId) return;
       const dx = (e.clientX - drag.startX) / SCALE;
-      if (Math.abs(dx) > 2) drag.moved = true;
+      const dy = (drag.startY - e.clientY) / SCALE;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) drag.moved = true;
       if (!drag.moved) return;
+      this.action = null;
       this.target = null;
       this.returnTo = null;
       const nx = Math.round(Math.max(this.bounds[0], Math.min(this.bounds[1], drag.fromX + dx)));
       if (nx !== this.x) this.facing = nx > this.x ? 1 : -1;
       this.x = nx;
+      drag.lift = Math.round(Math.max(0, Math.min(maxLift, dy)));
       this.renderStill();
     };
     const up = (e: PointerEvent): void => {
@@ -683,7 +752,9 @@ class Hama implements ActionHost {
       this.drag = null;
       if (e.type === 'pointercancel') return this.renderStill();
       if (drag.moved) {
-        this.play('land');
+        this.wake();
+        if (drag.lift >= 3) this.play('drop', { lift: drag.lift + 2 });
+        else this.play('land');
         return this.renderStill();
       }
       const now = performance.now();
@@ -705,7 +776,7 @@ class Hama implements ActionHost {
   private frame(now: number): { layers: Layer[]; dx: number; dy: number; turn: number } {
     if (this.still) {
       const m = MODES[this.mode](STILL_T[this.mode]);
-      const lift = this.drag?.moved ? -2 : 0;
+      const lift = this.drag?.moved ? -2 - this.drag.lift : 0;
       const pose = this.drag?.moved ? 'step' : m.pose;
       return { layers: [...(m.behind ?? []), { art: POSES[pose] }, ...(m.fx ?? [])], dx: 0, dy: lift, turn: 0 };
     }
@@ -777,8 +848,11 @@ class Hama implements ActionHost {
       }
     }
     if (this.drag?.moved) {
-      pose = 'step';
-      dy = -2;
+      // 들려 있으면 발을 버둥거린다.
+      pose = this.drag.lift > 0 && Math.floor(now / 140) % 2 ? 'stand' : 'step';
+      dy = -2 - this.drag.lift;
+      dx = 0;
+      turn = 0;
     } else if (walking && !this.action) {
       pose = Math.floor(now / 120) % 2 ? 'step' : 'stand';
     } else if (!this.action && this.micro && now < this.micro.until && this.mode === 'idle') {
@@ -993,6 +1067,21 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     mounted.hama.grab(event);
   }
 
+  /** 입력기 가장자리나 바로 위 빈자리를 두 번 누르면 하마가 그 자리로 간다. */
+  function onDoubleClick(event: MouseEvent): void {
+    if (!mounted || !isActive()) return;
+    const target = event.target as Element | null;
+    if (target !== input && target?.closest(INTERACTIVE)) return;
+    const rect = composer.getBoundingClientRect();
+    const { clientX: x, clientY: y } = event;
+    if (x < rect.left || x > rect.right || y < rect.top - ABOVE_PX || y > rect.bottom) return;
+    if (y >= rect.top && Math.min(x - rect.left, rect.right - x, y - rect.top, rect.bottom - y) > EDGE_PX) return;
+    const { hama, perch } = mounted;
+    window.clearTimeout(homeTimer);
+    homeTimer = 0;
+    hama.travel((x - perch.getBoundingClientRect().left) / SCALE - 6);
+  }
+
   let hovering = false;
   function onPointerMove(event: PointerEvent): void {
     if (!mounted || event.buttons !== 0 || !isActive()) return;
@@ -1009,6 +1098,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     hama.onImpact = () => {
       composer.animate?.([{ translate: '0 0' }, { translate: '0 1px' }, { translate: '0 0' }], { duration: 110 });
     };
+    hama.maxLift = () => Math.max(12, Math.floor((perch.getBoundingClientRect().bottom - hitRoot.getBoundingClientRect().top) / 2 / SCALE));
     perch.append(hama.el);
     composer.append(perch);
     // 집은 오른쪽 구석 — 발이 둥근 모서리 바로 안쪽에 선다.
@@ -1036,6 +1126,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     input.addEventListener('focus', onFocus);
     hitRoot.addEventListener('pointerdown', onPointerDown, true);
     hitRoot.addEventListener('pointermove', onPointerMove, { passive: true });
+    hitRoot.addEventListener('dblclick', onDoubleClick);
     hitRoot.addEventListener('transitionend', onPageTransition);
     hitRoot.addEventListener('transitioncancel', onPageTransition);
     updateActive();
@@ -1061,6 +1152,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     input.removeEventListener('focus', onFocus);
     hitRoot.removeEventListener('pointerdown', onPointerDown, true);
     hitRoot.removeEventListener('pointermove', onPointerMove);
+    hitRoot.removeEventListener('dblclick', onDoubleClick);
     hitRoot.removeEventListener('transitionend', onPageTransition);
     hitRoot.removeEventListener('transitioncancel', onPageTransition);
   }
