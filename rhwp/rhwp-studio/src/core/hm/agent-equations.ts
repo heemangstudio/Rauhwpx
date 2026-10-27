@@ -128,9 +128,14 @@ export function setEquationPropertiesByPath(core: HmCore, sec: number, parentPar
   return write(core, objectAt(list, para, innerControlIdx), props);
 }
 
-/** `{svg, widthPx, heightPx, baselinePx, warnings}` JSON. 문서는 바꾸지 않는다. */
+/** 엔진이 warnings 에 함께 싣는 글꼴 등록·글리프 안내. 수식 스크립트의 문제가 아니다. */
+const FONT_NOTE = /^no (equation font|registered font)\b/;
+
+/** `{svg, widthPx, heightPx, baselinePx, warnings}` JSON. warnings 는 수식 스크립트 경고만 담는다. 문서는 바꾸지 않는다. */
 export function renderEquationPreview(core: HmCore, script: string, fontSizeHwpunit: number, color: number, fontName?: string): string {
-  return JSON.stringify(core.query({ kind: 'equationPreview', script, size: fontSizeHwpunit, color, ...(fontName ? { font: fontName } : {}) }));
+  const preview = core.query<{ warnings?: unknown }>({ kind: 'equationPreview', script, size: fontSizeHwpunit, color, ...(fontName ? { font: fontName } : {}) });
+  if (Array.isArray(preview.warnings)) preview.warnings = preview.warnings.filter(w => typeof w !== 'string' || !FONT_NOTE.test(w));
+  return JSON.stringify(preview);
 }
 
 export function insertEquation(core: HmCore, sec: number, para: number, charOffset: number, script: string, fontSizeHwpunit: number, color: number, logical = false): { ok: boolean; paraIdx: number; controlIdx: number } {

@@ -48,6 +48,8 @@ test('수식 미리보기는 SVG와 크기를 주고 문서를 바꾸지 않는�
   const preview = JSON.parse(env.wasm.renderEquationPreview('sqrt {x}', 1000, 0));
   assert.match(preview.svg, /<svg/);
   assert.ok(preview.widthPx > 0 && preview.heightPx > 0);
+  // 글꼴이 아직 등록되지 않은 환경의 글꼴 안내는 수식 경고가 아니다(넣기 확인을 두 번 받지 않는다).
+  assert.deepEqual(preview.warnings, []);
   assert.equal(env.adapter.state().contentEpoch, epoch);
 });
 
