@@ -16,7 +16,10 @@ import type {
   AgentName,
   AgentSetupStatusMap,
   SidebarEvent,
+  TasteProvider,
+  TasteSettings,
 } from '../../agent/types.ts';
+import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
@@ -93,6 +96,11 @@ export interface InitialSetupDeps {
   openExternal?: (url: string) => void;
   /** 자동 버그 수정 단계를 넣을지. 기본은 데스크톱 자동 수정 API 가 있을 때. */
   autofixAvailable?: () => boolean;
+  /** Rau-0.1 설정(허브가 정본). 없으면 Rau-0.1 단계가 없다. */
+  taste?: {
+    get(): Promise<TasteSettings | null>;
+    set(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
+  } | null;
   /** 데스크톱 라이선스. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 라이선스 장이 없다. */
   license?: DesktopLicenseApi | null;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
@@ -121,7 +129,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let lastFocus: HTMLElement | null = null;
   let fontStep: FontStepKind | null = null;
   const withAutofix = (deps.autofixAvailable ?? (() => autofixApi() !== null))();
-  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix });
+  const tasteApi = deps.taste ?? null;
+  const withTaste = tasteApi !== null;
+  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix, taste: withTaste });
   let stepIndex = 0;
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
@@ -135,7 +145,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep });
+      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep, taste: withTaste });
       renderFonts();
       renderStep();
     });
@@ -144,7 +154,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     .then((status) => {
       licenseStatus = status;
       licenseStep = needsLicenseStep(status);
-      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep });
+      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
       renderStep();
     });
 
@@ -224,6 +234,75 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     cards.set(agent, { root: card, action });
   }
   modelsPanel.append(grid);
+
+  // ── Rau-0.1: 기본은 켜짐, 자동 공급자. 고르는 순간 허브에 저장한다. 켰을 때만 공급자를 고른다. ──
+  const tastePanel = el('div', 'rhwp-setup-panel rhwp-setup-taste');
+  tastePanel.dataset.step = 'taste';
+  const tasteGroup = el('div', 'rhwp-setup-font-actions');
+  tasteGroup.setAttribute('role', 'radiogroup');
+  tasteGroup.setAttribute('aria-label', RAU_TASTE_NAME);
+  const tasteChoices = ([[true, '켜기', 'sparkles'], [false, '끄기', 'minimize']] as const).map(([enabled, label, icon]) => {
+    const root = button('rhwp-setup-font-action');
+    root.setAttribute('role', 'radio');
+    const iconSlot = el('span', 'rhwp-setup-font-icon');
+    iconSlot.appendChild(createIcon(icon));
+    const check = el('span', 'rhwp-setup-check');
+    check.appendChild(createIcon('check'));
+    root.append(iconSlot, el('span', 'rhwp-setup-font-label', label), check);
+    root.addEventListener('click', () => void saveTaste({ enabled }));
+    tasteGroup.append(root);
+    return { enabled, root };
+  });
+  const tasteProviders = el('div', 'rhwp-setup-grid rhwp-setup-taste-providers');
+  tasteProviders.setAttribute('role', 'radiogroup');
+  tasteProviders.setAttribute('aria-label', `${RAU_TASTE_NAME} 공급자`);
+  const TASTE_PROVIDER_CHOICES: ReadonlyArray<{ id: TasteProvider; label: string }> = [
+    { id: 'auto', label: '자동' },
+    { id: 'claude', label: AGENT_LABEL.claude },
+    { id: 'codex', label: AGENT_LABEL.codex },
+    { id: 'pi', label: 'OpenRouter' },
+  ];
+  const tasteProviderChoices = TASTE_PROVIDER_CHOICES.map(({ id, label }) => {
+    const root = button('rhwp-setup-card-action');
+    root.setAttribute('role', 'radio');
+    root.setAttribute('aria-label', label);
+    const logo = el('span', 'rhwp-setup-card-logo');
+    logo.appendChild(id === 'auto' ? createIcon('refresh') : createProviderIcon(id));
+    const check = el('span', 'rhwp-setup-check');
+    check.appendChild(createIcon('check'));
+    root.append(logo, el('span', 'rhwp-setup-card-name', label), check);
+    root.addEventListener('click', () => void saveTaste({ provider: id, model: null, effort: null }));
+    tasteProviders.append(root);
+    return { id, root };
+  });
+  tastePanel.append(tasteGroup, tasteProviders);
+  /** 허브가 답하기 전에는 기본값을 보인다. */
+  let taste: Pick<TasteSettings, 'enabled' | 'provider'> = { enabled: true, provider: 'auto' };
+  let tasteRequest = 0;
+  async function loadTaste(): Promise<void> {
+    if (!tasteApi) return;
+    const seq = ++tasteRequest;
+    const current = await tasteApi.get().catch(() => null);
+    if (disposed || seq !== tasteRequest || !current) return;
+    taste = { enabled: current.enabled, provider: current.provider };
+    renderTaste();
+  }
+  async function saveTaste(patch: Partial<TasteSettings>): Promise<void> {
+    if (!tasteApi) return;
+    const seq = ++tasteRequest;
+    taste = { ...taste, ...patch };
+    renderTaste();
+    const saved = await tasteApi.set(patch).catch(() => null);
+    if (disposed || seq !== tasteRequest) return;
+    // 저장하지 못했으면 허브의 값으로 되돌린다.
+    if (saved) {
+      taste = { enabled: saved.enabled, provider: saved.provider };
+      renderTaste();
+    } else {
+      console.warn('[initial-setup] Rau-0.1 설정을 저장하지 못했습니다');
+      void loadTaste();
+    }
+  }
 
   // ── 자동 버그 수정: 기본은 꺼짐. 고르는 순간 답한 것으로 저장한다. ──
   const autofixPanel = el('div', 'rhwp-setup-panel');
@@ -359,10 +438,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, autofixPanel);
+  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, tastePanel, autofixPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,
+    taste: tastePanel,
     autofix: autofixPanel,
     fonts: fontsPanel,
     license: licenseElement,
@@ -409,6 +489,18 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
   }
 
+  function renderTaste(): void {
+    for (const choice of tasteChoices) {
+      const picked = taste.enabled === choice.enabled;
+      choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
+      choice.root.dataset.done = picked ? 'true' : 'false';
+    }
+    tasteProviders.hidden = !taste.enabled;
+    for (const choice of tasteProviderChoices) {
+      choice.root.setAttribute('aria-checked', choice.id === taste.provider ? 'true' : 'false');
+    }
+  }
+
   function renderFonts(): void {
     if (fontSearch === 'idle' && fontStep === 'missing') fontSearch = 'missing';
     const rescan = fontStep === 'missing' || fontSearch === 'missing';
@@ -429,6 +521,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
+    if (step === 'taste') return HIPPO_LINES.taste;
     if (step === 'autofix') return HIPPO_LINES.autofix;
     if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : licenseLine(licenseStatus);
     if (fontSearch === 'found') return HIPPO_LINES.found;
@@ -549,6 +642,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     renderTheme();
     renderCards();
     renderAutofix();
+    renderTaste();
+    void loadTaste();
     renderFonts();
     renderStep();
     requestAnimationFrame(() => {

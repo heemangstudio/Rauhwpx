@@ -170,6 +170,8 @@ test('라이선스 장은 키를 넣지 않은 데스크톱 사용자에게만 �
   assert.equal(needsLicenseStep(null), false);
   assert.deepEqual(planSteps('missing', { license: true }), ['theme', 'models', 'fonts', 'license']);
   assert.deepEqual(planSteps(null, { autofix: true, license: true }), ['theme', 'models', 'license', 'autofix']);
+  // Rau-0.1 은 자동 버그 수정 바로 앞에 묻는다.
+  assert.deepEqual(planSteps('missing', { autofix: true, license: true, taste: true }), ['theme', 'models', 'fonts', 'license', 'taste', 'autofix']);
   // 붙여 넣은 키는 다 찼을 때만 바로 확인한다.
   assert.equal(looksLikeFullKey(' hama-7kq2m-px4rt-9wzlb-c3vnd-h8yja\n'), true);
   assert.equal(looksLikeFullKey('HAMA-7KQ2M-PX4RT'), false);

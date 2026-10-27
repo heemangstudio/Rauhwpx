@@ -1,4 +1,5 @@
 import type { ChatThread, ThreadMessage, ThreadToolRecord } from '../../agent/threads.ts';
+import { tasteMarkerLabel } from '../../agent/taste.ts';
 
 const TOOL_TEXT_CHARS = 400;
 
@@ -31,9 +32,9 @@ function messageBlock(message: ThreadMessage): string | null {
         return `[오류] ${code}${clip(summary, 1000)}`.trim();
       }
       case 'marker':
-        return message.marker === 'handoff'
-          ? `— ${message.from} → ${message.to} —`
-          : '— 대화 압축 —';
+        if (message.marker === 'handoff') return `— ${message.from} → ${message.to} —`;
+        if (message.marker === 'taste') return `— ${tasteMarkerLabel(message.items.length)} —`;
+        return '— 대화 압축 —';
       case 'turn':
         return message.endedAt !== null && message.outcome && message.outcome !== 'completed'
           ? `— 턴 ${message.outcome}${message.reason ? ` (${message.reason})` : ''} —`

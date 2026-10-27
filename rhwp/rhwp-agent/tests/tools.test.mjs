@@ -1184,7 +1184,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // browser_upload(이 채팅의 파일을 웹사이트에 첨부) 추가분만큼 올렸다.
 // 양식 채우기·대화상자·인용·여러 쪽 읽기·감시·사이트 메모·하이퍼링크 추가분(약 5천 자) 중 남은 2.2천 자만큼 올렸다.
 // browser_press·browser_select 는 browser_type key·browser_fill_form 으로, 찾기·호버·끌기는 snapshot·click 인자로 합쳤고 설명을 줄여 나머지를 메웠다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 79_700;
+// 문서 기억 읽기 도구(read_document_memory) 추가분만큼 올렸다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 80_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 // 문서 없이 시작한 데스크톱 채팅(문서 연결 도구 + 홈 폴더 검색 + 요청 가능한 도구)이 가장 큰 direct 목록이다.

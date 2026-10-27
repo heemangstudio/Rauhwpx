@@ -35,6 +35,8 @@ import { checkDocumentMentions } from './document-mentions.check.mjs';
 import { checkDocumentLink } from './document-link.check.mjs';
 import { checkDocumentDetach } from './document-detach.check.mjs';
 import { checkDocumentNameWriter } from './document-name-writer.check.mjs';
+import { checkDocumentMemory } from './document-memory.check.mjs';
+import { checkTaste, checkTasteHistory } from './taste.check.mjs';
 import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
@@ -56,6 +58,9 @@ const focusedChecks = {
   'document-link': (h) => checkDocumentLink(h),
   'document-detach': (h) => checkDocumentDetach(h),
   'document-name-writer': (h) => checkDocumentNameWriter(h),
+  'document-memory': (h) => checkDocumentMemory(h),
+  taste: (h) => checkTaste(h),
+  'taste-history': (h) => checkTasteHistory(h),
   'scroll-rail': (h) => checkChatScrollRail(h),
   'focus-composer': async ({ page, open }) => {
     await open('reset=1&fullscreen=1');

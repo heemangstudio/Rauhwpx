@@ -1,5 +1,6 @@
 // 전체 모드 에이전트의 commit_version 은 자기 턴 안에서 불린다 — 실제 브리지 도구 경로와 실제 버전
 // 컨트롤러로, 턴 중에도 커밋되고(사용자 커밋은 계속 막힌다) 저장 전 문서는 행동할 수 있는 오류를 받는지 본다.
+// 커밋은 그 에이전트와 채팅의 이름으로 남는다.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -133,10 +134,13 @@ test('the agent commits from inside its running turn; user commits stay blocked 
           activeProviderTurnId: 'turn-1', turnRunning: true,
           activeToolRequests: 0, activeToolRequestControllers: new Map(),
           inFlightWrites: new Set(), versionCommitInFlight: null,
-          workflow: 'direct', phase: 'direct', permissionProfile: 'unrestricted', activeAgent: 'pi',
+          workflow: 'direct', phase: 'direct', permissionProfile: 'unrestricted', activeAgent: 'pi', threadId: 'th-agent',
           pendingEdits, listeners: new Set(),
           executor: { execute: async () => ({ revision: 1 }) },
-          versionCommit: (message: string) => target.checkpoint(message, { agentTurn: true }),
+          // main.ts 와 같은 배선 — 에이전트 이름과 채팅을 커밋에 남긴다.
+          versionCommit: (message: string, author: { agent: string | null; threadId: string }) => target.checkpoint(message, {
+            agentTurn: true, agent: { label: author.agent === 'pi' ? 'Pi' : '에이전트', threadId: author.threadId },
+          }),
           syncEditingLease: () => {},
           sendJson: () => true,
           sendToolResponse: (frame: { ok: boolean; result?: unknown; error?: { code: string; message: string } }) => {
@@ -175,6 +179,7 @@ test('the agent commits from inside its running turn; user commits stay blocked 
         const after = controller.getState().commits;
         const unsavedCommit = await commitVia(unsaved, '저장 전');
         return {
+          head: { reason: after[0]?.reason, author: after[0]?.author ?? null, threadId: after[0]?.threadId ?? null },
           userCommit,
           agentOk: agentCommit?.ok,
           agentError: agentCommit?.error ?? null,
@@ -192,6 +197,7 @@ test('the agent commits from inside its running turn; user commits stay blocked 
     assert.equal(result.userCommit, 'ACTIVE_AGENT_TURN', '사용자 커밋은 턴 중에 계속 막힌다');
     assert.equal(result.agentOk, true, JSON.stringify(result.agentError));
     assert.equal(result.committed, 1);
+    assert.deepEqual(result.head, { reason: 'agent', author: { kind: 'agent', label: 'Pi' }, threadId: 'th-agent' });
     assert.equal(result.unsaved?.code, 'SAVE_REQUIRED');
     assert.match(result.unsaved?.message ?? '', /Do not retry.*save/);
   } finally {

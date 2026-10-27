@@ -16,6 +16,8 @@ import { previewTokenUsage } from './mock-token-usage.ts';
 import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
+import { createMockDocumentMemory } from './mock-document-memory.ts';
+import { createMockTaste, sampleTasteDraft } from './mock-taste.ts';
 
 export const scenarios = [
   'chat',
@@ -445,6 +447,8 @@ export function createMockBridge(
   const staged = new Map<string, T.StagedReference>();
   const emit = (event: T.SidebarEvent) =>
     listeners.forEach((listener) => listener(event));
+  const documentMemory = createMockDocumentMemory(emit, () => chatDocumentId);
+  const taste = createMockTaste(emit);
   /** 선물 프록시의 Claude 모델. 허브처럼 내 키의 모델과 따로 두고 처음에는 Sonnet·Haiku·Opus 를 고른다. */
   const giftCatalog = [
     { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', prompt: 0.000003, completion: 0.000015 },
@@ -476,7 +480,8 @@ export function createMockBridge(
     const ownFirst = data.pi.keyConfigured && giftOrder === 'after';
     data.pi.credential = giftActive() && !ownFirst ? 'gift' : data.pi.keyConfigured ? 'own' : 'none';
     data.pi.giftOrder = giftOrder;
-    if (data.pi.credential !== 'gift') return data.pi;
+    // 허브처럼 매번 새 상태를 보낸다 — 받은 쪽이 들고 있는 이전 상태가 몰래 바뀌지 않게.
+    if (data.pi.credential !== 'gift') return { ...data.pi };
     return {
       ...data.pi,
       models: giftModels,
@@ -629,6 +634,8 @@ export function createMockBridge(
   const terminalMenu = () => `\x1b[2J\x1b[H\x1b[36m◆  ${terminalRun?.agent ?? 'CLI'} 로그인\x1b[0m\r\n\r\n`
     + terminalOptions.map((name, index) => `  ${index === terminalRun?.choice ? '❯' : ' '} ${name}`).join('\r\n')
     + '\r\n\r\n  Enter 키로 선택하세요.';
+  /** 받은 로그인 요청 — 미리보기 확인이 읽는다. */
+  const agentAuthCalls: Array<{ provider: T.AgentName; method: string }> = [];
   const authenticate = (provider: T.AgentName) => {
     if (provider === 'pi') {
       data.pi.keyConfigured = true;
@@ -1035,6 +1042,7 @@ export function createMockBridge(
       return data.setups;
     },
     authenticateAgent: async (provider, method) => {
+      agentAuthCalls.push({ provider, method });
       if (provider !== 'pi' && method === 'oauth') {
         terminalRun = { id: crypto.randomUUID(), agent: provider, step: 0, choice: 0 };
         const id = terminalRun.id;
@@ -1059,7 +1067,8 @@ export function createMockBridge(
       return {
         agent: provider,
         authRunId: crypto.randomUUID(),
-        authUrl: null,
+        // 허브처럼 Pi 브라우저 로그인은 OpenRouter PKCE 주소를 시작 응답에 싣는다 (미리보기는 열지 않는다).
+        authUrl: provider === 'pi' && method === 'oauth' ? 'https://openrouter.ai/auth?code_challenge_method=S256&state=preview' : null,
       };
     },
     resumeSetupTerminal: (agent, authRunId) => {
@@ -1161,7 +1170,7 @@ export function createMockBridge(
       data.pi.keyTail = 'demo';
       return syncPi();
     },
-    requestPiCatalog: async () => giftActive() ? giftCatalog.map((model) => ({
+    requestPiCatalog: async (_refresh, options) => giftActive() && !options?.own ? giftCatalog.map((model) => ({
       id: model.id,
       name: model.name,
       provider: 'anthropic',
@@ -1175,6 +1184,7 @@ export function createMockBridge(
       { id: 'openai/gpt-5.2', name: 'GPT-5.2', provider: 'openai' },
       { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro', provider: 'google' },
       { id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'deepseek' },
+      { id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', provider: 'deepseek' },
     ].map((model) => ({
       ...model,
       contextLength: 200000,
@@ -1965,6 +1975,8 @@ export function createMockBridge(
       request((requestId) =>
         emit({ type: 'writing-style-status', requestId, status: data.writing }),
       ),
+    ...documentMemory,
+    ...taste,
     requestAgentInstructions: async () => data.instructions,
     saveAgentInstructions: async (content, expectedRevision) => {
       if (expectedRevision !== data.instructions.revision)
@@ -1981,8 +1993,12 @@ export function createMockBridge(
       });
       return data.instructions;
     },
-    confirmAgentInstructionsDraft: (draft) =>
-      bridge.saveAgentInstructions(draft.content, draft.expectedRevision),
+    confirmAgentInstructionsDraft: async (draft) => {
+      const status = await bridge.saveAgentInstructions(draft.content, draft.expectedRevision);
+      // 허브처럼 적용한 변경안을 거둔다.
+      emit({ type: 'agent-instructions-draft-cleared', draftId: draft.id, outcome: 'confirmed' });
+      return status;
+    },
     rejectAgentInstructionsDraft: async (draft) => {
       emit({
         type: 'agent-instructions-draft-cleared',
@@ -2230,6 +2246,7 @@ export function createMockBridge(
     setHubDown: (value: boolean) => { hubDown = value; },
     setServices,
     setPiOwnKey,
+    agentAuthCalls,
     setUpdateAvailable,
     /** 에이전트가 브라우저 도구를 부른 것처럼 요청한다. 미리보기 탭과 조작권 흐름을 확인할 때 쓴다. */
     browserAsAgent: previewBrowser.requestAsAgent,
@@ -2309,6 +2326,12 @@ export function createMockBridge(
     emitDocumentRequired: (tool = 'project_edit') => {
       emit({ type: 'document-required', tool, reason: 'project-save' });
     },
+    /** 허브의 취향 학습 결과(taste-learned)를 보낸다. */
+    emitTasteLearned: (learned: T.TasteLearned) => emit({ type: 'taste-learned', ...learned }),
+    /** 기록에서 배우기의 결과(taste-history-learned)를 보낸다 — 턴에 묶이지 않는다. */
+    emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
+    /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */
+    emitTasteDraft: (id: string) => emit({ type: 'agent-instructions-draft', draft: { ...sampleTasteDraft(data.instructions), id } }),
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
@@ -2322,6 +2345,10 @@ export function createMockBridge(
       emit({ type: 'usage-report', usage: data.usage });
       bridge.listSkills();
       if (!options.liveChat?.deferWelcome) deliverWelcome();
+      // `taste=sample`: 표본 구분선이 가리키는 Rau-0.1 변경안 — 허브가 붙을 때 다시 보내는 것과 같다.
+      if (new URLSearchParams(location.search).get('taste') === 'sample') {
+        emit({ type: 'agent-instructions-draft', draft: sampleTasteDraft(data.instructions) });
+      }
     },
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */

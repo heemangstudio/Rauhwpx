@@ -20,6 +20,7 @@ const ROOT_ONLY_TOOLS = new Set([
 ]);
 const CHILD_DOCUMENT_CATEGORIES = new Set([
   'instruction-read',
+  'memory-read',
   'document-read',
   'document-write',
   'reference-read',

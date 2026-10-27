@@ -15,6 +15,7 @@ import {
 import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
+import { skipTasteUndo, tasteUndos } from './mock-taste.ts';
 import { showToast } from '../ui/toast.ts';
 import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
@@ -792,6 +793,11 @@ if (params.get('page') === 'settings') {
   eventBus.emit('settings:open', { destination: isSettingsDestination(requestedDestination) ? requestedDestination : 'editing' });
 }
 if (params.get('page') === 'versions') sidebar.openVersions();
+// `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
+if (params.has('memory')) {
+  await sidebar.startupChatSettled();
+  sidebar.openDocumentMemory();
+}
 const projectTab = params.get('project');
 if (projectTab === 'board' || projectTab === 'graph' || projectTab === 'files') {
   await waitForThreadsPersistence();
@@ -832,6 +838,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
+  taste: { undos: tasteUndos, skipUndo: skipTasteUndo },
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

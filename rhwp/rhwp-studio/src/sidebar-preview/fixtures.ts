@@ -721,3 +721,62 @@ export function longSampleChat(now: number): ChatThread {
     messages,
   };
 }
+
+/** Seeded chat that `taste=sample` opens: one turn and its Rau-0.1 divider. */
+export const SAMPLE_TASTE_CHAT_ID = 'preview-chat-taste';
+/** The hub turn id of that chat's turn — a live `taste-learned` for it lands after the turn. */
+export const SAMPLE_TASTE_TURN_ID = 'preview-taste-turn';
+
+/**
+ * `taste=sample`: a 사업 제안서 chat whose turn taught four notes (sample data) — two added
+ * (one already reverted), one changed that has since been edited again (no longer revertible)
+ * and one removed. The run also drafted an AGENTS.md line (`preview-taste-draft`).
+ */
+export function sampleTasteChat(now: number): ChatThread {
+  const activityAt = now - 20_000;
+  const startedAt = activityAt - 48_000;
+  const items: T.TasteLearnItem[] = [
+    { op: 'add', entryId: 'mem_taste000001', text: '본문은 한다체 사용', origin: 'learned' },
+    { op: 'add', entryId: 'mem_taste000002', text: '표 제목 칸은 굵게', origin: 'learned' },
+    { op: 'update', entryId: 'mem_taste000003', text: "'고객' 대신 '이용자'로 통일", prevText: "'고객' 대신 '사용자'로 통일", origin: 'learned' },
+    { op: 'remove', entryId: 'mem_taste000004', text: '예산표는 월별로 나눔', origin: 'explicit' },
+  ];
+  return {
+    id: SAMPLE_TASTE_CHAT_ID,
+    title: '추진 배경 문체 맞추기',
+    titleRequested: true,
+    createdAt: startedAt - 60_000,
+    updatedAt: activityAt,
+    lastActivityAt: activityAt,
+    agent: 'claude',
+    model: defaultModelForAgent('claude'),
+    effort: 'medium',
+    serviceTier: 'standard',
+    workflow: 'direct',
+    documentId: 'preview-proposal',
+    docKey: '사업 제안서.hwpx',
+    activeTemplateId: null,
+    messages: [
+      { role: 'user', text: '추진 배경을 한다체로 바꾸고 예산표는 분기별로 나눠 주세요.', agent: 'claude' },
+      {
+        role: 'system', kind: 'turn', messageId: `${SAMPLE_TASTE_CHAT_ID}-turn-1`, startedAt, endedAt: activityAt,
+        outcome: 'completed', hubTurnId: SAMPLE_TASTE_TURN_ID, text: '작업 48초, 문단 3개 수정',
+      },
+      {
+        role: 'assistant', kind: 'activity', agent: 'claude', activityId: `${SAMPLE_TASTE_CHAT_ID}-activity-1`, text: '도구 호출',
+        status: 'completed', startedAt: startedAt + 3_000, completedAt: activityAt - 4_000,
+        tools: [
+          sampleTool(`${SAMPLE_TASTE_CHAT_ID}-1`, 'replace_range', { sectionIdx: 0, paraIdx: 3, find: '합니다', text: '한다' }, '{"revision":4}'),
+          sampleTool(`${SAMPLE_TASTE_CHAT_ID}-2`, 'replace_range', { sectionIdx: 0, paraIdx: 4, find: '됩니다', text: '된다' }, '{"revision":5}'),
+        ],
+      },
+      { role: 'assistant', text: '추진 배경 세 문단을 한다체로 바꿨습니다. 예산표는 분기별 네 칸으로 나눴습니다.', agent: 'claude' },
+      {
+        role: 'system', kind: 'marker', marker: 'taste', learnId: 'learn_preview1', turnId: SAMPLE_TASTE_TURN_ID,
+        documentId: 'preview-proposal', key: 'mem-preview-proposal', items,
+        changes: items.map((item) => ({ op: item.op, entryId: item.entryId })),
+        undone: ['mem_taste000002'], stale: ['mem_taste000003'], proposalDraftId: 'preview-taste-draft', text: '',
+      },
+    ],
+  };
+}

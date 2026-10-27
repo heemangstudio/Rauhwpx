@@ -191,6 +191,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
     env: {
       ...process.env,
       NODE_ENV: 'production',
+      RHWP_TASTE_LEARNER: '0',
       RHWP_AGENT_PORT: '0',
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID,
@@ -778,6 +779,7 @@ test('owner watchdog disposes the hub when its desktop owner exits', { timeout: 
     env: {
       ...process.env,
       NODE_ENV: 'production',
+      RHWP_TASTE_LEARNER: '0',
       RHWP_AGENT_PORT: '0',
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: `${LAUNCH_ID}-owner`,
@@ -813,6 +815,7 @@ test('owner watchdog has an absolute deadline even while an orphan socket stays 
     env: {
       ...process.env,
       NODE_ENV: 'production',
+      RHWP_TASTE_LEARNER: '0',
       RHWP_AGENT_PORT: '0',
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: `${LAUNCH_ID}-orphan-deadline`,
