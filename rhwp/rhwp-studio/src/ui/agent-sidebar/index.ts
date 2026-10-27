@@ -5061,6 +5061,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
     ...(deps.license !== undefined ? { license: deps.license } : {}),
+    // ChatGPT·Claude 연결은 앱 안 브라우저가 있는 데스크톱에서만 묻는다.
+    ...(chromeSignIn ? { connectors: {
+      request: (action, args) => bridge.requestBrowser(action, args),
+      openSignInWindow: (url, title) => openSignInWindow(url, title),
+      chromeSignIn,
+      isConnected: () => bridge.getConnectionState() === 'connected',
+    } } : {}),
     taste: {
       get: () => bridge.requestTasteSettings(),
       set: (patch) => bridge.setTasteSettings(patch),

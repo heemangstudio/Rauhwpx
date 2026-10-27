@@ -20,6 +20,7 @@ import type {
   TasteSettings,
 } from '../../agent/types.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
+import { createWebAssistantConnection, WEB_ASSISTANTS, type WebAssistant, type WebAssistantConnectionOptions } from '../agent-sidebar/web-assistant-settings.ts';
 import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
@@ -96,6 +97,8 @@ export interface InitialSetupDeps {
   openExternal?: (url: string) => void;
   /** 자동 버그 수정 단계를 넣을지. 기본은 데스크톱 자동 수정 API 가 있을 때. */
   autofixAvailable?: () => boolean;
+  /** ChatGPT·Claude 계정 연결(데스크톱 앱 브라우저). 없으면 연결 단계가 없다. */
+  connectors?: WebAssistantConnectionOptions | null;
   /** Rau-0.1 설정(허브가 정본). 없으면 Rau-0.1 단계가 없다. */
   taste?: {
     get(): Promise<TasteSettings | null>;
@@ -131,7 +134,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const withAutofix = (deps.autofixAvailable ?? (() => autofixApi() !== null))();
   const tasteApi = deps.taste ?? null;
   const withTaste = tasteApi !== null;
-  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix, taste: withTaste });
+  const connectorOptions = deps.connectors ?? null;
+  const withConnectors = connectorOptions !== null;
+  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix, connectors: withConnectors, taste: withTaste });
   let stepIndex = 0;
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
@@ -145,7 +150,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep, connectors: withConnectors, taste: withTaste });
       renderFonts();
       renderStep();
     });
@@ -154,7 +159,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     .then((status) => {
       licenseStatus = status;
       licenseStep = needsLicenseStep(status);
-      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, connectors: withConnectors, taste: withTaste });
       renderStep();
     });
 
@@ -234,6 +239,43 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     cards.set(agent, { root: card, action });
   }
   modelsPanel.append(grid);
+
+  // ── 연결: 쓰고 있는 ChatGPT·Claude 계정. 설정 → AI → 연결의 줄과 같은 연결을 카드로 보인다. ──
+  const connectorsPanel = el('div', 'rhwp-setup-panel rhwp-setup-connectors');
+  connectorsPanel.dataset.step = 'connectors';
+  const connectorGrid = el('div', 'rhwp-setup-grid');
+  connectorGrid.setAttribute('role', 'list');
+  const CONNECTOR_LOGO: Record<WebAssistant, AgentName> = { chatgpt: 'codex', claude: 'claude' };
+  const connectors = connectorOptions ? (['chatgpt', 'claude'] as const).map((service) => {
+    const connection = createWebAssistantConnection(service, connectorOptions);
+    const card = el('div', 'rhwp-setup-card');
+    card.setAttribute('role', 'listitem');
+    card.dataset.service = service;
+    const action = button('rhwp-setup-card-action');
+    const logo = el('span', 'rhwp-setup-card-logo');
+    logo.appendChild(createProviderIcon(CONNECTOR_LOGO[service]));
+    const status = el('span', 'rhwp-setup-card-status');
+    const check = el('span', 'rhwp-setup-check');
+    check.appendChild(createIcon('check'));
+    action.append(logo, el('span', 'rhwp-setup-card-name', WEB_ASSISTANTS[service].name), status, check);
+    // 누르면 켜고 앱 안 로그인 창을 연다. 로그인되면 창이 저절로 닫힌다.
+    action.addEventListener('click', () => {
+      const current = connection.status();
+      if (current?.signedIn === true || connection.signingIn() || connectorOptions.chromeSignIn?.site()) return;
+      void (async () => { if (!current?.enabled) await connection.setEnabled(true); await connection.signIn(); })();
+    });
+    // 패스키·Google 계정은 Chrome에서 로그인한다. 진행 중이면 같은 자리가 '완료'가 된다.
+    const alt = button('rhwp-setup-font-folder rhwp-setup-card-alt', 'Chrome으로 로그인');
+    alt.addEventListener('click', () => {
+      void (async () => { if (!connection.status()?.enabled) await connection.setEnabled(true); await connection.chrome(); })();
+    });
+    card.append(action, alt);
+    connectorGrid.appendChild(card);
+    const entry = { service, connection, card, action, status, alt, signedIn: false };
+    connection.subscribe(() => renderConnector(entry));
+    return entry;
+  }) : [];
+  connectorsPanel.append(connectorGrid);
 
   // ── Rau-0.1: 기본은 켜짐, 자동 공급자. 고르는 순간 허브에 저장한다. 켰을 때만 공급자를 고른다. ──
   const tastePanel = el('div', 'rhwp-setup-panel rhwp-setup-taste');
@@ -438,10 +480,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, tastePanel, autofixPanel);
+  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, connectorsPanel, tastePanel, autofixPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,
+    connectors: connectorsPanel,
     taste: tastePanel,
     autofix: autofixPanel,
     fonts: fontsPanel,
@@ -479,6 +522,28 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
         configured ? `${AGENT_LABEL[agent]} 연결됨` : `${AGENT_LABEL[agent]} 연결`,
       );
     }
+  }
+
+  function renderConnector(entry: (typeof connectors)[number]): void {
+    const status = entry.connection.status();
+    const chromeSite = connectorOptions?.chromeSignIn?.site() ?? null;
+    const chromeHere = !!chromeSite && WEB_ASSISTANTS[entry.service].signInUrl.includes(chromeSite);
+    const signedIn = status?.signedIn === true;
+    entry.card.dataset.configured = signedIn ? 'true' : 'false';
+    entry.status.textContent = signedIn ? '연결됨'
+      : chromeHere ? 'Chrome에서 로그인 중'
+      : entry.connection.signingIn() ? '로그인 창에서 로그인'
+      : entry.connection.checking() ? '확인 중…'
+      : status?.busy ? 'Chrome 로그인 중'
+      : '';
+    entry.action.setAttribute('aria-label', signedIn ? `${WEB_ASSISTANTS[entry.service].name} 연결됨` : `${WEB_ASSISTANTS[entry.service].name} 연결`);
+    const chrome = connectorOptions?.chromeSignIn;
+    entry.alt.hidden = !chrome || chrome.available() === false || signedIn || !!chromeSite && !chromeHere;
+    entry.alt.textContent = chromeHere ? '완료' : 'Chrome으로 로그인';
+    entry.alt.disabled = !chromeHere && entry.connection.signingIn();
+    // 이 단계에서 새로 연결되면 하마가 알린다.
+    if (signedIn && !entry.signedIn && currentStep() === 'connectors' && overlay.isConnected) hippo.say(HIPPO_LINES.connectorConnected);
+    entry.signedIn = signedIn;
   }
 
   function renderAutofix(): void {
@@ -521,6 +586,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
+    if (step === 'connectors') return connectors.some((entry) => entry.signedIn) ? HIPPO_LINES.connectorConnected : HIPPO_LINES.connectors;
     if (step === 'taste') return HIPPO_LINES.taste;
     if (step === 'autofix') return HIPPO_LINES.autofix;
     if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : licenseLine(licenseStatus);
@@ -548,6 +614,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.
     primary.dataset.quiet = later ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
+      // 연결 단계에 들어올 때 상태를 다시 읽는다(켜진 서비스만 보이지 않는 탭으로 로그인을 확인한다).
+      if (step === 'connectors') for (const entry of connectors) { renderConnector(entry); void entry.connection.refresh(true); }
       spokenStep = step;
       hippo.say(lineFor(step));
     }
@@ -683,6 +751,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       disposed = true;
       window.clearTimeout(licensedTimer);
       licensePanel?.dispose();
+      for (const entry of connectors) entry.connection.dispose();
       hippo.dispose();
       stopAutofixSettings();
       document.removeEventListener('keydown', onKeyDown);
