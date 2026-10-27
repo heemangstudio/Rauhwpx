@@ -329,7 +329,8 @@ test('Rau-0.1 waits for review after a safe-mode write, learns plan feedback, an
   await waitFor(() => fake.learnerPrompts().length === 3, 'plan feedback learned');
   assert.match(fake.learnerPrompts()[2], /"user_message":"합니다체 말고 한다체로 다시 짜 줘"/);
 
-  // 3. 허브가 내려가면 도는 학습을 끊는다.
+  // 3. 허브가 내려가면 도는 학습을 끊는다. Windows 의 SIGTERM 은 강제 종료라 종료 처리가 돌지 않는다.
+  if (process.platform === 'win32') return;
   await start('thread-s', 'doc-s');
   fake.queueOutputs('__hang__');
   await say('끝나지 않는 학습');

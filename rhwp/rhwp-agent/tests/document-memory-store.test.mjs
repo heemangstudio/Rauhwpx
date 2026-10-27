@@ -110,7 +110,8 @@ test('the index is written before the memory file, so a crash between them leave
   // Another document's memory means a valid index already exists (a missing index would be rebuilt).
   const seed = new DocumentMemoryStore({ dir });
   await seed.apply(await seed.resolveKey({ documentId: 'doc-0' }), [{ op: 'add', kind: 'fact', text: '다른 문서' }], explicit);
-  // The second rename of the next write crashes, whichever file it is.
+  // The second rename of the next write crashes, whichever file it is. Each file is one rename only on
+  // POSIX; the Windows replace takes two (target aside, then temp in), so the store runs as linux here.
   let renames = 0;
   const crashing = {
     ...fsPromises,
@@ -120,7 +121,7 @@ test('the index is written before the memory file, so a crash between them leave
       return fsPromises.rename(from, to);
     },
   };
-  const store = new DocumentMemoryStore({ dir, fsApi: crashing });
+  const store = new DocumentMemoryStore({ dir, fsApi: crashing, platform: 'linux' });
   const key = await store.resolveKey({ documentId: 'doc-1' });
   await assert.rejects(store.apply(key, [{ op: 'add', kind: 'fact', text: '마감 11월' }], explicit), /simulated crash/);
 
