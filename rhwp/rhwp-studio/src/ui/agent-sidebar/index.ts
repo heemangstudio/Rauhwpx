@@ -5278,8 +5278,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const native = nativeBrowserApi();
     if (!native?.onEvent) throw new Error('데스크톱 앱에서만 로그인할 수 있습니다.');
     const browser = ensureWorkbenchBrowser();
-    const opened = await browser.controller.request<{ tab?: BrowserTab }>('open', { url });
-    const tab = opened?.tab;
+    // 허브는 로그인 페이지 로딩을 기다린 뒤 답한다. 탭이 생기는 즉시 오는 이벤트로 창을 먼저 띄우고 로딩은 창 안에서 보인다.
+    const openRequestId = crypto.randomUUID();
+    let created: (tab: BrowserTab) => void = () => {};
+    const early = new Promise<BrowserTab>((resolve) => { created = resolve; });
+    const unlisten = bridge.onBrowserEvent((event) => {
+      const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+      if (data.type === 'owned_browser_tab' && data.openRequestId === openRequestId && data.tab?.tabId) created(data.tab);
+    });
+    const opening = browser.controller.request<{ tab?: BrowserTab }>('open', { url, openRequestId });
+    let tab: BrowserTab | undefined;
+    try { tab = await Promise.race([early, opening.then((opened) => opened?.tab)]); } finally { unlisten(); }
     if (!tab?.tabId) throw new Error('로그인 창을 열지 못했습니다.');
     let finish: () => void = () => {};
     const closed = new Promise<void>((resolve) => { finish = resolve; });
@@ -5294,6 +5303,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (event.tabId !== tab.tabId) return;
       if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
     });
+    // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
+    opening.catch(() => close());
     try {
       await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true });
     } catch (failure) { await close(); throw failure; }
