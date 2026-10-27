@@ -847,3 +847,37 @@ test('body-to-table formatting includes the whole table contents in one undo ste
   a.redoEdit();
   assert.match(a.copyText(cellText).html, /font-size:17pt/);
 });
+
+test('edit warm-up edits a scratch blank document once in idle time and leaves the open document and fonts unchanged', async t => {
+  const adapter = await open(t);
+  const engine = adapter.hmEngine();
+  const template = new Uint8Array(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url)));
+  const before = { state: adapter.state(), outlines: engine.outlineRequests(), bytes: adapter.hmDoc().serialize(false) };
+  const idle: (() => void)[] = [];
+  const original = globalThis.requestIdleCallback;
+  globalThis.requestIdleCallback = ((run: () => void) => idle.push(run)) as typeof requestIdleCallback;
+  t.after(() => { globalThis.requestIdleCallback = original; });
+  const opened = t.mock.method(Engine.prototype, 'open');
+  const transacted = t.mock.method(Object.getPrototypeOf(adapter.hmDoc()), 'transact');
+  const warned = t.mock.method(console, 'warn');
+  adapter.scheduleEditWarmup();
+  assert.equal(idle.length, 0, 'a document without a template is not warmed');
+  adapter.editWarmupTemplate = template;
+  adapter.scheduleEditWarmup();
+  adapter.scheduleEditWarmup();
+  assert.equal(idle.length, 1);
+  assert.equal(opened.mock.callCount(), 0, 'nothing runs on the paint path');
+  idle[0]();
+  assert.equal(warned.mock.callCount(), 0);
+  assert.equal(opened.mock.callCount(), 1);
+  assert.equal(transacted.mock.callCount(), 1);
+  assert.equal(transacted.mock.calls[0].this === adapter.hmDoc(), false);
+  assert.ok(JSON.parse(transacted.mock.calls[0].result as string).contentEpoch > 0, 'the scratch copy took the edit');
+  assert.deepEqual(adapter.state(), before.state);
+  assert.equal(engine.outlineRequests(), before.outlines);
+  assert.deepEqual(adapter.hmDoc().serialize(false), before.bytes);
+  const next = await open(t, hwp());
+  next.editWarmupTemplate = template;
+  next.scheduleEditWarmup();
+  assert.equal(idle.length, 1, 'the engine module is warmed once');
+});

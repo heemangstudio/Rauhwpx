@@ -13,7 +13,8 @@ import type { DocumentInfo, PageInfo, LayerRenderProfile, PageLayerTree, HmlSave
 const NO_DOCUMENT = '문서가 로드되지 않았습니다';
 
 export async function initialize(core: HmCore): Promise<void> {
-  await Promise.all([core.adapter.initialize(), preloadBlankTemplate()]);
+  const [, template] = await Promise.all([core.adapter.initialize(), preloadBlankTemplate()]);
+  core.adapter.editWarmupTemplate = template;
 }
 
 export function getRuntimeFontMetricsApi(core: HmCore): RuntimeFontMetricsApi | null {

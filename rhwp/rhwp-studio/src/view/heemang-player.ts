@@ -236,11 +236,23 @@ function unionBox(boxes: Box[]): Box | null {
   return { x, y, w: Math.max(...boxes.map(b => b.x + b.w)) - x, h: Math.max(...boxes.map(b => b.y + b.h)) - y };
 }
 
+/** Byte equality, four bytes at a time where both arrays allow it; patch pixels run to megabytes. */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  const words = a.byteOffset % 4 === 0 && b.byteOffset % 4 === 0 ? a.length >> 2 : 0;
+  if (words) {
+    const x = new Uint32Array(a.buffer, a.byteOffset, words), y = new Uint32Array(b.buffer, b.byteOffset, words);
+    for (let i = 0; i < words; i++) if (x[i] !== y[i]) return false;
+  }
+  for (let i = words * 4; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 function sameKey(a: unknown[], b: unknown[]) {
   return a.length === b.length && a.every((u, k) => {
     const v = b[k];
     if (u === v) return true;
-    return u instanceof Uint8Array && v instanceof Uint8Array && u.length === v.length && u.every((n, i) => n === v[i]);
+    return u instanceof Uint8Array && v instanceof Uint8Array && sameBytes(u, v);
   });
 }
 

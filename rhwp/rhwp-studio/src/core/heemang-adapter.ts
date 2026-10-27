@@ -27,6 +27,9 @@ const PX_PER_HU = 96 / 7200;
 const KEPT_PAGE_BUFFERS = 6;
 function unsupportedMargin(): never { throw new EngineNotSupportedError('쪽 여백 정보'); }
 let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
+// 편집 경로의 WASM 함수는 처음 불릴 때 컴파일되므로, 문서를 연 뒤 첫 입력이 그 컴파일만큼 늦다.
+// 엔진(모듈)마다 한 번, 첫 쪽을 그린 뒤 쉬는 시간에 빈 문서 사본을 편집해 미리 컴파일해 둔다.
+let editWarmup: 'pending' | 'scheduled' | 'done' = 'pending';
 // native clipboard는 같은 Engine의 문서들이 공유한다.
 let internalClipboard: { engine: Engine; text: string } | null = null;
 
@@ -255,6 +258,8 @@ export class HeemangAdapter {
   onExternalImagesInjected?: (count: number) => void;
   /** 비동기 글꼴·그림 준비 뒤 쪽과 화면 장식을 함께 다시 그릴 호스트. */
   onPageRenderReady?: (pageIndex: number) => void;
+  /** 편집 경로를 미리 컴파일할 때 여는 빈 문서. 없으면 미리 컴파일하지 않는다. */
+  editWarmupTemplate: Uint8Array | null = null;
 
   async initialize(): Promise<void> {
     runtime ??= initializeRuntime().catch(error => { runtime = undefined; throw error; });
@@ -509,6 +514,7 @@ export class HeemangAdapter {
     const owner = canvas.isConnected ? canvas.ownerDocument : null;
     if (owner) {
       this.paintBuffered(owner, canvas, ctx, doc, index, packet, scale, patch, picture, patchBytes);
+      this.scheduleEditWarmup();
     } else {
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, width, height);
@@ -519,6 +525,35 @@ export class HeemangAdapter {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;
       this.redrawPage(canvas, paint, false);
     }).catch(error => console.warn('[Heemang] 글꼴 윤곽선 연결 실패:', error));
+  }
+
+  /**
+   * 편집할 수 있는 문서를 처음 화면에 그린 뒤, 쉬는 시간에 빈 문서 사본에 글자 하나를 넣고 닫는다.
+   * 열린 문서·기록·글꼴 상태는 건드리지 않고, 같은 엔진 모듈의 편집·조판 코드만 컴파일된다.
+   */
+  scheduleEditWarmup(): void {
+    const template = this.editWarmupTemplate;
+    if (editWarmup !== 'pending' || !this.editable || !template) return;
+    editWarmup = 'scheduled';
+    const run = () => {
+      editWarmup = 'done';
+      let scratch: Doc | null = null;
+      try {
+        scratch = this.engine.open(template);
+        const list = { section: 0, steps: [] };
+        const [para] = JSON.parse(scratch.query(JSON.stringify({ kind: 'paragraphs', list, from: 0, count: 1 }))) as ParagraphInfo[];
+        const end = para.offsets[para.offsets.length - 1];
+        const op: EditOp = { op: 'insertText', at: { section: 0, para: 0, offset: end }, text: '가' };
+        scratch.transact(JSON.stringify({ ops: [op] }));
+      } catch (error) {
+        console.warn('[Heemang] 편집 경로 예열 실패:', error);
+      } finally {
+        scratch?.close();
+        scratch?.free();
+      }
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2000 });
+    else setTimeout(run, 0);
   }
 
   /**

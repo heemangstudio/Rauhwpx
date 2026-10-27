@@ -317,6 +317,15 @@ test('page repaint region covers changed ops whole and keeps distant pixels, or 
   const at = [{ x: 10, y: 10, w: 20, h: 20 }], moved = [{ x: 400, y: 600, w: 20, h: 20 }];
   assert.deepEqual(player.repaintRegion(record(shown, state([new Uint8Array([1, 2])], at)),
     record(shown, state([new Uint8Array([1, 2])], at)), 595, 841), [], 'unchanged patch pixels are kept');
+  const pixels = new Uint8Array(4103).fill(7);
+  for (const k of [0, 2050, 4102]) {
+    const changed = pixels.slice();
+    changed[k] = 8;
+    assert.deepEqual(player.repaintRegion(record(shown, state([pixels], at)), record(shown, state([changed], at)), 595, 841),
+      at, `a patch whose byte ${k} changed repaints`);
+  }
+  assert.deepEqual(player.repaintRegion(record(shown, state([pixels], at)), record(shown, state([pixels.slice(1).subarray(0)], at)), 595, 841),
+    at, 'a patch of another size repaints');
   assert.deepEqual(player.repaintRegion(record(shown, state(['decoded', null], at)), record(shown, state(['decoded', {}], moved)), 595, 841),
     [...at, ...moved], 'a picture repaints where it was and where it lands once decoded');
   const clip = { op: 'clip', x: 0, y: 0, w: 30000, h: 30000 };
