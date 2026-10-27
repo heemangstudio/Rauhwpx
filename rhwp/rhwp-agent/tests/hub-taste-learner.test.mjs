@@ -182,37 +182,32 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
   const auto = { enabled: true, provider: 'auto', model: null, effort: null };
   assert.deepEqual((await request({ type: 'taste-settings-request' }, 'taste-settings')).settings, auto);
 
-  // 1. 에이전트가 턴 중에 기억을 쓰고, 학습기도 배운다 → 표시 하나.
-  const started = await start('thread-1', 'doc-1');
-  fake.queueOutputs(learnedStyle);
-  studio.send({ type: 'chat-user-message', text: 'Hold turn 3장은 건드리지 말고 한다체로 써 줘' });
+  // 1. 학습기가 턴에서 배운다 → 표시 하나. 에이전트는 기억을 쓰지 않는다.
+  await start('thread-1', 'doc-1');
+  fake.queueOutputs(JSON.stringify({ ops: [
+    { op: 'add', kind: 'protect', subject: '보호.3장', text: '3장 수정 금지' },
+    { op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true },
+  ] }));
+  studio.send({ type: 'chat-user-message', text: 'Hold turn 앞으로 3장은 건드리지 말고 한다체로 써 줘' });
   const until = Date.now() + 10_000;
-  while (!existsSync(path.join(root, 'mcp-token')) || fake.prompts().length === 0) {
+  while (fake.prompts().length === 0) {
     if (Date.now() > until) throw new Error(`no turn: ${hub.stderr()}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  const mcp = bufferedSocket(`ws://127.0.0.1:${hub.port}/mcp?token=${encodeURIComponent(fake.mcpToken())}&sessionId=taste-owner&agent=pi`);
-  await once(mcp.socket, 'open');
-  t.after(() => mcp.socket.terminate());
-  mcp.send({
-    type: 'tool-call', id: 1, tool: 'update_document_memory', workflow: 'direct', capabilityEpoch: started.capabilityEpoch,
-    args: { ops: [{ op: 'add', kind: 'protect', subject: '보호.3장', text: '3장 수정 금지' }], expectedRevision: 0 },
-  });
-  assert.equal((await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 1)).ok, true);
   writeFileSync(fake.release, '');
   const turnEnd = await studio.next(isTurnEnd);
   const learned = await studio.next((frame) => frame.type === 'taste-learned');
   assert.equal(learned.threadId, 'thread-1');
   assert.equal(learned.turnId, turnEnd.event.turnId);
   assert.deepEqual(learned.items.map((item) => [item.op, item.text, item.origin]), [
-    ['add', '3장 수정 금지', 'explicit'],
+    ['add', '3장 수정 금지', 'learned'],
     ['add', '본문은 한다체 사용', 'learned'],
   ]);
   const [learnerPrompt] = fake.learnerPrompts();
   assert.match(learnerPrompt, /한다체로 써 줘/);
   assert.match(learnerPrompt, /한다체로 고쳤습니다/, 'the root answer is captured from text deltas');
 
-  // 2. 되돌리기 — 학습기 결과가 아닌 직접 쓰기 하나만. 다른 문서의 키는 거절하고, 변경 목록은 허브가 남긴 것을 쓴다.
+  // 2. 되돌리기 — 표시의 항목 하나만. 다른 문서의 키는 거절하고, 변경 목록은 허브가 남긴 것을 쓴다.
   const mismatch = await request({
     type: 'taste-undo', learnId: learned.learnId, documentId: 'doc-1', key: 'dm_aaaaaaaaaaaaaaaa',
     changes: learned.changes, entryId: learned.items[0].entryId,

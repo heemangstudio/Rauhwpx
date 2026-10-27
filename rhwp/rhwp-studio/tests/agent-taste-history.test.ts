@@ -513,3 +513,19 @@ test('자동 실행은 문서를 연 뒤 한 번, 설정이 켜져 있고 같은
   assert.equal(state.runs, 4);
   trigger.dispose();
 });
+
+test('사용자가 누른 실행은 고친 글이 없어도 그 문서의 채팅을 싣고, 자동 실행은 싣지 않는다', async () => {
+  const log = new ProvenanceLog(memoryProvenanceBackend());
+  const sent: Array<{ pairs: ReviewSignal[]; chats: unknown[] }> = [];
+  const chats = [{ userText: '앞으로 한다체로 써 줘', answer: '네.' }];
+  const { miner } = minerFor(fakeDocument(['본문']), log, {
+    chats: () => chats,
+    send: async (_documentId, pairs, options) => {
+      sent.push({ pairs, chats: options.chats });
+      return { ok: true, learnId: 'learn_1', key: 'k', items: [], changes: [], accepted: [] };
+    },
+  });
+  assert.deepEqual(await miner.run({ auto: true }), { status: 'empty' });
+  assert.equal((await miner.run({ auto: false })).status, 'learned');
+  assert.deepEqual(sent, [{ pairs: [], chats }]);
+});

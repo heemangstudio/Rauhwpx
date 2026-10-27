@@ -370,8 +370,6 @@ const documentMemoryHub = createDocumentMemoryHub({
   store: new DocumentMemoryStore(),
   log,
   broadcast: (frame) => broadcastToStudios(frame),
-  // 턴 중 에이전트가 쓴 기억은 그 턴의 배움 표시에 함께 싣는다.
-  onWrite: (write) => tasteLearner.noteExplicit(write),
 });
 // 대화에서 배우기 설정 (Settings → AI → Rau-0.1). 문서 기억 폴더에 둔다.
 const tasteSettings = await new TasteSettingsStore({ dir: documentMemoryHub.store.dir }).init();
@@ -8060,13 +8058,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         sendResult(agentInstructionsStore.snapshot());
         return;
       }
-      if (tool === 'read_document_memory' || tool === 'update_document_memory') {
-        if (tool === 'update_document_memory'
-          && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
-          sendError(workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may change document memory'));
-          return;
-        }
-        void documentMemoryHub.runTool(record, record.agentSession, tool, args)
+      if (tool === 'read_document_memory') {
+        void documentMemoryHub.runTool(record, record.agentSession)
           .then(sendResult)
           .catch((error) => sendError(error, 'DOCUMENT_MEMORY_FAILED'));
         return;

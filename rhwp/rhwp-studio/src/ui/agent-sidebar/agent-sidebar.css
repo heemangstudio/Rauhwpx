@@ -3098,13 +3098,11 @@ button.ag-skill-copy {
 }
 
 .ag-marker-compaction.ag-marker-live .ag-marker-line:first-child,
-.ag-marker-memory.ag-marker-live .ag-marker-line:first-child,
 .ag-marker-handoff.ag-marker-live .ag-marker-line:last-child {
   transform-origin: left center;
 }
 
 .ag-marker-compaction.ag-marker-live .ag-marker-line:last-child,
-.ag-marker-memory.ag-marker-live .ag-marker-line:last-child,
 .ag-marker-handoff.ag-marker-live .ag-marker-line:first-child {
   transform-origin: right center;
 }
@@ -3113,8 +3111,7 @@ button.ag-skill-copy {
   animation: ag-marker-fade var(--ag-dur-slow) var(--ag-ease-out) both;
 }
 
-.ag-marker-compaction.ag-marker-live .ag-marker-icon,
-.ag-marker-memory.ag-marker-live .ag-marker-icon {
+.ag-marker-compaction.ag-marker-live .ag-marker-icon {
   animation: ag-marker-contract var(--ag-dur-slow) var(--ag-spring) both;
 }
 

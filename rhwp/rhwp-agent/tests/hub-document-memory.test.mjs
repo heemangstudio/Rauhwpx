@@ -9,7 +9,6 @@ import WebSocket from 'ws';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
 import { HUB_PROTOCOL_VERSION, startHub } from './hub-harness.mjs';
-import { authorizeToolCall } from '../planning-state.mjs';
 import { filterToolDefinitions } from '../tools.mjs';
 
 /**
@@ -222,9 +221,10 @@ test('hub-started turns carry document memory too', async (t) => {
   assert.match(f.prompts().at(-1) ?? '', /<document_memory revision="1"[\s\S]*이용자/);
 });
 
-test('the agent records memory in 채팅 mode as an explicit note of its turn', async (t) => {
+test('the agent reads document memory in 채팅 mode but cannot write it', async (t) => {
   const f = await fixture(t);
   const started = await f.start('thread-tools', 'doc-tools', 'question');
+  await f.memory({ op: 'apply', documentId: 'doc-tools', ops: [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }] });
   await f.say('Hold turn');
   const mcp = bufferedSocket(
     `ws://127.0.0.1:${f.hub.port}/mcp?token=${encodeURIComponent(f.fake.mcpToken())}&sessionId=memory-owner&agent=pi`,
@@ -236,54 +236,25 @@ test('the agent records memory in 채팅 mode as an explicit note of its turn', 
     return mcp.next((frame) => frame.type === 'tool-result' && frame.id === id);
   };
 
-  const written = await call(1, 'update_document_memory', {
-    ops: [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }],
-    expectedRevision: 0,
-  });
-  assert.equal(written.ok, true, JSON.stringify(written));
-  assert.equal(written.result.revision, 1);
-  const changed = await f.studio.next((frame) => frame.type === 'document-memory-changed');
-  assert.equal(changed.documentId, 'doc-tools');
-
-  const stale = await call(2, 'update_document_memory', {
-    ops: [{ op: 'add', kind: 'fact', subject: '사실.기한', text: '11월 3일 제출' }],
-    expectedRevision: 0,
-  });
-  assert.equal(stale.error?.code, 'MEMORY_REVISION_CONFLICT');
-
-  const read = await call(3, 'read_document_memory', {});
+  const read = await call(1, 'read_document_memory', {});
   assert.deepEqual(read.result.entries.map((entry) => entry.text), ['본문은 한다체 사용']);
-
+  // 기억은 Rau-0.1 과 문서 기억 시트만 쓴다.
+  const written = await call(2, 'update_document_memory', {
+    ops: [{ op: 'add', kind: 'fact', subject: '사실.기한', text: '11월 3일 제출' }],
+    expectedRevision: 1,
+  });
+  assert.equal(written.ok, false);
   const listed = await f.memory({ op: 'list', documentId: 'doc-tools' });
-  const [entry] = listed.memory.entries;
-  assert.equal(entry.origin, 'explicit');
-  assert.equal(entry.source.threadId, 'thread-tools');
-  assert.equal(entry.source.kind, 'turn');
-  assert.equal(typeof entry.source.turnId, 'string');
+  assert.deepEqual(listed.memory.entries.map((entry) => entry.text), ['본문은 한다체 사용']);
   writeFileSync(f.fake.release, '');
   await f.studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
 });
 
-test('memory tools are offered in every chat phase and memory writes pass every workflow gate', () => {
-  for (const phase of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing']) {
+test('every chat phase can read document memory and none can write it', () => {
+  for (const phase of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing', 'doc-researcher']) {
     const names = new Set(filterToolDefinitions(phase).map((definition) => definition.name));
     assert.equal(names.has('read_document_memory'), true, phase);
-    assert.equal(names.has('update_document_memory'), true, phase);
+    assert.equal([...names].some((name) => name.includes('document_memory') && name !== 'read_document_memory'), false, phase);
   }
-  const gates = [
-    { workflow: 'question', phase: 'questioning' },
-    { workflow: 'plan', phase: 'planning' },
-    { workflow: 'plan', phase: 'awaiting-approval' },
-    { workflow: 'plan', phase: 'implementing' },
-    { workflow: 'direct', phase: 'direct' },
-  ];
-  for (const gate of gates) {
-    assert.equal(authorizeToolCall({
-      category: 'memory-write', tool: 'update_document_memory', ...gate,
-      expectedEpoch: 7, receivedEpoch: 7, chatPermissionGrants: [],
-    }), true, `${gate.workflow}/${gate.phase}`);
-  }
-  // Subagents and background workers read memory but never write it.
-  assert.equal(filterToolDefinitions('doc-researcher').some((definition) => definition.name === 'update_document_memory'), false);
   assert.equal(filterToolDefinitions('copy-layout-worker').some((definition) => definition.name.includes('document_memory')), false);
 });

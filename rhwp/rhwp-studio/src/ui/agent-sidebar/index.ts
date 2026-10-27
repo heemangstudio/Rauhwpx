@@ -12,7 +12,7 @@ import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
-import { openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
+import { historyOutcomeNote, openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
 import { createTasteMarkerView, type TasteMarkerView } from './taste-marker.ts';
 import { tasteMarkerLabel } from '../../agent/taste.ts';
 import { installSelectMenus } from './select-menu.ts';
@@ -119,7 +119,6 @@ import {
   renameThread,
   setThreadTitle,
   addCompactionMarker,
-  addMemoryMarker,
   addHandoffMarker,
   addTasteMarker,
   addStoredTasteHistoryMarker,
@@ -5033,6 +5032,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
     ...(deps.license !== undefined ? { license: deps.license } : {}),
+    taste: {
+      get: () => bridge.requestTasteSettings(),
+      set: (patch) => bridge.setTasteSettings(patch),
+    },
     onFinished: () => {
       updateReconnectChip();
       updateCalibrationChip();
@@ -6512,7 +6515,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     value: string;
     label: string;
     detail: string;
-    local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast' | 'compact';
+    local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast' | 'compact' | 'learn';
     mode?: AgentMode;
     templateId?: string;
     skillName?: string;
@@ -6691,6 +6694,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           }]
         : []),
       { value: '/compact', label: '/compact', detail: '콘텍스트 압축', local: 'compact' },
+      { value: '/learn', label: '/learn', detail: '기록에서 배우기', local: 'learn' },
       { value: '/calibration', label: '/calibration', detail: '말투 맞추기', local: 'calibration' },
       { value: '/settings', label: '/settings', detail: '설정 열기 (연결, 기본값, 사용량)', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
@@ -6774,6 +6778,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (option.local === 'skills') { input.value = ''; setSkillsPanelOpen(true); return; }
     if (option.local === 'fast') { input.value = ''; applyFastCommand(selectedServiceTier === 'fast' ? 'off' : 'on'); return; }
     if (option.local === 'compact') { input.value = ''; resizeComposerInput(); void requestCompaction(); return; }
+    if (option.local === 'learn') { input.value = ''; resizeComposerInput(); void learnFromHistory(); return; }
     input.value = `${option.value} `;
     input.focus();
   }
@@ -7477,6 +7482,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         return;
       }
       if (text === '/compact') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void requestCompaction(); return; }
+      if (text === '/learn') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void learnFromHistory(); return; }
       if (text === '/calibration') { input.value = ''; writingStyleCalibration.open(); return; }
       if (text === '/settings') { input.value = ''; requestSettingsOpen(); return; }
       if (text === '/skills') { input.value = ''; setSkillsPanelOpen(true); return; }
@@ -11744,11 +11750,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         if (event.parentTaskId && fleetView.routeToolResult(event)) break;
         recordActivityToolResult(event);
-        {
-          const savedMemory = event.ok && baseToolName(toolRows.get(event.callId)?.name ?? '') === 'update_document_memory';
-          resolveToolRow(event);
-          if (savedMemory) addMemorySavedMarker(event);
-        }
+        resolveToolRow(event);
         break;
       case 'task-start':
         fleetView.taskStart(event);
@@ -11996,23 +11998,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateComposer();
   }
 
-  /** 에이전트가 문서 기억을 저장한 도구 행 바로 뒤에 "기억에 저장됨" 구분선을 긋는다. 압축 구분선과 같은 자리 잡기다. */
-  function addMemorySavedMarker(event: Extract<AgentStreamEvent, { type: 'tool-result' }>): void {
-    if (eventThreadId() === currentThread.id) {
-      flushPendingAssistantRender();
-      flushAssistantBuffer({ kind: 'progress' });
-      compactStreamIntoActivity(event.agent);
-      closeCurrentActivityGroup();
-      streamBubble = null;
-    }
-    updateEventThread((thread) => {
-      const marker = addMemoryMarker(thread, event.callId);
-      if (!marker) return false;
-      if (thread === currentThread) withAutoScroll(() => appendConversation(renderThreadMarker(marker, { live: true })));
-      return true;
-    });
-  }
-
   function compactUnavailableReason(): string | null {
     if (connState !== 'connected') return '허브에 연결되지 않았습니다';
     if (activeCompaction !== null) return '압축하는 중입니다';
@@ -12055,6 +12040,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateComposer();
   }
 
+  /** /learn — 문서 기억 시트의 기록에서 배우기와 같다. 배운 것은 구분선으로, 나머지는 알림으로 남는다. */
+  let historyLearning = false;
+  async function learnFromHistory(): Promise<void> {
+    if (historyLearning) return;
+    historyLearning = true;
+    showToast({ message: '기록에서 배우는 중입니다.', durationMs: 2400 });
+    const outcome = await bridge.learnFromHistory().finally(() => { historyLearning = false; });
+    const note = historyOutcomeNote(outcome);
+    if (note) showToast({ message: note.text, durationMs: 3200 });
+  }
+
   /**
    * 문서를 뗀 뒤의 압축에서 조용히 넘기는 거절 — 압축을 못 하거나, 할 것이 없거나, 콘텍스트가 작아 필요 없거나
    * (COMPACTION_NOT_NEEDED: 허브가 떼어 냄 알림만 다음 턴에 싣는다), 그새 일이 시작됐다.
@@ -12092,7 +12088,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function threadMarkerLabel(message: ThreadMarkerMessage): string {
     if (message.marker === 'handoff') return `${AGENT_LABEL[message.to]}${TO_PARTICLE[message.to] ?? '로'} 전환`;
     if (message.marker === 'taste') return tasteMarkerLabel(message.items.length);
-    if (message.marker === 'memory') return '기억에 저장됨';
     return message.beforeTokens !== undefined && message.afterTokens !== undefined
       ? `콘텍스트 압축됨, ${formatTokens(message.beforeTokens)} → ${formatTokens(message.afterTokens)}`
       : '콘텍스트 압축됨';
@@ -12111,7 +12106,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     row.setAttribute('aria-label', label);
     if (message.marker === 'compaction') row.dataset.compactionId = message.compactionId;
     let icon: Element = message.marker === 'handoff' ? createProviderIcon(message.to)
-      : createIcon(message.marker === 'memory' ? 'book' : 'contract');
+      : createIcon('contract');
     icon.classList.add('ag-marker-icon');
     const text = el('span', 'ag-marker-label', label);
     text.setAttribute('aria-hidden', 'true');

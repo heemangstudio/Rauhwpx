@@ -105,6 +105,32 @@ test('자동 요청은 대화에서 배우기를 따르고, 학습기를 쓸 수
   assert.equal((await silent.handler.handle({}, { documentId: 'doc-1', pairs: [pair(1)] })).error.code, 'TASTE_HISTORY_NO_RESULT');
 });
 
+test('사용자가 누른 요청은 그 문서의 채팅만으로도 배우고, 자동 요청은 채팅을 싣지 않는다', async () => {
+  const h = harness();
+  const chats = [
+    { userText: '앞으로 이 문서는 한다체로 써 줘', answer: '네, 한다체로 고쳤습니다.' },
+    { userText: '   ', answer: '빈 요청은 버린다' },
+    { userText: '가'.repeat(900), answer: '나'.repeat(900) },
+  ];
+  const reply = await h.handler.handle({}, { documentId: 'doc-1', chats });
+  assert.equal(reply.ok, true, JSON.stringify(reply.error));
+  assert.deepEqual(reply.accepted, []);
+  const [input] = h.calls;
+  assert.deepEqual(input.signals, []);
+  assert.equal(input.chats.length, 2);
+  assert.equal(input.chats[0].userText, chats[0].userText);
+  assert.ok([...input.chats[1].userText].length <= 801 && [...input.chats[1].answer].length <= 401, '턴마다 앞부분만 싣는다');
+
+  const many = Array.from({ length: 50 }, (_, i) => ({ userText: `요청 ${i}`, answer: '' }));
+  await h.handler.handle({}, { documentId: 'doc-2', pairs: [pair(1)], chats: many });
+  assert.deepEqual([h.calls[1].chats.length, h.calls[1].chats[0].userText], [40, '요청 10'], '최근 턴만 남긴다');
+
+  assert.equal((await h.handler.handle({}, { documentId: 'doc-3', chats, auto: true })).error?.code, 'TASTE_HISTORY_INVALID');
+  await h.handler.handle({}, { documentId: 'doc-3', pairs: [pair(1)], chats, auto: true });
+  assert.equal(h.calls[2].chats, undefined);
+  assert.equal((await h.handler.handle({}, { documentId: 'doc-4', chats: 'x' })).error?.code, 'TASTE_HISTORY_INVALID');
+});
+
 test('학습기가 닫히는 중이면(TASTE_CLOSED) 실패로 답하고 자리를 놓는다', async () => {
   const h = harness({ learn: () => { throw Object.assign(new Error('The taste learner is closed'), { code: 'TASTE_CLOSED' }); } });
   const reply = await h.handler.handle({}, { documentId: 'doc-1', pairs: [pair(1)] });

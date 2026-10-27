@@ -10,6 +10,7 @@
  */
 import './document-memory-sheet.css';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import type { TasteHistoryOutcome } from '../../agent/taste-history.ts';
 import type {
   DocumentMemory,
   DocumentMemoryEntry,
@@ -62,6 +63,17 @@ const ERROR_TEXT: Record<string, string> = {
 };
 const OFFLINE_TEXT = '에이전트 허브에 연결되어 있지 않습니다.';
 const HISTORY_NOTE_MS = 3_200;
+
+/** 기록에서 배우기 결과의 안내. 배운 것이 있으면 구분선이 남으므로 null. 시트와 /learn 이 함께 쓴다. */
+export function historyOutcomeNote(outcome: TasteHistoryOutcome): { text: string; error: boolean } | null {
+  if (outcome.status === 'review') return { text: '검토 중인 변경이 있습니다.', error: false };
+  if (outcome.status === 'empty') return { text: '배울 기록이 없습니다.', error: false };
+  if (outcome.status === 'learned' && outcome.result.items.length === 0) return { text: '새로 배운 것이 없습니다.', error: false };
+  if (outcome.status === 'failed') {
+    return { text: outcome.code === 'OFFLINE' ? OFFLINE_TEXT : '기록에서 배우지 못했습니다.', error: true };
+  }
+  return null;
+}
 
 function errorText(result: DocumentMemoryResult | null): string {
   if (!result) return OFFLINE_TEXT;
@@ -185,10 +197,9 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
     const outcome = await bridge.learnFromHistory();
     learnButton.removeAttribute('aria-busy');
     if (closed) return;
-    if (outcome.status === 'review') showNote('검토 중인 변경이 있습니다.');
-    else if (outcome.status === 'empty') showNote('배울 기록이 없습니다.');
-    else if (outcome.status === 'learned' && outcome.result.items.length === 0) showNote('새로 배운 것이 없습니다.');
-    else if (outcome.status === 'failed') showError(outcome.code === 'OFFLINE' ? OFFLINE_TEXT : '기록에서 배우지 못했습니다.');
+    const note = historyOutcomeNote(outcome);
+    if (note?.error) showError(note.text);
+    else if (note) showNote(note.text);
   }
 
   /** 새 기억을 받는다 — revision 이 뒤로 가지 않게 한다. */

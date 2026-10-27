@@ -5,12 +5,19 @@
 // tasteLearner.learnHistory 를 부른다. 한 문서(기억 키)에 한 번에 하나만 받는다. 답의 accepted 는 학습기에 넘긴
 // 짝의 번호(받은 pairs 기준)다 — Studio 는 그 짝만 '이미 보냄'으로 남기고 나머지는 다음에 다시 보낸다.
 //
+// 사용자가 누른 요청(auto 아님)은 그 문서의 지난 채팅도 싣는다(chats: 사용자 요청과 에이전트의 마지막 답,
+// 오래된 것부터). 짝이 없어도 채팅만으로 배운다.
+//
 // 학습기는 대화에서 배우기 설정과 상관없이 돈다 — 사용자가 시트에서 누른 요청이다. 문서를 열 때 Studio 가
 // 저절로 보낸 요청(auto)만 설정을 따른다. 테스트 허브처럼 학습기를 쓸 수 없으면 둘 다 거절한다.
 import { normalizeReviewSignal } from './taste-signals.mjs';
 
 // 학습기 프롬프트가 싣는 신호 수와 같다 — 보낸 짝은 모두 모델이 본다.
 export const MAX_HISTORY_PAIRS = 20;
+// 채팅 기록은 최근 턴만, 턴마다 앞부분만 싣는다 — 프롬프트를 수만 자 안에 둔다.
+export const MAX_HISTORY_CHATS = 40;
+const CHAT_USER_CHARS = 800;
+const CHAT_ANSWER_CHARS = 400;
 const MAX_ID_LENGTH = 200;
 
 function historyError(code, message) {
@@ -22,11 +29,31 @@ function historyError(code, message) {
  * @returns {{ signal: object, index: number }[] | null} index 는 받은 목록에서의 자리
  */
 export function normalizeHistoryPairs(raw) {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_HISTORY_PAIRS) return null;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_HISTORY_PAIRS) return null;
   return raw.flatMap((pair, index) => {
     const signal = pair?.kind === 'history' ? normalizeReviewSignal(pair) : null;
     return signal ? [{ signal, index }] : [];
   });
+}
+
+function clipText(value, max) {
+  const text = typeof value === 'string' ? value.normalize('NFC').trim() : '';
+  const chars = [...text];
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : text;
+}
+
+/**
+ * 채팅 기록을 검증한다. 틀이 틀렸으면 null. 사용자 글이 없는 턴은 버리고, 넘치면 최근 턴만 남긴다.
+ * @returns {{ userText: string, answer: string }[] | null}
+ */
+export function normalizeHistoryChats(raw) {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return null;
+  return raw.flatMap((turn) => {
+    const userText = clipText(turn?.userText, CHAT_USER_CHARS);
+    return userText ? [{ userText, answer: clipText(turn?.answer, CHAT_ANSWER_CHARS) }] : [];
+  }).slice(-MAX_HISTORY_CHATS);
 }
 
 /**
@@ -49,8 +76,11 @@ export function createTasteHistoryHandler({ learner, resolveKey, available = () 
       const documentId = typeof msg?.documentId === 'string' ? msg.documentId.trim() : '';
       if (!documentId || documentId.length > MAX_ID_LENGTH) throw historyError('TASTE_HISTORY_INVALID', 'documentId is required');
       const pairs = normalizeHistoryPairs(msg.pairs);
-      if (!pairs) throw historyError('TASTE_HISTORY_INVALID', `pairs must be 1–${MAX_HISTORY_PAIRS} history signals`);
-      if (pairs.length === 0) throw historyError('TASTE_HISTORY_INVALID', 'No valid history pair');
+      if (!pairs) throw historyError('TASTE_HISTORY_INVALID', `pairs must be at most ${MAX_HISTORY_PAIRS} history signals`);
+      // 자동 요청은 채팅을 싣지 않는다 — 문서를 열 때마다 지난 대화를 다시 배우지 않게.
+      const chats = msg.auto === true ? [] : normalizeHistoryChats(msg.chats);
+      if (!chats) throw historyError('TASTE_HISTORY_INVALID', 'chats must be an array of turns');
+      if (pairs.length === 0 && chats.length === 0) throw historyError('TASTE_HISTORY_INVALID', 'No valid history pair or chat');
       if (!available()) throw historyError('TASTE_UNAVAILABLE', 'The taste learner is not available on this hub');
       if (msg.auto === true && !enabled()) throw historyError('TASTE_DISABLED', 'Learning from chats is turned off');
       if (inFlight.has(`doc:${documentId}`)) throw historyError('TASTE_HISTORY_BUSY', 'This document is already learning from history');
@@ -68,10 +98,11 @@ export function createTasteHistoryHandler({ learner, resolveKey, available = () 
         key,
         ...(threadId(record) ? { threadId: threadId(record) } : {}),
         signals,
+        ...(chats.length ? { chats } : {}),
       });
       // 모델이 답하지 않았으면(경로 없음·잘못된 답) 실패로 알린다 — Studio 가 다음에 다시 보낸다.
       if (!result?.provider) throw historyError('TASTE_HISTORY_NO_RESULT', 'The taste learner returned no result');
-      log(`taste-history doc=${documentId} pairs=${pairs.length} items=${result.items.length}`);
+      log(`taste-history doc=${documentId} pairs=${pairs.length} chats=${chats.length} items=${result.items.length}`);
       return {
         ok: true,
         learnId: result.learnId,

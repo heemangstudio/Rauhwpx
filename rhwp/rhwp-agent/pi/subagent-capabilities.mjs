@@ -14,7 +14,6 @@ const ROOT_ONLY_TOOLS = new Set([
   'update_todos',
   'register_copy_layout_template',
   'update_agent_instructions',
-  'update_document_memory',
   'commit_product_skill',
   'browser_request_account',
   'request_secret',

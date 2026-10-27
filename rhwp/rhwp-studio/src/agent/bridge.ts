@@ -48,6 +48,7 @@ import { missingAnchorIds, readDocumentMemoryResult } from './document-memory.ts
 import { readTasteLearned, readTasteSettings, readTasteUndoResult } from './taste.ts';
 import {
   AutoHistoryTrigger,
+  MAX_HISTORY_CHATS,
   ProvenanceLog,
   TasteHistoryMiner,
   idbProvenanceBackend,
@@ -57,6 +58,7 @@ import {
   type TasteHistoryOutcome,
 } from './taste-history.ts';
 import { lostSessionReason, type TurnInterruptionReason } from './turn-interruption-reason.ts';
+import { documentChatTurns } from './threads.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import { currentAgentEditLock, onAgentEditLockChange } from './agent-prefs.ts';
 import { chatPermissionMatchesContext, isChatPermissionScope, readChatPermissionGrants, readChatPermissionOutcome, readChatPermissionRequest, readChatPermissionRequests, readSecretMeta } from './chat-permissions.ts';
@@ -1980,12 +1982,14 @@ export class AgentBridgeImpl implements AgentBridge {
       send: (documentId, pairs, options) => this.request<TasteHistoryResult>({
         type: 'taste-history-learn',
         documentId,
-        pairs,
+        ...(pairs.length ? { pairs } : {}),
+        ...(options.chats.length ? { chats: options.chats } : {}),
         ...(options.auto ? { auto: true } : {}),
         ...this.documentMemoryIdentityFields(documentId),
       }, 'taste-history', TASTE_HISTORY_TIMEOUT_MS),
       blocked: () => this.historyBlocker(),
       revision: () => this.revision.revision,
+      chats: (documentId) => documentChatTurns(documentId, MAX_HISTORY_CHATS),
     });
     this.tasteHistoryAuto = new AutoHistoryTrigger({
       openKey: () => (this.documentId && deps.wasm.hasLoadedDocument?.() ? `${this.documentId}#${deps.wasm.documentInstance}` : null),

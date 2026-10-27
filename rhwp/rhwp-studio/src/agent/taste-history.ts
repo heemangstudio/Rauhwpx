@@ -677,12 +677,23 @@ export type TasteHistoryOutcome =
 /** 같은 문서의 일 — 검토를 기다리는 변경, 에이전트 턴. 없으면 null */
 export type HistoryBlocker = 'review' | 'turn' | null;
 
+/** 기록에서 배우기가 함께 싣는 채팅 턴 — 사용자 요청과 그 턴 에이전트의 마지막 답. */
+export interface HistoryChatTurn {
+  userText: string;
+  answer: string;
+}
+
+/** 한 번에 싣는 채팅 턴 수 — 허브도 같은 수로 자른다. */
+export const MAX_HISTORY_CHATS = 40;
+
 export interface TasteHistoryMinerDeps {
   log: ProvenanceLog;
   reader: ParagraphReader;
   documentId(): string | null;
-  /** 짝을 허브에 보낸다. 연결이 없으면 null. */
-  send(documentId: string, pairs: ReviewSignal[], options: { auto: boolean }): Promise<TasteHistoryResult | null>;
+  /** 짝과 채팅을 허브에 보낸다. 연결이 없으면 null. */
+  send(documentId: string, pairs: ReviewSignal[], options: { auto: boolean; chats: HistoryChatTurn[] }): Promise<TasteHistoryResult | null>;
+  /** 이 문서의 지난 채팅 턴 (오래된 것부터). 사용자가 누른 실행만 싣는다. */
+  chats?(documentId: string): HistoryChatTurn[];
   /** 같은 문서의 모든 채팅을 본다. 검토 대기면 언제나, 턴 중이면 자동 실행만 멈춘다. */
   blocked?(): HistoryBlocker;
   /** 문서가 바뀔 때마다 오르는 값 — 조각으로 읽는 사이 바뀌었으면 다시 읽는다. */
@@ -770,11 +781,13 @@ export class TasteHistoryMiner {
     const collected = await this.collect(options);
     if (!collected) return { status: 'empty' };
     if ('status' in collected) return collected;
-    if (collected.pairs.length === 0) return { status: 'empty' };
     const { documentId, pairs } = collected;
+    // 문서를 열 때 저절로 도는 실행은 고친 글만 본다 — 열 때마다 지난 대화를 다시 배우지 않게.
+    const chats = options.auto ? [] : (this.deps.chats?.(documentId) ?? []).slice(-MAX_HISTORY_CHATS);
+    if (pairs.length === 0 && chats.length === 0) return { status: 'empty' };
     const gate = this.gate(options);
     if (gate) return gate;
-    const result = await this.deps.send(documentId, pairs.map((pair) => pair.signal), options);
+    const result = await this.deps.send(documentId, pairs.map((pair) => pair.signal), { ...options, chats });
     if (!result) return { status: 'failed', code: 'OFFLINE' };
     if (!result.ok) return { status: 'failed', code: result.error?.code ?? 'TASTE_HISTORY_FAILED' };
     // 허브가 학습기에 넘긴 짝만 남긴다 — 걸러 낸 짝은 다음에 다시 보낸다.

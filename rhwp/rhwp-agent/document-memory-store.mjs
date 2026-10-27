@@ -788,7 +788,7 @@ export function documentMemoryPromptBlock(memory, { excludeIds = [], emptied = f
   if (entries.length === 0 && omitted.length === 0 && !emptied) return '';
   const lines = [
     `<document_memory revision="${Number(memory?.revision) || 0}">`,
-    'Notes on this document, the user\'s preferences unless the current request conflicts. Follow them when you write or edit the document, not in chat replies. Tags: 직접 user-edited, 요청 saved on request, 학습 learned. Record new or changed rules with update_document_memory. Replaces any earlier document_memory block.',
+    'Notes on this document, the user\'s preferences unless the current request conflicts. Follow them when you write or edit the document, not in chat replies. Tags: 직접 user-edited, 요청 saved on request, 학습 learned. Replaces any earlier document_memory block.',
   ];
   let used = 0;
   const subjectsOnly = [];

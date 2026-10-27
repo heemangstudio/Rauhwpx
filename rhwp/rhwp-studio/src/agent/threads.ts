@@ -190,8 +190,7 @@ export type ThreadTurnOutcome = 'interrupted' | 'failed';
 /**
  * 대화 흐름의 구분선. 프로바이더에게는 보내지 않는다.
  * handoff = 다른 프로바이더로 넘어간 자리, compaction = 콘텍스트를 압축한 자리,
- * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서, 또는 기록에서 배우기가(turnId 없음) 문서 기억을 바꾼 자리,
- * memory = 에이전트의 update_document_memory 호출이 성공한 자리.
+ * taste = 취향 학습(Rau-0.1)이 그 턴의 대화에서, 또는 기록에서 배우기가(turnId 없음) 문서 기억을 바꾼 자리.
  */
 export type ThreadMarkerMessage =
   | (ThreadMessageBase & {
@@ -210,14 +209,6 @@ export type ThreadMarkerMessage =
       trigger: CompactionTrigger;
       beforeTokens?: number;
       afterTokens?: number;
-      planId?: never;
-    })
-  | (ThreadMessageBase & {
-      role: 'system';
-      kind: 'marker';
-      marker: 'memory';
-      /** 그 도구 호출의 callId — 같은 호출에 두 번 긋지 않는다. */
-      callId: string;
       planId?: never;
     })
   | (ThreadMessageBase & {
@@ -1122,10 +1113,6 @@ function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMe
       ...(beforeTokens !== undefined ? { beforeTokens } : {}),
       ...(afterTokens !== undefined ? { afterTokens } : {}),
     };
-  }
-  if (message.marker === 'memory') {
-    const callId = nonEmptyString(message.callId);
-    return callId ? { role: 'system', kind: 'marker', marker: 'memory', callId, text: message.text } : null;
   }
   if (message.marker === 'taste') {
     const learnId = nonEmptyString(message.learnId);
@@ -2439,16 +2426,6 @@ export function addCompactionMarker(
   return marker;
 }
 
-/** 문서 기억 저장 구분선을 더한다. 같은 호출의 구분선이 이미 있으면 null. */
-export function addMemoryMarker(thread: ChatThread, callId: string): ThreadMarkerMessage | null {
-  const exists = thread.messages.some((message) => message.kind === 'marker'
-    && message.marker === 'memory' && message.callId === callId);
-  if (exists) return null;
-  const marker: ThreadMarkerMessage = { role: 'system', kind: 'marker', marker: 'memory', callId, text: '' };
-  thread.messages.push(marker);
-  return marker;
-}
-
 export function isTasteMarker(message: ThreadMessage | null | undefined): message is ThreadTasteMarker {
   return message?.kind === 'marker' && message.marker === 'taste';
 }
@@ -2513,6 +2490,26 @@ function tasteMarkerIndex(messages: readonly ThreadMessage[], turnId: string | n
   let index = start + 1;
   while (index < messages.length && messages[index]!.role !== 'user' && !isTurnMarker(messages[index])) index += 1;
   return index;
+}
+
+/** 한 채팅의 턴 — 사용자 요청마다 그 턴 에이전트의 마지막 답. 진행 줄·도구·구분선은 뺀다. */
+export function chatTurnTexts(messages: readonly ThreadMessage[]): Array<{ userText: string; answer: string }> {
+  const turns: Array<{ userText: string; answer: string }> = [];
+  for (const message of messages) {
+    if (message.kind !== undefined) continue;
+    if (message.role === 'user') turns.push({ userText: message.text, answer: '' });
+    else if (message.role === 'assistant' && turns.length > 0) turns[turns.length - 1]!.answer = message.text;
+  }
+  return turns.filter((turn) => turn.userText.trim());
+}
+
+/** 기록에서 배우기(Rau-0.1)가 싣는 이 문서의 모든 채팅(보관한 것 포함)의 턴 — 오래된 채팅부터, 최근 limit 개. */
+export function documentChatTurns(documentId: string, limit: number): Array<{ userText: string; answer: string }> {
+  return storedThreads()
+    .filter((thread) => thread.documentId === documentId)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .flatMap((thread) => chatTurnTexts(thread.messages))
+    .slice(-limit);
 }
 
 /**

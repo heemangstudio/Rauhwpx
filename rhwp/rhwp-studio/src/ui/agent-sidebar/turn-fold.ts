@@ -112,7 +112,6 @@ const CATEGORIES = {
   web: plain('other', '웹 탐색'),
   copyLayout: plain('other', '레이아웃 복제'),
   instructions: plain('other', '지시 변경 제안'),
-  memory: plain('other', '기억 기록'),
   skill: plain('other', '스킬 변경'),
   foreign: counted('other', (n) => `도구 ${n}번`),
 } satisfies Record<string, CategoryDef>;
@@ -187,7 +186,6 @@ const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   create_document: 'documentCreate',
   detach_document: 'documentDetach',
   update_agent_instructions: 'instructions',
-  update_document_memory: 'memory',
   commit_product_skill: 'skill',
   project_edit: 'projectEdit',
   project_import: 'projectImport',

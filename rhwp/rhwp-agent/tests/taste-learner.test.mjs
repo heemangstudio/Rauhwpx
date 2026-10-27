@@ -157,38 +157,17 @@ test('Pi gift mode resolves a gift model or skips Pi', async (t) => {
   assert.equal(h.calls[0].model, 'gift/cheap');
 });
 
-test('with the toggle off the learner never runs, but the turn still shows the agent\'s own memory writes', async (t) => {
+test('with the toggle off the learner never runs and shows nothing', async (t) => {
   const h = harness(t, { settings: { enabled: false }, outputs: { claude: json([{ op: 'add', kind: 'fact', text: '마감 11월 3일' }]) } });
-  const key = await h.store.resolveKey({ documentId: 'doc-1' });
-  const explicit = await h.store.apply(key, [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }], { origin: 'explicit' });
-  h.learner.noteExplicit({ documentId: 'doc-1', key, threadId: 'th1', turnId: 't1', changes: explicit.changes });
   h.signals.ingest({ threadId: 'th1', documentId: 'doc-1', signals: [{ kind: 'rejected', at, after: '열립니다' }] });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '한다체로 기억해 줘', learn: true });
-  await until(() => h.frames.length === 1, 'explicit marker');
   await settle();
   assert.equal(h.calls.length, 0);
-  assert.deepEqual(h.frames[0].items.map((item) => [item.op, item.origin]), [['add', 'explicit']]);
+  assert.deepEqual(h.frames, []);
   assert.deepEqual(h.signals.peekSignals('doc-1'), [], 'signals gathered while off are dropped');
 });
 
-test('explicit writes and learned changes of one turn arrive as one marker', async (t) => {
-  const h = harness(t, { outputs: { claude: json([{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" }]) } });
-  const key = await h.store.resolveKey({ documentId: 'doc-1' });
-  const explicit = await h.store.apply(key, [{ op: 'add', kind: 'protect', subject: '보호.3장', text: '3장 수정 금지' }], { origin: 'explicit' });
-  h.learner.noteExplicit({ documentId: 'doc-1', key, threadId: 'th1', turnId: 't1', changes: explicit.changes });
-  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '3장은 건드리지 마. 고객은 이용자로.', learn: true });
-  await until(() => h.frames.length === 1, 'marker');
-  await settle();
-  assert.equal(h.frames.length, 1);
-  assert.deepEqual(h.frames[0].items.map((item) => [item.text, item.origin]), [
-    ['3장 수정 금지', 'explicit'],
-    ["'고객' 대신 '이용자'로 통일", 'learned'],
-  ]);
-  assert.equal(h.frames[0].changes.length, 2);
-  assert.doesNotMatch(h.calls[0].prompt, /3장 수정 금지[^]*3장 수정 금지[^]*3장 수정 금지/, 'notes appear once, as current notes');
-});
-
-test('while a run is busy only the newest request waits; a skipped turn still shows its own writes', async (t) => {
+test('while a run is busy only the newest request waits', async (t) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const h = harness(t, {
@@ -199,14 +178,10 @@ test('while a run is busy only the newest request waits; a skipped turn still sh
       },
     },
   });
-  const key = await h.store.resolveKey({ documentId: 'doc-1' });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '첫 턴', learn: true });
   await until(() => h.calls.length === 1, 'first run');
-  const explicit = await h.store.apply(key, [{ op: 'add', kind: 'fact', subject: '사실.기한', text: '11월 3일 제출' }], { origin: 'explicit' });
-  h.learner.noteExplicit({ documentId: 'doc-1', key, threadId: 'th1', turnId: 't2', changes: explicit.changes });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't2', documentId: 'doc-1', userText: '둘째 턴', learn: true });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't3', documentId: 'doc-1', userText: '셋째 턴', learn: true });
-  assert.deepEqual(h.frames.map((frame) => frame.turnId), ['t2'], 'the replaced turn shows its own write at once');
   release();
   await until(() => h.calls.length === 2, 'second run');
   await settle();
@@ -585,25 +560,23 @@ test('a turn waiting for review learns once, together with the accept and the re
   const h = harness(t, { outputs: { claude: styleNote('본문은 한다체 사용') } });
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
   const key = await h.store.resolveKey({ documentId: 'doc-1' });
-  const explicit = await h.store.apply(key, [{ op: 'add', kind: 'term', subject: '용어.회의실', text: "'회의실' 대신 '대회의실'" }], { origin: 'explicit' });
-  h.learner.noteExplicit({ documentId: 'doc-1', key, threadId: 'th1', turnId: 't1', changes: explicit.changes });
   await h.learner.turnEnded({
     threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '회의 안내 문단을 써 줘', answer: '썼습니다.', learn: true, reviewPending: true,
   });
-  assert.deepEqual(h.frames.map((frame) => [frame.turnId, frame.items.map((item) => item.origin)]), [['t1', ['explicit']]], 'the agent\'s own write shows at once');
   await settle();
+  assert.deepEqual(h.frames, []);
   assert.equal(h.calls.length, 0, 'no run while the edits wait for review');
 
   h.signals.ingest({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', signals: [{ kind: 'accepted', at, after: '회의는 화요일에 열립니다.' }] });
   await settle();
   assert.equal(h.calls.length, 0, 'an accept alone waits for a rewrite');
   h.signals.ingest({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', signals: [{ kind: 'rewritten', at, after: '참석해 주시기 바랍니다.', userText: '참석 바란다.' }] });
-  await until(() => h.frames.length === 2, 'learned marker');
+  await until(() => h.frames.length === 1, 'learned marker');
   await settle();
   assert.equal(h.calls.length, 1, 'one call for the turn, the accept and the rewrite');
   assert.match(h.calls[0].prompt, /회의 안내 문단을 써 줘[^]*회의는 화요일에 열립니다[^]*참석 바란다/);
-  assert.deepEqual([h.frames[1].threadId, h.frames[1].turnId], ['th1', 't1']);
-  assert.deepEqual(h.frames[1].items.map((item) => [item.text, item.origin]), [['본문은 한다체 사용', 'learned']]);
+  assert.deepEqual([h.frames[0].threadId, h.frames[0].turnId], ['th1', 't1']);
+  assert.deepEqual(h.frames[0].items.map((item) => [item.text, item.origin]), [['본문은 한다체 사용', 'learned']]);
   const learned = (await h.store.read(key)).entries.find((entry) => entry.subject === '문체.종결');
   assert.deepEqual(learned.source, { threadId: 'th1', turnId: 't1', kind: 'turn' });
 });

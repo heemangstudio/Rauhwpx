@@ -53,10 +53,9 @@ function memoryError(code, message) {
  *   store: import('./document-memory-store.mjs').DocumentMemoryStore,
  *   log?: (message: string) => void,
  *   broadcast?: (frame: object) => void,
- *   onWrite?: (write: { documentId: string, key: string, threadId?: string, turnId?: string, changes: object[] }) => void,
- * }} deps broadcast 는 모든 Studio 창에 프레임을 보낸다. onWrite 는 에이전트 도구의 쓰기를 알린다 (턴의 배움 표시에 모은다).
+ * }} deps broadcast 는 모든 Studio 창에 프레임을 보낸다.
  */
-export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () => {}, onWrite = () => {} }) {
+export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () => {} }) {
   /** Studio 가 알린 문서 원본의 digest·파일 이름을 기억해 둔다. */
   function noteSource(record, documentId, { digest, fileName } = {}) {
     if (typeof documentId !== 'string' || !documentId) return;
@@ -202,47 +201,24 @@ export function createDocumentMemoryHub({ store, log = () => {}, broadcast = () 
     }
   }
 
-  /** read_document_memory · update_document_memory. 에이전트의 쓰기는 사용자 요청에 따른 explicit 이다. */
-  async function runTool(record, session, tool, args) {
+  /** read_document_memory. 에이전트는 기억을 읽기만 한다 — 쓰기는 Rau-0.1 과 사용자(문서 기억 시트)의 몫이다. */
+  async function runTool(record, session) {
     if (!session?.documentId) {
       throw memoryError('DOCUMENT_REQUIRED', 'No document is linked to this chat; document memory belongs to a document.');
     }
-    const { documentId, threadId, turnId } = session;
+    const { documentId } = session;
     const key = await keyFor(record, documentId);
-    if (tool === 'read_document_memory') {
-      const memory = await store.read(key);
-      const missing = session.documentMemory ? anchorStatus(session.documentMemory, documentId, memory).missing : new Set();
-      return {
-        revision: memory.revision,
-        entries: memory.entries.map((entry) => ({
-          id: entry.id,
-          kind: entry.kind,
-          subject: entry.subject,
-          text: entry.text,
-          ...(entry.anchor ? { anchor: entry.anchor } : {}),
-          ...(missing.has(entry.id) ? { anchorMissing: true } : {}),
-        })),
-      };
-    }
-    const result = await store.apply(key, args.ops, {
-      expectedRevision: args.expectedRevision,
-      origin: 'explicit',
-      source: { threadId, ...(turnId ? { turnId } : {}), kind: 'turn' },
-    });
-    if (result.changes.length) {
-      changed(documentId, key, result.revision);
-      try {
-        onWrite({ documentId, key, threadId, ...(turnId ? { turnId } : {}), changes: result.changes });
-      } catch (error) {
-        log(`document memory write listener failed: ${error?.message ?? error}`);
-      }
-    }
+    const memory = await store.read(key);
+    const missing = session.documentMemory ? anchorStatus(session.documentMemory, documentId, memory).missing : new Set();
     return {
-      revision: result.revision,
-      changes: result.changes.map((change) => ({
-        op: change.op,
-        id: change.entryId,
-        ...(change.entry ? { subject: change.entry.subject, text: change.entry.text } : {}),
+      revision: memory.revision,
+      entries: memory.entries.map((entry) => ({
+        id: entry.id,
+        kind: entry.kind,
+        subject: entry.subject,
+        text: entry.text,
+        ...(entry.anchor ? { anchor: entry.anchor } : {}),
+        ...(missing.has(entry.id) ? { anchorMissing: true } : {}),
       })),
     };
   }
