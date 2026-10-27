@@ -169,7 +169,14 @@ export const evaluateTableFormulaEx: HmApi['evaluateTableFormulaEx'] = (core, op
   }
   return { ok: true, value, display };
 };
-export const evaluateTableFormula: HmApi['evaluateTableFormula'] = (core, sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult) =>
-  JSON.stringify(evaluateTableFormulaEx(core, { sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult }));
+/** 계산식 대화상자·블록 계산·hwpctl 의 계약: 성공은 {ok, result}, 틀린 식은 {ok:false, error}. */
+export const evaluateTableFormula: HmApi['evaluateTableFormula'] = (core, sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult) => {
+  try {
+    const { value } = evaluateTableFormulaEx(core, { sectionIdx, parentParaIdx, controlIdx, targetRow, targetCol, formula, writeResult });
+    return JSON.stringify({ ok: true, result: value });
+  } catch (error) {
+    return JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+};
 
 extendBridge({ setTableCaptionText, evaluateTableFormula, evaluateTableFormulaEx });

@@ -79,6 +79,19 @@ test('table properties apply together and reject an unsupported edit atomically'
   assert.equal(api.getCellProperties(core, 0, 0, c, 0).paddingLeft, 280);
 });
 
+test('table formulas keep the dialog result contract and report a bad formula without writing', t => {
+  const { core } = open(t);
+  const c = api.createTable(core, 0, 0, 0, 2, 2).controlIdx;
+  api.insertTextInCell(core, 0, 0, c, 0, 0, 0, '1234');
+  api.insertTextInCell(core, 0, 0, c, 1, 0, 0, '5678');
+  assert.deepEqual(JSON.parse(api.evaluateTableFormula(core, 0, 0, c, 1, 0, '=A1*2', false)), { ok: true, result: 2468 });
+  const state = core.state();
+  const bad = JSON.parse(api.evaluateTableFormula(core, 0, 0, c, 1, 0, '=A1+', true));
+  assert.equal(bad.ok, false);
+  assert.equal(typeof bad.error, 'string');
+  assert.deepEqual(core.state(), state);
+});
+
 test('picture insertion, selection geometry, move and resize survive save and undo', t => {
   const { core, doc } = open(t);
   const result = api.insertPicture(core, 0, 0, 0, '[]', png, 7200, 5400, 96, 72, 'png', '그림', 7000, 8000, 'floating');
