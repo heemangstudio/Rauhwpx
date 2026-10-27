@@ -118,6 +118,16 @@ export function pageFocusComposer() {
   return document.activeElement === editor || editor.contains(document.activeElement);
 }
 
+/** 입력창과 같은 form 의 보내기(submit) 단추를 누른다. 2026-10 의 ChatGPT 는 Enter 로 보내지 않는다. 단추가 없으면 false. */
+export function pageSubmitComposer() {
+  const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
+    .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0; }).at(-1);
+  const submit = editor?.closest('form')?.querySelector('button[type="submit"]:not([disabled])');
+  if (!submit) return false;
+  submit.click();
+  return true;
+}
+
 /** 화면에 있는 대화 차례: 열쇠(사용자 메시지 id)와 글. */
 export function pageTurns() {
   return [...document.querySelectorAll('[data-turn-key]')]
@@ -367,13 +377,15 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
     const squash = (value) => value.replace(/\s+/g, ' ').trim();
     const head = squash(question).slice(0, 40);
     await waitFor(async () => squash((await evaluate(page, pageComposerState)).text).includes(head), { until: Math.min(until, now() + 5_000), label: 'composer text' });
-    await page.keyboard.press('Enter');
+    // 보내기 단추가 있으면 그것을 누르고, 없을 때만 Enter 를 쓴다.
+    const submit = async () => { if (!await evaluate(page, pageSubmitComposer)) await page.keyboard.press('Enter'); };
+    await submit();
     // 새 차례는 처음 보는 열쇠이면서 이 질문을 담아야 한다.
     const fresh = async () => (await evaluate(page, pageTurns)).find((turn) => !known.has(turn.key) && squash(turn.text).includes(head))?.key ?? null;
     const sent = await waitFor(fresh, { until: Math.min(until, now() + 3_000), label: 'new turn' }).catch(() => null);
     if (sent) return sent;
-    // Enter 가 먹히지 않았으면(입력창이 글을 그대로 가짐) 한 번 더 누른다. 비었으면 보내는 중이니 기다리기만 한다.
-    if (squash((await evaluate(page, pageComposerState)).text).includes(head)) await page.keyboard.press('Enter');
+    // 보내지 않았으면(입력창이 글을 그대로 가짐) 한 번 더 보낸다. 비었으면 보내는 중이니 기다리기만 한다.
+    if (squash((await evaluate(page, pageComposerState)).text).includes(head)) await submit();
     return waitFor(fresh, { until: Math.min(until, now() + stepTimeoutMs), label: 'new turn' });
   };
 

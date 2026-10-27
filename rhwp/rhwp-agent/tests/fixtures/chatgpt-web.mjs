@@ -15,7 +15,7 @@ export function createChatgptFixture({ signedIn = true, projects = [], answerDel
   ${state.drift === 'project-button' ? '' : '<button type="button" aria-label="새 프로젝트 추가" data-app-action-sidebar-project-create></button>'}
 </nav>
 <main><h1 id="title"></h1><div id="thread"></div>
-  ${state.drift === 'composer' ? '<textarea id="prompt"></textarea>' : '<div class="ProseMirror" contenteditable="true" role="textbox" aria-label="ChatGPT에게 물어보세요" style="min-height:24px;width:400px"></div>'}
+  <form id="composer">${state.drift === 'composer' ? '<textarea id="prompt"></textarea>' : '<div class="ProseMirror" contenteditable="true" role="textbox" aria-label="ChatGPT에게 물어보세요" style="min-height:24px;width:400px"></div>'}<button type="submit" aria-label="Send">↑</button></form>
   <button type="button" id="stop" aria-label="중지" hidden></button>
 </main>
 <script>
@@ -52,9 +52,10 @@ document.querySelector('[data-app-action-sidebar-project-create]')?.addEventList
   });
 });
 const editor = document.querySelector('.ProseMirror');
-editor?.addEventListener('keydown', async (event) => {
-  if (event.key !== 'Enter') return;
+// 2026-10 의 실제 화면처럼 Enter 로는 보내지 않고 보내기 단추(form submit)로만 보낸다.
+document.querySelector('#composer').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!editor) return;
   const question = editor.innerText.trim();
   editor.textContent = '';
   const sent = await fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ conversationId, projectId: projectMatch?.[1] ?? null, question }) }).then(r => r.json());
