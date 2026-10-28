@@ -23,6 +23,8 @@ export const DRAG_ABANDON_MS = 30 * 60_000;
  */
 const MAX_PATH_UNITS = 259;
 const MIN_NAME_UNITS = 12;
+/** NAME_MAX on macOS and Linux file systems. */
+const MAX_NAME_BYTES = 255;
 export const DRAG_EXPORT_TIMEOUT_MS = 15_000;
 const MAX_DRAG_ITEMS = 64;
 const MAX_EXPORT_BYTES = 1024 * 1024 * 1024;
@@ -58,18 +60,24 @@ export function normalizeDragExport(result) {
   return { fileName: typeof result.fileName === 'string' ? result.fileName.slice(0, 255) : '', bytes };
 }
 
+const utf8Length = (text) => Buffer.byteLength(text, 'utf8');
+
 /**
- * Shorten a file name so `folder/name` stays within MAX_PATH, keeping its
- * extension. Counts UTF-16 units, as Windows does, and never splits a surrogate pair.
+ * Shorten a file name so it can be written, keeping its extension and never
+ * splitting a surrogate pair. Windows: `folder\name` stays within MAX_PATH,
+ * counted in UTF-16 units. macOS and Linux: the name stays within 255 UTF-8
+ * bytes, which a long Korean name passes at 86 characters.
  */
-export function fitFileNameToPath(folder, fileName, maxUnits = MAX_PATH_UNITS) {
-  const budget = Math.max(MIN_NAME_UNITS, maxUnits - folder.length - 1);
-  if (fileName.length <= budget) return fileName;
+export function fitFileNameToPath(folder, fileName, platform = process.platform) {
+  const windows = platform === 'win32';
+  const budget = windows ? Math.max(MIN_NAME_UNITS, MAX_PATH_UNITS - folder.length - 1) : MAX_NAME_BYTES;
+  const size = windows ? (text) => text.length : utf8Length;
+  if (size(fileName) <= budget) return fileName;
   const dot = fileName.lastIndexOf('.');
   const extension = dot > 0 && fileName.length - dot <= 16 ? fileName.slice(dot) : '';
   let stem = '';
   for (const character of extension ? fileName.slice(0, dot) : fileName) {
-    if (stem.length + character.length + extension.length > budget) break;
+    if (size(stem) + size(character) + size(extension) > budget) break;
     stem += character;
   }
   return `${stem.replace(/[ .]+$/g, '') || 'document'}${extension}`;

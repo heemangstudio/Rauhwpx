@@ -126,19 +126,25 @@ test('a drag the renderer never finishes is cleaned up', async (t) => {
   assert.equal(existsSync(paths[0]), false);
 });
 
-test('a staged copy keeps its whole path within Windows MAX_PATH and keeps its extension', async (t) => {
+test('a long name is shortened to what the file system accepts and keeps its extension', async (t) => {
   const folder = String.raw`C:\Users\someone\AppData\Local\Temp\Rauhwpx-drag-0123abcd\89abcdef`;
   const long = `${'가'.repeat(150)}${'😀'.repeat(40)}.hwpx`;
-  const fitted = fitFileNameToPath(folder, long);
-  assert.ok(folder.length + 1 + fitted.length <= 259);
-  assert.ok(fitted.endsWith('.hwpx'));
-  assert.equal(fitted, fitted.toWellFormed(), 'no split surrogate pair');
-  assert.equal(fitFileNameToPath(folder, '보고서.hwp'), '보고서.hwp');
+  const windows = fitFileNameToPath(folder, long, 'win32');
+  assert.ok(folder.length + 1 + windows.length <= 259, 'Windows: the whole path fits MAX_PATH');
+  assert.ok(windows.endsWith('.hwpx'));
+  assert.equal(windows, windows.toWellFormed(), 'no split surrogate pair');
+  const posix = fitFileNameToPath('/tmp/Rauhwpx-drag-0123abcd/89abcdef', long, 'darwin');
+  assert.ok(Buffer.byteLength(posix) <= 255, 'macOS and Linux: the name fits 255 bytes');
+  assert.ok(posix.endsWith('.hwpx'));
+  assert.equal(posix, posix.toWellFormed());
+  assert.equal(fitFileNameToPath(folder, '보고서.hwp', 'win32'), '보고서.hwp');
+  assert.equal(fitFileNameToPath('/tmp/x', '보고서.hwp', 'linux'), '보고서.hwp');
 
+  // A 179-character Korean name (537 bytes) is written on this platform too.
   const root = scratch(t);
   const staging = new FileDragStaging({ root, lingerMs: 60_000, abandonMs: 60_000 });
   const { paths } = await staging.stage('window-a', [{ fileName: `${'나'.repeat(179)}.hwpx`, bytes: bytes('x') }]);
-  assert.ok(paths[0].length <= 259, `${paths[0].length} units`);
+  if (process.platform === 'win32') assert.ok(paths[0].length <= 259, `${paths[0].length} units`);
   assert.ok(paths[0].endsWith('.hwpx'));
   assert.equal(readFileSync(paths[0], 'utf8'), 'x');
   staging.clearSync();
