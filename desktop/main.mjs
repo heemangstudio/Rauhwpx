@@ -44,6 +44,7 @@ import {
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
 import { createAgentDocument, defaultAgentDocumentFolder, openAgentDocumentAtPath } from './agent-documents.mjs';
 import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
+import { collectDragSources, DragExportRequests, FileDragStaging, normalizeDragItems } from './file-drag-out.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
@@ -829,7 +830,15 @@ function broadcastUnsavedDocuments() {
 
 function forgetUnsavedDocuments(sessionId) {
   if (unsavedDocuments.forget(sessionId)) broadcastUnsavedDocuments();
+  // 닫히거나 다시 불린 창은 끌기용 내보내기 요청에 답하지 않는다.
+  dragExports.forgetSession(sessionId);
 }
+
+// 문서 홈 카드를 다른 앱으로 끌어 놓는다. 바뀐 문서·새 문서는 임시 폴더에 내보낸 사본을 넘긴다.
+const dragStaging = new FileDragStaging({ root: join(app.getPath('temp'), `${INTERNAL_APP_NAME}-drag-out`) });
+const dragExports = new DragExportRequests();
+dragStaging.clearSync();
+app.on('will-quit', () => dragStaging.clearSync());
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
 function noteRecentDocument(sessionId, handleId) {
@@ -2164,6 +2173,63 @@ ipcMain.handle('desktop:unsaved-document-action', (event, documentId, action) =>
   sessions.focusSession(owner);
   target.sender.send('desktop:run-unsaved-document-action', { documentId, action });
   return true;
+});
+ipcMain.handle('desktop:prepare-file-drag', async (event, rawItems) => {
+  const session = sessionForEvent(event);
+  const items = normalizeDragItems(rawItems);
+  if (!items.length) return { token: null, failed: [] };
+  const { sources, failed } = await collectDragSources(items, {
+    ownerOf: (item) => {
+      const owner = item.kind === 'unsaved'
+        ? unsavedDocuments.ownerOf(item.documentId)
+        : nativeFiles.ownerSessionOf(item.documentId);
+      return owner && owner !== session.sessionId ? owner : null;
+    },
+    exportFrom: (owner, documentId) => dragExports.request(owner, (requestId) => {
+      const target = sessions.sessionById(owner);
+      if (!target || target.sender.isDestroyed()) throw new Error('owner window is gone');
+      target.sender.send('desktop:drag-export-request', { requestId, documentId });
+    }),
+    savedPath: async (documentId) => (
+      (await nativeFiles.inspectDocument(documentId)).state === 'present' ? nativeFiles.bookmarkPathFor(documentId) : null
+    ),
+  });
+  if (!sources.length) return { token: null, failed };
+  try {
+    const { token } = await dragStaging.stage(session.sessionId, sources);
+    return { token, failed };
+  } catch (error) {
+    console.warn('[hamaeditor] drag export staging failed:', error);
+    return { token: null, failed: items.map((item) => item.fileName || item.documentId) };
+  }
+});
+ipcMain.handle('desktop:drag-export-reply', (event, requestId, result) => {
+  const session = sessionForEvent(event);
+  return typeof requestId === 'string' && dragExports.reply(session.sessionId, requestId, result);
+});
+ipcMain.on('desktop:start-file-drag', (event, token, iconDataUrl) => {
+  try {
+    const session = sessionForEvent(event);
+    const paths = dragStaging.pathsFor(session.sessionId, token);
+    if (!paths?.length) return;
+    const icon = typeof iconDataUrl === 'string' && iconDataUrl.startsWith('data:image/png;base64,')
+      ? nativeImage.createFromDataURL(iconDataUrl)
+      : nativeImage.createEmpty();
+    // macOS 는 빈 그림으로 끌기를 시작하지 않는다.
+    if (icon.isEmpty() && process.platform === 'darwin') return;
+    event.sender.startDrag({ file: paths[0], files: paths, icon });
+    // Windows 는 놓을 때까지 startDrag 가 돌아오지 않는다. 돌아오면 끌기는 끝났다.
+    if (process.platform === 'win32') dragStaging.end(session.sessionId, token);
+  } catch (error) {
+    console.warn('[hamaeditor] file drag failed:', error);
+  }
+});
+ipcMain.on('desktop:end-file-drag', (event, token, dropped) => {
+  try {
+    dragStaging.end(sessionForEvent(event).sessionId, token, { immediate: dropped !== true });
+  } catch {
+    // 닫히는 창은 남은 사본을 버림 타이머에 맡긴다.
+  }
 });
 const recentWindowOpens = new Map();
 ipcMain.handle('desktop:open-native-document-window', async (event, documentId) => {

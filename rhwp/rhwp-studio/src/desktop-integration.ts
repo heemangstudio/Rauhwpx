@@ -317,6 +317,12 @@ export interface RhwpDesktopApi {
   /** 다른 창의 새 문서를 그 창에서 열거나 저장한다. 그 창이 없으면 false. */
   runUnsavedDocumentAction?: (documentId: string, action: UnsavedDocumentAction) => Promise<boolean>;
   onUnsavedDocumentAction?: (callback: (documentId: string, action: UnsavedDocumentAction) => void) => (() => void) | void;
+  /** 문서 홈 카드를 파일로 끌어 내기. 준비한 끌기의 token 으로 시작하고 끝낸다. */
+  prepareFileDrag?: (items: DesktopFileDragItem[]) => Promise<{ token: string | null; failed: string[] }>;
+  startFileDrag?: (token: string, iconDataUrl: string) => void;
+  /** dropped: 끌기를 시작했다(받는 앱이 사본을 읽을 수 있다). false 면 사본을 바로 지운다. */
+  endFileDrag?: (token: string, dropped: boolean) => void;
+  onDragExportRequest?: (callback: (documentId: string) => DesktopDragExport | Promise<DesktopDragExport>) => (() => void) | void;
   /** slotId 를 생략하면 창의 기본 문서 자리다. 한 창이 문서마다 다른 자리를 쓴다. */
   reserveDocument?: (
     identity: DocumentOwnershipIdentity,
@@ -387,6 +393,28 @@ export interface DesktopUnsavedDocument extends UnsavedDocumentReport {
 }
 
 export type UnsavedDocumentAction = 'open' | 'save';
+
+/** 끌어 낼 문서. recent·unsaved 는 데스크톱이 찾고(다른 창이면 그 창에 묻는다), bytes 는 이 창이 내보낸 것이다. */
+export type DesktopFileDragItem =
+  | { kind: 'recent' | 'unsaved'; documentId: string; fileName: string }
+  | { kind: 'bytes'; fileName: string; bytes: Uint8Array };
+
+/** 다른 창의 물음에 대한 답: 바뀐 내용, 저장된 파일 그대로(clean), 또는 없음. */
+export type DesktopDragExport = { fileName: string; bytes: Uint8Array } | 'clean' | null;
+
+export type DesktopFileDragApi = Required<Pick<RhwpDesktopApi,
+  'prepareFileDrag' | 'startFileDrag' | 'endFileDrag' | 'onDragExportRequest'>>;
+
+export function desktopFileDragApi(win?: DesktopHost): DesktopFileDragApi | null {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (!api?.prepareFileDrag || !api.startFileDrag || !api.endFileDrag || !api.onDragExportRequest) return null;
+  return {
+    prepareFileDrag: api.prepareFileDrag,
+    startFileDrag: api.startFileDrag,
+    endFileDrag: api.endFileDrag,
+    onDragExportRequest: api.onDragExportRequest,
+  };
+}
 
 export function desktopUnsavedDocumentsApi(win?: DesktopHost): Required<Pick<RhwpDesktopApi,
   'setUnsavedDocuments' | 'listUnsavedDocuments' | 'onUnsavedDocumentsChanged'

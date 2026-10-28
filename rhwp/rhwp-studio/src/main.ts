@@ -85,7 +85,7 @@ import {
   readFileFromHandle,
   type FileSystemFileHandleLike,
 } from '@/command/file-system-access';
-import { fileNameForFormat, forgetConvertedHmlSaveHandle } from '@/command/save-target';
+import { fileNameForFormat, forgetConvertedHmlSaveHandle, resolveSaveTarget } from '@/command/save-target';
 import { EngineTrappedError, engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
@@ -106,7 +106,7 @@ import {
   type VerifiedDocumentGrant,
 } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs, RECENT_MENU_LIMIT, updateRecentDoc, type RecentDoc } from '@/recent/recent-store';
-import { createDocumentHome, type DocumentHome, type HomeCloseResult } from '@/home/document-home';
+import { createDocumentHome, type DocumentHome, type HomeCloseResult, type HomeDragItem } from '@/home/document-home';
 import { createEmptyDocumentView, type EmptyDocumentView } from '@/ui/empty-document-view';
 import {
   createUnsavedDocuments,
@@ -316,6 +316,10 @@ import {
   desktopUpdatesApi,
   desktopDiagnosticsLogger,
   desktopIssueReportApi,
+  desktopFileDragApi,
+  type DesktopDragExport,
+  type DesktopFileDragApi,
+  type DesktopFileDragItem,
   nativeFileHandleId,
   restoredNativeFileHandle,
   type UpdateRestartSlice,
@@ -3126,6 +3130,48 @@ for (const name of ['document-context-changed', 'document-saved']) {
   eventBus.on(name, () => unsavedDocumentStore.invalidate());
 }
 
+/**
+ * 이 창에 열린 문서를 파일로 끌 때 넘길 내용. 저장된 파일과 같으면 clean 이라 그 파일이 간다.
+ * 바뀐 문서·새 문서는 저장할 때의 형식으로 내보낸다. HML 은 저장 때 형식을 다시 묻는 문서라 HWPX 로 낸다.
+ */
+function exportLiveDocumentForDrag(documentId: string): DesktopDragExport {
+  const session = liveSessionForDocument(documentId);
+  if (!session || engineTrap()) return null;
+  if (!session.wasm.isNewDocument && !session.documentState.isDirty()) return 'clean';
+  const target = resolveSaveTarget(session.wasm.getSourceFormat(), session.wasm.fileName, session.wasm.currentFileHandle);
+  const format = target.format === 'hml' ? 'hwpx' : target.format;
+  if (session === attachedSession) commandServices.getInputHandler()?.flushDeferredPaginationIfNeeded('drag-out');
+  const bytes = exportDocumentForFormat(session.wasm, format);
+  return { fileName: fileNameForFormat(session.wasm.fileName, format), bytes };
+}
+
+/** 문서 홈에서 끌 카드들을 파일로 준비한다. 이 창에 열린 문서는 여기서 내보내고, 나머지는 데스크톱이 찾는다. */
+async function prepareHomeFileDrag(api: DesktopFileDragApi, items: readonly HomeDragItem[]) {
+  const failed: string[] = [];
+  const wire: DesktopFileDragItem[] = [];
+  const live = items.filter((item) => (item.kind === 'recent' || item.local) && liveSessionForDocument(item.documentId));
+  // 내보내기는 엔진을 붙잡는다. 준비 중 표시가 먼저 그려지게 한 틀 넘긴다.
+  if (live.length) await new Promise((resolve) => requestAnimationFrame(resolve));
+  for (const item of items) {
+    if (!live.includes(item)) {
+      wire.push({ kind: item.kind, documentId: item.documentId, fileName: item.fileName });
+      continue;
+    }
+    try {
+      const exported = exportLiveDocumentForDrag(item.documentId);
+      if (exported === 'clean') wire.push({ kind: 'recent', documentId: item.documentId, fileName: item.fileName });
+      else if (exported) wire.push({ kind: 'bytes', fileName: exported.fileName, bytes: exported.bytes });
+      else failed.push(item.fileName);
+    } catch (error) {
+      console.warn('[drag-out] export failed:', error);
+      failed.push(item.fileName);
+    }
+  }
+  if (!wire.length) return { token: null, failed };
+  const prepared = await api.prepareFileDrag(wire);
+  return { token: prepared.token, failed: [...failed, ...prepared.failed] };
+}
+
 /** 템플릿은 허브에 있다. 지금 보이는 채팅의 브리지로 묻는다. */
 function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
@@ -3133,6 +3179,9 @@ function templateBridge() {
 
 function installDocumentHome(): void {
   const fileManager = desktopFileManagerName();
+  const fileDrag = desktopFileDragApi();
+  // 다른 창의 홈이 이 창에 열린 문서를 끌면 바뀐 내용을 내보내 준다.
+  fileDrag?.onDragExportRequest((documentId) => exportLiveDocumentForDrag(documentId));
   documentHome = createDocumentHome({
     listRecent: () => listRecentDocs(),
     loadWorktrees: () => loadWorktreeData(worktreeStore),
@@ -3244,6 +3293,13 @@ function installDocumentHome(): void {
       }
     },
     onDrop: (event) => { void handleDocumentDrop(event, { fromHome: true }); },
+    dragOut: fileDrag
+      ? {
+        prepare: (items) => prepareHomeFileDrag(fileDrag, items),
+        start: (token, icon) => fileDrag.startFileDrag(token, icon),
+        end: (token, dropped) => fileDrag.endFileDrag(token, dropped),
+      }
+      : undefined,
     // 문서 없이도 집중 화면 설정으로 가고, 설정을 닫으면 홈으로 돌아온다.
     // 홈은 설정 화면이 자리 잡은 뒤에 내린다. 먼저 내리면 교차 페이드가 문서 화면에서 시작해 한 번 비친다.
     openSettings: () => {

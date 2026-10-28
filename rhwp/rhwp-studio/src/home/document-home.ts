@@ -30,6 +30,7 @@ import {
   type WorktreeData,
 } from './home-data.ts';
 import { releaseThumbnailWorker } from './thumbnail-render.ts';
+import { createHomeDragOut, dragIconDataUrl, DRAG_KEY_ATTRIBUTE, type HomeDragOut, type PreparedFileDrag } from './home-drag-out.ts';
 import type { UnsavedDocument } from './unsaved-documents.ts';
 import { createIcon } from '../ui/agent-sidebar/icons.ts';
 
@@ -88,8 +89,19 @@ export interface DocumentHomeDeps {
     save(document: UnsavedDocument): void;
   };
   onDrop?(event: DragEvent): void;
+  /** 데스크톱: 카드를 파일로 다른 앱에 끌어 놓는다. 없으면 카드는 끌리지 않는다. */
+  dragOut?: {
+    prepare(items: readonly HomeDragItem[]): Promise<PreparedFileDrag>;
+    start(token: string, iconDataUrl: string): void;
+    end(token: string, dropped: boolean): void;
+  };
   toast(message: string): void;
 }
+
+/** 끌어 낼 카드. 최근 문서는 저장된 파일이, 새 문서는 그 문서를 연 창이 내보낸 사본이 간다. */
+export type HomeDragItem =
+  | { kind: 'recent'; documentId: string; fileName: string }
+  | { kind: 'unsaved'; documentId: string; fileName: string; local: boolean };
 
 export interface DocumentHome {
   readonly element: HTMLElement;
@@ -292,6 +304,8 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   let galleryOpen = false;
   let expanded: string | null = null;
   let focusedId: string | null = null;
+  /** 데스크톱의 카드 끌어 내기와 고르기. 아래 입력 단락에서 만든다. */
+  let dragOut: HomeDragOut | null = null;
   let loadToken = 0;
   /** 카드 그림은 다시 그려도 재사용한다. 목록에서 빠진 문서의 그림은 버린다. */
   const blobs = new Map<string, Blob>();
@@ -557,6 +571,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const unsaved = unsavedItems();
     if (!documents.length) {
       grid.replaceChildren(...unsaved);
+      dragOut?.paint();
       expanded = null;
       if (loaded && !unsaved.length) {
         const empty = el('li', 'dh-empty');
@@ -595,12 +610,18 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
       card.append(paper, text);
       const state = presence.get(doc.recentId)?.state;
       if (state === 'unavailable' || flagged.has(doc.recentId)) item.classList.add('is-dimmed');
+      // 작업 트리 사본은 저장소 안에 있어 파일로 끌지 않는다. 못 찾은 파일도 끌지 않는다.
+      if (dragOut && !(doc.branch && !doc.branch.primary) && state !== 'missing' && state !== 'unavailable'
+        && !flagged.has(doc.recentId)) {
+        card.setAttribute(DRAG_KEY_ATTRIBUTE, `recent:${doc.recentId}`);
+      }
       item.append(card);
       items.push(item);
       const row = rowFor(doc);
       if (row) lazyThumbnail(gridScope, paper, `document:${doc.documentId}`, () => loadDocumentThumbnail(row));
     }
     grid.replaceChildren(...unsaved, ...items);
+    dragOut?.paint();
     placeDetail();
     if (!restoreUnsavedFocus() && keepFocus) cardFor(focusedId)?.focus({ preventScroll: true });
   }
@@ -654,6 +675,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     const name = displayName(doc.fileName) || '새 문서';
     const card = button('dh-card dh-unsaved-card', '');
     card.dataset.unsavedKey = `open:${doc.documentId}`;
+    if (dragOut) card.setAttribute(DRAG_KEY_ATTRIBUTE, `unsaved:${doc.documentId}`);
     card.setAttribute('aria-label', `${name}, 저장 안 됨${doc.local ? '' : ', 다른 창'}, 열기`);
     const paper = paperFor(unsavedFormat(doc.fileName), 'dh-doc-paper dh-unsaved-paper');
     paper.prepend(dashedOutline());
@@ -1069,6 +1091,48 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }
   }
 
+  // ── 파일로 끌어 내기 ────────────────────────────────────
+  function dragItemFor(key: string): HomeDragItem | null {
+    if (key.startsWith('recent:')) {
+      const row = rows.find((entry) => entry.id === key.slice('recent:'.length));
+      return row ? { kind: 'recent', documentId: row.documentId, fileName: row.fileName } : null;
+    }
+    const documentId = key.slice('unsaved:'.length);
+    const doc = deps.unsaved?.list().find((entry) => entry.documentId === documentId);
+    return doc ? { kind: 'unsaved', documentId, fileName: doc.fileName || '새 문서.hwpx', local: doc.local } : null;
+  }
+
+  function formatFor(key: string): string {
+    const item = dragItemFor(key);
+    if (!item) return 'hwp';
+    if (item.kind === 'unsaved') return unsavedFormat(item.fileName);
+    return rows.find((entry) => entry.documentId === item.documentId)?.sourceFormat ?? 'hwp';
+  }
+
+  dragOut = deps.dragOut ? createHomeDragOut({
+    grid,
+    prepare: (keys) => {
+      const items = keys.map(dragItemFor).filter((item): item is HomeDragItem => item !== null);
+      return items.length ? deps.dragOut!.prepare(items) : Promise.resolve({ token: null, failed: [] });
+    },
+    start: (token, icon) => deps.dragOut!.start(token, icon),
+    end: (token, dropped) => deps.dragOut!.end(token, dropped),
+    iconFor: (keys) => {
+      const first = keys[0] ?? '';
+      const card = grid.querySelector<HTMLElement>(`[${DRAG_KEY_ATTRIBUTE}="${CSS.escape(first)}"]`);
+      return dragIconDataUrl({
+        image: card?.querySelector<HTMLImageElement>('.dh-thumb') ?? null,
+        format: formatFor(first),
+        count: keys.length,
+      });
+    },
+    onFailed: (names) => {
+      const shown = names.slice(0, 3).map((name) => displayName(name)).join(', ');
+      const more = names.length > 3 ? ` 외 ${names.length - 3}개` : '';
+      deps.toast(`끌어 놓지 못한 문서: ${shown}${more}`);
+    },
+  }) : null;
+
   // ── 입력 ────────────────────────────────────────────────
   grid.addEventListener('click', (event) => {
     const card = (event.target as HTMLElement).closest<HTMLButtonElement>('.dh-card');
@@ -1162,6 +1226,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     if (target?.closest('input, textarea, select, [contenteditable="true"], dialog, [role="dialog"]')) return;
     // 홈이 받은 Esc 는 뒤의 앱(에이전트 전체 화면 닫기 등)으로 넘기지 않는다.
     event.preventDefault();
+    if (dragOut?.clearSelection()) return;
     if (expanded) { const id = expanded; collapse(); cardFor(id)?.focus(); return; }
     if (deps.returnTarget()) hide();
     // 캡처 단계에서 받는다. 가린 앱의 Esc 처리(에이전트 전체 화면 닫기 등)보다 먼저다.
@@ -1212,12 +1277,24 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     }).catch((error) => deps.toast(error instanceof Error ? error.message : '템플릿을 추가하지 못했습니다.'));
   });
   if (deps.onDrop) {
-    root.addEventListener('dragover', (event) => { event.preventDefault(); root.classList.add('is-drag-over'); });
+    root.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      // 이 홈에서 끌어 낸 카드는 홈에 다시 놓아도 열지 않는다.
+      if (dragOut?.outbound) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+        return;
+      }
+      root.classList.add('is-drag-over');
+    });
     root.addEventListener('dragleave', (event) => {
       if (!root.contains(event.relatedTarget as Node | null)) root.classList.remove('is-drag-over');
     });
     root.addEventListener('drop', (event) => {
       root.classList.remove('is-drag-over');
+      if (dragOut?.consumeDrop()) {
+        event.preventDefault();
+        return;
+      }
       deps.onDrop!(event);
     });
   }
@@ -1274,6 +1351,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
     root.classList.remove('is-shown');
     root.hidden = true;
     expanded = null;
+    dragOut?.clearSelection();
     resetThumbnails();
     // 미리보기 일꾼의 엔진 메모리를 돌려준다. 다음에 열 때 새로 띄운다.
     releaseThumbnailWorker();
