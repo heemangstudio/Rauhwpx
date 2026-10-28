@@ -5321,7 +5321,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
     });
     try {
-      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true });
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true });
     } catch (failure) { await close(); throw failure; }
     return { closed, close };
   };

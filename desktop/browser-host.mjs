@@ -520,7 +520,7 @@ export class OwnedBrowserHost {
 
   emit(tab, type, extra = {}) {
     if (!tab?.targetId) return;
-    const payload = { type, ...this.state(tab), ...extra };
+    const payload = { type, ...this.state(tab), ...extra, signInPresentation: tab.signInPresentation === true };
     this.onEvent(payload);
     if ((['zoom', 'download-progress', 'sign-in'].includes(type) || type === 'human-input') && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
@@ -534,12 +534,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId, signIn = false }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab);
+    if (mode === 'popout') return this.popout(window, tab, { signIn });
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -826,7 +826,7 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab) {
+  popout(ownerWindow, tab, { signIn = false } = {}) {
     this.unplace(tab);
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
@@ -849,6 +849,7 @@ export class OwnedBrowserHost {
       popout.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
       void popout.loadURL(POPOUT_URL);
     }
+    tab.signInPresentation = signIn === true;
     this.placeGuest(tab, popout);
     tab.placement = { window: popout, ownerWindow, mode: 'popout' };
     tab.interactive = tab.human;
@@ -863,7 +864,7 @@ export class OwnedBrowserHost {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
     // 도구 막대 높이(76 CSS px)도 창의 페이지 확대를 따른다.
-    const toolbar = Math.round(76 * pageZoomFactor(popout));
+    const toolbar = tab.signInPresentation ? 0 : Math.round(76 * pageZoomFactor(popout));
     const bounds = { x: 0, y: toolbar, width, height: Math.max(0, height - toolbar) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
