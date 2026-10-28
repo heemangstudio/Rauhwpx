@@ -318,6 +318,10 @@ function applyTableDeleteRowColumn(
   const ctx = currentTableCellContext(services);
   if (!ctx) return;
   const { ih, pos, cellInfo } = ctx;
+  // 셀 블록이 여러 줄·칸에 걸치면 블록이 덮은 줄·칸을 모두 지운다.
+  const range = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
+  const start = mode === 'row' ? range?.startRow ?? cellInfo.row : range?.startCol ?? cellInfo.col;
+  const count = range ? (mode === 'row' ? range.endRow - range.startRow : range.endCol - range.startCol) + 1 : 1;
   const succeeded = safeTableOp(() => ih.executeOperation({
     kind: 'snapshot',
     operationType: mode === 'row' ? 'deleteTableRow' : 'deleteTableColumn',
@@ -325,21 +329,21 @@ function applyTableDeleteRowColumn(
       const path = tablePathJson(pos);
       const res = mode === 'row'
         ? (path
-            ? wasm.deleteTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.row)
-            : wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row))
+            ? wasm.deleteTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, start, count)
+            : wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start, count))
         : (path
-            ? wasm.deleteTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.col)
-            : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col));
+            ? wasm.deleteTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, start, count)
+            : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start, count));
       if (!res.ok) return pos;
       // 삭제 후 셀 수가 줄면 기존 cellIndex가 범위를 벗어날 수 있어 보정한다 (#1483).
       const corrected = clampedCellAfterDelete(
         wasm,
         pos,
-        cellInfo.row,
-        cellInfo.col,
+        mode === 'row' ? start : cellInfo.row,
+        mode === 'row' ? cellInfo.col : start,
         res.rowCount,
         res.colCount,
-        mode === 'row' ? cellInfo.rowSpan > 1 : cellInfo.colSpan > 1,
+        !range && (mode === 'row' ? cellInfo.rowSpan > 1 : cellInfo.colSpan > 1),
       );
       if (!corrected) {
         // 표 소멸 → 표 밖 본문 위치로 폴백.
@@ -582,7 +586,7 @@ export const tableCommands: CommandDef[] = [
       const cellInfo = cellInfoAt(services.wasm, pos);
       const isMerged = !isMultiCell && (cellInfo.rowSpan > 1 || cellInfo.colSpan > 1);
 
-      const dialog = new CellSplitDialog(isMerged);
+      const dialog = new CellSplitDialog(Boolean(isMultiCell) || isMerged);
       dialog.onApply = (nRows, mCols, equalHeight, mergeFirst) => {
         const ih2 = services.getInputHandler();
         if (!ih2) return;
@@ -592,6 +596,17 @@ export const tableCommands: CommandDef[] = [
           operation: (wasm) => {
             if (isMultiCell && range && tableCtx) {
               const path = tableCtx.cellPath?.length ? JSON.stringify(tableCtx.cellPath) : null;
+              if (mergeFirst) {
+                // 블록을 한 셀로 합친 뒤 그 셀을 줄·칸 수만큼 나눈다.
+                if (path) {
+                  wasm.mergeTableCellsByPath(tableCtx.sec, tableCtx.ppi, path, range.startRow, range.startCol, range.endRow, range.endCol);
+                  wasm.splitTableCellIntoByPath(tableCtx.sec, tableCtx.ppi, path, range.startRow, range.startCol, nRows, mCols, equalHeight, false);
+                } else {
+                  wasm.mergeTableCells(tableCtx.sec, tableCtx.ppi, tableCtx.ci, range.startRow, range.startCol, range.endRow, range.endCol);
+                  wasm.splitTableCellInto(tableCtx.sec, tableCtx.ppi, tableCtx.ci, range.startRow, range.startCol, nRows, mCols, equalHeight, false);
+                }
+                return tableCellPositionAt(wasm, pos, range.startRow, range.startCol, true);
+              }
               path
                 ? wasm.splitTableCellsInRangeByPath(
                     tableCtx.sec, tableCtx.ppi, path,

@@ -20,10 +20,11 @@ export class CellSplitDialog {
   private equalHeightCheck!: HTMLInputElement;
   private mergeFirstCheck!: HTMLInputElement;
 
-  private isMerged: boolean;
+  /** 「셀을 합친 후 나누기」를 쓸 수 있는지: 여러 셀 블록이거나 이미 합친 셀일 때. */
+  private canMergeFirst: boolean;
 
-  constructor(isMerged: boolean) {
-    this.isMerged = isMerged;
+  constructor(canMergeFirst: boolean) {
+    this.canMergeFirst = canMergeFirst;
   }
 
   show(): void {
@@ -174,11 +175,11 @@ export class CellSplitDialog {
     this.mergeFirstCheck = document.createElement('input');
     this.mergeFirstCheck.type = 'checkbox';
     this.mergeFirstCheck.id = 'csd-mf-check';
-    this.mergeFirstCheck.disabled = !this.isMerged;
+    this.mergeFirstCheck.disabled = !this.canMergeFirst;
     const mfLabel = document.createElement('label');
     mfLabel.htmlFor = 'csd-mf-check';
     mfLabel.textContent = '셀을 합친 후 나누기(M)';
-    if (!this.isMerged) {
+    if (!this.canMergeFirst) {
       mfLabel.style.color = '#999';
     }
     mfRow.appendChild(this.mergeFirstCheck);

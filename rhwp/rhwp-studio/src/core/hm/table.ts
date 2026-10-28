@@ -168,19 +168,19 @@ export function insertTableColumnByPath(core: HmCore, sec: number, parentPara: n
   throw unsupported('insertTableColumnByPath');
 }
 
-export function deleteTableRow(core: HmCore, sec: number, parentPara: number, controlIdx: number, rowIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+export function deleteTableRow(core: HmCore, sec: number, parentPara: number, controlIdx: number, rowIdx: number, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('deleteTableRow');
 }
 
-export function deleteTableRowByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, rowIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+export function deleteTableRowByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, rowIdx: number, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('deleteTableRowByPath');
 }
 
-export function deleteTableColumn(core: HmCore, sec: number, parentPara: number, controlIdx: number, colIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+export function deleteTableColumn(core: HmCore, sec: number, parentPara: number, controlIdx: number, colIdx: number, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('deleteTableColumn');
 }
 
-export function deleteTableColumnByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, colIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+export function deleteTableColumnByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, colIdx: number, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('deleteTableColumnByPath');
 }
 

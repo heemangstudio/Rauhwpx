@@ -98,10 +98,10 @@ export const insertTableRow: typeof original.insertTableRow = (core, s, p, c, ro
 export const insertTableRowByPath: typeof original.insertTableRowByPath = (core, s, p, path, row, below) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'insertTableRows', table, beforeRow: row + Number(below), count: 1 }, table); };
 export const insertTableColumn: typeof original.insertTableColumn = (core, s, p, c, col, right) => { const table = tableAddress(s, p, c); return edit(core, { op: 'insertTableColumns', table, beforeColumn: col + Number(right), count: 1 }, table); };
 export const insertTableColumnByPath: typeof original.insertTableColumnByPath = (core, s, p, path, col, right) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'insertTableColumns', table, beforeColumn: col + Number(right), count: 1 }, table); };
-export const deleteTableRow: typeof original.deleteTableRow = (core, s, p, c, row) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableRows', table, startRow: row, count: 1 }, table); };
-export const deleteTableRowByPath: typeof original.deleteTableRowByPath = (core, s, p, path, row) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'deleteTableRows', table, startRow: row, count: 1 }, table); };
-export const deleteTableColumn: typeof original.deleteTableColumn = (core, s, p, c, col) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableColumns', table, startColumn: col, count: 1 }, table); };
-export const deleteTableColumnByPath: typeof original.deleteTableColumnByPath = (core, s, p, path, col) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'deleteTableColumns', table, startColumn: col, count: 1 }, table); };
+export const deleteTableRow: typeof original.deleteTableRow = (core, s, p, c, row, count = 1) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableRows', table, startRow: row, count }, table); };
+export const deleteTableRowByPath: typeof original.deleteTableRowByPath = (core, s, p, path, row, count = 1) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'deleteTableRows', table, startRow: row, count }, table); };
+export const deleteTableColumn: typeof original.deleteTableColumn = (core, s, p, c, col, count = 1) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableColumns', table, startColumn: col, count }, table); };
+export const deleteTableColumnByPath: typeof original.deleteTableColumnByPath = (core, s, p, path, col, count = 1) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'deleteTableColumns', table, startColumn: col, count }, table); };
 export const moveTableOffset: typeof original.moveTableOffset = (core, s, p, c, dx, dy) => {
   core.transact([{ op: 'moveObject', object: tableAddress(s, p, c), dx, dy }]);
   return { ok: true, ppi: p, ci: c };

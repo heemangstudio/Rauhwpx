@@ -784,20 +784,20 @@ export class WasmBridge {
     return api.insertTableColumnByPath(this.core, sec, parentPara, pathJson, colIdx, right);
   }
 
-  deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number): { ok: boolean; rowCount: number; colCount: number } {
-    return api.deleteTableRow(this.core, sec, parentPara, controlIdx, rowIdx);
+  deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.deleteTableRow(this.core, sec, parentPara, controlIdx, rowIdx, count);
   }
 
-  deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number): { ok: boolean; rowCount: number; colCount: number } {
-    return api.deleteTableRowByPath(this.core, sec, parentPara, pathJson, rowIdx);
+  deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.deleteTableRowByPath(this.core, sec, parentPara, pathJson, rowIdx, count);
   }
 
-  deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number): { ok: boolean; rowCount: number; colCount: number } {
-    return api.deleteTableColumn(this.core, sec, parentPara, controlIdx, colIdx);
+  deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.deleteTableColumn(this.core, sec, parentPara, controlIdx, colIdx, count);
   }
 
-  deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number): { ok: boolean; rowCount: number; colCount: number } {
-    return api.deleteTableColumnByPath(this.core, sec, parentPara, pathJson, colIdx);
+  deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.deleteTableColumnByPath(this.core, sec, parentPara, pathJson, colIdx, count);
   }
 
   createTable(sec: number, para: number, charOffset: number, rows: number, cols: number): { ok: boolean; paraIdx: number; controlIdx: number } {
