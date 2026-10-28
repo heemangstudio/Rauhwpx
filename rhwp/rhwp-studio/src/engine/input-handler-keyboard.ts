@@ -268,10 +268,10 @@ function executeHeaderFooterNavigationAction(
       this.cursor.moveToWordBoundaryInHf(1);
       break;
     case 'lineStart':
-      this.cursor.moveToParagraphEdgeInHf(-1);
+      this.cursor.moveToLineEdgeInHf(-1);
       break;
     case 'lineEnd':
-      this.cursor.moveToParagraphEdgeInHf(1);
+      this.cursor.moveToLineEdgeInHf(1);
       break;
     case 'paragraphBackward':
       this.cursor.moveToParagraphBoundaryInHf(-1);
@@ -315,6 +315,38 @@ function handleHeaderFooterNavigationShortcut(this: any, e: KeyboardEvent): bool
     return true;
   }
   return false;
+}
+
+/** 본문과 같은 플랫폼별 탐색 규칙을 각주 좌표계에 적용한다. Shift 는 각주 안 선택을 넓힌다. */
+function handleFootnoteNavigationShortcut(this: any, e: KeyboardEvent): boolean {
+  const input = toNavigationKeyInput(e);
+  const platform = detectPlatformKind();
+  const action = getNavigationAction(input, platform);
+  const boundary = ((e.metaKey && !e.ctrlKey && !e.altKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown'))
+    || (((e.ctrlKey || e.metaKey) && !e.altKey) && (e.key === 'Home' || e.key === 'End'));
+  const vertical = !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown');
+  if (!action && !boundary && !vertical) {
+    if (!shouldSuppressUnmappedNavigation(input, platform)) return false;
+    e.preventDefault();
+    return true;
+  }
+  e.preventDefault();
+  if (e.shiftKey) this.cursor.setFnAnchor();
+  else this.cursor.clearSelection();
+  if (action === 'wordBackward' || action === 'wordForward') {
+    this.cursor.moveToWordBoundaryInFn(action === 'wordBackward' ? -1 : 1);
+  } else if (action === 'lineStart' || action === 'lineEnd') {
+    this.cursor.moveToLineEdgeInFn(action === 'lineStart' ? -1 : 1);
+  } else if (action) {
+    this.cursor.moveToParagraphBoundaryInFn(action === 'paragraphBackward' ? -1 : 1);
+  } else if (boundary) {
+    this.cursor.moveToFootnoteBoundary(e.key === 'ArrowUp' || e.key === 'Home' ? -1 : 1);
+  } else {
+    this.cursor.moveVerticalInFn(e.key === 'ArrowUp' ? -1 : 1);
+  }
+  this.updateCaret();
+  if (e.shiftKey) this.updateSelection();
+  return true;
 }
 
 function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentPosition {
@@ -947,6 +979,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.textarea?.focus();
       return;
     }
+
+    if (handleFootnoteNavigationShortcut.call(this, e)) return;
 
     // 방향키 → 각주 내 이동
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {

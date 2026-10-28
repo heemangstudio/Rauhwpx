@@ -867,7 +867,8 @@ export class CursorState {
     this.atLineEnd = false;
     const pos = this.position;
 
-    if (this.usesCellPathNavigation()) {
+    // 글상자도 셀과 같이 자기 문단 목록 안에서 문단을 옮긴다.
+    if (this.isInCell()) {
       // [#2914] 본문 분기와 동일한 한컴 표준 — 문단 중간(Ctrl+↑)이면 먼저 현재 문단 시작에서 멈춘다.
       if (direction === -1 && pos.charOffset > 0) {
         this.position = { ...pos, charOffset: 0 };
@@ -960,7 +961,8 @@ export class CursorState {
     this.preferredX = null;
     const pos = this.position;
 
-    if (this.usesCellPathNavigation()) {
+    // 글상자도 셀과 같이 자기 문단 목록 안에서 단어를 찾는다.
+    if (this.isInCell()) {
       this.moveToWordBoundaryInCell(direction);
       return;
     }
@@ -2062,6 +2064,35 @@ export class CursorState {
     this.updateRect();
   }
 
+  /** 머리말/꼬리말에서 캐럿이 있는 시각 줄의 처음(-1)이나 끝(1)으로 간다 (Home/End). */
+  moveToLineEdgeInHf(edge: -1 | 1): void {
+    if (this._headerFooterMode === 'none' || !this.rect) return;
+    const hit = this.hitInHf(edge < 0 ? 0 : LINE_EDGE_FAR_X, this.rect.y + this.rect.height / 2);
+    if (!hit || hit.paraIndex !== this._hfParaIdx) return;
+    this._hfCharOffset = hit.charOffset;
+    this.updateRect();
+  }
+
+  /** 편집 중인 머리말/꼬리말 안에서 (x, y) 의 위치. 다른 머리말/꼬리말이면 null. */
+  private hitInHf(x: number, y: number): { paraIndex: number; charOffset: number } | null {
+    if (this._headerFooterMode === 'none' || !this.rect) return null;
+    const isHeader = this._headerFooterMode === 'header';
+    const wasm = this.wasm as unknown as {
+      hitTestInHeaderFooterTarget?: WasmBridge['hitTestInHeaderFooterTarget'];
+      hitTestInHeaderFooter: WasmBridge['hitTestInHeaderFooter'];
+    };
+    try {
+      const hit = typeof wasm.hitTestInHeaderFooterTarget === 'function'
+        ? wasm.hitTestInHeaderFooterTarget(this.rect.pageIndex, this._hfSectionIdx, isHeader, this._hfApplyTo, x, y)
+        : wasm.hitTestInHeaderFooter(this.rect.pageIndex, isHeader, x, y);
+      if (!hit.hit || hit.sectionIndex !== this._hfSectionIdx || hit.applyTo !== this._hfApplyTo
+        || hit.paraIndex === undefined || hit.charOffset === undefined) return null;
+      return { paraIndex: hit.paraIndex, charOffset: hit.charOffset };
+    } catch {
+      return null;
+    }
+  }
+
   /** 머리말/꼬리말에서 현재 X를 유지해 위·아래 시각 줄로 이동한다. */
   moveVerticalInHf(delta: -1 | 1): void {
     if (this._headerFooterMode === 'none' || !this.rect) return;
@@ -2200,7 +2231,108 @@ export class CursorState {
 
     this.updateRect();
   }
+
+  /** 각주 문단의 글자들. 읽지 못하면 null. */
+  private footnoteTexts(): string[] | null {
+    try {
+      return this.wasm.getFootnoteInfo(this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx).texts;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 각주 안 단어 경계로 이동한다 (Option/Ctrl+←/→). 문단 끝에서는 이웃 문단으로 넘어간다. */
+  moveToWordBoundaryInFn(direction: -1 | 1): void {
+    if (!this._footnoteMode) return;
+    const chars = Array.from(this.footnoteTexts()?.[this._fnInnerParaIdx] ?? '');
+    const offset = this._fnCharOffset;
+    if (direction > 0 ? offset >= chars.length : offset <= 0) {
+      this.moveHorizontalInFn(direction);
+      return;
+    }
+    if (direction > 0) {
+      const rest = chars.slice(offset, offset + 50).join('');
+      this._fnCharOffset = Math.min(chars.length, offset + findWordBoundaryForward(rest));
+    } else {
+      const start = Math.max(0, offset - 50);
+      this._fnCharOffset = start + findWordBoundaryBackward(chars.slice(start, offset).join(''));
+    }
+    this.updateRect();
+  }
+
+  /** 각주의 이전/다음 문단 경계로 이동한다 (Ctrl+↑/↓). 본문과 같이 문단 중간이면 먼저 그 문단 처음으로 간다. */
+  moveToParagraphBoundaryInFn(direction: -1 | 1): void {
+    if (!this._footnoteMode) return;
+    const texts = this.footnoteTexts();
+    if (!texts) return;
+    if (direction < 0) {
+      if (this._fnCharOffset > 0) this._fnCharOffset = 0;
+      else if (this._fnInnerParaIdx > 0) this._fnInnerParaIdx--;
+    } else if (this._fnInnerParaIdx + 1 < texts.length) {
+      this._fnInnerParaIdx++;
+      this._fnCharOffset = 0;
+    } else {
+      this._fnCharOffset = Array.from(texts[this._fnInnerParaIdx] ?? '').length;
+    }
+    this.updateRect();
+  }
+
+  /** 각주 전체의 처음/끝으로 이동한다 (Cmd+↑/↓, Ctrl+Home/End). */
+  moveToFootnoteBoundary(edge: -1 | 1): void {
+    if (!this._footnoteMode) return;
+    const texts = this.footnoteTexts();
+    if (!texts) return;
+    if (edge < 0) {
+      this._fnInnerParaIdx = 0;
+      this._fnCharOffset = 0;
+    } else {
+      this._fnInnerParaIdx = Math.max(0, texts.length - 1);
+      this._fnCharOffset = Array.from(texts[this._fnInnerParaIdx] ?? '').length;
+    }
+    this.updateRect();
+  }
+
+  /** 각주에서 캐럿이 있는 시각 줄의 처음(-1)이나 끝(1)으로 간다 (Home/End). */
+  moveToLineEdgeInFn(edge: -1 | 1): void {
+    if (!this._footnoteMode || !this.rect) return;
+    const hit = this.hitInFn(edge < 0 ? 0 : LINE_EDGE_FAR_X, this.rect.y + this.rect.height / 2);
+    if (!hit || hit.fnParaIndex !== this._fnInnerParaIdx) return;
+    this._fnCharOffset = hit.charOffset;
+    this.updateRect();
+  }
+
+  /** 각주에서 현재 X를 유지해 위·아래 시각 줄로 이동한다. 다른 각주로는 넘어가지 않는다. */
+  moveVerticalInFn(delta: -1 | 1): void {
+    if (!this._footnoteMode || !this.rect) return;
+    const { x, y, height } = this.rect;
+    const step = Math.max(12, height * 1.25);
+    for (const multiplier of [1, 2, 4]) {
+      const hit = this.hitInFn(x, y + height / 2 + delta * step * multiplier);
+      if (!hit) continue;
+      if (hit.fnParaIndex === this._fnInnerParaIdx && hit.charOffset === this._fnCharOffset) continue;
+      this._fnInnerParaIdx = hit.fnParaIndex;
+      this._fnCharOffset = hit.charOffset;
+      this.updateRect();
+      return;
+    }
+  }
+
+  /** 편집 중인 각주 안에서 (x, y) 의 위치. 다른 각주이거나 각주 밖이면 null. */
+  private hitInFn(x: number, y: number): { fnParaIndex: number; charOffset: number } | null {
+    if (!this.rect) return null;
+    try {
+      const hit = this.wasm.hitTestInFootnote(this.rect.pageIndex, x, y);
+      if (!hit.hit || hit.footnoteIndex !== this._fnFootnoteIndex
+        || hit.fnParaIndex === undefined || hit.charOffset === undefined) return null;
+      return { fnParaIndex: hit.fnParaIndex, charOffset: hit.charOffset };
+    } catch {
+      return null;
+    }
+  }
 }
+
+/** 줄 끝을 찾을 때 쓰는 쪽 오른쪽 바깥 x(px). 어느 쪽 너비보다도 크다. */
+const LINE_EDGE_FAR_X = 1e6;
 
 // ─── 단어 경계 탐색 유틸 (PR #794, Alt+Arrow 단어 이동) ──────────────────────────────────
 
