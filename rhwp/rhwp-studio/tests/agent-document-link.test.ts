@@ -363,7 +363,7 @@ function chat(state: { unlinked: boolean; active: boolean; busy: boolean; thread
   };
 }
 
-const idle = { linking: false, busy: false, managedWorktree: false, readOnlyDirty: false };
+const idle = { linking: false };
 
 test('home and File opens leave a working document-less chat in its own session', () => {
   const empty = (chats: RoutingChat[]) => ({ wasm: { hasLoadedDocument: () => false }, chats });
@@ -373,8 +373,8 @@ test('home and File opens leave a working document-less chat in its own session'
   assert.equal(opensInNewSession(empty([chat({ unlinked: true, active: true, busy: true })]), { ...idle, linking: true }), false,
     'the document linked into the chat opens in its session');
   const loaded = { wasm: { hasLoadedDocument: () => true }, chats: [] };
-  assert.equal(opensInNewSession(loaded, idle), false);
-  assert.equal(opensInNewSession(loaded, { ...idle, busy: true }), true);
+  assert.equal(opensInNewSession(loaded, idle), true, 'an open document stays as a tab');
+  assert.equal(opensInNewSession(loaded, { ...idle, linking: true }), false, 'a link opens into its own session');
 });
 
 test('an old document-less chat continues without looking for a document to move to', () => {

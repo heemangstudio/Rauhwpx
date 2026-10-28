@@ -5766,6 +5766,11 @@ export class InputHandler {
   /** 커서가 표 셀 내부인가? */
   isInTable(): boolean { return this.cursor.isInCell(); }
 
+  /** 이 키 입력의 Ctrl+Tab 이 표 셀 안 탭 문자다 (input-handler-keyboard 의 Ctrl+Tab 과 같은 조건). */
+  ownsCtrlTab(target: EventTarget | null): boolean {
+    return target === this.textarea && this.cursor.isInCell() && !this.cursor.isInTextBox() && !this.isFormMode();
+  }
+
   /** 셀 선택 모드인가? */
   isInCellSelectionMode(): boolean { return this.cursor.isInCellSelectionMode(); }
 

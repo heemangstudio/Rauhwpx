@@ -8003,6 +8003,24 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   color: var(--ag-text-secondary);
 }
 
+/* 집중 모드 머리의 문서 이름은 열린 문서 목록을 펴는 단추다. */
+.ag-workspace-document-name.ag-document-switch {
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border-radius: var(--ag-r-chip);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out), color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-workspace-document-name.ag-document-switch:is(:hover, [aria-expanded='true']) {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-workspace-document-name.ag-document-switch:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 1px;
+}
+
 .ag-workspace-title {
   display: flex;
   min-width: 0;

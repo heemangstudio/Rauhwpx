@@ -102,6 +102,67 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
   cursor: default;
   -webkit-app-region: no-drag;
 }
+/* 열린 문서 목록 단추. 이름은 줄이고 개수·꺾쇠는 늘 보인다. */
+#editor-document-title.editor-document-title-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  pointer-events: auto;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.editor-document-title-switcher .editor-document-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-document-title-switcher .worktree-chip { margin-left: 1px; }
+.editor-document-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--ui-text-muted);
+}
+.editor-document-switch-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ui-hover);
+  font: 600 10.5px/16px var(--font-family-ui);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.editor-document-switch-count:empty { display: none; }
+.editor-document-switch-chevron { display: inline-grid; place-items: center; }
+.editor-document-switch-chevron svg { display: block; transition: transform 140ms ease; }
+#editor-document-title.editor-document-title-switcher:hover,
+#editor-document-title.editor-document-title-switcher[aria-expanded='true'] {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+#editor-document-title.editor-document-title-switcher:is(:hover, [aria-expanded='true']) .editor-document-switch {
+  color: var(--ui-text-secondary);
+}
+#editor-document-title.editor-document-title-switcher:is(:hover, [aria-expanded='true']) .editor-document-switch-count {
+  background: var(--ui-hover-strong, var(--ui-active));
+}
+#editor-document-title.editor-document-title-switcher[aria-expanded='true'] .editor-document-switch-chevron svg {
+  transform: rotate(180deg);
+}
+#editor-document-title.editor-document-title-switcher:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  #editor-document-title.editor-document-title-switcher,
+  .editor-document-switch-chevron svg { transition: none; }
+}
 #editor-document-title[hidden] { display: none; }
 #editor-document-title[hidden] + #editor-command-search { margin-left: auto; }
 @media (max-width: 767px) {
