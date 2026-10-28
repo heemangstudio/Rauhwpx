@@ -59,14 +59,22 @@ export function pageNavigationUrl(value) {
   return browserNavigationUrl(text);
 }
 
+/** 창 페이지 확대 배율. 보기 > 확대/축소를 쓰면 CSS px 하나가 이 배율만큼의 DIP 가 된다. */
+function pageZoomFactor(window) {
+  const factor = window?.webContents?.getZoomFactor?.();
+  return Number.isFinite(factor) && factor > 0 ? factor : 1;
+}
+
+/** 렌더러가 잰 CSS px 영역을 뷰가 쓰는 창 DIP 영역으로 바꾸고 창 안으로 자른다. */
 export function browserViewBounds(bounds, window) {
   const area = window.getContentBounds();
   if (!bounds || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key]))) {
     throw new Error('Browser presentation bounds are invalid');
   }
-  const x = Math.max(0, Math.min(area.width, Math.round(bounds.x)));
-  const y = Math.max(0, Math.min(area.height, Math.round(bounds.y)));
-  return { x, y, width: Math.max(0, Math.min(area.width - x, Math.round(bounds.width))), height: Math.max(0, Math.min(area.height - y, Math.round(bounds.height))) };
+  const zoom = pageZoomFactor(window);
+  const x = Math.max(0, Math.min(area.width, Math.round(bounds.x * zoom)));
+  const y = Math.max(0, Math.min(area.height, Math.round(bounds.y * zoom)));
+  return { x, y, width: Math.max(0, Math.min(area.width - x, Math.round(bounds.width * zoom))), height: Math.max(0, Math.min(area.height - y, Math.round(bounds.height * zoom))) };
 }
 
 // 파일 칸의 accept 를 파일 창 확장자 목록으로 옮긴다. 옮기지 못하는 형식이 하나라도 있으면 거르지 않는다.
@@ -100,9 +108,13 @@ async function privateDirectory(dir) {
 }
 
 export class OwnedBrowserHost {
-  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dialog, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform }) {
+  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dialog, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform,
+    getDownloadsDir = () => join(os.homedir(), 'Downloads'), shell = null }) {
     this.platform = platform;
     this.dialog = dialog;
+    // Windows 는 사용자가 다운로드 폴더를 옮길 수 있다(OneDrive 알려진 폴더 이동 등). 허브와 같은 폴더를 쓴다.
+    this.getDownloadsDir = getDownloadsDir;
+    this.shell = shell;
     this.BrowserWindow = BrowserWindow;
     this.BaseWindow = BaseWindow;
     this.WebContentsView = WebContentsView;
@@ -113,6 +125,7 @@ export class OwnedBrowserHost {
     this.tabs = new Map();
     this.pendingTabs = new Set();
     this.parkingWindow = null;
+    this.parkingSurfaceWindow = null;
     this.captureSurfaces = new WeakMap();
     this.aliases = new Map();
     this.popouts = new Map();
@@ -405,13 +418,15 @@ export class OwnedBrowserHost {
   }
 
   syncActivity(tab) {
+    this.syncParkingSurface();
     tab.activityQueue = (tab.activityQueue ?? Promise.resolve()).catch(() => {}).then(async () => {
       const contents = tab.view.webContents;
       if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
       // 열린 페이지 대화상자는 렌더러를 멈춰 이 명령이 돌아오지 않는다. 에이전트가 대화상자에 답할 수 있게 닫힐 때까지 미룬다.
       if (tab.dialogOpen) { tab.activitySyncDeferred = true; return; }
       // 허브가 숨은 탭을 다루는 동안에는 타이머·애니메이션 제한을 풀어 페이지가 제 속도로 뜨게 한다.
-      contents.setBackgroundThrottling(!tab.activityLeases?.size);
+      const unthrottled = !!tab.activityLeases?.size;
+      if (unthrottled !== !!tab.unthrottled) { tab.unthrottled = unthrottled; contents.setBackgroundThrottling?.(!unthrottled); }
       await contents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: !!tab.activityLeases?.size });
     });
     return tab.activityQueue;
@@ -642,6 +657,35 @@ export class OwnedBrowserHost {
     tab.dialogParking = null;
     window.contentView.addChildView(tab.view);
     for (const other of this.tabs.values()) if (other !== tab && other.placement?.window === window && other.placement.mode === 'float') this.raiseFloat(other);
+    this.syncParkingSurface();
+  }
+
+  /**
+   * Windows 는 매핑되지 않은 창의 게스트를 초당 한 프레임으로만 그린다. 그러면 에이전트의 마우스 이벤트
+   * 하나가 1초씩 걸려 hover·drag 가 시간 초과된다. 주차된 탭이 활동 임대를 쥐는 동안 주차 창을
+   * 캡처 때처럼 투명·비활성으로 띄워 둔다. 임대가 모두 끝나면 다시 숨긴다.
+   */
+  syncParkingSurface() {
+    const window = this.parkingWindow;
+    const usable = this.platform === 'win32' && !this.disposing && window && !window.isDestroyed();
+    const needed = usable && [...this.tabs.values()].some((tab) => (
+      tab.parkingWindow === window && !tab.closing && tab.activityLeases?.size > 0
+    ));
+    const held = this.parkingSurfaceWindow ?? null;
+    if (held && (held !== window || !needed)) {
+      this.parkingSurfaceWindow = null;
+      if (!held.isDestroyed()) {
+        const remaining = (this.captureSurfaces.get(held) ?? 1) - 1;
+        if (remaining > 0) this.captureSurfaces.set(held, remaining);
+        else { this.captureSurfaces.delete(held); held.hide(); }
+      }
+    }
+    if (needed && this.parkingSurfaceWindow !== window) {
+      const leases = this.captureSurfaces.get(window) ?? 0;
+      this.captureSurfaces.set(window, leases + 1);
+      this.parkingSurfaceWindow = window;
+      if (!leases) window.showInactive();
+    }
   }
 
   parkGuest(tab) {
@@ -724,6 +768,7 @@ export class OwnedBrowserHost {
     tab.interactive = false;
     if (tab.view.webContents && !tab.view.webContents.isDestroyed()) this.setViewRadius(tab, 0);
     this.parkGuest(tab);
+    this.syncParkingSurface();
     if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
@@ -853,7 +898,9 @@ export class OwnedBrowserHost {
   layoutPopout(tab, popout) {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
-    const top = (tab.popoutBare ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
+    // 도구 막대(76 CSS px)와 Chrome 로그인 막대 높이도 창의 페이지 확대를 따른다.
+    const css = (tab.popoutBare ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
+    const top = Math.round(css * pageZoomFactor(popout));
     const bounds = { x: 0, y: top, width, height: Math.max(0, height - top) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
@@ -1010,11 +1057,12 @@ export class OwnedBrowserHost {
   }
 
   async revealDownload({ filePath }) {
-    const root = await realpath(join(os.homedir(), 'Downloads'));
+    const root = await realpath(this.getDownloadsDir());
     const file = await realpath(filePath);
     const within = relative(root, file), info = await lstat(filePath);
     if (!within || within === '..' || within.startsWith('..' + sep) || isAbsolute(within) || !info.isFile() || info.isSymbolicLink()) throw new Error('Download file is unavailable');
-    const { shell } = await import('electron'); shell.showItemInFolder(file); return { revealed: true };
+    const shell = this.shell ?? (await import('electron')).shell;
+    shell.showItemInFolder(file); return { revealed: true };
   }
 
   cancelDownload(guid) { this.downloads.get(guid)?.cancel(); return {}; }
@@ -1158,7 +1206,9 @@ export class OwnedBrowserHost {
       this.tabs.clear();
       this.aliases.clear();
       this.popouts.clear();
-      await this.passwords?.vault.clear();
+      // 금고를 지우지 못해도 쿠키·사이트 데이터는 지운다. 실패는 끝에서 알려 다시 시도하게 한다.
+      let vaultError = null;
+      try { await this.passwords?.vault.clear(); } catch (error) { vaultError = error; }
       this.passwords?.clearProtectedValues();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
@@ -1174,6 +1224,7 @@ export class OwnedBrowserHost {
       this.downloadPath = null;
       this.downloadBehavior = 'deny';
       this.generation = randomUUID();
+      if (vaultError) throw vaultError;
       return { tabsClosed: guests.length, generation: this.generation, nativeStorageCleared: !!this.session };
     })();
     try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); this.passwords?.cookies?.endReset(); }

@@ -797,7 +797,10 @@ function registerFilledSecret(record, value) {
 }
 const initialBrowserConfiguration = await credentialBroker.getConfiguration();
 const browserDownloads = createBrowserDownloads({
-  exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc' ? path.join(os.homedir(), 'Downloads') : null,
+  // 데스크톱은 app.getPath('downloads') 를 넘긴다 — Windows 는 다운로드 폴더를 옮길 수 있다.
+  exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc'
+    ? (process.env.RHWP_DOWNLOADS_DIR ? path.resolve(process.env.RHWP_DOWNLOADS_DIR) : path.join(os.homedir(), 'Downloads'))
+    : null,
   dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
   maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
   authorizeDownload: async ({ actor, url, target }) => {
@@ -2430,7 +2433,11 @@ async function answerChatPermission(record, sock, msg) {
       activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
       if (scope === 'always') {
         // 저장에 실패해도 이 채팅의 허용은 이미 적용됐다. 다음 채팅에서 다시 묻는다.
-        await chatPermissionPolicy.grant(capability).catch((error) => log(`chat permission policy write failed: ${error?.code ?? error?.message ?? error}`));
+        await chatPermissionPolicy.grant(capability).catch((error) => {
+          log(`chat permission policy write failed: ${error?.code ?? error?.message ?? error}`);
+          // 저장되지 않은 "항상"은 이 채팅의 허용으로만 남긴다(범위 조회도 chat 으로 답한다).
+          activeSession.chatScopedGrants = normalizeChatPermissionGrants([...(activeSession.chatScopedGrants ?? []), capability]);
+        });
       } else {
         activeSession.chatScopedGrants = normalizeChatPermissionGrants([...(activeSession.chatScopedGrants ?? []), capability]);
       }

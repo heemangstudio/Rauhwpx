@@ -11,7 +11,7 @@ import {
   validateAgentDocumentPath,
 } from '../desktop/agent-documents.mjs';
 import { DocumentLeaseManager } from '../desktop/document-leases.mjs';
-import { NativeFileHandleRegistry } from '../desktop/native-file-handles.mjs';
+import { NativeFileHandleRegistry, validateNativeDocumentPath } from '../desktop/native-file-handles.mjs';
 
 const BLANK_HWPX = readFileSync(new URL('../rhwp/samples/tac-host-spacing.hwpx', import.meta.url));
 
@@ -219,6 +219,24 @@ test('새 문서는 주어진 폴더가 있는 절대 경로의 실제 폴더일
       { ok: false, code: 'WRITE_FAILED' },
     );
     assert.deepEqual(readdirSync(folder).sort(), ['안내문.hwpx', '하위']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Windows 대체 데이터 스트림(a.txt:hidden.hwp)은 문서 경로로 받지 않는다', async () => {
+  assert.equal(validateAgentDocumentPath('C:/Users/me/a.txt:hidden.hwp', { platform: 'win32' }), null);
+  assert.throws(() => validateNativeDocumentPath('C:/Users/me/a.txt:hidden.hwp', { platform: 'win32' }));
+  assert.equal(validateAgentDocumentPath('C:/Users/me/보고서.hwp', { platform: 'win32' }), 'C:\\Users\\me\\보고서.hwp');
+  if (process.platform !== 'win32') return;
+  const { dir, nativeFiles, documentLeases, cleanup } = setup();
+  try {
+    const carrier = join(dir, 'a.txt');
+    writeFileSync(carrier, 'visible');
+    writeFileSync(`${carrier}:hidden.hwp`, 'HWP Document File secret');
+    const opened = await openAgentDocumentAtPath('window-1', `${carrier}:hidden.hwp`, { nativeFiles, documentLeases });
+    assert.deepEqual(opened, { ok: false, code: 'INVALID_PATH' });
+    assert.deepEqual(nativeFiles.descriptorsForSession('window-1'), []);
   } finally {
     cleanup();
   }

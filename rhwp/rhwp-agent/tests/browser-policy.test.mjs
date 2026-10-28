@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createBrowserPolicy } from '../browser-policy.mjs';
+import { createBrowserPolicy, readBrowserJson, writeBrowserJson } from '../browser-policy.mjs';
 
 const owner = { isHuman: true, clientId: 'owner' };
 const agent = { threadId: 'thread-a', projectId: 'project-a', agentId: 'root' };
@@ -128,3 +128,41 @@ test('a domain block in settings blocks its subdomains while sub-host entries st
   assert.equal(await browse('https://docs.example.com/'), true, 'a block on one subdomain stays on it');
 });
 
+
+test('a trailing-dot host name is the same host for sub-host blocks', async (t) => {
+  const { policy } = await fixture(t);
+  const browse = async (url) => (await policy.check({ actor: agent, action: 'browse', url })).allowed;
+  await policy.update({ actor: owner, operation: 'set-site', origin: 'https://admin.corp-site.com', allowedActions: [], blockedActions: ['browse'] });
+  assert.equal(await browse('https://admin.corp-site.com/'), false);
+  assert.equal(await browse('https://admin.corp-site.com./'), false);
+  assert.equal(await browse('https://ADMIN.corp-site.com../login'), false);
+  assert.equal(await browse('https://docs.corp-site.com./'), true);
+});
+
+test('browser settings writes and reads wait out a short Windows lock on the file', { skip: process.platform !== 'win32' && 'Windows share-mode locks only' }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-browser-json-lock-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const file = path.join(dataDir, 'browser-policy.json');
+  await writeBrowserJson(file, { version: 1 });
+  // 백신·색인기처럼 공유 없이 쥔다 — 읽기는 EBUSY, 교체는 EPERM 이 난다.
+  const holdLock = async () => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$f=[System.IO.File]::Open('${file.replaceAll("'", "''")}','Open','ReadWrite','None'); 'locked'; Start-Sleep -Milliseconds 700; $f.Close()`],
+    { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+    t.after(() => { child.kill(); });
+    await new Promise((resolve, reject) => {
+      child.stdout.on('data', (chunk) => { if (String(chunk).includes('locked')) resolve(); });
+      child.once('exit', () => reject(new Error('lock helper exited early')));
+    });
+    return child;
+  };
+  const exited = (child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once('exit', resolve)));
+  // 교체와 읽기를 따로 잠가 두 재시도를 각각 확인한다.
+  let child = await holdLock();
+  await writeBrowserJson(file, { version: 2 });
+  await exited(child);
+  child = await holdLock();
+  assert.deepEqual(await readBrowserJson(file), { version: 2 });
+  await exited(child);
+});

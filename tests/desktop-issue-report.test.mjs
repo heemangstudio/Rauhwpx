@@ -9,6 +9,7 @@ import test from 'node:test';
 import {
   createDiagnosticLog,
   createLineSink,
+  formatLogArgs,
   redactSecrets,
   teeConsole,
 } from '../desktop/diagnostic-log.mjs';
@@ -94,6 +95,45 @@ test('secrets are redacted before they reach the disk', () => withTempDir(async 
   assert.match(written, /tokens: 1234/);
   assert.equal(redactSecrets('nothing secret here'), 'nothing secret here');
 }));
+
+test('a Windows home folder is hidden in stack frames, inspected errors, JSON and other spellings', async () => {
+  const home = 'C:\\Users\\김하마';
+  const missing = await import('node:fs/promises').then((fs) => fs.readFile(`${home}\\definitely-missing.txt`)).catch((error) => error);
+  const lines = [
+    formatLogArgs([missing]),
+    `    at async file:///C:/Users/${encodeURIComponent('김하마')}/AppData/Local/app.mjs:1:1`,
+    'at file:///c:/users/김하마/AppData/x.mjs',
+    JSON.stringify({ path: `${home}\\Documents\\a.hwp` }),
+    'C:\\Users\\B9E8~1\\AppData\\Local\\Temp\\x',
+    'C:\\Users\\김하마2\\notes.txt',
+  ];
+  const out = redactSecrets(lines.join('\n'), { home });
+  assert.ok(!out.includes('김하마'), out);
+  assert.ok(!out.includes(encodeURIComponent('김하마')), out);
+  assert.ok(!out.includes('B9E8~1'), out);
+  assert.match(out, /~\\\\Documents\\\\a\.hwp/);
+  assert.equal(redactSecrets('C:\\Users\\Public\\Desktop', { home }), 'C:\\Users\\Public\\Desktop');
+  // 이름이 더 이어지는 다른 사용자 폴더는 홈으로 줄이지 않고, 문장 끝 마침표 앞의 홈은 줄인다.
+  assert.equal(redactSecrets('C:\\Users\\김하마하\\x', { home }), 'C:\\Users\\[user]\\x');
+  assert.equal(redactSecrets('Cannot open /Users/andy. See /Users/andy.kim/x', { home: '/Users/andy' }), 'Cannot open ~. See /Users/andy.kim/x');
+});
+
+test('cookie headers, URL user info and short explicit passwords are redacted', () => {
+  const out = redactSecrets([
+    'Cookie: sid=abcdef123456; session=zzz',
+    'set-cookie: SESSIONID=topsecret; Path=/; HttpOnly',
+    'proxy https://user:hunter2hunter2@example.com:8080/x',
+    'password=abc123',
+    '{"password":"pw1"}',
+    'Chrome cookie import failed: EBUSY',
+  ].join('\n'));
+  for (const leaked of ['abcdef123456', 'zzz', 'topsecret', 'hunter2hunter2', 'abc123', 'pw1']) {
+    assert.ok(!out.includes(leaked), `${leaked} leaked: ${out}`);
+  }
+  assert.match(out, /https:\/\/\[redacted\]@example\.com:8080\/x/);
+  assert.match(out, /Chrome cookie import failed: EBUSY/);
+  assert.equal(redactSecrets('password=[redacted]'), 'password=[redacted]');
+});
 
 test('hub stderr split mid-token is joined into lines before redaction', () => withTempDir(async (dir) => {
   const log = createDiagnosticLog({ dir });

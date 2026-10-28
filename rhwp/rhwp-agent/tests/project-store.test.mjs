@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { ProjectStore, documentNodeId } from '../project-store.mjs';
-import { DEFAULT_PROJECT_SETTINGS } from '../project-settings.mjs';
+import { DEFAULT_PROJECT_SETTINGS, ProjectSettingsStore } from '../project-settings.mjs';
 import { executeProjectTool } from '../project-tools.mjs';
 import { createReferenceCatalog } from '../reference-catalog.mjs';
 import { ReferenceStore } from '../reference-store.mjs';
@@ -410,4 +410,83 @@ test('project_read shows clips and text-less pages on a PDF and the source on a 
   const rows = await read({ view: 'items', kind: 'clip' });
   assert.deepEqual(rows.items, [{ id: clipId, kind: 'clip', title: '표지 그림', column: 'inbox', source: pdf.id, page: 1 }]);
   assert.equal((await read({ view: 'summary' })).counts.clips, 1);
+});
+
+test('Windows startup recovers project, index and settings files left at the replacement gap', async (t) => {
+  const { parent, referenceStore, store } = await fixture(t);
+  const root = path.join(parent, 'projects');
+  const projectId = await store.projectForDocument('doc-gap', { name: '틈.hwpx' });
+  const item = await addText(referenceStore, store, projectId, 'kept.txt', 'kept evidence');
+  const threadProjectId = await store.projectForThread('thread-gap');
+  const settingsStore = new ProjectSettingsStore({ root, platform: 'win32' });
+  await settingsStore.load();
+  await settingsStore.save({ board: { trashDays: 90 } });
+  // 두 rename 사이에서 프로세스가 죽은 디스크 상태: 대상은 없고 직전 값만 `.previous-write` 에 있다.
+  for (const file of [path.join(root, projectId, 'project.json'), path.join(root, 'index.json'), path.join(root, 'settings.json')]) {
+    await fs.rename(file, `${file}.previous-write`);
+  }
+
+  const reopened = await new ProjectStore({ root, referenceStore, platform: 'win32' }).init();
+  assert.equal(reopened.projectIdForDocument('doc-gap'), projectId);
+  // 색인을 폴더에서 다시 만들면 잃는 스레드 대응도 남는다.
+  assert.equal(await reopened.projectForThread('thread-gap'), threadProjectId);
+  assert.equal((await reopened.get(projectId)).items.find((entry) => entry.id === item.id)?.kind, 'file');
+  assert.equal(await reopened.projectForDocument('doc-gap'), projectId);
+  const settings = await new ProjectSettingsStore({ root, platform: 'win32' }).load();
+  assert.equal(settings.board.trashDays, 90);
+});
+
+test('reference repair keeps going past a project whose data cannot be read', async (t) => {
+  const { parent, referenceStore, store } = await fixture(t);
+  const root = path.join(parent, 'projects');
+  const broken = await store.createProject({ name: '깨진 프로젝트' });
+  await addText(referenceStore, store, broken.id, 'broken.txt', 'broken evidence');
+  const healthy = await store.createProject({ name: '멀쩡한 프로젝트' });
+  // 항목 없이 기록만 남은 자료 — 부팅 복구가 항목을 붙여야 한다.
+  await referenceStore.addBuffer({ scope: 'project', scopeId: healthy.id, name: 'orphan.txt', bytes: Buffer.from('orphan evidence') });
+  await fs.writeFile(path.join(root, broken.id, 'project.json'), '{ not json');
+
+  const logs = [];
+  const reopened = await new ProjectStore({ root, referenceStore, logger: (line) => logs.push(line) }).init();
+  assert.equal(await reopened.repairReferences(), 1);
+  assert.equal((await reopened.get(healthy.id)).items.filter((entry) => entry.kind === 'file').length, 1);
+  assert.ok(logs.some((line) => line.includes(broken.id)));
+});
+
+test('uploaded file names and user renames keep compatibility characters such as ㎡, ① and ㈜', async (t) => {
+  const { referenceStore, store } = await fixture(t);
+  const project = await store.createProject({ name: '㈜한컴 ２０２６' });
+  assert.equal((await store.get(project.id)).name, '㈜한컴 ２０２６');
+  const item = await addText(referenceStore, store, project.id, '면적 15㎡.txt', '면적 본문');
+  const file = referenceStore.getFile(item.fileId);
+  assert.equal(file.originalName ?? file.name, '면적 15㎡.txt');
+  assert.equal((await store.getItem(project.id, item.id)).title, '면적 15㎡.txt');
+
+  await store.applyOps(project.id, { actor: user, ops: [{ op: 'rename', id: item.id, name: '회의록① 최종.txt' }] });
+  assert.equal((await store.getItem(project.id, item.id)).title, '회의록① 최종.txt');
+});
+
+test('a project.json held open by another program fails as a project lock, not a harness update', { skip: process.platform !== 'win32' && 'Windows share-mode locks only', timeout: 30_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const { parent, referenceStore, store } = await fixture(t);
+  const projectId = await store.projectForDocument('doc-lock', { name: '잠금.hwpx' });
+  const file = path.join(parent, 'projects', projectId, 'project.json');
+  const before = await fs.readFile(file, 'utf8');
+  // 백업·동기화 프로그램처럼 삭제 공유 없이 연다 — rename 이 EPERM 으로 실패한다.
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$f=[System.IO.File]::Open('${file.replaceAll("'", "''")}','Open','Read','Read'); 'locked'; Start-Sleep -Seconds 8; $f.Close()`],
+  { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+  t.after(() => { child.kill(); });
+  await new Promise((resolve, reject) => {
+    child.stdout.on('data', (chunk) => { if (String(chunk).includes('locked')) resolve(); });
+    child.once('exit', () => reject(new Error('lock helper exited early')));
+  });
+  await assert.rejects(
+    addText(referenceStore, store, projectId, 'locked.txt', 'locked evidence'),
+    (error) => error.code === 'PROJECT_FILE_LOCKED' && /프로젝트 파일/.test(error.message),
+  );
+  child.kill();
+  await new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once('exit', resolve)));
+  assert.equal(await fs.readFile(file, 'utf8'), before);
+  assert.equal((await store.get(projectId)).items.length, 0);
 });

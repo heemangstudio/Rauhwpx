@@ -490,6 +490,8 @@ class AgentHubOwner {
         RHWP_SECRET_BROKER: 'ipc',
         RHWP_BROWSER_HOST: 'ipc',
         RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
+        // 사용자가 옮긴 다운로드 폴더(OneDrive 알려진 폴더 이동 등)에 내려받는다.
+        RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
@@ -733,6 +735,7 @@ const browserHost = new OwnedBrowserHost({
   electronSession,
   dialog,
   dataDir: join(app.getPath('userData'), 'browser'),
+  getDownloadsDir: () => app.getPath('downloads'),
   getWindowForSession: (sessionId) => {
     const session = sessions.sessionById(sessionId);
     if (session) return session.window;
@@ -908,7 +911,13 @@ const updateLifecycle = createUpdateLifecycle({
     updateAll?.dispose();
     await disposeAutofix();
     await hubOwner.teardown();
-    await browserHost.dispose();
+    // 웹 페이지 대화상자 등으로 브라우저 정리가 멈춰도 종료(와 Windows 업데이트 설치)는 이어 간다.
+    let disposeTimer;
+    const disposed = await Promise.race([
+      browserHost.dispose().then(() => true),
+      new Promise((resolve) => { disposeTimer = setTimeout(() => resolve(false), 5_000); }),
+    ]).finally(() => clearTimeout(disposeTimer));
+    if (!disposed) console.warn('[hamaeditor] native browser cleanup timed out during quit');
   },
   onQuitRequested: (requested) => { quitRequested = requested; browserHost.setQuitRequested(requested); },
   onTeardown: () => { quitting = true; },

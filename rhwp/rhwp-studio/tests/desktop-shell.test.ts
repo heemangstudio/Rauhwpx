@@ -533,7 +533,7 @@ test('startup cleanup requires an old owner record and a confirmed dead PID', as
     minimumAgeMs: 1_000,
     now: () => now,
     isAlive: (pid: number) => pid === 22,
-    readdirImpl: async () => [
+    readdirImpl: async (directory: string) => (directory === '/launch-work' ? [
       { name: active, isDirectory: () => true },
       { name: stale, isDirectory: () => true },
       { name: live, isDirectory: () => true },
@@ -541,7 +541,10 @@ test('startup cleanup requires an old owner record and a confirmed dead PID', as
       { name: unowned, isDirectory: () => true },
       { name: foreign, isDirectory: () => true },
       { name: 'keep-me', isDirectory: () => true },
-    ],
+    ] : [
+      { name: LAUNCH_OWNER_FILE, isDirectory: () => false },
+      { name: 'work', isDirectory: () => true },
+    ]),
     readFileImpl: async (ownerPath: string) => {
       if (path.basename(ownerPath) === LEGACY_CLEANUP_MARKER_FILE) {
         throw Object.assign(new Error('missing'), { code: 'ENOENT' });
@@ -563,7 +566,8 @@ test('startup cleanup requires an old owner record and a confirmed dead PID', as
     },
   });
   assert.deepEqual(result, [stale]);
-  assert.deepEqual(removed, [path.join('/launch-work', stale)]);
+  // 소유 기록은 맨 나중에(폴더와 함께) 지운다 — 중간에 멈춰도 다음 실행이 이 폴더를 알아본다.
+  assert.deepEqual(removed, [path.join('/launch-work', stale, 'work'), path.join('/launch-work', stale)]);
   assert.match(desktopMain, /removeStaleLaunchDirectories\(runtimeRoot, launchId,/);
   assert.match(desktopMain, /removeStaleLaunchDirectories\(workRoot, launchId,/);
   assert.match(desktopMain, /launchStoragePaths\(/);

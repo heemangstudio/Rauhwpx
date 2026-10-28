@@ -113,23 +113,27 @@ export function normalizeReferenceScope(scope, scopeId) {
 
 export function sanitizeReferenceName(value) {
   const leaf = path.basename(String(value ?? '').replaceAll('\\', '/'));
-  const clean = leaf.normalize('NFKC')
+  // NFC, not NFKC: 호환 분해는 면적 15㎡·회의록①·㈜ 같은 이름을 조용히 바꾼다(desktop/safe-filename.mjs 와 같다).
+  const clean = leaf.normalize('NFC')
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[<>:"/\\|?*]/g, '_')
     .replace(/^\.+/, '')
     .replace(/[. ]+$/g, '')
     .trim();
   if (!clean) throw new ReferenceStoreError('REFERENCE_NAME_INVALID', 'A valid file name is required');
-  const extension = path.extname(clean).toLowerCase();
+  // 확장자만 호환 분해해 형식을 가린다(전각 `.ｔｘｔ`·`．txt` 도 그대로 받아 준다).
+  const dot = Math.max(clean.lastIndexOf('.'), clean.lastIndexOf('．'));
+  const rawExt = dot > 0 ? clean.slice(dot) : '';
+  const extension = rawExt.normalize('NFKC').toLowerCase();
   if (!SUPPORTED_REFERENCE_EXTENSIONS.includes(extension)) {
     throw new ReferenceStoreError(
       'REFERENCE_TYPE_UNSUPPORTED',
       `Unsupported reference type ${extension || '(none)'}; supported: ${SUPPORTED_REFERENCE_EXTENSIONS.join(', ')}`,
     );
   }
-  const ext = path.extname(clean);
+  const ext = rawExt.normalize('NFKC');
   // UTF-16 단위로 자르므로 이모지 같은 서로게이트 쌍의 앞 절반만 남으면 버린다.
-  const stem = path.basename(clean, ext).slice(0, Math.max(1, 220 - ext.length)).replace(/[\uD800-\uDBFF]$/, '');
+  const stem = clean.slice(0, clean.length - rawExt.length).slice(0, Math.max(1, 220 - ext.length)).replace(/[\uD800-\uDBFF]$/, '');
   return `${stem}${ext.slice(0, 30)}`;
 }
 
