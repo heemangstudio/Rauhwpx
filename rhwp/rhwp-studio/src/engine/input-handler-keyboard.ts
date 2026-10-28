@@ -1667,7 +1667,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
           break;
         }
         if (e.shiftKey) {
-          this.cursor.moveToCellPrev();
+          // 한컴: Shift+Tab 은 앞 셀 글 끝으로 가고, 첫 셀에서는 움직이지 않는다.
+          this.cursor.moveToCellPrev(false);
         } else if (insertRowAfterLastTableCellByTab.call(this)) {
           // 마지막 셀 Tab은 한컴처럼 새 줄을 자동 추가하고 새 줄 첫 셀로 이동한다.
         } else {

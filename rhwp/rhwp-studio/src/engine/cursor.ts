@@ -1105,8 +1105,11 @@ export class CursorState {
     }
   }
 
-  /** 이전 셀로 이동 (Shift+Tab) — 셀 내부에서만 호출 */
-  moveToCellPrev(): void {
+  /**
+   * 이전 셀로 이동 — 셀 내부에서만 호출. 첫 셀에서는 표 밖 이전 위치로 나가고,
+   * leaveAtStart=false(Shift+Tab)면 한컴처럼 그대로 둔다.
+   */
+  moveToCellPrev(leaveAtStart = true): void {
     if (!this.isInCell()) return;
     this.preferredX = null;
     this.atLineEnd = false;
@@ -1121,7 +1124,7 @@ export class CursorState {
       const curPos = order.indexOf(cei);
       if (curPos <= 0) {
         // 첫 셀 → 표 밖 이전 위치로 이동
-        this.exitTable(-1);
+        if (leaveAtStart) this.exitTable(-1);
         return;
       }
 

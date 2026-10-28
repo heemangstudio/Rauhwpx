@@ -23,6 +23,7 @@ const hooks = registerHooks({
   },
 });
 const { tableCommands } = await import('../src/command/commands/table.ts');
+const { CursorState } = await import('../src/engine/cursor.ts');
 hooks.deregister();
 const { keyboardResizeUpdates } = await import('../src/engine/table-keyboard-resize.ts');
 /** 한컴 Office 2022 가 만든 4x4 표 (셀 저장 높이 282, 그려진 높이 1282, 칸 너비 10488). */
@@ -307,4 +308,32 @@ test('Ctrl·Alt+방향키는 한컴처럼 283 단위로 블록 경계를 옮긴�
   const down = await press('ArrowDown', false);
   assert.deepEqual([0, 1, 2, 3].map(c => down.sizes(1, c).height), [2131, 2131, 2131, 2131], '그려진 높이 1282 에서 849 늘어난다');
   assert.equal(down.sizes(0, 1).height, 282);
+});
+
+test('Tab 은 다음 셀 처음, Shift+Tab 은 앞 셀 글 끝으로 가고 첫 셀에서는 움직이지 않는다', async t => {
+  // 한컴 tab-nav: C3 에서 Tab 두 번 → D3, A4 처음. Shift+Tab 두 번 → D3, C3 글 끝. A1 에서 Shift+Tab 은 그대로.
+  const { wasm } = await openHeemangAgent(t, HANCOM_TABLE);
+  const { ppi, ci } = firstTable(wasm);
+  const cursor = new CursorState(wasm);
+  const index = (row: number, col: number) => Array.from({ length: wasm.getTableDimensions(0, ppi, ci).cellCount }, (_, i) => i)
+    .find(i => wasm.getCellInfo(0, ppi, ci, i).row === row && wasm.getCellInfo(0, ppi, ci, i).col === col)!;
+  const at = (row: number, col: number) => cursor.moveTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0, parentParaIndex: ppi,
+    controlIndex: ci, cellIndex: index(row, col), cellParaIndex: 0, cellPath: [{ controlIndex: ci, cellIndex: index(row, col), cellParaIndex: 0 }] });
+  const where = () => {
+    const p = cursor.getPosition();
+    const c = wasm.getCellInfo(0, ppi, ci, p.cellPath!.at(-1)!.cellIndex);
+    return [c.row, c.col, p.charOffset];
+  };
+  at(2, 2);
+  cursor.moveToCellNext();
+  assert.deepEqual(where(), [2, 3, 0]);
+  cursor.moveToCellNext();
+  assert.deepEqual(where(), [3, 0, 0]);
+  cursor.moveToCellPrev(false);
+  assert.deepEqual(where(), [2, 3, 0]);
+  cursor.moveToCellPrev(false);
+  assert.deepEqual(where(), [2, 2, 2]);
+  at(0, 0);
+  cursor.moveToCellPrev(false);
+  assert.deepEqual(where(), [0, 0, 0]);
 });
