@@ -12,6 +12,15 @@ import type { Address, ControlInfo, ParagraphInfo, Step } from '../../../vendor/
 import type { CellPathEntry, DocumentPosition } from '../types';
 import type { HmCore, ListAddress } from './core';
 
+/**
+ * Studio 평문 입력을 엔진 입력 글자로 바꾼다. 줄바꿈(LF·CR·CRLF)은 문단 안 강제 줄바꿈이다.
+ * 문단 텍스트를 읽으면 강제 줄바꿈이 `\n` 으로 나오므로, 지운 글자를 다시 넣어도 같은 문단으로 돌아온다.
+ * 엔진은 U+2028 을 강제 줄바꿈으로 받는다. 문단 나누기는 split 연산으로 따로 한다.
+ */
+export function lineBreakText(text: string): string {
+  return text.replace(/\r\n?|\n/g, '\u2028');
+}
+
 export interface ParaMap {
   info: ParagraphInfo;
   /** 논리 칸마다 시작 wire 오프셋. */

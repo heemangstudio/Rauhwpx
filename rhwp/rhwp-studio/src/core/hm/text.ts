@@ -6,17 +6,13 @@
 import type { EditOp } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import {
-  bodyList, cellList, logicalLength, logicalRangeToWire, logicalText, logicalToText, logicalToWire, paraMap,
+  bodyList, cellList, lineBreakText, logicalLength, logicalRangeToWire, logicalText, logicalToText, logicalToWire, paraMap,
   pathTarget, textRangeToWire, textSlice, textToLogical, textToWire, toAddress, wireToLogical, wireToText,
 } from './address';
 import type { TextContent, LocalBodyTextReplaceResult, RemovedParaMeta, DeferredCellTextMutationResult } from './bridge-types';
 
 const json = (value: unknown): string => JSON.stringify(value);
 
-/** 엔진 입력 문자열로 바꾼다. CR/LF 는 문단 나누기다. */
-function engineText(text: string): string {
-  return text.replace(/\r\n?/g, '\n');
-}
 
 /** 유니코드 scalar 로 센 글자 수 (Studio 캐럿 산술과 같은 축). */
 const units = (text: string): number => [...text].length;
@@ -26,13 +22,8 @@ const units = (text: string): number => [...text].length;
 export function insertIn(core: HmCore, list: ListAddress, para: number, offset: number, text: string, logical: boolean): number {
   const map = paraMap(core.paragraph(list, para));
   const at = logical ? logicalToWire(map, offset) : textToWire(map, offset);
-  const value = engineText(text);
+  const value = lineBreakText(text);
   if (value) core.transact([{ op: 'insertText', at: toAddress(list, para, at), text: value }]);
-  if (value.includes('\n')) {
-    // 문단이 나뉘었다. 마지막 문단의 캐럿을 돌려준다.
-    const tail = value.slice(value.lastIndexOf('\n') + 1);
-    return units(tail);
-  }
   const after = paraMap(core.paragraph(list, para));
   const wire = at + [...value].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
   return logical ? wireToLogical(after, wire) : wireToText(after, wire);
@@ -66,13 +57,12 @@ export function replaceIn(core: HmCore, list: ListAddress, para: number, offset:
   const [from, to] = logicalRangeToWire(map, offset, end);
   const removedText = logicalText(map, offset, end);
   const at = logicalToWire(map, offset);
-  const value = engineText(text);
+  const value = lineBreakText(text);
   const ops: EditOp[] = [];
   if (to > from) ops.push({ op: 'delete', from: toAddress(list, para, from), to: toAddress(list, para, to) });
   if (value) ops.push({ op: 'insertText', at: toAddress(list, para, at), text: value });
   core.transact(ops);
   const removal = { removedStart: logicalToText(map, offset), removedCount: [...removedText].length, removedContent: { text: removedText } };
-  if (value.includes('\n')) return { ...removal, charOffset: units(value.slice(value.lastIndexOf('\n') + 1)) };
   const after = paraMap(core.paragraph(list, para));
   const wire = at + [...value].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
   return { ...removal, charOffset: value ? wireToLogical(after, wire) : offset };

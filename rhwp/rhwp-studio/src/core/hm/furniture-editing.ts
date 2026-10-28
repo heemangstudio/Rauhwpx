@@ -2,7 +2,7 @@
 import type { Address, Caret, Located, ControlInfo, EditOp, FormatContext, Rect } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { hu, px } from './core';
-import { afterFieldEnds, bodyList, isLogicalControl, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
+import { afterFieldEnds, bodyList, isLogicalControl, lineBreakText, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
 import { api, extendBridge } from './api';
 import * as format from './format';
 import { paraOps, widgetCharPatch } from './format-widgets';
@@ -73,7 +73,7 @@ const cursor = (caret: { page: number; x: number; y: number; height: number }): 
 
 function insert(core: HmCore, list: FurnitureList, para: number, offset: number, text: string): number {
   if (!text) return offset;
-  const receipt = core.transact([{ op: 'insertText', at: at(core, list, para, offset), text: text.replace(/\r\n?/g, '\n') }]);
+  const receipt = core.transact([{ op: 'insertText', at: at(core, list, para, offset), text: lineBreakText(text) }]);
   const caret = receipt?.caret;
   return caret ? wireToLogical(mapIn(core, list, caret.para), caret.offset) : offset;
 }

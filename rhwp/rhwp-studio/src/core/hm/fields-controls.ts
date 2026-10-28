@@ -1,6 +1,6 @@
 import type { Address, EditOp, Step } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
-import { bodyList, cellList, logicalAddress, toAddress, paraMap, pathTarget, positionTarget, stepsToPath, textRangeToWire, wireToLogical, wireToText } from './address';
+import { bodyList, cellList, lineBreakText, logicalAddress, toAddress, paraMap, pathTarget, positionTarget, stepsToPath, textRangeToWire, wireToLogical, wireToText } from './address';
 import { webHyperlinkUrl } from '../hyperlink';
 import { api, extendBridge } from './api';
 import type { DocumentPosition, FieldInfoResult, BookmarkInfo, HyperlinkTarget, HyperlinkContext } from './bridge-types';
@@ -210,10 +210,9 @@ function activeInside(core: HmCore, list: ListAddress, para: number, charOffset:
 }
 
 function insertInside(core: HmCore, list: ListAddress, para: number, wire: number, text: string): number {
-  const value = text.replace(/\r\n?/g, '\n');
+  const value = lineBreakText(text);
   if (!value) return wireToLogical(paraMap(core.paragraph(list, para)), wire);
   core.transact([{ op: 'insertText', at: toAddress(list, para, wire), text: value }]);
-  if (value.includes('\n')) return value.length - value.lastIndexOf('\n') - 1;
   const width = [...value].reduce((n, c) => n + (c === '\t' ? 8 : c.length), 0);
   return wireToLogical(paraMap(core.paragraph(list, para)), wire + width);
 }
