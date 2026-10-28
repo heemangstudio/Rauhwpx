@@ -2,7 +2,7 @@
 import type { Address, CharPatch, Copied, EditOp } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { unsupported } from './core';
-import { addressToPosition, bodyList, cellList, logicalAddress, logicalRangeToWire, paraMap, pathTarget, toAddress } from './address';
+import { addressToPosition, bodyList, cellList, logicalAddress, logicalRangeToWire, paraMap, pathTarget, textSlice, toAddress, wireToText } from './address';
 import { extendBridge } from './api';
 
 /**
@@ -35,28 +35,38 @@ export function copyRange(core: HmCore, from: Address, to: Address): Clipboard {
   let controls = false;
   let single = false;
   const tables: Array<{ text: string; html: string }> = [];
+  // 외부 붙여넣기용 평문: 문단마다 한 줄이고, 고른 표는 그 자리에 칸은 탭, 줄은 줄바꿈으로 들어간다.
+  const lines: string[] = [];
   for (let sec = from.section; sec <= to.section; sec++) {
     const list = { section: sec, steps: from.steps ?? [] };
     const first = sec === from.section ? from.para : 0;
     const last = sec === to.section ? to.para : core.paragraphCount(list) - 1;
     for (let para = first; para <= last; para++) {
-    const info = core.paragraph(list, para);
-    for (const control of info.controls) {
-      if (control.offset < (sec === from.section && para === from.para ? from.offset : 0) || control.offset + 8 > (sec === to.section && para === to.para ? to.offset : info.length)) continue;
-      if (!['table', 'object', 'equation'].includes(control.kind)) continue;
-      controls = true;
-      single = from.section === to.section && from.para === to.para && from.offset === control.offset && to.offset === control.offset + 8;
-      if (control.kind === 'table') tables.push(tableText(core, list, para, control.index));
+      const info = core.paragraph(list, para), map = paraMap(info);
+      const start = sec === from.section && para === from.para ? from.offset : 0;
+      const end = sec === to.section && para === to.para ? to.offset : info.length;
+      let line = '', at = start;
+      for (const control of info.controls) {
+        if (control.offset < start || control.offset + 8 > end) continue;
+        if (!['table', 'object', 'equation'].includes(control.kind)) continue;
+        controls = true;
+        single = from.section === to.section && from.para === to.para && from.offset === control.offset && to.offset === control.offset + 8;
+        if (control.kind !== 'table') continue;
+        const table = tableText(core, list, para, control.index);
+        tables.push(table);
+        line += textSlice(map, wireToText(map, at), wireToText(map, control.offset)) + table.text;
+        at = control.offset + 8;
+      }
+      lines.push(line + textSlice(map, wireToText(map, at), wireToText(map, end)));
     }
-  }
   }
   // 엔진 조각은 표·그림·도형·수식·양식 개체를 통째로 담는다. 담지 못한 개체가 있으면 붙여넣어도 사라진다.
   const dropped = controls && !(copied.objects > 0);
   const fragmentText = copied.text;
-  // 엔진 조각의 글자에는 표 안 글자가 없다. 표만 고른 경우 셀 글자를 외부 붙여넣기용으로 채운다.
-  if (tables.length && !copied.text.trim()) {
-    copied.text = tables.map(table => table.text).join('\n');
-    if (!copied.html.includes('<table')) copied.html = tables.map(table => table.html).join('');
+  // 엔진 조각의 글자에는 표 안 글자가 없다. 표가 든 선택은 셀 글자를 표 자리에 채운다.
+  if (tables.length) {
+    copied.text = lines.join('\n');
+    if (!fragmentText.trim() && !copied.html.includes('<table')) copied.html = tables.map(table => table.html).join('');
   }
   const result = { ...copied, controls, single, dropped, source: core.adapter.documentInstance, fragmentText };
   clipboards.set(core.adapter.hmEngine(), result);

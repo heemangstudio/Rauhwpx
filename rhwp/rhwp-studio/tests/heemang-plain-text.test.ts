@@ -22,11 +22,12 @@ const { HmCore } = await import('../src/core/hm/core.ts');
 const text = await import('../src/core/hm/text.ts');
 const furniture = await import('../src/core/hm/furniture-editing.ts');
 const { createTableEx } = await import('../src/core/hm/table-properties.ts');
+const clipboard = await import('../src/core/hm/clipboard-native.ts');
 
 function open(t: test.TestContext, bytes = new Uint8Array(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url)))) {
   const engine = new Engine(), doc = engine.open(bytes);
   t.after(() => { doc.free(); engine.free(); });
-  const adapter = { documentInstance: 1, hmDoc: () => doc, hasLoadedDocument: () => true,
+  const adapter = { documentInstance: 1, hmDoc: () => doc, hmEngine: () => engine, hasLoadedDocument: () => true,
     applyReceipt: () => {}, refreshLayout: () => {} } as unknown as HeemangAdapter;
   return { core: new HmCore(adapter), doc };
 }
@@ -57,4 +58,20 @@ test('평문 입력의 줄바꿈은 문단을 나누지 않는 강제 줄바꿈�
     assert.equal(text.getTextInCell(reopened, 0, table.paraIdx, table.controlIdx, 0, 0, 0, 100, true), '셀\n둘째 줄', format);
     assert.equal(JSON.parse(furniture.getHeaderFooter(reopened, 0, true, 0)).text, '머리\n말', format);
   }
+});
+
+// 바깥 프로그램에 붙여 넣는 평문에는 고른 표의 셀 글자가 표 자리에 들어간다(옛 Studio 와 같은 꼴).
+test('글자와 표를 함께 복사한 평문은 표 자리에 셀 글자를 칸은 탭, 줄은 줄바꿈으로 담는다', t => {
+  const { core } = open(t);
+  text.insertText(core, 0, 0, 0, '앞 글', true);
+  const table = createTableEx(core, { sectionIdx: 0, paraIdx: 0, charOffset: 3, rowCount: 2, colCount: 2 });
+  text.insertTextInCell(core, 0, table.paraIdx, table.controlIdx, 0, 0, 0, '가', true);
+  text.insertTextInCell(core, 0, table.paraIdx, table.controlIdx, 3, 0, 0, '라', true);
+  const last = text.getParagraphCount(core, 0) - 1;
+  text.insertText(core, 0, last, 0, '뒤', true);
+  clipboard.copySelection(core, 0, 0, 0, last, 1);
+  const lines = clipboard.getClipboardText(core).split('\n');
+  assert.equal(lines[0], '앞 글');
+  assert.deepEqual(lines.slice(1, 3), ['가\t', '\t라']);
+  assert.equal(lines.at(-1), '뒤');
 });
