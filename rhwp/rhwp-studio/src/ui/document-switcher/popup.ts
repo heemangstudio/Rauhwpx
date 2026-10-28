@@ -13,10 +13,11 @@ import {
   type RecentDocumentRow,
   type SwitcherRow,
 } from './model.ts';
-import { pickRow, rowKey, SwitcherList, type DocumentSwitcherHost } from './view.ts';
+import { anotherModalOpen, pickRow, rowKey, SwitcherList, type DocumentSwitcherHost } from './view.ts';
 
 export class DocumentSwitcherPopup {
   private overlay: HTMLDivElement | null = null;
+  private panel: HTMLDivElement | null = null;
   private input: HTMLInputElement | null = null;
   private list: SwitcherList | null = null;
   private recent: RecentDocumentRow[] = [];
@@ -49,6 +50,7 @@ export class DocumentSwitcherPopup {
     for (const dispose of this.cleanup.splice(0)) dispose();
     this.overlay.remove();
     this.overlay = null;
+    this.panel = null;
     this.input = null;
     this.list = null;
     this.cycling = false;
@@ -103,6 +105,7 @@ export class DocumentSwitcherPopup {
     overlay.append(panel);
     document.body.append(overlay);
     this.overlay = overlay;
+    this.panel = panel;
     this.input = input;
     this.list = list;
 
@@ -124,19 +127,29 @@ export class DocumentSwitcherPopup {
 
     const onKeyDown = (event: KeyboardEvent) => this.handleKeyDown(event);
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== 'Control' || !this.cycling) return;
+      if (event.key !== 'Control' || !this.cycling || anotherModalOpen(panel)) return;
       const row = this.list?.selectedRow;
       if (row) this.pick(row);
       else this.close();
     };
     const onBlur = () => this.close();
+    // 창이 떠 있는 동안 초점은 검색 칸에 둔다. 닫은 탭 대신 붙은 문서가 편집 칸에 초점을 주면 친 글자가 창 뒤
+    // 문서에 들어간다. 다른 모달(닫기 확인 등)이 뜨면 그쪽에 둔다.
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target as Node | null;
+      if (target && panel.contains(target)) return;
+      if (anotherModalOpen(panel)) return;
+      input.focus({ preventScroll: true });
+    };
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('keyup', onKeyUp, true);
+    document.addEventListener('focusin', onFocusIn, true);
     window.addEventListener('blur', onBlur);
     const unsubscribe = this.host.subscribe(() => this.refresh());
     this.cleanup.push(
       () => document.removeEventListener('keydown', onKeyDown, true),
       () => document.removeEventListener('keyup', onKeyUp, true),
+      () => document.removeEventListener('focusin', onFocusIn, true),
       () => window.removeEventListener('blur', onBlur),
       unsubscribe,
     );
@@ -159,12 +172,21 @@ export class DocumentSwitcherPopup {
     const rows = this.rows();
     // 같은 행이 다시 그린 목록에 있으면 그 행을, 없으면 같은 자리를 고른다.
     const kept = rows.findIndex((row) => rowKey(row) === key);
-    this.list.render(rows, kept >= 0 ? kept : Math.max(0, previous));
+    if (kept >= 0) {
+      this.list.render(rows, kept);
+      return;
+    }
+    // 고른 문서가 닫혔다. Ctrl 을 쥐고 돌던 중이면 열린 문서에 머문다 — Ctrl 을 놓을 때 새 문서·최근 문서를 열지 않는다.
+    const fallback = Math.min(Math.max(0, previous), rows.length - 1);
+    this.list.render(rows, this.cycling && rows[fallback]?.kind !== 'open'
+      ? stepOpenIndex(rows, fallback, -1)
+      : fallback);
+    if (this.cycling && this.list.selectedRow?.kind !== 'open') this.cycling = false;
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
     const list = this.list;
-    if (!list) return;
+    if (!list || anotherModalOpen(this.panel)) return;
     if (event.key === 'Tab') {
       event.preventDefault();
       event.stopPropagation();

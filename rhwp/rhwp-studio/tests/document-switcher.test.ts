@@ -10,6 +10,7 @@ import {
   type OpenDocumentRow,
   type RecentDocumentRow,
 } from '../src/ui/document-switcher/model.ts';
+import { pickRow, type DocumentSwitcherHost } from '../src/ui/document-switcher/view.ts';
 
 const open = (documentId: string, name: string, current = false): OpenDocumentRow => ({
   kind: 'open', documentId, name, dirty: false, status: null, current,
@@ -74,4 +75,22 @@ test('switching documents shows the running chat, else the last one seen, else t
   assert.deepEqual(pickChatForDocument({
     chats: [{ running: false, threadId: 'draft' }], activeIndex: 0, threads, documentId: 'doc-z', docKey: null,
   }), { kind: 'keep' }, 'a document with no conversation keeps its draft');
+});
+
+test('picking the current document still reaches the host, so document home can step aside', () => {
+  const calls: string[] = [];
+  const host: DocumentSwitcherHost = {
+    openRows: () => tabs,
+    recentRows: async () => [],
+    switchTo: (documentId) => calls.push(`switch:${documentId}`),
+    openRecent: (row) => calls.push(`recent:${row.documentId}`),
+    close: (documentId) => calls.push(`close:${documentId}`),
+    runAction: (action) => calls.push(`action:${action}`),
+    subscribe: () => () => {},
+  };
+  pickRow(host, tabs[1]);
+  pickRow(host, tabs[2]);
+  pickRow(host, recent('d', '계약서.hwp'));
+  pickRow(host, { kind: 'action', action: 'home', label: '문서 홈' });
+  assert.deepEqual(calls, ['switch:b', 'switch:c', 'recent:d', 'action:home']);
 });

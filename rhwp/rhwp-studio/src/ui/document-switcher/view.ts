@@ -7,6 +7,20 @@ import type {
   SwitcherAction,
   SwitcherRow,
 } from './model.ts';
+import { openModalCount } from '../modal-stack.ts';
+
+/**
+ * 이 목록 말고 다른 모달(확인 시트·대화상자)이 떠 있는가. 그때는 그쪽이 키와 초점을 받는다.
+ * own 은 이 목록의 판이다 — 그 안의 요소는 세지 않는다.
+ */
+export function anotherModalOpen(own: Element | null): boolean {
+  if (openModalCount() > 0) return true;
+  for (const el of document.querySelectorAll('[aria-modal="true"]')) {
+    if (el === own || own?.contains(el) || el.getClientRects().length === 0) continue;
+    return true;
+  }
+  return false;
+}
 
 /** 화면 쪽(main.ts)이 채운다. 목록은 열 때마다 새로 읽는다. */
 export interface DocumentSwitcherHost {
@@ -195,17 +209,12 @@ export class SwitcherList {
     this.elements[index]?.scrollIntoView({ block: 'nearest' });
     this.options.onSelect?.(index);
   }
-
-  /** 다시 그린 뒤에도 같은 행을 고르도록 행의 자리를 찾는다. 없으면 -1. */
-  indexOfKey(key: string | null): number {
-    return key === null ? -1 : this.rows.findIndex((row) => rowKey(row) === key);
-  }
 }
 
 /** 고른 행을 실행한다. */
 export function pickRow(host: DocumentSwitcherHost, row: SwitcherRow): void {
-  if (row.kind === 'open') {
-    if (!row.current) host.switchTo(row.documentId);
-  } else if (row.kind === 'recent') host.openRecent(row);
+  // 지금 문서를 골라도 넘긴다 — 문서 홈이 덮고 있으면 걷어야 한다.
+  if (row.kind === 'open') host.switchTo(row.documentId);
+  else if (row.kind === 'recent') host.openRecent(row);
   else host.runAction(row.action);
 }

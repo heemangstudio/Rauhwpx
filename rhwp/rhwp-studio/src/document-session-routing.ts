@@ -36,14 +36,18 @@ export function sessionHoldsActiveUnlinkedChat(session: RoutingSession): boolean
 }
 
 /**
- * 홈·파일 메뉴의 열기를 지금 세션 대신 새 세션에 할지. 열린 문서는 탭으로 남으므로 문서가 있는 세션은 늘 뒤에
- * 둔다. 문서가 없는 세션은 쓰이는 문서 없는 채팅이 있을 때만 뒤에 둔다. 그 채팅에 이을 문서를 여는 중(linking)이면
- * 이 세션에 연다.
+ * 홈·파일 메뉴의 열기를 지금 세션 대신 새 세션에 할지. 열린 문서는 탭으로 남으므로 새 탭을 열 수 있으면(tabs)
+ * 문서가 있는 세션은 뒤에 둔다. 열 수 없어도 에이전트가 일하는 문서, 관리되는 작업 트리, 저장할 수 없는 바뀐
+ * 문서는 뒤에 둔다. 문서가 없는 세션은 쓰이는 문서 없는 채팅이 있을 때만 뒤에 둔다. 그 채팅에 이을 문서를 여는
+ * 중(linking)이면 이 세션에 연다.
  */
-export function opensInNewSession(session: RoutingSession, state: { linking: boolean }): boolean {
+export function opensInNewSession(
+  session: RoutingSession,
+  state: { linking: boolean; tabs: boolean; busy: boolean; managedWorktree: boolean; readOnlyDirty: boolean },
+): boolean {
   if (state.linking) return false;
   if (!session.wasm.hasLoadedDocument()) return sessionHoldsActiveUnlinkedChat(session);
-  return true;
+  return state.tabs || state.busy || state.managedWorktree || state.readOnlyDirty;
 }
 
 /**
