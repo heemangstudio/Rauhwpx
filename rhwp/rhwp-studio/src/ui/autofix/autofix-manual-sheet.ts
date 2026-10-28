@@ -194,7 +194,7 @@ export function openManualAutofixSheet(options: ManualAutofixSheetOptions = {}, 
     stage.hidden = next !== 'running';
     elapsed.hidden = next !== 'running';
     statusText.textContent = next === 'running'
-      ? '몇 분 걸릴 수 있고, 창을 닫아도 계속 고칩니다.'
+      ? '창을 닫아도 됩니다'
       : '아직 안 되면 다시 고쳐 볼 수 있습니다. AI가 앞선 시도를 참고합니다.';
     animate(next === 'running');
     result.hidden = form || next === 'running';
