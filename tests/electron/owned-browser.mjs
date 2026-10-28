@@ -158,6 +158,22 @@ try {
   assert.equal(await page.locator('#draft').inputValue(), 'Kept while moving');
   assert.equal(navigations, 0);
   report.presentation = { navigations, draft: await page.locator('#draft').inputValue(), mode: host.state(host.tab('tab-one')).mode };
+  host.attach(first, { tabId: 'tab-one', mode: 'popout', signIn: true });
+  const signInTab = host.tab('tab-one');
+  assert.equal(signInTab.view.getBounds().y, 0, 'Sign-in fills the window without a toolbar gap');
+  await popout.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(resolve))');
+  assert.equal(await popout.webContents.executeJavaScript('getComputedStyle(document.querySelector(".browser-chrome")).display'), 'none');
+  host.control({ tabId: 'tab-one', human: true });
+  await host.navigate(first, { tabId: 'tab-one', url: 'http://browser-fixture.invalid/#auth-callback' });
+  assert.equal(signInTab.view.getBounds().y, 0, 'Auth navigation retains the chrome-free presentation');
+  assert.equal(await popout.webContents.executeJavaScript('document.querySelector(".browser-chrome").hidden'), true);
+  await page.goBack();
+  host.control({ tabId: 'tab-one', human: false });
+  host.attach(first, { tabId: 'tab-one', mode: 'popout' });
+  assert.ok(signInTab.view.getBounds().y > 0, 'Ordinary popouts restore their toolbar');
+  assert.equal(await popout.webContents.executeJavaScript('document.querySelector(".browser-chrome").hidden'), false);
+
+  host.attach(first, { tabId: 'tab-one', bounds: { x: 10, y: 80, width: 620, height: 410 }, mode: 'dock', interactive: true });
   console.error('OWNED_BROWSER_STAGE presentations');
   assert.throws(() => host.attach(second, { tabId: 'tab-one', bounds: { x: 0, y: 0, width: 200, height: 200 } }), /another editor window/);
   await assert.rejects(() => host.navigate(first, { tabId: 'tab-one', url: 'http://browser-fixture.invalid/second' }), /Take control/);
