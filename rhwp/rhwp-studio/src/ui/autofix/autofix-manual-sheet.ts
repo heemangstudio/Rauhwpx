@@ -5,12 +5,14 @@
  * 적기 → 고치는 중 → 결과. 고쳤으면 이제 잘 되는지 묻고 그 답을 확인 결과로 메인에 알린다(아직 안 되면
  * 적은 글을 그대로 두고 다시 고칠 수 있다 — 다음 실행은 앞선 시도를 맥락으로 받는다). 고치지 못했으면
  * 원인과 버그 제보를 보인다. 고치는 중에 닫아도 실행은 이어지고, 끝나면 토스트로 알려 결과를 다시 연다.
+ * 고치는 동안은 픽셀 하마가 못을 박고(autofix-hama.ts) 지난 시간을 센다.
  */
 import '../agent-sidebar/sheet.css';
 import '../issue-report/issue-report.css';
 import './autofix-manual.css';
 import { isTopModal, popModal, pushModal } from '../modal-stack.ts';
 import { showToast } from '../toast.ts';
+import { createAutofixHama, type AutofixHama } from './autofix-hama.ts';
 import { noteAutofixOutcome, runAutofixResult, type AutofixResult } from './autofix.ts';
 
 export const MANUAL_AUTOFIX_SURFACE = 'manual';
@@ -29,6 +31,7 @@ interface ManualRun {
   description: string;
   promise: Promise<AutofixResult>;
   result: AutofixResult | null;
+  startedAt: number;
 }
 
 let current: ManualRun | null = null;
@@ -51,6 +54,12 @@ function reducedMotion(): boolean {
   }
 }
 
+/** 지난 시간: 0:07, 3:42 */
+export function formatAutofixElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 /** 적은 글의 첫 줄이 보고의 제목이 된다. */
 export function manualAutofixRequest(description: string) {
   const text = description.trim().slice(0, DESCRIPTION_MAX);
@@ -66,7 +75,7 @@ export function manualAutofixRequest(description: string) {
 const UNAVAILABLE_TEXT = '자동 수정을 쓸 수 없습니다. 설정의 AI에서 Codex나 Claude에 로그인되어 있는지 확인하세요.';
 
 function startRun(description: string, options: ManualAutofixSheetOptions): ManualRun {
-  const run: ManualRun = { description, promise: runAutofixResult(manualAutofixRequest(description)), result: null };
+  const run: ManualRun = { description, promise: runAutofixResult(manualAutofixRequest(description)), result: null, startedAt: Date.now() };
   current = run;
   options.onBusy?.(true);
   void run.promise.then((result) => {
@@ -123,12 +132,13 @@ export function openManualAutofixSheet(options: ManualAutofixSheetOptions = {}, 
   message.rows = 3;
 
   const status = el('div', 'afm-status');
-  status.setAttribute('role', 'status');
-  const dots = el('span', 'afm-dots');
-  dots.setAttribute('aria-hidden', 'true');
-  for (let index = 0; index < 3; index += 1) dots.append(el('span', 'afm-dot'));
+  const stage = el('div', 'afm-stage');
+  // 지난 시간은 초마다 바뀌므로 스크린리더에 알리지 않는다. 상태 글만 알린다.
+  const elapsed = el('span', 'afm-elapsed');
+  elapsed.setAttribute('aria-hidden', 'true');
   const statusText = el('span', 'afm-status-text');
-  status.append(dots, statusText);
+  statusText.setAttribute('role', 'status');
+  status.append(stage, elapsed, statusText);
 
   const result = el('div', 'afm-result');
   const resultHead = el('p', 'afm-result-head');
@@ -153,6 +163,25 @@ export function openManualAutofixSheet(options: ManualAutofixSheetOptions = {}, 
   let view: View = 'form';
   let closed = false;
   const modalToken = {};
+  let hama: AutofixHama | null = null;
+  let clock: ReturnType<typeof setInterval> | null = null;
+
+  /** 고치는 동안만 하마가 움직이고 시계가 간다. */
+  const animate = (on: boolean): void => {
+    if (on && !hama) {
+      hama = createAutofixHama();
+      stage.append(hama.element);
+      const tick = () => { elapsed.textContent = `고치는 중 · ${formatAutofixElapsed(Date.now() - (current?.startedAt ?? Date.now()))}`; };
+      tick();
+      clock = setInterval(tick, 1000);
+    } else if (!on && hama) {
+      hama.dispose();
+      hama.element.remove();
+      hama = null;
+      if (clock !== null) clearInterval(clock);
+      clock = null;
+    }
+  };
 
   const render = (next: View, outcome: AutofixResult | null = null, retry = false): void => {
     view = next;
@@ -162,10 +191,12 @@ export function openManualAutofixSheet(options: ManualAutofixSheetOptions = {}, 
     message.hidden = next === 'unavailable';
     lead.hidden = !form;
     status.hidden = next !== 'running' && !(form && retry);
-    dots.hidden = next !== 'running';
+    stage.hidden = next !== 'running';
+    elapsed.hidden = next !== 'running';
     statusText.textContent = next === 'running'
-      ? '고치는 중입니다. 몇 분 걸릴 수 있고, 창을 닫아도 계속 고칩니다.'
+      ? '몇 분 걸릴 수 있고, 창을 닫아도 계속 고칩니다.'
       : '아직 안 되면 다시 고쳐 볼 수 있습니다. AI가 앞선 시도를 참고합니다.';
+    animate(next === 'running');
     result.hidden = form || next === 'running';
     question.hidden = next !== 'fixed';
     resultHead.textContent = next === 'fixed' ? '고쳤습니다.' : next === 'failed' ? '고치지 못했습니다.' : UNAVAILABLE_TEXT;
@@ -190,6 +221,7 @@ export function openManualAutofixSheet(options: ManualAutofixSheetOptions = {}, 
     if (closed) return;
     closed = true;
     openSheet = null;
+    animate(false);
     if (view === 'form') draft = message.value;
     document.removeEventListener('keydown', onKeyDown, true);
     popModal(modalToken);

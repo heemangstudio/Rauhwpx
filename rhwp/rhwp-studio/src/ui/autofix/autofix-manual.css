@@ -15,41 +15,45 @@
   color: var(--n-ink-secondary);
 }
 
-.afm-sheet :is(.afm-lead, .afm-message, .afm-status, .afm-result, .afm-result > *, .afm-dots)[hidden] {
+.afm-sheet :is(.afm-lead, .afm-message, .afm-status, .afm-stage, .afm-elapsed, .afm-result, .afm-result > *)[hidden] {
   display: none;
 }
 
 .afm-status {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 2px;
   font-size: var(--ag-fs-secondary);
   line-height: var(--ag-lh-secondary);
   color: var(--n-ink-secondary);
 }
 
-.afm-dots {
-  display: inline-flex;
-  flex: none;
+/* 고치는 동안: 하마, 지난 시간, 안내를 가운데 한 줄로 쌓는다. */
+.afm-sheet[data-view='running'] .afm-status {
   align-items: center;
-  gap: 6px;
+  padding: 6px 0 2px;
+  text-align: center;
 }
 
-/* 자동 수정 단추의 실행 중 점과 같은 물결 */
-.afm-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--rhwp-autofix-dot);
-  animation: rhwp-autofix-wave 1100ms ease-in-out infinite;
+.afm-stage {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
 }
 
-.afm-dot:nth-child(2) {
-  animation-delay: 140ms;
+/* 28x11 논리 픽셀을 다섯 배로 키운다. 픽셀이 번지지 않게 한다. */
+.afm-hama {
+  display: block;
+  width: 140px;
+  height: 55px;
+  image-rendering: pixelated;
 }
 
-.afm-dot:nth-child(3) {
-  animation-delay: 280ms;
+.afm-elapsed {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--n-ink);
 }
 
 .afm-result {
@@ -100,10 +104,4 @@
 
 .afm-sheet .ag-sheet-actions > .ag-sheet-btn[hidden] {
   display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .afm-dot {
-    animation: none;
-  }
 }

@@ -81,10 +81,23 @@ test('the title-bar autofix button sends the described state and reports whether
     }]);
     assert.equal(await page.$eval('#editor-autofix-manual', (button) => (button as HTMLElement).dataset.running), 'true');
     assert.deepEqual(await visibleButtons(), ['닫기']);
+    // 고치는 동안 픽셀 하마가 움직이고 지난 시간을 센다.
+    const hamaPixels = () => page.$eval('.afm-hama', (canvas) => {
+      const element = canvas as HTMLCanvasElement;
+      return Array.from(element.getContext('2d')!.getImageData(0, 0, element.width, element.height).data).join(',');
+    });
+    const firstFrame = await hamaPixels();
+    await page.waitForFunction((before) => {
+      const element = document.querySelector<HTMLCanvasElement>('.afm-hama');
+      if (!element) return false;
+      return Array.from(element.getContext('2d')!.getImageData(0, 0, element.width, element.height).data).join(',') !== before;
+    }, { timeout: 3000 }, firstFrame);
+    assert.match(await page.$eval('.afm-elapsed', (node) => node.textContent ?? ''), /^고치는 중 · 0:0\d$/);
 
     // 고치면 원인을 글자로만 보이고 잘 되는지 묻는다. 아직 안 되면 글을 남겨 다시 고칠 수 있다.
     await release({ status: 'fixed', provider: 'codex', runId: 'r1', cause: '<b>잠금 파일</b>을 지웠습니다.' });
     await page.waitForFunction(() => document.querySelector<HTMLElement>('.afm-sheet')?.dataset.view === 'fixed');
+    assert.equal(await page.$('.afm-hama'), null, 'the hippo leaves with the result');
     assert.equal(await page.$eval('.afm-cause', (cause) => cause.textContent), '원인: <b>잠금 파일</b>을 지웠습니다.');
     assert.equal(await page.$('.afm-cause b'), null, 'the agent text is never parsed as HTML');
     assert.equal(await page.$eval('#editor-autofix-manual', (button) => (button as HTMLElement).dataset.running ?? null), null);
