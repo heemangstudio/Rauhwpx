@@ -763,6 +763,10 @@ test('HWPX controller durably completes clean and conflicted merges with composi
           conflicted ? 0 : wasm.getParagraphLength(0, 0),
           conflicted ? 'INCOMING:' : ':INCOMING',
         );
+        // 겹치지 않는 병합에서는 들어오는 쪽이 구역 여백도 바꾼다. 병합은 본문 편집과 함께 이것도 지켜야 한다.
+        const baseMargin = wasm.getPageDef(0).marginLeft;
+        if (!conflicted) wasm.setPageDef(0, { ...wasm.getPageDef(0), marginLeft: baseMargin + 1000 });
+        const incomingMargin = wasm.getPageDef(0).marginLeft;
         const incoming = snapshotModule.captureVersionSnapshot(wasm);
         wasm.loadDocument(currentExport.bytes, fileName);
         // HWPX import/export can normalize package representation. Capture the
@@ -892,6 +896,8 @@ test('HWPX controller durably completes clean and conflicted merges with composi
             repositoryId: created.repository.id,
             currentHead: currentCheckpoint.commit.id,
             incomingHead: incomingCheckpoint.commit.id,
+            baseMargin,
+            incomingMargin,
           },
         });
         return { repositoryId: created.repository.id };
@@ -936,6 +942,9 @@ test('HWPX controller durably completes clean and conflicted merges with composi
           manifestCoverage: manifest?.coverage,
           manifestKinds: manifest?.entries.map((entry: { kind: string }) => entry.kind),
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
+          baseMargin: expected.baseMargin,
+          incomingMargin: expected.incomingMargin,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
       });
@@ -946,17 +955,10 @@ test('HWPX controller durably completes clean and conflicted merges with composi
       assert.equal(merged.merge.conflictCount > 0, conflicted);
       assert.equal(merged.sourceHead, merged.incomingHead);
       assert.equal(merged.manifestCoverage, 'full-document');
-      for (const kind of [
-        'document',
-        'document-properties',
-        'section',
-        'section-settings',
-        'paragraph',
-        'text',
-        'character-style',
-        'paragraph-style',
-        'style',
-      ]) assert.ok(merged.manifestKinds.includes(kind), `HWPX manifest must include ${kind}`);
+      // HeemangEngine 매니페스트는 문서 속성·구역 설정·글자 모양을 각 문서·구역·문단 항목 안에 담는다.
+      for (const kind of ['document', 'style', 'section', 'paragraph']) {
+        assert.ok(merged.manifestKinds.includes(kind), `HWPX manifest must include ${kind}`);
+      }
       assert.deepEqual(merged.magic, [0x50, 0x4b]);
       if (conflicted) {
         assert.match(merged.text, /INCOMING:/);
@@ -964,6 +966,8 @@ test('HWPX controller durably completes clean and conflicted merges with composi
       } else {
         assert.match(merged.text, /CURRENT:/);
         assert.match(merged.text, /:INCOMING/);
+        assert.notEqual(merged.incomingMargin, merged.baseMargin);
+        assert.equal(merged.marginLeft, merged.incomingMargin, 'clean merge keeps the incoming section margin');
       }
 
       await page.evaluate(() => (window as any).__hwpxInput.performUndo());
@@ -978,10 +982,12 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         return {
           sourceHead: (await store.getBranch(expected.repositoryId, 'source'))?.target,
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
       });
       assert.equal(undone.sourceHead, merged.incomingHead);
+      assert.equal(undone.marginLeft, merged.baseMargin);
       assert.match(undone.text, /CURRENT:/);
       assert.doesNotMatch(undone.text, /INCOMING:/);
       assert.deepEqual(undone.magic, [0x50, 0x4b]);
@@ -999,6 +1005,7 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         const result = {
           sourceHead: (await store.getBranch(expected.repositoryId, 'source'))?.target,
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
         controller.dispose();
@@ -1006,6 +1013,7 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         return result;
       });
       assert.equal(redone.sourceHead, merged.incomingHead);
+      assert.equal(redone.marginLeft, merged.incomingMargin);
       assert.deepEqual(redone.magic, [0x50, 0x4b]);
       if (conflicted) {
         assert.match(redone.text, /INCOMING:/);
