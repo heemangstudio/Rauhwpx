@@ -319,7 +319,8 @@ export interface RhwpDesktopApi {
   onUnsavedDocumentAction?: (callback: (documentId: string, action: UnsavedDocumentAction) => void) => (() => void) | void;
   /** 문서 홈 카드를 파일로 끌어 내기. 준비한 끌기의 token 으로 시작하고 끝낸다. */
   prepareFileDrag?: (items: DesktopFileDragItem[]) => Promise<{ token: string | null; failed: string[] }>;
-  startFileDrag?: (token: string, iconDataUrl: string) => void;
+  /** true 로 풀리면 끌기가 끝났다(Windows 는 놓은 뒤에 풀린다). false 면 운영체제가 아직 끄는 중이다. */
+  startFileDrag?: (token: string, iconDataUrl: string) => Promise<boolean>;
   /** dropped: 끌기를 시작했다(받는 앱이 사본을 읽을 수 있다). false 면 사본을 바로 지운다. */
   endFileDrag?: (token: string, dropped: boolean) => void;
   onDragExportRequest?: (callback: (documentId: string) => DesktopDragExport | Promise<DesktopDragExport>) => (() => void) | void;

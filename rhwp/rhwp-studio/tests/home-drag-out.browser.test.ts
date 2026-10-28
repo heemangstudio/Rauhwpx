@@ -38,7 +38,7 @@ test('home cards select with Cmd/Ctrl and Shift and drag out as files', { timeou
       const log: unknown[] = [];
       const grid = document.getElementById('grid')!;
       for (const card of grid.querySelectorAll('button')) {
-        card.addEventListener('click', () => log.push(['card-click', card.textContent]));
+        card.addEventListener('click', (event) => log.push(['card-click', card.textContent, event.detail === 0 ? 'key' : 'mouse']));
       }
       let release: (() => void) | null = null;
       let tokens = 0;
@@ -52,7 +52,11 @@ test('home cards select with Cmd/Ctrl and Shift and drag out as files', { timeou
           }
           return new Promise((resolve) => { release = () => resolve({ token, failed: [] }); });
         },
-        start: (token, icon) => log.push(['start', token, icon.startsWith('data:image/png;base64,')]),
+        start: (token, icon) => {
+          log.push(['start', token, icon.startsWith('data:image/png;base64,')]);
+          // Windows 처럼 놓은 뒤에 끝을 알리는 데스크톱.
+          return Promise.resolve((window as unknown as { finishOnStart?: boolean }).finishOnStart === true);
+        },
         end: (token, dropped) => log.push(['end', token, dropped]),
         iconFor: (keys) => dragIconDataUrl({ image: null, format: 'hwpx', count: keys.length }),
         onFailed: (names) => log.push(['failed', [...names]]),
@@ -135,8 +139,41 @@ test('home cards select with Cmd/Ctrl and Shift and drag out as files', { timeou
     await page.mouse.down();
     await page.mouse.move(from.x + 2, from.y + 1);
     await page.mouse.up();
-    assert.deepEqual(await takeLog(), [['card-click', 'b']]);
+    assert.deepEqual(await takeLog(), [['card-click', 'b', 'mouse']]);
     assert.deepEqual(await selected(), []);
+
+    // 데스크톱이 끝을 알리면(Windows) 창 밖에 놓아 포인터 이동이 없어도 끌기는 끝나고,
+    // 그 뒤 들어오는 다른 앱의 파일은 우리 끌기로 버려지지 않는다. 끌기 뒤 키보드로 누른 카드는 열린다.
+    await page.evaluate(() => {
+      Object.assign(window, { holdPrepare: false, finishOnStart: true });
+    });
+    from = await center(card('c'));
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 20, from.y, { steps: 4 });
+    await page.waitForFunction(() => (window as unknown as { log: unknown[][] }).log.some((entry) => entry[0] === 'end'));
+    assert.equal(await page.evaluate(() => (window as unknown as { dragOut: { outbound: boolean } }).dragOut.outbound), false);
+    assert.equal(await page.evaluate(() => (window as unknown as { dragOut: { consumeDrop(): boolean } }).dragOut.consumeDrop()), false);
+    // Windows 는 운영체제 끌기 뒤에 click 을 보내지 않는다. 그 사이의 키보드 누르기는 카드에 닿는다.
+    await page.focus(card('c'));
+    await page.keyboard.press('Enter');
+    await page.mouse.up();
+    assert.deepEqual(await takeLog(), [
+      ['prepare', ['recent:c']],
+      ['start', 'token-4', true],
+      ['end', 'token-4', true],
+      ['card-click', 'c', 'key'],
+    ]);
+
+    // 손가락으로 넘기는 몸짓은 문서를 내보내지 않는다.
+    const touch = await page.target().createCDPSession();
+    from = await center(card('a'));
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] });
+    for (const dx of [5, 10, 20, 30]) {
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: from.x + dx, y: from.y }] });
+    }
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    assert.deepEqual((await takeLog()).filter((entry) => (entry as unknown[])[0] === 'prepare'), []);
 
     // 끌 수 없는 카드는 고르지 않는다.
     await page.keyboard.down(modifier);

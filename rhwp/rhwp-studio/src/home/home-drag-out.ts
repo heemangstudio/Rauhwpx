@@ -22,7 +22,8 @@ export interface HomeDragOutDeps {
   /** 카드 격자. 카드는 이 안에 있다. */
   grid: HTMLElement;
   prepare(keys: readonly string[]): Promise<PreparedFileDrag>;
-  start(token: string, iconDataUrl: string): void;
+  /** true 로 풀리면 운영체제 끌기가 끝났다. 끝을 모르면 false 나 void 다. */
+  start(token: string, iconDataUrl: string): Promise<boolean> | void;
   end(token: string, dropped: boolean): void;
   iconFor(keys: readonly string[]): string;
   onFailed(names: readonly string[]): void;
@@ -127,13 +128,18 @@ export function createHomeDragOut(deps: HomeDragOutDeps): HomeDragOut {
       phase = { kind: 'idle' };
       return;
     }
-    phase = { kind: 'dragging', token: prepared.token };
-    deps.start(prepared.token, deps.iconFor(keys));
+    const dragging: Phase = { kind: 'dragging', token: prepared.token };
+    phase = dragging;
+    // Windows 는 놓은 뒤에 끝을 알려 준다. 창 밖에 놓으면 포인터 이동이 오지 않아 이것이 유일한 끝이다.
+    void Promise.resolve(deps.start(prepared.token, deps.iconFor(keys))).then((finished) => {
+      if (finished === true && phase === dragging) finishDrag();
+    }, () => {});
   }
 
   // 고르기는 카드의 click 보다 먼저 받는다. 바꿔 고르기·범위 고르기는 카드를 펼치거나 열지 않는다.
   const onClick = (event: MouseEvent) => {
-    if (swallowClick) {
+    // 키보드 Enter·Space 의 click(detail 0)은 끌기와 상관없다.
+    if (swallowClick && event.detail > 0) {
       swallowClick = false;
       event.preventDefault();
       event.stopPropagation();
@@ -162,7 +168,9 @@ export function createHomeDragOut(deps: HomeDragOutDeps): HomeDragOut {
     // 앞선 끌기가 끝났다는 신호이기도 하다.
     finishDrag();
     swallowClick = false;
-    if (event.button !== 0 || !event.isPrimary || isToggleClick(event) || event.shiftKey) return;
+    // 손가락 끌기는 홈을 넘기는 몸짓이다. 넘길 때마다 문서를 내보내지 않는다.
+    if (event.button !== 0 || !event.isPrimary || event.pointerType === 'touch'
+      || isToggleClick(event) || event.shiftKey) return;
     const key = keyOf(event.target);
     if (!key || (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"]'))) return;
     phase = { kind: 'pressed', key, x: event.clientX, y: event.clientY, pointerId: event.pointerId };

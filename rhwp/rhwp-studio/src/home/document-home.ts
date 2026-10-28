@@ -92,7 +92,8 @@ export interface DocumentHomeDeps {
   /** 데스크톱: 카드를 파일로 다른 앱에 끌어 놓는다. 없으면 카드는 끌리지 않는다. */
   dragOut?: {
     prepare(items: readonly HomeDragItem[]): Promise<PreparedFileDrag>;
-    start(token: string, iconDataUrl: string): void;
+    /** true 로 풀리면 운영체제 끌기가 끝났다. */
+    start(token: string, iconDataUrl: string): Promise<boolean> | void;
     end(token: string, dropped: boolean): void;
   };
   toast(message: string): void;

@@ -8,6 +8,7 @@ import {
   collectDragSources,
   DragExportRequests,
   FileDragStaging,
+  fitFileNameToPath,
   normalizeDragItems,
 } from '../desktop/file-drag-out.mjs';
 
@@ -123,4 +124,43 @@ test('a drag the renderer never finishes is cleaned up', async (t) => {
   const { paths } = await staging.stage('window-a', [{ fileName: 'a.hwpx', bytes: bytes('a') }]);
   await wait(120);
   assert.equal(existsSync(paths[0]), false);
+});
+
+test('a staged copy keeps its whole path within Windows MAX_PATH and keeps its extension', async (t) => {
+  const folder = String.raw`C:\Users\someone\AppData\Local\Temp\Rauhwpx-drag-0123abcd\89abcdef`;
+  const long = `${'가'.repeat(150)}${'😀'.repeat(40)}.hwpx`;
+  const fitted = fitFileNameToPath(folder, long);
+  assert.ok(folder.length + 1 + fitted.length <= 259);
+  assert.ok(fitted.endsWith('.hwpx'));
+  assert.equal(fitted, fitted.toWellFormed(), 'no split surrogate pair');
+  assert.equal(fitFileNameToPath(folder, '보고서.hwp'), '보고서.hwp');
+
+  const root = scratch(t);
+  const staging = new FileDragStaging({ root, lingerMs: 60_000, abandonMs: 60_000 });
+  const { paths } = await staging.stage('window-a', [{ fileName: `${'나'.repeat(179)}.hwpx`, bytes: bytes('x') }]);
+  assert.ok(paths[0].length <= 259, `${paths[0].length} units`);
+  assert.ok(paths[0].endsWith('.hwpx'));
+  assert.equal(readFileSync(paths[0], 'utf8'), 'x');
+  staging.clearSync();
+});
+
+test('a staged copy dropped back into a window is recognised and names the window that owns its document', async (t) => {
+  const root = scratch(t);
+  const staging = new FileDragStaging({ root, lingerMs: 30, abandonMs: 60_000 });
+  const { token, paths } = await staging.stage('window-a', [
+    { fileName: 'mine.hwpx', bytes: bytes('a') },
+    { fileName: 'theirs.hwpx', bytes: bytes('b'), owner: 'window-c' },
+    { path: '/docs/saved.hwp' },
+  ]);
+  assert.deepEqual(staging.stagedCopy(paths[0]), { owner: 'window-a' });
+  assert.deepEqual(staging.stagedCopy(paths[1]), { owner: 'window-c' });
+  if (process.platform === 'win32') assert.deepEqual(staging.stagedCopy(paths[1].toUpperCase()), { owner: 'window-c' });
+  assert.equal(staging.stagedCopy(paths[2]), null, 'a saved file opens as usual');
+  assert.equal(staging.stagedCopy(join(root, '..', 'elsewhere.hwpx')), null);
+  assert.equal(staging.stagedCopy(root), null);
+  assert.deepEqual(staging.stagedCopy(join(root, 'leftover', 'old.hwpx')), { owner: null });
+
+  staging.end('window-a', token);
+  await wait(120);
+  assert.deepEqual(staging.stagedCopy(paths[0]), { owner: null }, 'still ours after removal, owner forgotten');
 });

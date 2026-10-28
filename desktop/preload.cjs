@@ -274,9 +274,12 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   },
   // 문서 홈 카드를 파일로 다른 앱에 끌어 놓는다. 준비(내보내기·임시 사본) 뒤에 끌기를 시작한다.
   prepareFileDrag: (items) => ipcRenderer.invoke('desktop:prepare-file-drag', Array.isArray(items) ? items : []),
-  startFileDrag: (token, iconDataUrl) => {
-    ipcRenderer.send('desktop:start-file-drag', String(token ?? ''), String(iconDataUrl ?? ''));
-  },
+  // true: 끌기가 끝났다(Windows 는 놓은 뒤에 돌아온다). false: 운영체제가 아직 끄는 중이다.
+  startFileDrag: (token, iconDataUrl) => ipcRenderer.invoke(
+    'desktop:start-file-drag',
+    String(token ?? ''),
+    String(iconDataUrl ?? ''),
+  ).then((finished) => finished === true, () => true),
   endFileDrag: (token, dropped) => {
     ipcRenderer.send('desktop:end-file-drag', String(token ?? ''), dropped === true);
   },
