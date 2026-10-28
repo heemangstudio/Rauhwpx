@@ -2000,9 +2000,9 @@ function selectedCellBlock(self: any) {
   return { ...context, ...range, pathJson: JSON.stringify(path) };
 }
 
-function cellBlockStartPosition(self: any, wasm: WasmBridge, block: NonNullable<ReturnType<typeof selectedCellBlock>>): DocumentPosition {
-  const target = wasm.getTableCellTargetByPath(block.sec, block.ppi, block.pathJson,
-    block.startRow, block.startCol, 0);
+function cellBlockStartPosition(self: any, wasm: WasmBridge, block: NonNullable<ReturnType<typeof selectedCellBlock>>,
+  row = block.startRow, col = block.startCol): DocumentPosition {
+  const target = wasm.getTableCellTargetByPath(block.sec, block.ppi, block.pathJson, row, col, 0);
   return remapTableCellPosition(self.cursor.getPosition(), target, true);
 }
 
@@ -2016,7 +2016,8 @@ export function clearSelectedCellBlock(this: any): void {
     this.executeOperation({ kind: 'snapshot', operationType: 'clearTableCellRange', operation: (wasm: WasmBridge) => {
       wasm.clearTableCellRange(block.sec, block.ppi, block.pathJson,
         block.startRow, block.startCol, block.endRow, block.endCol);
-      return cellBlockStartPosition(this, wasm, block);
+      // 한컴처럼 블록은 남기고 캐럿은 블록의 마지막 셀에 둔다.
+      return cellBlockStartPosition(this, wasm, block, block.endRow, block.endCol);
     }});
     this.updateCellSelection();
   } catch (error) {
