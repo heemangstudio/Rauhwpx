@@ -126,8 +126,9 @@ export function guardEngineCalls(proto: object): void {
 /** HeemangEngine `Doc` 에서 문서 내용을 바꾸지 않는 메서드. 나머지 호출마다 변이 순번이 오른다. */
 const HEEMANG_READ_CALLS: ReadonlySet<string> = new Set([
   'state', 'pages', 'pageInfo', 'page', 'patch', 'pictureSource', 'pictureBytes', 'pageSvg', 'pdf', 'pagePng',
-  'locate', 'objects', 'select', 'selectRange', 'navigate', 'query', 'search', 'layoutStats', 'substitutions',
-  'fontRequests', 'fontNames', 'copy', 'checkpoint', 'releaseCheckpoint', 'serialize', 'serializeAs',
+  'locate', 'objects', 'pageObjects', 'select', 'selectRange', 'navigate', 'query', 'search', 'layoutStats',
+  'substitutions', 'fontRequests', 'glyphRequests', 'fontNames', 'copy', 'hasTableTransposeClipboard', 'checkpoint',
+  'releaseCheckpoint', 'serialize', 'serializeAs', 'exportHwpx', 'verifyHwp',
 ]);
 /** 멈춘 뒤에도 복구본 저장이 쓰는 읽기. */
 const HEEMANG_CALLS_ALLOWED_AFTER_TRAP: ReadonlySet<string> = new Set(['serialize', 'serializeAs', 'state', 'free']);

@@ -98,6 +98,9 @@ test('snapshot cache shares an export across reads and invalidates on editor or 
       let exports = 0;
       const originalExport = wasm.exportHwp.bind(wasm);
       wasm.exportHwp = () => { exports++; return originalExport(); };
+      let hwpxExports = 0;
+      const originalHwpxExport = wasm.exportHwpx.bind(wasm);
+      wasm.exportHwpx = () => { hwpxExports++; return originalHwpxExport(); };
       const cache = new VersionSnapshotCache();
       try {
         const initial = cache.fingerprint(wasm, 'document-a', 0);
@@ -112,17 +115,24 @@ test('snapshot cache shares an export across reads and invalidates on editor or 
         wasm.fileName = 'renamed.hwp';
         const renamed = cache.capture(wasm, 'document-b', 1);
         const renamedExports = exports;
+        wasm.fileName = 'renamed.hwpx';
+        const converted = cache.capture(wasm, 'document-b', 1);
+        const convertedSignature = [...converted.bytes.subarray(0, 2)];
         cache.clear();
-        cache.capture(wasm, 'document-b', 1);
-        return { initialExports, editExports, documentExports, renamedExports, finalExports: exports,
+        const cleared = cache.capture(wasm, 'document-b', 1);
+        return { initialExports, editExports, documentExports, renamedExports, finalExports: exports, hwpxExports,
           sameFingerprint: initial === captured.fingerprint, reused, changed: edited.fingerprint !== initial,
-          recaptured: otherDocument !== edited && renamed !== otherDocument };
+          recaptured: otherDocument !== edited && renamed !== otherDocument,
+          renamedSameBytes: renamed.fingerprint === edited.fingerprint,
+          convertedToHwpx: converted.fingerprint !== renamed.fingerprint && convertedSignature.join() === '80,75',
+          clearedSameBytes: cleared.fingerprint === converted.fingerprint };
       } finally { wasm.releaseDocument(); }
     });
-    // 캐시 키가 바뀌면 새로 캡처한다. 엔진에 쓰기가 없었으면(다른 문서 id·clear) 같은 바이트를 다시 내보내지
-    // 않고, 엔진 이름을 바꾸면 다시 내보낸다.
-    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 2,
-      renamedExports: 3, finalExports: 3, sameFingerprint: true, reused: true, changed: true, recaptured: true });
+    // 캐시 키가 바뀌면 새로 캡처한다. 엔진에 쓰기가 없었으면(다른 문서 id·같은 형식의 이름 바꾸기·clear) 같은
+    // 바이트를 다시 내보내지 않고, 이름이 저장 형식을 바꾸면 그 형식으로 다시 내보낸다.
+    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 2, renamedExports: 2,
+      finalExports: 2, hwpxExports: 1, sameFingerprint: true, reused: true, changed: true, recaptured: true,
+      renamedSameBytes: true, convertedToHwpx: true, clearedSameBytes: true });
   } finally { await page.close(); }
 });
 
