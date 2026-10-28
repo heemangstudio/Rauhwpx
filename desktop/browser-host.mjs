@@ -95,6 +95,33 @@ export function fileChooserFilters(accept) {
   return extensions.size ? [{ name: '파일', extensions: [...extensions] }] : null;
 }
 
+/** 게스트에서 누른 탭 닫기 단축키(Windows·Linux Ctrl+W, macOS Cmd+W). */
+export function isGuestCloseShortcut(input, platform = process.platform) {
+  if (input?.type !== 'keyDown' || String(input.key ?? '').toLowerCase() !== 'w' || input.shift || input.alt) return false;
+  return platform === 'darwin' ? Boolean(input.meta) && !input.control : Boolean(input.control) && !input.meta;
+}
+
+/**
+ * 브라우저 호스트의 숨은 주차 창과 숨긴 팝아웃 창이 남아 있으면 window-all-closed 가 오지 않는다.
+ * 그래서 Windows·Linux 에서는 마지막 편집기 창이 닫히면 직접 앱을 끝낸다. 여는 중인 창이 있으면
+ * 그 실행이 끝난 뒤 다시 본다. macOS 는 창이 없어도 Dock 에 남는다.
+ */
+export function createLastEditorWindowQuit({ platform = process.platform, canQuit, editorWindowCount, quit }) {
+  let launches = 0;
+  const check = () => {
+    if (platform === 'darwin' || launches > 0 || !canQuit() || editorWindowCount() > 0) return false;
+    quit();
+    return true;
+  };
+  return {
+    async track(launch) {
+      launches += 1;
+      try { return await launch; } finally { launches -= 1; check(); }
+    },
+    windowClosed: check,
+  };
+}
+
 async function privateDirectory(dir) {
   const absolute = resolve(dir);
   await mkdir(absolute, { recursive: true, mode: 0o700 });
@@ -286,7 +313,15 @@ export class OwnedBrowserHost {
       // 전달된 입력은 허브에 알려 이어지는 페이지 요청(로그인 제출 등)을 사용자의 것으로 본다.
       if (['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
     };
-    contents.on('before-input-event', blockHumanInput);
+    contents.on('before-input-event', (event, input) => {
+      if (!tab.automationInputDepth && isGuestCloseShortcut(input, this.platform)) {
+        // 막지 않으면 메뉴의 창 닫기 단축키가 페이지 뒤의 편집기 창을 닫는다. 사용자가 잡은 탭이면 그 탭만 닫는다.
+        event.preventDefault();
+        if (tab.human && tab.interactive && !tab.closing) this.closeGuest(tab);
+        return;
+      }
+      blockHumanInput(event, input);
+    });
     contents.on('before-mouse-event', blockHumanInput);
     contents.on('devtools-opened', () => {
       // DevTools takes the same debugger. Close it rather than silently hand
