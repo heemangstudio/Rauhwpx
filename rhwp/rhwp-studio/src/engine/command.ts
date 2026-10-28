@@ -601,6 +601,18 @@ export function applyCharFormatToInsertedText(
   }), JSON.stringify(charFormat));
 }
 
+/**
+ * 이어 친 글자가 앞 입력과 한 번에 되돌릴 묶음인지. 한컴처럼 쉬었다 쳐도, 낱말 사이 빈칸이 있어도 한
+ * 묶음이고, 줄바꿈·탭과 다른 서식은 묶음을 끊는다. 위치가 이어지는지는 명령마다 본다.
+ * (한컴 2022 캡처: 'abc' 3초 'def' 와 'one two three' 는 되돌리기 한 번에 사라지고 Enter 는 따로 되돌린다.)
+ */
+function continuesTyping(
+  text: string, next: string, format?: Partial<CharProperties>, nextFormat?: Partial<CharProperties>,
+): boolean {
+  if (/[\n\t\u2028]/.test(text) || /[\n\t\u2028]/.test(next)) return false;
+  return JSON.stringify(format ?? null) === JSON.stringify(nextFormat ?? null);
+}
+
 export class InsertTextCommand implements EditCommand {
   readonly type = 'insertText';
   readonly timestamp: number;
@@ -657,11 +669,7 @@ export class InsertTextCommand implements EditCommand {
     // 연속 위치 확인
     const expectedOffset = this.position.charOffset + charCount(this.text);
     if (other.position.charOffset !== expectedOffset) return null;
-    // 300ms 이내
-    if (other.timestamp - this.timestamp > 300) return null;
-    // 줄바꿈/탭 포함 시 병합 불가
-    if (other.text.includes('\n') || other.text.includes('\t')) return null;
-    if (JSON.stringify(this.charFormat ?? null) !== JSON.stringify(other.charFormat ?? null)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
 
     return new InsertTextCommand(this.position, this.text + other.text, this.timestamp, this.charFormat);
   }
@@ -1695,7 +1703,15 @@ export class InsertTextInHeaderFooterCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof InsertTextInHeaderFooterCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.isHeader !== b.isHeader || a.applyTo !== b.applyTo) return null;
+    if (other.paraIdx !== this.paraIdx || other.charOffset !== this.charOffset + charCount(this.text)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
+    return new InsertTextInHeaderFooterCommand(this.target, this.paraIdx, this.charOffset, this.text + other.text, this.charFormat);
+  }
 }
 
 /**
@@ -1899,7 +1915,15 @@ export class InsertTextInFootnoteCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof InsertTextInFootnoteCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx) return null;
+    if (other.innerParaIdx !== this.innerParaIdx || other.charOffset !== this.charOffset + charCount(this.text)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
+    return new InsertTextInFootnoteCommand(this.target, this.innerParaIdx, this.charOffset, this.text + other.text, this.charFormat);
+  }
 }
 
 export class DeleteTextInFootnoteCommand implements EditCommand {

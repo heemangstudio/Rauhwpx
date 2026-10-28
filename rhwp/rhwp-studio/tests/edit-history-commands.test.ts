@@ -53,6 +53,53 @@ test('서식이 다른 연속 입력은 한 undo 칸으로 합치지 않는다',
   }
 });
 
+// 한컴 2022 캡처(heemang-cleanroom parity/notes/hancom-edit-captures/undo-typing-*): 'abc' 를 치고 3초 쉰 뒤
+// 'def' 를 쳐도, 'one two three' 를 쳐도 되돌리기 한 번에 모두 사라진다. Enter 는 따로 되돌린다.
+test('한컴처럼 쉬었다 이어 친 글자와 낱말 사이 빈칸은 한 묶음으로 되돌리고 Enter 는 따로 되돌린다', () => {
+  const { wasm, host } = documentWith('끝');
+  const before = documentFingerprint(wasm);
+  let at = 0;
+  const type = (text: string, time: number) => {
+    host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(0, at), text, time) });
+    at += [...text].length;
+  };
+  for (const [i, ch] of [...'abc'].entries()) type(ch, 1_000 + i * 50);
+  for (const [i, ch] of [...'def two'].entries()) type(ch, 4_000 + i * 50);
+  assert.equal(paragraphText(wasm, 0), 'abcdef two끝');
+  host.executeOperation({ kind: 'command', command: new C.SplitParagraphCommand(body(0, at)) });
+  host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(1, 0), 'x', 9_000) });
+  host.handleUndo();
+  assert.deepEqual([paragraphText(wasm, 0), paragraphText(wasm, 1)], ['abcdef two', '끝']);
+  host.handleUndo();
+  assert.equal(wasm.getParagraphCount(0), 1);
+  host.handleUndo();
+  assert.equal(documentFingerprint(wasm), before);
+});
+
+test('머리말과 각주에서 이어 친 글자도 한 묶음으로 되돌린다', () => {
+  {
+    const { wasm, host } = headerDocument('끝');
+    const before = documentFingerprint(wasm);
+    for (const [i, ch] of [...'머리 말'].entries()) {
+      wasm.insertTextInHeaderFooter(0, true, 0, 0, i, ch);
+      host.executeOperation({ kind: 'record', command: new C.InsertTextInHeaderFooterCommand(HF, 0, i, ch) });
+    }
+    assert.deepEqual(headerText(wasm), ['머리 말끝']);
+    host.handleUndo();
+    assert.equal(documentFingerprint(wasm), before);
+  }
+  {
+    const { wasm, host, note, target } = footnoteDocument('끝');
+    const before = documentFingerprint(wasm);
+    for (const [i, ch] of [...'각주 글'].entries()) {
+      wasm.insertTextInFootnote(0, note.paraIdx, note.controlIdx, 0, i, ch);
+      host.executeOperation({ kind: 'record', command: new C.InsertTextInFootnoteCommand(target, 0, i, ch) });
+    }
+    host.handleUndo();
+    assert.equal(documentFingerprint(wasm), before);
+  }
+});
+
 // ─── 머리말/꼬리말·각주 편집 ───────────────────────────────
 
 const HF = { sectionIdx: 0, isHeader: true, applyTo: 0, previewPage: 0 };
