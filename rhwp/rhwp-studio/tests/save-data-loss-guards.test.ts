@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DocumentDirtyState } from '../src/core/document-dirty-state.ts';
 import { EventBus } from '../src/core/event-bus.ts';
+import { AutosaveManager } from '../src/recovery/autosave-manager.ts';
 import { createTestModuleServer } from './support/module-server.ts';
 import { trackAppTimers } from './support/app-timers.ts';
 
@@ -197,4 +198,74 @@ test('파일 handle 로 저장한 경우에만 그 handle 을 문서와 연결�
   assert.equal(result, 'saved');
   assert.equal(downloads, 1);
   assert.equal(download.events.some((event) => event.startsWith('handle-saved')), false);
+});
+
+/**
+ * 창 닫기·앱 종료의 저장 확인. 맥 네이티브 시트가 고른 답을 차례로 돌려주고, 데스크톱 닫기 처리(main.ts)처럼
+ * 닫기가 정해진 뒤 저장 안 함을 고른 문서의 복구본을 지운다. 닫기 허용 여부와 남은 복구본을 돌려준다.
+ */
+async function closeWindowAnswering(answers: Array<'save' | 'discard' | 'cancel'>, failSave = false) {
+  const h = saveHarness(idleInput, 'doc.hwpx', failSave);
+  const drafts = new Set<string>();
+  const manager = new AutosaveManager({
+    exportDraft: () => ({ bytes: new Uint8Array([1]), format: 'hwpx' as const }),
+    debounceMs: 0,
+    minSaveIntervalMs: 0,
+    idFactory: () => 'draft-close',
+    store: {
+      async saveDraft(draft) { drafts.add(draft.id); },
+      async deleteDraft(id) { drafts.delete(id); },
+    },
+    logger: { debug() {}, warn() {} },
+  });
+  manager.connect(h.services.eventBus);
+  await manager.beginDocument({ fileName: 'doc.hwpx', sourceFormat: 'hwpx' });
+  await manager.flushNow('typing');
+  assert.deepEqual([...drafts], ['draft-close'], '닫기 전 편집은 복구본으로 남아 있다');
+
+  const win = globalThis.window as unknown as Record<string, unknown>;
+  const asked: string[] = [];
+  win.rhwpDesktop = {
+    platform: 'darwin',
+    showUnsavedChangesSheet: async () => {
+      const answer = answers.shift() ?? 'cancel';
+      asked.push(answer);
+      return answer;
+    },
+  };
+  const originalError = console.error;
+  console.error = () => {};
+  let allowClose: boolean;
+  try {
+    let discarded = false;
+    allowClose = await fileCommands.confirmSaveBeforeReplacingDocument(h.services as never, {
+      onDiscard: () => { discarded = true; },
+    });
+    if (allowClose && discarded) await manager.discardCurrentDraft('window-close-discard');
+  } finally {
+    console.error = originalError;
+    delete win.rhwpDesktop;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  manager.dispose();
+  return { allowClose, drafts: [...drafts], asked, dirty: h.documentState.isDirty() };
+}
+
+test('창을 닫을 때 저장 안 함을 고르면 복구본을 지워 다음 실행이 버린 변경을 복구하자고 묻지 않는다', async () => {
+  const closed = await closeWindowAnswering(['discard']);
+  assert.equal(closed.allowClose, true);
+  assert.deepEqual(closed.asked, ['discard']);
+  assert.deepEqual(closed.drafts, [], '버린 문서의 복구본이 남지 않는다');
+});
+
+test('창 닫기를 취소하거나 저장에 실패하면 복구본을 그대로 둔다', async () => {
+  const cancelled = await closeWindowAnswering(['cancel']);
+  assert.equal(cancelled.allowClose, false);
+  assert.deepEqual(cancelled.drafts, ['draft-close']);
+
+  const failed = await closeWindowAnswering(['save'], true);
+  assert.equal(failed.allowClose, false);
+  assert.deepEqual(failed.asked, ['save'], '저장에 실패하면 다시 묻지 않고 닫기를 멈춘다');
+  assert.equal(failed.dirty, true);
+  assert.deepEqual(failed.drafts, ['draft-close'], '저장하지 못한 편집의 복구본은 남는다');
 });
