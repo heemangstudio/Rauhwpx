@@ -112,26 +112,24 @@ function reopenBoth(wasm: Wasm, adapter: { refreshLayout(): void }, check: () =>
   }
 }
 
-test('줄 지우기는 셀 블록이 덮은 줄을 모두 지우고 저장 후에도 남은 줄만 있다', async t => {
+test('여러 셀 블록에서는 줄·칸 추가와 지우기를 하지 않고, 블록이 없으면 커서 줄·칸을 지운다', async t => {
+  // 한컴 ins-rows-block, ins-cols-block, del-rows-block, del-cols-block: 여러 셀 블록이 잡혀 있으면 거절한다.
   const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
   const tb = table(wasm, 4, 2);
   ['r0', 'r1', 'r2', 'r3'].forEach((text, row) => wasm.insertTextInCell(0, tb.ppi, tb.ci, tb.index(row, 0), 0, 0, text));
-  run(wasm, 'table:delete-row', tb.pos(tb.index(1, 1)), { range: { startRow: 1, startCol: 0, endRow: 2, endCol: 1 }, ctx: tb.ctx });
-  const expected = { rows: 2, cols: 2, cells: ['0,0 1x1 r0', '0,1 1x1 ', '1,0 1x1 r3', '1,1 1x1 '] };
+  const before = tb.grid();
+  const block = { range: { startRow: 1, startCol: 0, endRow: 2, endCol: 1 }, ctx: tb.ctx };
+  for (const id of ['table:delete-row', 'table:delete-col', 'table:insert-row-below', 'table:insert-col-right', 'table:delete-row-col', 'table:insert-row-col']) {
+    const command = tableCommands.find(c => c.id === id)!;
+    assert.equal(command.canExecute!({ inTable: true, hasMultiCellSelection: true } as never), false, id);
+    assert.equal(command.canExecute!({ inTable: true, hasMultiCellSelection: false } as never), true, id);
+    if (!id.endsWith('-row-col')) run(wasm, id, tb.pos(tb.index(1, 1)), block);
+  }
+  assert.deepEqual(tb.grid(), before, '블록이 잡혀 있으면 표가 그대로다');
+  run(wasm, 'table:delete-row', tb.pos(tb.index(1, 1)));
+  const expected = { rows: 3, cols: 2, cells: ['0,0 1x1 r0', '0,1 1x1 ', '1,0 1x1 r2', '1,1 1x1 ', '2,0 1x1 r3', '2,1 1x1 '] };
   assert.deepEqual(tb.grid(), expected);
-  // 블록이 없으면 지금처럼 커서 줄 하나만 지운다.
-  run(wasm, 'table:delete-row', tb.pos(tb.index(0, 0)));
-  assert.deepEqual(tb.grid(), { rows: 1, cols: 2, cells: ['0,0 1x1 r3', '0,1 1x1 '] });
-  reopenBoth(wasm, adapter, () => assert.deepEqual(tb.grid(), { rows: 1, cols: 2, cells: ['0,0 1x1 r3', '0,1 1x1 '] }));
-});
-
-test('칸 지우기는 셀 블록이 덮은 칸을 모두 지운다', async t => {
-  const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwp);
-  const tb = table(wasm, 2, 4);
-  ['c0', 'c1', 'c2', 'c3'].forEach((text, col) => wasm.insertTextInCell(0, tb.ppi, tb.ci, tb.index(0, col), 0, 0, text));
-  run(wasm, 'table:delete-col', tb.pos(tb.index(0, 0)), { range: { startRow: 0, startCol: 0, endRow: 1, endCol: 2 }, ctx: tb.ctx });
-  assert.deepEqual(tb.grid(), { rows: 2, cols: 1, cells: ['0,0 1x1 c3', '1,0 1x1 '] });
-  reopenBoth(wasm, adapter, () => assert.deepEqual(tb.grid(), { rows: 2, cols: 1, cells: ['0,0 1x1 c3', '1,0 1x1 '] }));
+  reopenBoth(wasm, adapter, () => assert.deepEqual(tb.grid(), expected));
 });
 
 test('셀을 합친 후 나누기는 블록을 한 셀로 합친 뒤 그 셀을 나눈다', async t => {

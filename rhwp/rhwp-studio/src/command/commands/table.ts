@@ -17,6 +17,8 @@ import { tableCellIndex, tableTarget } from '@/core/table-target';
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
 const hasMultiCellSelection = (ctx: EditorContext) => ctx.hasMultiCellSelection;
+/** 한컴은 여러 셀 블록이 잡혀 있으면 줄·칸 추가와 지우기를 하지 않는다. */
+const inTableWithoutBlock = (ctx: EditorContext) => ctx.inTable && !ctx.hasMultiCellSelection;
 
 type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
 type TableDimensions = { rowCount: number; colCount: number; cellCount: number };
@@ -220,6 +222,7 @@ function applyTableInsertRowColumn(
   const ctx = currentTableCellContext(services);
   if (!ctx) return;
   const { ih, pos, cellInfo } = ctx;
+  if (ih.hasMultiCellSelection?.()) return;
   const succeeded = safeTableOp(() => ih.executeOperation({
     kind: 'snapshot',
     operationType: mode.startsWith('row') ? 'insertTableRow' : 'insertTableColumn',
@@ -276,10 +279,8 @@ function applyTableDeleteRowColumn(
   const ctx = currentTableCellContext(services);
   if (!ctx) return;
   const { ih, pos, cellInfo } = ctx;
-  // 셀 블록이 여러 줄·칸에 걸치면 블록이 덮은 줄·칸을 모두 지운다.
-  const range = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
-  const start = mode === 'row' ? range?.startRow ?? cellInfo.row : range?.startCol ?? cellInfo.col;
-  const count = range ? (mode === 'row' ? range.endRow - range.startRow : range.endCol - range.startCol) + 1 : 1;
+  if (ih.hasMultiCellSelection?.()) return;
+  const start = mode === 'row' ? cellInfo.row : cellInfo.col;
   const succeeded = safeTableOp(() => ih.executeOperation({
     kind: 'snapshot',
     operationType: mode === 'row' ? 'deleteTableRow' : 'deleteTableColumn',
@@ -287,11 +288,11 @@ function applyTableDeleteRowColumn(
       const path = tablePathJson(pos);
       const res = mode === 'row'
         ? (path
-            ? wasm.deleteTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, start, count)
-            : wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start, count))
+            ? wasm.deleteTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, start)
+            : wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start))
         : (path
-            ? wasm.deleteTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, start, count)
-            : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start, count));
+            ? wasm.deleteTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, start)
+            : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start));
       if (!res.ok) return pos;
       // 한컴처럼 줄을 지우면 그 자리 줄의 첫 셀, 칸을 지우면 그 자리 칸의 첫 셀 처음으로 간다.
       // 삭제 후 셀 수가 줄면 기존 cellIndex가 범위를 벗어날 수 있어 보정한다 (#1483).
@@ -437,7 +438,7 @@ export const tableCommands: CommandDef[] = [
     id: 'table:insert-row-col',
     label: '줄/칸 추가하기(I)...',
     shortcutLabel: 'Alt+Enter',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
@@ -451,7 +452,7 @@ export const tableCommands: CommandDef[] = [
     id: 'table:delete-row-col',
     label: '줄/칸 지우기(E)...',
     shortcutLabel: 'Alt+Delete',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
@@ -464,7 +465,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:insert-row-above',
     label: '위쪽에 줄 추가하기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableInsertRowColumn(services, 'row-above', 1);
     },
@@ -472,7 +473,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:insert-row-below',
     label: '아래쪽에 줄 추가하기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableInsertRowColumn(services, 'row-below', 1);
     },
@@ -480,7 +481,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:insert-col-left',
     label: '왼쪽에 칸 추가하기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableInsertRowColumn(services, 'col-left', 1);
     },
@@ -488,7 +489,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:insert-col-right',
     label: '오른쪽에 칸 추가하기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableInsertRowColumn(services, 'col-right', 1);
     },
@@ -496,7 +497,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:delete-row',
     label: '줄 지우기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableDeleteRowColumn(services, 'row');
     },
@@ -504,7 +505,7 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:delete-col',
     label: '칸 지우기',
-    canExecute: inTable,
+    canExecute: inTableWithoutBlock,
     execute(services) {
       applyTableDeleteRowColumn(services, 'col');
     },
