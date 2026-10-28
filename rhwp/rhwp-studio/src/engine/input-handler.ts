@@ -2954,6 +2954,9 @@ export class InputHandler {
     this.headerFooterSelectionComposition = false;
     const cmd = this.history.peekUndoTop();
     if (!(cmd instanceof SubmodeSelectionSnapshotCommand)) return true;
+    // 조합 글자는 선택을 지운 스냅샷 뒤에 들어갔다. redo 가 그 글자까지 되살리게 after 를 다시 잡는다.
+    cmd.captureAfter(this.wasm, this.cursor.getPosition());
+    this.history.invalidateCurrentSnapshot();
     cmd.updateContextAfter({
       mode: 'headerFooter',
       sectionIdx: this.cursor.hfSectionIdx,

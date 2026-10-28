@@ -142,6 +142,20 @@ export default {
     await page.evaluate(() => window.__dispatcher.dispatch('page:header-create'));
     await waitFor(page, 'header editing', () => window.__inputHandler.cursor.headerFooterMode === 'header');
     await checkArea(page, 'header');
+    // 머리말 선택을 한글 조합으로 바꾼 뒤 되돌리고 다시 실행하면 조합한 글자까지 돌아온다.
+    await press(page, 'Meta+ArrowUp');
+    await press(page, 'Shift+Alt+ArrowRight');
+    const cdp = await page.createCDPSession();
+    for (const text of ['ㅂ', '바']) await cdp.send('Input.imeSetComposition', { text, selectionStart: 1, selectionEnd: 1 });
+    await cdp.send('Input.insertText', { text: '바' });
+    await cdp.detach();
+    const replaced = (await areaText(page))[0];
+    assert.equal(replaced, '바beta gamma', 'header selection replaced by composition');
+    await shortcut(page, 'KeyZ');
+    await waitFor(page, 'undo restores the header selection', () => window.__inputHandler.cursor.headerFooterMode === 'header');
+    assert.equal((await areaText(page))[0], 'alpha beta gamma');
+    await shortcut(page, 'KeyZ', { shift: true });
+    assert.equal((await areaText(page))[0], replaced, 'redo keeps the composed syllable');
 
     await newDocument(page);
     await clickPage(page);

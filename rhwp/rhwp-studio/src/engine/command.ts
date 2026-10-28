@@ -2739,6 +2739,17 @@ export class SnapshotCommand implements EditCommand {
 
   mergeWith(_other: EditCommand): EditCommand | null { return null; }
 
+  /**
+   * 최초 실행 뒤 이력 밖에서 이어진 변경(선택을 지운 뒤 확정한 IME 조합)까지 이 명령에 담는다.
+   * redo 는 지금 문서와 캐럿으로 돌아온다.
+   */
+  captureAfter(wasm: WasmBridge, cursorAfter: DocumentPosition): void {
+    const next = wasm.saveSnapshot();
+    if (this.afterId !== null) wasm.discardSnapshot(this.afterId);
+    this.afterId = next;
+    this.cursorAfter = { ...cursorAfter };
+  }
+
   /** [Task #2328] 현재 살아있는 before/after 스냅샷 id 개수. */
   snapshotResourceCount(): number {
     return (this.beforeId !== null ? 1 : 0) + (this.afterId !== null ? 1 : 0);
