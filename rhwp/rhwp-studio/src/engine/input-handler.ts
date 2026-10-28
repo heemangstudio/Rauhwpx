@@ -2966,6 +2966,46 @@ export class InputHandler {
     return true;
   }
 
+  /**
+   * 각주 안 선택을 지운다. 문단에 걸친 선택은 시작 문단 끝·끝 문단 앞·사이 문단 글자를 지우고 문단을 붙인다.
+   * 한 스냅샷 이력으로 남기고, 되돌리면 지우기 전 각주 캐럿으로 돌아간다. 선택이 비었으면 false.
+   */
+  private deleteFootnoteSelection(): boolean {
+    const selection = this.cursor.getFootnoteSelectionOrdered();
+    if (!selection) return false;
+    const { start, end } = selection;
+    if (start.fnParaIdx === end.fnParaIdx && start.charOffset === end.charOffset) return false;
+    const before = this.getCurrentEditContext() as Extract<EditContext, { mode: 'footnote' }>;
+    const { sectionIdx: sec, paraIdx: para, controlIdx: control } = before;
+    const bodyPosition = this.cursor.getPosition();
+    this.cursor.clearSelection();
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'deleteSelectionInFootnote',
+      editContext: before,
+      editContextAfter: { ...before, innerParaIdx: start.fnParaIdx, charOffset: start.charOffset },
+      operation: (wasm) => {
+        const lengths = wasm.getFootnoteInfo(sec, para, control).texts.map(text => Array.from(text).length);
+        if (start.fnParaIdx === end.fnParaIdx) {
+          wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, end.charOffset - start.charOffset);
+        } else {
+          wasm.deleteTextInFootnote(sec, para, control, end.fnParaIdx, 0, end.charOffset);
+          for (let inner = end.fnParaIdx - 1; inner > start.fnParaIdx; inner--) {
+            if (lengths[inner] > 0) wasm.deleteTextInFootnote(sec, para, control, inner, 0, lengths[inner]);
+          }
+          const tail = lengths[start.fnParaIdx] - start.charOffset;
+          if (tail > 0) wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, tail);
+          for (let merged = start.fnParaIdx; merged < end.fnParaIdx; merged++) {
+            wasm.mergeParagraphInFootnote(sec, para, control, start.fnParaIdx + 1);
+          }
+        }
+        return { ...bodyPosition };
+      },
+    });
+    this.cursor.setFnCursorPosition(start.fnParaIdx, start.charOffset);
+    return true;
+  }
+
   /** 선택 영역을 삭제한다 */
   private deleteSelection(options?: { deferRecord?: boolean }): void {
     const hfSelection = this.getNonEmptyHeaderFooterSelection();
@@ -2976,6 +3016,10 @@ export class InputHandler {
         operationType: 'deleteSelectionInHeaderFooter',
         restoreSelectionOnUndo: true,
       });
+      return;
+    }
+    if (this.cursor.isInFootnote()) {
+      if (!options?.deferRecord) this.deleteFootnoteSelection();
       return;
     }
     const sel = this.cursor.getSelectionOrdered();

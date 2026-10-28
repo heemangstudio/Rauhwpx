@@ -1012,7 +1012,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     // Backspace / Delete
     if (e.key === 'Backspace' || e.key === 'Delete') {
       e.preventDefault();
-      this.caret.beginEraseMotion();
+      if (this.deleteFootnoteSelection()) {
+        this.afterEdit();
+        return;
+      }
       const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
       const innerParaIdx = this.cursor.fnInnerParaIdx;
       const fnOff = this.cursor.fnCharOffset;
@@ -1072,7 +1075,6 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
           this.afterEdit();
         } catch { /* ignore */ }
       }
-      this.caret.endEraseMotion();
       return;
     }
 

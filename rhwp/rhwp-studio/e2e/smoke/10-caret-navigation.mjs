@@ -27,6 +27,18 @@ const caret = (page) => page.evaluate(() => {
   return [p.cellParaIndex ?? p.paragraphIndex, p.charOffset];
 });
 
+/** 캐럿이 있는 영역(머리말·각주·셀·글상자·본문)의 문단 글자. */
+const areaText = (page) => page.evaluate(() => {
+  const c = window.__inputHandler.cursor, w = window.__wasm;
+  if (c.headerFooterMode !== 'none') {
+    const isHeader = c.headerFooterMode === 'header';
+    const n = JSON.parse(w.getHeaderFooterParaInfo(c.hfSectionIdx, isHeader, c.hfApplyTo, 0)).paraCount;
+    return Array.from({ length: n }, (_, i) => JSON.parse(w.getHeaderFooterParaInfo(c.hfSectionIdx, isHeader, c.hfApplyTo, i)).text);
+  }
+  if (c.isInFootnote()) return w.getFootnoteInfo(c.fnSectionIdx, c.fnParaIdx, c.fnControlIdx).texts;
+  return Array.from({ length: w.getParagraphCount(0) }, (_, p) => w.getTextRange(0, p, 0, 1000));
+});
+
 /** 키 열을 누르고 키마다 캐럿을 기대값과 맞춘다. 오프셋이 null 이면 문단만 본다(위아래 이동의 x 맞춤). */
 async function walk(page, label, steps) {
   for (const [key, expected] of steps) {
@@ -58,6 +70,7 @@ async function checkArea(page, label) {
   await page.keyboard.press('Backspace');
   // 끝의 마침표가 한 낱말이다.
   assert.deepEqual(await caret(page), [2, LONG.length - 1], `${label}: shift-extended word delete`);
+  assert.equal((await areaText(page))[2], LONG.slice(0, -1), `${label}: the selected word is deleted`);
 }
 
 export default {
@@ -109,6 +122,15 @@ export default {
     await press(page, 'Meta+ArrowUp');
     await press(page, 'ArrowDown');
     assert.equal(await page.evaluate(() => window.__inputHandler.cursor.getPosition().cellIndex), 0, 'down into the table');
+    // Shift+↓ 로 표를 지나 선택하면 표 전체가 선택에 들고, 그 위에 친 글자가 표를 바꾼다.
+    await press(page, 'Meta+ArrowUp');
+    await press(page, 'End');
+    await press(page, 'Shift+ArrowDown');
+    await press(page, 'Shift+ArrowDown');
+    await page.keyboard.type('X');
+    assert.equal((await body())[0], 'aboveX', 'typing over a selection across the table');
+    assert.equal(await page.evaluate(() => window.__wasm.getPageControlLayout(0).controls.filter((c) => c.type === 'table').length), 0,
+      'the selected table is replaced');
 
     // 머리말·각주·글상자 안에서도 본문과 같은 키로 움직인다.
     await newDocument(page);
