@@ -272,6 +272,30 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     ipcRenderer.on('desktop:run-unsaved-document-action', listener);
     return () => ipcRenderer.removeListener('desktop:run-unsaved-document-action', listener);
   },
+  // 문서 홈 카드를 파일로 다른 앱에 끌어 놓는다. 준비(내보내기·임시 사본) 뒤에 끌기를 시작한다.
+  prepareFileDrag: (items) => ipcRenderer.invoke('desktop:prepare-file-drag', Array.isArray(items) ? items : []),
+  // true: 끌기가 끝났다(Windows 는 놓은 뒤에 돌아온다). false: 운영체제가 아직 끄는 중이다.
+  startFileDrag: (token, iconDataUrl) => ipcRenderer.invoke(
+    'desktop:start-file-drag',
+    String(token ?? ''),
+    String(iconDataUrl ?? ''),
+  ).then((finished) => finished === true, () => true),
+  endFileDrag: (token, dropped) => {
+    ipcRenderer.send('desktop:end-file-drag', String(token ?? ''), dropped === true);
+  },
+  // 다른 창이 이 창에 열린 문서를 끌 때: 바뀐 내용을 내보내 돌려준다.
+  onDragExportRequest: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.requestId !== 'string' || typeof payload.documentId !== 'string') return;
+      Promise.resolve()
+        .then(() => callback(payload.documentId))
+        .catch(() => null)
+        .then((result) => ipcRenderer.invoke('desktop:drag-export-reply', payload.requestId, result ?? null))
+        .catch(() => {});
+    };
+    ipcRenderer.on('desktop:drag-export-request', listener);
+    return () => ipcRenderer.removeListener('desktop:drag-export-request', listener);
+  },
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,

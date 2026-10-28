@@ -2268,6 +2268,13 @@ export class NativeFileHandleRegistry {
     return this.#byPath.get(this.#ownershipKey(bookmark.path))?.sessionId === sessionId;
   }
 
+  /** 이 문서의 경로를 쥔 창. 아무 창도 열지 않았으면 null. */
+  ownerSessionOf(documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return null;
+    return this.#byPath.get(this.#ownershipKey(bookmark.path))?.sessionId ?? null;
+  }
+
   async searchNearby(sessionId, documentId, { basenameHint = '' } = {}) {
     this.#forgetSessionProbes(sessionId);
     const probes = [];
