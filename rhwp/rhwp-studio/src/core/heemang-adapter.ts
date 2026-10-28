@@ -240,6 +240,8 @@ export class HeemangAdapter {
   private packets = new Map<number, PagePacket>();
   private furniturePreview: { key: string; doc: Doc; list: { section: number; steps: { para: number; control: number; index: number }[] } } | null = null;
   private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
+  /** 마지막으로 읽은 쪽 목록 JSON 과 그 해석. 엔진이 같은 문자열을 주면 다시 해석하지 않는다. */
+  private pageList: { doc: Doc; raw: string; pages: HmPage[] } | null = null;
   private _fileName = '';
   private sourceFormat = 'hwpx';
   private hmlSourceMetadata: HmlOpenMetadata | null = null;
@@ -359,6 +361,7 @@ export class HeemangAdapter {
     this.fontsPrepared = false;
     this.packets.clear();
     this.pageMetadata = null;
+    this.pageList = null;
     this.currentFileHandle = null;
     this._digest = null;
     this.openedFromFile = false;
@@ -395,13 +398,17 @@ export class HeemangAdapter {
     };
   }
   getSectionCount(): number { return Math.max(-1, ...this.hmPages().map(p => p.section)) + 1; }
-  private hmPages(): HmPage[] {
+  /** 지금 조판의 쪽 목록. 읽기 전용으로 나눠 쓴다. */
+  hmPages(): HmPage[] {
     const doc = this.document();
     // state는 대기 중인 조판과 공유 엔진의 글꼴 변경을 먼저 반영한다.
     const { layoutEpoch, fontGeneration } = this.state();
     const cached = this.pageMetadata;
     if (cached?.doc === doc && cached.layoutEpoch === layoutEpoch && cached.fontGeneration === fontGeneration) return cached.pages;
-    const pages: HmPage[] = JSON.parse(doc.pages());
+    // 글자를 쳐도 쪽 배치가 그대로면 엔진은 같은 JSON 을 준다. 그때는 앞서 해석한 목록을 쓴다.
+    const raw = doc.pages();
+    const pages: HmPage[] = this.pageList?.doc === doc && this.pageList.raw === raw ? this.pageList.pages : JSON.parse(raw);
+    this.pageList = { doc, raw, pages };
     this.pageMetadata = { doc, layoutEpoch, fontGeneration, pages };
     return pages;
   }

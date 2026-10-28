@@ -376,7 +376,8 @@ export function getAllPageInfo(core: HmCore): PageInfo[] {
   if (!core.hasDocument()) throw new Error(NO_DOCUMENT);
   const cache = pageCacheFor(core);
   if (!cache.all) {
-    cache.all = (JSON.parse(core.call(doc => doc.pages())) as HmPageInfo[]).map(toPageInfo);
+    // 어댑터가 이 조판에서 읽은 쪽 목록을 함께 쓴다.
+    cache.all = core.call(() => core.adapter.hmPages()).map(toPageInfo);
     cache.all.forEach((info, index) => cache.pages.set(index, info));
   }
   return cache.all;
