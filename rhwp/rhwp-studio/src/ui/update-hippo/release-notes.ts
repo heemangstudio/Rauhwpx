@@ -12,14 +12,18 @@ import type { UpdateSign } from './update-sign.ts';
 
 export const RELEASE_NOTES: Readonly<Record<string, readonly string[]>> = {
   '3.0.10': [
-    '문서마다 기억을 남기는 문서 기억',
-    'Rau-0.1이 내 수정에서 문체를 배워요',
+    '문서 탭, Ctrl+Tab으로 전환',
+    '내 수정에서 문체를 배우는 Rau-0.1',
+    '홈 문서를 다른 앱으로 끌어 놓기',
+    '에이전트가 내 ChatGPT·Claude에 질문',
+    'ZIP, PowerPoint, Excel 첨부',
+    '문서마다 쌓이는 문서 기억',
     '채팅에서 AGENTS.md 제안 승인',
-    '채팅 입력창 위에 사는 픽셀 하마',
+    '채팅 입력창 위의 픽셀 하마',
+    'Windows Claude·Codex 설치와 로그인 안정화',
+    'Windows에서 Codex 채팅이 시작되지 않던 문제 수정',
     '이름을 바꾼 문서도 리서치 프로젝트 유지',
-    'Windows 한글 사용자 폴더에서 Claude 설치',
     'Claude 답변이 되풀이되던 문제 수정',
-    '참고 자료를 닫은 뒤 채팅 목록 클릭 수정',
   ],
 };
 
