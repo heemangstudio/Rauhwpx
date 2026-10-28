@@ -126,7 +126,7 @@ export function createWorkbenchBrowser(options: {
     handle(reloadStalled());
   }, error); stalledReload.hidden = true;
   // 다시 열어도 두 번 더 멈춘 페이지는 그 자리에 자동 수정을 둔다. 고치면 다시 연다.
-  const stalledEscalation = createRetryEscalation();
+  const stalledEscalation = createRetryEscalation(2, 'browser-page');
   let stalledAutofix: AutofixButton | null = null;
   const stalledAutofixButton = (): AutofixButton => stalledAutofix ??= createAutofixButton({
     request: () => {

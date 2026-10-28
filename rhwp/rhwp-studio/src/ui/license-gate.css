@@ -35,10 +35,10 @@
 /* 파일 이름이 없거나 가운데로 빠지면 알약이 오른쪽 끝 묶음의 맨 앞이 된다. */
 #editor-document-title[hidden] + .license-pill,
 html.desktop-native-menu #menu-bar .license-pill { margin-left: auto; }
-#menu-bar .license-pill + #editor-command-search { margin-left: 8px; }
+#menu-bar .license-pill + :is(#editor-command-search, #editor-autofix-manual) { margin-left: 8px; }
 /* 통합 제목 막대의 검색 상자는 margin-left:auto 를 받는다. 그대로 두면 알약의 auto 여백과
    남는 폭을 나눠 가져 알약이 가운데로 밀리므로, 알약은 늘 검색 바로 왼쪽에 붙인다. */
-html.desktop-native-menu #menu-bar .license-pill + #editor-command-search { margin-left: 8px; }
+html.desktop-native-menu #menu-bar .license-pill + :is(#editor-command-search, #editor-autofix-manual) { margin-left: 8px; }
 /* macOS·Windows 통합 제목 막대는 파일 이름을 창 가운데에 절대 배치한다. 오른쪽에 알약이
    붙으면 이름의 오른쪽 끝이 알약 위로 겹치므로, 알약부터 막대 끝까지의 실제 폭을 재어
    (license-gate.ts) 양쪽 여백으로 뺀다. 알약이 없으면 이 규칙은 적용되지 않는다. */

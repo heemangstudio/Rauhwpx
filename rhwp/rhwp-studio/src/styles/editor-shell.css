@@ -169,6 +169,37 @@
 }
 .editor-command-search kbd { margin-left: 24px; font: 11px var(--font-family-ui); color: var(--ui-text-muted); }
 .editor-command-search:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
+/* 자동 수정(연장통): 명령 검색과 같은 테두리 상자의 아이콘 단추. 도는 동안 오른쪽 위에 초록 점이 물결친다. */
+.editor-autofix-manual {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text-secondary);
+  font: inherit;
+  cursor: default;
+}
+.editor-autofix-manual:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
+.editor-autofix-manual[data-running]::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rhwp-autofix-dot);
+  animation: rhwp-autofix-wave 1100ms ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .editor-autofix-manual[data-running]::after { animation: none; }
+}
 #menu-bar { height: 32px; padding: 0 10px; background: var(--ui-surface); border-bottom: 0; gap: 2px; }
 .menu-title { padding: 3px 9px; border-radius: 5px; font-size: 13px; }
 #style-bar { --editor-field-border: var(--theme-hairline, #dfe3e9); min-height: 38px; padding: 4px 10px; gap: 3px 0; background: var(--ui-surface); }
@@ -219,7 +250,7 @@
 /* Do not animate layout or theme colors: controls stay in place as state changes. */
 #studio-header, #studio-header button, #style-bar, #icon-toolbar, .cp-panel { transition: none; }
 html:is(.desktop-mac, .desktop-windows) #menu-bar { height: var(--desktop-titlebar-height); padding-left: var(--desktop-home-reserve); }
-html:is(.desktop-mac, .desktop-windows) #editor-command-search { -webkit-app-region: no-drag; }
+html:is(.desktop-mac, .desktop-windows) :is(#editor-command-search, #editor-autofix-manual) { -webkit-app-region: no-drag; }
 @media (max-width: 1023px) {
 }
 @media (max-width: 767px) {

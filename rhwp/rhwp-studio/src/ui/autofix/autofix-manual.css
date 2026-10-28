@@ -1,0 +1,109 @@
+/* ─── 직접 부르는 자동 수정 시트 ─────────────────────────
+   버그 제보 시트(ir-sheet)의 면·입력 칸·버튼을 그대로 쓰고, 진행 줄과 결과만 더한다. */
+
+.afm-sheet .afm-lead {
+  margin: -4px 0 0;
+}
+
+/* 버그 제보보다 짧은 칸이다. 지금 상태를 한두 줄로 적는다. */
+.afm-sheet .afm-message {
+  min-height: 76px;
+}
+
+.afm-sheet .afm-message[readonly] {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+}
+
+.afm-sheet :is(.afm-lead, .afm-message, .afm-status, .afm-result, .afm-result > *, .afm-dots)[hidden] {
+  display: none;
+}
+
+.afm-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.afm-dots {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 자동 수정 단추의 실행 중 점과 같은 물결 */
+.afm-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--rhwp-autofix-dot);
+  animation: rhwp-autofix-wave 1100ms ease-in-out infinite;
+}
+
+.afm-dot:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.afm-dot:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.afm-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.afm-result p {
+  margin: 0;
+}
+
+.afm-result-head {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink);
+}
+
+.afm-sheet[data-view='fixed'] .afm-result-head {
+  color: color-mix(in oklab, var(--rhwp-autofix-dot) 70%, var(--n-ink));
+}
+
+/* 에이전트가 쓴 원인. 텍스트로만 넣고, 길면 칸 안에서 넘긴다. */
+.afm-cause {
+  max-height: 160px;
+  overflow: auto;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.afm-question {
+  padding-top: 4px;
+  font-size: var(--ag-fs-body);
+  color: var(--n-ink);
+}
+
+/* 보이는 단추 수(1~2개)대로 폭을 나눈다. */
+.afm-sheet .ag-sheet-actions {
+  display: flex;
+}
+
+.afm-sheet .ag-sheet-actions > .ag-sheet-btn {
+  flex: 1 1 0;
+}
+
+.afm-sheet .ag-sheet-actions > .ag-sheet-btn[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .afm-dot {
+    animation: none;
+  }
+}

@@ -81,6 +81,15 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
   flex: 0 0 auto;
 }
 
+/* 자동 수정 단추는 명령 검색 바로 왼쪽에 붙는다. 같은 order 를 받고, 검색이 받던 왼쪽 여백 규칙을 대신 받는다.
+   설정에서 끄면 DOM 에서 빠지므로 아래 규칙들은 단추가 있을 때만 맞는다. */
+#menu-bar #editor-autofix-manual {
+  order: 2;
+  margin-left: 8px;
+  flex: 0 0 auto;
+}
+#menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
+
 #editor-document-title {
   order: 1;
   flex: 0 1 auto;
@@ -165,9 +174,11 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
 }
 #editor-document-title[hidden] { display: none; }
 #editor-document-title[hidden] + #editor-command-search { margin-left: auto; }
+#editor-document-title[hidden] + #editor-autofix-manual { margin-left: auto; }
 @media (max-width: 767px) {
   #editor-document-title { display: none; }
-  #menu-bar #editor-command-search { margin-left: auto; }
+  #menu-bar :is(#editor-command-search, #editor-autofix-manual) { margin-left: auto; }
+  #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 }
 
 /* Focus mode paints its own bar over this row. Electron still includes
@@ -216,6 +227,8 @@ html.desktop-native-menu #editor-document-title {
 html.desktop-native-menu #menu-bar #editor-command-search {
   margin-left: auto;
 }
+html.desktop-native-menu #menu-bar #editor-autofix-manual { margin-left: auto; }
+html.desktop-native-menu #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 
 html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-item {
   height: 100%;
@@ -482,6 +495,11 @@ html.desktop-windows #menu-bar #editor-command-search {
   order: 0;
   margin-left: 8px;
 }
+html.desktop-windows #menu-bar #editor-autofix-manual {
+  order: 0;
+  margin-left: 8px;
+}
+html.desktop-windows #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 html.desktop-windows #menu-bar .license-pill { margin-left: auto; }
 html.desktop-windows .desktop-menu-toggle {
   width: 28px;
