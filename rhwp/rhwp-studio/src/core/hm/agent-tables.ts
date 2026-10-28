@@ -52,7 +52,8 @@ export const setTableCaptionText: HmApi['setTableCaptionText'] = (core, sec, par
 function formulaValue(core: HmCore, table: TableAddress, row: number, col: number, source: string): number {
   const info = tableInfo(core, table);
   if (source.length > 1000) throw new RangeError('표 계산식이 너무 깁니다');
-  const input = source.trim().replace(/^=/, '').toUpperCase();
+  // 계산식은 = 또는 @ 로 시작한다.
+  const input = source.trim().replace(/^[=@]/, '').toUpperCase();
   let at = 0, depth = 0;
   const space = () => { while (/\s/.test(input[at] ?? '') && at < input.length) at++; };
   const take = (char: string) => { space(); if (input[at] === char) { at++; return true; } return false; };
@@ -89,11 +90,29 @@ function formulaValue(core: HmCore, table: TableAddress, row: number, col: numbe
       if (!token) throw new Error('표 계산식에 값이 필요합니다');
       at += token.length;
       if (take('(')) {
-        const values: number[] = [];
+        // 인수 하나하나는 범위가 펼친 값 목록이다. 인수는 쉼표나 세미콜론으로 나눈다.
+        const args: number[][] = [];
         if (!take(')')) {
-          do { values.push(...expression()); } while (take(','));
+          do { args.push(comparison()); } while (take(',') || take(';'));
           if (!take(')')) throw new Error('닫는 괄호가 없습니다');
         }
+        const values = args.flat();
+        const arg = (i: number, fallback?: number) => {
+          if (args[i] === undefined) {
+            if (fallback === undefined) throw new Error(`${token} 함수의 인수가 모자랍니다`);
+            return fallback;
+          }
+          return scalar(args[i]);
+        };
+        const unary = (f: (x: number) => number) => {
+          if (args.length !== 1) throw new Error(`${token} 함수는 인수 하나가 필요합니다`);
+          return [f(arg(0))];
+        };
+        /** 소수 digits 자리에서 반올림(0 에서 먼 쪽)하거나 버린다. 2진 오차(2.675*100=267.4999…)는 15자리에서 정리한다. */
+        const toDigits = (x: number, digits: number, f: (v: number) => number) => {
+          const scale = 10 ** Math.trunc(digits);
+          return f(Number((Math.abs(x) * scale).toPrecision(15))) / scale * Math.sign(x);
+        };
         switch (token) {
           case 'SUM': return [values.reduce((a, b) => a + b, 0)];
           case 'AVG': case 'AVERAGE': if (!values.length) throw new Error('평균 범위가 비어 있습니다'); return [values.reduce((a, b) => a + b, 0) / values.length];
@@ -101,7 +120,26 @@ function formulaValue(core: HmCore, table: TableAddress, row: number, col: numbe
           case 'MAX': if (!values.length) throw new Error('최댓값 범위가 비어 있습니다'); return [Math.max(...values)];
           case 'COUNT': return [values.length];
           case 'PRODUCT': return [values.reduce((a, b) => a * b, 1)];
-          case 'ABS': return [Math.abs(scalar(values))];
+          case 'ABS': return unary(Math.abs);
+          case 'SQRT': return unary(Math.sqrt);
+          case 'EXP': return unary(Math.exp);
+          case 'LOG': return unary(Math.log);
+          case 'LOG10': return unary(Math.log10);
+          case 'SIN': return unary(Math.sin);
+          case 'COS': return unary(Math.cos);
+          case 'TAN': return unary(Math.tan);
+          case 'ASIN': return unary(Math.asin);
+          case 'ACOS': return unary(Math.acos);
+          case 'ATAN': return unary(Math.atan);
+          case 'RADIAN': return unary(x => x * Math.PI / 180);
+          case 'SIGN': return unary(Math.sign);
+          case 'CEILING': return unary(Math.ceil);
+          case 'FLOOR': return unary(Math.floor);
+          case 'INT': return unary(Math.trunc);
+          case 'ROUND': return [toDigits(arg(0), arg(1, 0), Math.round)];
+          case 'TRUNC': return [toDigits(arg(0), arg(1, 0), Math.trunc)];
+          case 'MOD': { const divisor = arg(1); if (divisor === 0) throw new Error('0으로 나눌 수 없습니다'); return [arg(0) % divisor]; }
+          case 'IF': if (args.length !== 3) throw new Error('IF 함수는 조건, 참, 거짓 세 인수가 필요합니다'); return [arg(0) !== 0 ? arg(1) : arg(2)];
           default: throw new Error(`지원하지 않는 표 함수: ${token}`);
         }
       }
@@ -136,6 +174,18 @@ function formulaValue(core: HmCore, table: TableAddress, row: number, col: numbe
       else if (take('-')) value = [scalar(value) - scalar(product())];
       else return value;
     }
+  };
+  /** 함수 인수 안의 비교식. 참은 1, 거짓은 0 이다. */
+  const comparison = (): number[] => {
+    const left = expression();
+    space();
+    const op = /^(<=|>=|<>|!=|==|<|>|=)/.exec(input.slice(at))?.[0];
+    if (!op) return left;
+    at += op.length;
+    const a = scalar(left), b = scalar(expression());
+    const result = op === '<' ? a < b : op === '<=' ? a <= b : op === '>' ? a > b : op === '>=' ? a >= b
+      : op === '<>' || op === '!=' ? a !== b : a === b;
+    return [result ? 1 : 0];
   };
   const value = scalar(expression()); space();
   if (at !== input.length || !Number.isFinite(value)) throw new Error('잘못된 표 계산식입니다');

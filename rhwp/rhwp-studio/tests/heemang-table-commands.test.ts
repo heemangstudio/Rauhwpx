@@ -129,3 +129,24 @@ test('셀을 합친 후 나누기는 블록을 한 셀로 합친 뒤 그 셀을 
   dialogs.find(d => d.name === 'CellSplitDialog')!.dialog.onApply(1, 2, false, false);
   assert.equal(other.grid().cols, 4);
 });
+
+test('계산식은 대화상자가 고르는 함수와 비교식, @ 시작을 계산한다', async t => {
+  const { wasm } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  const tb = table(wasm, 3, 3);
+  ['4', '9', '2.567', '-7', '3', ''].forEach((v, i) => v && wasm.insertTextInCell(0, tb.ppi, tb.ci, i, 0, 0, v));
+  const value = (formula: string) => {
+    const result = JSON.parse(wasm.evaluateTableFormula(0, tb.ppi, tb.ci, 2, 2, formula, false));
+    if (!result.ok) throw new Error(result.error);
+    return result.result;
+  };
+  const cases: Array<[string, number]> = [
+    ['=SQRT(B1)', 3], ['=ROUND(C1)', 3], ['=ROUND(C1,2)', 2.57], ['=ROUND(-2.5)', -3], ['=ROUND(2.675,2)', 2.68],
+    ['=CEILING(C1)', 3], ['=FLOOR(C1)', 2], ['=TRUNC(C1)', 2], ['=TRUNC(C1,1)', 2.5], ['=INT(-2.5)', -2],
+    ['=MOD(A2,B2)', -1], ['=MOD(B1;A1)', 1], ['=SIGN(A2)', -1], ['=EXP(0)', 1], ['=LOG(1)', 0], ['=LOG10(1000)', 3],
+    ['=SIN(0)', 0], ['=COS(0)', 1], ['=TAN(0)', 0], ['=ASIN(0)', 0], ['=ACOS(1)', 0], ['=RADIAN(180)', Math.PI],
+    ['=IF(A1>B1,1,2)', 2], ['=IF(A1<B1,1,2)', 1], ['=IF(A1=4,10,20)', 10], ['=IF(A1<>4,10,20)', 20], ['=IF(A1>=4,SUM(A1:B1),0)', 13],
+    ['@SUM(A1:B1)', 13], ['=sum(a1:b1)*2', 26], ['=AVG(A1:B1)', 6.5],
+  ];
+  for (const [formula, expected] of cases) assert.ok(Math.abs(value(formula) - expected) < 1e-9, `${formula} = ${value(formula)}`);
+  for (const bad of ['=SQRT(A2)', '=MOD(A1,0)', '=IF(1,2)', '=NOPE(1)', '=A1>B1']) assert.throws(() => value(bad), undefined, bad);
+});
