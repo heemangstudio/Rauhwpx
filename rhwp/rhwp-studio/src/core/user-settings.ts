@@ -180,7 +180,7 @@ function defaultSettings(): AppSettings {
       showControlCodes: false,
       clipView: true,
       sidebarMotion: false,
-      showHama: true,
+      showHama: false,
       compactToolbar: false,
     },
     versionControl: {
@@ -398,7 +398,7 @@ class UserSettingsService {
         showControlCodes: normalizeBoolean(next.view.showControlCodes, false),
         clipView: normalizeBoolean(next.view.clipView, true),
         sidebarMotion: normalizeBoolean(next.view.sidebarMotion, false),
-        showHama: normalizeBoolean(next.view.showHama, true),
+        showHama: normalizeBoolean(next.view.showHama, false),
         compactToolbar: normalizeBoolean(next.view.compactToolbar, false),
       },
       versionControl: {
