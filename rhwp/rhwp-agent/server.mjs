@@ -645,8 +645,11 @@ let writingStyleCalibrationOwner = null;
 const retainedUncertainBackends = new Set();
 const sessions = new HubSessionRegistry({
   createRecord(sessionId) {
-    const recordKey = `${crypto.createHash('sha256').update(sessionId).digest('hex')}-${crypto.randomUUID()}`;
-    const recordRoot = path.join(RECORDS_ROOT, recordKey);
+    // 짧은 무작위 이름만 쓴다. Codex 는 이 아래 home/.codex 에 SQLite DB 를 두는데, Windows SQLite 는
+    // 260자 경로 제한을 넘지 못해 `<db>-journal` 경로가 길면 Codex 가 시작하자마자 끝난다.
+    let recordRoot;
+    do recordRoot = path.join(RECORDS_ROOT, crypto.randomBytes(8).toString('hex'));
+    while (existsSync(recordRoot));
     const workDir = path.join(recordRoot, 'work');
     // Providers can mutate workDir. Hub-created files must live in a sibling
     // tree whose parents are outside every safe-profile writable root, or a
