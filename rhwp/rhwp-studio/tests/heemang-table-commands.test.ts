@@ -24,6 +24,9 @@ const hooks = registerHooks({
 });
 const { tableCommands } = await import('../src/command/commands/table.ts');
 hooks.deregister();
+const { keyboardResizeUpdates } = await import('../src/engine/table-keyboard-resize.ts');
+/** 한컴 Office 2022 가 만든 4x4 표 (셀 저장 높이 282, 그려진 높이 1282, 칸 너비 10488). */
+const HANCOM_TABLE = 'rhwp-studio/tests/fixtures/hancom-table-4x4.hwpx';
 
 type Wasm = Awaited<ReturnType<typeof openHeemangAgent>>['wasm'];
 type Range = { startRow: number; startCol: number; endRow: number; endCol: number };
@@ -32,6 +35,7 @@ type PathEntry = { controlIndex: number; cellIndex: number; cellParaIndex: numbe
 /** 명령을 실제 엔진에 실행한다. 블록 선택이 있으면 그 범위와 표를 알린다. */
 function run(wasm: Wasm, id: string, pos: Record<string, any>, selection?: { range: Range; ctx: Record<string, unknown> }) {
   const caption: unknown[] = [];
+  let caret: any = null;
   const ih = {
     getCursorPosition: () => pos,
     isInCellSelectionMode: () => Boolean(selection),
@@ -44,12 +48,22 @@ function run(wasm: Wasm, id: string, pos: Record<string, any>, selection?: { ran
     getSelectedTableRef: () => null,
     exitTableObjectSelection: () => {},
     enterTableCaptionEditing: (...args: unknown[]) => caption.push(args),
-    executeOperation(desc: { operation: (w: Wasm) => unknown }) { desc.operation(wasm); },
+    executeOperation(desc: { operation: (w: Wasm) => unknown }) { caret = desc.operation(wasm); },
   };
   const command = tableCommands.find(c => c.id === id);
   if (!command) throw new Error(`missing ${id}`);
   command.execute({ wasm, eventBus: { emit() {} }, getInputHandler: () => ih } as never);
-  return { caption };
+  return { caption, caret };
+}
+
+/** 문서의 첫 표 (한컴 표 문서용). */
+function firstTable(wasm: Wasm) {
+  for (let p = 0; p < wasm.getParagraphCount(0); p++) {
+    for (let c = 0; c < 4; c++) {
+      try { wasm.getTableDimensions(0, p, c); return { ppi: p, ci: c }; } catch { /* 표가 아니다 */ }
+    }
+  }
+  throw new Error('no table');
 }
 
 function table(wasm: Wasm, rows: number, cols: number) {
@@ -235,4 +249,62 @@ test('계산식은 대화상자가 고르는 함수와 비교식, @ 시작을 �
   ];
   for (const [formula, expected] of cases) assert.ok(Math.abs(value(formula) - expected) < 1e-9, `${formula} = ${value(formula)}`);
   for (const bad of ['=SQRT(A2)', '=MOD(A1,0)', '=IF(1,2)', '=NOPE(1)', '=A1>B1']) assert.throws(() => value(bad), undefined, bad);
+});
+
+test('줄·칸을 지우면 한컴처럼 그 자리 줄의 첫 셀, 그 자리 칸의 첫 셀로 간다', async t => {
+  // 한컴 del-row: B2 의 줄을 지우면 A2, del-col: B2 의 칸을 지우면 B1 처음.
+  const { wasm } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  const tb = table(wasm, 4, 4);
+  const row = run(wasm, 'table:delete-row', tb.pos(tb.index(1, 1))).caret;
+  assert.deepEqual([wasm.getCellInfo(0, tb.ppi, tb.ci, row.cellIndex).row, wasm.getCellInfo(0, tb.ppi, tb.ci, row.cellIndex).col, row.charOffset], [1, 0, 0]);
+  const col = run(wasm, 'table:delete-col', tb.pos(tb.index(1, 1))).caret;
+  assert.deepEqual([wasm.getCellInfo(0, tb.ppi, tb.ci, col.cellIndex).row, wasm.getCellInfo(0, tb.ppi, tb.ci, col.cellIndex).col, col.charOffset], [0, 1, 0]);
+});
+
+test('아래쪽에 줄 추가는 커서 줄의 셀 걸침과 높이를 본뜬다', async t => {
+  // 한컴 ins-row-merged-corpus: 합친 셀이 있는 줄 아래에 넣은 줄은 같은 칸 걸침을 갖는다.
+  const { wasm, adapter } = await openHeemangAgent(t, HANCOM_TABLE);
+  const { ppi, ci } = firstTable(wasm);
+  wasm.mergeTableCells(0, ppi, ci, 0, 0, 0, 1);
+  const pos = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0, parentParaIndex: ppi, controlIndex: ci, cellIndex: 0, cellParaIndex: 0,
+    cellPath: [{ controlIndex: ci, cellIndex: 0, cellParaIndex: 0 }] };
+  const caret = run(wasm, 'table:insert-row-below', pos).caret;
+  const cells = () => Array.from({ length: wasm.getTableDimensions(0, ppi, ci).cellCount }, (_, i) => {
+    const c = wasm.getCellInfo(0, ppi, ci, i);
+    return `${c.row},${c.col} ${c.rowSpan}x${c.colSpan} ${wasm.getCellProperties(0, ppi, ci, i).height}`;
+  });
+  assert.ok(cells().includes('1,0 1x2 282'), cells().join(' | '));
+  assert.equal(wasm.getCellInfo(0, ppi, ci, caret.cellIndex).row, 0, '커서는 원래 셀에 남는다');
+  reopenBoth(wasm, adapter, () => assert.ok(cells().includes('1,0 1x2 282'), cells().join(' | ')));
+});
+
+test('Ctrl·Alt+방향키는 한컴처럼 283 단위로 블록 경계를 옮긴다', async t => {
+  // 한컴 resize-ctrl-right, resize-alt-right, resize-ctrl-down: F5 로 B2 를 고르고 세 번 누른다.
+  const press = async (key: 'ArrowRight' | 'ArrowDown', moveBoundary: boolean) => {
+    const { wasm } = await openHeemangAgent(t, HANCOM_TABLE);
+    const { ppi, ci } = firstTable(wasm);
+    const range = { startRow: 1, startCol: 1, endRow: 1, endCol: 1 };
+    for (let i = 0; i < 3; i++) {
+      wasm.resizeTableCells(0, ppi, ci, keyboardResizeUpdates(wasm.getTableCellBboxes(0, ppi, ci), range,
+        wasm.getTableDimensions(0, ppi, ci), key, moveBoundary));
+    }
+    const sizes = (row: number, col: number) => {
+      for (let i = 0; i < 16; i++) {
+        const c = wasm.getCellInfo(0, ppi, ci, i);
+        if (c.row === row && c.col === col) return wasm.getCellProperties(0, ppi, ci, i);
+      }
+      throw new Error('no cell');
+    };
+    return { sizes, table: wasm.getTableProperties(0, ppi, ci) };
+  };
+  const ctrl = await press('ArrowRight', false);
+  assert.deepEqual([0, 1, 2, 3].map(r => ctrl.sizes(r, 1).width), [11337, 11337, 11337, 11337], '칸 전체가 넓어진다');
+  assert.equal(ctrl.sizes(1, 2).width, 10488);
+  assert.equal(ctrl.table.tableWidth, 42801, '표가 그만큼 넓어진다');
+  const alt = await press('ArrowRight', true);
+  assert.deepEqual([alt.sizes(0, 1).width, alt.sizes(0, 2).width, alt.sizes(3, 2).width], [11337, 9639, 9639], '경계만 옮긴다');
+  assert.equal(alt.table.tableWidth, 41952);
+  const down = await press('ArrowDown', false);
+  assert.deepEqual([0, 1, 2, 3].map(c => down.sizes(1, c).height), [2131, 2131, 2131, 2131], '그려진 높이 1282 에서 849 늘어난다');
+  assert.equal(down.sizes(0, 1).height, 282);
 });

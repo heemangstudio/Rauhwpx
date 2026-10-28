@@ -225,29 +225,17 @@ function applyTableInsertRowColumn(
     operationType: mode.startsWith('row') ? 'insertTableRow' : 'insertTableColumn',
     operation: (wasm) => {
       const path = tablePathJson(pos);
-      for (let i = 0; i < count; i += 1) {
-        switch (mode) {
-          case 'row-above':
-            path
-              ? wasm.insertTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.row, false)
-              : wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false);
-            break;
-          case 'row-below':
-            path
-              ? wasm.insertTableRowByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.row, true)
-              : wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true);
-            break;
-          case 'col-left':
-            path
-              ? wasm.insertTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.col, false)
-              : wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false);
-            break;
-          case 'col-right':
-            path
-              ? wasm.insertTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, cellInfo.col, true)
-              : wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true);
-            break;
-        }
+      const columns = mode.startsWith('col');
+      const after = mode === 'row-below' || mode === 'col-right';
+      // 새 줄·칸은 커서 셀의 줄·칸을 본뜬다 (한컴). 아래·오른쪽은 셀이 걸친 마지막 줄·칸 뒤에 넣는다.
+      const band = columns
+        ? cellInfo.col + (after ? cellInfo.colSpan - 1 : 0)
+        : cellInfo.row + (after ? cellInfo.rowSpan - 1 : 0);
+      const sec = pos.sectionIndex, ppi = pos.parentParaIndex!, ci = pos.controlIndex!;
+      if (columns) {
+        path ? wasm.insertTableColumnByPath(sec, ppi, path, band, after, count) : wasm.insertTableColumn(sec, ppi, ci, band, after, count);
+      } else {
+        path ? wasm.insertTableRowByPath(sec, ppi, path, band, after, count) : wasm.insertTableRow(sec, ppi, ci, band, after, count);
       }
       const row = cellInfo.row + (mode === 'row-above' ? count : 0);
       const col = cellInfo.col + (mode === 'col-left' ? count : 0);
@@ -305,15 +293,16 @@ function applyTableDeleteRowColumn(
             ? wasm.deleteTableColumnByPath(pos.sectionIndex, pos.parentParaIndex!, path, start, count)
             : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, start, count));
       if (!res.ok) return pos;
+      // 한컴처럼 줄을 지우면 그 자리 줄의 첫 셀, 칸을 지우면 그 자리 칸의 첫 셀 처음으로 간다.
       // 삭제 후 셀 수가 줄면 기존 cellIndex가 범위를 벗어날 수 있어 보정한다 (#1483).
       const corrected = clampedCellAfterDelete(
         wasm,
         pos,
-        mode === 'row' ? start : cellInfo.row,
-        mode === 'row' ? cellInfo.col : start,
+        mode === 'row' ? start : 0,
+        mode === 'row' ? 0 : start,
         res.rowCount,
         res.colCount,
-        !range && (mode === 'row' ? cellInfo.rowSpan > 1 : cellInfo.colSpan > 1),
+        false,
       );
       if (!corrected) {
         // 표 소멸 → 표 밖 본문 위치로 폴백.

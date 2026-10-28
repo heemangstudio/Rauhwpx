@@ -94,10 +94,17 @@ export const splitTableCell: typeof original.splitTableCell = (core, s, p, c, r,
 export const splitTableCellByPath: typeof original.splitTableCellByPath = (core, s, p, path, r, col) => restoreSpan(core, tableAddressByPath(s, p, path), r, col);
 export const splitTableCellInto: typeof original.splitTableCellInto = (core, s, p, c, r, col, rows, cols, equal, _mergeFirst) => split(core, tableAddress(s, p, c), r, col, rows, cols, equal);
 export const splitTableCellIntoByPath: typeof original.splitTableCellIntoByPath = (core, s, p, path, r, col, rows, cols, equal, _mergeFirst) => split(core, tableAddressByPath(s, p, path), r, col, rows, cols, equal);
-export const insertTableRow: typeof original.insertTableRow = (core, s, p, c, row, below) => { const table = tableAddress(s, p, c); return edit(core, { op: 'insertTableRows', table, beforeRow: row + Number(below), count: 1 }, table); };
-export const insertTableRowByPath: typeof original.insertTableRowByPath = (core, s, p, path, row, below) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'insertTableRows', table, beforeRow: row + Number(below), count: 1 }, table); };
-export const insertTableColumn: typeof original.insertTableColumn = (core, s, p, c, col, right) => { const table = tableAddress(s, p, c); return edit(core, { op: 'insertTableColumns', table, beforeColumn: col + Number(right), count: 1 }, table); };
-export const insertTableColumnByPath: typeof original.insertTableColumnByPath = (core, s, p, path, col, right) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'insertTableColumns', table, beforeColumn: col + Number(right), count: 1 }, table); };
+/** 새 줄·칸은 기준 줄·칸(row/col)의 셀 걸침과 크기를 따른다 (한컴 줄/칸 추가). */
+function insertBands(core: HmCore, table: TableAddress, columns: boolean, band: number, after: boolean, count: number) {
+  const op = columns
+    ? { op: 'insertTableColumns', table, beforeColumn: band + Number(after), count, copyColumn: band }
+    : { op: 'insertTableRows', table, beforeRow: band + Number(after), count, copyRow: band };
+  return edit(core, op as EditOp, table);
+}
+export const insertTableRow: typeof original.insertTableRow = (core, s, p, c, row, below, count = 1) => insertBands(core, tableAddress(s, p, c), false, row, below, count);
+export const insertTableRowByPath: typeof original.insertTableRowByPath = (core, s, p, path, row, below, count = 1) => insertBands(core, tableAddressByPath(s, p, path), false, row, below, count);
+export const insertTableColumn: typeof original.insertTableColumn = (core, s, p, c, col, right, count = 1) => insertBands(core, tableAddress(s, p, c), true, col, right, count);
+export const insertTableColumnByPath: typeof original.insertTableColumnByPath = (core, s, p, path, col, right, count = 1) => insertBands(core, tableAddressByPath(s, p, path), true, col, right, count);
 export const deleteTableRow: typeof original.deleteTableRow = (core, s, p, c, row, count = 1) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableRows', table, startRow: row, count }, table); };
 export const deleteTableRowByPath: typeof original.deleteTableRowByPath = (core, s, p, path, row, count = 1) => { const table = tableAddressByPath(s, p, path); return edit(core, { op: 'deleteTableRows', table, startRow: row, count }, table); };
 export const deleteTableColumn: typeof original.deleteTableColumn = (core, s, p, c, col, count = 1) => { const table = tableAddress(s, p, c); return edit(core, { op: 'deleteTableColumns', table, startColumn: col, count }, table); };

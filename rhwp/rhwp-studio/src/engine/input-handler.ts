@@ -1557,8 +1557,8 @@ export class InputHandler {
   }
 
   /** 셀 선택 모드에서 Ctrl+방향키로 셀 크기 조절 */
-  private resizeCellByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
-    _table.resizeCellByKeyboard.call(this, key);
+  private resizeCellByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', moveBoundary = false): void {
+    _table.resizeCellByKeyboard.call(this, key, moveBoundary);
   }
 
   private resizeTableProportional(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {

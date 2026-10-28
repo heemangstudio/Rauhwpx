@@ -978,9 +978,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "controlIdx",
       "colIdx",
-      "right"
+      "right",
+      "count"
     ],
-    "signature": "insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean)"
+    "signature": "insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean, count = 1)"
   },
   {
     "method": "insertTableColumnByPath",
@@ -990,9 +991,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "colIdx",
-      "right"
+      "right",
+      "count"
     ],
-    "signature": "insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean)"
+    "signature": "insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean, count = 1)"
   },
   {
     "method": "insertTableRow",
@@ -1002,9 +1004,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "controlIdx",
       "rowIdx",
-      "below"
+      "below",
+      "count"
     ],
-    "signature": "insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean)"
+    "signature": "insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean, count = 1)"
   },
   {
     "method": "insertTableRowByPath",
@@ -1014,9 +1017,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "rowIdx",
-      "below"
+      "below",
+      "count"
     ],
-    "signature": "insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean)"
+    "signature": "insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean, count = 1)"
   },
   {
     "method": "insertText",

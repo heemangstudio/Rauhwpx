@@ -1353,9 +1353,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (this.cursor.isInCellSelectionMode()) {
     // 브라우저의 copy/cut/paste 이벤트가 셀 블록을 그대로 받게 한다.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(e.key.toLowerCase())) return;
+    // 한컴처럼 Delete 는 블록의 셀 내용을 지우고 블록을 유지한다. Backspace 는 셀 블록에서 아무것도 하지 않는다.
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace')) {
       e.preventDefault();
-      clearSelectedCellBlock.call(this);
+      if (e.key === 'Delete') clearSelectedCellBlock.call(this);
       return;
     }
     if (e.key === 'Escape') {
@@ -1383,8 +1384,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         // phase 3: 전체 표 비율 리사이즈 (모든 셀에 동일 delta)
         this.resizeTableProportional(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
       } else {
-        // phase 1, 2: 선택 셀 크기 조절 (이웃 셀 반대 delta)
-        this.resizeCellByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
+        // phase 1, 2: 블록 경계 옮기기 — Ctrl 은 표를 키우고 Alt 는 이웃 칸·줄을 줄인다.
+        this.resizeCellByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', e.altKey && !e.ctrlKey && !e.metaKey);
       }
       return;
     }

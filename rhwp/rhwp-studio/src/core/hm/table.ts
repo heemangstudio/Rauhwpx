@@ -172,19 +172,19 @@ export function hasTableTransposeClipboard(_core: HmCore): boolean {
   return false;
 }
 
-export function insertTableRow(core: HmCore, sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
+export function insertTableRow(core: HmCore, sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('insertTableRow');
 }
 
-export function insertTableRowByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
+export function insertTableRowByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('insertTableRowByPath');
 }
 
-export function insertTableColumn(core: HmCore, sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean): { ok: boolean; rowCount: number; colCount: number } {
+export function insertTableColumn(core: HmCore, sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('insertTableColumn');
 }
 
-export function insertTableColumnByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean): { ok: boolean; rowCount: number; colCount: number } {
+export function insertTableColumnByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean, count?: number): { ok: boolean; rowCount: number; colCount: number } {
   throw unsupported('insertTableColumnByPath');
 }
 

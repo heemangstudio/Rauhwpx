@@ -788,20 +788,20 @@ export class WasmBridge {
     return api.hasTableTransposeClipboard(this.core);
   }
 
-  insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
-    return api.insertTableRow(this.core, sec, parentPara, controlIdx, rowIdx, below);
+  insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.insertTableRow(this.core, sec, parentPara, controlIdx, rowIdx, below, count);
   }
 
-  insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
-    return api.insertTableRowByPath(this.core, sec, parentPara, pathJson, rowIdx, below);
+  insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.insertTableRowByPath(this.core, sec, parentPara, pathJson, rowIdx, below, count);
   }
 
-  insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean): { ok: boolean; rowCount: number; colCount: number } {
-    return api.insertTableColumn(this.core, sec, parentPara, controlIdx, colIdx, right);
+  insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.insertTableColumn(this.core, sec, parentPara, controlIdx, colIdx, right, count);
   }
 
-  insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean): { ok: boolean; rowCount: number; colCount: number } {
-    return api.insertTableColumnByPath(this.core, sec, parentPara, pathJson, colIdx, right);
+  insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean, count = 1): { ok: boolean; rowCount: number; colCount: number } {
+    return api.insertTableColumnByPath(this.core, sec, parentPara, pathJson, colIdx, right, count);
   }
 
   deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, count = 1): { ok: boolean; rowCount: number; colCount: number } {

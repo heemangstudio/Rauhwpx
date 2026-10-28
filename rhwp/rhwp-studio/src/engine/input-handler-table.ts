@@ -6,6 +6,8 @@ import { MoveTableCommand, MovePictureCommand, MoveShapeCommand } from './comman
 import { getObjectProperties, setObjectProperties } from './input-handler-picture';
 import type { CellBbox } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
+import { tableTarget } from '@/core/table-target';
+import { keyboardResizeUpdates } from './table-keyboard-resize';
 import { tableIdentity, type TableRef } from './table-bbox-cache';
 import type { BorderEdge } from './table-resize-renderer';
 import { showToast } from '@/ui/toast';
@@ -1464,46 +1466,27 @@ export function finishMoveDrag(this: any): void {
   }
 }
 
-export function resizeCellByKeyboard(this: any, key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
+/** 셀 블록의 경계를 방향키로 옮긴다 — Ctrl 은 표를 키우고 Alt 는 이웃 칸·줄을 줄인다 (table-keyboard-resize). */
+export function resizeCellByKeyboard(this: any, key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', moveBoundary = false): void {
   const ctx = this.cursor.getCellTableContext();
   const range = this.cursor.getSelectedCellRange();
   if (!ctx || !range) return;
 
-  const DELTA = 300; // 1 키스트로크 당 300 HWPUNIT (~1mm)
-  let bboxes: CellBbox[];
+  const target = tableTarget(this.wasm, ctx);
+  let updates;
   try {
-    bboxes = this.wasm.getTableCellBboxes(ctx.sec, ctx.ppi, ctx.ci);
+    updates = keyboardResizeUpdates(target.cellBboxes(), range, target.dimensions(), key, moveBoundary);
   } catch { return; }
-
-  // 선택 범위 내 셀 bbox 추출
-  const selectedBboxes = bboxes
-    .filter(b => b.row >= range.startRow && b.row <= range.endRow
-              && b.col >= range.startCol && b.col <= range.endCol);
-  if (selectedBboxes.length === 0) return;
-
-  const updates: Array<{ cellIdx: number; widthDelta?: number; heightDelta?: number }> = [];
-  const updatedCells = new Set<number>();
-  const isHoriz = (key === 'ArrowLeft' || key === 'ArrowRight');
-  const delta = (key === 'ArrowRight' || key === 'ArrowDown') ? DELTA : -DELTA;
-
-  // 선택 블록 내부 이웃에 반대 delta를 넣으면 전체 선택에서 첫 행/열만 변한다.
-  // 한컴처럼 선택된 셀들은 모두 같은 방향으로 크기를 조정한다.
-  for (const bbox of selectedBboxes) {
-    if (updatedCells.has(bbox.cellIdx)) continue;
-    updatedCells.add(bbox.cellIdx);
-    if (isHoriz) {
-      updates.push({ cellIdx: bbox.cellIdx, widthDelta: delta });
-    } else {
-      updates.push({ cellIdx: bbox.cellIdx, heightDelta: delta });
-    }
-  }
+  if (updates.length === 0) return;
 
   try {
     this.executeOperation({
       kind: 'snapshot',
       operationType: 'resizeCellByKeyboard',
-      operation: (wasm: any) => {
-        wasm.resizeTableCells(ctx.sec, ctx.ppi, ctx.ci, updates);
+      operation: (wasm: WasmBridge) => {
+        const t = tableTarget(wasm, ctx);
+        if (t.nested) wasm.resizeTableCellsByPath(ctx.sec, ctx.ppi, JSON.stringify(ctx.cellPath), updates);
+        else wasm.resizeTableCells(ctx.sec, ctx.ppi, ctx.ci, updates);
         return this.cursor.getPosition();
       },
     });
@@ -1523,7 +1506,8 @@ export function resizeTableProportional(this: any, key: 'ArrowUp' | 'ArrowDown' 
   const delta = (key === 'ArrowRight' || key === 'ArrowDown') ? DELTA : -DELTA;
 
   try {
-    const bboxes = this.wasm.getTableCellBboxes(ctx.sec, ctx.ppi, ctx.ci);
+    // 중첩 표는 셀 경로로 안쪽 표를 다룬다.
+    const bboxes = tableTarget(this.wasm, ctx).cellBboxes();
     const updates: Array<{ cellIdx: number; widthDelta?: number; heightDelta?: number }> = [];
     const processed = new Set<number>();
 
@@ -1540,8 +1524,9 @@ export function resizeTableProportional(this: any, key: 'ArrowUp' | 'ArrowDown' 
     this.executeOperation({
       kind: 'snapshot',
       operationType: 'resizeTableProportional',
-      operation: (wasm: any) => {
-        wasm.resizeTableCells(ctx.sec, ctx.ppi, ctx.ci, updates);
+      operation: (wasm: WasmBridge) => {
+        if (tableTarget(wasm, ctx).nested) wasm.resizeTableCellsByPath(ctx.sec, ctx.ppi, JSON.stringify(ctx.cellPath), updates);
+        else wasm.resizeTableCells(ctx.sec, ctx.ppi, ctx.ci, updates);
         return this.cursor.getPosition();
       },
     });

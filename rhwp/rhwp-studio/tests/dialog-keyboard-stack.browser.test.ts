@@ -347,7 +347,7 @@ test('the find dialog leaves Enter/Escape outside it alone and re-checks a stale
   }
 });
 
-test('table dialogs refuse a nested table before touching the engine', { timeout: 30_000 }, async () => {
+test('table dialogs read a nested table through its cell path, never the outer table', { timeout: 30_000 }, async () => {
   const page = await harness();
   try {
     const result = await page.evaluate(async () => {
@@ -361,17 +361,19 @@ test('table dialogs refuse a nested table before touching the engine', { timeout
         sec: 0, ppi: 2, ci: 0,
         cellPath: [{ controlIndex: 0, cellIndex: 1, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }],
       };
-      new TableCellPropsDialog(wasm as never, {} as never, tableCtx, 1, 'cell').show();
-      new CellBorderBgDialog(wasm as never, {} as never, tableCtx, 1, 'each').show();
-      return {
-        touched,
-        overlays: document.querySelectorAll('.modal-overlay').length,
-        toast: document.getElementById('rhwp-toast-container')?.textContent ?? '',
-      };
+      // 가짜 엔진의 빈 속성으로는 대화상자를 다 채우지 못한다 — 어떤 API 를 읽는지만 본다.
+      try { new TableCellPropsDialog(wasm as never, {} as never, tableCtx, 1, 'cell').show(); } catch { /* 빈 속성 */ }
+      try { new CellBorderBgDialog(wasm as never, {} as never, tableCtx, 1, 'each').show(); } catch { /* 빈 속성 */ }
+      document.querySelectorAll('.modal-overlay').forEach(node => node.remove());
+      return { touched, toast: document.getElementById('rhwp-toast-container')?.textContent ?? '' };
     });
-    assert.deepEqual(result.touched, []);
-    assert.equal(result.overlays, 0);
-    assert.match(result.toast, /중첩된 표/);
+    assert.ok(result.touched.includes('getCellPropertiesByPath'), result.touched.join(','));
+    assert.ok(result.touched.includes('getTablePropertiesByPath'), result.touched.join(','));
+    assert.ok(result.touched.includes('getCellOwnPropertiesByPath'), result.touched.join(','));
+    for (const flat of ['getCellProperties', 'getTableProperties', 'getCellOwnProperties']) {
+      assert.ok(!result.touched.includes(flat), `${flat} reads the outer table`);
+    }
+    assert.doesNotMatch(result.toast, /중첩된 표/);
   } finally {
     await page.close();
   }
