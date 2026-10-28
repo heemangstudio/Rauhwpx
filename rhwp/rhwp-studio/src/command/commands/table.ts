@@ -12,7 +12,7 @@ import {
   type TableInsertRowColumnMode,
 } from '@/ui/table-row-column-dialog';
 import { remapTableCellPosition, tableModelPathJson } from '@/core/table-structural-cursor';
-import { showToast } from '@/ui/toast';
+import { tableCellIndex, tableTarget } from '@/core/table-target';
 
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
@@ -38,20 +38,6 @@ function tablePathJson(pos: TableCursorPosition): string | null {
  */
 function isNestedPath(path: readonly unknown[] | null | undefined): boolean {
   return (path?.length ?? 0) > 1;
-}
-
-/** 커서나 셀 블록 선택이 중첩 표 안에 있는지. */
-function isInNestedTable(
-  ih: TableCellCommandContext['ih'],
-  pos: TableCursorPosition,
-): boolean {
-  if (isNestedPath(pos.cellPath)) return true;
-  return Boolean(ih.isInCellSelectionMode?.() && isNestedPath(ih.getCellTableContext?.()?.cellPath));
-}
-
-/** 경로 기반 엔진·대화상자 API 가 없는 명령은 바깥 표를 대신 고치지 않도록 멈춘다. */
-function refuseNestedTable(): void {
-  showToast({ message: '중첩 표에서는 지원하지 않습니다.', durationMs: 2500 });
 }
 
 /**
@@ -173,32 +159,20 @@ function blockCalcCommand(id: string, label: string, func: string, shortcut: str
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      // 경로 기반 계산식 API 가 없다. 평면 좌표로 계산하면 바깥 표 셀을 읽고 덮어쓴다.
-      if (isInNestedTable(ih, pos)) {
-        refuseNestedTable();
-        return;
-      }
+      // 중첩 표는 셀 경로로 안쪽 표의 셀을 읽고 쓴다 (평면 좌표는 바깥 표).
+      const ref = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       try {
-        const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
-        const row = cellInfo.row;
-        const col = cellInfo.col;
-        const formula = `=${func}(above)`;
-        // [블록계산 이관] write=true 는 결과를 셀에 써서 문자 수를 바꾼다 — 미기록 시 후속
-        // undo 오프셋 오염(#2344 셀 숫자 서식과 동일 계열). dry-run(write=false)으로 ok 를
-        // 확인한 뒤 commit 을 snapshot 으로 라우팅한다(라우터가 refresh → 수동 emit 제거).
-        const check = JSON.parse(services.wasm.evaluateTableFormula(
-          pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, row, col, formula, false,
-        ));
-        if (!check.ok) return;
+        const { row, col } = tableTarget(services.wasm, ref).cellInfo(tableCellIndex(pos)!);
+        const formula = { targetRow: row, targetCol: col, formula: `=${func}(above)` };
+        // [블록계산 이관] 결과 기록은 셀 문자 수를 바꾼다 — 미기록 시 후속 undo 오프셋 오염(#2344 셀 숫자
+        // 서식과 동일 계열). 먼저 계산만 해 보고, 기록은 snapshot 으로 라우팅한다(라우터가 refresh).
+        tableTarget(services.wasm, ref).evaluateFormula({ ...formula, writeResult: false });
         safeTableOp(() => ih.executeOperation({
           kind: 'snapshot',
           operationType: 'tableBlockCalc',
           operation: (wasm) => {
-            const written = JSON.parse(
-              wasm.evaluateTableFormula(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, row, col, formula, true),
-            );
-            // 기록하지 못했으면 빈 되돌리기 항목을 남기지 않는다 (throw → 스냅샷 복원·폐기).
-            if (!written.ok) throw new Error(written.error ?? '블록 계산 결과를 기록하지 못했습니다');
+            // 기록하지 못하면 던져서 빈 되돌리기 항목을 남기지 않는다 (snapshot 복원·폐기).
+            tableTarget(wasm, ref).evaluateFormula({ ...formula, writeResult: true });
             return pos;
           },
         }), '블록 계산');
@@ -214,16 +188,12 @@ function openFormulaDialog(services: Parameters<CommandDef['execute']>[0]): void
   if (!ih) return;
   const pos = ih.getCursorPosition();
   if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-  // 계산식 대화상자는 평면 좌표로만 쓴다. 중첩 표에서는 바깥 표에 결과를 쓰게 된다.
-  if (isInNestedTable(ih, pos)) {
-    refuseNestedTable();
-    return;
-  }
   const dialog = new FormulaDialog(services.wasm, services.eventBus, {
     sec: pos.sectionIndex,
     ppi: pos.parentParaIndex,
     ci: pos.controlIndex,
-    cellIndex: pos.cellIndex,
+    cellPath: pos.cellPath,
+    cellIndex: tableCellIndex(pos)!,
   }, services);
   dialog.show();
 }
@@ -414,11 +384,7 @@ export const tableCommands: CommandDef[] = [
       if (ih.isInTableObjectSelection()) {
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
-        // 중첩 표 참조의 sec/ppi/ci 는 바깥 표다. 대화상자도 cellPath 로 한 번 더 거절한다.
-        if (isNestedPath(ref.cellPath)) {
-          refuseNestedTable();
-          return;
-        }
+        // 중첩 표 참조의 sec/ppi/ci 는 바깥 표다. 대화상자는 cellPath 로 안쪽 표를 다룬다.
         const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, cellPath: ref.cellPath };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
         dialog.show();
@@ -427,12 +393,8 @@ export const tableCommands: CommandDef[] = [
 
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      if (isInNestedTable(ih, pos)) {
-        refuseNestedTable();
-        return;
-      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
-      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
+      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, tableCellIndex(pos)!, 'cell', services);
       dialog.show();
     },
   },
@@ -445,17 +407,13 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      if (isInNestedTable(ih, pos)) {
-        refuseNestedTable();
-        return;
-      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const selectionRange = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
       const dialog = new CellBorderBgDialog(
         services.wasm,
         services.eventBus,
         tableCtx,
-        pos.cellIndex,
+        tableCellIndex(pos)!,
         'each',
         selectionRange,
         services,
@@ -473,16 +431,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih.hasMultiCellSelection()) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      if (isInNestedTable(ih, pos)) {
-        refuseNestedTable();
-        return;
-      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const dialog = new CellBorderBgDialog(
         services.wasm,
         services.eventBus,
         tableCtx,
-        pos.cellIndex,
+        tableCellIndex(pos)!,
         'asOne',
         ih.getSelectedCellRange(),
         services,
@@ -881,51 +835,44 @@ export const tableCommands: CommandDef[] = [
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
-      // 표 참조 획득 (표 객체 선택 또는 셀 내부)
-      let sec: number, ppi: number, ci: number;
-      const ref = ih.getSelectedTableRef();
-      if (ref) {
-        // 캡션 API 는 평면 좌표만 받는다. 중첩 표에서는 바깥 표에 캡션을 넣게 된다.
-        if (isNestedPath(ref.cellPath)) {
-          refuseNestedTable();
-          return;
-        }
-        sec = ref.sec; ppi = ref.ppi; ci = ref.ci;
-      } else {
-        const pos = ih.getCursorPosition();
-        if (pos.parentParaIndex === undefined || pos.controlIndex === undefined) return;
-        if (isInNestedTable(ih, pos)) {
-          refuseNestedTable();
-          return;
-        }
-        sec = pos.sectionIndex; ppi = pos.parentParaIndex; ci = pos.controlIndex;
-      }
+      // 표 참조 획득 (표 객체 선택 또는 셀 내부). 중첩 표는 cellPath 로 안쪽 표를 가리킨다.
+      const selected = ih.getSelectedTableRef();
+      const pos = ih.getCursorPosition();
+      if (!selected && (pos.parentParaIndex === undefined || pos.controlIndex === undefined)) return;
+      const ref = selected ?? { sec: pos.sectionIndex, ppi: pos.parentParaIndex!, ci: pos.controlIndex!, cellPath: pos.cellPath };
+      const target = tableTarget(services.wasm, ref);
       // 현재 캡션 상태 조회
-      let props: any;
-      try { props = services.wasm.getTableProperties(sec, ppi, ci); } catch { return; }
+      let props: ReturnType<typeof target.tableProperties>;
+      try { props = target.tableProperties(); } catch { return; }
       if (!props) return;
+      // 캡션 목록은 셀 목록 다음 번호다.
+      const captionIndex = target.dimensions().cellCount;
+      const captionPath = isNestedPath(ref.cellPath)
+        ? JSON.stringify([...ref.cellPath!.slice(0, -1), { ...ref.cellPath!.at(-1)!, cellIndex: captionIndex, cellParaIndex: 0 }])
+        : null;
       let charOffset = 0;
       if (!props.hasCaption) {
-        safeTableOp(() => ih.executeOperation({
+        const created = safeTableOp(() => ih.executeOperation({
           kind: 'snapshot',
           operationType: 'toggleTableCaption',
           operation: (wasm) => {
-            const result: any = wasm.setTableProperties(sec, ppi, ci, { hasCaption: true });
-            charOffset = result?.captionCharOffset ?? 3;
-            return { sectionIndex: sec, paragraphIndex: ppi, charOffset: 0 };
+            tableTarget(wasm, ref).setTableProperties({ hasCaption: true });
+            return pos;
           },
         }), '캡션 넣기');
-      } else {
-        try {
-          const len = services.wasm.getCellParagraphLength(sec, ppi, ci, 65534, 0);
-          charOffset = len;
-        } catch { charOffset = 0; }
+        if (!created) return;
       }
+      // 캡션 글 끝에서 편집을 시작한다.
+      try {
+        charOffset = captionPath
+          ? services.wasm.getCellParagraphLengthByPath(ref.sec, ref.ppi, captionPath)
+          : services.wasm.getCellParagraphLength(ref.sec, ref.ppi, ref.ci, captionIndex, 0);
+      } catch { charOffset = 0; }
       // 표 내부 편집 모드 종료 후 캡션 편집 진입
-      if (ref) {
+      if (selected) {
         ih.exitTableObjectSelection();
       }
-      ih.enterTableCaptionEditing(sec, ppi, ci, charOffset);
+      ih.enterTableCaptionEditing(ref.sec, ref.ppi, ref.ci, charOffset, captionIndex, ref.cellPath);
     },
   },
   {

@@ -660,12 +660,24 @@ export class WasmBridge {
     return api.getCellOwnProperties(this.core, sec, parentPara, controlIdx, cellIdx);
   }
 
+  getCellOwnPropertiesByPath(sec: number, parentPara: number, pathJson: string, cellIdx: number): CellProperties {
+    return api.getCellOwnPropertiesByPath(this.core, sec, parentPara, pathJson, cellIdx);
+  }
+
   setCellProperties(sec: number, parentPara: number, controlIdx: number, cellIdx: number, props: Partial<CellProperties>): { ok: boolean } {
     return api.setCellProperties(this.core, sec, parentPara, controlIdx, cellIdx, props);
   }
 
+  setCellPropertiesByPath(sec: number, parentPara: number, pathJson: string, cellIdx: number, props: Partial<CellProperties>): { ok: boolean } {
+    return api.setCellPropertiesByPath(this.core, sec, parentPara, pathJson, cellIdx, props);
+  }
+
   setCellZoneProperties(sec: number, parentPara: number, controlIdx: number, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>): { ok: boolean; borderFillId: number } {
     return api.setCellZoneProperties(this.core, sec, parentPara, controlIdx, range, props);
+  }
+
+  setCellZonePropertiesByPath(sec: number, parentPara: number, pathJson: string, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>): { ok: boolean; borderFillId: number } {
+    return api.setCellZonePropertiesByPath(this.core, sec, parentPara, pathJson, range, props);
   }
 
   resizeTableCells(sec: number, parentPara: number, controlIdx: number, updates: TableCellResizeUpdate[]): { ok: boolean } {
@@ -684,12 +696,20 @@ export class WasmBridge {
     return api.getTableProperties(this.core, sec, parentPara, controlIdx);
   }
 
+  getTablePropertiesByPath(sec: number, parentPara: number, pathJson: string): TableProperties {
+    return api.getTablePropertiesByPath(this.core, sec, parentPara, pathJson);
+  }
+
   getTableSignature(sec: number, parentPara: number, controlIdx: number): string {
     return api.getTableSignature(this.core, sec, parentPara, controlIdx);
   }
 
   setTableProperties(sec: number, parentPara: number, controlIdx: number, props: Partial<TableProperties>): { ok: boolean } {
     return api.setTableProperties(this.core, sec, parentPara, controlIdx, props);
+  }
+
+  setTablePropertiesByPath(sec: number, parentPara: number, pathJson: string, props: Partial<TableProperties>): { ok: boolean } {
+    return api.setTablePropertiesByPath(this.core, sec, parentPara, pathJson, props);
   }
 
   setTableColumnWidths(sec: number, parentPara: number, controlIdx: number, widths: number[]): { ok: boolean; colCount: number; tableWidth: number } {
@@ -821,8 +841,9 @@ export class WasmBridge {
     return api.evaluateTableFormula(this.core, sec, parentPara, controlIdx, targetRow, targetCol, formula, writeResult);
   }
 
+  /** pathJson 을 주면 셀 경로가 가리키는 (중첩) 표에서 계산한다. */
   evaluateTableFormulaEx(options: {
-    sectionIdx: number; parentParaIdx: number; controlIdx: number;
+    sectionIdx: number; parentParaIdx: number; controlIdx: number; pathJson?: string;
     targetRow: number; targetCol: number; formula: string; writeResult: boolean;
     decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string;
   }): { ok: boolean; value?: number; display?: string } {

@@ -27,6 +27,7 @@ hooks.deregister();
 
 type Wasm = Awaited<ReturnType<typeof openHeemangAgent>>['wasm'];
 type Range = { startRow: number; startCol: number; endRow: number; endCol: number };
+type PathEntry = { controlIndex: number; cellIndex: number; cellParaIndex: number };
 
 /** 명령을 실제 엔진에 실행한다. 블록 선택이 있으면 그 범위와 표를 알린다. */
 function run(wasm: Wasm, id: string, pos: Record<string, any>, selection?: { range: Range; ctx: Record<string, unknown> }) {
@@ -71,6 +72,21 @@ function table(wasm: Wasm, rows: number, cols: number) {
     }) };
   };
   return { ppi, ci, index, text, pos, grid, ctx: { sec: 0, ppi, ci } };
+}
+
+/** 바깥 2x2 표의 첫 셀에 안쪽 2x2 표를 붙여 넣는다. */
+function nested(wasm: Wasm) {
+  const outer = table(wasm, 2, 2);
+  const source = wasm.createTableEx({ sectionIdx: 0, paraIdx: wasm.getParagraphCount(0) - 1, charOffset: 0, rowCount: 2, colCount: 2 });
+  wasm.copyControl(0, source.paraIdx, source.controlIdx);
+  wasm.pasteInternalInCell(0, outer.ppi, outer.ci, 0, 0, 0);
+  const inner = (cellIndex: number): PathEntry[] => [{ controlIndex: outer.ci, cellIndex: 0, cellParaIndex: 0 }, { controlIndex: 0, cellIndex, cellParaIndex: 0 }];
+  const innerText = (cellIndex: number) => {
+    const path = JSON.stringify(inner(cellIndex));
+    return wasm.getTextInCellByPath(0, outer.ppi, path, 0, wasm.getCellParagraphLengthByPath(0, outer.ppi, path));
+  };
+  const innerPos = (cellIndex: number) => ({ ...outer.pos(0), cellPath: inner(cellIndex) });
+  return { outer, inner, innerText, innerPos };
 }
 
 function reopenBoth(wasm: Wasm, adapter: { refreshLayout(): void }, check: () => void) {
@@ -128,6 +144,76 @@ test('셀을 합친 후 나누기는 블록을 한 셀로 합친 뒤 그 셀을 
   run(wasm, 'table:cell-split', other.pos(0), { range: { startRow: 0, startCol: 0, endRow: 0, endCol: 1 }, ctx: other.ctx });
   dialogs.find(d => d.name === 'CellSplitDialog')!.dialog.onApply(1, 2, false, false);
   assert.equal(other.grid().cols, 4);
+});
+
+test('중첩 표에서 블록 계산·계산식·셀 속성은 안쪽 표를 다루고 바깥 표는 그대로 둔다', async t => {
+  const { wasm } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  const { outer, inner, innerText, innerPos } = nested(wasm);
+  wasm.insertTextInCell(0, outer.ppi, outer.ci, 1, 0, 0, '7');
+  wasm.insertTextInCell(0, outer.ppi, outer.ci, 3, 0, 0, '100');
+  wasm.insertTextInCellByPath(0, outer.ppi, JSON.stringify(inner(0)), 0, '40');
+  wasm.insertTextInCellByPath(0, outer.ppi, JSON.stringify(inner(1)), 0, '2');
+  const outerBefore = [0, 1, 2, 3].map(i => outer.text(i));
+  toasts.length = 0;
+
+  run(wasm, 'table:block-sum', innerPos(2));
+  assert.equal(innerText(2), '40', '블록 합계는 안쪽 표의 위 칸을 더한다');
+  run(wasm, 'table:block-product', innerPos(3));
+  assert.equal(innerText(3), '2');
+  assert.deepEqual([0, 1, 2, 3].map(i => outer.text(i)).slice(1), outerBefore.slice(1), '바깥 표 셀은 바뀌지 않는다');
+  assert.deepEqual(toasts, []);
+
+  dialogs.length = 0;
+  run(wasm, 'table:formula', innerPos(3));
+  run(wasm, 'table:cell-props', innerPos(1));
+  run(wasm, 'table:border-each', innerPos(1));
+  const [formula, props, border] = dialogs;
+  assert.deepEqual([formula.name, props.name, border.name], ['FormulaDialog', 'TableCellPropsDialog', 'CellBorderBgDialog']);
+  assert.deepEqual(formula.args[2], { sec: 0, ppi: outer.ppi, ci: outer.ci, cellPath: inner(3), cellIndex: 3 });
+  assert.equal(props.args[3], 1, '셀 속성은 안쪽 표의 셀 번호로 연다');
+  assert.equal(border.args[3], 1);
+
+  // 대화상자가 쓰는 경로 API 는 안쪽 표의 셀과 표를 바꾼다.
+  const path = JSON.stringify(inner(1));
+  const outerCell = wasm.getCellProperties(0, outer.ppi, outer.ci, 1);
+  const outerTable = wasm.getTableProperties(0, outer.ppi, outer.ci);
+  wasm.setCellPropertiesByPath(0, outer.ppi, path, 1, { verticalAlign: 2, fillType: 'solid', fillColor: '#ff0000' });
+  assert.equal(wasm.getCellPropertiesByPath(0, outer.ppi, path, 1).verticalAlign, 2);
+  assert.equal(wasm.getCellPropertiesByPath(0, outer.ppi, path, 1).fillColor, '#ff0000');
+  wasm.setTablePropertiesByPath(0, outer.ppi, path, { cellSpacing: 120 });
+  assert.equal(wasm.getTablePropertiesByPath(0, outer.ppi, path).cellSpacing, 120);
+  assert.deepEqual(wasm.getCellProperties(0, outer.ppi, outer.ci, 1), outerCell, '바깥 셀은 그대로다');
+  assert.deepEqual(wasm.getTableProperties(0, outer.ppi, outer.ci), outerTable, '바깥 표는 그대로다');
+});
+
+test('캡션 넣기는 캡션 목록 끝에 커서를 두고 그 글이 저장된다', async t => {
+  const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  const tb = table(wasm, 2, 2);
+  const [[sec, ppi, ci, offset, captionIndex, cellPath]] = run(wasm, 'table:caption-toggle', tb.pos(0)).caption as unknown[][];
+  assert.deepEqual([sec, ppi, ci, captionIndex], [0, tb.ppi, tb.ci, 4], '캡션 목록은 셀 목록 다음 번호다');
+  assert.equal(wasm.getTableProperties(0, tb.ppi, tb.ci).hasCaption, true);
+  assert.equal(offset, wasm.getCellParagraphLength(0, tb.ppi, tb.ci, 4, 0), '캡션 글 끝');
+  wasm.insertTextInCell(0, tb.ppi, tb.ci, captionIndex as number, 0, offset as number, '설명');
+  assert.equal((cellPath as unknown[]).length, 1);
+  // 이미 캡션이 있으면 캡션을 하나 더 만들지 않고 그 끝으로 간다.
+  const again = run(wasm, 'table:caption-toggle', tb.pos(0)).caption[0] as unknown[];
+  assert.equal(again[3], wasm.getCellParagraphLength(0, tb.ppi, tb.ci, 4, 0));
+  reopenBoth(wasm, adapter, () => assert.match(wasm.getTextInCell(0, tb.ppi, tb.ci, 4, 0, 0, 20), /설명$/));
+});
+
+test('중첩 표의 캡션 넣기는 안쪽 표에 캡션을 만든다', async t => {
+  const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+  const { outer, inner } = nested(wasm);
+  const call = run(wasm, 'table:caption-toggle', { ...outer.pos(0), cellPath: inner(0) }).caption[0] as unknown[];
+  assert.equal(call[4], 4);
+  assert.deepEqual(call[5], inner(0));
+  assert.equal(wasm.getTablePropertiesByPath(0, outer.ppi, JSON.stringify(inner(0))).hasCaption, true);
+  assert.equal(wasm.getTableProperties(0, outer.ppi, outer.ci).hasCaption, false, '바깥 표에는 캡션이 생기지 않는다');
+  const captionPath = JSON.stringify([inner(0)[0], { controlIndex: 0, cellIndex: 4, cellParaIndex: 0 }]);
+  wasm.insertTextInCellByPath(0, outer.ppi, captionPath, call[3] as number, '안쪽');
+  const text = () => wasm.getTextInCellByPath(0, outer.ppi, captionPath, 0, wasm.getCellParagraphLengthByPath(0, outer.ppi, captionPath));
+  assert.match(text(), /안쪽$/);
+  reopenBoth(wasm, adapter, () => assert.match(text(), /안쪽$/));
 });
 
 test('계산식은 대화상자가 고르는 함수와 비교식, @ 시작을 계산한다', async t => {

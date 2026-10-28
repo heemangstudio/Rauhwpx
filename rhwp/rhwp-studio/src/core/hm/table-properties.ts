@@ -54,8 +54,10 @@ function borderFillProps(b: NativeBorderFill | null): Partial<CellProperties> {
   }
   const line = (l: NativeLine): BorderLineInfo => ({ type: l.style, width: l.widthIndex, color: hex(l.color) });
   const solid = b.fill && b.fill.kind & 1 ? b.fill.solid : null;
+  // 그러데이션(4)·그림(2) 채우기는 대화상자가 고치지 않지만 종류는 그대로 알린다.
+  const kind = solid ? 'solid' : b.fill && b.fill.kind & 4 ? 'gradient' : b.fill && b.fill.kind & 2 ? 'image' : 'none';
   return { borderFillId: b.id, borderLeft: line(b.left), borderRight: line(b.right), borderTop: line(b.top), borderBottom: line(b.bottom),
-    fillType: solid ? 'solid' : 'none', fillColor: solid ? hex(solid.background) : '#ffffff',
+    fillType: kind, fillColor: solid ? hex(solid.background) : '#ffffff',
     patternColor: solid ? hex(solid.patternColor) : '#000000', patternType: solid ? solid.pattern : 0,
     diagonalLine: b.diagonal.style, diagonalSlash: b.slash, diagonalBackSlash: b.backslash,
     diagonalWidth: b.diagonal.widthIndex, diagonalColor: hex(b.diagonal.color), centerLine: b.centerLine.toUpperCase() };
@@ -149,20 +151,22 @@ function setCell(core: HmCore, table: TableAddress, index: number, props: Partia
   if (Object.keys(patch).length) core.transact([{ op: 'setCellProperties', table, row: info.row, column: info.column, patch } as EditOp]);
   return { ok: true };
 }
-export const getCellProperties: typeof original.getCellProperties = (core, s, p, c, i) => cellProperties(core, tableAddress(s, p, c), i);
-export const getCellOwnProperties: typeof original.getCellOwnProperties = getCellProperties;
-export const getCellPropertiesByPath: typeof original.getCellPropertiesByPath = (core, s, p, path, i) => cellProperties(core, tableAddressByPath(s, p, path), i);
-export const setCellProperties: typeof original.setCellProperties = (core, s, p, c, index, props) => setCell(core, tableAddress(s, p, c), index, props);
-export const setCellZoneProperties: typeof original.setCellZoneProperties = (core, s, p, c, range, props) => {
-  const table = tableAddress(s, p, c);
-  // 하나의 셀처럼 적용: 묶음 전체가 테두리·배경 하나를 나눠 쓰는 표 영역이다. 중심선은 영역에 쓰지 않는다.
+/** 하나의 셀처럼 적용: 묶음 전체가 테두리·배경 하나를 나눠 쓰는 표 영역이다. 중심선은 영역에 쓰지 않는다. */
+function setZone(core: HmCore, table: TableAddress, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>) {
   const borderFill = borderFillPatch({ ...props, centerLine: undefined } as Record<string, unknown>, {});
   if (borderFill) core.transact([{ op: 'setCellZone', table, startRow: range.startRow, startColumn: range.startCol,
     endRow: range.endRow, endColumn: range.endCol, borderFill } as EditOp]);
   return { ok: true, borderFillId: 0 };
-};
-export const getTableProperties: typeof original.getTableProperties = (core, s, p, c) => {
-  const table = tableAddress(s, p, c);
+}
+export const getCellProperties: typeof original.getCellProperties = (core, s, p, c, i) => cellProperties(core, tableAddress(s, p, c), i);
+export const getCellOwnProperties: typeof original.getCellOwnProperties = getCellProperties;
+export const getCellPropertiesByPath: typeof original.getCellPropertiesByPath = (core, s, p, path, i) => cellProperties(core, tableAddressByPath(s, p, path), i);
+export const getCellOwnPropertiesByPath: typeof original.getCellOwnPropertiesByPath = getCellPropertiesByPath;
+export const setCellProperties: typeof original.setCellProperties = (core, s, p, c, index, props) => setCell(core, tableAddress(s, p, c), index, props);
+export const setCellPropertiesByPath: typeof original.setCellPropertiesByPath = (core, s, p, path, index, props) => setCell(core, tableAddressByPath(s, p, path), index, props);
+export const setCellZoneProperties: typeof original.setCellZoneProperties = (core, s, p, c, range, props) => setZone(core, tableAddress(s, p, c), range, props);
+export const setCellZonePropertiesByPath: typeof original.setCellZonePropertiesByPath = (core, s, p, path, range, props) => setZone(core, tableAddressByPath(s, p, path), range, props);
+function tableProperties(core: HmCore, table: TableAddress): TableProperties {
   const props = core.query<NativeTable>({ kind: 'tableProperties', table });
   const common = objectProperties(core, table);
   const cap = (v: string) => v[0].toUpperCase() + v.slice(1);
@@ -179,10 +183,9 @@ export const getTableProperties: typeof original.getTableProperties = (core, s, 
     hasCaption: !!props.caption, ...(props.caption ? { captionDirection: ['left', 'right', 'top', 'bottom'].indexOf(props.caption.side ?? 'bottom'),
       captionVertAlign: ['top', 'center', 'bottom'].indexOf(props.caption.verticalAlign ?? 'top'), captionWidth: props.caption.width ?? 0, captionSpacing: props.caption.gap ?? 0 } : {}),
     ...borderFillProps(props.borderFill) } as TableProperties;
-};
-export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => {
-  const table = tableAddress(s, p, c);
-  const current = getTableProperties(core, s, p, c);
+}
+function setTable(core: HmCore, table: TableAddress, props: Partial<TableProperties>) {
+  const current = tableProperties(core, table);
   const common: Record<string, unknown> = {};
   const patch: Record<string, unknown> = {};
   const padding = [current.paddingLeft, current.paddingRight, current.paddingTop, current.paddingBottom];
@@ -211,7 +214,11 @@ export const setTableProperties: typeof original.setTableProperties = (core, s, 
   }
   core.transact(ops);
   return { ok: true };
-};
+}
+export const getTableProperties: typeof original.getTableProperties = (core, s, p, c) => tableProperties(core, tableAddress(s, p, c));
+export const getTablePropertiesByPath: typeof original.getTablePropertiesByPath = (core, s, p, path) => tableProperties(core, tableAddressByPath(s, p, path));
+export const setTableProperties: typeof original.setTableProperties = (core, s, p, c, props) => setTable(core, tableAddress(s, p, c), props);
+export const setTablePropertiesByPath: typeof original.setTablePropertiesByPath = (core, s, p, path, props) => setTable(core, tableAddressByPath(s, p, path), props);
 export const deleteTableControl: typeof original.deleteTableControl = (core, s, p, c) => deleteObject(core, tableAddress(s, p, c));
 export const deleteCellTableControlByPath: typeof original.deleteCellTableControlByPath = (core, s, p, path, c) => {
   const container = JSON.parse(path);
@@ -273,6 +280,7 @@ export const fitTableToPage: typeof original.fitTableToPage = (core, s, p, c) =>
   return setTableColumnWidths(core, s, p, c, Array.from({ length: table.columns }, (_, i) => i === table.columns - 1 ? width - colWidth * i : colWidth));
 };
 
-extendBridge({ getCellProperties, getCellOwnProperties, getCellPropertiesByPath, setCellProperties, setCellZoneProperties,
-  getTableProperties, setTableProperties, deleteTableControl, deleteCellTableControlByPath,
+extendBridge({ getCellProperties, getCellOwnProperties, getCellPropertiesByPath, getCellOwnPropertiesByPath,
+  setCellProperties, setCellPropertiesByPath, setCellZoneProperties, setCellZonePropertiesByPath,
+  getTableProperties, getTablePropertiesByPath, setTableProperties, setTablePropertiesByPath, deleteTableControl, deleteCellTableControlByPath,
   createTableEx, createTable, setTableColumnWidths, fitTableToPage });

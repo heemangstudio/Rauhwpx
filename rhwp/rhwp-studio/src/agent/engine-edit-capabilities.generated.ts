@@ -603,9 +603,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "controlIdx",
-      "colIdx"
+      "colIdx",
+      "count"
     ],
-    "signature": "deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number)"
+    "signature": "deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, count = 1)"
   },
   {
     "method": "deleteTableColumnByPath",
@@ -614,9 +615,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "pathJson",
-      "colIdx"
+      "colIdx",
+      "count"
     ],
-    "signature": "deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number)"
+    "signature": "deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, count = 1)"
   },
   {
     "method": "deleteTableControl",
@@ -635,9 +637,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "controlIdx",
-      "rowIdx"
+      "rowIdx",
+      "count"
     ],
-    "signature": "deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number)"
+    "signature": "deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, count = 1)"
   },
   {
     "method": "deleteTableRowByPath",
@@ -646,9 +649,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "pathJson",
-      "rowIdx"
+      "rowIdx",
+      "count"
     ],
-    "signature": "deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number)"
+    "signature": "deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, count = 1)"
   },
   {
     "method": "deleteText",
@@ -765,7 +769,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "options"
     ],
-    "signature": "evaluateTableFormulaEx(options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; })"
+    "signature": "evaluateTableFormulaEx(options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; pathJson?: string; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; })"
   },
   {
     "method": "findOrCreateFontId",
@@ -1581,6 +1585,18 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "setCellProperties(sec: number, parentPara: number, controlIdx: number, cellIdx: number, props: Partial<CellProperties>)"
   },
   {
+    "method": "setCellPropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "cellIdx",
+      "props"
+    ],
+    "signature": "setCellPropertiesByPath(sec: number, parentPara: number, pathJson: string, cellIdx: number, props: Partial<CellProperties>)"
+  },
+  {
     "method": "setCellShapePropertiesByPath",
     "kind": "document",
     "parameters": [
@@ -1603,6 +1619,18 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "props"
     ],
     "signature": "setCellZoneProperties(sec: number, parentPara: number, controlIdx: number, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>)"
+  },
+  {
+    "method": "setCellZonePropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "range",
+      "props"
+    ],
+    "signature": "setCellZonePropertiesByPath(sec: number, parentPara: number, pathJson: string, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>)"
   },
   {
     "method": "setCharShapeId",
@@ -1959,6 +1987,17 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "props"
     ],
     "signature": "setTableProperties(sec: number, parentPara: number, controlIdx: number, props: Partial<TableProperties>)"
+  },
+  {
+    "method": "setTablePropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "props"
+    ],
+    "signature": "setTablePropertiesByPath(sec: number, parentPara: number, pathJson: string, props: Partial<TableProperties>)"
   },
   {
     "method": "splitParagraph",

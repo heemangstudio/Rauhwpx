@@ -1,4 +1,5 @@
 import { WasmBridge } from '@/core/wasm-bridge';
+import { tableCellIndex, tableTarget } from '@/core/table-target';
 import { isCharFormatError, CharFormatRecoveryError } from '@/core/char-format-error';
 import { EventBus } from '@/core/event-bus';
 import { CursorState } from './cursor';
@@ -35,7 +36,7 @@ import type { CellSelectionRenderer } from './cell-selection-renderer';
 import { cellSelectionParagraphTargets, promoteCrossCellSelection } from './table-cell-selection';
 import type { TableObjectRenderer } from './table-object-renderer';
 import type { TableResizeRenderer, BorderEdge } from './table-resize-renderer';
-import type { CellBbox, CellPathLike } from '@/core/types';
+import type { CellBbox, CellPathEntry, CellPathLike } from '@/core/types';
 import { showConfirm } from '@/ui/confirm-dialog';
 import * as _mouse from './input-handler-mouse';
 import * as _table from './input-handler-table';
@@ -5209,16 +5210,29 @@ export class InputHandler {
     this.focusTextarea();
   }
 
-  /** 표 캡션 텍스트 편집 모드 진입 (cellIndex=65534로 캡션 구분) */
-  enterTableCaptionEditing(sec: number, ppi: number, ci: number, charOffset = 0): void {
+  /**
+   * 표 캡션 텍스트 편집 모드 진입. 캡션 목록은 셀 목록 다음 번호(captionIndex = 셀 수)다.
+   * 중첩 표는 cellPath(안쪽 표 셀까지의 경로)의 마지막 단계를 캡션 목록으로 바꾼다.
+   */
+  enterTableCaptionEditing(sec: number, ppi: number, ci: number, charOffset: number, captionIndex: number, cellPath?: CellPathEntry[]): void {
     this.cursor.clearSelection();
-    this.cursor.moveTo({
+    const nested = (cellPath?.length ?? 0) > 1;
+    this.cursor.moveTo(nested ? {
+      sectionIndex: sec,
+      paragraphIndex: 0,
+      charOffset,
+      parentParaIndex: ppi,
+      controlIndex: cellPath![0].controlIndex,
+      cellIndex: cellPath![0].cellIndex,
+      cellParaIndex: cellPath![0].cellParaIndex,
+      cellPath: [...cellPath!.slice(0, -1), { controlIndex: cellPath!.at(-1)!.controlIndex, cellIndex: captionIndex, cellParaIndex: 0 }],
+    } : {
       sectionIndex: sec,
       paragraphIndex: 0,
       charOffset,
       parentParaIndex: ppi,
       controlIndex: ci,
-      cellIndex: 65534,
+      cellIndex: captionIndex,
       cellParaIndex: 0,
     });
     this.cursor.resetPreferredX();
@@ -6054,9 +6068,11 @@ export class InputHandler {
       pickDefined(this.getParaProperties(), FORMAT_COPY_PARA_KEYS) as Partial<ParaProperties>,
     );
     const pos = this.cursor.getPosition();
+    // 중첩 셀은 셀 경로로 안쪽 셀의 모양을 읽는다 (평면 좌표는 바깥 셀).
     const cellProps = pos.parentParaIndex !== undefined
       ? pickDefined(
-          this.wasm.getCellOwnProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!, pos.cellIndex!),
+          tableTarget(this.wasm, { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex!, cellPath: pos.cellPath })
+            .cellOwnProperties(tableCellIndex(pos)!),
           FORMAT_COPY_CELL_KEYS,
         ) as Partial<CellProperties>
       : undefined;
@@ -6075,27 +6091,22 @@ export class InputHandler {
       this.focusTextarea();
       return false;
     }
-    if (ctx.cellPath && ctx.cellPath.length > 1) {
-      console.info('[InputHandler] 중첩 표 셀 모양복사는 아직 지원하지 않습니다');
-      this.focusTextarea();
-      return false;
-    }
-
     const props = JSON.parse(JSON.stringify(cellProps)) as Partial<CellProperties>;
     this.executeOperation({
       kind: 'snapshot',
       operationType: 'formatCopyCellProps',
       operation: (wasm) => {
-        const dims = wasm.getTableDimensions(ctx.sec, ctx.ppi, ctx.ci);
+        const target = tableTarget(wasm, ctx);
+        const dims = target.dimensions();
         const excluded = this.cursor.getExcludedCells();
         for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx++) {
-          const info = wasm.getCellInfo(ctx.sec, ctx.ppi, ctx.ci, cellIdx);
+          const info = target.cellInfo(cellIdx);
           if (info.row < range.startRow || info.row > range.endRow ||
               info.col < range.startCol || info.col > range.endCol) {
             continue;
           }
           if (excluded.has(`${info.row},${info.col}`)) continue;
-          wasm.setCellProperties(ctx.sec, ctx.ppi, ctx.ci, cellIdx, props);
+          target.setCellProperties(cellIdx, props);
         }
         return this.cursor.getPosition();
       },

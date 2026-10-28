@@ -44,12 +44,24 @@ export function getCellOwnProperties(core: HmCore, sec: number, parentPara: numb
   throw unsupported('getCellOwnProperties');
 }
 
+export function getCellOwnPropertiesByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, cellIdx: number): CellProperties {
+  throw unsupported('getCellOwnPropertiesByPath');
+}
+
 export function setCellProperties(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, props: Partial<CellProperties>): { ok: boolean } {
   throw unsupported('setCellProperties');
 }
 
+export function setCellPropertiesByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, cellIdx: number, props: Partial<CellProperties>): { ok: boolean } {
+  throw unsupported('setCellPropertiesByPath');
+}
+
 export function setCellZoneProperties(core: HmCore, sec: number, parentPara: number, controlIdx: number, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>): { ok: boolean; borderFillId: number } {
   throw unsupported('setCellZoneProperties');
+}
+
+export function setCellZonePropertiesByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>): { ok: boolean; borderFillId: number } {
+  throw unsupported('setCellZonePropertiesByPath');
 }
 
 export function resizeTableCells(core: HmCore, sec: number, parentPara: number, controlIdx: number, updates: TableCellResizeUpdate[]): { ok: boolean } {
@@ -68,12 +80,20 @@ export function getTableProperties(core: HmCore, sec: number, parentPara: number
   throw unsupported('getTableProperties');
 }
 
+export function getTablePropertiesByPath(core: HmCore, sec: number, parentPara: number, pathJson: string): TableProperties {
+  throw unsupported('getTablePropertiesByPath');
+}
+
 export function getTableSignature(core: HmCore, sec: number, parentPara: number, controlIdx: number): string {
   throw unsupported('getTableSignature');
 }
 
 export function setTableProperties(core: HmCore, sec: number, parentPara: number, controlIdx: number, props: Partial<TableProperties>): { ok: boolean } {
   throw unsupported('setTableProperties');
+}
+
+export function setTablePropertiesByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, props: Partial<TableProperties>): { ok: boolean } {
+  throw unsupported('setTablePropertiesByPath');
 }
 
 export function setTableColumnWidths(core: HmCore, sec: number, parentPara: number, controlIdx: number, widths: number[]): { ok: boolean; colCount: number; tableWidth: number } {
@@ -196,7 +216,7 @@ export function evaluateTableFormula(core: HmCore, sec: number, parentPara: numb
   throw unsupported('evaluateTableFormula');
 }
 
-export function evaluateTableFormulaEx(core: HmCore, options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; }): { ok: boolean; value?: number; display?: string } {
+export function evaluateTableFormulaEx(core: HmCore, options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; pathJson?: string; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; }): { ok: boolean; value?: number; display?: string } {
   throw unsupported('evaluateTableFormulaEx');
 }
 

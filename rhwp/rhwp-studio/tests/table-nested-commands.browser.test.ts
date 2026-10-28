@@ -13,7 +13,7 @@ const wasmPackageRoot = process.env.RHWP_WASM_PACKAGE_DIR ?? resolve(rhwpRoot, '
 requireWasmPackage(wasmPackageRoot);
 
 // 커서의 평면 필드(parentParaIndex/controlIndex/cellIndex)는 바깥 표를 가리킨다.
-// 중첩 표 안에서 표 명령이 평면 API 를 쓰면 화면 밖 바깥 표를 조용히 고친 채 저장된다.
+// 중첩 표 안에서 표 명령이 평면 API 를 쓰면 화면 밖 바깥 표를 조용히 고친 채 저장된다. 명령은 셀 경로로 안쪽 표를 고친다.
 test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표에만 적용된다', { timeout: 60_000 }, async () => {
   const server = await createServer({
     root: studioRoot,
@@ -131,9 +131,16 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
 
       run('table:block-sum', innerPos(3));
       const afterBlockSum = outerTexts();
+      const innerBlockSum = innerText(3);
 
-      run('table:formula', innerPos(3));
-      const formulaDialogOpened = Boolean(document.querySelector('.dialog-overlay, .modal-overlay, [role="dialog"]'));
+      run('table:formula', innerPos(2));
+      const formulaInput = document.querySelector<HTMLInputElement>('.formula-input');
+      const formulaDialogOpened = Boolean(formulaInput);
+      if (formulaInput) {
+        formulaInput.value = '=SUM(right)';
+        [...document.querySelectorAll<HTMLButtonElement>('.dialog-btn-primary')].at(-1)?.click();
+      }
+      const innerFormula = innerText(2);
 
       run('table:cell-width-equal', innerPos(0), {
         range: { startRow: 0, startCol: 0, endRow: 1, endCol: 1 },
@@ -153,6 +160,8 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
         innerWidthsAfter: innerWidths(),
         innerDims: innerDims(),
         innerCell1: innerText(1),
+        innerBlockSum,
+        innerFormula,
         operations,
         toasts: toasts(),
         formulaDialogOpened,
@@ -160,11 +169,10 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
     });
 
     assert.deepEqual(result.afterBlockSum, result.outerBefore, '블록 합계가 바깥 표 셀을 덮어쓰면 안 된다');
-    assert.equal(result.formulaDialogOpened, false, '계산식 대화상자는 바깥 표 좌표로 열리면 안 된다');
-    assert.ok(
-      result.toasts.filter((text) => text === '중첩 표에서는 지원하지 않습니다.').length >= 2,
-      '지원하지 않는 명령은 이유를 알린다',
-    );
+    assert.equal(result.innerBlockSum, '1234567', '블록 합계는 안쪽 표의 위 칸을 더해 안쪽 셀에 쓴다');
+    assert.equal(result.formulaDialogOpened, true, '계산식 대화상자는 안쪽 표 셀로 열린다');
+    assert.equal(result.innerFormula, '1,234,567', '계산식 결과는 안쪽 셀에 (기본 쉼표 형식으로) 들어간다');
+    assert.deepEqual(result.toasts, [], '중첩 표 명령을 거절하지 않는다');
 
     assert.deepEqual(result.outerWidthsAfter, result.outerWidthsBefore, '셀 너비 균등화가 바깥 표를 바꾸면 안 된다');
     assert.notEqual(result.innerWidthsBefore[0], result.innerWidthsBefore[1], '전제: 안쪽 표 폭이 다르다');
@@ -177,7 +185,7 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
       [result.outerBefore[0], result.outerBefore[1], result.outerBefore[2], '1,234'],
       '바깥 표는 평면 경로 명령만 바꾼다',
     );
-    assert.deepEqual(result.operations, ['equalizeTableCellWidths', 'cellNumberFormat', 'cellNumberFormat']);
+    assert.deepEqual(result.operations, ['tableBlockCalc', 'tableFormula', 'equalizeTableCellWidths', 'cellNumberFormat', 'cellNumberFormat']);
   } finally {
     await browser?.close();
     await server.close();

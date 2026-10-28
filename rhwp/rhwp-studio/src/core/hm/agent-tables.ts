@@ -6,6 +6,7 @@ import { extendBridge } from './api';
 import type { HmApi } from './api';
 import type { HmCore } from './core';
 import { paraMap, toAddress } from './address';
+import { tableAddressByPath } from './table-editing';
 
 const tableAddress = (section: number, para: number, control: number): TableAddress =>
   ({ section, steps: [], para, control });
@@ -192,7 +193,9 @@ function formulaValue(core: HmCore, table: TableAddress, row: number, col: numbe
   return value;
 }
 export const evaluateTableFormulaEx: HmApi['evaluateTableFormulaEx'] = (core, options) => {
-  const table = tableAddress(options.sectionIdx, options.parentParaIdx, options.controlIdx);
+  const table = options.pathJson
+    ? tableAddressByPath(options.sectionIdx, options.parentParaIdx, options.pathJson)
+    : tableAddress(options.sectionIdx, options.parentParaIdx, options.controlIdx);
   const info = tableInfo(core, table);
   const cell = info.cells.find(c => c.row <= options.targetRow && options.targetRow < c.row + c.rowSpan
     && c.column <= options.targetCol && options.targetCol < c.column + c.columnSpan);

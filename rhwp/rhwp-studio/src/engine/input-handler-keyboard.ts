@@ -1233,12 +1233,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const ref = this.cursor.getSelectedTableRef();
       if (ref) {
         if (ref.cellPath && ref.cellPath.length > 1) {
-          // 중첩 표 삭제는 미지원 — 선택만 해제
+          // 중첩 표: 안쪽 표를 지우고 그 표를 담던 셀 문단 처음(moveOutOfSelectedTable 위치)으로 돌아간다.
+          const parentPath = JSON.stringify(ref.cellPath.slice(0, -1));
+          const control = ref.cellPath[ref.cellPath.length - 1].controlIndex;
           this.cursor.moveOutOfSelectedTable();
           this.eventBus.emit('table-object-selection-changed', false);
-          this.updateCaret();
-          // [Task #394] 셀 진입 자동 ON 로직 비활성화 — input-handler.ts 의 코멘트 참고.
-          // this.checkTransparentBordersTransition();
+          this.executeOperation({ kind: 'snapshot', operationType: 'deleteTable', operation: (wasm: WasmBridge) => {
+            wasm.deleteCellTableControlByPath(ref.sec, ref.ppi, parentPath, control);
+            return this.cursor.getPosition();
+          }});
         } else {
           this.cursor.moveOutOfSelectedTable();
           this.eventBus.emit('table-object-selection-changed', false);
