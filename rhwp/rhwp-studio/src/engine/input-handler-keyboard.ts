@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { isBodyControl } from './picture-hit-policy';
-import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate } from './command';
+import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, InsertTextInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate } from './command';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import * as _connector from './input-handler-connector';
 import {
@@ -994,13 +994,21 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
 
-    // Enter → 각주 내 문단 분할
+    // Enter → 각주 내 문단 분할, Shift+Enter → 본문처럼 강제 줄바꿈
     if (e.key === 'Enter') {
       e.preventDefault();
       try {
+        this.deleteFootnoteSelection();
         const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
         const innerParaIdx = this.cursor.fnInnerParaIdx;
         const charOffset = this.cursor.fnCharOffset;
+        if (e.shiftKey) {
+          this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, '\n');
+          this.executeOperation({ kind: 'record', command: new InsertTextInFootnoteCommand(target, innerParaIdx, charOffset, '\n') });
+          this.cursor.setFnCursorPosition(innerParaIdx, charOffset + 1);
+          this.afterEdit();
+          return;
+        }
         const result = this.wasm.splitParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset);
         this.executeOperation({ kind: 'record', command: new SplitParagraphInFootnoteCommand(target, innerParaIdx, charOffset, result.fnParaIndex) });
         this.cursor.setFnCursorPosition(result.fnParaIndex, 0);

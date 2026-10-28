@@ -71,6 +71,10 @@ async function checkArea(page, label) {
   // 끝의 마침표가 한 낱말이다.
   assert.deepEqual(await caret(page), [2, LONG.length - 1], `${label}: shift-extended word delete`);
   assert.equal((await areaText(page))[2], LONG.slice(0, -1), `${label}: the selected word is deleted`);
+  // Shift+Enter 는 이 영역에서도 문단을 나누지 않고 줄만 바꾼다.
+  await press(page, 'Shift+Enter');
+  await page.keyboard.type('z');
+  assert.deepEqual((await areaText(page)).slice(2), [`${LONG.slice(0, -1)}\nz`], `${label}: Shift+Enter`);
 }
 
 export default {
