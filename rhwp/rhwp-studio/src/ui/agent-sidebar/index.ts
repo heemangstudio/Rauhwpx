@@ -476,6 +476,9 @@ export interface AgentSidebarDeps {
   renameDocument?: (name: string) => Promise<string | null>;
   /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
   canRenameDocument?: () => boolean;
+  /** 집중 모드 머리의 문서 이름을 누르면 이 창의 열린 문서 목록을 편다(같은 앵커면 접는다). */
+  toggleDocumentList?: (anchor: HTMLElement) => void;
+  closeDocumentList?: () => void;
   /** 쓰기 활동 — 기본은 창 전체 감시자. 미리보기가 '쓰는 중' 장면을 고정할 때만 바꾼다. */
   typingActivity?: TypingActivity;
   /** 백그라운드 채팅 알림 장부 — 기본은 페이지 하나짜리(chatAttention). 미리보기가 바꾼다. */
@@ -2242,6 +2245,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const name = getDocumentContext?.()?.documentName;
       if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
+      deps.closeDocumentList?.();
       // 하마가 쓰는 중이면 쓰기를 거두고 이름부터 보인다 — 쓰기가 끝나며 입력 칸을 덮지 않는다.
       if (documentNameWriter.target) {
         documentNameWriter.cancel();
@@ -3102,6 +3106,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   bindChatTitleRename(workspaceChatTitle);
   bindChatTitleRename(chatTitle);
   bindDocumentRename(workspaceDocumentName);
+  if (deps.toggleDocumentList) {
+    const toggleDocumentList = deps.toggleDocumentList;
+    // 집중 모드는 메뉴 막대를 덮는다 — 그 머리의 문서 이름이 열린 문서 목록을 편다.
+    workspaceDocumentName.classList.add('ag-document-switch');
+    workspaceDocumentName.addEventListener('click', (event) => {
+      if (event.detail > 1 || isRenaming(workspaceDocumentName)) return;
+      if (!getDocumentContext?.()?.documentName) return;
+      toggleDocumentList(workspaceDocumentName);
+    });
+  }
   bindDocumentNameMenu(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.

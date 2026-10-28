@@ -24,6 +24,7 @@
 @import './styles/hyperlink-dialog.css';
 @import './styles/shape-picker.css';
 @import './styles/command-palette.css';
+@import './styles/document-switcher.css';
 @import './styles/compare-dialog.css';
 @import './styles/responsive.css';
 @import './styles/editor-shell.css';
