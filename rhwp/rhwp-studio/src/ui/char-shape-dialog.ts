@@ -46,7 +46,7 @@ import {
   sameLangArray,
   type LangArrayKey,
 } from './char-shape-model';
-import { popModal, pushModal } from './modal-stack';
+import { isTopModal, popModal, pushModal } from './modal-stack';
 
 const LANG_NAMES = ['대표', '한글', '영문', '한자', '일어', '외국어', '기호', '사용자'];
 
@@ -194,6 +194,7 @@ export class CharShapeDialog {
   private currentLang = 0;
   private props: CharProperties | null = null;
   private initialProps: CharProperties | null = null;
+  private captureHandler: ((e: KeyboardEvent) => void) | null = null;
   /** 언어별 칸에 마지막으로 보여 준 값 — 사용자가 고친 칸만 반영하는 기준 */
   private shownLangValues: Record<string, string> = {};
   private shownFont = '';
@@ -224,13 +225,48 @@ export class CharShapeDialog {
     this.switchTab(0);
     document.body.appendChild(this.overlay);
     pushModal(this);
+    this.installKeyGuard();
+    this.baseSizeInput.focus();
     this.baseSizeInput.select();
   }
 
   hide(): void {
+    this.removeKeyGuard();
     popModal(this);
     this.overlay?.remove();
     if (this.onClose) this.onClose();
+  }
+
+  /**
+   * ModalDialog 와 같은 document capture 키 가드.
+   * Esc 는 대화상자를 닫고, 대화상자 밖(편집 영역 등)을 향한 키는 막고 포커스를 대화상자로 되돌린다.
+   * 대화상자 안의 키는 컨트롤(탭 방향키 등)까지 전달한 뒤 오버레이에서 문서 단축키로 새지 않게 끊는다.
+   */
+  private installKeyGuard(): void {
+    this.removeKeyGuard();
+    this.captureHandler = (e: KeyboardEvent) => {
+      if (!isTopModal(this)) return;
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.preventDefault();
+        this.hide();
+        return;
+      }
+      const target = e.target as Node | null;
+      if (target && this.dialog.contains(target)) return;
+      // 편집기의 입력 textarea 에 포커스가 남아 있으면 글자가 문서에 들어가므로 기본 동작도 막고
+      // 포커스를 대화상자로 되돌린다.
+      e.stopPropagation();
+      e.preventDefault();
+      this.baseSizeInput.focus();
+    };
+    document.addEventListener('keydown', this.captureHandler, true);
+  }
+
+  private removeKeyGuard(): void {
+    if (!this.captureHandler) return;
+    document.removeEventListener('keydown', this.captureHandler, true);
+    this.captureHandler = null;
   }
 
   // ════════════════════════════════════════════════════════
@@ -337,10 +373,8 @@ export class CharShapeDialog {
 
     this.overlay.appendChild(this.dialog);
 
-    // Escape
-    this.overlay.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); this.hide(); }
-    });
+    // 대화상자 안의 키가 문서 단축키(document/window 리스너)로 새지 않게 한다. Esc 는 키 가드가 처리한다.
+    this.overlay.addEventListener('keydown', (e) => e.stopPropagation());
 
     enableDialogDrag(this.dialog, titleBar);
   }

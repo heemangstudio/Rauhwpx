@@ -77,7 +77,7 @@ import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
-import { OwnedBrowserHost } from './browser-host.mjs';
+import { OwnedBrowserHost, createLastEditorWindowQuit } from './browser-host.mjs';
 import { BrowserAdblock, registerBrowserAdblockIpc } from './browser-adblock.mjs';
 import { NativeBrowserPasswords, registerBrowserPasswordIpc } from './browser-passwords.mjs';
 import { BrowserWebAuthn } from './browser-webauthn.mjs';
@@ -745,6 +745,12 @@ const browserHost = new OwnedBrowserHost({
     )) ?? null;
   },
 });
+// 브라우저의 숨은 창이 window-all-closed 를 막으므로 마지막 편집기 창이 닫힐 때 직접 끝낸다.
+const lastEditorWindowQuit = createLastEditorWindowQuit({
+  canQuit: () => initialLaunchesOpened && !quitting,
+  editorWindowCount: () => sessions.windows().length,
+  quit: () => app.quit(),
+});
 const browserAdblock = new BrowserAdblock({ host: browserHost, ipcMain });
 new NativeBrowserPasswords({
   host: browserHost,
@@ -1247,6 +1253,7 @@ async function createWindow(launch = launchRequest(), {
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
+    else lastEditorWindowQuit.windowClosed();
     void closeOwnedHubSession(session.sessionId);
   });
   const launchFiles = [];
@@ -1454,7 +1461,7 @@ function queueLaunch(request) {
     pendingLaunches.push(request);
     return;
   }
-  void openLaunch(request).catch(showLaunchError);
+  void lastEditorWindowQuit.track(openLaunch(request).catch(showLaunchError));
 }
 
 function showLaunchError(error) {

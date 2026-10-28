@@ -53,6 +53,7 @@ import { allowsDocumentShortcut, isEditorInput, ownsTextInput } from '@/command/
 import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
 import {
   confirmSaveBeforeReplacingDocument,
+  type ConfirmSaveOptions,
   fileCommands,
   locateRecoveryOriginal,
   openRecentDocument,
@@ -1005,8 +1006,14 @@ installDesktopCloseHandling(async () => {
   if (licenseReadOnly) return closeLicenseViewer();
   if (!await confirmCloseWithBackgroundSessions()) return false;
   if (!await confirmSaveBackgroundDocuments()) return false;
-  const allowClose = await canReplaceCurrentDocument();
+  // 저장 안 함을 고른 문서는 닫기가 정해진 뒤 복구본을 지운다. 남겨 두면 다음 실행이 버린 변경을 복구하자고 묻는다.
+  const discarded: DocumentSession[] = [];
+  const allowClose = await canReplaceCurrentDocument(undefined, {
+    onDiscard: () => { discarded.push(attachedSession); },
+  });
   if (allowClose) {
+    await Promise.all(discarded.map((session) => session.autosave.discardCurrentDraft('window-close-discard')
+      .catch((error) => console.warn('[recovery] 닫을 때 버린 문서의 복구본을 지우지 못했습니다:', error))));
     await flushWorktreesBeforeClose();
     for (const session of liveSessions) session.documentState.permitNextUnload();
   }
@@ -6577,7 +6584,10 @@ async function createNewDocumentNow(template?: Uint8Array, restoredDocumentId?: 
   }
 }
 
-async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<boolean> {
+async function canReplaceCurrentDocument(
+  skipUnsavedGuard?: boolean,
+  confirmOptions?: ConfirmSaveOptions,
+): Promise<boolean> {
   // 저장 확인의 버리기는 지금 문서의 복구본을 지운다. 멈춘 엔진에는 바꿔 열 문서도 올릴 수 없다.
   if (refuseDocumentOpenWhileTrapped()) return false;
   if (agentEditingLease.active) {
@@ -6589,7 +6599,7 @@ async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<bo
     }
   }
   const allowed = skipUnsavedGuard === true
-    || await confirmSaveBeforeReplacingDocument(commandServices);
+    || await confirmSaveBeforeReplacingDocument(commandServices, confirmOptions);
   if (!allowed) return false;
   await attachedSession.versions?.whenIdle();
   return true;
