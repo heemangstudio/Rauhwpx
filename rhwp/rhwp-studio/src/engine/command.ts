@@ -613,6 +613,16 @@ function continuesTyping(
   return JSON.stringify(format ?? null) === JSON.stringify(nextFormat ?? null);
 }
 
+/** 두 지우기가 모두 Backspace(되돌리면 캐럿이 지운 글자 뒤)이고 뒤의 것이 앞의 것 바로 앞을 지웠는지. */
+function continuesBackspace(
+  offset: number, text: string, cursorAfterUndo: number,
+  nextOffset: number, nextText: string, nextCursorAfterUndo: number,
+): boolean {
+  return cursorAfterUndo === offset + charCount(text)
+    && nextCursorAfterUndo === nextOffset + charCount(nextText)
+    && nextOffset + charCount(nextText) === offset;
+}
+
 export class InsertTextCommand implements EditCommand {
   readonly type = 'insertText';
   readonly timestamp: number;
@@ -731,7 +741,9 @@ export class DeleteTextCommand implements EditCommand {
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof DeleteTextCommand)) return null;
     if (other.direction !== this.direction) return null;
-    if (other.timestamp - this.timestamp > 300) return null;
+    // 한컴 2022 캡처처럼 이어 누른 Backspace 는 쉬었다 눌러도 한 번에 되돌린다(47번 → 1단계).
+    // 앞으로 지우기(Delete)는 캡처가 없어 짧은 연타만 묶는다.
+    if (this.direction === 'forward' && other.timestamp - this.timestamp > 300) return null;
     // 같은 문단/셀 확인
     if (other.position.sectionIndex !== this.position.sectionIndex) return null;
     if (other.position.paragraphIndex !== this.position.paragraphIndex) return null;
@@ -1802,7 +1814,15 @@ export class DeleteTextInHeaderFooterCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  /** 이어 누른 Backspace 는 본문처럼 한 묶음이다. */
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof DeleteTextInHeaderFooterCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.isHeader !== b.isHeader || a.applyTo !== b.applyTo || other.paraIdx !== this.paraIdx) return null;
+    if (!continuesBackspace(this.charOffset, this.deletedText, this.cursorBeforeOffset, other.charOffset, other.deletedText, other.cursorBeforeOffset)) return null;
+    return new DeleteTextInHeaderFooterCommand(this.target, this.paraIdx, other.charOffset, other.deletedText + this.deletedText, this.cursorBeforeOffset);
+  }
 }
 
 export class SplitParagraphInHeaderFooterCommand implements EditCommand {
@@ -1961,7 +1981,15 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  /** 이어 누른 Backspace 는 본문처럼 한 묶음이다. */
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof DeleteTextInFootnoteCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx || other.innerParaIdx !== this.innerParaIdx) return null;
+    if (!continuesBackspace(this.charOffset, this.deletedText, this.cursorBeforeOffset, other.charOffset, other.deletedText, other.cursorBeforeOffset)) return null;
+    return new DeleteTextInFootnoteCommand(this.target, this.innerParaIdx, other.charOffset, other.deletedText + this.deletedText, this.cursorBeforeOffset);
+  }
 }
 
 export class SplitParagraphInFootnoteCommand implements EditCommand {

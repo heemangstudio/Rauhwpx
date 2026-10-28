@@ -76,6 +76,42 @@ test('한컴처럼 쉬었다 이어 친 글자와 낱말 사이 빈칸은 한 �
   assert.equal(documentFingerprint(wasm), before);
 });
 
+// 한컴 2022 캡처 undo-typing-backspace·shrink-*: 'hello' 뒤 Backspace 두 번은 되돌리기 한 번에 함께 돌아오고
+// 다음 되돌리기가 입력을 지운다. 이어 누른 Backspace 는 쉬었다 눌러도 한 단계다.
+test('한컴처럼 이어 누른 Backspace 는 쉬었다 눌러도 한 번에 되돌리고 입력과는 따로 되돌린다', () => {
+  const { wasm, host } = documentWith('끝');
+  host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(0, 0), 'hello', 1_000) });
+  host.executeOperation({ kind: 'command', command: new C.DeleteTextCommand(body(0, 4), 1, 'backward', undefined, 2_000) });
+  host.executeOperation({ kind: 'command', command: new C.DeleteTextCommand(body(0, 3), 1, 'backward', undefined, 6_000) });
+  assert.equal(paragraphText(wasm, 0), 'hel끝');
+  host.handleUndo();
+  assert.equal(paragraphText(wasm, 0), 'hello끝');
+  host.handleUndo();
+  assert.equal(paragraphText(wasm, 0), '끝');
+});
+
+test('머리말과 각주에서 이어 누른 Backspace 도 한 묶음으로 되돌린다', () => {
+  {
+    const { wasm, host } = headerDocument('머리말');
+    for (const off of [3, 2]) {
+      const res = JSON.parse(wasm.deleteTextInHeaderFooter(0, true, 0, 0, off - 1, 1));
+      host.executeOperation({ kind: 'record', command: new C.DeleteTextInHeaderFooterCommand(HF, 0, off - 1, res.deletedText, off) });
+    }
+    assert.deepEqual(headerText(wasm), ['머']);
+    host.handleUndo();
+    assert.deepEqual(headerText(wasm), ['머리말']);
+  }
+  {
+    const { wasm, host, note, target } = footnoteDocument('각주글');
+    for (const off of [3, 2]) {
+      const res = wasm.deleteTextInFootnote(0, note.paraIdx, note.controlIdx, 0, off - 1, 1);
+      host.executeOperation({ kind: 'record', command: new C.DeleteTextInFootnoteCommand(target, 0, off - 1, res.deletedText, off) });
+    }
+    host.handleUndo();
+    assert.deepEqual(wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).texts, ['각주글']);
+  }
+});
+
 test('머리말과 각주에서 이어 친 글자도 한 묶음으로 되돌린다', () => {
   {
     const { wasm, host } = headerDocument('끝');
