@@ -5,9 +5,9 @@ import { createServer } from 'vite';
 import puppeteer, { type Page } from 'puppeteer-core';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
 
-// 하마는 기본으로 입력기 위에 있고, 편집 설정의 '하마' 스위치를 끄고 적용하면 새로고침 없이 사라지며,
+// 하마는 기본으로 꺼져 있고, 편집 설정의 '하마' 스위치를 끄고 적용하면 새로고침 없이 사라지며,
 // 그 값이 저장되어 다시 열어도 꺼진 채이고, 다시 켜면 돌아온다.
-test('하마 설정은 기본으로 켜져 있고, 끄고 켜면 입력기의 하마가 바로 사라지고 돌아오며 저장된다', { timeout: 60_000 }, async () => {
+test('하마 설정은 기본으로 꺼져 있고, 끄고 켜면 입력기의 하마가 바로 사라지고 돌아오며 저장된다', { timeout: 60_000 }, async () => {
   const server = await createServer({
     configFile: resolve(import.meta.dirname, '../vite.sidebar.config.ts'),
     server: { port: 0, open: false }, logLevel: 'error',
@@ -27,7 +27,12 @@ test('하마 설정은 기본으로 켜져 있고, 끄고 켜면 입력기의 �
     await page.waitForSelector(toggle);
 
     const initial = await state(page, toggle);
-    assert.deepEqual(initial, { checked: true, hama: true, stored: null }, '처음에는 켜져 있고 하마가 입력기 위에 있다');
+    assert.deepEqual(initial, { checked: false, hama: false, stored: null }, '처음에는 꺼져 있고 하마가 없다');
+
+    await page.click(toggle);
+    await clickApply(page);
+    await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama canvas');
+    assert.deepEqual(await state(page, toggle), { checked: true, hama: true, stored: true });
 
     await page.click(toggle);
     await clickApply(page);
