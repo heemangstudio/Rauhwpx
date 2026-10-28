@@ -61,16 +61,16 @@ async function isDirectory(filePath, fsApi) {
 }
 
 function directoryReplaceError(pathValue, action = 'replace') {
-  const error = new Error(`Refusing to ${action} directory ${pathValue}`);
+  const error = /** @type {NodeJS.ErrnoException} */ (new Error(`Refusing to ${action} directory ${pathValue}`));
   error.code = 'EISDIR';
   return error;
 }
 
 function rollbackFailedError(error, restoreError, backupPath, tempPath) {
-  const failure = new AggregateError(
+  const failure = /** @type {AggregateError & { code?: string, backupPath?: string, tempPath?: string }} */ (new AggregateError(
     [error, restoreError],
     `Windows file replacement failed; the previous value remains at ${backupPath}`,
-  );
+  ));
   failure.code = 'FILE_REPLACE_ROLLBACK_FAILED';
   failure.backupPath = backupPath;
   failure.tempPath = tempPath;
@@ -142,7 +142,11 @@ export async function recoverInterruptedFileReplacement(
   return true;
 }
 
-/** Delete a Windows-replaced file without leaving an old backup to resurrect. */
+/**
+ * Delete a Windows-replaced file without leaving an old backup to resurrect.
+ * @param {string} targetPath
+ * @param {{ platform?: NodeJS.Platform, fsApi?: typeof fs, delays?: number[] }} [options]
+ */
 export async function removeFileAndReplacementBackup(
   targetPath,
   { platform = process.platform, fsApi = fs, delays } = {},

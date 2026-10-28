@@ -98,7 +98,7 @@ function parseChatPermissionPolicy(raw) {
 export function createChatPermissionPolicy({ filePath, platform = process.platform }) {
   if (!filePath) throw new TypeError('Chat permission policy filePath is required.');
   let always = [];
-  let stamp = null;
+  let stamp = /** @type {string | null} */ (null);
   let queue = Promise.resolve();
   const stampOf = (info) => `${info.mtimeMs}:${info.size}`;
   async function readFromDisk() {
