@@ -20,6 +20,16 @@ test('native browser rejects privileged URLs and clamps a projection to its owni
   assert.deepEqual(browserViewBounds({ x: -10, y: 20, width: 1000, height: 1000 }, { getContentBounds: () => ({ width: 800, height: 600 }) }), { x: 0, y: 20, width: 800, height: 580 });
 });
 
+test('a zoomed editor places the native browser over its placeholder in window DIP', () => {
+  const placeholder = { x: 300, y: 100, width: 400, height: 300 };
+  const editor = (factor) => ({ getContentBounds: () => ({ width: 1400, height: 900 }), webContents: { getZoomFactor: () => factor } });
+  assert.deepEqual(browserViewBounds(placeholder, editor(1)), placeholder);
+  assert.deepEqual(browserViewBounds(placeholder, editor(1.2)), { x: 360, y: 120, width: 480, height: 360 });
+  assert.deepEqual(browserViewBounds(placeholder, editor(0.8)), { x: 240, y: 80, width: 320, height: 240 });
+  // 확대한 영역도 창 밖으로 나가지 않는다.
+  assert.deepEqual(browserViewBounds({ x: 1000, y: 600, width: 400, height: 300 }, editor(1.5)), { x: 1400, y: 900, width: 0, height: 0 });
+});
+
 test('native hidden guests wake only during scoped actions and preserve forms and downloads', { skip: unavailable ? 'Electron needs an installed binary and display' : false, timeout: 30_000 }, async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'hama-browser-activity-'));
   const env = { ...process.env, RHWP_BROWSER_TEST_DATA_DIR: dataDir };

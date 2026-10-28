@@ -917,6 +917,10 @@ export function createMockBridge(
       if (!pending || pending.kind !== 'secret-save') return { ok: false, code: 'REQUEST_INVALIDATED' };
       if (connection !== 'connected') return { ok: false, code: 'DISCONNECTED' };
       if (failRequestAction()) return { ok: false, code: 'SECRET_SAVE_FAILED', message: '저장하지 못했습니다.' };
+      // Windows 자격 증명 관리자처럼 "항상" 저장은 2560 바이트까지만 받는다.
+      if (args.scope === 'always' && new TextEncoder().encode(args.value).length > 2560) {
+        return { ok: false, code: 'SECRET_TOO_LARGE_FOR_VAULT', message: 'This secret is too long for the secure vault on this computer.' };
+      }
       // 허브처럼 값은 금고로만 간다. 미리보기는 길이만 남긴다.
       secretSubmissions.push({ requestId: args.requestId, label: args.label, scope: args.scope, valueLength: args.value.length });
       const secret: T.SecretMeta = { id: pending.secretId ?? crypto.randomUUID(), label: args.label, kind: pending.secretKind ?? 'other',

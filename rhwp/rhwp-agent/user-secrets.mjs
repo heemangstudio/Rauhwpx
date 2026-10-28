@@ -104,7 +104,13 @@ export function createUserSecretStore({ dataDir, secretStore = null, wrappingKey
   async function writeValue(id, value) {
     if (vaultAvailable()) {
       try { await secretStore.set(vaultKey(id), value); return; }
-      catch { throw failure('SECRET_STORAGE_UNAVAILABLE', 'The secure vault could not save this secret.'); }
+      catch (error) {
+        // Windows 자격 증명 관리자는 2560 바이트까지만 받는다. 이유를 알려야 "이 채팅만"으로 다시 저장할 수 있다.
+        if (error?.code === 'BROWSER_SECRET_SIZE_LIMIT') {
+          throw failure('SECRET_TOO_LARGE_FOR_VAULT', 'This secret is too long for the secure vault on this computer. Save it for this chat only.');
+        }
+        throw failure('SECRET_STORAGE_UNAVAILABLE', 'The secure vault could not save this secret.');
+      }
     }
     if (authStore.available) {
       try { await authStore.saveSecret(id, { value }); return; }

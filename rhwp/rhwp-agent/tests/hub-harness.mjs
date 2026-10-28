@@ -159,6 +159,21 @@ export function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE, {
   return { binDir };
 }
 
+/** POST /shutdown 으로 허브가 provider 프로세스 트리를 정리하고 스스로 끝나게 한다. 제한 시간 안에서만 기다린다. */
+async function stopHubGracefully(child, port, token, launchId, timeoutMs = 10_000) {
+  const exited = once(child, 'exit').then(() => true);
+  try {
+    await fetch(`http://127.0.0.1:${port}/shutdown`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'x-rhwp-launch-id': launchId },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {}
+  let timer;
+  await Promise.race([exited, new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+  clearTimeout(timer);
+}
+
 /**
  * Start `server.mjs` on an ephemeral port with a private work root that is
  * removed after the test.
@@ -225,10 +240,16 @@ export async function startHub(t, {
   });
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr += chunk; });
+  let hubPort = null;
   t.after(async () => {
+    // Windows 의 SIGTERM 은 TerminateProcess 라 허브가 provider CLI 를 정리하지 못하고, 남은 CLI 가
+    // 작업 폴더를 쥐어 rmSync 가 EPERM 으로 실패한다. 먼저 허브 자신의 종료 경로를 탄다.
+    if (process.platform === 'win32' && child.exitCode === null && hubPort !== null) {
+      await stopHubGracefully(child, hubPort, token, launchId);
+    }
     if (child.exitCode === null) child.kill('SIGTERM');
     if (child.exitCode === null) await once(child, 'exit');
-    rmSync(workRoot, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const readyLine = await waitForLine(
     child.stdout,
@@ -236,6 +257,7 @@ export async function startHub(t, {
     readyTimeoutMs,
   );
   const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));
+  hubPort = ready.port;
   return {
     port: ready.port,
     token,

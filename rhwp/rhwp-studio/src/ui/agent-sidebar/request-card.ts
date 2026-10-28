@@ -260,7 +260,9 @@ export function createRequestCardController(options: RequestCardOptions) {
     }
     if (card.outcome) return;
     if (result.ok) settle(card, { status: 'granted' });
-    else fail(card, result.code === 'DISCONNECTED' ? '연결되면 다시 입력하세요.' : '저장하지 못했습니다. 다시 입력하세요.', null);
+    else fail(card, result.code === 'DISCONNECTED' ? '연결되면 다시 입력하세요.'
+      : result.code === 'SECRET_TOO_LARGE_FOR_VAULT' ? '이 컴퓨터의 보안 저장소에 넣기에는 값이 너무 깁니다. "항상"을 끄고 다시 입력하세요.'
+        : '저장하지 못했습니다. 다시 입력하세요.', null);
   }
 
   function header(card: RequestCard): HTMLElement {

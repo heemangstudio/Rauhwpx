@@ -74,6 +74,10 @@ export async function validateDocumentPath(candidate, {
   assertLocalAbsolutePath(candidate, 'path');
   const lexical = path.resolve(candidate);
   const name = path.basename(lexical).normalize('NFC');
+  // NTFS 대체 데이터 스트림(a.txt:hidden.hwp)은 다른 파일의 숨은 내용이며 저장할 수도 없다.
+  if (platform === 'win32' && name.includes(':')) {
+    throw pathError('PATH_REJECTED', 'Alternate data streams cannot be used');
+  }
   const ext = path.extname(name).slice(1).toLowerCase();
   if (!extensions.includes(ext)) {
     throw pathError('PATH_REJECTED', `Only ${extensions.join('/')} files can be used`);

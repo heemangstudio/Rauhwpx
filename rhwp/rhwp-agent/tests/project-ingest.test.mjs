@@ -226,6 +226,24 @@ test('path imports stay inside the allowed roots and reject links', async (t) =>
   assert.equal(stores.added.length, 1);
 });
 
+test('a path that differs only by letter case imports on a case-insensitive file system', async (t) => {
+  const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-ingest-case-')));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+  const work = path.join(base, 'work');
+  await fs.mkdir(path.join(work, 'Sub'), { recursive: true });
+  await fs.writeFile(path.join(work, 'Sub', 'ok.md'), '# 메모');
+  if (!await fs.stat(path.join(work, 'SUB', 'OK.MD')).then(() => true, () => false)) {
+    t.skip('this file system is case-sensitive');
+    return;
+  }
+  const stores = fakeStores();
+  const ingest = createProjectIngest({ ...stores, settings: settings(), fetchPublic: async () => assert.fail('no fetch') });
+  const { item } = await ingest.importPath({ projectId: 'p1', path: path.join('SUB', 'OK.MD'), allowedRoots: [work] });
+  // 디스크의 표기를 쓴다.
+  assert.equal(item.title, 'ok.md');
+  assert.equal(stores.added.length, 1);
+});
+
 test('home imports require a resolvable hit from the home search', async (t) => {
   const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-ingest-home-')));
   t.after(() => fs.rm(base, { recursive: true, force: true }));

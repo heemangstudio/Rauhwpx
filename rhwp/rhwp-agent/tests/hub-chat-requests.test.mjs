@@ -4,6 +4,7 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 import {
   HUB_TEST_TOKEN as TOKEN,
@@ -89,10 +90,10 @@ async function userTurn(studio, text, ids = { threadId: THREAD, documentId: DOCU
 }
 
 let callId = 1;
-async function call(mcp, tool, args) {
+async function call(mcp, tool, args, timeoutMs) {
   const id = callId++;
   sendFrame(mcp, { type: 'tool-call', id, tool, args });
-  return mcp.next((frame) => frame.type === 'tool-result' && frame.id === id);
+  return mcp.next((frame) => frame.type === 'tool-result' && frame.id === id, timeoutMs);
 }
 
 async function browserRequest(studio, action, args = {}) {
@@ -455,7 +456,8 @@ function certificatePreload(t) {
   `);
   const preload = path.join(workRoot, 'tls-preload.mjs');
   writeFileSync(preload, "import { register } from 'node:module'; register(new URL('./tls-loader.mjs', import.meta.url));\n");
-  return preload;
+  // Windows 의 --import 는 C:\ 같은 드라이브 경로를 URL 스킴으로 읽어 거절한다 — file: URL 로 넘긴다.
+  return pathToFileURL(preload).href;
 }
 
 test('a secret typed into its card fills a real page and never reaches the agent, observations, frames or logs', { timeout: 90_000 }, async (t) => {
@@ -488,7 +490,8 @@ test('a secret typed into its card fills a real page and never reaches the agent
   await startChat(studio);
   await userTurn(studio, 'Add my API key to the dashboard.');
   let mcp = await openClient(mcpUrl);
-  const opened = await call(mcp, 'browser_open', { url: origin });
+  // 첫 browser_open 은 관리형 Chromium 을 처음 띄운다 — 느린 머신에서는 10초를 넘긴다.
+  const opened = await call(mcp, 'browser_open', { url: origin }, 60_000);
   assert.equal(opened.ok, true, JSON.stringify(opened));
   const pending = await call(mcp, 'request_secret', secretArgs(origin));
   assert.equal(pending.result.pending, true);

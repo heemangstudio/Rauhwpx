@@ -187,6 +187,24 @@ async function checkSecretCards(page, origin, screenshot) {
   assert.equal(await page.$eval('.ag-request-secret input', (input) => input.value), '', 'failed submit clears the value');
   assert.deepEqual(await leaks(), clean);
 
+  // 보안 저장소에 넣기에 너무 긴 값은 이유를 알리고, "항상"을 끄면 이 채팅에 저장된다.
+  await start(page, origin, 'scenario=secret');
+  const long = `${secret}${'A'.repeat(3000)}`;
+  await page.$eval('.ag-request-secret input', (input, value) => {
+    input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, long);
+  await page.click('.ag-request-card .ag-request-primary');
+  await page.waitForSelector('.ag-request-error');
+  assert.match(await page.$eval('.ag-request-error', (node) => node.textContent), /너무 깁니다/);
+  assert.equal(await page.$eval('.ag-request-card', (node) => node.dataset.status), 'pending');
+  await setScope(page, 'chat');
+  await page.$eval('.ag-request-secret input', (input, value) => {
+    input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, long);
+  await page.click('.ag-request-card .ag-request-primary');
+  await page.waitForSelector('.ag-request-card[data-status="granted"]');
+  assert.equal((await page.evaluate(() => window.sidebarPreview.snapshot())).secretSubmissions.at(-1).scope, 'chat');
+
   // 거절해도 입력한 값을 지운다.
   await start(page, origin, 'scenario=secret');
   await page.type('.ag-request-secret input', secret);

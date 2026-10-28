@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { sameSite, siteScope } from './browser-site.mjs';
+import { retryWindows } from './fs-replace.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export function passwordFailure(code, message, details = {}) { return Object.assign(new Error(message), { code, ...details }); }
@@ -36,9 +37,10 @@ export class LocalBrowserPasswordVault {
       if (!directory.isDirectory() || directory.isSymbolicLink()) throw passwordFailure('BROWSER_PASSWORD_STORAGE_INVALID', 'The local password directory is invalid.');
       if (this.platform !== 'win32') await chmod(this.directory, 0o700);
       try {
-        const info = await lstat(this.file);
+        // 백신·색인기가 잠깐 쥔 파일(EBUSY/EPERM)은 짧게 다시 읽는다.
+        const info = await retryWindows(() => lstat(this.file), this.platform);
         if (!info.isFile() || info.isSymbolicLink() || info.size > 32 * 1024 * 1024) throw new Error();
-        const state = JSON.parse(await readFile(this.file, 'utf8'));
+        const state = JSON.parse(await retryWindows(() => readFile(this.file, 'utf8'), this.platform));
         if (state.schema !== 1 || !Array.isArray(state.records) || state.records.length > 4096) throw new Error();
         for (const record of state.records) {
           if (!UUID.test(record.id) || passwordOrigin(record.origin) !== record.origin || typeof record.username !== 'string' || typeof record.ciphertext !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(record.ciphertext)
@@ -48,7 +50,14 @@ export class LocalBrowserPasswordVault {
         this.records = state.records.map(normalizedRecord);
       } catch (error) {
         if (error.code === 'ENOENT') this.records = [];
-        else throw passwordFailure('BROWSER_PASSWORD_STORAGE_INVALID', 'The local password vault could not be read.');
+        else if (typeof error?.code === 'string' && /^E[A-Z0-9]+$/.test(error.code)) {
+          // 일시적인 읽기 실패를 영구 손상으로 기억하지 않는다 — 다음 요청이 다시 읽는다.
+          this.readyPromise = null;
+          throw passwordFailure('BROWSER_PASSWORD_STORAGE_UNAVAILABLE', 'The local password vault could not be read right now. Try again.');
+        } else {
+          this.unreadable = true;
+          throw passwordFailure('BROWSER_PASSWORD_STORAGE_INVALID', 'The local password vault could not be read.');
+        }
       }
     })();
     return this.readyPromise;
@@ -77,7 +86,7 @@ export class LocalBrowserPasswordVault {
       const encoded = JSON.stringify({ schema: 1, records });
       if (Buffer.byteLength(encoded) > 32 * 1024 * 1024) throw passwordFailure('BROWSER_PASSWORD_LIMIT', 'The local password vault exceeds its storage limit.');
       await writeFile(temp, encoded, { flag: 'wx', mode: 0o600 });
-      await rename(temp, this.file);
+      await retryWindows(() => rename(temp, this.file), this.platform);
       const revoked = this.records.filter((record) => !records.includes(record));
       this.records = records;
       // A removal or replacement acknowledges only after writes which already
@@ -199,5 +208,24 @@ export class LocalBrowserPasswordVault {
     try { assertCurrent(); return await operation(credential, lease); } finally { credential.password = ''; }
   }
   remove(id) { return this.mutate(async () => { await this.persist(this.records.filter((record) => record.id !== id)); return { removed: true }; }); }
-  clear() { return this.mutate(async () => { const removed = this.records.length; await this.persist([]); return { removed }; }); }
+  clear() {
+    const task = this.queue.then(async () => {
+      try {
+        await this.ready();
+      } catch (error) {
+        // 읽을 수 없는 금고도 지우기는 된다 — 빈 금고로 덮어쓰면 다시 쓸 수 있다.
+        if (!this.unreadable) throw error;
+        this.records = [];
+      }
+      const removed = this.records.length;
+      await this.persist([]);
+      if (this.unreadable) {
+        this.unreadable = false;
+        this.readyPromise = Promise.resolve();
+      }
+      return { removed };
+    });
+    this.queue = task.catch(() => {});
+    return task;
+  }
 }

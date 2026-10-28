@@ -26,25 +26,59 @@ const SECRET_PATTERNS = [
   [/\bbb_(?:live|test)_[A-Za-z0-9_-]{12,}/g, REDACTED],
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
   [/\bHAMA(?:-[0-9A-Z]{5}){5}\b/gi, `HAMA-${REDACTED}`],
+  // 쿠키 머리글 값(name=value; …)과 URL 의 사용자 정보(scheme://user:pass@).
+  [/\b((?:set-)?cookie)(["']?\s*[:=]\s*["']?)[^\s=;"',]+=[^\r\n"']*/gi, `$1$2${REDACTED}`],
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:"']+:[^\s/@"']+@/gi, `$1${REDACTED}@`],
   [
-    /\b((?:[a-z0-9]+[_-])?(?:api[_-]?key|apikey|access[_-]?key|private[_-]?key|session[_-]?key|token|secret|password|passwd|credential)s?)(["']?\s*[:=]\s*["']?)([^\s"'&,;)}\]]{8,})/gi,
+    /\b((?:[a-z0-9]+[_-])?(?:api[_-]?key|apikey|access[_-]?key|private[_-]?key|session[_-]?key|token|secret|password|passwd|credential)s?)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"'&,;)}\]]{8,})/gi,
     `$1$2${REDACTED}`,
   ],
+  // 키 이름이 비밀번호라고 밝히면 짧은 값도 가린다.
+  [/\b(password|passwd|pwd)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"'&,;)}\]]+)/gi, `$1$2${REDACTED}`],
 ];
+// Windows 의 다른 사용자 폴더와 8.3 짧은 이름(C:\Users\MANAG~1)도 사용자 이름을 드러낸다.
+const WINDOWS_USER_DIR = /\b([A-Za-z]:(?:\\{1,2}|\/)Users(?:\\{1,2}|\/))(?!Public\b|Default\b|\[user\])[^\\/\s"'`:;,)\]}]+/gi;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** 비밀로 보이는 값(키·토큰·Authorization)을 가리고, 홈 폴더 경로는 ~ 로 줄인다. */
+/**
+ * 홈 경로가 기록에 나타나는 모양들. Windows 는 대소문자를 가리지 않고, 스택의 file:// URL 은 / 와
+ * URL 인코딩을, util.inspect·JSON 은 \\ 두 번을 쓴다.
+ */
+let cachedHomePattern = null;
+function homePattern(home) {
+  if (cachedHomePattern?.home === home) {
+    cachedHomePattern.pattern.lastIndex = 0;
+    return cachedHomePattern.pattern;
+  }
+  const windows = /^[A-Za-z]:[\\/]/.test(home);
+  const variants = new Set([home, encodeURI(home)]);
+  if (windows) {
+    const back = home.replaceAll('/', '\\');
+    const forward = back.replaceAll('\\', '/');
+    for (const variant of [back, forward, encodeURI(forward), back.replaceAll('\\', '\\\\')]) variants.add(variant);
+  }
+  const alternatives = [...variants].filter((value) => value.length > 1)
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegExp);
+  // 홈 이름 뒤에 이름 글자가 이어지면 다른 폴더다(C:\Users\manag 와 C:\Users\manager·manag.kim·김하마하).
+  // 문장 끝의 마침표(… /Users/andy.)는 이름이 아니므로 가린다.
+  const pattern = new RegExp(`(?:${alternatives.join('|')})(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}_-])`, windows ? 'giu' : 'gu');
+  cachedHomePattern = { home, pattern };
+  return pattern;
+}
+
+/** 비밀로 보이는 값(키·토큰·Authorization·쿠키)을 가리고, 홈 폴더 경로는 ~ 로 줄인다. */
 export function redactSecrets(text, { secrets = [], home = '' } = {}) {
   let out = String(text);
   for (const secret of secrets) {
     if (typeof secret === 'string' && secret.length >= 8) out = out.split(secret).join(REDACTED);
   }
   for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
-  if (home && home.length > 1) out = out.replace(new RegExp(escapeRegExp(home), 'g'), '~');
-  return out;
+  if (home && home.length > 1) out = out.replace(homePattern(home), '~');
+  return out.replace(WINDOWS_USER_DIR, '$1[user]');
 }
 
 /** console 인자를 console 과 같은 모양의 한 덩어리 글로 만든다. */
