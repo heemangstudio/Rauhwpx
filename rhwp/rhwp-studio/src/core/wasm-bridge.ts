@@ -688,6 +688,11 @@ export class WasmBridge {
     return api.resizeTableCellsByPath(this.core, sec, parentPara, pathJson, updates);
   }
 
+  /** 셀 경로가 가리키는 표의 (row, col) 셀 오른쪽(아래쪽) 경계만 delta HWPUNIT 옮긴다 (한컴 F5+Shift+방향키). */
+  moveTableCellEdgeByPath(sec: number, parentPara: number, pathJson: string, row: number, col: number, side: 'right' | 'bottom', delta: number): { ok: boolean } {
+    return api.moveTableCellEdgeByPath(this.core, sec, parentPara, pathJson, row, col, side, delta);
+  }
+
   moveTableOffset(sec: number, parentPara: number, controlIdx: number, deltaH: number, deltaV: number): { ok: boolean; ppi: number; ci: number } {
     return api.moveTableOffset(this.core, sec, parentPara, controlIdx, deltaH, deltaV);
   }

@@ -88,6 +88,10 @@ export const getTableCellTargetByPath: typeof original.getTableCellTargetByPath 
 };
 export const resizeTableCells: typeof original.resizeTableCells = (core, s, p, c, updates) => resize(core, tableAddress(s, p, c), updates);
 export const resizeTableCellsByPath: typeof original.resizeTableCellsByPath = (core, s, p, path, updates) => resize(core, tableAddressByPath(s, p, path), updates);
+export const moveTableCellEdgeByPath: typeof original.moveTableCellEdgeByPath = (core, s, p, path, row, column, side, delta) => {
+  core.transact([{ op: 'moveTableCellEdge', table: tableAddressByPath(s, p, path), row, column, side, delta }]);
+  return { ok: true };
+};
 export const mergeTableCells: typeof original.mergeTableCells = (core, s, p, c, a, b, d, e) => merge(core, tableAddress(s, p, c), a, b, d, e);
 export const mergeTableCellsByPath: typeof original.mergeTableCellsByPath = (core, s, p, path, a, b, d, e) => merge(core, tableAddressByPath(s, p, path), a, b, d, e);
 export const splitTableCell: typeof original.splitTableCell = (core, s, p, c, r, col) => restoreSpan(core, tableAddress(s, p, c), r, col);
@@ -148,7 +152,7 @@ export const getTableControlsInSelection: typeof original.getTableControlsInSele
 
 extendBridge({ getTableDimensions, getTableDimensionsByPath, getCellInfo, getCellInfoByPath,
   getTableCellBboxes, getTableCellBboxesByPath, getTableBBox, getTableBBoxAtPage, getTableCellTargetByPath,
-  resizeTableCells, resizeTableCellsByPath, mergeTableCells, mergeTableCellsByPath, splitTableCell,
+  resizeTableCells, resizeTableCellsByPath, moveTableCellEdgeByPath, mergeTableCells, mergeTableCellsByPath, splitTableCell,
   splitTableCellByPath, splitTableCellInto, splitTableCellIntoByPath, insertTableRow, insertTableRowByPath,
   insertTableColumn, insertTableColumnByPath, deleteTableRow, deleteTableRowByPath, deleteTableColumn,
   deleteTableColumnByPath, moveTableOffset, getTableSignature, getTableControlsInSelection, clearTableCellRange });

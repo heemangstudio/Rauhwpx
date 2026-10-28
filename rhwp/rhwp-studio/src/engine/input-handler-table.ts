@@ -7,7 +7,7 @@ import { getObjectProperties, setObjectProperties } from './input-handler-pictur
 import type { CellBbox } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { tableTarget } from '@/core/table-target';
-import { keyboardResizeUpdates } from './table-keyboard-resize';
+import { KEYBOARD_RESIZE_STEP, keyboardResizeUpdates } from './table-keyboard-resize';
 import { tableIdentity, type TableRef } from './table-bbox-cache';
 import type { BorderEdge } from './table-resize-renderer';
 import { showToast } from '@/ui/toast';
@@ -1493,6 +1493,40 @@ export function resizeCellByKeyboard(this: any, key: 'ArrowUp' | 'ArrowDown' | '
     this.updateCellSelection();
   } catch (err) {
     console.warn('[InputHandler] resizeCellByKeyboard 실패:', err);
+  }
+}
+
+/**
+ * F5 로 잡은 셀 하나에서 Shift+방향키: 한컴처럼 그 셀의 오른쪽(←→) 또는 아래쪽(↑↓) 경계만 283 씩 옮긴다.
+ * 경계 건너편 셀이 그만큼 줄고 표 크기는 그대로이며, 엔진이 경계가 닿는 자리에 격자선을 더한다.
+ */
+export function moveCellEdgeByKeyboard(this: any, key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
+  const ctx = this.cursor.getCellTableContext();
+  const range = this.cursor.getSelectedCellRange();
+  if (!ctx || !range) return;
+  let cell: CellBbox | undefined;
+  try {
+    cell = tableTarget(this.wasm, ctx).cellBboxes().find(b => range.startRow >= b.row && range.startRow < b.row + b.rowSpan
+      && range.startCol >= b.col && range.startCol < b.col + b.colSpan);
+  } catch { return; }
+  if (!cell) return;
+  const side = key === 'ArrowLeft' || key === 'ArrowRight' ? 'right' : 'bottom';
+  const delta = key === 'ArrowRight' || key === 'ArrowDown' ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP;
+  const path = ctx.cellPath?.length ? ctx.cellPath : [{ controlIndex: ctx.ci, cellIndex: 0, cellParaIndex: 0 }];
+  try {
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'moveTableCellEdge',
+      operation: (wasm: WasmBridge) => {
+        wasm.moveTableCellEdgeByPath(ctx.sec, ctx.ppi, JSON.stringify(path), cell!.row, cell!.col, side, delta);
+        return this.cursor.getPosition();
+      },
+    });
+    this.cursor.refreshCellTableDimensions();
+    this.updateCellSelection();
+  } catch (err) {
+    // 표 테두리의 셀이나 더 옮길 수 없는 경계는 그대로 둔다.
+    console.warn('[InputHandler] moveCellEdgeByKeyboard 실패:', err);
   }
 }
 

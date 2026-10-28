@@ -335,3 +335,22 @@ test('Tab 은 다음 셀 처음, Shift+Tab 은 앞 셀 글 끝으로 가고 첫 
   cursor.moveToCellPrev(false);
   assert.deepEqual(where(), [0, 0, 0]);
 });
+
+test('셀 하나의 경계 옮기기는 한컴처럼 그 셀과 건너편 셀만 바꾸고 격자선을 더한다', async t => {
+  // 한컴 resize-shift-right: F5 로 B2 를 잡고 Shift+→ 세 번 → B2 11337, C2 9639, 4x5 격자, 표 너비 그대로.
+  const { wasm, adapter } = await openHeemangAgent(t, HANCOM_TABLE);
+  const { ppi, ci } = firstTable(wasm);
+  const path = JSON.stringify([{ controlIndex: ci, cellIndex: 0, cellParaIndex: 0 }]);
+  for (let i = 0; i < 3; i++) wasm.moveTableCellEdgeByPath(0, ppi, path, 1, 1, 'right', 283);
+  const grid = () => Array.from({ length: wasm.getTableDimensions(0, ppi, ci).cellCount }, (_, i) => {
+    const c = wasm.getCellInfo(0, ppi, ci, i);
+    return `${c.row},${c.col} ${c.rowSpan}x${c.colSpan} ${wasm.getCellProperties(0, ppi, ci, i).width}`;
+  });
+  const check = () => {
+    assert.equal(wasm.getTableDimensions(0, ppi, ci).colCount, 5);
+    for (const cell of ['1,1 1x2 11337', '1,3 1x1 9639', '0,1 1x1 10488', '0,2 1x2 10488']) assert.ok(grid().includes(cell), `${cell}: ${grid().join(' | ')}`);
+    assert.equal(wasm.getTableProperties(0, ppi, ci).tableWidth, 41952);
+  };
+  check();
+  reopenBoth(wasm, adapter, check);
+});

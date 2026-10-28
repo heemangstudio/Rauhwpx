@@ -1401,7 +1401,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const dr = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
       const dc = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
       const phase = this.cursor.getCellSelectionPhase();
-      if (e.shiftKey || phase === 2) {
+      if (e.shiftKey && phase === 1 && !this.cursor.isExtendedCellSelection() && !this.hasMultiCellSelection()) {
+        // 한컴: F5 로 잡은 셀 하나에서 Shift+방향키는 블록을 넓히지 않고 그 셀의 경계만 옮긴다.
+        this.moveCellEdgeByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
+        return;
+      } else if (e.shiftKey || phase === 2) {
         // phase 2: 범위 확장 (anchor 고정, focus만 이동)
         this.cursor.expandCellSelection(dr, dc);
       } else if (phase === 3) {

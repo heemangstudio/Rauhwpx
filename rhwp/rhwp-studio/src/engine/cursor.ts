@@ -1328,6 +1328,18 @@ export class CursorState {
   /** 셀 선택 단계를 반환한다. */
   getCellSelectionPhase(): number { return this._cellSelectionPhase; }
 
+  /** 격자선이 늘거나 준 뒤(셀 경계 옮기기) 셀 선택이 쓰는 표의 줄·칸 수를 다시 읽는다. */
+  refreshCellTableDimensions(): void {
+    if (!this.cellTableCtx) return;
+    const { sec, ppi, ci, cellPath } = this.cellTableCtx;
+    try {
+      const dims = (cellPath?.length ?? 0) > 0
+        ? this.wasm.getTableDimensionsByPath(sec, ppi, JSON.stringify(cellPath))
+        : this.wasm.getTableDimensions(sec, ppi, ci);
+      this.cellTableCtx = { ...this.cellTableCtx, rowCount: dims.rowCount, colCount: dims.colCount };
+    } catch { /* 표가 사라졌다 */ }
+  }
+
   /** F5 반복: 셀 선택 단계를 다음으로 진행한다. */
   advanceCellSelectionPhase(): void {
     if (!this._cellSelectionMode || !this.cellTableCtx) return;

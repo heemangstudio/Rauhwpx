@@ -1236,6 +1236,20 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "movePictureControlByPath(sec: number, fromParentPara: number, fromPath: CellPathLike, fromControl: number, toParentPara: number, toPath: CellPathLike, toCharOffset: number)"
   },
   {
+    "method": "moveTableCellEdgeByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "row",
+      "col",
+      "side",
+      "delta"
+    ],
+    "signature": "moveTableCellEdgeByPath(sec: number, parentPara: number, pathJson: string, row: number, col: number, side: 'right' | 'bottom', delta: number)"
+  },
+  {
     "method": "moveTableOffset",
     "kind": "document",
     "parameters": [

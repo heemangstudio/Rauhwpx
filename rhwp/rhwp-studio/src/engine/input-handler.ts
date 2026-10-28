@@ -1561,6 +1561,10 @@ export class InputHandler {
     _table.resizeCellByKeyboard.call(this, key, moveBoundary);
   }
 
+  private moveCellEdgeByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
+    _table.moveCellEdgeByKeyboard.call(this, key);
+  }
+
   private resizeTableProportional(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
     _table.resizeTableProportional.call(this, key);
   }

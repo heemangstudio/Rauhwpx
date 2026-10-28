@@ -72,6 +72,10 @@ export function resizeTableCellsByPath(core: HmCore, sec: number, parentPara: nu
   throw unsupported('resizeTableCellsByPath');
 }
 
+export function moveTableCellEdgeByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, row: number, col: number, side: 'right' | 'bottom', delta: number): { ok: boolean } {
+  throw unsupported('moveTableCellEdgeByPath');
+}
+
 export function moveTableOffset(core: HmCore, sec: number, parentPara: number, controlIdx: number, deltaH: number, deltaV: number): { ok: boolean; ppi: number; ci: number } {
   throw unsupported('moveTableOffset');
 }
