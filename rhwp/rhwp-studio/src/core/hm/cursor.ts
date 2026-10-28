@@ -244,7 +244,11 @@ export function getTableBoundaryPosition(core: HmCore, request: {
   const before = wireToLogical(map, control.offset);
   if (!request.after) return { paraIdx: request.hostParaIndex, charOffset: before };
   const after = wireToLogical(map, control.offset + 8);
-  return { paraIdx: request.hostParaIndex, charOffset: after > before ? after : logicalLength(map) };
+  if (after > before) return { paraIdx: request.hostParaIndex, charOffset: after };
+  // 글자처럼 취급하지 않는 표는 캐럿 칸이 없다. 문단에 표 뒤 글자가 없으면 표 뒤는 다음 문단 처음이다.
+  const end = logicalLength(map);
+  if (end > before || request.hostParaIndex + 1 >= core.paragraphCount(list)) return { paraIdx: request.hostParaIndex, charOffset: end };
+  return { paraIdx: request.hostParaIndex + 1, charOffset: 0 };
 }
 
 /** 쪽의 첫 본문 위치. */
