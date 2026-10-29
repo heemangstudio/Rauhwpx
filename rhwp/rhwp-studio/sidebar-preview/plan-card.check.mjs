@@ -1,4 +1,5 @@
-// 앱 요금제: 무료면 보내기가 요금제 카드를 열고 아무것도 보내지 않는다. ↑ 단추는 무료·Pro 에 보이고 Hama 에는 없다.
+// 앱 요금제: 무료면 보내기가 요금제 카드를 열고 아무것도 보내지 않는다. ↑ 단추는 무료에만 있고,
+// Pro·기존 라이선스는 문서 홈 위 막대의 Hama 입구로 카드를 연다.
 // 결제 링크가 비면 '곧 출시'로 막히고, 결제가 끝나면 다시 불러오지 않고 에이전트가 열린다.
 import assert from 'node:assert/strict';
 
@@ -47,7 +48,7 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
   await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-pricing-locked'));
   assert.equal(await page.$eval('#agent-sidebar', (root) => root.dataset.tier), 'pro');
-  assert.equal(await visible(page, '.ag-pricing-upgrade'), true, 'arrow on pro');
+  assert.equal(await visible(page, '.ag-pricing-upgrade'), false, 'paying users get no arrow');
   await page.click('.ag-send');
   await page.waitForFunction(() => window.sidebarPreview.snapshot().messageTexts.length === 1);
   assert.equal(await page.$('.ag-pricing-card'), null, 'an unlocked send opens no card');
@@ -68,10 +69,28 @@ export async function checkPlanCard({ page, open, screenshot }) {
   assert.equal(await visible(page, '.ag-pricing-badge'), true, 'legacy mark');
   await closeCard(page);
 
-  // Hama 에는 ↑ 단추가 없고, 요금제 API 가 없으면(웹) 잠금도 단추도 없다.
-  await open('reset=1&plan=hama');
-  assert.equal(await visible(page, '.ag-pricing-upgrade'), false, 'no arrow on hama');
+  // ↑ 단추는 무료에만 있다. 요금제 API 가 없으면(웹) 잠금도 단추도 없다.
+  for (const tier of ['pro', 'legacy', 'hama']) {
+    await open(`reset=1&plan=${tier}`);
+    assert.equal(await visible(page, '.ag-pricing-upgrade'), false, `no arrow on ${tier}`);
+  }
   await open('reset=1');
   assert.equal(await visible(page, '.ag-pricing-upgrade'), false, 'no arrow without a plan API');
   assert.equal(await page.$eval('.ag-root', (root) => root.classList.contains('ag-pricing-locked')), false);
+
+  // 문서 홈의 Hama 입구: Pro·기존 라이선스에만, 누르면 Hama 칸을 짚은 카드.
+  const homeEntry = async (tier) => {
+    await open(`reset=1&home=1&plan=${tier}`);
+    await page.waitForSelector('#document-home .dh-topbar');
+    return visible(page, '.plan-hama-entry');
+  };
+  assert.deepEqual(
+    [await homeEntry('free'), await homeEntry('hama'), await homeEntry('legacy'), await homeEntry('pro')],
+    [false, false, true, true],
+  );
+  assert.equal(await visible(page, '.plan-hama-soon'), true, 'Hama checkout not open yet');
+  await page.click('.plan-hama-entry');
+  await cardOpen(page);
+  await page.waitForSelector('.ag-pricing-col[data-plan="hama"][data-focus="true"]');
+  await closeCard(page);
 }

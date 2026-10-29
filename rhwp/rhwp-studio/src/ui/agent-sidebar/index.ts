@@ -2124,7 +2124,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   rebuildLlmMenu();
-  // 모델 이름 바로 옆의 요금제 단추. 요금제를 알고 Hama 가 아닐 때만 보인다.
+  // 모델 이름 바로 옆의 요금제 단추. 무료에만 보인다(Pro·기존 라이선스는 문서 홈의 Hama 입구).
   const planUpgrade = el('button', 'ag-pricing-upgrade');
   planUpgrade.type = 'button';
   planUpgrade.setAttribute('aria-label', '요금제 보기');

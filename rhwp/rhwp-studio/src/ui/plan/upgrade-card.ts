@@ -6,6 +6,7 @@ import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
+import { createHamaMark } from './hama-mark.ts';
 import type { DesktopLicenseApi } from '../agent-sidebar/settings-license.ts';
 import type { PlanStore } from './plan-store.ts';
 import { tierForSku, type PlanSku, type PlanStatus, type PlanTier } from './plan-types.ts';
@@ -180,6 +181,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     if (current) column.dataset.current = 'true';
     if (focused === plan) column.dataset.focus = 'true';
     const name = el('div', 'ag-pricing-name', plan === 'free' ? '무료' : plan === 'pro' ? 'Pro' : 'Hama');
+    if (plan === 'hama') name.prepend(createHamaMark('ag-pricing-hama-mark'));
     const priceRow = el('div', 'ag-pricing-price');
     const features = el('ul', 'ag-pricing-features');
     const actions = el('div', 'ag-pricing-actions');

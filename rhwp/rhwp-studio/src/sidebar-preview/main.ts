@@ -64,6 +64,8 @@ import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
 import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
 import type { PlanTier } from '../ui/plan/plan-types.ts';
+import { createPlanStore } from '../ui/plan/plan-store.ts';
+import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
@@ -630,6 +632,10 @@ const sidebar = initAgentSidebar({
 });
 mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
+/* `home=1`: 문서 홈(표본 최근 문서). Pro·기존 라이선스면 위 막대에 Hama 입구가 선다. */
+const home = params.get('home') === '1'
+  ? mountHomeScene({ plan: mockPlan ? createPlanStore(mockPlan.api) : null, license: mockLicense?.api ?? null, report })
+  : null;
 const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
 chats.push({ sidebar, mock });
@@ -876,6 +882,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   gift: mockGift,
   autofix: mockAutofix,
   plan: mockPlan,
+  home,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
