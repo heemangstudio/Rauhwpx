@@ -58,7 +58,7 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
-import { mockHamaMode, mockHamaStatus } from './mock-hama.ts';
+import { mockHamaMode, mockHamaModes, mockHamaStatus, type MockHamaMode } from './mock-hama.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
@@ -218,6 +218,18 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true, hama: mockHamaStatus(mockHamaMode(params)) });
 mockGift?.api.onChange(() => mock.syncPiStatus());
+const hamaDesktop = params.has('hama') && mockHamaMode(params) !== 'off';
+/** 잠긴 Hama 를 누르면 앱이 띄울 플랜 안내 요청 — 미리보기는 기록만 한다. */
+const planCardRequests: unknown[] = [];
+window.addEventListener('rhwp:open-plan-card', (event) => {
+  planCardRequests.push((event as CustomEvent).detail);
+  report('Plan card placeholder');
+});
+/** `sidebarPreview.setHama('cap5h')` — Hama 플랜 상태를 바꿔 hama-status 를 다시 보낸다. */
+function setHama(mode: MockHamaMode): void {
+  if (!mockHamaModes.includes(mode)) throw new Error(`hama mode: ${mockHamaModes.join(', ')}`);
+  mock.setHamaStatus(mockHamaStatus(mode));
+}
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);
 setAutofixApi(mockAutofix?.api ?? null);
@@ -594,6 +606,8 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
+  // `hama=` 를 주면 데스크톱 앱처럼 잠긴 Hama 항목이 보인다(`off` 나 생략은 웹 Studio — 항목이 없다).
+  desktopApp: hamaDesktop,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
@@ -840,6 +854,8 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
+  setHama,
+  planCardRequests,
   autofix: mockAutofix,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,

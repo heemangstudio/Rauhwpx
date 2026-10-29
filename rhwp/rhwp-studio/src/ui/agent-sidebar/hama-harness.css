@@ -1,0 +1,179 @@
+/* Hama 하네스 — 앱 하마의 파랑. 라이트는 흰 바닥 위 글자 대비를 위해 한 단 진하게 둔다
+   (--ag-on-accent 와의 대비는 다른 프로바이더 색과 같은 밝기대). */
+.ag-root {
+  --ag-hama: #3d9bd1;
+  --ag-hama-wash: rgba(61, 155, 209, 0.10);
+}
+
+:root[data-theme-effective='dark'] .ag-root {
+  --ag-hama: #62b3e2;
+  --ag-hama-wash: rgba(98, 179, 226, 0.16);
+}
+
+.ag-root[data-agent='hama'] {
+  --ag-accent: var(--ag-hama);
+}
+
+.ag-provider-icon-mask[data-agent='hama'] {
+  -webkit-mask-image: url('/icons/provider-hama.svg');
+  mask-image: url('/icons/provider-hama.svg');
+}
+
+.ag-root[data-agent='hama'] .ag-provider .ag-provider-icon-mask,
+.ag-provider-item[data-agent='hama'] .ag-provider-icon-mask {
+  color: var(--ag-hama);
+}
+
+.ag-fleet.ag-hama { --ag-accent: var(--ag-hama); }
+.ag-skill-token[data-agent='hama'] { --ag-skill-color: var(--ag-hama); }
+.ag-plan-card.ag-hama { box-shadow: none; }
+
+/* 피커: 내 키로 도는 하네스들 아래 가는 줄, 그 아래 줄에 Hama 가 따로 선다. */
+.ag-provider-sep {
+  flex: 0 0 100%;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--ag-border);
+}
+
+.ag-provider-sep[hidden] {
+  display: none;
+}
+
+/* 잠긴 Hama — 고를 수 없고, 누르면 플랜 안내를 연다. */
+.ag-provider-item[data-locked='true'] {
+  color: var(--ag-text-secondary);
+}
+
+.ag-provider-item[data-locked='true'] .ag-provider-icon-mask {
+  opacity: 0.55;
+}
+
+.ag-provider-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: -2px;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-provider-lock[hidden] {
+  display: none;
+}
+
+.ag-provider-lock .ag-icon {
+  width: 11px;
+  height: 11px;
+}
+
+/* 입력기 줄의 Hama 표 — Hama 를 고른 동안만. 사용량 고리를 품는다. */
+.ag-hama-badge {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 5px;
+  border-radius: var(--ag-r-code);
+  background: var(--ag-hama-wash);
+  color: var(--ag-hama);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-tight);
+  white-space: nowrap;
+}
+
+.ag-root[data-agent='hama'] .ag-provider .ag-hama-badge {
+  display: inline-flex;
+}
+
+/* 입력기 줄에서는 표가 마크를 대신한다 — 모델 이름에 자리를 남긴다. */
+.ag-root[data-agent='hama'] .ag-composer-meta .ag-provider .ag-provider-icon {
+  display: none;
+}
+
+.ag-hama-meter {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ag-hama-meter[hidden] {
+  display: none;
+}
+
+.ag-hama-ring {
+  width: 10px;
+  height: 10px;
+  transform: rotate(-90deg);
+}
+
+.ag-hama-ring circle {
+  fill: none;
+  stroke-width: 2.4;
+}
+
+.ag-hama-ring-track {
+  stroke: color-mix(in srgb, var(--ag-hama) 28%, transparent);
+}
+
+.ag-hama-ring-fill {
+  stroke: var(--ag-hama);
+  stroke-dasharray: 0 100;
+}
+
+.ag-hama-meter[data-blocked='true'] .ag-hama-ring-fill {
+  stroke: var(--ag-err);
+}
+
+/* 설정 패널의 '사용량' — 창마다 한 줄: 이름 · 막대 · % · 초기화까지. */
+.ag-hama-usage-rows {
+  display: grid;
+  grid-template-columns: auto minmax(48px, 1fr) auto auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 6px;
+  padding-top: 5px;
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-hama-usage-row {
+  display: contents;
+}
+
+.ag-hama-usage-name {
+  color: var(--ag-text-secondary);
+}
+
+.ag-hama-usage-bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-hover);
+}
+
+.ag-hama-usage-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--ag-hama);
+}
+
+.ag-hama-usage-pct {
+  min-width: 4ch;
+  color: var(--ag-text);
+  text-align: right;
+}
+
+.ag-hama-usage-reset {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-fill {
+  background: var(--ag-err);
+}
+
+.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-pct,
+.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-reset {
+  color: var(--ag-err);
+}

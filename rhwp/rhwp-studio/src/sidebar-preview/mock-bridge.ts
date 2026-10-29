@@ -2427,6 +2427,11 @@ export function createMockBridge(
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */
     syncPiStatus: emitPi,
+    /** Hama 플랜 상태를 바꾸고 허브처럼 hama-status 를 보낸다. */
+    setHamaStatus: (status: T.HamaStatus) => {
+      hamaStatus = status;
+      emitHama();
+    },
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       compactions: compactions.map((entry) => ({ ...entry })),

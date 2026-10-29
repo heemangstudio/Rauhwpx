@@ -35,6 +35,7 @@ import type {
   AgentWorkflowState,
   CompactionSupport,
   CompactionTrigger,
+  HamaStatus,
   PermissionProfile,
   ServiceTier,
   PendingChangeSet,
@@ -214,6 +215,8 @@ import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createChatHama, type ChatHama } from './chat-hama.ts';
+import { hamaEntry, hamaIsDefault, readHarnessChoice, recordHarnessChoice } from './hama-harness.ts';
+import { createHamaUsage } from './hama-usage.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -383,6 +386,8 @@ export interface AgentSidebarDeps {
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
   license?: DesktopLicenseApi | null;
+  /** 데스크톱 앱인가 — Hama 플랜이 없을 때 잠긴 Hama 항목을 보인다. 생략하면 rhwpDesktop 이 있는지로 정한다. */
+  desktopApp?: boolean;
   /** 헤더에 표시할 현재 문서와 선택 상태. */
   getDocumentContext?: () => {
     documentId?: string | null;
@@ -1923,15 +1928,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerTrigger.setAttribute('aria-expanded', 'false');
   providerTrigger.setAttribute('aria-controls', 'ag-config-panel');
   let providerIcon = createProviderIcon(selectedAgent);
-  providerTrigger.append(providerIcon);
+  // Hama 를 고른 동안만 보이는 작은 표(CSS 가 .ag-root[data-agent] 로 켠다). 사용량 고리가 그 안에 산다 —
+  // 누르면 설정 패널이 열리고 거기에 창별 사용량이 있다.
+  const hamaUsage = createHamaUsage();
+  const hamaBadge = el('span', 'ag-hama-badge', AGENT_LABEL.hama);
+  hamaBadge.append(hamaUsage.meter);
+  providerTrigger.append(providerIcon, hamaBadge);
 
   const providerMenu = el('div', 'ag-model-menu');
   providerMenu.setAttribute('role', 'menu');
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
 
+  /** Hama 플랜 상태 (hama-status). 피커의 Hama 항목·기본 하네스·사용량 게이지가 읽는다. */
+  let hamaStatus: HamaStatus | null = bridge.hamaStatus?.() ?? null;
+  const desktopApp = deps.desktopApp
+    ?? typeof (window as Window & { rhwpDesktop?: unknown }).rhwpDesktop !== 'undefined';
+
   function selectAgent(agent: AgentName): void {
     if (isSelectionLocked()) return;
+    recordHarnessChoice(agent);
     setSelectedAgent(agent);
     selectedModel = resolveModelForAgent(agent, selectedModel);
     selectedEffort = resolveEffortForAgent(agent, selectedEffort, selectedModel);
@@ -1944,6 +1960,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     providerTrigger.focus();
   }
 
+  // Hama 는 내 키로 도는 하네스들과 따로 선다 — 가는 줄 아래 자기 줄에.
+  const hamaSeparator = el('span', 'ag-provider-sep');
+  hamaSeparator.setAttribute('role', 'separator');
+  const hamaLock = el('span', 'ag-provider-lock');
+  hamaLock.append(createIcon('lock'), createIcon('send'));
   for (const agent of PROVIDER_ORDER) {
     const item = el('button', 'ag-model-item ag-provider-item');
     item.type = 'button';
@@ -1951,7 +1972,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', 'false');
     item.append(createProviderIcon(agent), document.createTextNode(AGENT_LABEL[agent]));
-    item.addEventListener('click', () => selectAgent(agent));
+    if (agent === 'hama') {
+      item.append(hamaLock);
+      providerMenu.appendChild(hamaSeparator);
+    }
+    item.addEventListener('click', () => {
+      if (agent === 'hama' && item.dataset.locked === 'true') {
+        // 잠긴 Hama — 하네스를 바꾸지 않고 플랜 안내를 연다(카드는 앱 쪽이 이 이벤트로 띄운다).
+        setConfigPanelOpen(false);
+        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } }));
+        return;
+      }
+      selectAgent(agent);
+    });
     providerItems.set(agent, item);
     providerMenu.appendChild(item);
   }
@@ -1964,7 +1997,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncProviderMenu(): void {
-    for (const [agent, item] of providerItems) item.hidden = !connectedProviders.has(agent);
+    for (const [agent, item] of providerItems) {
+      if (agent !== 'hama') {
+        item.hidden = !connectedProviders.has(agent);
+        continue;
+      }
+      const entry = hamaEntry(hamaStatus, desktopApp);
+      const locked = entry === 'locked';
+      item.hidden = entry === 'hidden';
+      item.dataset.locked = locked ? 'true' : 'false';
+      item.setAttribute('role', locked ? 'menuitem' : 'menuitemradio');
+      if (locked) item.removeAttribute('aria-checked');
+      else if (!item.hasAttribute('aria-checked')) item.setAttribute('aria-checked', String(selectedAgent === 'hama'));
+      if (locked) item.setAttribute('aria-haspopup', 'dialog');
+      else item.removeAttribute('aria-haspopup');
+      item.setAttribute('aria-label', locked ? `${AGENT_LABEL.hama} (잠김)` : AGENT_LABEL.hama);
+      hamaLock.hidden = !locked;
+      hamaSeparator.hidden = item.hidden;
+    }
     if (document.activeElement instanceof HTMLButtonElement
       && document.activeElement.hidden
       && providerMenu.contains(document.activeElement)) {
@@ -2389,7 +2439,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerGroup.append(el('span', 'ag-config-label', '에이전트'), providerMenu);
   const llmGroup = el('div', 'ag-config-group');
   llmGroup.append(el('span', 'ag-config-label', '모델'), llmMenu);
-  configPanelInner.append(providerGroup, llmGroup, effortGroup);
+  configPanelInner.append(providerGroup, llmGroup, effortGroup, hamaUsage.group);
   configPanel.append(configPanelInner);
 
   const contextRow = el('div', 'ag-context-row');
@@ -7317,6 +7367,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
     failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
     const mentions = splitThreadMentions(request.mentions);
+    // 이 하네스로 대화해 봤다 — 다음 새 채팅의 기본 하네스 판단에 쓴다.
+    recordHarnessChoice(selectedAgent);
     const sent = bridge.sendUserMessage(
       requestText,
       request.skillName,
@@ -9272,9 +9324,32 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
+  /** 새 채팅을 Hama 로 열지 — Hama 플랜 가입자이고 다른 하네스를 고르거나 써 본 적이 없을 때. */
+  function hamaIsDefaultNow(): boolean {
+    return hamaIsDefault(hamaStatus, { choice: readHarnessChoice(), hasChats: peekThreads().length > 0 });
+  }
+
+  /**
+   * Hama 플랜 상태가 연결로 처음 닿으면, 아직 아무것도 보내지 않은 빈 채팅을 Hama 로 세운다. 일하는 채팅·보낸
+   * 채팅·열람 중인 채팅은 바꾸지 않는다.
+   */
+  function adoptHamaDefault(): void {
+    if (selectedAgent === 'hama' || !hamaIsDefaultNow()) return;
+    const next = firstRunAgentForChat('hama', {
+      selectedAgent,
+      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
+      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
+      readOnly: readOnlyDocLabel !== null,
+    });
+    if (!next) return;
+    applyDefaultSelection();
+    startCurrentBridgeChat();
+    refreshSidebarWidthMin();
+  }
+
   /** 저장된 기본값을 지금 선택으로 세운다 (새 대화 진입점에서만 부른다). */
   function applyDefaultSelection(): void {
-    const nextAgent = agentPrefs.defaultAgent;
+    const nextAgent = hamaIsDefaultNow() ? 'hama' : agentPrefs.defaultAgent;
     const nextModel = resolveModelForAgent(nextAgent, agentPrefs.defaultModel);
     const nextEffort = resolveEffortForAgent(nextAgent, agentPrefs.defaultEffort, nextModel);
     selectedModel = nextModel;
@@ -9734,11 +9809,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const [name, item] of providerItems) {
       const active = name === agent;
       item.classList.toggle('ag-active', active);
-      item.setAttribute('aria-checked', active ? 'true' : 'false');
+      if (item.dataset.locked !== 'true') item.setAttribute('aria-checked', active ? 'true' : 'false');
     }
     syncProviderMenu();
     if (activeComposerSkill) composerSkill.dataset.agent = agent;
     updateWorkspaceAgentContext();
+    hamaUsage.update(hamaStatus, agent === 'hama');
   }
 
   function setConnection(
@@ -10471,6 +10547,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
   function applyAgentPrefs(prefs: AgentPrefs): void {
+    // 기본 프로바이더를 바꿔 저장했다 — 직접 고른 것이다(Hama 기본값이 덮지 않는다).
+    if (prefs.defaultAgent !== agentPrefs.defaultAgent) recordHarnessChoice(prefs.defaultAgent);
     agentPrefs = prefs;
     rebuildLlmMenu();
   }
@@ -12536,6 +12614,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
+        // 허브에 붙을 때마다 Hama 플랜 상태를 묻는다(답은 hama-status 로 온다).
+        if (e.state === 'connected') void bridge.requestHamaStatus?.().catch(() => null);
         permissionController.setConnection(e.state === 'connected');
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
@@ -12697,6 +12777,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         renderActiveTemplate();
         persistCurrentThread();
         if (e.reason === 'deleted') systemMessage('템플릿이 삭제되어 해제했습니다.');
+        break;
+      case 'hama-status':
+        hamaStatus = e.status;
+        syncProviderMenu();
+        if (selectedAgent === 'hama') {
+          // 브리지가 Hama 모델 레지스트리를 먼저 바꿨다. 지금 선택도 새 목록으로 접는다.
+          selectedModel = resolveModelForAgent('hama', selectedModel);
+          selectedEffort = resolveEffortForAgent('hama', selectedEffort, selectedModel);
+          rebuildLlmMenu();
+          rebuildEffortMenu();
+          scheduleSidebarWidthMin();
+        }
+        hamaUsage.update(hamaStatus, selectedAgent === 'hama');
+        adoptHamaDefault();
         break;
       case 'pi-status':
       case 'hama-status':
@@ -13787,6 +13881,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setSelectedAgent(selectedAgent);
   setConnection(connState);
   setTurnRunning(turnRunning);
+  // Hama 플랜 상태 — 이미 받아 둔 것이 있으면 바로 쓰고, 붙어 있으면 다시 묻는다.
+  adoptHamaDefault();
+  if (connState === 'connected') void bridge.requestHamaStatus?.().catch(() => null);
   updateWorkflowControl();
   updateDocumentContext();
   /**
@@ -14264,6 +14361,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       runStatus.dispose();
       unsubscribeHamaSetting();
       hamaRootObserver?.disconnect();
+      hamaUsage.dispose();
       chatHama?.dispose();
       attentionViewObserver?.disconnect();
       window.removeEventListener('focus', scheduleSeenCheck);
