@@ -790,7 +790,7 @@ export function readContextEvent(event: AgentStreamEvent): AgentStreamEvent | nu
 }
 
 function isAgentName(v: unknown): v is AgentName {
-  return v === 'claude' || v === 'codex' || v === 'pi';
+  return v === 'claude' || v === 'codex' || v === 'pi' || v === 'hama';
 }
 
 function isBoundedText(value: unknown, max: number): value is string {
@@ -1260,6 +1260,8 @@ function readProviderStatus(value: unknown): ProviderStatusMap {
     claude: readProviderHealth(src['claude']),
     codex: readProviderHealth(src['codex']),
     pi: readProviderHealth(src['pi']),
+    // Hama 는 Pi 런타임으로 돈다. 허브가 따로 보내지 않으면 Pi 의 실행 환경을 따른다.
+    hama: readProviderHealth(src['hama'] ?? src['pi']),
   } as ProviderStatusMap;
 }
 
@@ -1304,6 +1306,7 @@ function readAgentSetupStatuses(value: unknown): AgentSetupStatusMap {
     claude: readAgentSetupStatus(src['claude'], 'claude'),
     codex: readAgentSetupStatus(src['codex'], 'codex'),
     pi: readAgentSetupStatus(src['pi'], 'pi'),
+    hama: readAgentSetupStatus(src['hama'], 'hama'),
   } as AgentSetupStatusMap;
 }
 

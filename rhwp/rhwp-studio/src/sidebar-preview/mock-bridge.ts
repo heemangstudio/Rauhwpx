@@ -53,6 +53,8 @@ export const failureKinds = [
   'pi-setup',
   'usage',
   'usage-soon',
+  'hama-cap',
+  'hama-month',
   'credits',
   'provider',
   'exited',
@@ -87,6 +89,17 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
     case 'usage-soon':
       return failure('usage_limit', "You've hit your limit · resets soon", `${agent}:rate_limit`, false, now + 3_000);
+    case 'hama-cap':
+      // 허브가 [hama-cap:…] 꼬리표로 분류한 Hama 5시간 한도. 리셋 시각은 3시간 12분 뒤.
+      return {
+        ...failure('usage_limit', 'Hama 5시간 사용 한도에 도달했습니다.\n429 Hama quota exceeded (cap_5h)', 'hama_cap_5h', false, now + 3 * 3_600_000 + 12 * 60_000),
+        agent: 'hama',
+      };
+    case 'hama-month':
+      return {
+        ...failure('usage_limit', 'Hama 이번 달 사용량을 모두 썼습니다.\n429 Hama quota exceeded (cap_month)', 'hama_cap_month', false, now + 9 * 24 * 3_600_000),
+        agent: 'hama',
+      };
     case 'credits':
       return failure('usage_limit', 'OpenRouter 크레딧이 부족합니다.\n402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/settings/credits?[redacted]', 'openrouter_credits', false);
     case 'provider':
@@ -518,6 +531,14 @@ export function createMockBridge(
   };
   let hamaStatus: T.HamaStatus = options.hama ?? inactiveHamaStatus();
   setHamaModels(hamaStatus.models);
+  // 허브처럼 서버가 살아 있는 플랜이라고 답했을 때만 Hama 가 연결이다.
+  data.setups.hama = {
+    ...data.setups.hama,
+    connected: hamaStatus.availability === 'active',
+    authenticated: hamaStatus.availability === 'active',
+    setupComplete: hamaStatus.availability === 'active',
+    authMethod: null,
+  };
   const emitHama = () => {
     setHamaModels(hamaStatus.models);
     emit({ type: 'hama-status', status: hamaStatus });

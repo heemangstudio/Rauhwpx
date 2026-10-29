@@ -29,7 +29,7 @@ export const MAX_FAILURE_MESSAGE = 2000;
 /** 리셋 시각으로 받아 줄 미래 한계 — 주간 창보다 넉넉하다. 그 너머는 깨진 값이다. */
 const MAX_RESET_AHEAD_MS = 400 * 24 * 60 * 60 * 1000;
 const CODE_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
-const AGENT_NAMES: readonly AgentName[] = ['claude', 'codex', 'pi', 'grok', 'cursor', 'opencode'];
+const AGENT_NAMES: readonly AgentName[] = ['claude', 'codex', 'pi', 'hama', 'grok', 'cursor', 'opencode'];
 
 function isAgentName(value: unknown): value is AgentName {
   return typeof value === 'string' && (AGENT_NAMES as readonly string[]).includes(value);

@@ -63,6 +63,7 @@ import {
   modelSupportsImages,
   resolveEffortForAgent,
   resolveModelForAgent,
+  isModelForAgent,
   resolveServiceTier,
   agentSupportsFast,
 } from '../../agent/models.ts';
@@ -1473,6 +1474,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai-connection'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
+    hamaCheapModel: () => {
+      const status = bridge.hamaStatus();
+      const id = status.cheapModelIds[0];
+      const model = status.models.find((entry) => entry.id === id);
+      return model ? { id: model.id, name: model.name } : null;
+    },
+    switchHamaModel: (modelId) => {
+      if (selectedAgent !== 'hama' || isSelectionLocked() || !isModelForAgent('hama', modelId)) return false;
+      selectModel(modelId);
+      return selectedModel === modelId;
+    },
+    switchToByok: () => {
+      // 키가 있으면 프로바이더 전환과 같은 길(기록 전달)로 옮기고, 없으면 BYOK 설정을 연다.
+      if (connectedProviders.has('pi')) {
+        selectAgent('pi');
+        return;
+      }
+      requestSettingsOpen('ai-connection');
+      settingsPanel.openAgentSetup('pi');
+    },
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
     autofix: { ready: autofixReady, create: createAutofixButton },
@@ -12677,11 +12698,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (e.reason === 'deleted') systemMessage('템플릿이 삭제되어 해제했습니다.');
         break;
       case 'pi-status':
+      case 'hama-status':
         syncProviderMenu();
-        if (selectedAgent === 'pi') {
-          selectedModel = resolveModelForAgent('pi', selectedModel);
-          selectedEffort = resolveEffortForAgent('pi', selectedEffort, selectedModel);
+        // 브리지가 이 하네스의 모델 레지스트리를 먼저 갱신했다. 현재 선택을 새 목록으로 접는다.
+        if (selectedAgent === (e.type === 'pi-status' ? 'pi' : 'hama')) {
+          selectedModel = resolveModelForAgent(selectedAgent, selectedModel);
+          selectedEffort = resolveEffortForAgent(selectedAgent, selectedEffort, selectedModel);
         }
+        if (e.type === 'hama-status') failureNotices.refresh();
         rebuildLlmMenu();
         rebuildEffortMenu();
         scheduleSidebarWidthMin();

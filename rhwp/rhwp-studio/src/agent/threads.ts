@@ -559,7 +559,7 @@ function isStoredChatThread(v: unknown): v is StoredChatThread {
     && typeof t.title === 'string'
     && typeof t.createdAt === 'number'
     && typeof t.updatedAt === 'number'
-    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi')
+    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi' || t.agent === 'hama')
     && typeof t.model === 'string'
     && typeof t.effort === 'string'
     && Array.isArray(t.messages)
@@ -661,7 +661,7 @@ function parseThreadTask(value: unknown): ThreadTaskRecord | null {
 }
 
 function isAgentName(value: unknown): value is AgentName {
-  return value === 'claude' || value === 'codex' || value === 'pi';
+  return value === 'claude' || value === 'codex' || value === 'pi' || value === 'hama';
 }
 
 function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {

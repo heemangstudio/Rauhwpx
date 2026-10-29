@@ -14,14 +14,14 @@
   pointer-events: none;
 }
 
-.ag-hama {
+.ag-hama-hippo {
   position: absolute;
   bottom: 0;
   left: 0;
   pointer-events: none;
 }
 
-.ag-hama canvas {
+.ag-hama-hippo canvas {
   display: block;
   image-rendering: pixelated;
   pointer-events: none;
