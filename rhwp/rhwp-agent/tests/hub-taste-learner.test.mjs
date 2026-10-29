@@ -25,6 +25,14 @@ function fakePreload(root) {
   const aborted = path.join(root, 'learner-aborted');
   const claudeUrl = new URL('../agents/claude.mjs', import.meta.url).href;
   const oneShotUrl = new URL('../agents/one-shot-llm.mjs', import.meta.url).href;
+  const cliSetupUrl = new URL('../cli-setup-manager.mjs', import.meta.url).href;
+  // 허브는 Claude 채팅 전에 CLI 로그인을 확인한다. 가짜 Claude 는 이 기계의 로그인과 상관없이 로그인된 것으로 둔다.
+  const cliSetupStub = `
+    export function createCliSetupManager(...args) {
+      const manager = realCreateCliSetupManager(...args);
+      return { ...manager, authStatus: async () => ({ authenticated: true }) };
+    }
+  `;
   const claudeStub = `
     import { appendFileSync as __fakeAppend, existsSync as __fakeExists, rmSync as __fakeRm, writeFileSync as __fakeWrite } from 'node:fs';
     export async function canResumeClaudeSession() { return false; }
@@ -82,6 +90,11 @@ function fakePreload(root) {
           .replace('export function createClaudeSession(', 'function realCreateClaudeSession(')
           .replace('export async function canResumeClaudeSession(', 'async function realCanResumeClaudeSession(');
         return { ...original, shortCircuit: true, source: source + ${JSON.stringify(claudeStub)} };
+      }
+      if (url === ${JSON.stringify(cliSetupUrl)}) {
+        const original = await nextLoad(url, context);
+        const source = String(original.source).replace('export function createCliSetupManager(', 'function realCreateCliSetupManager(');
+        return { ...original, shortCircuit: true, source: source + ${JSON.stringify(cliSetupStub)} };
       }
       if (url === ${JSON.stringify(oneShotUrl)}) {
         const original = await nextLoad(url, context);
