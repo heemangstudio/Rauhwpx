@@ -213,6 +213,9 @@ function permissionPathRule(tool, value) {
 
 function claudeProcessEnv(opts, sourceEnv) {
   const env = isolatedProcessEnv(opts, sourceEnv);
+  // CLI 자체의 자동 기억(~/.claude/projects/<cwd>/memory)을 끈다. 앱의 기억은 문서 기억(Rau-0.1)과
+  // 앱 AGENTS.md(사용자 승인)뿐이다. --setting-sources '' 아래에서는 기본이 켜짐이고, 이 env 가 설정보다 먼저 본다.
+  env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
   if (!opts.isolatedHome) {
     delete env.CLAUDE_CONFIG_DIR;
     delete env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
