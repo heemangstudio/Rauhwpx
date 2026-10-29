@@ -143,8 +143,8 @@ test('activation turns on paid features, and settings show a masked key', async 
   assert.equal(server.calls.at(-1).body.appVersion, '3.1.0');
   assert.deepEqual(changes.at(-1), 'licensed');
   assert.equal(result.status.paid, true);
-  // 예전 서버는 edition·plan·rau 를 보내지 않는다. Pro 로 보고 Rau 자격은 모른다.
-  assert.deepEqual([result.status.edition, result.status.plan, result.status.rau], ['pro', null, { eligible: null }]);
+  // 예전 서버와 예전 키는 edition·plan·rau 를 보내지 않는다. Pro 판이 아니고 Rau 자격은 모른다.
+  assert.deepEqual([result.status.edition, result.status.plan, result.status.rau], [null, null, { eligible: null }]);
 });
 
 test('the Pro server\'s edition, plan and Rau eligibility are stored and follow the lease', async (t) => {

@@ -133,6 +133,17 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     getStatus: () => ipcRenderer.invoke('rau:status'),
     openUpgrade: (url) => ipcRenderer.invoke('rau:open-upgrade', typeof url === 'string' ? url : ''),
   },
+  // 앱 요금제와 앱 안 결제. 결제 확인과 키 활성화는 메인이 하고, 렌더러는 요금제와 진행 상태만 받는다.
+  plan: {
+    getStatus: () => ipcRenderer.invoke('plan:status'),
+    startCheckout: (sku) => ipcRenderer.invoke('plan:start-checkout', String(sku ?? '')),
+    cancelCheckout: () => ipcRenderer.invoke('plan:cancel-checkout'),
+    onChange: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('plan:changed', listener);
+      return () => ipcRenderer.removeListener('plan:changed', listener);
+    },
+  },
   // 앱 업데이트. 확인·다운로드·재시작은 메인이 하고, 렌더러는 상태를 받아 보여 준다.
   updates: {
     getAllState: () => ipcRenderer.invoke('desktop:update-all-get-state'),

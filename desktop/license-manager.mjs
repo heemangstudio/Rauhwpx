@@ -234,11 +234,12 @@ export function createLicenseManager({
     else if (lease.reason === 'expired') value = 'lease_expired';
     else value = 'needs_activation';
     // Pro 는 서명한 lease 로만 정한다. 라이선스를 보지 않는 개발 빌드(unenforced)도 같다.
+    // edition 은 서버가 'pro' 라고 답한 키만 'pro' 다. 예전 키(GLJFC9·평생·Signature·베타 등)는 null 이다.
     const paid = value === 'licensed';
     return {
       state: enforce ? value : 'unenforced',
       paid,
-      edition: paid ? license.edition ?? 'pro' : null,
+      edition: paid ? license.edition : null,
       plan: paid ? license.plan ?? null : null,
       rau: { eligible: paid ? license.rauEligible ?? null : false },
       deviceId: state.deviceId,
