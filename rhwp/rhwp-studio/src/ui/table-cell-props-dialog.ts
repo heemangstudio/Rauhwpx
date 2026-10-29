@@ -10,7 +10,7 @@ import {
   readHwp16Input,
   readHwpunitInput,
 } from './table-property-units';
-import { rejectNestedTableDialog } from './table-dialog-guard';
+import { tableTarget } from '@/core/table-target';
 
 const DOC_PAPER_COLOR = 'var(--doc-paper)';
 const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
@@ -21,6 +21,11 @@ interface TabDef {
   id: string;
   label: string;
   builder: () => HTMLElement;
+}
+
+/** 그러데이션·그림 채우기는 이 대화상자가 고치지 않는다 — 단색을 고르지 않으면 그대로 둔다. */
+function keepsOtherFill(props: { fillType?: string }): boolean {
+  return props.fillType === 'gradient' || props.fillType === 'image';
 }
 
 /**
@@ -136,14 +141,12 @@ export class TableCellPropsDialog extends ModalDialog {
   }
 
   show(): void {
-    // 중첩 표는 by-path 설정 API가 없어 바깥 표에 쓰게 된다 — 열지 않는다.
-    if (rejectNestedTableDialog(this.tableCtx.cellPath)) return;
     super.show();
     this.dialog.classList.add('tcp-dialog');
-    // 속성 조회
-    const { sec, ppi, ci } = this.tableCtx;
-    this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
-    this.tableProps = this.wasm.getTableProperties(sec, ppi, ci);
+    // 속성 조회 (중첩 표는 셀 경로로 안쪽 표를 읽는다)
+    const target = tableTarget(this.wasm, this.tableCtx);
+    this.cellProps = target.cellProperties(this.cellIdx);
+    this.tableProps = target.tableProperties();
     this.populateFields();
   }
 
@@ -1341,8 +1344,6 @@ export class TableCellPropsDialog extends ModalDialog {
   }
 
   protected onConfirm(): void {
-    const { sec, ppi, ci } = this.tableCtx;
-
     // 셀 속성 수정
     const newCellProps: Record<string, unknown> = {};
     if (this.cellApplySizeCheck.checked) {
@@ -1378,7 +1379,7 @@ export class TableCellPropsDialog extends ModalDialog {
         newCellProps.fillColor = this.bgColorPicker.value;
         newCellProps.patternColor = this.bgPatternColorPicker.value;
         newCellProps.patternType = parseInt(this.bgPatternTypeSelect.value, 10);
-      } else {
+      } else if (!keepsOtherFill(this.cellProps)) {
         newCellProps.fillType = 'none';
       }
     }
@@ -1444,14 +1445,15 @@ export class TableCellPropsDialog extends ModalDialog {
         newTableProps.fillColor = this.bgColorPicker.value;
         newTableProps.patternColor = this.bgPatternColorPicker.value;
         newTableProps.patternType = parseInt(this.bgPatternTypeSelect.value, 10);
-      } else {
+      } else if (!keepsOtherFill(this.tableProps)) {
         newTableProps.fillType = 'none';
       }
     }
 
     const applyProps = () => {
-      this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newCellProps as Partial<CellProperties>);
-      this.wasm.setTableProperties(sec, ppi, ci, newTableProps as Partial<TableProperties>);
+      const target = tableTarget(this.wasm, this.tableCtx);
+      target.setCellProperties(this.cellIdx, newCellProps as Partial<CellProperties>);
+      target.setTableProperties(newTableProps as Partial<TableProperties>);
     };
     // 표/셀 속성 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
     // 기록한다 (#1320 계약, picture-props-dialog(#2027)와 동일 패턴).

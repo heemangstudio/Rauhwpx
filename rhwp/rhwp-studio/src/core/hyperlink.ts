@@ -35,6 +35,26 @@ export function hyperlinkTarget(pos: DocumentPosition): HyperlinkTarget {
   return target;
 }
 
+const targetPath = (target: HyperlinkTarget): string | null => target.cellPath.length
+  ? JSON.stringify(target.cellPath.map(([controlIndex, cellIndex, cellParaIndex]) => ({ controlIndex, cellIndex, cellParaIndex })))
+  : null;
+
+/** 캐럿 위치를 링크 범위의 글자 위치로 바꾼다. 각주·글자처럼 취급한 개체는 캐럿에서만 한 칸을 차지한다. */
+export function hyperlinkTextOffset(wasm: WasmBridge, target: HyperlinkTarget, caret: number): number {
+  const path = targetPath(target);
+  if (path) return typeof wasm.logicalToTextOffsetInCellByPath === 'function' ? wasm.logicalToTextOffsetInCellByPath(target.section, target.para, path, caret) : caret;
+  return typeof wasm.logicalToTextOffset === 'function' ? wasm.logicalToTextOffset(target.section, target.para, caret) : caret;
+}
+
+/** 링크 범위의 글자 위치를 캐럿 위치로 바꾼다. after 면 그 앞 글자 바로 뒤, 아니면 그 글자 바로 앞이다. */
+export function hyperlinkCaretOffset(wasm: WasmBridge, target: HyperlinkTarget, text: number, after = false): number {
+  const path = targetPath(target);
+  const toCaret = (offset: number): number => path
+    ? (typeof wasm.textToLogicalOffsetInCellByPath === 'function' ? wasm.textToLogicalOffsetInCellByPath(target.section, target.para, path, offset) : offset)
+    : (typeof wasm.textToLogicalOffset === 'function' ? wasm.textToLogicalOffset(target.section, target.para, offset) : offset);
+  return after && text > 0 ? toCaret(text - 1) + 1 : toCaret(text);
+}
+
 export function hyperlinkRange(pos: DocumentPosition, selection: { start: DocumentPosition; end: DocumentPosition } | null) {
   const start = selection?.start ?? pos;
   const end = selection?.end ?? pos;

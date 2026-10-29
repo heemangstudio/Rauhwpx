@@ -2986,6 +2986,7 @@ export class DocumentVersionController implements VersionManagerController {
       const entries = await this.#mergeWorker.buildDocumentManifest(blob.bytes, {
         onProgress: (progress) => this.#eventBus.emit('merge-progress', progress),
       });
+      if (!entries) throw new VersionError('MERGE_VALIDATION_FAILED', '문서 구조 식별 정보를 만들지 못했습니다.');
       return this.#store.putFullMergeManifest(repositoryId, id, entries);
     })();
     memo.set(id, building);

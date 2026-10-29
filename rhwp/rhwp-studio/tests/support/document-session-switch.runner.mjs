@@ -1,48 +1,20 @@
-// 실제 WASM(rhwp/pkg) 두 문서 + 페이지 퍼사드 + 세션별 CommandHistory + HeadlessEditorHost.
+// 실제 HeemangEngine(hm-wasm) 두 문서 + 페이지 퍼사드 + 세션별 CommandHistory + HeadlessEditorHost.
 // 화면이 B 로 옮겨 간 동안 A 의 에이전트 편집이 A 의 히스토리에 쌓이고, A 로 돌아와 undo 하면
 // A 만 되돌아가는지 본다. InputHandler 는 DOM 이 필요해 여기서는 그 히스토리 호출 경로
 // (history.execute/undo(facade))를 그대로 흉내 낸다.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { registerHooks } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { startEditEngine } from './edit-history-env.ts';
 
-const studio = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const src = join(studio, 'src');
-const pkg = join(studio, '../pkg');
-const binding = pathToFileURL(join(pkg, 'rhwp.js')).href;
-registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === '@wasm/rhwp.js') return { url: binding, shortCircuit: true };
-    if (specifier.startsWith('@/')) {
-      const path = join(src, specifier.slice(2));
-      return { url: pathToFileURL(path.endsWith('.ts') ? path : `${path}.ts`).href, shortCircuit: true };
-    }
-    if (/^\.{1,2}\//.test(specifier) && !/\.[cm]?[tj]s$/.test(specifier)) {
-      return { url: pathToFileURL(join(dirname(fileURLToPath(context.parentURL)), specifier + '.ts')).href, shortCircuit: true };
-    }
-    return next(specifier, context);
-  },
-});
-const engine = await import(binding);
-engine.initSync({ module: readFileSync(join(pkg, 'rhwp_bg.wasm')) });
-const load = (path) => import(pathToFileURL(join(src, path)).href);
-const { WasmBridge } = await load('core/wasm-bridge.ts');
-const { EventBus } = await load('core/event-bus.ts');
-const { createAttachableFacade } = await load('core/attachable-facade.ts');
-const { CommandHistory } = await load('engine/history.ts');
-const { InsertTextCommand } = await load('engine/command.ts');
-const { HeadlessEditorHost } = await load('engine/headless-editor-host.ts');
+const engine = await startEditEngine();
+const { WasmBridge } = await engine.load('/src/core/wasm-bridge.ts');
+const { createAttachableFacade } = await engine.load('/src/core/attachable-facade.ts');
+const { InsertTextCommand } = await engine.load('/src/engine/command.ts');
+const { HeadlessEditorHost } = await engine.load('/src/engine/headless-editor-host.ts');
+const { CommandHistory, EventBus } = engine;
 
 function bridge(text) {
-  const doc = engine.HwpDocument.createEmpty();
-  doc.createBlankDocument();
-  doc.insertText(0, 0, 0, text);
-  const wasm = new WasmBridge();
-  wasm.doc = doc;
-  // 스냅샷 복원 뒤의 외부 그림 주입은 개발 서버 fetch 라 여기서는 끈다
-  wasm.populateExternalImagesFromDevServer = async () => {};
+  const wasm = engine.newDocument();
+  wasm.insertText(0, 0, 0, text);
   return wasm;
 }
 const text = (wasm) => wasm.getTextRange(0, 0, 0, wasm.getParagraphLength(0, 0));

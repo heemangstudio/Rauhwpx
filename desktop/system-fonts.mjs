@@ -18,6 +18,7 @@ import {
   SYSTEM_FONT_INDEX_VERSION,
   assembleFontIndex,
   createReadSource,
+  compactSfntFace,
   decodeHancomText,
   decodeNameRecord,
   extractCollectionFace as extractCollectionFaceBytes,
@@ -845,7 +846,7 @@ export function createSystemFontService(options = {}) {
    * 정해지고, chunks() 는 파일을 다시 열어 같은 바이트를 순서대로 돌려준다.
    * @returns {Promise<{ size: number, chunks(): AsyncGenerator<Buffer> }>}
    */
-  async function openFace(id) {
+  async function openFace(id, options = {}) {
     const started = performance.now();
     if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) throw new Error('invalid font id');
     if (!index) await list();
@@ -864,6 +865,19 @@ export function createSystemFontService(options = {}) {
     const collection = face.format === 'ttc' || face.format === 'otc';
     if (!collection && file.size > MAX_FACE_BYTES) {
       throw new Error(`too-large: ${file.size} bytes (cap ${MAX_FACE_BYTES})`);
+    }
+    if (typeof options.characters === 'string') {
+      const handle = await fs.open(file.path, 'r');
+      try {
+        const compact = await compactSfntFace(fileSource(handle, file.size), face, options.characters, options.glyphs);
+        const now = await handle.stat();
+        if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) throw stale(id, 'font file changed since the index was built');
+        if (compact) {
+          return { size: compact.length, async* chunks() {
+            for (let at=0;at<compact.length;at+=STREAM_CHUNK) yield compact.subarray(at,at+STREAM_CHUNK);
+          } };
+        }
+      } finally { await handle.close(); }
     }
     if (face.format === 'woff' || face.format === 'woff2') return openWebFace(id, face, file, started);
     const plan = collection ? await collectionPlan(id, file, face.faceIndex) : null;

@@ -1,0 +1,130 @@
+{
+  "base": "4d8a5c955e86bf8b7bc9b15dac84d829799db591",
+  "source_sha256": {
+    "crates/hm-hwpx/src/object.rs": "b4d34a7cfa4795219e30cee55d2fdf34b07ebe3b8ea81ccc71d20dddfe4b7656",
+    "crates/hm-hwpx/src/write/object.rs": "217e39d322dfc43e643f6d017fb50b623236b5611d40056495d51a6f6b05e775",
+    "crates/hm-hwpx/tests/line_geometry.rs": "f15b876e11a5c567575c2ad2150198a948df73e16429aaacb499f56124275eb3",
+    "crates/hm-hwpx/tests/twins.rs": "1fb97c71147f5a8a22bb554ab69a6214564868ac46596b3f5a7fc5558909755e",
+    "crates/hm-render/src/objects.rs": "e62691fbe745be9038774964946c27d88be93e54fb0a65fb555073143931465d"
+  },
+  "binary": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-connector-arrow-1af8e042df52",
+  "binary_sha256": "1af8e042df5208666f8691eb5cbd8694078d626191591f5aa2e4d2233e904a4d",
+  "status": "accepted native component; combined live WASM verification pending",
+  "commit": "f6ed9431b816d2ed13a7c1c67f242602fd7ff4d7",
+  "strict_gate": {
+    "base": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-objects-images-parabox-text",
+    "base_sha256": "1c7313f86c9314255454438dff59a058e6280b4b6f70be0fa3a71d52ccc1b215",
+    "cand": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-connector-arrow-1af8e042df52",
+    "cand_sha256": "1af8e042df5208666f8691eb5cbd8694078d626191591f5aa2e4d2233e904a4d",
+    "font_args_sha": "08295f14f7eb",
+    "pass": true,
+    "seconds": 37,
+    "hash_seconds": 33,
+    "docs": 687,
+    "pages_base": 11498,
+    "counts": {
+      "changed_svg": 3,
+      "noise": 1,
+      "improved": 2
+    },
+    "page_count_changes": [],
+    "failures": [],
+    "worse": [],
+    "improved": [
+      {
+        "doc": "d-2025-998509c2ea49",
+        "page": 205,
+        "gate": false,
+        "delta_px": -724,
+        "rises": [],
+        "crop": "d-2025-998509c2ea49_p205_improved.png",
+        "base_px": 11431,
+        "cand_px": 10707,
+        "base_pct": 7.62,
+        "cand_pct": 7.16
+      },
+      {
+        "doc": "d-2025-73aa4b6358ca",
+        "page": 205,
+        "gate": false,
+        "delta_px": -110,
+        "rises": [],
+        "crop": "d-2025-73aa4b6358ca_p205_improved.png",
+        "base_px": 11006,
+        "cand_px": 10896,
+        "base_pct": 6.49,
+        "cand_pct": 6.43
+      }
+    ],
+    "neutral": [],
+    "unscored": []
+  },
+  "whole_handbook": {
+    "old": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/oracle/rhwp-main-d25f784",
+    "old_sha256": "c291768e1ea18df076d931004a97513fbd0e8a1c94f1e0702b447b9fd7d619da",
+    "cand": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-connector-arrow-1af8e042df52",
+    "cand_sha256": "1af8e042df5208666f8691eb5cbd8694078d626191591f5aa2e4d2233e904a4d",
+    "font_args_sha": "08295f14f7eb",
+    "label": "",
+    "noise_px": 100,
+    "noise_frac": 0.0,
+    "seconds": 40,
+    "docs": 1,
+    "counts": {
+      "better": 1
+    },
+    "page_match": {
+      "old_match": 0,
+      "cand_match": 1,
+      "lost": [],
+      "gained": [
+        "d-2025-998509c2ea49"
+      ]
+    },
+    "delta_distribution": {
+      "n": 1,
+      "abs_px_percentiles": {
+        "p1": -27145415,
+        "p5": -27145415,
+        "p25": -27145415,
+        "p50": -27145415,
+        "p75": -27145415,
+        "p90": -27145415,
+        "p95": -27145415,
+        "p99": -27145415
+      },
+      "rel_percentiles": {
+        "p1": -0.7224,
+        "p5": -0.7224,
+        "p25": -0.7224,
+        "p50": -0.7224,
+        "p75": -0.7224,
+        "p90": -0.7224,
+        "p95": -0.7224,
+        "p99": -0.7224
+      },
+      "docs_delta_eq_0": 0,
+      "docs_delta_gt_0": 0,
+      "docs_delta_gt_0_le_100px": 0,
+      "docs_delta_gt_100px": 0,
+      "docs_delta_gt_1000px": 0
+    },
+    "worse": [],
+    "unrenderable_both": []
+  },
+  "tests": {
+    "hm_hwpx": {
+      "pass": 39,
+      "fail": 0,
+      "ignored": 1
+    },
+    "hm_render": {
+      "pass": 46,
+      "fail": 0
+    },
+    "public_ole_identity": {
+      "pass": 1,
+      "fail": 0
+    }
+  }
+}

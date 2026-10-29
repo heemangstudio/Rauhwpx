@@ -90,3 +90,21 @@ test('answers 503 when the font indexer is not available in this install', async
     assert.equal(response.status, 503);
   });
 });
+
+
+test('bounded character and glyph plans reach the authenticated font service without changing bytes', async () => {
+  const calls=[];
+  const service=fakeService(), open=service.openFace;
+  service.openFace=async(id,options)=>{calls.push(options);return open(id);};
+  await withServer({authenticate,loadService:async()=>service},async(base)=>{
+    const headers={authorization:'Bearer good'}, route=`${base}/fonts/faces/${FACE_ID}`;
+    const response=await fetch(`${route}?chars=41,d55c,1f600&glyphs=0,8,2a`,{headers});
+    assert.equal(response.status,200);assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[0,1,0,0,42]);
+    assert.deepEqual(calls,[{characters:'A한😀',glyphs:[0,8,42]}]);
+    for(const query of ['chars=110000','chars=d800','chars=xyz','glyphs=1','chars=41&glyphs=fffff',`chars=${'41,'.repeat(5000)}41`]) {
+      assert.equal((await fetch(`${route}?${query}`,{headers})).status,400);
+    }
+    assert.equal((await fetch(`${route}?chars=41`)).status,401);
+    assert.equal(calls.length,1);
+  });
+});

@@ -98,6 +98,9 @@ test('snapshot cache shares an export across reads and invalidates on editor or 
       let exports = 0;
       const originalExport = wasm.exportHwp.bind(wasm);
       wasm.exportHwp = () => { exports++; return originalExport(); };
+      let hwpxExports = 0;
+      const originalHwpxExport = wasm.exportHwpx.bind(wasm);
+      wasm.exportHwpx = () => { hwpxExports++; return originalHwpxExport(); };
       const cache = new VersionSnapshotCache();
       try {
         const initial = cache.fingerprint(wasm, 'document-a', 0);
@@ -112,17 +115,24 @@ test('snapshot cache shares an export across reads and invalidates on editor or 
         wasm.fileName = 'renamed.hwp';
         const renamed = cache.capture(wasm, 'document-b', 1);
         const renamedExports = exports;
+        wasm.fileName = 'renamed.hwpx';
+        const converted = cache.capture(wasm, 'document-b', 1);
+        const convertedSignature = [...converted.bytes.subarray(0, 2)];
         cache.clear();
-        cache.capture(wasm, 'document-b', 1);
-        return { initialExports, editExports, documentExports, renamedExports, finalExports: exports,
+        const cleared = cache.capture(wasm, 'document-b', 1);
+        return { initialExports, editExports, documentExports, renamedExports, finalExports: exports, hwpxExports,
           sameFingerprint: initial === captured.fingerprint, reused, changed: edited.fingerprint !== initial,
-          recaptured: otherDocument !== edited && renamed !== otherDocument };
+          recaptured: otherDocument !== edited && renamed !== otherDocument,
+          renamedSameBytes: renamed.fingerprint === edited.fingerprint,
+          convertedToHwpx: converted.fingerprint !== renamed.fingerprint && convertedSignature.join() === '80,75',
+          clearedSameBytes: cleared.fingerprint === converted.fingerprint };
       } finally { wasm.releaseDocument(); }
     });
-    // 캐시 키가 바뀌면 새로 캡처한다. 엔진에 쓰기가 없었으면(다른 문서 id·clear) 같은 바이트를 다시 내보내지
-    // 않고, 엔진 이름을 바꾸면 다시 내보낸다.
-    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 2,
-      renamedExports: 3, finalExports: 3, sameFingerprint: true, reused: true, changed: true, recaptured: true });
+    // 캐시 키가 바뀌면 새로 캡처한다. 엔진에 쓰기가 없었으면(다른 문서 id·같은 형식의 이름 바꾸기·clear) 같은
+    // 바이트를 다시 내보내지 않고, 이름이 저장 형식을 바꾸면 그 형식으로 다시 내보낸다.
+    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 2, renamedExports: 2,
+      finalExports: 2, hwpxExports: 1, sameFingerprint: true, reused: true, changed: true, recaptured: true,
+      renamedSameBytes: true, convertedToHwpx: true, clearedSameBytes: true });
   } finally { await page.close(); }
 });
 
@@ -753,6 +763,10 @@ test('HWPX controller durably completes clean and conflicted merges with composi
           conflicted ? 0 : wasm.getParagraphLength(0, 0),
           conflicted ? 'INCOMING:' : ':INCOMING',
         );
+        // 겹치지 않는 병합에서는 들어오는 쪽이 구역 여백도 바꾼다. 병합은 본문 편집과 함께 이것도 지켜야 한다.
+        const baseMargin = wasm.getPageDef(0).marginLeft;
+        if (!conflicted) wasm.setPageDef(0, { ...wasm.getPageDef(0), marginLeft: baseMargin + 1000 });
+        const incomingMargin = wasm.getPageDef(0).marginLeft;
         const incoming = snapshotModule.captureVersionSnapshot(wasm);
         wasm.loadDocument(currentExport.bytes, fileName);
         // HWPX import/export can normalize package representation. Capture the
@@ -882,6 +896,8 @@ test('HWPX controller durably completes clean and conflicted merges with composi
             repositoryId: created.repository.id,
             currentHead: currentCheckpoint.commit.id,
             incomingHead: incomingCheckpoint.commit.id,
+            baseMargin,
+            incomingMargin,
           },
         });
         return { repositoryId: created.repository.id };
@@ -926,6 +942,9 @@ test('HWPX controller durably completes clean and conflicted merges with composi
           manifestCoverage: manifest?.coverage,
           manifestKinds: manifest?.entries.map((entry: { kind: string }) => entry.kind),
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
+          baseMargin: expected.baseMargin,
+          incomingMargin: expected.incomingMargin,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
       });
@@ -936,17 +955,10 @@ test('HWPX controller durably completes clean and conflicted merges with composi
       assert.equal(merged.merge.conflictCount > 0, conflicted);
       assert.equal(merged.sourceHead, merged.incomingHead);
       assert.equal(merged.manifestCoverage, 'full-document');
-      for (const kind of [
-        'document',
-        'document-properties',
-        'section',
-        'section-settings',
-        'paragraph',
-        'text',
-        'character-style',
-        'paragraph-style',
-        'style',
-      ]) assert.ok(merged.manifestKinds.includes(kind), `HWPX manifest must include ${kind}`);
+      // HeemangEngine 매니페스트는 문서 속성·구역 설정·글자 모양을 각 문서·구역·문단 항목 안에 담는다.
+      for (const kind of ['document', 'style', 'section', 'paragraph']) {
+        assert.ok(merged.manifestKinds.includes(kind), `HWPX manifest must include ${kind}`);
+      }
       assert.deepEqual(merged.magic, [0x50, 0x4b]);
       if (conflicted) {
         assert.match(merged.text, /INCOMING:/);
@@ -954,6 +966,8 @@ test('HWPX controller durably completes clean and conflicted merges with composi
       } else {
         assert.match(merged.text, /CURRENT:/);
         assert.match(merged.text, /:INCOMING/);
+        assert.notEqual(merged.incomingMargin, merged.baseMargin);
+        assert.equal(merged.marginLeft, merged.incomingMargin, 'clean merge keeps the incoming section margin');
       }
 
       await page.evaluate(() => (window as any).__hwpxInput.performUndo());
@@ -968,10 +982,12 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         return {
           sourceHead: (await store.getBranch(expected.repositoryId, 'source'))?.target,
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
       });
       assert.equal(undone.sourceHead, merged.incomingHead);
+      assert.equal(undone.marginLeft, merged.baseMargin);
       assert.match(undone.text, /CURRENT:/);
       assert.doesNotMatch(undone.text, /INCOMING:/);
       assert.deepEqual(undone.magic, [0x50, 0x4b]);
@@ -989,6 +1005,7 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         const result = {
           sourceHead: (await store.getBranch(expected.repositoryId, 'source'))?.target,
           text: snapshot.captureVersionSnapshot(wasm).compareSnapshot.paragraphs[0]?.text ?? '',
+          marginLeft: wasm.getPageDef(0).marginLeft,
           magic: [...wasm.exportHwpx().slice(0, 2)],
         };
         controller.dispose();
@@ -996,6 +1013,7 @@ test('HWPX controller durably completes clean and conflicted merges with composi
         return result;
       });
       assert.equal(redone.sourceHead, merged.incomingHead);
+      assert.equal(redone.marginLeft, merged.incomingMargin);
       assert.deepEqual(redone.magic, [0x50, 0x4b]);
       if (conflicted) {
         assert.match(redone.text, /INCOMING:/);

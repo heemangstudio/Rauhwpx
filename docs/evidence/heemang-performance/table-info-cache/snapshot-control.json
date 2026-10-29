@@ -1,0 +1,200 @@
+{
+  "samples": [
+    {
+      "enabled": false,
+      "warmup": true,
+      "run": -1,
+      "elapsedMs": 110.79999995231628,
+      "counts": {
+        "enabled": false,
+        "hits": 0,
+        "misses": 0,
+        "nativeQueries": 152,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 0
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": true,
+      "warmup": true,
+      "run": -1,
+      "elapsedMs": 91.39999997615814,
+      "counts": {
+        "enabled": true,
+        "hits": 44,
+        "misses": 108,
+        "nativeQueries": 108,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 1
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": false,
+      "warmup": false,
+      "run": 0,
+      "elapsedMs": 99.5,
+      "counts": {
+        "enabled": false,
+        "hits": 0,
+        "misses": 0,
+        "nativeQueries": 152,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 0
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": true,
+      "warmup": false,
+      "run": 0,
+      "elapsedMs": 97.69999992847443,
+      "counts": {
+        "enabled": true,
+        "hits": 44,
+        "misses": 108,
+        "nativeQueries": 108,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 1
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": true,
+      "warmup": false,
+      "run": 1,
+      "elapsedMs": 75.60000002384186,
+      "counts": {
+        "enabled": true,
+        "hits": 44,
+        "misses": 108,
+        "nativeQueries": 108,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 1
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": false,
+      "warmup": false,
+      "run": 1,
+      "elapsedMs": 100.70000004768372,
+      "counts": {
+        "enabled": false,
+        "hits": 0,
+        "misses": 0,
+        "nativeQueries": 152,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 0
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": false,
+      "warmup": false,
+      "run": 2,
+      "elapsedMs": 101.80000007152557,
+      "counts": {
+        "enabled": false,
+        "hits": 0,
+        "misses": 0,
+        "nativeQueries": 152,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 0
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": true,
+      "warmup": false,
+      "run": 2,
+      "elapsedMs": 93.19999992847443,
+      "counts": {
+        "enabled": true,
+        "hits": 44,
+        "misses": 108,
+        "nativeQueries": 108,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 1
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": true,
+      "warmup": false,
+      "run": 3,
+      "elapsedMs": 79.30000007152557,
+      "counts": {
+        "enabled": true,
+        "hits": 44,
+        "misses": 108,
+        "nativeQueries": 108,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 1
+      },
+      "characters": 597303,
+      "equal": true
+    },
+    {
+      "enabled": false,
+      "warmup": false,
+      "run": 3,
+      "elapsedMs": 110.70000004768372,
+      "counts": {
+        "enabled": false,
+        "hits": 0,
+        "misses": 0,
+        "nativeQueries": 152,
+        "compared": 0,
+        "mismatches": 0,
+        "invalidations": 0
+      },
+      "characters": 597303,
+      "equal": true
+    }
+  ],
+  "before": {
+    "instance": 1,
+    "contentEpoch": 0,
+    "layoutEpoch": 2,
+    "fontGeneration": 54,
+    "format": "hwp5",
+    "pageCount": 92,
+    "dirty": false,
+    "undo": 0,
+    "redo": 0
+  },
+  "after": {
+    "instance": 1,
+    "contentEpoch": 0,
+    "layoutEpoch": 2,
+    "fontGeneration": 54,
+    "format": "hwp5",
+    "pageCount": 92,
+    "dirty": false,
+    "undo": 0,
+    "redo": 0
+  },
+  "revision": 0,
+  "instance": 1,
+  "snapshotSha256": "c3d3728c04bd3fc81d5d5638e8877da53a84a311c2bb3502c4363fc6e1de244c",
+  "pageErrors": []
+}

@@ -1,0 +1,21 @@
+{
+  "source": "53fabe6bd3578799b10433484aa4f5b41b5ad3ac",
+  "branch": "fix/core-live-qualification",
+  "free_start_GiB": 8.53104019165039,
+  "jobs": 3,
+  "own_target": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-integrate/target",
+  "bindgen": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/notes/swarm-malformed-membership-r12/tooling/wasm-bindgen-0.2.125-aarch64-apple-darwin/wasm-bindgen",
+  "bindgen_version": "wasm-bindgen 0.2.125",
+  "wasm_opt": null,
+  "old_package_sha256": "8a5eee93da7b64f1765ce09dea56afc46e84c66297a039dad3d1d199817ea248",
+  "scope": "native01c qualified fixes plus approved performance source; held rendering trials excluded",
+  "exit_code": 0,
+  "package_sha256": {
+    "hm_wasm.js": "2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110",
+    "hm_wasm_bg.wasm": "5cd1b7fcefb83c1b3b5beda8a0d47217d284fe546162741a3c1c1583ea03d608",
+    "hm_wasm.d.ts": "2a9773b38391f4d95c2079472fe43fcf2b3cee9599f1c2475e3667345b6cf576",
+    "hm_wasm_bg.wasm.d.ts": "4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4"
+  },
+  "wasm_bytes": 7572618,
+  "frozen_package": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/core-live-53fabe6b-5cd1b7fc"
+}

@@ -5354,7 +5354,8 @@ export class AgentBridgeImpl implements AgentBridge {
     const wasm = new WasmBridge();
     try {
       await wasm.initialize();
-      const info = wasm.loadDocument(new Uint8Array(await file.arrayBuffer()), file.name);
+      wasm.loadDocument(new Uint8Array(await file.arrayBuffer()), file.name);
+      const info = wasm.getDocumentInfo();
       return { format: extension, pageCount: info.pageCount, sectionCount: info.sectionCount };
     } catch (error) {
       throw new Error(`템플릿 파일을 열 수 없습니다: ${error instanceof Error ? error.message : String(error)}`);

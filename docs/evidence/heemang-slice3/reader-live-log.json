@@ -1,0 +1,1068 @@
+{
+  "url": "http://127.0.0.1:7700/?engine=heemang",
+  "fixture": "rhwp/tests/fixtures/editing_parity/mac-hancom-12.30.0/cell-mixed-text/source.hwpx",
+  "runtime": "heemang",
+  "finalState": {
+    "instance": 1,
+    "contentEpoch": 5,
+    "layoutEpoch": 7,
+    "fontGeneration": 38,
+    "format": "hwpx",
+    "pageCount": 1,
+    "dirty": true,
+    "undo": 1,
+    "redo": 1
+  },
+  "requests": [
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 1
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "to": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "column": 0,
+          "row": 0
+        },
+        "kind": "cells",
+        "table": {
+          "control": 2,
+          "para": 0,
+          "section": 0
+        },
+        "to": {
+          "column": 1,
+          "row": 0
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "column": 0,
+          "row": 0
+        },
+        "kind": "cells",
+        "table": {
+          "control": 2,
+          "para": 0,
+          "section": 0
+        },
+        "to": {
+          "column": 1,
+          "row": 0
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 67
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 1
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 1
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 1
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 3
+        }
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 3
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 3
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 3
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "to": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "offset": 0,
+          "para": 1,
+          "section": 0
+        },
+        "to": {
+          "offset": 3,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 1
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "selectRange",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "copyText",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "formatCharacters",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "copyText",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "deleteForward",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "undoEdit"
+    },
+    {
+      "name": "copyText",
+      "range": {
+        "from": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 67
+        }
+      }
+    },
+    {
+      "name": "copyText",
+      "range": {
+        "kind": "cells",
+        "table": {
+          "section": 0,
+          "para": 0,
+          "control": 2
+        },
+        "from": {
+          "row": 0,
+          "column": 0
+        },
+        "to": {
+          "row": 0,
+          "column": 1
+        }
+      }
+    },
+    {
+      "name": "deleteForward",
+      "range": {
+        "from": {
+          "section": 0,
+          "para": 1,
+          "offset": 0
+        },
+        "to": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 0,
+              "control": 2,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 3
+        },
+        "fromAffinity": "downstream",
+        "toAffinity": "downstream"
+      }
+    },
+    {
+      "name": "undoEdit"
+    }
+  ],
+  "receipts": [
+    {
+      "contentEpoch": 1,
+      "layoutEpoch": 3,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "historyId": 1
+    },
+    {
+      "contentEpoch": 2,
+      "layoutEpoch": 4,
+      "pageCount": 1,
+      "caret": {
+        "section": 0,
+        "steps": [
+          {
+            "para": 0,
+            "control": 2,
+            "index": 0
+          }
+        ],
+        "para": 0,
+        "offset": 0
+      },
+      "undo": 2,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 2
+    },
+    {
+      "contentEpoch": 3,
+      "layoutEpoch": 5,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 1,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "from": {
+          "column": 0,
+          "row": 0
+        },
+        "kind": "cells",
+        "table": {
+          "control": 2,
+          "para": 0,
+          "section": 0
+        },
+        "to": {
+          "column": 1,
+          "row": 0
+        }
+      },
+      "historyId": 1
+    },
+    {
+      "contentEpoch": 4,
+      "layoutEpoch": 6,
+      "pageCount": 1,
+      "caret": {
+        "section": 0,
+        "para": 0,
+        "offset": 16
+      },
+      "undo": 2,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 3
+    },
+    {
+      "contentEpoch": 5,
+      "layoutEpoch": 7,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 1,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 1,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 3,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 1
+    }
+  ],
+  "changed": [
+    {
+      "contentEpoch": 1,
+      "layoutEpoch": 3,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "historyId": 1
+    },
+    {
+      "contentEpoch": 2,
+      "layoutEpoch": 4,
+      "pageCount": 1,
+      "caret": {
+        "section": 0,
+        "steps": [
+          {
+            "para": 0,
+            "control": 2,
+            "index": 0
+          }
+        ],
+        "para": 0,
+        "offset": 0
+      },
+      "undo": 2,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 0,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 2
+    },
+    {
+      "contentEpoch": 3,
+      "layoutEpoch": 5,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 1,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "from": {
+          "column": 0,
+          "row": 0
+        },
+        "kind": "cells",
+        "table": {
+          "control": 2,
+          "para": 0,
+          "section": 0
+        },
+        "to": {
+          "column": 1,
+          "row": 0
+        }
+      },
+      "historyId": 1
+    },
+    {
+      "contentEpoch": 4,
+      "layoutEpoch": 6,
+      "pageCount": 1,
+      "caret": {
+        "section": 0,
+        "para": 0,
+        "offset": 16
+      },
+      "undo": 2,
+      "redo": 0,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 16,
+          "para": 0,
+          "section": 0
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 3
+    },
+    {
+      "contentEpoch": 5,
+      "layoutEpoch": 7,
+      "pageCount": 1,
+      "undo": 1,
+      "redo": 1,
+      "changedPages": [
+        0
+      ],
+      "selection": {
+        "anchor": {
+          "offset": 0,
+          "para": 1,
+          "section": 0
+        },
+        "anchorAffinity": "downstream",
+        "focus": {
+          "offset": 3,
+          "para": 0,
+          "section": 0,
+          "steps": [
+            {
+              "control": 2,
+              "index": 0,
+              "para": 0
+            }
+          ]
+        },
+        "focusAffinity": "downstream"
+      },
+      "historyId": 1
+    }
+  ]
+}

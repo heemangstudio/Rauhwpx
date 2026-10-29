@@ -1,0 +1,32 @@
+✔ serves the font index and face bytes only to an authenticated local Studio (23.549ms)
+✔ rejects malformed ids and reports changed files as stale (8.470583ms)
+✔ answers 503 when the font indexer is not available in this install (1.504542ms)
+✔ bounded character and glyph plans reach the authenticated font service without changing bytes (4.917417ms)
+✔ parses family, weight and coverage from a real TrueType font (8.326959ms)
+✔ keeps Korean names from Windows and Mac name records in a collection (15.016833ms)
+✔ extracts a collection face into a standalone font with valid checksums (15.326583ms)
+✔ browser blob sources parse and extract the same as in-memory bytes (12.825041ms)
+✔ name tables match the standalone face a browser blob would copy (23.505583ms)
+✔ parses Hancom font list files (0.411958ms)
+✔ indexes roots, caches parses, maps Hancom names and guards reads (32.864792ms)
+✔ collection faces are planned once and later reads stream the same bytes (12.777417ms)
+✔ a later launch opens with the saved index and rescans in the background (17.668625ms)
+✔ an index saved by another app version is rescanned, not restored (8.479041ms)
+✔ expands catalog roots with home, Windows variables and wildcard folders (1.579625ms)
+✔ default roots walk Hancom, user, system, then other-app fonts (1.342542ms)
+✔ other-app fonts are indexed last and sniffed caches accept only real font signatures (7.406916ms)
+✔ variable fonts expose named instances as separate faces with stable ids (3.865708ms)
+✔ WOFF and WOFF2 index like their source font and decode back to an equivalent SFNT (5.281458ms)
+✔ web font decoding refuses decompression bombs and oversized declared output (68.80325ms)
+✔ app-bundled WOFF2 fonts are indexed unlisted and served as SFNT (5.414292ms)
+✔ catalog probes app bundles, Homebrew casks and TeX trees at fixed depths (5.693583ms)
+✔ catalog probes only the Fonts folder directly under each Windows program folder (0.188625ms)
+✔ compact SFNT transfer preserves source bytes, metrics, glyph IDs and composite records (0.759291ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 292.946917

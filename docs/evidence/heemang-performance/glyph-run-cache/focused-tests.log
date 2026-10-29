@@ -1,0 +1,25 @@
+✔ Heemang packet preserves HU geometry and COLORREF paint records (1.748375ms)
+✔ Heemang packet rejects incompatible, truncated and overlapping transfers (0.222625ms)
+✔ Heemang packet rejects unknown paint instructions and oversized counts (0.136417ms)
+✔ unavailable engine operations have one machine-readable error (0.077542ms)
+✔ pictures defer and share image/jpeg decoding across pages while retaining placement (1.129542ms)
+✔ pictures defer and share image/png decoding across pages while retaining placement (0.192083ms)
+✔ pictures defer and share image/gif decoding across pages while retaining placement (0.192125ms)
+✔ pictures defer and share image/bmp decoding across pages while retaining placement (0.161792ms)
+✔ RGBA pictures decode through ImageData with exact pixels and dimensions (0.511583ms)
+✔ clear cancels queued document reads and discards a stale decode with the same key (0.356666ms)
+✔ pictures fall back after bytes failure without retrying the decode (0.138167ms)
+✔ pictures fall back after sync decode failure without retrying the decode (0.122583ms)
+✔ pictures fall back after async decode failure without retrying the decode (0.118416ms)
+✔ picture source errors and non-picture items use the patch fallback (0.078041ms)
+✔ player clips picture placement, skips pending pictures and preserves patch fallback (0.326042ms)
+✔ glyph-run reuse preserves geometry across packet replacement, zoom and font refill (0.678042ms)
+✔ deferred reads retry after relayout moves a different picture into the item (0.180166ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 88.529541

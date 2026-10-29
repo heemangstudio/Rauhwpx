@@ -1,0 +1,64 @@
+[
+  {
+    "source": "hwpx",
+    "object": {
+      "section": 0,
+      "para": 0,
+      "control": 2
+    },
+    "before": {
+      "hwp5": {
+        "bytes": 4096
+      },
+      "hwpx": {
+        "bytes": 7898
+      }
+    },
+    "after": {
+      "hwp5": {
+        "bytes": 4608
+      },
+      "hwpx": {
+        "bytes": 8274
+      }
+    },
+    "picture": {
+      "binDataId": 2,
+      "extension": "png",
+      "mime": "image/png",
+      "naturalHeight": 1800,
+      "naturalWidth": 2400
+    }
+  },
+  {
+    "source": "hwp",
+    "object": {
+      "section": 0,
+      "para": 0,
+      "control": 2
+    },
+    "before": {
+      "hwp5": {
+        "bytes": 4096
+      },
+      "hwpx": {
+        "bytes": 6669
+      }
+    },
+    "after": {
+      "hwp5": {
+        "error": "corrupt: missing embedded bytes for BinData/BIN0001.png"
+      },
+      "hwpx": {
+        "bytes": 7373
+      }
+    },
+    "picture": {
+      "binDataId": 2,
+      "extension": "png",
+      "mime": "image/png",
+      "naturalHeight": 1800,
+      "naturalWidth": 2400
+    }
+  }
+]

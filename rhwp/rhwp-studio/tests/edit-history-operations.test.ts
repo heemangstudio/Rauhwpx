@@ -575,8 +575,8 @@ test('양식 체크박스 클릭은 양식 모드에서도 undo 한 칸이다', 
 
 test('라디오 클릭은 같은 그룹의 해제와 선택을 undo 한 칸으로 되돌리고, 이미 켜진 라디오 재클릭은 이력을 남기지 않는다', () => {
   const { wasm, host } = formHost();
-  // 같은 문단에 같은 그룹 라디오를 하나 더 만들고 첫 번째를 켠다.
-  wasm.copySelection(0, 6, 0, 6, 0);
+  // 같은 문단에 같은 그룹 라디오를 하나 더 만들고 첫 번째를 켠다. 글자처럼 놓인 라디오는 캐럿 한 칸이다.
+  wasm.copySelection(0, 6, 0, 6, 1);
   wasm.pasteInternal(0, 6, 0);
   assert.equal(wasm.getFormObjectInfo(0, 6, 1).formType, 'RadioButton');
   wasm.setFormValue(0, 6, 0, JSON.stringify({ value: 1 }));
@@ -892,10 +892,10 @@ test('도형 클릭이 맨 앞으로 올리는 순서 변경은 undo 한 칸이�
 
 let footerPictureBytes: Uint8Array | null = null;
 
-/** 꼬리말에 떠 있는 그림이 있는 한 쪽짜리 문서(hwp3-sample.hwp 의 본문을 비웠다). */
+/** 꼬리말에 떠 있는 그림이 있는 한 쪽짜리 문서(hwp3-sample 의 HWPX 판에서 본문을 비웠다. HWP 3 문서는 저장할 수 없다). */
 function footerPictureDocument() {
   if (!footerPictureBytes) {
-    const source = quiet(() => env.openDocument(readFileSync(new URL('../../samples/hwp3-sample.hwp', import.meta.url)), 'hwp3-sample.hwp'));
+    const source = quiet(() => env.openDocument(readFileSync(new URL('../../samples/hwp3-sample-hwpx.hwpx', import.meta.url)), 'hwp3-sample-hwpx.hwpx'));
     const last = source.getParagraphCount(0) - 1;
     source.deleteRange(0, 0, source.getParagraphLength(0, 0), last, source.getParagraphLength(0, last));
     // 글자처럼 취급하는 그림은 끌어 옮길 수 없으므로 떠 있는 그림으로 바꿔 둔다.

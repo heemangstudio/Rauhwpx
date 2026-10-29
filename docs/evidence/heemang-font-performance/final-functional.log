@@ -1,0 +1,9 @@
+d-05-mixed-korean-latin-108b1ff845b3.hwpx: candidate failed [] baseline failed []
+d-01-table-border-styles-6a0712c9dd15.hwpx: candidate failed [] baseline failed []
+d-156467175-press-release-head-4d0ec3e99bf4.hwp: candidate failed [select+bold] baseline failed [select+bold]
+footnote-01.hwp: candidate failed [] baseline failed []
+d-1341000-research-report-foot-cd72258675b5.hwp: candidate failed [] baseline failed []
+
+1 candidate regressions in 82 rows (36.6 s)
+candidate old-engine requests: 0; EngineNotSupported toasts: 0; page errors: 0
+→ /Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/e2e/heemang-verify/out/functional/parity.md

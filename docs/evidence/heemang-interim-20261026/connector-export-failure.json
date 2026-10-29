@@ -1,0 +1,12 @@
+{
+  "scope": "INTERIM",
+  "url": "http://127.0.0.1:7733/?engine=heemang",
+  "provider": "fixture local hub; no provider calls",
+  "input": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity-corpus/docs/d-2025-998509c2ea49.hwpx",
+  "checks": [
+    "real Alt+G page205 navigation and visible canvas"
+  ],
+  "originalPages": 384,
+  "error": "Error: SAVE_FAILED: conversion has conflicting layouts at logical line 0, source start 0\n    at evaluate (evaluate at file:///private/tmp/heemang-interim-ui-root/connectors.mjs:18:97, <anonymous>:0:23)\n    at #evaluate (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-only/rhwp/rhwp-studio/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)\n    at async ExecutionContext.evaluate (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-only/rhwp/rhwp-studio/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:288:16)\n    at async IsolatedWorld.evaluate (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-only/rhwp/rhwp-studio/node_modules/puppeteer-core/lib/puppeteer/cdp/IsolatedWorld.js:104:16)\n    at async CdpFrame.evaluate (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-only/rhwp/rhwp-studio/node_modules/puppeteer-core/lib/puppeteer/api/Frame.js:364:20)\n    at async CdpPage.evaluate (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-only/rhwp/rhwp-studio/node_modules/puppeteer-core/lib/puppeteer/api/Page.js:832:20)\n    at async file:///private/tmp/heemang-interim-ui-root/connectors.mjs:18:86\n    at exportHwp (http://127.0.0.1:7733/src/core/wasm-bridge.ts:150:13)\n    at exportHwp (http://127.0.0.1:7733/src/core/hm/document.ts:179:8)\n    at serializeAs (http://127.0.0.1:7733/src/core/hm/document.ts:176:13)",
+  "pageErrors": []
+}

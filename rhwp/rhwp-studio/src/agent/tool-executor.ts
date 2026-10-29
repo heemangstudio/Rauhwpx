@@ -1,3 +1,4 @@
+import { agentTextToLogicalOffset } from './engine-coordinates.ts';
 /**
  * MCP 툴 실행기 — 허브가 전달한 tool-request를 실제 문서 호출로 매핑한다.
  *
@@ -8,6 +9,7 @@
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
+import { EngineNotSupportedError } from '../core/engine-support.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
@@ -543,6 +545,13 @@ function assertForeignReadable(tool: string, args: Record<string, unknown>): voi
 /** 도구 실행 중 던져진 값을 응답 오류로 — engine trap 과 문서 없음은 제 코드로, 나머지는 RPC_ERROR. */
 function toolErrorOf(e: unknown): AgentToolError {
   if (e instanceof AgentToolError) return e;
+  if (e instanceof EngineNotSupportedError) {
+    return new AgentToolError(
+      'ENGINE_NOT_SUPPORTED',
+      `The document engine (HeemangEngine) does not support this yet: ${e.operation}. Nothing was changed. `
+        + 'Tell the user this part cannot be done in this editor yet, and continue with what the tools support.',
+    );
+  }
   const message = e instanceof Error ? e.message : String(e);
   if (reportEngineTrap(e)) return engineTrappedError(message);
   if (message.includes(DOC_NOT_LOADED_MESSAGE)) {
@@ -4080,7 +4089,9 @@ export class AgentToolExecutor {
         const fieldId = wasm.insertHyperlink(target, linkStart, linkEnd, url);
         applyHyperlinkFormat(wasm, target, linkStart, linkEnd, '#0000ff');
         if (footnote === undefined) return { fieldId };
-        const res = wasm.insertFootnote(sectionIdx, paraIdx, linkEnd);
+        // 링크 범위는 글자 위치, 각주 자리는 캐럿 위치다. 링크 마지막 글자 바로 뒤에 단다.
+        const noteAt = linkEnd > 0 ? agentTextToLogicalOffset(wasm, sectionIdx, paraIdx, linkEnd - 1) + 1 : 0;
+        const res = wasm.insertFootnote(sectionIdx, paraIdx, noteAt);
         if (!res.ok) throw new AgentToolError('HYPERLINK_FAILED', 'insertFootnote failed');
         // 새 각주 문단은 번호 자리 공백 둘("  ")로 시작한다 — 손으로 넣을 때처럼 번호 뒤에 쓴다.
         const fresh = wasm.getFootnoteInfo(sectionIdx, res.paraIdx, res.controlIdx);
@@ -4695,6 +4706,7 @@ export class AgentToolExecutor {
   private caretRect(sectionIdx: number, paraIdx: number, charOffset: number, cell?: CellAddr): SelectionRect | null {
     const { wasm } = this.deps;
     try {
+      charOffset = agentTextToLogicalOffset(wasm, sectionIdx, paraIdx, charOffset, cell);
       const rect = cell?.path
         ? wasm.getCursorRectByPath(sectionIdx, cell.paraIdx, cellPathAt(cell, paraIdx), charOffset)
         : cell

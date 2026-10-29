@@ -1,0 +1,1046 @@
+{
+  "performanceQualified": false,
+  "scope": "Report first authenticated MCP request only. Seven paired fresh contexts, excluded warmup, fixture Pi provider and real authenticated local hub/editor/MCP transport. Every failed run is preserved. Full six-document cold-open/typing qualification on this source remains pending.",
+  "variants": [
+    {
+      "variant": "completeHostSfnt",
+      "change": "Full host-font source retention.",
+      "verdict": "FAIL",
+      "warmupExcluded": 1,
+      "runs": 7,
+      "baselineMedianMs": 16.101499999989755,
+      "candidateMedianMs": 51.52787499999977,
+      "pairedMedianDeltaMs": 34.14695800002664,
+      "pairedWins": 0,
+      "pageErrors": 0,
+      "apps": {
+        "baseline": [
+          {
+            "run": 0,
+            "ms": 11.22783299999719,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 1,
+            "ms": 11.654750000001513,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 2,
+            "ms": 9.779750000001513,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 3,
+            "ms": 19.429249999986496,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 4,
+            "ms": 21.396542000002228,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 5,
+            "ms": 16.101499999989755,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 6,
+            "ms": 21.457041000016034,
+            "pageErrors": 0,
+            "resultChars": 63769
+          }
+        ],
+        "candidate": [
+          {
+            "run": 0,
+            "ms": 30.043583000006038,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 1,
+            "ms": 29.963208000001032,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 2,
+            "ms": 51.52787499999977,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 3,
+            "ms": 53.57620800001314,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 4,
+            "ms": 33.59195900001214,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 5,
+            "ms": 60.97329200000968,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 6,
+            "ms": 56.21999999997206,
+            "pageErrors": 0,
+            "resultChars": 58083
+          }
+        ]
+      },
+      "wasm": "a2de71a001ca1a3ccb2fd5fe48d60acd932b3bf8e2a08898e2e45835ed381c03",
+      "studioRevision": "927be10e0af36b9abc0e92ea3bf8a4fe87dcf0d4",
+      "engineRevision": "4abe48ac4ce4fa67195bb11c47b9a0c3c12769d2",
+      "candidateSources": {
+        "main.ts": "5a652397b0468f760c275e59e0e1beb0909cf4d508bf16f8eb80a16c5b703f55",
+        "core/heemang-adapter.ts": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b",
+        "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+        "core/hm/core.ts": "dcfbb5b07dbc51679053a39924fecedd562df0b6371dea0abb9a82edb9db1fb8",
+        "core/hm/table-editing.ts": "a43cd66613fbd8d51892bd1e5bc2ece6ca31dbb9c80b7bb2bd963e167b845ae9",
+        "core/hm/agent-tables.ts": "c77378871d3aa4c9fdec56f3c3e63a4bd039d9cdfc22371eb847cd3b66abb25f",
+        "core/hm/clipboard-native.ts": "47901f00b4d947992c63b544e19d9f3c997f124aecc7a5ae4d438938350349ba",
+        "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+        "core/hm/fields-controls.ts": "b8c3e368a9f5b01e1f84b82ce5efdf80b4abbba2ab7143aed0bbfa859f87f14f",
+        "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+        "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+      },
+      "engineSources": {
+        "crates/hm-layout/src/paginate.rs": "9c6484dae55bee77fd1b5b603cfebe032af40e84616b2712eb939854ae07b753",
+        "crates/hm-layout/src/para.rs": "466b4969850058068710993cc3d2448192f9f968f9a0364af4f4edc3a4ff23c6",
+        "crates/hm-layout/src/table/flow.rs": "8b26797e394e11cdbfaf26f3c3cd58f981da525b9129060a7424044b2199ea13",
+        "crates/hm-layout/src/table/mod.rs": "1a4a3391eeafaae85f1397991135317c53e9b876e80b92f2a1c5e2c8b6a9a835",
+        "crates/hm-fonts/src/lib.rs": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55",
+        "crates/hm-wasm/src/engine.rs": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c",
+        "crates/hm-wasm/src/lib.rs": "0fc2de1aa6dda98e2e62b1c2c3744e1b9b8e28f34cfa28c9318fd972d6db9497",
+        "crates/hm-wasm/src/operations.rs": "110633e9021f737a18204632e5e945c21d1a81a947bfaa5050e27558ffcf2882"
+      },
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-927be10e/measured/structure-2026-10-26T07-36-45-659Z.jsonl",
+        "bytes": 3150,
+        "sha256": "f7c3b00a95bbc9bd4de4e2a906433d96b27941073e2fc1f2f5e59ac06192490b"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-927be10e/measured/structure-2026-10-26T07-36-45-659Z.jsonl.manifest.json",
+        "bytes": 5214,
+        "sha256": "96d05c1b684174617512fdb93d162c78acc36b5ba1e37d63159ca13ff1a22682"
+      },
+      "summary": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-927be10e/strict-summary.txt",
+        "bytes": 310,
+        "sha256": "9a06f051e486444dc90f5ead8dc0aaf60f71a997bfbf191cd897b98f9d54d1e5",
+        "text": "\nstructureFirstMs  median [Q1–Q3] (min–max)\n  report    baseline 16.1 [11–20] (10–21) n=7               candidate 51.5 [32–55] (30–61) n=7               SLOWER paired Δ +34.1 (cand≤base 0/7)\npage errors: 0, open errors: 0\n\nStrict median gate: FAIL\nreport: structureFirstMs median 51.5 > 16.1 ms\n"
+      },
+      "sourceBefore": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-927be10e/source-before.txt",
+        "bytes": 515,
+        "sha256": "84b1c2f2c517b5cadb44ebbf6060cdc9f5137ee3c583834f0a4fab8fc99b43ae"
+      },
+      "sourceAfter": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-927be10e/source-after.txt",
+        "bytes": 515,
+        "sha256": "84b1c2f2c517b5cadb44ebbf6060cdc9f5137ee3c583834f0a4fab8fc99b43ae"
+      }
+    },
+    {
+      "variant": "lazyCellPaths",
+      "change": "Resolve model cell paths only after a cell contains the requested point.",
+      "verdict": "FAIL",
+      "warmupExcluded": 1,
+      "runs": 7,
+      "baselineMedianMs": 12.246375000016997,
+      "candidateMedianMs": 19.723291999995126,
+      "pairedMedianDeltaMs": 7.275874999992084,
+      "pairedWins": 0,
+      "pageErrors": 0,
+      "apps": {
+        "baseline": [
+          {
+            "run": 0,
+            "ms": 11.149124999996275,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 1,
+            "ms": 11.122415999998339,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 2,
+            "ms": 12.088375000006636,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 3,
+            "ms": 12.246375000016997,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 4,
+            "ms": 15.523583000001963,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 5,
+            "ms": 14.123082999984035,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 6,
+            "ms": 15.751082999981008,
+            "pageErrors": 0,
+            "resultChars": 63769
+          }
+        ],
+        "candidate": [
+          {
+            "run": 0,
+            "ms": 21.20300000000134,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 1,
+            "ms": 15.733041999992565,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 2,
+            "ms": 19.723291999995126,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 3,
+            "ms": 19.52225000000908,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 4,
+            "ms": 22.496458000008715,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 5,
+            "ms": 23.98424999997951,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 6,
+            "ms": 18.46837499999674,
+            "pageErrors": 0,
+            "resultChars": 58083
+          }
+        ]
+      },
+      "wasm": "8ec071e5963c532ff2daf42e72e1ac651b01ca68e291a47287dd7b5bf1f23457",
+      "studioRevision": "927be10e0af36b9abc0e92ea3bf8a4fe87dcf0d4",
+      "engineRevision": "4abe48ac4ce4fa67195bb11c47b9a0c3c12769d2",
+      "candidateSources": {
+        "main.ts": "5a652397b0468f760c275e59e0e1beb0909cf4d508bf16f8eb80a16c5b703f55",
+        "core/heemang-adapter.ts": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b",
+        "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+        "core/hm/core.ts": "dcfbb5b07dbc51679053a39924fecedd562df0b6371dea0abb9a82edb9db1fb8",
+        "core/hm/table-editing.ts": "a43cd66613fbd8d51892bd1e5bc2ece6ca31dbb9c80b7bb2bd963e167b845ae9",
+        "core/hm/agent-tables.ts": "c77378871d3aa4c9fdec56f3c3e63a4bd039d9cdfc22371eb847cd3b66abb25f",
+        "core/hm/clipboard-native.ts": "47901f00b4d947992c63b544e19d9f3c997f124aecc7a5ae4d438938350349ba",
+        "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+        "core/hm/fields-controls.ts": "b8c3e368a9f5b01e1f84b82ce5efdf80b4abbba2ab7143aed0bbfa859f87f14f",
+        "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+        "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+      },
+      "engineSources": {
+        "crates/hm-layout/src/paginate.rs": "9c6484dae55bee77fd1b5b603cfebe032af40e84616b2712eb939854ae07b753",
+        "crates/hm-layout/src/para.rs": "466b4969850058068710993cc3d2448192f9f968f9a0364af4f4edc3a4ff23c6",
+        "crates/hm-layout/src/table/flow.rs": "8b26797e394e11cdbfaf26f3c3cd58f981da525b9129060a7424044b2199ea13",
+        "crates/hm-layout/src/table/mod.rs": "1a4a3391eeafaae85f1397991135317c53e9b876e80b92f2a1c5e2c8b6a9a835",
+        "crates/hm-fonts/src/lib.rs": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55",
+        "crates/hm-wasm/src/engine.rs": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c",
+        "crates/hm-wasm/src/lib.rs": "0fc2de1aa6dda98e2e62b1c2c3744e1b9b8e28f34cfa28c9318fd972d6db9497",
+        "crates/hm-wasm/src/operations.rs": "110633e9021f737a18204632e5e945c21d1a81a947bfaa5050e27558ffcf2882",
+        "crates/hm-wasm/src/selection.rs": "4147abd320c38a2af3f3c61b506c54d658d7a381fbe5d17fe315da14310435e0"
+      },
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-lazy-cell-paths/measured/structure-2026-10-26T08-25-46-324Z.jsonl",
+        "bytes": 3153,
+        "sha256": "99f75ee2582ef716ff3b6e54dafec37ebb2b6d62126cc803ddbf619d58c7f856"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-lazy-cell-paths/measured/structure-2026-10-26T08-25-46-324Z.jsonl.manifest.json",
+        "bytes": 5323,
+        "sha256": "00181e2a9d013a261caba2d17ad5fedc726a25f5e3970989c32cd4120d6e890b"
+      },
+      "summary": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-lazy-cell-paths/strict-summary.txt",
+        "bytes": 309,
+        "sha256": "97e383aec3ed5369b84979490aa15af645bcc0b4336aca1ec3c5814c758b91a1",
+        "text": "\nstructureFirstMs  median [Q1–Q3] (min–max)\n  report    baseline 12.2 [12–15] (11–16) n=7               candidate 19.7 [19–22] (16–24) n=7               SLOWER paired Δ +7.3 (cand≤base 0/7)\npage errors: 0, open errors: 0\n\nStrict median gate: FAIL\nreport: structureFirstMs median 19.7 > 12.2 ms\n"
+      },
+      "sourceBefore": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-lazy-cell-paths/source-before.txt",
+        "bytes": 669,
+        "sha256": "4f20351da187803a2c85ab1f5d085d71f3fd7b1914c66b1ce7a3f27e290f223d"
+      },
+      "sourceAfter": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-lazy-cell-paths/source-after.txt",
+        "bytes": 669,
+        "sha256": "4f20351da187803a2c85ab1f5d085d71f3fd7b1914c66b1ce7a3f27e290f223d"
+      }
+    },
+    {
+      "variant": "jointCellIndexHeld",
+      "change": "Collect cells and line boxes in the same renderer walk. This version has a failed-transaction pointer-lifetime regression and is held.",
+      "verdict": "FAIL",
+      "warmupExcluded": 1,
+      "runs": 7,
+      "baselineMedianMs": 12.693415999998251,
+      "candidateMedianMs": 12.989792000007583,
+      "pairedMedianDeltaMs": 1.4989169999898877,
+      "pairedWins": 2,
+      "pageErrors": 0,
+      "apps": {
+        "baseline": [
+          {
+            "run": 0,
+            "ms": 12.693415999998251,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 1,
+            "ms": 21.456208000003244,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 2,
+            "ms": 13.117666999998619,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 3,
+            "ms": 13.958291000002646,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 4,
+            "ms": 12.051666999992449,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 5,
+            "ms": 9.966916999983368,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 6,
+            "ms": 11.490875000017695,
+            "pageErrors": 0,
+            "resultChars": 63769
+          }
+        ],
+        "candidate": [
+          {
+            "run": 0,
+            "ms": 19.504583999994793,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 1,
+            "ms": 15.690750000001572,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 2,
+            "ms": 21.703083999993396,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 3,
+            "ms": 12.712165999997524,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 4,
+            "ms": 12.591000000014901,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 5,
+            "ms": 12.962166000012076,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 6,
+            "ms": 12.989792000007583,
+            "pageErrors": 0,
+            "resultChars": 58083
+          }
+        ]
+      },
+      "wasm": "56cf4800345f27d9b06573add7c9cd83af9ac282817cb60db3daa53cc8856225",
+      "studioRevision": "927be10e0af36b9abc0e92ea3bf8a4fe87dcf0d4",
+      "engineRevision": "4abe48ac4ce4fa67195bb11c47b9a0c3c12769d2",
+      "candidateSources": {
+        "main.ts": "5a652397b0468f760c275e59e0e1beb0909cf4d508bf16f8eb80a16c5b703f55",
+        "core/heemang-adapter.ts": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b",
+        "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+        "core/hm/core.ts": "dcfbb5b07dbc51679053a39924fecedd562df0b6371dea0abb9a82edb9db1fb8",
+        "core/hm/table-editing.ts": "a43cd66613fbd8d51892bd1e5bc2ece6ca31dbb9c80b7bb2bd963e167b845ae9",
+        "core/hm/agent-tables.ts": "c77378871d3aa4c9fdec56f3c3e63a4bd039d9cdfc22371eb847cd3b66abb25f",
+        "core/hm/clipboard-native.ts": "47901f00b4d947992c63b544e19d9f3c997f124aecc7a5ae4d438938350349ba",
+        "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+        "core/hm/fields-controls.ts": "b8c3e368a9f5b01e1f84b82ce5efdf80b4abbba2ab7143aed0bbfa859f87f14f",
+        "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+        "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+      },
+      "engineSources": {
+        "crates/hm-layout/src/paginate.rs": "9c6484dae55bee77fd1b5b603cfebe032af40e84616b2712eb939854ae07b753",
+        "crates/hm-layout/src/para.rs": "466b4969850058068710993cc3d2448192f9f968f9a0364af4f4edc3a4ff23c6",
+        "crates/hm-layout/src/table/flow.rs": "8b26797e394e11cdbfaf26f3c3cd58f981da525b9129060a7424044b2199ea13",
+        "crates/hm-layout/src/table/mod.rs": "1a4a3391eeafaae85f1397991135317c53e9b876e80b92f2a1c5e2c8b6a9a835",
+        "crates/hm-fonts/src/lib.rs": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55",
+        "crates/hm-wasm/src/engine.rs": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c",
+        "crates/hm-wasm/src/lib.rs": "0fc2de1aa6dda98e2e62b1c2c3744e1b9b8e28f34cfa28c9318fd972d6db9497",
+        "crates/hm-wasm/src/operations.rs": "110633e9021f737a18204632e5e945c21d1a81a947bfaa5050e27558ffcf2882",
+        "crates/hm-wasm/src/selection.rs": "8cf14dd58a2d5f18422707955de00b8052daea371d80be6150342a78c9d89f62",
+        "crates/hm-wasm/src/index.rs": "deb7ac94f6ae7c001eeaae20860dacb2f8f5fea31d4d8791e96bca5e79380737",
+        "crates/hm-wasm/src/rendering.rs": "700cd99fcacdb525a598457ae1200aea07f87c9f02ee52bb0501b9adf11753f1",
+        "crates/hm-render/src/lib.rs": "742a22dfbb0193c68c489964c401bbe60567d771fa407f560681fdc73ec059d1"
+      },
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-cell-index/measured/structure-2026-10-26T08-44-31-063Z.jsonl",
+        "bytes": 3156,
+        "sha256": "43f4b35398cd4c87e9117902412332cd876357c0c1208eae455de5ad04af6dda"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-cell-index/measured/structure-2026-10-26T08-44-31-063Z.jsonl.manifest.json",
+        "bytes": 5642,
+        "sha256": "99fba0461963c8abec7a803f475d9856a645a2c82b6f8af17134e6cf6d4835ee"
+      },
+      "summary": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-cell-index/strict-summary.txt",
+        "bytes": 312,
+        "sha256": "9d5b41ff0decc8edae1f7805b80ce2ed0d499ef903d101e34b05a7005e38da93",
+        "text": "\nstructureFirstMs  median [Q1–Q3] (min–max)\n  report    baseline 12.7 [12–14] (10–21) n=7               candidate 13.0 [13–18] (13–22) n=7               noise (>) paired Δ +1.5 (cand≤base 2/7)\npage errors: 0, open errors: 0\n\nStrict median gate: FAIL\nreport: structureFirstMs median 13.0 > 12.7 ms\n"
+      },
+      "sourceBefore": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-cell-index/source-before.txt",
+        "bytes": 1123,
+        "sha256": "227ca7ba525540f10e96f6d57f20fc7d4dd6ed417c079394643ca2ea461dae52"
+      },
+      "sourceAfter": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-cell-index/source-after.txt",
+        "bytes": 1123,
+        "sha256": "227ca7ba525540f10e96f6d57f20fc7d4dd6ed417c079394643ca2ea461dae52"
+      }
+    },
+    {
+      "variant": "formatSnapshot",
+      "change": "Rollback-safe joint index9ab3c752 plus formatting snapshots keyed by existing ParagraphInfo identity.",
+      "verdict": "FAIL",
+      "warmupExcluded": 1,
+      "runs": 7,
+      "baselineMedianMs": 11.18300000000454,
+      "candidateMedianMs": 11.54491599999892,
+      "pairedMedianDeltaMs": -0.09887599997455254,
+      "pairedWins": 5,
+      "pageErrors": 0,
+      "apps": {
+        "baseline": [
+          {
+            "run": 0,
+            "ms": 11.814041999998153,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 1,
+            "ms": 11.18300000000454,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 2,
+            "ms": 11.039624999990338,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 3,
+            "ms": 11.112458999996306,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 4,
+            "ms": 11.239583000016864,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 5,
+            "ms": 11.153791999968234,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 6,
+            "ms": 19.382708000019193,
+            "pageErrors": 0,
+            "resultChars": 63769
+          }
+        ],
+        "candidate": [
+          {
+            "run": 0,
+            "ms": 11.54491599999892,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 1,
+            "ms": 14.670709000005445,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 2,
+            "ms": 12.036625000007916,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 3,
+            "ms": 10.784708000021055,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 4,
+            "ms": 11.169999999983702,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 5,
+            "ms": 11.054915999993682,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 6,
+            "ms": 11.728957999963313,
+            "pageErrors": 0,
+            "resultChars": 58083
+          }
+        ]
+      },
+      "wasm": "9ab3c75261e404db6f80d1b493942d999efc9b97a4c7a90539cf82721cc47b1d",
+      "studioRevision": "927be10e0af36b9abc0e92ea3bf8a4fe87dcf0d4",
+      "engineRevision": "4abe48ac4ce4fa67195bb11c47b9a0c3c12769d2",
+      "candidateSources": {
+        "main.ts": "5a652397b0468f760c275e59e0e1beb0909cf4d508bf16f8eb80a16c5b703f55",
+        "core/heemang-adapter.ts": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b",
+        "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+        "core/hm/core.ts": "dcfbb5b07dbc51679053a39924fecedd562df0b6371dea0abb9a82edb9db1fb8",
+        "core/hm/format-widgets.ts": "c8048bbb1ca053418fcce2100f7c29363daed40c4b730c707340bff77aafb880",
+        "core/heemang-format.ts": "e88ef65f3c8f84a2af45fc70b52d7c6b6a65c9c03698a61f81703cdbcd9713c2",
+        "core/hm/table-editing.ts": "a43cd66613fbd8d51892bd1e5bc2ece6ca31dbb9c80b7bb2bd963e167b845ae9",
+        "core/hm/agent-tables.ts": "c77378871d3aa4c9fdec56f3c3e63a4bd039d9cdfc22371eb847cd3b66abb25f",
+        "core/hm/clipboard-native.ts": "47901f00b4d947992c63b544e19d9f3c997f124aecc7a5ae4d438938350349ba",
+        "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+        "core/hm/fields-controls.ts": "b8c3e368a9f5b01e1f84b82ce5efdf80b4abbba2ab7143aed0bbfa859f87f14f",
+        "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+        "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+      },
+      "engineSources": {
+        "crates/hm-layout/src/paginate.rs": "9c6484dae55bee77fd1b5b603cfebe032af40e84616b2712eb939854ae07b753",
+        "crates/hm-layout/src/para.rs": "466b4969850058068710993cc3d2448192f9f968f9a0364af4f4edc3a4ff23c6",
+        "crates/hm-layout/src/table/flow.rs": "8b26797e394e11cdbfaf26f3c3cd58f981da525b9129060a7424044b2199ea13",
+        "crates/hm-layout/src/table/mod.rs": "1a4a3391eeafaae85f1397991135317c53e9b876e80b92f2a1c5e2c8b6a9a835",
+        "crates/hm-fonts/src/lib.rs": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55",
+        "crates/hm-wasm/src/engine.rs": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c",
+        "crates/hm-wasm/src/lib.rs": "0fc2de1aa6dda98e2e62b1c2c3744e1b9b8e28f34cfa28c9318fd972d6db9497",
+        "crates/hm-wasm/src/operations.rs": "110633e9021f737a18204632e5e945c21d1a81a947bfaa5050e27558ffcf2882",
+        "crates/hm-wasm/src/selection.rs": "8cf14dd58a2d5f18422707955de00b8052daea371d80be6150342a78c9d89f62",
+        "crates/hm-wasm/src/index.rs": "deb7ac94f6ae7c001eeaae20860dacb2f8f5fea31d4d8791e96bca5e79380737",
+        "crates/hm-wasm/src/rendering.rs": "a9f5bb543d31986a8ce579aa5d56cf3c231cafc7d1d212abd403d1501c8656c9",
+        "crates/hm-render/src/lib.rs": "742a22dfbb0193c68c489964c401bbe60567d771fa407f560681fdc73ec059d1",
+        "crates/hm-wasm/src/editing.rs": "0ea10e01be3455e9f3bd42df9aa6cda8a3c9bea3e6fd7b00f3146647e1470378",
+        "crates/hm-wasm/src/clipboard.rs": "6fc26f80cfa5963a4f162ef8abd48e71d57701ed90b258e012ecf5d802411d2d",
+        "crates/hm-wasm/src/studio_bridge.rs": "dae03233002870a1f721e97d5f57de1de6d30ae8559e5fc27d0088c32e64edf6",
+        "crates/hm-wasm/src/history.rs": "a52d47edf51964d075b03be3eea3bb41d68d8413dda3265f4a41d5187905ddf6",
+        "crates/hm-wasm/src/connectors.rs": "364626d020a0e19cc098eb7c6d16bb87828e44a59afb0a1235eaf15942f4077b"
+      },
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/measured/structure-2026-10-26T09-32-48-452Z.jsonl",
+        "bytes": 3155,
+        "sha256": "007494f4ba85c1c85128ebd598333ebbd5e782c8b0d7cbe1a5bce3bcf7afeebb"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/measured/structure-2026-10-26T09-32-48-452Z.jsonl.manifest.json",
+        "bytes": 6422,
+        "sha256": "a160f4e3f7e8738b190a6b1861c3d72d781a4b301d667fe469f1ce1e62f7b017"
+      },
+      "summary": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/strict-summary.txt",
+        "bytes": 312,
+        "sha256": "3eb976481f0781a250e1b8829815e323a83693918a3e0c28f1e8ddc67b72d6bc",
+        "text": "\nstructureFirstMs  median [Q1–Q3] (min–max)\n  report    baseline 11.2 [11–12] (11–19) n=7               candidate 11.5 [11–12] (11–15) n=7               noise (>) paired Δ -0.1 (cand≤base 5/7)\npage errors: 0, open errors: 0\n\nStrict median gate: FAIL\nreport: structureFirstMs median 11.5 > 11.2 ms\n"
+      },
+      "sourceBefore": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/source-before.txt",
+        "bytes": 1451,
+        "sha256": "211ef06a7c020fe8d135c9f370fd5e20a17f9e1103801f167cda6c5e1cedde99"
+      },
+      "sourceAfter": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/source-after.txt",
+        "bytes": 1451,
+        "sha256": "211ef06a7c020fe8d135c9f370fd5e20a17f9e1103801f167cda6c5e1cedde99"
+      }
+    },
+    {
+      "variant": "stateDecode",
+      "change": "Keep every native state check, reuse JSON decoding for identical responses, and return fresh state objects.",
+      "verdict": "PASS",
+      "warmupExcluded": 1,
+      "runs": 7,
+      "baselineMedianMs": 11.152333000005456,
+      "candidateMedianMs": 10.676832999975886,
+      "pairedMedianDeltaMs": -0.4910840000375174,
+      "pairedWins": 6,
+      "pageErrors": 0,
+      "apps": {
+        "baseline": [
+          {
+            "run": 0,
+            "ms": 11.70654099999956,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 1,
+            "ms": 11.074333999989904,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 2,
+            "ms": 11.152333000005456,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 3,
+            "ms": 11.52920799999265,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 4,
+            "ms": 11.167917000013404,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 5,
+            "ms": 11.100041999976384,
+            "pageErrors": 0,
+            "resultChars": 63769
+          },
+          {
+            "run": 6,
+            "ms": 11.100084000005154,
+            "pageErrors": 0,
+            "resultChars": 63769
+          }
+        ],
+        "candidate": [
+          {
+            "run": 0,
+            "ms": 10.91045899999881,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 1,
+            "ms": 11.103375000006054,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 2,
+            "ms": 10.726667000009911,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 3,
+            "ms": 10.50937499999418,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 4,
+            "ms": 10.676832999975886,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 5,
+            "ms": 8.853833000001032,
+            "pageErrors": 0,
+            "resultChars": 58083
+          },
+          {
+            "run": 6,
+            "ms": 10.658082999987528,
+            "pageErrors": 0,
+            "resultChars": 58083
+          }
+        ]
+      },
+      "wasm": "9ab3c75261e404db6f80d1b493942d999efc9b97a4c7a90539cf82721cc47b1d",
+      "studioRevision": "927be10e0af36b9abc0e92ea3bf8a4fe87dcf0d4",
+      "engineRevision": "1ca2da4213e18d2c4b510f1de69757b819cafae9",
+      "candidateSources": {
+        "main.ts": "5a652397b0468f760c275e59e0e1beb0909cf4d508bf16f8eb80a16c5b703f55",
+        "core/heemang-adapter.ts": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b",
+        "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+        "core/hm/core.ts": "bc4f18aad6cdc994b4acd198221c5633a300832f48c20028a2038bd4a4f16515",
+        "core/hm/format-widgets.ts": "c8048bbb1ca053418fcce2100f7c29363daed40c4b730c707340bff77aafb880",
+        "core/heemang-format.ts": "e88ef65f3c8f84a2af45fc70b52d7c6b6a65c9c03698a61f81703cdbcd9713c2",
+        "core/hm/table-editing.ts": "a43cd66613fbd8d51892bd1e5bc2ece6ca31dbb9c80b7bb2bd963e167b845ae9",
+        "core/hm/agent-tables.ts": "c77378871d3aa4c9fdec56f3c3e63a4bd039d9cdfc22371eb847cd3b66abb25f",
+        "core/hm/clipboard-native.ts": "47901f00b4d947992c63b544e19d9f3c997f124aecc7a5ae4d438938350349ba",
+        "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+        "core/hm/fields-controls.ts": "b8c3e368a9f5b01e1f84b82ce5efdf80b4abbba2ab7143aed0bbfa859f87f14f",
+        "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+        "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+      },
+      "engineSources": {
+        "crates/hm-layout/src/paginate.rs": "9c6484dae55bee77fd1b5b603cfebe032af40e84616b2712eb939854ae07b753",
+        "crates/hm-layout/src/para.rs": "466b4969850058068710993cc3d2448192f9f968f9a0364af4f4edc3a4ff23c6",
+        "crates/hm-layout/src/table/flow.rs": "8b26797e394e11cdbfaf26f3c3cd58f981da525b9129060a7424044b2199ea13",
+        "crates/hm-layout/src/table/mod.rs": "1a4a3391eeafaae85f1397991135317c53e9b876e80b92f2a1c5e2c8b6a9a835",
+        "crates/hm-fonts/src/lib.rs": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55",
+        "crates/hm-wasm/src/engine.rs": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c",
+        "crates/hm-wasm/src/lib.rs": "0fc2de1aa6dda98e2e62b1c2c3744e1b9b8e28f34cfa28c9318fd972d6db9497",
+        "crates/hm-wasm/src/operations.rs": "110633e9021f737a18204632e5e945c21d1a81a947bfaa5050e27558ffcf2882",
+        "crates/hm-wasm/src/selection.rs": "8cf14dd58a2d5f18422707955de00b8052daea371d80be6150342a78c9d89f62",
+        "crates/hm-wasm/src/index.rs": "deb7ac94f6ae7c001eeaae20860dacb2f8f5fea31d4d8791e96bca5e79380737",
+        "crates/hm-wasm/src/rendering.rs": "a9f5bb543d31986a8ce579aa5d56cf3c231cafc7d1d212abd403d1501c8656c9",
+        "crates/hm-render/src/lib.rs": "742a22dfbb0193c68c489964c401bbe60567d771fa407f560681fdc73ec059d1",
+        "crates/hm-wasm/src/editing.rs": "0ea10e01be3455e9f3bd42df9aa6cda8a3c9bea3e6fd7b00f3146647e1470378",
+        "crates/hm-wasm/src/clipboard.rs": "6fc26f80cfa5963a4f162ef8abd48e71d57701ed90b258e012ecf5d802411d2d",
+        "crates/hm-wasm/src/studio_bridge.rs": "dae03233002870a1f721e97d5f57de1de6d30ae8559e5fc27d0088c32e64edf6",
+        "crates/hm-wasm/src/history.rs": "a52d47edf51964d075b03be3eea3bb41d68d8413dda3265f4a41d5187905ddf6",
+        "crates/hm-wasm/src/connectors.rs": "364626d020a0e19cc098eb7c6d16bb87828e44a59afb0a1235eaf15942f4077b"
+      },
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-state-decode/measured/structure-2026-10-26T10-04-33-738Z.jsonl",
+        "bytes": 3152,
+        "sha256": "20e20ccef3f22ef58823cb085a32d8bfd3cd219ebfe2b144729cbe4f1011b698"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-state-decode/measured/structure-2026-10-26T10-04-33-738Z.jsonl.manifest.json",
+        "bytes": 6451,
+        "sha256": "606c46fc083941c0b4c1b97cff4c8a1e59b4eb02bedaf0937b883bdb394f84b1"
+      },
+      "summary": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-state-decode/strict-summary.txt",
+        "bytes": 262,
+        "sha256": "8dd0c98f41c329eb38022a5d674f7b5624cd3065c6ef595ab37b320de4259539",
+        "text": "\nstructureFirstMs  median [Q1–Q3] (min–max)\n  report    baseline 11.2 [11–11] (11–12) n=7               candidate 10.7 [11–11] (9–11) n=7                faster paired Δ -0.5 (cand≤base 6/7)\npage errors: 0, open errors: 0\n\nStrict median gate: PASS\n"
+      },
+      "sourceBefore": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-state-decode/source-before.txt",
+        "bytes": 1451,
+        "sha256": "18bb5807bad745d8e067266aab5f2cc9b4b681c9992354925ff089f0df8c59d7"
+      },
+      "sourceAfter": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-state-decode/source-after.txt",
+        "bytes": 1451,
+        "sha256": "18bb5807bad745d8e067266aab5f2cc9b4b681c9992354925ff089f0df8c59d7"
+      }
+    }
+  ],
+  "causalControls": {
+    "beforeFormatSnapshot": {
+      "distinctRequests": 128,
+      "calls": 258,
+      "chars": 323260,
+      "inclusiveQueryMs": 3.700000047683716,
+      "duplicateCalls": 130,
+      "pageErrors": 0,
+      "resultChars": 58083,
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-format-query-observation/measured/structure-2026-10-26T09-28-32-440Z.jsonl",
+        "bytes": 16600,
+        "sha256": "4c06d123df4c89a4cb4b3307ee022b7c4954a73d21cd1bce7dbd0be243a03bb8"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-format-query-observation/measured/structure-2026-10-26T09-28-32-440Z.jsonl.manifest.json",
+        "bytes": 6421,
+        "sha256": "90d4801e529d88da7143343363938f5f310cb44f13f5167981d0cf85404aea2a"
+      }
+    },
+    "afterFormatSnapshot": {
+      "distinctRequests": 0,
+      "calls": 0,
+      "chars": 0,
+      "inclusiveQueryMs": 0,
+      "duplicateCalls": 0,
+      "pageErrors": 0,
+      "resultChars": 58083,
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/query-control/structure-2026-10-26T09-40-36-496Z.jsonl",
+        "bytes": 245,
+        "sha256": "5d09083970c0027fb2d12f235f9d2304e5c85cce54cfbf97abda2ebda2f5b999"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-mcp-seven-format-snapshot/query-control/structure-2026-10-26T09-40-36-496Z.jsonl.manifest.json",
+        "bytes": 6421,
+        "sha256": "b6873b232f2da32bdc811da946b36a9f37db6508e1fb1cefcd25f9804758283a"
+      }
+    },
+    "interpretation": "Existing editor/brief reads have populated the ParagraphInfo snapshots before the measured MCP request. Reusing their format data eliminates all 258 formatRuns reads in that request. No prewarm or scheduled work was added. The original first-call timer and strict gate are unchanged.",
+    "nativeReadObservation": {
+      "counts": {
+        "state": {
+          "calls": 1721,
+          "chars": 223730,
+          "ms": 1.1000001430511475
+        },
+        "query.formatContext": {
+          "calls": 2,
+          "chars": 2811,
+          "ms": 0
+        },
+        "locate": {
+          "calls": 92,
+          "chars": 11792,
+          "ms": 0.7000000476837158
+        }
+      },
+      "pageErrors": 0,
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-native-read-observation/measured/structure-2026-10-26T09-52-14-708Z.jsonl",
+        "bytes": 418,
+        "sha256": "dda35dd1a78ffa94b73cb2fd617206809596a369209c3018d85b526a67d12c40"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-native-read-observation/measured/structure-2026-10-26T09-52-14-708Z.jsonl.manifest.json",
+        "bytes": 6518,
+        "sha256": "d1cac8bf316a69d2de6d43fe0643e57d201eac710f1392be8c6947a0536c4a98"
+      },
+      "profiles": [
+        {
+          "path": "/private/tmp/heemang-perf-resume/report-native-read-observation/profiles/candidate-d-1341000-research-report-foot-cd72258675b5.hwp-structure-1793008356606.cpuprofile",
+          "bytes": 24596,
+          "sha256": "c86c6d3b8479903d520a4cb25c6996b3c63b17d474096592579a63f1f2d332ab"
+        }
+      ],
+      "scope": "Single instrumented candidate run, no latency acceptance."
+    },
+    "stateDecode": {
+      "readsPerBatch": 4096,
+      "warmupReadsPerAlgorithm": 128,
+      "pairs": [
+        {
+          "run": 0,
+          "old": 4.5,
+          "current": 3.8000000715255737
+        },
+        {
+          "run": 1,
+          "current": 3.600000023841858,
+          "old": 5.399999976158142
+        },
+        {
+          "run": 2,
+          "old": 4.399999976158142,
+          "current": 3.200000047683716
+        },
+        {
+          "run": 3,
+          "current": 2.799999952316284,
+          "old": 3.899999976158142
+        },
+        {
+          "run": 4,
+          "old": 6.100000023841858,
+          "current": 3.1999999284744263
+        },
+        {
+          "run": 5,
+          "current": 2.9000000953674316,
+          "old": 3.799999952316284
+        },
+        {
+          "run": 6,
+          "old": 3.799999952316284,
+          "current": 3.700000047683716
+        }
+      ],
+      "identicalSnapshots": true,
+      "nativeReads": {
+        "state": {
+          "calls": 1721,
+          "chars": 223730,
+          "ms": 1.8999998569488525
+        },
+        "query.formatContext": {
+          "calls": 2,
+          "chars": 2811,
+          "ms": 0.10000002384185791
+        },
+        "locate": {
+          "calls": 92,
+          "chars": 11792,
+          "ms": 0.6999999284744263
+        }
+      },
+      "pageErrors": 0,
+      "raw": {
+        "path": "/private/tmp/heemang-perf-resume/report-state-decode-causal/measured/structure-2026-10-26T10-02-09-931Z.jsonl",
+        "bytes": 969,
+        "sha256": "9e17e4181ece98b00851c77719814fbed47f2508956b90effbd4671676830109"
+      },
+      "manifest": {
+        "path": "/private/tmp/heemang-perf-resume/report-state-decode-causal/measured/structure-2026-10-26T10-02-09-931Z.jsonl.manifest.json",
+        "bytes": 6514,
+        "sha256": "8395b7c691b141283710620bb7dc342d1ebe991483996ae0ec64ba499e1d589a"
+      },
+      "harness": {
+        "path": "/private/tmp/heemang-perf-resume/state-decode-causal-bench.mjs",
+        "bytes": 53519,
+        "sha256": "a6cc390dc9e377c18e6ee8c5079fd3d3fe00e5a27fbfab9e64a684dc1c6d713f"
+      },
+      "medianOldBatchMs": 4.399999976158142,
+      "medianCurrentBatchMs": 3.200000047683716,
+      "pairedWins": 7,
+      "estimatedSavingsAt1721ReadsMs": 0.46218262720503844,
+      "scope": "Same live document, unchanged native state checks, alternating old/current decode batches. Diagnostic only; estimated total saving assumes linear read cost."
+    }
+  },
+  "correctness": {
+    "nativeRollback": {
+      "pass": 88,
+      "fail": 0,
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/mcp-address-rollback-native.log",
+        "bytes": 10207,
+        "sha256": "a922e309551cdb12be500ea1ff634abed7f2cf864151f64ef1f545b3965d52f2"
+      }
+    },
+    "originalPointerRegression": {
+      "verdict": "RED",
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/mcp-page-cell-index-rollback.log",
+        "bytes": 231074,
+        "sha256": "99eca9cb14426ba3200c4ac17fd37d25f5c42e017ddc42bb837953d1dd033dd5"
+      }
+    },
+    "originalObsoleteExpectations": {
+      "pass": 57,
+      "fail": 2,
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/mcp-address-rollback-real-wasm.log",
+        "bytes": 7393,
+        "sha256": "4a994d18fe81405872eeb76f09db6a680805c41a05a3a218f1ec1599c656dc18"
+      }
+    },
+    "correctedContract": {
+      "pass": 59,
+      "fail": 0,
+      "skip": 0,
+      "wasm": "9ab3c75261e404db6f80d1b493942d999efc9b97a4c7a90539cf82721cc47b1d",
+      "testCommit": "1ca2da4",
+      "spacingTestCommit": "7bdca65",
+      "proof": "Actual hml/aligns.hml text-box left 0 content is traversed through advertised control lists and all nested ParagraphInfo/list snapshots match after same-format HML save/reopen.",
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/mcp-rollback-real-wasm-contract-textboxes.log",
+        "bytes": 5153,
+        "sha256": "d564a000268211652791a55e33adb0b040caeb7447f0cf0ecceb18d068434879"
+      }
+    },
+    "formatSnapshot": {
+      "pass": 7,
+      "fail": 0,
+      "typecheck": "PASS",
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/format-snapshot-widget.log",
+        "bytes": 849,
+        "sha256": "9907b7a150dda36e313130c67cbf3d1da3066d0eedcce82d6b32752d5316e49f"
+      },
+      "typecheckLog": {
+        "path": "/private/tmp/heemang-perf-resume/format-snapshot-tsc.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "stateDecode": {
+      "pass": 12,
+      "fail": 0,
+      "typecheck": "PASS",
+      "log": {
+        "path": "/private/tmp/heemang-perf-resume/state-decode-focused.log",
+        "bytes": 1379,
+        "sha256": "099274a6ea63df69f787f5b623c70db1ad3f8a00171a78205d6c600d98f9d59f"
+      },
+      "typecheckLog": {
+        "path": "/private/tmp/heemang-perf-resume/state-decode-tsc.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  },
+  "sourceNotes": [
+    "The joint renderer index stores cells and line boxes from the same renderer walk. Both metadata and painted indexes carry identical cell geometry.",
+    "A failed Editor transaction may replace model addresses while preserving content/layout epochs. All six transaction entry points now clear derived pages/indexes/paths on error without relayout or an epoch/history change.",
+    "Formatting snapshots use the existing paragraph identity lifecycle. Public callers receive new property/run objects. Edit, Undo, Redo, failed-batch and document-replacement behavior is covered."
+  ],
+  "remaining": [
+    "Only report MCP is qualified on this worker source. Other five documents remain pending.",
+    "All six documents still require changed-source cold-first-visible and completed-result typing p50/p95 gates.",
+    "Repeated MCP across the other five documents is pending.",
+    "Sequential open/close font-source residency accumulation remains unmeasured."
+  ],
+  "reportMcpQualified": true
+}

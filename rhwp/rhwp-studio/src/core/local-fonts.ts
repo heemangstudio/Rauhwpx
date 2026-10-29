@@ -220,11 +220,6 @@ export function getLocalFontDetectionMethod(): LocalFontDetectionSource | null {
   return null;
 }
 
-/** 로컬 글꼴 감지 지원 여부. Firefox에서는 문서 후보 글꼴 probe만 지원한다. */
-export function isLocalFontSupported(): boolean {
-  return getLocalFontDetectionMethod() !== null;
-}
-
 function normalizeFamilies(families: unknown): string[] {
   if (!Array.isArray(families)) return [];
   const set = new Set<string>();
@@ -909,7 +904,7 @@ export async function registerLocalFontFace(
     record.aliases = normalizeFontNames([...record.aliases, ...options.extraAliases]);
   }
   record.source = options.source;
-  if (options.sourcePath) record.sourcePath = options.sourcePath;
+  if (options.sourcePath || options.fileName) record.sourcePath = options.sourcePath || options.fileName;
   if (options.desktopFaceId) record.desktopFaceId = options.desktopFaceId;
 
   const faceKey = localFontFaceKey(record);

@@ -301,14 +301,15 @@ test(
     const bytes = await page.evaluate(() =>
       Array.from((window as any).__wasm.exportHwpx()),
     );
+    // 저장한 바이트를 편집기와 따로 연 문서에서 다시 읽는다.
     const reopened = await page.evaluate(async (bytes: number[]) => {
-      const doc = (
-        window as any
-      ).__wasm.doc.constructor.fromTrustedLocalFileBytes(new Uint8Array(bytes));
+      const reader = new (window as any).__wasm.constructor();
+      await reader.initialize();
+      reader.loadDocument(new Uint8Array(bytes), 'reopened.hwpx');
       try {
-        return doc.getTextRange(0, 0, 0, doc.getParagraphLength(0, 0), false);
+        return reader.getTextRange(0, 0, 0, reader.getParagraphLength(0, 0));
       } finally {
-        doc.free();
+        reader.releaseDocument();
       }
     }, bytes);
     assert.equal(reopened.split(marker).length - 1, 1);

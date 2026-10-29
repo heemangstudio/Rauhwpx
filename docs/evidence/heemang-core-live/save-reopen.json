@@ -1,0 +1,22 @@
+{
+  "scope": "FUTURE-core-save-correctness",
+  "url": "http://127.0.0.1:7733/?engine=heemang",
+  "provider": "fixture local hub; no provider calls",
+  "input": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity-corpus/docs/d-2025-998509c2ea49.hwpx",
+  "checks": [
+    "real Alt+G page205 navigation and visible canvas",
+    "real File menu save-as-hwp, 8885760 bytes",
+    "real File menu save-as-hwpx, 8951550 bytes"
+  ],
+  "originalPages": 384,
+  "hwpPages": 384,
+  "hwpxPages": 384,
+  "routes": {
+    "original_routes": 20,
+    "reopened_routes": 20,
+    "exact_points": true
+  },
+  "pageErrors": [],
+  "legacyEngineRequests": [],
+  "pass": true
+}

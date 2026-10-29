@@ -8,7 +8,7 @@ import {
   hasCellBorderFillEdits,
   type CellBorderFillEdits,
 } from './cell-border-bg-model';
-import { rejectNestedTableDialog } from './table-dialog-guard';
+import { tableTarget } from '@/core/table-target';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -161,17 +161,15 @@ export class CellBorderBgDialog extends ModalDialog {
   }
 
   show(): void {
-    // 중첩 표는 by-path 설정 API가 없어 바깥 표에 쓰게 된다 — 열지 않는다.
-    if (rejectNestedTableDialog(this.tableCtx.cellPath)) return;
     super.show();
     this.dialog.classList.add('tcp-border-bg-dialog');
     this.borderTouched = [false, false, false, false];
     this.fillTouched = false;
     this.diagTouched = false;
-    const { sec, ppi, ci } = this.tableCtx;
+    const target = tableTarget(this.wasm, this.tableCtx);
     this.cellProps = this.applyMode === 'each'
-      ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
-      : this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
+      ? target.cellOwnProperties(this.cellIdx)
+      : target.cellProperties(this.cellIdx);
     this.populateFields();
   }
 
@@ -991,7 +989,6 @@ export class CellBorderBgDialog extends ModalDialog {
   }
 
   private selectedCellIndicesForRange(range: CellRange): number[] {
-    const { sec, ppi, ci } = this.tableCtx;
     const indices = new Set<number>();
     const overlaps = (bbox: CellBbox): boolean => {
       const endRow = bbox.row + Math.max(1, bbox.rowSpan) - 1;
@@ -1002,7 +999,7 @@ export class CellBorderBgDialog extends ModalDialog {
         endCol >= range.startCol;
     };
 
-    for (const bbox of this.wasm.getTableCellBboxes(sec, ppi, ci)) {
+    for (const bbox of tableTarget(this.wasm, this.tableCtx).cellBboxes()) {
       if (overlaps(bbox)) indices.add(bbox.cellIdx);
     }
     return [...indices];
@@ -1036,7 +1033,7 @@ export class CellBorderBgDialog extends ModalDialog {
   }
 
   protected onConfirm(): void {
-    const { sec, ppi, ci } = this.tableCtx;
+    const target = tableTarget(this.wasm, this.tableCtx);
     this.normalizeDiagonalExclusive();
 
     // 각 셀마다 적용에서 바꾼 것이 없으면 문서를 건드리지 않는다.
@@ -1082,7 +1079,7 @@ export class CellBorderBgDialog extends ModalDialog {
       if (this.applyMode === 'asOne') {
         const range = scope === 'all'
           ? (() => {
-            const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+            const dims = target.dimensions();
             return {
               startRow: 0,
               startCol: 0,
@@ -1092,9 +1089,9 @@ export class CellBorderBgDialog extends ModalDialog {
           })()
           : this.selectionRange;
         if (range) {
-          this.wasm.setCellZoneProperties(sec, ppi, ci, range, newProps as Partial<CellProperties>);
+          target.setCellZoneProperties(range, newProps as Partial<CellProperties>);
         } else {
-          this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+          target.setCellProperties(this.cellIdx, newProps as Partial<CellProperties>);
         }
         return;
       }
@@ -1102,7 +1099,7 @@ export class CellBorderBgDialog extends ModalDialog {
       // 앞 셀을 적용하면 이웃 셀의 공유 변이 바뀌므로 셀 속성은 매번 새로 읽는다.
       let targetIndices: number[];
       if (scope === 'all') {
-        const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+        const dims = target.dimensions();
         targetIndices = Array.from({ length: dims.cellCount }, (_, i) => i);
       } else if (this.selectionRange) {
         const cellIndices = this.selectedCellIndicesForRange(this.selectionRange);
@@ -1111,9 +1108,9 @@ export class CellBorderBgDialog extends ModalDialog {
         targetIndices = [this.cellIdx];
       }
       for (const cellIdx of targetIndices) {
-        const own = this.wasm.getCellOwnProperties(sec, ppi, ci, cellIdx);
+        const own = target.cellOwnProperties(cellIdx);
         const patch = buildCellBorderFillPatch(edits, own);
-        if (patch) this.wasm.setCellProperties(sec, ppi, ci, cellIdx, patch as Partial<CellProperties>);
+        if (patch) target.setCellProperties(cellIdx, patch as Partial<CellProperties>);
       }
     };
     // 셀 테두리/배경 일괄 적용도 undo 대상이다 — 편집 라우터를 통과시켜

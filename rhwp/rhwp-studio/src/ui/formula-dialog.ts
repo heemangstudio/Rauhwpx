@@ -10,6 +10,8 @@
  */
 import { ModalDialog } from './dialog';
 import { makeOption } from './dom-utils';
+import { tableTarget } from '@/core/table-target';
+import type { CellPathEntry } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 
@@ -17,6 +19,8 @@ interface FormulaContext {
   sec: number;
   ppi: number;
   ci: number;
+  /** 중첩 표면 안쪽 셀까지의 경로. cellIndex 는 그 표 안의 셀 번호다. */
+  cellPath?: CellPathEntry[];
   cellIndex: number;
 }
 
@@ -185,69 +189,28 @@ export class FormulaDialog extends ModalDialog {
 
     try {
       // 셀 목록은 병합 기준 셀만 담으므로 cellIndex 를 열 수로 나누면 병합 표에서 다른 칸이 된다.
-      // 엔진이 알려 주는 실제 행/열을 쓴다.
-      const cellInfo = this.wasm.getCellInfo(this.ctx.sec, this.ctx.ppi, this.ctx.ci, this.ctx.cellIndex);
-      const row = cellInfo.row;
-      const col = cellInfo.col;
+      // 엔진이 알려 주는 실제 행/열을 쓴다. 중첩 표는 셀 경로로 안쪽 표를 다룬다.
+      const target = tableTarget(this.wasm, this.ctx);
+      const cellInfo = target.cellInfo(this.ctx.cellIndex);
+      const decimalPlaces: Record<string, number> = { integer: 0, decimal1: 1, decimal2: 2 };
+      const options = {
+        targetRow: cellInfo.row, targetCol: cellInfo.col, formula,
+        decimalPlaces: decimalPlaces[this.formatSelect.value],
+        thousandsSeparator: this.commaCheck.checked,
+      };
 
-      // 먼저 검증 (write_result=false)
-      const validateResult = this.wasm.evaluateTableFormula(
-        this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-        row, col, formula, false,
-      );
-      const validated = JSON.parse(validateResult);
-
-      if (!validated.ok) {
-        this.showError(validated.error || '계산식에 오류가 있습니다.');
+      // 먼저 검증 (writeResult=false)
+      try {
+        target.evaluateFormula({ ...options, writeResult: false });
+      } catch (e: any) {
+        this.showError(e?.message || '계산식에 오류가 있습니다.');
         return false;
       }
 
-      // 형식 + 쉼표 문자열은 dry-run 결과만으로 산출 가능 → 뮤테이션 전에 계산.
-      let displayValue = validated.result;
-      const fmt = this.formatSelect.value;
-      if (fmt === 'integer') displayValue = Math.round(displayValue);
-      else if (fmt === 'decimal1') displayValue = Number(displayValue.toFixed(1));
-      else if (fmt === 'decimal2') displayValue = Number(displayValue.toFixed(2));
-
-      let formatted: string | null = null;
-      if (this.commaCheck.checked && typeof displayValue === 'number') {
-        const parts = displayValue.toString().split('.');
-        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-        formatted = parts.join('.');
-      }
-
-      // 검증 통과 → 실제 적용 (write_result=true) + 쉼표 기록.
-      // [계산식 이관] 두 뮤테이션(commit + insertTextInCell)이 미기록이면 undo 불가에 더해
-      // 셀 문자 수 변화로 후속 undo 오프셋이 오염된다(#2344 계열) → 하나의 snapshot 으로
-      // 원자화해 라우팅(#2077 동형). services 미주입 시 직접 적용 fallback.
-      const commit = () => {
-        this.wasm.evaluateTableFormula(
-          this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-          row, col, formula, true,
-        );
-        if (formatted !== null) {
-          try {
-            // [#2367] 위 evaluateTableFormula(write_result=true) 가 이미 원시 결과를 셀에
-            // 기록했다. 지우지 않고 offset 0 에 삽입하면 두 값이 겹쳐 남는다
-            // ("6,912" + "6912" → "6,9126912"). #2344 계열과 동형으로 delete 후 insert 한다.
-            // 같은 commit() 안이라 두 뮤테이션은 하나의 snapshot 으로 원자화된다.
-            const len = this.wasm.getCellParagraphLength(
-              this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-              this.ctx.cellIndex, 0,
-            );
-            if (len > 0) {
-              this.wasm.deleteTextInCell(
-                this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-                this.ctx.cellIndex, 0, 0, len,
-              );
-            }
-            this.wasm.insertTextInCell(
-              this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-              this.ctx.cellIndex, 0, 0, formatted,
-            );
-          } catch { /* 쉼표 포맷 기록 실패 시 기본값 유지 */ }
-        }
-      };
+      // 검증 통과 → 형식과 쉼표를 적용한 결과를 한 번에 기록한다.
+      // [계산식 이관] 미기록 뮤테이션은 undo 불가에 더해 셀 문자 수 변화로 후속 undo 오프셋이
+      // 오염된다(#2344 계열) → 하나의 snapshot 으로 라우팅(#2077 동형). services 미주입 시 직접 적용.
+      const commit = () => { target.evaluateFormula({ ...options, writeResult: true }); };
       const ih = this.services?.getInputHandler();
       if (ih) {
         ih.executeOperation({

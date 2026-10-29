@@ -1,0 +1,1549 @@
+{
+  "url": "http://127.0.0.1:7700/?engine=heemang",
+  "source": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/docs/fdi_q1.hwpx",
+  "copy": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/enter/fdi_q1.hwpx",
+  "boundary": "Chrome keyboard Enter; document upload through production file input; native reads only.",
+  "checks": [
+    {
+      "name": "100 Enters at end of fdi_q1 section 1",
+      "status": "passed",
+      "clicked": {
+        "at": {
+          "section": 1,
+          "steps": [],
+          "para": 17,
+          "offset": 0
+        },
+        "caret": {
+          "page": 8,
+          "x": 7086,
+          "y": 58365,
+          "height": 1400
+        },
+        "point": {
+          "x": 187.51491734981857,
+          "y": 826.926323377441
+        }
+      },
+      "before": {
+        "state": {
+          "instance": 1,
+          "contentEpoch": 0,
+          "layoutEpoch": 2,
+          "fontGeneration": 86,
+          "format": "hwpx",
+          "pageCount": 9,
+          "dirty": false,
+          "undo": 0,
+          "redo": 0
+        },
+        "count": 18,
+        "last": {
+          "index": 17,
+          "text": "",
+          "length": 1,
+          "caret": [
+            0,
+            0
+          ],
+          "controls": []
+        },
+        "position": {
+          "section": 1,
+          "steps": [],
+          "para": 17,
+          "offset": 0
+        },
+        "caret": {
+          "page": 8,
+          "x": 7086,
+          "y": 58365,
+          "height": 1400
+        },
+        "visible": true,
+        "caretRect": {
+          "x": 187.5,
+          "y": 817.53125,
+          "width": 1.328125,
+          "height": 18.671875,
+          "top": 817.53125,
+          "right": 188.828125,
+          "bottom": 836.203125,
+          "left": 187.5
+        },
+        "scrollRect": {
+          "x": 20,
+          "y": 168,
+          "width": 940,
+          "height": 1004,
+          "top": 168,
+          "right": 960,
+          "bottom": 1172,
+          "left": 20
+        },
+        "toasts": []
+      },
+      "after": {
+        "state": {
+          "instance": 1,
+          "contentEpoch": 100,
+          "layoutEpoch": 102,
+          "fontGeneration": 86,
+          "format": "hwpx",
+          "pageCount": 13,
+          "dirty": true,
+          "undo": 100,
+          "redo": 0
+        },
+        "count": 118,
+        "last": {
+          "index": 117,
+          "text": "",
+          "length": 1,
+          "caret": [
+            0,
+            0
+          ],
+          "controls": []
+        },
+        "position": {
+          "section": 1,
+          "steps": [],
+          "para": 117,
+          "offset": 0
+        },
+        "caret": {
+          "page": 12,
+          "x": 7086,
+          "y": 29765,
+          "height": 1400
+        },
+        "visible": true,
+        "caretRect": {
+          "x": 187.5,
+          "y": 1153.09375,
+          "width": 1.328125,
+          "height": 18.671875,
+          "top": 1153.09375,
+          "right": 188.828125,
+          "bottom": 1171.765625,
+          "left": 187.5
+        },
+        "scrollRect": {
+          "x": 20,
+          "y": 168,
+          "width": 940,
+          "height": 1004,
+          "top": 168,
+          "right": 960,
+          "bottom": 1172,
+          "left": 20
+        },
+        "toasts": []
+      },
+      "samples": [
+        {
+          "enters": 10,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 10,
+            "layoutEpoch": 12,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 10,
+            "dirty": true,
+            "undo": 10,
+            "redo": 0
+          },
+          "count": 28,
+          "last": {
+            "index": 27,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 27,
+            "offset": 0
+          },
+          "caret": {
+            "page": 9,
+            "x": 7086,
+            "y": 14645,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.921875,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.921875,
+            "right": 188.828125,
+            "bottom": 1172.59375,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 20,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 20,
+            "layoutEpoch": 22,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 10,
+            "dirty": true,
+            "undo": 20,
+            "redo": 0
+          },
+          "count": 38,
+          "last": {
+            "index": 37,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 37,
+            "offset": 0
+          },
+          "caret": {
+            "page": 9,
+            "x": 7086,
+            "y": 39845,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1154.046875,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1154.046875,
+            "right": 188.828125,
+            "bottom": 1172.71875,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 30,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 30,
+            "layoutEpoch": 32,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 10,
+            "dirty": true,
+            "undo": 30,
+            "redo": 0
+          },
+          "count": 48,
+          "last": {
+            "index": 47,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 47,
+            "offset": 0
+          },
+          "caret": {
+            "page": 9,
+            "x": 7086,
+            "y": 65045,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1154.171875,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1154.171875,
+            "right": 188.828125,
+            "bottom": 1172.84375,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 40,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 40,
+            "layoutEpoch": 42,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 11,
+            "dirty": true,
+            "undo": 40,
+            "redo": 0
+          },
+          "count": 58,
+          "last": {
+            "index": 57,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 57,
+            "offset": 0
+          },
+          "caret": {
+            "page": 10,
+            "x": 7086,
+            "y": 19685,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.65625,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.65625,
+            "right": 188.828125,
+            "bottom": 1172.328125,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 50,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 50,
+            "layoutEpoch": 52,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 11,
+            "dirty": true,
+            "undo": 50,
+            "redo": 0
+          },
+          "count": 68,
+          "last": {
+            "index": 67,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 67,
+            "offset": 0
+          },
+          "caret": {
+            "page": 10,
+            "x": 7086,
+            "y": 44885,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.78125,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.78125,
+            "right": 188.828125,
+            "bottom": 1172.453125,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 60,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 60,
+            "layoutEpoch": 62,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 11,
+            "dirty": true,
+            "undo": 60,
+            "redo": 0
+          },
+          "count": 78,
+          "last": {
+            "index": 77,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 77,
+            "offset": 0
+          },
+          "caret": {
+            "page": 10,
+            "x": 7086,
+            "y": 70085,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.890625,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.890625,
+            "right": 188.828125,
+            "bottom": 1172.5625,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 70,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 70,
+            "layoutEpoch": 72,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 70,
+            "redo": 0
+          },
+          "count": 88,
+          "last": {
+            "index": 87,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 87,
+            "offset": 0
+          },
+          "caret": {
+            "page": 11,
+            "x": 7086,
+            "y": 24725,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.375,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.375,
+            "right": 188.828125,
+            "bottom": 1172.046875,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 80,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 80,
+            "layoutEpoch": 82,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 80,
+            "redo": 0
+          },
+          "count": 98,
+          "last": {
+            "index": 97,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 97,
+            "offset": 0
+          },
+          "caret": {
+            "page": 11,
+            "x": 7086,
+            "y": 49925,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.5,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.5,
+            "right": 188.828125,
+            "bottom": 1172.171875,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 90,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 90,
+            "layoutEpoch": 92,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 90,
+            "redo": 0
+          },
+          "count": 108,
+          "last": {
+            "index": 107,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 107,
+            "offset": 0
+          },
+          "caret": {
+            "page": 11,
+            "x": 7086,
+            "y": 75125,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.625,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.625,
+            "right": 188.828125,
+            "bottom": 1172.296875,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 100,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 100,
+            "layoutEpoch": 102,
+            "fontGeneration": 86,
+            "format": "hwpx",
+            "pageCount": 13,
+            "dirty": true,
+            "undo": 100,
+            "redo": 0
+          },
+          "count": 118,
+          "last": {
+            "index": 117,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 1,
+            "steps": [],
+            "para": 117,
+            "offset": 0
+          },
+          "caret": {
+            "page": 12,
+            "x": 7086,
+            "y": 29765,
+            "height": 1400
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 187.5,
+            "y": 1153.09375,
+            "width": 1.328125,
+            "height": 18.671875,
+            "top": 1153.09375,
+            "right": 188.828125,
+            "bottom": 1171.765625,
+            "left": 187.5
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        }
+      ],
+      "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/enter/body-after-100.png"
+    },
+    {
+      "name": "100 Enters inside table cell",
+      "status": "passed",
+      "clicked": {
+        "at": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 3,
+              "control": 0,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 42
+        },
+        "caret": {
+          "page": 0,
+          "x": 48274,
+          "y": 17488,
+          "height": 2600
+        },
+        "point": {
+          "x": 736.8912108587556,
+          "y": 365.61676248396446
+        }
+      },
+      "before": {
+        "state": {
+          "instance": 1,
+          "contentEpoch": 0,
+          "layoutEpoch": 2,
+          "fontGeneration": 82,
+          "format": "hwpx",
+          "pageCount": 9,
+          "dirty": false,
+          "undo": 0,
+          "redo": 0
+        },
+        "count": 1,
+        "last": {
+          "index": 0,
+          "text": "‘24년 1분기 해외직접투자는 150.9억 달러로 전년동기비 14.6% 감소",
+          "length": 43,
+          "caret": [
+            0,
+            42
+          ],
+          "controls": []
+        },
+        "position": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 3,
+              "control": 0,
+              "index": 0
+            }
+          ],
+          "para": 0,
+          "offset": 42
+        },
+        "caret": {
+          "page": 0,
+          "x": 48274,
+          "y": 17488,
+          "height": 2600
+        },
+        "visible": true,
+        "caretRect": {
+          "x": 736.890625,
+          "y": 348.25,
+          "width": 1.328125,
+          "height": 34.671875,
+          "top": 348.25,
+          "right": 738.21875,
+          "bottom": 382.921875,
+          "left": 736.890625
+        },
+        "scrollRect": {
+          "x": 20,
+          "y": 168,
+          "width": 940,
+          "height": 1004,
+          "top": 168,
+          "right": 960,
+          "bottom": 1172,
+          "left": 20
+        },
+        "toasts": []
+      },
+      "after": {
+        "state": {
+          "instance": 1,
+          "contentEpoch": 100,
+          "layoutEpoch": 102,
+          "fontGeneration": 82,
+          "format": "hwpx",
+          "pageCount": 14,
+          "dirty": true,
+          "undo": 100,
+          "redo": 0
+        },
+        "count": 101,
+        "last": {
+          "index": 100,
+          "text": "",
+          "length": 1,
+          "caret": [
+            0,
+            0
+          ],
+          "controls": []
+        },
+        "position": {
+          "section": 0,
+          "steps": [
+            {
+              "para": 3,
+              "control": 0,
+              "index": 0
+            }
+          ],
+          "para": 100,
+          "offset": 0
+        },
+        "caret": {
+          "page": 4,
+          "x": 30096,
+          "y": 27529,
+          "height": 2600
+        },
+        "visible": true,
+        "caretRect": {
+          "x": 494.421875,
+          "y": 1137.203125,
+          "width": 1.328125,
+          "height": 34.671875,
+          "top": 1137.203125,
+          "right": 495.75,
+          "bottom": 1171.875,
+          "left": 494.421875
+        },
+        "scrollRect": {
+          "x": 20,
+          "y": 168,
+          "width": 940,
+          "height": 1004,
+          "top": 168,
+          "right": 960,
+          "bottom": 1172,
+          "left": 20
+        },
+        "toasts": []
+      },
+      "samples": [
+        {
+          "enters": 10,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 10,
+            "layoutEpoch": 12,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 10,
+            "dirty": true,
+            "undo": 10,
+            "redo": 0
+          },
+          "count": 11,
+          "last": {
+            "index": 10,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 10,
+            "offset": 0
+          },
+          "caret": {
+            "page": 0,
+            "x": 30096,
+            "y": 45882,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 726.984375,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 726.984375,
+            "right": 495.75,
+            "bottom": 761.65625,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 20,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 20,
+            "layoutEpoch": 22,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 10,
+            "dirty": true,
+            "undo": 20,
+            "redo": 0
+          },
+          "count": 21,
+          "last": {
+            "index": 20,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 20,
+            "offset": 0
+          },
+          "caret": {
+            "page": 0,
+            "x": 30096,
+            "y": 74482,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1108.453125,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1108.453125,
+            "right": 495.75,
+            "bottom": 1143.125,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 30,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 30,
+            "layoutEpoch": 32,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 11,
+            "dirty": true,
+            "undo": 30,
+            "redo": 0
+          },
+          "count": 31,
+          "last": {
+            "index": 30,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 30,
+            "offset": 0
+          },
+          "caret": {
+            "page": 1,
+            "x": 30096,
+            "y": 33249,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.96875,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.96875,
+            "right": 495.75,
+            "bottom": 1172.640625,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 40,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 40,
+            "layoutEpoch": 42,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 11,
+            "dirty": true,
+            "undo": 40,
+            "redo": 0
+          },
+          "count": 41,
+          "last": {
+            "index": 40,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 40,
+            "offset": 0
+          },
+          "caret": {
+            "page": 1,
+            "x": 30096,
+            "y": 61849,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.453125,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.453125,
+            "right": 495.75,
+            "bottom": 1172.125,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 50,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 50,
+            "layoutEpoch": 52,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 50,
+            "redo": 0
+          },
+          "count": 51,
+          "last": {
+            "index": 50,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 50,
+            "offset": 0
+          },
+          "caret": {
+            "page": 2,
+            "x": 30096,
+            "y": 21809,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.890625,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.890625,
+            "right": 495.75,
+            "bottom": 1172.5625,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 60,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 60,
+            "layoutEpoch": 62,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 60,
+            "redo": 0
+          },
+          "count": 61,
+          "last": {
+            "index": 60,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 60,
+            "offset": 0
+          },
+          "caret": {
+            "page": 2,
+            "x": 30096,
+            "y": 50409,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.359375,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.359375,
+            "right": 495.75,
+            "bottom": 1172.03125,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 70,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 70,
+            "layoutEpoch": 72,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 12,
+            "dirty": true,
+            "undo": 70,
+            "redo": 0
+          },
+          "count": 71,
+          "last": {
+            "index": 70,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 70,
+            "offset": 0
+          },
+          "caret": {
+            "page": 3,
+            "x": 30096,
+            "y": 10369,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.8125,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.8125,
+            "right": 495.75,
+            "bottom": 1172.484375,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 80,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 80,
+            "layoutEpoch": 82,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 13,
+            "dirty": true,
+            "undo": 80,
+            "redo": 0
+          },
+          "count": 81,
+          "last": {
+            "index": 80,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 80,
+            "offset": 0
+          },
+          "caret": {
+            "page": 3,
+            "x": 30096,
+            "y": 38969,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.28125,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.28125,
+            "right": 495.75,
+            "bottom": 1171.953125,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 90,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 90,
+            "layoutEpoch": 92,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 13,
+            "dirty": true,
+            "undo": 90,
+            "redo": 0
+          },
+          "count": 91,
+          "last": {
+            "index": 90,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 90,
+            "offset": 0
+          },
+          "caret": {
+            "page": 3,
+            "x": 30096,
+            "y": 67569,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.765625,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.765625,
+            "right": 495.75,
+            "bottom": 1172.4375,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        },
+        {
+          "enters": 100,
+          "state": {
+            "instance": 1,
+            "contentEpoch": 100,
+            "layoutEpoch": 102,
+            "fontGeneration": 82,
+            "format": "hwpx",
+            "pageCount": 14,
+            "dirty": true,
+            "undo": 100,
+            "redo": 0
+          },
+          "count": 101,
+          "last": {
+            "index": 100,
+            "text": "",
+            "length": 1,
+            "caret": [
+              0,
+              0
+            ],
+            "controls": []
+          },
+          "position": {
+            "section": 0,
+            "steps": [
+              {
+                "para": 3,
+                "control": 0,
+                "index": 0
+              }
+            ],
+            "para": 100,
+            "offset": 0
+          },
+          "caret": {
+            "page": 4,
+            "x": 30096,
+            "y": 27529,
+            "height": 2600
+          },
+          "visible": true,
+          "caretRect": {
+            "x": 494.421875,
+            "y": 1137.203125,
+            "width": 1.328125,
+            "height": 34.671875,
+            "top": 1137.203125,
+            "right": 495.75,
+            "bottom": 1171.875,
+            "left": 494.421875
+          },
+          "scrollRect": {
+            "x": 20,
+            "y": 168,
+            "width": 940,
+            "height": 1004,
+            "top": 168,
+            "right": 960,
+            "bottom": 1172,
+            "left": 20
+          },
+          "toasts": []
+        }
+      ],
+      "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice3/enter/cell-after-100.png"
+    }
+  ],
+  "status": "passed"
+}

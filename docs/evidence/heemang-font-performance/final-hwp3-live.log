@@ -1,0 +1,2 @@
+{"url":"http://127.0.0.1:7722/","cancelPreservedDirty":true,"failurePreservedDirty":true,"results":[{"cmd":"file:save","bytes":6656,"reopened":true},{"cmd":"file:save-as-hwp","bytes":6656,"reopened":true},{"cmd":"file:save-as-hwpx","bytes":9951,"reopened":true}],"pageErrors":[]}
+  [cleanup] 서버가 남긴 프로세스 그룹 14345 을 멈춥니다

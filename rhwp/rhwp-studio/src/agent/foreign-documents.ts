@@ -527,8 +527,11 @@ let windowVersion: Promise<string> | null = null;
 
 /** 창의 wasm 판. 일꾼도 같은 빌드를 띄우므로 미리 읽기 결과의 열쇠가 된다. */
 function windowWasmVersion(): Promise<string> {
-  windowVersion ??= import('@wasm/rhwp.js')
-    .then((module) => String(module.version()))
+  windowVersion ??= import('../../vendor/hm-wasm/hm_wasm.js')
+    .then(async (module) => {
+      await module.default();
+      return `hm-wasm:${module.capabilities()}`;
+    })
     .catch(() => 'unknown');
   return windowVersion;
 }

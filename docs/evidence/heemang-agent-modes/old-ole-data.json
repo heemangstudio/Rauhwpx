@@ -1,0 +1,20 @@
+[
+  {
+    "label": "body OLE",
+    "getControlImageData": {
+      "error": "렌더링 오류: Picture 컨트롤이 아닙니다"
+    },
+    "getControlImageMime": {
+      "error": "렌더링 오류: Picture 컨트롤이 아닙니다"
+    }
+  },
+  {
+    "label": "nested OLE",
+    "getControlImageData": {
+      "error": "렌더링 오류: Picture 컨트롤이 아닙니다"
+    },
+    "getControlImageMime": {
+      "error": "렌더링 오류: Picture 컨트롤이 아닙니다"
+    }
+  }
+]

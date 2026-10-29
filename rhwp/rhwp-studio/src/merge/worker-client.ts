@@ -263,8 +263,9 @@ export class MergeWorkerClient {
   buildDocumentManifest(
     bytes: Uint8Array,
     options: MergeWorkerCallOptions = {},
-  ): Promise<MergeManifestEntrySeed[]> {
-    return this.request({ id: 0, operation: 'build-manifest', bytes }, options);
+  ): Promise<MergeManifestEntrySeed[] | undefined> {
+    return this.request<MergeManifestEntrySeed[] | null>({ id: 0, operation: 'build-manifest', bytes }, options)
+      .then((entries) => entries ?? undefined);
   }
 
   dispose(): void {

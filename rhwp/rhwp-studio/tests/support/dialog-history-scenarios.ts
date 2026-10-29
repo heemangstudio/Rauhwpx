@@ -631,7 +631,11 @@ async function styleSave(mode: 'add' | 'edit'): Promise<StepResult> {
 async function styleCreateFailure(): Promise<{ before: string; after: string; entries: number; stillOpen: boolean }> {
   freshDocument(() => {
     wasm.insertText(0, 0, 0, '스타일 문단');
-    for (let i = 0; i < 300 && wasm.createStyle(JSON.stringify({ name: `채움${i}` })) >= 0; i++) { /* 상한까지 */ }
+    // 스타일 표가 차면 엔진이 거절한다(예외). 대화상자는 이 거절을 받아 열린 채 남아야 한다.
+    for (let i = 0; i < 300; i++) {
+      try { wasm.createStyle(JSON.stringify({ name: `채움${i}` })); } catch { return; }
+    }
+    throw new Error('스타일 표가 300개 안에 차지 않았다');
   });
   run('format:style-dialog');
   let stillOpen = false;

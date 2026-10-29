@@ -1,4 +1,5 @@
 import { WasmBridge } from '@/core/wasm-bridge';
+import { tableCellIndex, tableTarget } from '@/core/table-target';
 import { isCharFormatError, CharFormatRecoveryError } from '@/core/char-format-error';
 import { EventBus } from '@/core/event-bus';
 import { CursorState } from './cursor';
@@ -35,7 +36,7 @@ import type { CellSelectionRenderer } from './cell-selection-renderer';
 import { cellSelectionParagraphTargets, promoteCrossCellSelection } from './table-cell-selection';
 import type { TableObjectRenderer } from './table-object-renderer';
 import type { TableResizeRenderer, BorderEdge } from './table-resize-renderer';
-import type { CellBbox, CellPathLike } from '@/core/types';
+import type { CellBbox, CellPathEntry, CellPathLike } from '@/core/types';
 import { showConfirm } from '@/ui/confirm-dialog';
 import * as _mouse from './input-handler-mouse';
 import * as _table from './input-handler-table';
@@ -1556,8 +1557,12 @@ export class InputHandler {
   }
 
   /** 셀 선택 모드에서 Ctrl+방향키로 셀 크기 조절 */
-  private resizeCellByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
-    _table.resizeCellByKeyboard.call(this, key);
+  private resizeCellByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', moveBoundary = false): void {
+    _table.resizeCellByKeyboard.call(this, key, moveBoundary);
+  }
+
+  private moveCellEdgeByKeyboard(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
+    _table.moveCellEdgeByKeyboard.call(this, key);
   }
 
   private resizeTableProportional(key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
@@ -2949,6 +2954,9 @@ export class InputHandler {
     this.headerFooterSelectionComposition = false;
     const cmd = this.history.peekUndoTop();
     if (!(cmd instanceof SubmodeSelectionSnapshotCommand)) return true;
+    // 조합 글자는 선택을 지운 스냅샷 뒤에 들어갔다. redo 가 그 글자까지 되살리게 after 를 다시 잡는다.
+    cmd.captureAfter(this.wasm, this.cursor.getPosition());
+    this.history.invalidateCurrentSnapshot();
     cmd.updateContextAfter({
       mode: 'headerFooter',
       sectionIdx: this.cursor.hfSectionIdx,
@@ -2958,6 +2966,46 @@ export class InputHandler {
       charOffset: this.cursor.hfCharOffset,
       previewPage: this.cursor.hfPreviewPage,
     });
+    return true;
+  }
+
+  /**
+   * 각주 안 선택을 지운다. 문단에 걸친 선택은 시작 문단 끝·끝 문단 앞·사이 문단 글자를 지우고 문단을 붙인다.
+   * 한 스냅샷 이력으로 남기고, 되돌리면 지우기 전 각주 캐럿으로 돌아간다. 선택이 비었으면 false.
+   */
+  private deleteFootnoteSelection(): boolean {
+    const selection = this.cursor.getFootnoteSelectionOrdered();
+    if (!selection) return false;
+    const { start, end } = selection;
+    if (start.fnParaIdx === end.fnParaIdx && start.charOffset === end.charOffset) return false;
+    const before = this.getCurrentEditContext() as Extract<EditContext, { mode: 'footnote' }>;
+    const { sectionIdx: sec, paraIdx: para, controlIdx: control } = before;
+    const bodyPosition = this.cursor.getPosition();
+    this.cursor.clearSelection();
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'deleteSelectionInFootnote',
+      editContext: before,
+      editContextAfter: { ...before, innerParaIdx: start.fnParaIdx, charOffset: start.charOffset },
+      operation: (wasm) => {
+        const lengths = wasm.getFootnoteInfo(sec, para, control).texts.map(text => Array.from(text).length);
+        if (start.fnParaIdx === end.fnParaIdx) {
+          wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, end.charOffset - start.charOffset);
+        } else {
+          wasm.deleteTextInFootnote(sec, para, control, end.fnParaIdx, 0, end.charOffset);
+          for (let inner = end.fnParaIdx - 1; inner > start.fnParaIdx; inner--) {
+            if (lengths[inner] > 0) wasm.deleteTextInFootnote(sec, para, control, inner, 0, lengths[inner]);
+          }
+          const tail = lengths[start.fnParaIdx] - start.charOffset;
+          if (tail > 0) wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, tail);
+          for (let merged = start.fnParaIdx; merged < end.fnParaIdx; merged++) {
+            wasm.mergeParagraphInFootnote(sec, para, control, start.fnParaIdx + 1);
+          }
+        }
+        return { ...bodyPosition };
+      },
+    });
+    this.cursor.setFnCursorPosition(start.fnParaIdx, start.charOffset);
     return true;
   }
 
@@ -2971,6 +3019,10 @@ export class InputHandler {
         operationType: 'deleteSelectionInHeaderFooter',
         restoreSelectionOnUndo: true,
       });
+      return;
+    }
+    if (this.cursor.isInFootnote()) {
+      if (!options?.deferRecord) this.deleteFootnoteSelection();
       return;
     }
     const sel = this.cursor.getSelectionOrdered();
@@ -5209,16 +5261,29 @@ export class InputHandler {
     this.focusTextarea();
   }
 
-  /** 표 캡션 텍스트 편집 모드 진입 (cellIndex=65534로 캡션 구분) */
-  enterTableCaptionEditing(sec: number, ppi: number, ci: number, charOffset = 0): void {
+  /**
+   * 표 캡션 텍스트 편집 모드 진입. 캡션 목록은 셀 목록 다음 번호(captionIndex = 셀 수)다.
+   * 중첩 표는 cellPath(안쪽 표 셀까지의 경로)의 마지막 단계를 캡션 목록으로 바꾼다.
+   */
+  enterTableCaptionEditing(sec: number, ppi: number, ci: number, charOffset: number, captionIndex: number, cellPath?: CellPathEntry[]): void {
     this.cursor.clearSelection();
-    this.cursor.moveTo({
+    const nested = (cellPath?.length ?? 0) > 1;
+    this.cursor.moveTo(nested ? {
+      sectionIndex: sec,
+      paragraphIndex: 0,
+      charOffset,
+      parentParaIndex: ppi,
+      controlIndex: cellPath![0].controlIndex,
+      cellIndex: cellPath![0].cellIndex,
+      cellParaIndex: cellPath![0].cellParaIndex,
+      cellPath: [...cellPath!.slice(0, -1), { controlIndex: cellPath!.at(-1)!.controlIndex, cellIndex: captionIndex, cellParaIndex: 0 }],
+    } : {
       sectionIndex: sec,
       paragraphIndex: 0,
       charOffset,
       parentParaIndex: ppi,
       controlIndex: ci,
-      cellIndex: 65534,
+      cellIndex: captionIndex,
       cellParaIndex: 0,
     });
     this.cursor.resetPreferredX();
@@ -6059,9 +6124,11 @@ export class InputHandler {
       pickDefined(this.getParaProperties(), FORMAT_COPY_PARA_KEYS) as Partial<ParaProperties>,
     );
     const pos = this.cursor.getPosition();
+    // 중첩 셀은 셀 경로로 안쪽 셀의 모양을 읽는다 (평면 좌표는 바깥 셀).
     const cellProps = pos.parentParaIndex !== undefined
       ? pickDefined(
-          this.wasm.getCellOwnProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!, pos.cellIndex!),
+          tableTarget(this.wasm, { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex!, cellPath: pos.cellPath })
+            .cellOwnProperties(tableCellIndex(pos)!),
           FORMAT_COPY_CELL_KEYS,
         ) as Partial<CellProperties>
       : undefined;
@@ -6080,27 +6147,22 @@ export class InputHandler {
       this.focusTextarea();
       return false;
     }
-    if (ctx.cellPath && ctx.cellPath.length > 1) {
-      console.info('[InputHandler] 중첩 표 셀 모양복사는 아직 지원하지 않습니다');
-      this.focusTextarea();
-      return false;
-    }
-
     const props = JSON.parse(JSON.stringify(cellProps)) as Partial<CellProperties>;
     this.executeOperation({
       kind: 'snapshot',
       operationType: 'formatCopyCellProps',
       operation: (wasm) => {
-        const dims = wasm.getTableDimensions(ctx.sec, ctx.ppi, ctx.ci);
+        const target = tableTarget(wasm, ctx);
+        const dims = target.dimensions();
         const excluded = this.cursor.getExcludedCells();
         for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx++) {
-          const info = wasm.getCellInfo(ctx.sec, ctx.ppi, ctx.ci, cellIdx);
+          const info = target.cellInfo(cellIdx);
           if (info.row < range.startRow || info.row > range.endRow ||
               info.col < range.startCol || info.col > range.endCol) {
             continue;
           }
           if (excluded.has(`${info.row},${info.col}`)) continue;
-          wasm.setCellProperties(ctx.sec, ctx.ppi, ctx.ci, cellIdx, props);
+          target.setCellProperties(cellIdx, props);
         }
         return this.cursor.getPosition();
       },

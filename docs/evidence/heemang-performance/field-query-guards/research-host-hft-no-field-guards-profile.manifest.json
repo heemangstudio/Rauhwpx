@@ -1,0 +1,38 @@
+{
+  "mode": "typing",
+  "runs": 1,
+  "warmup": 0,
+  "profile": "/private/tmp/heemang-perf-resume/research-host-hft-no-field-guards-profile/profiles",
+  "verify": false,
+  "verifyPackets": false,
+  "typingSignal": "visible-result-v2",
+  "openSignal": "first-visible-frame-v2",
+  "traceGlyphs": false,
+  "harness": "4e74b3858333513c29e966b8b51b4cc5019761dac58c85580b22870760520960",
+  "baseline": {
+    "root": "/private/tmp/heemang-perf-resume/baseline-main",
+    "revision": "d25f784c3c626d74b9af31d779643854867e2744",
+    "wasm": "359355db1cb2c79861dfc56b5d8ec5bee346a70363eddbdbf62869eda2a5c06e"
+  },
+  "candidate": {
+    "root": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w",
+    "revision": "441f9e48a322aba6a104bb32df3247c281af9972",
+    "wasm": "be2b5cb9d31bef505bdd22faa192791996560fce126a02baff08389c2a822b3d",
+    "sources": {
+      "core/heemang-adapter.ts": "b7fef47917638b4c058e207f5f03aa468da6845a26e7cc3d18436e0564796c56",
+      "core/wasm-bridge.ts": "95696d30227dac9d2797586cb1757b15d5d688455f8053bda37bf67bc72a2ec1",
+      "core/hm/core.ts": "7bde178eefe3ef30d11b8e20ddd649fc748ff45da9eb604183028b21ab26fda7",
+      "core/hm/text.ts": "8147db41f7fda03b5ceb3bae17f978b308fa89ebac1dd4bbe7605281b8914ffd",
+      "core/hm/fields-controls.ts": "e2a18e597e85cd326f5371a15fffce839995d896a62b86cf7fd2968d08eefacf",
+      "view/heemang-player.ts": "a901be8f3e97e04e1952668ad60267c951fcf8131e47459750fa9ccee7c34aee",
+      "view/canvas-view.ts": "f47beae0d6c10121d026bf0c94cece11a756c6ef96687ee7dc2aea463b6ff954"
+    }
+  },
+  "documents": [
+    {
+      "doc": "report",
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity-corpus/docs/d-1341000-research-report-foot-cd72258675b5.hwp",
+      "sha256": "e9011fe125a76ed5d56ae06a1702e7f82b4ff5550f2a07ead956ca540f1231c8"
+    }
+  ]
+}

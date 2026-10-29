@@ -1,0 +1,169 @@
+{
+  "blobs": [
+    {
+      "id": "blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "byteLength": 12907,
+      "bytes": {
+        "length": 12907
+      }
+    }
+  ],
+  "compareSnapshots": [
+    {
+      "id": "blake3:0e426d22b0afe418e94f252ec11818998e1010647400a1d8ea19c077124486a0",
+      "byteLength": 2003,
+      "snapshot": {
+        "layoutSignature": "c2d5637d",
+        "meta": {
+          "name": "d-05-mixed-korean-latin-108b1ff845b3.hwpx",
+          "sectionCount": 1,
+          "pageCount": 1,
+          "pageDisplayNumbers": [
+            1
+          ]
+        },
+        "paragraphs": [
+          {
+            "section": 0,
+            "paragraph": 0,
+            "sectionPage": 1,
+            "globalIndex": 0,
+            "stableId": "",
+            "text": "05 MIXED SCRIPT SPACING",
+            "normalizedText": "05 MIXED SCRIPT SPACING",
+            "controlCount": 2,
+            "signature": "4f4a5f18",
+            "formatSignature": "557987cb",
+            "isAnchorCandidate": true,
+            "anchor": {
+              "pageIndex": 0,
+              "x": 113.38666666666667,
+              "y": 132.26666666666668,
+              "width": 320,
+              "height": 18.666666666666668
+            }
+          },
+          {
+            "section": 0,
+            "paragraph": 1,
+            "sectionPage": 1,
+            "globalIndex": 1,
+            "stableId": "",
+            "text": "한글ABC한글 2026년OpenAI문서 가격₩12,345.67 (Test) 가나다라마바사아자차카타파하",
+            "normalizedText": "한글ABC한글 2026년OpenAI문서 가격₩12,345.67 (Test) 가나다라마바사아자차카타파하",
+            "controlCount": 0,
+            "signature": "13b43c65",
+            "formatSignature": "3656ac31",
+            "isAnchorCandidate": false,
+            "anchor": {
+              "pageIndex": 0,
+              "x": 113.38666666666667,
+              "y": 158.93333333333334,
+              "width": 320,
+              "height": 18
+            }
+          },
+          {
+            "section": 0,
+            "paragraph": 2,
+            "sectionPage": 1,
+            "globalIndex": 2,
+            "stableId": "",
+            "text": "한글ABC한글 2026년OpenAI문서 가격₩12,345.67 (Test) 가나다라마바사아자차카타파하",
+            "normalizedText": "한글ABC한글 2026년OpenAI문서 가격₩12,345.67 (Test) 가나다라마바사아자차카타파하",
+            "controlCount": 0,
+            "signature": "13b43c65",
+            "formatSignature": "3656ac31",
+            "isAnchorCandidate": false,
+            "anchor": {
+              "pageIndex": 0,
+              "x": 113.38666666666667,
+              "y": 190.93333333333334,
+              "width": 320,
+              "height": 18
+            }
+          },
+          {
+            "section": 0,
+            "paragraph": 3,
+            "sectionPage": 1,
+            "globalIndex": 3,
+            "stableId": "",
+            "text": "LongTokenWithoutSpaces-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789 한글혼합줄바꿈검사",
+            "normalizedText": "LongTokenWithoutSpaces-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789 한글혼합줄바꿈검사",
+            "controlCount": 0,
+            "signature": "2ec56213",
+            "formatSignature": "f223851c",
+            "isAnchorCandidate": true,
+            "anchor": {
+              "pageIndex": 0,
+              "x": 113.38666666666667,
+              "y": 242.13333333333333,
+              "width": 320,
+              "height": 18
+            }
+          }
+        ],
+        "controls": []
+      }
+    }
+  ],
+  "objectSizes": [
+    {
+      "id": "blobs:blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "kind": "blob",
+      "byteLength": 12907
+    },
+    {
+      "id": "compareSnapshots:blake3:0e426d22b0afe418e94f252ec11818998e1010647400a1d8ea19c077124486a0",
+      "kind": "compareSnapshot",
+      "byteLength": 2003
+    }
+  ],
+  "worktrees": [
+    {
+      "id": "52ef5da6-0524-4fc1-ba46-ca201e29dc12",
+      "documentId": "5035e8a7-f2a6-4ef7-850f-d9fccadebc4d",
+      "repositoryId": "81550304-a77a-4c32-8e19-7e39e2e24d31",
+      "branch": "main",
+      "branchGeneration": "c6847aff-44fe-42bb-a871-82fe7f6ee001",
+      "primary": true,
+      "fileName": "d-05-mixed-korean-latin-108b1ff845b3.hwpx",
+      "sourceFormat": "hwpx",
+      "baseCommitId": "c1752653-6309-4c45-827c-683df38cce92",
+      "blobId": "blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "savedFingerprint": "blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "mergeTarget": null,
+      "revision": 1,
+      "createdAt": 1792920387774,
+      "updatedAt": 1792920387774
+    }
+  ],
+  "commits": [
+    {
+      "id": "c1752653-6309-4c45-827c-683df38cce92",
+      "repositoryId": "81550304-a77a-4c32-8e19-7e39e2e24d31",
+      "parents": [],
+      "ordinal": 1,
+      "blobId": "blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "compareSnapshotId": "blake3:0e426d22b0afe418e94f252ec11818998e1010647400a1d8ea19c077124486a0",
+      "mergeManifestId": "blake3:b141946afa540cebe6816ef1adf194f5b3f4b40934b9fe1a5ac546c41a7e83a3",
+      "contentFingerprint": "blake3:3b8ad89dcbf8347866e214db20c8fefe7b3106ed6dde6c14d952879488e69e0a",
+      "title": "10월 25일 오후 06:26",
+      "titleRevision": 0,
+      "titleOrigin": "timestamp",
+      "author": {
+        "kind": "user",
+        "label": "사용자"
+      },
+      "reason": "initial",
+      "stats": {
+        "added": 4,
+        "removed": 0,
+        "modified": 0
+      },
+      "createdAt": 1792920387769
+    }
+  ],
+  "visible": "15 KB / 10.00 GB"
+}

@@ -414,10 +414,12 @@ export async function createHwpCtrl(options: {
     // 이미 로딩된 WASM 모듈 사용
     wasmDoc = options.wasmModule;
   } else {
-    // 동적 로딩
-    const { default: init, HwpDocument } = await import('@wasm/rhwp.js');
-    await init(options.wasmUrl);
-    wasmDoc = HwpDocument.createEmpty();
+    // 동적 로딩 — Studio 와 같은 HeemangEngine 브리지 위에서 빈 문서를 연다.
+    const { WasmBridge } = await import('../core/wasm-bridge');
+    const bridge = new WasmBridge();
+    await bridge.initialize();
+    bridge.createNewDocument();
+    wasmDoc = bridge;
   }
 
   return new HwpCtrl(wasmDoc, options.onSave);

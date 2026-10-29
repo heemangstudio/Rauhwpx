@@ -23,12 +23,6 @@ export function createChevron(className = ''): SVGSVGElement {
   return svg;
 }
 
-/** HTML 정적 마크업용 동일 아이콘. */
-export const CHEVRON_SVG_HTML =
-  '<svg class="ui-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false">'
-  + `<path d="${CHEVRON_PATH}" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>`
-  + '</svg>';
-
 /** 채팅 목록(사이드 컬럼) 아이콘 — 얇은 stroke. */
 export function createColumnIcon(className = ''): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

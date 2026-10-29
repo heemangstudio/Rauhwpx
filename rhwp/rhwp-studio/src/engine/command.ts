@@ -601,6 +601,28 @@ export function applyCharFormatToInsertedText(
   }), JSON.stringify(charFormat));
 }
 
+/**
+ * 이어 친 글자가 앞 입력과 한 번에 되돌릴 묶음인지. 한컴처럼 쉬었다 쳐도, 낱말 사이 빈칸이 있어도 한
+ * 묶음이고, 줄바꿈·탭과 다른 서식은 묶음을 끊는다. 위치가 이어지는지는 명령마다 본다.
+ * (한컴 2022 캡처: 'abc' 3초 'def' 와 'one two three' 는 되돌리기 한 번에 사라지고 Enter 는 따로 되돌린다.)
+ */
+function continuesTyping(
+  text: string, next: string, format?: Partial<CharProperties>, nextFormat?: Partial<CharProperties>,
+): boolean {
+  if (/[\n\t\u2028]/.test(text) || /[\n\t\u2028]/.test(next)) return false;
+  return JSON.stringify(format ?? null) === JSON.stringify(nextFormat ?? null);
+}
+
+/** 두 지우기가 모두 Backspace(되돌리면 캐럿이 지운 글자 뒤)이고 뒤의 것이 앞의 것 바로 앞을 지웠는지. */
+function continuesBackspace(
+  offset: number, text: string, cursorAfterUndo: number,
+  nextOffset: number, nextText: string, nextCursorAfterUndo: number,
+): boolean {
+  return cursorAfterUndo === offset + charCount(text)
+    && nextCursorAfterUndo === nextOffset + charCount(nextText)
+    && nextOffset + charCount(nextText) === offset;
+}
+
 export class InsertTextCommand implements EditCommand {
   readonly type = 'insertText';
   readonly timestamp: number;
@@ -657,11 +679,7 @@ export class InsertTextCommand implements EditCommand {
     // 연속 위치 확인
     const expectedOffset = this.position.charOffset + charCount(this.text);
     if (other.position.charOffset !== expectedOffset) return null;
-    // 300ms 이내
-    if (other.timestamp - this.timestamp > 300) return null;
-    // 줄바꿈/탭 포함 시 병합 불가
-    if (other.text.includes('\n') || other.text.includes('\t')) return null;
-    if (JSON.stringify(this.charFormat ?? null) !== JSON.stringify(other.charFormat ?? null)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
 
     return new InsertTextCommand(this.position, this.text + other.text, this.timestamp, this.charFormat);
   }
@@ -723,7 +741,9 @@ export class DeleteTextCommand implements EditCommand {
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof DeleteTextCommand)) return null;
     if (other.direction !== this.direction) return null;
-    if (other.timestamp - this.timestamp > 300) return null;
+    // 한컴 2022 캡처처럼 이어 누른 Backspace 는 쉬었다 눌러도 한 번에 되돌린다(47번 → 1단계).
+    // 앞으로 지우기(Delete)는 캡처가 없어 짧은 연타만 묶는다.
+    if (this.direction === 'forward' && other.timestamp - this.timestamp > 300) return null;
     // 같은 문단/셀 확인
     if (other.position.sectionIndex !== this.position.sectionIndex) return null;
     if (other.position.paragraphIndex !== this.position.paragraphIndex) return null;
@@ -1695,7 +1715,15 @@ export class InsertTextInHeaderFooterCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof InsertTextInHeaderFooterCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.isHeader !== b.isHeader || a.applyTo !== b.applyTo) return null;
+    if (other.paraIdx !== this.paraIdx || other.charOffset !== this.charOffset + charCount(this.text)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
+    return new InsertTextInHeaderFooterCommand(this.target, this.paraIdx, this.charOffset, this.text + other.text, this.charFormat);
+  }
 }
 
 /**
@@ -1786,7 +1814,15 @@ export class DeleteTextInHeaderFooterCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  /** 이어 누른 Backspace 는 본문처럼 한 묶음이다. */
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof DeleteTextInHeaderFooterCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.isHeader !== b.isHeader || a.applyTo !== b.applyTo || other.paraIdx !== this.paraIdx) return null;
+    if (!continuesBackspace(this.charOffset, this.deletedText, this.cursorBeforeOffset, other.charOffset, other.deletedText, other.cursorBeforeOffset)) return null;
+    return new DeleteTextInHeaderFooterCommand(this.target, this.paraIdx, other.charOffset, other.deletedText + this.deletedText, this.cursorBeforeOffset);
+  }
 }
 
 export class SplitParagraphInHeaderFooterCommand implements EditCommand {
@@ -1899,7 +1935,15 @@ export class InsertTextInFootnoteCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof InsertTextInFootnoteCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx) return null;
+    if (other.innerParaIdx !== this.innerParaIdx || other.charOffset !== this.charOffset + charCount(this.text)) return null;
+    if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
+    return new InsertTextInFootnoteCommand(this.target, this.innerParaIdx, this.charOffset, this.text + other.text, this.charFormat);
+  }
 }
 
 export class DeleteTextInFootnoteCommand implements EditCommand {
@@ -1937,7 +1981,15 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   }
 
   editContext(): EditContext { return this.lastContext; }
-  mergeWith(): null { return null; }
+
+  /** 이어 누른 Backspace 는 본문처럼 한 묶음이다. */
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!(other instanceof DeleteTextInFootnoteCommand)) return null;
+    const a = this.target, b = other.target;
+    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx || other.innerParaIdx !== this.innerParaIdx) return null;
+    if (!continuesBackspace(this.charOffset, this.deletedText, this.cursorBeforeOffset, other.charOffset, other.deletedText, other.cursorBeforeOffset)) return null;
+    return new DeleteTextInFootnoteCommand(this.target, this.innerParaIdx, other.charOffset, other.deletedText + this.deletedText, this.cursorBeforeOffset);
+  }
 }
 
 export class SplitParagraphInFootnoteCommand implements EditCommand {
@@ -2686,6 +2738,17 @@ export class SnapshotCommand implements EditCommand {
   }
 
   mergeWith(_other: EditCommand): EditCommand | null { return null; }
+
+  /**
+   * 최초 실행 뒤 이력 밖에서 이어진 변경(선택을 지운 뒤 확정한 IME 조합)까지 이 명령에 담는다.
+   * redo 는 지금 문서와 캐럿으로 돌아온다.
+   */
+  captureAfter(wasm: WasmBridge, cursorAfter: DocumentPosition): void {
+    const next = wasm.saveSnapshot();
+    if (this.afterId !== null) wasm.discardSnapshot(this.afterId);
+    this.afterId = next;
+    this.cursorAfter = { ...cursorAfter };
+  }
 
   /** [Task #2328] 현재 살아있는 before/after 스냅샷 id 개수. */
   snapshotResourceCount(): number {

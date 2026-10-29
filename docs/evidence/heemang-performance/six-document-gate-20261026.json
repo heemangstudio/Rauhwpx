@@ -1,0 +1,658 @@
+{
+  "qualified": false,
+  "scope": "Isolated worker Studio edec0d52 and engine 3d1f340, not final combined source. Seven measured paired fresh-context runs plus one excluded warmup for all six documents.",
+  "runnerExit": 1,
+  "coldGate": "PASS",
+  "typingGate": "FAIL",
+  "coldRows": 84,
+  "typingRows": 84,
+  "sourceAndPackageStable": true,
+  "studioRevision": "edec0d52e821551df5ac27b23c47e74a9199030c",
+  "engineRevision": "3d1f3407a419513726cdf52335c6ac1badd735b0",
+  "candidateWasmSha256": "67f619a9e8d54d252f935928475e4d0324237afffed4bc07e92535dfa18e9bc5",
+  "pageErrors": 0,
+  "documents": {
+    "mixed": {
+      "coldFirstVisibleMs": {
+        "baseline": 464.2000000476837,
+        "candidate": 110.19999992847443
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 11.299999952316284,
+            "p95Ms": 25.295000022649752,
+            "pooledSyncP50Ms": 2.600000023841858,
+            "pooledSyncP95Ms": 4.710000044107439,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 13.550000071525574,
+            "p95Ms": 37.81500004529952,
+            "pooledSyncP50Ms": 2.450000047683716,
+            "pooledSyncP95Ms": 3.899999976158142,
+            "lateCompletedFramesOver4Ms": 112,
+            "maxCumulativeRefills": 16,
+            "refillCooccurrence": {
+              "lateAndRefill": 112,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 168
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": []
+      }
+    },
+    "table": {
+      "coldFirstVisibleMs": {
+        "baseline": 484.7000000476837,
+        "candidate": 108.0
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 11.049999952316284,
+            "p95Ms": 21.210000026226037,
+            "pooledSyncP50Ms": 2.950000047683716,
+            "pooledSyncP95Ms": 4.600000023841858,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 19.750000059604645,
+            "p95Ms": 37.860000067949294,
+            "pooledSyncP50Ms": 2.75,
+            "pooledSyncP95Ms": 4.0,
+            "lateCompletedFramesOver4Ms": 133,
+            "maxCumulativeRefills": 19,
+            "refillCooccurrence": {
+              "lateAndRefill": 133,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 147
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        },
+        "cell": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 11.150000035762787,
+            "p95Ms": 25.655000019073483,
+            "pooledSyncP50Ms": 3.299999952316284,
+            "pooledSyncP95Ms": 4.704999929666521,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 9.350000023841858,
+            "p95Ms": 19.70500004887581,
+            "pooledSyncP50Ms": 2.899999976158142,
+            "pooledSyncP95Ms": 3.5999999046325684,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 19,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "pass": {
+            "p50Ms": true,
+            "p95Ms": true
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": []
+      }
+    },
+    "press": {
+      "coldFirstVisibleMs": {
+        "baseline": 1018.5999999046326,
+        "candidate": 269.60000002384186
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 17.30000001192093,
+            "p95Ms": 28.085000067949277,
+            "pooledSyncP50Ms": 4.700000047683716,
+            "pooledSyncP95Ms": 7.210000044107439,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 20.5,
+            "p95Ms": 49.024999976158135,
+            "pooledSyncP50Ms": 2.399999976158142,
+            "pooledSyncP95Ms": 3.600000023841858,
+            "lateCompletedFramesOver4Ms": 77,
+            "maxCumulativeRefills": 11,
+            "refillCooccurrence": {
+              "lateAndRefill": 77,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 203
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        },
+        "cell": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 19.0,
+            "p95Ms": 26.514999997615813,
+            "pooledSyncP50Ms": 5.600000023841858,
+            "pooledSyncP95Ms": 7.900000095367432,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 21.0,
+            "p95Ms": 49.44999997615814,
+            "pooledSyncP50Ms": 3.1999999284744263,
+            "pooledSyncP95Ms": 4.800000071525574,
+            "lateCompletedFramesOver4Ms": 77,
+            "maxCumulativeRefills": 22,
+            "refillCooccurrence": {
+              "lateAndRefill": 77,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 203
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": [
+          {
+            "run": 0,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 1,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 2,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 3,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 4,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 5,
+            "inkRatio": 0.9724866221527679
+          },
+          {
+            "run": 6,
+            "inkRatio": 0.9724866221527679
+          }
+        ]
+      }
+    },
+    "footnote": {
+      "coldFirstVisibleMs": {
+        "baseline": 715.0,
+        "candidate": 236.0
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.150000035762787,
+            "p95Ms": 25.820000070333478,
+            "pooledSyncP50Ms": 4.100000023841858,
+            "pooledSyncP95Ms": 5.799999958276748,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.599999964237213,
+            "p95Ms": 42.864999932050694,
+            "pooledSyncP50Ms": 2.5,
+            "pooledSyncP95Ms": 4.105000019073487,
+            "lateCompletedFramesOver4Ms": 63,
+            "maxCumulativeRefills": 9,
+            "refillCooccurrence": {
+              "lateAndRefill": 63,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 217
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        },
+        "cell": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.150000035762787,
+            "p95Ms": 25.72500002384185,
+            "pooledSyncP50Ms": 4.299999952316284,
+            "pooledSyncP95Ms": 5.400000095367432,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.75,
+            "p95Ms": 42.160000044107385,
+            "pooledSyncP50Ms": 3.0,
+            "pooledSyncP95Ms": 3.899999976158142,
+            "lateCompletedFramesOver4Ms": 63,
+            "maxCumulativeRefills": 18,
+            "refillCooccurrence": {
+              "lateAndRefill": 63,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 217
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": []
+      }
+    },
+    "report": {
+      "coldFirstVisibleMs": {
+        "baseline": 1160.3000000715256,
+        "candidate": 444.2000000476837
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 19.649999976158142,
+            "p95Ms": 29.22000004649162,
+            "pooledSyncP50Ms": 5.549999952316284,
+            "pooledSyncP95Ms": 7.20500004887581,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 19.349999964237213,
+            "p95Ms": 31.074999976158132,
+            "pooledSyncP50Ms": 6.199999988079071,
+            "pooledSyncP95Ms": 7.900000095367432,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "pass": {
+            "p50Ms": true,
+            "p95Ms": false
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": []
+      }
+    },
+    "footnoteHwpx": {
+      "coldFirstVisibleMs": {
+        "baseline": 674.0999999046326,
+        "candidate": 228.0
+      },
+      "typing": {
+        "body": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 14.149999976158142,
+            "p95Ms": 26.544999998807903,
+            "pooledSyncP50Ms": 4.099999964237213,
+            "pooledSyncP95Ms": 5.600000023841858,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.450000047683716,
+            "p95Ms": 43.88499995470047,
+            "pooledSyncP50Ms": 2.799999952316284,
+            "pooledSyncP95Ms": 4.299999958276748,
+            "lateCompletedFramesOver4Ms": 63,
+            "maxCumulativeRefills": 9,
+            "refillCooccurrence": {
+              "lateAndRefill": 63,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 217
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        },
+        "cell": {
+          "baseline": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 14.600000023841858,
+            "p95Ms": 24.959999930858597,
+            "pooledSyncP50Ms": 4.200000047683716,
+            "pooledSyncP95Ms": 5.404999977350236,
+            "lateCompletedFramesOver4Ms": 0,
+            "maxCumulativeRefills": 0,
+            "refillCooccurrence": {
+              "lateAndRefill": 0,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 280
+            }
+          },
+          "candidate": {
+            "runs": 7,
+            "editedInputs": 280,
+            "missedInputs": 0,
+            "p50Ms": 15.800000011920929,
+            "p95Ms": 38.75500004887581,
+            "pooledSyncP50Ms": 2.799999952316284,
+            "pooledSyncP95Ms": 3.700000047683716,
+            "lateCompletedFramesOver4Ms": 63,
+            "maxCumulativeRefills": 18,
+            "refillCooccurrence": {
+              "lateAndRefill": 63,
+              "lateWithoutRefill": 0,
+              "refillWithoutLate": 0,
+              "neither": 217
+            }
+          },
+          "pass": {
+            "p50Ms": false,
+            "p95Ms": false
+          }
+        }
+      },
+      "partialFirstFrames": {
+        "baseline": [],
+        "candidate": []
+      }
+    }
+  },
+  "timingLimits": [
+    "The recorded machine snapshots show other high-CPU Chrome renderer processes throughout the quiet holds. Later parent process inspection maps surviving renderer PIDs 60684/91039/91042 to personal Chrome parent 14716, outside this benchmark. They remain untouched. The failed gate is retained; no unchanged rerun replaces it.",
+    "Candidate first-visible ink is about 97% of settled ink in the seven press samples. The unchanged strict first-visible gate does not reject this ratio. This is recorded as incomplete first-frame content evidence."
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/locks.log",
+      "bytes": 598,
+      "sha256": "f82a7dacf70ce384e6474adf4c23222d6ae39524096d61d0187ef5f417808141"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/machine.log",
+      "bytes": 26323,
+      "sha256": "ec7af29ec3922b13e0f301b172da07514b7f81f6c69a062e792e56168befd5f2"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/open/open-2026-10-26T04-19-34-504Z.jsonl",
+      "bytes": 29364,
+      "sha256": "f46432fcfb20d35288cbb6df14e2befe747d3cfc05a315cbdc170b5fed6bdf65"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/open/open-2026-10-26T04-19-34-504Z.jsonl.manifest.json",
+      "bytes": 6369,
+      "sha256": "326b275761f43e1f84c4159550fba96a91320116879ac701d92881fa267ec1d8"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/open-strict-summary.txt",
+      "bytes": 4148,
+      "sha256": "876e48e426360c3027f7946050e0efa29416294637978c469836bc885f6a1ccd"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/open.log",
+      "bytes": 7057,
+      "sha256": "18842cefc856dfc4634f367a870554aa8b6d19e67382ff872adc04ca1deb5e14"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/provenance-after.txt",
+      "bytes": 1600,
+      "sha256": "1c05241d93057202bfb03a3f453b1ad59ba209c8e05923efdb55d2893323d747"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/provenance-before.txt",
+      "bytes": 1600,
+      "sha256": "1c05241d93057202bfb03a3f453b1ad59ba209c8e05923efdb55d2893323d747"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-31-05-727Z.jsonl",
+      "bytes": 275850,
+      "sha256": "dc0359cd9181c8733c58f41144833b1513135c207088e661fb425c94b459e863"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-31-05-727Z.jsonl.manifest.json",
+      "bytes": 5153,
+      "sha256": "6e63af64d12fd25dadf8a57927ba00587157f2c090052c3a72ed663720855d16"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-35-11-098Z.jsonl",
+      "bytes": 550989,
+      "sha256": "24634807e0ec0a955d8c30c37389d3f861b97e41943194874186d0fc822e6a81"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-35-11-098Z.jsonl.manifest.json",
+      "bytes": 5154,
+      "sha256": "13fa25a0fcfa6da3dde99fdae404479b4e5d2d2636c5b1a9d2caa885e77b6479"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-40-33-935Z.jsonl",
+      "bytes": 553063,
+      "sha256": "b3ab5c2a3262f8a9ef948bb9d70098cd21a5d12c37d83dded56f14b5607cc2b0"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-40-33-935Z.jsonl.manifest.json",
+      "bytes": 5159,
+      "sha256": "c4d3708ed72d60ce3891d1f1044e12a7cc7f307957b7080718596a7a4a2236e5"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-46-16-238Z.jsonl",
+      "bytes": 551658,
+      "sha256": "bfc09a7d64f0ab5eacbd6292446e0e5f7d0938ce870d44a32abb4a600cabd540"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-46-16-238Z.jsonl.manifest.json",
+      "bytes": 5130,
+      "sha256": "696dbb8a9ca25514ca34f956524f8b499f0d5561df6a95d3ed444efe54ad0f2f"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-51-46-656Z.jsonl",
+      "bytes": 275217,
+      "sha256": "a677b7cd9482ecaa22a5fca7cdd98d3900636da1a14d831059d0f463fb40e00a"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-51-46-656Z.jsonl.manifest.json",
+      "bytes": 5160,
+      "sha256": "bd905402721b263e56067251fb6f60dba17cf5e20d6fc08f8a9e2f144919df08"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-56-16-596Z.jsonl",
+      "bytes": 555931,
+      "sha256": "aadfac450732d987762efcbe29768bc18fc203da5dd90df722864da4cd95d2d4"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing/typing-2026-10-26T04-56-16-596Z.jsonl.manifest.json",
+      "bytes": 5150,
+      "sha256": "874585a2a6f3f7d9ff59631a64497b41dee9e80eb3b3f80249ad95962db760cd"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-footnote.log",
+      "bytes": 789,
+      "sha256": "d10ff9fde7c5cf98e8835a839433b78210758b828e943b58d12ec65fb933941a"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-footnoteHwpx.log",
+      "bytes": 853,
+      "sha256": "03599cc1d7f0acc89859cc0c98fda84d5b3ea2d369b19ac9862ae9a255a23ee3"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-mixed.log",
+      "bytes": 690,
+      "sha256": "6b9a25e5fd4de336928b942de8bb22a2531e076849a0ef0770b73f9802660268"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-press.log",
+      "bytes": 741,
+      "sha256": "99f1a2b0455bdc559548ea9d676ddf321966aeef3c20a3719c251bfb195a105c"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-report.log",
+      "bytes": 709,
+      "sha256": "efce835f09384684879e5e643e0400adab1fd987ef00ef498073a014e6ef1cee"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-strict-summary.txt",
+      "bytes": 4151,
+      "sha256": "b61a595413c6f646a3883cffbc62adbfb3dd4dbe13c0cb8214e2ddaddebb2cc6"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/six-doc-worker-edec0d52/typing-table.log",
+      "bytes": 731,
+      "sha256": "15ef0cf44ca3e992b5b6b466d469f9d3dc0327a9e9e2e06adf9e2a8a5dc7624a"
+    }
+  ]
+}

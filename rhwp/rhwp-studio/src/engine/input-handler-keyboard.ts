@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { isBodyControl } from './picture-hit-policy';
-import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate } from './command';
+import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, InsertTextInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate } from './command';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import * as _connector from './input-handler-connector';
 import {
@@ -268,10 +268,10 @@ function executeHeaderFooterNavigationAction(
       this.cursor.moveToWordBoundaryInHf(1);
       break;
     case 'lineStart':
-      this.cursor.moveToParagraphEdgeInHf(-1);
+      this.cursor.moveToLineEdgeInHf(-1);
       break;
     case 'lineEnd':
-      this.cursor.moveToParagraphEdgeInHf(1);
+      this.cursor.moveToLineEdgeInHf(1);
       break;
     case 'paragraphBackward':
       this.cursor.moveToParagraphBoundaryInHf(-1);
@@ -315,6 +315,38 @@ function handleHeaderFooterNavigationShortcut(this: any, e: KeyboardEvent): bool
     return true;
   }
   return false;
+}
+
+/** 본문과 같은 플랫폼별 탐색 규칙을 각주 좌표계에 적용한다. Shift 는 각주 안 선택을 넓힌다. */
+function handleFootnoteNavigationShortcut(this: any, e: KeyboardEvent): boolean {
+  const input = toNavigationKeyInput(e);
+  const platform = detectPlatformKind();
+  const action = getNavigationAction(input, platform);
+  const boundary = ((e.metaKey && !e.ctrlKey && !e.altKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown'))
+    || (((e.ctrlKey || e.metaKey) && !e.altKey) && (e.key === 'Home' || e.key === 'End'));
+  const vertical = !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown');
+  if (!action && !boundary && !vertical) {
+    if (!shouldSuppressUnmappedNavigation(input, platform)) return false;
+    e.preventDefault();
+    return true;
+  }
+  e.preventDefault();
+  if (e.shiftKey) this.cursor.setFnAnchor();
+  else this.cursor.clearSelection();
+  if (action === 'wordBackward' || action === 'wordForward') {
+    this.cursor.moveToWordBoundaryInFn(action === 'wordBackward' ? -1 : 1);
+  } else if (action === 'lineStart' || action === 'lineEnd') {
+    this.cursor.moveToLineEdgeInFn(action === 'lineStart' ? -1 : 1);
+  } else if (action) {
+    this.cursor.moveToParagraphBoundaryInFn(action === 'paragraphBackward' ? -1 : 1);
+  } else if (boundary) {
+    this.cursor.moveToFootnoteBoundary(e.key === 'ArrowUp' || e.key === 'Home' ? -1 : 1);
+  } else {
+    this.cursor.moveVerticalInFn(e.key === 'ArrowUp' ? -1 : 1);
+  }
+  this.updateCaret();
+  if (e.shiftKey) this.updateSelection();
+  return true;
 }
 
 function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentPosition {
@@ -948,6 +980,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
 
+    if (handleFootnoteNavigationShortcut.call(this, e)) return;
+
     // 방향키 → 각주 내 이동
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
@@ -960,13 +994,21 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
 
-    // Enter → 각주 내 문단 분할
+    // Enter → 각주 내 문단 분할, Shift+Enter → 본문처럼 강제 줄바꿈
     if (e.key === 'Enter') {
       e.preventDefault();
       try {
+        this.deleteFootnoteSelection();
         const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
         const innerParaIdx = this.cursor.fnInnerParaIdx;
         const charOffset = this.cursor.fnCharOffset;
+        if (e.shiftKey) {
+          this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, '\n');
+          this.executeOperation({ kind: 'record', command: new InsertTextInFootnoteCommand(target, innerParaIdx, charOffset, '\n') });
+          this.cursor.setFnCursorPosition(innerParaIdx, charOffset + 1);
+          this.afterEdit();
+          return;
+        }
         const result = this.wasm.splitParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset);
         this.executeOperation({ kind: 'record', command: new SplitParagraphInFootnoteCommand(target, innerParaIdx, charOffset, result.fnParaIndex) });
         this.cursor.setFnCursorPosition(result.fnParaIndex, 0);
@@ -978,7 +1020,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     // Backspace / Delete
     if (e.key === 'Backspace' || e.key === 'Delete') {
       e.preventDefault();
-      this.caret.beginEraseMotion();
+      if (this.deleteFootnoteSelection()) {
+        this.afterEdit();
+        return;
+      }
       const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
       const innerParaIdx = this.cursor.fnInnerParaIdx;
       const fnOff = this.cursor.fnCharOffset;
@@ -1038,7 +1083,6 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
           this.afterEdit();
         } catch { /* ignore */ }
       }
-      this.caret.endEraseMotion();
       return;
     }
 
@@ -1233,12 +1277,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const ref = this.cursor.getSelectedTableRef();
       if (ref) {
         if (ref.cellPath && ref.cellPath.length > 1) {
-          // 중첩 표 삭제는 미지원 — 선택만 해제
+          // 중첩 표: 안쪽 표를 지우고 그 표를 담던 셀 문단 처음(moveOutOfSelectedTable 위치)으로 돌아간다.
+          const parentPath = JSON.stringify(ref.cellPath.slice(0, -1));
+          const control = ref.cellPath[ref.cellPath.length - 1].controlIndex;
           this.cursor.moveOutOfSelectedTable();
           this.eventBus.emit('table-object-selection-changed', false);
-          this.updateCaret();
-          // [Task #394] 셀 진입 자동 ON 로직 비활성화 — input-handler.ts 의 코멘트 참고.
-          // this.checkTransparentBordersTransition();
+          this.executeOperation({ kind: 'snapshot', operationType: 'deleteTable', operation: (wasm: WasmBridge) => {
+            wasm.deleteCellTableControlByPath(ref.sec, ref.ppi, parentPath, control);
+            return this.cursor.getPosition();
+          }});
         } else {
           this.cursor.moveOutOfSelectedTable();
           this.eventBus.emit('table-object-selection-changed', false);
@@ -1350,9 +1397,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (this.cursor.isInCellSelectionMode()) {
     // 브라우저의 copy/cut/paste 이벤트가 셀 블록을 그대로 받게 한다.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(e.key.toLowerCase())) return;
+    // 한컴처럼 Delete 는 블록의 셀 내용을 지우고 블록을 유지한다. Backspace 는 셀 블록에서 아무것도 하지 않는다.
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace')) {
       e.preventDefault();
-      clearSelectedCellBlock.call(this);
+      if (e.key === 'Delete') clearSelectedCellBlock.call(this);
       return;
     }
     if (e.key === 'Escape') {
@@ -1380,8 +1428,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         // phase 3: 전체 표 비율 리사이즈 (모든 셀에 동일 delta)
         this.resizeTableProportional(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
       } else {
-        // phase 1, 2: 선택 셀 크기 조절 (이웃 셀 반대 delta)
-        this.resizeCellByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
+        // phase 1, 2: 블록 경계 옮기기 — Ctrl 은 표를 키우고 Alt 는 이웃 칸·줄을 줄인다.
+        this.resizeCellByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', e.altKey && !e.ctrlKey && !e.metaKey);
       }
       return;
     }
@@ -1397,7 +1445,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const dr = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
       const dc = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
       const phase = this.cursor.getCellSelectionPhase();
-      if (e.shiftKey || phase === 2) {
+      if (e.shiftKey && phase === 1 && !this.cursor.isExtendedCellSelection() && !this.hasMultiCellSelection()) {
+        // 한컴: F5 로 잡은 셀 하나에서 Shift+방향키는 블록을 넓히지 않고 그 셀의 경계만 옮긴다.
+        this.moveCellEdgeByKeyboard(e.key as 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight');
+        return;
+      } else if (e.shiftKey || phase === 2) {
         // phase 2: 범위 확장 (anchor 고정, focus만 이동)
         this.cursor.expandCellSelection(dr, dc);
       } else if (phase === 3) {
@@ -1665,7 +1717,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
           break;
         }
         if (e.shiftKey) {
-          this.cursor.moveToCellPrev();
+          // 한컴: Shift+Tab 은 앞 셀 글 끝으로 가고, 첫 셀에서는 움직이지 않는다.
+          this.cursor.moveToCellPrev(false);
         } else if (insertRowAfterLastTableCellByTab.call(this)) {
           // 마지막 셀 Tab은 한컴처럼 새 줄을 자동 추가하고 새 줄 첫 셀로 이동한다.
         } else {
@@ -1998,9 +2051,9 @@ function selectedCellBlock(self: any) {
   return { ...context, ...range, pathJson: JSON.stringify(path) };
 }
 
-function cellBlockStartPosition(self: any, wasm: WasmBridge, block: NonNullable<ReturnType<typeof selectedCellBlock>>): DocumentPosition {
-  const target = wasm.getTableCellTargetByPath(block.sec, block.ppi, block.pathJson,
-    block.startRow, block.startCol, 0);
+function cellBlockStartPosition(self: any, wasm: WasmBridge, block: NonNullable<ReturnType<typeof selectedCellBlock>>,
+  row = block.startRow, col = block.startCol): DocumentPosition {
+  const target = wasm.getTableCellTargetByPath(block.sec, block.ppi, block.pathJson, row, col, 0);
   return remapTableCellPosition(self.cursor.getPosition(), target, true);
 }
 
@@ -2014,7 +2067,8 @@ export function clearSelectedCellBlock(this: any): void {
     this.executeOperation({ kind: 'snapshot', operationType: 'clearTableCellRange', operation: (wasm: WasmBridge) => {
       wasm.clearTableCellRange(block.sec, block.ppi, block.pathJson,
         block.startRow, block.startCol, block.endRow, block.endCol);
-      return cellBlockStartPosition(this, wasm, block);
+      // 한컴처럼 블록은 남기고 캐럿은 블록의 마지막 셀에 둔다.
+      return cellBlockStartPosition(this, wasm, block, block.endRow, block.endCol);
     }});
     this.updateCellSelection();
   } catch (error) {
@@ -2329,12 +2383,7 @@ export function onPaste(this: any, e: ClipboardEvent): void {
         const result = wasm.pasteControl(p.sectionIndex, p.paragraphIndex, p.charOffset);
         const parsed = JSON.parse(result);
         if (parsed.ok) {
-          const newParaIdx = (parsed.paraIdx ?? p.paragraphIndex) + 1;
-          return {
-            sectionIndex: p.sectionIndex,
-            paragraphIndex: newParaIdx,
-            charOffset: 0,
-          } as DocumentPosition;
+          return positionAfterPasteResult(p, parsed);
         }
         return p;
       }});

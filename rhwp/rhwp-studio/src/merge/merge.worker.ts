@@ -1,7 +1,5 @@
 /// <reference lib="webworker" />
 
-import init from '@wasm/rhwp.js';
-import * as wasmModule from '@wasm/rhwp.js';
 import type { MergeAnalysis, MergeValidationResult } from './domain.ts';
 import type { MergeWorkerRequest, MergeWorkerResponse } from './worker-protocol.ts';
 import type { MergeManifestEntrySeed } from '../versioning/types.ts';
@@ -41,33 +39,22 @@ interface StructuralMergeExports {
 }
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
-let wasmReady: Promise<void> | null = null;
 
 function post(message: MergeWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
 }
 
-function wasmInitialized(): Promise<void> {
-  if (!wasmReady) {
-    const initializing = init().then(() => undefined);
-    wasmReady = initializing.catch((error) => {
-      wasmReady = null;
-      throw error;
-    });
-  }
-  return wasmReady;
+let runtime: Promise<StructuralMergeExports> | undefined;
+
+function exportsReady(): Promise<StructuralMergeExports> {
+  return runtime ??= import('../../vendor/hm-wasm/hm_wasm').then(async (module) => {
+    await module.default();
+    return module as unknown as StructuralMergeExports;
+  });
 }
 
-async function exportsReady(): Promise<StructuralMergeExports> {
-  await wasmInitialized();
-  const exports = wasmModule as unknown as Partial<StructuralMergeExports>;
-  if (
-    typeof exports.structuralMergeAnalyze !== 'function'
-    || typeof exports.structuralMergeMaterialize !== 'function'
-  ) {
-    throw new Error('This RHWP WebAssembly build does not include the structural merge exports.');
-  }
-  return exports as StructuralMergeExports;
+async function wasmInitialized(): Promise<void> {
+  await exportsReady();
 }
 
 function canonical(value: unknown): string {
@@ -218,7 +205,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
     if (request.operation === 'build-manifest') {
       const exports = await exportsReady();
       if (typeof exports.structuralMergeBuildManifest !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include structural manifest export.');
+        throw new Error('This HeemangEngine build does not include structural manifest export.');
       }
       const entries = parseManifestEntries(exports.structuralMergeBuildManifest(request.bytes));
       post({ id: request.id, type: 'manifest', entries });
@@ -235,7 +222,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
         return;
       }
       if (typeof exports.structuralMergeAnalyzeDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte merge analysis.');
+        throw new Error('This HeemangEngine build does not include document-byte merge analysis.');
       }
       const value = parseAnalysis(request.manifests
         && typeof exports.structuralMergeAnalyzeDocumentWithManifests === 'function'
@@ -275,7 +262,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
         return;
       }
       if (typeof exports.structuralMergeMaterializeDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte merge materialization.');
+        throw new Error('This HeemangEngine build does not include document-byte merge materialization.');
       }
       const bytes = request.manifests
         && typeof exports.structuralMergeMaterializeDocumentWithManifests === 'function'
@@ -301,7 +288,7 @@ scope.addEventListener('message', (event: MessageEvent<MergeWorkerRequest>) => {
     if (request.operation === 'synthesize-virtual-base-document') {
       const exports = await exportsReady();
       if (typeof exports.structuralMergeVirtualBaseDocument !== 'function') {
-        throw new Error('This RHWP WebAssembly build does not include document-byte virtual base synthesis.');
+        throw new Error('This HeemangEngine build does not include document-byte virtual base synthesis.');
       }
       const basesJson = JSON.stringify(request.bases.map(base64));
       const bytes = exports.structuralMergeVirtualBaseDocument(basesJson, request.currentFormat);

@@ -1,0 +1,722 @@
+[
+  {
+    "round": 0,
+    "doc": "d-05-mixed-korean-latin-108b1ff845b3.hwpx",
+    "candidate": {
+      "firstPaintMs": 388,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 6.900000095367432
+        },
+        {
+          "name": "host.subset",
+          "font": "HANDotumB.ttf",
+          "bytes": 1371212,
+          "ms": 132.90000009536743
+        },
+        {
+          "name": "host.subset",
+          "font": "HANDotum.ttf",
+          "bytes": 1368708,
+          "ms": 144
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 3.6999999284744263
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 0.5
+        }
+      ],
+      "resources": []
+    },
+    "baseline": {
+      "firstPaintMs": 755,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 58.300000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "HANDotum.ttf",
+          "bytes": 22252900,
+          "ms": 152.70000004768372
+        },
+        {
+          "name": "host.read",
+          "font": "HANBatang.ttf",
+          "bytes": 28413328,
+          "ms": 273.6999999284744
+        },
+        {
+          "name": "host.read",
+          "font": "HANDotumB.ttf",
+          "bytes": 31085224,
+          "ms": 346.10000002384186
+        },
+        {
+          "name": "host.read",
+          "font": "HANBatangB.ttf",
+          "bytes": 30692160,
+          "ms": 181
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "d-01-table-border-styles-6a0712c9dd15.hwpx",
+    "candidate": {
+      "firstPaintMs": 140,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 1.399999976158142
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 0.3999999761581421
+        }
+      ],
+      "resources": []
+    },
+    "baseline": {
+      "firstPaintMs": 140,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 8.700000047683716
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "d-156467175-press-release-head-4d0ec3e99bf4.hwp",
+    "candidate": {
+      "firstPaintMs": 599,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 6.899999976158142
+        },
+        {
+          "name": "host.subset",
+          "font": "ENJGT.HFT",
+          "bytes": 74218,
+          "ms": 27.600000023841858
+        },
+        {
+          "name": "host.subset",
+          "font": "ENJGTI.HFT",
+          "bytes": 8955,
+          "ms": 34.5
+        },
+        {
+          "name": "host.subset",
+          "font": "ENSMJI.HFT",
+          "bytes": 11788,
+          "ms": 34.59999990463257
+        },
+        {
+          "name": "host.subset",
+          "font": "FLSMJ.HFT",
+          "bytes": 28508,
+          "ms": 36.199999928474426
+        },
+        {
+          "name": "host.subset",
+          "font": "ENSMJ.HFT",
+          "bytes": 107647,
+          "ms": 42.09999990463257
+        },
+        {
+          "name": "host.subset",
+          "font": "HGJGT.HFT",
+          "bytes": 347156,
+          "ms": 42.200000047683716
+        },
+        {
+          "name": "host.subset",
+          "font": "HMEPO.HFT",
+          "bytes": 11503,
+          "ms": 65.60000002384186
+        },
+        {
+          "name": "host.subset",
+          "font": "HMEPOB.HFT",
+          "bytes": 12744,
+          "ms": 65.80000007152557
+        },
+        {
+          "name": "host.subset",
+          "font": "HGSMJ.HFT",
+          "bytes": 914341,
+          "ms": 73.30000007152557
+        },
+        {
+          "name": "host.subset",
+          "font": "HMEPOBI.HFT",
+          "bytes": 12424,
+          "ms": 74.80000007152557
+        },
+        {
+          "name": "host.subset",
+          "font": "HJJGT.HFT",
+          "bytes": 1357654,
+          "ms": 78.90000009536743
+        },
+        {
+          "name": "host.subset",
+          "font": "HMEPOI.HFT",
+          "bytes": 12776,
+          "ms": 93.39999997615814
+        },
+        {
+          "name": "host.subset",
+          "font": "JPJGT.HFT",
+          "bytes": 21176,
+          "ms": 97.20000004768372
+        },
+        {
+          "name": "host.subset",
+          "font": "JPSMJ.HFT",
+          "bytes": 57285,
+          "ms": 97.70000004768372
+        },
+        {
+          "name": "host.subset",
+          "font": "HMKSM.HFT",
+          "bytes": 1690667,
+          "ms": 105.70000004768372
+        },
+        {
+          "name": "host.subset",
+          "font": "SPJGT.HFT",
+          "bytes": 85292,
+          "ms": 107
+        },
+        {
+          "name": "host.subset",
+          "font": "SPSMJ.HFT",
+          "bytes": 180333,
+          "ms": 118.5
+        },
+        {
+          "name": "host.subset",
+          "font": "H2HDRM.TTF",
+          "bytes": 161284,
+          "ms": 159.39999997615814
+        },
+        {
+          "name": "host.subset",
+          "font": "HJSMJ.HFT",
+          "bytes": 7035635,
+          "ms": 180
+        },
+        {
+          "name": "host.subset",
+          "font": "GungsuhChe.TTF",
+          "bytes": 220836,
+          "ms": 236.09999990463257
+        },
+        {
+          "name": "host.subset",
+          "font": "HDotum.TTF",
+          "bytes": 571304,
+          "ms": 249.19999992847443
+        },
+        {
+          "name": "host.subset",
+          "font": "HMKMM.TTF",
+          "bytes": 142184,
+          "ms": 252
+        },
+        {
+          "name": "host.subset",
+          "font": "malgun.ttf",
+          "bytes": 465636,
+          "ms": 262.2000000476837
+        },
+        {
+          "name": "host.subset",
+          "font": "HANBatang.ttf",
+          "bytes": 1401768,
+          "ms": 292.39999997615814
+        },
+        {
+          "name": "host.subset",
+          "font": "HANBatangB.ttf",
+          "bytes": 1391528,
+          "ms": 309.5
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 37.299999952316284
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 3.799999952316284
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGT.HFT",
+          "bytes": 74218,
+          "ms": 6.700000047683716
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGTI.HFT",
+          "bytes": 8955,
+          "ms": 10
+        },
+        {
+          "name": "host.read",
+          "font": "HGJGT.HFT",
+          "bytes": 347156,
+          "ms": 13.100000023841858
+        },
+        {
+          "name": "host.read",
+          "font": "JPJGT.HFT",
+          "bytes": 21176,
+          "ms": 13.700000047683716
+        },
+        {
+          "name": "host.read",
+          "font": "SPJGT.HFT",
+          "bytes": 85292,
+          "ms": 19.40000009536743
+        },
+        {
+          "name": "host.read",
+          "font": "HJJGT.HFT",
+          "bytes": 1357654,
+          "ms": 19.5
+        },
+        {
+          "name": "host.read",
+          "font": "HMKSM.HFT",
+          "bytes": 1690667,
+          "ms": 21.800000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "HMKMM.TTF",
+          "bytes": 1820872,
+          "ms": 30.399999976158142
+        },
+        {
+          "name": "host.read",
+          "font": "H2HDRM.TTF",
+          "bytes": 911040,
+          "ms": 33.699999928474426
+        },
+        {
+          "name": "host.read",
+          "font": "malgun.ttf",
+          "bytes": 9599104,
+          "ms": 67.29999995231628
+        }
+      ],
+      "resources": []
+    },
+    "baseline": {
+      "firstPaintMs": 995,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 14.600000023841858
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGTI.HFT",
+          "bytes": 8955,
+          "ms": 21.300000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGT.HFT",
+          "bytes": 74218,
+          "ms": 22.600000023841858
+        },
+        {
+          "name": "host.read",
+          "font": "ENSMJ.HFT",
+          "bytes": 107647,
+          "ms": 29.800000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "ENSMJI.HFT",
+          "bytes": 11788,
+          "ms": 32.300000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "FLSMJ.HFT",
+          "bytes": 28508,
+          "ms": 34.700000047683716
+        },
+        {
+          "name": "host.read",
+          "font": "HJJGT.HFT",
+          "bytes": 1357654,
+          "ms": 63.39999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "HGSMJ.HFT",
+          "bytes": 914341,
+          "ms": 67.5
+        },
+        {
+          "name": "host.read",
+          "font": "HGJGT.HFT",
+          "bytes": 347156,
+          "ms": 69.20000004768372
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOB.HFT",
+          "bytes": 12744,
+          "ms": 81.30000007152557
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPO.HFT",
+          "bytes": 11503,
+          "ms": 81.30000007152557
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOI.HFT",
+          "bytes": 12776,
+          "ms": 87.39999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOBI.HFT",
+          "bytes": 12424,
+          "ms": 87.5
+        },
+        {
+          "name": "host.read",
+          "font": "HMKOLD.HFT",
+          "bytes": 676509,
+          "ms": 87.5
+        },
+        {
+          "name": "host.read",
+          "font": "JPJGT.HFT",
+          "bytes": 21176,
+          "ms": 87.5
+        },
+        {
+          "name": "host.read",
+          "font": "JPSMJ.HFT",
+          "bytes": 57285,
+          "ms": 89
+        },
+        {
+          "name": "host.read",
+          "font": "SPJGT.HFT",
+          "bytes": 85292,
+          "ms": 89.10000002384186
+        },
+        {
+          "name": "host.read",
+          "font": "SPSMJ.HFT",
+          "bytes": 180333,
+          "ms": 89.10000002384186
+        },
+        {
+          "name": "host.read",
+          "font": "HMKSM.HFT",
+          "bytes": 1690667,
+          "ms": 94.80000007152557
+        },
+        {
+          "name": "host.read",
+          "font": "arial.ttf",
+          "bytes": 912744,
+          "ms": 107.39999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "HYGPRM.TTF",
+          "bytes": 909544,
+          "ms": 117.29999995231628
+        },
+        {
+          "name": "host.read",
+          "font": "H2HDRM.TTF",
+          "bytes": 911040,
+          "ms": 118.69999992847443
+        },
+        {
+          "name": "host.read",
+          "font": "HJSMJ.HFT",
+          "bytes": 7035635,
+          "ms": 167.39999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "HYMJRE.TTF",
+          "bytes": 4883924,
+          "ms": 194.89999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "ENSMJ.HFT",
+          "bytes": 107647,
+          "ms": 149.20000004768372
+        },
+        {
+          "name": "host.read",
+          "font": "DotumChe.TTF",
+          "bytes": 8123920,
+          "ms": 275.7999999523163
+        },
+        {
+          "name": "host.read",
+          "font": "GulimChe.TTF",
+          "bytes": 8498748,
+          "ms": 276.89999997615814
+        },
+        {
+          "name": "host.read",
+          "font": "malgun.ttf",
+          "bytes": 9599104,
+          "ms": 208.5
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGT.HFT",
+          "bytes": 74218,
+          "ms": 98.80000007152557
+        },
+        {
+          "name": "host.read",
+          "font": "GungsuhChe.TTF",
+          "bytes": 10179612,
+          "ms": 322.2999999523163
+        },
+        {
+          "name": "host.read",
+          "font": "HMKMOLD.TTF",
+          "bytes": 1056924,
+          "ms": 16.5
+        },
+        {
+          "name": "host.read",
+          "font": "HMKMM.TTF",
+          "bytes": 1820872,
+          "ms": 39.60000002384186
+        },
+        {
+          "name": "host.read",
+          "font": "Palatino.ttc",
+          "bytes": 484768,
+          "ms": 66.70000004768372
+        },
+        {
+          "name": "host.read",
+          "font": "HBatang.TTF",
+          "bytes": 31636844,
+          "ms": 259.8000000715256
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOB.HFT",
+          "bytes": 12744,
+          "ms": 20.899999976158142
+        },
+        {
+          "name": "host.read",
+          "font": "Arial Bold.ttf",
+          "bytes": 750984,
+          "ms": 21.700000047683716
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOI.HFT",
+          "bytes": 12776,
+          "ms": 17.899999976158142
+        },
+        {
+          "name": "host.read",
+          "font": "Arial Italic.ttf",
+          "bytes": 553284,
+          "ms": 25.299999952316284
+        },
+        {
+          "name": "host.read",
+          "font": "Palatino.ttc",
+          "bytes": 274524,
+          "ms": 33.60000002384186
+        },
+        {
+          "name": "host.read",
+          "font": "HDotum.TTF",
+          "bytes": 22877444,
+          "ms": 62
+        },
+        {
+          "name": "host.read",
+          "font": "ENJGTI.HFT",
+          "bytes": 8955,
+          "ms": 13.5
+        },
+        {
+          "name": "host.read",
+          "font": "ENSMJI.HFT",
+          "bytes": 11788,
+          "ms": 13.799999952316284
+        },
+        {
+          "name": "host.read",
+          "font": "Arial Bold Italic.ttf",
+          "bytes": 558672,
+          "ms": 12.300000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "HMEPOBI.HFT",
+          "bytes": 12424,
+          "ms": 10.300000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "Palatino.ttc",
+          "bytes": 518472,
+          "ms": 30
+        },
+        {
+          "name": "host.read",
+          "font": "Palatino.ttc",
+          "bytes": 511152,
+          "ms": 33.5
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "footnote-01.hwp",
+    "baseline": {
+      "firstPaintMs": 293,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 2.6999999284744263
+        },
+        {
+          "name": "host.read",
+          "font": "HMKSM.HFT",
+          "bytes": 1690667,
+          "ms": 6
+        },
+        {
+          "name": "host.read",
+          "font": "NanumGothic.ttc",
+          "bytes": 4344084,
+          "ms": 30.800000071525574
+        },
+        {
+          "name": "host.read",
+          "font": "NanumGothic.ttc",
+          "bytes": 4171568,
+          "ms": 44.699999928474426
+        }
+      ],
+      "resources": []
+    },
+    "candidate": {
+      "firstPaintMs": 307,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 1
+        },
+        {
+          "name": "host.subset",
+          "font": "HBatang.TTF",
+          "bytes": 529412,
+          "ms": 19.600000023841858
+        },
+        {
+          "name": "host.subset",
+          "font": "HYMJRE.TTF",
+          "bytes": 332568,
+          "ms": 23.399999976158142
+        },
+        {
+          "name": "host.subset",
+          "font": "NanumGothic.ttc",
+          "bytes": 374380,
+          "ms": 24.200000047683716
+        },
+        {
+          "name": "host.subset",
+          "font": "NanumGothic.ttc",
+          "bytes": 372268,
+          "ms": 15.600000023841858
+        },
+        {
+          "name": "host.subset",
+          "font": "HMKMM.TTF",
+          "bytes": 196180,
+          "ms": 32.39999997615814
+        },
+        {
+          "name": "host.subset",
+          "font": "HANBatang.ttf",
+          "bytes": 1464340,
+          "ms": 47.199999928474426
+        },
+        {
+          "name": "host.subset",
+          "font": "HANDotumB.ttf",
+          "bytes": 1537144,
+          "ms": 61
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 6.599999904632568
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1.899999976158142
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 4.199999928474426
+        },
+        {
+          "name": "host.read",
+          "font": "HMKSM.HFT",
+          "bytes": 1690667,
+          "ms": 26.5
+        },
+        {
+          "name": "host.read",
+          "font": "HYMJRE.TTF",
+          "bytes": 4883924,
+          "ms": 41.89999997615814
+        }
+      ],
+      "resources": []
+    }
+  }
+]

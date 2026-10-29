@@ -401,6 +401,8 @@ export interface ParaProperties {
   headType?: string;         // 'None'|'Outline'|'Number'|'Bullet'
   paraLevel?: number;        // 0-6 (=1-7수준)
   numberingId?: number;      // 번호/글머리표 정의 ID (1-based, 0=없음)
+  numberingRestartMode?: number; // 세션의 번호 방식: 0=자동, 1=이어, 2=다시 시작
+  numberingStartNum?: number;
   widowOrphan?: boolean;
   keepWithNext?: boolean;
   keepLines?: boolean;
@@ -613,6 +615,11 @@ export interface ControlLayoutItem {
   stableIndex?: number;
   /** [Task #1280 v2] 텍스트 어울림 모드(이미지뿐 아니라 shape/line/group에도 노출). */
   wrap?: string;
+  /** 직선·연결선의 시작·끝 점(쪽 좌표). */
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
   /**
    * [Task #2230] 그림 미지정 placeholder(bin 참조 실패 + 외부 경로 없음).
    * 더블클릭 시 그림 지정(파일 선택) 진입 분기 근거.
@@ -656,6 +663,7 @@ export interface ObjectRef {
 
 /** WASM getShapeProperties() 반환 타입 */
 export interface ShapeProperties {
+  instanceId?: number;
   width: number;
   height: number;
   treatAsChar: boolean;
