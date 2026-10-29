@@ -18,7 +18,8 @@ if (!browser) {
 }
 if (!files.length) throw new Error(`No ${suite} tests found`);
 // Browser test servers otherwise invalidate the shared Vite cache while another page imports a module.
-const browserOptions = browser ? ['--test-concurrency=1'] : [];
+// A file whose tests all finished can still hold a handle on Linux CI and keep the run waiting until the job times out.
+const browserOptions = browser ? ['--test-concurrency=1', '--test-force-exit'] : [];
 const result = spawnSync(process.execPath, ['--test', ...options, ...browserOptions, ...files], {
   cwd: root,
   stdio: 'inherit',
