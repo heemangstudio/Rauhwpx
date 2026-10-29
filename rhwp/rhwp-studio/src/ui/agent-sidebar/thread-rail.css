@@ -312,10 +312,14 @@
 }
 
 .ag-threads-item-when[data-status='working'],
-.ag-threads-item-when[data-status='needs-input'],
 .ag-threads-item-when[data-status='needs-review'],
 .ag-threads-item-when[data-status='failed'] {
   color: var(--ag-text-secondary);
+}
+
+/* 질문·권한·계획 승인을 기다리는 채팅은 글자까지 파랗다 — 사용자 차례다. */
+.ag-threads-item-when[data-status='needs-input'] {
+  color: var(--ag-ask);
 }
 
 /* 오류 이유는 짧다. 길게 온 이유는 제목을 밀어내지 않고 말줄임으로 끝난다. */
@@ -383,7 +387,7 @@
 
 /* ── 실행 상태 점 ───────────────────────────────────────
    여러 탭에서 도는 채팅을 한 목록에서 알아본다 — 노란 점은 지금 일하는
-   채팅, 초록 점은 끝나서 볼거리가 생긴 채팅, 빨간 점은 답을 기다리는 채팅,
+   채팅, 초록 점은 끝나서 볼거리가 생긴 채팅, 파란 점은 답을 기다리는 채팅,
    에이전트 색 점은 검토를 기다리는 채팅, 빨간 고리는 오류·중단으로 멈춘 채팅. */
 .ag-thread-status {
   flex: 0 0 auto;
@@ -402,7 +406,7 @@
 }
 
 .ag-thread-status-needs-input {
-  background: var(--ag-err);
+  background: var(--ag-ask);
 }
 
 .ag-thread-status-needs-review {

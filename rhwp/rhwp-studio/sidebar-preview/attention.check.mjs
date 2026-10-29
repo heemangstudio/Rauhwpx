@@ -227,7 +227,7 @@ export async function checkFinished(page, origin) {
   assert.equal(state.badge, 0);
 }
 
-/** 계획 승인·질문은 입력 대기, 답하면 걷힌다. 사용자가 멈춘 턴은 아무것도 남기지 않는다. */
+/** 계획 승인·질문은 입력 필요, 답하면 걷힌다. 사용자가 멈춘 턴은 아무것도 남기지 않는다. */
 export async function checkBlockingStates(page, origin) {
   await openPreview(page, origin, 'scenario=plan');
   await page.click('#play');
@@ -236,14 +236,14 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   let state = await attentionState(page);
   assert.equal(rowOf(state, planThread).status, 'needs-input', 'a plan awaiting approval waits for input');
-  assert.equal(rowOf(state, planThread).label, '입력 대기');
+  assert.equal(rowOf(state, planThread).label, '입력 필요');
   await page.click('.ag-root .ag-threads-close');
   await page.click('.ag-plan-approve');
   await waitFor(page, () => window.sidebarPreview.snapshot().workflow.phase !== 'awaiting-approval', undefined, 'the plan is approved');
   await showRail(page);
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
     .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when')?.dataset.status !== 'needs-input',
-  planThread, 'approving the plan clears 입력 대기');
+  planThread, 'approving the plan clears 입력 필요');
 
   await openPreview(page, origin, 'scenario=chat&hold=1');
   await page.click('#play');
@@ -275,7 +275,7 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
     .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when')?.dataset.status === '',
-  questionThread, 'answering clears 입력 대기');
+  questionThread, 'answering clears 입력 필요');
 
   // 멈춤: 노란 불이 걷히고 아무 점도 남지 않는다.
   await openPreview(page, origin, 'scenario=chat&hold=1');

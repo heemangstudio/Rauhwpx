@@ -229,6 +229,8 @@ body.ag-sidebar-resizing {
   --ag-err: var(--theme-danger, #c8372d);
   /* 실행 중 표시등 — 켜진 백열전구의 노랑. */
   --ag-run: #d9a514;
+  /* 사용자 입력을 기다리는 표시 — 질문·권한·계획 승인. */
+  --ag-ask: #2f6fe0;
 
   /* 모노 활자는 펼친 도구 세부와 정확한 좌표에만 쓴다. */
   --ag-micro: var(--ag-fs-mono);
@@ -375,6 +377,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   --ag-ok: var(--theme-success, #5cbb7f);
   --ag-err: var(--theme-danger, #ff6b60);
   --ag-run: #f0c24b;
+  --ag-ask: #6ea2ff;
   --ag-cite-hit: rgba(240, 194, 75, 0.34);
   box-shadow: var(--n-elev-2);
 }

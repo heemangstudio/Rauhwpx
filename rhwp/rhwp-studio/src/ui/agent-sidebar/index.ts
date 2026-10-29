@@ -8510,7 +8510,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     rebuildThreadsList();
   }
 
-  /** 실행 상태 점 — 노란 불(작업 중)·빨간 점(입력 대기)·에이전트 색 점(검토 대기)·
+  /** 실행 상태 점 — 노란 불(작업 중)·파란 점(입력 필요)·에이전트 색 점(검토 대기)·
       빨간 고리(오류·중단)·초록 점(보지 않은 완료). 옆 글자(완료는 화면 낭독용 글)가 상태를 말한다. */
   function buildStatusDot(status: ChatRunStatus): HTMLElement {
     const dot = el('span', `ag-thread-status ag-thread-status-${status}`);
@@ -8529,7 +8529,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 행 오른쪽 위 — 실행 중이면 점과 짧은 상태, 아니면 마지막 대화 이후 경과.
       작업 중은 시작 뒤 400ms 가 지나야 보인다 — 짧은 턴은 경과 표시에서 곧바로 완료 점으로 간다.
-      입력 대기·완료 같은 다른 상태는 바로 보인다. 삭제·보관 판단은 실제 상태를 읽는다. */
+      입력 필요·완료 같은 다른 상태는 바로 보인다. 삭제·보관 판단은 실제 상태를 읽는다. */
   function fillThreadWhen(when: HTMLElement, thread: ThreadSummary, now = Date.now()): void {
     let status = getChatStatus(thread.id);
     const since = status === 'working' ? getChatWorkingSince(thread.id) : null;
@@ -8546,7 +8546,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const elapsed = since ? formatWorkingElapsed(since, now) : '';
       label = elapsed ? `작업 중 ${elapsed}` : '작업 중';
     } else if (status === 'needs-input') {
-      label = '입력 대기';
+      label = '입력 필요';
     } else if (status === 'needs-review') {
       label = '검토 대기';
     } else if (status === 'failed') {

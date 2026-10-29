@@ -251,11 +251,11 @@ stopped, failed, subagent, scrolled-up and report-then-tool cases and saves `tur
 
 ## Background-chat attention
 
-Each chat row shows whose turn it is: `입력 대기` (red dot) for a question or a plan awaiting
-approval, `작업 중` (breathing yellow, 400 ms after the turn starts), `검토 대기` (agent-colored
+Each chat row shows whose turn it is: `입력 필요` (blue dot and text) for a question, a permission request
+or a plan awaiting approval, `작업 중` (breathing yellow, 400 ms after the turn starts), `검토 대기` (agent-colored
 dot) for staged edits, a red ring with a short reason (`오류`, `중단됨`, `로그인 필요`, `사용 한도` …)
 for a failed or cut-off turn, and a green dot for a turn that finished while nobody watched it.
-Seeing a chat (shown, window focused) clears its green dot and red ring; 입력 대기 and 검토 대기
+Seeing a chat (shown, window focused) clears its green dot and red ring; 입력 필요 and 검토 대기
 stay until answered. A chat that needs attention keeps its place on the rail; its row's status is the only
 in-app signal besides the chat-list button, which shows the count of other chats.
 An unfocused desktop window gets one OS notification per turn and state and an app-icon badge.
