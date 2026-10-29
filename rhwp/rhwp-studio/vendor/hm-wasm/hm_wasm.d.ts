@@ -176,12 +176,13 @@ export type EditOp =
 | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
 | { op: "pageBreak"; at: Address; on: boolean }
 | { op: "applyStyle"; from: Address; to: Address; styleId: number }
-| { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number }
+| { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
 | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
-| { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number }
+| { op: "insertTableColumns"; table: TableAddress; beforeColumn: number; count: number; copyColumn?: number }
 | { op: "deleteTableColumns"; table: TableAddress; startColumn: number; count: number }
 | { op: "mergeTableCells"; table: TableAddress; startRow: number; startColumn: number; endRow: number; endColumn: number }
 | { op: "splitTableCell"; table: TableAddress; row: number; column: number; rows: number; columns: number; equalRowHeight: boolean }
+| { op: "moveTableCellEdge"; table: TableAddress; row: number; column: number; side: "right" | "bottom"; delta: number }
 | { op: "setListRestart"; at: Address; restart: ListRestart | null }
 | { op: "setList"; from: Address; to: Address; list: ListSpec | null }
 | { op: "moveObject"; object: ObjectAddress; dx: number; dy: number }

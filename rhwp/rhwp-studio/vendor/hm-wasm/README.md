@@ -1,14 +1,10 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `afcacaf` (2026-10-28 release
-candidate). It is core `53fabe6` (qualified native `01c8536` plus the selected performance commits over
-integration `e48a461`) with five accepted rendering fixes: HWPX picture outer shadows (`02d1b46`),
-document-level integer-percent picture fill zoom with overflow clipping (`f8899cd`), paragraph-relative horizontal
-object alignment between paragraph margins (`150b388`), connected character borders (`9b93aa0`) and picture bullets
-with empty number formats as paragraph heads (`a7dd228`), followed by two Studio fixes: tables pasted into a narrower
-cell fit its text width and `resizeTableCells` takes absolute sizes (`edbd0aa`), and structural merges keep the
-current document's default-tab paragraph shapes and compare HWPX binary entries without package addressing
-(`afcacaf`). Built with
+Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `1a54900` (2026-10-29). Over the
+`afcacaf` package it adds the rendering lanes through `b3cce93` (tables, text, forms/math, curriculum and objects
+under the r12 gate fonts), Hancom-captured table editing (`9bbcf60`: merge drops empty cells, split grids and heights,
+`copyRow`/`copyColumn`, saved laid-out table height, `moveTableCellEdge`), caret motion fixes (`054d48b`) and the
+typing performance work with its incremental-versus-fresh layout equivalence test (`1a54900`). Built with
 `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
@@ -17,9 +13,9 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,585,818 | `1c91ad51ff815187b3f7c93dedddbb66fb29fe22f122c1f120405107699dbae9` |
+| `hm_wasm_bg.wasm` | 7,736,148 | `8bbd8eab1034d6ee7b72800b5e59090709605d32839995bf6d6f5a526cc95023` |
 | `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
-| `hm_wasm.d.ts` | 54,782 | `004d64e811527a3ca6924d136e1b086310cce53c6b462185a434b28e894b92b4` |
+| `hm_wasm.d.ts` | 54,942 | `4a1a7181fca222c49fc9d51ed67b9ce32c77a32d67f62ccec8753d9066c7b88b` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
 
 Integration `e48a461` adds, over the earlier `e2c92f9`, structural version merging and `Doc.verifyHwp`
