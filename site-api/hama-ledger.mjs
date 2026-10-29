@@ -34,9 +34,9 @@ export const HAIKU_PRICES = Object.freeze({
   longContextMultiplier: 5,
 });
 
-/** Round to a micro-dollar so float sums never drift across a cap. */
+/** Round to a nano-dollar so float sums never drift across a cap, while a cheap call keeps its exact cost. */
 export function usd(value) {
-  return Math.round(value * 1e6) / 1e6;
+  return Math.round(value * 1e9) / 1e9;
 }
 
 export function finite(value) {

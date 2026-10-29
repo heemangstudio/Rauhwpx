@@ -147,8 +147,8 @@ test('cost: list prices per token kind, and the long-context rate past 100K prom
   assert.equal(costFromUsage({ cacheWrite5mTokens: 100_000 }), 0.0125);
   assert.equal(costFromUsage({ cacheWrite1hTokens: 100_000 }), 0.02);
   assert.equal(costFromUsage({ inputTokens: 100_000, outputTokens: 1000 }), 0.0105);
-  // 100_001 prompt tokens (input + cache read): every rate × 5 ($0.0075005, kept to the micro-dollar).
-  assert.equal(costFromUsage({ inputTokens: 1, cacheReadTokens: 100_000, outputTokens: 1000 }), 0.007501);
+  // 100_001 prompt tokens (input + cache read): every rate × 5.
+  assert.equal(costFromUsage({ inputTokens: 1, cacheReadTokens: 100_000, outputTokens: 1000 }), 0.0075005);
 });
 
 test('service: status shape, idempotent recording across a restart, usage log and admin views', async (t) => {
@@ -212,6 +212,7 @@ test('service: status shape, idempotent recording across a restart, usage log an
   await hama.admin.disable(ADMIN, { keyId: 'lic_a' });
   await assert.rejects(hama.status('lease:lic_a'), { code: 'hama_not_enrolled', status: 403 });
   await assert.rejects(hama.admin.enroll(ADMIN, { keyId: 'lic_a', allowanceUsd: -1 }), { code: 'allowance_invalid' });
+  await assert.rejects(hama.admin.enroll(ADMIN, { keyId: 'lic_a', allowanceUsd: 0.001 }), { code: 'allowance_invalid' });
   await assert.rejects(hama.admin.disable(ADMIN, { keyId: 'lic_none' }), { code: 'hama_not_found' });
 });
 

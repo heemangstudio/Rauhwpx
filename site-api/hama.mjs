@@ -48,13 +48,12 @@ export function usageLogName(keyId) {
   return `${String(keyId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100) || '_'}.jsonl`;
 }
 
-/** Admin-set allowance: 0 < usd ≤ MAX_HAMA_ALLOWANCE_USD, number or numeric string, rounded to cents. */
+/** Admin-set allowance: at least a cent and at most MAX_HAMA_ALLOWANCE_USD, number or numeric string, rounded to cents. */
 export function parseHamaAllowance(value) {
   const n = typeof value === 'string' && value.trim() ? Number(value) : value;
-  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0 || n > MAX_HAMA_ALLOWANCE_USD) {
-    throw licenseError('allowance_invalid', 400);
-  }
-  return Math.round(n * 100) / 100;
+  const cents = typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : NaN;
+  if (!(cents > 0) || cents > MAX_HAMA_ALLOWANCE_USD) throw licenseError('allowance_invalid', 400);
+  return cents;
 }
 
 export function createHamaService({

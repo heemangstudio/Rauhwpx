@@ -101,7 +101,7 @@ Deploy checks: Railway's edge must keep long SSE responses open (idle and maximu
 
 ### Hama plan
 
-A hosted plan: the app's Pi harness runs through this server, metered per license key against a monthly USD allowance with rolling caps. It is off unless `HAMA_ENABLED=true`; every `/v1/hama/*` and `/v1/admin/hama*` route answers 404 until then. Price and pool are tentative, so every number is an env variable. Keys are enrolled by the admin for now (a Groble product hookup follows the Pro plan change in `licenses.mjs`).
+A hosted plan: the app's Pi harness runs through this server, metered per license key against a monthly USD allowance with rolling caps. It is off unless `HAMA_ENABLED=true`; every `/v1/hama/*` and `/v1/admin/hama*` route answers 404 until then. Price and pool are tentative, so every number is an env variable. Keys are enrolled by the admin for now (a Hama Groble product follows the Pro plan change in `licenses.mjs`). Eligibility is an active plan in `hama.json` and nothing else: a license's tier or edition (Pro included) never grants Hama, so an active lease that is not enrolled gets 403 `hama_not_enrolled` on status and on both proxy routes.
 
 The app authenticates with its license lease (same check as the gift) as `Authorization: Bearer <lease>` or `x-api-key: <lease>`. Errors: 401 `unauthorized`, 403 `hama_not_enrolled` (valid lease, no active plan).
 
