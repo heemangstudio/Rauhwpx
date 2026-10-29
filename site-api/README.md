@@ -97,6 +97,8 @@ Owner setup on OpenRouter, so gift usage bills to Anthropic Console credit:
 2. Keep a small OpenRouter credit balance. BYOK requests cost 5% of the normal OpenRouter price from OpenRouter credits, after a monthly fee-free allowance ($25,000 of list-price usage on pay-as-you-go). A gift key's limit counts both the Anthropic spend and that fee.
 3. Create a management key at openrouter.ai/settings/management-keys and set it as `OPENROUTER_PROVISIONING_KEY`. If it has an expiration, replace the variable before that date; an expired key makes claims fail with `upstream_unavailable`.
 
+Every response on these routes leaves the gift's OpenRouter key out: the claim, status and proxy answers build their own bodies, and admin views drop `openrouterKey`.
+
 Deploy checks: Railway's edge must keep long SSE responses open (idle and maximum request duration), so try a long streamed completion against production after the first deploy.
 
 ### Hama plan
@@ -117,6 +119,18 @@ The app authenticates with its license lease (same check as the gift) as `Author
 - Owner setup: create `HAMA_OPENROUTER_KEY` with a hard credit limit on OpenRouter. OpenRouter BYOK is per account, so if that account routes Anthropic through the BYOK key from the gift setup with shared capacity off, the Claude backup reaches the same Anthropic key and fails with it. Keep the Hama key in an account (or workspace) without that BYOK rule so the backup is real.
 - Admin (`ADMIN_TOKEN`): `GET /v1/admin/hama?status=` lists plans with their caps and totals; `POST /v1/admin/hama/enroll {keyId, allowanceUsd?, periodAnchor?}` enrolls an existing license or re-activates and updates its plan (`allowanceUsd` 0–1000 overrides `HAMA_MONTHLY_ALLOWANCE_USD`, `null` goes back to it; `periodAnchor` defaults to the enrollment time and is kept on later calls); `POST /v1/admin/hama/disable {keyId}` ends access and keeps the ledger; `GET /v1/admin/hama/usage?keyId=&limit=` returns the plan and its newest usage log entries (100 by default, at most 1000). Errors: `invalid_key` 404 (no such license), `hama_not_found` 404, `allowance_invalid` 400, `period_anchor_invalid` 400.
 
+### Hosted Rau-0.1 (Pro)
+
+Rau-0.1, the taste learner in `rhwp/rhwp-agent/taste-learner.mjs`, runs on this server for active Pro keys, so the app never calls OpenRouter or any provider with a key. The app authenticates with its lease (`Authorization: Bearer <lease>`, the same check as gifts). Any key that is not an active Pro key (GLJFC9, lifetime, Signature, beta, grandfathered, manual, a Pro key past its expiry and payment grace, or revoked) gets `rau_requires_pro`; a lease that is not ours, expired, or for a removed device is `unauthorized`.
+
+- `POST /v1/rau/learn {prompt}`: `prompt` is a non-empty string of at most 48 KB UTF-8. The server sends it as one user message to `RAU_MODEL` (default `deepseek/deepseek-v4.1-flash`, a pinned id, never the `~` alias) with `reasoning: {effort: RAU_REASONING_EFFORT}` (default `low`), `max_tokens` = `RAU_MAX_OUTPUT_TOKENS` (default 2000), not streamed, and answers `200 {ok:true, text, model, usage:{usedUsd, capUsd, remainingUsd, resetsAt}}`. `text` is the model's reply as is.
+- `GET /v1/rau/status` → `{ok:true, eligible, reason (null|'rau_requires_pro'), upgradeUrl, capUsd, usedUsd, remainingUsd, resetsAt}`. `usedUsd` and `remainingUsd` are `null` when not eligible. It never creates an OpenRouter key.
+- Errors are `{ok:false, error, ...}`: 400 `invalid` with `field` (`prompt` or `body`), 401 `unauthorized`, 403 `rau_requires_pro` with `upgradeUrl` (`PRO_UPGRADE_URL`), 402 `rau_cap_reached` with `capUsd`, `usedUsd` and `resetsAt`, 429 `rate_limited` with `Retry-After` (2 concurrent and 20 per minute per license, 120 per minute per IP), 502 `upstream_unavailable`, 503 `rau_not_configured` (no `OPENROUTER_PROVISIONING_KEY`, or `RAU_ENABLED=false`).
+- Allowance: the first learn call creates one OpenRouter key per license, `hama-rau-<keyId>`, with `limit` = `RAU_MONTHLY_CAP_USD` (default 1.00), `limit_reset: 'monthly'` (OpenRouter resets at 00:00 UTC on the 1st) and `include_byok_in_limit: true`. The period is the UTC calendar month and `resetsAt` the next 1st at 00:00Z. When the stored period or cap differs from the current one, the next call PATCHes the key once with the cap and the monthly reset, so a changed cap takes effect and a reset OpenRouter skipped is asked for again. Before each call the server refuses once this month's spend reaches the cap, taking the higher of OpenRouter's count (`GET /key`, cached 15 s) and its own ledger of each response's `usage.cost`. An upstream key-limit refusal (402/403) also answers `rau_cap_reached` and fills the ledger. Two calls at once can each pass the check, so a month can end at most two calls over the cap; the OpenRouter limit still holds. The key stays in `rau.json` and is never in any response.
+- `GET /v1/admin/rau` (`ADMIN_TOKEN`) lists allowances without their keys, with this month's `usedUsd` and `remainingUsd`, the model, period and cap. `node scripts/license-admin.mjs rau` prints one line per license.
+
+At about $0.0003 a call on the default model, the $1 cap is roughly 3,000 calls a month.
+
 Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford base32). The server assumes **one replica**: all license writes go through one in-process lock and an atomic temp-file rename.
 
 ## Data
@@ -130,6 +144,7 @@ Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford 
 | `downloads.json` | `{ days: { [KST day]: { ['platform|version']: count } } }` |
 | `feedback/index.json` | `{ reports: [ { id, receivedAt, status, installHash, email, preview, appVersion, os, osVersion, arch, attachments, bytes } ] }` |
 | `feedback/<id>/` | `report.json` (message, meta, sha256 of the install id, attachment sizes) plus `screenshot.png`/`.jpg`, `log.txt`, `chat.txt`, `document.hwp`/`.hwpx`/`.hml` (any other format as `document.bin`) when sent. Reports older than 90 days are pruned on each write and list |
+| `rau.json` | `{ allowances: { [keyId]: { status, name, capUsd, period, openrouterHash, openrouterKey, ledger: { ['YYYY-MM']: usd }, createdAt, limitSetAt, lastUsedAt } } }`: hosted Rau-0.1 keys, the last 3 months of spend |
 | `gifts.json` | `{ events: { [eventId]: { grants: { [keyId]: { status, name, limitUsd, pendingLimitUsd?, openrouterHash, openrouterKey, claimedAt, ... } }, allocations: { [keyId]: usd } } } }` |
 | `hama.json` | `{ plans: { [keyId]: { status, allowanceUsd, periodAnchor, enrolledAt, disabledAt? } }, ledgers: { [keyId]: { minutes, hours, period, ids, totalUsd, calls, lastCallAt } } }`. A heavy key holds about 40 KB of ledger, so the 8 MiB store limit fits roughly 200 of them |
 | `hama-usage/<keyId>.jsonl` | One line per billed Hama call: `{at, id, route, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, costSource}`. Past 4 MiB the file moves to `<keyId>.1.jsonl` (one older file kept) |
@@ -168,7 +183,12 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GRANDFATHER_CUTOFF` | ISO-8601 time; Mac installs first seen before it get a free key. Unset disables grandfathering |
 | `GRANDFATHER_PLATFORMS` | Comma list of `os` values, default `darwin` |
 | `LICENSE_ALLOWED_ORIGINS` | CORS origins for by-ref, default `https://heemangstudios.com,https://www.heemangstudios.com,https://heemangstudio.github.io` |
-| `OPENROUTER_PROVISIONING_KEY` | OpenRouter management key that creates the gift keys (BYOK setup above). With `GIFT_EVENT_ID` it turns the gift routes on |
+| `OPENROUTER_PROVISIONING_KEY` | OpenRouter management key that creates the gift keys (BYOK setup above) and the hosted Rau-0.1 keys. With `GIFT_EVENT_ID` it turns the gift routes on; on its own it turns hosted Rau on |
+| `RAU_ENABLED` | Optional `true`/`false`. `false` answers `rau_not_configured` even with the management key set |
+| `RAU_MODEL` | Pinned OpenRouter model id for Rau-0.1, default `deepseek/deepseek-v4.1-flash`. A `~` alias is refused at startup |
+| `RAU_REASONING_EFFORT` | `reasoning.effort` sent with each call: `xhigh`, `high`, `medium`, `low`, `minimal` or `none`, default `low`. Anything else fails startup |
+| `RAU_MAX_OUTPUT_TOKENS` | `max_tokens` per Rau call (reasoning counts toward it), default 2000 |
+| `RAU_MONTHLY_CAP_USD` | Spending limit of each Pro license's Rau key per UTC month, default 1.00 |
 | `GIFT_EVENT_ID` | Event id, e.g. `special-2026-10`. One gift per license per event |
 | `GIFT_AMOUNT_USD` | Limit of each gift key, default 20 |
 | `GIFT_ENDS_AT` | Optional ISO-8601 time after which no new gifts are claimed. Claimed gifts keep working |

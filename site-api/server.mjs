@@ -15,6 +15,8 @@ import {
   resolveHamaUsageDir,
   resolveLicenseConfig,
   resolveLicensesDbPath,
+  resolveRauConfig,
+  resolveRauDbPath,
   resolveUniqueInstallPingKey,
   resolveUniqueInstallsDbPath,
   resolveWaitlistDbPath,
@@ -36,6 +38,7 @@ import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs'
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
 import { renderUniqueInstallsPage } from './pages.mjs';
+import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
 import { createTelegramSender } from './telegram.mjs';
@@ -161,6 +164,17 @@ function discardUpload(req, maxBytes) {
   req.resume();
 }
 
+/** Reads up to `maxBytes`; past it the rest is drained and the answer is null, so the client still reads the reply. */
+async function readOrNull(req, maxBytes) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size <= maxBytes) chunks.push(chunk);
+  }
+  return size > maxBytes ? null : Buffer.concat(chunks);
+}
+
 function errorStatus(error) {
   if ((error?.licenseError || error?.expose) && Number.isInteger(error.status)) return error.status;
   if (error?.code === 'RATE_LIMITED') return 429;
@@ -193,6 +207,7 @@ export function siteRequestListener({
   licenses,
   gifts,
   hama,
+  rau,
   feedback,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
@@ -264,6 +279,7 @@ export function siteRequestListener({
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
+      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau') && !rau) throw siteError('NOT_FOUND', 'not found');
       if (pathname.startsWith(`${GIFT_PROXY_PREFIX}/`)) {
         // Streams its own response (SSE), so it never goes through send().
         allow('gift-proxy', 600, MINUTE);
@@ -439,6 +455,26 @@ export function siteRequestListener({
           allow('gift-claim', 20, TEN_MINUTES);
           await readJson(req);
           send(200, await gifts.claim(bearerToken(req)));
+          return;
+        // Hosted Rau-0.1. Per-license limits live in rau.mjs; these per-IP ones only stop floods.
+        case 'GET /v1/rau/status':
+          if (!limiter.check(`rau-status:${ip}`, 120, MINUTE)) throw rauRateLimited(60);
+          send(200, await rau.status(bearerToken(req)));
+          return;
+        case 'POST /v1/rau/learn': {
+          if (Number(req.headers['content-length']) > 4 * MAX_RAU_BODY_BYTES) {
+            discardUpload(req, 4 * MAX_RAU_BODY_BYTES);
+            send(400, { ok: false, error: 'invalid', field: 'prompt' }, { Connection: 'close' });
+            return;
+          }
+          if (!limiter.check(`rau-learn:${ip}`, 120, MINUTE)) { req.resume?.(); throw rauRateLimited(60); }
+          const raw = await readOrNull(req, MAX_RAU_BODY_BYTES);
+          send(200, await rau.learn(bearerToken(req), raw));
+          return;
+        }
+        case 'GET /v1/admin/rau':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await rau.admin.list(bearerToken(req)));
           return;
         case 'GET /v1/admin/gifts':
           allow('admin', 120, TEN_MINUTES);
@@ -663,7 +699,8 @@ export function siteRequestListener({
           ...(error.tier ? { tier: error.tier } : {}),
           ...(error.licenseExpiresAt ? { licenseExpiresAt: error.licenseExpiresAt } : {}),
           ...(error.paymentFixUrl ? { paymentFixUrl: error.paymentFixUrl } : {}),
-        });
+          ...(error.extra ?? {}),
+        }, error.headers ?? {});
         return;
       }
       if (status >= 500) log(`[site-api] ${req.method} ${req.url}: ${error?.stack ?? error}`);
@@ -760,6 +797,17 @@ export function createSiteServer(env = process.env, options = {}) {
     ...hamaService,
     proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
   };
+  const rau = createRauService({
+    store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
+    // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
+    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true }),
+    config: resolveRauConfig(env),
+    upgradeUrl: licenseConfig.proUpgradeUrl,
+    adminToken: licenseConfig.adminToken,
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+    log,
+  });
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
@@ -774,7 +822,7 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
