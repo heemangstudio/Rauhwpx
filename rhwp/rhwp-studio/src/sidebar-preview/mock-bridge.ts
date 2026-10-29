@@ -2352,6 +2352,10 @@ export function createMockBridge(
     },
     /** 허브의 취향 학습 결과(taste-learned)를 보낸다. */
     emitTasteLearned: (learned: T.TasteLearned) => emit({ type: 'taste-learned', ...learned }),
+    /** 호스팅 Rau-0.1 이 Pro 가 아니라고 거절했다(rau-upgrade). */
+    emitRauUpgrade: (upgradeUrl: string | null = null) => emit({
+      type: 'rau-upgrade', reason: 'rau_requires_pro', upgradeUrl, threadId: null, documentId: null,
+    }),
     /** 기록에서 배우기의 결과(taste-history-learned)를 보낸다 — 턴에 묶이지 않는다. */
     emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
     /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */

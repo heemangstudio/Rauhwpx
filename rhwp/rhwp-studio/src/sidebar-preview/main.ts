@@ -61,6 +61,7 @@ import { createMockGift, mockGiftMode } from './mock-gift.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
+import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
@@ -204,6 +205,8 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
 const mockLicense = createMockLicense(mockLicenseMode(params), report);
+/* 호스팅 Rau(Pro). `rau=free|pro` 가 설정 → Rau-0.1 의 Pro 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
+const mockRau = createMockRau(mockRauMode(params), report);
 const mockGift = createMockGift(mockGiftMode(params), {
   failClaim: params.get('claim') === 'fail',
   locked: mockLicense !== null && mockLicenseMode(params) !== 'licensed',
@@ -593,6 +596,7 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
+  rau: mockRau,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
@@ -749,6 +753,8 @@ document.querySelector('#detach-document')!.addEventListener('click', () => {
 document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');
 });
+document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL));
+if (mockRauMode(params) === 'upgrade') mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL);
 document
   .querySelector('#settings')!
   .addEventListener('click', () =>

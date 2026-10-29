@@ -1,5 +1,6 @@
 // 설정 → AI 의 Rau-0.1 (취향 학습). 대화에서 배우기 스위치와 학습기의 공급자·모델·추론 강도.
 // 허브가 정본이다. 알림·Git 전환처럼 바꾸는 즉시 저장하고 적용 초안을 거치지 않는다.
+// 데스크톱에서 공급자가 자동이면 Pro 줄이 호스팅 Rau 자격을 보인다(Pro 가 아니면 업그레이드 단추).
 // 공급자 고르기는 정리 도우미(settings-project.ts)와 같은 방식이다. OpenRouter 는 Pi 에이전트의 OpenRouter 자격으로만
 // 돈다. 없으면 Pi 설정과 같은 연결 줄(브라우저로 로그인 / 또는 / 키)을 보이고, 두 길 모두 Pi 설정의 처리기를 그대로 쓴다.
 import './settings-taste.css';
@@ -15,6 +16,7 @@ import {
 import { RAU_TASTE_NAME, TASTE_DEFAULT_ROUTES, TASTE_EFFORTS } from '../../agent/taste.ts';
 import type { PiCatalogModel, PiStatus, TasteProvider, TasteSettings } from '../../agent/types.ts';
 import { AGENT_LABEL } from './providers.ts';
+import { openRauUpgrade, type DesktopRauApi, type RauStatus } from './rau-upgrade.ts';
 
 type Option = { id: string; label: string };
 type ChosenProvider = Exclude<TasteProvider, 'auto'>;
@@ -71,6 +73,8 @@ export interface TasteSettingsSectionDeps {
   /** Pi 설정이 보이는 마지막 키 오류. */
   authError(): string;
   isDisposed(): boolean;
+  /** 데스크톱의 호스팅 Rau 자격. 없으면 Pro 줄이 없다. */
+  rau?: DesktopRauApi | null;
 }
 
 export interface TasteSettingsSection {
@@ -118,7 +122,20 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   const authError = el('p', 'ag-settings-cliproxy-error ag-taste-auth-error');
   authError.hidden = true;
 
-  body.append(learning, provider.root, model.root, effort.root, authRow, authError);
+  // 호스팅 Rau(Pro). 자동 경로일 때만 먼저 쓰므로 그때만 보인다.
+  const pro = el('div', 'ag-settings-control-row ag-taste-setting-row ag-taste-pro-row');
+  pro.dataset.tasteField = 'pro';
+  const proCopy = el('span', 'ag-settings-control-copy');
+  const proDetail = el('span', 'ag-settings-control-description');
+  proCopy.append(el('span', 'ag-settings-control-label', 'Pro 호스팅'), proDetail);
+  const proState = el('span', 'ag-settings-control-description ag-taste-pro-state');
+  const upgrade = el('button', 'ag-settings-btn', '업그레이드');
+  upgrade.type = 'button';
+  pro.append(proCopy, proState, upgrade);
+  pro.hidden = true;
+  let rauStatus: RauStatus | null = null;
+
+  body.append(learning, provider.root, pro, model.root, effort.root, authRow, authError);
 
   // 허브가 답하기 전에는 기본값(켜짐, 자동)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;
@@ -174,7 +191,23 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     return options.some((option) => option.id === resolved) ? resolved : options[0]!.id;
   }
 
+  function renderPro(): void {
+    const status = rauStatus;
+    pro.hidden = !status?.ok || shown.provider !== 'auto' || !shown.enabled;
+    if (!status?.ok) return;
+    const eligible = status.eligible === true;
+    const capped = eligible && status.remainingUsd === 0;
+    upgrade.hidden = eligible;
+    proState.hidden = !eligible;
+    proState.textContent = capped
+      ? `${status.resetsAt ? new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(new Date(status.resetsAt)) : '다음 달'}까지 한도 도달`
+      : '켜짐';
+    proDetail.hidden = eligible;
+    proDetail.textContent = '월 ₩3,900 · 연 ₩39,000';
+  }
+
   function render(): void {
+    renderPro();
     const locked = settings === null || saving;
     learningInput.checked = shown.enabled;
     learningInput.disabled = locked;
@@ -209,6 +242,13 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   }
 
   async function refresh(): Promise<void> {
+    if (deps.rau) {
+      void deps.rau.getStatus().then((status) => {
+        if (deps.isDisposed()) return;
+        rauStatus = status;
+        renderPro();
+      }, () => {});
+    }
     const seq = ++request;
     const next = await deps.bridge.requestTasteSettings();
     if (!deps.isDisposed() && seq === request) accept(next);
@@ -241,6 +281,7 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     void save({ model: next, effort: effortFor(agent, next, shown.effort) });
   });
   effort.select.addEventListener('change', () => void save({ effort: effort.select.value || null }));
+  upgrade.addEventListener('click', () => openRauUpgrade(deps.rau ?? null, rauStatus?.upgradeUrl));
   login.addEventListener('click', () => deps.loginOpenRouter());
   keyInput.addEventListener('keydown', async (event) => {
     if (event.key !== 'Enter' || event.isComposing) return;

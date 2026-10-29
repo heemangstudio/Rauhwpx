@@ -1,0 +1,178 @@
+// 호스팅 Rau-0.1(Pro): 자동 경로에서 먼저 쓰고, Pro 가 아니면 안내 한 번과 함께 내 계정 경로로,
+// 한도에 닿으면 초기화 때까지 건너뛴다. 라이선스가 없거나 데스크톱이 아니면 묻지 않는다. 허브에는 키가 오지 않는다.
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { DocumentMemoryStore } from '../document-memory-store.mjs';
+import { createHostedRau, createIpcRauSource, RAU_REFUSAL_MS } from '../rau-hosted.mjs';
+import { createTasteSignalBuffer } from '../taste-signals.mjs';
+import { createTasteLearner } from '../taste-learner.mjs';
+
+const ready = { claude: { ready: true }, codex: { ready: true }, pi: { ready: true } };
+const json = (ops) => JSON.stringify({ ops });
+const learned = json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }]);
+
+async function until(predicate, label, timeoutMs = 3_000) {
+  const end = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > end) throw new Error(`timed out: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
+
+/** 데스크톱 대신 답하는 소스. answer 는 (prompt) => value 이거나 던진다. */
+function fakeSource(answer, { available = true } = {}) {
+  const listeners = new Set();
+  const prompts = [];
+  return {
+    available,
+    prompts,
+    async learn(prompt) {
+      prompts.push(prompt);
+      return answer(prompt);
+    },
+    onChange(callback) { listeners.add(callback); return () => listeners.delete(callback); },
+    licenseChanged() { for (const listener of listeners) listener(); },
+  };
+}
+
+const refusal = (code, extra = {}) => () => { throw Object.assign(new Error(code), { code, ...extra }); };
+
+function harness(t, { source, settings = { enabled: true }, clock = { t: Date.parse('2026-10-30T00:00:00Z') }, claude = learned } = {}) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'rhwp-rau-hosted-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new DocumentMemoryStore({ dir });
+  const calls = [];
+  const frames = [];
+  const hosted = createHostedRau({ source, now: () => clock.t });
+  const learner = createTasteLearner({
+    store,
+    signals: createTasteSignalBuffer(),
+    settings: () => settings,
+    routes: () => ({
+      readiness: ready,
+      hosted,
+      deps: { runProvider: async (call) => { calls.push(call); return claude; } },
+    }),
+    resolveKey: ({ documentId }) => store.resolveKey({ documentId }),
+    emit: (frame) => frames.push(frame),
+    debounceMs: 30,
+    providerTimeoutMs: 5_000,
+    overallTimeoutMs: 10_000,
+  });
+  t.after(() => learner.close());
+  let turn = 0;
+  const run = async () => {
+    turn += 1;
+    const before = calls.length + source.prompts.length;
+    await learner.turnEnded({ threadId: 'th1', turnId: `t${turn}`, documentId: 'doc-1', userText: `한다체로 써 줘 ${turn}. 앞으로도.`, learn: true });
+    await until(() => calls.length + source.prompts.length > before, `run ${turn}`);
+    await settle();
+  };
+  return { calls, frames, run, clock };
+}
+
+test('with a license the hosted route runs first and its text is learned like any route', async (t) => {
+  const source = fakeSource(() => ({ text: learned, model: 'rau-0.1' }));
+  const h = harness(t, { source });
+  await h.run();
+  assert.equal(source.prompts.length, 1);
+  assert.equal(h.calls.length, 0, 'no own-account route');
+  assert.equal(h.frames.length, 1);
+  assert.equal(h.frames[0].type, 'taste-learned');
+});
+
+test('a Pro refusal falls back to own accounts, prompts once, and is remembered until the license changes', async (t) => {
+  const source = fakeSource(refusal('rau_requires_pro', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
+  const h = harness(t, { source });
+  await h.run();
+  assert.deepEqual(h.calls.map((call) => call.provider), ['claude']);
+  const upgrades = h.frames.filter((frame) => frame.type === 'rau-upgrade');
+  assert.equal(upgrades.length, 1);
+  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_pro', 'https://heemangstudios.com/pricing.html', 'doc-1']);
+
+  await h.run();
+  assert.equal(source.prompts.length, 1, 'the refusal is remembered');
+  assert.equal(h.calls.length, 2);
+
+  h.clock.t += RAU_REFUSAL_MS;
+  await h.run();
+  assert.equal(source.prompts.length, 2, 'asked again after a day');
+  assert.equal(h.frames.filter((frame) => frame.type === 'rau-upgrade').length, 1, 'the same refusal never prompts twice');
+
+  source.licenseChanged();
+  await h.run();
+  assert.equal(source.prompts.length, 3, 'a license change asks at once');
+  assert.equal(h.frames.filter((frame) => frame.type === 'rau-upgrade').length, 2);
+});
+
+test('a reached cap skips hosted Rau until it resets, without prompting', async (t) => {
+  const resetsAt = Date.parse('2026-11-01T00:00:00Z');
+  const source = fakeSource(refusal('rau_cap_reached', { capUsd: 3, usedUsd: 3, resetsAt }));
+  const h = harness(t, { source });
+  await h.run();
+  await h.run();
+  assert.equal(source.prompts.length, 1);
+  assert.equal(h.calls.length, 2);
+  h.clock.t = resetsAt;
+  await h.run();
+  assert.equal(source.prompts.length, 2);
+  assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
+});
+
+test('without a license or outside the desktop app, own accounts run and nothing prompts', async (t) => {
+  const noLicense = fakeSource(refusal('no_license'));
+  const h = harness(t, { source: noLicense });
+  await h.run();
+  assert.deepEqual(h.calls.map((call) => call.provider), ['claude']);
+  assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
+
+  const browser = fakeSource(() => ({ text: learned }), { available: false });
+  const web = harness(t, { source: browser });
+  await web.run();
+  assert.equal(browser.prompts.length, 0);
+  assert.equal(web.calls.length, 1);
+});
+
+test('a chosen provider never goes through hosted Rau', async (t) => {
+  const source = fakeSource(() => ({ text: learned }));
+  const h = harness(t, { source, settings: { enabled: true, provider: 'claude', model: null, effort: null } });
+  await h.run();
+  assert.equal(source.prompts.length, 0);
+  assert.equal(h.calls.length, 1);
+});
+
+test('the IPC source sends only the prompt and maps the desktop error back', async () => {
+  const processRef = new EventEmitter();
+  processRef.env = { RHWP_RAU_BROKER: 'ipc' };
+  const sent = [];
+  processRef.send = (message, callback) => { sent.push(message); callback?.(null); };
+  const source = createIpcRauSource({ processRef });
+  assert.equal(source.available, true);
+
+  const ok = source.learn('prompt-1');
+  assert.deepEqual(Object.keys(sent[0]).sort(), ['id', 'operation', 'prompt', 'type']);
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[0].id, ok: true, value: { text: '{"ops":[]}', model: 'rau' } });
+  assert.deepEqual(await ok, { text: '{"ops":[]}', model: 'rau' });
+
+  const refused = source.learn('prompt-2');
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[1].id, ok: false, error: 'rau_requires_pro', code: 'rau_requires_pro', upgradeUrl: 'https://heemangstudios.com/pricing.html' });
+  await assert.rejects(refused, (error) => error.code === 'rau_requires_pro' && error.upgradeUrl === 'https://heemangstudios.com/pricing.html');
+
+  let changed = 0;
+  source.onChange(() => { changed += 1; });
+  processRef.emit('message', { type: 'rhwp-rau-changed' });
+  assert.equal(changed, 1);
+
+  const plain = new EventEmitter();
+  plain.env = {};
+  plain.send = () => {};
+  const unavailable = createIpcRauSource({ processRef: plain });
+  assert.equal(unavailable.available, false);
+  await assert.rejects(unavailable.learn('x'), (error) => error.code === 'RAU_SOURCE_UNAVAILABLE');
+});

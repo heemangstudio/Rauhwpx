@@ -62,6 +62,7 @@ import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
 import { createTasteSettingsSection } from './settings-taste.ts';
+import type { DesktopRauApi } from './rau-upgrade.ts';
 import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
@@ -351,6 +352,8 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
+  /** 호스팅 Rau-0.1(Pro) 자격. 데스크톱만. 없으면 Rau-0.1 에 Pro 줄이 없다. */
+  rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string) => Promise<SignInWindow>;
 }
@@ -483,6 +486,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     authBlocked: () => piBusy || setupBusy || connectionState !== 'connected',
     authError: () => piMessage,
     isDisposed: () => disposed,
+    rau: deps.rau ?? null,
   });
   /** Rau-0.1 에서 시작한 Pi 브라우저 로그인 — 끝나면 Pi 모델 고르기 대신 Rau-0.1 로 돌아온다. */
   let piAuthReturnToTaste = false;
