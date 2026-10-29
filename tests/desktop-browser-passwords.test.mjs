@@ -522,3 +522,101 @@ test('manual save opt-in renews on the same website and stops on another origin'
   assert.equal(f.tab.manualPasswordSave, null);
   assert.equal(tokens.at(-1), null);
 });
+
+test('an unreadable local vault can still be cleared and is usable again afterwards', async (t) => {
+  const { root, vault } = await vaultFixture(t);
+  await mkdir(join(root, 'vault'), { recursive: true });
+  await writeFile(join(root, 'vault', 'local-passwords.json'), '');
+  await assert.rejects(vault.list(), { code: 'BROWSER_PASSWORD_STORAGE_INVALID' });
+  assert.deepEqual(await vault.clear(), { removed: 0 });
+  assert.deepEqual((await vault.list()).accounts, []);
+  await vault.importCredential({ origin: 'https://fixture.invalid/', username: 'andy', password: 'fixture' });
+  assert.equal((await vault.list()).accounts.length, 1);
+});
+
+test('a vault failure during browser reset still clears cookies and site data, then reports the failure', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'hama-reset-order-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const host = new OwnedBrowserHost({ dataDir: join(root, 'native') });
+  const calls = [];
+  host.session = {
+    closeAllConnections: async () => { calls.push('closeAllConnections'); },
+    clearData: async () => { calls.push('clearData'); },
+    clearAuthCache: async () => { calls.push('clearAuthCache'); },
+    clearHostResolverCache: async () => { calls.push('clearHostResolverCache'); },
+    flushStorageData: () => { calls.push('flushStorageData'); },
+    cookies: { flushStore: async () => { calls.push('flushStore'); } },
+  };
+  let cleared = 0;
+  const failure = Object.assign(new Error('vault locked'), { code: 'BROWSER_PASSWORD_STORAGE_UNAVAILABLE' });
+  host.passwords = {
+    vault: { clear: async () => { cleared += 1; if (cleared === 1) throw failure; return { removed: 0 }; } },
+    clearProtectedValues: () => { calls.push('clearProtectedValues'); },
+    importer: { beginReset() {}, endReset() {} },
+  };
+  const owner = { connected: true };
+  await assert.rejects(host.reset(owner), failure);
+  assert.ok(calls.includes('clearData') && calls.includes('flushStore') && calls.includes('clearAuthCache'), calls.join(','));
+  assert.ok(calls.includes('clearProtectedValues'));
+  // 다시 시도하면 끝까지 지운다.
+  assert.equal((await host.reset(owner)).nativeStorageCleared, true);
+});
+
+test('a Windows lock on the vault file is retried and never remembered as corruption', { skip: process.platform !== 'win32' && 'Windows share-mode locks only' }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const { root, vault, safeStorage } = await vaultFixture(t);
+  await vault.importCredential({ origin: 'https://fixture.invalid/', username: 'andy', password: 'fixture' });
+  const file = join(root, 'vault', 'local-passwords.json');
+  // 백신·색인기처럼 공유 없이 파일을 쥔다.
+  const holdLock = (ms) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$f=[System.IO.File]::Open('${file.replaceAll("'", "''")}','Open','ReadWrite','None'); 'locked'; Start-Sleep -Milliseconds ${ms}; $f.Close()`],
+    { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    const locked = new Promise((resolve, reject) => {
+      child.stdout.on('data', (chunk) => { if (String(chunk).includes('locked')) resolve(); });
+      child.once('exit', () => reject(new Error('lock helper exited early')));
+    });
+    t.after(() => { child.kill(); });
+    return { locked, exited };
+  };
+  // 재시도 창보다 짧은 잠금: 다른 vault 인스턴스가 기다렸다가 읽는다.
+  const short = holdLock(500);
+  await short.locked;
+  const reader = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
+  assert.equal((await reader.list()).accounts.length, 1);
+  await short.exited;
+  // 재시도 창보다 긴 잠금: 지금은 실패하지만 풀리면 다시 읽는다.
+  const long = holdLock(4000);
+  await long.locked;
+  const late = new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage });
+  await assert.rejects(late.list(), { code: 'BROWSER_PASSWORD_STORAGE_UNAVAILABLE' });
+  await long.exited;
+  assert.equal((await late.list()).accounts.length, 1);
+  // 저장도 잠깐의 잠금을 기다렸다가 교체한다.
+  const write = holdLock(500);
+  await write.locked;
+  await late.importCredential({ origin: 'https://fixture.invalid/', username: 'second', password: 'fixture' });
+  await write.exited;
+  assert.equal((await new LocalBrowserPasswordVault({ dataDir: join(root, 'vault'), safeStorage }).list()).accounts.length, 2);
+});
+
+test('downloads are revealed from the user\'s Downloads known folder, wherever it was moved', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'hama-downloads-folder-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const moved = join(root, 'OneDrive', 'Downloads');
+  await mkdir(moved, { recursive: true });
+  const file = join(moved, 'report.pdf');
+  await writeFile(file, 'pdf');
+  const revealed = [];
+  const host = new OwnedBrowserHost({
+    dataDir: join(root, 'native'),
+    getDownloadsDir: () => moved,
+    shell: { showItemInFolder: (target) => revealed.push(target) },
+  });
+  assert.deepEqual(await host.revealDownload({ filePath: file }), { revealed: true });
+  assert.deepEqual(revealed, [await realpath(file)]);
+  const outside = join(root, 'elsewhere.pdf');
+  await writeFile(outside, 'pdf');
+  await assert.rejects(host.revealDownload({ filePath: outside }), /Download file is unavailable/);
+});

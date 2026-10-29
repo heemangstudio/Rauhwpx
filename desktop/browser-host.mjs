@@ -56,14 +56,22 @@ export function pageNavigationUrl(value) {
   return browserNavigationUrl(text);
 }
 
+/** 창 페이지 확대 배율. 보기 > 확대/축소를 쓰면 CSS px 하나가 이 배율만큼의 DIP 가 된다. */
+function pageZoomFactor(window) {
+  const factor = window?.webContents?.getZoomFactor?.();
+  return Number.isFinite(factor) && factor > 0 ? factor : 1;
+}
+
+/** 렌더러가 잰 CSS px 영역을 뷰가 쓰는 창 DIP 영역으로 바꾸고 창 안으로 자른다. */
 export function browserViewBounds(bounds, window) {
   const area = window.getContentBounds();
   if (!bounds || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(bounds[key]))) {
     throw new Error('Browser presentation bounds are invalid');
   }
-  const x = Math.max(0, Math.min(area.width, Math.round(bounds.x)));
-  const y = Math.max(0, Math.min(area.height, Math.round(bounds.y)));
-  return { x, y, width: Math.max(0, Math.min(area.width - x, Math.round(bounds.width))), height: Math.max(0, Math.min(area.height - y, Math.round(bounds.height))) };
+  const zoom = pageZoomFactor(window);
+  const x = Math.max(0, Math.min(area.width, Math.round(bounds.x * zoom)));
+  const y = Math.max(0, Math.min(area.height, Math.round(bounds.y * zoom)));
+  return { x, y, width: Math.max(0, Math.min(area.width - x, Math.round(bounds.width * zoom))), height: Math.max(0, Math.min(area.height - y, Math.round(bounds.height * zoom))) };
 }
 
 // 파일 칸의 accept 를 파일 창 확장자 목록으로 옮긴다. 옮기지 못하는 형식이 하나라도 있으면 거르지 않는다.
@@ -87,6 +95,33 @@ export function fileChooserFilters(accept) {
   return extensions.size ? [{ name: '파일', extensions: [...extensions] }] : null;
 }
 
+/** 게스트에서 누른 탭 닫기 단축키(Windows·Linux Ctrl+W, macOS Cmd+W). */
+export function isGuestCloseShortcut(input, platform = process.platform) {
+  if (input?.type !== 'keyDown' || String(input.key ?? '').toLowerCase() !== 'w' || input.shift || input.alt) return false;
+  return platform === 'darwin' ? Boolean(input.meta) && !input.control : Boolean(input.control) && !input.meta;
+}
+
+/**
+ * 브라우저 호스트의 숨은 주차 창과 숨긴 팝아웃 창이 남아 있으면 window-all-closed 가 오지 않는다.
+ * 그래서 Windows·Linux 에서는 마지막 편집기 창이 닫히면 직접 앱을 끝낸다. 여는 중인 창이 있으면
+ * 그 실행이 끝난 뒤 다시 본다. macOS 는 창이 없어도 Dock 에 남는다.
+ */
+export function createLastEditorWindowQuit({ platform = process.platform, canQuit, editorWindowCount, quit }) {
+  let launches = 0;
+  const check = () => {
+    if (platform === 'darwin' || launches > 0 || !canQuit() || editorWindowCount() > 0) return false;
+    quit();
+    return true;
+  };
+  return {
+    async track(launch) {
+      launches += 1;
+      try { return await launch; } finally { launches -= 1; check(); }
+    },
+    windowClosed: check,
+  };
+}
+
 async function privateDirectory(dir) {
   const absolute = resolve(dir);
   await mkdir(absolute, { recursive: true, mode: 0o700 });
@@ -97,9 +132,13 @@ async function privateDirectory(dir) {
 }
 
 export class OwnedBrowserHost {
-  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dialog, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform }) {
+  constructor({ BrowserWindow, BaseWindow = BrowserWindow, WebContentsView, electronSession, dialog, dataDir, getWindowForSession, onEvent = () => {}, platform = process.platform,
+    getDownloadsDir = () => join(os.homedir(), 'Downloads'), shell = null }) {
     this.platform = platform;
     this.dialog = dialog;
+    // Windows 는 사용자가 다운로드 폴더를 옮길 수 있다(OneDrive 알려진 폴더 이동 등). 허브와 같은 폴더를 쓴다.
+    this.getDownloadsDir = getDownloadsDir;
+    this.shell = shell;
     this.BrowserWindow = BrowserWindow;
     this.BaseWindow = BaseWindow;
     this.WebContentsView = WebContentsView;
@@ -110,6 +149,7 @@ export class OwnedBrowserHost {
     this.tabs = new Map();
     this.pendingTabs = new Set();
     this.parkingWindow = null;
+    this.parkingSurfaceWindow = null;
     this.captureSurfaces = new WeakMap();
     this.aliases = new Map();
     this.popouts = new Map();
@@ -273,7 +313,15 @@ export class OwnedBrowserHost {
       // 전달된 입력은 허브에 알려 이어지는 페이지 요청(로그인 제출 등)을 사용자의 것으로 본다.
       if (['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
     };
-    contents.on('before-input-event', blockHumanInput);
+    contents.on('before-input-event', (event, input) => {
+      if (!tab.automationInputDepth && isGuestCloseShortcut(input, this.platform)) {
+        // 막지 않으면 메뉴의 창 닫기 단축키가 페이지 뒤의 편집기 창을 닫는다. 사용자가 잡은 탭이면 그 탭만 닫는다.
+        event.preventDefault();
+        if (tab.human && tab.interactive && !tab.closing) this.closeGuest(tab);
+        return;
+      }
+      blockHumanInput(event, input);
+    });
     contents.on('before-mouse-event', blockHumanInput);
     contents.on('devtools-opened', () => {
       // DevTools takes the same debugger. Close it rather than silently hand
@@ -399,6 +447,7 @@ export class OwnedBrowserHost {
   }
 
   syncActivity(tab) {
+    this.syncParkingSurface();
     tab.activityQueue = (tab.activityQueue ?? Promise.resolve()).catch(() => {}).then(async () => {
       const contents = tab.view.webContents;
       if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
@@ -471,7 +520,7 @@ export class OwnedBrowserHost {
 
   emit(tab, type, extra = {}) {
     if (!tab?.targetId) return;
-    const payload = { type, ...this.state(tab), ...extra };
+    const payload = { type, ...this.state(tab), ...extra, signInPresentation: tab.signInPresentation === true };
     this.onEvent(payload);
     if ((['zoom', 'download-progress', 'sign-in'].includes(type) || type === 'human-input') && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
@@ -485,12 +534,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId, signIn = false }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab);
+    if (mode === 'popout') return this.popout(window, tab, { signIn });
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -633,6 +682,35 @@ export class OwnedBrowserHost {
     tab.dialogParking = null;
     window.contentView.addChildView(tab.view);
     for (const other of this.tabs.values()) if (other !== tab && other.placement?.window === window && other.placement.mode === 'float') this.raiseFloat(other);
+    this.syncParkingSurface();
+  }
+
+  /**
+   * Windows 는 매핑되지 않은 창의 게스트를 초당 한 프레임으로만 그린다. 그러면 에이전트의 마우스 이벤트
+   * 하나가 1초씩 걸려 hover·drag 가 시간 초과된다. 주차된 탭이 활동 임대를 쥐는 동안 주차 창을
+   * 캡처 때처럼 투명·비활성으로 띄워 둔다. 임대가 모두 끝나면 다시 숨긴다.
+   */
+  syncParkingSurface() {
+    const window = this.parkingWindow;
+    const usable = this.platform === 'win32' && !this.disposing && window && !window.isDestroyed();
+    const needed = usable && [...this.tabs.values()].some((tab) => (
+      tab.parkingWindow === window && !tab.closing && tab.activityLeases?.size > 0
+    ));
+    const held = this.parkingSurfaceWindow ?? null;
+    if (held && (held !== window || !needed)) {
+      this.parkingSurfaceWindow = null;
+      if (!held.isDestroyed()) {
+        const remaining = (this.captureSurfaces.get(held) ?? 1) - 1;
+        if (remaining > 0) this.captureSurfaces.set(held, remaining);
+        else { this.captureSurfaces.delete(held); held.hide(); }
+      }
+    }
+    if (needed && this.parkingSurfaceWindow !== window) {
+      const leases = this.captureSurfaces.get(window) ?? 0;
+      this.captureSurfaces.set(window, leases + 1);
+      this.parkingSurfaceWindow = window;
+      if (!leases) window.showInactive();
+    }
   }
 
   parkGuest(tab) {
@@ -715,6 +793,7 @@ export class OwnedBrowserHost {
     tab.interactive = false;
     if (tab.view.webContents && !tab.view.webContents.isDestroyed()) this.setViewRadius(tab, 0);
     this.parkGuest(tab);
+    this.syncParkingSurface();
     if (!tab.closing && !tab.view.webContents.isDestroyed()) void this.viewport(tab, tab.view.getBounds()).catch(() => {});
   }
 
@@ -747,7 +826,7 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab) {
+  popout(ownerWindow, tab, { signIn = false } = {}) {
     this.unplace(tab);
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
@@ -770,6 +849,7 @@ export class OwnedBrowserHost {
       popout.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
       void popout.loadURL(POPOUT_URL);
     }
+    tab.signInPresentation = signIn === true;
     this.placeGuest(tab, popout);
     tab.placement = { window: popout, ownerWindow, mode: 'popout' };
     tab.interactive = tab.human;
@@ -783,7 +863,9 @@ export class OwnedBrowserHost {
   layoutPopout(tab, popout) {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
-    const bounds = { x: 0, y: 76, width, height: Math.max(0, height - 76) };
+    // 도구 막대 높이(76 CSS px)도 창의 페이지 확대를 따른다.
+    const toolbar = tab.signInPresentation ? 0 : Math.round(76 * pageZoomFactor(popout));
+    const bounds = { x: 0, y: toolbar, width, height: Math.max(0, height - toolbar) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
   }
@@ -933,11 +1015,12 @@ export class OwnedBrowserHost {
   }
 
   async revealDownload({ filePath }) {
-    const root = await realpath(join(os.homedir(), 'Downloads'));
+    const root = await realpath(this.getDownloadsDir());
     const file = await realpath(filePath);
     const within = relative(root, file), info = await lstat(filePath);
     if (!within || within === '..' || within.startsWith('..' + sep) || isAbsolute(within) || !info.isFile() || info.isSymbolicLink()) throw new Error('Download file is unavailable');
-    const { shell } = await import('electron'); shell.showItemInFolder(file); return { revealed: true };
+    const shell = this.shell ?? (await import('electron')).shell;
+    shell.showItemInFolder(file); return { revealed: true };
   }
 
   cancelDownload(guid) { this.downloads.get(guid)?.cancel(); return {}; }
@@ -1090,7 +1173,9 @@ export class OwnedBrowserHost {
       this.tabs.clear();
       this.aliases.clear();
       this.popouts.clear();
-      await this.passwords?.vault.clear();
+      // 금고를 지우지 못해도 쿠키·사이트 데이터는 지운다. 실패는 끝에서 알려 다시 시도하게 한다.
+      let vaultError = null;
+      try { await this.passwords?.vault.clear(); } catch (error) { vaultError = error; }
       this.passwords?.clearProtectedValues();
       // Electron caches sessions by path. Clear both memory and disk before the
       // hub removes this profile, so a later session cannot revive old login data.
@@ -1106,6 +1191,7 @@ export class OwnedBrowserHost {
       this.downloadPath = null;
       this.downloadBehavior = 'deny';
       this.generation = randomUUID();
+      if (vaultError) throw vaultError;
       return { tabsClosed: guests.length, generation: this.generation, nativeStorageCleared: !!this.session };
     })();
     try { return await this.resetPromise; } finally { this.resetPromise = null; this.passwords?.importer.endReset(); this.passwords?.cookies?.endReset(); }

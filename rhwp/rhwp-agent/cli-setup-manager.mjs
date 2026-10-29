@@ -29,6 +29,15 @@ const CONFIG = Object.freeze({
 });
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const STATUS_TIMEOUT_MS = 10_000;
+// 새로 받은 실행 파일의 첫 실행은 Windows 백신 검사·첫 실행 초기화로 10초를 넘기기도 한다.
+const FIRST_PROBE_TIMEOUT_MS = 30_000;
+// Codex 가 auth.json 을 다시 쓰는 순간(빈 파일·쓰다 만 JSON)이나 백신이 잡은 잠금(EBUSY/EPERM)은 잠깐 기다렸다 다시 읽는다.
+const CODEX_LOGIN_READ_ATTEMPTS = 3;
+const CODEX_LOGIN_RETRY_MS = 100;
+// 다시 읽어도 읽히지 않으면 이 시간 안에 확인한 마지막 결과를 유지한다.
+const CODEX_LOGIN_GRACE_MS = 60_000;
+// 사용자 config.toml 이 keyring/auto 저장소를 고르면 `codex login` 이 auth.json 을 남기지 않아 앱이 로그인을 보지 못한다.
+const CODEX_FILE_STORE_ARGS = Object.freeze(['-c', 'cli_auth_credentials_store=file']);
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const CLAUDE_TOKEN_SECRET = 'rhwp.claude.oauth-token';
 // `claude setup-token` tokens last a year. The CLI does not report the exact
@@ -140,7 +149,7 @@ export function isNewerVersion(candidate, current) {
 }
 
 /** Create the app-managed Claude/Codex CLI setup service. */
-export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnProcess = spawn, createTerminal = createSetupTerminal, npmCommand = null, nodeCommand = process.execPath, platform = process.platform, baseEnv = process.env, homeDir = os.homedir(), secretStore = null, readClaudeLogin = readClaudeOAuthCredential, verifyClaude = verifyClaudeCredential, deleteKeychainItem = null, fetchImpl = globalThis.fetch, bundledClaudeVersion = bundledClaudeCodeVersion(), bundledClaudeBin = bundledClaudeBinary(), now = Date.now } = {}) {
+export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnProcess = spawn, createTerminal = createSetupTerminal, npmCommand = null, nodeCommand = process.execPath, platform = process.platform, baseEnv = process.env, homeDir = os.homedir(), secretStore = null, readClaudeLogin = readClaudeOAuthCredential, verifyClaude = verifyClaudeCredential, deleteKeychainItem = null, fetchImpl = globalThis.fetch, bundledClaudeVersion = bundledClaudeCodeVersion(), bundledClaudeBin = bundledClaudeBinary(), now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const prefixDir = path.join(rootDir, 'prefix');
   const binDir = path.join(prefixDir, 'node_modules', '.bin');
   const configPath = path.join(rootDir, 'config.json');
@@ -187,6 +196,12 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
    */
   const versionProbes = new Map();
   const installedVersions = new Map();
+  /** 한 번 확인에 실패한 지문. 같은 파일의 다음 확인은 첫 실행만큼 오래 기다리지 않는다. */
+  const failedProbeFingerprints = new Map();
+  /** 설치 직후 확인에서 실행되지 않은 관리형 CLI 의 지문. 같은 파일이 남아 있으면 설치되지 않은 것으로 알린다. */
+  const unusableBins = new Map();
+  /** 마지막으로 끝까지 읽은 Codex auth.json 결과. 잠깐 읽히지 않을 때 로그인 표시가 깜박이지 않게 한다. */
+  let codexLoginSeen = null;
   let installQueue = Promise.resolve();
   let activeLaunches = 0;
   let launchReady = Promise.resolve();
@@ -273,8 +288,13 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   async function refreshLocalClaudeLogin() {
     const current = claudeCredential();
     if (!claudeAuth.useLocalLogin || current?.source === 'app' || current?.source === 'api-key') return;
+    const previousReadAt = claudeAuth.localReadAt;
     claudeAuth.localReadAt = now();
-    const found = await readClaudeLogin({ homeDir: hostProfileHome, env: baseEnv, platform }).catch(() => null);
+    const found = await readClaudeLogin({ homeDir: hostProfileHome, env: baseEnv, platform, reportUnreadable: true })
+      .catch(() => ({ source: 'unreadable' }));
+    // Claude Code 가 파일을 다시 쓰는 중이거나 Windows 에서 잠겨 읽지 못했으면 있던 로그인을 지우지 않는다.
+    // 파일이 없거나 읽었는데 토큰이 없을 때만 로그아웃으로 본다. 다음 확인에서 곧바로 다시 읽는다.
+    if (found?.source === 'unreadable') { claudeAuth.localReadAt = previousReadAt; return; }
     const parsed = found ? parseClaudeOAuthCredential(found.text) : null;
     claudeAuth.local = parsed
       ? { token: parsed.claudeAiOauth.accessToken, expiresAt: claudeCredentialExpiry(parsed) || null }
@@ -416,7 +436,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
         }
         resolve(result);
       };
-      const timer = setTimeout(() => { void finish({ code: null, stdout, stderr: `${stderr}\ntimeout` }, true); }, timeoutMs);
+      const timer = setTimeout(() => { void finish({ code: null, stdout, stderr: `${stderr}\ntimeout`, timedOut: true }, true); }, timeoutMs);
       child.on('error', (error) => { void finish({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }, tree); });
       child.once('close', (code, signal) => { void finish({ code, signal, stdout, stderr }); });
     });
@@ -426,10 +446,22 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     const codexHome = typeof baseEnv.CODEX_HOME === 'string' && baseEnv.CODEX_HOME.trim()
       ? platformPath.resolve(baseEnv.CODEX_HOME)
       : platformPath.join(hostProfileHome, '.codex');
-    try {
-      const auth = JSON.parse(await fs.readFile(platformPath.join(codexHome, 'auth.json'), 'utf8'));
-      return Boolean(auth?.tokens?.refresh_token || auth?.tokens?.access_token || auth?.OPENAI_API_KEY);
-    } catch { return false; }
+    const file = platformPath.join(codexHome, 'auth.json');
+    for (let attempt = 1; ; attempt += 1) {
+      let auth;
+      try {
+        const text = await fs.readFile(file, 'utf8');
+        if (!text.trim()) throw new Error('empty auth.json');
+        auth = JSON.parse(text);
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') { codexLoginSeen = null; return false; }
+        if (attempt < CODEX_LOGIN_READ_ATTEMPTS) { await sleep(CODEX_LOGIN_RETRY_MS); continue; }
+        return Boolean(codexLoginSeen?.authenticated && now() - codexLoginSeen.at < CODEX_LOGIN_GRACE_MS);
+      }
+      const authenticated = Boolean(auth?.tokens?.refresh_token || auth?.tokens?.access_token || auth?.OPENAI_API_KEY);
+      codexLoginSeen = { authenticated, at: now() };
+      return authenticated;
+    }
   }
   async function binFingerprint(agent, bin) {
     const manifest = path.join(prefixDir, 'node_modules', ...CONFIG[agent].package.split('/'), 'package.json');
@@ -439,21 +471,31 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     )));
     return `${bin}|${stamps.join('|')}`;
   }
+  /** `--version` 으로 버전을 읽는다. 곧바로 실패하면 한 번 더 띄우고, 시간 초과는 이미 오래 기다렸으므로 다시 띄우지 않는다. */
+  async function probeVersion(agent, bin, timeoutMs) {
+    let result = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      result = await run(bin, ['--version'], { env: envFor(agent), timeoutMs });
+      const version = result.code === 0 ? parseCliVersion(cleanOutput(result.stdout)) : null;
+      if (version) return { version, result };
+      if (result.timedOut) break;
+    }
+    return { version: null, result };
+  }
   async function managedVersion(agent) {
     const bin = binPath(agent);
     if (!existsSync(bin)) { versionProbes.delete(agent); return null; }
     const fingerprint = await binFingerprint(agent, bin);
     const cached = versionProbes.get(agent);
     if (cached?.fingerprint === fingerprint) return cached.version;
-    const probe = {
-      fingerprint,
-      version: run(bin, ['--version'], { env: envFor(agent) })
-        .then((result) => (result.code === 0 ? parseCliVersion(cleanOutput(result.stdout)) : null)),
-    };
+    // 새 실행 파일의 첫 확인만 넉넉히 기다린다. 같은 파일에서 이미 실패했으면 평소 시간만 기다린다.
+    const timeoutMs = failedProbeFingerprints.get(agent) === fingerprint ? STATUS_TIMEOUT_MS : FIRST_PROBE_TIMEOUT_MS;
+    const probe = { fingerprint, version: probeVersion(agent, bin, timeoutMs).then(({ version }) => version) };
     versionProbes.set(agent, probe);
     const version = await probe.version;
     // 실패(시간 초과·설치 중 교체)는 기억하지 않고 다음 상태 확인에서 다시 실행한다.
-    if (!version && versionProbes.get(agent) === probe) versionProbes.delete(agent);
+    if (!version && versionProbes.get(agent) === probe) { versionProbes.delete(agent); failedProbeFingerprints.set(agent, fingerprint); }
+    if (version) failedProbeFingerprints.delete(agent);
     return version;
   }
   async function authState(agent) {
@@ -479,18 +521,30 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function status(agent) {
     assertAgent(agent); await load(); const bin = binPath(agent);
+    const installing = installs.has(agent);
     // npm 이 바이너리를 교체하는 동안 확인된 버전을 유지한다.
-    const version = installs.has(agent)
+    let version = installing
       ? installedVersions.get(agent) ?? null
       : await managedVersion(agent);
-    if (version) installedVersions.set(agent, version);
-    else if (!installs.has(agent)) installedVersions.delete(agent);
+    const hasBin = existsSync(bin);
+    // 설치 직후 확인에서 실행되지 않은 그 파일이 그대로면 설치되지 않은 것으로 알린다.
+    const unusable = !installing && !version && hasBin && unusableBins.has(agent)
+      && unusableBins.get(agent) === await binFingerprint(agent, bin);
+    if (version) {
+      installedVersions.set(agent, version);
+      if (!installing) unusableBins.delete(agent);
+    } else if (!installing) {
+      // 실행 파일은 있는데 확인만 실패하면(백신 검사로 인한 시간 초과 등) 마지막으로 확인한 버전을 유지한다.
+      // 번들 버전으로 바꿔 알리면 멀쩡한 CLI 가 업데이트 대상으로 보인다.
+      if (hasBin && !unusable) version = installedVersions.get(agent) ?? null;
+      else installedVersions.delete(agent);
+    }
     const { authenticated, authMethod, authSource, authVerifiedAt } = await authState(agent);
     // 관리형 CLI 가 없으면 Claude 는 SDK 번들 런타임으로 실행되므로 그 버전을 기준으로 삼는다.
-    const runtimeVersion = version ?? (agent === 'claude' ? bundledClaudeVersion : null);
+    const runtimeVersion = version ?? (agent === 'claude' && !hasBin ? bundledClaudeVersion : null);
     const latestVersion = latestVersions[agent];
     const updateRequired = Boolean(runtimeVersion && latestVersion && isNewerVersion(latestVersion, runtimeVersion));
-    return { installed: Boolean(version || existsSync(bin)), installing: installs.has(agent), version: runtimeVersion, authenticated, authMethod, ...(agent === 'claude' ? { authSource, authVerifiedAt } : {}), keyTail: keyTail(apiKeys[agent]), latestVersion, updateRequired, error: null };
+    return { installed: !unusable && Boolean(version || hasBin), installing, version: runtimeVersion, authenticated, authMethod, ...(agent === 'claude' ? { authSource, authVerifiedAt } : {}), keyTail: keyTail(apiKeys[agent]), latestVersion, updateRequired, error: null };
   }
   /** Login state only: no `--version` run. Used before every chat message. */
   async function authStatus(agent) {
@@ -514,7 +568,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       const npmCacheDir = path.join(npmCacheRunsDir, `${now()}-${randomUUID()}`);
       let result;
       try {
-        result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', npmCacheDir, '--logs-dir', npmLogsDir, '--update-notifier=false', `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+        // 사용자 npm 설정의 ignore-scripts=true, omit=optional, save=false 도 덮어쓴다. 그대로 두면 npm 이 0 으로 끝나도
+        // 플랫폼 바이너리 없이 자리표시 실행 파일만 남거나, package.json 이 갱신되지 않아 다음 설치가 다른 CLI 를 지운다.
+        result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--global=false', '--prefix', prefixDir, '--cache', npmCacheDir, '--logs-dir', npmLogsDir, '--update-notifier=false', '--ignore-scripts=false', '--include=optional', '--save', `${item.package}@latest`], { env: withoutHubPrivateEnv(baseEnv), timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
       } finally {
         // Windows 에서는 백신 검사가 방금 받은 tarball 을 잠깐 잡고 있어 EBUSY/EPERM 이 날 수 있으므로 몇 번 다시 시도한다.
         // 그래도 남으면 다음 시작 때 pruneNpmCaches 가 지운다.
@@ -522,9 +578,26 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       }
       assertPrefixAvailable();
       if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
+      // npm 이 성공해도 실행 파일이 실제로 도는지 확인한 뒤에만 설치 완료로 알린다. 첫 실행은 오래 걸릴 수 있다.
+      const bin = binPath(agent);
+      const fingerprint = await binFingerprint(agent, bin);
+      const probe = await probeVersion(agent, bin, FIRST_PROBE_TIMEOUT_MS);
+      if (!probe.version) {
+        unusableBins.set(agent, fingerprint);
+        failedProbeFingerprints.set(agent, fingerprint);
+        installedVersions.delete(agent);
+        throw setupError('AGENT_INSTALL_FAILED', 'CLI 를 설치했지만 실행되지 않아요. npm 설정(ignore-scripts, optional 의존성, 레지스트리 미러)을 확인한 뒤 다시 설치해 주세요.',
+          cleanOutput(probe.result?.stderr || probe.result?.stdout) || null);
+      }
+      unusableBins.delete(agent);
+      return { fingerprint, version: probe.version };
     });
     installQueue = task.catch(() => {});
-    const settled = task.finally(() => { installs.delete(agent); versionProbes.delete(agent); }).then(async () => {
+    const settled = task.then(
+      // 설치 확인에서 읽은 버전을 기억해 바로 이어지는 상태 확인이 CLI 를 다시 띄우지 않게 한다.
+      (verified) => { versionProbes.set(agent, { fingerprint: verified.fingerprint, version: Promise.resolve(verified.version) }); },
+      (error) => { versionProbes.delete(agent); throw error; },
+    ).finally(() => { installs.delete(agent); }).then(async () => {
       onProgress?.({ state: 'installing', phase: 'verifying' });
       const installed = await status(agent);
       onProgress?.({ state: 'done' });
@@ -537,8 +610,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   async function prepareLaunch(agent) {
     assertAgent(agent);
     await load();
+    // 설정 화면에서 시작한 설치·업데이트가 실패해도 이 실행과는 상관없으므로 기존 실행 파일로 계속한다.
     const ownInstall = installs.get(agent);
-    if (ownInstall) await ownInstall;
+    if (ownInstall) await ownInstall.catch(() => {});
     let pending;
     do {
       pending = installQueue;
@@ -591,7 +665,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     if (!['oauth', 'login'].includes(method)) throw setupError('AGENT_AUTH_INVALID', '지원하지 않는 로그인 방식이에요.');
     nodeHostShimDir = await ensureNodeHost();
     if (agent !== 'claude') {
-      const argv = agent === 'codex' ? ['login', '--device-auth'] : ['login'];
+      const argv = agent === 'codex' ? [...CODEX_FILE_STORE_ARGS, 'login', '--device-auth'] : ['login'];
       // 앱이 설치한 CLI 가 없으면 PATH 의 CLI 로 로그인한다. 없는 경로를 실행하면 아무 출력 없이 멈춘다.
       const command = existsSync(binPath(agent)) ? binPath(agent) : CONFIG[agent].bin;
       const launch = managedLaunch(command, argv, envFor(agent));

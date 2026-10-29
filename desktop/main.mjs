@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { rm, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
@@ -44,6 +44,7 @@ import {
 import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
 import { createAgentDocument, defaultAgentDocumentFolder, openAgentDocumentAtPath } from './agent-documents.mjs';
 import { UnsavedDocumentRegistry } from './unsaved-documents.mjs';
+import { collectDragSources, DragExportRequests, FileDragStaging, normalizeDragItems } from './file-drag-out.mjs';
 import { captureDocumentRegion, installAgentContextStore } from './agent-context-store.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
@@ -76,7 +77,7 @@ import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
 import { createRebrandImportController } from './rebrand-import-controller.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
-import { OwnedBrowserHost } from './browser-host.mjs';
+import { OwnedBrowserHost, createLastEditorWindowQuit } from './browser-host.mjs';
 import { BrowserAdblock, registerBrowserAdblockIpc } from './browser-adblock.mjs';
 import { NativeBrowserPasswords, registerBrowserPasswordIpc } from './browser-passwords.mjs';
 import { BrowserWebAuthn } from './browser-webauthn.mjs';
@@ -84,7 +85,7 @@ import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
 import { createFakeUpdater, createUpdateController } from './update-controller.mjs';
-import { createUpdateAllController } from './update-all.mjs';
+import { createUpdateAllController, writeUpdateAllState } from './update-all.mjs';
 import { createDevProviderUpdates } from './dev-provider-updates.mjs';
 import {
   UPDATE_RESTART_FILE_NAME,
@@ -490,6 +491,8 @@ class AgentHubOwner {
         RHWP_SECRET_BROKER: 'ipc',
         RHWP_BROWSER_HOST: 'ipc',
         RHWP_BROWSER_DATA_DIR: join(app.getPath('userData'), 'browser'),
+        // 사용자가 옮긴 다운로드 폴더(OneDrive 알려진 폴더 이동 등)에 내려받는다.
+        RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
@@ -733,6 +736,7 @@ const browserHost = new OwnedBrowserHost({
   electronSession,
   dialog,
   dataDir: join(app.getPath('userData'), 'browser'),
+  getDownloadsDir: () => app.getPath('downloads'),
   getWindowForSession: (sessionId) => {
     const session = sessions.sessionById(sessionId);
     if (session) return session.window;
@@ -740,6 +744,12 @@ const browserHost = new OwnedBrowserHost({
       sessions.sessionForSender(window.webContents).agentSessionIds.has(sessionId)
     )) ?? null;
   },
+});
+// 브라우저의 숨은 창이 window-all-closed 를 막으므로 마지막 편집기 창이 닫힐 때 직접 끝낸다.
+const lastEditorWindowQuit = createLastEditorWindowQuit({
+  canQuit: () => initialLaunchesOpened && !quitting,
+  editorWindowCount: () => sessions.windows().length,
+  quit: () => app.quit(),
 });
 const browserAdblock = new BrowserAdblock({ host: browserHost, ipcMain });
 new NativeBrowserPasswords({
@@ -826,6 +836,20 @@ function broadcastUnsavedDocuments() {
 
 function forgetUnsavedDocuments(sessionId) {
   if (unsavedDocuments.forget(sessionId)) broadcastUnsavedDocuments();
+  // 닫히거나 다시 불린 창은 끌기용 내보내기 요청에 답하지 않는다.
+  dragExports.forgetSession(sessionId);
+}
+
+// 문서 홈 카드를 다른 앱으로 끌어 놓는다. 바뀐 문서·새 문서는 임시 폴더에 내보낸 사본을 넘긴다.
+// 임시 폴더는 프로필마다 따로다. 개발판과 배포판이 함께 떠도 서로의 사본을 지우지 않는다.
+const dragStaging = new FileDragStaging({
+  root: join(app.getPath('temp'), `${INTERNAL_APP_NAME}-drag-${createHash('sha256').update(app.getPath('userData')).digest('hex').slice(0, 8)}`),
+});
+const dragExports = new DragExportRequests();
+// 잠금을 못 쥔 두 번째 인스턴스(탐색기에서 파일을 두 번 누를 때 잠깐 뜬다)는 첫 인스턴스의 사본을 지우면 안 된다.
+if (hasSingleInstanceLock) {
+  dragStaging.clearSync();
+  app.on('will-quit', () => dragStaging.clearSync());
 }
 
 /** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
@@ -898,6 +922,8 @@ async function bestEffortStartupCleanup(label, cleanup) {
 
 // 자동 수정은 아래에서 설치된다. 그 전에 앱이 끝나도 정리 단계가 그대로 돌게 빈 함수로 시작한다.
 let disposeAutofix = async () => {};
+/** 고친 자리의 확인 결과 가운데 메인이 직접 아는 것(렌더러가 다시 죽음). 설치 전에는 버린다. */
+let noteAutofixOutcome = () => false;
 const updateLifecycle = createUpdateLifecycle({
   app,
   updater: autoUpdater,
@@ -908,7 +934,13 @@ const updateLifecycle = createUpdateLifecycle({
     updateAll?.dispose();
     await disposeAutofix();
     await hubOwner.teardown();
-    await browserHost.dispose();
+    // 웹 페이지 대화상자 등으로 브라우저 정리가 멈춰도 종료(와 Windows 업데이트 설치)는 이어 간다.
+    let disposeTimer;
+    const disposed = await Promise.race([
+      browserHost.dispose().then(() => true),
+      new Promise((resolve) => { disposeTimer = setTimeout(() => resolve(false), 5_000); }),
+    ]).finally(() => clearTimeout(disposeTimer));
+    if (!disposed) console.warn('[hamaeditor] native browser cleanup timed out during quit');
   },
   onQuitRequested: (requested) => { quitRequested = requested; browserHost.setQuitRequested(requested); },
   onTeardown: () => { quitting = true; },
@@ -1071,7 +1103,7 @@ function configureAutoUpdater({ restartManifest }) {
     restartApp: () => updates.restart(),
     providerStatus: () => maintenance(),
     installProvider: (agent) => maintenance(agent),
-    persist: (state) => writeNativeFileAtomically(updateAllFile, Buffer.from(JSON.stringify(state), 'utf8')),
+    persist: (state) => writeUpdateAllState(updateAllFile, state),
     broadcast(state) {
       for (const window of sessions.windows()) {
         if (!window.webContents.isDestroyed()) window.webContents.send('desktop:update-all-state', state);
@@ -1223,6 +1255,7 @@ async function createWindow(launch = launchRequest(), {
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
+    else lastEditorWindowQuit.windowClosed();
     void closeOwnedHubSession(session.sessionId);
   });
   const launchFiles = [];
@@ -1276,6 +1309,8 @@ async function createWindow(launch = launchRequest(), {
     updates?.forgetRunningChats(session.sessionId);
     // 비정상 종료면 빈 창 대신 안내 화면을 띄운다. 첫 번째는 다시 열기, 두 번째부터는 자동 수정을 권한다.
     if (details?.reason === 'clean-exit' || quitting || updateRestartClosing || window.isDestroyed()) return;
+    // 자동 수정이 고쳤다고 한 뒤 다시 죽었으면 고친 것이 버티지 못했다.
+    noteAutofixOutcome({ surface: 'renderer-crash', ok: false });
     session.crashCount = (session.crashCount ?? 0) + 1;
     if (session.crashCount > MAX_CRASH_PAGES) return;
     session.crashPage = true;
@@ -1430,7 +1465,7 @@ function queueLaunch(request) {
     pendingLaunches.push(request);
     return;
   }
-  void openLaunch(request).catch(showLaunchError);
+  void lastEditorWindowQuit.track(openLaunch(request).catch(showLaunchError));
 }
 
 function showLaunchError(error) {
@@ -1606,6 +1641,7 @@ const autofix = installAutofixHost({
   unpacked: unpackedPath,
 });
 disposeAutofix = () => autofix.dispose();
+noteAutofixOutcome = (outcome) => autofix.noteOutcome(outcome);
 // 렌더러 오류. 렌더러가 줄이고 겹친 것을 묶어 보내지만, 메인도 창마다 1분에 120줄까지만 받는다.
 const RENDERER_LOG_PER_MINUTE = 120;
 const rendererLogBudget = new Map();
@@ -1872,6 +1908,12 @@ ipcMain.handle('desktop:pick-legacy-history-folder', async (event) => {
 });
 ipcMain.handle('desktop:claim-native-dropped-file', async (event, filePath) => {
   const session = sessionForEvent(event);
+  // 문서 홈에서 끌어 낸 임시 사본은 곧 지워진다. 열지 않고 그 문서를 연 창으로 보낸다.
+  const stagedCopy = dragStaging.stagedCopy(filePath);
+  if (stagedCopy) {
+    if (stagedCopy.owner) sessions.focusSession(stagedCopy.owner);
+    return { owned: true };
+  }
   const result = await nativeFiles.create(session.sessionId, filePath);
   if (!result.ok) {
     sessions.focusSession(result.ownerSessionId);
@@ -2155,6 +2197,71 @@ ipcMain.handle('desktop:unsaved-document-action', (event, documentId, action) =>
   sessions.focusSession(owner);
   target.sender.send('desktop:run-unsaved-document-action', { documentId, action });
   return true;
+});
+ipcMain.handle('desktop:prepare-file-drag', async (event, rawItems) => {
+  const session = sessionForEvent(event);
+  const items = normalizeDragItems(rawItems);
+  if (!items.length) return { token: null, failed: [] };
+  const { sources, failed } = await collectDragSources(items, {
+    ownerOf: (item) => {
+      const owner = item.kind === 'unsaved'
+        ? unsavedDocuments.ownerOf(item.documentId)
+        : nativeFiles.ownerSessionOf(item.documentId);
+      return owner && owner !== session.sessionId ? owner : null;
+    },
+    exportFrom: (owner, documentId) => dragExports.request(owner, (requestId) => {
+      const target = sessions.sessionById(owner);
+      if (!target || target.sender.isDestroyed()) throw new Error('owner window is gone');
+      target.sender.send('desktop:drag-export-request', { requestId, documentId });
+    }),
+    savedPath: async (documentId) => (
+      (await nativeFiles.inspectDocument(documentId)).state === 'present' ? nativeFiles.bookmarkPathFor(documentId) : null
+    ),
+  });
+  if (!sources.length) return { token: null, failed };
+  try {
+    // 이 창이 내보낸 사본(bytes)의 문서는 이 창에 열려 있다.
+    const { token } = await dragStaging.stage(session.sessionId, sources);
+    return { token, failed };
+  } catch (error) {
+    console.warn('[hamaeditor] drag export staging failed:', error);
+    return { token: null, failed: items.map((item) => item.fileName || item.documentId) };
+  }
+});
+ipcMain.handle('desktop:drag-export-reply', (event, requestId, result) => {
+  const session = sessionForEvent(event);
+  return typeof requestId === 'string' && dragExports.reply(session.sessionId, requestId, result);
+});
+// 끝났다(true)면 렌더러는 끌기를 바로 닫는다. Windows 는 놓을 때까지 startDrag 가 돌아오지 않는다.
+// 그 뒤 포인터가 창 밖에 있으면 렌더러는 끝을 알 길이 없어, 다음에 들어오는 파일 끌기를 우리 것으로 알고 버린다.
+ipcMain.handle('desktop:start-file-drag', (event, token, iconDataUrl) => {
+  try {
+    const session = sessionForEvent(event);
+    const paths = dragStaging.pathsFor(session.sessionId, token);
+    if (!paths?.length) return true;
+    const icon = typeof iconDataUrl === 'string' && iconDataUrl.startsWith('data:image/png;base64,')
+      ? nativeImage.createFromDataURL(iconDataUrl)
+      : nativeImage.createEmpty();
+    // macOS 는 빈 그림으로 끌기를 시작하지 않는다.
+    if (icon.isEmpty() && process.platform === 'darwin') {
+      dragStaging.end(session.sessionId, token, { immediate: true });
+      return true;
+    }
+    event.sender.startDrag({ file: paths[0], files: paths, icon });
+    if (process.platform !== 'win32') return false;
+    dragStaging.end(session.sessionId, token);
+    return true;
+  } catch (error) {
+    console.warn('[hamaeditor] file drag failed:', error);
+    return true;
+  }
+});
+ipcMain.on('desktop:end-file-drag', (event, token, dropped) => {
+  try {
+    dragStaging.end(sessionForEvent(event).sessionId, token, { immediate: dropped !== true });
+  } catch {
+    // 닫히는 창은 남은 사본을 버림 타이머에 맡긴다.
+  }
 });
 const recentWindowOpens = new Map();
 ipcMain.handle('desktop:open-native-document-window', async (event, documentId) => {

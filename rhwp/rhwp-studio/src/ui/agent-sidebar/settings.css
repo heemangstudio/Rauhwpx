@@ -194,6 +194,33 @@
   background: var(--ag-err);
 }
 
+/* 웹 ChatGPT·Claude 연결 — 프로바이더 줄 아래, 상태 · 로그인 · 켜기 스위치. */
+.ag-settings-assistant-row {
+  min-height: 32px;
+  padding: 6px 8px;
+}
+
+.ag-settings-assistant-row > .ag-settings-btn {
+  flex: 0 0 auto;
+}
+
+.ag-settings-assistant-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.ag-settings-assistant-switch:has(.ag-settings-toggle-input:disabled) {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ag-settings-assistant-note {
+  font-size: var(--ag-fs-meta);
+  color: var(--ag-text-tertiary);
+}
+
 /* ── 버튼 ───────────────────────────────────────────── */
 
 .ag-settings-actions {

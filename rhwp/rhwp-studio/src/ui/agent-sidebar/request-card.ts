@@ -52,6 +52,8 @@ const capabilityIcons: Record<ChatPermissionCapability, SidebarIconName> = {
   browser: 'browser',
   'local-execution': 'terminal',
   'other-documents': 'document',
+  chatgpt: 'message',
+  claude: 'message',
 };
 
 const capabilityTitles: Record<ChatPermissionCapability, string> = {
@@ -60,6 +62,8 @@ const capabilityTitles: Record<ChatPermissionCapability, string> = {
   browser: '브라우저를 사용하려고 합니다',
   'local-execution': '로컬 파일과 명령을 실행하려고 합니다',
   'other-documents': '다른 문서를 읽으려고 합니다',
+  chatgpt: '내 ChatGPT에 물어보려고 합니다',
+  claude: '내 Claude에 물어보려고 합니다',
 };
 
 const secretTitles: Record<string, string> = {
@@ -256,7 +260,9 @@ export function createRequestCardController(options: RequestCardOptions) {
     }
     if (card.outcome) return;
     if (result.ok) settle(card, { status: 'granted' });
-    else fail(card, result.code === 'DISCONNECTED' ? '연결되면 다시 입력하세요.' : '저장하지 못했습니다. 다시 입력하세요.', null);
+    else fail(card, result.code === 'DISCONNECTED' ? '연결되면 다시 입력하세요.'
+      : result.code === 'SECRET_TOO_LARGE_FOR_VAULT' ? '이 컴퓨터의 보안 저장소에 넣기에는 값이 너무 깁니다. "항상"을 끄고 다시 입력하세요.'
+        : '저장하지 못했습니다. 다시 입력하세요.', null);
   }
 
   function header(card: RequestCard): HTMLElement {

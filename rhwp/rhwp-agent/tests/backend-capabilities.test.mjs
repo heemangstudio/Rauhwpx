@@ -527,6 +527,26 @@ test('Claude SDK projects plan and build intent independently from access', () =
   assert.equal(build.tools.includes('Write'), true);
 });
 
+test('Claude children never run the CLI auto-memory, even when the host env forces it on', async () => {
+  const providerEnv = { PATH: '/usr/bin', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' };
+  for (const profile of [{ permissionProfile: 'safe' }, { permissionProfile: 'unrestricted' }, { isolatedHome: undefined }]) {
+    const sdk = buildClaudeSdkOptions({ ...baseOpts, ...profile, providerEnv, requestUserInput: async () => null, agentRole: 'chat' }, sessionId, false, new AbortController());
+    assert.equal(sdk.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  }
+  const spawns = [];
+  const session = createClaudeSession({ ...baseOpts, permissionProfile: 'unrestricted', providerEnv, onEvent: () => {} }, {
+    spawnProcess(command, argv, options) {
+      const process = new FakeProcess();
+      spawns.push({ options });
+      return process;
+    },
+  });
+  session.sendUserMessage('hi');
+  await nextTask();
+  assert.equal(spawns[0].options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  await session.dispose();
+});
+
 test('Windows restricted Claude uses only owned MCP tools without native execution', async () => {
   for (const entry of [...matrix, { workflow: 'question', phase: 'questioning', permissionProfile: 'safe' }]) {
     const opts = { ...baseOpts, ...entry, agentRole: 'chat', requestUserInput: async () => null };

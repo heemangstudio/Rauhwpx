@@ -227,8 +227,14 @@ function within(root, candidate) {
   return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
+// Windows·macOS 는 대소문자를 가리지 않는다 — realpath 는 디스크의 표기를 돌려주므로 접어서 비교한다.
+function foldPathCase(value, platform) {
+  const normalized = value.normalize('NFC');
+  return platform === 'linux' ? normalized : normalized.toLowerCase();
+}
+
 /** Resolve `candidate` inside one of `allowedRoots` with no symlink anywhere below the root. */
-export async function resolveAllowedPath(candidate, allowedRoots) {
+export async function resolveAllowedPath(candidate, allowedRoots, { platform = process.platform } = {}) {
   if (typeof candidate !== 'string' || !candidate || candidate.includes('\0')) {
     throw new ProjectIngestError('PROJECT_INGEST_PATH', 'A file path is required');
   }
@@ -252,7 +258,8 @@ export async function resolveAllowedPath(candidate, allowedRoots) {
       if (error instanceof ProjectIngestError) throw error;
       throw new ProjectIngestError('PROJECT_INGEST_NOT_FOUND', 'The file does not exist');
     }
-    if (!within(root.real, real) || path.relative(root.real, real) !== relative) {
+    if (!within(root.real, real)
+      || foldPathCase(path.relative(root.real, real), platform) !== foldPathCase(relative, platform)) {
       throw new ProjectIngestError('PROJECT_INGEST_PATH', 'The path leaves the allowed folder through a link');
     }
     return real;

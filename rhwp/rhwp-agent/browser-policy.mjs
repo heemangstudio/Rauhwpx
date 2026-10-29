@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseDomain } from 'tldts';
 
+import { retryLockedOperation } from './harness-update.mjs';
+
 // 브라우저 권한의 유일한 결정 지점. 서비스·자격 증명 중개자·서버·데스크톱 모두 check() 에 묻고, 모든 카드는 이 상태에 쓴다.
 const ACTIONS = new Set(['browse', 'read', 'download', 'research-import', 'website-change', 'account-use']);
 const RESEARCH_ACTIONS = ['browse', 'read', 'download', 'research-import'];
@@ -14,6 +16,11 @@ const CHAT_GRANT_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_GRANT_TOUCH_MS = 24 * 60 * 60 * 1000;
 const SIGNED_IN_LIMIT = 4096;
 const SIGNED_IN_SOURCES = new Set(['owner-form', 'handoff', 'chrome-import', 'passkey', 'federated', 'legacy']);
+/** 허브의 웹 비서 행위자(chatgpt-web.mjs·claude-web.mjs)가 쓰는 사이트. 일반 에이전트 브라우저 도구에는 해당하지 않는다. */
+const SYSTEM_ACTOR_SITE_KEYS = Object.freeze({
+  chatgpt: Object.freeze(['https://chatgpt.com', 'https://openai.com']),
+  claude: Object.freeze(['https://claude.ai', 'https://anthropic.com']),
+});
 export const DEFAULT_RESEARCH_SITES = Object.freeze([
   { origin: 'https://www.google.com', label: 'Google Search' },
   { origin: 'https://docs.google.com', label: 'Google Slides / Docs reading' },
@@ -33,12 +40,19 @@ export function browserOrigin(value) {
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
     throw failure('BROWSER_INVALID_ORIGIN', 'Only HTTP or HTTPS website origins are supported.');
   }
+  return canonicalOrigin(url);
+}
+
+/** `admin.example.com.` 은 `admin.example.com` 과 같은 호스트다 — 끝 점을 떼야 정확한 호스트 차단이 덮는다. */
+function canonicalOrigin(url) {
+  const host = url.hostname.replace(/\.+$/, '');
+  if (host && host !== url.hostname) url.hostname = host;
   return url.origin;
 }
 
 /** 웹 출처. about:·data:·blob:·chrome-error: 처럼 사이트가 없는 주소는 null 이다. */
 export function webOrigin(value) {
-  try { const url = new URL(String(value)); return ['https:', 'http:'].includes(url.protocol) ? url.origin : null; } catch { return null; }
+  try { const url = new URL(String(value)); return ['https:', 'http:'].includes(url.protocol) ? canonicalOrigin(url) : null; } catch { return null; }
 }
 
 const scopeCache = new Map();
@@ -121,7 +135,8 @@ export async function writeBrowserJson(filePath, value, maxBytes = 1024 * 1024) 
   try {
     const file = await fs.open(temp, 'wx', 0o600);
     try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
-    await fs.rename(temp, filePath);
+    // Windows 에서 백신·색인기·백업 도구가 대상을 잠깐 쥐면 rename 이 EPERM 이다 — 짧게 다시 시도한다.
+    await retryLockedOperation(() => fs.rename(temp, filePath), { relabel: false });
     await fs.chmod(filePath, 0o600);
   } finally { await fs.rm(temp, { force: true }); }
 }
@@ -132,7 +147,7 @@ export async function readBrowserJson(filePath, maxBytes = 1024 * 1024) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) {
       throw failure('BROWSER_STORAGE_INVALID', 'Browser settings storage is invalid.');
     }
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+    return JSON.parse(await retryLockedOperation(() => fs.readFile(filePath, 'utf8'), { relabel: false }));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     if (error instanceof SyntaxError) throw failure('BROWSER_STORAGE_INVALID', 'Browser settings cannot be read. Restore the saved data before continuing.');
@@ -362,6 +377,8 @@ export function createBrowserPolicy({ dataDir, ownerId = 'local-owner', onChange
       return { ...base, allowed: false, code: 'BROWSER_SITE_BLOCKED', reason: 'blocked', blocked, item: item?.blocked ? item : null };
     }
     if (resource === 'subresource' && action === 'browse') return { ...base, allowed: true, source: 'subresource' };
+    // 허브의 웹 비서 연결(ask_chatgpt·ask_claude)은 설정에서 켜고 채팅마다 허용한 뒤에만 돈다. 그 행위자에게는 자기 사이트만 연다.
+    if (Object.hasOwn(SYSTEM_ACTOR_SITE_KEYS, actor?.system ?? '') && SYSTEM_ACTOR_SITE_KEYS[actor.system].includes(scope.key)) return { ...base, allowed: true, source: actor.system };
     const grant = chatGrant(actor?.threadId, scope.key, action) ?? userEntry(origin, action) ?? researchDefault(origin, action);
     if (grant) return { ...base, allowed: true, source: grant.source, grantEpoch: grant.epoch };
     if (action === 'website-change' || action === 'account-use') return { ...base, allowed: false, code: 'BROWSER_PERMISSION_REQUIRED', reason: action, item };

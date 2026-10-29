@@ -103,7 +103,7 @@ import {
   defaultPiRoot,
 } from './pi-manager.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
-import { createProviderMaintenance } from './provider-maintenance.mjs';
+import { createProviderMaintenance, runHarnessUpdateRound } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
 import { NODE_HOST_ENV } from './npm-cli-launch.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
@@ -159,6 +159,8 @@ import {
   normalizeChatPermissionRequest,
   normalizeChatPermissionScope,
 } from './chat-permissions.mjs';
+import { chatgptError, createChatgptDriver, createChatgptStore } from './chatgpt-web.mjs';
+import { claudeError, createClaudeDriver, createClaudeStore } from './claude-web.mjs';
 import { ChatContinuationQueue, ChatRequestRegistry } from './chat-requests.mjs';
 import {
   createUserSecretStore,
@@ -643,8 +645,11 @@ let writingStyleCalibrationOwner = null;
 const retainedUncertainBackends = new Set();
 const sessions = new HubSessionRegistry({
   createRecord(sessionId) {
-    const recordKey = `${crypto.createHash('sha256').update(sessionId).digest('hex')}-${crypto.randomUUID()}`;
-    const recordRoot = path.join(RECORDS_ROOT, recordKey);
+    // 짧은 무작위 이름만 쓴다. Codex 는 이 아래 home/.codex 에 SQLite DB 를 두는데, Windows SQLite 는
+    // 260자 경로 제한을 넘지 못해 `<db>-journal` 경로가 길면 Codex 가 시작하자마자 끝난다.
+    let recordRoot;
+    do recordRoot = path.join(RECORDS_ROOT, crypto.randomBytes(8).toString('hex'));
+    while (existsSync(recordRoot));
     const workDir = path.join(recordRoot, 'work');
     // Providers can mutate workDir. Hub-created files must live in a sibling
     // tree whose parents are outside every safe-profile writable root, or a
@@ -795,7 +800,10 @@ function registerFilledSecret(record, value) {
 }
 const initialBrowserConfiguration = await credentialBroker.getConfiguration();
 const browserDownloads = createBrowserDownloads({
-  exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc' ? path.join(os.homedir(), 'Downloads') : null,
+  // 데스크톱은 app.getPath('downloads') 를 넘긴다 — Windows 는 다운로드 폴더를 옮길 수 있다.
+  exportDirectory: process.env.RHWP_BROWSER_HOST === 'ipc'
+    ? (process.env.RHWP_DOWNLOADS_DIR ? path.resolve(process.env.RHWP_DOWNLOADS_DIR) : path.join(os.homedir(), 'Downloads'))
+    : null,
   dataDir: OWNED_BROWSER_DATA_DIR, projectIngest, onEvent: broadcastBrowserEvent,
   maxBytes: initialBrowserConfiguration.downloads.maxFileBytes, autoImport: initialBrowserConfiguration.downloads.autoImport,
   authorizeDownload: async ({ actor, url, target }) => {
@@ -835,6 +843,29 @@ const ownedBrowser = createOwnedBrowserService({
 });
 await ownedBrowser.restore();
 await applyBrowserConfiguration(initialBrowserConfiguration);
+// ask_chatgpt: 설정에서 켠 사용자의 ChatGPT. 켜기·채팅 지도는 허브 데이터 폴더에, 대화는 앱 안 브라우저(네이티브)로만 한다.
+const chatgptStore = createChatgptStore({ filePath: path.join(path.dirname(PROJECTS_ROOT), 'chatgpt.json'), logger: log });
+await chatgptStore.ready();
+const chatgptDriver = createChatgptDriver({
+  store: chatgptStore,
+  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+});
+// ask_claude: 같은 방식으로 사용자의 Claude.ai. 상태는 claude.json 에 따로 둔다.
+const claudeStore = createClaudeStore({ filePath: path.join(path.dirname(PROJECTS_ROOT), 'claude.json'), logger: log });
+await claudeStore.ready();
+const claudeDriver = createClaudeDriver({
+  store: claudeStore,
+  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+});
+/** 웹 비서(ask_chatgpt·ask_claude)마다 저장소·구동기·오류·문구. */
+const WEB_ASSISTANTS = Object.freeze({
+  chatgpt: { store: chatgptStore, driver: chatgptDriver, error: chatgptError, code: 'CHATGPT', name: 'ChatGPT' },
+  claude: { store: claudeStore, driver: claudeDriver, error: claudeError, code: 'CLAUDE', name: 'Claude.ai' },
+});
+/** ask_chatgpt·ask_claude 를 보이고 부를 수 있는가: 설정에서 켰고 앱 안 브라우저가 데스크톱 네이티브다. */
+function webAssistantGate(service) {
+  return WEB_ASSISTANTS[service].store.enabled() && ownedBrowser.nativeActive();
+}
 // 페이지 감시: 채팅의 에이전트로 다시 읽고, 바뀌면 그 채팅에 알린다. RHWP_BROWSER_WATCH_MINUTE_MS 는 시험용으로 "1분" 을 줄인다.
 const browserWatches = createBrowserWatchService({
   dataDir: OWNED_BROWSER_DATA_DIR, ownedBrowser, log,
@@ -1255,6 +1286,21 @@ async function handleBrowserRequest(record, sock, msg) {
       case 'recipes.write': result = { recipe: await browserRecipes.write({ site: String(args.site ?? ''), text: String(args.text ?? ''), author: 'user', secrets: [...filledSecretValues] }) }; break;
       case 'recipes.delete': result = await browserRecipes.remove(String(args.site ?? '')); break;
       case 'permissions.list': result = { always: chatPermissionPolicy.list() }; break;
+      // 설정 → AI → ChatGPT·Claude: 켜기와 연결 상태. 로그인은 Studio 가 앱 안 브라우저의 별도 창으로 연다.
+      case 'chatgpt.status':
+      case 'claude.status': {
+        const assistant = WEB_ASSISTANTS[String(msg.action).split('.')[0]];
+        result = await assistant.driver.status({ check: args.check === true, sessionId: record.sessionId });
+        break;
+      }
+      case 'chatgpt.configure':
+      case 'claude.configure': {
+        const assistant = WEB_ASSISTANTS[String(msg.action).split('.')[0]];
+        if (typeof args.enabled !== 'boolean') throw workflowError('INVALID_ARGS', `Choose whether ${assistant.name} is on`);
+        await assistant.store.setEnabled(args.enabled);
+        result = await assistant.driver.status();
+        break;
+      }
       case 'permissions.revoke': result = { always: await revokeAlwaysChatPermission(args.capability) }; break;
       case 'sessions.imported': result = await ownedBrowser.acceptImportedSessions(Array.isArray(args.domains) ? args.domains.slice(0, 500) : []); break;
       case 'accounts.signout': result = await credentialBroker.signOut({ ...args, actor }); break;
@@ -1631,6 +1677,15 @@ function syncSourceCodexAuth() {
   }
 }
 
+/**
+ * Codex 백엔드는 턴마다 이 게터로 원본 auth.json 경로를 다시 읽는다. 채팅을 연 뒤에
+ * 로그인해도 첫 턴이 로그인 전 값(undefined)으로 격리 홈의 사본을 지우지 않는다.
+ */
+function currentSourceCodexAuthPath() {
+  syncSourceCodexAuth();
+  return sourceCodexAuthPath;
+}
+
 function refreshSessionCredentials(agent) {
   for (const record of sessions.values()) {
     if (agent === 'codex') prepareCodexHome(record.codexHome, sourceCodexAuthPath);
@@ -1881,19 +1936,24 @@ const providerMaintenance = createProviderMaintenance({
     const statuses = await agentSetupStatuses();
     broadcastToStudios({ v: 1, type: 'provider-status', providers });
     broadcastAgentSetupStatuses(statuses);
-    for (const record of sessions.values()) {
-      if (!record.studioSocket) continue;
-      try {
-        const models = await modelCatalog(agent, record, { refresh: true });
-        sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
-      } catch (error) { log(`model refresh after update failed: ${error?.message ?? error}`); }
-    }
     return { statuses };
+  },
+  // 모델 목록은 잠금이 풀린 뒤 창마다 동시에 받는다. 첫 창만 강제로 다시 읽고, 같은
+  // 실행 파일·자격 증명을 쓰는 다른 창은 카탈로그가 합쳐 둔 그 조회를 함께 기다린다.
+  async afterRelease(agent) {
+    const records = [...sessions.values()].filter((record) => record.studioSocket);
+    await Promise.all(records.map((record, index) => modelCatalog(agent, record, { refresh: index === 0 })
+      .then((models) => {
+        if (record.studioSocket) sendJson(record.studioSocket, { v: 1, type: 'model-catalog', agent, models });
+      })
+      .catch((error) => log(`model refresh after update failed: ${error?.message ?? error}`))));
   },
 });
 
 let harnessUpdateTimer = null;
 let harnessUpdateRunning = false;
+// 열린 채팅 때문에 Pi 교체만 미룬 재시도. Claude·Codex registry 확인은 이미 끝났다.
+let harnessUpdatePiOnly = false;
 
 function scheduleHarnessUpdates(delayMs) {
   if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
@@ -1906,32 +1966,44 @@ function scheduleHarnessUpdates(delayMs) {
 
 async function runAutomaticHarnessUpdates() {
   if (harnessUpdateRunning) return;
-  // idle 세션도 CLI 프로세스를 물고 있으므로 완전히 닫힌 뒤 디스크의 하네스를 교체한다.
-  if (hasAgentSessions()) {
-    scheduleHarnessUpdates(HARNESS_UPDATE_BUSY_RETRY_MS);
-    return;
-  }
   harnessUpdateRunning = true;
   await ensureBootWork();
   let nextDelay = HARNESS_UPDATE_INTERVAL_MS;
   const canActivate = () => !hasAgentSessions();
+  const piOnly = harnessUpdatePiOnly;
+  harnessUpdatePiOnly = false;
   const before = {
     claude: cliSetupStatus.claude?.version ?? null,
     codex: cliSetupStatus.codex?.version ?? null,
     pi: piStatus.version ?? null,
   };
   try {
-    cliSetupStatus.claude = await cliSetup.automaticUpdate('claude', { canActivate });
-    cliSetupStatus.codex = await cliSetup.automaticUpdate('codex', { canActivate });
-    piStatus = await mutateSharedNpmPrefix(() => piManager.automaticUpdate({ canActivate }));
+    // Claude·Codex 는 registry 최신 버전만 확인하므로 열린 채팅과 상관없이 돈다.
+    // idle 세션도 Pi 프로세스를 물고 있으므로 Pi 하네스는 모든 채팅이 닫힌 뒤에만 교체한다.
+    const { piDeferred } = await runHarnessUpdateRound({
+      piOnly,
+      canActivate,
+      async checkRegistry() {
+        cliSetupStatus.claude = await cliSetup.automaticUpdate('claude', { canActivate });
+        cliSetupStatus.codex = await cliSetup.automaticUpdate('codex', { canActivate });
+      },
+      async updatePi() {
+        piStatus = await mutateSharedNpmPrefix(() => piManager.automaticUpdate({ canActivate }));
+      },
+    });
+    if (piDeferred) {
+      harnessUpdatePiOnly = true;
+      nextDelay = HARNESS_UPDATE_BUSY_RETRY_MS;
+    }
     const statuses = await agentSetupStatuses();
     if (Object.values(statuses).some((status) => status.updateRequired)) {
-      nextDelay = HARNESS_UPDATE_FAILURE_RETRY_MS;
+      nextDelay = Math.min(nextDelay, HARNESS_UPDATE_FAILURE_RETRY_MS);
     }
-    broadcastAgentSetupStatuses(statuses);
     const changed = before.claude !== statuses.claude.version
       || before.codex !== statuses.codex.version
       || before.pi !== statuses.pi.version;
+    // Pi 만 다시 미룬 재시도는 바뀐 것이 없으면 같은 상태를 5분마다 다시 보내지 않는다.
+    if (!piOnly || changed) broadcastAgentSetupStatuses(statuses);
     if (changed) {
       const providers = await providerHealth.check(true);
       broadcastToStudios({ v: 1, type: 'provider-status', providers });
@@ -2364,7 +2436,11 @@ async function answerChatPermission(record, sock, msg) {
       activeSession.chatPermissionGrants.splice(0, activeSession.chatPermissionGrants.length, ...grants);
       if (scope === 'always') {
         // 저장에 실패해도 이 채팅의 허용은 이미 적용됐다. 다음 채팅에서 다시 묻는다.
-        await chatPermissionPolicy.grant(capability).catch((error) => log(`chat permission policy write failed: ${error?.code ?? error?.message ?? error}`));
+        await chatPermissionPolicy.grant(capability).catch((error) => {
+          log(`chat permission policy write failed: ${error?.code ?? error?.message ?? error}`);
+          // 저장되지 않은 "항상"은 이 채팅의 허용으로만 남긴다(범위 조회도 chat 으로 답한다).
+          activeSession.chatScopedGrants = normalizeChatPermissionGrants([...(activeSession.chatScopedGrants ?? []), capability]);
+        });
       } else {
         activeSession.chatScopedGrants = normalizeChatPermissionGrants([...(activeSession.chatScopedGrants ?? []), capability]);
       }
@@ -3544,7 +3620,7 @@ async function launchTemplateJob(record, job) {
   return launchCopyLayoutWorker(record, job, {
     ensureBootWork,
     prepareCodexHome,
-    sourceCodexAuthPath,
+    sourceCodexAuthPath: currentSourceCodexAuthPath,
     prepareClaudeHome,
     sourceClaudeAuth,
     MCP_SCRIPT,
@@ -5569,7 +5645,7 @@ async function startSession(
     serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
-    codexAuthPath: sourceCodexAuthPath,
+    codexAuthPath: currentSourceCodexAuthPath,
     codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
     claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
     // CLI 는 채팅 시작 뒤에도 설치·갱신될 수 있다. 실제 프로세스를 만들 때 prefix 잠금을 기다린다.
@@ -5604,7 +5680,7 @@ async function startSession(
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
     ...(agent === 'pi' ? piSpawnHooks() : {}),
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
-    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true }),
+    projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true, askChatgpt: webAssistantGate('chatgpt'), askClaude: webAssistantGate('claude') }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
     providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
     ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
@@ -8288,6 +8364,32 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           });
         return;
       }
+      if (tool === 'ask_chatgpt' || tool === 'ask_claude') {
+        const service = tool === 'ask_chatgpt' ? 'chatgpt' : 'claude';
+        const assistant = WEB_ASSISTANTS[service];
+        void (async () => {
+          if (workerJob || sock.piSubagentId || msg.parentTaskId || sock.agentRole !== 'chat') {
+            throw workflowError('ROOT_INTERACTION_REQUIRED', `Only the root conversation may ask ${assistant.name}`);
+          }
+          if (!assistant.store.enabled()) throw assistant.error(`${assistant.code}_DISABLED`, `${assistant.name} is turned off in Settings → AI.`);
+          if (!ownedBrowser.nativeActive()) throw assistant.error(`${assistant.code}_UNAVAILABLE`, `${assistant.name} works only in the HamaEditor desktop app with its built-in browser.`);
+          // 채팅마다 한 번 묻는다(이 채팅·항상). 허브만 확인하는 권한이라 턴 중에 허용돼도 바로 쓸 수 있다.
+          if (!record.agentSession.chatPermissionGrants.includes(service)) {
+            throw workflowError('PERMISSION_REQUIRED', `Asking the user's ${assistant.name} needs their consent: call request_permission with capability "${service}" and a short reason, then end the turn and wait.`);
+          }
+          const chatKey = record.agentSession.chatId ?? record.agentSession.threadId;
+          // 앱 안 브라우저의 보이지 않는 탭에서 묻는다. 사용자의 탭 목록과 작업 칸에는 나오지 않는다.
+          return assistant.driver.ask({ chatKey, question: args.question, sessionId: record.sessionId });
+        })().then((result) => {
+          // 도구 카드는 프로바이더의 잘린 미리보기 대신 질문·답 전체와 채팅 주소를 그린다.
+          sendJson(record.studioSocket, { v: 1, type: 'hub-tool-executed', tool, args: msg.args ?? {}, ok: true, result });
+          sendResult(result);
+        }).catch((error) => {
+          sendJson(record.studioSocket, { v: 1, type: 'hub-tool-executed', tool, args: msg.args ?? {}, ok: false, error: { code: error?.code ?? `${assistant.code}_FAILED`, message: String(error?.message ?? error) } });
+          sendError(error, `${assistant.code}_FAILED`);
+        });
+        return;
+      }
       if (definition.category === 'browser' || tool === 'browser_request_account' || tool === 'request_secret') {
         void browserActorForMcp(record, sock, tool, args).then(async (actor) => {
           if (tool === 'browser_watch') {
@@ -9259,6 +9361,8 @@ const httpServer = http.createServer((req, res) => {
           homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
           requestable: !requestedWorkerJobId && !requestedSubagentId,
           documentLink: !requestedWorkerJobId && !requestedSubagentId,
+          askChatgpt: webAssistantGate('chatgpt') && !requestedWorkerJobId && !requestedSubagentId,
+          askClaude: webAssistantGate('claude') && !requestedWorkerJobId && !requestedSubagentId,
           researchPermissions: gates.researchPermissions,
         },
       });

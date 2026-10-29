@@ -24,6 +24,7 @@ import {
 } from '../../agent/agent-prefs.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createBrowserSettingsPane } from './browser-settings.ts';
+import { createWebAssistantSettingsRow, type SignInWindow } from './web-assistant-settings.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createUsageViews } from './token-usage-view.ts';
@@ -54,6 +55,7 @@ import {
   formatTokens,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import { installOutcomeFromStatus, SetupTerminalResync } from '../../agent/pending-requests.ts';
 import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createLicenseSettingsSection } from './settings-license.ts';
@@ -349,6 +351,8 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
+  /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
+  openSignInWindow?: (url: string) => Promise<SignInWindow>;
 }
 
 export interface SettingsPanel {
@@ -711,12 +715,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (connectionRefreshing) return;
     connectionRefreshing = true;
     renderConnection();
-    try { await Promise.all([refreshProviders(true), refreshSetupStatuses(true)]); }
+    try { await Promise.all([refreshProviders(true), refreshSetupStatuses(true), ...assistantRows.map(row => row.refresh(true))]); }
     finally { connectionRefreshing = false; if (!disposed) renderConnection(); }
   });
   refreshBtn.classList.add('ag-settings-section-action');
   connection.head.append(refreshBtn);
-  connection.body.append(providerList, hubRow);
+  // 웹 ChatGPT·Claude. 로그인 창은 설정 위에 별도 창으로 뜨고, 설정은 그대로 둔다.
+  const assistantRows = (['chatgpt', 'claude'] as const).map(service => createWebAssistantSettingsRow(service, {
+    request: (action, args) => bridge.requestBrowser(action, args),
+    ...(deps.openSignInWindow ? { openSignInWindow: deps.openSignInWindow } : {}),
+    isConnected: () => connectionState === 'connected',
+  }));
+  connection.body.append(providerList, ...assistantRows.map(row => row.root), hubRow);
 
   // ── Pi 모달 흐름 ──────────────────────────────────────
   // 설치 → 로그인 → 모델 → 요약으로 모습을 바꾸며, 설정 페이지에는 직접 붙지 않는다.
@@ -1027,6 +1037,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   setupAuthPane.append(setupTerminal.root);
   setupTerminal.setOnline(connectionState === 'connected');
+  // 끊긴 동안 허브가 보낸 터미널 프레임은 사라진다 — 같은 로그인으로 다시 붙으면 화면을 다시 받는다.
+  const setupTerminalResync = new SetupTerminalResync((agent, authRunId) => bridge.resumeSetupTerminal(agent, authRunId));
   setupLoginCancel.addEventListener('click', () => {
     if (setupAgent && setupAuthRunId) {
       abandonedAuthRunIds.add(setupAuthRunId);
@@ -1061,7 +1073,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (event.target === setupOverlay) closeAgentSetup();
   });
   setupOverlay.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeAgentSetup();
+    if (event.key !== 'Escape') return;
+    // 이 Esc 는 연결 창만 닫는다 — 뒤에 열린 첫 실행 설정 같은 문서 수준 Esc 처리로 번지지 않게 한다.
+    event.preventDefault();
+    event.stopPropagation();
+    closeAgentSetup();
   });
 
   piInstallBtn.addEventListener('click', () => void runPiInstall());
@@ -1774,6 +1790,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
     if (destination === 'archive') archivePane.open();
+    if (destination === 'ai') for (const row of assistantRows) void row.refresh(true);
     panes.get(destination)?.scrollTo({ top: 0 });
   }
 
@@ -2279,7 +2296,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         label = detected ? '로그인 필요' : '연결하기';
         message = detected ? '설정에서 로그인' : `${AGENT_LABEL[agent]} 연결 필요`;
       }
-      row.dot.dataset.state = !online || working ? 'unknown' : connected && !setup?.updateRequired && !setup?.error && !health?.error ? 'connected' : 'disconnected';
+      // 문구와 같은 기준 — 설치하지 않은 프로바이더의 updateRequired(번들 런타임)는 연결 상태를 흐리지 않는다.
+      const needsUpdate = setup?.installed === true && setup?.updateRequired === true;
+      row.dot.dataset.state = !online || working ? 'unknown' : connected && !needsUpdate && !setup?.error && !health?.error ? 'connected' : 'disconnected';
       row.detail.textContent = label;
       row.detail.title = label;
       row.detail.classList.toggle('ag-settings-account-detail', online && connected && label === (identity || '연결됨'));
@@ -2316,6 +2335,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   /** 진행 중인 로그인의 주소·코드를 지운다. */
   function clearSetupAuthPrompt(): void {
     setupTerminal.close();
+    setupTerminalResync.reset();
     setupOauthPending = false;
     setupAuthUrl = null;
     setupUserCode = null;
@@ -2774,15 +2794,25 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       pendingInstalls.delete(agent);
     }
     if (disposed) return;
+    // 답이 없다(시간 초과·끊김·오류) — 허브는 아직 설치 중이거나 이미 끝냈을 수 있다. 상태를 다시 읽어
+    // 실제 결과로 정한다. 그러지 않으면 '설치 실패' 가 곧 오는 완료 방송에 뒤집힌다.
+    let outcome: ReturnType<typeof installOutcomeFromStatus> = 'installed';
+    if (!statuses) {
+      const fresh = await bridge.requestAgentSetupStatus(true).catch(() => null);
+      if (disposed) return;
+      if (fresh) statuses = fresh;
+      outcome = installOutcomeFromStatus(fresh?.[agent]);
+    }
     setupStatusRevision += 1;
     if (statuses) setupStatuses = statuses;
     // 그사이 다른 프로바이더 창을 열었다면 그 창의 진행 상태는 건드리지 않는다.
     if (setupAgent === agent) {
-      setupBusy = false;
-      if (!statuses) {
+      // 아직 설치 중이면 진행 표시를 그대로 둔다 — 끝나면 허브의 상태 방송이 막대를 마친다.
+      setupBusy = outcome === 'installing';
+      if (outcome === 'failed') {
         if (!setupMessage) setupMessage = '설치 실패';
         resetSetupInstallProgress();
-      } else {
+      } else if (outcome === 'installed') {
         setSetupInstallProgress(100, 'done');
       }
     }
@@ -3612,6 +3642,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           break;
         case 'connection':
           connectionState = ev.state;
+          setupTerminalResync.connection(ev.state,
+            supportsTerminalSetup(setupAgent) && setupAuthRunId !== null && setupOauthPending);
           setupTerminal.setOnline(ev.state === 'connected');
           projectPane.setConnected(ev.state === 'connected');
           renderConnection();
@@ -3671,12 +3703,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           const selectedStatus = setupAgent ? ev.statuses[setupAgent] : null;
           if (setupAgent && isSetupOpen() && selectedStatus?.authOwnedByThisSession && selectedStatus.authRunId
             && !abandonedAuthRunIds.has(selectedStatus.authRunId)) {
-            const resumeTerminal = supportsTerminalSetup(setupAgent) && setupAuthRunId !== selectedStatus.authRunId;
+            const previousRunId = setupAuthRunId;
             setupAuthRunId = selectedStatus.authRunId;
             setupBusy = true;
             setupOauthPending = supportsTerminalSetup(setupAgent) || Boolean(selectedStatus.authUrl);
-            if (supportsTerminalSetup(setupAgent)) void setupTerminal.open(AGENT_LABEL[setupAgent]);
-            if (resumeTerminal) bridge.resumeSetupTerminal(setupAgent, selectedStatus.authRunId);
+            if (supportsTerminalSetup(setupAgent)) {
+              void setupTerminal.open(AGENT_LABEL[setupAgent]);
+              // 다른 로그인이거나, 같은 로그인이라도 끊겼다 다시 붙었으면 화면을 다시 받는다.
+              setupTerminalResync.sync(setupAgent, previousRunId, selectedStatus.authRunId);
+            }
             setupAuthUrl = selectedStatus.authUrl ?? setupAuthUrl;
             if (setupAgent === 'claude') setupCodePending = true;
           }

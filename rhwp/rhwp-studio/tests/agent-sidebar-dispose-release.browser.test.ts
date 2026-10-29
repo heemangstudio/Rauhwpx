@@ -61,15 +61,19 @@ async function openPreview(t: any): Promise<Page> {
 }
 
 async function collectGarbage(page: Page): Promise<void> {
-  const client = await page.createCDPSession();
-  await client.send('HeapProfiler.collectGarbage');
-  await client.send('HeapProfiler.collectGarbage');
-  await client.detach();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const client = await page.createCDPSession();
+    await client.send('HeapProfiler.collectGarbage');
+    await client.send('HeapProfiler.collectGarbage');
+    await client.detach();
+    // 명시적으로 GC 해도 현재 V8 작업이 끝날 때까지 WeakRef 대상이 살아 있을 수 있다.
+    await new Promise((done) => setTimeout(done, 100));
+  }
 }
 
 test('a disposed sidebar that was never shown is garbage collected', { timeout: 120_000 }, async (t) => {
   const page = await openPreview(t);
-  await page.evaluate(async () => {
+  await page.evaluate(() => {
     const { sidebar, mock, bus } = (window as any).__modules;
     const preview = (window as any).sidebarPreview;
     const created = mock.createMockBridge(() => {});
@@ -84,11 +88,16 @@ test('a disposed sidebar that was never shown is garbage collected', { timeout: 
       moveToLibraryDocument: async () => 'cancelled',
     });
     created.boot();
-    // 목록과 머리글이 이름표를 등록할 시간을 준다 — 사이드바는 한 번도 문서에 붙지 않는다.
-    await new Promise((done) => setTimeout(done, 300));
+    (window as any).__pendingRelease = { instance, bridge: created.bridge };
     (window as any).__released = { root: new WeakRef(instance.root), bridge: new WeakRef(created.bridge) };
-    instance.dispose();
-    created.bridge.dispose();
+  });
+  // 목록과 머리글이 이름표를 등록할 시간을 준다 — 사이드바는 한 번도 문서에 붙지 않는다.
+  await new Promise((done) => setTimeout(done, 300));
+  await page.evaluate(() => {
+    const pending = (window as any).__pendingRelease;
+    delete (window as any).__pendingRelease;
+    pending.instance.dispose();
+    pending.bridge.dispose();
   });
   await collectGarbage(page);
   assert.deepEqual(await page.evaluate(() => {

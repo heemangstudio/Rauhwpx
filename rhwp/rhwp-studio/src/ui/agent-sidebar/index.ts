@@ -52,6 +52,7 @@ import type {
   UserQuestionInteraction,
   StagedReference,
   TasteHistoryLearned,
+  BrowserTab,
 } from '../../agent/types.ts';
 import {
   defaultModelForAgent,
@@ -211,6 +212,7 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
+import { createChatHama, type ChatHama } from './chat-hama.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -221,13 +223,14 @@ import { createDocumentLinkToggle } from './document-link-toggle.ts';
 import { createSidebarWorkbench, type SidebarWorkbench, type WorkbenchView } from './workbench.ts';
 import { createWorkbenchBoard, type WorkbenchBoard } from './workbench-board.ts';
 import { browserPopupDestination } from './browser-controller.ts';
+import { nativeBrowserApi } from './browser-presentation.ts';
 import { readAgentPointer } from './browser-agent-cursor.ts';
 import { createWorkbenchBrowser, type WorkbenchBrowser } from './workbench-browser.ts';
 import { createWorkbenchDocuments, type WorkbenchDocuments } from './workbench-documents.ts';
 import { createWorkbenchAgents, type WorkbenchAgents } from './workbench-agents.ts';
 import './workbench-agents.css';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
-import { createFailureNoticeController, failureRailLabel, retryWire } from './failure-notice.ts';
+import { authNoticeReconnected, createFailureNoticeController, failureRailLabel, retryWire } from './failure-notice.ts';
 import { autofixReady, createRetryEscalation, onAutofixSettings } from '../autofix/autofix.ts';
 import { createAutofixButton, swapSlot, type AutofixButton } from '../autofix/autofix-button.ts';
 import {
@@ -238,6 +241,7 @@ import {
   type ToolOutcomeView,
 } from './tool-presentation.ts';
 import { createSettingsPanel } from './settings.ts';
+import type { SignInWindow } from './web-assistant-settings.ts';
 import {
   isSettingsDestination,
   type EditorSettingsRuntime,
@@ -246,6 +250,7 @@ import {
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
 import {
   createInitialSetup,
+  firstRunAgentForChat,
   maybeStartInitialSetup,
   type InitialSetupDeps,
   type InitialSetupUi,
@@ -471,6 +476,9 @@ export interface AgentSidebarDeps {
   renameDocument?: (name: string) => Promise<string | null>;
   /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
   canRenameDocument?: () => boolean;
+  /** 집중 모드 머리의 문서 이름을 누르면 이 창의 열린 문서 목록을 편다(같은 앵커면 접는다). */
+  toggleDocumentList?: (anchor: HTMLElement) => void;
+  closeDocumentList?: () => void;
   /** 쓰기 활동 — 기본은 창 전체 감시자. 미리보기가 '쓰는 중' 장면을 고정할 때만 바꾼다. */
   typingActivity?: TypingActivity;
   /** 백그라운드 채팅 알림 장부 — 기본은 페이지 하나짜리(chatAttention). 미리보기가 바꾼다. */
@@ -1336,6 +1344,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
   let fullscreen = false;
+  /** 입력기 위의 하마. 입력기를 만든 뒤 붙는다. */
+  let chatHama: ChatHama | null = null;
   let threadsRailCollapsed = readStoredThreadsRailCollapsed();
   let workspaceCompact = false;
   let compactThreadsRailOpen = false;
@@ -1450,7 +1460,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 보낸 메시지가 턴을 기다리는 동안도 다시 시도는 막힌다 — 같은 요청이 두 번 나간다.
     isTurnRunning: () => agentWorking(),
     isConnected: () => connState === 'connected',
-    reconnected: (agent) => !authFailedAgents.has(agent) && setupStatuses?.[agent]?.authenticated === true,
+    reconnected: (agent, failedAt) => authNoticeReconnected(failedAt, {
+      authenticated: setupStatuses?.[agent]?.authenticated === true,
+      failing: authFailedAgents.has(agent),
+      verifiedAt: setupStatuses?.[agent]?.authVerifiedAt ?? null,
+      provenAt: authProvenAt.get(agent) ?? null,
+    }),
     openLogin: (agent) => {
       requestSettingsOpen('ai-connection');
       settingsPanel.beginAgentConnect(agent, { reauth: true });
@@ -2230,6 +2245,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const name = getDocumentContext?.()?.documentName;
       if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
+      deps.closeDocumentList?.();
       // 하마가 쓰는 중이면 쓰기를 거두고 이름부터 보인다 — 쓰기가 끝나며 입력 칸을 덮지 않는다.
       if (documentNameWriter.target) {
         documentNameWriter.cancel();
@@ -3090,6 +3106,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   bindChatTitleRename(workspaceChatTitle);
   bindChatTitleRename(chatTitle);
   bindDocumentRename(workspaceDocumentName);
+  if (deps.toggleDocumentList) {
+    const toggleDocumentList = deps.toggleDocumentList;
+    // 집중 모드는 메뉴 막대를 덮는다 — 그 머리의 문서 이름이 열린 문서 목록을 편다.
+    workspaceDocumentName.classList.add('ag-document-switch');
+    workspaceDocumentName.addEventListener('click', (event) => {
+      if (event.detail > 1 || isRenaming(workspaceDocumentName)) return;
+      if (!getDocumentContext?.()?.documentName) return;
+      toggleDocumentList(workspaceDocumentName);
+    });
+  }
   bindDocumentNameMenu(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
@@ -3377,7 +3403,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const connRetry = el('button', 'ag-conn-retry', '다시 연결');
   connRetry.type = 'button';
   /** 다시 연결이 두 번 실패했거나 앱이 띄우는 허브가 뜨지 않으면 그 자리에 자동 수정을 둔다. */
-  const hubEscalation = createRetryEscalation();
+  const hubEscalation = createRetryEscalation(2, 'hub-connection');
   let hubRetryPending = false;
   let connAutofix: AutofixButton | null = null;
   function reconnectHub(): void {
@@ -3936,6 +3962,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 인증 실패를 본 시각. 허브가 그 뒤에 자격 증명을 다시 확인하면 칩을 거둔다. */
   const authFailedAt = new Map<AgentName, number>();
+  /** 이 창에서 자격 증명이 실제로 통한 마지막 시각 — 끝난 로그인이나 끝까지 간 턴. 저장된 실패 알림과 견준다. */
+  const authProvenAt = new Map<AgentName, number>();
   /** 턴이 도는 중에 로그인이 돌아와 턴이 끝난 뒤 다시 열 세션. */
   const reconnectRestartPending = new Set<AgentName>();
 
@@ -3947,7 +3975,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         authRunSeen.add(agent);
       } else if (authRunSeen.has(agent)) {
         authRunSeen.delete(agent);
-        if (status?.authenticated) authFailedAgents.delete(agent);
+        if (status?.authenticated) {
+          authFailedAgents.delete(agent);
+          authProvenAt.set(agent, Date.now());
+        }
       }
       const failedAt = authFailedAt.get(agent);
       if (failedAt !== undefined && status?.authenticated
@@ -4338,6 +4369,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 편대 도크는 입력기 위에 뜨는 오버레이라서 입력기의 자식으로 붙는다 —
   // 사이드바·전체 화면 어디로 옮겨져도 입력기를 따라간다.
   composer.appendChild(fleetView.root);
+  // 입력기 위의 하마 — 사이드바와 집중 화면이 같은 입력기를 쓰므로 한 번만 붙인다.
+  chatHama = createChatHama({
+    composer,
+    input,
+    hitRoot: chatPage,
+    enabled: () => userSettings.getViewSettings().showHama,
+    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed')),
+  });
+  const unsubscribeHamaSetting = userSettings.subscribe(() => chatHama?.sync());
+  // 접기·집중 화면·설정이나 목록 같은 다른 면은 모두 뿌리의 클래스로 바뀐다.
+  const hamaRootObserver = typeof MutationObserver === 'function'
+    ? new MutationObserver(() => chatHama?.sync())
+    : null;
+  hamaRootObserver?.observe(root, { attributes: true, attributeFilter: ['class'] });
+  queueMicrotask(() => chatHama?.sync());
   const questionTimelineAnchor = el('span', 'ag-question-timeline-anchor');
   const permissionController = createRequestCardController({
     context: () => ({ threadId: currentThread.id, documentId: currentDocumentId }),
@@ -5008,6 +5054,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      여기서 관리한다(스킬 페이지와 같은 계약). */
   const settingsPanel = createSettingsPanel({
     bridge,
+    // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
+    openSignInWindow: (url) => openSignInWindow(url),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -5039,6 +5087,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       set: (patch) => bridge.setTasteSettings(patch),
     },
     onFinished: () => {
+      adoptFirstRunDefaultAgent();
       updateReconnectChip();
       updateCalibrationChip();
     },
@@ -5248,6 +5297,33 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       workbench?.select('browser');
       browser.dock();
     } else browser.float();
+  };
+  // 설정의 로그인(ChatGPT·Claude)은 작업 칸이 아니라 앱 안 브라우저의 별도 창으로 연다.
+  // 그 탭은 작업 칸에서 고르지 않는다. 창을 닫으면 탭도 닫고 closed 가 끝난다.
+  const openSignInWindow = async (url: string): Promise<SignInWindow> => {
+    const native = nativeBrowserApi();
+    if (!native?.onEvent) throw new Error('데스크톱 앱에서만 로그인할 수 있습니다.');
+    const browser = ensureWorkbenchBrowser();
+    const opened = await browser.controller.request<{ tab?: BrowserTab }>('open', { url });
+    const tab = opened?.tab;
+    if (!tab?.tabId) throw new Error('로그인 창을 열지 못했습니다.');
+    let finish: () => void = () => {};
+    const closed = new Promise<void>((resolve) => { finish = resolve; });
+    let done = false;
+    const close = async (): Promise<void> => {
+      if (done) return;
+      done = true; stop();
+      await browser.controller.refresh().then(() => browser.controller.close(tab.tabId)).catch(() => {});
+      finish();
+    };
+    const stop = native.onEvent((event) => {
+      if (event.tabId !== tab.tabId) return;
+      if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
+    });
+    try {
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true });
+    } catch (failure) { await close(); throw failure; }
+    return { closed, close };
   };
   const chatLinkError = (error: unknown) => showToast({ message: `브라우저를 열지 못했습니다: ${readableIpcError(error)}`, durationMs: 5000 });
   routeChatBrowserLinks(messages, openChatLink, chatLinkError);
@@ -9701,6 +9777,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function setTurnRunning(running: boolean): void {
     const ended = turnRunning && !running;
     turnRunning = running;
+    chatHama?.setRunning(running);
     if (!running) { replyPending = false; workbenchBrowser?.endAgentPreview(); floatingBrowser?.endAgentPreview(); }
     // 일하는 동안 다른 창이 이 채팅을 이 문서에서 뗐으면 턴이 끝난 뒤 따른다(adoptStoredThreadLink).
     if (ended) queueMicrotask(() => {
@@ -10348,6 +10425,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 다시 보낸 요청이 대기열 앞에 선다. 붙잡음을 풀어 그 턴의 정상 종료가 맨 앞을 보내게 한다.
     followUps.release();
     return true;
+  }
+
+  /**
+   * 첫 실행 설정이 연결한 프로바이더를 기본값으로 저장했다. 아직 아무것도 보내지 않은 채팅이면 그 기본값으로
+   * 바로 세운다 — 그러지 않으면 Codex 만 연결한 사용자의 첫 메시지가 연결하지 않은 Claude 로 간다.
+   */
+  function adoptFirstRunDefaultAgent(): void {
+    agentPrefs = loadAgentPrefs();
+    rebuildLlmMenu();
+    const next = firstRunAgentForChat(agentPrefs.defaultAgent, {
+      selectedAgent,
+      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
+      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
+      readOnly: readOnlyDocLabel !== null,
+    });
+    if (!next) return;
+    applyDefaultSelection();
+    // 초안은 첫 메시지를 보낼 때 이 선택으로 열린다. 이미 연 빈 채팅은 새 프로바이더로 다시 연다.
+    startCurrentBridgeChat();
+    refreshSidebarWidthMin();
   }
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
@@ -11707,6 +11804,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (event.parentTaskId && fleetView.routeTextDelta(event)) break;
         assistantBuffer += event.text;
         if (!assistantBuffer.trim()) break;
+        chatHama?.talking();
         if (!streamBubble && turnActivity) closeCurrentActivityGroup();
         if (!streamBubble) {
           const bubble = openAssistantBubble(event.agent);
@@ -11726,6 +11824,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           trackSubagentToolCall(event);
           break;
         }
+        chatHama?.tool(event.tool, event.argsJson);
         // 스폰 자체는 편대 카드가 나타내므로 도구 행을 따로 그리지 않는다.
         if (!event.parentTaskId && isSpawnToolName(event.tool)) {
           suppressedSpawnCalls.add(event.callId);
@@ -11804,6 +11903,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           && !event.errorMessage
           && turnFailedToolCount === 0;
         if (completed) failureNotices.noteSuccess();
+        if (completed) authProvenAt.set(event.agent, Date.now());
         if (completed && authFailedAgents.delete(event.agent)) updateComposer();
         if (reconnectRestartPending.delete(event.agent) && event.agent === selectedAgent) {
           restartAgentSession();
@@ -11841,6 +11941,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // U3: 결과를 레일에 남긴다 — 보던 채팅, 사용자가 멈춘 턴, 대기열이 다음 메시지를 보낸 턴은 남기지 않는다.
         // 승인을 기다리는 계획은 입력 대기로 선다. 알림은 한 마이크로태스크 뒤 — turn-failure 의 이유가 먼저 닿는다.
         runStatus.turnEnded(lastTurnEndOutcome, { drained: drainedFollowUp });
+        // 대기 메시지가 곧바로 이어 나갔으면 끝 몸짓 없이 다음 턴으로 간다.
+        if (!drainedFollowUp) chatHama?.turnEnded(lastTurnEndOutcome);
         // 바깥 사정으로 끊긴 턴(S3) — 보지 않던 채팅이면 레일에 '중단됨', 알림은 '작업이 중단됐습니다' 한 번.
         if (interruption !== null) runStatus.noteTurnFailure({ interrupted: true });
         turnErrorSeen = false;
@@ -12724,6 +12826,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // U3: 허브 오류로 끝난 턴은 (보지 않았으면) 레일에 오류로 남는다.
         if (turnRunning) runStatus.sync();
         else if (runStatus.turnEnded('failed', { drained: false })) {
+          chatHama?.turnEnded('failed');
           if (e.failure) runStatus.noteTurnFailure(railFailureNote(e.failure, hubFailureSummary));
         } else if (followUpBounced && followUps.snapshot().hold?.reason !== 'busy') {
           // 앞 턴 끝에서 이어 보낸 대기 메시지를 허브가 받지 않았다 — 채팅은 붙잡힌 대기열과 함께 멈췄다.
@@ -13908,6 +14011,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     restoreSharedBrowser();
     // 다시 보이는 채팅의 완료·오류 점을 걷고 확인 필요 수를 다시 센다.
     scheduleSeenCheck();
+    chatHama?.sync();
   }
 
   function deactivate(): void {
@@ -13944,6 +14048,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     arrivalGuard.release();
     vacateSidebarSlot(COLLAPSE_TAB_SLOT, collapseTab);
     vacateSidebarSlot(ROOT_SLOT, root);
+    chatHama?.sync();
   }
 
   if (active) queueMicrotask(restoreSharedBrowser);
@@ -14132,6 +14237,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       connAutofix?.dispose();
       // 이 사이드바가 쓴 작업·입력·검토 점을 걷는다. 미뤄 둔 알림은 그대로 나간다.
       runStatus.dispose();
+      unsubscribeHamaSetting();
+      hamaRootObserver?.disconnect();
+      chatHama?.dispose();
       attentionViewObserver?.disconnect();
       window.removeEventListener('focus', scheduleSeenCheck);
       document.removeEventListener('visibilitychange', scheduleSeenCheck);

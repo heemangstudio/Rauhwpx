@@ -417,6 +417,7 @@ export async function removeStaleLaunchDirectories(
   }
 
   const removed = [];
+  const failures = [];
   for (const entry of entries) {
     if (!entry.isDirectory()
       || entry.name === activeLaunchId
@@ -460,14 +461,48 @@ export async function removeStaleLaunchDirectories(
       }
     }
 
+    try {
+      await removeLaunchDirectory(directory, markers, {
+        opendirImpl, readdirImpl, rmImpl, platform, sleep,
+      });
+      removed.push(entry.name);
+    } catch (error) {
+      // 잠긴 폴더 하나 때문에 나머지 오래된 실행 폴더를 남기지 않는다. 다음 실행이 다시 시도한다.
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw Object.assign(
+      new AggregateError(failures, `Could not remove ${failures.length} stale launch director${failures.length === 1 ? 'y' : 'ies'}`),
+      { code: failures[0]?.code, removed },
+    );
+  }
+  return removed;
+}
+
+/**
+ * 실행 폴더를 지운다. 소유 기록은 맨 나중에 지운다 — 잠긴 파일 때문에 중간에 멈춰도 다음 실행이
+ * 같은 기록으로 이 폴더를 다시 알아보고 이어서 지운다(기록 없는 폴더는 지우지 않으므로).
+ */
+async function removeLaunchDirectory(directory, markers, { opendirImpl, readdirImpl, rmImpl, platform, sleep }) {
+  const { entries } = await readBoundedDirectory(directory, {
+    maxEntries: MAX_LAUNCH_DIRECTORY_ENTRIES,
+    opendirImpl,
+    readdirImpl,
+  });
+  for (const child of entries) {
+    if (child.name === markers.owner) continue;
     await retryWindows(
-      () => rmImpl(directory, { recursive: true, force: true }),
+      () => rmImpl(path.join(directory, child.name), { recursive: true, force: true }),
       platform,
       sleep,
     );
-    removed.push(entry.name);
   }
-  return removed;
+  await retryWindows(
+    () => rmImpl(directory, { recursive: true, force: true }),
+    platform,
+    sleep,
+  );
 }
 
 export function removeLegacyLaunchDirectories(parentDir, activeLaunchId, options = {}) {

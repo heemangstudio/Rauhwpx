@@ -232,7 +232,9 @@ export async function installLicenseGate(
     const search = document.getElementById('editor-command-search');
     const bar = search?.parentElement ?? document.getElementById('menu-bar');
     if (!bar) return;
-    if (search) search.before(pill);
+    // 검색 바로 왼쪽의 자동 수정 단추와 검색 사이에 끼지 않고, 그 묶음 앞에 선다.
+    const autofix = search?.previousElementSibling?.id === 'editor-autofix-manual' ? search.previousElementSibling : null;
+    if (search) (autofix ?? search).before(pill);
     else bar.append(pill);
     bar.classList.add('has-license-pill');
     measurePillReserve();

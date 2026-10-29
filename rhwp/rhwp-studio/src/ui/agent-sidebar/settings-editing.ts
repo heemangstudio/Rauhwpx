@@ -184,6 +184,7 @@ export function createEditingSettings(options: {
   const pictureRatio = toggleRow('그림 비율 유지', '그림 속성을 열 때 너비와 높이의 비율을 기본으로 고정합니다.');
   const compactToolbar = toggleRow('한 줄 도구 상자', '메뉴와 도구 상자를 한 줄에 모아 편집 화면을 넓힙니다.');
   const sidebarMotion = toggleRow('사이드바 움직임', '사이드바와 집중 화면을 열고 닫을 때 움직임을 보여 줍니다.');
+  const showHama = toggleRow('하마', '입력창 위에서 작업 상태를 따라 움직이는 하마를 보여 줍니다.');
   appearance.body.append(
     paragraphMarks.root,
     controlCodes.root,
@@ -191,6 +192,7 @@ export function createEditingSettings(options: {
     pictureRatio.root,
     compactToolbar.root,
     sidebarMotion.root,
+    showHama.root,
   );
 
   paragraphMarks.input.addEventListener('change', () => {
@@ -213,6 +215,10 @@ export function createEditingSettings(options: {
   });
   sidebarMotion.input.addEventListener('change', () => {
     draft.view.sidebarMotion = sidebarMotion.input.checked;
+    render();
+  });
+  showHama.input.addEventListener('change', () => {
+    draft.view.showHama = showHama.input.checked;
     render();
   });
   pictureRatio.input.addEventListener('change', () => {
@@ -604,6 +610,7 @@ export function createEditingSettings(options: {
     pictureRatio.input.checked = draft.dialog.picturePropsKeepRatio;
     compactToolbar.input.checked = draft.view.compactToolbar;
     sidebarMotion.input.checked = draft.view.sidebarMotion;
+    showHama.input.checked = draft.view.showHama;
     recentFonts.input.checked = draft.font.showRecentFonts;
     recentCount.input.value = String(draft.font.recentFontCount);
     recentCount.input.disabled = !draft.font.showRecentFonts;

@@ -497,6 +497,28 @@ export function failureSummaryText(view: Pick<FailureView, 'title' | 'line'>): s
   return view.line ? `${view.title}, ${view.line}` : view.title;
 }
 
+/**
+ * 로그인 실패 알림이 '다시 연결됐어요' 로 바뀌어도 되는지 — 순수 함수. 허브의 authenticated 는 자격 증명
+ * 파일이 있다는 뜻일 뿐(Codex 는 토큰이 있으면 참)이라, 거절된 토큰으로도 참이다. 실패 뒤에 허브가 자격 증명을
+ * 실제로 확인했거나(verifiedAt, Claude) 이 창에서 로그인·성공한 턴이 그 뒤에 있었을 때(provenAt)만 믿는다.
+ * failedAt 이 없는(0) 옛 알림은 실패 시각을 모르니 이 창의 증거만 믿는다.
+ */
+export function authNoticeReconnected(
+  failedAt: number,
+  evidence: {
+    authenticated: boolean;
+    /** 이 창이 아직 인증 실패로 보는 중 */
+    failing: boolean;
+    verifiedAt?: number | null;
+    provenAt?: number | null;
+  },
+): boolean {
+  if (!evidence.authenticated || evidence.failing) return false;
+  const known = Number.isFinite(failedAt) && failedAt > 0;
+  if (known && typeof evidence.verifiedAt === 'number' && evidence.verifiedAt >= failedAt) return true;
+  return typeof evidence.provenAt === 'number' && (!known || evidence.provenAt >= failedAt);
+}
+
 export interface FailureNoticeControllerDeps {
   /** 이 사이드바가 보여 주는 채팅 */
   thread(): ChatThread;
@@ -508,8 +530,11 @@ export interface FailureNoticeControllerDeps {
   agentLabel(agent: AgentName): string;
   isTurnRunning(): boolean;
   isConnected(): boolean;
-  /** 로그인 실패 뒤 이 프로바이더가 새 자격 증명으로 다시 연결됐다 */
-  reconnected(agent: AgentName): boolean;
+  /**
+   * 로그인 실패 뒤 이 프로바이더가 새 자격 증명으로 다시 연결됐다. failedAt 은 알림을 만든 시각(저장됨) —
+   * 새로고침 뒤에도 그 뒤의 증거(허브의 자격 증명 확인, 끝난 로그인)로만 다시 연결됐다고 본다.
+   */
+  reconnected(agent: AgentName, failedAt: number): boolean;
   openLogin(agent: AgentName): void;
   openSettings(): void;
   /** 채팅 시작이 실패했을 때의 다시 시도 */
@@ -576,7 +601,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   const restarted = new WeakSet<ThreadFailureMessage>();
   const resumes = new Map<string, ArmedResume>();
   /** 같은 실패의 다시 시도가 실패한 횟수. 두 번이면 그 뒤 알림의 다시 시도가 자동 수정이 된다. */
-  const escalation = createRetryEscalation();
+  const escalation = createRetryEscalation(2, 'provider-failure');
   const escalated = new WeakSet<ThreadFailureMessage>();
   const autofixButtons = new Map<ThreadFailureMessage, AutofixButton>();
   const escalationKey = (failure: ProviderFailure) => `${failure.agent}:${failure.class}:${failure.code ?? ''}`;
@@ -607,7 +632,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       agentLabel: deps.agentLabel(message.failure.agent),
       now: now(),
       resetAt: resolvedResetAt(message),
-      reconnected: message.failure.class === 'auth_required' && deps.reconnected(message.failure.agent),
+      reconnected: message.failure.class === 'auth_required' && deps.reconnected(message.failure.agent, message.at),
       hasRetry: message.origin === 'start' ? !restarted.has(message) : Boolean(message.retry),
       hasRetryPayload: Boolean(message.retry),
       turnRunning: deps.isTurnRunning(),

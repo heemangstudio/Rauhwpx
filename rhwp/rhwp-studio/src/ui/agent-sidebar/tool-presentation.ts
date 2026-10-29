@@ -47,6 +47,10 @@ export interface ToolOutcomeView {
   image?: string;
   /** 결과로 더 정확해진 동작 이름 (예: edit_object 가 그림이었을 때 “그림 이동”) */
   label?: string;
+  /** 펼친 본문에 보일 긴 답 (ask_chatgpt·ask_claude) */
+  answer?: string;
+  /** 결과가 가리키는 페이지 (ask_chatgpt·ask_claude 의 웹 채팅) */
+  link?: { href: string; label: string };
 }
 
 type Args = Record<string, unknown>;
@@ -569,6 +573,8 @@ const SPECS: Record<string, ToolSpec> = {
     category: 'other', label: '권한 요청',
     summary: (a) => join([isChatPermissionCapability(a['capability']) ? CHAT_PERMISSION_LABELS[a['capability']] : '', clip(str(a['reason']), 64)]),
   },
+  ask_chatgpt: { category: 'other', label: 'ChatGPT에 묻기', summary: (a) => quote(str(a['question']), 40) },
+  ask_claude: { category: 'other', label: 'Claude에 묻기', summary: (a) => quote(str(a['question']), 40) },
   ask_user_question: {
     category: 'other', label: '질문하기',
     summary: (a) => {
@@ -814,6 +820,20 @@ const ERROR_TEXT: Record<string, string> = {
   LICENSE_READ_ONLY: '읽기 전용 라이선스',
   DOCUMENT_REQUIRED: '문서가 필요함',
   RPC_ERROR: '실행 오류',
+  PERMISSION_REQUIRED: '허용 필요',
+  CHATGPT_DISABLED: 'ChatGPT 꺼짐',
+  CHATGPT_UNAVAILABLE: '데스크톱 앱에서만 가능',
+  CHATGPT_SIGNED_OUT: 'ChatGPT 로그인 필요',
+  CHATGPT_CHALLENGE: 'ChatGPT 확인 필요',
+  CHATGPT_UI_CHANGED: 'ChatGPT 화면이 바뀜',
+  CHATGPT_TIMEOUT: 'ChatGPT 응답 시간 초과',
+  CLAUDE_DISABLED: 'Claude 꺼짐',
+  CLAUDE_UNAVAILABLE: '데스크톱 앱에서만 가능',
+  CLAUDE_SIGNED_OUT: 'Claude 로그인 필요',
+  CLAUDE_CHALLENGE: 'Claude 확인 필요',
+  CLAUDE_LIMIT: 'Claude 사용 한도 도달',
+  CLAUDE_UI_CHANGED: 'Claude 화면이 바뀜',
+  CLAUDE_TIMEOUT: 'Claude 응답 시간 초과',
 };
 
 export function errorText(code: string): string {
@@ -972,6 +992,8 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
     case 'request_permission': return result['status'] === 'granted' ? '이 채팅에 허용됨'
       : result['status'] === 'pending' ? '허용 대기' : '';
     case 'request_secret': return result['pending'] === true ? '입력 대기' : '';
+    case 'ask_chatgpt':
+    case 'ask_claude': return str(result['answer']) ? (result['truncated'] === true ? '답 받음 · 일부' : '답 받음') : '';
     case 'browser_request_account': return result['granted'] === true ? '이미 허용됨' : result['pending'] === true ? '허용 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);
@@ -1102,6 +1124,26 @@ function refinedLabel(name: string, args: Args, result: Args | null): string | u
   return noun ? `${noun} ${objectAction(args)}` : undefined;
 }
 
+/** 웹 비서 채팅 주소만 링크로 받는다. */
+const ASSISTANT_CHAT_URLS = {
+  ask_chatgpt: { pattern: /https:\/\/chatgpt\.com\/g\/g-p-[0-9a-f]{32}[a-z0-9-]*\/c\/[0-9a-f-]{36}/, label: 'ChatGPT에서 열기' },
+  ask_claude: { pattern: /https:\/\/claude\.ai\/chat\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/, label: 'Claude에서 열기' },
+} as const;
+
+/** ask_chatgpt·ask_claude 결과 — 답 전체와 “…에서 열기”. 잘린 미리보기에서는 주소만 건진다. */
+function assistantOutcome(name: keyof typeof ASSISTANT_CHAT_URLS, value: Args | null, preview: string): ToolOutcomeView {
+  const answer = value ? str(value['answer']) : '';
+  const { pattern, label } = ASSISTANT_CHAT_URLS[name];
+  const href = pattern.exec(value ? str(value['chatUrl']) : preview)?.[0];
+  return {
+    ok: true,
+    text: value ? successText(name, {}, value, 'other') : '답 받음',
+    notices: [],
+    ...(answer ? { answer } : {}),
+    ...(href ? { link: { href, label } } : {}),
+  };
+}
+
 export interface ToolResultInput {
   tool: string;
   argsJson: string;
@@ -1143,6 +1185,7 @@ export function presentToolResult(input: ToolResultInput): ToolOutcomeView {
   }
 
   if (!known) return { ok: true, text: '', notices: [] };
+  if (name === 'ask_chatgpt' || name === 'ask_claude') return assistantOutcome(name, parsed.value, input.preview);
   const value = parsed.value ?? {};
   const category = SPECS[name].category;
   const text = parsed.value ? successText(name, args, value, category) : category === 'edit' ? '적용' : '';

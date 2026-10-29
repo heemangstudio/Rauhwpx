@@ -806,3 +806,49 @@ test('bridge: context events are validated and a finished compaction re-sends th
   ]);
   assert.equal(resets, 1);
 });
+
+// ─── 설정 창 로그인 터미널 다시 받기 ───────────────────────
+
+const { SetupTerminalResync } = await import('../src/agent/pending-requests.ts');
+
+test('로그인 터미널이 열린 채 연결이 끊겼다 같은 로그인으로 다시 붙으면 화면을 한 번 다시 받는다', () => {
+  const resumed: Array<[string, string]> = [];
+  const mockBridge = { resumeSetupTerminal: (agent: string, runId: string) => { resumed.push([agent, runId]); } };
+  const resync = new SetupTerminalResync((agent, runId) => mockBridge.resumeSetupTerminal(agent, runId));
+  // 설정 창이 보던 로그인과, 허브 상태가 알린 로그인. 설정 창이 그러듯 상태마다 sync 를 부른다.
+  let shownRunId: string | null = 'run-1';
+  const status = (runId: string) => {
+    const previous = shownRunId;
+    shownRunId = runId;
+    return resync.sync('codex', previous, runId);
+  };
+
+  // 이미 보던 로그인의 주기 방송은 화면을 다시 청하지 않는다.
+  assert.equal(status('run-1'), false);
+  assert.deepEqual(resumed, []);
+
+  // 터미널 로그인이 열린 채 끊겼다 같은 실행으로 다시 붙는다 — 끊긴 동안의 프레임은 버려졌다.
+  resync.connection('connecting', true);
+  resync.connection('disconnected', true);
+  resync.connection('connected', true);
+  assert.equal(status('run-1'), true);
+  assert.deepEqual(resumed, [['codex', 'run-1']]);
+
+  // 다시 받은 뒤의 방송은 더 청하지 않는다(한 번만).
+  assert.equal(status('run-1'), false);
+  assert.equal(status('run-1'), false);
+  assert.equal(resumed.length, 1);
+});
+
+test('로그인 터미널이 없을 때의 끊김이나 닫은 로그인은 화면 다시 받기를 남기지 않는다', () => {
+  const resumed: string[] = [];
+  const resync = new SetupTerminalResync((_agent, runId) => { resumed.push(runId); });
+  resync.connection('disconnected', false);
+  assert.equal(resync.sync('claude', 'run-1', 'run-1'), false);
+  resync.connection('disconnected', true);
+  resync.reset();
+  assert.equal(resync.sync('claude', 'run-1', 'run-1'), false);
+  // 다른 로그인이 이 창의 것으로 오면(재접속 뒤 다른 실행) 예전처럼 화면을 받는다.
+  assert.equal(resync.sync('claude', 'run-1', 'run-2'), true);
+  assert.deepEqual(resumed, ['run-2']);
+});

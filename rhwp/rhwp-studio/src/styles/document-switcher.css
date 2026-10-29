@@ -1,0 +1,239 @@
+/* ── 열린 문서 전환 ─────────────────────────────────── */
+/* 제목 막대 목록(.ds-dropdown)과 Ctrl+Tab 창(.ds-popup)이 같은 행을 쓴다.
+   면·모서리·높이·선택 행은 명령 검색(.cp-*)과 같다. */
+
+/* 상태 점은 채팅 목록(thread-rail.css)과 같은 말을 쓴다: 노랑은 일하는 중, 빨강은 답·검토를 기다림.
+   값은 에이전트 면의 --ag-run / --ag-err 와 같다. 이 목록은 .ag-root 밖에 뜬다. */
+.ds-panel {
+  --ds-working: #d9a514;
+  --ds-attention: var(--theme-danger, #c8372d);
+  --ds-icon: var(--n-ink-tertiary);
+}
+
+:root[data-theme-effective='dark'] .ds-panel {
+  --ds-working: #f0c24b;
+  --ds-attention: var(--theme-danger, #ff6b60);
+}
+
+/* 제목 아래 목록 */
+.ds-dropdown {
+  position: fixed;
+  z-index: 9000;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: min(440px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ui-surface);
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  box-shadow: var(--ag-elev-popover);
+  font-family: var(--ag-font);
+  outline: none;
+  -webkit-app-region: no-drag;
+}
+
+/* Ctrl+Tab 창은 명령 검색 면(.cp-*)을 그대로 쓰고, 입력 칸 오른쪽에 단축키를 둔다. */
+.ds-hint {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+  font-family: var(--font-family-mono);
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* 목록 */
+.ds-list {
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.ds-popup .ds-list {
+  max-height: 392px;
+  padding-top: 4px;
+}
+
+html.desktop-windows .ds-list {
+  scrollbar-width: none;
+}
+
+.ds-heading {
+  padding: 8px 14px 4px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-tight);
+  user-select: none;
+}
+
+.ds-sep {
+  height: 1px;
+  margin: 6px 12px;
+  background: var(--n-ink-hairline);
+}
+
+.ds-sep + .ds-heading {
+  padding-top: 4px;
+}
+
+.ds-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  margin: 0 6px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--ag-r-row);
+  color: var(--color-text);
+  cursor: default;
+  user-select: none;
+}
+
+.ds-popup .ds-row {
+  min-height: 36px;
+}
+
+.ds-row--selected {
+  background: var(--n-ink-fill-selected);
+}
+
+.ds-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--ds-icon);
+}
+
+.ds-icon svg {
+  display: block;
+}
+
+.ds-row--selected .ds-icon,
+.ds-row--current .ds-icon {
+  color: var(--n-ink-secondary);
+}
+
+.ds-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--ag-fs-body);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 지금 문서: 굵기만 한 단계 올린다. */
+.ds-row--current .ds-name {
+  font-weight: var(--ag-fw-strong);
+}
+
+/* 상태 점·저장 안 함 점 */
+.ds-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ds-status,
+.ds-dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.ds-status--working {
+  background: var(--ds-working);
+  animation: ds-pulse 1.6s ease-in-out infinite;
+}
+
+.ds-status--attention {
+  background: var(--ds-attention);
+}
+
+/* 저장하지 않은 변경: 잉크 점. 상태 점보다 한 단계 조용하다. */
+.ds-dirty {
+  width: 6px;
+  height: 6px;
+  background: var(--n-ink-secondary);
+}
+
+@keyframes ds-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-status--working { animation: none; }
+}
+
+/* 닫기 단추는 자리를 늘 차지하고 행에 올리거나 고를 때만 보인다. 점이 흔들리지 않는다. */
+.ds-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: -2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  visibility: hidden;
+}
+
+.ds-row:hover .ds-close,
+.ds-row--selected .ds-close {
+  visibility: visible;
+}
+
+.ds-close:hover {
+  background: var(--n-ink-fill-pressed);
+  color: var(--color-text);
+}
+
+.ds-format {
+  flex: 0 0 auto;
+  color: var(--n-ink-tertiary);
+  font-family: var(--font-family-mono);
+  font-size: var(--ag-fs-mono);
+  letter-spacing: 0.02em;
+}
+
+/* 동작 행은 한 단계 조용하다. */
+.ds-row--action {
+  min-height: 32px;
+}
+
+.ds-popup .ds-row--action {
+  min-height: 34px;
+}
+
+.ds-row--action .ds-name {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  letter-spacing: 0;
+}
+
+.ds-row--action.ds-row--selected .ds-name {
+  color: var(--color-text);
+}
+
+.ds-empty {
+  padding: 20px 16px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-body);
+  text-align: center;
+}

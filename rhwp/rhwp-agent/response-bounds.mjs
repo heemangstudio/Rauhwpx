@@ -36,7 +36,7 @@ export async function cancelResponseBody(response, reason) {
 export async function readResponseBytesBounded(response, {
   maxBytes = DEFAULT_MAX_BYTES,
   label = 'HTTP response',
-  abortController = null,
+  abortController = /** @type {AbortController | null} */ (null),
 } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new TypeError('maxBytes must be a non-negative safe integer');

@@ -12,6 +12,8 @@ function showAutofix() {
   button.disabled = false;
   button.textContent = '자동 수정';
   button.removeAttribute('aria-label');
+  // 누르기 전에 쓸 제공자를 미리 골라 둔다.
+  desktop?.autofix?.prewarm?.().catch(() => {});
 }
 
 function reopen() {

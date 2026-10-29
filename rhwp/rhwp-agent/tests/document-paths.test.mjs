@@ -254,3 +254,13 @@ test('Windows 8.3 short paths are accepted, while a junction still counts as a l
   assert.equal(await codeOf(validateDocumentPath(path.join(junction, 'quarterly report.hwp'))), 'PATH_REJECTED');
   assert.equal(await codeOf(validateDocumentFolder(junction, { home: root })), 'PATH_REJECTED');
 });
+
+test('an NTFS alternate data stream beside a real file is not accepted as a document', { skip: process.platform !== 'win32' && 'NTFS streams exist only on Windows' }, async (t) => {
+  const root = tempRoot(t);
+  const carrier = path.join(root, 'a.txt');
+  writeFileSync(carrier, 'visible');
+  const stream = `${carrier}:hidden.hwp`;
+  writeFileSync(stream, 'HWP Document File secret');
+  assert.equal(await codeOf(validateDocumentPath(stream)), 'PATH_REJECTED');
+  assert.equal(await codeOf(validateDocumentPath(path.join(root, 'missing.txt:hidden.hwp'))), 'PATH_REJECTED');
+});

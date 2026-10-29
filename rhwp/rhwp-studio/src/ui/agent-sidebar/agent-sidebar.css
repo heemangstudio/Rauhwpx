@@ -3937,6 +3937,8 @@ button.ag-skill-copy {
 }
 
 .ag-tool-items[hidden],
+.ag-tool-question[hidden],
+.ag-tool-answer[hidden],
 .ag-tool-detail[hidden],
 .ag-tool-notices[hidden] {
   display: none;
@@ -4014,6 +4016,37 @@ button.ag-skill-copy {
   font-size: var(--ag-fs-meta);
   line-height: var(--ag-lh-secondary);
   overflow-wrap: anywhere;
+}
+
+/* ask_chatgpt: 질문과 받은 답. */
+.ag-tool-question {
+  margin: 0;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-tool-answer {
+  max-height: 320px;
+  overflow: auto;
+  padding-left: 8px;
+  border-left: 2px solid var(--ag-border);
+  color: var(--ag-text);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-tool-link {
+  flex: none;
+  margin-left: 8px;
+  color: var(--ag-accent, var(--ag-text));
+  font-size: var(--ag-fs-meta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* 원본 인자/결과 — 디버깅용이라 접어 둔다. */
@@ -7968,6 +8001,24 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   flex: 0 2 auto;
   max-width: 45%;
   color: var(--ag-text-secondary);
+}
+
+/* 집중 모드 머리의 문서 이름은 열린 문서 목록을 펴는 단추다. */
+.ag-workspace-document-name.ag-document-switch {
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border-radius: var(--ag-r-chip);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out), color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-workspace-document-name.ag-document-switch:is(:hover, [aria-expanded='true']) {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-workspace-document-name.ag-document-switch:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 1px;
 }
 
 .ag-workspace-title {

@@ -812,8 +812,17 @@ async function fallbackNameForCurrentSave(
   return downloadName;
 }
 
+export interface ConfirmSaveOptions {
+  /**
+   * 사용자가 저장 안 함을 골랐을 때 부른다. 문서를 바꿔 열지 않고 닫기만 하는 경로(창 닫기·앱 종료)는
+   * 이것으로 버린 문서의 복구본을 지운다. 취소·저장 실패·이미 깨끗한 문서에서는 부르지 않는다.
+   */
+  onDiscard?: () => void;
+}
+
 export async function confirmSaveBeforeReplacingDocument(
   services: CommandServices,
+  options: ConfirmSaveOptions = {},
 ): Promise<boolean> {
   // 저장하는 동안 들어온 편집이 있으면 문서가 dirty 로 남는다. 그 편집을 버리지 않도록 다시 묻는다.
   for (;;) {
@@ -831,6 +840,7 @@ export async function confirmSaveBeforeReplacingDocument(
       await services.discardUnsavedWork?.().catch((error) => {
         console.warn('[file] 버린 편집을 작업 공간에서 놓지 못했습니다:', error);
       });
+      options.onDiscard?.();
       return true;
     }
 

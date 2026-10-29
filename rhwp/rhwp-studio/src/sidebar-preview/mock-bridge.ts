@@ -183,6 +183,24 @@ function toolScenarioCalls(): ToolScenarioCall[] {
       },
     },
     {
+      id: 'chatgpt',
+      tool: 'mcp__rhwp__ask_chatgpt',
+      args: { question: '보고서를 쓸 때 내가 선호하는 말투와 문장 길이를 알려 줘.' },
+      result: {
+        chatUrl: 'https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-hamaeditor/c/6adc5c72-88e4-83e8-9af1-76f614c6b91b',
+        answer: '평소 **간결하고 전문적인 말투**를 선호하십니다.\n\n- 문장은 짧게, 한 문장에 한 가지 내용\n- 불필요한 수식어는 빼고 숫자와 근거를 먼저',
+      },
+    },
+    {
+      id: 'claude',
+      tool: 'mcp__rhwp__ask_claude',
+      args: { question: '지난번에 정한 보고서 표지 형식을 알려 줘.' },
+      result: {
+        chatUrl: 'https://claude.ai/chat/0b6f7c1e-2a4d-4e8f-9c3b-5d7a1e2f4c6b',
+        answer: '지난달에 **기관명 · 제목 · 날짜** 세 줄 표지로 정하셨습니다. 로고는 왼쪽 위에 둡니다.',
+      },
+    },
+    {
       id: 'table',
       tool: 'mcp__rhwp__set_table_props',
       args: { expectedRevision: 13, sectionIdx: 0, paraIdx: 21, controlIdx: 0, tableProps: { repeatHeader: true, textWrap: 'topAndBottom' } },
@@ -899,6 +917,10 @@ export function createMockBridge(
       if (!pending || pending.kind !== 'secret-save') return { ok: false, code: 'REQUEST_INVALIDATED' };
       if (connection !== 'connected') return { ok: false, code: 'DISCONNECTED' };
       if (failRequestAction()) return { ok: false, code: 'SECRET_SAVE_FAILED', message: '저장하지 못했습니다.' };
+      // Windows 자격 증명 관리자처럼 "항상" 저장은 2560 바이트까지만 받는다.
+      if (args.scope === 'always' && new TextEncoder().encode(args.value).length > 2560) {
+        return { ok: false, code: 'SECRET_TOO_LARGE_FOR_VAULT', message: 'This secret is too long for the secure vault on this computer.' };
+      }
       // 허브처럼 값은 금고로만 간다. 미리보기는 길이만 남긴다.
       secretSubmissions.push({ requestId: args.requestId, label: args.label, scope: args.scope, valueLength: args.value.length });
       const secret: T.SecretMeta = { id: pending.secretId ?? crypto.randomUUID(), label: args.label, kind: pending.secretKind ?? 'other',
@@ -2100,6 +2122,8 @@ export function createMockBridge(
       listeners.clear();
       pendingListeners.clear();
       leaseListeners.clear();
+      documentMemory.dispose();
+      taste.dispose();
     },
   };
   /**

@@ -109,7 +109,14 @@ export interface ThreadToolOutcome {
   /** 줄인 결과 그림 (data URL) */
   image?: string;
   label?: string;
+  /** ask_chatgpt·ask_claude 의 답 */
+  answer?: string;
+  /** ask_chatgpt·ask_claude 의 웹 채팅 */
+  link?: { href: string; label: string };
 }
+
+/** 저장하는 도구 답 상한(ask_chatgpt·ask_claude 답 상한과 같다). */
+export const THREAD_TOOL_ANSWER_MAX_CHARS = 20_100;
 
 /** 저장하는 결과 그림 상한 — 대화 기록이 그림으로 불어나지 않게 한다. */
 export const THREAD_TOOL_IMAGE_MAX_CHARS = 200_000;
@@ -614,8 +621,18 @@ function parseToolOutcomeField(value: unknown): { outcome?: ThreadToolOutcome } 
       ...(items ? { items } : {}),
       ...(image ? { image } : {}),
       ...(typeof raw.label === 'string' ? { label: raw.label } : {}),
+      ...(typeof raw.answer === 'string' ? { answer: raw.answer.slice(0, THREAD_TOOL_ANSWER_MAX_CHARS) } : {}),
+      ...(assistantChatLink(raw.link) ? { link: assistantChatLink(raw.link)! } : {}),
     },
   };
+}
+
+/** 저장된 링크는 ChatGPT·Claude.ai 채팅 주소만 받는다. */
+function assistantChatLink(value: unknown): { href: string; label: string } | null {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  if (!raw || typeof raw.href !== 'string' || typeof raw.label !== 'string' || raw.label.length > 40) return null;
+  return /^https:\/\/chatgpt\.com\/g\/g-p-[0-9a-f]{32}[a-z0-9-]*\/c\/[0-9a-f-]{36}$/.test(raw.href)
+    || /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}$/.test(raw.href) ? { href: raw.href, label: raw.label } : null;
 }
 
 function parseThreadTask(value: unknown): ThreadTaskRecord | null {

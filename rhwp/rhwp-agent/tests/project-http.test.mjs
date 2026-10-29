@@ -159,3 +159,28 @@ test('settings validate strictly and join moves only the session document', asyn
   assert.equal(deleted.status, 200);
   assert.equal(projectStore.hasProject(otherProjectId), false);
 });
+
+test('an upload whose project card cannot be saved leaves no orphan file and keeps a duplicate in use', async (t) => {
+  const { projectStore, referenceStore, boundProjectId, call } = await fixture(t);
+  const upload = (name, text) => call(`/projects/${boundProjectId}/files`, {
+    method: 'POST', body: Buffer.from(text), headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent(name) },
+  });
+  const kept = await upload('kept.txt', '이미 있는 자료');
+  assert.equal(kept.status, 201);
+  const keptItem = (await kept.json()).item;
+
+  const addFileItem = projectStore.addFileItem.bind(projectStore);
+  projectStore.addFileItem = async () => {
+    throw Object.assign(new Error('프로젝트 파일을 다른 프로그램이 쓰고 있어 저장하지 못했어요.'), { code: 'PROJECT_FILE_LOCKED' });
+  };
+  const failed = await upload('new.txt', '새 자료 본문');
+  assert.equal(failed.status, 503);
+  assert.equal((await failed.json()).error.code, 'PROJECT_FILE_LOCKED');
+  const duplicate = await upload('again.txt', '이미 있는 자료');
+  assert.equal(duplicate.status, 503);
+  projectStore.addFileItem = addFileItem;
+
+  const files = referenceStore.list({ scope: 'project', scopeId: boundProjectId });
+  assert.deepEqual(files.map((file) => file.id), [keptItem.fileId]);
+  assert.equal((await call(`/projects/${boundProjectId}/files/${keptItem.id}/blob`)).status, 200);
+});

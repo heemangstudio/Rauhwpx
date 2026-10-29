@@ -8,6 +8,8 @@ import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/a
  * 칸 순서(FRAMES)·칸 크기·막대 열(STICK_X)을 바꾸면 여기도 같이 바꾼다. 팻말은 한글과 단추를
  * 담아야 해서 HTML 이고, 그림과 같은 3px 칸으로 테두리를 그린다.
  *
+ * 업데이트 팻말이 없으면 새 버전의 첫 실행에 릴리스 노트(release-notes.ts)를 잠깐 든다.
+ *
  * 팻말이 바뀌면 하마가 가장자리 밑으로 내려갔다가 새 팻말을 들고 올라온다. 하마를 누르면 귀만
  * 남기고 숨고, 귀를 누르면 다시 올라온다(이 페이지가 떠 있는 동안 기억한다). 움직임은 3px 칸
  * 단위로만 끊고, 동작 줄이기 설정이면 움직이지 않는다.
@@ -15,6 +17,7 @@ import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/a
 import './update-hippo.css';
 import type { DesktopUpdateState, DesktopUpdatesApi, UpdateAllState } from '../../desktop-integration.ts';
 import { updateSign, type UpdateSign, type UpdateSignAction, type UpdateSignIcon } from './update-sign.ts';
+import { markReleaseNotesSeen, pendingReleaseNotes, RELEASE_NOTES, releaseNotesSign } from './release-notes.ts';
 
 const FRAMES = ['idle', 'blink', 'ear', 'dip', 'peek'] as const;
 type Frame = (typeof FRAMES)[number];
@@ -99,7 +102,11 @@ export interface UpdateHippo {
   dispose(): void;
 }
 
-export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => void): UpdateHippo & {
+export function createUpdateSignHippo(
+  onAction: (id: UpdateSignAction['id']) => void,
+  /** 잠깐 보인 팻말(transientMs)이 내려갈 때. */
+  onDismiss: (key: string) => void = () => {},
+): UpdateHippo & {
   setSign(sign: UpdateSign | null): void;
 } {
   const element = document.createElement('div');
@@ -149,6 +156,7 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
   let idleTimer = 0;
   let blinkTimer = 0;
   let transientTimer = 0;
+  let transientArmed = false;
 
   function show(frame: Frame): void {
     sprite.style.backgroundPositionX = `${-FRAMES.indexOf(frame) * CELL_WIDTH * SCALE}px`;
@@ -234,7 +242,14 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
     board.dataset.tone = sign.tone;
     board.dataset.sign = sign.key.split(':')[0];
     board.classList.toggle('is-stacked', sign.actions.length > 1
-      || sign.progress !== null && sign.lines.length > 0);
+      || sign.progress !== null && sign.lines.length > 0 || Boolean(sign.heading));
+    if (sign.heading) {
+      const heading = document.createElement('strong');
+      heading.className = 'uh-heading';
+      heading.setAttribute('aria-hidden', 'true');
+      heading.textContent = sign.heading;
+      board.append(heading);
+    }
     if (sign.lines.length) {
       const text = document.createElement('p');
       text.className = 'uh-text';
@@ -245,6 +260,13 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
         text.append(span);
       }
       board.append(text);
+    }
+    if (sign.footnote) {
+      const footnote = document.createElement('span');
+      footnote.className = 'uh-footnote';
+      footnote.setAttribute('aria-hidden', 'true');
+      footnote.textContent = sign.footnote;
+      board.append(footnote);
     }
     if (sign.progress !== null) {
       const progress = document.createElement('div');
@@ -314,12 +336,30 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
     fillBoard(sign);
     speak(sign);
     window.clearTimeout(transientTimer);
-    if (sign.transientMs) {
-      transientTimer = window.setTimeout(() => {
-        dismissedKey = sign.key;
-        sync();
-      }, sign.transientMs);
-    }
+    transientArmed = false;
+    armTransient();
+  }
+
+  /**
+   * 잠깐 보이는 팻말의 시간은 홈이 보일 때부터 잰다. 문서를 연 채 켜져 홈이 가려져 있으면
+   * 홈이 보이게 될 때(rig 크기가 생길 때) 다시 부른다. 팻말에 마우스가 있으면 기다린다.
+   */
+  function armTransient(): void {
+    const sign = shown;
+    if (!sign?.transientMs || transientArmed || !rig.offsetWidth) return;
+    transientArmed = true;
+    const fire = (): void => {
+      if (disposed || shown !== sign) return;
+      if (board.matches(':hover')) {
+        transientTimer = window.setTimeout(fire, 1000);
+        return;
+      }
+      transientArmed = false;
+      dismissedKey = sign.key;
+      onDismiss(sign.key);
+      sync();
+    };
+    transientTimer = window.setTimeout(fire, sign.transientMs);
   }
 
   function setDucked(next: boolean): void {
@@ -354,6 +394,7 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
     if (!next && shown) {
       shown = null;
       window.clearTimeout(transientTimer);
+      transientArmed = false;
       sink(() => {
         element.hidden = true;
         sync();
@@ -424,8 +465,12 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
   show(ducked ? 'peek' : 'idle');
   setDucked(ducked);
   // 홈이 가려진 채 팻말을 들면 너비가 0 이라, 보이게 되어 너비가 생길 때 다시 맞춘다.
-  const boardSize = new ResizeObserver(() => alignBoard());
+  const boardSize = new ResizeObserver(() => {
+    alignBoard();
+    armTransient();
+  });
   boardSize.observe(board);
+  boardSize.observe(rig);
 
   return {
     element,
@@ -442,14 +487,23 @@ export function createUpdateSignHippo(onAction: (id: UpdateSignAction['id']) => 
   };
 }
 
-export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
+export interface ReleaseNotesSource {
+  version: string;
+  items: readonly string[];
+  /** 팻말이 홈에 보였다가 내려갔을 때. */
+  onSeen(): void;
+}
+
+export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSource | null = null): UpdateHippo {
   let state: DesktopUpdateState | null = null;
+  let notesSign = notes ? releaseNotesSign(notes.version, notes.items) : null;
   let confirming = false;
   let disposed = false;
   let allState: UpdateAllState | null = null;
   const unified = Boolean(api.getAllState && api.onAllState && api.updateAll);
+  // 업데이트 팻말이 먼저고, 릴리스 노트는 그 팻말이 없을 때만 든다.
   const sync = () => hippo.setSign(isInitialSetupActive() ? null
-    : unified ? updateAllSign(allState) : updateSign(state, { confirming }));
+    : (unified ? updateAllSign(allState) : updateSign(state, { confirming })) ?? notesSign);
   const hippo = createUpdateSignHippo((id) => {
     switch (id) {
       case 'update-all': void api.updateAll?.().catch(() => {}); break;
@@ -463,6 +517,11 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
         void api.restart().catch(() => ({ ok: false })).finally(() => { if (!disposed) sync(); });
         break;
     }
+  }, (key) => {
+    if (key !== notesSign?.key) return;
+    notesSign = null;
+    notes?.onSeen();
+    sync();
   });
   const unsubscribeInitial = onInitialSetupInactive(sync);
   const unsubscribeAll = unified ? api.onAllState!((next) => { allState = next; sync(); }) : () => {};
@@ -488,23 +547,44 @@ export function createUpdateHippo(api: DesktopUpdatesApi): UpdateHippo {
 interface UpdatesHost {
   rhwpDesktop?: { updates?: DesktopUpdatesApi };
   location?: { search: string };
+  localStorage?: Storage;
+}
+
+function releaseNotesFor(version: string, host: UpdatesHost): ReleaseNotesSource | null {
+  let storage: Storage | undefined;
+  try {
+    storage = host.localStorage;
+  } catch {
+    return null;
+  }
+  if (!storage) return null;
+  const store = storage;
+  const items = pendingReleaseNotes(version, store);
+  return items ? { version, items, onSeen: () => markReleaseNotesSeen(version, store) } : null;
 }
 
 /**
  * 데스크톱 앱이면 하마를 slot 에 붙인다. Vite 개발 서버에서는 `?update-hippo=<상황>` 으로
  * 가짜 업데이트를 띄울 수 있다(dev-updates-mock.ts, 배포 번들에는 들어가지 않는다).
+ * `?update-hippo=release-notes` 는 본 기록과 상관없이 가장 최근 릴리스 노트를 든다.
  */
-export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window): void {
+export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window, version = __APP_VERSION__): void {
   const api = host.rhwpDesktop?.updates;
   if (api) {
-    slot.append(createUpdateHippo(api).element);
+    slot.append(createUpdateHippo(api, releaseNotesFor(version, host)).element);
     return;
   }
   if (import.meta.env.DEV) {
     const scenario = new URLSearchParams(host.location?.search ?? '').get('update-hippo');
     if (!scenario) return;
     void import('./dev-updates-mock.ts').then(({ createDevUpdatesApi }) => {
-      slot.append(createUpdateHippo(createDevUpdatesApi(scenario)).element);
+      const latest = Object.keys(RELEASE_NOTES).at(-1);
+      const notes = scenario === 'release-notes' && latest ? {
+        version: latest,
+        items: RELEASE_NOTES[latest]!,
+        onSeen: () => console.info('[update-hippo mock] 릴리스 노트를 봤어요'),
+      } : null;
+      slot.append(createUpdateHippo(createDevUpdatesApi(scenario), notes).element);
     });
   }
 }

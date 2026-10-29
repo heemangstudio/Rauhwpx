@@ -507,6 +507,14 @@ html:is(.desktop-mac, .desktop-windows) .dh-new-chat {
   box-shadow: 0 0 0 2px var(--dh-ink);
 }
 
+/* 파일로 끌려고 고른 카드(Cmd/Ctrl·Shift 누르기). 펼친 카드의 먹선과 겹쳐도 색으로 구별된다. */
+.dh-card.is-selected .dh-paper {
+  box-shadow: 0 0 0 3px var(--theme-accent, #379cff);
+}
+.dh-grid.is-list .dh-card.is-selected { background: var(--theme-accent-subtle, rgba(55, 156, 255, 0.12)); }
+.dh-grid.is-drag-preparing,
+.dh-grid.is-drag-preparing .dh-card { cursor: progress; }
+
 /* 작업 트리가 있는 문서는 오른쪽 아래로 두 장이 겹쳐 보인다. 윗선은 다른 카드와 같다. */
 .dh-paper-stack,
 .dh-card:hover .dh-paper-stack {

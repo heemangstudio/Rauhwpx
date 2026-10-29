@@ -1461,13 +1461,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.updateCellSelection();
       return;
     }
-    // M: 셀 합치기, S: 셀 나누기
-    if (e.key === 'm' || e.key === 'M') {
+    // M: 셀 합치기, S: 셀 나누기 — 수정자 없는 키만. Ctrl+S(저장)·Ctrl+Shift+M(양쪽 정렬)·
+    // Ctrl+M,N 같은 조합은 아래 일반 단축키 처리로 넘긴다.
+    const bareKey = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (bareKey && (e.key === 'm' || e.key === 'M')) {
       e.preventDefault();
       this.dispatcher?.dispatch('table:cell-merge');
       return;
     }
-    if (e.key === 's' || e.key === 'S') {
+    if (bareKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       this.dispatcher?.dispatch('table:cell-split');
       return;

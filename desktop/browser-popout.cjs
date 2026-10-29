@@ -20,6 +20,7 @@ for (const button of document.querySelectorAll('[data-zoom]')) {
 }
 document.getElementById('close').addEventListener('click', () => run({ command: 'close' }));
 window.ownedBrowserPresentation.onState((state) => {
+  document.querySelector('.browser-chrome').hidden = state.signInPresentation === true;
   if (document.activeElement !== address) address.value = state.url;
   const human = state.controller === 'human';
   zoomFactor = typeof state.zoomFactor === 'number' ? state.zoomFactor : 1;

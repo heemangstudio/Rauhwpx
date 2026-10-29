@@ -48,6 +48,7 @@ function errorStatus(error) {
     case 'PROJECT_INGEST_INVALID':
     case 'PROJECT_INGEST_EMPTY': return 400;
     case 'PROJECT_INGEST_UNAVAILABLE':
+    case 'PROJECT_FILE_LOCKED':
     case 'PROJECT_LIBRARIAN_UNAVAILABLE': return 503;
     case 'PROJECT_STORE_CORRUPT': return 500;
     default:
@@ -145,6 +146,17 @@ export function createProjectHttpHandler({
     const item = await projectStore.getItem(projectId, itemId);
     if (item.kind !== 'file') throw httpError('PROJECT_ITEM_NOT_FOUND', `${itemId} is not a file`);
     return item;
+  };
+  /** 항목을 붙이지 못한 업로드 기록을 지운다. 같은 내용의 기존 항목이 쓰는 기록은 남긴다. */
+  const discardUnlinkedUpload = async (projectId, fileId) => {
+    try {
+      const snapshot = await projectStore.get(projectId, { trash: true });
+      if (snapshot.items.some((entry) => entry.fileId === fileId)) return;
+      await referenceStore.remove({ fileId, scope: 'project', scopeId: projectId });
+    } catch (error) {
+      // 남은 기록은 다음 부팅의 repairReferences 가 항목으로 붙인다.
+      projectStore.logger?.(`project upload cleanup kept ${fileId}: ${error?.message ?? error}`);
+    }
   };
   const settingsPayload = () => ({
     settings: settingsStore.get(),
@@ -319,14 +331,20 @@ export function createProjectHttpHandler({
           scope: 'project',
           scopeId: projectId,
         });
-        const item = await projectStore.addFileItem(projectId, {
-          fileId: file.id,
-          scope: 'project',
-          source: { kind: 'upload' },
-          ...(column ? { column } : {}),
-          addedBy: { kind: 'user' },
-          ...(labels?.auto ? { origin: labels.auto } : {}),
-        });
+        let item;
+        try {
+          item = await projectStore.addFileItem(projectId, {
+            fileId: file.id,
+            scope: 'project',
+            source: { kind: 'upload' },
+            ...(column ? { column } : {}),
+            addedBy: { kind: 'user' },
+            ...(labels?.auto ? { origin: labels.auto } : {}),
+          });
+        } catch (error) {
+          await discardUnlinkedUpload(projectId, file.id);
+          throw error;
+        }
         return reply(201, { item });
       }
 

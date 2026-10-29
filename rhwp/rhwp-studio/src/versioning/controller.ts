@@ -546,20 +546,22 @@ export class DocumentVersionController implements VersionManagerController {
     this.#snapshotCache.clear();
     const id = this.#getDocumentId();
     this.#autoEnableBlockedFor = options.autoEnable === false ? id : null;
+    // 첫 await 전에 불러온 내용과 편집 세대를 잡는다. 기록을 준비하는 동안 들어온 입력은
+    // 파일에 없으므로 저장 기준이나 작업 공간의 저장 지문에 섞이면 안 된다.
+    const loadedRevision = this.#documentState.captureRevision();
+    const loaded = id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()
+      ? this.#snapshotCache.content(this.#wasm, id, this.#editorRevision) : null;
+    this.#savedBaseline = id && loaded ? { documentId: id, content: loaded } : null;
     const existingWorktree = options.fromDisk && id
       ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
-    if (id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()) {
-      this.#savedBaseline = { documentId: id, content: this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision) };
-    } else {
-      this.#savedBaseline = null;
-    }
     await this.refresh();
-    if (options.fromDisk && this.#worktree?.primary && this.#canRecordSaved()
+    if (options.fromDisk && loaded && this.#worktree?.primary && this.#canRecordSaved()
       && (!existingWorktree || String(this.#worktree.blobId) === String(this.#worktree.savedFingerprint))) {
       await this.#enqueue(async () => {
         if (!this.#worktree?.primary || this.#getDocumentId() !== id || !this.#canRecordSaved()) return;
         const workspace = this.#captureWorkspaceToken();
-        const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+        // 지금 문서를 다시 내보내면 그사이 들어온 편집이 저장된 것으로 기록되므로 불러온 내용을 쓴다.
+        const content = loaded;
         const current = await this.#store.getWorktree(this.#worktree.id);
         this.#assertWorkspaceToken(workspace);
         if (!current || current.revision !== this.#worktree.revision
@@ -574,9 +576,12 @@ export class DocumentVersionController implements VersionManagerController {
     }
     if (this.#worktree && this.#wasm.hasLoadedDocument()) {
       // 위에서 같은 revision 으로 내보낸 지문을 쓴다. 그사이 편집이 있었으면 revision 이 올라 다시 내보낸다.
+      // 불러온 뒤 편집 세대가 올랐으면 지문이 같아도 clean 으로 돌리지 않는다.
       this.#setDirtyForFingerprint(
         this.#snapshotCache.fingerprint(this.#wasm, this.#getDocumentId(), this.#editorRevision),
         'worktree-loaded',
+        undefined,
+        loadedRevision,
       );
     }
   }
@@ -3634,10 +3639,14 @@ export class DocumentVersionController implements VersionManagerController {
     fingerprint: string,
     reason: string,
     semanticHeadFingerprint?: string,
+    /** 주면 그 편집 세대 뒤 편집이 없을 때만 clean 으로 바꾼다. */
+    cleanRevision?: number,
   ): void {
     this.#recordSemanticDirty(fingerprint, semanticHeadFingerprint);
-    if (fingerprint === (this.#worktree?.savedFingerprint ?? this.#repository?.lastSavedFingerprint)) this.#documentState.markClean(reason);
-    else this.#documentState.markDirty(reason);
+    if (fingerprint === (this.#worktree?.savedFingerprint ?? this.#repository?.lastSavedFingerprint)) {
+      if (cleanRevision === undefined) this.#documentState.markClean(reason);
+      else this.#documentState.markCleanIfUnchanged(cleanRevision, reason);
+    } else this.#documentState.markDirty(reason);
   }
 
   #recordSemanticDirty(fingerprint: string, headFingerprint?: string): void {

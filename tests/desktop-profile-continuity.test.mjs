@@ -374,3 +374,38 @@ test('only failures that made no progress use up the retry budget', async (t) =>
     }
   }), false, 'a store that fails the same way every time is eventually left alone');
 });
+
+test('one locked stale launch folder does not stop the sweep and is still recognized next time', async (t) => {
+  const root = await tempDir(t, 'stale-sweep');
+  const profileId = '0123456789abcdef0123';
+  const launch = async (launchId) => {
+    const directory = path.join(root, launchId);
+    await write(path.join(directory, '.rauhwpx-owner.json'), JSON.stringify({
+      version: 1, launchId, profileId, pid: 424242, createdAtMs: Date.now() - 3 * 24 * 60 * 60 * 1000,
+    }));
+    await write(path.join(directory, 'data.bin'), 'launch work');
+    return directory;
+  };
+  const locked = await launch('11111111-1111-4111-8111-111111111111');
+  const others = [
+    await launch('22222222-2222-4222-8222-222222222222'),
+    await launch('33333333-3333-4333-8333-333333333333'),
+  ];
+  let held = true;
+  // 백신이 잡은 파일처럼 이 파일만 지워지지 않는다.
+  const rmImpl = async (target, options) => {
+    if (held && target === path.join(locked, 'data.bin')) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return fs.rm(target, options);
+  };
+  const sweep = () => removeStaleLaunchDirectories(root, 'none', {
+    expectedProfileId: profileId, isAlive: () => false, rmImpl, platform: 'linux',
+  });
+
+  await assert.rejects(sweep(), (error) => error.code === 'EBUSY' && error.removed.length === 2);
+  for (const directory of others) await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  await fs.stat(path.join(locked, '.rauhwpx-owner.json'));
+
+  held = false;
+  assert.deepEqual(await sweep(), ['11111111-1111-4111-8111-111111111111']);
+  await assert.rejects(fs.stat(locked), { code: 'ENOENT' });
+});
