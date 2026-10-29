@@ -7,8 +7,6 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DocumentMemoryStore } from '../document-memory-store.mjs';
-import { createPiManager } from '../pi-manager.mjs';
-import { createMemorySecretStore } from '../secret-store.mjs';
 import { createTasteSignalBuffer } from '../taste-signals.mjs';
 import {
   RAU_TASTE_NAME,
@@ -19,7 +17,6 @@ import {
   newTasteTurn,
   noteTasteTurnEvent,
   tasteCandidates,
-  tasteOwnOpenRouter,
 } from '../taste-learner.mjs';
 
 const at = '2026-10-22T00:00:00.000Z';
@@ -124,37 +121,36 @@ test('a successful turn applies learned notes and emits one marker; nothing dura
   assert.equal((await h.store.read(frame.key)).revision, 1);
 });
 
-test('unusable output falls through to the next ready route; Codex waits for quota', async (t) => {
+test('unusable output falls through to the next ready route', async (t) => {
   const h = harness(t, {
     outputs: {
       claude: '네, 한다체를 기억하겠습니다.',
-      codex: json([{ op: 'add', kind: 'term', text: "'고객' 대신 '이용자'로 통일" }]),
-      pi: json([{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" }]),
+      codex: json([{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" }]),
     },
-    routeExtra: { codexQuota: { status: 'ok', session: { percent: 99 } } },
   });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '고객은 늘 이용자로 써 줘', learn: true });
   await until(() => h.frames.length === 1, 'marker');
-  assert.deepEqual(h.calls.map((call) => call.provider), ['claude', 'pi']);
-  assert.equal(h.calls[1].model, 'deepseek/deepseek-v4.1-flash');
-  assert.equal(h.calls[1].effort, 'max');
+  assert.deepEqual(h.calls.map((call) => [call.provider, call.model]), [['claude', 'claude-haiku-5-5'], ['codex', 'gpt-6-luna']]);
   assert.equal((await h.store.read(h.frames[0].key)).entries[0].subject, '용어.고객');
 });
 
-test('Pi gift mode resolves a gift model or skips Pi', async (t) => {
-  const resolved = tasteCandidates({ readiness: ready, giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } });
-  assert.equal(typeof resolved.find((candidate) => candidate.provider === 'pi').resolveModel, 'function');
-  const skipped = tasteCandidates({ readiness: ready, giftMode: true });
-  assert.equal(skipped.find((candidate) => candidate.provider === 'pi').ready, false);
+test('Rau-0.1 never runs on BYOK (Pi), even when it is the only ready route or an old setting picked it', async (t) => {
+  const dir = tempDir(t);
+  writeFileSync(path.join(dir, 'taste-settings.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }));
+  const settings = (await new TasteSettingsStore({ dir }).init()).get();
+  assert.deepEqual(settings, { enabled: true, provider: 'auto', model: null, effort: null });
 
   const h = harness(t, {
-    readiness: { pi: { ready: true } },
+    readiness: { claude: { ready: false }, codex: { ready: false }, pi: { ready: true } },
+    settings,
     routeExtra: { giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } },
-    outputs: { pi: '{"ops":[]}' },
+    outputs: { pi: json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '한다체' }]) },
   });
-  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '안녕', learn: true });
-  await until(() => h.calls.length === 1, 'pi run');
-  assert.equal(h.calls[0].model, 'gift/cheap');
+  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '늘 한다체로 써 줘', learn: true });
+  await settle();
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.frames, []);
+  assert.ok(tasteCandidates({ readiness: ready }, settings).every((candidate) => candidate.provider !== 'pi'));
 });
 
 test('with the toggle off the learner never runs and shows nothing', async (t) => {
@@ -331,13 +327,13 @@ test('learner provider settings validate, reset with the provider and read old f
   const settings = await new TasteSettingsStore({ dir }).init();
   assert.deepEqual(settings.get(), { enabled: false, provider: 'auto', model: null, effort: null });
 
-  await settings.set({ provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
-  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: false, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
+  await settings.set({ provider: 'claude', model: 'claude-sonnet-5-5', effort: 'high' });
+  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: false, provider: 'claude', model: 'claude-sonnet-5-5', effort: 'high' });
   // 공급자를 바꾸면 이전 공급자의 모델·추론을 버린다. 자동은 늘 비운다.
   assert.deepEqual(await settings.set({ provider: 'codex' }), { enabled: false, provider: 'codex', model: null, effort: null });
   assert.deepEqual(await settings.set({ provider: 'auto', model: 'gpt-6-sol', effort: 'low' }), { enabled: false, provider: 'auto', model: null, effort: null });
 
-  for (const patch of [{ provider: 'openai' }, { model: '' }, { model: ' padded ' }, { model: 'x'.repeat(201) }, { effort: 'ultra' }, {}, null]) {
+  for (const patch of [{ provider: 'openai' }, { provider: 'pi' }, { model: '' }, { model: ' padded ' }, { model: 'x'.repeat(201) }, { effort: 'ultra' }, {}, null]) {
     await assert.rejects(settings.set(patch), { code: 'TASTE_SETTINGS_INVALID' }, JSON.stringify(patch));
   }
   assert.deepEqual(settings.get(), { enabled: false, provider: 'auto', model: null, effort: null }, 'a rejected change keeps the old value');
@@ -349,7 +345,7 @@ test('learner provider settings validate, reset with the provider and read old f
 
 test('a chosen learner provider runs only that route with its own or the default model', () => {
   const quotaLow = { status: 'ok', session: { percent: 99 } };
-  assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'auto' }).map((c) => c.provider), ['claude', 'codex', 'pi']);
+  assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'auto' }).map((c) => c.provider), ['claude', 'codex']);
   assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'claude', model: null, effort: null }),
     [{ provider: 'claude', model: 'claude-haiku-5-5', effort: 'medium', ready: true }]);
   assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'codex', model: 'gpt-6-sol', effort: 'high' }),
@@ -357,48 +353,6 @@ test('a chosen learner provider runs only that route with its own or the default
   // 고른 Codex 도 사용량 문턱을 지킨다 — 다른 공급자로 넘어가지 않는다.
   assert.deepEqual(tasteCandidates({ readiness: ready, codexQuota: quotaLow }, { provider: 'codex' }).map((c) => [c.provider, c.ready]), [['codex', false]]);
   assert.equal(tasteCandidates({ readiness: { claude: { ready: false } } }, { provider: 'claude' })[0].ready, false);
-
-  // 고른 OpenRouter 는 내 키로만 돈다. 선물 모드여도 선물 모델로 바꾸지 않는다.
-  const gift = { readiness: ready, giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } };
-  const noKey = tasteCandidates({ ...gift, ownOpenRouter: { apiKey: () => null } }, { provider: 'pi', model: 'qwen/qwen3-max' });
-  assert.deepEqual(noKey, [{ provider: 'pi', model: 'qwen/qwen3-max', effort: 'max', ready: false, ownKey: true }]);
-  const ownKey = tasteCandidates({ ...gift, ownOpenRouter: { apiKey: () => 'sk-or-own' } }, { provider: 'pi' });
-  assert.deepEqual(ownKey, [{ provider: 'pi', model: 'deepseek/deepseek-v4.1-flash', effort: 'max', ready: true, ownKey: true }]);
-});
-
-test('a chosen OpenRouter model is called with the user\'s own key, and skipped without one', async (t) => {
-  const dir = tempDir(t);
-  const store = new DocumentMemoryStore({ dir });
-  const runs = [];
-  const logs = [];
-  let ownKey = null;
-  const learner = createTasteLearner({
-    store,
-    signals: createTasteSignalBuffer(),
-    settings: () => ({ enabled: true, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }),
-    routes: () => ({
-      readiness: ready,
-      giftMode: true,
-      ownOpenRouter: { apiKey: () => ownKey },
-      deps: { piManager: { apiKey: () => 'gift-lease' } },
-    }),
-    resolveKey: ({ documentId }) => store.resolveKey({ documentId }),
-    runOneShot: async ({ candidates, deps }) => {
-      runs.push({ candidates, key: deps.piManager.apiKey() });
-      return { provider: 'pi', model: candidates[0].model, value: [], output: '{"ops":[]}' };
-    },
-    log: (line) => logs.push(line),
-  });
-  t.after(() => learner.close());
-  await learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '한다체로 써 줘', learn: true });
-  await until(() => logs.some((line) => line.includes('no pi learner route is ready')), 'skip without a key');
-  assert.equal(runs.length, 0);
-
-  ownKey = 'sk-or-own';
-  await learner.turnEnded({ threadId: 'th1', turnId: 't2', documentId: 'doc-1', userText: '한다체로 써 줘', learn: true });
-  await until(() => runs.length === 1, 'pi run');
-  assert.equal(runs[0].key, 'sk-or-own');
-  assert.deepEqual(runs[0].candidates.map((c) => [c.provider, c.model, c.effort]), [['pi', 'qwen/qwen3-max', 'high']]);
 });
 
 const styleNote = (text) => json([{ op: 'add', kind: 'style', subject: '문체.종결', text, userCandidate: true }]);
@@ -668,32 +622,4 @@ test('a one-off request never overwrites a confirmed note; general phrasing or r
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['여기는 한다체로 써 줘'], signals: [{ kind: 'accepted' }] }), []);
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['본문은 한다체로 써 줘'] }), swap);
   assert.deepEqual(guardTasteOps(swap, [{ ...once[0], origin: 'user' }], { userTexts: ['본문은 한다체로 써 줘'] }), []);
-});
-
-test('the chosen OpenRouter route uses the Pi agent\'s own auth, whether pasted or from the browser login', async (t) => {
-  const rootDir = tempDir(t);
-  const openRouter = {
-    async validateKey() { return { valid: true, label: 'rhwp', limit: null, usage: 0, isFreeTier: false }; },
-    async catalog() { return []; },
-    async credits() { return null; },
-    clearCache() {},
-  };
-  const manager = await createPiManager({
-    rootDir,
-    openRouter,
-    secretStore: createMemorySecretStore(),
-    // OpenRouter PKCE 키 교환만 흉내 낸다 — 네트워크는 쓰지 않는다.
-    fetchImpl: async () => ({ ok: true, json: async () => ({ key: 'sk-or-v1-from-oauth' }) }),
-  }).init();
-  const own = tasteOwnOpenRouter(manager);
-  const chosen = { provider: 'pi' };
-  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, false, 'no auth yet');
-
-  const started = manager.beginOAuth('http://127.0.0.1:5175/oauth/openrouter/callback');
-  await manager.completeOAuth('one-time-code', started.state);
-  assert.equal(own.apiKey(), 'sk-or-v1-from-oauth');
-  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, true);
-
-  await manager.setApiKey('sk-or-v1-pasted');
-  assert.equal(own.apiKey(), 'sk-or-v1-pasted');
 });

@@ -270,9 +270,9 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
   assert.equal(studio.buffered.some((frame) => frame.type === 'taste-learned'), false);
 
   // 7. 공급자·모델·추론을 고른다. 잘못된 값은 거절하고 설정을 그대로 둔다.
-  const chosen = await request({ type: 'taste-settings-set', provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }, 'taste-settings');
-  assert.deepEqual(chosen.settings, { enabled: false, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
-  const rejected = await request({ type: 'taste-settings-set', provider: 'openai' }, 'taste-settings');
+  const chosen = await request({ type: 'taste-settings-set', provider: 'codex', model: 'gpt-6-sol', effort: 'high' }, 'taste-settings');
+  assert.deepEqual(chosen.settings, { enabled: false, provider: 'codex', model: 'gpt-6-sol', effort: 'high' });
+  const rejected = await request({ type: 'taste-settings-set', provider: 'pi' }, 'taste-settings');
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error.code, 'TASTE_SETTINGS_INVALID');
   assert.deepEqual(rejected.settings, chosen.settings);

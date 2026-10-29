@@ -13,6 +13,7 @@
 //
 // 공급자를 고르지 않았고(자동) 데스크톱 라이선스가 있으면 호스팅 Rau(Pro, routeInfo.hosted)를 먼저 쓴다.
 // Pro 가 아니라는 답(rau_requires_pro)이면 rau-upgrade 프레임을 한 번 보내고 내 계정 경로로 넘어간다.
+// BYOK(Pi, 사용자의 OpenRouter 키·선물 리스)로는 돌지 않는다 — 내 계정 경로는 Claude·Codex 뿐이다.
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -36,7 +37,6 @@ export const RAU_TASTE_NAME = 'Rau-0.1';
 export const TASTE_ROUTES = Object.freeze([
   Object.freeze({ provider: 'claude', model: 'claude-haiku-5-5', effort: 'medium' }),
   Object.freeze({ provider: 'codex', model: 'gpt-6-luna', effort: 'medium' }),
-  Object.freeze({ provider: 'pi', model: 'deepseek/deepseek-v4.1-flash', effort: 'max' }),
 ]);
 export const TASTE_SIGNAL_DEBOUNCE_MS = 5_000;
 /** 수락만 모인 동안 기다리는 시간 — 새 신호마다 다시 재고, 첫 신호부터 TASTE_ACCEPT_CAP_MS 를 넘지 않는다. */
@@ -93,9 +93,9 @@ export function noteTasteTurnEvent(turn, evt) {
 
 // ── 설정 ────────────────────────────────────────────────────────────────────
 
-/** 학습기 공급자. auto 는 TASTE_ROUTES 의 차례대로, 그 밖은 그 공급자 하나만 쓴다. */
-export const TASTE_PROVIDERS = Object.freeze(['auto', 'claude', 'codex', 'pi']);
-/** 한 번짜리 호출이 받는 추론 강도 (one-shot-llm 의 CLI·OpenRouter 값). */
+/** 학습기 공급자. auto 는 TASTE_ROUTES 의 차례대로, 그 밖은 그 공급자 하나만 쓴다. 옛 'pi' 는 자동으로 읽힌다. */
+export const TASTE_PROVIDERS = Object.freeze(['auto', 'claude', 'codex']);
+/** 한 번짜리 호출이 받는 추론 강도 (one-shot-llm 의 CLI 값). */
 export const TASTE_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_TASTE_SETTINGS = Object.freeze({ enabled: true, provider: 'auto', model: null, effort: null });
 const MAX_MODEL_CHARS = 200;
@@ -207,51 +207,27 @@ export class TasteSettingsStore {
 // ── 경로·프롬프트·출력 ──────────────────────────────────────────────────────
 
 /**
- * 학습기 경로. Codex 는 남은 사용량이 넉넉할 때만 쓴다(고른 경우에도). 자동 경로에서 선물 크레딧(Pi gift)에는
- * DeepSeek 가 없어 선물 모델 중 가장 싼 것으로 바꾼다(resolveModel.pi).
- * 공급자를 고르면 그 경로 하나만 쓰고, 모델·추론이 없으면 TASTE_ROUTES 의 기본값이다. 고른 OpenRouter 경로는
- * 사용자의 OpenRouter 키(routeInfo.ownOpenRouter)로만 돈다 — 고른 모델을 선물 크레딧으로 쓰지 않는다.
- * 키가 없으면 준비되지 않은 경로라 학습을 건너뛴다.
+ * 학습기 경로. Codex 는 남은 사용량이 넉넉할 때만 쓴다(고른 경우에도).
+ * 공급자를 고르면 그 경로 하나만 쓰고, 모델·추론이 없으면 TASTE_ROUTES 의 기본값이다.
  */
 export function tasteCandidates(routeInfo = {}, settings = {}) {
   const readiness = routeInfo.readiness ?? {};
   const codexAllowed = codexQuotaAllowsTitle(routeInfo.codexQuota);
   const chosen = TASTE_ROUTES.find((route) => route.provider === settings.provider);
   if (chosen) {
-    const candidate = {
+    return [{
       provider: chosen.provider,
       model: settings.model ?? chosen.model,
       effort: settings.effort ?? chosen.effort,
       ready: readiness[chosen.provider]?.ready === true && (chosen.provider !== 'codex' || codexAllowed),
-    };
-    if (chosen.provider === 'pi') {
-      candidate.ready = typeof routeInfo.ownOpenRouter?.apiKey === 'function' && Boolean(routeInfo.ownOpenRouter.apiKey());
-      candidate.ownKey = true;
-    }
-    return [candidate];
+    }];
   }
-  return TASTE_ROUTES.map(({ provider, model, effort }) => {
-    const candidate = {
-      provider,
-      model,
-      effort,
-      ready: readiness[provider]?.ready === true && (provider !== 'codex' || codexAllowed),
-    };
-    if (provider === 'pi' && routeInfo.giftMode === true) {
-      const resolve = routeInfo.resolveModel?.pi;
-      if (resolve) candidate.resolveModel = resolve;
-      else candidate.ready = false;
-    }
-    return candidate;
-  });
-}
-
-/**
- * 고른 OpenRouter 경로의 자격 — Pi 에이전트가 쓰는 바로 그 내 OpenRouter 키다. 붙여 넣은 키와 브라우저
- * 로그인(PKCE, completeOAuth → setApiKey)이 같은 자리에 저장되므로 둘 다 여기로 온다. 선물 리스는 넘기지 않는다.
- */
-export function tasteOwnOpenRouter(piManager) {
-  return { apiKey: () => piManager.ownApiKey() };
+  return TASTE_ROUTES.map(({ provider, model, effort }) => ({
+    provider,
+    model,
+    effort,
+    ready: readiness[provider]?.ready === true && (provider !== 'codex' || codexAllowed),
+  }));
 }
 
 /** JSON text that cannot close the surrounding data tag. */
@@ -637,13 +613,9 @@ export function createTasteLearner({
         overallTimeoutMs,
         deps: {
           ...(routeInfo.deps ?? {}),
-          // 고른 OpenRouter 경로는 선물 리스 대신 사용자의 키로 부른다.
-          ...(candidates.some((candidate) => candidate.ownKey) ? { piManager: routeInfo.ownOpenRouter } : {}),
           signal: controller.signal,
           tempPrefix: 'rhwp-taste-',
           label: RAU_TASTE_NAME,
-          // OpenRouter 는 추론 토큰도 max_tokens 에 센다. 최대 추론에서 JSON 이 잘리지 않게 넉넉히 둔다.
-          maxTokens: 32_768,
           maxOutputBytes: 512 * 1024,
           acceptOutput: (value) => parseTasteOutput(value) !== null,
         },

@@ -6,9 +6,3 @@
   min-width: 140px;
   max-width: 60%;
 }
-
-.ag-taste-auth-row .ag-settings-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 32px;
-}
