@@ -200,7 +200,7 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * Pi 는 내 OpenRouter 키가 있는 상태로 시작한다. `pikey=none` 이면 키 없이 시작해 예전 창(받기만)이 뜬다.
  */
 /*
- * 라이선스. `license=trial|expired|licensed` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
+ * 라이선스. `license=free|expired` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
 const mockLicense = createMockLicense(mockLicenseMode(params), report);

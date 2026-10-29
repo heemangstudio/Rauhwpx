@@ -93,11 +93,14 @@ export function createMockLicenseServer({
   const gifts = new Map();
   let giftCreatedUsd = 0;
 
-  /** licenseExpiresAt (epoch ms) makes an annual subscription key; without it the key is lifetime, like beta keys. */
-  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit } = {}) {
+  /**
+   * licenseExpiresAt (epoch ms) makes an annual subscription key; without it the key is lifetime, like beta keys.
+   * plan answers like the Pro server (edition, plan, rau.eligible); without it the answer matches the older server.
+   */
+  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit, plan = null, rauEligible = true } = {}) {
     const raw = Array.from(randomBytes(25), n => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
     const key = `HAMA-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}-${raw.slice(20, 25)}`;
-    licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false, licenseExpiresAt, autoRenew, paymentGraceEndsAt: null, deviceLimit: devices });
+    licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false, licenseExpiresAt, autoRenew, paymentGraceEndsAt: null, deviceLimit: devices, plan, rauEligible });
     return key;
   }
 
@@ -120,6 +123,7 @@ export function createMockLicenseServer({
       licenseState: license.paymentGraceEndsAt === null ? 'active' : 'payment_failed', paymentGraceEndsAt: license.paymentGraceEndsAt,
       ...(license.licenseExpiresAt === null ? {} : { paymentFixUrl: PAYMENT_FIX_URL }),
       devicesUsed: license.devices.size, deviceLimit: license.deviceLimit,
+      ...(license.plan ? { edition: 'pro', plan: license.plan, rau: { eligible: license.rauEligible } } : {}),
     };
   }
 

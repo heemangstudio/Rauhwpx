@@ -1,22 +1,21 @@
-// 체험·라이선스 상태. 메인 프로세스가 하나 만들어 저장 IPC 를 막고 설정 화면에 상태를 준다.
+// 라이선스 상태. 메인 프로세스가 하나 만들어 설정 화면과 Pro 기능(호스팅 Rau 등)에 상태를 준다.
 //
 // 규칙
-// - 체험: 이 기기에서 처음 실행한 때부터 3일(72시간) 동안 모든 기능을 쓸 수 있다. 저장 횟수는 세지 않는다.
-// - 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다. 실행할 때와 24시간마다 다시 확인해 lease 를 늘린다.
-// - 인터넷이 없으면 가진 lease 가 끝날 때까지(최대 7일) 그대로 쓴다.
-// - 환불이나 베타 종료로 키가 해지되면(revoked) 읽기 전용이 된다. 체험 시간이 남아 있어도 마찬가지다.
-// - 연간 구독 키는 서명한 lease 에 키의 만료 시각(licenseExpiresAt)이 들어 있다. 평생 키는 없다.
-//   만료가 지나면 체험이 끝난 것과 같은 읽기 전용(expired)이 된다. 서버가 만료라고 답하면 바로,
-//   서버에 닿지 못하면 만료 뒤 최대 7일(SUBSCRIPTION_OFFLINE_GRACE_MS, 가진 lease 가 끝나면 그 전)까지 쓴다.
-//   서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 편집할 수 있다. 만료 뒤에는 1시간마다 다시 확인한다.
+// - 편집기는 무료다. 키가 없거나, 해지·만료·확인 기한 지남·재활성화 필요여도 문서를 열고 편집하고 저장한다.
+//   이런 상태는 설정과 활성화 창에 문제로만 보인다.
+// - Pro 기능은 서명한 lease 로만 연다(paid). 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다.
+//   실행할 때와 24시간마다 다시 확인해 lease 를 늘린다. 인터넷이 없으면 가진 lease 가 끝날 때까지 그대로 쓴다.
+// - 서버 응답의 edition('pro')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 은 표시와 안내에만 쓴다.
+//   예전 서버는 보내지 않으므로 없으면 null 이다.
+// - 환불이나 베타 종료로 키가 해지되면(revoked) Pro 기능이 닫힌다.
+// - 구독 키는 서명한 lease 에 키의 만료 시각(licenseExpiresAt)이 들어 있다. 만료가 지나면 expired 다.
+//   서버가 만료라고 답하면 바로, 서버에 닿지 못하면 만료 뒤 최대 7일(SUBSCRIPTION_OFFLINE_GRACE_MS, 가진 lease 가
+//   끝나면 그 전)까지 Pro 를 쓴다. 서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 열린다. 만료 뒤에는 1시간마다 다시 확인한다.
 // - 갱신 결제가 실패하면 lease 에 결제 유예 끝(paymentGraceEndsAt)이 들어온다. 그때까지는 만료가 지나도
-//   그대로 편집할 수 있고(payment_failed), 상태에 Groble 결제 수단 페이지(paymentFixUrl)를 함께 준다.
+//   Pro 를 그대로 쓰고(payment_failed), 상태에 Groble 결제 수단 페이지(paymentFixUrl)를 함께 준다.
 // - 키 종류(tier: paid | beta)는 서버 응답에서 받아 표시에만 쓴다. 예전 상태 파일에 없으면 paid 다.
-// - 읽기 전용: 문서는 열고 볼 수 있지만 저장(native 파일 쓰기)은 거절한다.
-// - 체험이 끝나는 순간: 끝나기 전에 시작한 저장은 마저 쓴다. 끝난 뒤에는 자동 저장을 위해
-//   한 번만 짧은 유예(1분)를 연다. 유예는 상태 파일에 남아 다시 실행해도 다시 열리지 않는다.
-// - 해지·lease 만료·재활성화 필요로 이 실행 중에 편집할 수 있다가 잠기면, 그 전환에 한해 같은 유예를
-//   한 번 연다. 메모리에만 두므로 다시 실행하거나 같은 잠금에서 다시 받을 수 없다.
+// - 시계를 되돌려 lease 를 늘리지 못하게 본 적 있는 가장 늦은 시각(maxSeenAt)을 쓴다.
+// - 예전 상태 파일의 체험 기록(trial)은 읽지 않는다.
 //
 // 상태 파일은 userData/license.json. 라이선스 키는 비밀 저장소(secret-vault)에 두지 않는다.
 // 비밀 저장소의 "AI 제공자 초기화"가 키까지 지우고, 실행할 때마다 키체인 확인을 부르기 때문이다.
@@ -33,8 +32,6 @@ import {
 import { LicenseServerError } from './license-client.mjs';
 
 export const LICENSE_STATE_FILE = 'license.json';
-export const TRIAL_DURATION_MS = 72 * 60 * 60 * 1000;
-export const EXPIRY_SAVE_GRACE_MS = 60 * 1000;
 export const LICENSE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 연간 키의 만료가 지났는데 서버에 닿지 못할 때 더 쓸 수 있는 기간. */
 export const SUBSCRIPTION_OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,25 +56,7 @@ export function paymentFixUrlFrom(value) {
 }
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export class LicenseReadOnlyError extends Error {
-  constructor(state, tier = 'paid') {
-    super(state === 'revoked' && tier === 'beta'
-      ? `LICENSE_READ_ONLY: ${BETA_REVOKED_MESSAGE}`
-      : state === 'revoked'
-      ? 'LICENSE_READ_ONLY: 라이선스가 해지되어 읽기 전용이에요. 새 라이선스 키를 넣으면 다시 저장할 수 있어요.'
-      : state === 'expired'
-      ? `LICENSE_READ_ONLY: ${EXPIRED_MESSAGE}`
-      : state === 'lease_expired' || state === 'needs_activation'
-        ? 'LICENSE_READ_ONLY: 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결하거나 키를 다시 활성화해 주세요.'
-        : 'LICENSE_READ_ONLY: 체험이 끝나 읽기 전용이에요. 라이선스 키를 넣으면 다시 저장할 수 있어요.');
-    this.name = 'LicenseReadOnlyError';
-    this.code = 'LICENSE_READ_ONLY';
-    this.licenseState = state;
-  }
-}
-
 const BETA_REVOKED_MESSAGE = '베타 테스트 기간이 끝나 키가 해지되었어요.';
-const EXPIRED_MESSAGE = '라이선스 기간이 끝나 읽기 전용이에요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.';
 
 const ERROR_MESSAGES = {
   invalid_key: `라이선스 키를 찾을 수 없어요. 키를 다시 확인하고, 결제한 키가 맞다면 ${SUPPORT_EMAIL}으로 문의해 주세요.`,
@@ -97,7 +76,7 @@ export function licenseErrorMessage(code, tier = 'paid') {
 }
 
 function emptyState() {
-  return { v: 1, deviceId: randomUUID(), maxSeenAt: 0, trial: null, license: null };
+  return { v: 1, deviceId: randomUUID(), maxSeenAt: 0, license: null };
 }
 
 function sanitizeState(raw) {
@@ -106,12 +85,6 @@ function sanitizeState(raw) {
   const state = { ...base };
   if (typeof raw.deviceId === 'string' && DEVICE_ID_RE.test(raw.deviceId)) state.deviceId = raw.deviceId;
   if (Number.isSafeInteger(raw.maxSeenAt) && raw.maxSeenAt > 0) state.maxSeenAt = raw.maxSeenAt;
-  // 예전 상태 파일의 저장 횟수(saves)는 읽지 않는다.
-  if (raw.trial && Number.isSafeInteger(raw.trial.startedAt) && raw.trial.startedAt > 0) {
-    state.trial = { startedAt: raw.trial.startedAt };
-    if (Number.isSafeInteger(raw.trial.endedAt) && raw.trial.endedAt > 0) state.trial.endedAt = raw.trial.endedAt;
-    if (Number.isSafeInteger(raw.trial.expirySaveAt) && raw.trial.expirySaveAt > 0) state.trial.expirySaveAt = raw.trial.expirySaveAt;
-  }
   const key = normalizeLicenseKey(raw.license?.key);
   if (key) {
     state.license = {
@@ -126,9 +99,21 @@ function sanitizeState(raw) {
       autoRenew: typeof raw.license.autoRenew === 'boolean' ? raw.license.autoRenew : null,
       expiredAt: Number.isSafeInteger(raw.license.expiredAt) ? raw.license.expiredAt : null,
       paymentFixUrl: paymentFixUrlFrom(raw.license.paymentFixUrl),
+      ...editionFrom(raw.license),
     };
   }
   return state;
+}
+
+const PLANS = new Set(['monthly', 'annual', 'lifetime']);
+
+/** 클라이언트가 읽은 서버 응답(또는 상태 파일)의 Pro 표시 값. 없거나 모르는 값은 null. */
+function editionFrom(value) {
+  return {
+    edition: value?.edition === 'pro' ? 'pro' : null,
+    plan: PLANS.has(value?.plan) ? value.plan : null,
+    rauEligible: typeof value?.rauEligible === 'boolean' ? value.rauEligible : null,
+  };
 }
 
 export function licenseStatePath(userDataDir) {
@@ -144,8 +129,6 @@ export function createLicenseManager({
   existingInstallId = async () => null,
   enforce = true,
   now = Date.now,
-  trialDurationMs = TRIAL_DURATION_MS,
-  expirySaveGraceMs = EXPIRY_SAVE_GRACE_MS,
   checkIntervalMs = LICENSE_CHECK_INTERVAL_MS,
   offlineGraceMs = SUBSCRIPTION_OFFLINE_GRACE_MS,
   expiredRecheckMs = EXPIRED_RECHECK_MS,
@@ -158,10 +141,6 @@ export function createLicenseManager({
   let timer = null;
   let lastNetworkError = null;
   let lastGrandfatherAttempt = 0;
-  /** 이 실행에서 마지막으로 본 상태가 편집 가능했는지. */
-  let wasEditable = false;
-  /** 라이선스 쪽 잠금: 편집 가능 → 읽기 전용이 된 때와 그 전환의 유예 시작 시각. 체험 끝은 따로 다룬다. */
-  let lockTransition = null;
   /** 마지막으로 알린 상태. 같은 상태는 다시 알리지 않는다. */
   let notifiedStatus = null;
   /** 상태 파일에 마지막으로 쓴 maxSeenAt 과, 그것을 뺀 나머지 내용. */
@@ -176,7 +155,7 @@ export function createLicenseManager({
     return next;
   }
 
-  /** 시계를 되돌려 체험이나 lease 를 늘리지 못하게, 본 적 있는 가장 늦은 시각을 쓴다. */
+  /** 시계를 되돌려 lease 를 늘리지 못하게, 본 적 있는 가장 늦은 시각을 쓴다. */
   function clock() {
     const t = now();
     if (state && t > state.maxSeenAt) state.maxSeenAt = t;
@@ -214,8 +193,7 @@ export function createLicenseManager({
       if (error?.code !== 'ENOENT') log.warn?.('[license] state unreadable, starting fresh:', error?.message ?? error);
     }
     state = sanitizeState(raw);
-    const t = clock();
-    if (!state.trial) state.trial = { startedAt: t };
+    clock();
     await persist();
   }
 
@@ -236,16 +214,8 @@ export function createLicenseManager({
     return state.license?.licenseExpiresAt ?? null;
   }
 
-  function trialInfo(t) {
-    const startedAt = state.trial.startedAt;
-    const endsAt = startedAt + trialDurationMs;
-    const active = !state.trial.endedAt && t < endsAt;
-    return { startedAt, endsAt, active };
-  }
-
   function computeStatus() {
     const t = clock();
-    const trial = trialInfo(t);
     const license = state.license;
     const lease = leaseCheck(t);
     const expiresAt = license ? licenseExpiry(lease) : null;
@@ -256,25 +226,22 @@ export function createLicenseManager({
     // 그 끝을 지나 서버에 닿지 못하는 동안: 7일과 가진 lease 중 먼저 끝나는 때까지.
     const graceEndsAt = pastExpiry && lease.ok ? Math.min(accessEndsAt + offlineGraceMs, lease.payload.expiresAt) : null;
     let value;
-    if (!enforce) value = 'unenforced';
-    else if (license?.revokedAt) value = 'revoked';
-    else if (license?.expiredAt) value = 'expired';
+    if (!license) value = 'free';
+    else if (license.revokedAt) value = 'revoked';
+    else if (license.expiredAt) value = 'expired';
     else if (lease.ok) value = graceEndsAt !== null && t >= graceEndsAt ? 'expired' : 'licensed';
-    else if (license && pastExpiry) value = 'expired';
-    else if (license && lease.reason === 'expired') value = 'lease_expired';
-    else if (license) value = 'needs_activation';
-    else if (trial.active) value = 'trial';
-    else value = 'trial_expired';
-    const canEdit = value === 'unenforced' || value === 'licensed' || value === 'trial';
-    if (canEdit) lockTransition = null;
-    else if (wasEditable && value !== 'trial_expired' && !lockTransition) lockTransition = { at: t, graceAt: null };
-    wasEditable = canEdit;
+    else if (pastExpiry) value = 'expired';
+    else if (lease.reason === 'expired') value = 'lease_expired';
+    else value = 'needs_activation';
+    // Pro 는 서명한 lease 로만 정한다. 라이선스를 보지 않는 개발 빌드(unenforced)도 같다.
+    const paid = value === 'licensed';
     return {
-      state: value,
-      canEdit,
-      readOnly: !canEdit,
+      state: enforce ? value : 'unenforced',
+      paid,
+      edition: paid ? license.edition ?? 'pro' : null,
+      plan: paid ? license.plan ?? null : null,
+      rau: { eligible: paid ? license.rauEligible ?? null : false },
       deviceId: state.deviceId,
-      trial,
       license: license ? {
         maskedKey: maskLicenseKey(license.key),
         tier: license.tier,
@@ -314,7 +281,7 @@ export function createLicenseManager({
   }
 
   /** 서버 응답 lease 를 검증하고 저장한다. 실패하면 bad_lease. */
-  function acceptLease(key, { lease, keyId, tier, autoRenew, paymentFixUrl }, t) {
+  function acceptLease(key, { lease, keyId, tier, autoRenew, paymentFixUrl, edition, plan, rauEligible }, t) {
     const result = verifyLease(lease, { publicKeys, deviceId: state.deviceId, key, keyId, now: t });
     if (!result.ok) {
       log.warn?.('[license] server lease rejected:', result.reason);
@@ -333,6 +300,7 @@ export function createLicenseManager({
       autoRenew: licenseExpiresAt === null ? null : autoRenew !== false,
       expiredAt: null,
       paymentFixUrl: paymentFixUrlFrom(paymentFixUrl),
+      ...editionFrom({ edition, plan, rauEligible }),
     };
   }
 
@@ -459,60 +427,10 @@ export function createLicenseManager({
         }
       }
       state.license = null;
-      // 비활성화한 기기는 남은 체험으로 돌아가지 않는다.
-      state.trial.endedAt = clock();
       await persist();
       changed();
       return { ok: true, status: computeStatus() };
     });
-  }
-
-  /** 체험 시간이 다 되어 끝났는지. 비활성화로 끝낸 체험은 아니다. */
-  function trialRanOut(status) {
-    return status.state === 'trial_expired' && !state.trial.endedAt;
-  }
-
-  /**
-   * 잠긴 뒤 열린 문서를 자동 저장하려고 부른다. 처음 부른 때부터 유예를 한 번만 연다.
-   * 체험 끝(잠자기에서 깨어 기한을 넘긴 경우 포함)과, 이 실행 중의 해지·lease 만료·재활성화 필요를 받는다.
-   */
-  async function beginExpirySave() {
-    return serialize(async () => {
-      await load();
-      const status = computeStatus();
-      if (!trialRanOut(status)) {
-        if (status.canEdit || !lockTransition) return { ok: false, until: null };
-        const t = clock();
-        lockTransition.graceAt ??= t;
-        const until = lockTransition.graceAt + expirySaveGraceMs;
-        return { ok: t < until, until };
-      }
-      const t = clock();
-      if (!state.trial.expirySaveAt) {
-        state.trial.expirySaveAt = t;
-        await persist();
-      }
-      const until = state.trial.expirySaveAt + expirySaveGraceMs;
-      return { ok: t < until, until };
-    });
-  }
-
-  /**
-   * requestedAt: 저장 요청을 받은 시각(메인의 시계). 잠기기 전에 받은 저장은 잠긴 뒤에도 마저 쓴다.
-   * expirySave: beginExpirySave 로 유예를 받은 창의 자동 저장.
-   */
-  async function assertCanSave({ requestedAt = null, expirySave = false } = {}) {
-    await load();
-    const status = computeStatus();
-    if (status.canEdit) return status;
-    if (trialRanOut(status)) {
-      if (requestedAt !== null && requestedAt < status.trial.endsAt) return status;
-      if (expirySave && state.trial.expirySaveAt && clock() < state.trial.expirySaveAt + expirySaveGraceMs) return status;
-    } else if (lockTransition) {
-      if (requestedAt !== null && requestedAt < lockTransition.at) return status;
-      if (expirySave && lockTransition.graceAt !== null && clock() < lockTransition.graceAt + expirySaveGraceMs) return status;
-    }
-    throw new LicenseReadOnlyError(status.state, status.license?.tier);
   }
 
   function start({ setIntervalImpl = setInterval, clearIntervalImpl = clearInterval } = {}) {
@@ -520,7 +438,7 @@ export function createLicenseManager({
     void check({ force: true }).catch((error) => log.warn?.('[license] launch check failed:', error));
     timer = setIntervalImpl(() => {
       void check().then(() => {
-        // 체험 72시간이나 lease 끝처럼 서버 확인 없이도 상태가 바뀐다. 바뀐 때만 알린다.
+        // lease 끝처럼 서버 확인 없이도 상태가 바뀐다. 바뀐 때만 알린다.
         changed();
       }).catch((error) => log.warn?.('[license] scheduled check failed:', error));
     }, SCHEDULE_TICK_MS);
@@ -552,10 +470,6 @@ export function createLicenseManager({
     },
     activate,
     deactivate,
-    assertCanSave,
-    beginExpirySave,
-    /** 메인이 보는 지금 시각. 시계를 되돌려도 줄지 않는다. */
-    time: () => (state ? clock() : now()),
     start,
     stop,
   };

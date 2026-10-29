@@ -530,7 +530,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const body = el('div', 'ag-settings-body');
   const panes = new Map<SettingsDestination, HTMLElement>();
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
-  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
+  // 데스크톱 앱의 라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
   const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
     .rhwpDesktop?.license;
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [

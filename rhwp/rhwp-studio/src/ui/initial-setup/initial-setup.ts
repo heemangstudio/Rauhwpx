@@ -33,7 +33,7 @@ import {
 import { createHippo } from './hippo.ts';
 import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
 import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { createLicenseStep, licenseLine, needsLicenseStep } from './license-step.ts';
+import { createLicenseStep, needsLicenseStep } from './license-step.ts';
 import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
@@ -163,7 +163,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const licenseApi = deps.license === undefined
     ? (window as Window & { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null
     : deps.license;
-  let licenseStatus: LicenseStatus | null = null;
   let licenseStep = false;
   const fontStepReady = (deps.detectFontStep ?? detectFontStep)()
     .catch(() => null)
@@ -176,7 +175,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   // 라이선스 장은 처음 본 상태로 정한다. 이 창에서 활성화해도 장은 그대로 남는다.
   const licenseStepReady = (licenseApi ? licenseApi.getStatus().catch(() => null) : Promise.resolve(null))
     .then((status) => {
-      licenseStatus = status;
       licenseStep = needsLicenseStep(status);
       steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
       renderStep();
@@ -547,7 +545,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     if (step === 'taste') return HIPPO_LINES.taste;
     if (step === 'autofix') return HIPPO_LINES.autofix;
-    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : licenseLine(licenseStatus);
+    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : HIPPO_LINES.license;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -566,7 +564,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    // 키 없이 넘어가면 체험으로 쓴다.
+    // 키 없이 넘어가면 무료로 쓴다.
     const later = step === 'license' && !licensePanel?.licensed();
     primary.textContent = later ? '나중에' : last ? '완료' : '다음';
     // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.
