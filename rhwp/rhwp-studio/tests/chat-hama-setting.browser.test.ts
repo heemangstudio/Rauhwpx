@@ -17,24 +17,30 @@ test('하마 설정은 기본으로 꺼져 있고, 끄고 켜면 입력기의 �
   try {
     const page = await browser.newPage();
     const address = server.httpServer!.address() as { port: number };
-    const ready = () => page.waitForFunction(
-      () => document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true',
-      { timeout: 20_000 },
-    );
+    // 설정 창이 들어오는 동안은 줄이 움직여 누른 자리가 빗나가므로, 움직임이 멎을 때까지 기다린다.
+    const ready = async () => {
+      await page.waitForFunction(
+        () => document.querySelector<HTMLElement>('#agent-sidebar')?.dataset.composerReady === 'true',
+        { timeout: 20_000 },
+      );
+      await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'), { timeout: 10_000 });
+    };
     await page.goto(`http://127.0.0.1:${address.port}/?reset=1&page=settings&destination=editing`);
     await ready();
     const toggle = 'input[role="switch"][aria-label="하마"]';
+    // 입력은 1px 투명이라 그 점을 누르면 겹친 다른 요소가 받을 수 있다. 사람처럼 보이는 트랙을 누른다.
+    const track = `${toggle} + .ag-settings-toggle-track`;
     await page.waitForSelector(toggle);
 
     const initial = await state(page, toggle);
     assert.deepEqual(initial, { checked: false, hama: false, stored: null }, '처음에는 꺼져 있고 하마가 없다');
 
-    await page.click(toggle);
+    await page.click(track);
     await clickApply(page);
     await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama canvas');
     assert.deepEqual(await state(page, toggle), { checked: true, hama: true, stored: true });
 
-    await page.click(toggle);
+    await page.click(track);
     await clickApply(page);
     await page.waitForFunction(() => !document.querySelector('.ag-composer .ag-hama'));
     const off = await state(page, toggle);
@@ -45,7 +51,7 @@ test('하마 설정은 기본으로 꺼져 있고, 끄고 켜면 입력기의 �
     await page.waitForSelector(toggle);
     assert.deepEqual(await state(page, toggle), { checked: false, hama: false, stored: false }, '다시 열어도 꺼져 있다');
 
-    await page.click(toggle);
+    await page.click(track);
     await clickApply(page);
     await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama canvas');
     assert.deepEqual(await state(page, toggle), { checked: true, hama: true, stored: true }, '다시 켜면 돌아온다');
