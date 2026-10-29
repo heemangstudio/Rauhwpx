@@ -457,7 +457,7 @@ test('email: no RESEND_API_KEY logs and skips without failing', async () => {
 
 async function tempDir(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-lic-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
   return directory;
 }
 
