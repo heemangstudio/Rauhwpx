@@ -3755,6 +3755,8 @@ async function createEmptySession(): Promise<DocumentSession | null> {
   liveSessions.push(session);
   unsavedDocuments?.invalidate();
   try {
+    // 엔진은 세션마다 붙인다. 붙이지 않은 세션에 새 문서나 파일을 열면 엔진이 없어 실패한다.
+    await session.wasm.initialize();
     installDocumentVersions(session);
   } catch (error) {
     console.error('[sessions] 새 문서 세션을 준비하지 못했습니다:', error);
