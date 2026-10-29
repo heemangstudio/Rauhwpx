@@ -62,6 +62,8 @@ import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
+import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
+import type { PlanTier } from '../ui/plan/plan-types.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
@@ -204,7 +206,20 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 라이선스. `license=free|expired` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
-const mockLicense = createMockLicense(mockLicenseMode(params), report);
+/*
+ * 앱 요금제. `plan=free|pro|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
+ * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Pro 를 연다).
+ */
+const mockPlan = createMockPlan(mockPlanTier(params), {
+  checkout: mockCheckoutMode(params),
+  hold: params.get('checkoutHold') === '1',
+  report,
+});
+const mockLicense = createMockLicense(
+  mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
+mockLicense?.onLicensed(() => {
+  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('pro');
+});
 /* 호스팅 Rau(Pro). `rau=free|pro` 가 설정 → Rau-0.1 의 Pro 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
 const mockRau = createMockRau(mockRauMode(params), report);
 const mockGift = createMockGift(mockGiftMode(params), {
@@ -597,6 +612,7 @@ const sidebar = initAgentSidebar({
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
   rau: mockRau,
+  plan: mockPlan?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
@@ -710,6 +726,19 @@ for (const outcome of mockAutofixOutcomes) autofixSelect.add(new Option(outcome,
 autofixSelect.closest('label')!.hidden = !mockAutofix;
 if (mockAutofix) autofixSelect.value = mockAutofix.outcome();
 autofixSelect.addEventListener('change', () => mockAutofix?.setOutcome(autofixSelect.value as AutofixStatus));
+const planSelect = document.querySelector<HTMLSelectElement>('#plan')!;
+const checkoutSelect = document.querySelector<HTMLSelectElement>('#checkout')!;
+for (const tier of mockPlanTiers) planSelect.add(new Option(tier, tier));
+for (const mode of mockCheckoutModes) checkoutSelect.add(new Option(mode, mode));
+planSelect.closest('label')!.hidden = !mockPlan;
+checkoutSelect.closest('label')!.hidden = !mockPlan;
+if (mockPlan) {
+  planSelect.value = mockPlan.status().tier;
+  checkoutSelect.value = mockCheckoutMode(params);
+  mockPlan.api.onChange((status) => { planSelect.value = status.tier; });
+}
+planSelect.addEventListener('change', () => mockPlan?.setTier(planSelect.value as PlanTier));
+checkoutSelect.addEventListener('change', () => mockPlan?.setCheckout(checkoutSelect.value as MockCheckoutMode));
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
 theme.value = userSettings.getThemeSettings().mode;
 theme.addEventListener('change', () =>
@@ -846,6 +875,7 @@ if (parallel === 'locked') {
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
   autofix: mockAutofix,
+  plan: mockPlan,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,

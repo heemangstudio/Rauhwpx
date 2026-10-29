@@ -2842,6 +2842,7 @@ function reinstallInlinePrompt(): void {
     canvasView,
     bridge: session.bridge,
     submit: session.sidebar.sendInlinePrompt,
+    blocked: () => sidebar.planBlocksAgent(),
     startScreenshot: () => documentRegionCapture?.startCapture(),
   });
 }

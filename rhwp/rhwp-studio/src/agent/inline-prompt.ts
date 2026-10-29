@@ -33,6 +33,8 @@ export interface InlinePromptDeps {
   /** 선택과 의견을 저장하고 일반 입력기에 첨부한다. */
   submit: (submission: InlinePromptSubmission) => InlinePromptSendResponse;
   startScreenshot?: () => void;
+  /** 에이전트를 부를 수 없으면(무료 요금제) 요금제 카드를 열고 true. 칩은 상자를 열지 않는다. */
+  blocked?: () => boolean;
 }
 
 /** 선택이 잠깐 흔들릴 때 칩이 따라다니지 않도록 잦아든 뒤에만 검사한다. */
@@ -611,7 +613,7 @@ class InlinePromptController {
   }
 
   private async openBox(): Promise<void> {
-    if (!isAgentSidebarVisible()) {
+    if (!isAgentSidebarVisible() || this.deps.blocked?.()) {
       this.hideAll();
       return;
     }
