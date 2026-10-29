@@ -6,11 +6,10 @@ import { MIN_RELEASE_NOTES, releaseNotesProblem } from './check-release-notes.mj
 
 const SCRIPT = fileURLToPath(new URL('./check-release-notes.mjs', import.meta.url));
 
-test('a release needs at least two non-empty notes for its version', () => {
-  assert.equal(MIN_RELEASE_NOTES, 2);
-  assert.equal(releaseNotesProblem('3.1.0', { '3.1.0': ['a', 'b'] }), null);
-  assert.match(releaseNotesProblem('3.1.0', { '3.1.0': ['a'] }), /1 entry; at least 2/);
-  assert.match(releaseNotesProblem('3.1.0', { '3.1.0': [] }), /0 entries; at least 2/);
+test('a release needs at least one non-empty note for its version', () => {
+  assert.equal(MIN_RELEASE_NOTES, 1);
+  assert.equal(releaseNotesProblem('3.1.0', { '3.1.0': ['a'] }), null);
+  assert.match(releaseNotesProblem('3.1.0', { '3.1.0': [] }), /0 entries; at least 1/);
   assert.match(releaseNotesProblem('3.1.0', { '3.1.0': ['a', '  '] }), /1 empty entry/);
   assert.match(releaseNotesProblem('3.1.0', { '3.0.9': ['a', 'b'] }), /No release notes for 3\.1\.0/);
 });

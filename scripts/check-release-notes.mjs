@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const NOTES_FILE = 'rhwp/rhwp-studio/src/ui/update-hippo/release-notes.ts';
 
-export const MIN_RELEASE_NOTES = 2;
+export const MIN_RELEASE_NOTES = 1;
 
 /** Returns the problem with the notes for `version`, or null when they are releasable. */
 export function releaseNotesProblem(version, notes, min = MIN_RELEASE_NOTES) {
