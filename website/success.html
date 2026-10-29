@@ -254,7 +254,7 @@
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
           // Annual subscription keys show the renewal date. Keys without a term hide this line.
-          term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
+          term.textContent=P.renewalText(u.licenseExpiresAt,u.plan);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
         }else if(u.state==='revoked'){
           say('환불 등으로 사용이 중지된 라이선스 키예요.',true,false);

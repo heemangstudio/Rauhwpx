@@ -9,10 +9,22 @@
     // Signature is a separate button. PLAN does not select it.
     PLAN: 'annual',
     // Groble product checkout links. Each buy button appends ?ref=<random value> to its own link.
+    // An empty link keeps that buy button disabled as '곧 출시'.
     CHECKOUT_URLS: {
       onetime: 'https://groble.im/payment/uRshdR',
       annual: 'https://groble.im/payment/GLJFC9',
-      signature: 'https://groble.im/payment/8Xy27f'
+      signature: 'https://groble.im/payment/8Xy27f',
+      // PLACEHOLDER: the Groble Pro products don't exist yet. Paste each checkout link here to open sales.
+      proMonthly: '',
+      proYearly: ''
+    },
+    // Prices in won, VAT included. pricing.html fills every [data-price] from here, and
+    // purchase.test.cjs fails when the page's static fallback text drifts from these numbers.
+    // null means the price isn't set yet.
+    PRICES: {
+      proMonthly: 3900,
+      proYearly: 39000,
+      hama: null
     },
     // License server. success.html queries GET {API_BASE}/v1/license/by-ref?ref= .
     API_BASE: 'https://rau-credits-production.up.railway.app',
@@ -121,15 +133,16 @@
     return trackDownload(platform, 'latest', nav, fetchImpl);
   }
 
-  // Renewal notice for annual keys. Takes the expiry (epoch ms) the server sets to the end of the day in Korea time. Keys without a term (null) give an empty string.
-  function renewalText(licenseExpiresAt) {
+  // Renewal notice for subscription keys. Takes the expiry (epoch ms) the server sets to the end of the day in Korea time,
+  // and the key's plan from by-ref ('monthly' for Pro monthly; anything else renews yearly). Keys without a term (null) give an empty string.
+  function renewalText(licenseExpiresAt, plan) {
     if (typeof licenseExpiresAt !== 'number' || !isFinite(licenseExpiresAt)) return '';
     var date = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' }).format(new Date(licenseExpiresAt));
-    return '매년 자동으로 갱신돼요. 다음 갱신일은 ' + date + '이에요. 언제든 Groble에서 해지할 수 있어요.';
+    return (plan === 'monthly' ? '매달' : '매년') + ' 자동으로 갱신돼요. 다음 갱신일은 ' + date + '이에요. 언제든 Groble에서 해지할 수 있어요.';
   }
 
   /* Polls until the key is issued.
-     onUpdate({state:'pending'|'issued'|'revoked'|'error'|'timeout', key?, licenseExpiresAt?, attempts})
+     onUpdate({state:'pending'|'issued'|'revoked'|'error'|'timeout', key?, licenseExpiresAt?, plan?, attempts})
      Calling the returned function stops it. */
   function pollLicense(opts) {
     var fetchImpl = opts.fetch;
@@ -165,7 +178,7 @@
         .then(function (body) {
           if (stopped) return;
           if (body && body.status === 'issued' && typeof body.key === 'string' && body.key) {
-            done({ state: 'issued', key: body.key, licenseExpiresAt: typeof body.licenseExpiresAt === 'number' ? body.licenseExpiresAt : null, attempts: attempts });
+            done({ state: 'issued', key: body.key, licenseExpiresAt: typeof body.licenseExpiresAt === 'number' ? body.licenseExpiresAt : null, plan: typeof body.plan === 'string' ? body.plan : null, attempts: attempts });
             return;
           }
           if (body && body.status === 'revoked') {
@@ -192,7 +205,35 @@
     return function stop() { stopped = true; if (timer !== null) clearTimer(timer); };
   }
 
+  function formatWon(amount) {
+    return '₩' + String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // Text for each [data-price] key. Unknown keys give null and leave the element alone.
+  function priceText(key, prices) {
+    var p = prices || CONFIG.PRICES;
+    var monthly = p.proMonthly, yearly = p.proYearly;
+    switch (key) {
+      case 'proMonthly': return formatWon(monthly);
+      case 'proYearly': return formatWon(yearly);
+      case 'proYearlyPerMonth': return formatWon(Math.round(yearly / 12));
+      case 'proYearlySaving': return formatWon(monthly * 12 - yearly);
+      case 'hama': return typeof p.hama === 'number' ? formatWon(p.hama) : '미정';
+      default: return null;
+    }
+  }
+
+  function renderPrices(doc, prices) {
+    var scope = doc && typeof doc.querySelectorAll === 'function' ? doc : (root && root.document);
+    if (!scope) return;
+    Array.prototype.forEach.call(scope.querySelectorAll('[data-price]'), function (el) {
+      var text = priceText(el.getAttribute('data-price'), prices);
+      if (text !== null) el.textContent = text;
+    });
+  }
+
   // Each [data-buy] uses the consent and note inside its own article, then opens that sku's checkout.
+  // A sku without a checkout link stays a disabled '곧 출시' button, and its consent box stays hidden.
   function bindBuyButtons(doc) {
     var scope = doc && typeof doc.querySelectorAll === 'function' ? doc : (root && root.document);
     if (!scope || typeof scope.querySelectorAll !== 'function') return;
@@ -203,6 +244,19 @@
       var note = article && article.querySelector('[data-buy-note]');
       if (!consent) return;
       var sku = buy.getAttribute('data-buy-sku');
+      if (!CONFIG.CHECKOUT_URLS[sku]) {
+        buy.setAttribute('aria-disabled', 'true');
+        buy.textContent = '곧 출시';
+        buy.addEventListener('click', function (event) {
+          if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        });
+        return;
+      }
+      var label = buy.getAttribute('data-buy-label');
+      if (label) buy.textContent = label;
+      consent.hidden = false;
+      var consentBox = typeof consent.closest === 'function' ? consent.closest('label') : null;
+      if (consentBox) consentBox.hidden = false;
       function sync() {
         buy.setAttribute('aria-disabled', consent.checked ? 'false' : 'true');
       }
@@ -237,6 +291,9 @@
     loadRef: loadRef,
     resolveRef: resolveRef,
     renewalText: renewalText,
+    formatWon: formatWon,
+    priceText: priceText,
+    renderPrices: renderPrices,
     trackDownload: trackDownload,
     trackDownloadOnce: trackDownloadOnce,
     pollLicense: pollLicense,
