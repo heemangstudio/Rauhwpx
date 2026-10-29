@@ -559,10 +559,9 @@ export function showDocumentPalette(config: {
 
 // ── 끌어서 고정 · 순서 바꾸기 ─────────────────────────────
 //
-// 목록은 [고정됨 머리][고정한 행…]([입력 필요 머리][행…])[최근 머리][나머지 행…] 순서로 선다.
+// 목록은 [고정됨 머리][고정한 행…][최근 머리][나머지 행…] 순서로 선다.
 // 행은 li.ag-threads-row[data-thread-id], 머리는 li.ag-threads-section[data-section]
-// 이다. 고정·최근 구역 어디에나 놓을 수 있고, 고정 구역에 놓으면 고정, 아래에 놓으면 풀린다.
-// 입력 필요 구역은 상태가 정하므로 끌 수도, 놓을 수도 없다.
+// 이다. 두 구역 어디에나 놓을 수 있고, 고정 구역에 놓으면 고정, 아래에 놓으면 풀린다.
 
 /** 놓은 구역과 그 자리의 이웃 — after 는 바로 위, before 는 바로 아래 채팅. */
 export interface ThreadDrop {
@@ -608,7 +607,7 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
     frame: number;
   } | null = null;
 
-  const section = (name: 'pinned' | 'attention' | 'recent') =>
+  const section = (name: 'pinned' | 'recent') =>
     list.querySelector<HTMLElement>(`:scope > .ag-threads-section[data-section='${name}']`);
 
   /** 목록 내용 좌표의 세로 위치 — 행의 offsetTop 과 같은 기준. */
@@ -643,14 +642,12 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
 
     const recent = section('recent');
     const y = contentY(drag.pointerY);
-    // 고정 구역은 입력 필요(없으면 최근) 머리 앞에서 끝난다.
-    const boundary = section('attention') ?? recent;
-    const toPinned = !boundary || y < boundary.offsetTop + boundary.offsetHeight / 2;
+    const toPinned = !recent || y < recent.offsetTop + recent.offsetHeight / 2;
     section('pinned')?.classList.toggle('ag-drop-target', toPinned);
     recent?.classList.toggle('ag-drop-target', !toPinned);
     // 놓일 구역 안에서 가운데를 넘은 첫 행 앞에 선다. 없으면 구역의 끝이다.
     const start = toPinned ? section('pinned') : recent;
-    const end = toPinned ? boundary : null;
+    const end = toPinned ? recent : null;
     let before: Element | null = end;
     for (let node = start?.nextElementSibling ?? null; node && node !== end; node = node.nextElementSibling) {
       if (node === row || !isRow(node)) continue;
@@ -724,10 +721,10 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
     const next = row.nextElementSibling;
     const prev = row.previousElementSibling;
     if (prev === origin.prev && next === origin.next) return null;
-    const boundary = section('attention') ?? section('recent');
+    const recent = section('recent');
     return {
       id: row.dataset.threadId!,
-      pinned: boundary !== null && Boolean(row.compareDocumentPosition(boundary) & Node.DOCUMENT_POSITION_FOLLOWING),
+      pinned: recent !== null && Boolean(row.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING),
       before: isRow(next) ? next.dataset.threadId ?? null : null,
       after: isRow(prev) ? prev.dataset.threadId ?? null : null,
     };
@@ -809,7 +806,7 @@ export function attachThreadDrag(options: ThreadDragOptions): { dragging(): bool
   list.addEventListener('pointerdown', (event) => {
     if (drag || event.button !== 0 || event.pointerType === 'touch' || event.ctrlKey || event.metaKey) return;
     const row = (event.target as Element).closest('.ag-threads-item')?.closest<HTMLElement>('.ag-threads-row');
-    if (!row || row.parentElement !== list || !row.dataset.threadId || row.dataset.attention) return;
+    if (!row || row.parentElement !== list || !row.dataset.threadId) return;
     pending = { id: row.dataset.threadId, pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);

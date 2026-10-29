@@ -141,7 +141,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?reset=1` | Clear preview storage before mounting |
 | `?memory=sample` (`empty`) | The 문서 기억 sheet of 사업 제안서 opens on load: entries grouped 문체, 용어, 결정, 보호, the 보호 entry's quote marked `문서에 없음`; click a text to edit (Enter saves, Esc cancels), × deletes, the bottom row adds with a kind choice. `empty` starts with no entries. Right-click the header's document name (or a document in the rail's document filter) → **문서 기억** opens it in any scenario; `sidebarPreview.bridge.applyDocumentMemory(...)` simulates an agent write. **기록에서 배우기** in the sheet header learns one `Rau-0.1` entry per document and leaves a `Rau-0.1 1가지 배움` divider at the end of the chat behind it (add `&taste=sample` for a 사업 제안서 chat), then answers `배울 기록이 없습니다.` |
 | `?taste=sample` | A 사업 제안서 chat whose turn ends with the `Rau-0.1 4가지 배움` divider: click it to show 새로, 고침, 지움 rows (one already reverted, one no longer revertible), 되돌리기, 모두 보기 (the 문서 기억 sheet with the `Rau-0.1` badge) and 지시에 추가 제안 (Settings → AI → 지시 with the pending Rau-0.1 draft). `sidebarPreview.emitTasteLearned(...)` delivers a late learn and `emitTasteHistoryLearned({documentId, key, learnId, items, changes})` a history learn (the shown chat if it is that document's, else the document's latest chat, else nowhere; held until a running turn ends); `sidebarPreview.taste.undos` lists undo requests and `taste.skipUndo(entryId)` makes the next one come back skipped |
-| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), with those three lifted into **입력 필요** at the top of the rail and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
+| `?chats=sample` | Restore sample chats across three documents and no document: one running (`작업 중`), one finished but unread (green dot), one awaiting review (`검토 대기`, 분기별 예산 표 합계 확인) and one cut off (`중단됨` red ring, 추진 일정 분기별로 나누기), each in its own activity-ordered place on the rail, and 3 on the chat-list button. 사업 개요 첫 문단 다듬기 restores a folded turn (`작업 2분 31초 · 문단 2개 수정 · 표 1개 읽음`) and 참석자 명단 표 만들기 an interrupted one (`중단됨 · 1분 12초 · 표 1개 추가`) |
 | `?chats=long&fullscreen=1` | The sample chats plus an 18-turn 사업 제안서 chat in focus mode: the turn rail on the chat's right edge replaces the scrollbar; hover a tick for the request and reply preview, click it to scroll there |
 | `?chats=engine-trap` | The sample chats plus the shown document's chat that an engine trap interrupted; it opens with `문서 엔진이 멈춰 작업이 중단됐어요` and **이어서 진행**, as the editor marks it after reopening documents |
 | `?chats=sample`, then open 추진 일정 분기별로 나누기 | A turn the app cut off by restarting (stored sample): `앱이 다시 시작되어 작업이 중단됐어요` with **이어서 진행**, the question card `만료됨 · 앱 재시작` and one follow-up held as `앱 재시작 · …`. Set **Connection** to disconnected: the button is dimmed with `허브에 연결되면 이어서 진행할 수 있어요` |
@@ -149,10 +149,10 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
 | `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
 | `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
-| `?parallel=1&scenario=review&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.finishTurn()` | The hidden chat ends with edits to review: its row shows `검토 대기`, the chat-list button counts 1, and a toast `{제목} — 검토할 변경이 있습니다` offers **열기**, which shows that chat |
-| `?parallel=1&scenario=chat&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.failRunningTurn('auth')` | The hidden chat fails: a red ring with the short reason `로그인 필요` and a toast with the failure title |
-| `?attention=away&…` | The ledger behaves as if the window had no focus: notices for hidden chats go to the system sink (`알림: {제목} — {본문}` in the status line, `sidebarPreview.attentionNotices`) instead of toasts. By default a system notice is `HamaEditor — 작업이 중단됐습니다`: the app name and the fixed phrase, no chat title or document name |
-| `?attention=away&notificationDetails=1&…` | The same with **알림에 채팅 제목과 문서 이름 표시** on: `{채팅 제목} — 작업이 중단됐습니다 · 사업 제안서.hwpx` |
+| `?parallel=1&scenario=review&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.finishTurn()` | The hidden chat ends with edits to review: its row shows `검토 대기` and the chat-list button counts 1; clicking the row shows that chat |
+| `?parallel=1&scenario=chat&hold=1`, play, open a new chat, then `sidebarPreview.chats[0].mock.failRunningTurn('auth')` | The hidden chat fails: a red ring with the short reason `로그인 필요` on its row |
+| `?attention=away&…` | The ledger behaves as if the window had no focus: notices for hidden chats go to the system sink (`알림: {제목} — {본문}` in the status line, `sidebarPreview.attentionNotices`). By default a system notice is `HamaEditor — 작업이 중단됐습니다`: the app name and the fixed phrase, no chat title or document name |
+| `?attention=away&notificationDetails=1&…` | The same with **알림에 채팅 제목과 문서 이름 표시** on: `{채팅 제목} — 작업이 중단됐습니다 (사업 제안서.hwpx)` |
 | `?notifications=granted&page=settings&destination=ai-custom` | 설정 → AI → 사용자화 → **알림** with the **백그라운드 채팅 알림** switch and the **알림에 채팅 제목과 문서 이름 표시** switch (off by default), shown on the web only when the site already has notification permission |
 | `?scenario=chat&play=1&hold=1&questionHeld=1` | A question that arrived while the composer had focus and text: the one-line 에이전트가 질문했어요 strip. Click it, or move focus out of the composer, to open the question |
 | `?editor=1&scenario=chat&hold=1` | Editor shell with a labeled document input fixture (`textarea[data-rhwp-editor-input]`) for typing "in the document" |
@@ -256,19 +256,17 @@ approval, `작업 중` (breathing yellow, 400 ms after the turn starts), `검토
 dot) for staged edits, a red ring with a short reason (`오류`, `중단됨`, `로그인 필요`, `사용 한도` …)
 for a failed or cut-off turn, and a green dot for a turn that finished while nobody watched it.
 Seeing a chat (shown, window focused) clears its green dot and red ring; 입력 대기 and 검토 대기
-stay until answered. A chat that needs attention (unpinned) moves into **입력 필요** under 고정됨 and stays there while
-it is open, even after the dot clears; it drops back to 최근 when you switch to another chat.
-The chat-list button shows the count of other chats.
-A hidden chat's question, review or failure shows a toast with **열기** when the window has focus;
-an unfocused desktop window gets one OS notification per turn and state and an app-icon badge.
+stay until answered. A chat that needs attention keeps its place on the rail; its row's status is the only
+in-app signal besides the chat-list button, which shows the count of other chats.
+An unfocused desktop window gets one OS notification per turn and state and an app-icon badge.
 OS and browser notifications show the app name and a fixed phrase (`답변을 기다립니다`,
 `검토할 변경이 있습니다`, `작업이 중단됐습니다`, the failure title, `작업을 마쳤습니다`) unless
-**알림에 채팅 제목과 문서 이름 표시** is on; toasts inside the window always name the chat.
+**알림에 채팅 제목과 문서 이름 표시** is on.
 
 `node rhwp/rhwp-studio/sidebar-preview/attention.check.mjs` covers hidden review, failure and finish,
-plan, question and stop, the chip filter, `attention=away` with and without chat details in system
+plan, question and stop, rows staying in place, `attention=away` with and without chat details in system
 notices, and the settings switches, and saves
-`attention-rail.png`, `attention-filter.png`, `attention-toast.png` and `attention-settings.png`.
+`attention-rail.png`, `attention-review.png` and `attention-settings.png`.
 Inside the full harness it is the step selected by `SIDEBAR_CHECK=attention npm run test:sidebar`.
 
 ## Changes drawer

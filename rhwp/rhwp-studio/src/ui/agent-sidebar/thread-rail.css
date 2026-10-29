@@ -511,18 +511,12 @@
   transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.ag-threads-section[data-section='attention'],
 .ag-threads-section[data-section='recent'] {
   margin-top: 6px;
 }
 
-.ag-threads-list:not(.ag-has-pinned) > .ag-threads-section[data-section='attention'] {
-  margin-top: 0;
-}
-
-/* 고정 머리는 고정한 채팅이 있을 때만, 최근 머리는 위에 다른 구역이 있을 때만 선다. 끄는 동안은 둘 다 놓을 자리다. */
-.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section[data-section='pinned'],
-.ag-threads-list:not(.ag-has-pinned):not(.ag-has-attention):not(.ag-dragging) > .ag-threads-section[data-section='recent'] {
+/* 고정한 채팅이 없으면 두 머리 모두 끄는 동안에만 선다 — 끄는 동안은 둘 다 놓을 자리다. */
+.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section {
   display: none;
 }
 

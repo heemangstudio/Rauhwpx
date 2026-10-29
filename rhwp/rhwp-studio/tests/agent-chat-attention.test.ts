@@ -7,9 +7,8 @@ import {
   type AttentionReport,
 } from '../src/agent/chat-attention.ts';
 import type { ChatRunStatus } from '../src/agent/chat-status.ts';
-import { installAttentionToasts, installWebAgentAttention } from '../src/ui/agent-attention.ts';
+import { installWebAgentAttention } from '../src/ui/agent-attention.ts';
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../src/agent/attention-prefs.ts';
-import type { ToastOptions } from '../src/ui/toast.ts';
 
 function harness(opts: { focused?: boolean; details?: boolean } = {}) {
   const statuses = new Map<string, ChatRunStatus | null>();
@@ -49,8 +48,8 @@ test('an unseen finish notifies once per turn, showing only the app name and the
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end' });
   assert.equal(h.notices.length, 1);
   assert.deepEqual(
-    { title: h.notices[0]!.title, body: h.notices[0]!.body, channel: h.notices[0]!.channel },
-    { title: 'HamaEditor', body: '작업을 마쳤습니다', channel: 'system' },
+    { title: h.notices[0]!.title, body: h.notices[0]!.body },
+    { title: 'HamaEditor', body: '작업을 마쳤습니다' },
   );
   assert.doesNotMatch(JSON.stringify([h.notices[0]!.title, h.notices[0]!.body]), /사업/, 'no chat title or document name');
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end' });
@@ -59,29 +58,28 @@ test('an unseen finish notifies once per turn, showing only the app name and the
   assert.deepEqual(h.counts, [1]);
 });
 
-test('a focused window gets in-app notices for actionable states only', () => {
+test('a focused window counts every state but sends no notice', () => {
   const h = harness({ focused: true });
   h.report({ threadId: 'review', status: 'needs-review', key: 't1:end' });
   h.report({ threadId: 'failed', status: 'failed', key: 't2:end', reason: 'error', label: '로그인 필요', summary: 'Claude 로그인이 필요해요' });
   h.report({ threadId: 'input', status: 'needs-input', key: 't3:input:q1', reason: 'question' });
   h.report({ threadId: 'done', status: 'finished', key: 't4:end' });
-  assert.deepEqual(h.notices.map((notice) => [notice.threadId, notice.channel, notice.message]), [
-    ['review', 'in-app', '사업 개요 다듬기 — 검토할 변경이 있습니다'],
-    ['failed', 'in-app', '사업 개요 다듬기 — Claude 로그인이 필요해요'],
-    ['input', 'in-app', '사업 개요 다듬기 — 답변을 기다립니다'],
-  ]);
-  // 완료는 토스트 없이도 배지(그리고 칩)에 센다.
+  assert.deepEqual(h.notices, []);
   assert.equal(h.ledger.count(), 4);
+  // 이미 센 열쇠는 창을 떠난 뒤에도 다시 알리지 않는다.
+  h.focus(false);
+  h.report({ threadId: 'review', status: 'needs-review', key: 't1:end' });
+  assert.deepEqual(h.notices, []);
 });
 
-test('with chat details on, a system notice names the chat and the document; toasts always name the chat', () => {
+test('with chat details on, a system notice names the chat and the document', () => {
   const h = harness();
   h.report({ threadId: 'quiet', status: 'needs-input', key: 't1:input:q1', reason: 'question' });
   h.showDetails(true);
   h.report({ threadId: 'named', status: 'needs-input', key: 't2:input:q2', reason: 'question' });
-  assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body, notice.message]), [
-    ['HamaEditor', '답변을 기다립니다', '사업 개요 다듬기 — 답변을 기다립니다'],
-    ['사업 개요 다듬기', '답변을 기다립니다 (사업 제안서.hwpx)', '사업 개요 다듬기 — 답변을 기다립니다'],
+  assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body]), [
+    ['HamaEditor', '답변을 기다립니다'],
+    ['사업 개요 다듬기', '답변을 기다립니다 (사업 제안서.hwpx)'],
   ], 'the setting is read at each notice');
   h.showDetails(false);
   h.report({ threadId: 'fail', status: 'failed', key: 't3:end', reason: 'error', summary: 'Claude 로그인이 필요해요' });
@@ -171,25 +169,6 @@ test('remembered keys are bounded', () => {
   report('k3');
   report('k1');
   assert.deepEqual(notices, ['k1', 'k2', 'k3', 'k1'], 'the oldest key is forgotten first');
-});
-
-test('in-app notices become toasts whose 열기 opens that chat; system notices do not', () => {
-  const h = harness({ focused: true });
-  const toasts: ToastOptions[] = [];
-  const opened: string[] = [];
-  const off = installAttentionToasts(h.ledger, (id) => opened.push(id), (options) => toasts.push(options));
-  h.report({ threadId: 'a', status: 'needs-review', key: 'a:end' });
-  h.focus(false);
-  h.report({ threadId: 'b', status: 'failed', key: 'b:end', reason: 'error' });
-  assert.equal(toasts.length, 1);
-  assert.equal(toasts[0]!.message, '사업 개요 다듬기 — 검토할 변경이 있습니다');
-  assert.equal(toasts[0]!.action?.label, '열기');
-  toasts[0]!.action!.onClick();
-  assert.deepEqual(opened, ['a']);
-  off();
-  h.focus(true);
-  h.report({ threadId: 'c', status: 'needs-review', key: 'c:end' });
-  assert.equal(toasts.length, 1, 'uninstalled');
 });
 
 test('web notifications go out only when the site already has permission, and never ask', () => {

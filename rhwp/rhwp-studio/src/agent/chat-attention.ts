@@ -3,14 +3,13 @@
  *
  * 각 사이드바는 자기 채팅들의 상태(chat-status)를 사실에서 다시 계산해 쓰고, 바뀐 상태를
  * 여기 알린다(report). 장부는 "이 턴의 이 상태"마다 한 번만 알리고, 알렸지만 아직 보지 않은
- * 채팅을 센다 — 그 수가 앱 아이콘 배지다. 알리는 길(OS 알림·앱 안 토스트)은 구독자가 고른다.
+ * 채팅을 센다 — 그 수가 앱 아이콘 배지다. 알리는 길(OS·브라우저 알림)은 구독자가 고른다.
  *
  * - 보고 있는 채팅(보이고 창에 초점)은 알리지 않는다.
- * - 창에 초점이 있으면 앱 안(in-app), 없으면 시스템(system). 완료는 앱 안에서는 알리지 않는다 —
- *   칩과 머리 숫자로 충분하다.
+ * - 창에 초점이 있으면 세기만 하고 알리지 않는다 — 앱 안에서는 채팅 목록 행의 상태와 머리 숫자가 알린다.
  * - 같은 열쇠는 다시 알리지 않는다. 한 턴의 끝 상태(검토·오류·완료)는 열쇠 하나를 나눠 쓴다.
  * - 시스템 알림(OS·브라우저)은 잠금 화면과 알림 센터에 남는다. 그래서 기본은 앱 이름과 정해진
- *   문구뿐이고, 채팅 제목과 문서 이름은 사용자가 켰을 때만 싣는다. 앱 안 토스트는 늘 제목을 보인다.
+ *   문구뿐이고, 채팅 제목과 문서 이름은 사용자가 켰을 때만 싣는다.
  *
  * 순수 장부다 — 환경(상태 읽기·창 초점·제목 표시 설정)은 주입받는다.
  */
@@ -29,9 +28,6 @@ export interface AttentionNotice {
   title: string;
   /** 시스템 알림 본문 — `답변을 기다립니다`. 제목 표시를 켰으면 `답변을 기다립니다 · 사업 제안서.hwpx`. */
   body: string;
-  /** 앱 안 토스트 글 — `{제목} — 답변을 기다립니다`. */
-  message: string;
-  channel: 'system' | 'in-app';
 }
 
 export interface AttentionReport {
@@ -84,8 +80,6 @@ const DEFAULT_MAX_KEYS = 256;
 /** 내용을 싣지 않는 시스템 알림의 제목. */
 export const ATTENTION_APP_NAME = 'HamaEditor';
 const TITLE_MAX = 60;
-/** 앱 안 토스트는 손을 대야 하는 상태만 — 완료는 칩과 머리 숫자가 알린다. */
-const IN_APP_STATES: ReadonlySet<AttentionState> = new Set<AttentionState>(['needs-input', 'needs-review', 'failed']);
 
 function isAttentionState(status: ChatRunStatus | null): status is AttentionState {
   return status !== null && ATTENTION_STATUSES.has(status);
@@ -176,8 +170,7 @@ export function createChatAttentionLedger(env: ChatAttentionEnvironment): ChatAt
       remember(report.key);
       pending.set(report.threadId, state);
       emitCount();
-      const channel = env.windowFocused() ? 'in-app' : 'system';
-      if (channel === 'in-app' && !IN_APP_STATES.has(state)) return;
+      if (env.windowFocused()) return;
       const title = attentionTitle(report.title);
       const phrase = attentionPhrase(state, report.reason, report.label, report.summary);
       const details = env.showDetails?.() === true;
@@ -188,8 +181,6 @@ export function createChatAttentionLedger(env: ChatAttentionEnvironment): ChatAt
         state,
         title: details ? title : ATTENTION_APP_NAME,
         body: documentName ? `${phrase} (${documentName})` : phrase,
-        message: `${title} — ${phrase}`,
-        channel,
       };
       each((listener) => listener.notice?.(notice));
     },
