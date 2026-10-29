@@ -1,8 +1,8 @@
 /**
- * 허브 `hama-status` 프레임을 믿지 않고 다시 읽는다. 플랜이 없거나 모양이 틀리면 null.
+ * 허브 `hama-status` 프레임을 믿지 않고 다시 읽는다. 모양이 틀리면 unavailable 스냅샷이다.
  * 모델은 Haiku 5.5 하나만 Claude 로 받는다 — 허브가 무엇을 보내도 Sonnet·Opus 는 고를 수 없다.
  */
-import type { HamaCap, HamaCapWindow, HamaStatus, PiModelConfig } from './types.ts';
+import type { HamaAvailability, HamaCap, HamaCapWindow, HamaStatus, PiModelConfig } from './types.ts';
 
 export const HAMA_CLAUDE_MODEL = 'anthropic/claude-haiku-5.5';
 export const HAMA_CAPS: readonly HamaCap[] = ['cap_5h', 'cap_week', 'cap_month'];
@@ -53,11 +53,21 @@ function model(value: unknown): PiModelConfig | null {
   };
 }
 
-export function readHamaStatus(value: unknown): HamaStatus | null {
-  if (!value || typeof value !== 'object') return null;
+/** 쓸 수 없는 Hama — 브라우저 Studio, 옛 허브, 플랜이 아닌 라이선스. */
+export function inactiveHamaStatus(availability: Exclude<HamaAvailability, 'active'> = 'unavailable'): HamaStatus {
+  return {
+    availability, plan: null, caps: null, blocked: null, models: [], defaultModelId: HAMA_CLAUDE_MODEL, cheapModelIds: [], ready: false,
+  };
+}
+
+export function readHamaStatus(value: unknown): HamaStatus {
+  if (!value || typeof value !== 'object') return inactiveHamaStatus();
   const src = value as Record<string, unknown>;
+  if (src['availability'] === 'not_enrolled') return inactiveHamaStatus('not_enrolled');
   const plan = (src['plan'] ?? null) as Record<string, unknown> | null;
-  if (!plan || typeof plan !== 'object') return null;
+  if (src['availability'] !== 'active' || !plan || typeof plan !== 'object' || plan['status'] !== 'active') {
+    return inactiveHamaStatus();
+  }
   const rawCaps = (src['caps'] ?? {}) as Record<string, unknown>;
   const caps = Object.fromEntries(HAMA_CAPS.map((cap) => [cap, capWindow(rawCaps[cap])])) as Record<HamaCap, HamaCapWindow | null>;
   const rawBlocked = (src['blocked'] ?? null) as Record<string, unknown> | null;
@@ -78,8 +88,9 @@ export function readHamaStatus(value: unknown): HamaStatus | null {
     .filter((id): id is string => typeof id === 'string' && ids.has(id) && !id.startsWith('anthropic/'));
   const requestedDefault = src['defaultModelId'];
   return {
+    availability: 'active',
     plan: {
-      status: plan['status'] === 'active' ? 'active' : 'disabled',
+      status: 'active',
       allowanceUsd: usd(plan['allowanceUsd']),
       periodStart: time(plan['periodStart']),
       periodEnd: time(plan['periodEnd']),
@@ -95,7 +106,7 @@ export function readHamaStatus(value: unknown): HamaStatus | null {
   };
 }
 
-/** Hama 를 지금 채팅에 쓸 수 있다: 플랜이 살아 있고 Pi 런타임이 있다. */
+/** Hama 를 지금 채팅에 쓸 수 있다: 플랜이 살아 있고 Pi 런타임이 있다. 라이선스 등급으로 짐작하지 않는다. */
 export function hamaConnected(status: HamaStatus | null | undefined): boolean {
-  return status?.plan.status === 'active' && status.ready && status.models.length > 0;
+  return status?.availability === 'active' && status.ready && status.models.length > 0;
 }

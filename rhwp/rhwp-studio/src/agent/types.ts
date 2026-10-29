@@ -901,17 +901,24 @@ export interface HamaCapWindow {
 }
 
 /**
+ * Hama 를 쓸 수 있는지. active: 플랜이 살아 있다. not_enrolled: 서버가 403 hama_not_enrolled 로 답했다
+ * (Free·Pro 포함 Hama 플랜이 아닌 모든 라이선스). unavailable: 브라우저 Studio, 서버 꺼짐·404, 네트워크 오류, 라이선스 없음.
+ */
+export type HamaAvailability = 'active' | 'not_enrolled' | 'unavailable';
+
+/**
  * 허브 → Studio `hama-status` 의 스냅샷 (사이트 API `GET /v1/hama/status` 를 정리한 것). 시각은 모두 epoch ms.
- * 플랜이 없거나(미가입·해지) 데스크톱이 아니면 null 이 온다.
+ * 언제나 온다 — active 가 아니면 plan·caps·blocked 는 null 이고 모델은 비어 있다.
  */
 export interface HamaStatus {
+  availability: HamaAvailability;
   plan: {
     status: 'active' | 'disabled';
     allowanceUsd: number | null;
     periodStart: number | null;
     periodEnd: number | null;
-  };
-  caps: Record<HamaCap, HamaCapWindow | null>;
+  } | null;
+  caps: Record<HamaCap, HamaCapWindow | null> | null;
   /** 지금 막힌 한도. cheapAvailable 이면 싼 모델로는 계속 쓸 수 있다 (이번 달 한도는 언제나 false). */
   blocked: { cap: HamaCap; resetsAt: number | null; cheapAvailable: boolean } | null;
   /** Hama 하네스의 모델. Claude 는 Haiku 5.5 하나뿐이고 기본 모델이다. 그 뒤가 싼 모델이다. */
@@ -1408,7 +1415,7 @@ export type SidebarEvent =
   | { type: 'usage-report'; usage: UsageSummary }
   | { type: 'pi-status'; status: PiStatus }
   /** 허브 → Studio `hama-status`. Hama 플랜 상태가 바뀌었다 (요청의 답이거나 한도·라이선스 변화). */
-  | { type: 'hama-status'; status: HamaStatus | null }
+  | { type: 'hama-status'; status: HamaStatus }
   | {
       type: 'pi-setup-progress';
       requestId: string;

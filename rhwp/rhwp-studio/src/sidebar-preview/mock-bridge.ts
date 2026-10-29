@@ -1,5 +1,6 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
+import { inactiveHamaStatus } from '../agent/hama-status.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import { isChatPermissionCapability, readChatPermissionRequest } from '../agent/chat-permissions.ts';
 import { linkError } from '../agent/document-link.ts';
@@ -260,7 +261,7 @@ export interface MockBridgeOptions {
   /** Pi 가 선물 크레딧을 쓰는 중인지(mock-gift). 허브처럼 내 키보다 먼저 쓴다. */
   piGift?: () => boolean;
   /** Hama 플랜 상태(mock-hama). 없으면 플랜이 없다. */
-  hama?: T.HamaStatus | null;
+  hama?: T.HamaStatus;
 }
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
@@ -515,10 +516,10 @@ export function createMockBridge(
     setPiModels(status.models);
     emit({ type: 'pi-status', status });
   };
-  let hamaStatus: T.HamaStatus | null = options.hama ?? null;
-  setHamaModels(hamaStatus?.models ?? []);
+  let hamaStatus: T.HamaStatus = options.hama ?? inactiveHamaStatus();
+  setHamaModels(hamaStatus.models);
   const emitHama = () => {
-    setHamaModels(hamaStatus?.models ?? []);
+    setHamaModels(hamaStatus.models);
     emit({ type: 'hama-status', status: hamaStatus });
   };
   let tokenUsageScanned = false;
