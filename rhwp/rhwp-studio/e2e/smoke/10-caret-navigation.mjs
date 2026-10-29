@@ -80,6 +80,8 @@ async function checkArea(page, label) {
 export default {
   name: 'caret navigation and line breaks',
   async run({ page }) {
+    // 아래 키는 macOS 기준이다. Linux CI 에서도 같은 키로 움직이게 플랫폼을 고정한다.
+    await page.evaluate(() => { globalThis.__rhwpTestPlatformKind = 'mac'; });
     // Shift+Enter 는 문단을 나누지 않고 강제 줄바꿈을 넣으며, 지웠다 되돌려도 줄바꿈으로 돌아온다.
     await newDocument(page);
     await clickPage(page);
