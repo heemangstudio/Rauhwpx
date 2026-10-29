@@ -120,7 +120,7 @@ Pipeline: parser → model → document_core → renderer → serializer, expose
 
 ## Hub (`rhwp/rhwp-agent/`)
 
-`server.mjs` is the WS hub (`/studio`, `/mcp`, `/healthz`). Adapters: `agents/claude.mjs`, `agents/codex.mjs` (+ `codex-app-server.mjs`), `agents/pi.mjs`; shared briefs in `agents/backend.mjs`. Each CLI spawns `mcp-stdio.mjs`, which forwards tool calls to the hub and on to the Studio tab. Tools are `mcp__rhwp__<name>` in `tools.mjs`. Revision contract: every read returns `revision`, every write requires `expectedRevision`, mismatch returns `REVISION_MISMATCH`; saving does not bump the revision. Coordinates are 0-based body-text `sectionIdx`/`paraIdx`/`charOffset`.
+`server.mjs` is the WS hub (`/studio`, `/mcp`, `/healthz`). Adapters: `agents/claude.mjs`, `agents/codex.mjs` (+ `codex-app-server.mjs`), `agents/pi.mjs` (BYOK: the user's own keys and the gift), `agents/hama.mjs` (the Hama plan on the Pi runtime with the license lease, `hama-hosted.mjs`); shared briefs in `agents/backend.mjs`. Each CLI spawns `mcp-stdio.mjs`, which forwards tool calls to the hub and on to the Studio tab. Tools are `mcp__rhwp__<name>` in `tools.mjs`. Revision contract: every read returns `revision`, every write requires `expectedRevision`, mismatch returns `REVISION_MISMATCH`; saving does not bump the revision. Coordinates are 0-based body-text `sectionIdx`/`paraIdx`/`charOffset`.
 
 ## Other deliverables
 
