@@ -94,7 +94,7 @@ const requiredArchiveFiles = [
 for (const path of requiredArchiveFiles) {
   if (!archivedFiles.includes(path)) throw new Error(`Packaged archive file is missing: ${path}`);
 }
-if (!archivedFiles.some((path) => /^\/rhwp\/rhwp-studio\/dist\/assets\/rhwp_bg-.*\.wasm$/.test(path))) {
+if (!archivedFiles.some((path) => /^\/rhwp\/rhwp-studio\/dist\/assets\/hm_wasm_bg-.*\.wasm$/.test(path))) {
   throw new Error('Packaged archive is missing the Studio WASM engine');
 }
 const forbiddenArchiveFiles = [
