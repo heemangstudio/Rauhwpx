@@ -78,12 +78,12 @@ export function isGiftExhaustedError(text) {
 }
 const PI_KEY_MISSING_MESSAGE = 'Pi 설정에서 OpenRouter 키를 연결해 주세요.';
 /** Hama 하네스를 골랐는데 살아 있는 Hama 플랜이 없다. 사용자 키로 넘어가지 않는다. */
-export const HAMA_UNAVAILABLE_MESSAGE = 'Hama 플랜이 활성화되어 있지 않습니다.';
+export const HAMA_UNAVAILABLE_MESSAGE = 'Hama 플랜이 활성화되어 있지 않아요.';
 /** Hama 플랜의 한도 이름 → 알림 문구. 리셋 시각은 실패의 resetAt 으로 따로 간다. */
 export const HAMA_CAP_MESSAGES = Object.freeze({
-  cap_5h: 'Hama 5시간 사용 한도에 도달했습니다.',
-  cap_week: 'Hama 주간 사용 한도에 도달했습니다.',
-  cap_month: 'Hama 이번 달 사용량을 모두 썼습니다.',
+  cap_5h: 'Hama 5시간 사용 한도에 도달했어요.',
+  cap_week: 'Hama 주간 사용 한도에 도달했어요.',
+  cap_month: 'Hama 이번 달 사용량을 모두 썼어요.',
 });
 /** 내 키를 먼저 쓰다 그 크레딧이 떨어졌을 때. 다음 요청부터 선물 크레딧으로 넘어간다. */
 export const OWN_KEY_EXHAUSTED_GIFT_MESSAGE = 'OpenRouter 크레딧이 부족합니다. 다음 요청부터 Claude 크레딧을 씁니다.';

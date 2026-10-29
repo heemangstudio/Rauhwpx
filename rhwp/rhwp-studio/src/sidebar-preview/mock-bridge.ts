@@ -92,12 +92,12 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
     case 'hama-cap':
       // 허브가 [hama-cap:…] 꼬리표로 분류한 Hama 5시간 한도. 리셋 시각은 3시간 12분 뒤.
       return {
-        ...failure('usage_limit', 'Hama 5시간 사용 한도에 도달했습니다.\n429 Hama quota exceeded (cap_5h)', 'hama_cap_5h', false, now + 3 * 3_600_000 + 12 * 60_000),
+        ...failure('usage_limit', 'Hama 5시간 사용 한도에 도달했어요.\n429 Hama quota exceeded (cap_5h)', 'hama_cap_5h', false, now + 3 * 3_600_000 + 12 * 60_000),
         agent: 'hama',
       };
     case 'hama-month':
       return {
-        ...failure('usage_limit', 'Hama 이번 달 사용량을 모두 썼습니다.\n429 Hama quota exceeded (cap_month)', 'hama_cap_month', false, now + 9 * 24 * 3_600_000),
+        ...failure('usage_limit', 'Hama 이번 달 사용량을 모두 썼어요.\n429 Hama quota exceeded (cap_month)', 'hama_cap_month', false, now + 9 * 24 * 3_600_000),
         agent: 'hama',
       };
     case 'credits':

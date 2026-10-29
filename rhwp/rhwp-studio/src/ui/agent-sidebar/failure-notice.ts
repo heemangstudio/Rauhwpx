@@ -114,9 +114,9 @@ export function formatResetAt(at: number, now: number, timeZone?: string): strin
 }
 
 const HAMA_CAP_TITLES: Record<string, string> = {
-  hama_cap_5h: 'Hama 5시간 사용 한도에 도달했습니다',
-  hama_cap_week: 'Hama 주간 사용 한도에 도달했습니다',
-  hama_cap_month: 'Hama 이번 달 사용량을 모두 썼습니다',
+  hama_cap_5h: 'Hama 5시간 사용 한도에 도달했어요',
+  hama_cap_week: 'Hama 주간 사용 한도에 도달했어요',
+  hama_cap_month: 'Hama 이번 달 사용량을 모두 썼어요',
 };
 
 /** Hama 플랜의 한도 실패 (5시간·주간·이번 달). */
@@ -124,16 +124,16 @@ export function isHamaCapFailure(failure: Pick<ProviderFailure, 'code'>): boolea
   return failure.code !== null && failure.code in HAMA_CAP_TITLES;
 }
 
-/** 이 시각까지 남은 시간 — '3시간 12분 뒤 다시 쓸 수 있습니다'. 이틀 넘게 남으면 날짜로 말한다. */
+/** 이 시각까지 남은 시간 — '3시간 12분 뒤 다시 쓸 수 있어요'. 이틀 넘게 남으면 날짜로 말한다. */
 export function hamaCountdownLine(at: number, now: number, timeZone?: string): string {
   const left = at - now;
-  if (left <= 0) return '지금 다시 쓸 수 있습니다';
-  if (left > 48 * 3_600_000) return `${formatResetAt(at, now, timeZone)}에 다시 쓸 수 있습니다`;
+  if (left <= 0) return '지금 다시 쓸 수 있어요';
+  if (left > 48 * 3_600_000) return `${formatResetAt(at, now, timeZone)}에 다시 쓸 수 있어요`;
   const minutes = Math.ceil(left / 60_000);
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   const span = hours > 0 ? (rest > 0 ? `${hours}시간 ${rest}분` : `${hours}시간`) : `${minutes}분`;
-  return `${span} 뒤 다시 쓸 수 있습니다`;
+  return `${span} 뒤 다시 쓸 수 있어요`;
 }
 
 /** 내 OpenRouter 키의 크레딧 부족. own_credits 는 다음 요청이 선물 크레딧으로 간다. */
@@ -148,7 +148,7 @@ function isPiSetupFailure(failure: ProviderFailure): boolean {
 function titleFor(failure: ProviderFailure, label: string, origin: string): string {
   switch (failure.class) {
     case 'auth_required':
-      if (failure.code === 'HAMA_NOT_ACTIVE') return 'Hama 플랜이 활성화되어 있지 않습니다';
+      if (failure.code === 'HAMA_NOT_ACTIVE') return 'Hama 플랜이 활성화되어 있지 않아요';
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
       if (failure.code !== null && HAMA_CAP_TITLES[failure.code]) return HAMA_CAP_TITLES[failure.code]!;
@@ -202,7 +202,7 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
     // 한도는 기다리면 풀린다. 그동안 Hama 안의 싼 모델로 잇거나(기본), BYOK 로 옮긴다.
     const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
     if (ctx.hamaSwitchedTo) {
-      line = `${ctx.hamaSwitchedTo}로 바꿨습니다`;
+      line = `${ctx.hamaSwitchedTo}로 바꿨어요`;
       if (ctx.hasRetry) actions.push(retryAction());
       return { title, line, actions, detail, compact: false };
     }

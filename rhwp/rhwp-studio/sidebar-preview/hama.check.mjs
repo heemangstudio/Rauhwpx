@@ -36,23 +36,23 @@ export async function checkHamaCapNotices(page, origin, artifacts) {
   for (const theme of ['light', 'dark']) {
     await openHamaFailure(page, origin, { failure: 'hama-cap', hama: 'cap5h', theme });
     let [notice] = await notices(page);
-    assert.equal(notice.title, 'Hama 5시간 사용 한도에 도달했습니다');
-    assert.match(notice.line, /^3시간 1[12]분 뒤 다시 쓸 수 있습니다$/);
+    assert.equal(notice.title, 'Hama 5시간 사용 한도에 도달했어요');
+    assert.match(notice.line, /^3시간 1[12]분 뒤 다시 쓸 수 있어요$/);
     assert.deepEqual(notice.actions, ['hama-cheap', 'byok']);
     await shot(page, artifacts, `cap-5h-${theme}`);
 
     await page.click('.ag-failure-action[data-action="hama-cheap"]');
     await page.waitForFunction(() => document.querySelector('.ag-llm-name')?.textContent === 'DeepSeek V4.1 Flash');
     [notice] = await notices(page);
-    assert.equal(notice.line, 'DeepSeek V4.1 Flash로 바꿨습니다');
+    assert.equal(notice.line, 'DeepSeek V4.1 Flash로 바꿨어요');
     assert.deepEqual(notice.actions, ['retry']);
     assert.equal(await page.evaluate(() => document.querySelector('.ag-root').dataset.agent), 'hama', 'the switch stays inside Hama');
     await shot(page, artifacts, `cheap-switched-${theme}`);
 
     await openHamaFailure(page, origin, { failure: 'hama-month', hama: 'capmonth', theme });
     [notice] = await notices(page);
-    assert.equal(notice.title, 'Hama 이번 달 사용량을 모두 썼습니다');
-    assert.match(notice.line, /에 다시 쓸 수 있습니다$/);
+    assert.equal(notice.title, 'Hama 이번 달 사용량을 모두 썼어요');
+    assert.match(notice.line, /에 다시 쓸 수 있어요$/);
     assert.deepEqual(notice.actions, ['byok']);
     await shot(page, artifacts, `cap-month-${theme}`);
   }

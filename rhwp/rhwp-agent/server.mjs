@@ -6221,7 +6221,7 @@ async function handleStudioMessage(record, sock, msg) {
         await hamaHarness.ensureFresh({ timeoutMs: 3_000 }).catch(() => {});
         if (!hamaHarness.active() || !piStatus.installed) {
           rejectStart(Object.assign(
-            new Error('Hama 플랜이 활성화되어 있지 않습니다.'),
+            new Error('Hama 플랜이 활성화되어 있지 않아요.'),
             { code: 'HAMA_NOT_ACTIVE' },
           ));
           return;

@@ -27,34 +27,34 @@ const ids = (view: ReturnType<typeof failureView>) => view.actions.map((action) 
 test('a 5-hour cap counts down and offers the cheap model first, then BYOK', () => {
   const resetAt = NOW + 3 * HOUR + 12 * 60_000;
   const view = failureView(cap('hama_cap_5h', resetAt), 'turn', ctx({ resetAt }));
-  assert.equal(view.title, 'Hama 5시간 사용 한도에 도달했습니다');
-  assert.equal(view.line, '3시간 12분 뒤 다시 쓸 수 있습니다');
+  assert.equal(view.title, 'Hama 5시간 사용 한도에 도달했어요');
+  assert.equal(view.line, '3시간 12분 뒤 다시 쓸 수 있어요');
   assert.deepEqual(ids(view), ['hama-cheap', 'byok']);
   assert.equal(view.countdownAt, resetAt);
 
   // 싼 모델로 바꾼 뒤에는 다시 보내기만 남는다.
   const switched = failureView(cap('hama_cap_5h', resetAt), 'turn', ctx({ resetAt, hamaSwitchedTo: CHEAP.name }));
-  assert.equal(switched.line, 'DeepSeek V4.1 Flash로 바꿨습니다');
+  assert.equal(switched.line, 'DeepSeek V4.1 Flash로 바꿨어요');
   assert.deepEqual(ids(switched), ['retry']);
 
   // 싼 모델이 없으면 BYOK 만, 리셋이 지났으면 다시 시도가 앞에 선다.
   assert.deepEqual(ids(failureView(cap('hama_cap_week', resetAt), 'turn', ctx({ resetAt, hamaCheapModel: null }))), ['byok']);
   const passed = failureView(cap('hama_cap_5h', NOW - 1), 'turn', ctx({ resetAt: NOW - 1 }));
-  assert.equal(passed.line, '지금 다시 쓸 수 있습니다');
+  assert.equal(passed.line, '지금 다시 쓸 수 있어요');
   assert.deepEqual(ids(passed), ['retry', 'byok']);
 });
 
 test('a month cap shows only the reset time and BYOK', () => {
   const resetAt = NOW + 9 * 24 * HOUR;
   const view = failureView(cap('hama_cap_month', resetAt), 'turn', ctx({ resetAt }));
-  assert.equal(view.title, 'Hama 이번 달 사용량을 모두 썼습니다');
-  assert.match(view.line ?? '', /^11월 8일 .+에 다시 쓸 수 있습니다$/);
+  assert.equal(view.title, 'Hama 이번 달 사용량을 모두 썼어요');
+  assert.match(view.line ?? '', /^11월 8일 .+에 다시 쓸 수 있어요$/);
   assert.deepEqual(ids(view), ['byok']);
 });
 
 test('the countdown reads hours and minutes, then minutes', () => {
-  assert.equal(hamaCountdownLine(NOW + 2 * HOUR, NOW), '2시간 뒤 다시 쓸 수 있습니다');
-  assert.equal(hamaCountdownLine(NOW + 90_000, NOW), '2분 뒤 다시 쓸 수 있습니다');
+  assert.equal(hamaCountdownLine(NOW + 2 * HOUR, NOW), '2시간 뒤 다시 쓸 수 있어요');
+  assert.equal(hamaCountdownLine(NOW + 90_000, NOW), '2분 뒤 다시 쓸 수 있어요');
 });
 
 test('Hama is connected only for an active plan; not enrolled (Pro included) and unknown shapes are not', () => {

@@ -129,7 +129,7 @@ function sanitizeCode(value) {
 
 const CLASS_DEFAULT_MESSAGE = Object.freeze({
   auth_required: '프로바이더 로그인이 필요합니다.',
-  usage_limit: '프로바이더 사용 한도에 도달했습니다.',
+  usage_limit: '프로바이더 사용 한도에 도달했어요.',
   provider_error: '프로바이더 서버가 요청을 처리하지 못했습니다.',
   network: '프로바이더에 연결하지 못했습니다.',
   process_exited: '에이전트 실행이 중간에 멈췄습니다.',
