@@ -601,7 +601,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   const restarted = new WeakSet<ThreadFailureMessage>();
   const resumes = new Map<string, ArmedResume>();
   /** 같은 실패의 다시 시도가 실패한 횟수. 두 번이면 그 뒤 알림의 다시 시도가 자동 수정이 된다. */
-  const escalation = createRetryEscalation();
+  const escalation = createRetryEscalation(2, 'provider-failure');
   const escalated = new WeakSet<ThreadFailureMessage>();
   const autofixButtons = new Map<ThreadFailureMessage, AutofixButton>();
   const escalationKey = (failure: ProviderFailure) => `${failure.agent}:${failure.class}:${failure.code ?? ''}`;

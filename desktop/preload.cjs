@@ -79,9 +79,12 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     submit: (draft) => ipcRenderer.invoke('desktop:issue-report-submit', draft),
   },
   // 자동 수정. run 은 메인이 코딩 에이전트를 창 없이 돌려 이 컴퓨터의 앱 상태를 고치고, 결과를 문제 보고로 보낸다.
+  // prewarm 은 단추가 서기 전에 제공자를 미리 고르고, outcome 은 고친 자리의 동작이 다시 됐는지 메인에 알린다.
   // 설정(켜기·제공자 순서·모델·노력)은 메인이 저장하고, 바뀌면 모든 창에 알린다.
   autofix: {
     run: (request) => ipcRenderer.invoke('desktop:autofix-run', request),
+    prewarm: () => ipcRenderer.invoke('desktop:autofix-prewarm'),
+    outcome: (outcome) => ipcRenderer.invoke('desktop:autofix-outcome', outcome),
     getSettings: () => ipcRenderer.invoke('desktop:autofix-get-settings'),
     setSettings: (patch) => ipcRenderer.invoke('desktop:autofix-set-settings', patch),
     onChange: (callback) => {

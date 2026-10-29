@@ -93,7 +93,8 @@ import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
 import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
 import { setToastReporter, showToast } from '@/ui/toast';
-import { loadAutofixSettings } from '@/ui/autofix/autofix';
+import { loadAutofixSettings, noteAutofixOutcome } from '@/ui/autofix/autofix';
+import { installManualAutofix } from '@/ui/autofix/autofix-manual';
 import { createAutofixButton } from '@/ui/autofix/autofix-button';
 import { installRendererDiagnostics } from '@/ui/issue-report/renderer-diagnostics';
 import { REPORT_ISSUE_COMMAND, startIssueReport } from '@/ui/issue-report/issue-report';
@@ -601,6 +602,8 @@ function refuseDocumentOpenWhileTrapped(): boolean {
 }
 
 onEngineTrap(() => {
+  // 자동 수정이 고치고 다시 연 페이지에서 또 멈췄다.
+  noteAutofixOutcome('engine-trap', false);
   if (!trapRecoveryAvailable()) {
     // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다. 엔진 메모리는 모든 문서가
     // 함께 쓰므로 열린 문서 전부를 남긴다.
@@ -1051,6 +1054,9 @@ installDesktopMenuCommands(dispatcher);
 /** 문제 보고를 여는 함수. 데스크톱이 아니면 null — 사이드바의 문제 보고 단추도 없다. */
 let issueReporter: (() => void) | null = null;
 installIssueReport();
+// 제목 막대의 자동 수정 단추(데스크톱, 자동 수정을 켠 경우): 오류 알림 없이도 지금 상태를 적고 고친다.
+// 편집기 준비와 상관없이 단다 — 엔진이 뜨지 못해도 쓸 수 있다.
+installManualAutofix({ reportIssue: () => issueReporter?.() });
 
 /**
  * 문제 보고(데스크톱 전용): 도움말 메뉴·명령 팔레트·Cmd/Ctrl+Shift+/·오류 토스트·허브 끊김 안내에서 연다.
@@ -1950,10 +1956,14 @@ async function initialize(): Promise<void> {
     }
 
     rendererInitialized = true;
+    // 자동 수정이 고치고 다시 불러온 페이지라면 이번에는 떴다(초기화 실패·렌더러 비정상 종료).
+    noteAutofixOutcome('init-failure', true);
+    noteAutofixOutcome('renderer-crash', true);
   } catch (error) {
     rendererInitializationError = error instanceof Error ? error.message : String(error);
     msg.textContent = `초기화 실패: ${error}`;
     console.error('[main] 초기화 실패:', error);
+    noteAutofixOutcome('init-failure', false);
     offerInitAutofix(msg, rendererInitializationError);
   }
 }
@@ -6397,6 +6407,7 @@ async function recoverDocumentsAfterTrap(run: TrapRecoveryRun<DocumentSession>):
         attach: (session) => attachSession(session),
       });
     });
+    if (!report.stoppedByTrap) noteAutofixOutcome('engine-trap', true);
     presentTrapRecoveryReport(report, {
       toast: (message) => showToast({ message, durationMs: 6000 }),
       openEntry: (entry) => openTrapEntryOnDemand(entry),

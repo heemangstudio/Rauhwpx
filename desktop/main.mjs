@@ -922,6 +922,8 @@ async function bestEffortStartupCleanup(label, cleanup) {
 
 // 자동 수정은 아래에서 설치된다. 그 전에 앱이 끝나도 정리 단계가 그대로 돌게 빈 함수로 시작한다.
 let disposeAutofix = async () => {};
+/** 고친 자리의 확인 결과 가운데 메인이 직접 아는 것(렌더러가 다시 죽음). 설치 전에는 버린다. */
+let noteAutofixOutcome = () => false;
 const updateLifecycle = createUpdateLifecycle({
   app,
   updater: autoUpdater,
@@ -1307,6 +1309,8 @@ async function createWindow(launch = launchRequest(), {
     updates?.forgetRunningChats(session.sessionId);
     // 비정상 종료면 빈 창 대신 안내 화면을 띄운다. 첫 번째는 다시 열기, 두 번째부터는 자동 수정을 권한다.
     if (details?.reason === 'clean-exit' || quitting || updateRestartClosing || window.isDestroyed()) return;
+    // 자동 수정이 고쳤다고 한 뒤 다시 죽었으면 고친 것이 버티지 못했다.
+    noteAutofixOutcome({ surface: 'renderer-crash', ok: false });
     session.crashCount = (session.crashCount ?? 0) + 1;
     if (session.crashCount > MAX_CRASH_PAGES) return;
     session.crashPage = true;
@@ -1637,6 +1641,7 @@ const autofix = installAutofixHost({
   unpacked: unpackedPath,
 });
 disposeAutofix = () => autofix.dispose();
+noteAutofixOutcome = (outcome) => autofix.noteOutcome(outcome);
 // 렌더러 오류. 렌더러가 줄이고 겹친 것을 묶어 보내지만, 메인도 창마다 1분에 120줄까지만 받는다.
 const RENDERER_LOG_PER_MINUTE = 120;
 const rendererLogBudget = new Map();

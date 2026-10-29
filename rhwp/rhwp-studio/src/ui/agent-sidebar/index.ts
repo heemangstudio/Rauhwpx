@@ -3403,7 +3403,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const connRetry = el('button', 'ag-conn-retry', '다시 연결');
   connRetry.type = 'button';
   /** 다시 연결이 두 번 실패했거나 앱이 띄우는 허브가 뜨지 않으면 그 자리에 자동 수정을 둔다. */
-  const hubEscalation = createRetryEscalation();
+  const hubEscalation = createRetryEscalation(2, 'hub-connection');
   let hubRetryPending = false;
   let connAutofix: AutofixButton | null = null;
   function reconnectHub(): void {
