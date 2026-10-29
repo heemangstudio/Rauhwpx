@@ -468,6 +468,12 @@
   mask-image: url('/icons/provider-pi.svg');
 }
 
+/* 자리 표시 글리프 — Hama 마크가 들어오면 바꾼다. */
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='hama'] {
+  -webkit-mask-image: url('/icons/provider-pi.svg');
+  mask-image: url('/icons/provider-pi.svg');
+}
+
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {
   -webkit-mask-image: url('/icons/provider-grok.svg');
   mask-image: url('/icons/provider-grok.svg');

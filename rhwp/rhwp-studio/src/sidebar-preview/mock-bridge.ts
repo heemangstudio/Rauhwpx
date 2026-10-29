@@ -7,6 +7,7 @@ import {
   defaultModelForAgent,
   setModelCatalog,
   setPiModels,
+  setHamaModels,
 } from '../agent/models.ts';
 import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
@@ -258,6 +259,8 @@ export interface MockBridgeOptions {
   liveChat?: MockLiveChat;
   /** Pi 가 선물 크레딧을 쓰는 중인지(mock-gift). 허브처럼 내 키보다 먼저 쓴다. */
   piGift?: () => boolean;
+  /** Hama 플랜 상태(mock-hama). 없으면 플랜이 없다. */
+  hama?: T.HamaStatus | null;
 }
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
@@ -511,6 +514,12 @@ export function createMockBridge(
     const status = syncPi();
     setPiModels(status.models);
     emit({ type: 'pi-status', status });
+  };
+  let hamaStatus: T.HamaStatus | null = options.hama ?? null;
+  setHamaModels(hamaStatus?.models ?? []);
+  const emitHama = () => {
+    setHamaModels(hamaStatus?.models ?? []);
+    emit({ type: 'hama-status', status: hamaStatus });
   };
   let tokenUsageScanned = false;
   const later = (fn: () => void, delay = 20) => {
@@ -1182,6 +1191,11 @@ export function createMockBridge(
       return data.usage;
     },
     requestPiStatus: async () => syncPi(),
+    requestHamaStatus: async () => {
+      emitHama();
+      return hamaStatus;
+    },
+    hamaStatus: () => hamaStatus,
     installPi: async () => {
       await bridge.installAgent('pi');
       emitPi();

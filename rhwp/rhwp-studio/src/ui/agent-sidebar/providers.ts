@@ -10,7 +10,8 @@ import type { AgentName } from '../../agent/types.ts';
 export const AGENT_LABEL: Record<AgentName, string> = {
   claude: 'Claude',
   codex: 'Codex',
-  pi: 'Pi',
+  pi: 'BYOK',
+  hama: 'Hama',
   grok: 'Grok',
   cursor: 'Cursor',
   opencode: 'OpenCode',
@@ -21,6 +22,7 @@ export const PROVIDER_ORDER = [
   'claude',
   'codex',
   'pi',
+  'hama',
 ] as const satisfies readonly AgentName[];
 
 /* 새 프로바이더가 순서에서 빠지면 여기서 컴파일이 깨진다. */
@@ -30,6 +32,8 @@ void PROVIDER_ORDER;
 export const MASK_ICON_AGENTS: readonly AgentName[] = [
   'codex',
   'pi',
+  // 자리 표시 — Hama 마크가 들어오면 바꾼다. 지금은 Pi 글리프를 빌려 쓴다.
+  'hama',
 ];
 
 export const PROVIDER_ICON_SRC: Partial<Record<AgentName, string>> = {

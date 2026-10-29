@@ -94,6 +94,7 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
+  hama: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',

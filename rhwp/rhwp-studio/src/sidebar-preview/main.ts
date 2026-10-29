@@ -58,6 +58,7 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
+import { mockHamaMode, mockHamaStatus } from './mock-hama.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
@@ -215,7 +216,7 @@ const mock = createMockBridge(report, () => {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat, piGift: () => mockGift?.active() === true });
+}, { liveChat, piGift: () => mockGift?.active() === true, hama: mockHamaStatus(mockHamaMode(params)) });
 mockGift?.api.onChange(() => mock.syncPiStatus());
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);

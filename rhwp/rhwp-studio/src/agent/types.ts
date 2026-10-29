@@ -22,7 +22,11 @@ import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
-export type AgentName = 'claude' | 'codex' | 'pi' | 'grok' | 'cursor' | 'opencode';
+/**
+ * 'pi' 는 사용자 키로 도는 BYOK 하네스(내 OpenRouter 키·선물 크레딧)이고, 'hama' 는 Hama 플랜의 호스팅 하네스다.
+ * 둘 다 Pi 런타임을 쓰지만 자격·모델·사용량은 따로다.
+ */
+export type AgentName = 'claude' | 'codex' | 'pi' | 'hama' | 'grok' | 'cursor' | 'opencode';
 
 /** 활성 턴에서 파생되는 사용자 편집 잠금 상태. */
 export interface AgentEditingLease {
@@ -886,6 +890,39 @@ export interface PiStatus {
   giftOrder?: 'first' | 'after';
 }
 
+/** Hama 플랜의 사용 한도 창. 5시간·7일은 굴러가는 창이고 이번 달은 결제 주기다. */
+export type HamaCap = 'cap_5h' | 'cap_week' | 'cap_month';
+
+/** 한도 창 하나. resetsAt 은 epoch ms — 이 창이 한도 아래로 내려오는 가장 이른 시각(이번 달은 주기 끝). */
+export interface HamaCapWindow {
+  usedUsd: number;
+  limitUsd: number;
+  resetsAt: number | null;
+}
+
+/**
+ * 허브 → Studio `hama-status` 의 스냅샷 (사이트 API `GET /v1/hama/status` 를 정리한 것). 시각은 모두 epoch ms.
+ * 플랜이 없거나(미가입·해지) 데스크톱이 아니면 null 이 온다.
+ */
+export interface HamaStatus {
+  plan: {
+    status: 'active' | 'disabled';
+    allowanceUsd: number | null;
+    periodStart: number | null;
+    periodEnd: number | null;
+  };
+  caps: Record<HamaCap, HamaCapWindow | null>;
+  /** 지금 막힌 한도. cheapAvailable 이면 싼 모델로는 계속 쓸 수 있다 (이번 달 한도는 언제나 false). */
+  blocked: { cap: HamaCap; resetsAt: number | null; cheapAvailable: boolean } | null;
+  /** Hama 하네스의 모델. Claude 는 Haiku 5.5 하나뿐이고 기본 모델이다. 그 뒤가 싼 모델이다. */
+  models: PiModelConfig[];
+  defaultModelId: string;
+  /** 한도에 걸렸을 때 넘어갈 싼 모델 id (서버 순서, 첫 번째가 기본). */
+  cheapModelIds: string[];
+  /** Pi 런타임이 설치되어 있어 바로 채팅할 수 있다. */
+  ready: boolean;
+}
+
 /** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */
 export interface BrowserRuntime {
   runtimeId: string;
@@ -1370,6 +1407,8 @@ export type SidebarEvent =
   | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string; detail?: string }
   | { type: 'usage-report'; usage: UsageSummary }
   | { type: 'pi-status'; status: PiStatus }
+  /** 허브 → Studio `hama-status`. Hama 플랜 상태가 바뀌었다 (요청의 답이거나 한도·라이선스 변화). */
+  | { type: 'hama-status'; status: HamaStatus | null }
   | {
       type: 'pi-setup-progress';
       requestId: string;
