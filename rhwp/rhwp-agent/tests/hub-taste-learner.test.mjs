@@ -24,6 +24,13 @@ function fakePreload(root) {
   const aborted = path.join(root, 'learner-aborted');
   const piUrl = new URL('../agents/pi.mjs', import.meta.url).href;
   const oneShotUrl = new URL('../agents/one-shot-llm.mjs', import.meta.url).href;
+  const titleUrl = new URL('../agents/checkpoint-title.mjs', import.meta.url).href;
+  // Rau-0.1 은 BYOK(Pi) 경로를 쓰지 않는다. 학습기 경로는 Claude 로 두고, 이 기계의 CLI 설치·로그인과 상관없이 준비된 것으로 본다.
+  const titleStub = `
+    export function resolveCheckpointTitleCliRoute(provider, ...rest) {
+      return provider === 'claude' ? { ready: true, command: 'claude' } : realResolveCheckpointTitleCliRoute(provider, ...rest);
+    }
+  `;
   const piSource = `
     import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
     export function canResumePiSession() { return false; }
@@ -76,6 +83,11 @@ function fakePreload(root) {
   writeFileSync(path.join(root, 'loader.mjs'), `
     export async function load(url, context, nextLoad) {
       if (url === ${JSON.stringify(piUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(piSource)} };
+      if (url === ${JSON.stringify(titleUrl)}) {
+        const original = await nextLoad(url, context);
+        const source = String(original.source).replace('export function resolveCheckpointTitleCliRoute(', 'function realResolveCheckpointTitleCliRoute(');
+        return { ...original, shortCircuit: true, source: source + ${JSON.stringify(titleStub)} };
+      }
       if (url === ${JSON.stringify(oneShotUrl)}) {
         const original = await nextLoad(url, context);
         const source = String(original.source).replace('export async function runOneShot(', 'async function realRunOneShot(');
