@@ -38,10 +38,14 @@ function active(overrides: Partial<HamaStatus> = {}): HamaStatus {
   };
 }
 
-test('Hama entry: an active plan opens it, otherwise the desktop app locks it and web Studio hides it', () => {
+test('Hama entry: active opens it, Pro and legacy keys never see it, Free desktop sees it locked, web hides it', () => {
   assert.equal(hamaEntry(active(), false), 'open');
   assert.equal(hamaEntry(active(), true), 'open');
-  for (const status of [null, inactiveHamaStatus('not_enrolled'), inactiveHamaStatus('unavailable')]) {
+  // not_enrolled = a valid license without a Hama plan (Pro, legacy): their upgrade entry is on the home screen.
+  assert.equal(hamaEntry(inactiveHamaStatus('not_enrolled'), true), 'hidden');
+  assert.equal(hamaEntry(inactiveHamaStatus('not_enrolled'), false), 'hidden');
+  // unavailable = no license (Free) or the server is unreachable.
+  for (const status of [null, inactiveHamaStatus('unavailable')]) {
     assert.equal(hamaEntry(status, true), 'locked');
     assert.equal(hamaEntry(status, false), 'hidden');
   }

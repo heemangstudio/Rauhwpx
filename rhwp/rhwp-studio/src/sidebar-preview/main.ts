@@ -218,7 +218,7 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true, hama: mockHamaStatus(mockHamaMode(params)) });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-const hamaDesktop = params.has('hama') && mockHamaMode(params) !== 'off';
+const hamaDesktop = params.has('hama');
 /** 잠긴 Hama 를 누르면 앱이 띄울 플랜 안내 요청 — 미리보기는 기록만 한다. */
 const planCardRequests: unknown[] = [];
 window.addEventListener('rhwp:open-plan-card', (event) => {
@@ -606,7 +606,7 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
-  // `hama=` 를 주면 데스크톱 앱처럼 잠긴 Hama 항목이 보인다(`off` 나 생략은 웹 Studio — 항목이 없다).
+  // `hama=` 를 주면 데스크톱 앱이다 — `off`(unavailable, Free)면 잠긴 Hama 항목이 보인다. 생략하면 웹 Studio 라 항목이 없다.
   desktopApp: hamaDesktop,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),

@@ -8,12 +8,15 @@ import type { AgentName, HamaCap, HamaStatus } from '../../agent/types.ts';
 export type HamaEntry = 'open' | 'locked' | 'hidden';
 
 /**
- * 피커의 Hama 항목. Hama 플랜이 살아 있으면 고를 수 있다. 아니면 데스크톱 앱에서는 잠긴 채 보이고(누르면 플랜
- * 안내를 연다), 웹 Studio 에서는 숨긴다. Pro·Free 같은 라이선스 등급으로 짐작하지 않는다 — availability 만 본다.
+ * 피커의 Hama 항목. Hama 플랜이 살아 있으면 고를 수 있다. 라이선스는 있는데 Hama 플랜이 아니면(not_enrolled — Pro·
+ * 기존 라이선스) 숨긴다: 그 사용자의 업그레이드 안내는 홈 화면만 한다. 그 밖(unavailable — 라이선스 없는 Free, 서버
+ * 꺼짐·오프라인)은 데스크톱 앱에서 잠긴 채 보이고(누르면 플랜 안내를 연다), 웹 Studio 에서는 숨긴다.
+ * 라이선스 등급으로 짐작하지 않는다 — availability 만 본다.
  */
 export function hamaEntry(status: HamaStatus | null | undefined, desktop: boolean): HamaEntry {
   if (status?.availability === 'active') return 'open';
-  return desktop ? 'locked' : 'hidden';
+  if (status?.availability === 'not_enrolled' || !desktop) return 'hidden';
+  return 'locked';
 }
 
 /** 사용자가 마지막으로 직접 고르거나(피커) 써 본(보낸 턴) 하네스. 기본 하네스 판단에만 쓴다. */
