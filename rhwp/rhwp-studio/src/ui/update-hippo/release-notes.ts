@@ -37,6 +37,9 @@ export const RELEASE_NOTES: Readonly<Record<string, readonly string[]>> = {
     '저장 안 함으로 버린 변경이 복구로 돌아오던 문제 수정',
     'ChatGPT·Claude 로그인 창에서 브라우저 도구 막대 숨김',
   ],
+  '3.1.0': [
+    '새 엔진 : HeemangEngine',
+  ],
 };
 
 /** 마지막으로 노트를 보인(또는 새로 설치해 건너뛴) 버전. */
