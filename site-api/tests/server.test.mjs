@@ -15,7 +15,7 @@ const MAC_ID = '11111111-1111-4111-8111-111111111111';
 
 async function tempDir(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
   return directory;
 }
 

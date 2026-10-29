@@ -199,7 +199,7 @@ test('unique-installs persist in unique-installs.json on the Railway volume', as
       path.join('/data', 'unique-installs.json'),
     );
   } finally {
-    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5 });
   }
 });
 
