@@ -234,3 +234,81 @@ export function resolveGiftConfig(env = process.env) {
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
   };
 }
+
+export function resolveHamaDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'hama.json');
+}
+
+/** Per-license JSONL usage logs of the Hama plan. */
+export function resolveHamaUsageDir(env = process.env) {
+  return path.join(resolveDataDir(env), 'hama-usage');
+}
+
+export const DEFAULT_ANTHROPIC_API_BASE = 'https://api.anthropic.com';
+export const DEFAULT_HAMA_CHEAP_MODELS = 'deepseek/deepseek-v4.1-flash,qwen/qwen3.8-flash';
+const HAMA_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const HAMA_PRICE_FIELDS = [
+  'inputPerMTok', 'outputPerMTok', 'cacheReadPerMTok', 'cacheWrite5mPerMTok', 'cacheWrite1hPerMTok',
+  'longContextTokens', 'longContextMultiplier',
+];
+
+function hamaPercent(name, text, fallback) {
+  const value = positiveNumber(name, text, fallback);
+  if (value > 100) throw new Error(`${name} must be at most 100: ${text}`);
+  return value;
+}
+
+function apiBase(name, text, fallback) {
+  const value = (text || fallback).replace(/\/+$/, '');
+  let url;
+  try { url = new URL(value); } catch { url = null; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) throw new Error(`${name} must be an http(s) URL: ${value}`);
+  return value;
+}
+
+/**
+ * Hama plan settings. HAMA_ENABLED turns the routes on; the upstream keys can arrive later (calls
+ * answer 503 until one is set). The hosted Claude model is a code constant in hama.mjs, so nothing
+ * here can add Sonnet or Opus; HAMA_CHEAP_MODELS refuses Claude ids for the same reason.
+ */
+export function resolveHamaConfig(env = process.env) {
+  const enabledText = trimmed(env.HAMA_ENABLED).toLowerCase();
+  if (enabledText && !['1', 'true', 'yes', 'on', '0', 'false', 'no', 'off'].includes(enabledText)) {
+    throw new Error(`HAMA_ENABLED must be true or false: ${env.HAMA_ENABLED}`);
+  }
+  const cheapModels = commaList(trimmed(env.HAMA_CHEAP_MODELS), DEFAULT_HAMA_CHEAP_MODELS);
+  for (const model of cheapModels) {
+    if (/^anthropic\//i.test(model) || /claude/i.test(model)) throw new Error(`HAMA_CHEAP_MODELS must not name a Claude model: ${model}`);
+  }
+  const cheapReasoningEffort = trimmed(env.HAMA_CHEAP_REASONING_EFFORT).toLowerCase() || 'low';
+  if (!HAMA_REASONING_EFFORTS.includes(cheapReasoningEffort)) {
+    throw new Error(`HAMA_CHEAP_REASONING_EFFORT must be one of ${HAMA_REASONING_EFFORTS.join(', ')}: ${cheapReasoningEffort}`);
+  }
+  const maxOutputTokens = positiveNumber('HAMA_MAX_OUTPUT_TOKENS', trimmed(env.HAMA_MAX_OUTPUT_TOKENS), 16000);
+  if (!Number.isSafeInteger(maxOutputTokens)) throw new Error('HAMA_MAX_OUTPUT_TOKENS must be an integer');
+  const pricesText = trimmed(env.HAMA_PRICES);
+  let prices = {};
+  if (pricesText) {
+    try { prices = JSON.parse(pricesText); } catch { prices = null; }
+    if (!prices || typeof prices !== 'object' || Array.isArray(prices)) throw new Error('HAMA_PRICES must be a JSON object');
+    for (const [field, value] of Object.entries(prices)) {
+      if (!HAMA_PRICE_FIELDS.includes(field)) throw new Error(`HAMA_PRICES has an unknown field: ${field}`);
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`HAMA_PRICES.${field} must be a number ≥ 0`);
+    }
+  }
+  return {
+    enabled: ['1', 'true', 'yes', 'on'].includes(enabledText),
+    allowanceUsd: positiveNumber('HAMA_MONTHLY_ALLOWANCE_USD', trimmed(env.HAMA_MONTHLY_ALLOWANCE_USD), 15),
+    cap5hPct: hamaPercent('HAMA_CAP_5H_PCT', trimmed(env.HAMA_CAP_5H_PCT), 20),
+    capWeekPct: hamaPercent('HAMA_CAP_WEEK_PCT', trimmed(env.HAMA_CAP_WEEK_PCT), 50),
+    capMonthPct: hamaPercent('HAMA_CAP_MONTH_PCT', trimmed(env.HAMA_CAP_MONTH_PCT), 100),
+    cheapModels,
+    cheapReasoningEffort,
+    maxOutputTokens,
+    prices,
+    anthropicKey: trimmed(env.ANTHROPIC_API_KEY),
+    anthropicBase: apiBase('ANTHROPIC_API_BASE', trimmed(env.ANTHROPIC_API_BASE), DEFAULT_ANTHROPIC_API_BASE),
+    openrouterKey: trimmed(env.HAMA_OPENROUTER_KEY),
+    openrouterBase: apiBase('OPENROUTER_API_BASE', trimmed(env.OPENROUTER_API_BASE), DEFAULT_OPENROUTER_API_BASE),
+  };
+}
