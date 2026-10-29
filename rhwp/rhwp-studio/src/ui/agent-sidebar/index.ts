@@ -4014,7 +4014,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function providerNeedsLogin(agent: AgentName): boolean {
-    if (!(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
+    // Hama 는 로그인하지 않는다 — 플랜이 없으면 피커에 보이지 않을 뿐이다.
+    if (agent === 'hama' || !(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
     const status = setupStatuses?.[agent];
     if (!status || status.authenticating) return false;
     // 설치만 됐고 한 번도 연결하지 않은 프로바이더는 입력기 메뉴에 없다.

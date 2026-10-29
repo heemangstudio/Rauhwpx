@@ -24,7 +24,7 @@ import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
-import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from '../agent-sidebar/providers.ts';
+import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon } from '../agent-sidebar/providers.ts';
 import { afterBootScreen, bootLaunchedWithFile } from '../boot-screen.ts';
 import {
   isProviderConfigured,
@@ -238,7 +238,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const grid = el('div', 'rhwp-setup-grid');
   grid.setAttribute('role', 'list');
   const cards = new Map<AgentName, { root: HTMLElement; action: HTMLButtonElement }>();
-  for (const agent of PROVIDER_ORDER) {
+  for (const agent of CONNECTABLE_PROVIDERS) {
     const card = el('div', 'rhwp-setup-card');
     card.setAttribute('role', 'listitem');
     card.dataset.agent = agent;
@@ -482,7 +482,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   overlay.appendChild(dialog);
 
   function configuredAgents(): AgentName[] {
-    return PROVIDER_ORDER.filter((agent) => isProviderConfigured(agent, setupStatuses));
+    return CONNECTABLE_PROVIDERS.filter((agent) => isProviderConfigured(agent, setupStatuses));
   }
 
   function renderTheme(): void {
@@ -493,7 +493,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function renderCards(): void {
-    for (const agent of PROVIDER_ORDER) {
+    for (const agent of CONNECTABLE_PROVIDERS) {
       const card = cards.get(agent);
       if (!card) continue;
       const configured = isProviderConfigured(agent, setupStatuses);
