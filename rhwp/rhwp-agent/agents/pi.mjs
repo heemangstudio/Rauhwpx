@@ -77,6 +77,8 @@ export function isGiftExhaustedError(text) {
   return GIFT_EXHAUSTED_ERROR.test(String(text ?? ''));
 }
 const PI_KEY_MISSING_MESSAGE = 'Pi 설정에서 OpenRouter 키를 연결해 주세요.';
+/** Hama 하네스를 골랐는데 살아 있는 Hama 플랜이 없다. 사용자 키로 넘어가지 않는다. */
+export const HAMA_UNAVAILABLE_MESSAGE = 'Hama 플랜이 활성화되어 있지 않습니다.';
 /** Hama 플랜의 한도 이름 → 알림 문구. 리셋 시각은 실패의 resetAt 으로 따로 간다. */
 export const HAMA_CAP_MESSAGES = Object.freeze({
   cap_5h: 'Hama 5시간 사용 한도에 도달했습니다.',
@@ -111,6 +113,7 @@ export function formatOpenRouterCreditError(text, access = null) {
  *   onCreditExhausted?: (info: { mode: string, confirmed: boolean }) => void,
  *   onAccessRejected?: (info: { mode: string, status: number }) => void,
  *   onHamaCap?: (info: { cap: 'cap_5h'|'cap_week'|'cap_month', resetsAt: number }) => void,
+ *   agentName?: 'pi'|'hama',
  * }} PiBackendOptions
  *
  * @typedef {{ mode: 'hama'|'gift'|'own'|'none', key: string|null, agentDir: string, model: string|null,
@@ -227,7 +230,8 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     PI_TELEMETRY: '0',
     RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
     RHWP_AGENT_TOKEN: String(opts.token ?? ''),
-    RHWP_AGENT_NAME: 'pi',
+    // Hama 하네스는 MCP 에 자기 이름으로 붙는다 (허브가 세션의 에이전트와 맞춰 본다).
+    RHWP_AGENT_NAME: opts.agentName === 'hama' ? 'hama' : 'pi',
     RHWP_HUB_HTTP: `http://127.0.0.1:${opts.hubPort}`,
     RHWP_ROOT_DIR: String(opts.rootDir ?? ''),
     ...(readOnlyRoots.length > 0 ? { RHWP_READONLY_ROOTS: readOnlyRoots.join(path.delimiter) } : {}),
@@ -273,8 +277,7 @@ function spawnIdFromToolResult(result) {
 }
 
 /** Map Pi extension subagent tools onto the unified task-card event stream. */
-export function createPiFleetMapper(onEvent) {
-  const agent = 'pi';
+export function createPiFleetMapper(onEvent, agent = 'pi') {
   const taskIdBySubagent = new Map();
   const callMeta = new Map();
   const running = new Set();
@@ -487,7 +490,8 @@ export function createPiSession(opts, {
 } = {}) {
   const onEvent = opts.onEvent;
 
-  const agent = 'pi';
+  // Hama 하네스도 이 Pi 런타임을 쓴다 (agents/hama.mjs). 이벤트의 에이전트 이름만 다르다.
+  const agent = opts.agentName === 'hama' ? 'hama' : 'pi';
 
   // pi 세션 id 는 우리가 발급한다. 첫 스폰은 세션 파일을 만들고(“creating a new
   // session” 경고가 stderr 에 찍힌다) 이후 스폰은 같은 파일을 이어 쓴다.
@@ -535,7 +539,7 @@ export function createPiSession(opts, {
   let turnAccess = null;
   /** 이번 스폰이 실제로 쓴 모델. 자격이 바뀌면 opts.model 과 다를 수 있다. */
   let turnModel = opts.model;
-  const fleet = createPiFleetMapper(onEvent);
+  const fleet = createPiFleetMapper(onEvent, agent);
 
   function spawnSecrets() {
     return [opts.token, opts.openRouterApiKey, turnAccess?.key];
@@ -833,6 +837,12 @@ export function createPiSession(opts, {
       turnAccess = null;
       if (typeof opts.resolvePiAccess === 'function') {
         try { turnAccess = opts.resolvePiAccess(opts.model) ?? null; } catch { turnAccess = null; }
+      }
+      if (turnAccess?.mode === 'none' && turnAccess.reason === 'hama-unavailable') {
+        const failure = { source: 'pi', code: 'HAMA_NOT_ACTIVE' };
+        onEvent({ type: 'error', agent, message: HAMA_UNAVAILABLE_MESSAGE, failure });
+        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
+        return;
       }
       if (turnAccess?.mode === 'none') {
         const giftUsedUp = turnAccess.reason === 'gift-exhausted';

@@ -13,7 +13,8 @@ import { registerHubSession } from '../../../desktop/agent-hub.mjs';
 import { HUB_PROTOCOL_VERSION, startHub } from './hub-harness.mjs';
 
 /**
- * 가짜 Pi(채팅 공급자)와 가짜 runOneShot(학습기 모델)을 허브에 끼운다. 학습기 출력은 outputs.json 의
+ * 가짜 Claude(채팅 공급자)와 가짜 runOneShot(학습기 모델)을 허브에 끼운다. BYOK(pi) 채팅은 배우지 않으므로
+ * 채팅은 Claude 로 연다. 학습기 출력은 outputs.json 의
  * 앞에서부터 하나씩 꺼내고, 받은 프롬프트는 learner-prompts.jsonl 에 남긴다.
  */
 function fakePreload(root) {
@@ -22,33 +23,33 @@ function fakePreload(root) {
   const outputs = path.join(root, 'outputs.json');
   const release = path.join(root, 'release');
   const aborted = path.join(root, 'learner-aborted');
-  const piUrl = new URL('../agents/pi.mjs', import.meta.url).href;
+  const claudeUrl = new URL('../agents/claude.mjs', import.meta.url).href;
   const oneShotUrl = new URL('../agents/one-shot-llm.mjs', import.meta.url).href;
-  const piSource = `
-    import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
-    export function canResumePiSession() { return false; }
-    export function createPiSession(opts) {
-      writeFileSync(${JSON.stringify(path.join(root, 'mcp-token'))}, opts.token);
+  const claudeStub = `
+    import { appendFileSync as __fakeAppend, existsSync as __fakeExists, rmSync as __fakeRm, writeFileSync as __fakeWrite } from 'node:fs';
+    export async function canResumeClaudeSession() { return false; }
+    export function createClaudeSession(opts) {
+      __fakeWrite(${JSON.stringify(path.join(root, 'mcp-token'))}, opts.token);
       return {
-        getSessionId() { return 'fake-pi-session'; },
+        getSessionId() { return 'fake-claude-session'; },
         setExecutionMode() {},
         setPermissionProfile() {},
         dispose() { return true; },
         interrupt() {},
         sendUserMessage(prompt) {
-          appendFileSync(${JSON.stringify(promptLog)}, JSON.stringify(prompt) + '\\n');
-          opts.onEvent({ type: 'turn-start', agent: 'pi' });
+          __fakeAppend(${JSON.stringify(promptLog)}, JSON.stringify(prompt) + '\\n');
+          opts.onEvent({ type: 'turn-start', agent: 'claude' });
           const end = () => {
-            if (prompt.includes('Write turn')) opts.onEvent({ type: 'tool-call', agent: 'pi', id: 'write-1', tool: 'mcp__rhwp__insert_text', input: {} });
-            opts.onEvent({ type: 'text-delta', agent: 'pi', text: '한다체로 ' });
-            opts.onEvent({ type: 'text-delta', agent: 'pi', text: '고쳤습니다.' });
-            opts.onEvent({ type: 'turn-end', agent: 'pi', stopReason: 'completed' });
+            if (prompt.includes('Write turn')) opts.onEvent({ type: 'tool-call', agent: 'claude', id: 'write-1', tool: 'mcp__rhwp__insert_text', input: {} });
+            opts.onEvent({ type: 'text-delta', agent: 'claude', text: '한다체로 ' });
+            opts.onEvent({ type: 'text-delta', agent: 'claude', text: '고쳤습니다.' });
+            opts.onEvent({ type: 'turn-end', agent: 'claude', stopReason: 'completed' });
           };
           if (!prompt.includes('Hold turn')) return end();
           const timer = setInterval(() => {
-            if (!existsSync(${JSON.stringify(release)})) return;
+            if (!__fakeExists(${JSON.stringify(release)})) return;
             clearInterval(timer);
-            rmSync(${JSON.stringify(release)}, { force: true });
+            __fakeRm(${JSON.stringify(release)}, { force: true });
             end();
           }, 10);
         },
@@ -75,7 +76,13 @@ function fakePreload(root) {
   `;
   writeFileSync(path.join(root, 'loader.mjs'), `
     export async function load(url, context, nextLoad) {
-      if (url === ${JSON.stringify(piUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(piSource)} };
+      if (url === ${JSON.stringify(claudeUrl)}) {
+        const original = await nextLoad(url, context);
+        const source = String(original.source)
+          .replace('export function createClaudeSession(', 'function realCreateClaudeSession(')
+          .replace('export async function canResumeClaudeSession(', 'async function realCanResumeClaudeSession(');
+        return { ...original, shortCircuit: true, source: source + ${JSON.stringify(claudeStub)} };
+      }
       if (url === ${JSON.stringify(oneShotUrl)}) {
         const original = await nextLoad(url, context);
         const source = String(original.source).replace('export async function runOneShot(', 'async function realRunOneShot(');
@@ -166,7 +173,7 @@ async function startTasteHub(t) {
     return studio.next((reply) => reply.type === type && reply.requestId === requestId);
   };
   const start = (threadId, documentId, extra = {}) => {
-    studio.send({ type: 'chat-start', agent: 'pi', threadId, documentId, documentName: `${documentId}.hwpx`, workflow: 'direct', force: true, ...extra });
+    studio.send({ type: 'chat-start', agent: 'claude', threadId, documentId, documentName: `${documentId}.hwpx`, workflow: 'direct', force: true, ...extra });
     return studio.next((frame) => frame.type === 'chat-started');
   };
   const say = (text) => {
@@ -310,7 +317,7 @@ test('Rau-0.1 waits for review after a safe-mode write, learns plan feedback, an
   const prompts = fake.prompts().length;
   studio.send({ type: 'chat-user-message', text: 'Hold turn 회의 안내 계획을 세워 줘' });
   await waitFor(() => fake.prompts().length > prompts, 'plan turn');
-  const mcp = bufferedSocket(`ws://127.0.0.1:${hub.port}/mcp?token=${encodeURIComponent(fake.mcpToken())}&sessionId=taste-owner&agent=pi`);
+  const mcp = bufferedSocket(`ws://127.0.0.1:${hub.port}/mcp?token=${encodeURIComponent(fake.mcpToken())}&sessionId=taste-owner&agent=claude`);
   await once(mcp.socket, 'open');
   t.after(() => mcp.socket.terminate());
   mcp.send({

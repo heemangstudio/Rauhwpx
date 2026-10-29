@@ -9,6 +9,7 @@ import { generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { normalizeLicenseKey, licenseKeyHash, verifyLease } from '../../desktop/license-lease.mjs';
+import { createHamaMock } from './hama-mock.mjs';
 
 // 테스트마다 메모리에서 생성한다. 개인키는 저장하거나 커밋하지 않는다.
 const pair = generateKeyPairSync('ed25519');
@@ -150,6 +151,8 @@ export function createMockLicenseServer({
     return { license, deviceId: result.payload.deviceId, platform: license.platforms.get(result.payload.deviceId) ?? null };
   }
 
+  const hama = createHamaMock({ now, authenticate });
+
   function giftEvent() {
     return { id: giftConfig.eventId, amountUsd: giftConfig.amountUsd, endsAt: giftConfig.endsAt, active: giftConfig.active };
   }
@@ -266,6 +269,11 @@ export function createMockLicenseServer({
   /** 반환값: [status, body] 또는 SSE 일 때 [status, null, { sse: string[] }]. 예전 2인자 호출도 받는다. */
   function handle(path, body, { method, headers = {} } = {}) {
     calls.push({ path, body });
+    if (path.startsWith('/v1/hama/')) {
+      const result = hama.handle(path, body, { method: method ? String(method).toUpperCase() : 'GET', headers });
+      if (log) log(`[hama] ${method ?? '-'} ${path}${typeof body?.model === 'string' ? ` model=${body.model}` : ''} → ${result[0]}${result[2]?.sse ? ' stream' : ''}`);
+      return result;
+    }
     if (path.startsWith('/v1/gift/')) {
       const result = handleGift(path, body, method ? String(method).toUpperCase() : undefined, headers);
       if (log) {
@@ -314,7 +322,7 @@ export function createMockLicenseServer({
     const encoder = new TextEncoder();
     return new ReadableStream({
       start(controller) {
-        for (const data of events) controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+        for (const data of events) controller.enqueue(encoder.encode(sseFrame(data)));
         controller.close();
       },
     });
@@ -327,7 +335,7 @@ export function createMockLicenseServer({
     try { body = JSON.parse(init.body ?? '{}'); } catch { body = null; }
     const [status, payload, extra] = handle(new URL(url).pathname, body, { method: init.method ?? 'GET', headers: init.headers ?? {} });
     if (extra?.sse) return new Response(sseStream(extra.sse), { status, headers: { 'Content-Type': 'text/event-stream' } });
-    return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json', ...(extra?.headers ?? {}) } });
   }
 
   function giftState(ref) {
@@ -370,6 +378,11 @@ export function createMockLicenseServer({
     setOffline(value) { offline = value; },
     giftState,
     setGiftUsage,
+    /** Hama 플랜: 이 라이선스(키 또는 id)를 가입시킨다. 가입하지 않은 키는 403 hama_not_enrolled 다. */
+    enrollHama(ref) { const license = licenseByRef(ref); if (license) hama.enroll(license.id); },
+    disenrollHama(ref) { const license = licenseByRef(ref); if (license) hama.disenroll(license.id); },
+    setHamaCap(cap) { hama.setCap(cap); },
+    hamaCalls: hama.calls,
     /** 모든 라이선스의 사용액을 같은 값으로 둔다(CLI 관리 경로). */
     setAllGiftUsage(usd) { for (const license of licenses.values()) setGiftUsage(license.id, usd); },
     setGiftActive(value) { giftConfig.active = Boolean(value); },
@@ -382,6 +395,12 @@ function cliPort(argv, env) {
   const raw = index >= 0 ? argv[index + 1] : env.MOCK_PORT;
   const port = Number(raw);
   return Number.isInteger(port) && port > 0 && port < 65536 ? port : 8787;
+}
+
+/** SSE 한 덩어리. 문자열은 data 만, {event, data} 는 event 줄도 붙인다 (Anthropic Messages). */
+function sseFrame(entry) {
+  if (entry && typeof entry === 'object') return `event: ${entry.event}\ndata: ${entry.data}\n\n`;
+  return `data: ${entry}\n\n`;
 }
 
 function readBody(req) {
@@ -410,6 +429,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (path.startsWith('/__mock/')) {
       if (req.method === 'POST' && path === '/__mock/gift/usage') server.setAllGiftUsage(body?.usd);
       else if (req.method === 'POST' && path === '/__mock/gift/active') server.setGiftActive(body?.active);
+      else if (req.method === 'POST' && path === '/__mock/hama/enroll') server.enrollHama(normalizeLicenseKey(body?.key) ?? body?.key);
+      else if (req.method === 'POST' && path === '/__mock/hama/cap') server.setHamaCap(body?.cap ?? null);
       else if (req.method === 'POST' && path === '/__mock/license/expiry') {
         const target = normalizeLicenseKey(body?.key);
         if (!target || !server.snapshot().licenses.some((l) => l.key === target)) return json(404, { ok: false, error: 'invalid_key' });
@@ -424,13 +445,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     if (!['POST', 'GET'].includes(req.method)) return json(405, { ok: false, error: 'method' });
     const [status, payload, extra] = server.handle(path, body ?? {}, { method: req.method, headers: req.headers });
-    if (!extra?.sse) return json(status, payload);
+    if (!extra?.sse) {
+      res.writeHead(status, { 'Content-Type': 'application/json', ...(extra?.headers ?? {}) });
+      res.end(JSON.stringify(payload));
+      return;
+    }
     res.writeHead(status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     let closed = false;
     res.on('close', () => { closed = true; });
     for (const data of extra.sse) {
       if (closed) return;
-      res.write(`data: ${data}\n\n`);
+      res.write(sseFrame(data));
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     res.end();
@@ -440,5 +465,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`annual test key ${annualKey} (renews in 365 days)`);
     console.log(`HAMA_LICENSE_DEV_PUBLIC_KEY=${DEV_KEYPAIR.kid}:${DEV_KEYPAIR.publicKeyBase64}`);
     console.log(`gift proxy base http://127.0.0.1:${port}${GIFT_PROXY_PREFIX}`);
+    console.log(`hama: POST /__mock/hama/enroll {key} to enroll a key, POST /__mock/hama/cap {cap} to force a cap`);
   });
 }

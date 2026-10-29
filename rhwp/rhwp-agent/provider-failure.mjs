@@ -199,6 +199,8 @@ const SHARED_CODES = Object.freeze({
   hama_cap_5h: 'usage_limit',
   hama_cap_week: 'usage_limit',
   hama_cap_month: 'usage_limit',
+  // Hama 하네스를 골랐는데 살아 있는 Hama 플랜이 없다.
+  HAMA_NOT_ACTIVE: 'auth_required',
   PI_MODEL_MISSING: 'invalid_request',
   // Pi 어댑터도 쓴다: 선물 크레딧이 떨어졌는데 내 키가 없을 때.
   PI_NOT_CONFIGURED: 'auth_required',

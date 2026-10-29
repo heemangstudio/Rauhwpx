@@ -1,24 +1,20 @@
 /**
- * Hama 플랜 — 사이트 API 가 라이선스 리스로 Pi 의 주 에이전트를 돌려 주는 유료 플랜.
- * 허브는 `GET /v1/hama/status` 로 플랜·한도·모델을 읽고, Pi 홈(agent-hama/)의 models.json 을 쓴다.
+ * Hama 플랜 — 사이트 API 가 라이선스 리스로 Hama 하네스(Pi 런타임)의 모델을 대 주는 유료 플랜.
+ * 데스크톱이 `GET /v1/hama/status` 로 플랜·한도·모델을 묻고, 허브는 그 답을 정리해 Pi 홈(agent-hama/)의
+ * models.json 을 쓴다. 이 파일은 순수 함수만 둔다 (허브 쪽 상태는 hama-hosted.mjs).
  *
  * 규칙
  * - 호스팅 Claude 는 Haiku 5.5 하나뿐이다 (상수). 서버 답에 다른 Claude 가 있어도 쓰지 않는다.
  * - 싼 모델은 서버가 주는 목록에서 Claude 가 아닌 것만 쓴다. 추론 강도는 서버가 정한다.
  * - 한도에 걸린 요청은 429 이고 문구에 `[hama-cap:<cap>:<iso>]` 꼬리표가 붙는다.
  */
-import { readResponseJsonBounded } from './response-bounds.mjs';
-
 /** 호스팅 Claude 허용 목록. 정확히 하나다 — Sonnet·Opus 는 어떤 경로로도 들어오지 않는다. */
 export const HAMA_CLAUDE_MODEL = 'anthropic/claude-haiku-5.5';
 export const HAMA_CAPS = /** @type {const} */ (['cap_5h', 'cap_week', 'cap_month']);
-export const HAMA_STATUS_PATH = '/v1/hama/status';
 export const HAMA_ANTHROPIC_PATH = '/v1/hama/anthropic';
 export const HAMA_OPENAI_PATH = '/v1/hama/openrouter';
 export const HAMA_DEFAULT_MAX_OUTPUT_TOKENS = 16_000;
 const MAX_CHEAP_MODELS = 4;
-const STATUS_TIMEOUT_MS = 10_000;
-const STATUS_MAX_BYTES = 64 * 1024;
 const MODEL_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i;
 
 /**
@@ -86,6 +82,7 @@ function modelId(value) {
  * @typedef {Object} HamaStatus
  * @property {'active'|'disabled'} planStatus
  * @property {number|null} allowanceUsd
+ * @property {number|null} periodStart
  * @property {number|null} periodEnd
  * @property {Partial<Record<'cap_5h'|'cap_week'|'cap_month', HamaCapWindow>>} caps
  * @property {{ cap: 'cap_5h'|'cap_week'|'cap_month', resetsAt: number|null, cheapAvailable: boolean } | null} blocked
@@ -130,6 +127,7 @@ export function normalizeHamaStatus(body) {
   return {
     planStatus,
     allowanceUsd: finiteUsd(plan?.allowanceUsd),
+    periodStart: isoTime(plan?.periodStart),
     periodEnd: isoTime(plan?.periodEnd),
     caps,
     blocked,
@@ -139,30 +137,6 @@ export function normalizeHamaStatus(body) {
       ? Math.min(maxTokens, 64_000)
       : HAMA_DEFAULT_MAX_OUTPUT_TOKENS,
   };
-}
-
-/**
- * `GET /v1/hama/status`. 플랜이 없으면(403 hama_not_enrolled, 404 꺼짐) null, 리스 거절(401)은
- * code 'unauthorized' 로 던진다. 그 밖의 실패도 던진다 — 부르는 쪽이 마지막 답을 지킨다.
- */
-export async function fetchHamaStatus({ fetchImpl = globalThis.fetch, apiBase, lease, timeoutMs = STATUS_TIMEOUT_MS }) {
-  const response = await fetchImpl(`${apiBase}${HAMA_STATUS_PATH}`, {
-    method: 'GET',
-    headers: { Accept: 'application/json', Authorization: `Bearer ${lease}` },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  let body = null;
-  try {
-    body = await readResponseJsonBounded(response, { maxBytes: STATUS_MAX_BYTES, label: 'Hama status' });
-  } catch {
-    body = null;
-  }
-  if (response.status === 401) throw Object.assign(new Error('Hama lease rejected.'), { code: 'unauthorized' });
-  if (response.status === 403 || response.status === 404) return null;
-  if (!response.ok) throw Object.assign(new Error(`Hama status HTTP ${response.status}`), { code: 'server' });
-  const status = normalizeHamaStatus(body);
-  if (!status) throw Object.assign(new Error('Bad Hama status response.'), { code: 'server' });
-  return status;
 }
 
 /**
