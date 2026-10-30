@@ -188,16 +188,16 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const lines: string[] = [];
     if (plan === 'free') {
       priceRow.append(el('span', 'ag-pricing-amount', '₩0'));
-      lines.push('문서 편집·저장');
+      lines.push('문서 편집');
     } else if (plan === 'pro') {
       const monthly = price('proMonthly');
       const yearly = price('proYearly');
       priceRow.append(el('span', 'ag-pricing-amount', monthly === null ? '—' : won(monthly)), el('span', 'ag-pricing-unit', '/월'));
       if (yearly !== null) priceRow.append(el('span', 'ag-pricing-alt', `연 ${won(yearly)}`));
-      lines.push('에이전트(BYOK)', 'Rau-0.1');
+      lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
     } else {
       priceRow.append(el('span', 'ag-pricing-amount ag-pricing-amount-soon', '준비 중'));
-      lines.push('Hama 에이전트');
+      lines.push('Hama 에이전트 크레딧 제공');
     }
     for (const line of lines) features.append(el('li', '', line));
 

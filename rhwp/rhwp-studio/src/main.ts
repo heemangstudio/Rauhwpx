@@ -3256,7 +3256,12 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => {
-      mountLicenseRegisterButton(slot);
+      const plan = desktopPlanApi();
+      if (plan) {
+        const store = createPlanStore(plan);
+        const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
+        mountLicenseRegisterButton(slot, () => { openPlanCard({ store, license, focus: 'pro' }); });
+      }
       mountHomeHamaEntry(slot);
     },
     mountCorner: (slot) => mountUpdateHippo(slot),

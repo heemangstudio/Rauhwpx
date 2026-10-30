@@ -1333,6 +1333,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let restoringLiveQuestion = false;
   let skillsPanelOpen = false;
   let settingsPanelOpen = false;
+  let settingsOpening = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
   /** 홈에서 설정을 열며 집중 화면으로 들어왔으면, 홈으로 돌아갈 때 그 화면을 접는다. */
@@ -1553,6 +1554,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   function agentLockedByPlan(): boolean {
     return planLocksAgent(planStore.status());
+  }
+  /** 설정을 열거나 보는 중이 아니면 무료 요금제에서 사이드바와 집중 화면을 쓸 수 없다. */
+  function agentSurfaceLocked(): boolean {
+    return agentLockedByPlan() && !settingsPanelOpen && !settingsOpening;
   }
   /** 잠겼으면 카드를 열고 true — 부른 쪽은 아무것도 보내지 않는다. */
   function planBlocksAgent(): boolean {
@@ -1790,7 +1795,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     };
   }
 
-  function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
+  function setCollapsed(requestedCollapsed: boolean, opts?: { recenter?: boolean }): void {
+    // 무료 요금제의 사이드바는 접힌 채로 있다. 설정만 이 안에서 열린다.
+    const collapsed = requestedCollapsed || agentSurfaceLocked();
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
     root.inert = collapsed;
@@ -1883,9 +1890,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.stopPropagation();
     if (fullscreen) return;
     const opening = root.classList.contains('ag-collapsed');
+    // 잠긴 에이전트는 펼치지 않고 요금제 카드를 연다.
+    if (opening && planBlocksAgent()) return;
     setCollapsed(!opening);
-    // 잠긴 에이전트를 펼치면 요금제 카드도 함께 연다.
-    if (opening) planBlocksAgent();
   });
 
   resizeHandle.addEventListener('pointerdown', onResizeHandlePointerDown);
@@ -2910,7 +2917,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setFullscreen(false, { then: () => setCollapsed(true) });
       return;
     }
-    setCollapsed(!root.classList.contains('ag-collapsed'));
+    const opening = root.classList.contains('ag-collapsed');
+    if (opening && planBlocksAgent()) return;
+    setCollapsed(!opening);
   }
 
   function toggleFocusChat(): void {
@@ -6137,6 +6146,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
   function setFullscreen(on: boolean, opts?: { then?: () => void; instant?: boolean }): void {
+    if (on && !fullscreen && agentSurfaceLocked()) {
+      planBlocksAgent();
+      return;
+    }
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -6377,6 +6390,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 스킬·설정·목록 세 페이지는 서로를 닫는다 — 무대에는 하나만 선다. */
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
+    settingsOpening = false;
     settingsReturnsHome = false;
     settingsExitsFullscreenOnHome = false;
     settingsExitsFullscreen = false;
@@ -6411,6 +6425,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 집중 화면이 남아 있으면 홈의 돌아가기 단추가 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
     if (exitFullscreen) setFullscreen(false, { instant: true, then: () => openDocumentHome?.({ instant: true }) });
     else if (returnHome) openDocumentHome?.({ instant: true });
+    // 무료 요금제는 설정을 닫으면 사이드바도 다시 접는다.
+    if (agentLockedByPlan()) {
+      if (fullscreen) setFullscreen(false);
+      setCollapsed(true);
+    }
     return true;
   }
 
@@ -6467,6 +6486,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 다음에 여는 설정이 지시의 변경안 카드로 옮겨 간다(취향 학습 구분선의 지시에 추가 제안). */
   let revealInstructionsOnSettingsOpen = false;
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestinationInput): void {
+    if (open) settingsOpening = true;
     // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
     if (open && !fullscreen && !settingsPanelOpen) {
       setFullscreen(true, {
@@ -6513,8 +6533,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       settingsPanel.open(destination);
       settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
       if (revealInstructionsOnSettingsOpen) settingsPanel.revealInstructions();
+      settingsOpening = false;
     } else {
       settingsPanel.close();
+      settingsOpening = false;
+      if (agentLockedByPlan()) setCollapsed(true);
     }
     revealInstructionsOnSettingsOpen = false;
   }
@@ -6524,6 +6547,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       eventBus.emit('settings:open', destination ? { destination } : undefined);
       return;
     }
+    settingsOpening = true;
     setCollapsed(false);
     setSettingsPanelOpen(true, destination);
   }
@@ -7684,6 +7708,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.toggle('ag-pricing-locked', locked);
     collapseTabLock.hidden = !locked;
     settingsPanel.syncPlanLock();
+    if (agentSurfaceLocked()) {
+      if (fullscreen) setFullscreen(false);
+      // 이미 접혔으면 건드리지 않는다. 다시 접으면 결제 중인 요금제 카드가 닫힌다.
+      if (!root.classList.contains('ag-collapsed')) setCollapsed(true);
+    }
     updateComposer();
   }
   const unsubscribePlan = planStore.subscribe(() => {
@@ -13762,6 +13791,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           } | undefined;
           const requested = request?.destination;
           const destination = isSettingsDestination(requested) ? requested : undefined;
+          settingsOpening = true;
           setCollapsed(false);
           const wasFullscreen = fullscreen;
           const open = (): void => {

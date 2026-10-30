@@ -1,13 +1,10 @@
 import type { DesktopHost } from '../desktop-integration';
-import { licenseSummary, looksLikeFullKey, renewalPrompt, type DesktopLicenseApi, type LicenseStatus } from './agent-sidebar/settings-license';
-import { markLicensedHere } from './initial-setup/active';
+import { licenseSummary, renewalPrompt, type LicenseStatus } from './agent-sidebar/settings-license';
 import { createRenewalNotice } from './license-renewal-notice';
-import { showToast } from './toast';
 import './license-gate.css';
 
 /** 라이선스 등록 단추들. 게이트가 상태를 받을 때마다 보이기를 맞춘다. 상태를 알기 전에는 숨긴다. */
 const registerButtons = new Set<HTMLElement>();
-let licenseApi: DesktopLicenseApi | null = null;
 let lastStatus: LicenseStatus | null = null;
 
 /** 키가 없거나, 해지됐거나, 기간이 끝난 연간 키일 때만 보인다. 라이선스가 있으면 숨는다. */
@@ -15,132 +12,17 @@ function showsRegisterButton(status: LicenseStatus): boolean {
   return status.state === 'free' || status.state === 'revoked' || status.state === 'expired';
 }
 
-/**
- * 라이선스 등록 단추를 slot 에 둔다. 누르면 아래에 키 칸이 열려 그 자리에서 활성화한다.
- * 키를 다 붙여 넣으면 누르지 않아도 확인하고, 키가 없으면 구매 페이지로 가는 길을 둔다.
- */
-export function mountLicenseRegisterButton(slot: HTMLElement): void {
-  const wrap = document.createElement('div');
-  wrap.className = 'license-register';
-  wrap.hidden = !lastStatus || !showsRegisterButton(lastStatus);
-
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'license-register-toggle';
-  toggle.textContent = '라이선스 등록';
-  toggle.setAttribute('aria-haspopup', 'dialog');
-  toggle.setAttribute('aria-expanded', 'false');
-
-  const pop = document.createElement('div');
-  pop.className = 'license-register-pop';
-  pop.setAttribute('role', 'dialog');
-  pop.setAttribute('aria-label', '라이선스 등록');
-  pop.hidden = true;
-  const form = document.createElement('form');
-  form.className = 'license-register-form';
-  form.noValidate = true;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'license-register-input';
-  input.autocomplete = 'off';
-  input.spellcheck = false;
-  input.setAttribute('autocapitalize', 'characters');
-  input.placeholder = '라이선스 키 붙여넣기';
-  input.setAttribute('aria-label', '라이선스 키');
-  const submitButton = document.createElement('button');
-  submitButton.type = 'submit';
-  submitButton.className = 'license-register-submit';
-  submitButton.textContent = '활성화';
-  form.append(input, submitButton);
-  const note = document.createElement('p');
-  note.className = 'license-register-note';
-  note.setAttribute('role', 'alert');
-  const buyRow = document.createElement('p');
-  buyRow.className = 'license-register-buy';
-  const buy = document.createElement('button');
-  buy.type = 'button';
-  buy.className = 'license-register-buy-link';
-  buy.textContent = '구매하기';
-  buy.addEventListener('click', () => { void licenseApi?.openPricing(); });
-  buyRow.append('키가 없나요? ', buy);
-  pop.append(form, note, buyRow);
-  wrap.append(toggle, pop);
-
-  let busy = false;
-  function render(): void {
-    input.disabled = busy;
-    submitButton.disabled = busy || !input.value.trim();
-    submitButton.setAttribute('aria-busy', busy ? 'true' : 'false');
-    note.hidden = !note.textContent;
-  }
-
-  function onOutside(event: PointerEvent): void {
-    if (!wrap.contains(event.target as Node)) setOpen(false);
-  }
-  let open = false;
-  function setOpen(next: boolean): void {
-    if (open === next) return;
-    open = next;
-    pop.hidden = !open;
-    toggle.setAttribute('aria-expanded', String(open));
-    if (open) {
-      note.textContent = '';
-      render();
-      document.addEventListener('pointerdown', onOutside, true);
-      input.focus();
-    } else {
-      document.removeEventListener('pointerdown', onOutside, true);
-    }
-  }
-
-  async function submit(): Promise<void> {
-    const key = input.value.trim();
-    if (!key || busy || !licenseApi) return;
-    busy = true;
-    note.textContent = '';
-    render();
-    try {
-      const result = await licenseApi.activate(key);
-      busy = false;
-      if (result.ok) {
-        input.value = '';
-        markLicensedHere();
-        setOpen(false);
-        render();
-        showToast({ message: '라이선스가 활성화됐어요.', durationMs: 4000 });
-        return;
-      }
-      note.textContent = result.message ?? '키를 확인하지 못했어요. 다시 넣어 주세요.';
-    } catch {
-      busy = false;
-      note.textContent = '라이선스 서버에 연결하지 못했어요. 잠시 뒤 다시 해 주세요.';
-    }
-    render();
-    input.focus();
-    input.select();
-  }
-
-  toggle.addEventListener('click', () => setOpen(!open));
-  pop.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    event.stopPropagation();
-    setOpen(false);
-    toggle.focus();
-  });
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    void submit();
-  });
-  input.addEventListener('input', render);
-  // 구매 페이지에서 복사한 키를 붙여 넣으면 누르지 않아도 바로 확인한다.
-  input.addEventListener('paste', () => {
-    window.setTimeout(() => {
-      if (looksLikeFullKey(input.value)) void submit();
-    }, 0);
-  });
-
-  registerButtons.add(wrap);
-  slot.append(wrap);
+/** 홈에서 요금제 안내를 연다. */
+export function mountLicenseRegisterButton(slot: HTMLElement, openPlans: () => void): void {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'license-register-toggle';
+  button.textContent = '업그레이드';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.hidden = !lastStatus || !showsRegisterButton(lastStatus);
+  button.addEventListener('click', openPlans);
+  registerButtons.add(button);
+  slot.append(button);
 }
 
 /** 키를 넣었지만 확인하지 못한 상태. 메뉴 막대에 알약을 둔다. 편집은 막지 않는다. */
@@ -157,7 +39,6 @@ export async function installLicenseGate(): Promise<void> {
   const found = (window as unknown as DesktopHost).rhwpDesktop?.license;
   if (!found) return;
   const api = found;
-  licenseApi = api;
 
   const pill = document.createElement('button');
   pill.type = 'button';
