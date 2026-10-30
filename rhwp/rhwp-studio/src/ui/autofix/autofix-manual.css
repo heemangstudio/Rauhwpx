@@ -1,0 +1,107 @@
+/* ─── 직접 부르는 자동 수정 시트 ─────────────────────────
+   버그 제보 시트(ir-sheet)의 면·입력 칸·버튼을 그대로 쓰고, 진행 줄과 결과만 더한다. */
+
+.afm-sheet .afm-lead {
+  margin: -4px 0 0;
+}
+
+/* 버그 제보보다 짧은 칸이다. 지금 상태를 한두 줄로 적는다. */
+.afm-sheet .afm-message {
+  min-height: 76px;
+}
+
+.afm-sheet .afm-message[readonly] {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+}
+
+.afm-sheet :is(.afm-lead, .afm-message, .afm-status, .afm-stage, .afm-elapsed, .afm-result, .afm-result > *)[hidden] {
+  display: none;
+}
+
+.afm-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+/* 고치는 동안: 하마, 지난 시간, 안내를 가운데 한 줄로 쌓는다. */
+.afm-sheet[data-view='running'] .afm-status {
+  align-items: center;
+  padding: 6px 0 2px;
+  text-align: center;
+}
+
+.afm-stage {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+/* 28x11 논리 픽셀을 다섯 배로 키운다. 픽셀이 번지지 않게 한다. */
+.afm-hama {
+  display: block;
+  width: 140px;
+  height: 55px;
+  image-rendering: pixelated;
+}
+
+.afm-elapsed {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--n-ink);
+}
+
+.afm-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.afm-result p {
+  margin: 0;
+}
+
+.afm-result-head {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink);
+}
+
+.afm-sheet[data-view='fixed'] .afm-result-head {
+  color: color-mix(in oklab, var(--rhwp-autofix-dot) 70%, var(--n-ink));
+}
+
+/* 에이전트가 쓴 원인. 텍스트로만 넣고, 길면 칸 안에서 넘긴다. */
+.afm-cause {
+  max-height: 160px;
+  overflow: auto;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.afm-question {
+  padding-top: 4px;
+  font-size: var(--ag-fs-body);
+  color: var(--n-ink);
+}
+
+/* 보이는 단추 수(1~2개)대로 폭을 나눈다. */
+.afm-sheet .ag-sheet-actions {
+  display: flex;
+}
+
+.afm-sheet .ag-sheet-actions > .ag-sheet-btn {
+  flex: 1 1 0;
+}
+
+.afm-sheet .ag-sheet-actions > .ag-sheet-btn[hidden] {
+  display: none;
+}

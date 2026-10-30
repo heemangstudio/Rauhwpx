@@ -17,7 +17,7 @@ const HWP = Buffer.from('HWP Document File fixture bytes');
 
 async function setup(t, { maxStorageBytes, notify = async () => {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'feedback-test-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
   const clock = { now: Date.parse('2026-10-20T03:00:00.000Z') };
   const feedback = createFeedbackService({ dir, now: () => clock.now, adminToken: ADMIN, maxStorageBytes, notify });
   const server = http.createServer(siteRequestListener({ feedback }));

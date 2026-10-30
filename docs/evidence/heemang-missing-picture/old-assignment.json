@@ -1,0 +1,40 @@
+[
+  {
+    "source": "hwp",
+    "assigned": {
+      "ok": true,
+      "binDataId": 1
+    },
+    "saved": [
+      {
+        "format": "hwp",
+        "bytes": 4608,
+        "matchingImage": true
+      },
+      {
+        "format": "hwpx",
+        "bytes": 8795,
+        "matchingImage": true
+      }
+    ]
+  },
+  {
+    "source": "hwpx",
+    "assigned": {
+      "ok": true,
+      "binDataId": 1
+    },
+    "saved": [
+      {
+        "format": "hwp",
+        "bytes": 7168,
+        "matchingImage": true
+      },
+      {
+        "format": "hwpx",
+        "bytes": 8821,
+        "matchingImage": true
+      }
+    ]
+  }
+]

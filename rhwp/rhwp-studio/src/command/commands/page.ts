@@ -615,9 +615,13 @@ export const pageCommands: CommandDef[] = [
       }
     },
   })),
-  {
-    id: 'page:col-left',
-    label: '단 - 왼쪽',
+  // 한컴 '왼쪽'·'오른쪽' 모양: 두 단 중 한쪽이 다른 쪽의 절반 너비다(간격 8mm).
+  ...[
+    { id: 'page:col-left', label: '단 - 왼쪽', narrow: 0 },
+    { id: 'page:col-right', label: '단 - 오른쪽', narrow: 1 },
+  ].map((def): CommandDef => ({
+    id: def.id,
+    label: def.label,
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       const ih = services.getInputHandler();
@@ -628,35 +632,14 @@ export const pageCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'setColumnDef',
           operation: (wasm) => {
-            wasm.setColumnDef(pos.sectionIndex, 2, 0, 0, 2268);
+            wasm.setColumnDef(pos.sectionIndex, 2, 0, 0, 2268, def.narrow === 0 ? [1, 2] : [2, 1]);
             return pos;
           },
-          meta: { actionId: 'page:col-left', domain: 'page', refresh: 'full', dirtyScope: 'document' },
+          meta: { actionId: def.id, domain: 'page', refresh: 'full', dirtyScope: 'document' },
         });
-      } catch (err) { console.warn('[page:col-left]', err); }
+      } catch (err) { console.warn(`[${def.id}]`, err); }
     },
-  },
-  {
-    id: 'page:col-right',
-    label: '단 - 오른쪽',
-    canExecute: (ctx) => ctx.hasDocument,
-    execute(services) {
-      const ih = services.getInputHandler();
-      if (!ih) return;
-      const pos = ih.getPosition();
-      try {
-        ih.executeOperation({
-          kind: 'snapshot',
-          operationType: 'setColumnDef',
-          operation: (wasm) => {
-            wasm.setColumnDef(pos.sectionIndex, 2, 0, 0, 2268);
-            return pos;
-          },
-          meta: { actionId: 'page:col-right', domain: 'page', refresh: 'full', dirtyScope: 'document' },
-        });
-      } catch (err) { console.warn('[page:col-right]', err); }
-    },
-  },
+  })),
   {
     id: 'page:col-settings',
     label: '다단 설정',

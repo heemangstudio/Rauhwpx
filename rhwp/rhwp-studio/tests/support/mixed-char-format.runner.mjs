@@ -1,29 +1,10 @@
-// #6788: 실제 command/history/bridge + rhwp/pkg WASM 행위 회귀.
+// #6788: 실제 command/history/bridge + HeemangEngine(hm-wasm) 행위 회귀.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { registerHooks } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { startEditEngine } from './edit-history-env.ts';
 
-const studio = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const src = join(studio, 'src');
-const binding = join(studio, '../pkg/rhwp.js');
-registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === '@wasm/rhwp.js') return { url: pathToFileURL(binding).href, shortCircuit: true };
-    if (specifier.startsWith('@/')) return { url: pathToFileURL(join(src, specifier.slice(2) + '.ts')).href, shortCircuit: true };
-    if (/^\.{1,2}\//.test(specifier) && !/\.[cm]?[tj]s$/.test(specifier)) {
-      return { url: pathToFileURL(join(dirname(fileURLToPath(context.parentURL)), specifier + '.ts')).href, shortCircuit: true };
-    }
-    return next(specifier, context);
-  },
-});
-const { HwpDocument, initSync } = await import(pathToFileURL(binding));
-initSync({ module: readFileSync(join(studio, '../pkg/rhwp_bg.wasm')) });
-const { WasmBridge } = await import(pathToFileURL(join(src, 'core/wasm-bridge.ts')));
-const { ApplyCharFormatCommand } = await import(pathToFileURL(join(src, 'engine/command.ts')));
-const { CommandHistory } = await import(pathToFileURL(join(src, 'engine/history.ts')));
-const { parseCharShapeRuns } = await import(pathToFileURL(join(src, 'core/char-shape-runs.ts')));
+const engine = await startEditEngine();
+const { ApplyCharFormatCommand } = engine.command;
+const { CommandHistory } = engine;
 
 const pos = (p, off) => ({ sectionIndex: 0, paragraphIndex: p, charOffset: off });
 const bodyRange = (p, from, to) => ({
@@ -34,16 +15,6 @@ const bodyRange = (p, from, to) => ({
 const text = '가😀나다라마바';
 const purple = '#a020c0';
 const yellow = { shadeColor: '#ffff00' };
-function bridge(doc) {
-  const wasm = Object.create(WasmBridge.prototype);
-  wasm.doc = doc;
-  return wasm;
-}
-function blank() {
-  const doc = HwpDocument.createEmpty();
-  doc.createBlankDocument();
-  return doc;
-}
 function bodyState(wasm, count = 1) {
   return Array.from({ length: count }, (_, p) => Array.from({ length: wasm.getParagraphLength(0, p) }, (_, o) => wasm.getCharPropertiesAt(0, p, o)));
 }
@@ -72,13 +43,12 @@ function rangesFor(from, to, count) {
 }
 let scenarios = 0;
 for (const [count, from, to] of [[1, pos(0, 0), pos(0, 7)], [1, pos(0, 2), pos(0, 4)], [1, pos(0, 3), pos(0, 6)], [2, pos(0, 1), pos(1, 6)]]) {
-  const doc = blank();
+  const wasm = engine.newDocument();
   for (let p = 0; p < count; p++) {
-    if (p) doc.splitParagraph(0, p - 1, 7);
-    doc.insertText(0, p, 0, text);
-    doc.applyCharFormat(0, p, 2, 4, JSON.stringify({ textColor: purple, bold: true, fontSize: 1800 }));
+    if (p) wasm.splitParagraph(0, p - 1, 7);
+    wasm.insertText(0, p, 0, text);
+    wasm.applyCharFormat(0, p, 2, 4, JSON.stringify({ textColor: purple, bold: true, fontSize: 1800 }));
   }
-  const wasm = bridge(doc);
   const history = new CommandHistory();
   let restoreCalls = 0;
   const restore = wasm.setCharShapeRuns.bind(wasm);
@@ -95,16 +65,14 @@ for (const [count, from, to] of [[1, pos(0, 0), pos(0, 7)], [1, pos(0, 2), pos(0
   }
   assert.equal(restoreCalls, count * 6, '구간 수와 무관하게 문단당 복원 호출 한 번');
   history.clear(wasm);
-  doc.free();
   scenarios++;
 }
 
 {
-  const doc = blank();
-  doc.insertText(0, 0, 0, text);
-  doc.splitParagraph(0, 0, 7);
-  doc.insertText(0, 1, 0, text);
-  const wasm = bridge(doc);
+  const wasm = engine.newDocument();
+  wasm.insertText(0, 0, 0, text);
+  wasm.splitParagraph(0, 0, 7);
+  wasm.insertText(0, 1, 0, text);
   const before = bodyState(wasm, 2);
   const apply = wasm.applyCharFormat.bind(wasm);
   wasm.applyCharFormat = (sec, p, ...args) => {
@@ -118,30 +86,15 @@ for (const [count, from, to] of [[1, pos(0, 0), pos(0, 7)], [1, pos(0, 2), pos(0
     error => error.cause?.message === 'injected failure');
   assert.deepEqual(bodyState(wasm, 2), before);
   assert.equal(history.undo(wasm), null);
-  doc.free();
   scenarios++;
 }
 
 {
-  const doc = blank();
-  const wasm = bridge(doc);
+  const wasm = engine.newDocument();
   const history = new CommandHistory();
   history.execute(new ApplyCharFormatCommand([bodyRange(0, 0, 0)], yellow, pos(0, 0)), wasm);
   assert.equal(history.undo(wasm), null);
-  doc.free();
   scenarios++;
 }
 
-{
-  let mutations = 0;
-  const fake = { applyCharFormat() { mutations++; }, getCharShapeRuns() { return '[]'; } };
-  const history = new CommandHistory();
-  assert.throws(() => history.execute(new ApplyCharFormatCommand([bodyRange(0, 0, 6)], yellow, pos(0, 0)), bridge(fake)), /최신 WASM/);
-  assert.equal(mutations, 0);
-  for (const json of ['null', '[]', '[{"startOffset":1,"endOffset":6,"charShapeId":0}]', '[{"startOffset":0,"endOffset":6,"charShapeId":-1}]']) {
-    assert.throws(() => parseCharShapeRuns(json, 0, 6));
-  }
-  assert.deepEqual(parseCharShapeRuns('[]', 0, 0), []);
-  scenarios++;
-}
 console.log(`MIXED_CHAR_FORMAT_OK scenarios=${scenarios}`);

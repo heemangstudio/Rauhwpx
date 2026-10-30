@@ -1,0 +1,110 @@
+{
+  "requested": "Heemang editing slice 2, opt-in sessions only; old engine remains default",
+  "baseCommit": "d599e35c",
+  "engine": {
+    "mainInspected": "70367de",
+    "vendored": "280497a916a7590fce1bfa7ac5ce8ad1b39516e9",
+    "wasmSha256": "cb404ef58bca9bb05c3d2ac66a2009e3a53f3514d297e6f1af7ac06de314460b",
+    "engineSourceModified": false
+  },
+  "works": [
+    "Selection bold/italic/underline on and off, size, COLORREF color in body and cells",
+    "Paragraph alignment, indent, left margin, percent line spacing and before/after spacing",
+    "Plain text copy/cut/paste; internal styled text insertion at a caret, including same runtime cross-document fragments",
+    "Native wire-address find next/previous and case-sensitive search; replace and grouped replace-all in body and table cells",
+    "One native undo group per mutation, directed selection restoration and checkpoint rollback through caret-resolution failures",
+    "Same-format HWP5/HWPX saved text, character formatting and paragraph properties survive reopening"
+  ],
+  "stubbedBeforeDocumentMutation": [
+    "Strike, font face, character spacing and caret insertion formatting",
+    "Style apply and lists/bullets/numbering on/off",
+    "Table row/column insert/delete, cell merge/split and cross-cell text selection",
+    "External rich HTML and nontext clipboard input",
+    "Internal fragment replacement over a selection",
+    "Clipboard ranges intersecting controls; paragraphs with soft breaks, nonbreaking/fixed spaces or unaccounted wire units",
+    "Relative size/line-spacing controls that require the missing current-format query"
+  ],
+  "interaction": "Character buttons open explicit on/off choices because formatContext is absent; blank dialog fields leave existing properties unchanged.",
+  "tests": {
+    "unit": {
+      "command": "npm --prefix rhwp/rhwp-studio test",
+      "exitCode": 0,
+      "pass": 2923,
+      "todo": 2,
+      "fail": 0,
+      "note": "Two existing TODO tests concern legacy header/footer IME redo and field undo."
+    },
+    "nativeAndRouting": {
+      "command": "node --test rhwp/rhwp-studio/tests/heemang-editing.test.ts rhwp/rhwp-studio/tests/license-viewer-commands.test.ts",
+      "pass": 33,
+      "fail": 0
+    },
+    "readerBrowser": {
+      "command": "node --test rhwp/rhwp-studio/tests/heemang-reader.browser.test.ts",
+      "result": "pass",
+      "boundary": "Real browser/reader with fixture-backed native and view services; clipboard races, adjacent search and guard behavior"
+    },
+    "typecheck": {
+      "command": "npx --prefix rhwp/rhwp-studio tsc --noEmit -p rhwp/rhwp-studio/tsconfig.json",
+      "exitCode": 0
+    },
+    "live": {
+      "runtime": "http://127.0.0.1:7700/?engine=heemang",
+      "browser": "Chrome using repo e2e ensureChromePath and puppeteer-core",
+      "documents": "Copies of the four read-only parity gate docs",
+      "details": "suite-matrix.json",
+      "clipboard": "Real production Edit-menu navigator.clipboard.write/read on all four docs; headless CDP Meta shortcuts emitted no clipboard events, synthetic event checks are separately labeled.",
+      "finalReport": "final-report.json"
+    },
+    "finalTargetedLive": {
+      "status": "passed",
+      "runtime": "Real Studio/Chrome/native engine",
+      "run": "2026-10-23T07-36-59-127Z",
+      "checks": 12,
+      "searchTraceRun": "2026-10-23T07-39-17-051Z",
+      "searchChecks": 4,
+      "coverage": "Real Edit-menu clipboard plus caret-inclusive find, adjacent next/previous/wrap, replace and exact undo/redo"
+    },
+    "additionalRealUiStubs": {
+      "status": "passed",
+      "checks": 24,
+      "documents": 4,
+      "coverage": "Table row/column deletion, bullet toggle, style apply, character spacing decrease and cross-cell guards"
+    }
+  },
+  "persistenceGate": {
+    "status": "incomplete",
+    "textStylesAndPageCounts": "pass on all four",
+    "fullLayout": "pass on exam_math; measured reopen drift on lang_exam -588HU, nikl_plan -293HU, fdi_q1 -4808HU",
+    "firstDeltaPx100Percent": {
+      "lang_exam.hwp": -7.84,
+      "nikl_plan.hwp": -3.9066666667,
+      "fdi_q1.hwpx": -64.1066666667
+    },
+    "fontDiagnostic": "Explicit prepareFonts on edited nikl changed neither geometry nor font requests, and did not remove reopen drift. Runtime resource IDs were normalized; geometry was not.",
+    "request": "../engine-requests.md#slice-2",
+    "nativeRequest": "native-save-layout-request.json"
+  },
+  "screenshots": [
+    "evidence/exam_math-before.png",
+    "evidence/exam_math-formatted.png",
+    "evidence/exam_math-reopened.png",
+    "evidence/fdi_q1-before.png",
+    "evidence/fdi_q1-formatted.png",
+    "evidence/fdi_q1-reopened.png",
+    "evidence/lang_exam-before.png",
+    "evidence/lang_exam-formatted.png",
+    "evidence/lang_exam-reopened.png",
+    "evidence/nikl_plan-before.png",
+    "evidence/nikl_plan-formatted.png",
+    "evidence/nikl_plan-reopened.png",
+    "evidence/paragraph-dialog.png"
+  ],
+  "knownCoverageGap": "None for cross-cell guards after additional real UI Shift-click checks on all four documents.",
+  "reviewFindingsFixed": [
+    "Lossy native control/soft-break clipboard cut",
+    "Toolbar blocked for all Heemang editing",
+    "Async menu Cut stale selection/clipboard generation",
+    "Adjacent native search boundary"
+  ]
+}

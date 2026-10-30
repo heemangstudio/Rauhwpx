@@ -203,12 +203,3 @@ export function createStopIcon(className = ''): SVGSVGElement {
   return svg;
 }
 
-/** 편집 종류 → 아이콘 이름. opGlyph 의 유니코드 대응을 대체한다. */
-export const OP_ICON: Record<string, SidebarIconName> = {
-  insert: 'insert',
-  delete: 'delete',
-  replace: 'replace',
-  format: 'format',
-  field: 'field',
-  object: 'object',
-};

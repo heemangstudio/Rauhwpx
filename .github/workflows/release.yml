@@ -38,6 +38,9 @@ jobs:
             exit 1
           fi
 
+      - name: Require release notes for the version
+        run: node scripts/check-release-notes.mjs
+
       - name: Audit high and critical production advisories
         run: node scripts/audit-production.mjs
 

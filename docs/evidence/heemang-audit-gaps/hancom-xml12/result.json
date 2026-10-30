@@ -1,0 +1,10 @@
+{
+  "question": "Does Hancom read the candidate's xmlVersion 1.2 HWPX fixed line spacing (case branch packed) as 15 pt or 30 pt?",
+  "inputs": {"v12.hwpx": "candidate save from samples/hwpx/blank_hwpx.hwpx (xmlVersion 1.2), fixed 15 pt typed", "v14.hwpx": "candidate save from template/blank-batang.hwp (xmlVersion 1.4), fixed 15 pt typed"},
+  "tool": "heemang-cleanroom/tools/hancom-rt/hancom_dir.sh -> hancom-parity-loop hancom_export.sh (print to PDF)",
+  "measure": "pdftotext -bbox-layout line yMin deltas",
+  "hancomLinePitchPt": {"v12": 15.0, "v14": 15.0},
+  "candidateLinePitchPx": {"v12": 20, "v14": 20},
+  "oldEngineReadsV12As": "30.0 pt (old engine misreads 1.2 packed line spacing)",
+  "verdict": "Hancom reads 15 pt; candidate writer kept unchanged"
+}

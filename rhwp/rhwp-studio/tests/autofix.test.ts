@@ -4,13 +4,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  AUTOFIX_PREWARM_INTERVAL_MS,
   AUTOFIX_RESULT_MS,
   AUTOFIX_UNAVAILABLE_MS,
   autofixReady,
   createAutofixController,
   createRetryEscalation,
+  noteAutofixOutcome,
+  prewarmAutofix,
   runAutofix,
+  runAutofixResult,
   setAutofixApi,
+  type AutofixOutcome,
   type AutofixPhase,
   type AutofixSettings,
   type AutofixStatus,
@@ -165,5 +170,89 @@ test('runs share one in-flight request in a window and treat rejections as faile
 
   setAutofixApi(fakeApi({ ...SETTINGS, enabled: true }, async () => { throw new Error('boom'); }));
   assert.equal(await runAutofix({ surface: 'a', title: 'a' }), 'failed');
+  setAutofixApi(undefined);
+});
+
+function recordingApi(result: () => Awaited<ReturnType<DesktopAutofixApi['run']>>) {
+  const outcomes: AutofixOutcome[] = [];
+  let prewarms = 0;
+  const api: DesktopAutofixApi = {
+    ...fakeApi({ ...SETTINGS, enabled: true, decided: true }, async () => result()),
+    prewarm: async () => { prewarms += 1; return { ready: true }; },
+    outcome: async (outcome) => { outcomes.push(outcome); return true; },
+  };
+  return { api, outcomes, prewarms: () => prewarms };
+}
+
+test('the run result carries the run id and the cause for the renderer to show', async () => {
+  const { api } = recordingApi(() => ({ status: 'fixed', provider: 'codex', runId: 'r1', cause: '  잠금 파일  ' }));
+  setAutofixApi(api);
+  await settle();
+  assert.deepEqual(await runAutofixResult({ surface: 'manual', title: 't' }), { status: 'fixed', provider: 'codex', runId: 'r1', cause: '잠금 파일' });
+  setAutofixApi(fakeApi({ ...SETTINGS, enabled: true }, async () => ({ status: 'weird' as AutofixStatus, provider: 'evil' as never })));
+  assert.deepEqual(await runAutofixResult({ surface: 'manual', title: 't' }), { status: 'failed' }, 'unknown values are dropped');
+  setAutofixApi(undefined);
+});
+
+test('after a fix, the next success or failure of that surface is reported once with the run id', async () => {
+  const { api, outcomes } = recordingApi(() => ({ status: 'fixed', runId: 'r1' }));
+  setAutofixApi(api);
+  await settle();
+  const escalation = createRetryEscalation(2, 'hub-connection');
+  escalation.failed('hub');
+  escalation.reset();
+  assert.deepEqual(outcomes, [], 'nothing to confirm before a fix');
+
+  assert.equal(await runAutofix({ surface: 'hub-connection', title: 't' }), 'fixed');
+  escalation.retried('hub');
+  escalation.failed('hub');
+  escalation.reset();
+  assert.deepEqual(outcomes, [{ surface: 'hub-connection', ok: false, runId: 'r1' }], 'the first signal settles it');
+
+  await runAutofix({ surface: 'browser-page', title: 't' });
+  createRetryEscalation(2, 'browser-page').reset();
+  assert.deepEqual(outcomes.at(-1), { surface: 'browser-page', ok: true, runId: 'r1' });
+
+  const failed = recordingApi(() => ({ status: 'failed', runId: 'r2' }));
+  setAutofixApi(failed.api);
+  await settle();
+  await runAutofix({ surface: 'hub-connection', title: 't' });
+  createRetryEscalation(2, 'hub-connection').reset();
+  assert.deepEqual(failed.outcomes, [], 'only a fixed run waits for confirmation');
+  setAutofixApi(undefined);
+});
+
+test('surfaces that reload the page always report, so the main process can match a fix made before the reload', async () => {
+  const { api, outcomes } = recordingApi(() => ({ status: 'fixed' }));
+  setAutofixApi(api);
+  await settle();
+  noteAutofixOutcome('init-failure', true);
+  noteAutofixOutcome('engine-trap', false);
+  noteAutofixOutcome('provider-failure', true);
+  assert.deepEqual(outcomes, [{ surface: 'init-failure', ok: true }, { surface: 'engine-trap', ok: false }]);
+  setAutofixApi(undefined);
+});
+
+test('the first failed retry warms up a provider before the autofix button appears, at most once a minute', async () => {
+  const { api, prewarms } = recordingApi(() => ({ status: 'fixed' }));
+  setAutofixApi(api);
+  await settle();
+  const escalation = createRetryEscalation(2, 'provider-failure');
+  escalation.failed('a');
+  assert.equal(prewarms(), 0, 'a first failure is not a failed retry');
+  escalation.retried('a');
+  escalation.failed('a');
+  assert.equal(prewarms(), 1);
+  escalation.retried('a');
+  escalation.failed('a');
+  assert.equal(prewarms(), 1, 'throttled');
+  prewarmAutofix(Date.now() + AUTOFIX_PREWARM_INTERVAL_MS);
+  assert.equal(prewarms(), 2);
+
+  const off = recordingApi(() => ({ status: 'fixed' }));
+  setAutofixApi({ ...off.api, getSettings: async () => SETTINGS });
+  await settle();
+  prewarmAutofix();
+  assert.equal(off.prewarms(), 0, 'not while autofix is off');
   setAutofixApi(undefined);
 });

@@ -477,6 +477,9 @@ export interface AgentSidebarDeps {
   renameDocument?: (name: string) => Promise<string | null>;
   /** 지금 문서의 이름을 바꿀 수 있는가. 바꿀 수 없으면 두 번 눌러도 칸을 열지 않는다. */
   canRenameDocument?: () => boolean;
+  /** 집중 모드 머리의 문서 이름을 누르면 이 창의 열린 문서 목록을 편다(같은 앵커면 접는다). */
+  toggleDocumentList?: (anchor: HTMLElement) => void;
+  closeDocumentList?: () => void;
   /** 쓰기 활동 — 기본은 창 전체 감시자. 미리보기가 '쓰는 중' 장면을 고정할 때만 바꾼다. */
   typingActivity?: TypingActivity;
   /** 백그라운드 채팅 알림 장부 — 기본은 페이지 하나짜리(chatAttention). 미리보기가 바꾼다. */
@@ -2243,6 +2246,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const name = getDocumentContext?.()?.documentName;
       if (!name || deps.canRenameDocument?.() === false) return;
       event.preventDefault();
+      deps.closeDocumentList?.();
       // 하마가 쓰는 중이면 쓰기를 거두고 이름부터 보인다 — 쓰기가 끝나며 입력 칸을 덮지 않는다.
       if (documentNameWriter.target) {
         documentNameWriter.cancel();
@@ -3103,6 +3107,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   bindChatTitleRename(workspaceChatTitle);
   bindChatTitleRename(chatTitle);
   bindDocumentRename(workspaceDocumentName);
+  if (deps.toggleDocumentList) {
+    const toggleDocumentList = deps.toggleDocumentList;
+    // 집중 모드는 메뉴 막대를 덮는다 — 그 머리의 문서 이름이 열린 문서 목록을 편다.
+    workspaceDocumentName.classList.add('ag-document-switch');
+    workspaceDocumentName.addEventListener('click', (event) => {
+      if (event.detail > 1 || isRenaming(workspaceDocumentName)) return;
+      if (!getDocumentContext?.()?.documentName) return;
+      toggleDocumentList(workspaceDocumentName);
+    });
+  }
   bindDocumentNameMenu(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
@@ -3390,7 +3404,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const connRetry = el('button', 'ag-conn-retry', '다시 연결');
   connRetry.type = 'button';
   /** 다시 연결이 두 번 실패했거나 앱이 띄우는 허브가 뜨지 않으면 그 자리에 자동 수정을 둔다. */
-  const hubEscalation = createRetryEscalation();
+  const hubEscalation = createRetryEscalation(2, 'hub-connection');
   let hubRetryPending = false;
   let connAutofix: AutofixButton | null = null;
   function reconnectHub(): void {
@@ -5335,12 +5349,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
       if (data.type !== 'owned_browser_popup' || data.openerTabId !== tab.tabId || !data.tab?.tabId) return;
       popups.add(data.tab.tabId);
-      void native.attach({ tabId: data.tab.tabId, expectedTargetId: data.tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true, title }).catch(() => {});
+      void native.attach({ tabId: data.tab.tabId, expectedTargetId: data.tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true, title }).catch(() => {});
     });
     // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
     opening.catch(() => close());
     try {
-      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, bare: true, title });
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true, title });
     } catch (failure) { await close(); throw failure; }
     return { closed, close };
   };

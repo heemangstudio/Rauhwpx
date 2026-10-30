@@ -1,0 +1,56 @@
+[
+  {
+    "format": "hwp",
+    "pictures": [
+      {
+        "path": "",
+        "control": 3,
+        "bytes": 68,
+        "mime": "image/png",
+        "sha256": "3fd24bcfdb17a6027c5f3ed896d17a020d6ff9d9e4d06362461a9b44b6ac1b52"
+      },
+      {
+        "path": "",
+        "control": 4,
+        "bytes": 1011,
+        "mime": "image/png",
+        "sha256": "876cc884e7e6201baf2d34a842bb912cb140c3451eb8c5c99751998b3cc1c984"
+      },
+      {
+        "path": "[{\"controlIndex\":2,\"cellIndex\":0,\"cellParaIndex\":0}]",
+        "control": 0,
+        "bytes": 68,
+        "mime": "image/png",
+        "sha256": "3fd24bcfdb17a6027c5f3ed896d17a020d6ff9d9e4d06362461a9b44b6ac1b52"
+      }
+    ],
+    "insertedExact": true
+  },
+  {
+    "format": "hwpx",
+    "pictures": [
+      {
+        "path": "",
+        "control": 3,
+        "bytes": 68,
+        "mime": "image/png",
+        "sha256": "3fd24bcfdb17a6027c5f3ed896d17a020d6ff9d9e4d06362461a9b44b6ac1b52"
+      },
+      {
+        "path": "",
+        "control": 4,
+        "bytes": 1011,
+        "mime": "image/png",
+        "sha256": "876cc884e7e6201baf2d34a842bb912cb140c3451eb8c5c99751998b3cc1c984"
+      },
+      {
+        "path": "[{\"controlIndex\":2,\"cellIndex\":0,\"cellParaIndex\":0}]",
+        "control": 0,
+        "bytes": 68,
+        "mime": "image/png",
+        "sha256": "3fd24bcfdb17a6027c5f3ed896d17a020d6ff9d9e4d06362461a9b44b6ac1b52"
+      }
+    ],
+    "insertedExact": true
+  }
+]

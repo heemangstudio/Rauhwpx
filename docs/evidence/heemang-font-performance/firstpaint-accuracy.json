@@ -1,0 +1,191 @@
+[
+  {
+    "round": 0,
+    "doc": "d-05-mixed-korean-latin-108b1ff845b3.hwpx",
+    "baseline": {
+      "firstPaintMs": 1135,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 61.299999952316284
+        }
+      ],
+      "resources": []
+    },
+    "firstPaintSvgStable": true,
+    "candidate": {
+      "firstPaintMs": 1298,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 7.700000047683716
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 6.199999928474426
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 0.30000007152557373
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "d-01-table-border-styles-6a0712c9dd15.hwpx",
+    "baseline": {
+      "firstPaintMs": 124,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 6.699999928474426
+        }
+      ],
+      "resources": []
+    },
+    "firstPaintSvgStable": true,
+    "candidate": {
+      "firstPaintMs": 119,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 2.9000000953674316
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 0.5
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "d-156467175-press-release-head-4d0ec3e99bf4.hwp",
+    "firstPaintSvgStable": true,
+    "candidate": {
+      "firstPaintMs": 716,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 7.400000095367432
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 40.199999928474426
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 3
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1.7999999523162842
+        }
+      ],
+      "resources": []
+    },
+    "baseline": {
+      "firstPaintMs": 1153,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 15.700000047683716
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "footnote-01.hwp",
+    "baseline": {
+      "firstPaintMs": 393,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 2.600000023841858
+        }
+      ],
+      "resources": []
+    },
+    "firstPaintSvgStable": true,
+    "candidate": {
+      "firstPaintMs": 384,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 1
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 11.5
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1.5
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 4
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 0.7999999523162842
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1.100000023841858
+        }
+      ],
+      "resources": []
+    }
+  },
+  {
+    "round": 0,
+    "doc": "d-1341000-research-report-foot-cd72258675b5.hwp",
+    "firstPaintSvgStable": true,
+    "candidate": {
+      "firstPaintMs": 1021,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 15.5
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 11.699999928474426
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 2.3000000715255737
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 1.6999999284744263
+        },
+        {
+          "name": "renderPageToCanvas",
+          "ms": 2.899999976158142
+        }
+      ],
+      "resources": []
+    },
+    "baseline": {
+      "firstPaintMs": 1432,
+      "calls": [
+        {
+          "name": "loadDocument",
+          "ms": 120.39999997615814
+        }
+      ],
+      "resources": []
+    }
+  }
+]

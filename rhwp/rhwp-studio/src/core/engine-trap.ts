@@ -120,6 +120,25 @@ export function onEngineTrap(listener: (info: EngineTrapInfo) => void): () => vo
  * 돌려주거나 스택을 더 잃어 memory access out of bounds 로 번지지 않게 한다.
  */
 export function guardEngineCalls(proto: object): void {
+  guardCalls(proto, isEngineReadCall, CALLS_ALLOWED_AFTER_TRAP);
+}
+
+/** HeemangEngine `Doc` 에서 문서 내용을 바꾸지 않는 메서드. 나머지 호출마다 변이 순번이 오른다. */
+const HEEMANG_READ_CALLS: ReadonlySet<string> = new Set([
+  'state', 'pages', 'pageInfo', 'page', 'patch', 'pictureSource', 'pictureBytes', 'pageSvg', 'pdf', 'pagePng',
+  'locate', 'objects', 'pageObjects', 'select', 'selectRange', 'navigate', 'query', 'search', 'layoutStats',
+  'substitutions', 'fontRequests', 'glyphRequests', 'fontNames', 'copy', 'hasTableTransposeClipboard', 'checkpoint',
+  'releaseCheckpoint', 'serialize', 'serializeAs', 'exportHwpx', 'verifyHwp',
+]);
+/** 멈춘 뒤에도 복구본 저장이 쓰는 읽기. */
+const HEEMANG_CALLS_ALLOWED_AFTER_TRAP: ReadonlySet<string> = new Set(['serialize', 'serializeAs', 'state', 'free']);
+
+/** HeemangEngine `Doc` 의 메서드에 같은 trap 감시와 변이 순번을 건다. */
+export function guardHeemangEngineCalls(proto: object): void {
+  guardCalls(proto, name => HEEMANG_READ_CALLS.has(name), HEEMANG_CALLS_ALLOWED_AFTER_TRAP);
+}
+
+function guardCalls(proto: object, isRead: (name: string) => boolean, allowed: ReadonlySet<string>): void {
   const marker = Symbol.for('rhwp.engineTrapGuard');
   const target = proto as Record<PropertyKey, unknown>;
   if (target[marker]) return;
@@ -129,8 +148,8 @@ export function guardEngineCalls(proto: object): void {
     const descriptor = Object.getOwnPropertyDescriptor(proto, name);
     const original = descriptor?.value;
     if (typeof original !== 'function' || !descriptor?.writable) continue;
-    const allowedAfterTrap = CALLS_ALLOWED_AFTER_TRAP.has(name);
-    const mutates = !isEngineReadCall(name);
+    const allowedAfterTrap = allowed.has(name);
+    const mutates = !isRead(name);
     target[name] = function guarded(this: unknown, ...args: unknown[]) {
       if (trapped && !allowedAfterTrap) throw new EngineTrappedError(trapped.message);
       if (mutates) mutationEpoch += 1;

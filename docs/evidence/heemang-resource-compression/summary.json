@@ -1,0 +1,20 @@
+{
+  "status": "native PASS; final combined WASM live save/reopen pending",
+  "base": "f6281d4747b9bb20c521b81816cac20f918b0a9c",
+  "cli": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/rc-resource-compression-aacc2dacfca8",
+  "cli_sha256": "aacc2dacfca8e5038a479cb0594a5481fd634082378a9ff8b8a28b4ae4656a4f",
+  "source_sha256": "f50d69164ad4630e001092ad101e7f484d5970dcd83db13d26b15b8a9265d6aa",
+  "before_bytes": 64538181,
+  "after_bytes": 8951550,
+  "identical_decompressed_package_members": 471,
+  "embedded_assets": 435,
+  "pages": 384,
+  "identical_text_bytes": 575917,
+  "native_export_diagnostic_seconds": 1.137,
+  "tests": {
+    "passed": 40,
+    "failed": 0,
+    "ignored": 1
+  },
+  "commit": "01c8536"
+}

@@ -19,7 +19,7 @@ const SONNET = 'anthropic/claude-sonnet-5.5';
 
 async function setup(t, env = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-gifts-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
   const upstream = createFakeOpenRouter({ provisioningKey: PROVISIONING });
   const apiBase = await upstream.listen();
   t.after(() => upstream.close());

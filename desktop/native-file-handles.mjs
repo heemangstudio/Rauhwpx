@@ -181,6 +181,14 @@ function nativeHelperPath(filePath, suffix) {
   return join(dirname(filePath), `${clippedName(basename(filePath))}.rauhwpx-${shortRandomId()}${suffix}`);
 }
 
+// Helper paths an in-progress save in this process still owns, and recovery
+// copies a failed save handed to the user. The stale-helper sweep never
+// touches either.
+const inFlightNativeHelpers = new Set();
+const retainedNativeRecoveryCopies = new Set();
+/** A leftover helper must be untouched this long before the sweep removes it. */
+export const NATIVE_HELPER_STALE_MS = 2 * 60 * 1000;
+
 /**
  * icacls.exe is not long-path aware even with LongPathsEnabled. The \\?\ form
  * lets it reach documents whose full path passes MAX_PATH.
@@ -1143,6 +1151,30 @@ export async function writeNativeFileAtomically(
   // remains visible and openable in the platform file picker.
   const backupPath = nativeRecoveryPath(filePath);
   const linkProbePath = nativeHelperPath(filePath, '.link-probe');
+  const helperPaths = [temporaryPath, backupPath, linkProbePath];
+  for (const helperPath of helperPaths) inFlightNativeHelpers.add(helperPath);
+  try {
+    return await writeNativeFileWithHelpers(filePath, bytes, {
+      temporaryPath, backupPath, linkProbePath,
+      platform, openImpl, copyFileImpl, linkImpl, lstatImpl, renameImpl, rmImpl, statImpl,
+      syncParentImpl, fingerprintImpl, runCommandImpl, windowsSystemRoot, windowsProcessEnv,
+      metadataDirectory, expectedFingerprint, sleep, logger,
+    });
+  } finally {
+    for (const helperPath of helperPaths) inFlightNativeHelpers.delete(helperPath);
+  }
+}
+
+async function writeNativeFileWithHelpers(
+  filePath,
+  bytes,
+  {
+    temporaryPath, backupPath, linkProbePath,
+    platform, openImpl, copyFileImpl, linkImpl, lstatImpl, renameImpl, rmImpl, statImpl,
+    syncParentImpl, fingerprintImpl, runCommandImpl, windowsSystemRoot, windowsProcessEnv,
+    metadataDirectory, expectedFingerprint, sleep, logger,
+  },
+) {
   let temporaryFile;
   let backupMoved = false;
   let linkProbeCreated = false;
@@ -1323,6 +1355,7 @@ export async function writeNativeFileAtomically(
       await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep).catch(() => {});
     }
     if (backupMoved) {
+      retainedNativeRecoveryCopies.add(backupPath);
       throw nativeFileRecoveryRequiredError(error, backupPath, restoreErrors);
     }
     throw error;
@@ -1350,6 +1383,8 @@ export async function writeNativeFileAtomically(
     } catch (error) {
       logger?.warn?.('[native-save] recovery copy cleanup failed:', error);
     }
+  } else if (durabilityError && backupMoved) {
+    retainedNativeRecoveryCopies.add(backupPath);
   }
   let publishedFingerprint = null;
   let fingerprintError = null;
@@ -1438,6 +1473,86 @@ export async function recoverInterruptedNativeSave(
     logger?.warn?.('[native-save] could not restore an interrupted save:', error);
     return false;
   }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A save killed mid-way (crash, End task) leaves its helpers beside the
+ * document: a full-document `<name>.rauhwpx-<id>.tmp`, a `.link-probe` link to
+ * it, and after a crash past publication the `<stem>.rauhwpx-recovery-<id><ext>`
+ * copy of the previous version. Only the in-process cleanup removes them, so
+ * they would otherwise stay forever. Run this while the document exists:
+ * publication is atomic, so an existing target is a complete document and none
+ * of these copies is needed to recover it (an empty target is left alone).
+ *
+ * Only this document's exact helper names are considered, never a helper an
+ * in-progress save in this process owns or a recovery copy a failed save
+ * reported, and only after nothing touched it for `staleAfterMs` (mtime, ctime
+ * and birth time all count, since a copy carries the source mtime).
+ * Returns the removed paths.
+ */
+export async function sweepStaleNativeSaveHelpers(
+  filePath,
+  {
+    platform = process.platform,
+    readdirImpl = readdir,
+    lstatImpl = lstat,
+    rmImpl = rm,
+    now = Date.now,
+    staleAfterMs = NATIVE_HELPER_STALE_MS,
+    sleep,
+    logger = console,
+  } = {},
+) {
+  const target = await lstatImpl(filePath).catch(() => null);
+  if (!target?.isFile?.() || Number(target.size) <= 0) return [];
+  const directory = dirname(filePath);
+  const flags = platform === 'win32' || platform === 'darwin' ? 'i' : '';
+  const name = basename(filePath);
+  const extension = extname(filePath);
+  const helperPattern = new RegExp(
+    `^${escapeRegExp(clippedName(name))}\\.rauhwpx-[0-9a-f]{12}\\.(?:tmp|link-probe)$`,
+    flags,
+  );
+  // A clipped stem can be shared with another long document name whose own
+  // recovery copy may still be the only complete version of that document.
+  const stem = extension ? name.slice(0, -extension.length) : name;
+  const recoveryPattern = clippedName(stem) === stem
+    ? new RegExp(`^${escapeRegExp(nativeRecoveryPrefix(filePath))}[0-9a-f]{12}${escapeRegExp(extension)}$`, flags)
+    : null;
+  let names;
+  try {
+    names = await readdirImpl(directory);
+  } catch {
+    return [];
+  }
+  const removed = [];
+  for (const entryName of names.map(String)) {
+    if (!helperPattern.test(entryName) && !recoveryPattern?.test(entryName)) continue;
+    const helperPath = join(directory, entryName);
+    if (inFlightNativeHelpers.has(helperPath) || retainedNativeRecoveryCopies.has(helperPath)) continue;
+    const info = await lstatImpl(helperPath).catch(() => null);
+    if (!info?.isFile?.()) continue;
+    const touchedMs = Math.max(
+      Number(info.mtimeMs) || 0,
+      Number(info.ctimeMs) || 0,
+      Number(info.birthtimeMs) || 0,
+    );
+    if (now() - touchedMs < staleAfterMs) continue;
+    try {
+      await retryWindows(() => rmImpl(helperPath, { force: true }), platform, sleep);
+      removed.push(helperPath);
+    } catch (error) {
+      logger?.warn?.('[native-save] could not remove a leftover save helper:', error);
+    }
+  }
+  if (removed.length > 0) {
+    logger?.info?.('[native-save] removed leftover save helpers:', removed);
+  }
+  return removed;
 }
 
 function isPortableHistoryBundleName(filePath) {
@@ -1622,6 +1737,7 @@ export class NativeFileHandleRegistry {
   #moveLeases;
   #onEntriesMoved;
   #platform;
+  #sweepHelpers;
 
   constructor({
     canonicalize = canonicalNativePath,
@@ -1648,6 +1764,9 @@ export class NativeFileHandleRegistry {
     moveLeases = null,
     /** Told after a document was found under a new path. */
     onEntriesMoved = null,
+    sweepHelpersImpl = statImpl === stat && writeFileImpl === writeNativeFileAtomically
+      ? sweepStaleNativeSaveHelpers
+      : null,
   } = {}) {
     this.#canonicalize = canonicalize;
     this.#ownershipKey = ownershipKey;
@@ -1665,6 +1784,17 @@ export class NativeFileHandleRegistry {
     this.#platform = platform;
     this.#moveLeases = moveLeases;
     this.#onEntriesMoved = onEntriesMoved;
+    this.#sweepHelpers = sweepHelpersImpl;
+  }
+
+  /** Remove helpers a killed save left beside this document. Never fails the caller. */
+  async #sweepLeftoverHelpers(canonicalPath) {
+    if (!this.#sweepHelpers) return;
+    try {
+      await this.#sweepHelpers(canonicalPath);
+    } catch (error) {
+      console.warn('[native-save] leftover save helper sweep failed:', error);
+    }
   }
 
   async create(sessionId, filePath, { allowMissing = false } = {}) {
@@ -1746,6 +1876,7 @@ export class NativeFileHandleRegistry {
     };
     this.#byId.set(entry.handleId, entry);
     this.#byPath.set(ownershipPath, entry);
+    if (diskFingerprint?.state === 'file') await this.#sweepLeftoverHelpers(canonicalPath);
     return { ok: true, descriptor: this.#descriptor(entry), created: true };
   }
 
@@ -1990,6 +2121,7 @@ export class NativeFileHandleRegistry {
         }
         this.#refreshBookmarkDigest(identity, entry, bytes);
         this.#refreshBookmarkContent(entry);
+        await this.#sweepLeftoverHelpers(entry.canonicalPath);
       });
       // A failed write must not poison later saves to the same handle.
       entry.writeChain = write.catch(() => {});
@@ -2266,6 +2398,13 @@ export class NativeFileHandleRegistry {
     const bookmark = this.#bookmarks.get(documentId);
     if (!bookmark) return false;
     return this.#byPath.get(this.#ownershipKey(bookmark.path))?.sessionId === sessionId;
+  }
+
+  /** 이 문서의 경로를 쥔 창. 아무 창도 열지 않았으면 null. */
+  ownerSessionOf(documentId) {
+    const bookmark = this.#bookmarks.get(documentId);
+    if (!bookmark) return null;
+    return this.#byPath.get(this.#ownershipKey(bookmark.path))?.sessionId ?? null;
   }
 
   async searchNearby(sessionId, documentId, { basenameHint = '' } = {}) {

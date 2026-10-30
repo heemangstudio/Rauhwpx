@@ -532,3 +532,57 @@ test('closing the window writes the primary worktree edit that was waiting for i
     assert.equal(result.flushed, true, 'the close flush writes the pending edit before the window goes away');
   } finally { await page.close(); }
 });
+
+test('typing while a reopened document sets up history stays unsaved', { timeout: 45_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }, snapshots] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'), import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'), import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'), import('/src/versioning/snapshot.ts'),
+      ]);
+      const wasm = new WasmBridge(); await wasm.initialize();
+      wasm.loadDocument(new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer()), 'shift-return.hwp');
+      const eventBus = new EventBus(); const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty, getDocumentId: () => 'load-race-doc',
+        getInputHandler: () => ({ canRedo: () => false, prepareSnapshotCapacity() {} }) as never,
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined, isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }), requestCheckpointTitle: async () => null,
+        },
+        worktreeHost: {
+          ensureOwnership: async () => true, canMutate: () => true,
+          getStatus: () => ({ isOpen: true, busy: false }),
+          open: async () => {}, close: async () => {}, remove: async () => false, merge: async () => {},
+        },
+      });
+      try {
+        await controller.documentLoaded();
+        await controller.enable();
+        await controller.whenIdle();
+        // 디스크에서 다른 내용으로 다시 연다. 열린 직후는 clean 이다.
+        wasm.insertText(0, 0, 0, 'DISK ');
+        dirty.markClean('disk-open');
+        const opened = snapshots.fingerprintVersionContent(wasm);
+        const loading = controller.documentLoaded({ fromDisk: true });
+        // 버전 기록을 준비하는 동안 사용자가 입력한다.
+        wasm.insertText(0, 0, 0, 'TYPED ');
+        dirty.markDirty('typing'); eventBus.emit('document-mutated');
+        const typed = snapshots.fingerprintVersionContent(wasm);
+        await loading;
+        await controller.whenIdle();
+        const primary = (await store.findWorktreeByDocumentId(versions.documentId('load-race-doc')))!;
+        return { dirty: dirty.isDirty(), savedFingerprint: primary.savedFingerprint, opened, typed };
+      } finally { controller.dispose(); await store.close(); wasm.dispose(); }
+    });
+    assert.notEqual(result.opened, result.typed);
+    assert.equal(result.dirty, true, 'edits typed during history setup keep the document dirty');
+    assert.equal(result.savedFingerprint, result.opened, 'the saved baseline is the opened content, not the typed edit');
+  } finally { await page.close(); }
+});

@@ -6,6 +6,7 @@ import { userSettings } from '@/core/user-settings';
 import type { FontSet } from '@/core/user-settings';
 import { getLocalFonts } from '@/core/local-fonts';
 import { getDesktopFontMenuNames } from '@/core/desktop-fonts';
+import { showToast } from '@/ui/toast';
 import {
   filterFontMenuEntries,
   fontMenuEmptyMessage,
@@ -83,6 +84,7 @@ export class Toolbar {
   private fontMenuCleanup: (() => void) | null = null;
   /** 마지막으로 받은 fontFamilies (언어별 7개 배열) */
   private lastFontFamilies?: string[];
+  private fontChange = 0;
 
   constructor(
     private container: HTMLElement,
@@ -309,12 +311,22 @@ export class Toolbar {
       }
     });
 
-    this.fontName.addEventListener('change', () => {
+    this.fontName.addEventListener('change', async () => {
       const name = this.fontName.value;
       if (!name) return;
 
       // 대표 글꼴 세트 선택인지 확인
       const fontSet = this.findFontSetByName(name);
+      const request = ++this.fontChange;
+      const instance = this.wasm.documentInstance;
+      try {
+        await this.wasm.prepareFontFamilies(fontSet ? Object.entries(fontSet).filter(([key]) => key !== 'name').map(([, value]) => value) : [name]);
+      } catch (error) {
+        console.warn('[Toolbar] 글꼴 준비 실패:', error);
+        showToast({ message: '글꼴 파일을 불러오지 못했습니다.' });
+        return;
+      }
+      if (request !== this.fontChange || instance !== this.wasm.documentInstance) return;
       if (fontSet) {
         this.applyFontSet(fontSet);
         return;

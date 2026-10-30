@@ -1,0 +1,64 @@
+{
+  "scope": "Offline attribution of existing seven-pair acceptance records; no new samples.",
+  "source": "afd6a6912542ef19b7d4ca3a4a8892f8bbeb8feb",
+  "packageSha256": "5cd1b7fcefb83c1b3b5beda8a0d47217d284fe546162741a3c1c1583ea03d608",
+  "rawSha256": "3206022dd68ce33d3d1207ed05ac0bb0bad818004332b40061dae289d883d9c8",
+  "rows": [
+    {
+      "app": "baseline",
+      "target": "body",
+      "runs": 7,
+      "medianOfRunMedians": {
+        "sync": 4.800000011920929,
+        "paint": 18.200000047683716,
+        "render": 14.599999964237213,
+        "rafRun": 15.25,
+        "frameWork": 12.199999988079071,
+        "beforeCaptureMs": 2.799999952316284,
+        "captureMs": 4.350000023841858
+      }
+    },
+    {
+      "app": "baseline",
+      "target": "cell",
+      "runs": 7,
+      "medianOfRunMedians": {
+        "sync": 6.600000023841858,
+        "paint": 19.049999952316284,
+        "render": 16.19999998807907,
+        "rafRun": 16.899999976158142,
+        "frameWork": 12.5,
+        "beforeCaptureMs": 3.100000023841858,
+        "captureMs": 3.449999988079071
+      }
+    },
+    {
+      "app": "candidate",
+      "target": "body",
+      "runs": 7,
+      "medianOfRunMedians": {
+        "sync": 2.8000000715255737,
+        "paint": 19.30000001192093,
+        "render": 8.200000047683716,
+        "rafRun": 8.550000011920929,
+        "frameWork": 16.199999928474426,
+        "beforeCaptureMs": 3.149999976158142,
+        "captureMs": 4.449999988079071
+      }
+    },
+    {
+      "app": "candidate",
+      "target": "cell",
+      "runs": 7,
+      "medianOfRunMedians": {
+        "sync": 3.549999952316284,
+        "paint": 19.75,
+        "render": 8.899999976158142,
+        "rafRun": 9.200000047683716,
+        "frameWork": 16.049999952316284,
+        "beforeCaptureMs": 3.1999999284744263,
+        "captureMs": 3.900000035762787
+      }
+    }
+  ]
+}

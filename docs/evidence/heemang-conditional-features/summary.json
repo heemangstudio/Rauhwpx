@@ -1,0 +1,19 @@
+{
+  "url": "http://127.0.0.1:7724/?engine=heemang",
+  "fixtureProvider": true,
+  "results": [
+    {
+      "file": "biz_plan.hwp",
+      "tableCells": 3,
+      "savedBytes": 28672,
+      "fieldsRetained": true
+    },
+    {
+      "file": "표-텍스트.hwpx",
+      "tableCells": 3,
+      "savedBytes": 20182,
+      "fieldsRetained": true
+    }
+  ],
+  "pageErrors": []
+}

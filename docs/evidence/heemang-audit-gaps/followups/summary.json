@@ -1,0 +1,813 @@
+{
+  "engine": {
+    "branch": "fix/studio-audit-gaps",
+    "commit": "cb86974",
+    "wasmSha256": "1e9e78cff26e8314a493c2bf1ad0934ed6c07382d37cbc19d3e068ee7c2ddadf"
+  },
+  "baseline": {
+    "url": "http://127.0.0.1:7745/",
+    "runs": [
+      {
+        "source": "rhwp/template/blank-batang.hwp",
+        "shownLive": "Fixed 7.5",
+        "captionText": "표  1설명",
+        "live": {
+          "paragraphs": [
+            "앞글",
+            "[표]",
+            "",
+            ""
+          ],
+          "layout": [
+            {
+              "type": "table",
+              "x": 117.2,
+              "y": 142.3,
+              "w": 559.4,
+              "h": 34.2,
+              "rowCount": 2,
+              "colCount": 2
+            }
+          ],
+          "table": {
+            "treatAsChar": false,
+            "textWrap": "TopAndBottom",
+            "vertRelTo": "Para",
+            "horzRelTo": "Para",
+            "outer": [
+              283,
+              283
+            ],
+            "padding": [
+              510,
+              141
+            ],
+            "pageBreak": 2,
+            "border": {
+              "type": 1,
+              "width": 1,
+              "color": "#000000"
+            },
+            "cellHeight": 282,
+            "cellVertAlign": 1
+          },
+          "marks": null
+        },
+        "saved": {
+          "hwp": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/baseline-hwp-saved.hwp",
+          "hwpx": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/baseline-hwp-saved.hwpx"
+        },
+        "reopened": {
+          "hwp": {
+            "shown": "Fixed 7.5",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 0,
+                "y": 0,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "Square",
+              "vertRelTo": "Paper",
+              "horzRelTo": "Paper",
+              "outer": [
+                0,
+                0
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": null
+          },
+          "hwpx": {
+            "shown": "Fixed 7.5",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 146,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": null
+          }
+        },
+        "storedHwpx": {
+          "marks": [
+            "endNote:)",
+            "footNote:)"
+          ],
+          "fixed": [
+            750,
+            1500
+          ]
+        }
+      },
+      {
+        "source": "rhwp/samples/hwpx/blank_hwpx.hwpx",
+        "shownLive": "Fixed 7.5",
+        "captionText": "표  1설명",
+        "live": {
+          "paragraphs": [
+            "앞글",
+            "[표]",
+            "",
+            ""
+          ],
+          "layout": [
+            {
+              "type": "table",
+              "x": 117.2,
+              "y": 146,
+              "w": 559.4,
+              "h": 34.2,
+              "rowCount": 2,
+              "colCount": 2
+            }
+          ],
+          "table": {
+            "treatAsChar": false,
+            "textWrap": "TopAndBottom",
+            "vertRelTo": "Para",
+            "horzRelTo": "Para",
+            "outer": [
+              283,
+              283
+            ],
+            "padding": [
+              510,
+              141
+            ],
+            "pageBreak": 2,
+            "border": {
+              "type": 1,
+              "width": 1,
+              "color": "#000000"
+            },
+            "cellHeight": 282,
+            "cellVertAlign": 1
+          },
+          "marks": null
+        },
+        "saved": {
+          "hwp": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/baseline-hwpx-saved.hwp",
+          "hwpx": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/baseline-hwpx-saved.hwpx"
+        },
+        "reopened": {
+          "hwp": {
+            "shown": "Fixed 7.5",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 0,
+                "y": 0,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "Square",
+              "vertRelTo": "Paper",
+              "horzRelTo": "Paper",
+              "outer": [
+                0,
+                0
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": null
+          },
+          "hwpx": {
+            "shown": "Fixed 7.5",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 146,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": null
+          }
+        },
+        "storedHwpx": {
+          "marks": [
+            "endNote:)",
+            "footNote:)"
+          ],
+          "fixed": [
+            750,
+            1500
+          ]
+        }
+      }
+    ],
+    "pageErrors": []
+  },
+  "script": "rhwp/rhwp-studio/e2e/heemang-verify/audit-followups.mjs",
+  "fixtureProvider": "none (no agent turns)",
+  "candidate": {
+    "url": "http://127.0.0.1:7735/?engine=heemang",
+    "runs": [
+      {
+        "source": "rhwp/template/blank-batang.hwp",
+        "shownLive": "Fixed 15.0",
+        "captionText": "표  1설명",
+        "live": {
+          "paragraphs": [
+            "앞글",
+            "[표]",
+            "",
+            ""
+          ],
+          "layout": [
+            {
+              "type": "table",
+              "x": 117.2,
+              "y": 156,
+              "w": 559.4,
+              "h": 34.2,
+              "rowCount": 2,
+              "colCount": 2
+            }
+          ],
+          "table": {
+            "treatAsChar": false,
+            "textWrap": "TopAndBottom",
+            "vertRelTo": "Para",
+            "horzRelTo": "Para",
+            "outer": [
+              283,
+              283
+            ],
+            "padding": [
+              510,
+              141
+            ],
+            "pageBreak": 2,
+            "border": {
+              "type": 1,
+              "width": 1,
+              "color": "#000000"
+            },
+            "cellHeight": 282,
+            "cellVertAlign": 1
+          },
+          "marks": [
+            "endnote:)",
+            "footnote:)"
+          ]
+        },
+        "saved": {
+          "hwp": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/candidate-hwp-saved.hwp",
+          "hwpx": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/candidate-hwp-saved.hwpx"
+        },
+        "reopened": {
+          "hwp": {
+            "shown": "Fixed 15.0",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 156,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": [
+              "endnote:)",
+              "footnote:)"
+            ]
+          },
+          "hwpx": {
+            "shown": "Fixed 15.0",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 156,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": [
+              "endnote:)",
+              "footnote:)"
+            ]
+          }
+        },
+        "storedHwpx": {
+          "marks": [
+            "endNote:)",
+            "footNote:)"
+          ],
+          "fixed": [
+            1500,
+            3000
+          ]
+        }
+      },
+      {
+        "source": "rhwp/samples/hwpx/blank_hwpx.hwpx",
+        "shownLive": "Fixed 15.0",
+        "captionText": "표  1설명",
+        "live": {
+          "paragraphs": [
+            "앞글",
+            "[표]",
+            "",
+            ""
+          ],
+          "layout": [
+            {
+              "type": "table",
+              "x": 117.2,
+              "y": 156,
+              "w": 559.4,
+              "h": 34.2,
+              "rowCount": 2,
+              "colCount": 2
+            }
+          ],
+          "table": {
+            "treatAsChar": false,
+            "textWrap": "TopAndBottom",
+            "vertRelTo": "Para",
+            "horzRelTo": "Para",
+            "outer": [
+              283,
+              283
+            ],
+            "padding": [
+              510,
+              141
+            ],
+            "pageBreak": 2,
+            "border": {
+              "type": 1,
+              "width": 1,
+              "color": "#000000"
+            },
+            "cellHeight": 282,
+            "cellVertAlign": 1
+          },
+          "marks": [
+            "endnote:)",
+            "footnote:)"
+          ]
+        },
+        "saved": {
+          "hwp": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/candidate-hwpx-saved.hwp",
+          "hwpx": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-gaps/rhwp/rhwp-studio/e2e/heemang-verify/out/audit-followups/candidate-hwpx-saved.hwpx"
+        },
+        "reopened": {
+          "hwp": {
+            "shown": "Fixed 15.0",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 156,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": [
+              "endnote:)",
+              "footnote:)"
+            ]
+          },
+          "hwpx": {
+            "shown": "Fixed 15.0",
+            "paragraphs": [
+              "앞글",
+              "[표]",
+              "",
+              ""
+            ],
+            "layout": [
+              {
+                "type": "table",
+                "x": 117.2,
+                "y": 156,
+                "w": 559.4,
+                "h": 34.2,
+                "rowCount": 2,
+                "colCount": 2
+              }
+            ],
+            "table": {
+              "treatAsChar": false,
+              "textWrap": "TopAndBottom",
+              "vertRelTo": "Para",
+              "horzRelTo": "Para",
+              "outer": [
+                283,
+                283
+              ],
+              "padding": [
+                510,
+                141
+              ],
+              "pageBreak": 2,
+              "border": {
+                "type": 1,
+                "width": 1,
+                "color": "#000000"
+              },
+              "cellHeight": 282,
+              "cellVertAlign": 1
+            },
+            "marks": [
+              "endnote:)",
+              "footnote:)"
+            ]
+          }
+        },
+        "storedHwpx": {
+          "marks": [
+            "endNote:)",
+            "footNote:)"
+          ],
+          "fixed": [
+            3000,
+            3000
+          ]
+        }
+      }
+    ],
+    "pageErrors": []
+  },
+  "candidateFilesInOldEngine": {
+    "url": "http://127.0.0.1:7745/",
+    "read": {
+      "candidate-hwp-saved.hwp": {
+        "shown": "Fixed 15.0",
+        "paragraphs": [
+          "앞글",
+          "[표]",
+          "",
+          ""
+        ],
+        "layout": [
+          {
+            "type": "table",
+            "x": 117.2,
+            "y": 152.3,
+            "w": 559.4,
+            "h": 34.2,
+            "rowCount": 2,
+            "colCount": 2
+          }
+        ],
+        "table": {
+          "treatAsChar": false,
+          "textWrap": "TopAndBottom",
+          "vertRelTo": "Para",
+          "horzRelTo": "Para",
+          "outer": [
+            283,
+            283
+          ],
+          "padding": [
+            510,
+            141
+          ],
+          "pageBreak": 2,
+          "border": {
+            "type": 1,
+            "width": 1,
+            "color": "#000000"
+          },
+          "cellHeight": 282,
+          "cellVertAlign": 1
+        },
+        "marks": null
+      },
+      "candidate-hwp-saved.hwpx": {
+        "shown": "Fixed 15.0",
+        "paragraphs": [
+          "앞글",
+          "[표]",
+          "",
+          ""
+        ],
+        "layout": [
+          {
+            "type": "table",
+            "x": 117.2,
+            "y": 156,
+            "w": 559.4,
+            "h": 34.2,
+            "rowCount": 2,
+            "colCount": 2
+          }
+        ],
+        "table": {
+          "treatAsChar": false,
+          "textWrap": "TopAndBottom",
+          "vertRelTo": "Para",
+          "horzRelTo": "Para",
+          "outer": [
+            283,
+            283
+          ],
+          "padding": [
+            510,
+            141
+          ],
+          "pageBreak": 2,
+          "border": {
+            "type": 1,
+            "width": 1,
+            "color": "#000000"
+          },
+          "cellHeight": 282,
+          "cellVertAlign": 1
+        },
+        "marks": null
+      },
+      "candidate-hwpx-saved.hwp": {
+        "shown": "Fixed 15.0",
+        "paragraphs": [
+          "앞글",
+          "[표]",
+          "",
+          ""
+        ],
+        "layout": [
+          {
+            "type": "table",
+            "x": 117.2,
+            "y": 152.3,
+            "w": 559.4,
+            "h": 34.2,
+            "rowCount": 2,
+            "colCount": 2
+          }
+        ],
+        "table": {
+          "treatAsChar": false,
+          "textWrap": "TopAndBottom",
+          "vertRelTo": "Para",
+          "horzRelTo": "Para",
+          "outer": [
+            283,
+            283
+          ],
+          "padding": [
+            510,
+            141
+          ],
+          "pageBreak": 2,
+          "border": {
+            "type": 1,
+            "width": 1,
+            "color": "#000000"
+          },
+          "cellHeight": 282,
+          "cellVertAlign": 1
+        },
+        "marks": null
+      },
+      "candidate-hwpx-saved.hwpx": {
+        "shown": "Fixed 30.0",
+        "paragraphs": [
+          "앞글",
+          "[표]",
+          "",
+          ""
+        ],
+        "layout": [
+          {
+            "type": "table",
+            "x": 117.2,
+            "y": 156,
+            "w": 559.4,
+            "h": 34.2,
+            "rowCount": 2,
+            "colCount": 2
+          }
+        ],
+        "table": {
+          "treatAsChar": false,
+          "textWrap": "TopAndBottom",
+          "vertRelTo": "Para",
+          "horzRelTo": "Para",
+          "outer": [
+            283,
+            283
+          ],
+          "padding": [
+            510,
+            141
+          ],
+          "pageBreak": 2,
+          "border": {
+            "type": 1,
+            "width": 1,
+            "color": "#000000"
+          },
+          "cellHeight": 282,
+          "cellVertAlign": 1
+        },
+        "marks": null
+      }
+    },
+    "pageErrors": []
+  }
+}

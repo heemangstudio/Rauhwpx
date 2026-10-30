@@ -1,0 +1,9 @@
+{
+  "scope": "FUTURE-first-picture-correctness; excludes latency qualification",
+  "source": "1493aa57ed8e6bcf39ac9b6b905e1ac8ead3e5fa",
+  "wasm_sha256": "2ddeb93702a1c97539ef77402a23ba9a053fee4467c4b05e911836e464af86a7",
+  "exit_code": 0,
+  "free_start_GiB": 8.735721588134766,
+  "source_unchanged": true,
+  "package_unchanged": true
+}

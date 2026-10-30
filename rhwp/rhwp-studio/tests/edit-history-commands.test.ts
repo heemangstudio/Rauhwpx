@@ -53,6 +53,89 @@ test('서식이 다른 연속 입력은 한 undo 칸으로 합치지 않는다',
   }
 });
 
+// 한컴 2022 캡처(heemang-cleanroom parity/notes/hancom-edit-captures/undo-typing-*): 'abc' 를 치고 3초 쉰 뒤
+// 'def' 를 쳐도, 'one two three' 를 쳐도 되돌리기 한 번에 모두 사라진다. Enter 는 따로 되돌린다.
+test('한컴처럼 쉬었다 이어 친 글자와 낱말 사이 빈칸은 한 묶음으로 되돌리고 Enter 는 따로 되돌린다', () => {
+  const { wasm, host } = documentWith('끝');
+  const before = documentFingerprint(wasm);
+  let at = 0;
+  const type = (text: string, time: number) => {
+    host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(0, at), text, time) });
+    at += [...text].length;
+  };
+  for (const [i, ch] of [...'abc'].entries()) type(ch, 1_000 + i * 50);
+  for (const [i, ch] of [...'def two'].entries()) type(ch, 4_000 + i * 50);
+  assert.equal(paragraphText(wasm, 0), 'abcdef two끝');
+  host.executeOperation({ kind: 'command', command: new C.SplitParagraphCommand(body(0, at)) });
+  host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(1, 0), 'x', 9_000) });
+  host.handleUndo();
+  assert.deepEqual([paragraphText(wasm, 0), paragraphText(wasm, 1)], ['abcdef two', '끝']);
+  host.handleUndo();
+  assert.equal(wasm.getParagraphCount(0), 1);
+  host.handleUndo();
+  assert.equal(documentFingerprint(wasm), before);
+});
+
+// 한컴 2022 캡처 undo-typing-backspace·shrink-*: 'hello' 뒤 Backspace 두 번은 되돌리기 한 번에 함께 돌아오고
+// 다음 되돌리기가 입력을 지운다. 이어 누른 Backspace 는 쉬었다 눌러도 한 단계다.
+test('한컴처럼 이어 누른 Backspace 는 쉬었다 눌러도 한 번에 되돌리고 입력과는 따로 되돌린다', () => {
+  const { wasm, host } = documentWith('끝');
+  host.executeOperation({ kind: 'command', command: new C.InsertTextCommand(body(0, 0), 'hello', 1_000) });
+  host.executeOperation({ kind: 'command', command: new C.DeleteTextCommand(body(0, 4), 1, 'backward', undefined, 2_000) });
+  host.executeOperation({ kind: 'command', command: new C.DeleteTextCommand(body(0, 3), 1, 'backward', undefined, 6_000) });
+  assert.equal(paragraphText(wasm, 0), 'hel끝');
+  host.handleUndo();
+  assert.equal(paragraphText(wasm, 0), 'hello끝');
+  host.handleUndo();
+  assert.equal(paragraphText(wasm, 0), '끝');
+});
+
+test('머리말과 각주에서 이어 누른 Backspace 도 한 묶음으로 되돌린다', () => {
+  {
+    const { wasm, host } = headerDocument('머리말');
+    for (const off of [3, 2]) {
+      const res = JSON.parse(wasm.deleteTextInHeaderFooter(0, true, 0, 0, off - 1, 1));
+      host.executeOperation({ kind: 'record', command: new C.DeleteTextInHeaderFooterCommand(HF, 0, off - 1, res.deletedText, off) });
+    }
+    assert.deepEqual(headerText(wasm), ['머']);
+    host.handleUndo();
+    assert.deepEqual(headerText(wasm), ['머리말']);
+  }
+  {
+    const { wasm, host, note, target } = footnoteDocument('각주글');
+    for (const off of [3, 2]) {
+      const res = wasm.deleteTextInFootnote(0, note.paraIdx, note.controlIdx, 0, off - 1, 1);
+      host.executeOperation({ kind: 'record', command: new C.DeleteTextInFootnoteCommand(target, 0, off - 1, res.deletedText, off) });
+    }
+    host.handleUndo();
+    assert.deepEqual(wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).texts, ['각주글']);
+  }
+});
+
+test('머리말과 각주에서 이어 친 글자도 한 묶음으로 되돌린다', () => {
+  {
+    const { wasm, host } = headerDocument('끝');
+    const before = documentFingerprint(wasm);
+    for (const [i, ch] of [...'머리 말'].entries()) {
+      wasm.insertTextInHeaderFooter(0, true, 0, 0, i, ch);
+      host.executeOperation({ kind: 'record', command: new C.InsertTextInHeaderFooterCommand(HF, 0, i, ch) });
+    }
+    assert.deepEqual(headerText(wasm), ['머리 말끝']);
+    host.handleUndo();
+    assert.equal(documentFingerprint(wasm), before);
+  }
+  {
+    const { wasm, host, note, target } = footnoteDocument('끝');
+    const before = documentFingerprint(wasm);
+    for (const [i, ch] of [...'각주 글'].entries()) {
+      wasm.insertTextInFootnote(0, note.paraIdx, note.controlIdx, 0, i, ch);
+      host.executeOperation({ kind: 'record', command: new C.InsertTextInFootnoteCommand(target, 0, i, ch) });
+    }
+    host.handleUndo();
+    assert.equal(documentFingerprint(wasm), before);
+  }
+});
+
 // ─── 머리말/꼬리말·각주 편집 ───────────────────────────────
 
 const HF = { sectionIdx: 0, isHeader: true, applyTo: 0, previewPage: 0 };
@@ -540,13 +623,12 @@ function nestedTableDocument() {
   wasm.insertText(0, 0, 0, 'A');
   wasm.splitParagraph(0, 0, 1);
   const outer = wasm.createTableEx({ sectionIdx: 0, paraIdx: 0, charOffset: 1, rowCount: 2, colCount: 2 });
-  const source = wasm.createTableEx({
-    sectionIdx: 0, paraIdx: wasm.getParagraphCount(0) - 1, charOffset: 0, rowCount: 2, colCount: 2,
-  });
-  wasm.copyControl(0, source.paraIdx, source.controlIdx);
-  wasm.pasteInternalInCell(0, outer.paraIdx, outer.controlIdx, 0, 0, 0);
   const ppi = outer.paraIdx;
   const ci = outer.controlIdx;
+  // 바깥 첫 셀 첫 문단에 안쪽 표를 만든다. 표 복사·붙여넣기는 엔진이 아직 개체를 담지 못한다.
+  const cell = { section: 0, steps: [{ para: ppi, control: ci, index: 0 }] };
+  const lead = wasm.core.paragraph(cell, 0).caret[0];
+  wasm.core.transact([{ op: 'createTable', at: { ...cell, para: 0, offset: lead }, rows: 2, columns: 2, inline: true }]);
   // 바깥 첫 셀에도 문단을 둬서 평면 좌표로 새면 눈에 띄게 한다.
   const outerParas = wasm.getCellParagraphCount(0, ppi, ci, 0);
   wasm.insertTextInCell(0, ppi, ci, 0, outerParas - 1, 0, '바깥셀');

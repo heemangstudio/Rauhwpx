@@ -1,0 +1,17 @@
+✔ clearing an empty active-field session is safe on ordinary body caret updates (21.428417ms)
+✔ page and section changes survive native save/reopen and preserve other section bits (44.260416ms)
+✔ clickhere values, UTF-16 metadata and bookmarks survive native save/reopen and undo (10.940209ms)
+✔ hyperlink wrapping preserves text and character formatting and removes only the field (11.720667ms)
+✔ page border lines, fill and hiding survive native save/reopen (9.602167ms)
+✔ typing at an active empty click-here field fills the field (4.307583ms)
+✔ form controls report values, take new ones and survive native save/reopen (21.53425ms)
+✔ atomic replacement preserves body text and controls across Unicode, tabs and paragraphs (262.168792ms)
+✔ atomic replacement preserves cell text and controls across Unicode, tabs and paragraphs (117.914417ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 534.049667

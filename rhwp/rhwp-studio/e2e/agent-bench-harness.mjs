@@ -291,9 +291,12 @@ export function spawnLogged(cmd, args, cwd, extraEnv, logPath, { dropEnv = () =>
   for (const key of Object.keys(env)) if (dropEnv(key)) delete env[key];
   // Windows 의 .cmd 는 셸 없이 띄우면 EINVAL 이다 (CVE-2024-27980 이후 Node 정책). 인자는
   // 포트·호스트 같은 고정 값뿐이라 셸 이스케이프 문제가 없다.
+  // 공백이 있는 경로만 따옴표로 감싼다. PATH 로 찾는 `"npm.cmd"` 처럼 따옴표 친 bare 이름은
+  // cmd.exe 에서 %~dp0 이 현재 폴더로 풀려 npm.cmd 가 npm-prefix.js 를 찾지 못한다.
   const needsShell = isWindows && /\.(cmd|bat)$/i.test(cmd);
+  const shellCommand = needsShell && /\s/.test(cmd) ? `"${cmd}"` : cmd;
   installExitHooks();
-  const child = spawn(needsShell ? `"${cmd}"` : cmd, args, {
+  const child = spawn(shellCommand, args, {
     cwd,
     stdio: ['ignore', logFile, logFile],
     env,

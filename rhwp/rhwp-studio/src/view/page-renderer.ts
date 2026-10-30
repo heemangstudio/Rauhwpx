@@ -173,6 +173,12 @@ export class PageRenderer {
     pageInfo?: PageInfo,
   ): PageRenderResult {
     if (pageInfo) this.pageInfoByPage.set(pageIdx, pageInfo);
+    if (this.backend === 'canvas2d') {
+      // HeemangEngine 은 쪽 전체를 한 캔버스에 그린다. 그림 디코드가 끝나면 엔진이 스스로 다시 그린다.
+      this.wasm.renderPageToCanvas(pageIdx, canvas, renderScale);
+      this.drawMarginGuides(pageIdx, canvas, renderScale);
+      return { needsTextEditStaticLayerVerification: false };
+    }
     if (this.backend === 'canvaskit') {
       this.layerSummaryCache.delete(pageIdx);
       const renderedCanvas = this.renderPageCanvasKit(pageIdx, canvas, renderScale);

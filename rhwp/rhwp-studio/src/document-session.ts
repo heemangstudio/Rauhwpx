@@ -99,6 +99,8 @@ export interface DocumentSession {
    * 모드에서도 검토 없이 반영된다. 세션의 문서가 바뀌면(documentId 가 다르면) 더는 뜻이 없다.
    */
   createdDocument: { threadId: string; documentId: string } | null;
+  /** 마지막으로 화면에 붙은 시각. 채팅 자리가 모자라면 오래 안 본 문서부터 닫는다. */
+  lastAttachedAt: number;
   readonly disposers: Array<() => void>;
 }
 
@@ -188,6 +190,7 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     get sidebar() { return session.activeChat?.sidebar ?? null; },
     versions: null,
     createdDocument: null,
+    lastAttachedAt: Date.now(),
     disposers,
   };
 

@@ -41,7 +41,9 @@ export const MUTATING_METHODS: readonly string[] = [
   'mergeTableCellsByPath', 'splitTableCellByPath',
   'splitTableCellIntoByPath', 'splitTableCellsInRangeByPath',
   'resizeTableCellsByPath', // [#7189] 중첩 표는 평면 resizeTableCells 로 닿지 않는다
+  'moveTableCellEdgeByPath',
   'moveTableOffset', 'setTableProperties', 'setCellProperties', 'setCellZoneProperties',
+  'setTablePropertiesByPath', 'setCellPropertiesByPath', 'setCellZonePropertiesByPath',
   'pasteTableCellRange', 'clearTableCellRange',
   'pasteTableCellsTransposed', 'transposeTableCellsInPlace', 'pasteTableCellsTransposedAsTable',
   'evaluateTableFormula', 'evaluateTableFormulaEx',

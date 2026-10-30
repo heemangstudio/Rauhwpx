@@ -1,5 +1,5 @@
 /** 자동 수정 단추 DOM. 상태와 실행은 autofix.ts 가 맡는다. 모양은 전역 style.css 가 싣는 autofix.css. */
-import { createAutofixController, runAutofix, type AutofixPhase, type AutofixRequest } from './autofix.ts';
+import { createAutofixController, prewarmAutofix, runAutofix, type AutofixPhase, type AutofixRequest } from './autofix.ts';
 
 const LABELS: ReadonlyArray<[AutofixPhase, string]> = [
   ['idle', '자동 수정'],
@@ -70,6 +70,8 @@ export function createAutofixButton(options: AutofixButtonOptions): AutofixButto
   });
   button.dataset.phase = 'idle';
   button.addEventListener('click', () => controller.start());
+  // 단추가 섰다 — 누르기 전에 메인이 쓸 제공자를 미리 고르게 한다.
+  prewarmAutofix();
   return { element: button, phase: controller.phase, dispose: controller.dispose };
 }
 

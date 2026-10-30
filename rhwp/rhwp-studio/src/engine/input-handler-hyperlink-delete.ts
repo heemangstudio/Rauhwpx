@@ -1,4 +1,4 @@
-import { hyperlinkTarget } from '@/core/hyperlink';
+import { hyperlinkCaretOffset, hyperlinkTarget, hyperlinkTextOffset } from '@/core/hyperlink';
 import type { DocumentPosition } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { OperationDescriptor } from './command';
@@ -22,12 +22,14 @@ export function tryConfirmDeleteHyperlink(
   const canEdit = () => !!self.canEditHyperlink?.() && !self.isFormMode?.() && self.isActive?.() !== false;
   if (!canEdit()) return false;
   const pos = structuredClone(position);
-  const deleteOffset = pos.charOffset - (direction === 'backward' ? 1 : 0);
-  if (deleteOffset < 0) return false;
-  let target, context;
+  const caret = pos.charOffset - (direction === 'backward' ? 1 : 0);
+  if (caret < 0) return false;
+  let target, context, deleteOffset: number;
   try {
     target = hyperlinkTarget(pos);
     context = self.wasm.getHyperlinkContext(target);
+    // 링크 범위는 글자 위치다. 지울 칸이 각주·개체면 그 앞 글자 위치가 나오지만 링크는 개체를 감싸지 않는다.
+    deleteOffset = hyperlinkTextOffset(self.wasm, target, caret);
   } catch { return false; }
   const link = context.links.find(item => item.start <= deleteOffset && deleteOffset < item.end);
   if (!link) return false;
@@ -51,7 +53,7 @@ export function tryConfirmDeleteHyperlink(
           } else {
             wasm.deleteText(target.section, target.para, current.start, current.end - current.start);
           }
-          return { ...pos, charOffset: current.start };
+          return { ...pos, charOffset: hyperlinkCaretOffset(wasm, target, current.start) };
         },
       });
     } catch (error) {

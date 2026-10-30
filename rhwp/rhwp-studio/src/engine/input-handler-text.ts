@@ -856,6 +856,8 @@ export function onInput(this: any, e?: InputEvent): void {
   // 각주 편집 모드
   if (this.cursor.isInFootnote()) {
     try {
+      // 선택 위에 친 글자는 선택을 바꾼다. 지운 뒤 캐럿은 선택 처음에 있다.
+      this.deleteFootnoteSelection();
       const target = {
         sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx,
         footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum,

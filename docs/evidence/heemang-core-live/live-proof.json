@@ -1,0 +1,8 @@
+{
+  "scope": "FUTURE-core-save-correctness; not final performance qualification",
+  "source": "afd6a6912542ef19b7d4ca3a4a8892f8bbeb8feb",
+  "wasm_sha256": "5cd1b7fcefb83c1b3b5beda8a0d47217d284fe546162741a3c1c1583ea03d608",
+  "exit_code": 0,
+  "source_unchanged": true,
+  "package_unchanged": true
+}

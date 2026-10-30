@@ -3,8 +3,9 @@
  * Electron 없이 띄운다. update-hippo.ts 가 import.meta.env.DEV 일 때만 동적으로 불러온다.
  *
  * 상황: available · downloading · downloaded · error · install-error · external · up-to-date ·
- * check-error. `&update-hippo-chats=N` 은 실행 중인 채팅 수(기본 2)다. 다운로드는 3초 동안
- * 비율을 올린 뒤 downloaded 가 되고, 재시작은 콘솔에 남긴 뒤 잠시 restarting 을 보이고 돌아온다.
+ * check-error · release-notes(업데이트 없이 가장 최근 릴리스 노트). `&update-hippo-chats=N` 은
+ * 실행 중인 채팅 수(기본 2)다. 다운로드는 3초 동안 비율을 올린 뒤 downloaded 가 되고, 재시작은
+ * 콘솔에 남긴 뒤 잠시 restarting 을 보이고 돌아온다.
  * 개발 도구에서 `__updateHippoMock.set({ ... })` 로 상태를 바로 바꿀 수 있다.
  */
 import type { DesktopUpdateState, DesktopUpdatesApi } from '../../desktop-integration.ts';
@@ -31,6 +32,7 @@ function initialState(scenario: string, chats: number): DesktopUpdateState {
       return { ...base, error: { context: 'install', message: 'update was not applied' } };
     case 'external': return { ...base, install: 'external' };
     case 'up-to-date': return { ...base, status: 'up-to-date', version: null, manual: true };
+    case 'release-notes': return { ...base, status: 'up-to-date', version: null };
     case 'check-error':
       return { ...base, status: 'idle', version: null, manual: true, error: { context: 'check', message: 'offline' } };
     default: return base;

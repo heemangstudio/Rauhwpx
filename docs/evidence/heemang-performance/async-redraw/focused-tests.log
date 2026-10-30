@@ -1,0 +1,49 @@
+[CanvasView] 20/20페이지 로드, 총 높이: 29990px
+[CanvasView] 4/4페이지 로드, 총 높이: 6006px
+[CanvasView] 20/20페이지 로드, 총 높이: 29990px
+[CanvasView] 20/20페이지 로드, 총 높이: 37435px
+[CanvasView] 20/20페이지 로드, 총 높이: 18170.700389105048px
+[CanvasView] 20/20페이지 로드, 총 높이: 29990px
+[engine] WASM 엔진이 멈췄습니다. 화면 갱신과 편집을 중단합니다: RuntimeError: unreachable
+    at TestContext.<anonymous> (file:///Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/tests/canvas-view-initial-load-race.test.ts:183:48)
+    at Test.runInAsyncScope (node:async_hooks:226:14)
+    at Test.run (node:internal/test_runner/test:1397:25)
+    at Test.processPendingSubtests (node:internal/test_runner/test:969:18)
+    at Test.postRun (node:internal/test_runner/test:1537:19)
+    at Test.run (node:internal/test_runner/test:1462:12)
+    at async Test.processPendingSubtests (node:internal/test_runner/test:969:7)
+✔ 같은 문서의 글꼴 뷰 revision 이 초기 선택을 대체해도 쪽과 paint 를 초기화한다 (7.650333ms)
+✔ 이미 초기화한 문서의 뷰 revision 은 기존 canvas 를 재사용한다 (1.24425ms)
+✔ 선택 대기 중 문서를 교체하면 이전 문서의 load 와 뷰 revision 은 paint 하지 않는다 (1.160833ms)
+✔ 선택 대기 중 폐기하면 load 와 뷰 revision 이 쪽을 되살리지 않는다 (0.388541ms)
+✔ 문서 미로드·폐기·trap 상태에서는 빈 쪽 갱신이 엔진을 부르지 않는다 (0.72125ms)
+✔ 새 문서 일반 로드는 이전 문서 스크롤을 초기화한다 (0.686292ms)
+✔ 되살린 문서 일반 로드는 저장한 스크롤과 배율을 적용한다 (0.602333ms)
+✔ 모바일 새 문서 일반 로드는 폭 맞춤을 적용한다 (1.015541ms)
+✔ 새 문서 revision 경합는 이전 문서 스크롤을 초기화한다 (0.408458ms)
+✔ 되살린 문서 revision 경합는 저장한 스크롤과 배율을 적용한다 (0.526167ms)
+✔ 모바일 새 문서 revision 경합는 폭 맞춤을 적용한다 (0.900583ms)
+✔ 초기화된 문서의 일반 뷰 revision 은 scroll 과 zoom 을 유지한다 (0.586708ms)
+✔ 렌더에 실패한 canvas 는 지연 재렌더를 끊은 뒤에만 pool 로 돌아간다 (19.166625ms)
+✔ ViewportManager.clampScrollToContent 는 옛 쪽이 남아 늘어난 스크롤 영역 대신 새 내용 끝을 쓴다 (0.39625ms)
+(node:64416) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ metadata stays lazy; first candidates/default and newly requested fallbacks precede layout, deduping physical copies (45.256083ms)
+✔ missing primary default selects only first available families from remaining lists, including host-only fallbacks (10.365917ms)
+✔ outline refetch uses approved readers, shares asynchronous reads, and repaints only current attached canvases (7.168166ms)
+✔ font preparation does not lay out or mark a replacement document prepared after an async load (8.58225ms)
+✔ async outlines notify the owning view and ignore replaced, closed or detached canvases (39.898875ms)
+✔ picture arrivals coalesce repaint, drop detached canvases and cancel repaint on document replacement (7.984709ms)
+✔ catalog families keep every script bank in order and discover later host fallbacks (8.903541ms)
+✔ host SFNT preparation reuses preferred slots while retaining every matching HFT bank (8.28ms)
+✔ a desktop TTC face already handed to the engine is not fetched again under its catalog identity (7.524291ms)
+✔ fallback coverage is queried again before reading another large candidate (7.568333ms)
+✔ metric-only faces defer outline transfer while retaining their native metrics (8.334ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 772.092167

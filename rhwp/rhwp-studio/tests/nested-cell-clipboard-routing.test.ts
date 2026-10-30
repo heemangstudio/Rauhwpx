@@ -293,6 +293,7 @@ test('중첩 셀 블록 복사·잘라내기·붙여넣기는 경로와 한 번�
   try {
     const { onCopy, onCut, onPaste, clearSelectedCellBlock } = await vite.ssrLoadModule('/src/engine/input-handler-keyboard.ts');
     const calls: any[] = [];
+    const targets: number[][] = [];
     const data = new Map<string, string>();
     let operations = 0;
     const handler: any = {
@@ -310,7 +311,7 @@ test('중첩 셀 블록 복사·잘라내기·붙여넣기는 경로와 한 번�
         isInTableObjectSelection: () => false,
       },
       wasm: {
-        getTableCellTargetByPath: () => ({ cellIndex: 2, cellParaIndex: 0, charCount: 0 }),
+        getTableCellTargetByPath: (...args: any[]) => { targets.push(args.slice(3, 5)); return { cellIndex: 2, cellParaIndex: 0, charCount: 0 }; },
         copyTableCellRange: (...args: any[]) => { calls.push(['copy', ...args]); return { ok: true, text: '가\t나', html: '<table><tr><td>가</td><td>나</td></tr></table>' }; },
         clearTableCellRange: (...args: any[]) => { calls.push(['clear', ...args]); return { ok: true }; },
         pasteTableCellRange: (...args: any[]) => { calls.push(['paste', ...args]); return { ok: true }; },
@@ -333,6 +334,8 @@ test('중첩 셀 블록 복사·잘라내기·붙여넣기는 경로와 한 번�
     assert.equal(operations, 2);
     clearSelectedCellBlock.call(handler);
     assert.equal(operations, 3);
+    // 한컴 del-block-key: 지운 뒤에도 블록이 남고 캐럿은 블록의 마지막 셀에 있다.
+    assert.deepEqual(targets.at(-1), [2, 1]);
     assert.deepEqual(calls.map(call => call[0]), ['copy', 'copy', 'clear', 'paste', 'clear']);
     assert.deepEqual(calls[0].slice(1), [0, 8, JSON.stringify([outer, inner]), 1, 0, 2, 1]);
     assert.deepEqual(calls[3].slice(1), [0, 8, JSON.stringify([outer, inner]), 1, 0]);

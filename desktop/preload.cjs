@@ -80,9 +80,12 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     submit: (draft) => ipcRenderer.invoke('desktop:issue-report-submit', draft),
   },
   // 자동 수정. run 은 메인이 코딩 에이전트를 창 없이 돌려 이 컴퓨터의 앱 상태를 고치고, 결과를 문제 보고로 보낸다.
+  // prewarm 은 단추가 서기 전에 제공자를 미리 고르고, outcome 은 고친 자리의 동작이 다시 됐는지 메인에 알린다.
   // 설정(켜기·제공자 순서·모델·노력)은 메인이 저장하고, 바뀌면 모든 창에 알린다.
   autofix: {
     run: (request) => ipcRenderer.invoke('desktop:autofix-run', request),
+    prewarm: () => ipcRenderer.invoke('desktop:autofix-prewarm'),
+    outcome: (outcome) => ipcRenderer.invoke('desktop:autofix-outcome', outcome),
     getSettings: () => ipcRenderer.invoke('desktop:autofix-get-settings'),
     setSettings: (patch) => ipcRenderer.invoke('desktop:autofix-set-settings', patch),
     onChange: (callback) => {
@@ -272,6 +275,30 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     };
     ipcRenderer.on('desktop:run-unsaved-document-action', listener);
     return () => ipcRenderer.removeListener('desktop:run-unsaved-document-action', listener);
+  },
+  // 문서 홈 카드를 파일로 다른 앱에 끌어 놓는다. 준비(내보내기·임시 사본) 뒤에 끌기를 시작한다.
+  prepareFileDrag: (items) => ipcRenderer.invoke('desktop:prepare-file-drag', Array.isArray(items) ? items : []),
+  // true: 끌기가 끝났다(Windows 는 놓은 뒤에 돌아온다). false: 운영체제가 아직 끄는 중이다.
+  startFileDrag: (token, iconDataUrl) => ipcRenderer.invoke(
+    'desktop:start-file-drag',
+    String(token ?? ''),
+    String(iconDataUrl ?? ''),
+  ).then((finished) => finished === true, () => true),
+  endFileDrag: (token, dropped) => {
+    ipcRenderer.send('desktop:end-file-drag', String(token ?? ''), dropped === true);
+  },
+  // 다른 창이 이 창에 열린 문서를 끌 때: 바뀐 내용을 내보내 돌려준다.
+  onDragExportRequest: (callback) => {
+    const listener = (_event, payload) => {
+      if (typeof payload?.requestId !== 'string' || typeof payload.documentId !== 'string') return;
+      Promise.resolve()
+        .then(() => callback(payload.documentId))
+        .catch(() => null)
+        .then((result) => ipcRenderer.invoke('desktop:drag-export-reply', payload.requestId, result ?? null))
+        .catch(() => {});
+    };
+    ipcRenderer.on('desktop:drag-export-request', listener);
+    return () => ipcRenderer.removeListener('desktop:drag-export-request', listener);
   },
   reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',

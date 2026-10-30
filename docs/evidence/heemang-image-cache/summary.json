@@ -1,0 +1,21 @@
+{
+  "accepted": true,
+  "commit": "3c628cc7aa440f25e4d7be4d56a0e01d4fe8ea5a",
+  "native_binary_sha256": "2d21d5e26301e27517268c9a363b5d829a32401c69ec1b0b96065a431c8b84f9",
+  "native_core_tests": 56,
+  "wasm_api_tests": 87,
+  "standard_gate": "parity/notes/rc-render-objects/accept-cache-identity/summary.json",
+  "native_gate": "parity/notes/rc-render-objects/forced-cache-identity/summary.json",
+  "native_pages": 3045,
+  "native_docs": 687,
+  "native_svg_total_pages": 11498,
+  "native_verdicts": {
+    "noise": 3045
+  },
+  "browser": "parity/notes/rc-render-objects/cache-identity-wasm/browser-results-v5.json",
+  "signature": "parity/notes/rc-render-objects/cache-identity-signature.log",
+  "preserved_worktree_files": 106,
+  "scope": "Stable byte-range cache identities only; excludes all pending rendering/layout/effect trials",
+  "integrated_commit": "4d8a5c9",
+  "root_vendor_changed": false
+}

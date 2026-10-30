@@ -58,5 +58,4 @@ body[data-error="true"] #collaboration { color: #c14639; }
 .text-button { width: auto; height: 26px; padding: 0 10px; border-radius: 6px; font: inherit; font-weight: 600; }
 #chrome-sign-in-start, #chrome-sign-in-finish { background: var(--focus); color: white; }
 #chrome-sign-in-start:hover:not(:disabled), #chrome-sign-in-finish:hover:not(:disabled) { background: var(--focus); filter: brightness(1.08); }
-body[data-bare="true"] .browser-chrome { display: none; }
-body[data-bare="true"] #chrome-sign-in { border-top: 0; }
+body[data-sign-in="true"] #chrome-sign-in { border-top: 0; }

@@ -1,0 +1,100 @@
+{
+  "results": [
+    {
+      "baseline": true,
+      "kind": "Outline",
+      "visible": [
+        "1.",
+        "7.",
+        "8."
+      ],
+      "reopened": [
+        "1.",
+        "2.",
+        "3."
+      ]
+    },
+    {
+      "baseline": true,
+      "kind": "None",
+      "visible": [
+        "7."
+      ],
+      "reopened": [
+        "1."
+      ]
+    },
+    {
+      "baseline": true,
+      "kind": "Number",
+      "visible": [
+        "1.",
+        "7.",
+        "8."
+      ],
+      "reopened": [
+        "1.",
+        "2.",
+        "3."
+      ]
+    },
+    {
+      "baseline": true,
+      "masterSavedReopened": true,
+      "pageErrors": [],
+      "formats": [
+        "hwp",
+        "hwpx"
+      ]
+    },
+    {
+      "baseline": false,
+      "kind": "Outline",
+      "visible": [
+        "1.",
+        "7.",
+        "8."
+      ],
+      "reopened": [
+        "1.",
+        "2.",
+        "3."
+      ]
+    },
+    {
+      "baseline": false,
+      "kind": "None",
+      "visible": [
+        "7."
+      ],
+      "reopened": [
+        "1."
+      ]
+    },
+    {
+      "baseline": false,
+      "kind": "Number",
+      "visible": [
+        "1.",
+        "7.",
+        "8."
+      ],
+      "reopened": [
+        "1.",
+        "2.",
+        "3."
+      ]
+    },
+    {
+      "baseline": false,
+      "masterSavedReopened": true,
+      "pageErrors": [],
+      "formats": [
+        "hwp",
+        "hwpx"
+      ]
+    }
+  ],
+  "candidateUrl": "http://127.0.0.1:7724",
+  "fixtureProvider": true
+}

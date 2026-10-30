@@ -68,5 +68,6 @@ export type MergeWorkerResponse =
     }
   | { id: number; type: 'virtual-base'; tree: unknown }
   | { id: number; type: 'virtual-base-document'; bytes: Uint8Array }
-  | { id: number; type: 'manifest'; entries: MergeManifestEntrySeed[] }
+  /** entries 가 null 이면 엔진에 구조 병합이 없어 비교 스냅샷 기준 manifest 를 쓴다. */
+  | { id: number; type: 'manifest'; entries: MergeManifestEntrySeed[] | null }
   | { id: number; type: 'error'; message: string; stack?: string };

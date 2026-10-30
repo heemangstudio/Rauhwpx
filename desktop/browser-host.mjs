@@ -98,6 +98,33 @@ export function fileChooserFilters(accept) {
   return extensions.size ? [{ name: '파일', extensions: [...extensions] }] : null;
 }
 
+/** 게스트에서 누른 탭 닫기 단축키(Windows·Linux Ctrl+W, macOS Cmd+W). */
+export function isGuestCloseShortcut(input, platform = process.platform) {
+  if (input?.type !== 'keyDown' || String(input.key ?? '').toLowerCase() !== 'w' || input.shift || input.alt) return false;
+  return platform === 'darwin' ? Boolean(input.meta) && !input.control : Boolean(input.control) && !input.meta;
+}
+
+/**
+ * 브라우저 호스트의 숨은 주차 창과 숨긴 팝아웃 창이 남아 있으면 window-all-closed 가 오지 않는다.
+ * 그래서 Windows·Linux 에서는 마지막 편집기 창이 닫히면 직접 앱을 끝낸다. 여는 중인 창이 있으면
+ * 그 실행이 끝난 뒤 다시 본다. macOS 는 창이 없어도 Dock 에 남는다.
+ */
+export function createLastEditorWindowQuit({ platform = process.platform, canQuit, editorWindowCount, quit }) {
+  let launches = 0;
+  const check = () => {
+    if (platform === 'darwin' || launches > 0 || !canQuit() || editorWindowCount() > 0) return false;
+    quit();
+    return true;
+  };
+  return {
+    async track(launch) {
+      launches += 1;
+      try { return await launch; } finally { launches -= 1; check(); }
+    },
+    windowClosed: check,
+  };
+}
+
 async function privateDirectory(dir) {
   const absolute = resolve(dir);
   await mkdir(absolute, { recursive: true, mode: 0o700 });
@@ -289,7 +316,15 @@ export class OwnedBrowserHost {
       // 전달된 입력은 허브에 알려 이어지는 페이지 요청(로그인 제출 등)을 사용자의 것으로 본다.
       if (['mouseDown', 'keyDown'].includes(input?.type)) this.emit(tab, 'human-input');
     };
-    contents.on('before-input-event', blockHumanInput);
+    contents.on('before-input-event', (event, input) => {
+      if (!tab.automationInputDepth && isGuestCloseShortcut(input, this.platform)) {
+        // 막지 않으면 메뉴의 창 닫기 단축키가 페이지 뒤의 편집기 창을 닫는다. 사용자가 잡은 탭이면 그 탭만 닫는다.
+        event.preventDefault();
+        if (tab.human && tab.interactive && !tab.closing) this.closeGuest(tab);
+        return;
+      }
+      blockHumanInput(event, input);
+    });
     contents.on('before-mouse-event', blockHumanInput);
     contents.on('devtools-opened', () => {
       // DevTools takes the same debugger. Close it rather than silently hand
@@ -476,7 +511,7 @@ export class OwnedBrowserHost {
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
       controller: tab.human ? 'human' : 'agent', held: tab.held === true, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
-      chromeSignIn: this.chromeSignInOffer(tab), chromeSignInActive: this.chromeSignInActiveSite ?? null, bare: !!tab.popoutBare,
+      chromeSignIn: this.chromeSignInOffer(tab), chromeSignInActive: this.chromeSignInActiveSite ?? null,
     };
     if (tab.passwordShield) { state.url = protectedUrl(state.url); state.title = ''; state.error = null; }
     return this.passwords ? this.passwords.redact(tab, state) : state;
@@ -495,7 +530,7 @@ export class OwnedBrowserHost {
 
   emit(tab, type, extra = {}) {
     if (!tab?.targetId) return;
-    const payload = { type, ...this.state(tab), ...extra };
+    const payload = { type, ...this.state(tab), ...extra, signInPresentation: tab.signInPresentation === true };
     this.onEvent(payload);
     if ((['zoom', 'download-progress', 'sign-in'].includes(type) || type === 'human-input') && tab.tabId && this.owner?.connected && typeof this.owner.send === 'function') {
       try {
@@ -509,12 +544,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, bare = false, title, navigationEpoch, expectedTargetId }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, signIn = false, title, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab, bare === true, typeof title === 'string' && title ? title.slice(0, 80) : null);
+    if (mode === 'popout') return this.popout(window, tab, { signIn, title });
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -801,11 +836,11 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab, bare = false, title = null) {
+  popout(ownerWindow, tab, { signIn = false, title } = {}) {
     this.unplace(tab);
     // 로그인 전용 창은 도구 막대 없이 페이지만 창 전체에 보이고, 제목은 서비스 이름이다.
-    tab.popoutBare = bare;
-    tab.popoutTitle = title;
+    tab.signInPresentation = signIn === true;
+    tab.popoutTitle = typeof title === 'string' && title ? title.slice(0, 80) : null;
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
       popout = new this.BrowserWindow({ width: 1000, height: 760, minWidth: 420, minHeight: 320, title: 'Browser', show: false,
@@ -899,7 +934,7 @@ export class OwnedBrowserHost {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
     // 도구 막대(76 CSS px)와 Chrome 로그인 막대 높이도 창의 페이지 확대를 따른다.
-    const css = (tab.popoutBare ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
+    const css = (tab.signInPresentation ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
     const top = Math.round(css * pageZoomFactor(popout));
     const bounds = { x: 0, y: top, width, height: Math.max(0, height - top) };
     tab.view.setBounds(bounds);

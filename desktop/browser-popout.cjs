@@ -20,7 +20,8 @@ for (const button of document.querySelectorAll('[data-zoom]')) {
 }
 document.getElementById('close').addEventListener('click', () => run({ command: 'close' }));
 window.ownedBrowserPresentation.onState((state) => {
-  document.body.dataset.bare = String(state.bare === true);
+  document.querySelector('.browser-chrome').hidden = state.signInPresentation === true;
+  document.body.dataset.signIn = String(state.signInPresentation === true);
   const offer = state.chromeSignIn; const active = state.chromeSignInActive;
   document.getElementById('chrome-sign-in').hidden = !offer && !active;
   document.getElementById('chrome-sign-in-text').textContent = active ? `Chrome에서 ${active}에 로그인하는 중` : offer?.host ?? '';

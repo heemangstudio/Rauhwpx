@@ -1,0 +1,939 @@
+{
+  "performanceQualified": false,
+  "scope": "Isolated real-Studio font-source correctness and memory diagnostics. Fixture Pi/hub; no latency acceptance from these instrumented one-run controls.",
+  "candidateWasm": {
+    "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/vendor/hm-wasm/hm_wasm_bg.wasm",
+    "bytes": 7552701,
+    "sha256": "a2de71a001ca1a3ccb2fd5fe48d60acd932b3bf8e2a08898e2e45835ed381c03"
+  },
+  "frozenPackage": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/parity/bins/perf-host-sfnt-a2de71a0",
+  "native": {
+    "passed": 109,
+    "failed": 0,
+    "ignored": 0,
+    "corpus": "/Users/pyu/projects/hobbies/Rau/heemang-cleanroom/fixtures/samples",
+    "fontPaths": [
+      "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/Fonts",
+      "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/TTF",
+      "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Bin/Code"
+    ]
+  },
+  "studioFocused": {
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "typecheck": "PASS",
+    "metricDefaultRefinement": "12/12 focused flow checks pass after keeping class-default-only faces sparse"
+  },
+  "realWasm": {
+    "passed": 57,
+    "failed": 2,
+    "skipped": 0,
+    "controls": [
+      "Missing existing hml in capabilities.open expectation also fails on the unchanged67f619a9 package.",
+      "Accepted integration e232a81 formats-strike-spacing test passes against the new package; worker old expectation fails on characters.spacings."
+    ],
+    "newRetentionCheck": "PASS"
+  },
+  "live": {
+    "documents": [
+      {
+        "doc": "mixed",
+        "sourceBefore": {
+          "residentBytes": 53338124,
+          "generation": 2
+        },
+        "sourceAfter": {
+          "residentBytes": 53338124,
+          "generation": 2
+        },
+        "editedInputs": 40,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 41,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 2,
+          "afterFontGeneration": 2,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            2
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      },
+      {
+        "doc": "table",
+        "sourceBefore": {
+          "residentBytes": 53338124,
+          "generation": 2
+        },
+        "sourceAfter": {
+          "residentBytes": 53338124,
+          "generation": 2
+        },
+        "editedInputs": 80,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 82,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 2,
+          "afterFontGeneration": 2,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            2
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      },
+      {
+        "doc": "press",
+        "sourceBefore": {
+          "residentBytes": 129253230,
+          "generation": 28
+        },
+        "sourceAfter": {
+          "residentBytes": 129253230,
+          "generation": 28
+        },
+        "editedInputs": 80,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 82,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 28,
+          "afterFontGeneration": 28,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            28
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      },
+      {
+        "doc": "footnote",
+        "sourceBefore": {
+          "residentBytes": 99219259,
+          "generation": 11
+        },
+        "sourceAfter": {
+          "residentBytes": 99219259,
+          "generation": 11
+        },
+        "editedInputs": 80,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 82,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 11,
+          "afterFontGeneration": 11,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            11
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      },
+      {
+        "doc": "report",
+        "sourceBefore": {
+          "residentBytes": 174501867,
+          "generation": 55
+        },
+        "sourceAfter": {
+          "residentBytes": 174501867,
+          "generation": 55
+        },
+        "editedInputs": 40,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 41,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 55,
+          "afterFontGeneration": 55,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            55
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      },
+      {
+        "doc": "footnoteHwpx",
+        "sourceBefore": {
+          "residentBytes": 99219259,
+          "generation": 11
+        },
+        "sourceAfter": {
+          "residentBytes": 99219259,
+          "generation": 11
+        },
+        "editedInputs": 80,
+        "outlineRefills": 0,
+        "lateCompletedFramesOver4Ms": 0,
+        "packetChecks": 82,
+        "packetFailures": 0,
+        "reopen": {
+          "beforeInstance": 1,
+          "afterInstance": 2,
+          "beforeFontGeneration": 11,
+          "afterFontGeneration": 11,
+          "packetVerifyAll": true,
+          "packetVerifyCount": 1,
+          "fontGenerations": [
+            11
+          ],
+          "packetFailures": []
+        },
+        "pageErrors": 0
+      }
+    ],
+    "fullRedrawChecks": 164,
+    "fullRedrawFailures": 0,
+    "packetChecks": 410,
+    "packetFailures": 0,
+    "editedInputs": 400,
+    "lateCompletedFramesOver4Ms": 0,
+    "outlineRefills": 0,
+    "reopenChecks": 6,
+    "reopenFailures": 0,
+    "pageErrors": 0
+  },
+  "memory": {
+    "metric": "sum of RSS bytes for the owned Chrome process tree, sampled every500ms; post-GC resident snapshot",
+    "rows": [
+      {
+        "name": "baseline",
+        "file": "d-01-table-border-styles-6a0712c9dd15.hwpx",
+        "source": {
+          "fontBytes": null,
+          "wasmMemoryBytes": null,
+          "fontGeneration": null
+        },
+        "boot": {
+          "at": 1792999051101,
+          "rssBytes": 1388068864,
+          "processes": [
+            {
+              "pid": 2118,
+              "ppid": 2110,
+              "rssKiB": 267072
+            },
+            {
+              "pid": 2143,
+              "ppid": 2118,
+              "rssKiB": 108352
+            },
+            {
+              "pid": 2144,
+              "ppid": 2118,
+              "rssKiB": 156240
+            },
+            {
+              "pid": 2145,
+              "ppid": 2118,
+              "rssKiB": 79792
+            },
+            {
+              "pid": 2148,
+              "ppid": 2118,
+              "rssKiB": 115504
+            },
+            {
+              "pid": 2149,
+              "ppid": 2118,
+              "rssKiB": 98048
+            },
+            {
+              "pid": 2150,
+              "ppid": 2118,
+              "rssKiB": 530528
+            }
+          ]
+        },
+        "resident": {
+          "at": 1792999052582,
+          "rssBytes": 1858797568,
+          "processes": [
+            {
+              "pid": 2118,
+              "ppid": 2110,
+              "rssKiB": 272944
+            },
+            {
+              "pid": 2143,
+              "ppid": 2118,
+              "rssKiB": 114816
+            },
+            {
+              "pid": 2144,
+              "ppid": 2118,
+              "rssKiB": 156432
+            },
+            {
+              "pid": 2145,
+              "ppid": 2118,
+              "rssKiB": 79792
+            },
+            {
+              "pid": 2148,
+              "ppid": 2118,
+              "rssKiB": 115504
+            },
+            {
+              "pid": 2149,
+              "ppid": 2118,
+              "rssKiB": 98048
+            },
+            {
+              "pid": 2150,
+              "ppid": 2118,
+              "rssKiB": 977696
+            }
+          ]
+        },
+        "peakRssBytes": 1885126656,
+        "heap": {
+          "usedSize": 35702804,
+          "totalSize": 36880384,
+          "embedderHeapUsedSize": 13965776,
+          "backingStorageSize": 61211414
+        },
+        "pageErrors": []
+      },
+      {
+        "name": "baseline",
+        "file": "d-156467175-press-release-head-4d0ec3e99bf4.hwp",
+        "source": {
+          "fontBytes": null,
+          "wasmMemoryBytes": null,
+          "fontGeneration": null
+        },
+        "boot": {
+          "at": 1792999060827,
+          "rssBytes": 1381040128,
+          "processes": [
+            {
+              "pid": 2446,
+              "ppid": 2110,
+              "rssKiB": 264192
+            },
+            {
+              "pid": 2469,
+              "ppid": 2446,
+              "rssKiB": 106720
+            },
+            {
+              "pid": 2470,
+              "ppid": 2446,
+              "rssKiB": 156864
+            },
+            {
+              "pid": 2471,
+              "ppid": 2446,
+              "rssKiB": 79872
+            },
+            {
+              "pid": 2474,
+              "ppid": 2446,
+              "rssKiB": 115584
+            },
+            {
+              "pid": 2475,
+              "ppid": 2446,
+              "rssKiB": 97952
+            },
+            {
+              "pid": 2476,
+              "ppid": 2446,
+              "rssKiB": 527488
+            }
+          ]
+        },
+        "resident": {
+          "at": 1792999062675,
+          "rssBytes": 2099806208,
+          "processes": [
+            {
+              "pid": 2446,
+              "ppid": 2110,
+              "rssKiB": 281552
+            },
+            {
+              "pid": 2469,
+              "ppid": 2446,
+              "rssKiB": 114304
+            },
+            {
+              "pid": 2470,
+              "ppid": 2446,
+              "rssKiB": 161216
+            },
+            {
+              "pid": 2471,
+              "ppid": 2446,
+              "rssKiB": 79888
+            },
+            {
+              "pid": 2474,
+              "ppid": 2446,
+              "rssKiB": 115584
+            },
+            {
+              "pid": 2475,
+              "ppid": 2446,
+              "rssKiB": 97952
+            },
+            {
+              "pid": 2476,
+              "ppid": 2446,
+              "rssKiB": 1200096
+            }
+          ]
+        },
+        "peakRssBytes": 2187984896,
+        "heap": {
+          "usedSize": 36327860,
+          "totalSize": 37371904,
+          "embedderHeapUsedSize": 14730176,
+          "backingStorageSize": 31474793
+        },
+        "pageErrors": []
+      },
+      {
+        "name": "candidate",
+        "file": "d-01-table-border-styles-6a0712c9dd15.hwpx",
+        "source": {
+          "fontBytes": 53338124,
+          "wasmMemoryBytes": 56754176,
+          "fontGeneration": 2
+        },
+        "boot": {
+          "at": 1792999072673,
+          "rssBytes": 1382137856,
+          "processes": [
+            {
+              "pid": 2810,
+              "ppid": 2110,
+              "rssKiB": 267120
+            },
+            {
+              "pid": 2814,
+              "ppid": 2810,
+              "rssKiB": 108656
+            },
+            {
+              "pid": 2815,
+              "ppid": 2810,
+              "rssKiB": 156368
+            },
+            {
+              "pid": 2817,
+              "ppid": 2810,
+              "rssKiB": 79872
+            },
+            {
+              "pid": 2820,
+              "ppid": 2810,
+              "rssKiB": 115424
+            },
+            {
+              "pid": 2821,
+              "ppid": 2810,
+              "rssKiB": 98016
+            },
+            {
+              "pid": 2822,
+              "ppid": 2810,
+              "rssKiB": 524288
+            }
+          ]
+        },
+        "resident": {
+          "at": 1792999074023,
+          "rssBytes": 1691074560,
+          "processes": [
+            {
+              "pid": 2810,
+              "ppid": 2110,
+              "rssKiB": 270336
+            },
+            {
+              "pid": 2814,
+              "ppid": 2810,
+              "rssKiB": 117856
+            },
+            {
+              "pid": 2815,
+              "ppid": 2810,
+              "rssKiB": 156864
+            },
+            {
+              "pid": 2817,
+              "ppid": 2810,
+              "rssKiB": 79872
+            },
+            {
+              "pid": 2820,
+              "ppid": 2810,
+              "rssKiB": 115424
+            },
+            {
+              "pid": 2821,
+              "ppid": 2810,
+              "rssKiB": 98016
+            },
+            {
+              "pid": 2822,
+              "ppid": 2810,
+              "rssKiB": 813072
+            }
+          ]
+        },
+        "peakRssBytes": 1733820416,
+        "heap": {
+          "usedSize": 35461104,
+          "totalSize": 36339712,
+          "embedderHeapUsedSize": 13775464,
+          "backingStorageSize": 59964661
+        },
+        "pageErrors": []
+      },
+      {
+        "name": "candidate",
+        "file": "d-156467175-press-release-head-4d0ec3e99bf4.hwp",
+        "source": {
+          "fontBytes": 129253230,
+          "wasmMemoryBytes": 138280960,
+          "fontGeneration": 28
+        },
+        "boot": {
+          "at": 1792999082847,
+          "rssBytes": 1368440832,
+          "processes": [
+            {
+              "pid": 3131,
+              "ppid": 2110,
+              "rssKiB": 266896
+            },
+            {
+              "pid": 3140,
+              "ppid": 3131,
+              "rssKiB": 108000
+            },
+            {
+              "pid": 3141,
+              "ppid": 3131,
+              "rssKiB": 156448
+            },
+            {
+              "pid": 3142,
+              "ppid": 3131,
+              "rssKiB": 81744
+            },
+            {
+              "pid": 3145,
+              "ppid": 3131,
+              "rssKiB": 115792
+            },
+            {
+              "pid": 3158,
+              "ppid": 3131,
+              "rssKiB": 97984
+            },
+            {
+              "pid": 3159,
+              "ppid": 3131,
+              "rssKiB": 509504
+            }
+          ]
+        },
+        "resident": {
+          "at": 1792999084271,
+          "rssBytes": 1865203712,
+          "processes": [
+            {
+              "pid": 3131,
+              "ppid": 2110,
+              "rssKiB": 278896
+            },
+            {
+              "pid": 3140,
+              "ppid": 3131,
+              "rssKiB": 116576
+            },
+            {
+              "pid": 3141,
+              "ppid": 3131,
+              "rssKiB": 157056
+            },
+            {
+              "pid": 3142,
+              "ppid": 3131,
+              "rssKiB": 81744
+            },
+            {
+              "pid": 3145,
+              "ppid": 3131,
+              "rssKiB": 115792
+            },
+            {
+              "pid": 3158,
+              "ppid": 3131,
+              "rssKiB": 97984
+            },
+            {
+              "pid": 3159,
+              "ppid": 3131,
+              "rssKiB": 973440
+            }
+          ]
+        },
+        "peakRssBytes": 1956020224,
+        "heap": {
+          "usedSize": 36062260,
+          "totalSize": 37388288,
+          "embedderHeapUsedSize": 14120392,
+          "backingStorageSize": 35421139
+        },
+        "pageErrors": []
+      }
+    ],
+    "sequenceOpenClose": "Not measured yet. The engine shares retained sources across document instances; a bounded sequential control remains due."
+  },
+  "mcpSanity": [
+    {
+      "run": 0,
+      "doc": "mixed",
+      "app": "baseline",
+      "structureFirstMs": 4.305333999998766,
+      "resultChars": 1750,
+      "resultKeys": [
+        "mcpContent",
+        "pageCount",
+        "revision",
+        "truncated"
+      ],
+      "structureTransport": "authenticated-mcp-ws-v5",
+      "pageErrors": 0
+    },
+    {
+      "run": 0,
+      "doc": "mixed",
+      "app": "candidate",
+      "structureFirstMs": 3.485207999998238,
+      "resultChars": 1750,
+      "resultKeys": [
+        "mcpContent",
+        "pageCount",
+        "revision",
+        "truncated"
+      ],
+      "structureTransport": "authenticated-mcp-ws-v5",
+      "pageErrors": 0
+    },
+    {
+      "run": 0,
+      "doc": "report",
+      "app": "baseline",
+      "structureFirstMs": 13.001541999998153,
+      "resultChars": 63769,
+      "resultKeys": [
+        "mcpContent",
+        "pageCount",
+        "revision",
+        "truncated"
+      ],
+      "structureTransport": "authenticated-mcp-ws-v5",
+      "pageErrors": 0
+    },
+    {
+      "run": 0,
+      "doc": "report",
+      "app": "candidate",
+      "structureFirstMs": 30.844874999998865,
+      "resultChars": 58083,
+      "resultKeys": [
+        "mcpContent",
+        "pageCount",
+        "revision",
+        "truncated"
+      ],
+      "structureTransport": "authenticated-mcp-ws-v5",
+      "pageErrors": 0
+    }
+  ],
+  "ime": {
+    "runtime": "http://127.0.0.1:7733/?engine=heemang",
+    "fixtureHub": true,
+    "committedImeUndoRedo": true,
+    "cancelled": {
+      "text": "",
+      "canUndo": false,
+      "canRedo": false,
+      "position": {
+        "sectionIndex": 0,
+        "paragraphIndex": 0,
+        "charOffset": 0,
+        "cursorRect": {
+          "pageIndex": 0,
+          "x": 113.38666666666667,
+          "y": 132.26666666666668,
+          "height": 13.333333333333334
+        }
+      }
+    },
+    "finalText": "다",
+    "pageErrors": []
+  },
+  "engineSources": {
+    "crates/hm-fonts/src/lib.rs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts/src/lib.rs",
+      "bytes": 27700,
+      "sha256": "2e04d3f87a872b958fc5dfaeb5950625f6236c0bbe3965df414119c483a6ac55"
+    },
+    "crates/hm-fonts/tests/compact.rs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts/tests/compact.rs",
+      "bytes": 8261,
+      "sha256": "392d90577ad95050d68244a285c80c92dd5fb071135db794e22580aa89aa3549"
+    },
+    "crates/hm-fonts/tests/sparse.rs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-fonts/tests/sparse.rs",
+      "bytes": 6123,
+      "sha256": "bc4a41614b3f05d8a828e0f0b0723be12251afd39c939d2597d527c4eeae8ef4"
+    },
+    "crates/hm-wasm/src/engine.rs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-wasm/src/engine.rs",
+      "bytes": 17724,
+      "sha256": "4ad2d65199b04595fd68f6a0575812a166f06043daeb85f2ed957db2f3d21d5c"
+    },
+    "crates/hm-wasm/js/test/engine.test.mjs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/engine-hwp3w/crates/hm-wasm/js/test/engine.test.mjs",
+      "bytes": 62943,
+      "sha256": "a9c8787aa95d7bbf0243b32656d3f916f929c2770a5c1f8c6f6ce5f0b3f6e0c6"
+    }
+  },
+  "studioSources": {
+    "rhwp/rhwp-studio/src/core/heemang-adapter.ts": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/src/core/heemang-adapter.ts",
+      "bytes": 49478,
+      "sha256": "ee8d503ce1a2a323f3ec793006c7cb47aceddfbd85490aeb526e4eb2359fcf8b"
+    },
+    "rhwp/rhwp-studio/tests/heemang-font-flow.test.ts": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/tests/heemang-font-flow.test.ts",
+      "bytes": 18760,
+      "sha256": "5417da63dacec4cdde3715d019f04dd12fac84631a333c57c62b2ae34f07767f"
+    },
+    "rhwp/rhwp-studio/e2e/heemang-verify/cold-open-bench.mjs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/e2e/heemang-verify/cold-open-bench.mjs",
+      "bytes": 49694,
+      "sha256": "e9fb46502be0a387c81e491a954a1045ac806aabd2bbd828de822d738d526c48"
+    },
+    "rhwp/rhwp-studio/e2e/heemang-verify/cold-open-summary.mjs": {
+      "path": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio-hwp3w/rhwp/rhwp-studio/e2e/heemang-verify/cold-open-summary.mjs",
+      "bytes": 10365,
+      "sha256": "4cd75976952bfa006c88477691eaccd257a9b8075a81ef76830efc4da31c571a"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/all-six/typing-2026-10-26T07-14-18-683Z.jsonl",
+      "bytes": 216042,
+      "sha256": "d534e6623f3ba28b7b4397b9cf5425611b7dfa283885c529a34ed69bd2a4c601"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/all-six/typing-2026-10-26T07-14-18-683Z.jsonl.manifest.json",
+      "bytes": 6399,
+      "sha256": "13950f4196c63c820f4c962429f149393de80e5ae44dc19dd1aff78a54d0bd3a"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/all-six.log",
+      "bytes": 346,
+      "sha256": "c89ea32b4ca2c1314f69cbe28c430978f8958e82071d5908318032823aa4e67c"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/full-redraw/candidate-d-01-table-border-styles-6a0712c9dd15.hwpx-first-composition.png",
+      "bytes": 45364,
+      "sha256": "96d084955947aac939dacafd1af8917c29de17a61298e96502c2509e4dd57113"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/full-redraw/candidate-d-156467175-press-release-head-4d0ec3e99bf4.hwp-first-composition.png",
+      "bytes": 240979,
+      "sha256": "27f98aae8579527c3ab213d2563092a03245aac6c6c5347dd39a1833e9000ff6"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/full-redraw/typing-2026-10-26T07-18-51-392Z.jsonl",
+      "bytes": 90755,
+      "sha256": "e7ea7a3179a8af93131d74b58b05419eff2f611fda371cc6309bc99dcfb02c51"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/full-redraw/typing-2026-10-26T07-18-51-392Z.jsonl.manifest.json",
+      "bytes": 5435,
+      "sha256": "c0bcf2ab8294587ea3a89b98616d685e2f4632d9e174c6294c4719ebd52ff061"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/full-redraw.log",
+      "bytes": 195,
+      "sha256": "e58b170e66fa4d76a8c611fb7a6b037a6618c22d63ff63ba9421490c0c04034e"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/ime-history/result.json",
+      "bytes": 490,
+      "sha256": "d4b0121b6210932d0457053c5dc8d5927bd4aeb2e6773026014d2263d83637dc"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/ime-history.log",
+      "bytes": 355,
+      "sha256": "afb1bc06f8d83946e8d7be2f3e0f07cc5dc0baffbcd14d06abb02b48bf3564ed"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/locks.log",
+      "bytes": 148,
+      "sha256": "4b587b3f39739f653b2a43fb571dabc2ecf6551f1f1a414861daab44d10fd901"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/mcp-sanity/structure-2026-10-26T07-18-17-531Z.jsonl",
+      "bytes": 896,
+      "sha256": "49c3b11afdd9799693b22311e2bf38e835b6ca02a4c6fbbbc830685cab8e3e18"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/mcp-sanity/structure-2026-10-26T07-18-17-531Z.jsonl.manifest.json",
+      "bytes": 5460,
+      "sha256": "b68d6558abb1c51bc61149a94634eef11feb0dac9feb67bfe79dbb2a49de6468"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/mcp-sanity.log",
+      "bytes": 317,
+      "sha256": "0946f051999da29dce08b7342a0d9f15b4e92e4251df08ba79b305905a4815af"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/memory-v2.json",
+      "bytes": 73618,
+      "sha256": "8ed263c19a1a8c135516de13f66f7b40f70d9664fecef3ca60d764dbc14d7e4b"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/memory-v2.log",
+      "bytes": 619,
+      "sha256": "9b25fbd724cb3479534e653b66264bfd35d1816926d12238513ff5769aa8d86a"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/memory.log",
+      "bytes": 1331,
+      "sha256": "f3fb14f41d5b96e486cd705c87560aa243ded9942d818467b273d3dc8cab1f4e"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/source-after.txt",
+      "bytes": 347,
+      "sha256": "412cebf6a22b38a0a64755614ed670c3596613164febe0a5d24e37a9933343f7"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-live-a2de71a0-v1/source-before.txt",
+      "bytes": 347,
+      "sha256": "412cebf6a22b38a0a64755614ed670c3596613164febe0a5d24e37a9933343f7"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-copy-control.log",
+      "bytes": 196,
+      "sha256": "a3d0b523ae0c2d733521bd3f7e525d0e8952a8655443837b013a1163952a131b"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-green.log",
+      "bytes": 626,
+      "sha256": "9c72e7fcc23107f62754daf25a7d4a531fc10be9ef6f3a7e4e194e0db98d79a5"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-hml-before-control.log",
+      "bytes": 1128,
+      "sha256": "f16fd2f82b077a3147fabe88dca8da2968230879e4065f832554033a591ef9f5"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-memory-before-baseline-access-fix.mjs",
+      "bytes": 2976,
+      "sha256": "b46c7f2bb0ecd8908df93f197975a6d34807f1272d2e2b59700cd4b5668ae118"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-memory.mjs",
+      "bytes": 2979,
+      "sha256": "55fcb18c3984f71e166a08327860bf698b546d3fafe12e421918eb5fc5452194"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-native-complete-contract.log",
+      "bytes": 12452,
+      "sha256": "a7ba8fd89b7fa1959ba1d4b607c9b440cfafd41135fc5e4e01c2dd40f06434c8"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-native.log",
+      "bytes": 2284,
+      "sha256": "1368094e9205e8ac59c18a49c065d17cae2271b7f3bfa18a4a90db0e7a2528fc"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-real-wasm.log",
+      "bytes": 7375,
+      "sha256": "25ef2ee361c7720cde8fa27e1d4eaf4559c1deccaeb1ba76286d26b9e8bbc8c4"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-red.log",
+      "bytes": 969,
+      "sha256": "f8195fc785e8d5cf7a69623d713bd33934ac015553561194b2d217723f3d0828"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-spacing-control.log",
+      "bytes": 210,
+      "sha256": "db0e40bd7a8fdbb4669215a35422942de408e0fba2356f43d97e28eb7f44ca5a"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-studio-before-control.log",
+      "bytes": 2063,
+      "sha256": "a4ff8110d85a3b7cd817f834ea4ed19c206c6fa702b02fd14e44c54938e34c88"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-studio-flow.log",
+      "bytes": 1647,
+      "sha256": "699ee6da57bd39aa840eb58b49dcb251025040b97eda5e66b5ae2e0727e59971"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-studio-focused.log",
+      "bytes": 2065,
+      "sha256": "2dde25bddd31cefaeb6cfe46b8b068be89db44043a70faf0aa9e01b2d4094003"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-studio-metric-default.log",
+      "bytes": 1646,
+      "sha256": "7846e48d246cd510e507a4c78051f55e72c24aa1c8a987d75da31a2965f977a4"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-tsc.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/heemang-perf-resume/host-sfnt-wasm-build.log",
+      "bytes": 633,
+      "sha256": "33809a88ab72798d46c12bf25c29f5d8e0989447ba7fcf682995441d73e58f29"
+    }
+  ]
+}

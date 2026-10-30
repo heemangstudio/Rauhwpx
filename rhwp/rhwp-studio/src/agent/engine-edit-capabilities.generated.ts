@@ -84,13 +84,13 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "para",
-      "control",
-      "notePara",
-      "start",
-      "end",
-      "props"
+      "controlIdx",
+      "fnParaIdx",
+      "startOffset",
+      "endOffset",
+      "propsJson"
     ],
-    "signature": "applyCharFormatInFootnote(sec: number, para: number, control: number, notePara: number, start: number, end: number, props: string)"
+    "signature": "applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string)"
   },
   {
     "method": "applyCharFormatInHeaderFooter",
@@ -105,7 +105,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "endOffset",
       "propsJson"
     ],
-    "signature": "applyCharFormatInHeaderFooter(sec: number, isHeader: boolean, applyTo: number, startHfParaIdx: number, startOffset: number, endHfParaIdx: number, endOffset: number, propsJson: string,)"
+    "signature": "applyCharFormatInHeaderFooter(sec: number, isHeader: boolean, applyTo: number, startHfParaIdx: number, startOffset: number, endHfParaIdx: number, endOffset: number, propsJson: string)"
   },
   {
     "method": "applyCharFormatInHf",
@@ -114,12 +114,12 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "isHeader",
       "applyTo",
-      "para",
-      "start",
-      "end",
-      "props"
+      "hfParaIdx",
+      "startOffset",
+      "endOffset",
+      "propsJson"
     ],
-    "signature": "applyCharFormatInHf(sec: number, isHeader: boolean, applyTo: number, para: number, start: number, end: number, props: string)"
+    "signature": "applyCharFormatInHf(sec: number, isHeader: boolean, applyTo: number, hfParaIdx: number, startOffset: number, endOffset: number, propsJson: string)"
   },
   {
     "method": "applyDocumentParaSpacing",
@@ -190,10 +190,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "parentPara",
-      "path",
-      "props"
+      "pathJson",
+      "propsJson"
     ],
-    "signature": "applyParaFormatInCellByPath(sec: number, parentPara: number, path: string, props: string)"
+    "signature": "applyParaFormatInCellByPath(sec: number, parentPara: number, pathJson: string, propsJson: string)"
   },
   {
     "method": "applyParaFormatInFootnote",
@@ -360,7 +360,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "endRow",
       "endCol"
     ],
-    "signature": "copyTableCellsTransposed(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number,)"
+    "signature": "copyTableCellsTransposed(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number)"
   },
   {
     "method": "createHeaderFooter",
@@ -435,7 +435,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellPath",
       "innerControlIdx"
     ],
-    "signature": "deleteCellPictureControlByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number,)"
+    "signature": "deleteCellPictureControlByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number)"
   },
   {
     "method": "deleteCellTableControlByPath",
@@ -603,9 +603,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "controlIdx",
-      "colIdx"
+      "colIdx",
+      "count"
     ],
-    "signature": "deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number)"
+    "signature": "deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, count = 1)"
   },
   {
     "method": "deleteTableColumnByPath",
@@ -614,9 +615,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "pathJson",
-      "colIdx"
+      "colIdx",
+      "count"
     ],
-    "signature": "deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number)"
+    "signature": "deleteTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, count = 1)"
   },
   {
     "method": "deleteTableControl",
@@ -635,9 +637,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "controlIdx",
-      "rowIdx"
+      "rowIdx",
+      "count"
     ],
-    "signature": "deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number)"
+    "signature": "deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, count = 1)"
   },
   {
     "method": "deleteTableRowByPath",
@@ -646,9 +649,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "pathJson",
-      "rowIdx"
+      "rowIdx",
+      "count"
     ],
-    "signature": "deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number)"
+    "signature": "deleteTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, count = 1)"
   },
   {
     "method": "deleteText",
@@ -765,7 +769,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "options"
     ],
-    "signature": "evaluateTableFormulaEx(options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; })"
+    "signature": "evaluateTableFormulaEx(options: { sectionIdx: number; parentParaIdx: number; controlIdx: number; pathJson?: string; targetRow: number; targetCol: number; formula: string; writeResult: boolean; decimalPlaces?: number; thousandsSeparator?: boolean; prefix?: string; suffix?: string; })"
   },
   {
     "method": "findOrCreateFontId",
@@ -813,7 +817,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "name",
       "editable"
     ],
-    "signature": "insertClickHereField(pos: DocumentPosition, guide: string, memo: string, name: string, editable: boolean,)"
+    "signature": "insertClickHereField(pos: DocumentPosition, guide: string, memo: string, name: string, editable: boolean)"
   },
   {
     "method": "insertColumnBreak",
@@ -974,9 +978,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "controlIdx",
       "colIdx",
-      "right"
+      "right",
+      "count"
     ],
-    "signature": "insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean)"
+    "signature": "insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean, count = 1)"
   },
   {
     "method": "insertTableColumnByPath",
@@ -986,9 +991,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "colIdx",
-      "right"
+      "right",
+      "count"
     ],
-    "signature": "insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean)"
+    "signature": "insertTableColumnByPath(sec: number, parentPara: number, pathJson: string, colIdx: number, right: boolean, count = 1)"
   },
   {
     "method": "insertTableRow",
@@ -998,9 +1004,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "controlIdx",
       "rowIdx",
-      "below"
+      "below",
+      "count"
     ],
-    "signature": "insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean)"
+    "signature": "insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean, count = 1)"
   },
   {
     "method": "insertTableRowByPath",
@@ -1010,9 +1017,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "rowIdx",
-      "below"
+      "below",
+      "count"
     ],
-    "signature": "insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean)"
+    "signature": "insertTableRowByPath(sec: number, parentPara: number, pathJson: string, rowIdx: number, below: boolean, count = 1)"
   },
   {
     "method": "insertText",
@@ -1211,7 +1219,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "toPara",
       "toCharOffset"
     ],
-    "signature": "movePictureControl(sec: number, fromPara: number, fromCi: number, toPara: number, toCharOffset: number,)"
+    "signature": "movePictureControl(sec: number, fromPara: number, fromCi: number, toPara: number, toCharOffset: number)"
   },
   {
     "method": "movePictureControlByPath",
@@ -1225,7 +1233,21 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "toPath",
       "toCharOffset"
     ],
-    "signature": "movePictureControlByPath(sec: number, fromParentPara: number, fromPath: CellPathLike, fromControl: number, toParentPara: number, toPath: CellPathLike, toCharOffset: number,)"
+    "signature": "movePictureControlByPath(sec: number, fromParentPara: number, fromPath: CellPathLike, fromControl: number, toParentPara: number, toPath: CellPathLike, toCharOffset: number)"
+  },
+  {
+    "method": "moveTableCellEdgeByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "row",
+      "col",
+      "side",
+      "delta"
+    ],
+    "signature": "moveTableCellEdgeByPath(sec: number, parentPara: number, pathJson: string, row: number, col: number, side: 'right' | 'bottom', delta: number)"
   },
   {
     "method": "moveTableOffset",
@@ -1261,7 +1283,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "targetPara",
       "targetCharOffset"
     ],
-    "signature": "pasteDocumentBlock(sourceBytes: Uint8Array, sourceSection: number, startPara: number, endPara: number, targetSection: number, targetPara: number, targetCharOffset: number,)"
+    "signature": "pasteDocumentBlock(sourceBytes: Uint8Array, sourceSection: number, startPara: number, endPara: number, targetSection: number, targetPara: number, targetCharOffset: number)"
   },
   {
     "method": "pasteHtml",
@@ -1367,7 +1389,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "startRow",
       "startCol"
     ],
-    "signature": "pasteTableCellsTransposed(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number,)"
+    "signature": "pasteTableCellsTransposed(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number)"
   },
   {
     "method": "pasteTableCellsTransposedAsTable",
@@ -1377,7 +1399,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "charOffset"
     ],
-    "signature": "pasteTableCellsTransposedAsTable(sec: number, para: number, charOffset: number,)"
+    "signature": "pasteTableCellsTransposedAsTable(sec: number, para: number, charOffset: number)"
   },
   {
     "method": "promoteOleEquation",
@@ -1445,7 +1467,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "text",
       "logical"
     ],
-    "signature": "replaceBodyTextLocal(sec: number, para: number, charOffset: number, deleteCount: number, text: string, logical = false,)"
+    "signature": "replaceBodyTextLocal(sec: number, para: number, charOffset: number, deleteCount: number, text: string, logical = false)"
   },
   {
     "method": "replaceHyperlinkText",
@@ -1480,7 +1502,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "endOffset",
       "replacementText"
     ],
-    "signature": "replaceRangeInHeaderFooter(sec: number, isHeader: boolean, applyTo: number, startHfParaIdx: number, startOffset: number, endHfParaIdx: number, endOffset: number, replacementText: string,)"
+    "signature": "replaceRangeInHeaderFooter(sec: number, isHeader: boolean, applyTo: number, startHfParaIdx: number, startOffset: number, endHfParaIdx: number, endOffset: number, replacementText: string)"
   },
   {
     "method": "replaceText",
@@ -1508,7 +1530,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "text",
       "logical"
     ],
-    "signature": "replaceTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, deleteCount: number, text: string, logical = false,)"
+    "signature": "replaceTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, deleteCount: number, text: string, logical = false)"
   },
   {
     "method": "resizeTableCells",
@@ -1519,7 +1541,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "updates"
     ],
-    "signature": "resizeTableCells(sec: number, parentPara: number, controlIdx: number, updates: TableCellResizeUpdate[],)"
+    "signature": "resizeTableCells(sec: number, parentPara: number, controlIdx: number, updates: TableCellResizeUpdate[])"
   },
   {
     "method": "resizeTableCellsByPath",
@@ -1530,7 +1552,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "pathJson",
       "updates"
     ],
-    "signature": "resizeTableCellsByPath(sec: number, parentPara: number, pathJson: string, updates: TableCellResizeUpdate[],)"
+    "signature": "resizeTableCellsByPath(sec: number, parentPara: number, pathJson: string, updates: TableCellResizeUpdate[])"
   },
   {
     "method": "setCellParaShapeId",
@@ -1551,10 +1573,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "parentPara",
-      "path",
-      "shapeId"
+      "pathJson",
+      "paraShapeId"
     ],
-    "signature": "setCellParaShapeIdByPath(sec: number, parentPara: number, path: string, shapeId: number)"
+    "signature": "setCellParaShapeIdByPath(sec: number, parentPara: number, pathJson: string, paraShapeId: number)"
   },
   {
     "method": "setCellPicturePropertiesByPath",
@@ -1566,7 +1588,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "innerControlIdx",
       "props"
     ],
-    "signature": "setCellPicturePropertiesByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number, props: Record<string, unknown>,)"
+    "signature": "setCellPicturePropertiesByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number, props: Record<string, unknown>)"
   },
   {
     "method": "setCellProperties",
@@ -1581,6 +1603,18 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "setCellProperties(sec: number, parentPara: number, controlIdx: number, cellIdx: number, props: Partial<CellProperties>)"
   },
   {
+    "method": "setCellPropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "cellIdx",
+      "props"
+    ],
+    "signature": "setCellPropertiesByPath(sec: number, parentPara: number, pathJson: string, cellIdx: number, props: Partial<CellProperties>)"
+  },
+  {
     "method": "setCellShapePropertiesByPath",
     "kind": "document",
     "parameters": [
@@ -1590,7 +1624,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "innerControlIdx",
       "props"
     ],
-    "signature": "setCellShapePropertiesByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number, props: Record<string, unknown>,)"
+    "signature": "setCellShapePropertiesByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number, props: Record<string, unknown>)"
   },
   {
     "method": "setCellZoneProperties",
@@ -1602,7 +1636,19 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "range",
       "props"
     ],
-    "signature": "setCellZoneProperties(sec: number, parentPara: number, controlIdx: number, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>,)"
+    "signature": "setCellZoneProperties(sec: number, parentPara: number, controlIdx: number, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>)"
+  },
+  {
+    "method": "setCellZonePropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "range",
+      "props"
+    ],
+    "signature": "setCellZonePropertiesByPath(sec: number, parentPara: number, pathJson: string, range: { startRow: number; startCol: number; endRow: number; endCol: number }, props: Partial<CellProperties>)"
   },
   {
     "method": "setCharShapeId",
@@ -1650,13 +1696,13 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "para",
-      "control",
-      "notePara",
-      "start",
-      "end",
-      "shapeId"
+      "controlIdx",
+      "fnParaIdx",
+      "startOffset",
+      "endOffset",
+      "charShapeId"
     ],
-    "signature": "setCharShapeIdInFootnote(sec: number, para: number, control: number, notePara: number, start: number, end: number, shapeId: number)"
+    "signature": "setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number)"
   },
   {
     "method": "setCharShapeIdInHf",
@@ -1665,12 +1711,12 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "isHeader",
       "applyTo",
-      "para",
-      "start",
-      "end",
-      "shapeId"
+      "hfParaIdx",
+      "startOffset",
+      "endOffset",
+      "charShapeId"
     ],
-    "signature": "setCharShapeIdInHf(sec: number, isHeader: boolean, applyTo: number, para: number, start: number, end: number, shapeId: number)"
+    "signature": "setCharShapeIdInHf(sec: number, isHeader: boolean, applyTo: number, hfParaIdx: number, startOffset: number, endOffset: number, charShapeId: number)"
   },
   {
     "method": "setCharShapeRuns",
@@ -1705,9 +1751,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "columnCount",
       "columnType",
       "sameWidth",
-      "spacingHu"
+      "spacingHu",
+      "columnWidths"
     ],
-    "signature": "setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number)"
+    "signature": "setColumnDef(sec: number, columnCount: number, columnType: number, sameWidth: number, spacingHu: number, columnWidths?: number[])"
   },
   {
     "method": "setEquationProperties",
@@ -1789,7 +1836,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "innerCtrl",
       "props"
     ],
-    "signature": "setHeaderFooterPictureProperties(sec: number, outerPara: number, outerCtrl: number, innerPara: number, innerCtrl: number, props: Record<string, unknown>,)"
+    "signature": "setHeaderFooterPictureProperties(sec: number, outerPara: number, outerCtrl: number, innerPara: number, innerCtrl: number, props: Record<string, unknown>)"
   },
   {
     "method": "setNoteEquationProperties",
@@ -1850,7 +1897,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "hideFill",
       "hidePageNum"
     ],
-    "signature": "setPageHide(sec: number, para: number, hideHeader: boolean, hideFooter: boolean, hideMaster: boolean, hideBorder: boolean, hideFill: boolean, hidePageNum: boolean,)"
+    "signature": "setPageHide(sec: number, para: number, hideHeader: boolean, hideFooter: boolean, hideMaster: boolean, hideBorder: boolean, hideFill: boolean, hidePageNum: boolean)"
   },
   {
     "method": "setParaShapeId",
@@ -1868,11 +1915,11 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "para",
-      "control",
-      "notePara",
-      "shapeId"
+      "controlIdx",
+      "fnParaIdx",
+      "paraShapeId"
     ],
-    "signature": "setParaShapeIdInFootnote(sec: number, para: number, control: number, notePara: number, shapeId: number)"
+    "signature": "setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number)"
   },
   {
     "method": "setParaShapeIdInHf",
@@ -1881,10 +1928,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "isHeader",
       "applyTo",
-      "para",
-      "shapeId"
+      "hfParaIdx",
+      "paraShapeId"
     ],
-    "signature": "setParaShapeIdInHf(sec: number, isHeader: boolean, applyTo: number, para: number, shapeId: number)"
+    "signature": "setParaShapeIdInHf(sec: number, isHeader: boolean, applyTo: number, hfParaIdx: number, paraShapeId: number)"
   },
   {
     "method": "setPictureProperties",
@@ -1958,6 +2005,17 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "props"
     ],
     "signature": "setTableProperties(sec: number, parentPara: number, controlIdx: number, props: Partial<TableProperties>)"
+  },
+  {
+    "method": "setTablePropertiesByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "props"
+    ],
+    "signature": "setTablePropertiesByPath(sec: number, parentPara: number, pathJson: string, props: Partial<TableProperties>)"
   },
   {
     "method": "splitParagraph",
@@ -2083,7 +2141,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "equalRowHeight",
       "mergeFirst"
     ],
-    "signature": "splitTableCellInto(sec: number, parentPara: number, controlIdx: number, row: number, col: number, nRows: number, mCols: number, equalRowHeight: boolean, mergeFirst: boolean,)"
+    "signature": "splitTableCellInto(sec: number, parentPara: number, controlIdx: number, row: number, col: number, nRows: number, mCols: number, equalRowHeight: boolean, mergeFirst: boolean)"
   },
   {
     "method": "splitTableCellIntoByPath",
@@ -2099,7 +2157,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "equalRowHeight",
       "mergeFirst"
     ],
-    "signature": "splitTableCellIntoByPath(sec: number, parentPara: number, pathJson: string, row: number, col: number, nRows: number, mCols: number, equalRowHeight: boolean, mergeFirst: boolean,)"
+    "signature": "splitTableCellIntoByPath(sec: number, parentPara: number, pathJson: string, row: number, col: number, nRows: number, mCols: number, equalRowHeight: boolean, mergeFirst: boolean)"
   },
   {
     "method": "splitTableCellsInRange",
@@ -2116,7 +2174,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "mCols",
       "equalRowHeight"
     ],
-    "signature": "splitTableCellsInRange(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number, nRows: number, mCols: number, equalRowHeight: boolean,)"
+    "signature": "splitTableCellsInRange(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number, nRows: number, mCols: number, equalRowHeight: boolean)"
   },
   {
     "method": "splitTableCellsInRangeByPath",
@@ -2133,7 +2191,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "mCols",
       "equalRowHeight"
     ],
-    "signature": "splitTableCellsInRangeByPath(sec: number, parentPara: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number, nRows: number, mCols: number, equalRowHeight: boolean,)"
+    "signature": "splitTableCellsInRangeByPath(sec: number, parentPara: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number, nRows: number, mCols: number, equalRowHeight: boolean)"
   },
   {
     "method": "toggleHideHeaderFooter",
@@ -2152,7 +2210,7 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "controlIdx"
     ],
-    "signature": "transposeTableCellsInPlace(sec: number, parentPara: number, controlIdx: number,)"
+    "signature": "transposeTableCellsInPlace(sec: number, parentPara: number, controlIdx: number)"
   },
   {
     "method": "ungroupShape",
@@ -2216,14 +2274,13 @@ export const ENGINE_EDIT_CAPABILITIES = [
 ] as const;
 export const ENGINE_EDIT_TYPE_DEFINITIONS = {
   "CharProperties": "export interface CharProperties { fontFamily?: string; fontSize?: number; bold?: boolean; italic?: boolean; underline?: boolean; strikethrough?: boolean; textColor?: string; shadeColor?: string; emboss?: boolean; engrave?: boolean; charShapeId?: number; fontId?: number; fontIds?: number[]; underlineType?: string; underlineColor?: string; outlineType?: number; shadowType?: number; shadowColor?: string; shadowOffsetX?: number; shadowOffsetY?: number; strikeColor?: string; subscript?: boolean; superscript?: boolean; fontFamilies?: string[]; ratios?: number[]; spacings?: number[]; relativeSizes?: number[]; charOffsets?: number[]; fontName?: string; emphasisDot?: number; underlineShape?: number; strikeShape?: number; kerning?: boolean; borderFillId?: number; borderLeft?: { type: number; width: number; color: string }; borderRight?: { type: number; width: number; color: string }; borderTop?: { type: number; width: number; color: string }; borderBottom?: { type: number; width: number; color: string }; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; }",
-  "ParaProperties": "export interface ParaProperties { alignment?: string; lineSpacing?: number; lineSpacingType?: string; marginLeft?: number; marginRight?: number; indent?: number; spacingBefore?: number; spacingAfter?: number; paraShapeId?: number; headType?: string; paraLevel?: number; numberingId?: number; widowOrphan?: boolean; keepWithNext?: boolean; keepLines?: boolean; pageBreakBefore?: boolean; fontLineHeight?: boolean; singleLine?: boolean; autoSpaceKrEn?: boolean; autoSpaceKrNum?: boolean; verticalAlign?: number; englishBreakUnit?: number; koreanBreakUnit?: number; tabAutoLeft?: boolean; tabAutoRight?: boolean; tabStops?: { position: number; type: number; fill: number }[]; defaultTabSpacing?: number; borderFillId?: number; borderLeft?: { type: number; width: number; color: string }; borderRight?: { type: number; width: number; color: string }; borderTop?: { type: number; width: number; color: string }; borderBottom?: { type: number; width: number; color: string }; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; borderSpacing?: number[]; borderConnect?: boolean; borderIgnoreMargin?: boolean; }",
-  "ShapeProperties": "export interface ShapeProperties { width: number; height: number; treatAsChar: boolean; vertRelTo: string; vertAlign: string; horzRelTo: string; horzAlign: string; vertOffset: number; horzOffset: number; textWrap: string; sizeProtect?: boolean; tbMarginLeft?: number; tbMarginRight?: number; tbMarginTop?: number; tbMarginBottom?: number; tbVerticalAlign?: string; borderColor?: number; borderWidth?: number; borderAttr?: number; borderOutlineStyle?: number; lineType?: number; lineEndShape?: number; arrowStart?: number; arrowEnd?: number; arrowStartSize?: number; arrowEndSize?: number; rotationAngle?: number; horzFlip?: boolean; vertFlip?: boolean; fillType?: string; fillBgColor?: number; fillPatColor?: number; fillPatType?: number; fillAlpha?: number; gradientType?: number; gradientAngle?: number; gradientCenterX?: number; gradientCenterY?: number; gradientBlur?: number; roundRate?: number; description: string; }",
+  "ParaProperties": "export interface ParaProperties { alignment?: string; lineSpacing?: number; lineSpacingType?: string; marginLeft?: number; marginRight?: number; indent?: number; spacingBefore?: number; spacingAfter?: number; paraShapeId?: number; headType?: string; paraLevel?: number; numberingId?: number; numberingRestartMode?: number; numberingStartNum?: number; widowOrphan?: boolean; keepWithNext?: boolean; keepLines?: boolean; pageBreakBefore?: boolean; fontLineHeight?: boolean; singleLine?: boolean; autoSpaceKrEn?: boolean; autoSpaceKrNum?: boolean; verticalAlign?: number; englishBreakUnit?: number; koreanBreakUnit?: number; tabAutoLeft?: boolean; tabAutoRight?: boolean; tabStops?: { position: number; type: number; fill: number }[]; defaultTabSpacing?: number; borderFillId?: number; borderLeft?: { type: number; width: number; color: string }; borderRight?: { type: number; width: number; color: string }; borderTop?: { type: number; width: number; color: string }; borderBottom?: { type: number; width: number; color: string }; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; borderSpacing?: number[]; borderConnect?: boolean; borderIgnoreMargin?: boolean; }",
+  "ShapeProperties": "export interface ShapeProperties { instanceId?: number; width: number; height: number; treatAsChar: boolean; vertRelTo: string; vertAlign: string; horzRelTo: string; horzAlign: string; vertOffset: number; horzOffset: number; textWrap: string; sizeProtect?: boolean; tbMarginLeft?: number; tbMarginRight?: number; tbMarginTop?: number; tbMarginBottom?: number; tbVerticalAlign?: string; borderColor?: number; borderWidth?: number; borderAttr?: number; borderOutlineStyle?: number; lineType?: number; lineEndShape?: number; arrowStart?: number; arrowEnd?: number; arrowStartSize?: number; arrowEndSize?: number; rotationAngle?: number; horzFlip?: boolean; vertFlip?: boolean; fillType?: string; fillBgColor?: number; fillPatColor?: number; fillPatType?: number; fillAlpha?: number; gradientType?: number; gradientAngle?: number; gradientCenterX?: number; gradientCenterY?: number; gradientBlur?: number; roundRate?: number; description: string; }",
   "PictureProperties": "export interface PictureProperties { width: number; height: number; treatAsChar: boolean; vertRelTo: string; vertAlign: string; horzRelTo: string; horzAlign: string; vertOffset: number; horzOffset: number; textWrap: string; restrictInPage?: boolean; allowOverlap?: boolean; sizeProtect?: boolean; brightness: number; contrast: number; effect: string; transparency?: number; description: string; rotationAngle: number; horzFlip: boolean; vertFlip: boolean; originalWidth: number; originalHeight: number; cropLeft: number; cropTop: number; cropRight: number; cropBottom: number; paddingLeft: number; paddingTop: number; paddingRight: number; paddingBottom: number; outerMarginLeft: number; outerMarginTop: number; outerMarginRight: number; outerMarginBottom: number; borderColor: number; borderWidth: number; hasCaption: boolean; captionDirection: string; captionVertAlign: string; captionWidth: number; captionSpacing: number; captionMaxWidth: number; captionIncludeMargin: boolean; externalPath?: string; }",
   "EquationProperties": "export interface EquationProperties { width?: number; height?: number; treatAsChar?: boolean; vertRelTo?: string; vertAlign?: string; horzRelTo?: string; horzAlign?: string; vertOffset?: number; horzOffset?: number; textWrap?: string; sizeProtect?: boolean; zOrder?: number; instanceId?: number; outerMarginLeft?: number; outerMarginTop?: number; outerMarginRight?: number; outerMarginBottom?: number; hasCaption?: boolean; captionDirection?: string; captionWidth?: number; captionSpacing?: number; description?: string; script: string; fontSize: number; color: number; baseline: number; fontName: string; }",
   "EndnoteShapeSettings": "export interface EndnoteShapeSettings { ok?: boolean; numberFormat: EndnoteNumberFormat | string; userChar: string; prefixChar: string; suffixChar: string; startNumber: number; separatorEnabled: boolean; separatorLength: number; separatorMarginTop: number; separatorMarginBottom: number; noteSpacing: number; separatorLineType: number; separatorLineWidth: number; separatorColor: string; numbering: 'continue' | 'restartSection' | 'restartPage' | string; placement: 'documentEnd' | 'sectionEnd' | string; }",
   "CellPathLike": "export type CellPathLike = Array<CellPathEntry | CellPathSegment>;",
   "DocumentPosition": "export interface DocumentPosition { sectionIndex: number; paragraphIndex: number; charOffset: number; parentParaIndex?: number; controlIndex?: number; cellIndex?: number; cellParaIndex?: number; cellPath?: CellPathEntry[]; isTextBox?: boolean; cursorRect?: CursorRect; }",
-  "TableCellResizeUpdate": "export interface TableCellResizeUpdate { cellIdx: number; widthDelta?: number; heightDelta?: number; localResize?: boolean; renderWidth?: number; renderHeight?: number; }",
   "CellProperties": "export interface CellProperties { width: number; height: number; paddingLeft: number; paddingRight: number; paddingTop: number; paddingBottom: number; applyInnerMargin: boolean; verticalAlign: number; textDirection: number; isHeader: boolean; cellProtect?: boolean; fieldName?: string; editableInForm?: boolean; borderFillId?: number; borderLeft?: BorderLineInfo; borderRight?: BorderLineInfo; borderTop?: BorderLineInfo; borderBottom?: BorderLineInfo; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; diagonalLine?: number; diagonalSlash?: number; diagonalBackSlash?: number; diagonalWidth?: number; diagonalColor?: string; centerLine?: string; }",
   "CharShapeRun": "export interface CharShapeRun { startOffset: number; endOffset: number; charShapeId: number; }",
   "NoteControlRef": "export interface NoteControlRef { kind: 'footnote' | 'endnote'; sectionIdx: number; paraIdx: number; controlIdx: number; noteParaIdx: number; innerControlIdx: number; }",
@@ -2231,7 +2288,6 @@ export const ENGINE_EDIT_TYPE_DEFINITIONS = {
   "PageDef": "export interface PageDef { width: number; height: number; marginLeft: number; marginRight: number; marginTop: number; marginBottom: number; marginHeader: number; marginFooter: number; marginGutter: number; landscape: boolean; binding: number; }",
   "SectionDef": "export interface SectionDef { pageNum: number; pageNumType: number; pictureNum: number; tableNum: number; equationNum: number; columnSpacing: number; defaultTabSpacing: number; hideHeader: boolean; hideFooter: boolean; hideMasterPage: boolean; hideBorder: boolean; hideFill: boolean; hideEmptyLine: boolean; }",
   "TableProperties": "export interface TableProperties { cellSpacing: number; paddingLeft: number; paddingRight: number; paddingTop: number; paddingBottom: number; pageBreak: number; repeatHeader: boolean; tableWidth?: number; tableHeight?: number; outerLeft?: number; outerRight?: number; outerTop?: number; outerBottom?: number; hasCaption?: boolean; captionDirection?: number; captionVertAlign?: number; captionWidth?: number; captionSpacing?: number; treatAsChar?: boolean; textWrap?: string; vertRelTo?: string; vertAlign?: string; horzRelTo?: string; horzAlign?: string; vertOffset?: number; horzOffset?: number; restrictInPage?: boolean; allowOverlap?: boolean; keepWithAnchor?: boolean; borderFillId?: number; borderLeft?: BorderLineInfo; borderRight?: BorderLineInfo; borderTop?: BorderLineInfo; borderBottom?: BorderLineInfo; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; }",
-  "RemovedParaMeta": "export type RemovedParaMeta = Record<string, unknown>;",
   "EndnoteNumberFormat": "export type EndnoteNumberFormat = | 'digit' | 'circledDigit' | 'upperRoman' | 'lowerRoman' | 'upperAlpha' | 'lowerAlpha' | 'hangulSyllable' | 'hangulJamo' | 'hangulDigit' | 'hanjaDigit';",
   "CellPathEntry": "export interface CellPathEntry { controlIndex: number; cellIndex: number; cellParaIndex: number; }",
   "CellPathSegment": "export interface CellPathSegment { controlIdx: number; cellIdx: number; cellParaIdx: number; }",

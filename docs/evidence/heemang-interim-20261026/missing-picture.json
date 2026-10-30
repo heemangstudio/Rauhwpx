@@ -1,0 +1,91 @@
+{
+  "url": "http://127.0.0.1:7733/?engine=heemang",
+  "provider": "fixture-backed local hub; no provider calls",
+  "fixture": "Real mixed-text picture frame with unassigned binDataId0 and no declared image item; HWP generated through exportHwp",
+  "wasmBytes": 7572654,
+  "wasmSha256": "2ddeb93702a1c97539ef77402a23ba9a053fee4467c4b05e911836e464af86a7",
+  "replacement": {
+    "width": 32,
+    "height": 24,
+    "bytes": 556,
+    "sha256": "24055c2b316a51ebbc8b8319a33daa1338192c9a82cca515112a1f25d0d4f02c"
+  },
+  "runs": [
+    {
+      "source": "hwpx",
+      "target": {
+        "section": 0,
+        "para": 0,
+        "control": 2
+      },
+      "frame": {
+        "width": 18000,
+        "height": 9000,
+        "horzOffset": 0,
+        "vertOffset": 0,
+        "zOrder": 0,
+        "instanceId": 0,
+        "description": "Editing parity grid",
+        "pictureMargins": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "cancelledAtomic": true,
+      "invalidAtomic": true,
+      "doubleClickPickerAssignment": true,
+      "undoRedo": true,
+      "saved": [
+        {
+          "format": "hwp",
+          "bytes": 4608
+        },
+        {
+          "format": "hwpx",
+          "bytes": 7373
+        }
+      ]
+    },
+    {
+      "source": "hwp",
+      "target": {
+        "section": 0,
+        "para": 0,
+        "control": 2
+      },
+      "frame": {
+        "width": 18000,
+        "height": 9000,
+        "horzOffset": 0,
+        "vertOffset": 0,
+        "zOrder": 0,
+        "instanceId": 0,
+        "description": "Editing parity grid",
+        "pictureMargins": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "cancelledAtomic": true,
+      "invalidAtomic": true,
+      "doubleClickPickerAssignment": true,
+      "undoRedo": true,
+      "saved": [
+        {
+          "format": "hwp",
+          "bytes": 4608
+        },
+        {
+          "format": "hwpx",
+          "bytes": 7373
+        }
+      ]
+    }
+  ],
+  "pageErrors": [],
+  "legacyEngineRequests": []
+}

@@ -1,0 +1,28 @@
+{
+  "candidateUrl": "http://127.0.0.1:7724",
+  "fixtureProvider": true,
+  "results": [
+    {
+      "baseline": true,
+      "clipboard": "A",
+      "pasted": "ATEMPLATEA",
+      "failedImportPreservedClipboard": true,
+      "reopened": [
+        "hwp",
+        "hwpx"
+      ],
+      "pageErrors": []
+    },
+    {
+      "baseline": false,
+      "clipboard": "A",
+      "pasted": "ATEMPLATEA",
+      "failedImportPreservedClipboard": true,
+      "reopened": [
+        "hwp",
+        "hwpx"
+      ],
+      "pageErrors": []
+    }
+  ]
+}

@@ -1,0 +1,560 @@
+{
+  "runtime": "http://127.0.0.1:7700/?engine=heemang",
+  "sourceState": "Final reader source-ready verified with real native Heemang adapter; source untouched by test agent. Existing dev server reused.",
+  "targeted": {
+    "status": "passed",
+    "document": "nikl_plan.hwp",
+    "passed": 12,
+    "total": 12,
+    "result": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/results.json",
+    "checks": [
+      {
+        "name": "body styled source for real menu clipboard",
+        "status": "passed"
+      },
+      {
+        "name": "body menu internal copy/paste styles",
+        "status": "passed"
+      },
+      {
+        "name": "body menu cut",
+        "status": "passed"
+      },
+      {
+        "name": "body selected plain clipboard replacement",
+        "status": "passed"
+      },
+      {
+        "name": "body external HTML paste rejected",
+        "status": "passed"
+      },
+      {
+        "name": "final adjacent find caret-start, next, previous and wrap",
+        "status": "passed"
+      },
+      {
+        "name": "final first Replace without live match only finds caret-start hit",
+        "status": "passed"
+      },
+      {
+        "name": "final replace first adjacent hit selects next; exact undo redo",
+        "status": "passed"
+      },
+      {
+        "name": "final replace next adjacent hit; exact undo redo",
+        "status": "passed"
+      },
+      {
+        "name": "body styled source for real menu clipboard",
+        "status": "passed"
+      },
+      {
+        "name": "cell styled source for real menu clipboard",
+        "status": "passed"
+      },
+      {
+        "name": "same-format File menu save and reopen",
+        "status": "passed"
+      }
+    ],
+    "navigationSteps": [
+      {
+        "name": "caret-start inclusive",
+        "selection": {
+          "range": {
+            "from": {
+              "section": 0,
+              "para": 10,
+              "offset": 1
+            },
+            "to": {
+              "section": 0,
+              "para": 10,
+              "offset": 3
+            }
+          },
+          "expected": [
+            {
+              "page": 0,
+              "x": 280.2235250638355,
+              "y": 562.3677597097164,
+              "width": 40.92178470635667,
+              "height": 32.01182636742373
+            }
+          ],
+          "actual": [
+            {
+              "page": 0,
+              "x": 280.224,
+              "y": 562.368,
+              "width": 40.9218,
+              "height": 32.0118
+            }
+          ]
+        },
+        "screenshot": "final-find-caret-start-inclusive.png"
+      },
+      {
+        "name": "adjacent next",
+        "selection": {
+          "range": {
+            "from": {
+              "section": 0,
+              "para": 10,
+              "offset": 3
+            },
+            "to": {
+              "section": 0,
+              "para": 10,
+              "offset": 5
+            }
+          },
+          "expected": [
+            {
+              "page": 0,
+              "x": 321.14530977019217,
+              "y": 562.3677597097164,
+              "width": 40.92178470635667,
+              "height": 32.01182636742373
+            }
+          ],
+          "actual": [
+            {
+              "page": 0,
+              "x": 321.145,
+              "y": 562.368,
+              "width": 40.9218,
+              "height": 32.0118
+            }
+          ]
+        },
+        "screenshot": "final-find-adjacent-next.png"
+      },
+      {
+        "name": "previous",
+        "selection": {
+          "range": {
+            "from": {
+              "section": 0,
+              "para": 10,
+              "offset": 1
+            },
+            "to": {
+              "section": 0,
+              "para": 10,
+              "offset": 3
+            }
+          },
+          "expected": [
+            {
+              "page": 0,
+              "x": 280.2235250638355,
+              "y": 562.3677597097164,
+              "width": 40.92178470635667,
+              "height": 32.01182636742373
+            }
+          ],
+          "actual": [
+            {
+              "page": 0,
+              "x": 280.224,
+              "y": 562.368,
+              "width": 40.9218,
+              "height": 32.0118
+            }
+          ]
+        },
+        "screenshot": "final-find-previous.png"
+      },
+      {
+        "name": "previous wrap",
+        "selection": {
+          "range": {
+            "from": {
+              "section": 0,
+              "para": 10,
+              "offset": 3
+            },
+            "to": {
+              "section": 0,
+              "para": 10,
+              "offset": 5
+            }
+          },
+          "expected": [
+            {
+              "page": 0,
+              "x": 321.14530977019217,
+              "y": 562.3677597097164,
+              "width": 40.92178470635667,
+              "height": 32.01182636742373
+            }
+          ],
+          "actual": [
+            {
+              "page": 0,
+              "x": 321.145,
+              "y": 562.368,
+              "width": 40.9218,
+              "height": 32.0118
+            }
+          ]
+        },
+        "screenshot": "final-find-previous-wrap.png"
+      },
+      {
+        "name": "next wrap",
+        "selection": {
+          "range": {
+            "from": {
+              "section": 0,
+              "para": 10,
+              "offset": 1
+            },
+            "to": {
+              "section": 0,
+              "para": 10,
+              "offset": 3
+            }
+          },
+          "expected": [
+            {
+              "page": 0,
+              "x": 280.2235250638355,
+              "y": 562.3677597097164,
+              "width": 40.92178470635667,
+              "height": 32.01182636742373
+            }
+          ],
+          "actual": [
+            {
+              "page": 0,
+              "x": 280.224,
+              "y": 562.368,
+              "width": 40.9218,
+              "height": 32.0118
+            }
+          ]
+        },
+        "screenshot": "final-find-next-wrap.png"
+      }
+    ],
+    "nativeHistory": "Exact raw paragraphs/packet ops/lines/glyphs on undo/redo for both replacements and clipboard mutations.",
+    "realClipboard": "Actual Edit menu copy/cut/paste -> original navigator.clipboard methods; promise completion and editor focus observed. No synthetic clipboard event in this final run.",
+    "saveReopen": "Passed container format, text, character style samples, serialization, and normalized-resource-ID geometry for this targeted scenario. Does not supersede the separate full-formatting layout failures.",
+    "screenshots": {
+      "final-find-caret-start-inclusive.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-find-caret-start-inclusive.png",
+      "final-find-adjacent-next.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-find-adjacent-next.png",
+      "final-find-previous.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-find-previous.png",
+      "final-find-previous-wrap.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-find-previous-wrap.png",
+      "final-find-next-wrap.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-find-next-wrap.png",
+      "final-replace-prime.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-replace-prime.png",
+      "final-replace-first-next-selected.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-replace-first-next-selected.png",
+      "final-replaced-both.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/final-replaced-both.png",
+      "reopened-body-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/reopened-body-formatting.png",
+      "reopened-cell-formatting.png": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-36-59-127Z/nikl_plan/reopened-cell-formatting.png"
+    },
+    "browserErrors": []
+  },
+  "nativeSearchTrace": {
+    "status": "passed",
+    "passed": 4,
+    "total": 4,
+    "document": "nikl_plan.hwp",
+    "nativeMatches": {
+      "contentEpoch": 4,
+      "matches": [
+        {
+          "from": {
+            "section": 0,
+            "para": 10,
+            "offset": 1
+          },
+          "to": {
+            "section": 0,
+            "para": 10,
+            "offset": 3
+          }
+        },
+        {
+          "from": {
+            "section": 0,
+            "para": 10,
+            "offset": 3
+          },
+          "to": {
+            "section": 0,
+            "para": 10,
+            "offset": 5
+          }
+        }
+      ]
+    },
+    "trace": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-39-17-051Z/search-trace.json",
+    "result": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-39-17-051Z/results.json",
+    "assertions": "Every overlay equals the native selection geometry for offsets 1..3 or 3..5. Strict comparison retained. Dialog qZ/xY values and blank status recorded.",
+    "observer": "Read-only wrapper logs search arguments/results and returns the original result unchanged. All selection and replacement actions through actual UI."
+  },
+  "additionalStubs": {
+    "status": "passed",
+    "passed": 24,
+    "total": 24,
+    "result": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/results.json",
+    "commands": [
+      "table:delete-row",
+      "table:delete-col",
+      "format:toggle-bullet",
+      "format:apply-style",
+      "format:char-spacing-decrease"
+    ],
+    "crossCellShiftClick": "Passed on all four documents using native point-validated non-object cell caret stops, including across pages.",
+    "documents": [
+      {
+        "name": "exam_math.hwp",
+        "status": "passed",
+        "checks": [
+          {
+            "name": "final unsupported table:delete-row",
+            "status": "passed",
+            "command": "table:delete-row",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-row-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/table-delete-row.png"
+          },
+          {
+            "name": "final unsupported table:delete-col",
+            "status": "passed",
+            "command": "table:delete-col",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/table-delete-col.png"
+          },
+          {
+            "name": "final unsupported format:toggle-bullet",
+            "status": "passed",
+            "command": "format:toggle-bullet",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:toggle-bullet"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/format-toggle-bullet.png"
+          },
+          {
+            "name": "final unsupported format:apply-style",
+            "status": "passed",
+            "command": "format:apply-style",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:apply-style"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/format-apply-style.png"
+          },
+          {
+            "name": "final unsupported format:char-spacing-decrease",
+            "status": "passed",
+            "command": "format:char-spacing-decrease",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:char-spacing-decrease"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/format-char-spacing-decrease.png"
+          },
+          {
+            "name": "final unsupported cross-cell Shift-click across any pages",
+            "status": "passed",
+            "command": null,
+            "message": null,
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/exam_math/cross-cell-shift-rejected.png"
+          }
+        ]
+      },
+      {
+        "name": "lang_exam.hwp",
+        "status": "passed",
+        "checks": [
+          {
+            "name": "final unsupported table:delete-row",
+            "status": "passed",
+            "command": "table:delete-row",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-row-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/table-delete-row.png"
+          },
+          {
+            "name": "final unsupported table:delete-col",
+            "status": "passed",
+            "command": "table:delete-col",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/table-delete-col.png"
+          },
+          {
+            "name": "final unsupported format:toggle-bullet",
+            "status": "passed",
+            "command": "format:toggle-bullet",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:toggle-bullet"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/format-toggle-bullet.png"
+          },
+          {
+            "name": "final unsupported format:apply-style",
+            "status": "passed",
+            "command": "format:apply-style",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:apply-style"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/format-apply-style.png"
+          },
+          {
+            "name": "final unsupported format:char-spacing-decrease",
+            "status": "passed",
+            "command": "format:char-spacing-decrease",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:char-spacing-decrease"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/format-char-spacing-decrease.png"
+          },
+          {
+            "name": "final unsupported cross-cell Shift-click across any pages",
+            "status": "passed",
+            "command": null,
+            "message": null,
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/lang_exam/cross-cell-shift-rejected.png"
+          }
+        ]
+      },
+      {
+        "name": "nikl_plan.hwp",
+        "status": "passed",
+        "checks": [
+          {
+            "name": "final unsupported table:delete-row",
+            "status": "passed",
+            "command": "table:delete-row",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-row-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/table-delete-row.png"
+          },
+          {
+            "name": "final unsupported table:delete-col",
+            "status": "passed",
+            "command": "table:delete-col",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/table-delete-col.png"
+          },
+          {
+            "name": "final unsupported format:toggle-bullet",
+            "status": "passed",
+            "command": "format:toggle-bullet",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:toggle-bullet"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/format-toggle-bullet.png"
+          },
+          {
+            "name": "final unsupported format:apply-style",
+            "status": "passed",
+            "command": "format:apply-style",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:apply-style"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/format-apply-style.png"
+          },
+          {
+            "name": "final unsupported format:char-spacing-decrease",
+            "status": "passed",
+            "command": "format:char-spacing-decrease",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:char-spacing-decrease"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/format-char-spacing-decrease.png"
+          },
+          {
+            "name": "final unsupported cross-cell Shift-click across any pages",
+            "status": "passed",
+            "command": null,
+            "message": null,
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/nikl_plan/cross-cell-shift-rejected.png"
+          }
+        ]
+      },
+      {
+        "name": "fdi_q1.hwpx",
+        "status": "passed",
+        "checks": [
+          {
+            "name": "final unsupported table:delete-row",
+            "status": "passed",
+            "command": "table:delete-row",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-row-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/table-delete-row.png"
+          },
+          {
+            "name": "final unsupported table:delete-col",
+            "status": "passed",
+            "command": "table:delete-col",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: table:delete-col"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/table-delete-col.png"
+          },
+          {
+            "name": "final unsupported format:toggle-bullet",
+            "status": "passed",
+            "command": "format:toggle-bullet",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:toggle-bullet"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/format-toggle-bullet.png"
+          },
+          {
+            "name": "final unsupported format:apply-style",
+            "status": "passed",
+            "command": "format:apply-style",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:apply-style"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/format-apply-style.png"
+          },
+          {
+            "name": "final unsupported format:char-spacing-decrease",
+            "status": "passed",
+            "command": "format:char-spacing-decrease",
+            "message": [
+              "HeemangEngine에서 아직 지원하지 않는 기능입니다: format:char-spacing-decrease"
+            ],
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/format-char-spacing-decrease.png"
+          },
+          {
+            "name": "final unsupported cross-cell Shift-click across any pages",
+            "status": "passed",
+            "command": null,
+            "message": null,
+            "screenshot": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/2026-10-23T07-40-36-371Z/fdi_q1/cross-cell-shift-rejected.png"
+          }
+        ]
+      }
+    ],
+    "immutability": "Exact native state/history/packets and serialized SHA-256 unchanged before/after every unsupported action."
+  },
+  "knownOpenGate": {
+    "status": "incomplete",
+    "reason": "Original full formatting/edit/save/reopen scenarios drift on lang_exam, nikl_plan and fdi_q1. Text/styles/requested paragraph properties and page counts survive.",
+    "geometryEvidence": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/geometry-deltas-by-address.json",
+    "engineRequest": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/native-save-layout-request.json",
+    "writerProperties": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/paragraph-writer-properties-all-docs.json",
+    "fontDiagnostic": "/Users/pyu/projects/hobbies/Rau/heemang-wt/studio/output/heemang-editing/slice2/font-diagnostic-summary.json"
+  },
+  "priorHarnessFailure": {
+    "run": "2026-10-23T07-35-11-077Z",
+    "reason": "Expected HTML rejection toast covered Find buttons. Fixed script by actual .rhwp-toast-close UI dismissal and elementFromPoint center hit verification. Original failure artifacts retained.",
+    "sourceBug": false
+  }
+}

@@ -8,9 +8,6 @@ const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 // @/ 별칭 + 확장자 없는 상대 import 를 .ts 로 해석(tsconfig paths 재현).
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === '@wasm/rhwp.js') {
-      return { url: 'data:text/javascript,export class HwpDocument{};export function version(){return "test"};export default async function init(){}', shortCircuit: true };
-    }
     if (specifier.startsWith('@/')) {
       const abs = join(srcDir, specifier.slice(2));
       const withTs = abs.endsWith('.ts') ? abs : abs + '.ts';
@@ -25,7 +22,6 @@ registerHooks({
 });
 
 const { DeleteTextCommand, DeleteTextInHeaderFooterCommand, DeleteTextInFootnoteCommand } = await import(pathToFileURL(join(srcDir, 'engine', 'command.ts')).href);
-const { WasmBridge } = await import(pathToFileURL(join(srcDir, 'core', 'wasm-bridge.ts')).href);
 const nb = { text: '\u00a0', specialSpaceOrigins: [{ charIndex: 0, origin: 'NbSpace' }] };
 const fw = { text: '\u2007', specialSpaceOrigins: [{ charIndex: 0, origin: 'FwSpace' }] };
 const bodyPos = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 };
@@ -87,23 +83,5 @@ for (const nested of [false, true]) {
   const cmd = new DeleteTextInHeaderFooterCommand({ sectionIdx: 0, isHeader: true, applyTo: 0 }, 0, 99, '잘못된 텍스트', 2); cmd.execute(wasm); cmd.undo(wasm); assert.deepEqual(hfRestored, nb);
   let fnRestored; const fn = { deleteTextInFootnote: () => ({ ok: true, removedStart: 1, removedCount: 1, removedContent: fw }), insertTextContentInFootnote: (...a) => { assert.equal(a[4], 1); fnRestored = a[5]; } };
   const note = new DeleteTextInFootnoteCommand({ sectionIdx: 0, paraIdx: 0, controlIdx: 0 }, 0, 99, '잘못된 텍스트', 2); note.execute(fn); note.undo(fn); assert.deepEqual(fnRestored, fw);
-}
-// Bridge 구형 API fallback는 후속 insert 응답으로 delete payload를 덮지 않는다.
-{
-  const bridge = Object.create(WasmBridge.prototype);
-  const removal = { ok: true, charOffset: 1, removedStart: 1, removedCount: 1, removedContent: nb };
-  // Flat native insert는 replace(0)의 실제 결과처럼 빈 removedContent도 반환한다.
-  const insertOnly = { ok: true, charOffset: 2, cellFlowChanged: false, removedStart: 1, removedCount: 0, removedContent: { text: '', specialSpaceOrigins: [] } };
-  bridge.doc = { deleteText: () => JSON.stringify(removal), insertText: () => '{"ok":true,"charOffset":2}', deleteTextInCell: () => JSON.stringify(removal), insertTextInCell: () => JSON.stringify(insertOnly) };
-  assert.deepEqual(bridge.replaceBodyTextLocal(0, 0, 1, 1, 'X', true).removedContent, nb);
-  const fallback = bridge.replaceTextInCellDeferredPagination(0, 0, 0, 0, 0, 1, 1, 'X', true);
-  assert.equal(fallback.removedStart, 1); assert.equal(fallback.removedCount, 1); assert.deepEqual(fallback.removedContent, nb);
-  assert.equal(fallback.charOffset, 2); assert.equal(fallback.paginationDeferred, false); assert.equal(fallback.cellFlowChanged, false);
-  bridge.doc.replaceTextInCellDeferredPagination = () => JSON.stringify({ ...removal, charOffset: 2, cellFlowChanged: true });
-  const direct = bridge.replaceTextInCellDeferredPagination(0, 0, 0, 0, 0, 1, 1, 'X', true);
-  assert.deepEqual(direct.removedContent, nb); assert.equal(direct.paginationDeferred, true); assert.equal(direct.cellFlowChanged, true);
-  let mutations = 0; bridge.doc.insertTextContent = () => { mutations++; };
-  assert.throws(() => bridge.insertTextContent(0, 0, 0, { text: '\u00a0', specialSpaceOrigins: [{ charIndex: 0, origin: 'FwSpace' }] }));
-  assert.equal(mutations, 0);
 }
 console.log('SPECIAL_SPACE_COMMAND_BEHAVIOUR_OK');

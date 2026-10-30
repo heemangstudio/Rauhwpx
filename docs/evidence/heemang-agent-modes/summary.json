@@ -1,0 +1,62 @@
+{
+  "url": "http://127.0.0.1:7723/?engine=heemang",
+  "provider": "controlled Pi fixture; real Studio, authenticated hub and Heemang WASM",
+  "reports": [
+    {
+      "source": "rhwp/samples/footnote-01.hwp",
+      "name": "hwp",
+      "chatWriteBlocked": true,
+      "planWriteBlockedBeforeApproval": true,
+      "planUiApproval": true,
+      "staleRevisionRejected": true,
+      "agentLivePreview": true,
+      "agentRejected": true,
+      "agentAcceptedSingleUndoRedo": true,
+      "fullOneUndoPerWrite": true,
+      "versionCommit": "Cutover hwp mode verification",
+      "versionCommitId": "400aaf20-4cbe-4675-ba59-e6d28b355cee",
+      "saved": [
+        {
+          "format": "hwp",
+          "bytes": 15872
+        },
+        {
+          "format": "hwpx",
+          "bytes": 11494
+        }
+      ],
+      "pageErrors": [],
+      "legacyEngineRequests": []
+    },
+    {
+      "source": "rhwp/tests/fixtures/editing_parity/mac-hancom-12.30.0/body-mixed-text/edited.hwpx",
+      "name": "hwpx",
+      "chatWriteBlocked": true,
+      "planWriteBlockedBeforeApproval": true,
+      "planUiApproval": true,
+      "staleRevisionRejected": true,
+      "agentLivePreview": true,
+      "agentRejected": true,
+      "agentAcceptedSingleUndoRedo": true,
+      "fullOneUndoPerWrite": true,
+      "versionCommit": "Cutover hwpx mode verification",
+      "versionCommitId": "9f744da2-df25-48f2-be43-c34f77fd858b",
+      "saved": [
+        {
+          "format": "hwp",
+          "bytes": 4608
+        },
+        {
+          "format": "hwpx",
+          "bytes": 7882
+        }
+      ],
+      "pageErrors": [],
+      "legacyEngineRequests": []
+    }
+  ],
+  "engine": "744b178",
+  "studio": "4115f41e",
+  "wasmBytes": 6316394,
+  "wasmSha256": "5f1d1f7df5ed40a5b17598c9df76dec2f939ca86f025857815baf8c0e0ab6a8d"
+}

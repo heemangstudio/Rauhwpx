@@ -229,6 +229,72 @@ test('문단 모양 OK after changing only the alignment sends only the alignmen
   }
 });
 
+for (const [name, modulePath, className, selector, props] of [
+  ['문단 모양', '/src/ui/para-shape-dialog.ts', 'ParaShapeDialog', '.ps-dialog', {
+    alignment: 'justify', marginLeft: 0, marginRight: 0, indent: 0,
+    lineSpacing: 160, lineSpacingType: 'Percent', spacingBefore: 0, spacingAfter: 0,
+    borderSpacing: [0, 0, 0, 0], tabStops: [],
+  }],
+  ['글자 모양', '/src/ui/char-shape-dialog.ts', 'CharShapeDialog', '.cs-dialog', {
+    fontSize: 1000, fontFamilies: Array(7).fill('함초롬바탕'), ratios: Array(7).fill(100),
+    spacings: Array(7).fill(0), relativeSizes: Array(7).fill(100), charOffsets: Array(7).fill(0),
+    textColor: '#000000', shadeColor: '#ffffff', shadowType: 0, shadowOffsetX: 0, shadowOffsetY: 0,
+  }],
+] as const) {
+  test(`${name} takes keyboard focus from the document and closes on Escape`, { timeout: 30_000 }, async () => {
+    const page = await harness();
+    try {
+      await page.focus('#editor');
+      await page.evaluate(async (modulePath, className, props) => {
+        const mod = await import(modulePath);
+        const editor = document.getElementById('editor') as HTMLTextAreaElement;
+        const log: string[] = [];
+        editor.addEventListener('keydown', (event) => log.push(`editor:${event.key}`));
+        // 문서 단축키처럼 document 버블 단계에서 키를 받는 리스너
+        document.addEventListener('keydown', (event) => log.push(`document:${event.key}`));
+        const dialog = new mod[className]({} as never, {} as never);
+        dialog.onClose = () => { log.push('close'); editor.focus(); };
+        dialog.show(structuredClone(props));
+        Object.assign(window, { keyLog: log });
+      }, modulePath, className, props);
+
+      const state = () => page.evaluate((selector) => ({
+        focusInDialog: Boolean(document.activeElement?.closest(selector)),
+        focused: document.activeElement?.id ?? '',
+        open: Boolean(document.querySelector(selector)),
+        editorText: (document.getElementById('editor') as HTMLTextAreaElement).value,
+        log: (window as unknown as { keyLog: string[] }).keyLog.slice(),
+      }), selector);
+
+      assert.equal((await state()).focusInDialog, true, 'opening the dialog moves focus into it');
+      await page.keyboard.type('7');
+      let now = await state();
+      assert.equal(now.editorText, '', 'typing must not edit the document behind the dialog');
+      assert.deepEqual(now.log, [], 'keys inside the dialog must not reach document shortcuts');
+
+      // 포커스가 문서로 돌아가도 대화상자가 열려 있는 동안 키는 문서에 닿지 않는다.
+      await page.focus('#editor');
+      await page.keyboard.type('a');
+      now = await state();
+      assert.equal(now.editorText, '');
+      assert.deepEqual(now.log, []);
+
+      await page.keyboard.press('Escape');
+      now = await state();
+      assert.equal(now.open, false, 'Escape closes the dialog');
+      assert.deepEqual(now.log, ['close'], 'Escape closes once and does not reach the document');
+      assert.equal(now.focused, 'editor', 'closing returns focus to the editor');
+
+      await page.keyboard.type('b');
+      now = await state();
+      assert.equal(now.editorText, 'b', 'the editor receives keys again after the dialog closes');
+      assert.deepEqual(pageErrors(page), []);
+    } finally {
+      await page.close();
+    }
+  });
+}
+
 test('the find dialog leaves Enter/Escape outside it alone and re-checks a stale hit before replacing', { timeout: 30_000 }, async () => {
   const page = await harness();
   try {
@@ -347,7 +413,7 @@ test('the find dialog leaves Enter/Escape outside it alone and re-checks a stale
   }
 });
 
-test('table dialogs refuse a nested table before touching the engine', { timeout: 30_000 }, async () => {
+test('table dialogs read a nested table through its cell path, never the outer table', { timeout: 30_000 }, async () => {
   const page = await harness();
   try {
     const result = await page.evaluate(async () => {
@@ -361,17 +427,19 @@ test('table dialogs refuse a nested table before touching the engine', { timeout
         sec: 0, ppi: 2, ci: 0,
         cellPath: [{ controlIndex: 0, cellIndex: 1, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }],
       };
-      new TableCellPropsDialog(wasm as never, {} as never, tableCtx, 1, 'cell').show();
-      new CellBorderBgDialog(wasm as never, {} as never, tableCtx, 1, 'each').show();
-      return {
-        touched,
-        overlays: document.querySelectorAll('.modal-overlay').length,
-        toast: document.getElementById('rhwp-toast-container')?.textContent ?? '',
-      };
+      // 가짜 엔진의 빈 속성으로는 대화상자를 다 채우지 못한다 — 어떤 API 를 읽는지만 본다.
+      try { new TableCellPropsDialog(wasm as never, {} as never, tableCtx, 1, 'cell').show(); } catch { /* 빈 속성 */ }
+      try { new CellBorderBgDialog(wasm as never, {} as never, tableCtx, 1, 'each').show(); } catch { /* 빈 속성 */ }
+      document.querySelectorAll('.modal-overlay').forEach(node => node.remove());
+      return { touched, toast: document.getElementById('rhwp-toast-container')?.textContent ?? '' };
     });
-    assert.deepEqual(result.touched, []);
-    assert.equal(result.overlays, 0);
-    assert.match(result.toast, /중첩된 표/);
+    assert.ok(result.touched.includes('getCellPropertiesByPath'), result.touched.join(','));
+    assert.ok(result.touched.includes('getTablePropertiesByPath'), result.touched.join(','));
+    assert.ok(result.touched.includes('getCellOwnPropertiesByPath'), result.touched.join(','));
+    for (const flat of ['getCellProperties', 'getTableProperties', 'getCellOwnProperties']) {
+      assert.ok(!result.touched.includes(flat), `${flat} reads the outer table`);
+    }
+    assert.doesNotMatch(result.toast, /중첩된 표/);
   } finally {
     await page.close();
   }

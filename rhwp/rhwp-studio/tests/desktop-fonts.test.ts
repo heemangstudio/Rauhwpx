@@ -34,6 +34,7 @@ import {
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
 import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
+import { receiveEngineFonts, type EngineFontReader } from '../src/core/engine-support.ts';
 
 function face(id: string, overrides: Partial<SystemFontFace>): SystemFontFace {
   return {
@@ -735,4 +736,41 @@ test('SFNT localized physical style is shared with imported metric registration'
     assert.deepEqual(calls, [[false, true]]);
     assert.equal(syncImportedFontMetrics(), 0, 'unchanged face registration remains cached');
   } finally {resetLocalFontsForTests(); resetDesktopFontsForTests(); g.document = doc; g.FontFace = ff;}
+});
+
+test('TTC에서 분리한 face는 각자 바이트를 다시 읽고 서로의 등록을 덮지 않는다', async () => {
+  const g = globalThis as typeof globalThis & {document?: unknown; FontFace?: unknown};
+  const doc = g.document; const ff = g.FontFace;
+  g.FontFace = class {async load() {return this;}};
+  g.document = {fonts: {add() {}, delete() {return true;}}};
+  resetLocalFontsForTests(); resetDesktopFontsForTests();
+  const files = new Map<string, {bytes: Uint8Array; read?: EngineFontReader}>();
+  receiveEngineFonts((label, bytes, read) => { files.set(label, {bytes, read}); });
+  configureDesktopFonts({metrics: {register: () => JSON.stringify({registered: true})}});
+  try {
+    for (const [name, weight] of [['Regular', 400], ['Bold', 700]] as const) {
+      const bytes = new ArrayBuffer(92); const v = new DataView(bytes);
+      v.setUint32(0, 0x00010000); v.setUint16(4, 1);
+      v.setUint32(12, 0x4f532f32); v.setUint32(20, 28); v.setUint32(24, 64);
+      v.setUint16(28, 4); v.setUint16(32, weight);
+      const result = await registerLocalFontFace(bytes, {
+        source: 'imported', sourcePath: '/fonts/Collection.ttc', fileName: `${name}.ttf`,
+        names: {family: 'Collection', fullName: `Collection ${name}`, postscriptName: `Collection-${name}`, style: name, aliases: []},
+      });
+      assert.equal(result.ok, true);
+    }
+    assert.equal(syncImportedFontMetrics(), 2);
+    assert.equal(files.size, 2, '같은 TTC의 두 face가 독립된 등록을 유지한다');
+    const weights: number[] = [];
+    for (const file of files.values()) {
+      const bytes = await file.read?.();
+      assert.ok(bytes);
+      const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      assert.deepEqual(view, file.bytes);
+      weights.push(new DataView(view.buffer, view.byteOffset, view.byteLength).getUint16(32));
+    }
+    assert.deepEqual(weights.sort(), [400, 700]);
+  } finally {
+    resetLocalFontsForTests(); resetDesktopFontsForTests(); g.document = doc; g.FontFace = ff;
+  }
 });

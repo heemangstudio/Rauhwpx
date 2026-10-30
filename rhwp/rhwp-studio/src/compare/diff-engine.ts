@@ -1403,8 +1403,9 @@ export async function buildSnapshotFromBytes(
 ): Promise<CompareDocumentSnapshot> {
   const wasm = new WasmBridge();
   await wasm.initialize();
-  const info = wasm.loadDocument(bytes, fileName);
-  return drainSnapshotSteps(snapshotSteps(wasm, info, fileName, options));
+  wasm.loadDocument(bytes, fileName);
+  // 사본은 글꼴 준비를 거치지 않는다. 들인 직후 정보 대신 쪽 수까지 센 정보를 읽는다.
+  return drainSnapshotSteps(snapshotSteps(wasm, wasm.getDocumentInfo(), fileName, options));
 }
 
 /** 편집기에 올라온 문서 그대로 스냅샷 — 이력 비교 시 stable_id 유지 */

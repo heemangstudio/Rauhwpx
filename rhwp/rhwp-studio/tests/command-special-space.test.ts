@@ -25,7 +25,7 @@ test('합성은 nonBMP UTF16 길이가 아닌 scalar 길이로 이동하고 unkn
   assert.deepEqual(result.specialSpaceOrigins, [{ charIndex: 2, origin: 'FwSpace' }, { charIndex: 3, origin: 'Literal' }]);
   assert.deepEqual(content.specialSpaceOrigins, [{ charIndex: 1, origin: 'NbSpace' }, { charIndex: 2, origin: 'FwSpace' }]);
 });
-test('실제 명령 undo/redo/coalesce 및 bridge fallback 콘텐츠 보존', () => {
+test('실제 명령 undo/redo/coalesce 콘텐츠 보존', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const result = spawnSync(process.execPath, ['--no-warnings', '--import', pathToFileURL(join(here, 'support', 'ts-transform-hooks.mjs')).href, join(here, 'support', 'command-special-space.runner.mjs')], { encoding: 'utf8' });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);

@@ -1,0 +1,190 @@
+[
+  {
+    "headType": "Outline",
+    "before": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "restarted": [
+      "1.",
+      "First",
+      "7.",
+      "Second",
+      "Plain",
+      "8.",
+      "Third"
+    ],
+    "formattedLater": [
+      "1.",
+      "First",
+      "7.",
+      "Second",
+      "Plain",
+      "8.",
+      "Third"
+    ],
+    "continued": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "automatic": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "reopened": {
+      "hwp": [
+        "1.",
+        "First",
+        "2.",
+        "Second",
+        "Plain",
+        "3.",
+        "Third"
+      ],
+      "hwpx": [
+        "1.",
+        "First",
+        "2.",
+        "Second",
+        "Plain",
+        "3.",
+        "Third"
+      ]
+    }
+  },
+  {
+    "headType": "None",
+    "before": [
+      "First",
+      "Second",
+      "Plain",
+      "Third"
+    ],
+    "restarted": [
+      "First",
+      "Second",
+      "Plain",
+      "Third"
+    ],
+    "formattedLater": [
+      "First",
+      "7.",
+      "Second",
+      "Plain",
+      "Third"
+    ],
+    "continued": [
+      "First",
+      "1.",
+      "Second",
+      "Plain",
+      "Third"
+    ],
+    "automatic": [
+      "First",
+      "1.",
+      "Second",
+      "Plain",
+      "Third"
+    ],
+    "reopened": {
+      "hwp": [
+        "First",
+        "1.",
+        "Second",
+        "Plain",
+        "Third"
+      ],
+      "hwpx": [
+        "First",
+        "1.",
+        "Second",
+        "Plain",
+        "Third"
+      ]
+    }
+  },
+  {
+    "headType": "Number",
+    "before": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "restarted": [
+      "1.",
+      "First",
+      "7.",
+      "Second",
+      "Plain",
+      "8.",
+      "Third"
+    ],
+    "formattedLater": [
+      "1.",
+      "First",
+      "7.",
+      "Second",
+      "Plain",
+      "8.",
+      "Third"
+    ],
+    "continued": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "automatic": [
+      "1.",
+      "First",
+      "2.",
+      "Second",
+      "Plain",
+      "3.",
+      "Third"
+    ],
+    "reopened": {
+      "hwp": [
+        "1.",
+        "First",
+        "2.",
+        "Second",
+        "Plain",
+        "3.",
+        "Third"
+      ],
+      "hwpx": [
+        "1.",
+        "First",
+        "2.",
+        "Second",
+        "Plain",
+        "3.",
+        "Third"
+      ]
+    }
+  }
+]

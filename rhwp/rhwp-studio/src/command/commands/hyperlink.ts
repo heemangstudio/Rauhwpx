@@ -1,7 +1,7 @@
 import type { CommandDef } from '../types';
 import type { HyperlinkEdit } from '@/ui/hyperlink-dialog';
 import { HyperlinkDialog, confirmHyperlinkEdit } from '@/ui/hyperlink-dialog';
-import { hyperlinkRange, selectedHyperlink, resolveHyperlinkRange, applyHyperlinkFormat } from '@/core/hyperlink';
+import { hyperlinkRange, selectedHyperlink, resolveHyperlinkRange, applyHyperlinkFormat, hyperlinkCaretOffset, hyperlinkTextOffset } from '@/core/hyperlink';
 import { showToast } from '@/ui/toast';
 
 export const hyperlinkCommand: CommandDef = {
@@ -18,7 +18,11 @@ export const hyperlinkCommand: CommandDef = {
       if (!ih.canEditHyperlink()) throw new Error('본문, 표 셀, 글상자의 글자에서 하이퍼링크를 편집해 주세요.');
       const selection = ih.hasSelection() ? structuredClone(ih.getSelection()) : null;
       const range = hyperlinkRange(ih.getCursorPosition(), selection);
-      const { target, pos, start, end } = range;
+      const { target, pos } = range;
+      // 링크 범위는 글자 위치다. 캐럿 위치는 여기서 바꾸고, 돌려주는 캐럿은 caretAfter 로 되돌린다.
+      const start = hyperlinkTextOffset(services.wasm, target, range.start);
+      const end = hyperlinkTextOffset(services.wasm, target, range.end);
+      const caretAfter = (text: number) => ({ ...pos, charOffset: hyperlinkCaretOffset(services.wasm, target, text, true) });
       const context = services.wasm.getHyperlinkContext(target);
       const opened = selectedHyperlink(context.links, start, end);
       const canInsertText = !opened && start === end;
@@ -43,10 +47,10 @@ export const hyperlinkCommand: CommandDef = {
           operation: wasm => {
             switch (edit.kind) {
               case 'remove': {
-                if (!existing) return { ...pos, charOffset: current.end };
+                if (!existing) return caretAfter(current.end);
                 wasm.removeHyperlink(target, existing.fieldId, true);
                 applied = true;
-                return { ...pos, charOffset: existing.end };
+                return caretAfter(existing.end);
               }
               case 'save': {
                 // 대화상자에서 고친 글자만 반영한다. 그대로 둔 글자는 지금 문서의 글자를 유지한다.
@@ -55,7 +59,7 @@ export const hyperlinkCommand: CommandDef = {
                   wasm.updateHyperlink(target, existing.fieldId, edit.uri);
                   if (newText !== null) wasm.replaceHyperlinkText(target, existing.fieldId, newText);
                   applied = true;
-                  return { ...pos, charOffset: existing.start + Array.from(newText ?? existing.text).length };
+                  return caretAfter(existing.start + Array.from(newText ?? existing.text).length);
                 }
                 const linkStart = current.start;
                 let linkEnd = current.end;
@@ -75,7 +79,7 @@ export const hyperlinkCommand: CommandDef = {
                 }
                 applyHyperlinkFormat(wasm, target, linkStart, linkEnd, '#0000ff');
                 applied = true;
-                return { ...pos, charOffset: linkEnd };
+                return caretAfter(linkEnd);
               }
               default: {
                 const _never: never = edit;

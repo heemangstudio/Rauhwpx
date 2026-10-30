@@ -145,10 +145,11 @@ if (!process.env.RHWP_REPLACEMENT_HISTORY_CHILD) {
       assert.equal(f.history.canUndo(), false);
       f.history.redo(f.wasm);
       assert.deepEqual(f.state(), replaced);
-      // 같은 위치의 후속 입력도 기존 타이핑 병합 시간 밖이면 별도 동작이다.
-      f.history.execute(new commands.InsertTextCommand(f.position(), 'Q', Date.now() + 1000), f.wasm);
+      // 한컴처럼 쉬었다가 이어 친 글자도 같은 입력 묶음이라 한 번에 되돌린다.
+      f.history.execute(new commands.InsertTextCommand(f.position(), 'Q', Date.now() + 3000), f.wasm);
+      assert.equal(f.state().text, 'AXYZQB');
       f.history.undo(f.wasm);
-      assert.deepEqual(f.state(), replaced);
+      assert.deepEqual(f.state(), f.original);
       f.history.clear(f.wasm);
       assert.equal(f.snapshots.size, 0);
     });

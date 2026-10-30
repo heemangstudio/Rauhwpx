@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, clipboard, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, clipboard, ipcMain, webContents } from 'electron';
 import { PRODUCT_NAME } from './app-identity.mjs';
 import { documentEditMenuItem } from './edit-menu.mjs';
 import { deliverPlainTextPaste } from './plain-text-paste.mjs';
@@ -12,6 +12,8 @@ export const REPORT_ISSUE_LABEL = '버그 제보…';
 export const REPORT_ISSUE_ACCELERATOR = 'CmdOrCtrl+Shift+/';
 
 const isMac = process.platform === 'darwin';
+// 앱 내 브라우저 페이지가 포커스를 가지면 편집 메뉴는 문서 대신 그 페이지에 적용된다.
+const editTarget = { focusedWebContents: () => webContents.getFocusedWebContents() };
 
 // 렌더러 모델 상한: 신뢰된 렌더러라도 네이티브 메뉴 빌드 비용을 묶어 둔다.
 const MAX_DEPTH = 4;
@@ -131,8 +133,14 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
     label,
     accelerator: 'CmdOrCtrl+Shift+V',
     click: (_menuItem, browserWindow) => {
+      const window = browserWindow ?? BrowserWindow.getFocusedWindow();
+      const focused = editTarget.focusedWebContents();
+      if (window?.webContents && focused && focused !== window.webContents && !focused.isDestroyed()) {
+        focused.pasteAndMatchStyle();
+        return;
+      }
       deliverPlainTextPaste(
-        browserWindow ?? BrowserWindow.getFocusedWindow(),
+        window,
         () => clipboard.readText(),
       );
     },
@@ -179,16 +187,16 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
       {
         label: 'Edit',
         submenu: [
-          documentEditMenuItem('undo', 'Undo', 'CmdOrCtrl+Z'),
-          documentEditMenuItem('redo', 'Redo', 'Ctrl+Y'),
+          documentEditMenuItem('undo', 'Undo', 'CmdOrCtrl+Z', editTarget),
+          documentEditMenuItem('redo', 'Redo', 'Ctrl+Y', editTarget),
           { type: 'separator' },
           { role: 'cut' },
           { role: 'copy' },
           { role: 'paste' },
           pasteWithoutFormatting('Paste Without Formatting'),
-          documentEditMenuItem('delete', 'Delete'),
+          documentEditMenuItem('delete', 'Delete', undefined, editTarget),
           { type: 'separator' },
-          documentEditMenuItem('select-all', 'Select All', 'CmdOrCtrl+A'),
+          documentEditMenuItem('select-all', 'Select All', 'CmdOrCtrl+A', editTarget),
         ],
       },
       {
@@ -336,16 +344,16 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
       {
         label: editMenu?.label ?? '편집',
         submenu: tidySeparators([
-          documentEditMenuItem('undo', labelOf(editItems, 'edit:undo', '되돌리기'), 'CmdOrCtrl+Z'),
-          documentEditMenuItem('redo', labelOf(editItems, 'edit:redo', '다시 실행'), 'Cmd+Shift+Z'),
+          documentEditMenuItem('undo', labelOf(editItems, 'edit:undo', '되돌리기'), 'CmdOrCtrl+Z', editTarget),
+          documentEditMenuItem('redo', labelOf(editItems, 'edit:redo', '다시 실행'), 'Cmd+Shift+Z', editTarget),
           { type: 'separator' },
           { role: 'cut', label: labelOf(editItems, 'edit:cut', '오려 두기') },
           { role: 'copy', label: labelOf(editItems, 'edit:copy', '복사하기') },
           { role: 'paste', label: labelOf(editItems, 'edit:paste', '붙이기') },
           pasteWithoutFormatting('서식 없이 붙이기'),
-          documentEditMenuItem('delete', labelOf(editItems, 'edit:delete', '지우기')),
+          documentEditMenuItem('delete', labelOf(editItems, 'edit:delete', '지우기'), undefined, editTarget),
           { type: 'separator' },
-          documentEditMenuItem('select-all', labelOf(editItems, 'edit:select-all', '모두 선택'), 'CmdOrCtrl+A'),
+          documentEditMenuItem('select-all', labelOf(editItems, 'edit:select-all', '모두 선택'), 'CmdOrCtrl+A', editTarget),
           { type: 'separator' },
           ...editExtras,
         ]),

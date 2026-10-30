@@ -81,6 +81,15 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
   flex: 0 0 auto;
 }
 
+/* 자동 수정 단추는 명령 검색 바로 왼쪽에 붙는다. 같은 order 를 받고, 검색이 받던 왼쪽 여백 규칙을 대신 받는다.
+   설정에서 끄면 DOM 에서 빠지므로 아래 규칙들은 단추가 있을 때만 맞는다. */
+#menu-bar #editor-autofix-manual {
+  order: 2;
+  margin-left: 8px;
+  flex: 0 0 auto;
+}
+#menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
+
 #editor-document-title {
   order: 1;
   flex: 0 1 auto;
@@ -102,11 +111,74 @@ html:is(.desktop-mac, .desktop-windows) #menu-bar::after {
   cursor: default;
   -webkit-app-region: no-drag;
 }
+/* 열린 문서 목록 단추. 이름은 줄이고 개수·꺾쇠는 늘 보인다. */
+#editor-document-title.editor-document-title-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  pointer-events: auto;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.editor-document-title-switcher .editor-document-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-document-title-switcher .worktree-chip { margin-left: 1px; }
+.editor-document-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--ui-text-muted);
+}
+.editor-document-switch-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ui-hover);
+  font: 600 10.5px/16px var(--font-family-ui);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.editor-document-switch-count:empty { display: none; }
+.editor-document-switch-chevron { display: inline-grid; place-items: center; }
+.editor-document-switch-chevron svg { display: block; transition: transform 140ms ease; }
+#editor-document-title.editor-document-title-switcher:hover,
+#editor-document-title.editor-document-title-switcher[aria-expanded='true'] {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+#editor-document-title.editor-document-title-switcher:is(:hover, [aria-expanded='true']) .editor-document-switch {
+  color: var(--ui-text-secondary);
+}
+#editor-document-title.editor-document-title-switcher:is(:hover, [aria-expanded='true']) .editor-document-switch-count {
+  background: var(--ui-hover-strong, var(--ui-active));
+}
+#editor-document-title.editor-document-title-switcher[aria-expanded='true'] .editor-document-switch-chevron svg {
+  transform: rotate(180deg);
+}
+#editor-document-title.editor-document-title-switcher:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  #editor-document-title.editor-document-title-switcher,
+  .editor-document-switch-chevron svg { transition: none; }
+}
 #editor-document-title[hidden] { display: none; }
 #editor-document-title[hidden] + #editor-command-search { margin-left: auto; }
+#editor-document-title[hidden] + #editor-autofix-manual { margin-left: auto; }
 @media (max-width: 767px) {
   #editor-document-title { display: none; }
-  #menu-bar #editor-command-search { margin-left: auto; }
+  #menu-bar :is(#editor-command-search, #editor-autofix-manual) { margin-left: auto; }
+  #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 }
 
 /* Focus mode paints its own bar over this row. Electron still includes
@@ -155,6 +227,8 @@ html.desktop-native-menu #editor-document-title {
 html.desktop-native-menu #menu-bar #editor-command-search {
   margin-left: auto;
 }
+html.desktop-native-menu #menu-bar #editor-autofix-manual { margin-left: auto; }
+html.desktop-native-menu #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 
 html:is(.desktop-mac, .desktop-windows) #menu-bar .menu-item {
   height: 100%;
@@ -421,6 +495,11 @@ html.desktop-windows #menu-bar #editor-command-search {
   order: 0;
   margin-left: 8px;
 }
+html.desktop-windows #menu-bar #editor-autofix-manual {
+  order: 0;
+  margin-left: 8px;
+}
+html.desktop-windows #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
 html.desktop-windows #menu-bar .license-pill { margin-left: auto; }
 html.desktop-windows .desktop-menu-toggle {
   width: 28px;
