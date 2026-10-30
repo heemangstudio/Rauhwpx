@@ -31,13 +31,33 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.keyboard.press('Enter');
   await cardOpen(page);
   assert.deepEqual(await sentTexts(page), [], 'Enter sends nothing');
-  await closeCard(page);
+  // Esc 는 카드를 닫고, 입력칸으로 돌아온 뒤의 Esc 는 카드를 다시 열지 않는다.
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
+  await page.focus('.ag-input');
+  await page.keyboard.press('Escape');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(await page.$('.ag-pricing-card'), null, 'a second Esc leaves the card closed');
 
   // 창 이벤트로도 열린다(다른 화면이 모듈을 가져오지 않고 연다).
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } })));
   await cardOpen(page);
   await page.waitForSelector('.ag-pricing-col[data-plan="hama"][data-focus="true"]');
   await closeCard(page);
+
+  // 설정의 AI 묶음: 눌러도, 바로 열려고 해도 카드만 열리고 AI 설정은 나오지 않는다.
+  await page.evaluate(() => window.sidebarPreview.eventBus.emit('settings:open', { destination: 'editing' }));
+  await page.waitForSelector('#ag-settings-tab-ai.ag-settings-ai-locked', { visible: true });
+  await page.click('#ag-settings-tab-ai');
+  await cardOpen(page);
+  assert.equal(await visible(page, '#ag-settings-nav-ai-sections'), false, 'the AI sections stay folded');
+  assert.equal(await visible(page, '#ag-settings-pane-ai'), false, 'the AI pane stays closed');
+  await closeCard(page);
+  await page.evaluate(() => window.sidebarPreview.eventBus.emit('settings:open', { destination: 'ai-connection' }));
+  await cardOpen(page);
+  assert.equal(await visible(page, '#ag-settings-pane-ai'), false, 'a direct open stays out of AI');
+  await closeCard(page);
+  await page.click('.ag-settings-close');
 
   // 결제: 월간을 누르면 확인 중으로 바뀌고, 끝나면 성공을 잠깐 보인 뒤 닫히며 잠금이 풀린다.
   await page.click('.ag-send');

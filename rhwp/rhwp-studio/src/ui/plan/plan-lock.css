@@ -41,3 +41,28 @@
   width: 10px;
   height: 10px;
 }
+
+/* 설정의 AI 묶음: 펼침 꺾쇠 대신 자물쇠. 누르면 요금제 카드가 열린다. */
+.ag-settings-nav-group-lock {
+  display: none;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.ag-settings-nav-group-lock .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-settings-ai-locked .ag-settings-nav-group-lock {
+  display: inline-flex;
+}
+
+.ag-settings-ai-locked .ag-settings-nav-group-caret {
+  display: none;
+}
+
+.ag-root .ag-settings-page .ag-settings-nav-group.ag-settings-ai-locked {
+  color: var(--ag-text-tertiary);
+}

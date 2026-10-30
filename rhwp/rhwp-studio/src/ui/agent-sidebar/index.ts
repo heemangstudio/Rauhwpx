@@ -5087,6 +5087,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     bridge,
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
     openSignInWindow: (url) => openSignInWindow(url),
+    agentLocked: agentLockedByPlan,
+    openPlans: () => openPlans('pro'),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -7681,6 +7683,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else delete root.dataset.tier;
     root.classList.toggle('ag-pricing-locked', locked);
     collapseTabLock.hidden = !locked;
+    settingsPanel.syncPlanLock();
     updateComposer();
   }
   const unsubscribePlan = planStore.subscribe(() => {
