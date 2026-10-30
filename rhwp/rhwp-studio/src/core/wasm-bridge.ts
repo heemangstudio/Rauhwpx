@@ -1028,6 +1028,11 @@ export class WasmBridge {
     return api.applyEndnoteShape(this.core, sec, settings);
   }
 
+  /** 본문 문단의 controlIdx 번째 컨트롤이 각주인지 미주인지. 주석이 아니면 null. */
+  getNoteKind(sec: number, para: number, controlIdx: number): 'footnote' | 'endnote' | null {
+    return api.getNoteKind(this.core, sec, para, controlIdx);
+  }
+
   /** 각주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
   getFootnoteShape(sec: number): NoteShapeSettings {
     return api.getFootnoteShape(this.core, sec);

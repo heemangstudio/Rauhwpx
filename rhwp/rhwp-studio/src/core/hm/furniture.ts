@@ -44,6 +44,10 @@ export function getEndnoteShape(core: HmCore, sec: number): EndnoteShapeSettings
   throw unsupported('getEndnoteShape');
 }
 
+export function getNoteKind(core: HmCore, sec: number, para: number, controlIdx: number): 'footnote' | 'endnote' | null {
+  throw unsupported('getNoteKind');
+}
+
 export function getFootnoteShape(core: HmCore, sec: number): EndnoteShapeSettings {
   throw unsupported('getFootnoteShape');
 }

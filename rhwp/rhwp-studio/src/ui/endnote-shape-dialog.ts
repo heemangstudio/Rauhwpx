@@ -254,7 +254,7 @@ export class NoteShapeDialog extends ModalDialog {
     const label = KIND_LABEL[kind];
     this.noteSpacingLabel.textContent = `${label} 사이`;
     this.contentNumberLegend.textContent = `${label} 내용 번호 속성`;
-    this.numberingPageRow.style.display = kind === 'footnote' ? '' : 'none';
+    this.numberingPageRow.style.display = kind === 'footnote' ? 'inline-flex' : 'none';
     this.footnotePlacement.style.display = kind === 'footnote' ? '' : 'none';
     this.endnotePlacement.style.display = kind === 'endnote' ? '' : 'none';
     this.populate(this.drafts[kind]);
@@ -275,7 +275,8 @@ export class NoteShapeDialog extends ModalDialog {
     const length = settings.separatorLength;
     this.separatorLengthModeSelect.value = length === LENGTH_DEFAULT || (length === 0 && this.kind === 'footnote') ? 'default'
       : length === LENGTH_COLUMN || length === 0 ? 'column' : 'custom';
-    this.separatorLengthInput.value = this.separatorLengthModeSelect.value === 'custom' ? String(hwpToMm(length)) : '50';
+    this.separatorLengthInput.value = this.separatorLengthModeSelect.value === 'custom' ? String(hwpToMm(length))
+      : this.separatorLengthModeSelect.value === 'default' ? '50' : '';
     this.marginTopInput.value = String(hwpToMm(settings.separatorMarginTop || 0));
     this.noteSpacingInput.value = String(hwpToMm(settings.noteSpacing || 0));
     this.marginBottomInput.value = String(hwpToMm(settings.separatorMarginBottom || 0));
@@ -380,7 +381,10 @@ export class NoteShapeDialog extends ModalDialog {
     this.buildLineWidthControl();
     this.separatorLengthModeSelect = this.select([['default', '5 cm'], ['column', '단 너비'], ['custom', '사용자']]);
     this.separatorLengthModeSelect.style.width = '86px';
-    this.separatorLengthModeSelect.addEventListener('change', () => this.updateSeparatorEnabled());
+    this.separatorLengthModeSelect.addEventListener('change', () => {
+      if (this.separatorLengthModeSelect.value === 'custom' && !this.separatorLengthInput.value) this.separatorLengthInput.value = '50';
+      this.updateSeparatorEnabled();
+    });
     this.separatorLengthInput = this.numberInput(50, 0, 300, 0.5);
     this.buildColorControl();
 

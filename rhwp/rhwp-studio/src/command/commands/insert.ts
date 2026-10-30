@@ -112,10 +112,7 @@ function openNoteShapeDialog(services: Parameters<CommandDef['execute']>[0], kin
   let tab: NoteKind = kind ?? 'footnote';
   if (cursor?.isInFootnote?.()) {
     sectionIdx = cursor.fnSectionIdx;
-    if (!kind) {
-      const info = services.wasm.getNoteEditInfo(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx);
-      if (info?.kind === 'endnote') tab = 'endnote';
-    }
+    if (!kind && services.wasm.getNoteKind(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx) === 'endnote') tab = 'endnote';
   }
   new NoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services, tab).show();
 }

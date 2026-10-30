@@ -6,6 +6,7 @@
  */
 import type { HmCore } from './core';
 import { extendBridge } from './api';
+import { bodyList } from './address';
 import * as format from './format';
 import type { NoteNumberFormat, NoteShapeSettings } from './bridge-types';
 
@@ -109,4 +110,10 @@ export const getEndnoteShape = (core: HmCore, sec: number): NoteShapeSettings =>
 export const applyFootnoteShape = (core: HmCore, sec: number, settings: NoteShapeSettings) => applyNoteShape(core, sec, 'footnote', settings);
 export const applyEndnoteShape = (core: HmCore, sec: number, settings: NoteShapeSettings) => applyNoteShape(core, sec, 'endnote', settings);
 
-extendBridge({ getFootnoteShape, getEndnoteShape, applyFootnoteShape, applyEndnoteShape });
+/** 본문 문단의 controlIdx 번째 컨트롤이 각주인지 미주인지. 주석이 아니면 null. */
+export function getNoteKind(core: HmCore, sec: number, para: number, controlIdx: number): NoteKind | null {
+  const kind = core.paragraph(bodyList(sec), para).controls.find(control => control.index === controlIdx)?.kind;
+  return kind === 'footnote' || kind === 'endnote' ? kind : null;
+}
+
+extendBridge({ getFootnoteShape, getEndnoteShape, applyFootnoteShape, applyEndnoteShape, getNoteKind });
