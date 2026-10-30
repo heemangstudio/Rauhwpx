@@ -356,10 +356,15 @@ export interface SettingsPanelDeps {
   rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string) => Promise<SignInWindow>;
+  /** 무료 요금제면 true. AI 설정은 잠기고, 들어가려는 길마다 요금제 카드가 열린다. */
+  agentLocked?: () => boolean;
+  openPlans?: () => void;
 }
 
 export interface SettingsPanel {
   element: HTMLElement;
+  /** 요금제가 바뀌면 AI 묶음의 잠금을 맞춘다. */
+  syncPlanLock(): void;
   open(destination?: SettingsDestinationInput): void;
   close(): void;
   requestClose(): Promise<boolean>;
@@ -554,6 +559,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     withNavIcon(el('span', 'ag-settings-nav-group-label', 'AI'), 'ai'),
     createChevron('ag-settings-nav-group-caret'),
   );
+  const aiGroupLock = el('span', 'ag-settings-nav-group-lock');
+  aiGroupLock.setAttribute('aria-hidden', 'true');
+  aiGroupLock.append(createIcon('lock'));
+  aiGroupHeader.append(aiGroupLock);
   const aiGroupList = el('div', 'ag-settings-nav-sublist');
   aiGroupList.id = 'ag-settings-nav-ai-sections';
   aiGroupList.setAttribute('role', 'group');
@@ -1538,6 +1547,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   aiApply.addEventListener('click', () => void applyAiDraft());
   aiCancel.addEventListener('click', cancelAiDraft);
   aiGroupHeader.addEventListener('click', () => {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     if (aiGroupExpanded && currentDestination === 'ai') {
       aiGroupExpanded = false;
       renderDestinationState();
@@ -1562,7 +1575,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const targets: SettingsSearchTarget[] = [];
     for (const destination of destinations) {
       const pane = panes.get(destination.id);
-      if (!pane) continue;
+      if (!pane || (destination.id === 'ai' && aiLocked())) continue;
       for (const label of pane.querySelectorAll<HTMLElement>(searchSelector)) {
         const text = label.textContent?.trim();
         // 프로젝트·보관한 채팅 이름은 설정이 아니다.
@@ -1731,6 +1744,21 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         : modelCatalogLoading.has(modelCatalogAgent));
   }
 
+  function aiLocked(): boolean {
+    return deps.agentLocked?.() === true;
+  }
+
+  function syncPlanLock(): void {
+    const locked = aiLocked();
+    aiGroupHeader.classList.toggle('ag-settings-ai-locked', locked);
+    if (locked) aiGroupHeader.title = 'Pro에서 쓸 수 있어요';
+    else aiGroupHeader.removeAttribute('title');
+    if (!locked) return;
+    aiGroupExpanded = false;
+    if (currentDestination === 'ai') selectDestination('editing');
+    else renderAiSectionState();
+  }
+
   function renderAiSectionState(): void {
     const onAi = currentDestination === 'ai';
     aiGroupHeader.setAttribute('aria-expanded', String(aiGroupExpanded));
@@ -1769,7 +1797,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (changed) panes.get('ai')?.scrollTo({ top: 0 });
   }
 
-  function selectDestination(destination: SettingsDestination, aiSection?: AiSettingsSection): void {
+  function selectDestination(requested: SettingsDestination, aiSection?: AiSettingsSection): void {
+    let destination = requested;
+    // 설정 열기, 검색, 연결 안내 어디서 오든 잠긴 AI 로는 들어가지 않는다.
+    if (destination === 'ai' && aiLocked()) {
+      deps.openPlans?.();
+      destination = currentDestination === 'ai' ? 'editing' : currentDestination;
+    }
     if (destination === 'ai') {
       aiGroupExpanded = true;
       if (aiSection) selectAiSection(aiSection);
@@ -2456,11 +2490,19 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     openAgentSetup(agent);
     void continueAgentConnect(agent, options?.reauth === true);
   }
 
   function openAgentSetup(agent: AgentName): void {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     if (setupCloseTimer) {
       clearTimeout(setupCloseTimer);
       setupCloseTimer = null;
@@ -3561,6 +3603,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   return {
     element,
+    syncPlanLock,
     open(requested?: SettingsDestinationInput): void {
       const destination = normalizeSettingsDestination(requested);
       settingsOpen = true;

@@ -210,6 +210,8 @@ export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
   /** 호스팅 Rau-0.1(Pro) 자격과 업그레이드 페이지. 서버 호출과 lease 는 main 이 가진다. */
   rau?: import('./ui/agent-sidebar/rau-upgrade.ts').DesktopRauApi;
+  /** 앱 요금제(무료·Pro·기존 라이선스·Hama)와 결제. 결제 주소와 ref 는 main 만 안다. */
+  plan?: import('./ui/plan/plan-types.ts').DesktopPlanApi;
   /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
   gift?: import('./ui/special-event/gift.ts').DesktopGiftApi;
   /** 앱 업데이트 확인·다운로드·재시작. */

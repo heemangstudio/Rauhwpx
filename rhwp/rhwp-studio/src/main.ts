@@ -1,4 +1,8 @@
 import { installLicenseGate, mountLicenseRegisterButton } from './ui/license-gate';
+import { createPlanStore, desktopPlanApi } from './ui/plan/plan-store';
+import { mountHamaHomeEntry } from './ui/plan/hama-home-entry';
+import { openPlanCard } from './ui/plan/upgrade-card';
+import type { DesktopLicenseApi } from './ui/agent-sidebar/settings-license';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -2765,6 +2769,7 @@ function reinstallInlinePrompt(): void {
     canvasView,
     bridge: session.bridge,
     submit: session.sidebar.sendInlinePrompt,
+    blocked: () => sidebar.planBlocksAgent(),
     startScreenshot: () => documentRegionCapture?.startCapture(),
   });
 }
@@ -3129,6 +3134,15 @@ function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
 }
 
+/** 문서 홈의 Hama 입구(Pro·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
+function mountHomeHamaEntry(slot: HTMLElement): void {
+  const plan = desktopPlanApi();
+  if (!plan) return;
+  const store = createPlanStore(plan);
+  const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
+  mountHamaHomeEntry(slot, { store, open: () => { openPlanCard({ store, license, focus: 'hama' }); } });
+}
+
 function installDocumentHome(): void {
   const fileManager = desktopFileManagerName();
   const fileDrag = desktopFileDragApi();
@@ -3164,7 +3178,15 @@ function installDocumentHome(): void {
       if (!session) return null;
       return renderFirstPage(session.wasm).catch(() => null);
     },
-    mountTopbarTrailing: (slot) => mountLicenseRegisterButton(slot),
+    mountTopbarTrailing: (slot) => {
+      const plan = desktopPlanApi();
+      if (plan) {
+        const store = createPlanStore(plan);
+        const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
+        mountLicenseRegisterButton(slot, () => { openPlanCard({ store, license, focus: 'pro' }); });
+      }
+      mountHomeHamaEntry(slot);
+    },
     mountCorner: (slot) => mountUpdateHippo(slot),
     unsaved: {
       list: () => unsavedDocumentStore.list(),

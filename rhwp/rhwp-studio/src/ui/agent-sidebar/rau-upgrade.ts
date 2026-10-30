@@ -59,10 +59,13 @@ export interface RauUpgradeChip {
 
 export function createRauUpgradeChip({
   rau,
+  openPlans = null,
   store = storage(),
   onChange = () => {},
 }: {
   rau: DesktopRauApi | null;
+  /** 앱 요금제 카드. 있으면 업그레이드 페이지 대신 카드를 연다. */
+  openPlans?: (() => void) | null;
   store?: Storage | null;
   onChange?: () => void;
 }): RauUpgradeChip {
@@ -94,7 +97,8 @@ export function createRauUpgradeChip({
     onChange();
   }
   open.addEventListener('click', () => {
-    openRauUpgrade(rau, current?.upgradeUrl);
+    if (openPlans) openPlans();
+    else openRauUpgrade(rau, current?.upgradeUrl);
     settle();
   });
   close.addEventListener('click', settle);
