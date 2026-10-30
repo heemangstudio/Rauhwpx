@@ -29,7 +29,8 @@ import {
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
-import { createHamaService, emptyHamaState } from './hama.mjs';
+import { HAMA_ANTHROPIC_PREFIX, HAMA_OPENAI_PREFIX, createHamaService, emptyHamaState } from './hama.mjs';
+import { createHamaProxy } from './hama-proxy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
@@ -278,6 +279,18 @@ export function siteRequestListener({
       if (pathname.startsWith('/v1/hama/') || pathname === '/v1/admin/hama' || pathname.startsWith('/v1/admin/hama/')) {
         // Hama plan (hama.mjs). Every route is 404 while HAMA_ENABLED is off.
         if (!hama) throw siteError('NOT_FOUND', 'not found');
+        if (pathname.startsWith(`${HAMA_ANTHROPIC_PREFIX}/`) || pathname.startsWith(`${HAMA_OPENAI_PREFIX}/`)) {
+          // Streams its own response (SSE), so it never goes through send().
+          allow('hama-proxy', 600, MINUTE);
+          try {
+            await hama.proxy.handle(req, res, pathname);
+          } catch (error) {
+            log(`[site-api] hama proxy failed: ${error?.message ?? error}`);
+            if (res.headersSent) res.destroy();
+            else send(500, { error: { code: 500, message: 'server_error' } });
+          }
+          return;
+        }
         switch (route) {
           case 'GET /v1/hama/status':
             allow('hama-status', 120, MINUTE);
@@ -734,7 +747,7 @@ export function createSiteServer(env = process.env, options = {}) {
     log,
   });
   const hamaConfig = resolveHamaConfig(env);
-  const hama = hamaConfig.enabled ? createHamaService({
+  const hamaService = hamaConfig.enabled ? createHamaService({
     store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
     authenticate: (lease) => licenses.authenticateLease(lease),
     config: hamaConfig,
@@ -743,6 +756,10 @@ export function createSiteServer(env = process.env, options = {}) {
     log,
     usageLogDir: resolveHamaUsageDir(env),
   }) : null;
+  const hama = hamaService && {
+    ...hamaService,
+    proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
+  };
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
