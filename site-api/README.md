@@ -99,6 +99,18 @@ Owner setup on OpenRouter, so gift usage bills to Anthropic Console credit:
 
 Deploy checks: Railway's edge must keep long SSE responses open (idle and maximum request duration), so try a long streamed completion against production after the first deploy.
 
+### Hama plan
+
+A hosted plan: the app's Pi harness runs through this server, metered per license key against a monthly USD allowance with rolling caps. It is off unless `HAMA_ENABLED=true`; every `/v1/hama/*` and `/v1/admin/hama*` route answers 404 until then. Price and pool are tentative, so every number is an env variable. Keys are enrolled by the admin for now (a Hama Groble product follows the Pro plan change in `licenses.mjs`). Eligibility is an active plan in `hama.json` and nothing else: a license's tier or edition (Pro included) never grants Hama, so an active lease that is not enrolled gets 403 `hama_not_enrolled` on status and on both proxy routes.
+
+The app authenticates with its license lease (same check as the gift) as `Authorization: Bearer <lease>` or `x-api-key: <lease>`. Errors: 401 `unauthorized`, 403 `hama_not_enrolled` (valid lease, no active plan).
+
+- Models: the only hosted Claude model is `anthropic/claude-haiku-5.5` (Anthropic `claude-haiku-5-5`), a constant in `hama.mjs`. No env or flag adds Sonnet or Opus, and `HAMA_CHEAP_MODELS` refuses Claude ids. Cheap fallback models come from `HAMA_CHEAP_MODELS`.
+- Caps, as percentages of the key's allowance: `cap_5h` (spend in the trailing 5 hours, `HAMA_CAP_5H_PCT`), `cap_week` (trailing 7 days, `HAMA_CAP_WEEK_PCT`) and `cap_month` (the current billing month, `HAMA_CAP_MONTH_PCT`). Billing months start on `periodAnchor`'s day and time (UTC) each month, clamped to short months (Jan 31 → Feb 28/29 → Mar 31). A call is admitted while every applicable window is under its cap, so the last call may overshoot by its own cost. Claude is held by all three caps, cheap models only by `cap_month`; all spend counts in all windows. `resetsAt` is when the window drops back under its cap (`null` while under it; the period end for `cap_month`); with several caps blocking, the one that frees up last is reported.
+- Accounting (`hama-ledger.mjs`, pure): spend per minute for 5 hours, per hour for 7 days, and a running total per billing period. A bucket counts as if its spend happened at its end, so a window may over-count by one bucket and never under-counts. Each call is recorded once by its provider id (message or generation id); the last 500 ids of the last 24 hours are kept, so a repeated report, also after a restart, is not billed twice.
+- `GET /v1/hama/status` → `{ok, plan:{status, allowanceUsd, periodStart, periodEnd}, caps:{cap_5h|cap_week|cap_month:{usedUsd, limitUsd, resetsAt}}, blocked: null | {cap, resetsAt, cheapAvailable}, models:{default, claude, cheap, maxOutputTokens}, endpoints:{anthropic, openai}}`. 120 per IP per minute.
+- Admin (`ADMIN_TOKEN`): `GET /v1/admin/hama?status=` lists plans with their caps and totals; `POST /v1/admin/hama/enroll {keyId, allowanceUsd?, periodAnchor?}` enrolls an existing license or re-activates and updates its plan (`allowanceUsd` 0–1000 overrides `HAMA_MONTHLY_ALLOWANCE_USD`, `null` goes back to it; `periodAnchor` defaults to the enrollment time and is kept on later calls); `POST /v1/admin/hama/disable {keyId}` ends access and keeps the ledger; `GET /v1/admin/hama/usage?keyId=&limit=` returns the plan and its newest usage log entries (100 by default, at most 1000). Errors: `invalid_key` 404 (no such license), `hama_not_found` 404, `allowance_invalid` 400, `period_anchor_invalid` 400.
+
 Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford base32). The server assumes **one replica**: all license writes go through one in-process lock and an atomic temp-file rename.
 
 ## Data
@@ -113,6 +125,8 @@ Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford 
 | `feedback/index.json` | `{ reports: [ { id, receivedAt, status, installHash, email, preview, appVersion, os, osVersion, arch, attachments, bytes } ] }` |
 | `feedback/<id>/` | `report.json` (message, meta, sha256 of the install id, attachment sizes) plus `screenshot.png`/`.jpg`, `log.txt`, `chat.txt`, `document.hwp`/`.hwpx`/`.hml` (any other format as `document.bin`) when sent. Reports older than 90 days are pruned on each write and list |
 | `gifts.json` | `{ events: { [eventId]: { grants: { [keyId]: { status, name, limitUsd, pendingLimitUsd?, openrouterHash, openrouterKey, claimedAt, ... } }, allocations: { [keyId]: usd } } } }` |
+| `hama.json` | `{ plans: { [keyId]: { status, allowanceUsd, periodAnchor, enrolledAt, disabledAt? } }, ledgers: { [keyId]: { minutes, hours, period, ids, totalUsd, calls, lastCallAt } } }`. A heavy key holds about 40 KB of ledger, so the 8 MiB store limit fits roughly 200 of them |
+| `hama-usage/<keyId>.jsonl` | One line per billed Hama call: `{at, id, route, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, costSource}`. Past 4 MiB the file moves to `<keyId>.1.jsonl` (one older file kept) |
 
 All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume; locally it defaults to the current directory.
 
@@ -158,6 +172,16 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `GIFT_MAX_OUTPUT_TOKENS` | Output token cap per request, default 32000 |
 | `OPENROUTER_API_BASE` | OpenRouter API base, default `https://openrouter.ai/api/v1`. Only for local tests |
 | `LICENSE_DOWNLOAD_URL` | Download button in the key email. Unset or the homepage means the latest Mac dmg |
+| `HAMA_ENABLED` | `true` turns the Hama routes on. Default off (404) |
+| `HAMA_MONTHLY_ALLOWANCE_USD` | Monthly allowance per enrolled key, default 15. A per-key `allowanceUsd` overrides it |
+| `HAMA_CAP_5H_PCT`, `HAMA_CAP_WEEK_PCT`, `HAMA_CAP_MONTH_PCT` | Caps as percent of the allowance, default 20, 50 and 100 |
+| `HAMA_CHEAP_MODELS` | Comma list of cheap fallback models on OpenRouter, default `deepseek/deepseek-v4.1-flash,qwen/qwen3.8-flash`. Claude ids fail startup |
+| `HAMA_CHEAP_REASONING_EFFORT` | Reasoning effort forced on cheap models, default `low` |
+| `HAMA_MAX_OUTPUT_TOKENS` | Output token cap per Hama request, default 16000 |
+| `HAMA_PRICES` | Optional JSON override of the Haiku 5.5 price table (USD per million tokens): `inputPerMTok` 0.10, `outputPerMTok` 0.50, `cacheReadPerMTok` 0.01, `cacheWrite5mPerMTok` 0.125, `cacheWrite1hPerMTok` 0.20, and `longContextTokens` 100000 past which every rate is × `longContextMultiplier` 5 |
+| `ANTHROPIC_API_KEY` | Owner's Anthropic Console key for Hama's Claude calls. Secret; set only on Railway |
+| `ANTHROPIC_API_BASE` | Anthropic API base, default `https://api.anthropic.com`. Only for local tests |
+| `HAMA_OPENROUTER_KEY` | OpenRouter key for cheap models and the Claude backup route. Give it a hard credit limit on OpenRouter. Secret; set only on Railway. `OPENROUTER_API_BASE` applies to it too |
 
 ## Run and deploy
 

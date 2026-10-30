@@ -10,6 +10,9 @@ import {
   resolveFeedbackProofKey,
   resolveGiftConfig,
   resolveGiftsDbPath,
+  resolveHamaConfig,
+  resolveHamaDbPath,
+  resolveHamaUsageDir,
   resolveLicenseConfig,
   resolveLicensesDbPath,
   resolveUniqueInstallPingKey,
@@ -26,6 +29,7 @@ import {
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
+import { createHamaService, emptyHamaState } from './hama.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
@@ -187,6 +191,7 @@ export function siteRequestListener({
   downloads,
   licenses,
   gifts,
+  hama,
   feedback,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
@@ -269,6 +274,41 @@ export function siteRequestListener({
           else send(500, { error: { code: 500, message: 'server_error' } });
         }
         return;
+      }
+      if (pathname.startsWith('/v1/hama/') || pathname === '/v1/admin/hama' || pathname.startsWith('/v1/admin/hama/')) {
+        // Hama plan (hama.mjs). Every route is 404 while HAMA_ENABLED is off.
+        if (!hama) throw siteError('NOT_FOUND', 'not found');
+        switch (route) {
+          case 'GET /v1/hama/status':
+            allow('hama-status', 120, MINUTE);
+            req.resume?.();
+            send(200, await hama.status(bearerToken(req) || String(req.headers['x-api-key'] ?? '').trim()));
+            return;
+          case 'GET /v1/admin/hama':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.list(bearerToken(req), Object.fromEntries(searchParams)));
+            return;
+          case 'GET /v1/admin/hama/usage':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.usage(bearerToken(req), Object.fromEntries(searchParams)));
+            return;
+          case 'POST /v1/admin/hama/enroll': {
+            allow('admin', 120, TEN_MINUTES);
+            const token = bearerToken(req);
+            const body = await readJson(req);
+            // Only an existing license can be enrolled; the lookup also checks the token.
+            const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
+            if (!keyId || !(await licenses.admin.lookup(token, { keyId })).licenses[0]) throw licenseError('invalid_key', 404);
+            send(200, await hama.admin.enroll(token, { ...body, keyId }));
+            return;
+          }
+          case 'POST /v1/admin/hama/disable':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.disable(bearerToken(req), await readJson(req)));
+            return;
+          default:
+            throw siteError('NOT_FOUND', 'not found');
+        }
       }
       switch (route) {
         case 'GET /v1/groble/webhook':
@@ -693,6 +733,16 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
+  const hamaConfig = resolveHamaConfig(env);
+  const hama = hamaConfig.enabled ? createHamaService({
+    store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
+    authenticate: (lease) => licenses.authenticateLease(lease),
+    config: hamaConfig,
+    adminToken: licenseConfig.adminToken,
+    now: options.now,
+    log,
+    usageLogDir: resolveHamaUsageDir(env),
+  }) : null;
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
@@ -707,7 +757,7 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
