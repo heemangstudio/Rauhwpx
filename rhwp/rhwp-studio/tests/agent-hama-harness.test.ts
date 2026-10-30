@@ -14,8 +14,8 @@ const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 9, 30, 3, 0, 0);
 
 const haiku: PiModelConfig = {
-  id: 'anthropic/claude-haiku-5.5', name: 'Claude Haiku 5.5', reasoning: true, supportsImages: true,
-  efforts: ['low', 'medium', 'high'], defaultEffort: 'medium', contextLength: 200_000, pricing: { prompt: 0, completion: 0 },
+  id: 'anthropic/claude-haiku-5.5', name: 'Haiku 5.5', reasoning: true, supportsImages: true,
+  efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium', contextLength: 200_000, pricing: { prompt: 0, completion: 0 },
 };
 
 function active(overrides: Partial<HamaStatus> = {}): HamaStatus {
