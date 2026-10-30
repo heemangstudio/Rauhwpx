@@ -23,6 +23,7 @@
 //   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 //   node scripts/license-admin.mjs gift-amount --key-id lic_... --usd 30   # this beta key's gift; 0 = none, a claimed key's limit changes on OpenRouter
+//   node scripts/license-admin.mjs rau                                # hosted Rau-0.1 allowances: this month's spend against the cap
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...argv] = process.argv.slice(2);
@@ -70,6 +71,7 @@ const gets = {
   orders: '/v1/admin/orders',
   webhooks: '/v1/admin/webhooks',
   gifts: '/v1/admin/gifts',
+  rau: '/v1/admin/rau',
   downloads: '/v1/admin/downloads',
 };
 if (command === 'webhooks') {
@@ -95,7 +97,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
@@ -112,7 +114,8 @@ function expiryLine(license) {
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
-  return `${license.key} annual · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
+  const plan = `${license.edition === 'pro' ? 'pro ' : ''}${license.plan ?? 'annual'}`;
+  return `${license.key} ${plan} · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 if (command === 'downloads' && res.ok && parsed) {
   const pairs = (counts) => Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ') || '-';
@@ -123,6 +126,11 @@ if (command === 'downloads' && res.ok && parsed) {
 const listed = parsed?.licenses ?? parsed?.signatures ?? (parsed?.license ? [parsed.license] : []);
 if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
+}
+if (command === 'rau' && res.ok && parsed) {
+  const lines = [`${parsed.model} · ${parsed.period} · cap $${parsed.capUsd} · resets ${parsed.resetsAt}`];
+  for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
+  process.stdout.write(`\n${lines.join('\n')}\n`);
 }
 // The key alone on the last line, so it can be copied without picking through the JSON.
 if (command === 'beta' && res.ok && parsed?.license?.key) {

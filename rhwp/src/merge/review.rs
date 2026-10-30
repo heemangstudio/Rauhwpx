@@ -1135,7 +1135,7 @@ mod tests {
         incoming.bin_data_content.push(BinDataContent {
             id: 1,
             data: BinDataBytes::from(
-                include_bytes!("../../rhwp-chrome/icons/icon-16.png").to_vec(),
+                include_bytes!("../../assets/logo/logo-16.png").to_vec(),
             ),
             extension: "png".into(),
         });
@@ -1160,7 +1160,7 @@ mod tests {
         current.bin_data_content.push(BinDataContent {
             id: 1,
             data: BinDataBytes::from(
-                include_bytes!("../../rhwp-chrome/icons/icon-32.png").to_vec(),
+                include_bytes!("../../assets/logo/logo-32.png").to_vec(),
             ),
             extension: "png".into(),
         });
@@ -1289,7 +1289,7 @@ mod tests {
         incoming.bin_data_content.push(BinDataContent {
             id: 1,
             data: BinDataBytes::from(
-                include_bytes!("../../rhwp-chrome/icons/icon-16.png").to_vec(),
+                include_bytes!("../../assets/logo/logo-16.png").to_vec(),
             ),
             extension: "png".into(),
         });

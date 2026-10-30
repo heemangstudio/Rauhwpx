@@ -6,9 +6,6 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 
 - `Cargo.toml` / `Cargo.lock` (`rhwp` v0.8.2)
 - `rhwp-studio/package.json` / `rhwp-studio/package-lock.json`
-- `rhwp-chrome/package.json` / `rhwp-chrome/package-lock.json`
-- `rhwp-firefox/package.json` / `rhwp-firefox/package-lock.json`
-- `rhwp-vscode/package.json` / `rhwp-vscode/package-lock.json`
 - `assets/fonts/FONTS.md`
 
 ---
@@ -76,25 +73,15 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 
 ## npm 패키지
 
-### npm 배포 패키지
-
-| 패키지 | 버전 | 라이선스 | 용도 |
-|--------|------|---------|------|
-| @rhwp/core | 0.7.13 | MIT | WASM parser/renderer API |
-| @rhwp/editor | 0.7.13 | MIT | iframe 기반 웹 에디터 wrapper |
-
 ### rhwp-studio
 
 | 패키지 | Lock 버전 | 라이선스 | 용도 |
 |--------|-----------|---------|------|
 | canvaskit-wasm | 0.41.1 | BSD-3-Clause | CanvasKit 렌더링 backend |
 | @noble/hashes | 2.2.0 | MIT | 렌더 리소스 키와 문서 digest |
-| @types/chrome | 0.1.42 | MIT | Chrome API 타입 |
 | puppeteer-core | 25.0.4 | Apache-2.0 | E2E 테스트 / CDP 연결 |
 | typescript | 6.0.3 | Apache-2.0 | TypeScript 컴파일 |
 | vite | 8.0.14 | MIT | 개발 서버 + 빌드 |
-| vite-plugin-pwa | 1.3.0 | MIT | PWA 빌드 보조 |
-| workbox-window | 7.4.1 | MIT | Service worker runtime 보조 |
 
 ### rhwp-agent
 
@@ -105,28 +92,6 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 | @modelcontextprotocol/sdk | 1.31.0 | MIT | 에이전트·브라우저 MCP 서버/클라이언트 |
 | ws | 8.21.3 | MIT | 로컬 hub WebSocket transport |
 | zod | 4.4.3 | MIT | MCP 도구 입력 검증 |
-
-### rhwp-chrome / rhwp-firefox
-
-| 패키지 | Lock 버전 | 라이선스 | 용도 |
-|--------|-----------|---------|------|
-| typescript | 5.9.3 | Apache-2.0 | TypeScript 컴파일 |
-| vite | 6.4.2 | MIT | 확장 번들 빌드 |
-
-### rhwp-vscode
-
-| 패키지 | Lock 버전 | 라이선스 | 용도 |
-|--------|-----------|---------|------|
-| @types/node | 20.19.37 | MIT | Node.js 타입 |
-| @types/vscode | 1.110.0 | MIT | VS Code API 타입 |
-| copy-webpack-plugin | 14.0.0 | MIT | Webpack 파일 복사 |
-| null-loader | 4.0.1 | MIT | Webpack 로더 |
-| ts-loader | 9.5.4 | MIT | Webpack TypeScript 로더 |
-| typescript | 5.9.3 | Apache-2.0 | TypeScript 컴파일 |
-| webpack | 5.105.4 | MIT | 번들러 |
-| webpack-cli | 6.0.1 | MIT | Webpack CLI |
-| @noble/hashes | 2.2.0 | MIT | 문서 digest |
-| canvaskit-wasm | 0.41.1 | BSD-3-Clause | 자동 선택 CanvasKit backend |
 
 ### rhwp-shared
 

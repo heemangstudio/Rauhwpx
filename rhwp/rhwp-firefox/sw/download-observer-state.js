@@ -1,1 +1,0 @@
-../../rhwp-shared/sw/download-observer-state.js
