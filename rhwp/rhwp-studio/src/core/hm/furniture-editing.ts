@@ -1,19 +1,20 @@
 /** 머리말·꼬리말과 주석을 엔진의 중첩 문단 목록으로 편집한다. */
-import type { Address, Caret, Located, ControlInfo, EditOp, FormatContext, Rect } from '../../../vendor/hm-wasm/hm_wasm';
+import type { Address, Caret, Located, ControlInfo, EditOp, FormatContext, Rect, Step } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore, ListAddress } from './core';
 import { hu, px } from './core';
-import { afterFieldEnds, bodyList, isLogicalControl, lineBreakText, logicalLength, logicalRangeToWire, logicalToWire, paraMap, toAddress, wireToLogical, wireToText } from './address';
+import { addressToPosition, afterFieldEnds, bodyList, isLogicalControl, lineBreakText, logicalLength, logicalRangeToWire, logicalToWire, paraMap, pathTarget, positionTarget, stepsToPath, toAddress, wireToLogical, wireToText } from './address';
+import { copyRange } from './clipboard-native';
 import { api, extendBridge } from './api';
 import * as format from './format';
 import { paraOps, widgetCharPatch } from './format-widgets';
-import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
+import type { CharProperties, CursorRect, DocumentPosition, EndnoteShapeSettings, NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
 import { validateTextContent } from '../local-text-replace-result';
 
 type Side = 'both' | 'even' | 'odd';
 const SIDES: Side[] = ['both', 'even', 'odd'];
 interface FurnitureTarget { section: number; para: number; control: number; info: ControlInfo }
 interface FurnitureList extends ListAddress { headerFooter?: boolean }
-interface ControlRecord { target: { section: number; steps?: ListAddress['steps']; para: number; control: number }; offset: number; kind: string; flags?: number }
+interface ControlRecord { target: { section: number; steps?: ListAddress['steps']; para: number; control: number }; offset: number; kind: string; flags?: number; number?: number; lists?: { section: number; steps?: Step[] }[] }
 
 function edit(core: HmCore, op: EditOp): void {
   core.transact([op]);
@@ -41,31 +42,22 @@ function hfList(core: HmCore, section: number, isHeader: boolean, applyTo: numbe
   return nested(target, true);
 }
 
-function noteTarget(core: HmCore, sec: number, para: number, control: number): FurnitureTarget {
-  const info = core.paragraph(bodyList(sec), para).controls.find(item => item.index === control);
-  if (!info || !['footnote', 'endnote'].includes(info.kind)) throw new Error('각주·미주가 없습니다');
-  return { section: sec, para, control, info };
-}
-
-const noteList = (core: HmCore, sec: number, para: number, control: number): FurnitureList => nested(noteTarget(core, sec, para, control));
-
 /** 기존 HF·주석 커서는 유니코드 scalar를 센다. 엔진 주소는 UTF-16 wire 단위다. */
 function mapIn(core: HmCore, list: FurnitureList, para: number) {
   const info = core.paragraph(list, para);
-  const units: { start: number; width: number; text: string | null }[] = [];
+  const units: { start: number; width: number; text: string | null; kind?: string }[] = [];
   let utf16 = 0;
   for (const text of info.text) {
     units.push({ start: info.offsets[utf16], width: text === '\t' ? 8 : text.length, text });
     utf16 += text.length;
   }
+  // 머리말의 쪽 번호와 주석 자신의 번호는 한 칸이다. 주석 캐럿 0 은 번호 앞이다(한컴: Home 이 번호 앞으로 가고 그 앞에 글자를 칠 수 있다).
   for (const control of info.controls) {
-    if (isLogicalControl(control) || (list.headerFooter && control.kind === 'autoNumber')) units.push({ start: control.offset, width: 8, text: null });
+    if (isLogicalControl(control) || control.kind === 'autoNumber') units.push({ start: control.offset, width: 8, text: null, kind: control.kind });
   }
   units.sort((a, b) => a.start - b.start);
-  // 각주·미주 첫 문단 맨 앞의 번호는 주석 자신의 번호다. 캐럿 0 은 그 뒤에 선다.
-  const number = list.headerFooter ? undefined : info.controls.find(control => control.kind === 'autoNumber' && control.offset === info.caret[0]);
   return { ...paraMap(info), stops: units.map(unit => unit.start), widths: units.map(unit => unit.width), isText: units.map(unit => unit.text !== null),
-    lead: number ? number.offset + 8 : info.caret[0], end: info.offsets.at(-1)!, units };
+    lead: info.caret[0], end: info.offsets.at(-1)!, units };
 }
 
 const at = (core: HmCore, list: FurnitureList, para: number, offset: number): Address => toAddress(list, para, logicalToWire(mapIn(core, list, para), offset));
@@ -111,15 +103,18 @@ function selection(core: HmCore, list: FurnitureList, page: number, startPara: n
   return rects.map(rect => ({ ...cursor(rect), width: px(rect.width) }));
 }
 
+/** 중첩 목록(셀 안 주석 포함)의 문단을 셀 경로 API 로 부른다. */
+const listPath = (list: FurnitureList, para: number) => ({ parent: list.steps[0].para, path: JSON.stringify(stepsToPath(list.steps, para)) });
+
 function charProps(core: HmCore, list: FurnitureList, para: number, offset: number): CharProperties {
-  const owner = list.steps[0];
   const textOffset = wireToText(paraMap(core.paragraph(list, para)), logicalToWire(mapIn(core, list, para), offset));
-  return api.getCellCharPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para, textOffset);
+  const { parent, path } = listPath(list, para);
+  return api.getCellCharPropertiesAtByPath(core, list.section, parent, path, textOffset);
 }
 
 function paraProps(core: HmCore, list: FurnitureList, para: number) {
-  const owner = list.steps[0];
-  return api.getCellParaPropertiesAt(core, list.section, owner.para, owner.control, owner.index, para);
+  const { parent, path } = listPath(list, para);
+  return api.getCellParaPropertiesAtByPath(core, list.section, parent, path);
 }
 
 /** 본문과 같은 서식 변환을 쓴다. 밑줄 색·모양, 양각, 고정 줄 간격, 오른쪽 여백도 머리말·주석에서 바뀐다. */
@@ -211,102 +206,352 @@ export function insertFieldInHf(core: HmCore, sec: number, isHeader: boolean, ap
   return { ok: true, charOffset: offset + length, insertedAt: offset, insertedLength: length };
 }
 
-function insertNote(core: HmCore, sec: number, para: number, offset: number, kind: 'footnote' | 'endnote') {
-  const map = paraMap(core.paragraph(bodyList(sec), para));
-  const position = toAddress(bodyList(sec), para, afterFieldEnds(map, logicalToWire(map, offset)));
-  const before = new Set(core.paragraph(bodyList(sec), para).controls.map(control => control.index));
-  edit(core, { op: 'insertNote', at: position, kind });
-  const control = core.paragraph(bodyList(sec), para).controls.find(control => control.kind === kind && control.offset === position.offset)
-    ?? core.paragraph(bodyList(sec), para).controls.find(control => control.kind === kind && !before.has(control.index));
-  if (!control) throw new Error('삽입한 주석을 찾을 수 없습니다');
-  return { ok: true, paraIdx: para, controlIdx: control.index, footnoteNumber: control.number ?? 1, endnoteNumber: control.number ?? 1 };
+// ─── 각주·미주 ───────────────────────────────────────────
+
+type NoteKind = 'footnote' | 'endnote';
+const isNoteKind = (kind: string): kind is NoteKind => kind === 'footnote' || kind === 'endnote';
+/** 번호·개체처럼 글자가 아닌 칸을 units 문자열에서 나타낸다. */
+const OBJECT_UNIT = '￼';
+
+/** 주석 표시가 든 문단. path 는 Studio 셀 경로 JSON 이고 para 는 맨 바깥 본문 문단이다. 본문 주석은 path 가 없다. */
+function noteOwner(sec: number, para: number, path?: string | null): { list: ListAddress; para: number } {
+  return path && path !== '[]' ? pathTarget(sec, para, path) : { list: bodyList(sec), para };
 }
 
-export function insertFootnote(core: HmCore, sec: number, para: number, offset: number) { return insertNote(core, sec, para, offset, 'footnote'); }
-export function insertEndnote(core: HmCore, sec: number, para: number, offset: number) { return insertNote(core, sec, para, offset, 'endnote'); }
-export function getFootnoteInfo(core: HmCore, sec: number, para: number, control: number) {
-  const target = noteTarget(core, sec, para, control), list = nested(target), paraCount = core.paragraphCount(list);
-  const texts = Array.from({ length: paraCount }, (_, p) => core.paragraph(list, p).text);
-  return { ok: true, paraCount, totalTextLen: texts.reduce((count, text) => count + [...text].length, 0), number: target.info.number ?? 0, texts };
+interface NoteTarget { owner: { list: ListAddress; para: number }; control: number; info: ControlInfo; list: FurnitureList }
+
+function noteTarget(core: HmCore, sec: number, para: number, control: number, path?: string | null): NoteTarget {
+  const owner = noteOwner(sec, para, path);
+  const info = core.paragraph(owner.list, owner.para).controls.find(item => item.index === control);
+  if (!info || !isNoteKind(info.kind)) throw new Error('각주·미주가 없습니다');
+  return { owner, control, info, list: { section: sec, steps: [...owner.list.steps, { para: owner.para, control, index: 0 }] } };
 }
-export function insertTextInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, text: string) { return { ok: true, charOffset: insert(core, noteList(core, sec, para, control), notePara, offset, text) }; }
-export function insertTextContentInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, content: TextContent) { validateTextContent(content); return insertTextInFootnote(core, sec, para, control, notePara, offset, content.text); }
-export function deleteTextInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, count: number) { return remove(core, noteList(core, sec, para, control), notePara, offset, count); }
-export function splitParagraphInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, meta?: RemovedParaMeta) { return split(core, noteList(core, sec, para, control), notePara, offset, meta); }
-export function mergeParagraphInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number) { return merge(core, noteList(core, sec, para, control), notePara); }
-export function getParaPropertiesInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number) { return paraProps(core, noteList(core, sec, para, control), notePara); }
-export function applyParaFormatInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, props: string) { return formatPara(core, noteList(core, sec, para, control), notePara, props); }
-export function getCharPropertiesInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number) { return charProps(core, noteList(core, sec, para, control), notePara, offset); }
-export function applyCharFormatInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, start: number, end: number, props: string) { return formatChars(core, noteList(core, sec, para, control), notePara, start, notePara, end, props); }
+
+const noteList = (core: HmCore, sec: number, para: number, control: number, path?: string | null): FurnitureList => noteTarget(core, sec, para, control, path).list;
+
+/** 엔진의 컨트롤 주소를 Studio 주석 주소로 바꾼다. */
+function refOf(target: { section: number; steps?: Step[]; para: number; control: number }): NoteRef {
+  const steps = target.steps ?? [];
+  if (!steps.length) return { sectionIdx: target.section, paraIdx: target.para, controlIdx: target.control };
+  return { sectionIdx: target.section, paraIdx: steps[0].para, controlIdx: target.control, cellPath: stepsToPath(steps, target.para) };
+}
+
+const refKey = (ref: NoteRef): string => JSON.stringify([ref.sectionIdx, ref.paraIdx, ref.controlIdx, ref.cellPath ?? []]);
+const sameSteps = (a: readonly Step[] | undefined, b: readonly Step[]): boolean =>
+  (a ?? []).length === b.length && (a ?? []).every((step, i) => step.para === b[i].para && step.control === b[i].control && step.index === b[i].index);
+
+interface NoteEntry extends NoteHit { key: string; list: FurnitureList; owner: ListAddress; ownerPara: number }
+
+const directories = new WeakMap<HmCore, { tag: string; notes: NoteEntry[]; pageTag?: string; pages?: Map<number, NoteEntry[]> }>();
+
+/** 문서의 모든 주석(본문·표 셀·글상자)을 문서 순서로. 내용이 바뀔 때만 다시 읽는다. */
+function noteDirectory(core: HmCore) {
+  const tag = core.contentRevision;
+  let directory = directories.get(core);
+  if (directory?.tag !== tag) {
+    const controls = core.query<ControlRecord[]>({ kind: 'controls' });
+    const notes = controls.filter(control => isNoteKind(control.kind)).map((control): NoteEntry => {
+      const target = { ...control.target, steps: control.target.steps ?? [] };
+      const ref = refOf(target);
+      return {
+        ...ref, kind: control.kind as NoteKind, number: control.number ?? 0, key: refKey(ref),
+        owner: { section: target.section, steps: target.steps }, ownerPara: target.para,
+        list: { section: target.section, steps: [...target.steps, { para: target.para, control: target.control, index: 0 }] },
+      };
+    });
+    directory = { tag, notes };
+    directories.set(core, directory);
+  }
+  return directory;
+}
+
+/** 쪽마다 그 쪽에 줄이 놓인 주석. 조판이 바뀔 때만 다시 센다. */
+function notesOnPage(core: HmCore, page: number): NoteEntry[] {
+  const directory = noteDirectory(core);
+  const tag = `${core.contentRevision}:${core.state().layoutEpoch}`;
+  if (directory.pageTag !== tag || !directory.pages) {
+    const pages = new Map<number, NoteEntry[]>();
+    for (const note of directory.notes) {
+      const seen = new Set<number>();
+      for (let para = 0; para < core.paragraphCount(note.list); para++) for (const line of core.lines(note.list, para)) seen.add(line.page);
+      if (!seen.size) {
+        const caret = core.caret(toAddress(note.list, 0, 0));
+        if (caret) seen.add(caret.page);
+      }
+      for (const p of seen) {
+        const bucket = pages.get(p);
+        if (bucket) bucket.push(note); else pages.set(p, [note]);
+      }
+    }
+    directory.pageTag = tag;
+    directory.pages = pages;
+  }
+  return directory.pages.get(page) ?? [];
+}
+
+const sourceTypeOf = (core: HmCore, note: NoteEntry): NoteListEntry['sourceType'] => {
+  const steps = note.owner.steps;
+  if (!steps.length) return 'body';
+  const step = steps[steps.length - 1];
+  const parent = core.paragraph({ section: note.owner.section, steps: steps.slice(0, -1) }, step.para).controls.find(item => item.index === step.control);
+  return parent?.kind === 'table' ? 'table' : 'shape';
+};
+
+/** 주소가 주석 목록 안이면 그 주석. 주석 안 표처럼 더 깊은 곳은 주석 편집 대상이 아니다. */
+function noteAtAddress(core: HmCore, address: Address): { ref: NoteRef; kind: NoteKind; number: number; list: FurnitureList } | null {
+  const steps = address.steps ?? [];
+  const last = steps.at(-1);
+  if (!last) return null;
+  const parent: ListAddress = { section: address.section, steps: steps.slice(0, -1) };
+  const info = core.paragraph(parent, last.para).controls.find(item => item.index === last.control);
+  if (!info || !isNoteKind(info.kind)) return null;
+  return { ref: refOf({ section: address.section, steps: parent.steps, para: last.para, control: last.control }), kind: info.kind, number: info.number ?? 0, list: { section: address.section, steps } };
+}
+
+const caretIn = (core: HmCore, list: FurnitureList, address: Address | undefined, fallback: NoteCaret): NoteCaret =>
+  address && sameSteps(address.steps, list.steps)
+    ? { fnParaIndex: address.para, charOffset: wireToLogical(mapIn(core, list, address.para), address.offset) }
+    : fallback;
+
+/** 주석 내용: 문단 글자, 논리 길이, 번호 칸, 번호와 공백 뒤의 내용. */
+function noteContent(core: HmCore, target: NoteTarget): NoteContentInfo {
+  const list = target.list, paraCount = core.paragraphCount(list);
+  const texts: string[] = [], lengths: number[] = [], units: string[] = [], numbers: NoteCaret[] = [];
+  for (let para = 0; para < paraCount; para++) {
+    const map = mapIn(core, list, para);
+    texts.push(map.info.text);
+    lengths.push(logicalLength(map));
+    units.push(map.units.map(unit => unit.text ?? OBJECT_UNIT).join(''));
+    map.units.forEach((unit, charOffset) => { if (unit.kind === 'autoNumber') numbers.push({ fnParaIndex: para, charOffset }); });
+  }
+  // 한컴 새 주석은 [번호][공백]으로 시작한다. 에이전트가 읽고 쓰는 주석 글은 그 뒤다.
+  const first = mapIn(core, list, 0).units;
+  let start = 0;
+  if (first[0]?.kind === 'autoNumber') start = first[1]?.text === ' ' ? 2 : 1;
+  const plain = (para: number, from = 0) => mapIn(core, list, para).units.slice(from).map(unit => unit.text ?? '').join('');
+  const noteText = Array.from({ length: paraCount }, (_, para) => plain(para, para === 0 ? start : 0)).join('\n');
+  return { ok: true, kind: target.info.kind as NoteKind, paraCount, totalTextLen: texts.reduce((count, text) => count + [...text].length, 0),
+    number: target.info.number ?? 0, texts, lengths, units, numbers, noteText, textStart: { fnParaIndex: 0, charOffset: start } };
+}
+
+/** 위치(본문·표 셀·글상자)에 주석을 넣는다. 캐럿은 엔진 영수증의 캐럿(새 주석의 번호와 공백 뒤)이다. */
+export function insertNoteAt(core: HmCore, pos: DocumentPosition, kind: NoteKind) {
+  if (!isNoteKind(kind)) throw new RangeError('잘못된 주석 종류');
+  const { list, para } = positionTarget(pos);
+  const map = paraMap(core.paragraph(list, para));
+  const position = toAddress(list, para, afterFieldEnds(map, logicalToWire(map, pos.charOffset)));
+  const before = new Set(core.paragraph(list, para).controls.map(control => control.index));
+  const receipt = core.transact([{ op: 'insertNote', at: position, kind }]);
+  const controls = core.paragraph(list, para).controls;
+  const control = controls.find(item => item.kind === kind && item.offset === position.offset)
+    ?? controls.find(item => item.kind === kind && !before.has(item.index));
+  if (!control) throw new Error('삽입한 주석을 찾을 수 없습니다');
+  const ref = refOf({ section: list.section, steps: list.steps, para, control: control.index });
+  const target = noteTarget(core, ref.sectionIdx, ref.paraIdx, ref.controlIdx, notePath(ref));
+  const caret = caretIn(core, target.list, receipt?.caret, noteContent(core, target).textStart);
+  return { ok: true, kind, ...ref, number: control.number ?? 1, ...caret, anchor: addressToPosition(core, toAddress(list, para, control.offset)) };
+}
+
+/** NoteRef 의 셀 경로 JSON. 본문 주석이면 undefined. */
+export const notePath = (ref: Pick<NoteRef, 'cellPath'>): string | undefined => ref.cellPath?.length ? JSON.stringify(ref.cellPath) : undefined;
+
+function insertBodyNote(core: HmCore, sec: number, para: number, offset: number, kind: NoteKind) {
+  const note = insertNoteAt(core, { sectionIndex: sec, paragraphIndex: para, charOffset: offset }, kind);
+  return { ok: true, paraIdx: para, controlIdx: note.controlIdx, footnoteNumber: note.number, endnoteNumber: note.number, fnParaIndex: note.fnParaIndex, charOffset: note.charOffset };
+}
+
+export function insertFootnote(core: HmCore, sec: number, para: number, offset: number) { return insertBodyNote(core, sec, para, offset, 'footnote'); }
+export function insertEndnote(core: HmCore, sec: number, para: number, offset: number) { return insertBodyNote(core, sec, para, offset, 'endnote'); }
+export function getFootnoteInfo(core: HmCore, sec: number, para: number, control: number, path?: string): NoteContentInfo { return noteContent(core, noteTarget(core, sec, para, control, path)); }
+export function insertTextInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, text: string, path?: string) { return { ok: true, charOffset: insert(core, noteList(core, sec, para, control, path), notePara, offset, text) }; }
+export function insertTextContentInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, content: TextContent, path?: string) { validateTextContent(content); return insertTextInFootnote(core, sec, para, control, notePara, offset, content.text, path); }
+export function deleteTextInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, count: number, path?: string) { return remove(core, noteList(core, sec, para, control, path), notePara, offset, count); }
+export function splitParagraphInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, meta?: RemovedParaMeta, path?: string) { return split(core, noteList(core, sec, para, control, path), notePara, offset, meta); }
+export function mergeParagraphInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, path?: string) { return merge(core, noteList(core, sec, para, control, path), notePara); }
+export function getParaPropertiesInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, path?: string) { return paraProps(core, noteList(core, sec, para, control, path), notePara); }
+export function applyParaFormatInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, props: string, path?: string) { return formatPara(core, noteList(core, sec, para, control, path), notePara, props); }
+export function getCharPropertiesInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, path?: string) { return charProps(core, noteList(core, sec, para, control, path), notePara, offset); }
+export function applyCharFormatInFootnote(core: HmCore, sec: number, para: number, control: number, notePara: number, start: number, end: number, props: string, path?: string) { return formatChars(core, noteList(core, sec, para, control, path), notePara, start, notePara, end, props); }
+
+/** 주석 안 범위를 글로 바꾼다. 지우기와 넣기가 한 엔진 트랜잭션이라 IME 조합 한 번, 선택 위 입력 한 번이 각각 한 편집이다. */
+export function replaceRangeInFootnote(core: HmCore, sec: number, para: number, control: number, startPara: number, startOffset: number, endPara: number, endOffset: number, replacement: string, path?: string) {
+  const list = noteList(core, sec, para, control, path), from = at(core, list, startPara, startOffset);
+  const ops: EditOp[] = [];
+  if (startPara !== endPara || startOffset !== endOffset) {
+    const [a, b] = startPara === endPara ? logicalRangeToWire(mapIn(core, list, startPara), startOffset, endOffset) : [from.offset, at(core, list, endPara, endOffset).offset];
+    ops.push({ op: 'delete', from: toAddress(list, startPara, a), to: toAddress(list, endPara, b) });
+    if (replacement) ops.push({ op: 'insertText', at: toAddress(list, startPara, a), text: lineBreakText(replacement) });
+  } else if (replacement) {
+    ops.push({ op: 'insertText', at: from, text: lineBreakText(replacement) });
+  }
+  const caret = caretIn(core, list, core.transact(ops)?.caret, { fnParaIndex: startPara, charOffset: startOffset });
+  return { ok: true, ...caret };
+}
+
+/** 범위가 비면 캐럿에, 아니면 범위 위에 붙여 넣는다(한 번의 엔진 붙여넣기). text 가 null 이면 엔진이 복사해 둔 조각이다. 주석 안에 들어온 주석 표시는 버린다. */
+export function pasteInFootnote(core: HmCore, sec: number, para: number, control: number, startPara: number, startOffset: number, endPara: number, endOffset: number, text: string | null, path?: string) {
+  const list = noteList(core, sec, para, control, path);
+  const from = at(core, list, startPara, startOffset), to = at(core, list, endPara, endOffset);
+  const request: Record<string, unknown> = startPara === endPara && startOffset === endOffset ? { at: from } : { replace: { from, to } };
+  if (text !== null) request.text = text.replace(/\r\n?/g, '\n');
+  const receipt = core.mutate(doc => doc.paste(JSON.stringify(request)));
+  let caret = caretIn(core, list, receipt?.caret, { fnParaIndex: startPara, charOffset: startOffset });
+  const marks: { para: number; control: number; logical: number }[] = [];
+  for (let p = 0; p < core.paragraphCount(list); p++) {
+    const map = mapIn(core, list, p);
+    for (const item of map.info.controls) if (isNoteKind(item.kind)) marks.push({ para: p, control: item.index, logical: wireToLogical(map, item.offset) });
+  }
+  if (marks.length) {
+    core.transact(marks.reverse().map(mark => ({ op: 'deleteControl', target: { section: list.section, steps: list.steps, para: mark.para, control: mark.control } }) as EditOp));
+    const before = marks.filter(mark => mark.para === caret.fnParaIndex && mark.logical < caret.charOffset).length;
+    caret = { ...caret, charOffset: caret.charOffset - before };
+  }
+  return { ok: true, ...caret };
+}
+
+/** 주석 안 선택을 엔진 클립보드에 담는다. 번호 칸을 고르면 번호도 함께 담긴다. */
+export function copySelectionInFootnote(core: HmCore, sec: number, para: number, control: number, startPara: number, startOffset: number, endPara: number, endOffset: number, path?: string) {
+  const list = noteList(core, sec, para, control, path);
+  let from = at(core, list, startPara, startOffset), to = at(core, list, endPara, endOffset);
+  if (startPara === endPara) {
+    const [a, b] = logicalRangeToWire(mapIn(core, list, startPara), startOffset, endOffset);
+    from = toAddress(list, startPara, a);
+    to = toAddress(list, endPara, b);
+  }
+  const copied = copyRange(core, from, to);
+  return { ok: true, text: copied.text, html: copied.html };
+}
+
+/** 위치 바로 뒤(forward)나 앞(backward)의 주석 표시. 본문·표 셀·글상자 모두 본다. */
+export function getNoteAtPosition(core: HmCore, pos: DocumentPosition, direction: 'backward' | 'forward') {
+  const { list, para } = positionTarget(pos);
+  const map = paraMap(core.paragraph(list, para));
+  const logical = pos.charOffset - (direction === 'backward' ? 1 : 0);
+  const control = map.info.controls.find(item => isNoteKind(item.kind) && wireToLogical(map, item.offset) === logical);
+  if (!control) return { hit: false as const };
+  return { hit: true as const, kind: control.kind as NoteKind, number: control.number ?? 0, charOffset: logical, ...refOf({ section: list.section, steps: list.steps, para, control: control.index }) };
+}
 
 export function getFootnoteAtCursor(core: HmCore, sec: number, para: number, offset: number, direction: 'backward' | 'forward') {
-  const map = paraMap(core.paragraph(bodyList(sec), para));
-  const target = map.info.controls.find(control => ['footnote', 'endnote'].includes(control.kind) && wireToLogical(map, control.offset) === offset - (direction === 'backward' ? 1 : 0));
-  return target ? { hit: true, sectionIndex: sec, paragraphIndex: para, controlIndex: target.index, charOffset: wireToLogical(map, target.offset), footnoteNumber: target.number } : { hit: false };
+  const hit = getNoteAtPosition(core, { sectionIndex: sec, paragraphIndex: para, charOffset: offset }, direction);
+  return hit.hit ? { hit: true, sectionIndex: sec, paragraphIndex: para, controlIndex: hit.controlIdx, charOffset: hit.charOffset, footnoteNumber: hit.number } : { hit: false };
 }
 
-export function deleteFootnote(core: HmCore, sec: number, para: number, control: number) {
-  const target = noteTarget(core, sec, para, control), charOffset = wireToLogical(paraMap(core.paragraph(bodyList(sec), para)), target.info.offset);
-  edit(core, { op: 'deleteControl', target: { section: sec, para, control } });
-  return { ok: true, sectionIndex: sec, paragraphIndex: para, controlIndex: control, charOffset, deletedNumber: target.info.number ?? 0 };
+/** 주석 표시 바로 앞의 본문(셀) 위치. */
+export function getNoteAnchor(core: HmCore, sec: number, para: number, control: number, path?: string): DocumentPosition {
+  const target = noteTarget(core, sec, para, control, path);
+  return addressToPosition(core, toAddress(target.owner.list, target.owner.para, target.info.offset));
 }
 
-function notesOnPage(core: HmCore, page: number): FurnitureTarget[] {
-  const found: FurnitureTarget[] = [];
-  for (let sec = 0; sec < core.adapter.getSectionCount(); sec++) {
-    for (const target of furniture(core, sec)) {
-      if (!['footnote', 'endnote'].includes(target.info.kind)) continue;
-      const list = nested(target);
-      if (Array.from({ length: core.paragraphCount(list) }, (_, para) => core.lines(list, para)).flat().some(line => line.page === page)) found.push(target);
-      else if (core.caret(at(core, list, 0, 0), 'downstream', page)?.page === page) found.push(target);
-    }
-  }
-  return found;
+export function deleteFootnote(core: HmCore, sec: number, para: number, control: number, path?: string) {
+  const target = noteTarget(core, sec, para, control, path);
+  const position = addressToPosition(core, toAddress(target.owner.list, target.owner.para, target.info.offset));
+  edit(core, { op: 'deleteControl', target: { section: sec, steps: target.owner.list.steps, para: target.owner.para, control } });
+  return { ok: true, sectionIndex: sec, paragraphIndex: para, controlIndex: control, charOffset: position.charOffset, deletedNumber: target.info.number ?? 0, position };
+}
+
+/** 문서 순서의 모든 주석과 그 글. */
+export function listNotes(core: HmCore): NoteListEntry[] {
+  return noteDirectory(core).notes.map(note => {
+    const content = noteContent(core, noteTarget(core, note.sectionIdx, note.paraIdx, note.controlIdx, notePath(note)));
+    const { key: _key, list: _list, owner: _owner, ownerPara: _ownerPara, ...ref } = note;
+    return { ...ref, sourceType: sourceTypeOf(core, note), paraCount: content.paraCount, noteText: content.noteText };
+  });
 }
 
 export function getPageFootnoteInfo(core: HmCore, page: number, index: number) {
-  const target = notesOnPage(core, page)[index];
-  return target ? { ok: true, sectionIdx: target.section, paraIdx: target.para, controlIdx: target.control, sourceType: 'body' } : null;
+  const note = notesOnPage(core, page)[index];
+  return note ? { ok: true, sectionIdx: note.sectionIdx, paraIdx: note.paraIdx, controlIdx: note.controlIdx, sourceType: sourceTypeOf(core, note), kind: note.kind, cellPath: note.cellPath } : null;
 }
 export function pageHasFootnoteFootholds(core: HmCore, page: number): boolean { return notesOnPage(core, page).length > 0; }
-export function getCursorRectInNote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number): CursorRect | null {
-  const caret = core.caret(at(core, noteList(core, sec, para, control), notePara, offset));
+export function getCursorRectInNote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, path?: string): CursorRect | null {
+  const caret = core.caret(at(core, noteList(core, sec, para, control, path), notePara, offset));
   return caret ? cursor(caret) : null;
 }
 export function getCursorRectInFootnote(core: HmCore, page: number, index: number, para: number, offset: number): CursorRect | null {
-  const target = notesOnPage(core, page)[index];
-  if (!target) return null;
-  const caret = core.caret(at(core, nested(target), para, offset), 'downstream', page);
+  const note = notesOnPage(core, page)[index];
+  if (!note) return null;
+  const caret = core.caret(at(core, note.list, para, offset), 'downstream', page);
   return caret ? cursor(caret) : null;
 }
-export function getNoteEditInfo(core: HmCore, sec: number, para: number, control: number) {
-  const target = noteTarget(core, sec, para, control), caret = core.caret(at(core, nested(target), 0, 0));
+export function getNoteEditInfo(core: HmCore, sec: number, para: number, control: number, path?: string) {
+  const target = noteTarget(core, sec, para, control, path), caret = core.caret(at(core, target.list, 0, 0));
   if (!caret) return null;
-  return { ok: true, kind: target.info.kind, pageNum: caret.page, footnoteIndex: notesOnPage(core, caret.page).findIndex(item => item.section === sec && item.para === para && item.control === control), fnParaIndex: 0, charOffset: 0 };
+  const key = refKey(refOf({ section: sec, steps: target.owner.list.steps, para: target.owner.para, control }));
+  return { ok: true, kind: target.info.kind, pageNum: caret.page, footnoteIndex: notesOnPage(core, caret.page).findIndex(item => item.key === key), fnParaIndex: 0, charOffset: 0 };
 }
 export function getSelectionRectsInFootnote(core: HmCore, page: number, index: number, startPara: number, start: number, endPara: number, end: number): SelectionRect[] {
-  const target = notesOnPage(core, page)[index];
-  return target ? selection(core, nested(target), page, startPara, start, endPara, end) : [];
+  const note = notesOnPage(core, page)[index];
+  return note ? selection(core, note.list, page, startPara, start, endPara, end) : [];
 }
+/** 주석 선택의 모든 쪽 사각형. 쪽을 넘는 주석도 이어서 칠한다. */
+export function getSelectionRectsInNote(core: HmCore, sec: number, para: number, control: number, startPara: number, start: number, endPara: number, end: number, path?: string): SelectionRect[] {
+  const list = noteList(core, sec, para, control, path);
+  const rects = JSON.parse(core.call(doc => doc.select(JSON.stringify({ from: at(core, list, startPara, start), to: at(core, list, endPara, end) })))) as Rect[];
+  return rects.map(rect => ({ ...cursor(rect), width: px(rect.width) }));
+}
+
+/** 주석 안에서 엔진 캐럿 이동(줄 처음·끝, 위·아래 줄). 이 주석을 벗어나면 null. */
+export function navigateInNote(core: HmCore, sec: number, para: number, control: number, notePara: number, offset: number, motion: 'lineStart' | 'lineEnd' | 'up' | 'down', preferredX?: number, path?: string) {
+  const list = noteList(core, sec, para, control, path);
+  const request = { position: at(core, list, notePara, offset), motion, ...(preferredX === undefined ? {} : { preferredX: hu(preferredX) }) };
+  const located = JSON.parse(core.call(doc => doc.navigate(JSON.stringify(request)))) as Located | null;
+  if (!located || !sameSteps(located.position.steps, list.steps)) return null;
+  return { fnParaIndex: located.position.para, charOffset: wireToLogical(mapIn(core, list, located.position.para), located.position.offset), cursorRect: cursor(located.caret) };
+}
+
+/** 주석 첫 줄에서 위로 나갈 본문 자리: 그 쪽 주석 영역 바로 위 본문 줄의 같은 x(한컴 c03c). */
+export function getBodyPositionAboveNote(core: HmCore, sec: number, para: number, control: number, x: number, path?: string): DocumentPosition | null {
+  const target = noteTarget(core, sec, para, control, path);
+  const first = core.caret(at(core, target.list, 0, 0));
+  if (!first) return null;
+  let top = first.y;
+  for (const note of notesOnPage(core, first.page)) {
+    if (note.kind !== target.info.kind) continue;
+    for (let p = 0; p < core.paragraphCount(note.list); p++) for (const line of core.lines(note.list, p)) if (line.page === first.page) top = Math.min(top, line.y);
+  }
+  for (const step of [1, 4, 12]) {
+    const located = core.locate(first.page, x, px(top) - step, { body: true });
+    if (located && !noteAtAddress(core, located.position)) return addressToPosition(core, located.position);
+  }
+  return null;
+}
+
 export function hitTestInFootnote(core: HmCore, page: number, x: number, y: number) {
-  const located = core.locate(page, x, y), step = located?.position.steps?.[0];
-  if (!located || !step) return { hit: false };
-  const notes = notesOnPage(core, page), index = notes.findIndex(note => note.section === located.position.section && note.para === step.para && note.control === step.control);
-  if (index < 0) return { hit: false };
-  return { hit: true, footnoteIndex: index, fnParaIndex: located.position.para, charOffset: wireToLogical(mapIn(core, nested(notes[index]), located.position.para), located.position.offset), cursorRect: cursor(located.caret) };
+  const located = core.locate(page, x, y);
+  const note = located ? noteAtAddress(core, located.position) : null;
+  if (!located || !note) return { hit: false as const };
+  const key = refKey(note.ref);
+  return {
+    hit: true as const, footnoteIndex: notesOnPage(core, page).findIndex(item => item.key === key), fnParaIndex: located.position.para,
+    charOffset: wireToLogical(mapIn(core, note.list, located.position.para), located.position.offset), cursorRect: cursor(located.caret),
+    ...note.ref, kind: note.kind, number: note.number,
+  };
 }
-export function hitTestFootnote(core: HmCore, page: number, x: number, y: number) { const hit = hitTestInFootnote(core, page, x, y); return { hit: hit.hit, footnoteIndex: hit.footnoteIndex }; }
+export function hitTestFootnote(core: HmCore, page: number, x: number, y: number) {
+  const hit = hitTestInFootnote(core, page, x, y);
+  return hit.hit ? { hit: true, footnoteIndex: hit.footnoteIndex, sectionIdx: hit.sectionIdx, paraIdx: hit.paraIdx, controlIdx: hit.controlIdx, cellPath: hit.cellPath, kind: hit.kind } : { hit: false };
+}
+/** 본문·표 셀·글상자의 주석 표시 위를 눌렀는지. */
 export function hitTestBodyFootnoteMarker(core: HmCore, page: number, x: number, y: number) {
   const located = core.locate(page, x, y, { body: true });
-  if (!located || located.position.steps?.length) return { hit: false };
-  const info = core.paragraph(bodyList(located.position.section), located.position.para), map = paraMap(info);
-  for (const control of info.controls.filter(item => ['footnote', 'endnote'].includes(item.kind))) {
-    const caret = core.caret(toAddress(bodyList(located.position.section), located.position.para, control.offset), 'downstream', page);
-    const after = core.caret(toAddress(bodyList(located.position.section), located.position.para, control.offset + 8), 'upstream', page);
+  if (!located) return { hit: false };
+  const list: ListAddress = { section: located.position.section, steps: located.position.steps ?? [] };
+  const info = core.paragraph(list, located.position.para), map = paraMap(info);
+  for (const control of info.controls.filter(item => isNoteKind(item.kind))) {
+    const caret = core.caret(toAddress(list, located.position.para, control.offset), 'downstream', page);
+    const after = core.caret(toAddress(list, located.position.para, control.offset + 8), 'upstream', page);
     if (!caret || !after || caret.page !== page) continue;
     const left = Math.min(px(caret.x), px(after.x)), right = Math.max(px(caret.x), px(after.x));
     if (x < left || x > right || y < px(caret.y) || y > px(caret.y + caret.height)) continue;
-    return { hit: true, sectionIndex: located.position.section, paragraphIndex: info.index, controlIndex: control.index, footnoteNumber: control.number, bbox: { x: left, y: px(caret.y), w: right - left, h: px(caret.height) }, cursorRect: cursor(caret), charOffset: wireToLogical(map, control.offset) };
+    const ref = refOf({ section: list.section, steps: list.steps, para: located.position.para, control: control.index });
+    const notePage = core.caret(toAddress({ section: list.section, steps: [...list.steps, { para: located.position.para, control: control.index, index: 0 }] }, 0, 0))?.page ?? page;
+    const key = refKey(ref);
+    return {
+      hit: true, sectionIndex: ref.sectionIdx, paragraphIndex: ref.paraIdx, controlIndex: control.index, cellPath: ref.cellPath, kind: control.kind,
+      footnoteNumber: control.number, footnoteIndex: notesOnPage(core, notePage).findIndex(item => item.key === key), pageNum: notePage,
+      bbox: { x: left, y: px(caret.y), w: right - left, h: px(caret.height) }, cursorRect: cursor(caret), charOffset: wireToLogical(map, control.offset),
+    };
   }
   return { hit: false };
 }
@@ -460,11 +705,11 @@ function shapeId(core: HmCore, list: FurnitureList, para: number, id: number, st
   core.transact([start === undefined ? { op: 'setParaShape', from, to, paraShapeId: id } : { op: 'setCharShape', from, to, charShapeId: id }]);
   return JSON.stringify({ ok: true });
 }
-export function setCharShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, start: number, end: number, id: number): string {
-  return shapeId(core, noteList(core, sec, para, control), fnPara, id, start, end);
+export function setCharShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, start: number, end: number, id: number, path?: string): string {
+  return shapeId(core, noteList(core, sec, para, control, path), fnPara, id, start, end);
 }
-export function setParaShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, id: number): string {
-  return shapeId(core, noteList(core, sec, para, control), fnPara, id);
+export function setParaShapeIdInFootnote(core: HmCore, sec: number, para: number, control: number, fnPara: number, id: number, path?: string): string {
+  return shapeId(core, noteList(core, sec, para, control, path), fnPara, id);
 }
 export function setCharShapeIdInHf(core: HmCore, sec: number, header: boolean, applyTo: number, para: number, start: number, end: number, id: number): string {
   return shapeId(core, hfList(core, sec, header, applyTo), para, id, start, end);
@@ -484,6 +729,8 @@ extendBridge({
   getCharPropertiesInFootnote, applyCharFormatInFootnote, getFootnoteAtCursor, deleteFootnote,
   getPageFootnoteInfo, pageHasFootnoteFootholds, getCursorRectInNote, getCursorRectInFootnote, getNoteEditInfo,
   getSelectionRectsInFootnote, hitTestInFootnote, hitTestFootnote, hitTestBodyFootnoteMarker,
+  insertNoteAt, replaceRangeInFootnote, pasteInFootnote, copySelectionInFootnote, getNoteAtPosition, getNoteAnchor,
+  listNotes, getSelectionRectsInNote, navigateInNote, getBodyPositionAboveNote,
   getHeaderFooterEditTarget, getHeaderFooterPreviewPage, getCursorRectInHeaderFooter, getSelectionRectsInHeaderFooter,
   hitTestHeaderFooter, hitTestInHeaderFooterTarget, hitTestInHeaderFooter, renderHeaderFooterEditPreviewToCanvas,
   getHeaderFooterList, navigateHeaderFooterByPage, toggleHideHeaderFooter, getEndnoteShape, applyEndnoteShape,

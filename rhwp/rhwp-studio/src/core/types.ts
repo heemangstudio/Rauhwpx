@@ -136,6 +136,54 @@ export interface NoteEditInfo {
   virtualParaIndex?: number;
 }
 
+/**
+ * 각주·미주 하나. 본문 문단에 있으면 cellPath 가 없다. 표 셀·글상자 안이면 paraIdx 는 맨 바깥 본문
+ * 문단이고 cellPath 가 주석 표시가 든 안쪽 문단(마지막 cellParaIndex)까지 내려간다. controlIdx 는 그 문단의 컨트롤 번호다.
+ */
+export interface NoteRef {
+  sectionIdx: number;
+  paraIdx: number;
+  controlIdx: number;
+  cellPath?: CellPathEntry[];
+}
+
+/** 주석 목록의 한 문단 안 캐럿 위치. 캐럿 0 은 주석 자신의 번호 앞이다. */
+export interface NoteCaret {
+  fnParaIndex: number;
+  charOffset: number;
+}
+
+/** 위치에서 찾은 주석. */
+export interface NoteHit extends NoteRef {
+  kind: 'footnote' | 'endnote';
+  number: number;
+}
+
+/** 주석 내용 요약. lengths·units 는 논리 칸 기준이다(번호·개체 칸은 units 에서 U+FFFC). */
+export interface NoteContentInfo {
+  ok: boolean;
+  kind: 'footnote' | 'endnote';
+  paraCount: number;
+  totalTextLen: number;
+  number: number;
+  texts: string[];
+  lengths: number[];
+  units: string[];
+  /** 주석 자신의 번호 칸 위치. 번호를 지웠으면 비어 있다. */
+  numbers: NoteCaret[];
+  /** 첫 문단의 번호와 그 뒤 공백 하나를 뺀 내용. 문단은 줄바꿈으로 잇는다. */
+  noteText: string;
+  /** noteText 가 시작하는 캐럿(번호와 공백 뒤). */
+  textStart: NoteCaret;
+}
+
+/** 문서 순서의 주석 하나(에이전트 목록·탐색용). */
+export interface NoteListEntry extends NoteHit {
+  sourceType: 'body' | 'table' | 'shape';
+  paraCount: number;
+  noteText: string;
+}
+
 /** 구역 정의 (SectionDef) */
 export interface SectionDef {
   pageNum: number;
@@ -225,6 +273,12 @@ export interface BodyFootnoteMarkerHit {
   controlIndex?: number;
   footnoteNumber?: number;
   footnoteIndex?: number;
+  /** 표 셀·글상자 안 표시면 안쪽 문단까지의 경로. */
+  cellPath?: CellPathEntry[];
+  kind?: 'footnote' | 'endnote' | string;
+  /** 주석 내용이 놓인 쪽(미주는 표시와 다른 쪽일 수 있다). */
+  pageNum?: number;
+  charOffset?: number;
   bbox?: { x: number; y: number; w: number; h: number };
   cursorRect?: CursorRect;
 }
@@ -247,6 +301,8 @@ export interface DeleteFootnoteResult {
   controlIndex: number;
   charOffset: number;
   deletedNumber: number;
+  /** 지운 표시가 있던 본문(셀) 위치. */
+  position?: DocumentPosition;
 }
 
 /** 커서 위치의 필드 범위 정보 */

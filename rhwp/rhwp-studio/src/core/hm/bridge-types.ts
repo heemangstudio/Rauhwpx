@@ -6,6 +6,7 @@ import type { TextRemoval } from '../local-text-replace-result';
 import type { DocumentInfo } from '../types';
 
 export type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight, CharShapeRun } from '../types';
+export type { NoteRef, NoteCaret, NoteHit, NoteContentInfo, NoteListEntry } from '../types';
 export type { HyperlinkTarget, HyperlinkContext } from '../hyperlink';
 export type { HmlSaveBlocker, HmlSaveState } from '../hml-save-capability';
 export type { SelectionPageHints } from '../selection-page-hints';

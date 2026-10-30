@@ -88,9 +88,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "fnParaIdx",
       "startOffset",
       "endOffset",
-      "propsJson"
+      "propsJson",
+      "notePath"
     ],
-    "signature": "applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string)"
+    "signature": "applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string, notePath?: string)"
   },
   {
     "method": "applyCharFormatInHeaderFooter",
@@ -203,9 +204,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "controlIdx",
       "fnParaIdx",
-      "propsJson"
+      "propsJson",
+      "notePath"
     ],
-    "signature": "applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string)"
+    "signature": "applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string, notePath?: string)"
   },
   {
     "method": "applyParaFormatInHf",
@@ -488,9 +490,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "para",
-      "controlIdx"
+      "controlIdx",
+      "notePath"
     ],
-    "signature": "deleteFootnote(sec: number, para: number, controlIdx: number)"
+    "signature": "deleteFootnote(sec: number, para: number, controlIdx: number, notePath?: string)"
   },
   {
     "method": "deleteHeaderFooter",
@@ -718,9 +721,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "count"
+      "count",
+      "notePath"
     ],
-    "signature": "deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number)"
+    "signature": "deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number, notePath?: string)"
   },
   {
     "method": "deleteTextInHeaderFooter",
@@ -931,6 +935,15 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "insertNewNumber(sec: number, para: number, charOffset: number, startNum: number)"
   },
   {
+    "method": "insertNoteAt",
+    "kind": "document",
+    "parameters": [
+      "pos",
+      "kind"
+    ],
+    "signature": "insertNoteAt(pos: DocumentPosition, kind: 'footnote' | 'endnote')"
+  },
+  {
     "method": "insertPageBreak",
     "kind": "document",
     "parameters": [
@@ -1086,9 +1099,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "text"
+      "text",
+      "notePath"
     ],
-    "signature": "insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string)"
+    "signature": "insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string, notePath?: string)"
   },
   {
     "method": "insertTextInHeaderFooter",
@@ -1152,9 +1166,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "para",
       "controlIdx",
-      "fnParaIdx"
+      "fnParaIdx",
+      "notePath"
     ],
-    "signature": "mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number)"
+    "signature": "mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string)"
   },
   {
     "method": "mergeParagraphInHeaderFooter",
@@ -1334,6 +1349,22 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "pasteHwpJson(sec: number, para: number, charOffset: number, json: string)"
   },
   {
+    "method": "pasteInFootnote",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "para",
+      "controlIdx",
+      "startFnPara",
+      "startOffset",
+      "endFnPara",
+      "endOffset",
+      "text",
+      "notePath"
+    ],
+    "signature": "pasteInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, text: string | null, notePath?: string)"
+  },
+  {
     "method": "pasteInternal",
     "kind": "document",
     "parameters": [
@@ -1488,6 +1519,22 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "caseSensitive"
     ],
     "signature": "replaceOne(query: string, newText: string, caseSensitive: boolean)"
+  },
+  {
+    "method": "replaceRangeInFootnote",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "para",
+      "controlIdx",
+      "startFnPara",
+      "startOffset",
+      "endFnPara",
+      "endOffset",
+      "replacementText",
+      "notePath"
+    ],
+    "signature": "replaceRangeInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, replacementText: string, notePath?: string)"
   },
   {
     "method": "replaceRangeInHeaderFooter",
@@ -1700,9 +1747,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "fnParaIdx",
       "startOffset",
       "endOffset",
-      "charShapeId"
+      "charShapeId",
+      "notePath"
     ],
-    "signature": "setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number)"
+    "signature": "setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number, notePath?: string)"
   },
   {
     "method": "setCharShapeIdInHf",
@@ -1917,9 +1965,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "controlIdx",
       "fnParaIdx",
-      "paraShapeId"
+      "paraShapeId",
+      "notePath"
     ],
-    "signature": "setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number)"
+    "signature": "setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number, notePath?: string)"
   },
   {
     "method": "setParaShapeIdInHf",
@@ -2076,9 +2125,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "removedParaMeta"
+      "removedParaMeta",
+      "notePath"
     ],
-    "signature": "splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta)"
+    "signature": "splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta, notePath?: string)"
   },
   {
     "method": "splitParagraphInHeaderFooter",
