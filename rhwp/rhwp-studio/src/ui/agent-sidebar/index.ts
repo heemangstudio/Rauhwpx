@@ -1935,7 +1935,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   hamaBadge.append(hamaUsage.meter);
   providerTrigger.append(providerIcon, hamaBadge);
 
-  const providerMenu = el('div', 'ag-model-menu');
+  const providerMenu = el('div', 'ag-model-menu ag-provider-menu');
   providerMenu.setAttribute('role', 'menu');
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
@@ -1961,14 +1961,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   const hamaLock = el('span', 'ag-provider-lock');
-  hamaLock.append(createIcon('lock'), createIcon('send'));
+  hamaLock.append(createIcon('lock'));
   for (const agent of PROVIDER_ORDER) {
     const item = el('button', 'ag-model-item ag-provider-item');
     item.type = 'button';
     item.dataset.agent = agent;
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', 'false');
-    item.append(createProviderIcon(agent), document.createTextNode(AGENT_LABEL[agent]));
+    item.title = AGENT_LABEL[agent];
+    item.setAttribute('aria-label', AGENT_LABEL[agent]);
+    item.append(createProviderIcon(agent), el('span', 'ag-provider-name', AGENT_LABEL[agent]));
     if (agent === 'hama') item.append(hamaLock);
     item.addEventListener('click', () => {
       if (agent === 'hama' && item.dataset.locked === 'true') {

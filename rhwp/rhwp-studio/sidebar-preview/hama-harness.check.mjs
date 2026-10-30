@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 /** Hama 하네스: 잠긴 항목은 플랜 안내만 열고, 게이지는 Hama 에서만, 기본 하네스는 고른 적 없는 가입자만. */
 export async function checkHamaHarness({ page, origin, open, screenshot }) {
+  const viewport = page.viewport();
   const agent = () => page.$eval('.ag-root', (root) => root.dataset.agent);
   const shown = (selector) => page.$eval(selector, (node) => node.checkVisibility());
   const openPicker = async () => {
@@ -41,6 +42,13 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   await openPicker();
   const rowTops = await page.$$eval('.ag-provider-item:not([hidden])', (items) => new Set(items.map((item) => item.offsetTop)).size);
   assert.equal(rowTops, 1, 'Hama sits on the same row as the other providers');
+  await page.setViewport({ width: 320, height: 900 });
+  const narrow = await page.$$eval('.ag-provider-item:not([hidden])', (items) => {
+    const menu = items[0].parentElement.getBoundingClientRect();
+    return { rows: new Set(items.map((item) => item.offsetTop)).size, fits: items.every((item) => item.getBoundingClientRect().right <= menu.right + 0.5) };
+  });
+  assert.deepEqual(narrow, { rows: 1, fits: true }, 'the row holds at the narrowest sidebar');
+  await page.setViewport(viewport);
   assert.equal(await page.$$eval('.ag-hama-usage .ag-hama-usage-row', (rows) => rows.length), 3);
   assert.equal(await shown('.ag-hama-usage'), true);
 
