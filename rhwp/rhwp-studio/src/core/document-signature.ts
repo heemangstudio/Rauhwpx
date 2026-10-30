@@ -1,8 +1,8 @@
-// 원격 로드 문서의 바이트 시그니처(매직 넘버) 판정.
+// 문서 바이트 시그니처(매직 넘버) 판정.
 //
-// URL 파라미터/다운로드로 받은 응답이 실제 HWP/HWPX/HML 문서인지, 아니면 로그인/오류
-// 미리보기 HTML 페이지인지를 매직 우선으로 가린다. 서버가 Content-Type 을 부정확하게
-// 보내도(예: HWP3 본문에 text/html 404 헤더 — 조달청 pps.go.kr) 본문 매직이 우선한다.
+// 받은 바이트가 실제 HWP/HWPX/HML 문서인지, 아니면 로그인/오류 미리보기 HTML 페이지인지를
+// 매직 우선으로 가린다. 서버가 Content-Type 을 부정확하게 보내도(예: HWP3 본문에
+// text/html 404 헤더 — 조달청 pps.go.kr) 본문 매직이 우선한다.
 
 export type DocumentByteKind = 'hwp' | 'hwpx' | 'hml' | 'html' | 'xml' | 'unknown';
 
@@ -101,19 +101,4 @@ export function detectDocumentByteKind(
   if (declaredContentType.includes('text/html')) return 'html';
 
   return 'unknown';
-}
-
-export function assertRemoteDocumentBytes(bytes: Uint8Array, contentType?: string | null): void {
-  const kind = detectDocumentByteKind(bytes, contentType);
-  if (kind === 'hwp' || kind === 'hwpx' || kind === 'hml') return;
-
-  if (kind === 'html') {
-    throw new Error('실제 HWP/HWPX/HML 파일이 아닙니다. 파일 미리보기/오류 페이지가 반환되었습니다.');
-  }
-
-  if (kind === 'xml') {
-    throw new Error('HML 문서가 아닌 일반 XML 파일입니다.');
-  }
-
-  throw new Error('실제 HWP/HWPX/HML 파일이 아닙니다. 파일 시그니처를 확인할 수 없습니다.');
 }

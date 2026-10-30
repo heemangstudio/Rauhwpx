@@ -14,10 +14,10 @@ const page = `<!doctype html><html data-theme-effective="dark"><body>
 </body></html>`;
 
 interface Scenario {
-  search?: string;
   setup?: Record<string, unknown>;
   automated?: boolean;
   desktopLaunchFiles?: number;
+  desktopGeneratedDocument?: boolean;
 }
 
 interface BootResult {
@@ -66,13 +66,14 @@ async function boot(scenario: Scenario): Promise<BootResult> {
       if (options.setup) localStorage.setItem('rhwp-initial-setup', JSON.stringify(options.setup));
       if (options.desktopLaunchFiles !== undefined) {
         const files = Array.from({ length: options.desktopLaunchFiles }, (_, index) => ({ handleId: `h${index}` }));
+        const generated = options.desktopGeneratedDocument ? { launchDocumentId: 'generated-1' } : null;
         (window as unknown as { rhwpDesktop: unknown }).rhwpDesktop = {
           getLaunchFiles: () => Promise.resolve(files),
-          getLaunchGeneratedDocument: () => Promise.resolve(null),
+          getLaunchGeneratedDocument: () => Promise.resolve(generated),
         };
       }
     }, scenario);
-    await tab.goto(`${origin}/${scenario.search ?? ''}`);
+    await tab.goto(`${origin}/`);
     return await tab.evaluate(async () => {
       const state = (window as unknown as { __rhwpBoot: { decided: Promise<void>; mode: string; launchedWithFile: boolean } }).__rhwpBoot;
       await state.decided;
@@ -118,8 +119,8 @@ test('a first launch that opens a desktop file shows the still logo and defers s
   assert.equal(empty.launchedWithFile, false);
 });
 
-test('a first launch with a document URL shows the still logo', async () => {
-  const result = await boot({ search: '?url=https%3A%2F%2Fexample.com%2Fa.hwp' });
+test('a first launch that opens a generated document shows the still logo', async () => {
+  const result = await boot({ desktopLaunchFiles: 0, desktopGeneratedDocument: true });
   assert.equal(result.mode, 'still');
   assert.equal(result.launchedWithFile, true);
 });

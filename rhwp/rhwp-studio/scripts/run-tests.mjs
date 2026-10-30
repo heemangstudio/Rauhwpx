@@ -12,10 +12,6 @@ const files = readdirSync(new URL('../tests/', import.meta.url))
   .filter((name) => name.endsWith('.test.ts') && name.endsWith('.browser.test.ts') === browser)
   .sort()
   .map((name) => `tests/${name}`);
-if (!browser) {
-  files.push(...readdirSync(new URL('../../npm/editor/tests/', import.meta.url))
-    .filter((name) => name.endsWith('.test.mjs')).sort().map((name) => `../npm/editor/tests/${name}`));
-}
 if (!files.length) throw new Error(`No ${suite} tests found`);
 // Browser test servers otherwise invalidate the shared Vite cache while another page imports a module.
 // A file whose tests all finished can still hold a handle on Linux CI and keep the run waiting until the job times out.

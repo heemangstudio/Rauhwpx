@@ -32,6 +32,23 @@ jobs:
       - id: changes
         run: node scripts/ci-changes.mjs
 
+  secrets:
+    # Every PR, whatever it touches: no key-shaped literal in any tracked file.
+    name: Secret scan
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          # Parity PDFs are binary; git grep skips them anyway.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - run: node scripts/check-secrets.mjs
+
   engine:
     name: Engine
     needs: changes
@@ -149,14 +166,6 @@ jobs:
         run: |
           npm --prefix site-api ci
           npm --prefix site-api test
-      - name: Test browser extension security boundaries
-        if: contains(needs.changes.outputs.app, 'extensions')
-        run: >-
-          node --test
-          rhwp/rhwp-shared/security/*.test.js
-          rhwp/rhwp-chrome/sw/fetch-security.test.mjs
-          rhwp/rhwp-firefox/sw/fetch-security.test.mjs
-          rhwp/rhwp-safari/src/fetch-security.test.mjs
 
   session-tests:
     # macOS session tests run nightly (nightly.yml).

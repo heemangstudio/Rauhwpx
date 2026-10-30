@@ -16,12 +16,6 @@ export const PUBLISH_DOCS = [
   'CLAUDE.md',
   'rhwp/README.md',
   'rhwp/rhwp-agent/README.md',
-  'rhwp/rhwp-chrome/README.md',
-  'rhwp/rhwp-chrome/PRIVACY.md',
-  'rhwp/rhwp-chrome/DEVELOPER_GUIDE.md',
-  'rhwp/rhwp-firefox/README.md',
-  'rhwp/rhwp-firefox/PRIVACY.md',
-  'rhwp/rhwp-vscode/README.md',
 ];
 
 const LINK_RE = /\[(?:[^\]]*)\]\(([^)]+)\)/g;

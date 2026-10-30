@@ -1,1 +1,0 @@
-../../rhwp-shared/sw/private-network.js
