@@ -135,9 +135,9 @@ export interface NoteShapeSettings {
   startNumber: number;
   /** 주석 내용의 번호를 위 첨자로 쓴다 (HWPX supscript) */
   superscript?: boolean;
-  /** 구분선 길이가 0이 아니다. false 로 적용하면 길이만 0이 되고 종류·굵기·색은 남는다 */
+  /** 구분선 길이가 0이 아니다. false 로 적용하면 길이 0, 종류 0(없음)이 되고 굵기·색은 남는다 (한컴) */
   separatorEnabled: boolean;
-  /** -1 은 한컴 기본 5 cm, 0 은 구분선 없음 */
+  /** 0 보다 크면 HWPUNIT. -1 5 cm, -2 2 cm, -3 단 너비의 1/3, -4 단 너비 (한컴), 0 구분선 없음 */
   separatorLength: number;
   separatorMarginTop: number;
   separatorMarginBottom: number;

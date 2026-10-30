@@ -1029,6 +1029,11 @@ export class WasmBridge {
     return api.applyEndnoteShape(this.core, sec, settings);
   }
 
+  /** 주석 모양 대화상자의 "문서 전체" 적용: 준 항목만 모든 구역에 한 편집으로 쓴다. */
+  applyNoteShapeToDocument(kind: 'footnote' | 'endnote', changes: Partial<NoteShapeSettings>): { ok: boolean; changed?: boolean } {
+    return api.applyNoteShapeToDocument(this.core, kind, changes);
+  }
+
   /** 각주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
   getFootnoteShape(sec: number): NoteShapeSettings {
     return api.getFootnoteShape(this.core, sec);

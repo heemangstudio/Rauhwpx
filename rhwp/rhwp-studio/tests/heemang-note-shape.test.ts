@@ -54,7 +54,7 @@ for (const kind of ['footnote', 'endnote'] as const) {
   });
 }
 
-test('바뀐 것 없는 적용은 편집하지 않고, 구분선을 끄면 길이만 0이 되며 이름 없는 저장값은 남는다', t => {
+test('바뀐 것 없는 적용은 편집하지 않고, 구분선을 끄면 한컴처럼 길이 0·종류 없음이 되며 이름 없는 저장값은 남는다', t => {
   const { core } = open(t);
   const footnote = shapes.getFootnoteShape(core, 0);
   assert.equal(footnote.separatorLength, -1, '한컴 기본 각주 구분선 5 cm');
@@ -65,9 +65,10 @@ test('바뀐 것 없는 적용은 편집하지 않고, 구분선을 끄면 길�
 
   shapes.applyFootnoteShape(core, 0, { ...footnote, separatorEnabled: false });
   const off = core.query<{ separatorLength: number; lineKind: number; lineWidth: number }>({ kind: 'noteShape', section: 0, noteKind: 'footnote' });
-  assert.deepEqual([off.separatorLength, off.lineKind, off.lineWidth], [0, footnote.separatorLineType, footnote.separatorLineWidth]);
+  assert.deepEqual([off.separatorLength, off.lineKind, off.lineWidth], [0, 0, footnote.separatorLineWidth]);
   shapes.applyFootnoteShape(core, 0, { ...shapes.getFootnoteShape(core, 0), separatorEnabled: true });
-  assert.equal(shapes.getFootnoteShape(core, 0).separatorLength, -1, '다시 켜면 한컴 기본 길이');
+  const on = shapes.getFootnoteShape(core, 0);
+  assert.deepEqual([on.separatorLength, on.separatorLineType], [-1, 1], '다시 켜면 5 cm 실선');
 
   // 대화상자가 모르는 번호 모양(20)·위치(3)·속성 14비트 위는 다른 값을 고쳐도 남는다.
   const raw = core.query<{ attr: number }>({ kind: 'noteShape', section: 0, noteKind: 'endnote' });
@@ -77,4 +78,17 @@ test('바뀐 것 없는 적용은 편집하지 않고, 구분선을 끄면 길�
   assert.deepEqual([endnote.numberFormat, endnote.placement], ['20', '3']);
   shapes.applyEndnoteShape(core, 0, { ...endnote, prefixChar: '<' });
   assert.equal(core.query<{ attr: number }>({ kind: 'noteShape', section: 0, noteKind: 'endnote' }).attr, attr);
+});
+
+test('문서 전체 적용은 바꾼 항목만 모든 구역에 한 편집으로 쓴다 (한컴 c06f 구역의 끝)', t => {
+  const { core } = open(t, new Uint8Array(readFileSync(new URL('../../samples/hwpx/2026_oss_rst.hwpx', import.meta.url))));
+  // 둘째 구역만 다른 앞 장식 문자를 갖게 해 둔다. 바꾸지 않은 항목은 구역마다 남아야 한다.
+  shapes.applyEndnoteShape(core, 1, { ...shapes.getEndnoteShape(core, 1), prefixChar: '[' });
+  assert.deepEqual(shapes.applyNoteShapeToDocument(core, 'endnote', { placement: 'sectionEnd' }), { ok: true, changed: true });
+  assert.deepEqual([0, 1].map(sec => shapes.getEndnoteShape(core, sec).placement), ['sectionEnd', 'sectionEnd']);
+  assert.deepEqual([0, 1].map(sec => shapes.getEndnoteShape(core, sec).prefixChar), ['', '[']);
+  // 엔진 되돌리기 한 번이 두 구역을 함께 되돌린다.
+  core.mutate(d => d.undo());
+  assert.deepEqual([0, 1].map(sec => shapes.getEndnoteShape(core, sec).placement), ['documentEnd', 'documentEnd']);
+  assert.deepEqual(shapes.applyNoteShapeToDocument(core, 'endnote', { placement: 'documentEnd' }), { ok: true, changed: false });
 });

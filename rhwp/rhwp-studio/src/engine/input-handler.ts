@@ -2473,7 +2473,8 @@ export class InputHandler {
     return targets;
   }
 
-  private getCurrentEditContext(): EditContext | undefined {
+  /** 지금 편집 중인 머리말·꼬리말·주석. 본문이면 undefined. 대화상자가 되돌리기 뒤 그 자리로 돌아오게 할 때 쓴다. */
+  getCurrentEditContext(): EditContext | undefined {
     if (this.cursor.isInHeaderFooter()) {
       return {
         mode: 'headerFooter',

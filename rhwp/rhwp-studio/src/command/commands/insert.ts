@@ -97,19 +97,19 @@ const canInsertNote = (ctx: Parameters<NonNullable<CommandDef['canExecute']>>[0]
   ctx.hasDocument && ctx.inNote !== true && ctx.inHeaderFooter !== true;
 
 /**
- * 각주·미주 모양 대화상자를 연다. 탭을 정하지 않으면 주석 안에서는 그 주석의 종류, 본문에서는 각주 탭이다.
+ * 주석 모양 대화상자를 연다 (한컴 FootnoteOption). 본문에서는 각주·미주 두 탭, 주석 안에서는 그 주석의 탭 하나다.
  * 구역은 주석 안이면 그 주석의 구역, 아니면 본문 캐럿의 구역이다.
  */
-function openNoteShapeDialog(services: Parameters<CommandDef['execute']>[0], kind?: NoteKind): void {
+function openNoteShapeDialog(services: Parameters<CommandDef['execute']>[0]): void {
   const ih = services.getInputHandler();
   const cursor = (ih as any)?.cursor;
   let sectionIdx = ih?.getPosition()?.sectionIndex ?? 0;
-  let tab: NoteKind = kind ?? 'footnote';
+  let kinds: NoteKind[] = ['footnote', 'endnote'];
   if (cursor?.isInFootnote?.()) {
     sectionIdx = cursor.fnSectionIdx;
-    if (!kind && services.wasm.getFootnoteInfo(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx, cursor.fnNotePath).kind === 'endnote') tab = 'endnote';
+    kinds = [services.wasm.getFootnoteInfo(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx, cursor.fnNotePath).kind];
   }
-  new NoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services, tab).show();
+  new NoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services, kinds).show();
 }
 
 export const insertCommands: CommandDef[] = [
@@ -302,20 +302,11 @@ export const insertCommands: CommandDef[] = [
   },
   {
     id: 'insert:note-shape',
-    label: '각주/미주 모양',
+    label: '주석 모양',
     icon: 'icon-footnote',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       openNoteShapeDialog(services);
-    },
-  },
-  {
-    id: 'insert:endnote-shape',
-    label: '미주 모양',
-    icon: 'icon-endnote',
-    canExecute: (ctx) => ctx.hasDocument,
-    execute(services) {
-      openNoteShapeDialog(services, 'endnote');
     },
   },
   {

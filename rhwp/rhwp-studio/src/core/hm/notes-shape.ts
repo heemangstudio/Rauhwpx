@@ -4,6 +4,7 @@
  * 속성(attr) 비트는 HWP 5.0 각주/미주 모양 속성을 따른다: 0~7 번호 모양, 8~9 위치, 10~11 번호 매기기,
  * 12 내용 번호 위 첨자, 13 본문 아래(각주). 14비트 위와 이름이 없는 저장값은 그대로 남긴다.
  */
+import type { EditOp } from '../../../vendor/hm-wasm/hm_wasm';
 import type { HmCore } from './core';
 import { extendBridge } from './api';
 import * as format from './format';
@@ -77,8 +78,8 @@ export function getNoteShape(core: HmCore, sec: number, kind: NoteKind): NoteSha
   return settings;
 }
 
-/** 바뀐 것이 없으면 편집하지 않고 `changed: false` 를 돌려준다. 빠진 선택 항목은 저장값을 남긴다. */
-export function applyNoteShape(core: HmCore, sec: number, kind: NoteKind, settings: NoteShapeSettings): { ok: boolean; changed: boolean } {
+/** 설정대로 쓸 setNoteShape 편집. 저장값과 같으면 null. 빠진 선택 항목은 저장값을 남긴다. */
+function shapeOp(core: HmCore, sec: number, kind: NoteKind, settings: NoteShapeSettings): EditOp | null {
   const before = query(core, sec, kind) ?? {};
   const old = before.attr ?? 0;
   const superscript = settings.superscript ?? !!(old & SUPERSCRIPT);
@@ -88,20 +89,44 @@ export function applyNoteShape(core: HmCore, sec: number, kind: NoteKind, settin
     | code(PLACEMENT[kind], settings.placement, 3, '주석 위치') << 8
     | code(NUMBERING, settings.numbering, 3, '번호 매기기') << 10
     | (superscript ? SUPERSCRIPT : 0) | (beneathText ? BENEATH_TEXT : 0);
-  const storedLength = settings.separatorLength === 0 ? DEFAULT_SEPARATOR_LENGTH[kind] : settings.separatorLength;
+  // 한컴 c11c: 구분선을 끄면 길이 0, 종류 NONE 으로 저장한다. 다시 켜면 5 cm 실선부터다.
+  const on = settings.separatorEnabled;
+  const lineKind = on ? (settings.separatorLineType || 1) : 0;
   const patch: Required<NoteShape> = {
     attr, userChar: charCode(settings.userChar ?? '', '사용자 기호'), prefix: charCode(settings.prefixChar ?? '', '앞 장식 문자'),
-    suffix: charCode(settings.suffixChar ?? '', '뒤 장식 문자'), start: settings.startNumber,
-    separatorLength: settings.separatorEnabled ? storedLength : 0,
+    suffix: charCode(settings.suffixChar ?? '', '뒷 장식 문자'), start: settings.startNumber,
+    separatorLength: on ? (settings.separatorLength || DEFAULT_SEPARATOR_LENGTH[kind]) : 0,
     spaceAbove: settings.separatorMarginTop, spaceBelow: settings.separatorMarginBottom, spaceBetween: settings.noteSpacing,
-    lineKind: settings.separatorLineType, lineWidth: settings.separatorLineWidth, lineColor: format.hexToColor(settings.separatorColor),
+    lineKind, lineWidth: settings.separatorLineWidth, lineColor: format.hexToColor(settings.separatorColor),
   };
   for (const [key, value] of Object.entries(patch)) {
     if (!Number.isInteger(value)) throw new RangeError(`잘못된 주석 모양 값 ${key}: ${String(value)}`);
   }
-  if (Object.entries(patch).every(([key, value]) => before[key as keyof NoteShape] === value)) return { ok: true, changed: false };
-  core.transact([{ op: 'setNoteShape', section: sec, kind, patch }]);
-  return { ok: true, changed: true };
+  if (Object.entries(patch).every(([key, value]) => before[key as keyof NoteShape] === value)) return null;
+  return { op: 'setNoteShape', section: sec, kind, patch };
+}
+
+/** 한 구역의 주석 모양을 바꾼다. 바뀐 것이 없으면 편집하지 않고 `changed: false` 를 돌려준다. */
+export function applyNoteShape(core: HmCore, sec: number, kind: NoteKind, settings: NoteShapeSettings): { ok: boolean; changed: boolean } {
+  const op = shapeOp(core, sec, kind, settings);
+  if (op) core.transact([op]);
+  return { ok: true, changed: !!op };
+}
+
+/**
+ * 한컴 주석 모양의 적용 범위 "문서 전체": 준 항목만 모든 구역에 덮어쓴다. 구역마다 다른 나머지 항목은 남는다.
+ * 편집 한 번(엔진 트랜잭션 하나)이다. 바뀐 구역이 없으면 편집하지 않는다.
+ */
+export function applyNoteShapeToDocument(core: HmCore, kind: NoteKind, changes: Partial<NoteShapeSettings>): { ok: boolean; changed: boolean } {
+  const ops: EditOp[] = [];
+  for (let sec = 0; ; sec++) {
+    // 조판 전에도 세도록 엔진에 구역을 묻는다. 없는 구역은 BAD_ADDRESS 다.
+    try { query(core, sec, kind); } catch (error) { if (sec === 0) throw error; break; }
+    const op = shapeOp(core, sec, kind, { ...getNoteShape(core, sec, kind), ...changes });
+    if (op) ops.push(op);
+  }
+  if (ops.length) core.transact(ops);
+  return { ok: true, changed: ops.length > 0 };
 }
 
 export const getFootnoteShape = (core: HmCore, sec: number): NoteShapeSettings => getNoteShape(core, sec, 'footnote');
@@ -109,5 +134,4 @@ export const getEndnoteShape = (core: HmCore, sec: number): NoteShapeSettings =>
 export const applyFootnoteShape = (core: HmCore, sec: number, settings: NoteShapeSettings) => applyNoteShape(core, sec, 'footnote', settings);
 export const applyEndnoteShape = (core: HmCore, sec: number, settings: NoteShapeSettings) => applyNoteShape(core, sec, 'endnote', settings);
 
-
-extendBridge({ getFootnoteShape, getEndnoteShape, applyFootnoteShape, applyEndnoteShape });
+extendBridge({ getFootnoteShape, getEndnoteShape, applyFootnoteShape, applyEndnoteShape, applyNoteShapeToDocument });

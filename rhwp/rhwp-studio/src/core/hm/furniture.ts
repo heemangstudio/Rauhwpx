@@ -45,6 +45,10 @@ export function getEndnoteShape(core: HmCore, sec: number): EndnoteShapeSettings
   throw unsupported('getEndnoteShape');
 }
 
+export function applyNoteShapeToDocument(core: HmCore, kind: 'footnote' | 'endnote', changes: Partial<EndnoteShapeSettings>): { ok: boolean; changed?: boolean } {
+  throw unsupported('applyNoteShapeToDocument');
+}
+
 export function getFootnoteShape(core: HmCore, sec: number): EndnoteShapeSettings {
   throw unsupported('getFootnoteShape');
 }

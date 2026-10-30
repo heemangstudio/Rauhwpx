@@ -727,7 +727,7 @@ async function bookmarks(): Promise<{ add: StepResult; rename: StepResult; remov
 }
 
 type LayoutEntry = 'page:setup' | 'file:page-setup' | 'page:page-border' | 'page:col-settings'
-  | 'page:section-settings' | 'page:new-page-num' | 'insert:endnote-shape' | 'insert:note-shape';
+  | 'page:section-settings' | 'page:new-page-num' | 'insert:note-shape';
 
 /** 쪽·구역·번호 대화상자: 값 하나를 바꾸고 확인. */
 async function layoutDialog(entry: LayoutEntry): Promise<StepResult> {
@@ -759,18 +759,38 @@ async function layoutDialog(entry: LayoutEntry): Promise<StepResult> {
       case 'page:new-page-num':
         setValue(field(root, '시작 번호:'), '5');
         break;
-      case 'insert:endnote-shape':
-        setValue(field(root, '앞 장식 문자'), '(');
-        break;
       case 'insert:note-shape':
         // 본문에서 열면 각주 탭이다. 두 탭을 함께 고쳐도 확인 한 번이 한 칸이다.
-        setValue(field(root, '뒤 장식 문자'), ']');
+        setValue(field(root, '뒷 장식 문자'), ']');
         button(root, '미주 모양').click();
         setValue(field(root, '앞 장식 문자'), '(');
         break;
     }
     confirmDialog(root);
   });
+}
+
+/**
+ * 주석 안에서 연 주석 모양: 그 주석의 탭 하나만 보이고, 확인은 한 칸이며, 되돌리기·다시 하기 뒤에도
+ * 주석 편집과 캐럿이 그대로다 (한컴 c12).
+ */
+async function noteShapeInNote(kind: 'footnote' | 'endnote'): Promise<StepResult & { tabs: string[]; carets: string[] }> {
+  freshDocument(() => wasm.insertText(0, 0, 0, '주석 모양'));
+  host.moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 2 });
+  run(kind === 'footnote' ? 'insert:footnote' : 'insert:endnote');
+  const caret = () => `${host.cursor.isInFootnote()}:${host.cursor.fnInnerParaIdx}:${host.cursor.fnCharOffset}`;
+  const carets = [caret()];
+  let tabs: string[] = [];
+  const result = await step(() => {
+    run('insert:note-shape');
+    const root = dialog();
+    tabs = [...root.querySelectorAll<HTMLElement>('.dialog-tab')].filter((tab) => tab.style.display !== 'none').map((tab) => tab.textContent!.trim());
+    setValue(field(root, '앞 장식 문자'), '(');
+    confirmDialog(root);
+    carets.push(caret());
+  }, { afterUndo: () => carets.push(caret()) });
+  carets.push(caret());
+  return { ...result, tabs, carets };
 }
 
 /** 각주/미주 모양: 탭만 오가고 확인하면 문서도 이력도 그대로다. */
@@ -995,6 +1015,7 @@ export const scenarios = {
   bookmarks,
   layoutDialog,
   noteShapeNoChange,
+  noteShapeInNote,
   formModePageSetup,
   equationInsert,
   equationInsertAfterDocumentChange,
