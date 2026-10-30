@@ -22,7 +22,6 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   await open('reset=1&hama=notenrolled');
   await openPicker();
   assert.equal(await shown('.ag-provider-item[data-agent="hama"]'), false, 'Pro sees no Hama item');
-  assert.equal(await shown('.ag-provider-sep'), false, 'no empty Hama section');
 
   // 데스크톱, 라이선스 없음(Free) — 잠긴 항목은 플랜 안내를 열고 하네스를 바꾸지 않는다.
   await open('reset=1&hama=off');
@@ -40,6 +39,8 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   await page.waitForFunction(() => document.querySelector('.ag-root').dataset.agent === 'hama');
   assert.equal(await shown('.ag-hama-meter'), true, 'the usage ring shows on Hama');
   await openPicker();
+  const rowTops = await page.$$eval('.ag-provider-item:not([hidden])', (items) => new Set(items.map((item) => item.offsetTop)).size);
+  assert.equal(rowTops, 1, 'Hama sits on the same row as the other providers');
   assert.equal(await page.$$eval('.ag-hama-usage .ag-hama-usage-row', (rows) => rows.length), 3);
   assert.equal(await shown('.ag-hama-usage'), true);
 

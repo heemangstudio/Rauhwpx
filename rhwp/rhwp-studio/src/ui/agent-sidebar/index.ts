@@ -1960,9 +1960,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     providerTrigger.focus();
   }
 
-  // Hama 는 내 키로 도는 하네스들과 따로 선다 — 가는 줄 아래 자기 줄에.
-  const hamaSeparator = el('span', 'ag-provider-sep');
-  hamaSeparator.setAttribute('role', 'separator');
   const hamaLock = el('span', 'ag-provider-lock');
   hamaLock.append(createIcon('lock'), createIcon('send'));
   for (const agent of PROVIDER_ORDER) {
@@ -1972,10 +1969,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', 'false');
     item.append(createProviderIcon(agent), document.createTextNode(AGENT_LABEL[agent]));
-    if (agent === 'hama') {
-      item.append(hamaLock);
-      providerMenu.appendChild(hamaSeparator);
-    }
+    if (agent === 'hama') item.append(hamaLock);
     item.addEventListener('click', () => {
       if (agent === 'hama' && item.dataset.locked === 'true') {
         // 잠긴 Hama — 하네스를 바꾸지 않고 플랜 안내를 연다(카드는 앱 쪽이 이 이벤트로 띄운다).
@@ -2013,7 +2007,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       else item.removeAttribute('aria-haspopup');
       item.setAttribute('aria-label', locked ? `${AGENT_LABEL.hama} (잠김)` : AGENT_LABEL.hama);
       hamaLock.hidden = !locked;
-      hamaSeparator.hidden = item.hidden;
     }
     if (document.activeElement instanceof HTMLButtonElement
       && document.activeElement.hidden

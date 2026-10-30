@@ -28,18 +28,6 @@
 .ag-skill-token[data-agent='hama'] { --ag-skill-color: var(--ag-hama); }
 .ag-plan-card.ag-hama { box-shadow: none; }
 
-/* 피커: 내 키로 도는 하네스들 아래 가는 줄, 그 아래 줄에 Hama 가 따로 선다. */
-.ag-provider-sep {
-  flex: 0 0 100%;
-  height: 1px;
-  margin: 2px 0;
-  background: var(--ag-border);
-}
-
-.ag-provider-sep[hidden] {
-  display: none;
-}
-
 /* 잠긴 Hama — 고를 수 없고, 누르면 플랜 안내를 연다. */
 .ag-provider-item[data-locked='true'] {
   color: var(--ag-text-secondary);
