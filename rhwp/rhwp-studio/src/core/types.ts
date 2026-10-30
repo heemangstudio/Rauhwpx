@@ -94,27 +94,50 @@ export interface PageBorderFillSettings {
   applyPage?: 'all' | 'exceptFirst' | 'firstOnly';
 }
 
-export type EndnoteNumberFormat =
-  | 'digit'
-  | 'circledDigit'
-  | 'upperRoman'
-  | 'lowerRoman'
-  | 'upperAlpha'
-  | 'lowerAlpha'
-  | 'hangulSyllable'
-  | 'hangulJamo'
-  | 'hangulDigit'
-  | 'hanjaDigit';
+/**
+ * 각주·미주 번호 모양 이름. 괄호 안은 HWP 번호 모양 코드(속성 0~7비트)다.
+ * 이름이 없는 코드는 숫자 문자열('17')로 읽히고 그대로 다시 쓴다.
+ */
+export type NoteNumberFormat =
+  | 'digit' // 0 1,2,3
+  | 'circledDigit' // 1 ①,②,③
+  | 'upperRoman' // 2 I,II,III
+  | 'lowerRoman' // 3 i,ii,iii
+  | 'upperAlpha' // 4 A,B,C
+  | 'lowerAlpha' // 5 a,b,c
+  | 'circledUpperAlpha' // 6 Ⓐ,Ⓑ,Ⓒ
+  | 'circledLowerAlpha' // 7 ⓐ,ⓑ,ⓒ
+  | 'hangulSyllable' // 8 가,나,다
+  | 'circledHangulSyllable' // 9 ㉮,㉯,㉰
+  | 'hangulJamo' // 10 ㄱ,ㄴ,ㄷ
+  | 'circledHangulJamo' // 11 ㉠,㉡,㉢
+  | 'hangulDigit' // 12 일,이,삼
+  | 'hanjaDigit' // 13 一,二,三
+  | 'circledHanjaDigit' // 14 ㊀,㊁,㊂
+  | 'decagonCircle' // 15 갑,을,병
+  | 'decagonCircleHanja' // 16 甲,乙,丙
+  | 'symbol' // 128 *,†,‡
+  | 'userChar'; // 129 사용자 기호를 번호만큼 되풀이
+export type EndnoteNumberFormat = NoteNumberFormat;
 
-/** WASM getEndnoteShape() 반환 타입 — HWPUNIT 원본값 */
-export interface EndnoteShapeSettings {
+/**
+ * getFootnoteShape()/getEndnoteShape() 반환 타입 — 길이는 HWPUNIT 원본값.
+ * 이름이 없는 저장값(번호 모양·번호 매기기·위치)은 숫자 문자열로 읽히고 적용할 때 그대로 남는다.
+ */
+export interface NoteShapeSettings {
   ok?: boolean;
-  numberFormat: EndnoteNumberFormat | string;
+  numberFormat: NoteNumberFormat | string;
+  /** 번호 모양이 userChar 일 때 되풀이하는 글자 */
   userChar: string;
   prefixChar: string;
+  /** 빈 문자열이면 뒤 장식 문자가 없다 */
   suffixChar: string;
   startNumber: number;
+  /** 주석 내용의 번호를 위 첨자로 쓴다 (HWPX supscript) */
+  superscript?: boolean;
+  /** 구분선 길이가 0이 아니다. false 로 적용하면 길이만 0이 되고 종류·굵기·색은 남는다 */
   separatorEnabled: boolean;
+  /** -1 은 한컴 기본 5 cm, 0 은 구분선 없음 */
   separatorLength: number;
   separatorMarginTop: number;
   separatorMarginBottom: number;
@@ -122,9 +145,15 @@ export interface EndnoteShapeSettings {
   separatorLineType: number;
   separatorLineWidth: number;
   separatorColor: string;
+  /** restartPage 는 각주만 쓴다 */
   numbering: 'continue' | 'restartSection' | 'restartPage' | string;
-  placement: 'documentEnd' | 'sectionEnd' | string;
+  /** 각주: eachColumn | mergedColumn | rightMostColumn, 미주: documentEnd | sectionEnd */
+  placement: 'eachColumn' | 'mergedColumn' | 'rightMostColumn' | 'documentEnd' | 'sectionEnd' | string;
+  /** 각주를 본문 마지막 줄 바로 아래에 둔다 (HWPX beneathText) */
+  beneathText?: boolean;
 }
+export type EndnoteShapeSettings = NoteShapeSettings;
+export type FootnoteShapeSettings = NoteShapeSettings;
 
 export interface NoteEditInfo {
   ok: boolean;

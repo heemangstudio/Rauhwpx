@@ -200,10 +200,11 @@ test('책갈피 넣기·이름 바꾸기·지우기는 각각 undo 한 번으로
 test('쪽·구역·번호 대화상자 확인은 각각 undo 한 번으로 되돌아간다', opts, async (t) => {
   for (const entry of [
     'page:setup', 'file:page-setup', 'page:page-border', 'page:col-settings',
-    'page:section-settings', 'page:new-page-num', 'insert:endnote-shape',
+    'page:section-settings', 'page:new-page-num', 'insert:endnote-shape', 'insert:note-shape',
   ] as const) {
     await t.test(entry, async () => assertOneUndoStep(await scenario('layoutDialog', entry), entry));
   }
+  assertNothingRecorded(await scenario('noteShapeNoChange'), '각주/미주 모양 변경 없는 확인');
 });
 
 test('양식 모드에서는 편집 용지 두 진입점이 모두 막힌다', opts, async () => {

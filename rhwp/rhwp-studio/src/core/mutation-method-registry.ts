@@ -57,7 +57,7 @@ export const MUTATING_METHODS: readonly string[] = [
   'insertEquation', 'promoteOleEquation', 'setEquationProperties', 'setEquationPropertiesByPath', 'setNoteEquationProperties', 'deleteEquationControl',
   'insertEquationInCell', 'insertEquationInCellByPath', 'deleteEquationControlInCell', 'deleteEquationControlInCellByPath',
   // 각주/미주
-  'insertFootnote', 'insertEndnote', 'insertNoteAt', 'deleteFootnote', 'applyEndnoteShape',
+  'insertFootnote', 'insertEndnote', 'insertNoteAt', 'deleteFootnote', 'applyEndnoteShape', 'applyFootnoteShape',
   'insertTextInFootnote', 'deleteTextInFootnote', 'replaceRangeInFootnote', 'pasteInFootnote', 'splitParagraphInFootnote',
   'mergeParagraphInFootnote', 'applyParaFormatInFootnote',
   'applyCharFormatInFootnote', 'setCharShapeIdInFootnote', 'setParaShapeIdInFootnote',

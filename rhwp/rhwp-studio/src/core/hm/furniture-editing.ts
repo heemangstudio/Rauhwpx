@@ -7,7 +7,7 @@ import { copyRange } from './clipboard-native';
 import { api, extendBridge } from './api';
 import * as format from './format';
 import { paraOps, widgetCharPatch } from './format-widgets';
-import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
+import type { CharProperties, CursorRect, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
 import type { DocumentPosition, NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef } from './bridge-types';
 import { validateTextContent } from '../local-text-replace-result';
 
@@ -650,22 +650,6 @@ export function toggleHideHeaderFooter(core: HmCore, page: number, isHeader: boo
   return { hidden: !!(flags & bit) };
 }
 
-const NUMBER_FORMATS: Record<string, number> = { digit: 0, circledDigit: 1, upperRoman: 2, lowerRoman: 3, upperAlpha: 4, lowerAlpha: 5, hangulSyllable: 8, hangulJamo: 10, hangulDigit: 12, hanjaDigit: 13 };
-interface NoteShape { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
-export function getEndnoteShape(core: HmCore, sec: number): EndnoteShapeSettings {
-  const shape = core.query<NoteShape | null>({ kind: 'noteShape', section: sec, noteKind: 'endnote' }) ?? {};
-  const attr = shape.attr ?? 0;
-  return { ok: true, numberFormat: Object.keys(NUMBER_FORMATS).find(key => NUMBER_FORMATS[key] === (attr & 0xff)) ?? 'digit', userChar: String.fromCharCode(shape.userChar ?? 0).replace('\0', ''), prefixChar: String.fromCharCode(shape.prefix ?? 0).replace('\0', ''), suffixChar: String.fromCharCode(shape.suffix ?? 0).replace('\0', ''), startNumber: shape.start ?? 1, separatorEnabled: shape.separatorLength !== 0, separatorLength: shape.separatorLength ?? -1, separatorMarginTop: shape.spaceAbove ?? 0, separatorMarginBottom: shape.spaceBelow ?? 0, noteSpacing: shape.spaceBetween ?? 0, separatorLineType: shape.lineKind ?? 1, separatorLineWidth: shape.lineWidth ?? 0, separatorColor: format.colorToHex(shape.lineColor ?? 0), numbering: ['continue', 'restartSection', 'restartPage'][(attr >> 10) & 3] ?? 'continue', placement: ((attr >> 8) & 3) === 1 ? 'sectionEnd' : 'documentEnd' };
-}
-export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings) {
-  const before = core.query<NoteShape | null>({ kind: 'noteShape', section: sec, noteKind: 'endnote' });
-  const numberFormat = NUMBER_FORMATS[settings.numberFormat];
-  if (numberFormat === undefined) throw new Error('지원하지 않는 미주 번호 모양');
-  const attr = ((before?.attr ?? 0) & ~(0xff | (3 << 8) | (3 << 10))) | numberFormat | (settings.placement === 'sectionEnd' ? 1 << 8 : 0) | (Math.max(0, ['continue', 'restartSection', 'restartPage'].indexOf(settings.numbering)) << 10);
-  edit(core, { op: 'setNoteShape', section: sec, kind: 'endnote', patch: { attr, userChar: settings.userChar.charCodeAt(0) || 0, prefix: settings.prefixChar.charCodeAt(0) || 0, suffix: settings.suffixChar.charCodeAt(0) || 0, start: settings.startNumber, separatorLength: settings.separatorEnabled ? settings.separatorLength : 0, spaceAbove: settings.separatorMarginTop, spaceBelow: settings.separatorMarginBottom, spaceBetween: settings.noteSpacing, lineKind: settings.separatorLineType, lineWidth: settings.separatorLineWidth, lineColor: format.hexToColor(settings.separatorColor) } });
-  return { ok: true };
-}
-
 /**
  * 머리말·꼬리말 마당: 지우고 새로 만든 뒤 쪽 번호를 넣고 정렬한다. 6~10 은 1~5 에 굵게·밑줄을 더한다.
  * 4·5·9·10 은 오른쪽 정렬 탭으로 파일 이름과 쪽 번호를 양끝에 놓는다.
@@ -738,5 +722,5 @@ extendBridge({
   listNotes, getSelectionRectsInNote, navigateInNote, getBodyPositionAboveNote,
   getHeaderFooterEditTarget, getHeaderFooterPreviewPage, getCursorRectInHeaderFooter, getSelectionRectsInHeaderFooter,
   hitTestHeaderFooter, hitTestInHeaderFooterTarget, hitTestInHeaderFooter, renderHeaderFooterEditPreviewToCanvas,
-  getHeaderFooterList, navigateHeaderFooterByPage, toggleHideHeaderFooter, getEndnoteShape, applyEndnoteShape,
+  getHeaderFooterList, navigateHeaderFooterByPage, toggleHideHeaderFooter,
 });

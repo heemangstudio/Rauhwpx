@@ -563,6 +563,8 @@ const chordMapK: Record<string, string> = {
 const chordMapM: Record<string, string | [string, Record<string, unknown>]> = {
   n: 'insert:footnote',
   ㅜ: 'insert:footnote', // 한글 IME
+  e: 'insert:endnote',
+  ㄷ: 'insert:endnote', // 한글 IME
   s: 'page:hide',
   ㄴ: 'page:hide', // 한글 IME
   m: 'insert:equation',
@@ -867,7 +869,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     if (this._pendingChordM) {
       this._pendingChordM = false;
       const codeToKey: Record<string, string> = {
-        KeyM: 'm', KeyN: 'n', KeyS: 's', KeyF: 'f', KeyK: 'k',
+        KeyM: 'm', KeyN: 'n', KeyE: 'e', KeyS: 's', KeyF: 'f', KeyK: 'k',
         KeyR: 'r', KeyB: 'b', KeyD: 'd', KeyG: 'g', KeyY: 'y',
         KeyC: 'c', KeyW: 'w',
       };

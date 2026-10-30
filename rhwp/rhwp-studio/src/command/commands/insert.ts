@@ -5,7 +5,7 @@ import { EquationEditorDialog } from '@/ui/equation-editor-dialog';
 import { EquationPropertiesDialog } from '@/ui/equation-props-dialog';
 import { SymbolsDialog } from '@/ui/symbols-dialog';
 import { BookmarkDialog } from '@/ui/bookmark-dialog';
-import { EndnoteShapeDialog } from '@/ui/endnote-shape-dialog';
+import { NoteShapeDialog, type NoteKind } from '@/ui/endnote-shape-dialog';
 import { FieldInsertDialog } from '@/ui/field-insert-dialog';
 import { showShapePicker } from '@/ui/shape-picker';
 import { showToast } from '@/ui/toast';
@@ -43,7 +43,6 @@ let equationEditorDialog: EquationEditorDialog | null = null;
 let equationPropsDialog: EquationPropertiesDialog | null = null;
 let symbolsDialog: SymbolsDialog | null = null;
 let bookmarkDialog: BookmarkDialog | null = null;
-let endnoteShapeDialog: EndnoteShapeDialog | null = null;
 let fieldInsertDialog: FieldInsertDialog | null = null;
 
 /**
@@ -96,6 +95,22 @@ function insertNote(
 /** 주석·머리말 안이 아니면 넣을 수 있다. */
 const canInsertNote = (ctx: Parameters<NonNullable<CommandDef['canExecute']>>[0]) =>
   ctx.hasDocument && ctx.inNote !== true && ctx.inHeaderFooter !== true;
+
+/**
+ * 각주·미주 모양 대화상자를 연다. 탭을 정하지 않으면 주석 안에서는 그 주석의 종류, 본문에서는 각주 탭이다.
+ * 구역은 주석 안이면 그 주석의 구역, 아니면 본문 캐럿의 구역이다.
+ */
+function openNoteShapeDialog(services: Parameters<CommandDef['execute']>[0], kind?: NoteKind): void {
+  const ih = services.getInputHandler();
+  const cursor = (ih as any)?.cursor;
+  let sectionIdx = ih?.getPosition()?.sectionIndex ?? 0;
+  let tab: NoteKind = kind ?? 'footnote';
+  if (cursor?.isInFootnote?.()) {
+    sectionIdx = cursor.fnSectionIdx;
+    if (!kind && services.wasm.getFootnoteInfo(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx, cursor.fnNotePath).kind === 'endnote') tab = 'endnote';
+  }
+  new NoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services, tab).show();
+}
 
 export const insertCommands: CommandDef[] = [
   {
@@ -252,6 +267,7 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:footnote',
     label: '각주',
     icon: 'icon-footnote',
+    shortcutLabel: 'Ctrl+M,N',
     canExecute: canInsertNote,
     execute(services) {
       insertNote(services, 'footnote');
@@ -261,6 +277,7 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:endnote',
     label: '미주',
     icon: 'icon-endnote',
+    shortcutLabel: 'Ctrl+M,E',
     canExecute: canInsertNote,
     execute(services) {
       insertNote(services, 'endnote');
@@ -284,15 +301,21 @@ export const insertCommands: CommandDef[] = [
     },
   },
   {
+    id: 'insert:note-shape',
+    label: '각주/미주 모양',
+    icon: 'icon-footnote',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      openNoteShapeDialog(services);
+    },
+  },
+  {
     id: 'insert:endnote-shape',
     label: '미주 모양',
     icon: 'icon-endnote',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const pos = services.getInputHandler()?.getPosition();
-      const sectionIdx = pos?.sectionIndex ?? 0;
-      endnoteShapeDialog = new EndnoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services);
-      endnoteShapeDialog.show();
+      openNoteShapeDialog(services, 'endnote');
     },
   },
   {

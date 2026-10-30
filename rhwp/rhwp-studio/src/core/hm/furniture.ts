@@ -45,7 +45,15 @@ export function getEndnoteShape(core: HmCore, sec: number): EndnoteShapeSettings
   throw unsupported('getEndnoteShape');
 }
 
-export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean } {
+export function getFootnoteShape(core: HmCore, sec: number): EndnoteShapeSettings {
+  throw unsupported('getFootnoteShape');
+}
+
+export function applyFootnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean; changed?: boolean } {
+  throw unsupported('applyFootnoteShape');
+}
+
+export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean; changed?: boolean } {
   throw unsupported('applyEndnoteShape');
 }
 
