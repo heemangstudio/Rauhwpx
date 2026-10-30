@@ -7,7 +7,8 @@ import { copyRange } from './clipboard-native';
 import { api, extendBridge } from './api';
 import * as format from './format';
 import { paraOps, widgetCharPatch } from './format-widgets';
-import type { CharProperties, CursorRect, DocumentPosition, EndnoteShapeSettings, NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
+import type { CharProperties, CursorRect, EndnoteShapeSettings, RemovedParaMeta, SelectionRect, TextContent } from './bridge-types';
+import type { DocumentPosition, NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef } from './bridge-types';
 import { validateTextContent } from '../local-text-replace-result';
 
 type Side = 'both' | 'even' | 'odd';
