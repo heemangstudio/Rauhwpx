@@ -3,7 +3,7 @@
  *
  * Electron 은 preload IPC 로 메인 프로세스가 허브를 띄운다.
  * Vite 개발 서버는 `/__rhwp/ensure-agent-hub` 가 같은 일을 한다.
- * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
+ * 그 밖의 브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
 import type { DesktopFontHostApi, SystemFontIndex } from './core/desktop-fonts.ts';
@@ -488,31 +488,14 @@ export async function openPublishedDocumentInNewWindow(
 ): Promise<void> {
   const host = desktopHost(win);
   const openNative = host?.rhwpDesktop?.openGeneratedDocumentWindow;
-  if (openNative) {
-    if (!await openNative({
-      fileName: artifact.fileName,
-      downloadUrl: artifact.downloadUrl,
-      ...(options.readOnly ? { readOnly: true } : {}),
-    })) {
-      throw new Error('새 문서 창을 열지 못했습니다.');
-    }
-    return;
+  if (!openNative) throw new Error('새 문서 창을 열 수 없습니다.');
+  if (!await openNative({
+    fileName: artifact.fileName,
+    downloadUrl: artifact.downloadUrl,
+    ...(options.readOnly ? { readOnly: true } : {}),
+  })) {
+    throw new Error('새 문서 창을 열지 못했습니다.');
   }
-
-  const browserWindow = (win ?? globalThis) as DesktopHost & {
-    location?: { href: string };
-    open?: (url?: string | URL, target?: string, features?: string) => unknown;
-  };
-  if (!browserWindow.location?.href || !browserWindow.open) {
-    throw new Error('새 문서 창을 열 수 없습니다.');
-  }
-  const editorUrl = new URL(browserWindow.location.href);
-  editorUrl.search = '';
-  editorUrl.hash = '';
-  editorUrl.searchParams.set('url', artifact.downloadUrl);
-  editorUrl.searchParams.set('filename', artifact.fileName);
-  if (options.readOnly) editorUrl.searchParams.set('templatePreview', '1');
-  browserWindow.open(editorUrl.href, '_blank', 'noopener');
 }
 
 let inflight: Promise<boolean> | null = null;
@@ -1940,7 +1923,7 @@ function serviceWorkerContainer(win?: DesktopHost): ServiceWorkerLike | undefine
       : undefined);
 }
 
-/** Electron 셸에서는 PWA SW가 IndexedDB 할당량 정리로 최근문서/자동저장 open을 멈출 수 있다. */
+/** 예전 설치본이 남긴 서비스 워커는 IndexedDB 할당량 정리로 최근문서/자동저장 open을 멈출 수 있어 Electron 셸에서 해제한다. */
 export async function suppressDesktopServiceWorker(win?: DesktopHost): Promise<void> {
   if (!isDesktopApp(win)) return;
   const sw = serviceWorkerContainer(win);
@@ -1957,19 +1940,4 @@ export async function suppressDesktopServiceWorker(win?: DesktopHost): Promise<v
   sw.addEventListener?.('controllerchange', () => {
     void unregisterAll();
   });
-}
-
-/** 브라우저 PWA만 등록하고, Electron 은 기존 SW를 끈다. */
-export function installWebAppShell(win?: DesktopHost): void {
-  if (isDesktopApp(win)) {
-    void suppressDesktopServiceWorker(win);
-    return;
-  }
-  void import('virtual:pwa-register')
-    .then(({ registerSW }) => {
-      registerSW({ immediate: true });
-    })
-    .catch(() => {
-      /* 테스트·개발 번들에는 virtual module이 없을 수 있다 */
-    });
 }

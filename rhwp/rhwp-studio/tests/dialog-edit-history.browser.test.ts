@@ -36,12 +36,6 @@ before(async () => {
     configFile: false,
     cacheDir: resolve(studioRoot, 'node_modules/.vite-dialog-edit-history-test'),
     logLevel: 'silent',
-    // 파일 명령이 불러오는 PWA 등록 모듈은 앱 플러그인이 만든다. 여기서는 빈 모듈로 둔다.
-    plugins: [{
-      name: 'stub-pwa-register',
-      resolveId: (id: string) => (id === 'virtual:pwa-register' ? '\0virtual:pwa-register' : null),
-      load: (id: string) => (id === '\0virtual:pwa-register' ? 'export function registerSW() {}' : null),
-    }],
     resolve: {
       alias: {
         '@': resolve(studioRoot, 'src'),
