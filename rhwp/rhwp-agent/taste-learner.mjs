@@ -11,16 +11,12 @@
 // taste-learned 프레임 하나로 채팅의 "Rau-0.1 N가지 배움" 표시가 된다. 표시는 store 의 changes 를 품어 허브가 다시 떠도 되돌린다.
 // 여러 문서에서 같은 주제의 사용자 취향 후보가 생기면 AGENTS.md 한 줄을 제안한다(확인 카드).
 //
-// 공급자를 고르지 않았고(자동) 데스크톱 라이선스가 있으면 호스팅 Rau(Pro, routeInfo.hosted)를 먼저 쓴다.
-// Pro 가 아니라는 답(rau_requires_pro)이면 rau-upgrade 프레임을 한 번 보내고 내 계정 경로로 넘어간다.
-// BYOK(Pi, 사용자의 OpenRouter 키·선물 리스)로는 돌지 않는다 — 내 계정 경로는 Claude·Codex 뿐이다.
+// 학습은 호스팅 Rau 만 쓴다. 자격·한도·연결 문제로 쓸 수 없으면 이번 학습을 건너뛴다.
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
-import { codexQuotaAllowsTitle } from './agents/checkpoint-title.mjs';
-import { runOneShot as defaultRunOneShot } from './agents/one-shot-llm.mjs';
 import {
   DOCUMENT_MEMORY_KINDS,
   MAX_ENTRY_TEXT_CHARS,
@@ -33,11 +29,6 @@ import { recoverInterruptedFileReplacement, replaceFileAtomically } from './harn
 import { TOOL_CLASSIFICATIONS } from './tools.mjs';
 
 export const RAU_TASTE_NAME = 'Rau-0.1';
-/** 우선순위 순서. 준비된 첫 경로를 쓰고, 출력이 쓸모없으면 다음 경로로 넘어간다. */
-export const TASTE_ROUTES = Object.freeze([
-  Object.freeze({ provider: 'claude', model: 'claude-haiku-5-5', effort: 'medium' }),
-  Object.freeze({ provider: 'codex', model: 'gpt-6-luna', effort: 'medium' }),
-]);
 export const TASTE_SIGNAL_DEBOUNCE_MS = 5_000;
 /** 수락만 모인 동안 기다리는 시간 — 새 신호마다 다시 재고, 첫 신호부터 TASTE_ACCEPT_CAP_MS 를 넘지 않는다. */
 export const TASTE_ACCEPT_IDLE_MS = 30_000;
@@ -46,8 +37,6 @@ export const TASTE_ACCEPT_CAP_MS = 120_000;
 export const TASTE_DEFERRED_CAP_MS = 180_000;
 /** 허브가 내려갈 때 도는 학습을 기다려 주는 시간. 넘으면 끊는다. */
 export const TASTE_CLOSE_GRACE_MS = 2_000;
-export const TASTE_PROVIDER_TIMEOUT_MS = 90_000;
-export const TASTE_OVERALL_TIMEOUT_MS = 180_000;
 export const TASTE_MAX_OPS = 5;
 /** 턴에서 모으는 에이전트 답의 상한 (문자). */
 export const TASTE_ANSWER_CHARS = 8_000;
@@ -93,9 +82,9 @@ export function noteTasteTurnEvent(turn, evt) {
 
 // ── 설정 ────────────────────────────────────────────────────────────────────
 
-/** 학습기 공급자. auto 는 TASTE_ROUTES 의 차례대로, 그 밖은 그 공급자 하나만 쓴다. 옛 'pi' 는 자동으로 읽힌다. */
-export const TASTE_PROVIDERS = Object.freeze(['auto', 'claude', 'codex']);
-/** 한 번짜리 호출이 받는 추론 강도 (one-shot-llm 의 CLI 값). */
+/** 옛 클라이언트 요청 검증용. 읽거나 저장하면 모두 호스팅 경로로 정규화한다. */
+export const TASTE_PROVIDERS = Object.freeze(['auto', 'claude', 'codex', 'pi']);
+/** 옛 설정 요청의 추론 값. 저장할 때 비운다. */
 export const TASTE_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_TASTE_SETTINGS = Object.freeze({ enabled: true, provider: 'auto', model: null, effort: null });
 const MAX_MODEL_CHARS = 200;
@@ -118,9 +107,9 @@ const TASTE_FIELDS = Object.freeze({
   effort: (value) => value === null || TASTE_EFFORTS.includes(value),
 });
 
-/** 자동이면 모델·추론을 비운다 — 모델 선택은 고른 공급자의 것이다. */
+/** 옛 공급자·모델·추론 선택은 버린다. 호스팅 모델은 서버가 정한다. */
 function settled(settings) {
-  return settings.provider === 'auto' ? { ...settings, model: null, effort: null } : settings;
+  return { ...settings, provider: 'auto', model: null, effort: null };
 }
 
 /**
@@ -171,7 +160,9 @@ export class TasteSettingsStore {
       await recoverInterruptedFileReplacement(this.file, { platform: this.platform, fsApi: this.fs });
       const stat = await this.fs.lstat(this.file);
       if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_SETTINGS_BYTES) {
-        this.settings = normalizeTasteSettings(JSON.parse(await this.fs.readFile(this.file, 'utf8')));
+        const raw = JSON.parse(await this.fs.readFile(this.file, 'utf8'));
+        this.settings = normalizeTasteSettings(raw);
+        if ((raw?.provider && raw.provider !== 'auto') || raw?.model != null || raw?.effort != null) await this.set(this.settings);
       }
     } catch {
       // 없거나 깨진 설정은 기본값(켜짐)이다.
@@ -205,30 +196,6 @@ export class TasteSettingsStore {
 }
 
 // ── 경로·프롬프트·출력 ──────────────────────────────────────────────────────
-
-/**
- * 학습기 경로. Codex 는 남은 사용량이 넉넉할 때만 쓴다(고른 경우에도).
- * 공급자를 고르면 그 경로 하나만 쓰고, 모델·추론이 없으면 TASTE_ROUTES 의 기본값이다.
- */
-export function tasteCandidates(routeInfo = {}, settings = {}) {
-  const readiness = routeInfo.readiness ?? {};
-  const codexAllowed = codexQuotaAllowsTitle(routeInfo.codexQuota);
-  const chosen = TASTE_ROUTES.find((route) => route.provider === settings.provider);
-  if (chosen) {
-    return [{
-      provider: chosen.provider,
-      model: settings.model ?? chosen.model,
-      effort: settings.effort ?? chosen.effort,
-      ready: readiness[chosen.provider]?.ready === true && (chosen.provider !== 'codex' || codexAllowed),
-    }];
-  }
-  return TASTE_ROUTES.map(({ provider, model, effort }) => ({
-    provider,
-    model,
-    effort,
-    ready: readiness[provider]?.ready === true && (provider !== 'codex' || codexAllowed),
-  }));
-}
 
 /** JSON text that cannot close the surrounding data tag. */
 function embedJson(value) {
@@ -485,10 +452,8 @@ function settleWithin(promises, ms) {
  *   changed?: (documentId: string, key: string, revision: number) => void,
  *   promote?: (proposal: { line: string, subject: string, documents: number, refs: {key: string, entryId: string}[], threadId?: string, documentId: string })
  *     => Promise<string | { draftId?: string, exists?: boolean } | null> | string | { draftId?: string, exists?: boolean } | null,
- *   runOneShot?: typeof defaultRunOneShot,
  *   log?: (message: string) => void,
  *   debounceMs?: number, acceptIdleMs?: number, acceptCapMs?: number, deferredCapMs?: number,
- *   providerTimeoutMs?: number, overallTimeoutMs?: number,
  *   now?: () => number,
  * }} deps promote 는 만든 제안 id, 이미 AGENTS.md 에 있으면 { exists: true }, 자리가 없으면 null 을 돌려준다.
  */
@@ -502,14 +467,11 @@ export function createTasteLearner({
   emit = () => {},
   changed = () => {},
   promote = () => null,
-  runOneShot = defaultRunOneShot,
   log = () => {},
   debounceMs = TASTE_SIGNAL_DEBOUNCE_MS,
   acceptIdleMs = TASTE_ACCEPT_IDLE_MS,
   acceptCapMs = TASTE_ACCEPT_CAP_MS,
   deferredCapMs = TASTE_DEFERRED_CAP_MS,
-  providerTimeoutMs = TASTE_PROVIDER_TIMEOUT_MS,
-  overallTimeoutMs = TASTE_OVERALL_TIMEOUT_MS,
   now = Date.now,
 }) {
   /** 기억 키 → { busy, pending: Map(threadId → input), queue: [{ input, waiter }] }. 모든 일은 온 차례(seq)대로 돈다. */
@@ -567,12 +529,9 @@ export function createTasteLearner({
     }
     let routeInfo = {};
     try { routeInfo = (await routes({ threadId: input.threadId, documentId: input.documentId })) ?? {}; } catch {}
-    let chosen = {};
-    try { chosen = settings() ?? {}; } catch {}
-    const candidates = tasteCandidates(routeInfo, chosen);
-    const hosted = (!chosen.provider || chosen.provider === 'auto') && routeInfo.hosted?.usable?.() === true ? routeInfo.hosted : null;
-    if (!hosted && !candidates.some((candidate) => candidate.ready)) {
-      log(`${RAU_TASTE_NAME}: skipped ${input.kind} run, no ${chosen.provider && chosen.provider !== 'auto' ? `${chosen.provider} ` : ''}learner route is ready`);
+    const hosted = routeInfo.hosted?.usable?.() === true ? routeInfo.hosted : null;
+    if (!hosted) {
+      log(`${RAU_TASTE_NAME}: skipped ${input.kind} run, hosted learner is unavailable`);
       return empty;
     }
     let drained = input.signals;
@@ -604,22 +563,7 @@ export function createTasteLearner({
     const started = now();
     let result = null;
     try {
-      if (hosted) result = await learnHosted(hosted, prompt, input);
-      if (!result && candidates.some((candidate) => candidate.ready)) result = await runOneShot({
-        prompt,
-        candidates,
-        parse: parseTasteOutput,
-        providerTimeoutMs,
-        overallTimeoutMs,
-        deps: {
-          ...(routeInfo.deps ?? {}),
-          signal: controller.signal,
-          tempPrefix: 'rhwp-taste-',
-          label: RAU_TASTE_NAME,
-          maxOutputBytes: 512 * 1024,
-          acceptOutput: (value) => parseTasteOutput(value) !== null,
-        },
-      });
+      result = await learnHosted(hosted, prompt, input, controller.signal);
     } finally {
       controllers.delete(controller);
     }
@@ -642,10 +586,24 @@ export function createTasteLearner({
     return { changes: applied.changes, provider: result.provider, model: result.model };
   }
 
-  /** 호스팅 Rau 에 묻는다. 쓸 수 없거나 출력이 틀리면 null(내 계정 경로로 넘어간다). */
-  async function learnHosted(hosted, prompt, input) {
+  /** 호스팅 Rau 에 묻는다. 실패·잘못된 출력·종료 뒤의 늦은 답은 반영하지 않는다. */
+  async function learnHosted(hosted, prompt, input, signal) {
     let answer;
-    try { answer = await hosted.learn(prompt); } catch (error) { answer = { ok: false, code: error?.code ?? 'server' }; }
+    let onAbort;
+    try {
+      answer = await Promise.race([
+        hosted.learn(prompt, { signal }),
+        new Promise((resolve) => {
+          onAbort = () => resolve(null);
+          signal.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+    } catch (error) {
+      answer = { ok: false, code: error?.code ?? 'server' };
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
+    if (signal.aborted) return null;
     if (answer?.upgrade) {
       const frame = {
         v: 1,

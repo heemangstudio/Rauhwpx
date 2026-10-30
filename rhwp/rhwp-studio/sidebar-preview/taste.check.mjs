@@ -97,20 +97,10 @@ export async function checkTaste({ page, open, screenshot }) {
   await page.waitForFunction((input) => !input.disabled && !input.checked, {}, tasteToggle);
   const tasteSettings = () => page.evaluate(() => window.sidebarPreview.bridge.requestTasteSettings());
   assert.deepEqual(await tasteSettings(), { enabled: false, provider: 'auto', model: null, effort: null });
-  const field = (name) => `.ag-taste-settings [data-taste-field="${name}"]`;
-  assert.equal(await page.$eval(`${field('provider')} select`, (node) => node.disabled), true, 'the provider is locked while learning is off');
+  assert.equal(await page.$$eval('.ag-taste-settings select, .ag-taste-auth-row', (nodes) => nodes.length), 0);
   await tasteToggle.evaluate((input) => input.click());
-  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
-  assert.equal(await page.$eval(field('model'), (node) => node.hidden), true, 'auto has no model choice');
-
-  // BYOK(Pi)는 고를 수 없다. 공급자를 고르면 모델·추론은 그 공급자의 기본값이다.
-  assert.deepEqual(await page.$eval(`${field('provider')} select`, (node) => [...node.options].map((option) => option.value)), ['auto', 'claude', 'codex']);
-  await page.select(`${field('provider')} select`, 'claude');
-  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
-  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'claude', model: null, effort: null });
-  assert.equal(await page.$eval(`${field('model')} select`, (node) => node.value), 'claude-haiku-5-5');
-  await page.select(`${field('provider')} select`, 'auto');
-  await page.waitForFunction((selector) => document.querySelector(selector)?.hidden === true, {}, field('model'));
+  await page.waitForFunction((input) => !input.disabled && input.checked, {}, tasteToggle);
+  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'auto', model: null, effort: null });
   await page.click('.ag-settings-instructions-proposal .ag-settings-primary');
   await page.waitForSelector('.ag-settings-instructions-proposal', { hidden: true });
   assert.equal(await page.$eval('.ag-taste-action + .ag-taste-action', (node) => node.hidden), true);

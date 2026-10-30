@@ -1,54 +1,14 @@
-// 설정 → AI 의 Rau-0.1 (취향 학습). 대화에서 배우기 스위치와 학습기의 공급자·모델·추론 강도.
-// 허브가 정본이다. 알림·Git 전환처럼 바꾸는 즉시 저장하고 적용 초안을 거치지 않는다.
-// 데스크톱에서 공급자가 자동이면 Pro 줄이 호스팅 Rau 자격을 보인다(Pro 가 아니면 업그레이드 단추).
-// 공급자 고르기는 정리 도우미(settings-project.ts)와 같은 방식이다. BYOK(Pi)로는 돌지 않는다 — 고를 수 있는 공급자는 Claude·Codex 뿐이다.
-import './settings-taste.css';
-
+// 설정 → AI 의 호스팅 Rau-0.1. 대화에서 배우기와 Pro 자격만 보여 준다.
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import {
-  claudeModelLabel,
-  effortsForAgent,
-  labelForModel,
-  modelsForAgent,
-  resolveEffortForAgent,
-} from '../../agent/models.ts';
-import { RAU_TASTE_NAME, TASTE_DEFAULT_ROUTES, TASTE_EFFORTS } from '../../agent/taste.ts';
-import type { TasteProvider, TasteSettings } from '../../agent/types.ts';
-import { AGENT_LABEL } from './providers.ts';
+import { RAU_TASTE_NAME } from '../../agent/taste.ts';
+import type { TasteSettings } from '../../agent/types.ts';
 import { openRauUpgrade, type DesktopRauApi, type RauStatus } from './rau-upgrade.ts';
-
-type Option = { id: string; label: string };
-type ChosenProvider = Exclude<TasteProvider, 'auto'>;
-
-const PROVIDERS: readonly { id: TasteProvider; label: string }[] = [
-  { id: 'auto', label: '자동' },
-  { id: 'claude', label: AGENT_LABEL.claude },
-  { id: 'codex', label: AGENT_LABEL.codex },
-];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
-}
-
-function selectRow(field: string, label: string): { root: HTMLElement; select: HTMLSelectElement } {
-  const root = el('div', 'ag-settings-control-row ag-taste-setting-row');
-  root.dataset.tasteField = field;
-  const copy = el('span', 'ag-settings-control-copy');
-  copy.append(el('span', 'ag-settings-control-label', label));
-  const select = el('select', 'ag-settings-select ag-taste-setting-select');
-  select.setAttribute('aria-label', `${RAU_TASTE_NAME} ${label}`);
-  root.append(copy, select);
-  return { root, select };
-}
-
-function fill(control: HTMLSelectElement, options: readonly Option[], value: string): void {
-  const same = control.options.length === options.length
-    && options.every((option, index) => control.options[index]?.value === option.id && control.options[index]?.text === option.label);
-  if (!same) control.replaceChildren(...options.map((option) => new Option(option.label, option.id)));
-  if (options.some((option) => option.id === value)) control.value = value;
 }
 
 export interface TasteSettingsSectionDeps {
@@ -63,6 +23,8 @@ export interface TasteSettingsSection {
   /** 허브의 값(요청의 답이나 다른 창의 알림). 고르는 중인 요청의 답은 이 값이 덮는다. */
   accept(settings: TasteSettings | null): void;
   refresh(): Promise<void>;
+  /** 현재 상태를 다시 그린다. */
+  render(): void;
 }
 
 export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): TasteSettingsSection {
@@ -83,11 +45,6 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   learningTrack.setAttribute('aria-hidden', 'true');
   learning.append(learningCopy, learningInput, learningTrack);
 
-  const provider = selectRow('provider', '공급자');
-  const model = selectRow('model', '모델');
-  const effort = selectRow('effort', '추론');
-
-  // 호스팅 Rau(Pro). 자동 경로일 때만 먼저 쓰므로 그때만 보인다.
   const pro = el('div', 'ag-settings-control-row ag-taste-setting-row ag-taste-pro-row');
   pro.dataset.tasteField = 'pro';
   const proCopy = el('span', 'ag-settings-control-copy');
@@ -100,38 +57,16 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   pro.hidden = true;
   let rauStatus: RauStatus | null = null;
 
-  body.append(learning, provider.root, pro, model.root, effort.root);
+  body.append(learning, pro);
 
   // 허브가 답하기 전에는 기본값(켜짐, 자동)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;
   let shown: TasteSettings = { enabled: true, provider: 'auto', model: null, effort: null };
   let saving = false;
   let request = 0;
-
-  function modelOptions(agent: ChosenProvider, current: string): Option[] {
-    const options: Option[] = modelsForAgent(agent).map((entry) => ({ id: entry.id, label: entry.label }));
-    if (!options.some((option) => option.id === current)) {
-      options.unshift({ id: current, label: agent === 'claude' ? claudeModelLabel(current) : labelForModel('codex', current) });
-    }
-    return options;
-  }
-
-  function effortOptions(agent: ChosenProvider, current: string): Option[] {
-    return [...effortsForAgent(agent, current)].filter((option) => TASTE_EFFORTS.includes(option.id)).reverse();
-  }
-
-  function effortFor(agent: ChosenProvider, chosenModel: string, chosenEffort: string | null): string | null {
-    const options = effortOptions(agent, chosenModel);
-    if (options.length === 0) return null;
-    const preferred = chosenEffort ?? TASTE_DEFAULT_ROUTES[agent].effort;
-    if (options.some((option) => option.id === preferred)) return preferred;
-    const resolved = resolveEffortForAgent(agent, null, chosenModel);
-    return options.some((option) => option.id === resolved) ? resolved : options[0]!.id;
-  }
-
   function renderPro(): void {
     const status = rauStatus;
-    pro.hidden = !status?.ok || shown.provider !== 'auto' || !shown.enabled;
+    pro.hidden = !status?.ok || !shown.enabled;
     if (!status?.ok) return;
     const eligible = status.eligible === true;
     const capped = eligible && status.remainingUsd === 0;
@@ -149,20 +84,6 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     const locked = settings === null || saving;
     learningInput.checked = shown.enabled;
     learningInput.disabled = locked;
-    const off = locked || !shown.enabled;
-    fill(provider.select, PROVIDERS, shown.provider);
-    provider.select.disabled = off;
-    const agent = shown.provider === 'auto' ? null : shown.provider;
-    model.root.hidden = agent === null;
-    effort.root.hidden = agent === null;
-    if (!agent) return;
-    const currentModel = shown.model ?? TASTE_DEFAULT_ROUTES[agent].model;
-    fill(model.select, modelOptions(agent, currentModel), currentModel);
-    model.select.disabled = off;
-    const efforts = effortOptions(agent, currentModel);
-    effort.root.hidden = efforts.length === 0;
-    fill(effort.select, efforts, effortFor(agent, currentModel, shown.effort) ?? '');
-    effort.select.disabled = off;
   }
 
   function accept(next: TasteSettings | null): void {
@@ -203,18 +124,8 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   }
 
   learningInput.addEventListener('change', () => void save({ enabled: learningInput.checked }));
-  provider.select.addEventListener('change', () => {
-    void save({ provider: provider.select.value as TasteProvider, model: null, effort: null });
-  });
-  model.select.addEventListener('change', () => {
-    const agent = shown.provider === 'auto' ? null : shown.provider;
-    if (!agent) return;
-    const next = model.select.value;
-    void save({ model: next, effort: effortFor(agent, next, shown.effort) });
-  });
-  effort.select.addEventListener('change', () => void save({ effort: effort.select.value || null }));
   upgrade.addEventListener('click', () => openRauUpgrade(deps.rau ?? null, rauStatus?.upgradeUrl));
 
   render();
-  return { root, accept, refresh };
+  return { root, accept, refresh, render };
 }

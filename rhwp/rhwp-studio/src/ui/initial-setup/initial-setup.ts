@@ -16,7 +16,6 @@ import type {
   AgentName,
   AgentSetupStatusMap,
   SidebarEvent,
-  TasteProvider,
   TasteSettings,
 } from '../../agent/types.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
@@ -257,7 +256,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   modelsPanel.append(grid);
 
-  // ── Rau-0.1: 기본은 켜짐, 자동 공급자. 고르는 순간 허브에 저장한다. 켰을 때만 공급자를 고른다. ──
+  // ── Rau-0.1: 호스팅 학습을 켜거나 끄면 바로 저장한다. ──
   const tastePanel = el('div', 'rhwp-setup-panel rhwp-setup-taste');
   tastePanel.dataset.step = 'taste';
   const tasteGroup = el('div', 'rhwp-setup-font-actions');
@@ -275,28 +274,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     tasteGroup.append(root);
     return { enabled, root };
   });
-  const tasteProviders = el('div', 'rhwp-setup-grid rhwp-setup-taste-providers');
-  tasteProviders.setAttribute('role', 'radiogroup');
-  tasteProviders.setAttribute('aria-label', `${RAU_TASTE_NAME} 공급자`);
-  const TASTE_PROVIDER_CHOICES: ReadonlyArray<{ id: TasteProvider; label: string }> = [
-    { id: 'auto', label: '자동' },
-    { id: 'claude', label: AGENT_LABEL.claude },
-    { id: 'codex', label: AGENT_LABEL.codex },
-  ];
-  const tasteProviderChoices = TASTE_PROVIDER_CHOICES.map(({ id, label }) => {
-    const root = button('rhwp-setup-card-action');
-    root.setAttribute('role', 'radio');
-    root.setAttribute('aria-label', label);
-    const logo = el('span', 'rhwp-setup-card-logo');
-    logo.appendChild(id === 'auto' ? createIcon('refresh') : createProviderIcon(id));
-    const check = el('span', 'rhwp-setup-check');
-    check.appendChild(createIcon('check'));
-    root.append(logo, el('span', 'rhwp-setup-card-name', label), check);
-    root.addEventListener('click', () => void saveTaste({ provider: id, model: null, effort: null }));
-    tasteProviders.append(root);
-    return { id, root };
-  });
-  tastePanel.append(tasteGroup, tasteProviders);
+  tastePanel.append(tasteGroup);
   /** 허브가 답하기 전에는 기본값을 보인다. */
   let taste: Pick<TasteSettings, 'enabled' | 'provider'> = { enabled: true, provider: 'auto' };
   let tasteRequest = 0;
@@ -516,10 +494,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
       choice.root.dataset.done = picked ? 'true' : 'false';
     }
-    tasteProviders.hidden = !taste.enabled;
-    for (const choice of tasteProviderChoices) {
-      choice.root.setAttribute('aria-checked', choice.id === taste.provider ? 'true' : 'false');
-    }
+
   }
 
   function renderFonts(): void {
