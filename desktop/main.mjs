@@ -138,6 +138,8 @@ import { createGiftManager } from './gift-manager.mjs';
 import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
 import { createRauClient } from './rau-client.mjs';
 import { handleRauRequest, installRauHost, staleRauResponse } from './rau-host.mjs';
+import { createPlanManager } from './plan-manager.mjs';
+import { installPlanHost } from './plan-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
 import { createFontFolderStore } from './font-folders.mjs';
 import {
@@ -1583,6 +1585,7 @@ const licenseManager = createLicenseManager({
     licenseHost.broadcast(status);
     hubOwner.notifyLicenseChanged();
     void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
+    void planManager.licenseChanged(status).catch((error) => console.warn('[hamaeditor] plan refresh failed:', error));
   },
 });
 const licenseHost = installLicenseHost({
@@ -1595,6 +1598,17 @@ const licenseHost = installLicenseHost({
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
+// 앱 요금제: 라이선스로 무료·Pro·예전 키를 정하고, 앱 안 결제를 ref 로 확인해 키를 활성화한다.
+const planManager = createPlanManager({
+  licenseManager,
+  fetchImpl: (url, init) => net.fetch(url, init),
+  apiBase: licenseApiBase,
+  userDataDir: app.getPath('userData'),
+  // 결제 주소는 plan-manager 가 groble.im 의 https 주소만 넘긴다. 여기서 한 번 더 거른다.
+  openExternal: (url) => (/^https:\/\//.test(url) ? shell.openExternal(url) : Promise.reject(new Error('not https'))),
+  onChange: (status) => planHost.broadcast(status),
+});
+const planHost = installPlanHost({ ipcMain, manager: planManager, isTrustedStudioEvent, studioWebContents });
 
 // ── 문제 보고 ─────────────────────────────────────────────────────────────
 installIssueReportHost({
@@ -1692,6 +1706,7 @@ app.on('child-process-gone', (_event, details) => {
   console.warn('[hamaeditor] child process gone:', details?.type, details?.name ?? '', details?.reason, `exit ${details?.exitCode ?? '?'}`);
 });
 app.on('will-quit', () => diagnosticLog.flushSync());
+app.on('will-quit', () => planManager.stop());
 
 ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
@@ -2519,6 +2534,7 @@ if (!hasSingleInstanceLock) {
       console.warn('[hamaeditor] license state failed to load:', error);
     });
     licenseManager.start();
+    void planManager.start();
     desktopReady = true;
     let failedLaunches = 0;
     const restoredDocumentIds = (restartManifest?.windows ?? [])
