@@ -1,6 +1,6 @@
 {
  "date": "2026-10-31",
- "runtime": "Studio dev (hub + Vite on free ports via e2e/agent-bench-harness.mjs), headless Chrome 1440x1300; candidate feat/heemang-notes-parity a0444906 (vendor/hm-wasm HeemangEngine 25310d0); baseline Rauhwpx main e13e2155",
+ "runtime": "Studio dev (hub + Vite on free ports via e2e/agent-bench-harness.mjs), headless Chrome 1440x1300; candidate feat/heemang-notes-parity 251469c3 (vendor/hm-wasm HeemangEngine ab0b54a); before screenshots from Rauhwpx main e13e2155",
  "fixtures": "Hancom Office 2022 inputs and captures (heemang-cleanroom/parity/notes/hancom-note-captures)",
  "comparisonMethod": "Studio saves through WasmBridge.exportHwpx/exportHwp/exportHml (the save paths). HWPX: footNotePr/endNotePr per section plus every footNote/endNote control (attributes without instId, paragraph paraPr/style, run charPr, autoNum + autoNumFormat, text) compared with the Hancom HWPX for the same steps. HWP and HML: reopened in a fresh Studio context, re-exported as HWPX, compared the same way. HML also compared element-wise (FOOTNOTESHAPE/ENDNOTESHAPE/FOOTNOTE/ENDNOTE) with Hancom s-saved.hml. Rendering: Studio page count and page screenshots vs Hancom PDFs (pdftoppm), side by side.",
  "items": {
@@ -24,15 +24,42 @@
    "total": 11,
    "failed": []
   },
-  "5 note-shape dialog vs Hancom c06* (tab, values, one undo)": {
-   "passed": 135,
-   "total": 136,
+  "5 주석 모양 dialog vs Hancom c06*/c11* (tabs per context, values, one undo)": {
+   "passed": 185,
+   "total": 189,
    "failed": [
     {
-     "check": "dialog en-place1 sec2 (구역의 끝, menu 미주 모양 from section 2 body): saved footNotePr/endNotePr + note controls == Hancom c06f-sections/v-sec2-only-place1.hwpx",
+     "check": "dialog en-ok-unchanged: saved footNotePr/endNotePr + note controls == Hancom c11e-dialog-endnote/v-en-ok-unchanged.hwpx",
      "detail": {
       "diffs": [
-       ".sections[0].endNotePr.kids[4].attrs.place: \"END_OF_DOCUMENT\" != \"END_OF_SECTION\""
+       ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
+      ],
+      "studioUnmodifiedVsHancomInput": []
+     }
+    },
+    {
+     "check": "dialog en-numfmt-07: saved footNotePr/endNotePr + note controls == Hancom c11e-dialog-endnote/v-en-numfmt-07.hwpx",
+     "detail": {
+      "diffs": [
+       ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
+      ],
+      "studioUnmodifiedVsHancomInput": []
+     }
+    },
+    {
+     "check": "dialog en-numfmt-09: saved footNotePr/endNotePr + note controls == Hancom c11e-dialog-endnote/v-en-numfmt-09.hwpx",
+     "detail": {
+      "diffs": [
+       ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
+      ],
+      "studioUnmodifiedVsHancomInput": []
+     }
+    },
+    {
+     "check": "dialog en-section-end-dlg: saved footNotePr/endNotePr + note controls == Hancom c11e-dialog-endnote/v-en-section-end.hwpx",
+     "detail": {
+      "diffs": [
+       ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
       ],
       "studioUnmodifiedVsHancomInput": []
      }
@@ -40,8 +67,8 @@
    ]
   },
   "6 save HWPX/HWP/HML and reopen vs Hancom": {
-   "passed": 53,
-   "total": 54,
+   "passed": 57,
+   "total": 60,
    "failed": [
     {
      "check": "base-notes: Studio HML FOOTNOTESHAPE/ENDNOTESHAPE/FOOTNOTE/ENDNOTE == Hancom s-saved.hml",
@@ -300,47 +327,47 @@
        }
       ]
      }
+    },
+    {
+     "check": "en-numfmt-09: saved as HWP, reopened -> HWPX == Hancom v-en-numfmt-09.hwpx",
+     "detail": [
+      ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
+     ]
+    },
+    {
+     "check": "en-numfmt-09: saved as HML, reopened -> HWPX == Hancom v-en-numfmt-09.hwpx",
+     "detail": [
+      ".sections[0].endNotePr.kids[1].attrs.length: \"14692344\" != \"42520\""
+     ]
     }
    ]
   },
   "7 rendering vs Hancom PDFs": {
-   "passed": 16,
+   "passed": 17,
    "total": 17,
-   "failed": [
-    {
-     "check": "render Studio dialog 구역의 끝 from section 2: page count Studio 3 == Hancom 4",
-     "detail": {
-      "montage": "/private/tmp/notes-live/c7/studio-dialog-from-section-2.png"
-     }
-    }
-   ]
+   "failed": []
   }
  },
  "pageErrors": 0,
  "screenshots": {
   "1-new-footnote": "base.hwpx, caret at end of P0, insert footnote: before 1)| (no space), after 1) | (number + space, caret after)",
-  "2-note-shape-dialog": "base-3fn.hwpx from the body: before 미주-only dialog (insert:endnote-shape), after 각주/미주 모양 with 각주 tab (insert:note-shape, also reachable through 명령 검색)",
+  "2-note-shape-dialog": "base-3fn.hwpx from the body: before 미주-only dialog (insert:endnote-shape), after 주석 모양 with 각주/미주 tabs (입력 > 주석 모양)",
   "3-cell-footnote": "base.hwpx, caret at end of cell A1, insert footnote + type \"cell note\": before the mark lands in P0 (Th1)e), after a1 1) with the note",
   "4-pasted-mark": "base-notes.hwpx, copy \"quick[mark] brown\", paste at end of P3: before the copy has no mark/note, after quick2) with its own note 2) orig note",
   "5-mark-delete-prompt": "base-notes.hwpx, Backspace right after the footnote mark: before 각주 삭제 / 각주를 삭제하시겠습니까?, after 지우기 / [각주] 를 지울까요? 취소(N) 지움(Y)"
  },
  "findings": [
   {
-   "item": "5/7",
-   "summary": "Endnote placement 구역의 끝 applies to the caret section only",
-   "repro": "Open twosec-notes.hwpx, put the caret in section 2, 입력 > 미주 모양, choose 구역의 끝, 확인, save HWPX",
-   "expected (Hancom c06f v-sec2-only-place1)": "endNotePr place END_OF_SECTION in both sections; 4 pages",
-   "observed": "section 1 keeps END_OF_DOCUMENT, section 2 END_OF_SECTION; 3 pages"
+   "item": "5/6",
+   "summary": "Hancom-only side effect not reproduced: OK in the endnote tab (opened inside an endnote) rewrites endNotePr noteLine length 14692344 to the column width 42520 in Hancom (SUMMARY2, c11e); Studio keeps 14692344. All 4 c11e endnote-dialog comparisons and the en-numfmt-09 HWP/HML round trips differ only in that attribute."
   },
   {
    "item": "6",
-   "summary": "Studio HML note paragraphs differ from Hancom in default attributes only",
-   "detail": "Studio writes P PageBreak/ColumnBreak/Merged=\"0\" and omits PARALIST LinkListID/LinkListIDNext=\"0\"; same for every paragraph and list in the file (generic HML writer). Reopening the Studio HML gives notes and shapes equal to Hancom r-from-hml.hwpx."
+   "summary": "Studio HML differs from Hancom in default attributes only (P PageBreak/ColumnBreak/Merged=\"0\", no PARALIST LinkListID/LinkListIDNext) for every paragraph and list; reopened HML equals Hancom r-from-hml.hwpx."
   },
   {
    "item": "5",
-   "summary": "From the body the 각주 tab is reachable only through 명령 검색 (각주/미주 모양); the 입력 menu offers 미주 모양 and the ribbon button shows only in note mode",
-   "severity": "observation"
+   "summary": "Resolved since the first run: endnote placement 구역의 끝 is now written to every section (matches c06f v-sec2-only-place1 and v-en-place1; twosec renders 4 pages like Hancom)."
   }
  ]
 }
