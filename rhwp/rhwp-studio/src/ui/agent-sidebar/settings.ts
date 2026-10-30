@@ -477,7 +477,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
-  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다. renderPi 가 부르므로 먼저 만든다.
+  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다.
   const tasteSection = createTasteSettingsSection({
     bridge,
     isDisposed: () => disposed,
@@ -2514,7 +2514,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupCodePending = false;
     setupBusy = false;
     clearSetupAuthPrompt();
-    tasteSection.render();
     setupOverlay.classList.remove('ag-open');
     setupOverlay.setAttribute('aria-hidden', 'true');
     if (!setupAgent || !pendingInstalls.has(setupAgent)) resetSetupInstallProgress();
@@ -3151,7 +3150,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
-    tasteSection.render();
     piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
@@ -3283,7 +3281,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     void refreshProviders(true);
   }
 
-  /** OpenRouter 키 저장 — Pi 설정의 키 칸과 Rau-0.1 의 키 칸이 함께 쓴다. 성공하면 true. */
+  /** OpenRouter 키 저장 — Pi 설정의 키 칸. 성공하면 true. */
   async function connectOpenRouterKey(key: string): Promise<boolean> {
     if (!key || piBusy) return false;
     piBusy = true;
